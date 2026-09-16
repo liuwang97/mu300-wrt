@@ -1,0 +1,108 @@
+#!/bin/bash
+# Mobile data on the MU300 modem without Android RIL: AT commands on /dev/stty_nr1, data over sipa_eth<cid-1>.
+# usage: mobile-data up [APN] | down | status | sim-reset
+set -euo pipefail
+DEV=${MU300_AT_DEV:-/dev/stty_nr1}
+CID=1
+IFACE=sipa_eth$((CID - 1))
+
+at() {  # at CMD [timeout] -> response lines up to the final result code
+    local cmd=$1 t=${2:-5} line
+    exec 3<>"$DEV"
+    # drop late responses/URCs left over from earlier commands
+    while IFS= read -r -t 0.2 line <&3; do :; done
+    printf '%s\r' "$cmd" >&3
+    local end=$((SECONDS + t))
+    while [ $SECONDS -lt $end ]; do
+        IFS= read -r -t 1 line <&3 || continue
+        line=${line%$'\r'}
+        [ -z "$line" ] && continue
+        case "$line" in
+            +CSQ:*|+CESQ:*|+SPPCI:*|+ECIND:*|+SIND:*|+CREG:*|+CGREG:*|+SPNRINDICATE:*|+CTZV:*|^CONN:*|+SPERRLOG:*)
+                [ "${cmd#AT+CSQ}" != "$cmd" ] && [ "${line#+CSQ:}" != "$line" ] && echo "$line"
+                continue ;;
+        esac
+        echo "$line"
+        case "$line" in OK|ERROR|+CME\ ERROR*|+CMS\ ERROR*|CONNECT*|NO\ CARRIER) break ;; esac
+    done
+    exec 3>&-
+}
+
+up() {
+    stty -F "$DEV" raw -echo
+    at 'AT+CFUN?' | grep -q '+CFUN: 1' || { at 'AT+SFUN=2' 5 >/dev/null; at 'AT+SFUN=4' 15 >/dev/null; }
+    for _ in $(seq 1 60); do
+        at 'AT+CEREG?' | grep -qE '\+CEREG: [0-9],(1|5)' && break
+        sleep 2
+    done
+    at 'AT+CEREG?' | grep -qE '\+CEREG: [0-9],(1|5)' || { echo "not registered on the network" >&2; exit 1; }
+    if [ -n "${1:-}" ]; then
+        at "AT+CGDCONT=$CID,\"IPV4V6\",\"$1\"" >/dev/null
+    fi
+    at "AT+CGACT?" | grep -q "+CGACT:$CID,1" || at "AT+CGACT=1,$CID" 20 >/dev/null
+    rdp=$(at "AT+CGCONTRDP=$CID" 4 | grep '^+CGCONTRDP:' | head -1)
+    # +CGCONTRDP: cid,bearer,apn,"a.b.c.d.m.m.m.m",gw,dns1,dns2,...
+    addrmask=$(echo "$rdp" | cut -d, -f4 | tr -d '"')
+    ip4=$(echo "$addrmask" | cut -d. -f1-4)
+    mask=$(echo "$addrmask" | cut -d. -f5-8)
+    dns1=$(echo "$rdp" | cut -d, -f6 | tr -d '"')
+    dns2=$(echo "$rdp" | cut -d, -f7 | tr -d '"')
+    [ -n "$ip4" ] || { echo "no IPv4 address from AT+CGCONTRDP" >&2; exit 1; }
+    at "AT+CGDATA=\"M-ETHER\",$CID" 8 | grep -q CONNECT || true
+    prefix=$(python3 -c "import ipaddress,sys;print(ipaddress.IPv4Network('0.0.0.0/'+sys.argv[1]).prefixlen)" "$mask" 2>/dev/null || echo 32)
+    ip link set "$IFACE" up
+    ip addr flush dev "$IFACE"
+    ip addr add "$ip4/$prefix" dev "$IFACE"
+    ip route replace default dev "$IFACE" metric 100
+    if command -v resolvectl >/dev/null; then
+        resolvectl dns "$IFACE" $dns1 $dns2 || true
+        resolvectl domain "$IFACE" '~.' || true
+    fi
+    # share the connection with USB/Wi-Fi clients (dnsmasq on usb0 already hands out this device as router/DNS)
+    sysctl -qw net.ipv4.ip_forward=1
+    nft -f - <<NFT
+table ip mu300_nat
+delete table ip mu300_nat
+table ip mu300_nat {
+    chain postrouting {
+        type nat hook postrouting priority srcnat; policy accept;
+        oifname "$IFACE" masquerade
+    }
+    chain forward {
+        type filter hook forward priority filter; policy accept;
+        tcp flags syn tcp option maxseg size set rt mtu
+    }
+}
+NFT
+    echo "mobile data up on $IFACE ($(at 'AT+COPS?' | sed -n 's/^+COPS: [0-9],[0-9],"\([^"]*\)".*/\1/p'))"
+}
+
+down() {
+    nft delete table ip mu300_nat 2>/dev/null || true
+    ip route del default dev "$IFACE" 2>/dev/null || true
+    ip addr flush dev "$IFACE" 2>/dev/null || true
+    ip link set "$IFACE" down 2>/dev/null || true
+    stty -F "$DEV" raw -echo
+    at "AT+CGACT=0,$CID" 10 >/dev/null || true
+}
+
+sim_reset() {
+    stty -F "$DEV" raw -echo
+    at 'AT+SFUN=5' 20; at 'AT+SFUN=3' 10; sleep 2; at 'AT+SFUN=2' 10; at 'AT+SFUN=4' 30
+    for _ in $(seq 1 30); do at 'AT+CPIN?' | grep -q READY && break; sleep 2; done
+    at 'AT+CPIN?'
+}
+
+status() {
+    stty -F "$DEV" raw -echo
+    at 'AT+COPS?'; at 'AT+CSQ'; at 'AT+CEREG?'; at 'AT+CGACT?'
+    ip -br addr show "$IFACE"
+}
+
+case "${1:-status}" in
+    up) up "${2:-}" ;;
+    down) down ;;
+    status) status ;;
+    sim-reset) sim_reset ;;
+    *) echo "usage: $0 up [APN] | down | status | sim-reset" >&2; exit 2 ;;
+esac
