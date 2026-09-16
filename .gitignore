@@ -16,3 +16,4 @@ rootfs/base.tar
 __pycache__/
 .DS_Store
 tools/bt-init/mu300-bt-init
+tools/gpu/cltest
