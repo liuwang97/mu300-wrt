@@ -9,17 +9,31 @@ if [ ! -s "$CONF" ]; then
     psk=$(tr -dc 'A-HJ-NP-Za-km-z2-9' </dev/urandom | head -c 12)
     umask 077
     mkdir -p /etc/mu300
-    printf 'SSID=MU300-%s\nPSK=%s\nBAND=2.4\nCHANNEL=auto\nCOUNTRY=TR\n' "${mac^^}" "$psk" > "$CONF"
+    printf 'SSID=MU300-%s\nPSK=%s\nBAND=5\nCHANNEL=auto\nCOUNTRY=TR\n' "${mac^^}" "$psk" > "$CONF"
     echo "generated $CONF"
 fi
 # read values literally (never source the file: the passphrase may contain shell metacharacters)
 conf() { sed -n "s/^$1=//p" "$CONF" | head -1; }
 SSID=$(conf SSID); PSK=$(conf PSK); CHANNEL=$(conf CHANNEL); COUNTRY=$(conf COUNTRY); BAND=$(conf BAND)
-# BAND=5 uses 802.11a/n/ac; this chip supports only one AP at a time, so 2.4 and 5 GHz cannot run together
+# BAND=5 uses 802.11a/n/ac; this chip supports only one AP at a time, so 2.4 and 5 GHz cannot run together.
+# The firmware offers 5 GHz AP only on the non-DFS channels 36-48 and 149-165.
 [ -e /run/mu300-hotspot-force-2g ] && BAND=2.4
-case "${BAND:-2.4}" in
-    5) HWMODE=a; [ -z "$CHANNEL" ] || [ "$CHANNEL" = auto ] && CHANNEL=36; EXTRA=$'ieee80211ac=1\nvht_oper_chwidth=0' ;;
-    *) HWMODE=g; [ -z "$CHANNEL" ] || [ "$CHANNEL" = auto ] && CHANNEL=6; EXTRA= ;;
+case "${BAND:-5}" in
+    5)
+        HWMODE=a; case "$CHANNEL" in ""|auto|[0-9]|1[0-4]) CHANNEL=36 ;; esac
+        case "$CHANNEL" in
+            36|44) HT='[HT40+][SHORT-GI-20][SHORT-GI-40]'; SEG0=42 ;;
+            40|48) HT='[HT40-][SHORT-GI-20][SHORT-GI-40]'; SEG0=42 ;;
+            149|157) HT='[HT40+][SHORT-GI-20][SHORT-GI-40]'; SEG0=155 ;;
+            153|161) HT='[HT40-][SHORT-GI-20][SHORT-GI-40]'; SEG0=155 ;;
+            *) HT='[SHORT-GI-20]'; SEG0= ;;
+        esac
+        if [ -n "$SEG0" ]; then
+            EXTRA=$(printf 'ht_capab=%s\nieee80211ac=1\nvht_capab=[SHORT-GI-80]\nvht_oper_chwidth=1\nvht_oper_centr_freq_seg0_idx=%s' "$HT" "$SEG0")
+        else
+            EXTRA=$(printf 'ht_capab=%s\nieee80211ac=1\nvht_oper_chwidth=0' "$HT")
+        fi ;;
+    *) HWMODE=g; case "$CHANNEL" in [1-9]|1[0-3]) ;; *) CHANNEL=6 ;; esac; EXTRA='ht_capab=[SHORT-GI-20]' ;;
 esac
 # cfg80211 tried to load regulatory.db before the rootfs was mounted; reload it, then apply the country
 iw reg reload 2>/dev/null || true
@@ -29,7 +43,7 @@ sleep 1
 # fall back to 2.4 GHz if the requested 5 GHz channel is still not usable for AP (NO-IR/disabled/radar)
 if [ "$HWMODE" = a ] && ! iw list 2>/dev/null | grep -E "\* [0-9]+ MHz \[$CHANNEL\]" | grep -vqE "no IR|disabled|radar"; then
     echo "5 GHz channel $CHANNEL not allowed for AP here, falling back to 2.4 GHz channel 6" >&2
-    HWMODE=g; CHANNEL=6; EXTRA=
+    HWMODE=g; CHANNEL=6; EXTRA='ht_capab=[SHORT-GI-20]'
 fi
 [ ${#PSK} -ge 8 ] || { echo "PSK must be at least 8 characters" >&2; exit 1; }
 for n in $(seq 1 60); do [ -e /sys/class/net/wlan0 ] && break; sleep 1; done

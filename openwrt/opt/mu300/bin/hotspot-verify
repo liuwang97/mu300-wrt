@@ -1,6 +1,7 @@
 #!/bin/sh
-# hostapd reports AP-ENABLED even when the SC2355 firmware refuses CMD_START_AP (5 GHz AP returns
-# SPRD_CMD_STATUS_NOT_SUPPORT_ERROR with the Linux driver). Detect that and restart on 2.4 GHz.
+# hostapd reports AP-ENABLED even when the SC2355 firmware refuses CMD_START_AP (for example a 5 GHz
+# channel the firmware does not offer, or a driver without wlan_combo-5ghz-ap-ds-params.patch).
+# Detect that and restart on 2.4 GHz.
 since=$(cut -d. -f1 /proc/uptime)
 for n in $(seq 1 20); do
     sleep 1
