@@ -4,18 +4,33 @@
 # installer when available; otherwise generated once with a random passphrase.
 set -euo pipefail
 CONF=/etc/mu300/hotspot.conf
-LAN_IP=192.168.78.1
 if [ ! -s "$CONF" ]; then
     mac=$(cat /sys/class/net/wlan0/address 2>/dev/null | tr -d : | tail -c 5)
     psk=$(tr -dc 'A-HJ-NP-Za-km-z2-9' </dev/urandom | head -c 12)
     umask 077
     mkdir -p /etc/mu300
-    printf 'SSID=MU300-%s\nPSK=%s\nCHANNEL=6\nCOUNTRY=TR\n' "${mac^^}" "$psk" > "$CONF"
+    printf 'SSID=MU300-%s\nPSK=%s\nBAND=2.4\nCHANNEL=auto\nCOUNTRY=TR\n' "${mac^^}" "$psk" > "$CONF"
     echo "generated $CONF"
 fi
 # read values literally (never source the file: the passphrase may contain shell metacharacters)
 conf() { sed -n "s/^$1=//p" "$CONF" | head -1; }
-SSID=$(conf SSID); PSK=$(conf PSK); CHANNEL=$(conf CHANNEL); COUNTRY=$(conf COUNTRY)
+SSID=$(conf SSID); PSK=$(conf PSK); CHANNEL=$(conf CHANNEL); COUNTRY=$(conf COUNTRY); BAND=$(conf BAND)
+# BAND=5 uses 802.11a/n/ac; this chip supports only one AP at a time, so 2.4 and 5 GHz cannot run together
+[ -e /run/mu300-hotspot-force-2g ] && BAND=2.4
+case "${BAND:-2.4}" in
+    5) HWMODE=a; [ -z "$CHANNEL" ] || [ "$CHANNEL" = auto ] && CHANNEL=36; EXTRA=$'ieee80211ac=1\nvht_oper_chwidth=0' ;;
+    *) HWMODE=g; [ -z "$CHANNEL" ] || [ "$CHANNEL" = auto ] && CHANNEL=6; EXTRA= ;;
+esac
+# cfg80211 tried to load regulatory.db before the rootfs was mounted; reload it, then apply the country
+iw reg reload 2>/dev/null || true
+iw reg set "${COUNTRY:-TR}" 2>/dev/null || true
+for n in $(seq 1 15); do iw reg get 2>/dev/null | grep -q "country ${COUNTRY:-TR}:" && break; sleep 1; done
+sleep 1
+# fall back to 2.4 GHz if the requested 5 GHz channel is still not usable for AP (NO-IR/disabled/radar)
+if [ "$HWMODE" = a ] && ! iw list 2>/dev/null | grep -E "\* [0-9]+ MHz \[$CHANNEL\]" | grep -vqE "no IR|disabled|radar"; then
+    echo "5 GHz channel $CHANNEL not allowed for AP here, falling back to 2.4 GHz channel 6" >&2
+    HWMODE=g; CHANNEL=6; EXTRA=
+fi
 [ ${#PSK} -ge 8 ] || { echo "PSK must be at least 8 characters" >&2; exit 1; }
 for n in $(seq 1 60); do [ -e /sys/class/net/wlan0 ] && break; sleep 1; done
 umask 077
@@ -24,8 +39,11 @@ interface=wlan0
 driver=nl80211
 ssid=${SSID}
 country_code=${COUNTRY:-TR}
-hw_mode=g
-channel=${CHANNEL:-6}
+bridge=br-lan
+hw_mode=${HWMODE}
+channel=${CHANNEL}
+ieee80211d=1
+${EXTRA}
 ieee80211n=1
 wmm_enabled=1
 auth_algs=1
@@ -34,12 +52,13 @@ wpa_key_mgmt=WPA-PSK
 rsn_pairwise=CCMP
 wpa_passphrase=${PSK}
 C
+for n in $(seq 1 30); do ip link show br-lan >/dev/null 2>&1 && break; sleep 1; done
+ip addr flush dev wlan0 2>/dev/null || true
+# cfg80211 refuses to bridge a station-mode interface (EOPNOTSUPP); switch to AP first so hostapd can add it
+ip link set wlan0 down
+iw dev wlan0 set type __ap
 ip link set wlan0 up
-ip addr replace "$LAN_IP/24" dev wlan0
-dnsmasq --conf-file=/dev/null --interface=wlan0 --bind-interfaces --except-interface=lo \
-    --dhcp-range=192.168.78.10,192.168.78.200,255.255.255.0,12h --dhcp-leasefile=/run/mu300-wlan0.leases \
-    --pid-file=/run/mu300-dnsmasq-wlan0.pid
-mkdir -p /run/motd.d
+mkdir -p /run/motd.d && chmod 755 /run/motd.d
 printf 'MU300 hotspot: SSID "%s"  password "%s"  (edit /etc/mu300/hotspot.conf)\n' "$SSID" "$PSK" > /run/motd.d/50-mu300-hotspot
 chmod 640 /run/motd.d/50-mu300-hotspot
 exec hostapd /run/mu300-hostapd.conf
