@@ -13,14 +13,14 @@ BC_B=/run/mu300/misc-bc-slot-b-trial.bin
 MISC=$(cat /run/mu300/misc-dev 2>/dev/null || readlink -f /dev/block/by-name/misc)
 
 write_bc() {
-    dd if="$1" of="$MISC" bs=1 seek=2048 conv=notrunc status=none
+    dd if="$1" of="$MISC" bs=1 seek=2048 conv=notrunc 2>/dev/null
     sync
-    [ "$(dd if="$MISC" bs=1 skip=2048 count=32 status=none | od -An -tx1 -v | tr -d ' \n')" = "$(od -An -tx1 -v "$1" | tr -d ' \n')" ] \
+    [ "$(dd if="$MISC" bs=1 skip=2048 count=32 2>/dev/null | od -An -tx1 -v | tr -d ' \n')" = "$(od -An -tx1 -v "$1" | tr -d ' \n')" ] \
         || { echo "misc verify failed" >&2; exit 1; }
 }
 
 slot_state() {
-    b=$(dd if="$MISC" bs=1 skip=2048 count=32 status=none | od -An -tx1 -v | tr -d ' \n')
+    b=$(dd if="$MISC" bs=1 skip=2048 count=32 2>/dev/null | od -An -tx1 -v | tr -d ' \n')
     echo "misc bootloader_control: $b"
     echo "  slot a info: ${b:24:2}  slot b info: ${b:28:2}  (prio<<0|tries<<4|successful<<7)"
 }

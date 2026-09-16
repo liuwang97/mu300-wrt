@@ -169,12 +169,31 @@ ROOT_OFFSET=27762098176   # linux-boot/rootfs-region.env; outside every GPT part
 mkdir -p /newroot
 # busybox mount only sets up a loop for regular files; for a block device the loop options would
 # be handed to ext4 (EINVAL), so attach the loop explicitly and verify its offset
+# The ext4 area holds one or more systems: /ubuntu, /openwrt (selected by /.mu300/boot-os), or a single
+# Ubuntu directly in its root (first installs). Pick one and remember how to start it.
+has_init() { [ -x "$1/lib/systemd/systemd" ] || [ -x "$1/sbin/init" ]; }
+pick_root() {
+    want=$(cat /disk/.mu300/boot-os 2>/dev/null)
+    for os in $want ubuntu openwrt; do
+        [ -d "/disk/$os" ] && has_init "/disk/$os" && { echo "/disk/$os"; return; }
+        # legacy layout: Ubuntu in the filesystem root
+        [ "$os" = ubuntu ] && [ -x /disk/lib/systemd/systemd ] && { echo /disk; return; }
+    done
+}
+mkdir -p /disk
 rootloop=$(losetup -f 2>/run/rootmount.err)
 if [ -n "$rootloop" ] && losetup -o $ROOT_OFFSET "$rootloop" /dev/mmcblk0 2>>/run/rootmount.err \
    && [ "$(cat /sys/block/${rootloop#/dev/}/loop/offset)" = "$ROOT_OFFSET" ] \
    && [ "$(dd if="$rootloop" bs=1 skip=1080 count=2 2>/dev/null | od -An -tx1 | tr -d ' ')" = 53ef ] \
-   && mount -t ext4 -o noatime "$rootloop" /newroot 2>>/run/rootmount.err \
-   && [ -x /newroot/lib/systemd/systemd ]; then
+   && mount -t ext4 -o noatime "$rootloop" /disk 2>>/run/rootmount.err \
+   && rootdir=$(pick_root) && [ -n "$rootdir" ]; then
+    if [ "$rootdir" = /disk ]; then
+        mount --move /disk /newroot
+    else
+        mount --bind "$rootdir" /newroot
+        # keep the whole disk reachable from inside (switching systems, editing the other one)
+        mkdir -p /newroot/mnt/mu300-disk && mount --move /disk /newroot/mnt/mu300-disk
+    fi
     # Default-Linux mode: leave LK's decremented tries (b: tries 1, not successful). Userspace re-arms slot b
     # (tries 2) once the system is up; if it never gets there, LK falls back to Android on the next boot.
     if [ "$(cat /newroot/etc/mu300/default-boot 2>/dev/null)" = linux ]; then
@@ -184,16 +203,20 @@ if [ -n "$rootloop" ] && losetup -o $ROOT_OFFSET "$rootloop" /dev/mmcblk0 2>>/ru
     fi
     mkdir -p /run/mu300 && cp /etc/misc-bc-slot-a.bin /etc/misc-bc-slot-b-trial.bin /run/mu300/
     [ -n "$misc" ] && echo "$misc" > /run/mu300/misc-dev
-    log "stage=switch-root ubuntu=$(sed -n 's/^PRETTY_NAME=//p' /newroot/etc/os-release)"
+    echo "$rootloop" > /run/mu300/disk-dev
+    init=/sbin/init
+    [ -x /newroot/lib/systemd/systemd ] && init=/lib/systemd/systemd
+    log "stage=switch-root root=$rootdir init=$init os=$(sed -n 's/^PRETTY_NAME=//p' /newroot/etc/os-release)"
     persist
     kill $(jobs -p) 2>/dev/null
     for p in /proc/[0-9]*; do [ "${p#/proc/}" = 1 ] || kill -9 "${p#/proc/}" 2>/dev/null; done
     umount /config 2>/dev/null
+    mkdir -p /newroot/dev /newroot/proc /newroot/sys /newroot/run
     mount --move /dev /newroot/dev
     mount --move /proc /newroot/proc
     mount --move /sys /newroot/sys
     mount --move /run /newroot/run 2>/dev/null
-    exec switch_root /newroot /lib/systemd/systemd
+    exec switch_root /newroot $init
 fi
 log "stage=rootfs-unavailable $(cat /run/rootmount.err)"
 restore_slot_a

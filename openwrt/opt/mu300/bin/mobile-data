@@ -1,6 +1,7 @@
 #!/bin/bash
 # Mobile data on the MU300 modem without Android RIL: AT commands on /dev/stty_nr1, data over sipa_eth<cid-1>.
 # usage: mobile-data up [APN] | down | status | sim-reset | watch
+# MU300_NETIFD=1 mobile-data up [APN]: only attach and print IFACE/IP/PREFIX/DNS1/DNS2 (OpenWrt netifd protocol)
 set -euo pipefail
 DEV=${MU300_AT_DEV:-/dev/stty_nr1}
 CID=1
@@ -30,7 +31,7 @@ at() {  # at CMD [timeout] -> response lines up to the final result code
 
 up() {
     rm -f /run/mu300-mobile-data-down
-    stty -F "$DEV" raw -echo
+    stty -F "$DEV" raw -echo 2>/dev/null || true   # some tty flags are not supported by the modem tty
     at 'AT+CFUN?' | grep -q '+CFUN: 1' || { at 'AT+SFUN=2' 5 >/dev/null; at 'AT+SFUN=4' 15 >/dev/null; }
     for n in $(seq 1 60); do
         at 'AT+CEREG?' | grep -qE '\+CEREG: [0-9],(1|5)' && break
@@ -55,6 +56,11 @@ up() {
     [ -n "$ip4" ] || { echo "no IPv4 address from AT+CGCONTRDP" >&2; exit 1; }
     at "AT+CGDATA=\"M-ETHER\",$CID" 8 | grep -q CONNECT || true
     prefix=$(python3 -c "import ipaddress,sys;print(ipaddress.IPv4Network('0.0.0.0/'+sys.argv[1]).prefixlen)" "$mask" 2>/dev/null || echo 32)
+    if [ "${MU300_NETIFD:-0}" = 1 ]; then
+        # OpenWrt: netifd (proto mu300cell) configures the address, routes, DNS and firewall itself
+        printf 'IFACE=%s\nIP=%s\nPREFIX=%s\nDNS1=%s\nDNS2=%s\n' "$IFACE" "$ip4" "$prefix" "$dns1" "$dns2"
+        return 0
+    fi
     ip link set "$IFACE" up
     ip addr flush dev "$IFACE"
     ip addr add "$ip4/$prefix" dev "$IFACE"
@@ -90,12 +96,12 @@ down() {
     ip route del default dev "$IFACE" 2>/dev/null || true
     ip addr flush dev "$IFACE" 2>/dev/null || true
     ip link set "$IFACE" down 2>/dev/null || true
-    stty -F "$DEV" raw -echo
+    stty -F "$DEV" raw -echo 2>/dev/null || true   # some tty flags are not supported by the modem tty
     at "AT+CGACT=0,$CID" 10 >/dev/null || true
 }
 
 sim_reset() {
-    stty -F "$DEV" raw -echo
+    stty -F "$DEV" raw -echo 2>/dev/null || true   # some tty flags are not supported by the modem tty
     at 'AT+SFUN=5' 20; at 'AT+SFUN=3' 10; sleep 2; at 'AT+SFUN=2' 10; at 'AT+SFUN=4' 30
     for _ in $(seq 1 30); do at 'AT+CPIN?' | grep -q READY && break; sleep 2; done
     at 'AT+CPIN?'
@@ -109,7 +115,7 @@ watch() {
         sleep "${MU300_WATCH_INTERVAL:-30}"
         [ -e /run/mu300-mobile-data-down ] && continue
         [ -c "$DEV" ] || continue
-        stty -F "$DEV" raw -echo 2>/dev/null || continue
+        stty -F "$DEV" raw -echo 2>/dev/null || true
         if at "AT+CGACT?" | grep -q "+CGACT:$CID,1" && ip -4 addr show "$IFACE" 2>/dev/null | grep -q inet; then
             fails=0
             continue
@@ -118,13 +124,17 @@ watch() {
         [ "$fails" -lt 2 ] && continue
         echo "mobile data lost (modem reset or detached), reconnecting" >&2
         [ -w /sys/class/leds/sc27xx:blue/brightness ] && echo 0 > /sys/class/leds/sc27xx:blue/brightness
-        ( up ) || echo "reconnect failed, retrying" >&2
+        if [ "${MU300_NETIFD:-0}" = 1 ]; then
+            ifup "${MU300_WAN:-wan}"   # OpenWrt: let netifd run the mu300cell protocol again
+        else
+            ( up ) || echo "reconnect failed, retrying" >&2
+        fi
         fails=0
     done
 }
 
 status() {
-    stty -F "$DEV" raw -echo
+    stty -F "$DEV" raw -echo 2>/dev/null || true   # some tty flags are not supported by the modem tty
     at 'AT+COPS?'; at 'AT+CSQ'; at 'AT+CEREG?'; at 'AT+CGACT?'
     ip -br addr show "$IFACE"
 }

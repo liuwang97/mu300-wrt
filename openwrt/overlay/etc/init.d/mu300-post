@@ -1,0 +1,17 @@
+#!/bin/sh /etc/rc.common
+# After boot: keep mobile data up across modem resets, and mark the boot successful (re-arm slot b if Linux is default)
+START=99
+USE_PROCD=1
+export PATH="$PATH:/opt/mu300/busybox-bin"
+
+start_service() {
+	procd_open_instance cellwatch
+	procd_set_param command /opt/mu300/bin/mobile-data watch
+	procd_set_param env MU300_NETIFD=1 PATH="$PATH"
+	procd_set_param respawn 3600 30 0
+	procd_close_instance
+	procd_open_instance bootok
+	procd_set_param command /bin/sh -c "sleep 30; exec /opt/mu300/bin/mu300-next-boot --rearm"
+	procd_set_param env PATH="$PATH"
+	procd_close_instance
+}

@@ -10,8 +10,10 @@ while [ "$(cut -d. -f1 /proc/uptime)" -lt "$end" ]; do
     {
         echo "MU300-PERSIST-BEGIN uptime=$(cut -d' ' -f1 /proc/uptime) (early-recorder)"
         cat /run/stages 2>/dev/null
+        ip -br addr 2>/dev/null
         echo "--- lsmod"
         systemctl list-units --no-legend --plain --state=activating,failed 2>/dev/null
+        [ -f /etc/openwrt_release ] && { echo "--- ps"; ps w 2>/dev/null; echo "--- logread"; logread 2>/dev/null | grep -v PR_CAPBSET | tail -300; echo "--- android logcat"; tail -150 /var/log/android-logcat.txt 2>/dev/null; echo "--- mu300 logs"; tail -40 /tmp/mu300-*.log 2>/dev/null; }
         echo "--- dmesg"
         dmesg | tail -c 3000000
         echo "MU300-PERSIST-END"
