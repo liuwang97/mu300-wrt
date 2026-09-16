@@ -97,7 +97,7 @@ done < /etc/module-order
 mdev -s
 log "stage=modules-done loaded=$loaded failed=$failed"
 
-# Point bootloader_control back at slot a so any later reset returns to Android.
+# Locate misc now; whether slot a is restored is decided once the rootfs is known.
 misc=
 for n in $(seq 1 20); do
     for u in /sys/class/block/mmcblk*p*/uevent; do
@@ -109,18 +109,15 @@ for n in $(seq 1 20); do
     sleep 1
     mdev -s
 done
-if [ -n "$misc" ]; then
-    dd if=/etc/misc-bc-slot-a.bin of="$misc" bs=1 seek=2048 conv=notrunc 2>/dev/null
+
+write_misc_bc() {  # write_misc_bc FILE STAGE
+    [ -n "$misc" ] || { log "stage=misc-NOT-FOUND"; return 1; }
+    dd if="$1" of="$misc" bs=1 seek=2048 conv=notrunc 2>/dev/null
     sync
     dd if="$misc" of=/run/bc.bin bs=1 skip=2048 count=32 2>/dev/null
-    if cmp -s /run/bc.bin /etc/misc-bc-slot-a.bin; then
-        log "stage=misc-restored dev=$misc"
-    else
-        log "stage=misc-restore-MISMATCH dev=$misc"
-    fi
-else
-    log "stage=misc-NOT-FOUND"
-fi
+    if cmp -s /run/bc.bin "$1"; then log "stage=$2 dev=$misc"; else log "stage=$2-MISMATCH dev=$misc"; fi
+}
+restore_slot_a() { write_misc_bc /etc/misc-bc-slot-a.bin misc-restored; }
 
 for u in /sys/class/block/mmcblk*p*/uevent; do
     grep -qx PARTNAME=boot_b "$u" 2>/dev/null && bootb=/dev/$(basename "$(dirname "$u")")
@@ -178,6 +175,15 @@ if [ -n "$rootloop" ] && losetup -o $ROOT_OFFSET "$rootloop" /dev/mmcblk0 2>>/ru
    && [ "$(dd if="$rootloop" bs=1 skip=1080 count=2 2>/dev/null | od -An -tx1 | tr -d ' ')" = 53ef ] \
    && mount -t ext4 -o noatime "$rootloop" /newroot 2>>/run/rootmount.err \
    && [ -x /newroot/lib/systemd/systemd ]; then
+    # Default-Linux mode: leave LK's decremented tries (b: tries 1, not successful). Userspace re-arms slot b
+    # (tries 2) once the system is up; if it never gets there, LK falls back to Android on the next boot.
+    if [ "$(cat /newroot/etc/mu300/default-boot 2>/dev/null)" = linux ]; then
+        log "stage=default-boot-linux (slot a restore skipped)"
+    else
+        restore_slot_a
+    fi
+    mkdir -p /run/mu300 && cp /etc/misc-bc-slot-a.bin /etc/misc-bc-slot-b-trial.bin /run/mu300/
+    [ -n "$misc" ] && echo "$misc" > /run/mu300/misc-dev
     log "stage=switch-root ubuntu=$(sed -n 's/^PRETTY_NAME=//p' /newroot/etc/os-release)"
     persist
     kill $(jobs -p) 2>/dev/null
@@ -190,6 +196,7 @@ if [ -n "$rootloop" ] && losetup -o $ROOT_OFFSET "$rootloop" /dev/mmcblk0 2>>/ru
     exec switch_root /newroot /lib/systemd/systemd
 fi
 log "stage=rootfs-unavailable $(cat /run/rootmount.err)"
+restore_slot_a
 ifconfig usb0 192.168.77.1 netmask 255.255.255.0 up
 log "stage=usb0 $(ifconfig usb0 2>&1 | head -1)"
 cat > /etc/udhcpd.conf <<'EOF'

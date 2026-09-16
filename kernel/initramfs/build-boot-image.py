@@ -96,6 +96,7 @@ def main():
         'bin/logdw': (a.logdw.read_bytes(), stat.S_IFREG | 0o755),
         'etc/ueventd-perms.sh': (a.ueventd_perms.read_bytes(), stat.S_IFREG | 0o755),
         'etc/misc-bc-slot-a.bin': (slot_a_bc, stat.S_IFREG | 0o644),
+        'etc/misc-bc-slot-b-trial.bin': (slot_b_bc, stat.S_IFREG | 0o644),
         'etc/module-order': (a.module_order.read_bytes(), stat.S_IFREG | 0o644),
     }
     dirs = {'bin', 'sbin', 'etc', 'proc', 'sys', 'dev', 'run', 'tmp', 'root', 'config', 'linux-modules'}
