@@ -158,6 +158,8 @@ def main():
     manifest = {
         'image': a.out.name,
         'sha256': hashlib.sha256(image).hexdigest(),
+        # boot_b's tail holds the persistent init log, so on-device checks compare only the first 48 MiB
+        'sha256_head48m': hashlib.sha256(image[:PERSIST_LOG_OFFSET]).hexdigest(),
         'kernel_sha256': hashlib.sha256(kern).hexdigest(),
         'ramdisk_size': len(ram),
         'modules': len(a.module_order.read_text().split()),

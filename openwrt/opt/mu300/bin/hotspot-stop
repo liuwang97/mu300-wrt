@@ -1,0 +1,4 @@
+#!/bin/sh
+[ -f /run/mu300-dnsmasq-wlan0.pid ] && kill "$(cat /run/mu300-dnsmasq-wlan0.pid)" 2>/dev/null
+ip addr flush dev wlan0 2>/dev/null
+true

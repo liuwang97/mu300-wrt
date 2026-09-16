@@ -1,0 +1,45 @@
+#!/bin/bash
+# Wi-Fi hotspot on wlan0: hostapd (WPA2) + DHCP/DNS; clients are NATed out through the modem by mobile-data.
+# Settings: /etc/mu300/hotspot.conf (SSID, PSK, CHANNEL, COUNTRY). Imported from Android's SoftAP config by the
+# installer when available; otherwise generated once with a random passphrase.
+set -euo pipefail
+CONF=/etc/mu300/hotspot.conf
+LAN_IP=192.168.78.1
+if [ ! -s "$CONF" ]; then
+    mac=$(cat /sys/class/net/wlan0/address 2>/dev/null | tr -d : | tail -c 5)
+    psk=$(tr -dc 'A-HJ-NP-Za-km-z2-9' </dev/urandom | head -c 12)
+    umask 077
+    mkdir -p /etc/mu300
+    printf 'SSID=MU300-%s\nPSK=%s\nCHANNEL=6\nCOUNTRY=TR\n' "${mac^^}" "$psk" > "$CONF"
+    echo "generated $CONF"
+fi
+# read values literally (never source the file: the passphrase may contain shell metacharacters)
+conf() { sed -n "s/^$1=//p" "$CONF" | head -1; }
+SSID=$(conf SSID); PSK=$(conf PSK); CHANNEL=$(conf CHANNEL); COUNTRY=$(conf COUNTRY)
+[ ${#PSK} -ge 8 ] || { echo "PSK must be at least 8 characters" >&2; exit 1; }
+for n in $(seq 1 60); do [ -e /sys/class/net/wlan0 ] && break; sleep 1; done
+umask 077
+cat > /run/mu300-hostapd.conf <<C
+interface=wlan0
+driver=nl80211
+ssid=${SSID}
+country_code=${COUNTRY:-TR}
+hw_mode=g
+channel=${CHANNEL:-6}
+ieee80211n=1
+wmm_enabled=1
+auth_algs=1
+wpa=2
+wpa_key_mgmt=WPA-PSK
+rsn_pairwise=CCMP
+wpa_passphrase=${PSK}
+C
+ip link set wlan0 up
+ip addr replace "$LAN_IP/24" dev wlan0
+dnsmasq --conf-file=/dev/null --interface=wlan0 --bind-interfaces --except-interface=lo \
+    --dhcp-range=192.168.78.10,192.168.78.200,255.255.255.0,12h --dhcp-leasefile=/run/mu300-wlan0.leases \
+    --pid-file=/run/mu300-dnsmasq-wlan0.pid
+mkdir -p /run/motd.d
+printf 'MU300 hotspot: SSID "%s"  password "%s"  (edit /etc/mu300/hotspot.conf)\n' "$SSID" "$PSK" > /run/motd.d/50-mu300-hotspot
+chmod 640 /run/motd.d/50-mu300-hotspot
+exec hostapd /run/mu300-hostapd.conf

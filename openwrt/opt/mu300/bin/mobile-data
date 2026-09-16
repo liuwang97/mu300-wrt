@@ -74,10 +74,12 @@ table ip mu300_nat {
     }
 }
 NFT
+    [ -w /sys/class/leds/sc27xx:blue/brightness ] && echo 255 > /sys/class/leds/sc27xx:blue/brightness
     echo "mobile data up on $IFACE ($(at 'AT+COPS?' | sed -n 's/^+COPS: [0-9],[0-9],"\([^"]*\)".*/\1/p'))"
 }
 
 down() {
+    [ -w /sys/class/leds/sc27xx:blue/brightness ] && echo 0 > /sys/class/leds/sc27xx:blue/brightness
     nft delete table ip mu300_nat 2>/dev/null || true
     ip route del default dev "$IFACE" 2>/dev/null || true
     ip addr flush dev "$IFACE" 2>/dev/null || true
