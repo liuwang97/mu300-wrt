@@ -1,6 +1,6 @@
 #!/bin/bash
 # Mobile data on the MU300 modem without Android RIL: AT commands on /dev/stty_nr1, data over sipa_eth<cid-1>.
-# usage: mobile-data up [APN] | down | status | sim-reset
+# usage: mobile-data up [APN] | down | status | sim-reset | watch
 set -euo pipefail
 DEV=${MU300_AT_DEV:-/dev/stty_nr1}
 CID=1
@@ -29,10 +29,15 @@ at() {  # at CMD [timeout] -> response lines up to the final result code
 }
 
 up() {
+    rm -f /run/mu300-mobile-data-down
     stty -F "$DEV" raw -echo
     at 'AT+CFUN?' | grep -q '+CFUN: 1' || { at 'AT+SFUN=2' 5 >/dev/null; at 'AT+SFUN=4' 15 >/dev/null; }
-    for _ in $(seq 1 60); do
+    for n in $(seq 1 60); do
         at 'AT+CEREG?' | grep -qE '\+CEREG: [0-9],(1|5)' && break
+        # the radio can be switched off again meanwhile (modem reset), so re-check it every 10 s
+        if [ $((n % 5)) -eq 0 ] && ! at 'AT+CFUN?' | grep -q '+CFUN: 1'; then
+            at 'AT+SFUN=2' 5 >/dev/null; at 'AT+SFUN=4' 15 >/dev/null
+        fi
         sleep 2
     done
     at 'AT+CEREG?' | grep -qE '\+CEREG: [0-9],(1|5)' || { echo "not registered on the network" >&2; exit 1; }
@@ -79,6 +84,7 @@ NFT
 }
 
 down() {
+    touch /run/mu300-mobile-data-down   # tells watch not to reconnect
     [ -w /sys/class/leds/sc27xx:blue/brightness ] && echo 0 > /sys/class/leds/sc27xx:blue/brightness
     nft delete table ip mu300_nat 2>/dev/null || true
     ip route del default dev "$IFACE" 2>/dev/null || true
@@ -95,6 +101,28 @@ sim_reset() {
     at 'AT+CPIN?'
 }
 
+# The modem firmware occasionally resets itself (modem_control reloads it); it comes back with the radio off and
+# no PDP context, which Android's RIL repairs silently. Check the context every 30 s and reconnect when it is gone.
+watch() {
+    local fails=0
+    while :; do
+        sleep "${MU300_WATCH_INTERVAL:-30}"
+        [ -e /run/mu300-mobile-data-down ] && continue
+        [ -c "$DEV" ] || continue
+        stty -F "$DEV" raw -echo 2>/dev/null || continue
+        if at "AT+CGACT?" | grep -q "+CGACT:$CID,1" && ip -4 addr show "$IFACE" 2>/dev/null | grep -q inet; then
+            fails=0
+            continue
+        fi
+        fails=$((fails + 1))
+        [ "$fails" -lt 2 ] && continue
+        echo "mobile data lost (modem reset or detached), reconnecting" >&2
+        [ -w /sys/class/leds/sc27xx:blue/brightness ] && echo 0 > /sys/class/leds/sc27xx:blue/brightness
+        ( up ) || echo "reconnect failed, retrying" >&2
+        fails=0
+    done
+}
+
 status() {
     stty -F "$DEV" raw -echo
     at 'AT+COPS?'; at 'AT+CSQ'; at 'AT+CEREG?'; at 'AT+CGACT?'
@@ -106,5 +134,6 @@ case "${1:-status}" in
     down) down ;;
     status) status ;;
     sim-reset) sim_reset ;;
-    *) echo "usage: $0 up [APN] | down | status | sim-reset" >&2; exit 2 ;;
+    watch) watch ;;
+    *) echo "usage: $0 up [APN] | down | status | sim-reset | watch" >&2; exit 2 ;;
 esac
