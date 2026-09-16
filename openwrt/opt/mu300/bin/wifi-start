@@ -1,0 +1,10 @@
+#!/bin/sh
+# Bring up the SC2355 (Marlin3) Wi-Fi: PCIe host, WCN platform driver, then the WLAN driver.
+# Firmware (wcnmodem.bin, wifi_board_config*.ini) comes from Android's /odm/firmware -> /usr/lib/firmware.
+set -e
+depmod -a
+for m in pcie-sprd-misc pcie-sprd wcn_bsp sprd_wlan_combo; do
+    modprobe "$m"
+done
+for n in $(seq 1 30); do [ -e /sys/class/net/wlan0 ] && break; sleep 1; done
+ls /sys/class/net
