@@ -9,8 +9,8 @@ STATE=/var/lib/mu300/bdaddr
 FW=/usr/lib/firmware
 
 # the WCN platform driver is loaded by mu300-wifi; modprobe is a no-op if it is already there
-modprobe wcn_bsp
-modprobe sprdbt_tty
+grep -q "^wcn_bsp " /proc/modules || modprobe wcn_bsp
+grep -q "^sprdbt_tty " /proc/modules || modprobe sprdbt_tty
 for n in $(seq 1 10); do [ -c /dev/ttyBT0 ] && break; sleep 1; done
 [ -c /dev/ttyBT0 ] || { echo "no /dev/ttyBT0" >&2; exit 1; }
 

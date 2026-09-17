@@ -4,6 +4,7 @@
 # Inputs (same as rootfs/assemble.sh, all optional except modules):
 #   out/modules/*.ko  out/modules.builtin*  firmware/  android-subset/  android-gpu-subset/
 #   tools/logdw/logdw  tools/bt-init/mu300-bt-init  tools/gpu/cltest  busybox (static, full)
+#   upstream/out/modules/*.ko (optional: out-of-tree WCN modules for the mainline 6.18 kernel)
 set -eu
 VER=25.12.5
 KREL=5.4.254-gb50db5b6224c
@@ -35,7 +36,7 @@ docker run --rm --platform linux/arm64 \
   $(opt out/modules.builtin modules.builtin) $(opt out/modules.builtin.modinfo modules.builtin.modinfo) \
   $(opt firmware firmware) $(opt android-subset android-subset) $(opt android-gpu-subset android-gpu-subset) \
   $(opt tools/logdw/logdw logdw) $(opt tools/bt-init/mu300-bt-init bt-init) $(opt tools/gpu/cltest cltest) \
-  $(opt busybox busybox) -v "$TOP/openwrt":/out -v "$REGDB":/in/regdb:ro \
+  $(opt busybox busybox) $(opt upstream/out/modules mainline-modules) -v "$TOP/openwrt":/out -v "$REGDB":/in/regdb:ro \
   -e KREL=$KREL -e OUT="$(basename "$OUT")" mu300-openwrt-base:$VER /bin/sh -eu -c '
 mkdir -p /var/lock /var/run /tmp
 apk update >/dev/null
@@ -84,6 +85,10 @@ for s in mu300-vendor mu300-hw mu300-post; do
 done
 # no kernel of its own: OpenWrt kmods (6.12) and grub are unused on this device
 rm -rf $R/lib/modules/6.* $R/boot
+# out-of-tree modules for the experimental mainline kernel (upstream/)
+if ls /in/mainline-modules/*.ko >/dev/null 2>&1; then
+    mkdir -p $R/lib/modules/6.18.52 && cp /in/mainline-modules/*.ko $R/lib/modules/6.18.52/
+fi
 cd $R && tar -czf /out/$OUT .
 ls -la /out/$OUT'
 rm -rf "$REGDB"

@@ -78,7 +78,7 @@ for path, anchor, line in [
         t = t.replace(anchor, anchor + line, 1)
         open(fp, 'w').write(t)
 
-append_once('drivers/watchdog/Makefile', 'ump9620-pmic-wdt-off.o', 'obj-$(CONFIG_MFD_SC27XX_PMIC) += ump9620-pmic-wdt-off.o\n')
+append_once('drivers/watchdog/Makefile', 'ump9620-pmic-wdt.o', 'obj-$(CONFIG_MFD_SC27XX_PMIC) += ump9620-pmic-wdt.o\n')
 
 # sdhci-sprd: the SD card controller is not populated on the MU300 and floods the log; probe only the eMMC
 sp = os.path.join(tree, 'drivers/mmc/host/sdhci-sprd.c')
@@ -127,5 +127,14 @@ config ARM_SPRD_CPUFREQ_V2
 	bool "Unisoc UMS9620 cpufreq (v2, ATF DVFS)"
 	depends on SPRD_SIP_SVC && NVMEM
 	select PM_OPP
+''')
+# PCIe RC for the Marlin3 (SC2355) Wi-Fi/BT chip: vendor pcie-sprd glue ported to the 6.18 DWC host API
+append_once('drivers/pci/controller/dwc/Makefile', 'pcie-sprd.o', 'obj-$(CONFIG_PCIE_SPRD) += pcie-sprd-misc.o pcie-sprd.o\n')
+append_once('drivers/pci/controller/dwc/Kconfig', 'config PCIE_SPRD', '''
+config PCIE_SPRD
+	bool "Unisoc UMS9620 PCIe host (Marlin3)"
+	depends on OF && PCI_MSI
+	select PCIE_DW_HOST
+	select MFD_SYSCON
 ''')
 print('port installed')
