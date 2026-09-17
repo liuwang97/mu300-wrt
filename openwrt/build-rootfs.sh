@@ -22,6 +22,10 @@ want=$(curl -fsL "$URL/sha256sums" | sed -n "s/^\([0-9a-f]*\) \*$TARBALL$/\1/p")
 have=$(shasum -a 256 "openwrt/$TARBALL" 2>/dev/null || sha256sum "openwrt/$TARBALL")
 [ "${have%% *}" = "$want" ] || { echo "checksum mismatch for $TARBALL" >&2; exit 1; }
 docker import --platform linux/arm64 "openwrt/$TARBALL" mu300-openwrt-base:$VER >/dev/null
+# OpenWrt ships an unsigned regulatory.db; this kernel requires the signed database (wens key), so take Debian/Ubuntu's
+REGDB=$(mktemp -d)
+docker run --rm --platform linux/arm64 -v "$REGDB":/o ubuntu:26.04 sh -c \
+  "apt-get update -qq >/dev/null && apt-get install -y -qq wireless-regdb >/dev/null && cp /usr/lib/firmware/regulatory.db /usr/lib/firmware/regulatory.db.p7s /o/"
 
 opt() { [ -e "$IN/$1" ] && echo "-v $IN/$1:/in/$2:ro" || true; }
 # shellcheck disable=SC2046
@@ -31,7 +35,7 @@ docker run --rm --platform linux/arm64 \
   $(opt out/modules.builtin modules.builtin) $(opt out/modules.builtin.modinfo modules.builtin.modinfo) \
   $(opt firmware firmware) $(opt android-subset android-subset) $(opt android-gpu-subset android-gpu-subset) \
   $(opt tools/logdw/logdw logdw) $(opt tools/bt-init/mu300-bt-init bt-init) $(opt tools/gpu/cltest cltest) \
-  $(opt busybox busybox) -v "$TOP/openwrt":/out \
+  $(opt busybox busybox) -v "$TOP/openwrt":/out -v "$REGDB":/in/regdb:ro \
   -e KREL=$KREL -e OUT="$(basename "$OUT")" mu300-openwrt-base:$VER /bin/sh -eu -c '
 mkdir -p /var/lock /var/run /tmp
 apk update >/dev/null
@@ -51,6 +55,7 @@ M=$R/lib/modules/$KREL; mkdir -p $M
 cp /in/modules/*.ko $M/          # ubox kmodloader expects the modules flat in /lib/modules/<release>/
 for f in modules.builtin modules.builtin.modinfo; do [ -e /in/$f ] && cp /in/$f $M/; done
 [ -d /in/firmware ] && { mkdir -p $R/lib/firmware; cp -a /in/firmware/. $R/lib/firmware/; }
+cp /in/regdb/regulatory.db /in/regdb/regulatory.db.p7s $R/lib/firmware/
 if [ -d /in/android-subset ]; then
     mkdir -p $R/opt/mu300/android && cp -a /in/android-subset/. $R/opt/mu300/android/
     mv $R/opt/mu300/android/dev/__properties__ $R/opt/mu300/android/dev-properties && rmdir $R/opt/mu300/android/dev
@@ -78,3 +83,4 @@ done
 rm -rf $R/lib/modules/6.* $R/boot
 cd $R && tar -czf /out/$OUT .
 ls -la /out/$OUT'
+rm -rf "$REGDB"

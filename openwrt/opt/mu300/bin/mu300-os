@@ -3,6 +3,8 @@
 #   mu300-os             show installed systems and the current choice
 #   mu300-os openwrt     boot OpenWrt from now on (reboot to apply)
 #   mu300-os ubuntu
+# OpenWrt: od/timeout come from the static busybox in /opt/mu300/busybox-bin
+export PATH="$PATH:/opt/mu300/busybox-bin"
 set -e
 if mountpoint -q /mnt/mu300-disk 2>/dev/null; then
     DISK=/mnt/mu300-disk

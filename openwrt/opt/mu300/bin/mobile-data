@@ -2,6 +2,8 @@
 # Mobile data on the MU300 modem without Android RIL: AT commands on /dev/stty_nr1, data over sipa_eth<cid-1>.
 # usage: mobile-data up [APN] | down | status | sim-reset | watch
 # MU300_NETIFD=1 mobile-data up [APN]: only attach and print IFACE/IP/PREFIX/DNS1/DNS2 (OpenWrt netifd protocol)
+# OpenWrt: od/timeout come from the static busybox in /opt/mu300/busybox-bin
+export PATH="$PATH:/opt/mu300/busybox-bin"
 set -euo pipefail
 DEV=${MU300_AT_DEV:-/dev/stty_nr1}
 CID=1

@@ -6,6 +6,8 @@
 #   mu300-next-boot status
 # Slot b is armed with tries=2 and successful=0. LK decrements tries on boot; if Linux never reaches
 # mu300-boot-ok, the next boot sees tries=1 and rolls back to slot a (Android) by itself.
+# OpenWrt: od/timeout come from the static busybox in /opt/mu300/busybox-bin
+export PATH="$PATH:/opt/mu300/busybox-bin"
 set -eu
 CONF=/etc/mu300/default-boot
 BC_A=/run/mu300/misc-bc-slot-a.bin

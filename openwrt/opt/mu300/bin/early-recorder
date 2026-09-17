@@ -2,6 +2,8 @@
 # Early boot recorder: for the first minutes after switch_root, copy dmesg + unit states into the persistent
 # log area inside boot_b (48 MiB, 8 MiB) every few seconds, so a power cut before journald flushes still
 # leaves evidence that tools/collect-logs.sh can read from Android.
+# OpenWrt: od/timeout come from the static busybox in /opt/mu300/busybox-bin
+export PATH="$PATH:/opt/mu300/busybox-bin"
 BOOTB=$(readlink -f /dev/block/by-name/boot_b 2>/dev/null)
 [ -b "$BOOTB" ] || for u in /sys/class/block/mmcblk0p*/uevent; do grep -qx PARTNAME=boot_b "$u" && BOOTB=/dev/$(basename "$(dirname "$u")"); done
 [ -b "$BOOTB" ] || exit 0
