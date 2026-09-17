@@ -5,6 +5,8 @@ USE_PROCD=1
 export PATH="$PATH:/opt/mu300/busybox-bin"
 
 start_service() {
+	# nothing to boot on a kernel without the vendor modem loader (mainline)
+	[ -e /dev/modem ] || [ -e /dev/pmsys ] || { logger -t mu300-vendor "no modem stack in $(uname -r)"; return 0; }
 	procd_open_instance modem_control
 	procd_set_param command /opt/mu300/bin/android-vendor-start
 	procd_set_param env PATH="$PATH"

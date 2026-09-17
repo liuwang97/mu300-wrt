@@ -11,6 +11,7 @@ IFACE=sipa_eth$((CID - 1))
 
 at() {  # at CMD [timeout] -> response lines up to the final result code
     local cmd=$1 t=${2:-5} line
+    [ -c "$DEV" ] || return 1   # never let the redirection create a regular file in /dev
     exec 3<>"$DEV"
     # drop late responses/URCs left over from earlier commands
     while IFS= read -r -t 0.2 line <&3; do :; done
@@ -31,7 +32,11 @@ at() {  # at CMD [timeout] -> response lines up to the final result code
     exec 3>&-
 }
 
+# The modem needs the vendor modem loader/SIPC drivers (5.4 kernel); a kernel without them (mainline) has no modem.
+modem_stack() { [ -e /dev/modem ] || [ -e /dev/pmsys ] || [ -c "$DEV" ]; }
+
 up() {
+    modem_stack || { echo "no modem stack in this kernel ($(uname -r))" >&2; exit 3; }
     rm -f /run/mu300-mobile-data-down
     stty -F "$DEV" raw -echo 2>/dev/null || true   # some tty flags are not supported by the modem tty
     at 'AT+CFUN?' | grep -q '+CFUN: 1' || { at 'AT+SFUN=2' 5 >/dev/null; at 'AT+SFUN=4' 15 >/dev/null; }
@@ -113,6 +118,7 @@ sim_reset() {
 # no PDP context, which Android's RIL repairs silently. Check the context every 30 s and reconnect when it is gone.
 watch() {
     local fails=0
+    modem_stack || { echo "no modem stack in this kernel ($(uname -r)), not watching" >&2; exit 0; }
     while :; do
         sleep "${MU300_WATCH_INTERVAL:-30}"
         [ -e /run/mu300-mobile-data-down ] && continue

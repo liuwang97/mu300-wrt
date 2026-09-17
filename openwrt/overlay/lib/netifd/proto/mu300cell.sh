@@ -21,6 +21,12 @@ proto_mu300cell_setup() {
 	json_get_vars apn peerdns
 
 	out=$(MU300_NETIFD=1 /opt/mu300/bin/mobile-data up $apn 2>/tmp/mu300cell.err)
+	if [ $? = 3 ]; then
+		logger -t mu300cell "$(cat /tmp/mu300cell.err)"
+		proto_notify_error "$config" NO_MODEM
+		proto_block_restart "$config"
+		return 1
+	fi
 	ip=$(echo "$out" | sed -n 's/^IP=//p')
 	if [ -z "$ip" ]; then
 		logger -t mu300cell "attach failed: $(cat /tmp/mu300cell.err)"
