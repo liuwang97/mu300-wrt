@@ -114,4 +114,18 @@ if 'qogirn6pro' not in t:
     t = t.replace('static int sprd_efuse_write(', 'static int __maybe_unused sprd_efuse_write(')
     open(ep, 'w').write(t)
 assert 'reg_write' not in open(ep).read()
+# cpufreq: UMS9620 apcpu DVFS is done by ATF through Unisoc SIP calls (vendor sprd_sip_svc + sprd-cpufreq-v2)
+append_once('drivers/firmware/Makefile', 'sprd_sip_svc.o', 'obj-$(CONFIG_SPRD_SIP_SVC) += sprd_sip_svc.o\n')
+append_once('drivers/firmware/Kconfig', 'SPRD_SIP_SVC', '''
+config SPRD_SIP_SVC
+	bool "Unisoc SIP services (DVFS through ATF)"
+	depends on ARM64 && HAVE_ARM_SMCCC
+''')
+append_once('drivers/cpufreq/Makefile', 'sprd-cpufreq-v2-driver.o', 'obj-$(CONFIG_ARM_SPRD_CPUFREQ_V2) += sprd-cpufreq-v2-driver.o\n')
+append_once('drivers/cpufreq/Kconfig.arm', 'ARM_SPRD_CPUFREQ_V2', '''
+config ARM_SPRD_CPUFREQ_V2
+	bool "Unisoc UMS9620 cpufreq (v2, ATF DVFS)"
+	depends on SPRD_SIP_SVC && NVMEM
+	select PM_OPP
+''')
 print('port installed')
