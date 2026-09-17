@@ -58,6 +58,17 @@ mask2prefix() {
     echo "$bits"
 }
 
+# Make sure the radio is on (CFUN=1). SFUN=4 alone is enough from any state; the off/on cycle is the last resort,
+# because an interrupted cycle used to leave the radio switched off with nothing to turn it back on.
+radio_on() {
+    at 'AT+CFUN?' 4 | grep -q '+CFUN: 1' && return 0
+    at 'AT+SFUN=4' 15 >/dev/null || true
+    at 'AT+CFUN?' 4 | grep -q '+CFUN: 1' && return 0
+    at 'AT+SFUN=2' 5 >/dev/null || true
+    at 'AT+SFUN=4' 20 >/dev/null || true
+    at 'AT+CFUN?' 4 | grep -q '+CFUN: 1'
+}
+
 # The modem needs the vendor modem loader/SIPC drivers (5.4 kernel); a kernel without them (mainline) has no modem.
 modem_stack() { [ -e /dev/modem ] || [ -e /dev/pmsys ] || [ -c "$DEV" ]; }
 
@@ -65,13 +76,11 @@ up() {
     modem_stack || { echo "no modem stack in this kernel ($(uname -r))" >&2; exit 3; }
     rm -f /run/mu300-mobile-data-down
     stty -F "$DEV" raw -echo 2>/dev/null || true   # some tty flags are not supported by the modem tty
-    at 'AT+CFUN?' | grep -q '+CFUN: 1' || { at 'AT+SFUN=2' 5 >/dev/null; at 'AT+SFUN=4' 15 >/dev/null; }
+    radio_on
     for n in $(seq 1 60); do
         at 'AT+CEREG?' | grep -qE '\+CEREG: [0-9],(1|5)' && break
         # the radio can be switched off again meanwhile (modem reset), so re-check it every 10 s
-        if [ $((n % 5)) -eq 0 ] && ! at 'AT+CFUN?' | grep -q '+CFUN: 1'; then
-            at 'AT+SFUN=2' 5 >/dev/null; at 'AT+SFUN=4' 15 >/dev/null
-        fi
+        [ $((n % 5)) -eq 0 ] && radio_on
         sleep 2
     done
     at 'AT+CEREG?' | grep -qE '\+CEREG: [0-9],(1|5)' || { echo "not registered on the network" >&2; exit 1; }
@@ -156,6 +165,8 @@ watch() {
             fails=0
             continue
         fi
+        # a switched-off radio never comes back on its own
+        at 'AT+CFUN?' 4 | grep -q '+CFUN: 1' || { echo "radio was off, switching it on" >&2; radio_on || true; }
         fails=$((fails + 1))
         [ "$fails" -lt 2 ] && continue
         echo "mobile data lost (modem reset or detached), reconnecting" >&2
