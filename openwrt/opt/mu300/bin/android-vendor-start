@@ -25,7 +25,11 @@ mountpoint -q $A/dev || mount --rbind /dev $A/dev
 [ -s $A/dev/__properties__/property_info ] || mount --bind $A/dev-properties $A/dev/__properties__
 mountpoint -q $A/proc || mount -t proc proc $A/proc
 mountpoint -q $A/sys || mount -t sysfs sysfs $A/sys
-sed 's/androidboot.slot_suffix=_b/androidboot.slot_suffix=_a/' /proc/cmdline > /run/mu300-cmdline.android
+# the vendor daemons read androidboot.* (slot, modem config) from the command line; the mainline kernel forces its
+# own command line, so fall back to the bootargs LK put in the device tree
+src=/proc/cmdline
+grep -q androidboot.slot_suffix /proc/cmdline || [ ! -r /proc/device-tree/chosen/bootargs ] || src=/proc/device-tree/chosen/bootargs
+tr -d '\000' < $src | sed 's/androidboot.slot_suffix=_b/androidboot.slot_suffix=_a/' > /run/mu300-cmdline.android
 mount --bind /run/mu300-cmdline.android $A/proc/cmdline
 # sprd_modem_loader only accepts a task whose comm is exactly "modem_control": exec it directly
 # OpenWrt's procd preloads /lib/libsetlbf.so into services; the bionic linker in the chroot cannot load it

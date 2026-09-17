@@ -137,4 +137,10 @@ config PCIE_SPRD
 	select PCIE_DW_HOST
 	select MFD_SYSCON
 ''')
+# PMIC RTC (refnotify on the modem side needs /dev/rtc0): same registers as SC2731
+rp = os.path.join(tree, 'drivers/rtc/rtc-sc27xx.c')
+t = open(rp).read()
+if 'ump96xx-rtc' not in t:
+    t = t.replace('\t{ .compatible = "sprd,sc2731-rtc", },\n', '\t{ .compatible = "sprd,sc2731-rtc", },\n\t{ .compatible = "sprd,ump96xx-rtc", },\n', 1)
+    open(rp, 'w').write(t)
 print('port installed')

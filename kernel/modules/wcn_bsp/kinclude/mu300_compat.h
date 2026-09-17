@@ -61,6 +61,26 @@
 /* Android-only nl80211 extension; WAPI is never offered by hostapd/wpa_supplicant here */
 #define NL80211_WAPI_VERSION_1 (1 << 7)
 
+#include <linux/panic_notifier.h>
+#include <linux/string.h>
+#include <linux/io.h>
+#include <linux/hrtimer.h>
+#include <linux/netdevice.h>
+#include <net/netdev_rx_queue.h>
+#define strlcpy(dst, src, size) strscpy(dst, src, size)
+#define ioremap_nocache(addr, size) ioremap(addr, size)
+#define devm_ioremap_nocache(dev, addr, size) devm_ioremap(dev, addr, size)
+/* hrtimer_init() is gone; callers set ->function afterwards */
+static inline enum hrtimer_restart mu300_hrtimer_nop(struct hrtimer *t) { return HRTIMER_NORESTART; }
+#define hrtimer_init(timer, clock, mode) hrtimer_setup(timer, mu300_hrtimer_nop, clock, mode)
+/* netif_napi_add() lost its weight argument */
+#define netif_napi_add(dev, napi, poll, weight) netif_napi_add_weight(dev, napi, poll, weight)
+
+/* Android-only virtio device id used by the Trusty IPC firmware resource table */
+#ifndef VIRTIO_ID_TRUSTY_IPC
+#define VIRTIO_ID_TRUSTY_IPC 13
+#endif
+
 typedef int mm_segment_t;
 #define get_fs() 0
 #define set_fs(x) ((void)(x))

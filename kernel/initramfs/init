@@ -257,7 +257,11 @@ mount -t sysfs sysfs $A/sys
 # modem_control switches to uid system(1000); apply Android's ueventd/init node ownership
 sh /etc/ueventd-perms.sh
 # LK boots us from slot b; the modem images Android uses (and keeps updated) are the _a copies
-sed 's/androidboot.slot_suffix=_b/androidboot.slot_suffix=_a/' /proc/cmdline > /run/cmdline.android
+# the vendor daemons read androidboot.* (slot, modem config) from the command line; the mainline kernel forces its
+# own command line, so fall back to the bootargs LK put in the device tree
+src=/proc/cmdline
+grep -q androidboot.slot_suffix /proc/cmdline || [ ! -r /proc/device-tree/chosen/bootargs ] || src=/proc/device-tree/chosen/bootargs
+tr -d '\000' < $src | sed 's/androidboot.slot_suffix=_b/androidboot.slot_suffix=_a/' > /run/cmdline.android
 mount --bind /run/cmdline.android $A/proc/cmdline
 # liblog sends to logd's datagram socket; capture it so vendor daemons are debuggable
 mkdir -p /dev/socket
