@@ -19,3 +19,5 @@ tools/bt-init/mu300-bt-init
 tools/gpu/cltest
 work/
 openwrt/*.tar.gz
+upstream/stub/*.elf
+upstream/stub/*.bin
