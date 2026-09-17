@@ -500,20 +500,45 @@ menu_vpn() {
     done
 }
 
+# Live radio quality: move the device around and watch RSRP. The watchdog is paused while this runs, because only
+# one reader can have the modem's AT channel at a time.
+menu_signal() {
+    title "Mobile signal"
+    printf '  Move the device and watch the numbers; RSRP is the one that matters.\n'
+    printf '  %s-85 dBm and better: excellent    -95: good    -105: fair    below -115: barely usable%s\n\n' "$D" "$N"
+    printf '  %s[q] back%s\n\n' "$D" "$N"
+    svc stop mu300-mobile-data-watch >/dev/null 2>&1
+    old=$(stty -g 2>/dev/null)
+    stty -icanon -echo min 0 time 30 2>/dev/null
+    while :; do
+        out=$(timeout 25 /opt/mu300/bin/mobile-data signal 2>/dev/null)
+        printf '\033[s'
+        printf '%s\n' "$out" | sed 's/^/  /'
+        printf '\033[u'
+        key=$(dd bs=1 count=1 2>/dev/null)
+        case $key in q|Q) break ;; esac
+    done
+    stty "$old" 2>/dev/null
+    printf '\033[J\n'
+    svc start mu300-mobile-data-watch >/dev/null 2>&1
+}
+
 menu_network() {
     while :; do
         menu "Network" "Live traffic (monitor)" "Interfaces and addresses" "Mobile data: status" \
-            "Mobile data: reconnect" "Mobile data: disconnect" "Wi-Fi hotspot: restart" "VPN"
+            "Mobile signal (live, for finding a better spot)" "Mobile data: reconnect" "Mobile data: disconnect" \
+            "Wi-Fi hotspot: restart" "VPN"
         case $CHOICE in
             1) monitor ;;
             2) title "Interfaces"; { ip -br addr 2>/dev/null || ip addr; } | grep -vE '^(dummy|tunl|gre|erspan|ip_vti|ip6_vti|sit|ip6tnl|ip6gre|sipa_eth[1-9])' | sed 's/^/  /'
                printf '\n'; ip route | sed 's/^/  /'; pause ;;
             3) title "Mobile data"; timeout 30 /opt/mu300/bin/mobile-data status 2>&1 | sed 's/^/  /'; pause ;;
-            4) if is_openwrt; then ifdown wan; ifup wan; else svc restart mu300-mobile-data; fi
+            4) menu_signal ;;
+            5) if is_openwrt; then ifdown wan; ifup wan; else svc restart mu300-mobile-data; fi
                echo "  reconnect started"; pause ;;
-            5) if is_openwrt; then ifdown wan; else svc stop mu300-mobile-data; fi; pause ;;
-            6) if is_openwrt; then wifi reload; else svc restart mu300-hotspot; fi; echo "  restarted"; pause ;;
-            7) menu_vpn ;;
+            6) if is_openwrt; then ifdown wan; else svc stop mu300-mobile-data; fi; pause ;;
+            7) if is_openwrt; then wifi reload; else svc restart mu300-hotspot; fi; echo "  restarted"; pause ;;
+            8) menu_vpn ;;
             *) return ;;
         esac
     done

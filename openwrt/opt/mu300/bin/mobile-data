@@ -1,6 +1,6 @@
 #!/bin/bash
 # Mobile data on the MU300 modem without Android RIL: AT commands on /dev/stty_nr1, data over sipa_eth<cid-1>.
-# usage: mobile-data up [APN] | down | status | sim-reset | watch
+# usage: mobile-data up [APN] | down | status | signal | at "CMD" | sim-reset | watch
 # MU300_NETIFD=1 mobile-data up [APN]: only attach and print IFACE/IP/PREFIX/DNS1/DNS2 (OpenWrt netifd protocol)
 # OpenWrt: od/timeout come from the static busybox in /opt/mu300/busybox-bin
 export PATH="$PATH:/opt/mu300/busybox-bin"
@@ -169,6 +169,49 @@ watch() {
     done
 }
 
+# Radio quality in human terms. The AT channel belongs to whoever asks first, so the watchdog is paused by the
+# caller (mu300-toolkit does this); reading these values never disturbs an established data connection.
+signal() {
+    stty -F "$DEV" raw -echo 2>/dev/null || true
+    local cops cereg cesq csq rsrp rsrq act mcc oper tac cell rat q
+    cops=$(at 'AT+COPS?' 4 | grep '^+COPS:' || true)
+    cereg=$(at 'AT+CEREG?' 4 | grep '^+CEREG:' || true)
+    cesq=$(at 'AT+CESQ' 4 | grep '^+CESQ:' || true)
+    csq=$(at 'AT+CSQ' 4 | grep '^+CSQ:' || true)
+    oper=$(echo "$cops" | sed -n 's/.*"\([^"]*\)".*/\1/p')
+    act=$(echo "$cops" | awk -F, '{gsub(/ /, "", $4); print $4}')
+    tac=$(echo "$cereg" | awk -F'"' '{print $2}')
+    cell=$(echo "$cereg" | awk -F'"' '{print $4}')
+    # +CESQ: rxlev,ber,rscp,ecno,rsrq,rsrp[,ssrsrq,ssrsrp,sssinr]
+    rsrq=$(echo "$cesq" | awk -F'[,:]' '{gsub(/ /, "", $6); print $6}')
+    rsrp=$(echo "$cesq" | awk -F'[,:]' '{gsub(/ /, "", $7); print $7}')
+    case $act in
+        7) rat="LTE" ;;
+        13) rat="5G NSA (LTE + NR)" ;;
+        11|12) rat="5G" ;;
+        2|4|5|6) rat="3G" ;;
+        0|1|3) rat="2G" ;;
+        *) rat="unknown (AcT $act)" ;;
+    esac
+    printf 'operator     %s (%s)\n' "${oper:-unknown}" "$rat"
+    if [ -n "$rsrp" ] && [ "$rsrp" != 255 ] 2>/dev/null; then
+        # 3GPP mapping: RSRP index 0..97 = -140..-44 dBm, RSRQ index 0..34 = -19.5..-3 dB
+        local rsrp_dbm rsrq_db
+        rsrp_dbm=$((rsrp - 140))
+        rsrq_db=$(awk -v i="$rsrq" 'BEGIN { printf "%.1f", -19.5 + i * 0.5 }')
+        if [ "$rsrp_dbm" -ge -85 ]; then q="excellent"
+        elif [ "$rsrp_dbm" -ge -95 ]; then q="good"
+        elif [ "$rsrp_dbm" -ge -105 ]; then q="fair"
+        elif [ "$rsrp_dbm" -ge -115 ]; then q="weak"
+        else q="very weak"; fi
+        printf 'signal       RSRP %s dBm (%s), RSRQ %s dB\n' "$rsrp_dbm" "$q" "$rsrq_db"
+    else
+        printf 'signal       %s\n' "${csq:-no reading}"
+    fi
+    [ -n "$cell" ] && printf 'cell         %s  (tracking area %s)\n' "$cell" "$tac"
+    ip -4 -br addr show "$IFACE" 2>/dev/null | awk '{printf "interface    %s %s\n", $1, $3}'
+}
+
 status() {
     stty -F "$DEV" raw -echo 2>/dev/null || true   # some tty flags are not supported by the modem tty
     at 'AT+COPS?'; at 'AT+CSQ'; at 'AT+CEREG?'; at 'AT+CGACT?'
@@ -177,9 +220,12 @@ status() {
 
 case "${1:-status}" in
     up) up "${2:-}" ;;
+    signal) signal ;;
+    at) [ -n "${2:-}" ] || { echo "usage: $0 at \"AT+COMMAND\"" >&2; exit 2; }
+        stty -F "$DEV" raw -echo 2>/dev/null || true; at "$2" "${3:-6}" ;;
     down) down ;;
     status) status ;;
     sim-reset) sim_reset ;;
     watch) watch ;;
-    *) echo "usage: $0 up [APN] | down | status | sim-reset | watch" >&2; exit 2 ;;
+    *) echo "usage: $0 up [APN] | down | status | signal | at \"CMD\" | sim-reset | watch" >&2; exit 2 ;;
 esac
