@@ -81,10 +81,10 @@ SYS_OFF_PRIO_HIGH. The Unisoc vendor device tree names the controller "sprd,qogi
  	.read_check = sprd_adi_read_check_r3,
  };
  
++/* ADI r5p0: read data carries no register address, so there is nothing to check */
 +static struct sprd_adi_data ums9620_data = {
 +	.slave_offset = ADI_15BIT_SLAVE_OFFSET,
 +	.slave_addr_size = ADI_15BIT_SLAVE_ADDR_SIZE,
-+	.read_check = sprd_adi_read_check_r3,
 +	.restart = sprd_adi_restart_ums9620,
 +	.restart_prio = SYS_OFF_PRIO_HIGH,
 +};

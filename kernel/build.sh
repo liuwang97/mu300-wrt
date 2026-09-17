@@ -4,6 +4,7 @@ set -eo pipefail
 KV=${KV:-6.18.52}
 cd /src/linux-$KV
 # MU300 patches (idempotent); MU300_PROBE_STAGE=N adds the boot-stage reset probe (debug)
+python3 /work/port/install.py .
 [ -n "${MU300_PROBE_STAGE:-}" ] && python3 /work/debug/install-probe.py . "$MU300_PROBE_STAGE"
 for p in /work/patches/*.patch; do patch -p1 -N -s --dry-run < "$p" >/dev/null 2>&1 && patch -p1 -N -s < "$p"; done
 O=/src/out-$KV

@@ -1,0 +1,80 @@
+#!/usr/bin/env python3
+"""Copy the MU300 driver ports (drivers ported from the Unisoc 5.4 tree) into a mainline tree and hook up
+Makefile/Kconfig entries. Idempotent. usage: install.py <kernel tree>"""
+import os, shutil, sys
+tree = sys.argv[1]
+here = os.path.dirname(os.path.abspath(__file__))
+for root, _, files in os.walk(here):
+    for f in files:
+        if f in ('install.py',) or root == here:
+            continue
+        rel = os.path.relpath(os.path.join(root, f), here)
+        dst = os.path.join(tree, rel)
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        if not os.path.exists(dst) or open(os.path.join(root, f), 'rb').read() != open(dst, 'rb').read():
+            shutil.copyfile(os.path.join(root, f), dst)
+
+def append_once(path, marker, text):
+    p = os.path.join(tree, path)
+    s = open(p).read()
+    if marker not in s:
+        open(p, 'w').write(s.rstrip('\n') + '\n' + text)
+
+append_once('drivers/clk/sprd/Makefile', 'reset.o', 'clk-sprd-y\t+= reset.o\n')
+append_once('drivers/clk/sprd/Makefile', 'ums9620-clk.o', 'obj-$(CONFIG_SPRD_UMS9620_CLK)\t\t+= ums9620-clk.o\n')
+kc = os.path.join(tree, 'drivers/clk/sprd/Kconfig')
+s = open(kc).read()
+if 'SPRD_UMS9620_CLK' not in s:
+    i = s.rindex('endif')
+    s = s[:i] + ('config SPRD_UMS9620_CLK\n\ttristate "Support for the Unisoc UMS9620 clocks"\n'
+                 '\tdepends on (ARM64 && SPRD_COMMON_CLK) || COMPILE_TEST\n\tdefault ARM64\n'
+                 '\thelp\n\t  Support for the global clock controller on UMS9620 devices (ported from the Unisoc 5.4 kernel).\n\n') + s[i:]
+    open(kc, 'w').write(s)
+append_once('drivers/pmdomain/Makefile', 'sprd/', 'obj-y\t\t\t\t\t+= sprd/\n')
+kp = os.path.join(tree, 'drivers/pmdomain/Kconfig')
+k = open(kp).read()
+if 'SPRD_UMS9620_IPA_PD' not in k:
+    i = k.rindex('endmenu')
+    k = k[:i] + ('config SPRD_UMS9620_IPA_PD\n\tbool "Unisoc UMS9620 IPA subsystem power domain"\n'
+                 '\tdepends on ARCH_SPRD && PM\n\tselect PM_GENERIC_DOMAINS\n\tselect MFD_SYSCON\n\tdefault y\n\n') + k[i:]
+    open(kp, 'w').write(k)
+
+# UMP9620 PMIC: MFD match data (IRQ base 0x80, 11 IRQs) and the ported regulator driver
+mfd = os.path.join(tree, 'drivers/mfd/sprd-sc27xx-spi.c')
+m = open(mfd).read()
+if 'ump9620' not in m:
+    m = m.replace('static const struct sprd_pmic_data sc2731_data = {',
+                  'static const struct sprd_pmic_data ump9620_data = {\n\t.irq_base = 0x80,\n\t.num_irqs = 11,\n\t.charger_det = SPRD_SC2730_CHG_DET,\n};\n\nstatic const struct sprd_pmic_data sc2731_data = {', 1)
+    m = m.replace('\t{ .compatible = "sprd,sc2731", .data = &sc2731_data },\n',
+                  '\t{ .compatible = "sprd,sc2731", .data = &sc2731_data },\n\t{ .compatible = "sprd,ump9620", .data = &ump9620_data },\n', 1)
+    m = m.replace('\t{ .name = "sc2731", .driver_data = (unsigned long)&sc2731_data },\n',
+                  '\t{ .name = "sc2731", .driver_data = (unsigned long)&sc2731_data },\n\t{ .name = "ump9620", .driver_data = (unsigned long)&ump9620_data },\n', 1)
+    open(mfd, 'w').write(m)
+append_once('drivers/regulator/Makefile', 'ump9620-regulator.o', 'obj-$(CONFIG_REGULATOR_UMP9620) += ump9620-regulator.o\n')
+rk = os.path.join(tree, 'drivers/regulator/Kconfig')
+r = open(rk).read()
+if 'REGULATOR_UMP9620' not in r:
+    i = r.rindex('endif')
+    r = r[:i] + ('config REGULATOR_UMP9620\n\ttristate "Unisoc UMP9620 PMIC regulators"\n\tdepends on MFD_SC27XX_PMIC || COMPILE_TEST\n'
+                 '\thelp\n\t  Regulators of the UMP9620 PMIC (ported from the Unisoc 5.4 kernel).\n\n') + r[i:]
+    open(rk, 'w').write(r)
+
+append_once('drivers/usb/phy/Makefile', 'phy-sprd-ums9620-ssphy.o', 'obj-$(CONFIG_USB_SPRD_UMS9620_SSPHY) += phy-sprd-ums9620-ssphy.o\n')
+pk = os.path.join(tree, 'drivers/usb/phy/Kconfig')
+k = open(pk).read()
+if 'USB_SPRD_UMS9620_SSPHY' not in k:
+    i = k.rindex('endmenu')
+    k = k[:i] + ('config USB_SPRD_UMS9620_SSPHY\n\ttristate "Unisoc UMS9620 USB 3.1 PHY"\n\tdepends on ARCH_SPRD\n\tselect USB_PHY\n\tselect MFD_SYSCON\n\n') + k[i:]
+    open(pk, 'w').write(k)
+
+# DWC3: vendor DT compatibles -> mainline of-simple glue (clocks, resets, power domain) and DWC3 core
+for path, anchor, line in [
+    ('drivers/usb/dwc3/dwc3-of-simple.c', '\t{ .compatible = "sprd,sc9860-dwc3" },\n', '\t{ .compatible = "sprd,qogirn6pro-dwc3" },\n'),
+    ('drivers/usb/dwc3/core.c', '\t{\n\t\t.compatible = "synopsys,dwc3"\n\t},\n', '\t{\n\t\t.compatible = "snps,sprd-dwc3"\n\t},\n'),
+]:
+    fp = os.path.join(tree, path); t = open(fp).read()
+    if line not in t:
+        assert anchor in t, (path, anchor)
+        t = t.replace(anchor, anchor + line, 1)
+        open(fp, 'w').write(t)
+print('port installed')
