@@ -42,6 +42,8 @@ apk update >/dev/null
 apk add wpad-basic-mbedtls wifi-scripts iwinfo wireless-regdb iw bash ip-full coreutils-stty >/dev/null
 # ujail drops CAP_PERFMON (38), which this 5.4 kernel does not know: jailed services (dnsmasq, ntpd) crash-loop
 apk del procd-ujail procd-seccomp >/dev/null 2>&1 || true
+# online firmware upgrades flash whole-disk armsr images: that would overwrite the eMMC, so remove them
+apk del luci-app-attendedsysupgrade attendedsysupgrade-common owut >/dev/null 2>&1 || true
 R=/build/root; mkdir -p $R
 # copy the live filesystem of this container (the OpenWrt rootfs plus packages), without runtime mounts
 for e in /*; do
@@ -51,6 +53,7 @@ done
 mkdir -p $R/proc $R/sys $R/dev $R/tmp $R/run $R/opt
 cp -a /in/opt-mu300 $R/opt/mu300
 cp -a /in/overlay/. $R/
+mv $R/sbin/sysupgrade $R/sbin/sysupgrade.openwrt && mv $R/usr/libexec/mu300-sysupgrade $R/sbin/sysupgrade
 M=$R/lib/modules/$KREL; mkdir -p $M
 cp /in/modules/*.ko $M/          # ubox kmodloader expects the modules flat in /lib/modules/<release>/
 for f in modules.builtin modules.builtin.modinfo; do [ -e /in/$f ] && cp /in/$f $M/; done
