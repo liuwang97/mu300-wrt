@@ -1,0 +1,440 @@
+#!/bin/sh
+# mu300-toolkit: raspi-config style menu and task-manager view for the MU300 (Ubuntu and OpenWrt, POSIX sh + awk).
+#   mu300-toolkit              menu
+#   mu300-toolkit top          live monitor: CPU/core load and frequency, RAM, temperatures, network rates, processes
+#   mu300-toolkit info         one-shot summary
+#   mu300-toolkit profile [eco|balanced|performance]
+#   mu300-toolkit apply        apply the saved settings (boot service)
+export PATH="$PATH:/opt/mu300/bin:/opt/mu300/busybox-bin:/usr/sbin:/sbin"
+CONF=/etc/mu300/toolkit.conf
+VPN_CONF=/etc/mu300/vpn.conf
+CPUFREQ=/sys/devices/system/cpu/cpufreq
+GPU=$(ls -d /sys/class/devfreq/*.gpu 2>/dev/null | head -n1)
+PROFILES="eco balanced performance"
+
+if [ -t 1 ]; then
+    B=$(printf '\033[1m'); D=$(printf '\033[2m'); R=$(printf '\033[31m'); G=$(printf '\033[32m')
+    Y=$(printf '\033[33m'); C=$(printf '\033[36m'); N=$(printf '\033[0m')
+else
+    B= D= R= G= Y= C= N=
+fi
+
+is_openwrt() { [ -e /etc/openwrt_release ]; }
+need_root() {
+    [ "$(id -u)" = 0 ] && return 0
+    if command -v sudo >/dev/null; then exec sudo "$0" "$@"; fi
+    echo "run as root" >&2; exit 1
+}
+conf_get() { [ -r "$CONF" ] && sed -n "s/^$1=//p" "$CONF" | tail -n1; }
+current_profile() { p=$(conf_get CPU_PROFILE); echo "${p:-balanced}"; }
+conf_set() {  # conf_set KEY VALUE
+    mkdir -p "${CONF%/*}"; touch "$CONF"
+    if grep -q "^$1=" "$CONF"; then sed -i "s|^$1=.*|$1=$2|" "$CONF"; else echo "$1=$2" >> "$CONF"; fi
+}
+pause() { printf '\n%sPress Enter to continue%s' "$D" "$N"; read -r _; }
+title() { printf '\033[H\033[2J%s mu300-toolkit %s %s%s\n\n' "$B$C" "$N$B" "$1" "$N"; }
+
+# ---------------------------------------------------------------- services (systemd on Ubuntu, procd on OpenWrt)
+svc() {  # svc ACTION NAME ; ACTION: start stop restart enable disable status
+    if command -v systemctl >/dev/null; then
+        case $1 in
+            status) systemctl is-active "$2" 2>/dev/null ;;
+            enable|disable) systemctl "$1" --now "$2" ;;
+            *) systemctl "$1" "$2" ;;
+        esac
+    elif [ -x "/etc/init.d/$2" ]; then
+        case $1 in
+            status) "/etc/init.d/$2" running >/dev/null 2>&1 && echo active || echo inactive ;;
+            enable) "/etc/init.d/$2" enable; "/etc/init.d/$2" start ;;
+            disable) "/etc/init.d/$2" stop; "/etc/init.d/$2" disable ;;
+            *) "/etc/init.d/$2" "$1" ;;
+        esac
+    else
+        echo "missing"
+    fi
+}
+state_color() { case $1 in active) printf '%s%s%s' "$G" "$1" "$N" ;; failed) printf '%s%s%s' "$R" "$1" "$N" ;; *) printf '%s%s%s' "$Y" "$1" "$N" ;; esac; }
+
+# ---------------------------------------------------------------- performance profiles
+# The frequency tables (and the voltages behind them) are fixed by the SoC firmware: a profile moves between the
+# hardware minimum and maximum, it never goes beyond them. The kernel thermal trips keep throttling in every profile.
+profile_apply() {
+    p=$1
+    case " $PROFILES " in *" $p "*) ;; *) echo "unknown profile '$p' ($PROFILES)" >&2; return 1 ;; esac
+    for pol in "$CPUFREQ"/policy*; do
+        [ -d "$pol" ] || continue
+        read -r hwmin < "$pol/cpuinfo_min_freq"; read -r hwmax < "$pol/cpuinfo_max_freq"
+        case $p in
+            eco)
+                # highest table step at or below ~60 % of the maximum
+                cap=$(tr ' ' '\n' < "$pol/scaling_available_frequencies" | awk -v lim=$((hwmax * 6 / 10)) '$1 != "" && $1 <= lim && $1 > c {c = $1} END {print c}')
+                gov=schedutil; min=$hwmin; max=${cap:-$hwmax} ;;
+            balanced) gov=schedutil; min=$hwmin; max=$hwmax ;;
+            performance) gov=performance; min=$hwmin; max=$hwmax ;;
+        esac
+        grep -qw "$gov" "$pol/scaling_available_governors" || gov=$(cut -d' ' -f1 "$pol/scaling_available_governors")
+        # order matters: never set min above the current max or max below the current min
+        echo "$min" > "$pol/scaling_min_freq" 2>/dev/null
+        echo "$max" > "$pol/scaling_max_freq" 2>/dev/null
+        echo "$gov" > "$pol/scaling_governor" 2>/dev/null
+    done
+    if [ -n "$GPU" ]; then
+        gfreqs=$(tr ' ' '\n' < "$GPU/available_frequencies" | grep . | sort -n)
+        glo=$(echo "$gfreqs" | head -n1); ghi=$(echo "$gfreqs" | tail -n1)
+        echo "$glo" > "$GPU/min_freq" 2>/dev/null
+        case $p in
+            eco) echo "$glo" > "$GPU/max_freq" 2>/dev/null; echo simple_ondemand > "$GPU/governor" 2>/dev/null ;;
+            balanced) echo "$ghi" > "$GPU/max_freq" 2>/dev/null; echo simple_ondemand > "$GPU/governor" 2>/dev/null ;;
+            performance) echo "$ghi" > "$GPU/max_freq" 2>/dev/null; echo performance > "$GPU/governor" 2>/dev/null ;;
+        esac
+    fi
+}
+
+profile_show() {
+    printf '  %-10s %-12s %10s %10s %10s %10s\n' policy governor cur min max hw-max
+    for pol in "$CPUFREQ"/policy*; do
+        [ -d "$pol" ] || continue
+        printf '  %-10s %-12s %10s %10s %10s %10s\n' "cpu$(cut -d' ' -f1 "$pol/related_cpus")-$(awk '{print $NF}' "$pol/related_cpus")" \
+            "$(cat "$pol/scaling_governor")" "$(($(cat "$pol/scaling_cur_freq") / 1000))" "$(($(cat "$pol/scaling_min_freq") / 1000))" \
+            "$(($(cat "$pol/scaling_max_freq") / 1000))" "$(($(cat "$pol/cpuinfo_max_freq") / 1000))"
+    done
+    [ -n "$GPU" ] && printf '  %-10s %-12s %10s %10s %10s\n' gpu "$(cat "$GPU/governor")" "$(($(cat "$GPU/cur_freq") / 1000000))" \
+        "$(($(cat "$GPU/min_freq") / 1000000))" "$(($(cat "$GPU/max_freq") / 1000000))"
+    printf '  %s(MHz)%s\n' "$D" "$N"
+    thr=$(throttle_state)
+    printf '\n  thermal throttling: %s\n' "$( [ -n "$thr" ] && printf '%sactive%s (%s)' "$Y" "$N" "$thr" || printf '%snone%s' "$G" "$N")"
+}
+
+# cooling devices currently limiting something ("cpufreq-0:3 ...")
+throttle_state() {
+    for c in /sys/class/thermal/cooling_device*; do
+        read -r s < "$c/cur_state" 2>/dev/null || continue
+        [ "$s" -gt 0 ] 2>/dev/null && printf '%s:%s ' "$(sed 's/^thermal-//' "$c/type")" "$s"
+    done
+}
+
+# ---------------------------------------------------------------- live monitor
+snapshot() {
+    echo @stat; cat /proc/stat
+    echo @mem; cat /proc/meminfo
+    echo @net; cat /proc/net/dev
+    echo @load; cat /proc/loadavg /proc/uptime
+    echo @disk; cat /proc/diskstats
+    echo @sys
+    grep -H . /sys/class/thermal/thermal_zone*/type /sys/class/thermal/thermal_zone*/temp \
+        /sys/class/thermal/cooling_device*/cur_state "$CPUFREQ"/policy*/scaling_cur_freq \
+        "$CPUFREQ"/policy*/related_cpus "$CPUFREQ"/policy*/scaling_governor \
+        ${GPU:+"$GPU/cur_freq"} 2>/dev/null
+    echo @proc; cat /proc/[0-9]*/stat 2>/dev/null
+    echo @end
+}
+
+MONITOR_AWK='
+function human(b) { return b >= 1073741824 ? sprintf("%.1fG", b / 1073741824) : b >= 1048576 ? sprintf("%.1fM", b / 1048576) : sprintf("%.0fK", b / 1024) }
+function rate(b) { b = b * 8 / dt; return b >= 1000000 ? sprintf("%.1f Mbit/s", b / 1000000) : sprintf("%.0f kbit/s", b / 1000) }
+function bar(pct, w,   n, s, i, col) {
+    if (pct < 0) pct = 0; if (pct > 100) pct = 100
+    n = int(pct * w / 100 + 0.5); col = pct >= 85 ? RD : pct >= 60 ? YE : GR
+    s = col; for (i = 0; i < n; i++) s = s "|"; s = s DI; for (; i < w; i++) s = s "."; return s NO
+}
+function tcol(t) { return (t >= 85 ? RD : t >= 70 ? YE : GR) sprintf("%4.1f", t) NO }
+function line(s) { if (row < rows - 1) { printf "%s\033[K\n", s; row++ } }
+BEGIN {
+    RD = "\033[31m"; GR = "\033[32m"; YE = "\033[33m"; CY = "\033[36m"; BO = "\033[1m"; DI = "\033[2m"; NO = "\033[0m"
+    while ((getline l < prevfile) > 0) { split(l, a, " "); prev[a[1]] = a[2] }
+    close(prevfile)
+}
+/^@/ { sec = substr($0, 2); next }
+sec == "stat" && /^cpu/ {
+    tot = 0; for (i = 2; i <= NF; i++) tot += $i
+    idle = $5 + $6; k = $1
+    dtot = tot - prev["t_" k]; didle = idle - prev["i_" k]
+    busy[k] = (prev["t_" k] != "" && dtot > 0) ? 100 * (dtot - didle) / dtot : 0
+    cur["t_" k] = tot; cur["i_" k] = idle
+    if (k != "cpu") ncpu++
+}
+sec == "mem" { m[$1] = $2 * 1024 }
+sec == "net" && /:/ {
+    sub(/^ */, ""); split($0, p, ":"); ifc = p[1]; split(p[2], f, " ")
+    if (ifc == "lo" || ifc ~ /^(dummy|tunl|gre|gretap|erspan|ip_vti|ip6_vti|sit|ip6tnl|ip6gre|sipa_dummy)/) next
+    if (f[1] == 0 && f[9] == 0) next
+    nif++; ifn[nif] = ifc; rxb[ifc] = f[1]; txb[ifc] = f[9]
+    cur["rx_" ifc] = f[1]; cur["tx_" ifc] = f[9]
+}
+sec == "load" { if (NF == 5) load = $1 " " $2 " " $3; else up = int($1) }
+sec == "disk" && $3 ~ /^mmcblk[0-9]+$/ { cur["dw"] += $10; cur["dr"] += $6 }
+sec == "sys" {
+    i = index($0, ":"); path = substr($0, 1, i - 1); val = substr($0, i + 1)
+    n = split(path, pp, "/"); leaf = pp[n]; node = pp[n - 1]
+    if (leaf == "type" && node ~ /^thermal_zone/) ztype[node] = val
+    else if (leaf == "temp") ztemp[node] = val
+    else if (leaf == "cur_state" && val + 0 > 0) thr++
+    else if (leaf == "scaling_cur_freq") pfreq[node] = val
+    else if (leaf == "related_cpus") prel[node] = val
+    else if (leaf == "scaling_governor") pgov[node] = val
+    else if (leaf == "cur_freq") gpuf = val
+}
+sec == "proc" {
+    o = index($0, " ("); c = 0; for (i = length($0); i > 0; i--) if (substr($0, i, 1) == ")") { c = i; break }
+    if (!o || !c) next
+    pid = substr($0, 1, o - 1); name = substr($0, o + 2, c - o - 2)
+    split(substr($0, c + 2), f, " ")
+    ticks = f[12] + f[13]; cur["p_" pid] = ticks
+    pcpu = (prev["p_" pid] != "") ? (ticks - prev["p_" pid]) * 100 / (hz * dt) : 0
+    np++; plist[np] = sprintf("%08.2f %s %s %s", pcpu, pid, f[22] * 4096, name)
+}
+END {
+    for (k in cur) print k, cur[k] > prevfile
+    close(prevfile)
+    row = 0
+    printf "\033[H"
+    line(sprintf("%s mu300-toolkit %s %s  up %dd %02dh%02dm  load %s  profile %s%s%s   %s[q] quit%s", BO CY, NO BO, host, up / 86400, up % 86400 / 3600, up % 3600 / 60, load, CY, profile, NO, DI, NO))
+    line("")
+    thrs = thr ? YE "throttling (" thr " limits)" NO : GR "not throttling" NO
+    line(sprintf("%sCPU%s  %s %5.1f%%   %s", BO, NO, bar(busy["cpu"], 30), busy["cpu"], thrs))
+    for (pol in prel) {
+        ncs = split(prel[pol], cs, " "); s = ""
+        for (i = 1; i <= ncs; i++) s = s sprintf(" cpu%s %s%3.0f%%", cs[i], bar(busy["cpu" cs[i]], 6), busy["cpu" cs[i]])
+        polline[cs[1]] = sprintf("  %-4s %4d MHz %-11s%s", (cs[1] == 0 ? "lit" : ncs == 1 ? "big" : "mid"), pfreq[pol] / 1000, pgov[pol], s)
+    }
+    for (i = 0; i < ncpu; i++) if (i in polline) line(polline[i])
+    used = m["MemTotal:"] - m["MemAvailable:"]
+    line(sprintf("%sRAM%s  %s %5.1f%%   used %s / %s  avail %s  cache %s", BO, NO, bar(100 * used / m["MemTotal:"], 30), 100 * used / m["MemTotal:"], human(used), human(m["MemTotal:"]), human(m["MemAvailable:"]), human(m["Cached:"] + m["Buffers:"])))
+    if (m["SwapTotal:"] > 0) line(sprintf("  swap %s / %s (zram)", human(m["SwapTotal:"] - m["SwapFree:"]), human(m["SwapTotal:"])))
+    if (gpuf != "") line(sprintf("%sGPU%s  %d MHz", BO, NO, gpuf / 1000000))
+    line("")
+    # temperatures: most useful zones first, then any other readable zone
+    split("soc big7 mid4 mid5 lit0 gpu ai0 mm board chg pa nr", want, " ")
+    s = ""; cnt = 0; hot = 0
+    for (z in ztemp) { t = ztemp[z] / 1000; if (t > hot) hot = t; tbyname[ztype[z]] = t }
+    for (i = 1; i in want; i++) {
+        nm = want[i] "-thmzone"; if (!(nm in tbyname)) continue
+        s = s sprintf("%-6s%s  ", want[i], tcol(tbyname[nm])); cnt++
+        if (cnt % 6 == 0) { line((cnt == 6 ? BO "TEMP" NO " " : "     ") s); s = "" }
+    }
+    if (s != "") line((cnt <= 6 ? BO "TEMP" NO " " : "     ") s)
+    line(sprintf("     hottest %s C", tcol(hot)))
+    line("")
+    line(sprintf("%sNET%s  %-10s %15s %15s %10s %10s", BO, NO, "interface", "down", "up", "rx total", "tx total"))
+    for (i = 1; i <= nif; i++) {
+        ifc = ifn[i]
+        dr = (prev["rx_" ifc] != "") ? rxb[ifc] - prev["rx_" ifc] : 0
+        du = (prev["tx_" ifc] != "") ? txb[ifc] - prev["tx_" ifc] : 0
+        line(sprintf("     %-10s %s%15s%s %s%15s%s %10s %10s", ifc, GR, rate(dr), NO, CY, rate(du), NO, human(rxb[ifc]), human(txb[ifc])))
+    }
+    if (prev["dw"] != "") line(sprintf("%sDISK%s eMMC read %s/s  write %s/s", BO, NO, human((cur["dr"] - prev["dr"]) * 512 / dt), human((cur["dw"] - prev["dw"]) * 512 / dt)))
+    line("")
+    line(sprintf("%s%7s %6s %7s  %s%s", BO, "PID", "CPU%", "RSS", "NAME", NO))
+    # simple selection of the busiest processes (awk has no portable sort)
+    for (k = 0; row < rows - 1 && k < 30; k++) {
+        best = 0; for (i = 1; i <= np; i++) if (!(i in shown) && (best == 0 || plist[i] > plist[best])) best = i
+        if (!best) break; shown[best] = 1; split(plist[best], q, " ")
+        nm = plist[best]; sub(/^[^ ]+ [^ ]+ [^ ]+ /, "", nm)
+        line(sprintf("%7s %6.1f %7s  %s", q[2], q[1], human(q[3]), nm))
+    }
+    printf "\033[J"
+}'
+
+monitor() {
+    interval=${1:-2}
+    state=$(mktemp "${TMPDIR:-/tmp}/mu300-toolkit.XXXXXX")
+    hz=$(getconf CLK_TCK 2>/dev/null || echo 100)
+    host=$(cat /proc/sys/kernel/hostname)
+    old=$(stty -g 2>/dev/null)
+    trap 'stty "$old" 2>/dev/null; printf "\033[?25h\n"; rm -f "$state"; exit 0' INT TERM
+    stty -icanon -echo min 0 time $((interval * 10)) 2>/dev/null
+    printf '\033[?25l\033[2J'
+    dt=$interval
+    while :; do
+        size=$(stty size 2>/dev/null); rows=${size% *}; [ -n "$rows" ] && [ "$rows" -gt 5 ] || rows=40
+        profile=$(current_profile)
+        snapshot | awk -v prevfile="$state" -v dt="$dt" -v hz="$hz" -v rows="$rows" -v host="$host" -v profile="$profile" "$MONITOR_AWK"
+        key=$(dd bs=1 count=1 2>/dev/null)
+        case $key in q|Q) break ;; esac
+    done
+    stty "$old" 2>/dev/null; printf '\033[?25h\033[2J\033[H'; rm -f "$state"
+    trap - INT TERM
+}
+
+# ---------------------------------------------------------------- info
+info() {
+    . /etc/os-release 2>/dev/null
+    printf '%sSystem%s   %s, kernel %s, up %s\n' "$B" "$N" "${PRETTY_NAME:-unknown}" "$(uname -r)" "$(awk '{printf "%dd %dh %dm", $1/86400, $1%86400/3600, $1%3600/60}' /proc/uptime)"
+    printf '%sLoad%s     %s\n' "$B" "$N" "$(cut -d' ' -f1-3 /proc/loadavg)"
+    awk -v b="$B" -v n="$N" '/^MemTotal/{t=$2} /^MemAvailable/{a=$2} END{printf "%sRAM%s      %d MB used of %d MB (%d MB available)\n", b, n, (t-a)/1024, t/1024, a/1024}' /proc/meminfo
+    printf '%sStorage%s  %s\n' "$B" "$N" "$(df -h / | awk 'NR==2 {print $3 " used of " $2 " (" $5 ")"}')"
+    hot=$(cat /sys/class/thermal/thermal_zone*/temp 2>/dev/null | sort -n | tail -n1)
+    printf '%sTemp%s     hottest %s C, profile %s\n' "$B" "$N" "$((hot / 1000))" "$(current_profile)"
+    printf '%sNetwork%s\n' "$B" "$N"
+    ip -4 -br addr 2>/dev/null | awk '$1 !~ /^(lo|sipa_dummy)/ && $3 != "" {printf "  %-12s %s\n", $1, $3}'
+    ip route show default 2>/dev/null | sed 's/^/  default /' | head -n2
+}
+
+# ---------------------------------------------------------------- menus
+menu() {  # menu TITLE "label" ... -> sets CHOICE to the number (0 = back)
+    t=$1; shift; title "$t"
+    i=1; for l in "$@"; do printf '  %s%2d%s  %s\n' "$C" "$i" "$N" "$l"; i=$((i + 1)); done
+    printf '\n  %s 0%s  %s\n\n  > ' "$C" "$N" "$( [ "$t" = "Main menu" ] && echo Exit || echo Back)"
+    read -r CHOICE || CHOICE=0
+}
+
+menu_performance() {
+    while :; do
+        title "Performance"
+        profile_show
+        printf '\n  saved profile: %s%s%s\n\n' "$B" "$(current_profile)" "$N"
+        printf '  %s1%s  eco          cores capped at ~60 %% of max, GPU at lowest step (cooler, less power)\n' "$C" "$N"
+        printf '  %s2%s  balanced     schedutil across the full hardware range (stock behaviour)\n' "$C" "$N"
+        printf '  %s3%s  performance  all cores and GPU pinned at their hardware maximum\n' "$C" "$N"
+        printf '\n  %sThis SoC cannot be overclocked beyond its frequency table: the voltage steps are fixed by the\n' "$D"
+        printf '  firmware. "performance" is the fastest safe setting; the kernel still throttles at 85 C and the\n'
+        printf '  passively cooled case reaches that within minutes under full load.%s\n' "$N"
+        printf '\n  %s0%s  Back\n\n  > ' "$C" "$N"
+        read -r c || return
+        case $c in
+            1) p=eco ;; 2) p=balanced ;; 3) p=performance ;; *) return ;;
+        esac
+        profile_apply "$p" && conf_set CPU_PROFILE "$p"
+    done
+}
+
+vpn_enabled() { [ -r "$VPN_CONF" ] && grep -q '^ENABLE=1' "$VPN_CONF"; }
+menu_vpn() {
+    while :; do
+        title "VPN (VLESS / sing-box)"
+        printf '  service: %s   config: %s\n\n' "$(state_color "$(svc status mu300-vpn)")" \
+            "$( [ -r "$VPN_CONF" ] && (vpn_enabled && echo "enabled" || echo "disabled") || echo "missing")"
+        /opt/mu300/bin/mu300-vpn status 2>/dev/null | sed 's/^/  /'
+        menu_items="Turn on (ENABLE=1, start at boot)|Turn off (stop, remove kill switch)|Edit config ($VPN_CONF)|Restart"
+        printf '\n'
+        i=1; IFS='|'; for l in $menu_items; do printf '  %s%d%s  %s\n' "$C" "$i" "$N" "$l"; i=$((i + 1)); done; unset IFS
+        printf '\n  %s0%s  Back\n\n  > ' "$C" "$N"
+        read -r c || return
+        case $c in
+            1) [ -r "$VPN_CONF" ] || cp /etc/mu300/vpn.conf.example "$VPN_CONF" 2>/dev/null
+               chmod 600 "$VPN_CONF"
+               if grep -q '^VLESS_URI=""' "$VPN_CONF" || ! grep -q '^VLESS_URI=' "$VPN_CONF"; then
+                   echo "  set VLESS_URI first (Edit config)"; pause; continue
+               fi
+               sed -i 's/^ENABLE=.*/ENABLE=1/' "$VPN_CONF"; svc enable mu300-vpn; sleep 3 ;;
+            2) [ -r "$VPN_CONF" ] && sed -i 's/^ENABLE=.*/ENABLE=0/' "$VPN_CONF"
+               svc disable mu300-vpn; /opt/mu300/bin/mu300-vpn off ;;
+            3) [ -r "$VPN_CONF" ] || { cp /etc/mu300/vpn.conf.example "$VPN_CONF" 2>/dev/null; chmod 600 "$VPN_CONF"; }
+               ${EDITOR:-$(command -v nano || echo vi)} "$VPN_CONF"
+               vpn_enabled && svc restart mu300-vpn ;;
+            4) svc restart mu300-vpn; sleep 3 ;;
+            *) return ;;
+        esac
+    done
+}
+
+menu_network() {
+    while :; do
+        menu "Network" "Live traffic (monitor)" "Interfaces and addresses" "Mobile data: status" \
+            "Mobile data: reconnect" "Mobile data: disconnect" "Wi-Fi hotspot: restart" "VPN"
+        case $CHOICE in
+            1) monitor ;;
+            2) title "Interfaces"; { ip -br addr 2>/dev/null || ip addr; } | grep -vE '^(dummy|tunl|gre|erspan|ip_vti|ip6_vti|sit|ip6tnl|ip6gre|sipa_eth[1-9])' | sed 's/^/  /'
+               printf '\n'; ip route | sed 's/^/  /'; pause ;;
+            3) title "Mobile data"; timeout 30 /opt/mu300/bin/mobile-data status 2>&1 | sed 's/^/  /'; pause ;;
+            4) if is_openwrt; then ifdown wan; ifup wan; else svc restart mu300-mobile-data; fi
+               echo "  reconnect started"; pause ;;
+            5) if is_openwrt; then ifdown wan; else svc stop mu300-mobile-data; fi; pause ;;
+            6) if is_openwrt; then wifi reload; else svc restart mu300-hotspot; fi; echo "  restarted"; pause ;;
+            7) menu_vpn ;;
+            *) return ;;
+        esac
+    done
+}
+
+MU300_SERVICES="mu300-vendor mu300-wifi mu300-hotspot mu300-lan mu300-mobile-data mu300-mobile-data-watch mu300-bluetooth mu300-vpn mu300-firewall mu300-thermal-guard mu300-zram mu300-toolkit"
+menu_services() {
+    while :; do
+        title "Services"
+        if command -v systemctl >/dev/null; then
+            i=1; for s in $MU300_SERVICES; do
+                printf '  %s%2d%s  %-26s %s\n' "$C" "$i" "$N" "$s" "$(state_color "$(systemctl is-active "$s" 2>/dev/null)")"; i=$((i + 1))
+            done
+            failed=$(systemctl --failed --no-legend --plain 2>/dev/null | awk '{print $1}' | tr '\n' ' ')
+            printf '\n  failed units: %s\n' "${failed:-${G}none${N}}"
+            names=$MU300_SERVICES
+        else
+            names=
+            i=1; for s in /etc/init.d/mu300-* /etc/init.d/network /etc/init.d/dnsmasq /etc/init.d/dropbear; do
+                [ -x "$s" ] || continue; n=${s##*/}; names="$names $n"
+                printf '  %s%2d%s  %-26s %s\n' "$C" "$i" "$N" "$n" "$(state_color "$(svc status "$n")")"; i=$((i + 1))
+            done
+        fi
+        printf '\n  Enter a number to restart that service, 0 to go back\n\n  > '
+        read -r c || return
+        [ "$c" -gt 0 ] 2>/dev/null || return
+        s=$(echo $names | cut -d' ' -f"$c")
+        [ -n "$s" ] && { svc restart "$s"; echo "  restarted $s"; sleep 1; }
+    done
+}
+
+menu_system() {
+    while :; do
+        menu "System" "Summary" "Change password (${SUDO_USER:-$(id -un)})" "Hostname" "Timezone" \
+            "Recent warnings and errors" "Storage usage" "Next boot: Android" "Reboot" "Power off"
+        case $CHOICE in
+            1) title "Summary"; info; pause ;;
+            2) passwd "${SUDO_USER:-$(id -un)}"; pause ;;
+            3) printf '  current: %s\n  new hostname (empty = keep): ' "$(cat /proc/sys/kernel/hostname)"; read -r h
+               case $h in
+                   "") ;;
+                   *[!A-Za-z0-9-]*) echo "  letters, digits and - only"; pause ;;
+                   *) if is_openwrt; then uci set system.@system[0].hostname="$h"; uci commit system; /etc/init.d/system reload
+                      else hostnamectl set-hostname "$h" 2>/dev/null || { echo "$h" > /etc/hostname; hostname "$h"; }; fi ;;
+               esac ;;
+            4) if is_openwrt; then
+                   printf '  current: %s\n  zonename (e.g. Europe/Istanbul) and POSIX TZ (e.g. <+03>-3)\n  zonename: ' "$(uci -q get system.@system[0].zonename)"; read -r zn
+                   printf '  TZ: '; read -r tz
+                   [ -n "$zn" ] && [ -n "$tz" ] && { uci set system.@system[0].zonename="$zn"; uci set system.@system[0].timezone="$tz"; uci commit system; /etc/init.d/system reload; }
+               else
+                   printf '  current: %s\n  timezone (e.g. Europe/Istanbul): ' "$(readlink /etc/localtime | sed 's|.*zoneinfo/||')"; read -r zn
+                   [ -n "$zn" ] && { timedatectl set-timezone "$zn" || pause; }
+               fi ;;
+            5) title "Recent warnings and errors"
+               if command -v journalctl >/dev/null; then journalctl -b -p warning -n 40 --no-pager | cut -c1-200
+               else logread | grep -iE 'warn|err|fail' | tail -n 40 | cut -c1-200; fi
+               pause ;;
+            6) title "Storage"; df -h 2>/dev/null | grep -vE '^(tmpfs|devtmpfs|none|overlay|cgroup)' | sed 's/^/  /'; pause ;;
+            7) printf '  The next boot starts stock Android (Linux stays installed). Continue? [y/N] '; read -r a
+               case $a in y|Y) /opt/mu300/bin/mu300-next-boot android; pause ;; esac ;;
+            8) printf '  Reboot now? [y/N] '; read -r a; case $a in y|Y) reboot ;; esac ;;
+            9) printf '  Power off now? (needs a replug to start again) [y/N] '; read -r a; case $a in y|Y) poweroff ;; esac ;;
+            *) return ;;
+        esac
+    done
+}
+
+main_menu() {
+    while :; do
+        menu "Main menu" "Monitor (task manager)" "Performance profile (CPU/GPU)" "Network, mobile data, VPN" \
+            "Services" "System (password, hostname, timezone, reboot)" "Summary"
+        case $CHOICE in
+            1) monitor ;;
+            2) menu_performance ;;
+            3) menu_network ;;
+            4) menu_services ;;
+            5) menu_system ;;
+            6) title "Summary"; info; pause ;;
+            *) printf '\033[H\033[2J'; exit 0 ;;
+        esac
+    done
+}
+
+case ${1:-menu} in
+    menu) need_root "$@"; main_menu ;;
+    top|monitor) shift; monitor "${1:-2}" ;;
+    info) info ;;
+    profile)
+        if [ -z "${2:-}" ]; then profile_show; exit 0; fi
+        need_root "$@"; profile_apply "$2" && conf_set CPU_PROFILE "$2" && profile_show ;;
+    apply)
+        p=$(conf_get CPU_PROFILE)
+        [ -n "$p" ] && profile_apply "$p" && echo "applied profile $p" ;;
+    -h|--help|help) sed -n '2,7s/^# \{0,1\}//p' "$0" ;;
+    *) echo "usage: mu300-toolkit [menu|top [seconds]|info|profile [eco|balanced|performance]|apply]" >&2; exit 2 ;;
+esac

@@ -21,3 +21,4 @@ work/
 openwrt/*.tar.gz
 upstream/stub/*.elf
 upstream/stub/*.bin
+sing-box

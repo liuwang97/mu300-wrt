@@ -1,0 +1,7 @@
+#!/bin/sh /etc/rc.common
+# apply the performance profile saved by mu300-toolkit (/etc/mu300/toolkit.conf)
+START=96
+
+start() {
+	[ -r /etc/mu300/toolkit.conf ] && /opt/mu300/bin/mu300-toolkit apply
+}

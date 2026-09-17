@@ -4,6 +4,7 @@
 # Inputs (same as rootfs/assemble.sh, all optional except modules):
 #   out/modules/*.ko  out/modules.builtin*  firmware/  android-subset/  android-gpu-subset/
 #   tools/logdw/logdw  tools/bt-init/mu300-bt-init  tools/gpu/cltest  busybox (static, full)
+#   sing-box (tools/fetch-sing-box.sh, for mu300-vpn)
 #   upstream/out/modules/*.ko (optional: out-of-tree WCN modules for the mainline 6.18 kernel)
 set -eu
 VER=25.12.5
@@ -36,7 +37,7 @@ docker run --rm --platform linux/arm64 \
   $(opt out/modules.builtin modules.builtin) $(opt out/modules.builtin.modinfo modules.builtin.modinfo) \
   $(opt firmware firmware) $(opt android-subset android-subset) $(opt android-gpu-subset android-gpu-subset) \
   $(opt tools/logdw/logdw logdw) $(opt tools/bt-init/mu300-bt-init bt-init) $(opt tools/gpu/cltest cltest) \
-  $(opt busybox busybox) $(opt upstream/out/modules mainline-modules) -v "$TOP/openwrt":/out -v "$REGDB":/in/regdb:ro \
+  $(opt busybox busybox) $(opt sing-box sing-box) $(opt upstream/out/modules mainline-modules) -v "$TOP/openwrt":/out -v "$REGDB":/in/regdb:ro \
   -e KREL=$KREL -e OUT="$(basename "$OUT")" mu300-openwrt-base:$VER /bin/sh -eu -c '
 mkdir -p /var/lock /var/run /tmp
 apk update >/dev/null
@@ -68,6 +69,7 @@ fi
 [ -e /in/cltest ] && { mkdir -p $R/opt/mu300/android/system/bin; cp /in/cltest $R/opt/mu300/android/system/bin/cltest; chmod 755 $R/opt/mu300/android/system/bin/cltest; }
 [ -e /in/logdw ] && { cp /in/logdw $R/opt/mu300/bin/logdw; chmod 755 $R/opt/mu300/bin/logdw; }
 [ -e /in/bt-init ] && { cp /in/bt-init $R/opt/mu300/bin/mu300-bt-init; chmod 755 $R/opt/mu300/bin/mu300-bt-init; }
+[ -f /in/sing-box ] && install -m755 /in/sing-box $R/opt/mu300/bin/sing-box
 # full static busybox for the tools OpenWrt busybox leaves out (od, timeout, mountpoint, losetup, rfkill, telnetd)
 if [ -e /in/busybox ]; then
     cp /in/busybox $R/opt/mu300/bin/busybox; chmod 755 $R/opt/mu300/bin/busybox
@@ -79,10 +81,11 @@ if [ -e /in/busybox ]; then
 fi
 mkdir -p $R/etc/mu300
 # enable the services (rc.common "enable" needs ubus, which is not running in the build container)
-for s in mu300-vendor mu300-hw mu300-post; do
+for s in mu300-vendor mu300-hw mu300-post mu300-toolkit; do
     n=$(sed -n "s/^START=//p" $R/etc/init.d/$s)
     ln -sf ../init.d/$s $R/etc/rc.d/S$n$s
 done
+ln -sf /opt/mu300/bin/mu300-toolkit $R/usr/bin/mu300-toolkit
 # no kernel of its own: OpenWrt kmods (6.12) and grub are unused on this device
 rm -rf $R/lib/modules/6.* $R/boot
 # out-of-tree modules for the experimental mainline kernel (upstream/)
