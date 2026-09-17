@@ -45,6 +45,25 @@ def cpio_record(name, data, mode, ino, rdev=(0, 0)):
     return x
 
 
+def lz4_legacy(data):
+    """LZ4 legacy frame, the format vendor_boot uses. Prefers the lz4 command, falls back to the lz4 Python module
+    (pip install lz4) so the installer also works on hosts without the command line tool, e.g. Windows."""
+    try:
+        return subprocess.run(['lz4', '-l', '-12', '-c'], input=data, capture_output=True, check=True).stdout
+    except FileNotFoundError:
+        pass
+    try:
+        import lz4.block
+    except ImportError:
+        sys.exit("need the 'lz4' command or the lz4 Python module (pip install lz4)")
+    # legacy frame: magic, then for every 8 MiB of input a little-endian block length followed by the LZ4 block
+    out = bytearray(bytes.fromhex('02214c18'))
+    for i in range(0, len(data), 8 << 20):
+        block = lz4.block.compress(data[i:i + (8 << 20)], mode='high_compression', compression=12, store_size=False)
+        out += struct.pack('<I', len(block)) + block
+    return bytes(out)
+
+
 def bootloader_control(misc_head):
     """Return (slot_a_block, slot_b_trial_block) derived from the live misc bootloader_control."""
     bc = misc_head[MISC_BC_OFFSET:MISC_BC_OFFSET + 32]
@@ -130,7 +149,7 @@ def main():
     cpio += cpio_record('TRAILER!!!', b'', 0, ino)
     # must match vendor_boot's LZ4 legacy framing: a gzip segment makes this 5.4 kernel fall
     # back to the /dev/ram0 image path and panic "Unable to mount root fs on unknown-block(1,0)"
-    ram = subprocess.run(['lz4', '-l', '-12', '-c'], input=bytes(cpio), capture_output=True, check=True).stdout
+    ram = lz4_legacy(bytes(cpio))
     assert ram[:4] == bytes.fromhex('02214c18')
 
     kern = a.kernel.read_bytes()
