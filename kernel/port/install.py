@@ -93,4 +93,25 @@ if marker not in t:
 # which gives data CRC errors on HS400ES writes while reads work)
 t = t.replace('#define  SDHCI_SPRD_DLL_PHASE_INTERNAL\t0x3', '#define  SDHCI_SPRD_DLL_PHASE_INTERNAL\t0x2 /* MU300 r11p3 */')
 open(sp, 'w').write(t)
+# thermal: UMS9620 on-die sensors (vendor sprd_thermal_r5p0), calibration from eFuse
+append_once('drivers/thermal/Makefile', 'sprd_thermal_r5p0.o', 'obj-$(CONFIG_SPRD_THERMAL_R5P0) += sprd_thermal_r5p0.o\n')
+append_once('drivers/thermal/Kconfig', 'SPRD_THERMAL_R5P0', '''
+config SPRD_THERMAL_R5P0
+	tristate "Unisoc UMS9620 thermal sensors (r5p0)"
+	depends on ARCH_SPRD || COMPILE_TEST
+	depends on HAS_IOMEM && NVMEM && THERMAL_OF
+''')
+
+# sprd-efuse: add the UMS9620 (qogirn6pro) variant and make the provider strictly read-only.
+# Writing blows eFuses permanently; nothing on this port needs it.
+ep = os.path.join(tree, 'drivers/nvmem/sprd-efuse.c')
+t = open(ep).read()
+if 'qogirn6pro' not in t:
+    t = t.replace('static const struct of_device_id sprd_efuse_of_match[] = {\n',
+                  'static const struct sprd_efuse_variant_data qogirn6pro_data = {\n\t.blk_nums = 51,\n\t.blk_offset = 53,\n\t.blk_double = true,\n};\n\nstatic const struct of_device_id sprd_efuse_of_match[] = {\n\t{ .compatible = "sprd,qogirn6pro-efuse", .data = &qogirn6pro_data },\n', 1)
+    t = t.replace('econfig.read_only = false;', 'econfig.read_only = true;\t/* MU300: never blow eFuses */')
+    t = t.replace('\teconfig.reg_write = sprd_efuse_write;\n', '')
+    t = t.replace('static int sprd_efuse_write(', 'static int __maybe_unused sprd_efuse_write(')
+    open(ep, 'w').write(t)
+assert 'reg_write' not in open(ep).read()
 print('port installed')
