@@ -23,3 +23,4 @@ upstream/stub/*.elf
 upstream/stub/*.bin
 sing-box
 release/
+backup/
