@@ -36,7 +36,7 @@ case "${BAND:-5}" in
     *) HWMODE=g; case "$CHANNEL" in [1-9]|1[0-3]) ;; *) CHANNEL=6 ;; esac; EXTRA='ht_capab=[SHORT-GI-20]' ;;
 esac
 # cfg80211 tried to load regulatory.db before the rootfs was mounted; reload it, then apply the country
-iw reg reload 2>/dev/null || true
+/opt/mu300/bin/regdb-load >/dev/null 2>&1 || true
 iw reg set "${COUNTRY:-TR}" 2>/dev/null || true
 for n in $(seq 1 15); do iw reg get 2>/dev/null | grep -q "country ${COUNTRY:-TR}:" && break; sleep 1; done
 sleep 1
