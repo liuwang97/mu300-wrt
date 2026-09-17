@@ -21,8 +21,8 @@ echo "==> helper binaries"
 cp -R "$KOUT/modules" "$IN/out/modules"
 cp "$KOUT/modules.builtin" "$KOUT/modules.builtin.modinfo" "$IN/out/"
 docker build -q -t mu300-kbuild "$TOP/kernel" >/dev/null
-docker build -q -t mu300-ubuntu:26.04 "$TOP/rootfs" >/dev/null
-docker run --rm mu300-ubuntu:26.04 cat /bin/busybox > "$IN/busybox"; chmod +x "$IN/busybox"
+docker build -q -t mu300-ubuntu:24.04 "$TOP/rootfs" >/dev/null
+docker run --rm mu300-ubuntu:24.04 cat /bin/busybox > "$IN/busybox"; chmod +x "$IN/busybox"
 docker run --rm -v "$TOP/tools":/src:ro -v "$IN/tools":/o mu300-kbuild sh -c '
   gcc -O2 -static -o /o/logdw/logdw /src/logdw/logdw.c &&
   gcc -O2 -static -o /o/bt-init/mu300-bt-init /src/bt-init/mu300-bt-init.c'
@@ -40,13 +40,13 @@ rm -rf "$K"
 echo "==> Ubuntu root filesystem (generic)"
 B=$D/ubuntu-build && mkdir -p "$B"
 tar -C "$TOP/rootfs" --exclude ./base.tar --exclude './*.tar.gz' -cf - . | tar -xf - -C "$B"
-cid=$(docker create mu300-ubuntu:26.04 /bin/true); docker export "$cid" > "$B/base.tar"; docker rm "$cid" >/dev/null
+cid=$(docker create mu300-ubuntu:24.04 /bin/true); docker export "$cid" > "$B/base.tar"; docker rm "$cid" >/dev/null
 cltest=""; [ -f "$IN/tools/gpu/cltest" ] && cltest="-v $IN/tools/gpu/cltest:/cltest:ro"
 # shellcheck disable=SC2086
 docker run --rm -v "$B":/w -v "$IN/out/modules":/kmods:ro -v "$IN/out":/kout:ro -v "$IN/tools/logdw/logdw":/logdw:ro \
   -v "$IN/tools/bt-init/mu300-bt-init":/bt-init:ro -v "$IN/sing-box":/sing-box:ro $cltest \
-  mu300-ubuntu:26.04 bash /w/assemble.sh >/dev/null
-mv "$B/mu300-ubuntu-26.04-rootfs.tar.gz" "$D/mu300-ubuntu-rootfs.tar.gz"; rm -rf "$B"
+  mu300-ubuntu:24.04 bash /w/assemble.sh >/dev/null
+mv "$B/mu300-ubuntu-24.04-rootfs.tar.gz" "$D/mu300-ubuntu-rootfs.tar.gz"; rm -rf "$B"
 
 echo "==> OpenWrt root filesystem (generic)"
 MU300_INPUTS="$IN" sh "$TOP/openwrt/build-rootfs.sh" mu300-openwrt-release.tar.gz >/dev/null
@@ -81,7 +81,7 @@ Prebuilt images for \`./install.sh\` (ZTE F50 / MU300). Check your device first 
 | file | contents |
 |---|---|
 | mu300-kernel.tar.gz | Linux 5.4.254 \`Image\` and modules, static busybox and logdw for the boot image |
-| mu300-ubuntu-rootfs.tar.gz | Ubuntu 26.04 LTS root filesystem |
+| mu300-ubuntu-rootfs.tar.gz | Ubuntu 24.04 LTS root filesystem |
 | mu300-openwrt-rootfs.tar.gz | OpenWrt 25.12.5 root filesystem |
 
 The images contain **no proprietary files**: the installer pulls the Wi-Fi/Bluetooth firmware and the Android
