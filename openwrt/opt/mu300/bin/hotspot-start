@@ -69,8 +69,12 @@ C
 for n in $(seq 1 30); do ip link show br-lan >/dev/null 2>&1 && break; sleep 1; done
 ip addr flush dev wlan0 2>/dev/null || true
 # cfg80211 refuses to bridge a station-mode interface (EOPNOTSUPP); switch to AP first so hostapd can add it
-ip link set wlan0 down
-iw dev wlan0 set type __ap
+# the WCN chip can still be busy right after boot (Bluetooth power-cycles the same chip): retry the switch
+for n in 1 2 3 4 5 6; do
+    ip link set wlan0 down
+    iw dev wlan0 set type __ap 2>/dev/null && break
+    sleep 2
+done
 ip link set wlan0 up
 mkdir -p /run/motd.d && chmod 755 /run/motd.d
 printf 'MU300 hotspot: SSID "%s"  password "%s"  (edit /etc/mu300/hotspot.conf)\n' "$SSID" "$PSK" > /run/motd.d/50-mu300-hotspot
