@@ -346,7 +346,6 @@ static int sprd_cpufreq_init(struct cpufreq_policy *policy)
 	do_div(freq, 1000); /* from Hz to KHz */
 	policy->cur = (u32)freq;
 
-	dev_pm_opp_of_register_em(get_cpu_device(policy->cpu), policy->cpus);
 
 	/* enable dvfs phy */
 	ret = cluster->dvfs_enable(cluster->id);
@@ -529,6 +528,7 @@ static struct cpufreq_driver sprd_cpufreq_driver = {
 	.resume = sprd_cpufreq_resume,
 	.online = sprd_cpufreq_online,
 	.offline = sprd_cpufreq_offline,
+	.register_em = cpufreq_register_em_with_opp,
 };
 
 /* init inerface */
