@@ -10,7 +10,7 @@ import time
 def adb(cmd):
     # adb drops out when the device reboots; never treat that as "file missing"
     for attempt in range(30):
-        r=subprocess.run(['adb','exec-out',f"su -c '{cmd}; echo __RC$?'"],capture_output=True)
+        r=subprocess.run(['adb','exec-out',f"su -c '{cmd}; echo __RC$?'"],capture_output=True,stdin=subprocess.DEVNULL)
         out=r.stdout
         i=out.rfind(b'__RC')
         if r.returncode==0 and i>=0:

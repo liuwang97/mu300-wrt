@@ -5,8 +5,9 @@
 set -eu
 OUT=${1:-android-subset}
 TMP=$(mktemp -d)
-adb exec-out 'su -c "tar -chf - /apex/com.android.runtime /system/lib64 /vendor/bin/modem_control /vendor/bin/cp_diskserver /vendor/bin/refnotify /vendor/lib64/lib_crypto.so /vendor/bin/sh /vendor/bin/toybox_vendor /vendor/bin/getprop /vendor/lib64/libkernelbootcp.trusty.so /vendor/etc /dev/__properties__ 2>/dev/null"' | tar -xf - -C "$TMP"
+adb exec-out 'su -c "tar -chf - /apex/com.android.runtime /system/lib64 /vendor/bin/modem_control /vendor/bin/cp_diskserver /vendor/bin/refnotify /vendor/lib64/lib_crypto.so /vendor/bin/sh /vendor/bin/toybox_vendor /vendor/bin/getprop /vendor/lib64/libkernelbootcp.trusty.so /vendor/etc /dev/__properties__ 2>/dev/null"' </dev/null | tar -xf - -C "$TMP"
 rm -rf "$OUT" && mkdir -p "$OUT"
+OUT=$(cd "$OUT" && pwd)
 cd "$TMP"
 tar -cf - apex/com.android.runtime/bin/linker64 apex/com.android.runtime/lib64/bionic \
   system/lib64/libcutils.so system/lib64/libexpat.so system/lib64/liblog.so system/lib64/libhardware_legacy.so \
@@ -17,8 +18,8 @@ tar -cf - apex/com.android.runtime/bin/linker64 apex/com.android.runtime/lib64/b
   system/lib64/libpackagelistparser.so system/lib64/libprocessgroup.so system/lib64/libcgrouprc.so \
   vendor/lib64/libkernelbootcp.trusty.so vendor/lib64/lib_crypto.so vendor/bin/modem_control vendor/bin/cp_diskserver vendor/bin/refnotify vendor/bin/sh vendor/bin/toybox_vendor vendor/bin/getprop \
   vendor/etc/modem_cp_info.xml vendor/etc/modem_sp_info.xml vendor/etc/modem_ch_info.xml vendor/etc/cp_dump_info.xml \
-  vendor/etc/ueventd.rc dev/__properties__ | tar -xf - -C "$OLDPWD/$OUT"
-cd "$OLDPWD"
+  vendor/etc/ueventd.rc dev/__properties__ | tar -xf - -C "$OUT"
+cd /
 mkdir -p "$OUT/system/bin" "$OUT/linkerconfig"
 ln -sfn /apex/com.android.runtime/bin/linker64 "$OUT/system/bin/linker64"
 : > "$OUT/linkerconfig/ld.config.txt"
