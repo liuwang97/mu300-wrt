@@ -77,4 +77,20 @@ for path, anchor, line in [
         assert anchor in t, (path, anchor)
         t = t.replace(anchor, anchor + line, 1)
         open(fp, 'w').write(t)
+
+append_once('drivers/watchdog/Makefile', 'ump9620-pmic-wdt-off.o', 'obj-$(CONFIG_MFD_SC27XX_PMIC) += ump9620-pmic-wdt-off.o\n')
+
+# sdhci-sprd: the SD card controller is not populated on the MU300 and floods the log; probe only the eMMC
+sp = os.path.join(tree, 'drivers/mmc/host/sdhci-sprd.c')
+t = open(sp).read()
+marker = 'MU300: only the non-removable eMMC'
+if marker not in t:
+    anchor = 'static int sdhci_sprd_probe(struct platform_device *pdev)\n{\n'
+    i = t.index(anchor) + len(anchor)
+    j = t.index('\n\n', i) + 1          # after the local variable declarations
+    t = t[:j] + '\t/* ' + marker + ' is used */\n\tif (!of_property_read_bool(pdev->dev.of_node, "non-removable"))\n\t\treturn -ENODEV;\n' + t[j:]
+# UMS9620 has the r11p3 controller: the vendor driver programs DLL phase 0x2 (mainline 0x3,
+# which gives data CRC errors on HS400ES writes while reads work)
+t = t.replace('#define  SDHCI_SPRD_DLL_PHASE_INTERNAL\t0x3', '#define  SDHCI_SPRD_DLL_PHASE_INTERNAL\t0x2 /* MU300 r11p3 */')
+open(sp, 'w').write(t)
 print('port installed')
