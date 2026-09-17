@@ -1,12 +1,18 @@
 /*
  * cltest: probe the Mali GPU through Android's OpenCL driver and run a vector addition.
  * Built for bionic without the NDK (see build.sh); runs inside the Android vendor chroot.
+ *   cltest              probe and one verified vector addition
+ *   cltest loop [SEC]   GPU stress: run a heavy kernel repeatedly for SEC seconds (0 = until killed),
+ *                       printing the throughput every second
  * SPDX-License-Identifier: MIT
  */
 #include <stddef.h>
 #include <stdint.h>
 
 int printf(const char *, ...);
+int atoi(const char *);
+int strcmp(const char *, const char *);
+int fflush(void *);
 void *malloc(size_t);
 struct timespec { long tv_sec; long tv_nsec; };
 int clock_gettime(int, struct timespec *);
@@ -48,6 +54,12 @@ static const char *src =
 	"__kernel void add(__global float *a, __global float *b, __global float *c) {"
 	"  size_t i = get_global_id(0); c[i] = a[i] * a[i] + b[i]; }";
 
+static const char *burn_src =
+	"__kernel void burn(__global float *a, __global float *c) {"
+	"  float x = a[get_global_id(0)];"
+	"  for (int k = 0; k < 48; k++) x = sqrt(x * x + 1.0f) * 0.5f + sin(x) * cos(x * 0.5f);"
+	"  c[get_global_id(0)] = x; }";
+
 static double now(void)
 {
 	struct timespec t;
@@ -84,6 +96,30 @@ int main(int argc, char **argv, char **envp)
 	cl_mem bc = clCreateBuffer(ctx, CL_MEM_WRITE_ONLY, N * sizeof(float), NULL, &err);
 	cl_program p = clCreateProgramWithSource(ctx, 1, &src, NULL, &err);
 	if ((err = clBuildProgram(p, 1, &dev, "", NULL, NULL))) { printf("clBuildProgram: %d\n", err); return 1; }
+	if (argc > 1 && !strcmp(argv[1], "loop")) {
+		int secs = argc > 2 ? atoi(argv[2]) : 60;
+		cl_program bp = clCreateProgramWithSource(ctx, 1, &burn_src, NULL, &err);
+		if ((err = clBuildProgram(bp, 1, &dev, "", NULL, NULL))) { printf("clBuildProgram: %d\n", err); return 1; }
+		cl_kernel bk = clCreateKernel(bp, "burn", &err);
+		clSetKernelArg(bk, 0, sizeof(cl_mem), &ba);
+		clSetKernelArg(bk, 1, sizeof(cl_mem), &bc);
+		size_t n = N;
+		double start = now(), mark = start;
+		long runs = 0, total = 0;
+		for (;;) {
+			if ((err = clEnqueueNDRangeKernel(q, bk, 1, NULL, &n, NULL, 0, NULL, NULL))) { printf("enqueue: %d\n", err); return 1; }
+			clFinish(q);
+			runs++; total++;
+			double t = now();
+			if (t - mark >= 1.0) {
+				printf("gpu stress: %.2f runs/s (%.1f M elements/s), %ld runs in %.0f s\n",
+				       runs / (t - mark), runs * (double)N / 1e6 / (t - mark), total, t - start);
+				fflush(NULL);
+				runs = 0; mark = t;
+			}
+			if (secs > 0 && t - start >= secs) return 0;
+		}
+	}
 	cl_kernel k = clCreateKernel(p, "add", &err);
 	clSetKernelArg(k, 0, sizeof(cl_mem), &ba);
 	clSetKernelArg(k, 1, sizeof(cl_mem), &bb);
