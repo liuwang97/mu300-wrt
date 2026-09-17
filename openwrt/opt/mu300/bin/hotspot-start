@@ -41,7 +41,11 @@ iw reg set "${COUNTRY:-TR}" 2>/dev/null || true
 for n in $(seq 1 15); do iw reg get 2>/dev/null | grep -q "country ${COUNTRY:-TR}:" && break; sleep 1; done
 sleep 1
 # fall back to 2.4 GHz if the requested 5 GHz channel is still not usable for AP (NO-IR/disabled/radar)
-if [ "$HWMODE" = a ] && ! iw list 2>/dev/null | grep -E "\* [0-9]+ MHz \[$CHANNEL\]" | grep -vqE "no IR|disabled|radar"; then
+# newer kernels report a frequency offset, so iw prints "5180.0 MHz"
+ch_ok() { iw list 2>/dev/null | grep -E "\* [0-9.]+ MHz \[$CHANNEL\]" | grep -vqE "no IR|disabled|radar"; }
+# the channel flags follow the country change with a delay (seconds on the mainline kernel)
+if [ "$HWMODE" = a ]; then for n in $(seq 1 10); do ch_ok && break; sleep 1; done; fi
+if [ "$HWMODE" = a ] && ! ch_ok; then
     echo "5 GHz channel $CHANNEL not allowed for AP here, falling back to 2.4 GHz channel 6" >&2
     HWMODE=g; CHANNEL=6; EXTRA='ht_capab=[SHORT-GI-20]'
 fi
