@@ -69,6 +69,8 @@ up() {
         return 0
     fi
     ip link set "$IFACE" up
+    # the sipa driver hands up wrong hardware checksums ("hw csum failure" warnings): verify them in software
+    ethtool -K "$IFACE" rx off 2>/dev/null || true
     ip addr flush dev "$IFACE"
     ip addr add "$ip4/$prefix" dev "$IFACE"
     ip route replace default dev "$IFACE" metric 100

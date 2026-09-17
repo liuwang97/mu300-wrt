@@ -13,4 +13,6 @@ for m in wcn_bsp sprd_wlan_combo; do
     grep -q "^$m " /proc/modules || modprobe "$m"
 done
 for n in $(seq 1 30); do [ -e /sys/class/net/wlan0 ] && break; sleep 1; done
+# wcn_bsp turns the Marlin3 firmware (ARM) log on at boot; every firmware log packet is printed to the kernel log
+[ -w /proc/mdbg/at_cmd ] && printf 'at+armlog=0\r' > /proc/mdbg/at_cmd 2>/dev/null || true
 ls /sys/class/net
