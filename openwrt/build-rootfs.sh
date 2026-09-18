@@ -38,7 +38,7 @@ docker run --rm --platform linux/arm64 \
   $(opt firmware firmware) $(opt android-subset android-subset) $(opt android-gpu-subset android-gpu-subset) \
   $(opt tools/logdw/logdw logdw) $(opt tools/bt-init/mu300-bt-init bt-init) $(opt tools/gpu/cltest cltest) \
   $(opt busybox busybox) $(opt sing-box sing-box) $(opt upstream/out/modules mainline-modules) -v "$TOP/openwrt":/out -v "$REGDB":/in/regdb:ro \
-  -e KREL=$KREL -e OUT="$(basename "$OUT")" mu300-openwrt-base:$VER /bin/sh -eu -c '
+  -e KREL=$KREL -e OUT="$(basename "$OUT")" -e MU300_VERSION="${MU300_VERSION:-dev}" mu300-openwrt-base:$VER /bin/sh -eu -c '
 mkdir -p /var/lock /var/run /tmp
 apk update >/dev/null
 apk add wpad-basic-mbedtls wifi-scripts iwinfo wireless-regdb iw bash ip-full coreutils-stty >/dev/null
@@ -80,6 +80,7 @@ if [ -e /in/busybox ]; then
     done
 fi
 mkdir -p $R/etc/mu300
+printf '%s\n' "${MU300_VERSION:-dev}" > $R/etc/mu300/image-version
 # enable the services (rc.common "enable" needs ubus, which is not running in the build container)
 for s in mu300-vendor mu300-hw mu300-post mu300-toolkit; do
     n=$(sed -n "s/^START=//p" $R/etc/init.d/$s)

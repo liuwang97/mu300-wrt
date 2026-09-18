@@ -570,21 +570,43 @@ menu_services() {
     done
 }
 
+# Software update from a published release (mu300-update does the work and keeps the previous version)
+menu_update() {
+    while :; do
+        title "Software update"
+        /opt/mu300/bin/mu300-update check 2>&1 | sed 's/^/  /'
+        printf '\n  %s1%s  Update the installed systems (settings, users and vendor files are kept)\n' "$C" "$N"
+        printf '  %s2%s  Roll back to the previous version\n' "$C" "$N"
+        printf '  %s3%s  Delete the kept previous version (frees space)\n' "$C" "$N"
+        printf '\n  %sThe kernel and boot image are not updated here: they must be built with this device'"'"'s own\n' "$D"
+        printf '  Android files, which only ./install.sh on a computer can do.%s\n' "$N"
+        printf '\n  %s0%s  Back\n\n  > ' "$C" "$N"
+        read -r c || return
+        case $c in
+            1) title "Software update"; /opt/mu300/bin/mu300-update apply 2>&1 | sed 's/^/  /'; pause ;;
+            2) title "Rollback"; /opt/mu300/bin/mu300-update rollback 2>&1 | sed 's/^/  /'; pause ;;
+            3) title "Clean up"; /opt/mu300/bin/mu300-update clean 2>&1 | sed 's/^/  /'; pause ;;
+            *) return ;;
+        esac
+    done
+}
+
 menu_system() {
     while :; do
-        menu "System" "Summary" "Change password (${SUDO_USER:-$(id -un)})" "Hostname" "Timezone" \
+        menu "System" "Summary" "Software update" "Change password (${SUDO_USER:-$(id -un)})" "Hostname" "Timezone" \
             "Recent warnings and errors" "Storage usage" "Next boot: Android" "Reboot" "Power off"
         case $CHOICE in
             1) title "Summary"; info; pause ;;
-            2) passwd "${SUDO_USER:-$(id -un)}"; pause ;;
-            3) printf '  current: %s\n  new hostname (empty = keep): ' "$(cat /proc/sys/kernel/hostname)"; read -r h
+            2) menu_update ;;
+            3) passwd "${SUDO_USER:-$(id -un)}"; pause ;;
+            4) printf '  current: %s\n  new hostname (empty = keep): ' "$(cat /proc/sys/kernel/hostname)"; read -r h
                case $h in
                    "") ;;
                    *[!A-Za-z0-9-]*) echo "  letters, digits and - only"; pause ;;
                    *) if is_openwrt; then uci set system.@system[0].hostname="$h"; uci commit system; /etc/init.d/system reload
                       else hostnamectl set-hostname "$h" 2>/dev/null || { echo "$h" > /etc/hostname; hostname "$h"; }; fi ;;
                esac ;;
-            4) if is_openwrt; then
+            5) if is_openwrt; then
                    printf '  current: %s\n  zonename (e.g. Europe/Istanbul) and POSIX TZ (e.g. <+03>-3)\n  zonename: ' "$(uci -q get system.@system[0].zonename)"; read -r zn
                    printf '  TZ: '; read -r tz
                    [ -n "$zn" ] && [ -n "$tz" ] && { uci set system.@system[0].zonename="$zn"; uci set system.@system[0].timezone="$tz"; uci commit system; /etc/init.d/system reload; }
@@ -592,15 +614,15 @@ menu_system() {
                    printf '  current: %s\n  timezone (e.g. Europe/Istanbul): ' "$(readlink /etc/localtime | sed 's|.*zoneinfo/||')"; read -r zn
                    [ -n "$zn" ] && { timedatectl set-timezone "$zn" || pause; }
                fi ;;
-            5) title "Recent warnings and errors"
+            6) title "Recent warnings and errors"
                if command -v journalctl >/dev/null; then journalctl -b -p warning -n 40 --no-pager | cut -c1-200
                else logread | grep -iE 'warn|err|fail' | tail -n 40 | cut -c1-200; fi
                pause ;;
-            6) title "Storage"; df -h 2>/dev/null | grep -vE '^(tmpfs|devtmpfs|none|overlay|cgroup)' | sed 's/^/  /'; pause ;;
-            7) printf '  The next boot starts stock Android (Linux stays installed). Continue? [y/N] '; read -r a
+            7) title "Storage"; df -h 2>/dev/null | grep -vE '^(tmpfs|devtmpfs|none|overlay|cgroup)' | sed 's/^/  /'; pause ;;
+            8) printf '  The next boot starts stock Android (Linux stays installed). Continue? [y/N] '; read -r a
                case $a in y|Y) /opt/mu300/bin/mu300-next-boot android; pause ;; esac ;;
-            8) printf '  Reboot now? [y/N] '; read -r a; case $a in y|Y) reboot ;; esac ;;
-            9) printf '  Power off now? (needs a replug to start again) [y/N] '; read -r a; case $a in y|Y) poweroff ;; esac ;;
+            9) printf '  Reboot now? [y/N] '; read -r a; case $a in y|Y) reboot ;; esac ;;
+            10) printf '  Power off now? (needs a replug to start again) [y/N] '; read -r a; case $a in y|Y) poweroff ;; esac ;;
             *) return ;;
         esac
     done

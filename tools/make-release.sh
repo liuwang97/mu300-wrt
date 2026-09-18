@@ -45,11 +45,11 @@ cltest=""; [ -f "$IN/tools/gpu/cltest" ] && cltest="-v $IN/tools/gpu/cltest:/clt
 # shellcheck disable=SC2086
 docker run --rm -v "$B":/w -v "$IN/out/modules":/kmods:ro -v "$IN/out":/kout:ro -v "$IN/tools/logdw/logdw":/logdw:ro \
   -v "$IN/tools/bt-init/mu300-bt-init":/bt-init:ro -v "$IN/sing-box":/sing-box:ro $cltest \
-  mu300-ubuntu:24.04 bash /w/assemble.sh >/dev/null
+  -e MU300_VERSION="$TAG" mu300-ubuntu:24.04 bash /w/assemble.sh >/dev/null
 mv "$B/mu300-ubuntu-24.04-rootfs.tar.gz" "$D/mu300-ubuntu-rootfs.tar.gz"; rm -rf "$B"
 
 echo "==> OpenWrt root filesystem (generic)"
-MU300_INPUTS="$IN" sh "$TOP/openwrt/build-rootfs.sh" mu300-openwrt-release.tar.gz >/dev/null
+MU300_INPUTS="$IN" MU300_VERSION="$TAG" sh "$TOP/openwrt/build-rootfs.sh" mu300-openwrt-release.tar.gz >/dev/null
 mv "$TOP/openwrt/mu300-openwrt-release.tar.gz" "$D/mu300-openwrt-rootfs.tar.gz"
 
 echo "==> audit"

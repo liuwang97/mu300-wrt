@@ -1,0 +1,216 @@
+#!/bin/sh
+# Update the installed systems from a published release, on the device itself.
+#   mu300-update check            what is installed, what is the newest release
+#   mu300-update apply [OS...]    download, unpack and switch (default: every installed system)
+#   mu300-update rollback [OS]    go back to the previous version kept as <os>.old
+#   mu300-update clean            delete the kept <os>.old copies
+#
+# How it works: the new filesystem is unpacked next to the old one as <os>.new on the Linux partition, your settings
+# and the vendor files are carried over, and only then are the directories swapped (<os> -> <os>.old, <os>.new ->
+# <os>). Renaming the directory a running system boots from is safe - the running processes keep the old one until
+# the next boot - so an interrupted download or unpack can never leave a half-updated system behind.
+#
+# The kernel and the boot image are NOT updated: they have to be built with your device's own Android files, which
+# only ./install.sh on a computer can do. This is reported when a release needs a newer kernel.
+export PATH="$PATH:/opt/mu300/bin:/opt/mu300/busybox-bin:/usr/sbin:/sbin"
+REPO=${MU300_REPO:-dikeckaan/mu300-linux}
+DISK=${MU300_DISK:-/mnt/mu300-disk}
+CONF=/etc/mu300
+VERSION_FILE=$CONF/image-version
+
+say() { printf '\n==> %s\n' "$*"; }
+die() { printf '\nERROR: %s\n' "$*" >&2; exit 1; }
+have() { command -v "$1" >/dev/null 2>&1; }
+
+fetch_stdout() {  # fetch_stdout URL
+    if have curl; then curl -fsSL "$1"
+    else wget -qO- "$1"; fi
+}
+fetch_file() {  # fetch_file URL OUT
+    if have curl; then curl -fL --retry 3 -o "$2" "$1"
+    else wget -O "$2" "$1"; fi
+}
+
+installed_version() { [ -r "$VERSION_FILE" ] && cat "$VERSION_FILE" || echo unknown; }
+running_os() { [ -e /etc/openwrt_release ] && echo openwrt || echo ubuntu; }
+
+# systems present on the Linux partition
+installed_systems() {
+    for os in ubuntu openwrt; do
+        [ -d "$DISK/$os" ] && printf '%s ' "$os"
+    done
+}
+
+latest_release() {
+    fetch_stdout "https://api.github.com/repos/$REPO/releases/latest" \
+        | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1
+}
+
+mounted_disk() {
+    [ -d "$DISK/ubuntu" ] || [ -d "$DISK/openwrt" ] || die "the Linux partition is not mounted at $DISK"
+}
+
+check() {
+    mounted_disk
+    latest=$(latest_release)
+    [ -n "$latest" ] || die "could not reach GitHub (is the device online?)"
+    printf 'installed image   %s\n' "$(installed_version)"
+    printf 'newest release    %s\n' "$latest"
+    printf 'systems on disk   %s\n' "$(installed_systems)"
+    printf 'running now       %s\n' "$(running_os)"
+    printf 'kernel            %s\n' "$(uname -r)"
+    for os in $(installed_systems); do
+        [ -d "$DISK/$os.old" ] && printf 'rollback available for %s (%s)\n' "$os" "$(cat "$DISK/$os.old/etc/mu300/image-version" 2>/dev/null || echo unknown)"
+    done
+    if [ "$(installed_version)" = "$latest" ]; then
+        printf '\nUp to date.\n'
+    else
+        printf '\nRun: mu300-update apply\n'
+    fi
+}
+
+# everything that belongs to this device and must survive an update
+keep_list() {
+    case $1 in
+        ubuntu) echo "etc/mu300 etc/ssh etc/hostname etc/localtime etc/timezone etc/fstab home root srv usr/local var/lib/bluetooth" ;;
+        openwrt) echo "etc/config etc/mu300 etc/dropbear etc/rc.local root" ;;
+    esac
+}
+# vendor files that the published images deliberately do not contain
+vendor_list() {
+    case $1 in
+        ubuntu) echo "opt/mu300/android usr/lib/firmware" ;;
+        openwrt) echo "opt/mu300/android lib/firmware" ;;
+    esac
+}
+
+apply_one() {  # apply_one OS TAG
+    os=$1 tag=$2
+    old=$DISK/$os
+    new=$DISK/$os.new
+    [ -d "$old" ] || die "$os is not installed"
+    tarball=mu300-$os-rootfs.tar.gz
+    base=https://github.com/$REPO/releases/download/$tag
+    tmp=$DISK/.mu300-update
+    mkdir -p "$tmp"
+
+    say "$os: downloading $tag"
+    sums=$(fetch_stdout "$base/SHA256SUMS") || die "cannot download SHA256SUMS"
+    want=$(printf '%s\n' "$sums" | awk -v f="$tarball" '$2 == f || $2 == "*" f {print $1}')
+    [ -n "$want" ] || die "$tarball is not part of release $tag"
+    free=$(df -k "$DISK" | awk 'NR==2 {print $4}')
+    [ "$free" -gt 2000000 ] || die "less than 2 GB free on the Linux partition"
+    fetch_file "$base/$tarball" "$tmp/$tarball" || die "download failed"
+    have=$(sha256sum "$tmp/$tarball" | cut -d' ' -f1)
+    [ "$have" = "$want" ] || { rm -f "$tmp/$tarball"; die "checksum mismatch, nothing was changed"; }
+
+    say "$os: unpacking"
+    rm -rf "$new"; mkdir -p "$new"
+    tar -xzpf "$tmp/$tarball" -C "$new" || { rm -rf "$new" "$tmp/$tarball"; die "unpacking failed, nothing was changed"; }
+    rm -f "$tmp/$tarball"
+    [ -x "$new/sbin/init" ] || [ -L "$new/sbin/init" ] || [ -x "$new/bin/busybox" ] || { rm -rf "$new"; die "the unpacked system looks wrong, nothing was changed"; }
+
+    say "$os: keeping your settings and the vendor files"
+    for k in $(keep_list "$os"); do
+        [ -e "$old/$k" ] || continue
+        mkdir -p "$new/$(dirname "$k")"
+        rm -rf "$new/$k"
+        cp -a "$old/$k" "$new/$k"
+    done
+    # firmware and the Android userspace come from this device, never from the release
+    for v in $(vendor_list "$os"); do
+        [ -d "$old/$v" ] || continue
+        mkdir -p "$new/$v"
+        cp -an "$old/$v/." "$new/$v/" 2>/dev/null || true
+    done
+    # services enabled by hand (the links point into the system, so test with -L)
+    if [ "$os" = ubuntu ]; then
+        for w in "$old"/etc/systemd/system/*.wants; do
+            [ -d "$w" ] || continue
+            t=${w##*/}
+            for l in "$w"/*; do
+                [ -L "$l" ] || continue
+                u=${l##*/}
+                [ -L "$new/etc/systemd/system/$t/$u" ] && continue
+                [ -e "$new/etc/systemd/system/$u" ] || [ -e "$new/usr/lib/systemd/system/$u" ] || continue
+                mkdir -p "$new/etc/systemd/system/$t"
+                cp -a "$l" "$new/etc/systemd/system/$t/$u"
+            done
+        done
+    else
+        for l in "$old"/etc/rc.d/*; do
+            [ -L "$l" ] || continue
+            u=${l##*/}
+            [ -L "$new/etc/rc.d/$u" ] && continue
+            cp -a "$l" "$new/etc/rc.d/$u" 2>/dev/null || true
+        done
+    fi
+
+    say "$os: switching over"
+    sync
+    rm -rf "$DISK/$os.old"
+    mv "$old" "$DISK/$os.old" || die "could not move the old system aside"
+    mv "$new" "$old" || { mv "$DISK/$os.old" "$old"; die "could not put the new system in place (old one restored)"; }
+    sync
+    printf '%s: updated %s -> %s\n' "$os" "$(cat "$DISK/$os.old$VERSION_FILE" 2>/dev/null || echo unknown)" "$(cat "$old$VERSION_FILE" 2>/dev/null || echo unknown)"
+}
+
+apply() {
+    mounted_disk
+    tag=${MU300_RELEASE:-$(latest_release)}
+    [ -n "$tag" ] || die "could not reach GitHub (is the device online?)"
+    list=$*
+    [ -n "$list" ] || list=$(installed_systems)
+    for os in $list; do
+        case $os in ubuntu|openwrt) ;; *) die "unknown system '$os'" ;; esac
+        apply_one "$os" "$tag"
+    done
+    # the kernel lives in the boot image, which can only be built on a computer with your own Android files
+    krel=$(uname -r)
+    printf '\nThe kernel (%s) and the boot image are unchanged.\n' "$krel"
+    printf 'If the release notes mention a new kernel, run ./install.sh on your computer and choose "update".\n'
+    case " $list " in
+        *" $(running_os) "*) printf '\nReboot to start the updated %s. The previous version is kept: mu300-update rollback\n' "$(running_os)" ;;
+        *) printf '\nDone. The updated system is used the next time you switch to it.\n' ;;
+    esac
+}
+
+rollback() {
+    mounted_disk
+    list=$*
+    [ -n "$list" ] || list=$(installed_systems)
+    done_any=
+    for os in $list; do
+        [ -d "$DISK/$os.old" ] || { printf '%s: no previous version kept\n' "$os"; continue; }
+        sync
+        rm -rf "$DISK/$os.broken"
+        mv "$DISK/$os" "$DISK/$os.broken" || die "$os: could not move the current system aside"
+        mv "$DISK/$os.old" "$DISK/$os" || { mv "$DISK/$os.broken" "$DISK/$os"; die "$os: rollback failed (current system restored)"; }
+        rm -rf "$DISK/$os.broken"
+        sync
+        printf '%s: rolled back to %s\n' "$os" "$(cat "$DISK/$os$VERSION_FILE" 2>/dev/null || echo unknown)"
+        done_any=1
+    done
+    [ -n "$done_any" ] && printf '\nReboot to start it.\n'
+}
+
+clean() {
+    mounted_disk
+    for os in ubuntu openwrt; do
+        [ -d "$DISK/$os.old" ] || continue
+        rm -rf "$DISK/$os.old"
+        printf '%s: previous version deleted\n' "$os"
+    done
+    sync
+    df -h "$DISK" | tail -1
+}
+
+[ "$(id -u)" = 0 ] || { echo "run as root" >&2; exit 1; }
+case ${1:-check} in
+    check) check ;;
+    apply) shift; apply "$@" ;;
+    rollback) shift; rollback "$@" ;;
+    clean) clean ;;
+    -h|--help|help) sed -n '2,8s/^# \{0,1\}//p' "$0" ;;
+    *) echo "usage: mu300-update check|apply [os...]|rollback [os]|clean" >&2; exit 2 ;;
+esac
