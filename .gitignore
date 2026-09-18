@@ -27,3 +27,4 @@ backup/
 !stock/*.img
 arch/*.tar.gz
 arch/ArchLinuxARM-*
+android/magisk/*.zip
