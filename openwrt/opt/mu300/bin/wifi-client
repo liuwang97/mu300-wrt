@@ -90,12 +90,17 @@ stop_ap() {  # remember whether it was on, so "disconnect" can put it back
 
 iface_type() { iw dev "$IFACE" info 2>/dev/null | sed -n 's/^[[:space:]]*type //p'; }
 
-ap_mode_hint() {
-    cat >&2 <<HINT
-wifi-client: the radio is in access-point mode, and this driver cannot leave it without a reboot.
-             The network has been saved, so: reboot, and the device joins it before the hotspot starts.
-             (mu300-toolkit does this for you; "wifi-client forget" undoes it.)
-HINT
+ap_mode_hint() {  # ap_mode_hint scan|saved
+    echo "wifi-client: the radio is an access point right now, and this driver cannot turn it back into a" >&2
+    echo "             client without a reboot." >&2
+    if [ "${1:-}" = scan ]; then
+        echo "             So it cannot scan either. Give the network name yourself:" >&2
+        echo "                 wifi-client connect \"NAME\" \"PASSWORD\"" >&2
+        echo "             That saves it, and after a reboot the device joins it before the hotspot starts." >&2
+    else
+        echo "             The network is saved, so reboot and the device joins it before the hotspot starts." >&2
+        echo "             (\"wifi-client forget\" undoes it and keeps the hotspot.)" >&2
+    fi
 }
 
 prepare_station() {
@@ -130,7 +135,7 @@ stop_client() {
 }
 
 scan() {
-    prepare_station || { ap_mode_hint; return 1; }
+    prepare_station || { ap_mode_hint scan; return 1; }
     # the first scan after the radio changes mode often comes back busy or empty
     n=0
     while :; do
@@ -193,7 +198,7 @@ connect() {  # connect SSID [PASS]
     stop_client
     if ! prepare_station; then
         save_network "$ssid" "$psk"
-        ap_mode_hint
+        ap_mode_hint saved
         exit 3
     fi
 
