@@ -7,6 +7,8 @@
 # Needs a shell with "read -t" (bash or busybox ash): dash has no such option, and this tty ignores the termios
 # timer and blocks in the driver instead - see mu300-atd for the whole story.
 set -u
+# OpenWrt keeps the applets this needs (timeout) in the static busybox next to us
+export PATH="$PATH:/opt/mu300/bin:/opt/mu300/busybox-bin:/usr/sbin:/sbin"
 if [ -n "$(read -t 1 _probe </dev/null 2>&1)" ]; then
     for sh in /bin/bash /usr/bin/bash /bin/busybox; do
         [ -x "$sh" ] || continue
@@ -38,9 +40,14 @@ if [ -p "$DIR/cmd" ] && [ -p "$DIR/resp" ]; then
     echo $$ > "$lock/pid" 2>/dev/null || true
     trap 'rm -rf "$lock" 2>/dev/null' EXIT INT TERM
     # a daemon that is going away (shutdown) would leave this write blocked on the fifo for ever
-    timeout $((T + 6)) sh -c 'printf "%s %s\n" "$1" "$2" > "$3"' _ "$T" "$cmd" "$DIR/cmd" || {
-        echo "mu300-at: the daemon is not answering" >&2; exit 1; }
-    timeout $((T + 6)) cat "$DIR/resp"
+    if command -v timeout >/dev/null 2>&1; then
+        timeout $((T + 6)) sh -c 'printf "%s %s\n" "$1" "$2" > "$3"' _ "$T" "$cmd" "$DIR/cmd" || {
+            echo "mu300-at: the daemon is not answering" >&2; exit 1; }
+        timeout $((T + 6)) cat "$DIR/resp"
+    else
+        printf '%s %s\n' "$T" "$cmd" > "$DIR/cmd"
+        cat "$DIR/resp"
+    fi
     exit 0
 fi
 

@@ -131,20 +131,31 @@ ifconfig lo 127.0.0.1 up
 log "stage=usb-configfs"
 mount -t configfs configfs /config
 g=/config/usb_gadget/linux
-mkdir -p "$g/strings/0x409" "$g/configs/c.1/strings/0x409" "$g/functions/ecm.usb0"
+mkdir -p "$g/strings/0x409" "$g/configs/c.1/strings/0x409"
+# The USB network function: whichever of these the kernel actually has. Creating one it was not built with
+# fails here, and a gadget that is never bound leaves the device with no console and no network at all - which
+# is exactly what an "improvement" to NCM cost once.
+netfunc=
+for f in ${MU300_USBNET:-ecm ncm}; do
+    mkdir -p "$g/functions/$f.usb0" 2>/dev/null && { netfunc=$f; break; }
+done
+[ -n "$netfunc" ] || log "stage=usb-no-net-function (console only)"
 echo 0x0525 > "$g/idVendor"
 echo 0xa4a1 > "$g/idProduct"
 echo 0x0200 > "$g/bcdUSB"
 echo MU300LINUX > "$g/strings/0x409/serialnumber"
 echo Linux > "$g/strings/0x409/manufacturer"
 echo "MU300 Linux USB Ethernet" > "$g/strings/0x409/product"
-echo "Linux ECM + ACM console" > "$g/configs/c.1/strings/0x409/configuration"
+echo "Linux ${netfunc:-no} net + ACM console" > "$g/configs/c.1/strings/0x409/configuration"
 echo 250 > "$g/configs/c.1/MaxPower"
-echo 02:50:00:00:77:01 > "$g/functions/ecm.usb0/dev_addr"
-echo 02:50:00:00:77:02 > "$g/functions/ecm.usb0/host_addr"
-ln -s "$g/functions/ecm.usb0" "$g/configs/c.1/f1"
+if [ -n "$netfunc" ]; then
+    echo 02:50:00:00:77:01 > "$g/functions/$netfunc.usb0/dev_addr"
+    echo 02:50:00:00:77:02 > "$g/functions/$netfunc.usb0/host_addr"
+    ln -s "$g/functions/$netfunc.usb0" "$g/configs/c.1/f1"
+fi
 # USB serial console alongside ECM: recovery/debug access that does not depend on networking
 mkdir -p "$g/functions/acm.GS0" && ln -s "$g/functions/acm.GS0" "$g/configs/c.1/f2"
+log "stage=usb-net-function ${netfunc:-none}"
 log "stage=usb-wait-udc"
 for n in $(seq 1 40); do
     [ -e /sys/class/udc/25100000.dwc3 ] && break
