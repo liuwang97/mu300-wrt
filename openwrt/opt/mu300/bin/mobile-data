@@ -78,10 +78,36 @@ radio_on() {
 # The modem needs the vendor modem loader/SIPC drivers (5.4 kernel); a kernel without them (mainline) has no modem.
 modem_stack() { [ -e /dev/modem ] || [ -e /dev/pmsys ] || [ -c "$DEV" ]; }
 
+# "stty -F" opens and closes the tty, which desynchronises the SIPC channel (docs/FINDINGS.md 13b). When
+# mu300-atd owns the device it has already set the flags on its own descriptor, so leave the tty alone.
+tty_setup() {
+    [ -p /run/mu300-at/cmd ] && return 0
+    stty -F "$DEV" raw -echo 2>/dev/null || true
+}
+
+# Only one bring-up at a time: the watchdog and the service can both decide to reconnect, and two of them race for
+# every AT command (each losing the channel lock in turn, so neither finishes).
+UPLOCK=/run/mu300-mobile-data-up.lock
 up() {
+    if ! mkdir "$UPLOCK" 2>/dev/null; then
+        local p=$(cat "$UPLOCK/pid" 2>/dev/null || true)
+        if [ -n "$p" ] && kill -0 "$p" 2>/dev/null; then
+            echo "another bring-up is already running (pid $p)" >&2
+            return 0
+        fi
+        rm -rf "$UPLOCK"; mkdir "$UPLOCK" 2>/dev/null || true
+    fi
+    echo $$ > "$UPLOCK/pid"
+    up_locked "$@"
+    local rc=$?
+    rm -rf "$UPLOCK"
+    return $rc
+}
+
+up_locked() {
     modem_stack || { echo "no modem stack in this kernel ($(uname -r))" >&2; exit 3; }
     rm -f /run/mu300-mobile-data-down
-    stty -F "$DEV" raw -echo 2>/dev/null || true   # some tty flags are not supported by the modem tty
+    tty_setup
     radio_on
     for n in $(seq 1 60); do
         at 'AT+CEREG?' | grep -qE '\+CEREG: [0-9],(1|5)' && break
@@ -146,12 +172,12 @@ down() {
     ip route del default dev "$IFACE" 2>/dev/null || true
     ip addr flush dev "$IFACE" 2>/dev/null || true
     ip link set "$IFACE" down 2>/dev/null || true
-    stty -F "$DEV" raw -echo 2>/dev/null || true   # some tty flags are not supported by the modem tty
+    tty_setup
     at "AT+CGACT=0,$CID" 10 >/dev/null || true
 }
 
 sim_reset() {
-    stty -F "$DEV" raw -echo 2>/dev/null || true   # some tty flags are not supported by the modem tty
+    tty_setup
     at 'AT+SFUN=5' 20; at 'AT+SFUN=3' 10; sleep 2; at 'AT+SFUN=2' 10; at 'AT+SFUN=4' 30
     for _ in $(seq 1 30); do at 'AT+CPIN?' | grep -q READY && break; sleep 2; done
     at 'AT+CPIN?'
@@ -166,7 +192,7 @@ watch() {
         sleep "${MU300_WATCH_INTERVAL:-30}"
         [ -e /run/mu300-mobile-data-down ] && continue
         [ -c "$DEV" ] || continue
-        stty -F "$DEV" raw -echo 2>/dev/null || true
+        tty_setup
         if at "AT+CGACT?" | grep -q "+CGACT:$CID,1" && ip -4 addr show "$IFACE" 2>/dev/null | grep -q inet; then
             fails=0
             continue
@@ -189,7 +215,7 @@ watch() {
 # Radio quality in human terms. The AT channel belongs to whoever asks first, so the watchdog is paused by the
 # caller (mu300-toolkit does this); reading these values never disturbs an established data connection.
 signal() {
-    stty -F "$DEV" raw -echo 2>/dev/null || true
+    tty_setup
     local cops cereg cesq csq rsrp rsrq act mcc oper tac cell rat q
     cops=$(at 'AT+COPS?' 4 | grep '^+COPS:' || true)
     cereg=$(at 'AT+CEREG?' 4 | grep '^+CEREG:' || true)
@@ -230,7 +256,7 @@ signal() {
 }
 
 status() {
-    stty -F "$DEV" raw -echo 2>/dev/null || true   # some tty flags are not supported by the modem tty
+    tty_setup
     at 'AT+COPS?'; at 'AT+CSQ'; at 'AT+CEREG?'; at 'AT+CGACT?'
     ip -br addr show "$IFACE"
 }
@@ -239,7 +265,7 @@ case "${1:-status}" in
     up) up "${2:-}" ;;
     signal) signal ;;
     at) [ -n "${2:-}" ] || { echo "usage: $0 at \"AT+COMMAND\"" >&2; exit 2; }
-        stty -F "$DEV" raw -echo 2>/dev/null || true; at "$2" "${3:-6}" ;;
+        tty_setup; at "$2" "${3:-6}" ;;
     down) down ;;
     status) status ;;
     sim-reset) sim_reset ;;

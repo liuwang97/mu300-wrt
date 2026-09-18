@@ -23,14 +23,20 @@ cmd=${1:-}
 [ -n "$cmd" ] || { echo "usage: mu300-at [-t SECONDS] \"AT+COMMAND\"" >&2; exit 2; }
 
 if [ -p "$DIR/cmd" ] && [ -p "$DIR/resp" ]; then
-    # one client at a time: the daemon serves a single command per round
+    # one client at a time: the daemon serves a single command per round. The wait has to cover the slowest
+    # command somebody else may be running (AT+SFUN=4 takes ~20 s), not just this one.
     lock=$DIR/lock
+    wait=${MU300_AT_LOCK_WAIT:-90}
     n=0
     while ! mkdir "$lock" 2>/dev/null; do
-        n=$((n + 1)); [ "$n" -gt 100 ] && { echo "mu300-at: busy" >&2; exit 1; }
+        # a client killed with SIGKILL cannot clean up after itself; take the lock over when its owner is gone
+        owner=$(cat "$lock/pid" 2>/dev/null || true)
+        if [ -n "$owner" ] && ! kill -0 "$owner" 2>/dev/null; then rm -rf "$lock"; continue; fi
+        n=$((n + 1)); [ "$n" -gt $((wait * 10)) ] && { echo "mu300-at: busy" >&2; exit 1; }
         sleep 0.1 2>/dev/null || sleep 1
     done
-    trap 'rmdir "$lock" 2>/dev/null' EXIT INT TERM
+    echo $$ > "$lock/pid" 2>/dev/null || true
+    trap 'rm -rf "$lock" 2>/dev/null' EXIT INT TERM
     printf '%s %s\n' "$T" "$cmd" > "$DIR/cmd"
     timeout $((T + 6)) cat "$DIR/resp"
     exit 0

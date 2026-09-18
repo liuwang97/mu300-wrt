@@ -1,9 +1,13 @@
 #!/bin/sh
 # Keep the modem's AT channel open and hand it out one command at a time.
 #
-# Closing /dev/stty_nr* breaks it: the SIPC tty loses sync when it is closed while the modem is sending (and it
-# always is - signal reports arrive every few seconds), after which every new open reads nothing and only a modem
-# restart brings it back. Android's RIL never closes the port, and neither does this daemon.
+# /dev/stty_nr* are SIPC channels, not real serial ports, and only one reader gets the data: while this daemon
+# holds the channel, a second process that opens the device reads nothing. Android's RIL keeps its port open for
+# the lifetime of the system, and so does this daemon, so that AT commands cost one open instead of one per call.
+#
+# The one case where the descriptor has to be replaced is a modem restart (AT+SFUN=4, or a CP crash): the old
+# descriptor then refers to a channel that no longer exists and stays silent for ever, while still occupying the
+# device. The loop below notices that and reopens - see the comment there.
 #
 #   mu300-atd            run in the foreground (used by the service)
 #   mu300-at "AT+CSQ"    ask the daemon (see mu300-at)
@@ -34,12 +38,17 @@ rm -f "$CMD" "$RESP"
 mkfifo -m 600 "$CMD" "$RESP"
 
 # the one open that everything else borrows
-exec 3<>"$DEV"
-# on fd 3, not "stty -F $DEV": that would open and close the tty again, which is exactly what wedges the channel
-stty raw -echo <&3 2>/dev/null || true
+open_tty() {
+    exec 3<&- 2>/dev/null || true
+    exec 3<>"$DEV" || return 1
+    # on fd 3, not "stty -F $DEV": the -F form opens and closes the tty a second time
+    stty raw -echo <&3 2>/dev/null || true
+}
+open_tty || { echo "mu300-atd: cannot open $DEV" >&2; exit 1; }
 
 trap 'rm -f "$CMD" "$RESP"; exit 0' INT TERM
-trap '' PIPE   # a client that gave up waiting must not kill the daemon
+trap "" PIPE   # a client that gave up waiting must not kill the daemon
+silent=0       # consecutive commands the modem did not answer
 
 now() { date +%s; }
 
@@ -78,6 +87,24 @@ while :; do
     drain
     printf '%s\r' "$cmd" >&3
     reply=$(collect "$t")
+    # When the modem restarts (AT+SFUN=4 during a bring-up, or a CP crash) this descriptor is left attached to a
+    # channel that no longer exists: it reads nothing for ever, and because it still holds the channel, nobody
+    # else can talk to the modem either - which is what used to look like "the tty is wedged until the modem is
+    # restarted". Reopening it is all that is needed, so do that after two silent commands and try once more.
+    if [ -z "$reply" ]; then
+        silent=$((silent + 1))
+        if [ "$silent" -ge 2 ]; then
+            echo "mu300-atd: no reply twice, reopening $DEV" >&2
+            if open_tty; then
+                silent=0
+                drain
+                printf '%s\r' "$cmd" >&3
+                reply=$(collect "$t")
+            fi
+        fi
+    else
+        silent=0
+    fi
     # the client opens the other end right after writing the command; the timeout is only there so that a client
     # which died in between cannot block the daemon for ever
     printf '%s\n' "$reply" | timeout 5 dd of="$RESP" 2>/dev/null || true
