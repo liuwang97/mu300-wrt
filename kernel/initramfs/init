@@ -187,6 +187,28 @@ if [ -n "$rootloop" ] && losetup -o $ROOT_OFFSET "$rootloop" /dev/mmcblk0 2>>/ru
    && [ "$(dd if="$rootloop" bs=1 skip=1080 count=2 2>/dev/null | od -An -tx1 | tr -d ' ')" = 53ef ] \
    && mount -t ext4 -o noatime "$rootloop" /disk 2>>/run/rootmount.err \
    && rootdir=$(pick_root) && [ -n "$rootdir" ]; then
+    # A way back to Android with no computer and no keyboard: cut the power five times in a row. Every boot
+    # counts up here and mu300-next-boot --rearm clears the count once the system is really up, so only boots
+    # that never got that far add up. The fifth one puts slot a back and reboots, which lands in Android.
+    # only in default-Linux mode: with the one-shot trial every power cut already lands in Android
+    if [ "$(cat "$rootdir/etc/mu300/default-boot" 2>/dev/null)" = linux ]; then
+        tries=$(cat /disk/.mu300/boot-tries 2>/dev/null || echo 0)
+        case $tries in ''|*[!0-9]*) tries=0 ;; esac
+        tries=$((tries + 1))
+        mkdir -p /disk/.mu300 && echo "$tries" > /disk/.mu300/boot-tries && sync
+    else
+        tries=0
+    fi
+    if [ "$tries" -ge "${MU300_MAX_BOOT_TRIES:-5}" ]; then
+        log "stage=boot-tries-exceeded count=$tries (booting Android instead)"
+        echo 0 > /disk/.mu300/boot-tries && sync
+        restore_slot_a
+        persist
+        sync
+        reboot -f
+        sleep 30
+    fi
+
     if [ "$rootdir" = /disk ]; then
         mount --move /disk /newroot
     else

@@ -21,6 +21,16 @@ write_bc() {
         || { echo "misc verify failed" >&2; exit 1; }
 }
 
+# The initramfs counts every boot in .mu300/boot-tries and goes to Android when five pile up. Clearing it here
+# means "this boot got far enough to be called successful", so only power cuts that never reach this add up.
+clear_boot_tries() {
+    for d in /mnt/mu300-disk ""; do
+        [ -d "$d/.mu300" ] || continue
+        echo 0 > "$d/.mu300/boot-tries" 2>/dev/null && sync
+        return
+    done
+}
+
 slot_state() {
     b=$(dd if="$MISC" bs=1 skip=2048 count=32 2>/dev/null | od -An -tx1 -v | tr -d ' \n')
     echo "misc bootloader_control: $b"
@@ -30,7 +40,10 @@ slot_state() {
 case "${1:-status}" in
     linux)   mkdir -p /etc/mu300; echo linux > "$CONF"; write_bc "$BC_B"; echo "default boot: linux (slot b armed)" ;;
     android) mkdir -p /etc/mu300; echo android > "$CONF"; write_bc "$BC_A"; echo "next boot: android (slot a)" ;;
-    --rearm) [ "$(cat "$CONF" 2>/dev/null)" = linux ] && write_bc "$BC_B" && echo "slot b re-armed" || echo "default boot is not linux, nothing to do" ;;
-    status)  echo "default boot: $(cat "$CONF" 2>/dev/null || echo android)"; slot_state ;;
+    --rearm) clear_boot_tries
+             [ "$(cat "$CONF" 2>/dev/null)" = linux ] && write_bc "$BC_B" && echo "slot b re-armed" || echo "default boot is not linux, nothing to do" ;;
+    status)  echo "default boot: $(cat "$CONF" 2>/dev/null || echo android)"
+             for d in /mnt/mu300-disk ""; do [ -f "$d/.mu300/boot-tries" ] && { echo "boot tries since the last good boot: $(cat "$d/.mu300/boot-tries")/5"; break; }; done
+             slot_state ;;
     *) echo "usage: $0 linux|android|status" >&2; exit 2 ;;
 esac
