@@ -1,0 +1,50 @@
+#!/bin/sh
+# Keep the modem's AT channel open and hand it out one command at a time.
+#
+# Closing /dev/stty_nr* breaks it: the SIPC tty loses sync when it is closed while the modem is sending (and it
+# always is - signal reports arrive every few seconds), after which every new open reads nothing and only a modem
+# restart brings it back. Android's RIL never closes the port, and neither does this daemon.
+#
+#   mu300-atd            run in the foreground (used by the service)
+#   mu300-at "AT+CSQ"    ask the daemon (see mu300-at)
+set -u
+DEV=${MU300_AT_DEV:-/dev/stty_nr1}
+DIR=${MU300_AT_DIR:-/run/mu300-at}
+CMD=$DIR/cmd
+RESP=$DIR/resp
+
+[ -c "$DEV" ] || { echo "mu300-atd: $DEV is not a character device" >&2; exit 1; }
+mkdir -p "$DIR"
+rm -f "$CMD" "$RESP"
+mkfifo -m 600 "$CMD" "$RESP"
+stty -F "$DEV" raw -echo 2>/dev/null || true
+
+# the one open that everything else borrows
+exec 3<>"$DEV"
+trap 'rm -f "$CMD" "$RESP"; exit 0' INT TERM
+
+while :; do
+    # blocks until a client sends something; the extra open keeps the fifo alive between clients
+    read -r line < "$CMD" || continue
+    [ -n "$line" ] || continue
+    timeout=${line%% *}
+    case $timeout in
+        [0-9]|[0-9][0-9]) cmd=${line#* } ;;
+        *) timeout=6; cmd=$line ;;
+    esac
+    # drop anything the modem sent while nobody was asking (URCs), so replies are not mixed up
+    while read -r -t 1 _junk <&3 2>/dev/null; do :; done
+    {
+        printf '%s\r' "$cmd" >&3
+        end=$(( $(date +%s) + timeout ))
+        while [ "$(date +%s)" -lt "$end" ]; do
+            read -r -t 2 l <&3 2>/dev/null || continue
+            l=${l%$'\r'}
+            [ -n "$l" ] || continue
+            echo "$l"
+            case $l in
+                OK|ERROR|+CME\ ERROR*|+CMS\ ERROR*|CONNECT*|NO\ CARRIER) break ;;
+            esac
+        done
+    } > "$RESP" 2>/dev/null
+done

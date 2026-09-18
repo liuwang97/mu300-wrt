@@ -89,7 +89,7 @@ fi
 mkdir -p $R/etc/mu300
 printf '%s\n' "${MU300_VERSION:-dev}" > $R/etc/mu300/image-version
 # enable the services (rc.common "enable" needs ubus, which is not running in the build container)
-for s in mu300-vendor mu300-hw mu300-post mu300-toolkit; do
+for s in mu300-vendor mu300-hw mu300-post mu300-toolkit mu300-atd; do
     n=$(sed -n "s/^START=//p" $R/etc/init.d/$s)
     ln -sf ../init.d/$s $R/etc/rc.d/S$n$s
 done

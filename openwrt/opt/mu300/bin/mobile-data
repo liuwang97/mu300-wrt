@@ -11,6 +11,12 @@ IFACE=sipa_eth$((CID - 1))
 
 at() {  # at CMD [timeout] -> response lines up to the final result code
     local cmd=$1 t=${2:-5} line
+    # mu300-atd owns the AT channel when it runs: closing the SIPC tty wedges it until the modem restarts, so
+    # ask the daemon instead of opening the device here
+    if [ -p /run/mu300-at/cmd ]; then
+        /opt/mu300/bin/mu300-at -t "$t" "$cmd"
+        return
+    fi
     [ -c "$DEV" ] || return 1   # never let the redirection create a regular file in /dev
     exec 3<>"$DEV"
     # drop late responses/URCs left over from earlier commands
