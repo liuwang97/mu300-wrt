@@ -111,12 +111,19 @@ apply_one() {  # apply_one OS TAG
     [ -x "$new/sbin/init" ] || [ -L "$new/sbin/init" ] || [ -x "$new/bin/busybox" ] || { rm -rf "$new"; die "the unpacked system looks wrong, nothing was changed"; }
 
     say "$os: keeping your settings and the vendor files"
+    # etc/mu300 is kept as a whole (hotspot.conf, vpn.conf, ...), but the version of the image belongs to the new
+    # filesystem: copying the old directory over it would make every update report the version it replaced
+    newver=$(cat "$new$VERSION_FILE" 2>/dev/null || true)
     for k in $(keep_list "$os"); do
         [ -e "$old/$k" ] || continue
         mkdir -p "$new/$(dirname "$k")"
         rm -rf "$new/$k"
         cp -a "$old/$k" "$new/$k"
     done
+    if [ -n "$newver" ]; then
+        mkdir -p "$new$CONF"
+        printf '%s\n' "$newver" > "$new$VERSION_FILE"
+    fi
     # firmware and the Android userspace come from this device, never from the release
     for v in $(vendor_list "$os"); do
         [ -d "$old/$v" ] || continue
