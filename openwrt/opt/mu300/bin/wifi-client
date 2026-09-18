@@ -73,23 +73,40 @@ stop_ap() {  # remember whether it was on, so "disconnect" can put it back
     sleep 1
 }
 
-# Stopping hostapd does not change the interface back: it stays in AP mode, where scanning and joining are not
-# possible ("Device or resource busy" / no results at all). The type can only be changed while it is down.
+iface_type() { iw dev "$IFACE" info 2>/dev/null | sed -n 's/^[[:space:]]*type //p'; }
+
+# Stopping hostapd leaves the interface in AP mode, and in AP mode a scan returns nothing at all. This driver
+# refuses "iw set type" outright (Invalid argument), even with the interface down, although the phy does support
+# managed mode - so the interface has to be deleted and created again with the mode we want.
+set_mode() {  # set_mode managed|__ap
+    want=$1
+    [ "$(iface_type)" = "$(echo "$want" | sed 's/^__//')" ] && return 0
+    phy=$(iw dev "$IFACE" info 2>/dev/null | sed -n 's/^[[:space:]]*wiphy //p')
+    phy=phy${phy:-0}
+    ip link set "$IFACE" down 2>/dev/null || true
+    iw dev "$IFACE" set type "$want" 2>/dev/null && { ip link set "$IFACE" up 2>/dev/null; return 0; }
+    iw dev "$IFACE" del 2>/dev/null || true
+    if ! iw phy "$phy" interface add "$IFACE" type "$want" 2>/dev/null; then
+        # never leave the device without an interface: put the hotspot's one back
+        iw phy "$phy" interface add "$IFACE" type __ap 2>/dev/null || true
+        return 1
+    fi
+    ip link set "$IFACE" up 2>/dev/null || true
+    return 0
+}
+
 prepare_station() {
     stop_ap
     rfkill unblock wifi 2>/dev/null || true
     ip link set "$IFACE" nomaster 2>/dev/null || true
-    if [ "$(iw dev "$IFACE" info 2>/dev/null | sed -n 's/^[[:space:]]*type //p')" != managed ]; then
-        ip link set "$IFACE" down 2>/dev/null || true
-        iw dev "$IFACE" set type managed 2>/dev/null || true
-    fi
-    ip link set "$IFACE" up 2>/dev/null || true
+    set_mode managed || die "could not put $IFACE into station mode"
     sleep 1
 }
 
 start_ap() {
     [ -e "$AP_FLAG" ] || return 0
     rm -f "$AP_FLAG"
+    set_mode __ap || true   # hostapd cannot switch the mode on this driver either
     if is_openwrt; then wifi up >/dev/null 2>&1 || true
     else systemctl start mu300-hotspot >/dev/null 2>&1 || true; fi
 }
