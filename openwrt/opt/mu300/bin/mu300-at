@@ -4,9 +4,19 @@
 #   mu300-at -t 20 "AT+SFUN=4"   wait longer than the default 6 s
 # Falls back to opening the tty directly when the daemon is not running - that works once, and then the channel
 # needs a modem restart, so the daemon is strongly preferred.
+# Needs a shell with "read -t" (bash or busybox ash): dash has no such option, and this tty ignores the termios
+# timer and blocks in the driver instead - see mu300-atd for the whole story.
 set -u
+if [ -n "$(read -t 1 _probe </dev/null 2>&1)" ]; then
+    for sh in /bin/bash /usr/bin/bash /bin/busybox; do
+        [ -x "$sh" ] || continue
+        case $sh in */busybox) exec "$sh" ash "$0" "$@" ;; *) exec "$sh" "$0" "$@" ;; esac
+    done
+    echo "mu300-at: need bash or busybox ash (this shell has no 'read -t')" >&2; exit 1
+fi
 DIR=${MU300_AT_DIR:-/run/mu300-at}
 DEV=${MU300_AT_DEV:-/dev/stty_nr1}
+CR=$(printf '\r')
 T=6
 [ "${1:-}" = -t ] && { T=$2; shift 2; }
 cmd=${1:-}
@@ -22,20 +32,21 @@ if [ -p "$DIR/cmd" ] && [ -p "$DIR/resp" ]; then
     done
     trap 'rmdir "$lock" 2>/dev/null' EXIT INT TERM
     printf '%s %s\n' "$T" "$cmd" > "$DIR/cmd"
-    timeout $((T + 4)) cat "$DIR/resp"
+    timeout $((T + 6)) cat "$DIR/resp"
     exit 0
 fi
 
 echo "mu300-at: daemon not running, using $DEV directly (this can wedge the channel)" >&2
 [ -c "$DEV" ] || { echo "mu300-at: no $DEV" >&2; exit 1; }
-stty -F "$DEV" raw -echo 2>/dev/null || true
 exec 3<>"$DEV"
-while read -r -t 1 _j <&3 2>/dev/null; do :; done
+stty raw -echo <&3 2>/dev/null || true
+while :; do j=; IFS= read -r -t 1 j <&3 || break; done
 printf '%s\r' "$cmd" >&3
 end=$(( $(date +%s) + T ))
 while [ "$(date +%s)" -lt "$end" ]; do
-    read -r -t 2 l <&3 2>/dev/null || continue
-    l=${l%$'\r'}; [ -n "$l" ] || continue
+    l=
+    IFS= read -r -t 2 l <&3 || continue
+    l=${l%"$CR"}; [ -n "$l" ] || continue
     echo "$l"
     case $l in OK|ERROR|+CME\ ERROR*|+CMS\ ERROR*|CONNECT*|NO\ CARRIER) break ;; esac
 done
