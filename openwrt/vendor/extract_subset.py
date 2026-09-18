@@ -29,7 +29,8 @@ KEEP_PREFIXES = [
 KEEP_EXACT = {
     'vendor/etc/modem_cp_info.xml', 'vendor/etc/modem_sp_info.xml', 'vendor/etc/modem_ch_info.xml',
     'vendor/etc/cp_dump_info.xml', 'vendor/etc/ueventd.rc', 'dev/__properties__',
-    # refnotify reads this RF/Wi-Fi coexistence table and logs an error for every message without it
+    # refnotify asks for this RF/Wi-Fi coexistence table; the F50 firmware does not ship it (stock Android logs
+    # the same error), so it is copied only when a device happens to have it
     'vendor/etc/wcn_to_mipi.xml',
 }
 KEEP_EXACT |= {'system/lib64/' + n for n in (
