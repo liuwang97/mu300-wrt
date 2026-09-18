@@ -55,12 +55,11 @@ die() { printf 'wifi-client: %s\n' "$*" >&2; exit 1; }
 conf_get() { [ -r "$CONF" ] && sed -n "s/^$1=//p" "$CONF" | tail -n1; }
 is_openwrt() { [ -e /etc/openwrt_release ]; }
 
-ap_active() {
-    if is_openwrt; then
-        pgrep -x hostapd >/dev/null 2>&1 || pgrep -x wpad >/dev/null 2>&1
-    else
-        [ "$(systemctl is-active mu300-hotspot 2>/dev/null)" = active ]
-    fi
+ap_active() {  # ask the interface, not only the service: hostapd can also be running without it
+    [ "$(iw dev "$IFACE" info 2>/dev/null | sed -n 's/^[[:space:]]*type //p')" = AP ] && return 0
+    pgrep -x hostapd >/dev/null 2>&1 && return 0
+    pgrep -x wpad >/dev/null 2>&1 && return 0
+    is_openwrt || [ "$(systemctl is-active mu300-hotspot 2>/dev/null)" = active ]
 }
 
 stop_ap() {  # remember whether it was on, so "disconnect" can put it back
@@ -68,8 +67,23 @@ stop_ap() {  # remember whether it was on, so "disconnect" can put it back
     : > "$AP_FLAG"
     if is_openwrt; then wifi down >/dev/null 2>&1 || true
     else systemctl stop mu300-hotspot >/dev/null 2>&1 || true; fi
+    pkill -x hostapd 2>/dev/null || true
     # the hotspot leaves the interface in the LAN bridge; a client interface must not be in one
     ip link set "$IFACE" nomaster 2>/dev/null || true
+    sleep 1
+}
+
+# Stopping hostapd does not change the interface back: it stays in AP mode, where scanning and joining are not
+# possible ("Device or resource busy" / no results at all). The type can only be changed while it is down.
+prepare_station() {
+    stop_ap
+    rfkill unblock wifi 2>/dev/null || true
+    ip link set "$IFACE" nomaster 2>/dev/null || true
+    if [ "$(iw dev "$IFACE" info 2>/dev/null | sed -n 's/^[[:space:]]*type //p')" != managed ]; then
+        ip link set "$IFACE" down 2>/dev/null || true
+        iw dev "$IFACE" set type managed 2>/dev/null || true
+    fi
+    ip link set "$IFACE" up 2>/dev/null || true
     sleep 1
 }
 
@@ -89,10 +103,27 @@ stop_client() {
 }
 
 scan() {
-    stop_ap
-    ip link set "$IFACE" up 2>/dev/null || true
-    sleep 1
-    iw dev "$IFACE" scan 2>/dev/null | awk '
+    prepare_station
+    # the first scan after the radio changes mode often comes back busy or empty
+    n=0
+    while :; do
+        out=$(iw dev "$IFACE" scan 2>&1)
+        case $out in
+            *"BSS "*) break ;;
+        esac
+        n=$((n + 1))
+        [ "$n" -ge 3 ] && break
+        sleep 2
+    done
+    case $out in
+        *"BSS "*) ;;
+        *) printf 'wifi-client: the scan found nothing (%s)\n' "$(printf '%s' "$out" | head -1)" >&2
+           printf 'wifi-client: interface is %s, type %s\n' \
+               "$(cat "/sys/class/net/$IFACE/operstate" 2>/dev/null)" \
+               "$(iw dev "$IFACE" info 2>/dev/null | sed -n 's/^[[:space:]]*type //p')" >&2
+           return 1 ;;
+    esac
+    printf '%s\n' "$out" | awk '
         /^BSS /            { if (ssid != "") print sig "\t" enc "\t" ssid; ssid = ""; enc = "open"; sig = "" }
         /signal:/          { sig = int($2) }
         /SSID: /           { $1 = ""; sub(/^ /, ""); ssid = $0 }
@@ -125,9 +156,8 @@ wait_connected() {  # wait_connected SECONDS
 connect() {  # connect SSID [PASS]
     ssid=$1; psk=${2:-}
     command -v wpa_supplicant >/dev/null || die "wpa_supplicant is not installed"
-    stop_ap
     stop_client
-    ip link set "$IFACE" up 2>/dev/null || true
+    prepare_station
 
     umask 077
     if [ -n "$psk" ]; then

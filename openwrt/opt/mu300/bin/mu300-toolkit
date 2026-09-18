@@ -473,8 +473,15 @@ menu_performance() {
 wifi_pick_and_join() {
     title "Wi-Fi: join a network"
     printf '  scanning... (the hotspot is off while the radio scans)\n\n'
-    list=$(/opt/mu300/bin/wifi-client scan 2>/dev/null)
-    if [ -z "$list" ]; then printf '  %sno networks found%s\n' "$Y" "$N"; pause; return; fi
+    err=/run/mu300-wifi-scan.err
+    list=$(/opt/mu300/bin/wifi-client scan 2>"$err")
+    if [ -z "$list" ]; then
+        printf '  %sno networks found%s\n\n' "$Y" "$N"
+        sed 's/^/  /' "$err" 2>/dev/null
+        rm -f "$err"
+        pause; return
+    fi
+    rm -f "$err"
     printf '%s\n' "$list" | awk '{ printf "  %s%2d%s  %s\n", "'"$C"'", NR, "'"$N"'", $0 }'
     printf '\n  %s 0%s  Back\n\n  > ' "$C" "$N"
     read -r n || return
