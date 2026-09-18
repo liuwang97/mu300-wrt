@@ -6,4 +6,11 @@ for f in /usr/bin/ping /usr/bin/mtr-packet /usr/bin/arping; do
 done
 # docker export leaves an empty /etc/resolv.conf instead of the systemd-resolved stub
 [ -L /etc/resolv.conf ] || ln -sfn ../run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
+# /opt/mu300/bin is on nobody's PATH, and sudo's secure_path cannot see it at all, so the commands the
+# documentation tells people to run need links from a directory that is. Systems installed before these links
+# existed get them here instead of only after an update.
+for c in mu300-toolkit mu300-next-boot mu300-os mu300-update mobile-data mu300-at mu300-vpn; do
+    [ -x "/opt/mu300/bin/$c" ] || continue
+    [ -e "/usr/local/bin/$c" ] || ln -sfn "/opt/mu300/bin/$c" "/usr/local/bin/$c" 2>/dev/null || true
+done
 true
