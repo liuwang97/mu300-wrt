@@ -18,7 +18,7 @@ tar -cf - apex/com.android.runtime/bin/linker64 apex/com.android.runtime/lib64/b
   system/lib64/libpackagelistparser.so system/lib64/libprocessgroup.so system/lib64/libcgrouprc.so \
   vendor/lib64/libkernelbootcp.trusty.so vendor/lib64/lib_crypto.so vendor/bin/modem_control vendor/bin/cp_diskserver vendor/bin/refnotify vendor/bin/sh vendor/bin/toybox_vendor vendor/bin/getprop \
   vendor/etc/modem_cp_info.xml vendor/etc/modem_sp_info.xml vendor/etc/modem_ch_info.xml vendor/etc/cp_dump_info.xml \
-  vendor/etc/ueventd.rc dev/__properties__ | tar -xf - -C "$OUT"
+  vendor/etc/ueventd.rc vendor/etc/wcn_to_mipi.xml dev/__properties__ | tar -xf - -C "$OUT"
 cd /
 mkdir -p "$OUT/system/bin" "$OUT/linkerconfig"
 ln -sfn /apex/com.android.runtime/bin/linker64 "$OUT/system/bin/linker64"
