@@ -1,20 +1,27 @@
 #!/bin/sh
-# Build the MU300 OpenWrt rootfs tarball (runs on the host; needs Docker with arm64 support).
+# Build the MU300 OpenWrt (or ImmortalWrt) rootfs tarball (runs on the host; needs Docker with arm64 support).
 #   openwrt/build-rootfs.sh OUT.tar.gz
+#   MU300_FLAVOUR=immortalwrt openwrt/build-rootfs.sh OUT.tar.gz
 # Inputs (same as rootfs/assemble.sh, all optional except modules):
 #   out/modules/*.ko  out/modules.builtin*  firmware/  android-subset/  android-gpu-subset/
 #   tools/logdw/logdw  tools/bt-init/mu300-bt-init  tools/gpu/cltest  busybox (static, full)
 #   sing-box (tools/fetch-sing-box.sh, for mu300-vpn)
 #   upstream/out/modules/*.ko (optional: out-of-tree WCN modules for the mainline 6.18 kernel)
 set -eu
-VER=25.12.5
+FLAVOUR=${MU300_FLAVOUR:-openwrt}
+case $FLAVOUR in
+    openwrt)     VER=${MU300_WRT_VER:-25.12.5}; BASEURL=https://downloads.openwrt.org/releases ;;
+    # ImmortalWrt is an OpenWrt fork: same package manager, same layout, more drivers and LuCI apps
+    immortalwrt) VER=${MU300_WRT_VER:-25.12.2}; BASEURL=https://downloads.immortalwrt.org/releases ;;
+    *) echo "unknown flavour '$FLAVOUR' (openwrt or immortalwrt)" >&2; exit 1 ;;
+esac
 KREL=5.4.254-gb50db5b6224c
-OUT=${1:-mu300-openwrt-$VER-rootfs.tar.gz}
+OUT=${1:-mu300-$FLAVOUR-$VER-rootfs.tar.gz}
 TOP=$(cd "$(dirname "$0")/.." && pwd)
 # build inputs (out/, firmware/, android-subset/, tools binaries, busybox) may live outside the checkout
 IN=${MU300_INPUTS:-$TOP}
-TARBALL=openwrt-$VER-armsr-armv8-rootfs.tar.gz
-URL=https://downloads.openwrt.org/releases/$VER/targets/armsr/armv8
+TARBALL=$FLAVOUR-$VER-armsr-armv8-rootfs.tar.gz
+URL=$BASEURL/$VER/targets/armsr/armv8
 
 cd "$TOP"
 if [ ! -f "openwrt/$TARBALL" ]; then
@@ -23,7 +30,7 @@ fi
 want=$(curl -fsL "$URL/sha256sums" | sed -n "s/^\([0-9a-f]*\) \*$TARBALL$/\1/p")
 have=$(shasum -a 256 "openwrt/$TARBALL" 2>/dev/null || sha256sum "openwrt/$TARBALL")
 [ "${have%% *}" = "$want" ] || { echo "checksum mismatch for $TARBALL" >&2; exit 1; }
-docker import --platform linux/arm64 "openwrt/$TARBALL" mu300-openwrt-base:$VER >/dev/null
+docker import --platform linux/arm64 "openwrt/$TARBALL" mu300-$FLAVOUR-base:$VER >/dev/null
 # OpenWrt ships an unsigned regulatory.db; this kernel requires the signed database (wens key), so take Debian/Ubuntu's
 REGDB=$(mktemp -d)
 docker run --rm --platform linux/arm64 -v "$REGDB":/o ubuntu:26.04 sh -c \
@@ -38,7 +45,7 @@ docker run --rm --platform linux/arm64 \
   $(opt firmware firmware) $(opt android-subset android-subset) $(opt android-gpu-subset android-gpu-subset) \
   $(opt tools/logdw/logdw logdw) $(opt tools/bt-init/mu300-bt-init bt-init) $(opt tools/gpu/cltest cltest) \
   $(opt busybox busybox) $(opt sing-box sing-box) $(opt upstream/out/modules mainline-modules) -v "$TOP/openwrt":/out -v "$REGDB":/in/regdb:ro \
-  -e KREL=$KREL -e OUT="$(basename "$OUT")" -e MU300_VERSION="${MU300_VERSION:-dev}" mu300-openwrt-base:$VER /bin/sh -eu -c '
+  -e KREL=$KREL -e OUT="$(basename "$OUT")" -e MU300_VERSION="${MU300_VERSION:-dev}" mu300-$FLAVOUR-base:$VER /bin/sh -eu -c '
 mkdir -p /var/lock /var/run /tmp
 apk update >/dev/null
 apk add wpad-basic-mbedtls wifi-scripts iwinfo wireless-regdb iw bash ip-full coreutils-stty >/dev/null

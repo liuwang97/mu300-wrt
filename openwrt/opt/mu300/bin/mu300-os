@@ -1,8 +1,8 @@
 #!/bin/sh
-# Choose which system on the Linux disk area boots next (Ubuntu, OpenWrt).
+# Choose which system on the Linux disk area boots next. Any directory with an /etc and an init counts, so
+# ubuntu, openwrt, immortalwrt, arch, debian, kali ... all work the same way.
 #   mu300-os             show installed systems and the current choice
-#   mu300-os openwrt     boot OpenWrt from now on (reboot to apply)
-#   mu300-os ubuntu
+#   mu300-os <name>      boot that system from now on (reboot to apply)
 # OpenWrt: od/timeout come from the static busybox in /opt/mu300/busybox-bin
 export PATH="$PATH:/opt/mu300/busybox-bin"
 set -e
@@ -13,23 +13,47 @@ elif [ -x /lib/systemd/systemd ] && [ ! -d /ubuntu ] && [ -f /etc/os-release ] &
 else
     echo "cannot find the MU300 disk area (/mnt/mu300-disk)" >&2; exit 1
 fi
-list() {
-    for os in ubuntu openwrt; do
-        if [ -d "$DISK/$os/etc" ]; then echo "$os: installed ($DISK/$os)"
-        elif [ "$os" = ubuntu ] && [ "$DISK" = / ]; then echo "ubuntu: installed (/)"
-        else echo "$os: not installed"; fi
+
+# a system is any top-level directory that has /etc and something to run as init
+is_system() {
+    d=$DISK/$1
+    [ -d "$d/etc" ] || return 1
+    [ -x "$d/sbin/init" ] || [ -L "$d/sbin/init" ] || [ -x "$d/usr/lib/systemd/systemd" ] || \
+    [ -x "$d/lib/systemd/systemd" ] || [ -x "$d/bin/busybox" ]
+}
+systems() {
+    for d in "$DISK"/*/; do
+        n=${d%/}; n=${n##*/}
+        case $n in lost+found|.*|*.old|*.new|*.broken) continue ;; esac
+        is_system "$n" && printf '%s ' "$n"
     done
+}
+
+list() {
+    found=$(systems)
+    if [ -n "$found" ]; then
+        for n in $found; do
+            printf '%s: installed (%s)' "$n" "$DISK/$n"
+            [ -r "$DISK/$n/etc/mu300/image-version" ] && printf ' %s' "$(cat "$DISK/$n/etc/mu300/image-version")"
+            printf '\n'
+        done
+    elif [ "$DISK" = / ]; then
+        echo "ubuntu: installed (/)"
+    else
+        echo "no systems found in $DISK"
+    fi
     echo "boot-os: $(cat "$DISK/.mu300/boot-os" 2>/dev/null || echo 'ubuntu (default)')"
 }
+
 case "${1:-}" in
     "") list ;;
-    ubuntu|openwrt)
-        if [ ! -d "$DISK/$1/etc" ] && ! { [ "$1" = ubuntu ] && [ -x "$DISK/lib/systemd/systemd" ]; }; then
-            echo "$1 is not installed" >&2; exit 1
+    -h|--help) sed -n '2,6s/^# \{0,1\}//p' "$0" ;;
+    *)
+        if ! is_system "$1" && ! { [ "$1" = ubuntu ] && [ -x "$DISK/lib/systemd/systemd" ]; }; then
+            echo "$1 is not installed (available: $(systems))" >&2; exit 1
         fi
         mkdir -p "$DISK/.mu300"
         echo "$1" > "$DISK/.mu300/boot-os.tmp" && mv "$DISK/.mu300/boot-os.tmp" "$DISK/.mu300/boot-os"
         sync
         echo "next Linux boot: $1 (reboot to apply)" ;;
-    *) echo "usage: $0 [ubuntu|openwrt]" >&2; exit 2 ;;
 esac

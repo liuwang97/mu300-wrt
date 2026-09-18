@@ -25,3 +25,5 @@ sing-box
 release/
 backup/
 !stock/*.img
+arch/*.tar.gz
+arch/ArchLinuxARM-*
