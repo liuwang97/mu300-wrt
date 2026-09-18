@@ -1,6 +1,6 @@
 #!/bin/sh /etc/rc.common
 # join the saved Wi-Fi network (station mode); does nothing when no network was saved
-START=19
+START=15   # before netifd: the radio can only become a station before anything turns it into an AP
 export PATH="$PATH:/opt/mu300/busybox-bin"
 
 start() {

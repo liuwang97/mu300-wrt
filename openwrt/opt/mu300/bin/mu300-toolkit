@@ -472,33 +472,35 @@ menu_performance() {
 
 wifi_pick_and_join() {
     title "Wi-Fi: join a network"
-    printf '  scanning... (the hotspot is off while the radio scans)\n\n'
     err=/run/mu300-wifi-scan.err
+    printf '  scanning...\n\n'
     list=$(/opt/mu300/bin/wifi-client scan 2>"$err")
     if [ -z "$list" ]; then
-        printf '  %sno networks found%s\n\n' "$Y" "$N"
-        sed 's/^/  /' "$err" 2>/dev/null
+        sed 's/^/  /' "$err" 2>/dev/null; rm -f "$err"
+        printf '\n  Type the name of the network instead (empty = back)\n  > '
+        read -r ssid || return
+        [ -n "$ssid" ] || return
+    else
         rm -f "$err"
-        pause; return
+        printf '%s\n' "$list" | awk '{ printf "  %s%2d%s  %s\n", "'"$C"'", NR, "'"$N"'", $0 }'
+        printf '\n  %s 0%s  Back\n\n  > ' "$C" "$N"
+        read -r n || return
+        case $n in ''|0|*[!0-9]*) return ;; esac
+        line=$(printf '%s\n' "$list" | sed -n "${n}p")
+        [ -n "$line" ] || return
+        # the scan output is "%4s dBm  %-5s  %s", so the name starts at column 18 and may contain spaces
+        ssid=$(printf '%s' "$line" | cut -c18-)
+        [ -n "$ssid" ] || return
     fi
-    rm -f "$err"
-    printf '%s\n' "$list" | awk '{ printf "  %s%2d%s  %s\n", "'"$C"'", NR, "'"$N"'", $0 }'
-    printf '\n  %s 0%s  Back\n\n  > ' "$C" "$N"
-    read -r n || return
-    case $n in ''|0|*[!0-9]*) return ;; esac
-    line=$(printf '%s\n' "$list" | sed -n "${n}p")
-    [ -n "$line" ] || return
-    # the scan output is "%4s dBm  %-5s  %s", so the name starts at column 18 and may contain spaces
-    ssid=$(printf '%s' "$line" | cut -c18-)
-    enc=$(printf '%s' "$line" | cut -c11-16 | tr -d ' ')
-    [ -n "$ssid" ] || return
-    pass=
-    if [ "$enc" != open ]; then
-        printf '\n  password for %s%s%s (nothing is shown as you type): ' "$B" "$ssid" "$N"
-        stty -echo 2>/dev/null; read -r pass; stty echo 2>/dev/null; printf '\n'
-    fi
-    printf '\n'
+    printf '\n  password for %s%s%s (empty for an open network, nothing is shown as you type): ' "$B" "$ssid" "$N"
+    stty -echo 2>/dev/null; read -r pass; stty echo 2>/dev/null; printf '\n\n'
     /opt/mu300/bin/wifi-client connect "$ssid" "$pass" 2>&1 | sed 's/^/  /'
+    rc=$?
+    if [ "$rc" = 3 ] || grep -q "^SSID=$ssid$" /etc/mu300/wifi-client.conf 2>/dev/null && [ ! -e /run/mu300-wifi-client.active ]; then
+        printf '\n  %sReboot now to join it?%s [y/N] ' "$B" "$N"
+        read -r a
+        case $a in y|Y|e|E) printf '\n  rebooting...\n'; sync; reboot ;; esac
+    fi
     pause
 }
 
@@ -506,7 +508,7 @@ menu_wifi() {
     while :; do
         mode=$(/opt/mu300/bin/wifi-client status 2>/dev/null | sed -n 's/^mode  *//p')
         menu "Wi-Fi  [${mode:-unknown}]" "Status" "Join a network (scan and connect)" \
-            "Reconnect the saved network" "Disconnect (back to the hotspot)" "Forget the saved network" \
+            "Reconnect the saved network" "Disconnect (hotspot comes back)" "Forget the saved network" \
             "Hotspot: restart" "Hotspot: name and password"
         case $CHOICE in
             1) title "Wi-Fi"; /opt/mu300/bin/wifi-client status 2>&1 | sed 's/^/  /'; pause ;;
