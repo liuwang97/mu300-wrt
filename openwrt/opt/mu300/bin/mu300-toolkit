@@ -476,10 +476,23 @@ wifi_pick_and_join() {
     err=/run/mu300-wifi-scan.err
     if /opt/mu300/bin/wifi-client status 2>/dev/null | grep -q '^mode  *hotspot'; then
         # the radio is the access point: it cannot look for other networks, and this driver cannot turn it
-        # back into a client without a reboot - so take the name and let the next boot join it
+        # back into a client without a reboot. Two ways out, both offered here.
         list=
-        printf '  %sThe radio is the hotspot right now, so it cannot list the networks around you.%s\n' "$Y" "$N"
-        printf '  Give the name of the network to join; the device joins it after a reboot.\n'
+        printf '  %sThe radio is the hotspot right now, so it cannot list the networks around you.%s\n\n' "$Y" "$N"
+        printf '  %s1%s  Reboot with the hotspot off, then pick from the list (one reboot, then everything\n' "$C" "$N"
+        printf '      works live and "Disconnect" brings the hotspot straight back)\n'
+        printf '  %s2%s  Type the name now and let the device join it after a reboot\n' "$C" "$N"
+        printf '\n  %s0%s  Back\n\n  > ' "$C" "$N"
+        read -r w || return
+        case $w in
+            1) /opt/mu300/bin/wifi-client scan-mode on 2>&1 | sed 's/^/  /'
+               printf '\n  %sReboot now?%s [y/N] ' "$B" "$N"
+               read -r a
+               case $a in y|Y|e|E) printf '\n  rebooting...\n'; sync; reboot ;; esac
+               pause; return ;;
+            2) ;;
+            *) return ;;
+        esac
     else
         printf '  scanning...\n\n'
         list=$(/opt/mu300/bin/wifi-client scan 2>"$err")
