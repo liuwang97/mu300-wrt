@@ -1,0 +1,13 @@
+#!/bin/sh /etc/rc.common
+# join the saved Wi-Fi network (station mode); does nothing when no network was saved
+START=19
+export PATH="$PATH:/opt/mu300/busybox-bin"
+
+start() {
+	[ -f /etc/mu300/wifi-client.conf ] || return 0
+	/opt/mu300/bin/wifi-client up
+}
+
+stop() {
+	/opt/mu300/bin/wifi-client disconnect 2>/dev/null
+}

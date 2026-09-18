@@ -470,6 +470,54 @@ menu_performance() {
     done
 }
 
+wifi_pick_and_join() {
+    title "Wi-Fi: join a network"
+    printf '  scanning... (the hotspot is off while the radio scans)\n\n'
+    list=$(/opt/mu300/bin/wifi-client scan 2>/dev/null)
+    if [ -z "$list" ]; then printf '  %sno networks found%s\n' "$Y" "$N"; pause; return; fi
+    printf '%s\n' "$list" | awk '{ printf "  %s%2d%s  %s\n", "'"$C"'", NR, "'"$N"'", $0 }'
+    printf '\n  %s 0%s  Back\n\n  > ' "$C" "$N"
+    read -r n || return
+    case $n in ''|0|*[!0-9]*) return ;; esac
+    line=$(printf '%s\n' "$list" | sed -n "${n}p")
+    [ -n "$line" ] || return
+    # the scan output is "%4s dBm  %-5s  %s", so the name starts at column 18 and may contain spaces
+    ssid=$(printf '%s' "$line" | cut -c18-)
+    enc=$(printf '%s' "$line" | cut -c11-16 | tr -d ' ')
+    [ -n "$ssid" ] || return
+    pass=
+    if [ "$enc" != open ]; then
+        printf '\n  password for %s%s%s (nothing is shown as you type): ' "$B" "$ssid" "$N"
+        stty -echo 2>/dev/null; read -r pass; stty echo 2>/dev/null; printf '\n'
+    fi
+    printf '\n'
+    /opt/mu300/bin/wifi-client connect "$ssid" "$pass" 2>&1 | sed 's/^/  /'
+    pause
+}
+
+menu_wifi() {
+    while :; do
+        mode=$(/opt/mu300/bin/wifi-client status 2>/dev/null | sed -n 's/^mode  *//p')
+        menu "Wi-Fi  [${mode:-unknown}]" "Status" "Join a network (scan and connect)" \
+            "Reconnect the saved network" "Disconnect (back to the hotspot)" "Forget the saved network" \
+            "Hotspot: restart" "Hotspot: name and password"
+        case $CHOICE in
+            1) title "Wi-Fi"; /opt/mu300/bin/wifi-client status 2>&1 | sed 's/^/  /'; pause ;;
+            2) wifi_pick_and_join ;;
+            3) title "Wi-Fi"; /opt/mu300/bin/wifi-client up 2>&1 | sed 's/^/  /'; pause ;;
+            4) title "Wi-Fi"; /opt/mu300/bin/wifi-client disconnect 2>&1 | sed 's/^/  /'; pause ;;
+            5) title "Wi-Fi"; /opt/mu300/bin/wifi-client forget 2>&1 | sed 's/^/  /'; pause ;;
+            6) if is_openwrt; then wifi reload; else svc restart mu300-hotspot; fi; echo "  restarted"; pause ;;
+            7) title "Hotspot"
+               printf '  name and password live in %s/etc/mu300/hotspot.conf%s:\n\n' "$B" "$N"
+               sed -n 's/^\(SSID\|BAND\|CHANNEL\|COUNTRY\)=/  &/p' /etc/mu300/hotspot.conf 2>/dev/null
+               printf '  PSK=%s\n' "$(sed -n 's/^PSK=//p' /etc/mu300/hotspot.conf 2>/dev/null | head -1)"
+               printf '\n  %sEdit that file and restart the hotspot to change them.%s\n' "$D" "$N"; pause ;;
+            *) return ;;
+        esac
+    done
+}
+
 vpn_enabled() { [ -r "$VPN_CONF" ] && grep -q '^ENABLE=1' "$VPN_CONF"; }
 menu_vpn() {
     while :; do
@@ -527,7 +575,7 @@ menu_network() {
     while :; do
         menu "Network" "Live traffic (monitor)" "Interfaces and addresses" "Mobile data: status" \
             "Mobile signal (live, for finding a better spot)" "Mobile data: reconnect" "Mobile data: disconnect" \
-            "Wi-Fi hotspot: restart" "VPN"
+            "Wi-Fi (hotspot, or join a network)" "VPN"
         case $CHOICE in
             1) monitor ;;
             2) title "Interfaces"; { ip -br addr 2>/dev/null || ip addr; } | grep -vE '^(dummy|tunl|gre|erspan|ip_vti|ip6_vti|sit|ip6tnl|ip6gre|sipa_eth[1-9])' | sed 's/^/  /'
@@ -537,7 +585,7 @@ menu_network() {
             5) if is_openwrt; then ifdown wan; ifup wan; else svc restart mu300-mobile-data; fi
                echo "  reconnect started"; pause ;;
             6) if is_openwrt; then ifdown wan; else svc stop mu300-mobile-data; fi; pause ;;
-            7) if is_openwrt; then wifi reload; else svc restart mu300-hotspot; fi; echo "  restarted"; pause ;;
+            7) menu_wifi ;;
             8) menu_vpn ;;
             *) return ;;
         esac
