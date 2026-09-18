@@ -472,6 +472,7 @@ menu_performance() {
 
 wifi_pick_and_join() {
     title "Wi-Fi: join a network"
+    pass=
     err=/run/mu300-wifi-scan.err
     printf '  scanning...\n\n'
     list=$(/opt/mu300/bin/wifi-client scan 2>"$err")
@@ -480,6 +481,13 @@ wifi_pick_and_join() {
         printf '\n  Type the name of the network instead (empty = back)\n  > '
         read -r ssid || return
         [ -n "$ssid" ] || return
+        # people paste the whole example line, quotes and all: "NAME" "PASSWORD"
+        case $ssid in
+            \"*\"?*\"*\")
+                pass=${ssid#*\" \"}; pass=${pass%\"}
+                ssid=${ssid%%\" \"*}; ssid=${ssid#\"} ;;
+            \"*\") ssid=${ssid#\"}; ssid=${ssid%\"} ;;
+        esac
     else
         rm -f "$err"
         printf '%s\n' "$list" | awk '{ printf "  %s%2d%s  %s\n", "'"$C"'", NR, "'"$N"'", $0 }'

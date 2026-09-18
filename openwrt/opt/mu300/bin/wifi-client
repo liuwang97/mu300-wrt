@@ -136,10 +136,22 @@ stop_client() {
 
 scan() {
     prepare_station || { ap_mode_hint scan; return 1; }
+    # While wpa_supplicant owns the interface, "iw scan" can block until it gives the radio back; ask the
+    # supplicant instead, which knows how to schedule a scan around the connection it is holding.
+    if pgrep -f "wpa_supplicant -B -i $IFACE" >/dev/null 2>&1; then
+        wpa_cli -i "$IFACE" scan >/dev/null 2>&1
+        sleep 4
+        wpa_cli -i "$IFACE" scan_results 2>/dev/null | awk -F'\t' '
+            NR > 1 && NF >= 5 && $5 != "" {
+                enc = ($4 ~ /SAE/) ? "WPA3" : ($4 ~ /WPA|RSN/) ? "WPA2" : "open"
+                print $3 "\t" enc "\t" $5
+            }' | sort -rn | awk -F'\t' '!seen[$3]++ { printf "%4s dBm  %-5s  %s\n", $1, $2, $3 }'
+        return 0
+    fi
     # the first scan after the radio changes mode often comes back busy or empty
     n=0
     while :; do
-        out=$(iw dev "$IFACE" scan 2>&1)
+        out=$(timeout 25 iw dev "$IFACE" scan 2>&1)
         case $out in
             *"BSS "*) break ;;
         esac

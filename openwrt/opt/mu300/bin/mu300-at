@@ -37,7 +37,9 @@ if [ -p "$DIR/cmd" ] && [ -p "$DIR/resp" ]; then
     done
     echo $$ > "$lock/pid" 2>/dev/null || true
     trap 'rm -rf "$lock" 2>/dev/null' EXIT INT TERM
-    printf '%s %s\n' "$T" "$cmd" > "$DIR/cmd"
+    # a daemon that is going away (shutdown) would leave this write blocked on the fifo for ever
+    timeout $((T + 6)) sh -c 'printf "%s %s\n" "$1" "$2" > "$3"' _ "$T" "$cmd" "$DIR/cmd" || {
+        echo "mu300-at: the daemon is not answering" >&2; exit 1; }
     timeout $((T + 6)) cat "$DIR/resp"
     exit 0
 fi
