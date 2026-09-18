@@ -127,6 +127,9 @@ start_ap() {
 
 stop_client() {
     rm -f "$ACTIVE"
+    # the lease handler put the network's resolver on this link; leaving it there points DNS at a network the
+    # device is no longer on
+    command -v resolvectl >/dev/null 2>&1 && resolvectl revert "$IFACE" 2>/dev/null || true
     [ -s "$LEASE.pid" ] && kill "$(cat "$LEASE.pid")" 2>/dev/null
     pkill -f "udhcpc -i $IFACE" 2>/dev/null || true
     pkill -f "wpa_supplicant -B -i $IFACE" 2>/dev/null || true
