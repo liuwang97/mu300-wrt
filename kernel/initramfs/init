@@ -167,6 +167,8 @@ udc=
 log "stage=udc udc=${udc:-none} available=$(ls /sys/class/udc 2>/dev/null | tr '\n' ',')"
 persist
 sleep 1
+# Never rebind the gadget from a shell running on its own ACM console: the console dies with the unbind and the
+# rebind never runs, which leaves the device with no USB at all until it is power-cycled.
 log "stage=usb-bind-start"
 [ -n "$udc" ] && echo "$udc" > "$g/UDC"
 log "stage=usb-bind-done rc=$?"

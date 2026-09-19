@@ -67,6 +67,9 @@ M=$R/lib/modules/$KREL; mkdir -p $M
 cp /in/modules/*.ko $M/          # ubox kmodloader expects the modules flat in /lib/modules/<release>/
 for f in modules.builtin modules.builtin.modinfo; do [ -e /in/$f ] && cp /in/$f $M/; done
 [ -d /in/firmware ] && { mkdir -p $R/lib/firmware; cp -a /in/firmware/. $R/lib/firmware/; }
+# tools shared with the Ubuntu image look under /usr/lib/firmware (mu300-bt-init, for one); OpenWrt keeps
+# firmware in /lib/firmware
+mkdir -p $R/usr/lib && ln -sfn ../../lib/firmware $R/usr/lib/firmware
 cp /in/regdb/regulatory.db /in/regdb/regulatory.db.p7s $R/lib/firmware/
 if [ -d /in/android-subset ]; then
     mkdir -p $R/opt/mu300/android && cp -a /in/android-subset/. $R/opt/mu300/android/
