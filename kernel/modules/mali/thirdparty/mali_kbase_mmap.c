@@ -160,12 +160,13 @@ static unsigned long kbase_unmapped_area_topdown(struct vm_unmapped_area_info *i
 			continue;
 		}
 
-		gap_start = vma ? vma->vm_end : info->low_limit;
-		if (gap_start > end - info->length)
-			gap_start = info->low_limit;
+		/* align_and_check() moves gap_end down to the aligned start of the allocation and rejects
+		 * anything that would fall below gap_start, so hand it the bottom of this free window
+		 */
+		gap_start = end - info->length;
 
 		if (align_and_check(&gap_end, gap_start, info, is_shader_code, is_same_4gb_page))
-			return gap_end - info->length;
+			return gap_end;
 
 		if (end < info->length + PAGE_SIZE)
 			break;
