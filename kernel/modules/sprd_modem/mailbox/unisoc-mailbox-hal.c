@@ -214,6 +214,16 @@ static void put_msg_in_tx_fifo(unsigned long id, void *msg)
 
 	tx_data[id].fifo[pos] = *(u64 *)msg;
 	tx_data[id].wt_cnt++;
+	/*
+	 * Wake the deliver thread for this message ourselves. It used to be woken only by the inbox
+	 * interrupt, which the hardware raises when a delivery finishes or a channel blocks - but
+	 * check_mbox_chan_state() also fails with -ETIMEDOUT when the remote core is simply slow to take
+	 * the previous message, and that raises nothing. One such timeout left the fifo non-empty for ever,
+	 * so every later message was queued behind it and the AP never spoke to the modem again: the AT
+	 * channel went silent about ninety seconds into every boot and nothing short of a reboot brought it
+	 * back (docs/FINDINGS.md 13e).
+	 */
+	wake_up(&deliver_thread_wait);
 }
 
 void mbox_start_send_tx_fifo(u8 msk)
@@ -223,6 +233,19 @@ void mbox_start_send_tx_fifo(u8 msk)
 	wake_up(&deliver_thread_wait);
 }
 
+/* mask of the channels that still have something in their software fifo */
+static u8 tx_fifo_pending_mask(void)
+{
+	u8 mask = 0;
+	u32 id;
+
+	for (id = 0; id < chan_num; id++)
+		if (tx_data[id].wt_cnt != tx_data[id].rd_cnt)
+			mask |= 1 << id;
+
+	return mask;
+}
+
 static int sprd_mbox_deliver_thread(void *pdata)
 {
 	struct sprd_mbox_priv *priv = pdata;
@@ -230,17 +253,22 @@ static int sprd_mbox_deliver_thread(void *pdata)
 	unsigned long flag;
 	u32 dst, rd, pos;
 	u64 msg;
+	u8 still_queued;
 	int ret;
 
 	while (!kthread_should_stop()) {
 		dev_dbg(priv->dev, "tx_fifo waiting deliver event...\n");
-		ret = wait_event_interruptible(deliver_thread_wait, mbox_tx_mask);
+		ret = wait_event_interruptible(deliver_thread_wait,
+					       mbox_tx_mask || tx_fifo_pending_mask());
 		if (ret) {
 			dev_warn(priv->dev, "mbox_deliver_thread is interrupted\n");
 			continue;
 		}
 		/* Event triggered, process all tx_fifo. */
 		spin_lock_irqsave(&mbox_lock, flag);
+		/* Nothing was signalled, so this is a retry of whatever is still queued. */
+		if (!mbox_tx_mask)
+			mbox_tx_mask = tx_fifo_pending_mask();
 
 		for (dst = 0; dst < chan_num; dst++) {
 			if (!(mbox_tx_mask & (1 << dst)))
@@ -257,7 +285,11 @@ static int sprd_mbox_deliver_thread(void *pdata)
 			}
 		}
 		mbox_tx_mask = 0;
+		still_queued = tx_fifo_pending_mask();
 		spin_unlock_irqrestore(&mbox_lock, flag);
+		/* A channel that would not take the message: give the remote core a moment, then try again. */
+		if (still_queued)
+			usleep_range(1000, 2000);
 	}
 
 	return 0;
