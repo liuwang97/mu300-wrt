@@ -35,6 +35,31 @@ CR=$(printf '\r')
 
 [ -c "$DEV" ] || { echo "mu300-atd: $DEV is not a character device" >&2; exit 1; }
 mkdir -p "$DIR"
+
+# Exactly one daemon, or the modem looks dead to the whole device. Two of them read the same SIPC channel and
+# each gets a random half of every reply, and the newcomer replaces the command fifo under the one already
+# running - which is how "the modem stopped answering after a few minutes" kept happening. A second instance
+# (procd respawning, a service started twice) waits here instead of exiting, so that whoever holds the channel
+# keeps it and the spare takes over the moment that process is gone.
+LOCK=$DIR/lock
+alive() {  # alive PID -> is that pid still a running mu300-atd?
+    [ -n "$1" ] && [ -d "/proc/$1" ] && tr '\0' ' ' < "/proc/$1/cmdline" 2>/dev/null | grep -q mu300-atd
+}
+while :; do
+    if mkdir "$LOCK" 2>/dev/null; then break; fi
+    owner=$(cat "$LOCK/pid" 2>/dev/null || true)
+    if alive "$owner"; then
+        [ "${waited:-0}" = 0 ] && echo "mu300-atd: pid $owner already owns $DEV, waiting" >&2
+        waited=1
+        sleep 10
+        continue
+    fi
+    rm -rf "$LOCK"   # the owner is gone (killed, or the device rebooted with /run on disk)
+done
+echo $$ > "$LOCK/pid"
+trap 'rm -f "$CMD"; rm -rf "$LOCK"; exit 0' INT TERM
+trap 'rm -rf "$LOCK"' EXIT
+
 rm -f "$CMD"
 mkfifo -m 600 "$CMD"
 
@@ -47,7 +72,6 @@ open_tty() {
 }
 open_tty || { echo "mu300-atd: cannot open $DEV" >&2; exit 1; }
 
-trap 'rm -f "$CMD"; exit 0' INT TERM
 trap "" PIPE   # a client that gave up waiting must not kill the daemon
 silent=0       # consecutive commands the modem did not answer
 

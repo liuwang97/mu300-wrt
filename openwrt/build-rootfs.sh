@@ -60,6 +60,12 @@ for e in /*; do
     cp -a "$e" $R/
 done
 mkdir -p $R/proc $R/sys $R/dev $R/tmp $R/run $R/opt
+# Docker bind-mounts these three into the container, so the copy above picks up the build host's versions:
+# a resolv.conf pointing at Docker's internal DNS (which broke every lookup the device itself made), a hosts
+# file with the container's id, and a hostname that was the container id. Put OpenWrt's own back.
+ln -sf /tmp/resolv.conf $R/etc/resolv.conf
+printf '127.0.0.1\tlocalhost\n\n::1\tlocalhost ip6-localhost ip6-loopback\nff02::1\tip6-allnodes\nff02::2\tip6-allrouters\n' > $R/etc/hosts
+printf 'mu300\n' > $R/etc/hostname   # the real one comes from uci (etc/uci-defaults/90-mu300)
 cp -a /in/opt-mu300 $R/opt/mu300
 cp -a /in/overlay/. $R/
 mv $R/sbin/sysupgrade $R/sbin/sysupgrade.openwrt && mv $R/usr/libexec/mu300-sysupgrade $R/sbin/sysupgrade

@@ -323,7 +323,10 @@ int mdbg_loopcheck_read(int channel, struct mbuf_t *head,
 		memcpy(mdbg_proc->loopcheck.buf, head->buf, head->len);
 		mdbg_proc->loopcheck.rcv_len = head->len;
 	}
-	WCN_INFO("rx:%s\n", (char *)(mdbg_proc->loopcheck.buf));
+	/* the CP answers the 5 s loopcheck heartbeat: one line every five seconds for ever, which is the
+	 * bulk of the kernel log on an idle device (and of its writes, once journald stores it)
+	 */
+	WCN_DBG("rx:%s\n", (char *)(mdbg_proc->loopcheck.buf));
 	mdbg_proc->fail_count = 0;
 	complete(&mdbg_proc->loopcheck.completed);
 	complete_kernel_loopcheck();
