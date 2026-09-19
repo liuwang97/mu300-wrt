@@ -13,7 +13,15 @@ for m in $mods; do
     rm -rf /src/mod-build/$m && mkdir -p /src/mod-build && cp -r /work/modules/$m /src/mod-build/$m
     # wlan/bt use wcn_bsp's exports and its vendor headers (../wcn_bsp/kinclude)
     [ -d /src/mod-build/wcn_bsp ] || cp -r /work/modules/wcn_bsp /src/mod-build/wcn_bsp
-    make -C $O ARCH=arm64 M=/src/mod-build/$m KBUILD_EXTRA_SYMBOLS="$extra" -j"$(nproc)" modules 2>&1 | tee /work/out/modules/$m.log
+    # the Mali DDK needs its own configuration switches (same ones the 5.4 build uses)
+    margs=
+    kcflags=
+    [ "$m" = mali ] && kcflags="-I/src/mod-build/mali/kinclude"
+    # the Mali driver calls Trusty for protected mode, so it needs the vendor trusty headers that ship with
+    # the modem modules
+    [ "$m" = mali ] && [ ! -d /src/mod-build/mali/kinclude ] && cp -r /work/modules/sprd_modem/kinclude /src/mod-build/mali/kinclude
+    [ "$m" = mali ] && margs="src=/src/mod-build/mali CONFIG_MALI_MIDGARD=m CONFIG_MALI_PLATFORM_NAME=qogirn6pro CONFIG_MALI_DEVFREQ=y CONFIG_DEVFREQ_THERMAL=y CONFIG_MALI_DEBUG=n CONFIG_MALI_FENCE_DEBUG=n BUILD=no"
+    make -C $O ARCH=arm64 M=/src/mod-build/$m KBUILD_EXTRA_SYMBOLS="$extra" KCFLAGS="$kcflags" $margs -j"$(nproc)" modules 2>&1 | tee /work/out/modules/$m.log
     [ -f /src/mod-build/$m/Module.symvers ] && extra="$extra /src/mod-build/$m/Module.symvers"
     find /src/mod-build/$m -name '*.ko' -exec cp {} /work/out/modules/ \;
 done
