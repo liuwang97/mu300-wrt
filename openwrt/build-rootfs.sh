@@ -37,6 +37,18 @@ docker run --rm --platform linux/arm64 -v "$REGDB":/o ubuntu:26.04 sh -c \
   "apt-get update -qq >/dev/null && apt-get install -y -qq wireless-regdb >/dev/null && cp /usr/lib/firmware/regulatory.db /usr/lib/firmware/regulatory.db.p7s /o/"
 
 opt() { [ -e "$IN/$1" ] && echo "-v $IN/$1:/in/$2:ro" || true; }
+
+# The required input first, with a readable message: without it docker fails somewhere inside the build.
+ls "$IN/out/modules"/*.ko >/dev/null 2>&1 || {
+    echo "no kernel modules in $IN/out/modules - build them first (kernel/build-linux.sh), or point" >&2
+    echo "MU300_INPUTS at the directory that has out/modules, firmware/ and android-subset/." >&2
+    exit 1
+}
+# The optional ones decide whether the image can use the modem, Wi-Fi, the GPU or the VPN at all. Missing ones
+# used to be skipped silently, which produces an image that boots and then does nothing useful.
+for o in firmware android-subset android-gpu-subset tools/logdw/logdw tools/bt-init/mu300-bt-init tools/gpu/cltest busybox sing-box upstream/out/modules; do
+    [ -e "$IN/$o" ] && echo "  + $o" || echo "  - $o   (missing: the image is built without it)"
+done
 # shellcheck disable=SC2046
 docker run --rm --platform linux/arm64 \
   -v "$TOP/rootfs/overlay/opt/mu300":/in/opt-mu300:ro -v "$TOP/openwrt/overlay":/in/overlay:ro \
@@ -60,12 +72,13 @@ for e in /*; do
     cp -a "$e" $R/
 done
 mkdir -p $R/proc $R/sys $R/dev $R/tmp $R/run $R/opt
-# Docker bind-mounts these three into the container, so the copy above picks up the build host's versions:
-# a resolv.conf pointing at Docker's internal DNS (which broke every lookup the device itself made), a hosts
-# file with the container's id, and a hostname that was the container id. Put OpenWrt's own back.
+# Docker bind-mounts these three into the container, so the copy above picks up the build host versions:
+# a resolv.conf pointing at the internal Docker DNS (which broke every lookup the device itself made), a hosts
+# file with the container id, and a hostname that was the container id. Put the OpenWrt ones back.
+# (no apostrophes in here: this whole block is one single-quoted argument to sh -c)
 ln -sf /tmp/resolv.conf $R/etc/resolv.conf
-printf '127.0.0.1\tlocalhost\n\n::1\tlocalhost ip6-localhost ip6-loopback\nff02::1\tip6-allnodes\nff02::2\tip6-allrouters\n' > $R/etc/hosts
-printf 'mu300\n' > $R/etc/hostname   # the real one comes from uci (etc/uci-defaults/90-mu300)
+printf "127.0.0.1\tlocalhost\n\n::1\tlocalhost ip6-localhost ip6-loopback\nff02::1\tip6-allnodes\nff02::2\tip6-allrouters\n" > $R/etc/hosts
+printf "mu300\n" > $R/etc/hostname   # the real one comes from uci (etc/uci-defaults/90-mu300)
 cp -a /in/opt-mu300 $R/opt/mu300
 cp -a /in/overlay/. $R/
 mv $R/sbin/sysupgrade $R/sbin/sysupgrade.openwrt && mv $R/usr/libexec/mu300-sysupgrade $R/sbin/sysupgrade
