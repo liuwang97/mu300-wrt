@@ -22,4 +22,5 @@ sblock_bridge.ko
 sprd_modem_loader.ko
 sipa-sys.ko
 sipa-core.ko
+sipa-dele.ko
 sipa_eth.ko

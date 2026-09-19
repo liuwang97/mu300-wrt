@@ -77,6 +77,7 @@ open_tty || { echo "mu300-atd: cannot open $DEV" >&2; exit 1; }
 
 trap "" PIPE   # a client that gave up waiting must not kill the daemon
 silent=0       # consecutive commands the modem did not answer
+last_reopen=0  # when the device was last reopened (see the reopen rule in the loop)
 
 now() { date +%s; }
 
@@ -126,11 +127,15 @@ while :; do
     # When the modem restarts (AT+SFUN=4 during a bring-up, or a CP crash) this descriptor is left attached to a
     # channel that no longer exists: it reads nothing for ever, and because it still holds the channel, nobody
     # else can talk to the modem either - which is what used to look like "the tty is wedged until the modem is
-    # restarted". Reopening it is all that is needed, so do that after two silent commands and try once more.
+    # restarted". Reopening it is the cure, but it is not free: closing and opening the SIPC channel is the one
+    # operation that can lose it (13b), so only do it when the silence really looks like a restarted modem -
+    # three unanswered commands in a row, and not more than once a minute. A busy device that makes this shell
+    # miss a reply now and then must not cost us the channel.
     if [ -z "$reply" ]; then
         silent=$((silent + 1))
-        if [ "$silent" -ge 2 ]; then
-            echo "mu300-atd: no reply twice, reopening $DEV" >&2
+        if [ "$silent" -ge 3 ] && [ $(( $(now) - last_reopen )) -ge 60 ]; then
+            echo "mu300-atd: three unanswered commands, reopening $DEV" >&2
+            last_reopen=$(now)
             if open_tty; then
                 silent=0
                 drain
