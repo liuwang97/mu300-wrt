@@ -1294,6 +1294,13 @@ int sc2355_pcie_tx_data_pop_list(int channel, struct mbuf_t *head,
 	pr_debug("%s channel: %d, head: %p, tail: %p num: %d\n",
 		__func__, channel, head, tail, num);
 
+	/* same window as in sc2355_pcie_tx_cmd_pop_list() below */
+	if (!hif || !hif->tx_mgmt) {
+		pr_warn("%s: no tx context yet, freeing %d buffer(s)\n", __func__, num);
+		sprdwcn_bus_list_free(channel, head, tail, num);
+		return 0;
+	}
+
 	if (hif->hw_type == SPRD_HW_SC2355_PCIE) {
 		int tmp_num = num;
 
@@ -1453,6 +1460,17 @@ int sc2355_pcie_tx_cmd_pop_list(int channel, struct mbuf_t *head,
 	pr_debug("%s channel: %d, head: %p, tail: %p num: %d\n",
 		 __func__, channel, head, tail, num);
 
+	/* The chip completes commands through an MSI, and that can arrive before tx_init() has allocated
+	 * tx_mgmt or after tx_deinit() has set it back to NULL - a window the bus callbacks are registered
+	 * across. Dereferencing it there panics the kernel from interrupt context (seen twice at boot, in
+	 * sc2355_pcie_tx_cmd_pop_list+0x2c, "paging request at 00000000000030b0"). The buffers still have to
+	 * go back to the bus, so hand them over and leave.
+	 */
+	if (!hif || !hif->tx_mgmt) {
+		pr_warn("%s: no tx context yet, freeing %d buffer(s)\n", __func__, num);
+		sprdwcn_bus_list_free(channel, head, tail, num);
+		return 0;
+	}
 	tx_mgmt = (struct tx_mgmt *)hif->tx_mgmt;
 
 	pr_debug("%s len: %d buf: %s\n", __func__, head->len, head->buf + 4);

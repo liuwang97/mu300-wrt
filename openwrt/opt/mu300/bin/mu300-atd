@@ -57,8 +57,11 @@ while :; do
     rm -rf "$LOCK"   # the owner is gone (killed, or the device rebooted with /run on disk)
 done
 echo $$ > "$LOCK/pid"
-trap 'rm -f "$CMD"; rm -rf "$LOCK"; exit 0' INT TERM
-trap 'rm -rf "$LOCK"' EXIT
+# Only on a signal, never on EXIT: ash and dash run an EXIT trap when a *subshell* exits too, and this script
+# runs one per command (reply=$(collect ...)), so an EXIT trap here deletes the lock a second after taking it -
+# which is how the second daemon got in in the first place. A daemon that dies without being signalled leaves
+# the directory behind; the next one sees the owner is gone and takes over.
+trap 'rm -f "$CMD"; [ "$(cat "$LOCK/pid" 2>/dev/null)" = $$ ] && rm -rf "$LOCK"; exit 0' INT TERM
 
 rm -f "$CMD"
 mkfifo -m 600 "$CMD"
