@@ -303,8 +303,22 @@ static int pcie_rx_fill_mbuf(struct mbuf_t *head, struct mbuf_t *tail, int num,
 	int ret = 0, count = 0;
 	struct mbuf_t *pos = NULL;
 
+	/* Called from the PCIe interrupt: a NULL here is a kernel panic, not an error return (seen at ~30 s of
+	 * a boot, "NULL pointer dereference at 0000000000000000" in pcie_rx_fill_mbuf+0x6c).
+	 */
+	if (!hif || !hif->pdev) {
+		pr_warn("%s: no hif yet\n", __func__);
+		return -ENODEV;
+	}
+
 	for (pos = head, count = 0; count < num; count++) {
 		pr_debug("%s: pos: %p\n", __func__, pos);
+		/* the bus hands us a list it says has num entries; believe the list, not the count */
+		if (unlikely(!pos)) {
+			pr_warn("%s: list ended after %d of %d buffers\n", __func__, count, num);
+			ret = -EINVAL;
+			break;
+		}
 		pos->len = ALIGN(len, SMP_CACHE_BYTES);
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0))
 		pos->buf = __netdev_alloc_frag_align(pos->len, ~0u);
@@ -332,7 +346,7 @@ static int pcie_rx_fill_mbuf(struct mbuf_t *head, struct mbuf_t *tail, int num,
 
 	if (ret) {
 		pos = head;
-		while (count--) {
+		while (count-- && pos) {
 			sc2355_free_data(pos->buf, SPRD_DEFRAG_MEM);
 			pos = pos->next;
 		}
