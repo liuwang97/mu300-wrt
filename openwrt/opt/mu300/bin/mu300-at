@@ -24,7 +24,7 @@ T=6
 cmd=${1:-}
 [ -n "$cmd" ] || { echo "usage: mu300-at [-t SECONDS] \"AT+COMMAND\"" >&2; exit 2; }
 
-if [ -p "$DIR/cmd" ] && [ -p "$DIR/resp" ]; then
+if [ -p "$DIR/cmd" ]; then
     # one client at a time: the daemon serves a single command per round. The wait has to cover the slowest
     # command somebody else may be running (AT+SFUN=4 takes ~20 s), not just this one.
     lock=$DIR/lock
@@ -39,15 +39,24 @@ if [ -p "$DIR/cmd" ] && [ -p "$DIR/resp" ]; then
     done
     echo $$ > "$lock/pid" 2>/dev/null || true
     trap 'rm -rf "$lock" 2>/dev/null' EXIT INT TERM
-    # a daemon that is going away (shutdown) would leave this write blocked on the fifo for ever
+    # The answer comes back in a file of our own, not through a fifo: a fifo needs both ends at the same time,
+    # so a client that gave up waiting used to leave the daemon (or a leftover writer) blocked for ever.
+    answer=$DIR/answer.$$
+    rm -f "$answer" "$answer.part"
+    trap 'rm -rf "$lock" "$answer" "$answer.part" 2>/dev/null' EXIT INT TERM
     if command -v timeout >/dev/null 2>&1; then
-        timeout $((T + 6)) sh -c 'printf "%s %s\n" "$1" "$2" > "$3"' _ "$T" "$cmd" "$DIR/cmd" || {
-            echo "mu300-at: the daemon is not answering" >&2; exit 1; }
-        timeout $((T + 6)) cat "$DIR/resp"
+        timeout $((T + 6)) sh -c 'printf "%s %s %s\n" "$1" "$2" "$3" > "$4"' _ "$T" "$answer" "$cmd" "$DIR/cmd" || {
+            echo "mu300-at: the daemon is not reading commands" >&2; exit 1; }
     else
-        printf '%s %s\n' "$T" "$cmd" > "$DIR/cmd"
-        cat "$DIR/resp"
+        printf '%s %s %s\n' "$T" "$answer" "$cmd" > "$DIR/cmd"
     fi
+    n=0
+    while [ ! -e "$answer" ]; do
+        n=$((n + 1))
+        [ "$n" -gt $(( (T + 8) * 10 )) ] && { echo "mu300-at: no answer from the daemon" >&2; exit 1; }
+        sleep 0.1 2>/dev/null || sleep 1
+    done
+    cat "$answer"
     exit 0
 fi
 

@@ -31,13 +31,12 @@ fi
 DEV=${MU300_AT_DEV:-/dev/stty_nr1}
 DIR=${MU300_AT_DIR:-/run/mu300-at}
 CMD=$DIR/cmd
-RESP=$DIR/resp
 CR=$(printf '\r')
 
 [ -c "$DEV" ] || { echo "mu300-atd: $DEV is not a character device" >&2; exit 1; }
 mkdir -p "$DIR"
-rm -f "$CMD" "$RESP"
-mkfifo -m 600 "$CMD" "$RESP"
+rm -f "$CMD"
+mkfifo -m 600 "$CMD"
 
 # the one open that everything else borrows
 open_tty() {
@@ -48,7 +47,7 @@ open_tty() {
 }
 open_tty || { echo "mu300-atd: cannot open $DEV" >&2; exit 1; }
 
-trap 'rm -f "$CMD" "$RESP"; exit 0' INT TERM
+trap 'rm -f "$CMD"; exit 0' INT TERM
 trap "" PIPE   # a client that gave up waiting must not kill the daemon
 silent=0       # consecutive commands the modem did not answer
 
@@ -81,10 +80,18 @@ while :; do
     # blocks until a client sends something
     read -r line < "$CMD" || continue
     [ -n "$line" ] || continue
+    # "SECONDS /path/to/answer AT+COMMAND": the answer goes into a file of the client's choosing. A fifo needs
+    # both ends at once, and a client that gave up (or was killed) left the daemon or a leftover writer blocked
+    # on it for ever, which wedged every later command.
     t=${line%% *}
     case $t in
-        [0-9]|[0-9][0-9]) cmd=${line#* } ;;
-        *) t=6; cmd=$line ;;
+        [0-9]|[0-9][0-9]) rest=${line#* } ;;
+        *) t=6; rest=$line ;;
+    esac
+    answer=
+    case $rest in
+        /*) answer=${rest%% *}; cmd=${rest#* } ;;
+        *) cmd=$rest ;;
     esac
     drain
     printf '%s\r' "$cmd" >&3
@@ -107,11 +114,8 @@ while :; do
     else
         silent=0
     fi
-    # the client opens the other end right after writing the command; the timeout is only there so that a client
-    # which died in between cannot block the daemon for ever
-    if command -v timeout >/dev/null 2>&1; then
-        printf '%s\n' "$reply" | timeout 5 dd of="$RESP" 2>/dev/null || true
-    else
-        printf '%s\n' "$reply" > "$RESP" 2>/dev/null || true
+    if [ -n "$answer" ]; then
+        # write it complete, then move it into place, so the client never reads half an answer
+        printf '%s\n' "$reply" > "$answer.part" 2>/dev/null && mv "$answer.part" "$answer" 2>/dev/null
     fi
 done
