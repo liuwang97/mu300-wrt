@@ -43,7 +43,7 @@ static int loopcheck_send_pcie(char *cmd, unsigned int len)
 	static int at_buf_flag;
 	struct wcn_pcie_info *pcie_dev;
 
-	WCN_INFO("%s enter\n", __func__);
+	WCN_DBG("%s enter\n", __func__);
 	pcie_dev = get_wcn_device_info();
 	if (!pcie_dev) {
 		WCN_ERR("%s:PCIE device link error\n", __func__);
@@ -85,7 +85,7 @@ static int loopcheck_send_pcie(char *cmd, unsigned int len)
 	if (ret)
 		WCN_INFO("sprdwcn_bus_push_list error=%d\n", ret);
 
-	WCN_INFO("tx:%s in %s\n", cmd, __func__);
+	WCN_DBG("tx:%s in %s\n", cmd, __func__);
 
 	return len;
 }
@@ -114,7 +114,7 @@ static int loopcheck_send(char *buf, unsigned int len)
 		pub_head_rsv = PUB_HEAD_RSV;
 
 	WCN_INFO("%s", __wcn_get_sw_ver());
-	WCN_INFO("tx:%s\n", buf);
+	WCN_DBG("tx:%s\n", buf);
 	if (unlikely(!marlin_get_module_status())) {
 		WCN_ERR("WCN module have not open\n");
 		return -EIO;
