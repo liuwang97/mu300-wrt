@@ -1,0 +1,43 @@
+#!/bin/sh
+# Make the host re-enumerate the USB gadget, so it asks for a DHCP lease again.
+#
+# Why this exists: the host starts its DHCP the moment the gadget appears and gives up after a few seconds. A
+# device that is still booting (modules, modem, services) answers too late, the host falls back to a
+# self-assigned 169.254 address and, on macOS at least, stops asking. Re-enumerating looks like a fresh cable to
+# the host and it tries again.
+#
+# It detaches itself on purpose: unbinding the gadget kills the ACM console (and the SSH session over ECM) that
+# this was most likely started from, and a rebind that never runs leaves the device with no USB at all.
+set -u
+G=${MU300_GADGET:-/sys/kernel/config/usb_gadget/linux}
+[ -d "$G" ] || { echo "mu300-usb-reset: no gadget at $G" >&2; exit 1; }
+
+# "--if-no-lease": used at the end of the boot. If the host took an address, leave it alone; if it is still
+# waiting (it gave up while the device was booting), re-enumerate once.
+if [ "${1:-}" = --if-no-lease ]; then
+    sleep "${2:-20}"
+    for f in /tmp/dhcp.leases /var/lib/misc/dnsmasq.leases /var/lib/dnsmasq/dnsmasq.leases; do
+        [ -s "$f" ] && exit 0
+    done
+    set -- --detach
+fi
+
+if [ "${1:-}" != --run ]; then
+    setsid "$0" --run </dev/null >/dev/null 2>&1 &
+    echo "re-enumerating: the console and any SSH session drop for a few seconds"
+    exit 0
+fi
+
+udc=$(cat "$G/UDC" 2>/dev/null)
+[ -n "$udc" ] || udc=$(ls /sys/class/udc 2>/dev/null | head -n1)
+sleep 2
+echo "" > "$G/UDC" 2>/dev/null
+sleep 3
+n=0
+while [ "$n" -lt 10 ]; do
+    echo "$udc" > "$G/UDC" 2>/dev/null && break
+    n=$((n + 1))
+    sleep 2
+done
+sleep 1
+ip link set usb0 up 2>/dev/null || ifconfig usb0 up 2>/dev/null

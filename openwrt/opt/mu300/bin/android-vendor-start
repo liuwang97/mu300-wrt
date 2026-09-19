@@ -3,6 +3,12 @@
 # PM co-processor watchdog cuts power ~290 s after boot. See linux-boot/STATUS.md (v9).
 set -e
 A=/opt/mu300/android
+# wait for the modem stack: on the mainline kernel the modules are loaded by userspace (see extra-modules), so
+# this service can start before /dev/modem exists
+for n in $(seq 1 90); do
+    [ -e /dev/modem ] || [ -e /dev/pmsys ] || { sleep 1; continue; }
+    break
+done
 mkdir -p /dev/socket /dev/block/by-name
 [ -S /dev/socket/logdw ] || { /opt/mu300/bin/logdw /dev/socket/logdw >> /var/log/android-logcat.txt 2>&1 & sleep 1; }
 # bind the read-only Android property area instead of copying it: it is ~85 MiB (RAM on tmpfs) and OpenWrt's /dev
