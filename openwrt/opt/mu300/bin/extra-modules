@@ -4,11 +4,12 @@
 # On the mainline kernel the modem stack is not in the boot image at all: the SIPA accelerator attaches to the
 # USB gadget's usb0 as it is created, and a gadget created while those modules are already loaded transmits
 # nothing the host ever sees. So they are loaded here, once userspace is up and the gadget is long since bound.
+# sipa-dele is deliberately not in that list: it has to come after the modem, not with it (see below).
 M=/lib/modules/$(uname -r)
 if [ -f "$M/sipc-core.ko" ] && ! [ -e /dev/modem ]; then
     for m in sprd_systimer sprd_time_sync sprd_time_sync_cp trusty trusty-pm trusty-log trusty-irq trusty-ipc \
              trusty-virtio sprd_shm unisoc-mailbox sprd-sipc-virt-bus sprd_power_manager sipc-core spipe spool \
-             sipx seth slog_bridge sbuf_bridge sblock_bridge sprd_modem_loader sipa-sys sipa-core sipa-dele sipa_eth \
+             sipx seth slog_bridge sbuf_bridge sblock_bridge sprd_modem_loader sipa-sys sipa-core sipa_eth \
              sprdbt_tty; do
         for f in "$M/$m.ko" "$M/$(echo "$m" | tr '_' '-').ko"; do
             [ -f "$f" ] || continue
@@ -18,11 +19,13 @@ if [ -f "$M/sipc-core.ko" ] && ! [ -e /dev/modem ]; then
     done
 fi
 
-# The IPA delegate negotiates the accelerator's resources with the modem; without it the receive path never
-# starts (sipa_eth0 gets an address and rx_packets stays at 0). Boot images built before it was added to the
-# module order do not have it, so load it here too - it is a no-op when the initramfs already did.
+# The IPA delegate answers the modem when it asks permission to send downlink, and it only gets one attempt at
+# opening its SIPC channel - inserted before the modem is up, its thread dies or waits for ever, and the module
+# is [permanent] so it cannot be reloaded. sipa-dele-start waits for the modem first; in the background, since
+# that takes about a minute and everything below it here (Wi-Fi, the GPU, the sound card) must not wait for the
+# modem to finish booting. See that script and docs/FINDINGS.md 13f.
 if [ -f "$M/sipa-dele.ko" ] && ! grep -q '^sipa_dele ' /proc/modules; then
-    insmod "$M/sipa-dele.ko" 2>/dev/null && echo "loaded sipa-dele" || echo "FAILED sipa-dele"
+    /opt/mu300/bin/sipa-dele-start >/tmp/mu300-sipa-dele.log 2>&1 &
 fi
 
 # The PM co-processor keeps its own watchdog, and it power-cuts the device a few minutes after boot unless this

@@ -1,0 +1,57 @@
+#!/bin/sh
+# Load the IPA delegate once the modem is answering, and never before.
+#
+# The delegate is what makes downlink happen at all. Measured on stock Android, the modem asks permission over
+# SIPC channel 120 before it sends anything - "smsg_recv, dst=5, chan=120, type=5, flag=0x1" - the AP grants
+# SIPA_RM_RES_CONS_WWAN_DL and acks, and only then do packets arrive (docs/FINDINGS.md 13f). Never answer that
+# and the modem never sends, which is exactly our symptom: the call completes, the address is right, and
+# rx_packets stays at zero.
+#
+# Timing is the whole problem. sipa_dele's conn_thread opens the channel with smsg_ch_open(dst, chan, -1) as its
+# first act, and that call has two ways of ending badly when the modem is not there yet: it waits for ever for
+# an OPEN that never comes, or smsg_recv returns an error, the thread logs "sipa_delegator failed to open dst 5
+# channel 120" and *exits*. Either way nothing answers the modem for the rest of the boot, and there is no
+# second chance: sipa_dele is [permanent] in /proc/modules, so it cannot be unloaded and tried again.
+#
+# The initramfs used to load it with the rest of the modem stack, around twenty seconds in, while modem_control
+# does not have the CP up until about sixty. Android loads it the other way round. So this waits for the modem
+# to be talking before the module is ever inserted.
+set -u
+export PATH="$PATH:/opt/mu300/bin:/opt/mu300/busybox-bin:/usr/sbin:/sbin"
+
+M=/lib/modules/$(uname -r)
+KO=$M/sipa-dele.ko
+WAIT=${MU300_DELE_WAIT:-180}
+
+log() { echo "sipa-dele-start: $*"; }
+
+grep -q '^sipa_dele ' /proc/modules && { log "already loaded"; exit 0; }
+[ -f "$KO" ] || { log "no $KO (a kernel without the modem stack)"; exit 0; }
+
+# "The CP is talking" is not a single flag anywhere, but it has a reliable signature: the modem opens its sbuf
+# channels on dst 5 as it comes up, and the PM watchdog channel becomes ready at the same moment. Either line
+# means the far side is alive and will answer a channel open.
+modem_up() {
+    dmesg | grep -qE 'sprd-sbuf: channel 5-|sbuf ready for pmic wdt init'
+}
+
+n=0
+while [ "$n" -lt "$WAIT" ]; do
+    if modem_up; then
+        log "modem is up after ${n}s"
+        insmod "$KO" 2>/dev/null && log "loaded sipa-dele" || log "FAILED sipa-dele"
+        # Both halves of the handshake are pr_info, so this says immediately whether it took.
+        sleep 3
+        if dmesg | grep -q 'channel 5-120 send open msg'; then
+            log "channel open sent; handshake: $(dmesg | grep -c sipa_dele) sipa_dele messages so far"
+        else
+            log "no 'channel 5-120 send open msg' in dmesg - the delegate thread did not start"
+        fi
+        exit 0
+    fi
+    n=$((n + 2))
+    sleep 2
+done
+
+log "modem still silent after ${WAIT}s, loading anyway so the resources exist"
+insmod "$KO" 2>/dev/null && log "loaded sipa-dele" || log "FAILED sipa-dele"
