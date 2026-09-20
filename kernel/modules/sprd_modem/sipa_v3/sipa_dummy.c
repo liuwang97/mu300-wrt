@@ -306,14 +306,23 @@ static int sipa_dummy_rx_clean(struct sipa_dummy *dummy, int budget,
 			if (ret1 == -ENODATA)
 				sipa_dummy_set_bootts(dummy,
 						      SIPA_DUMMY_TS_RD_EMPTY);
+			/* MU300 debug: -ENODATA means the fifo was empty; anything else is a real error */
+			if (ret1 != -ENODATA)
+				pr_warn_ratelimited("mu300-ipa: nic_rx failed %d (fifo %d)\n",
+						    ret1, fifoid);
 			break;
 		}
 
 		skb_cnt++;
+		/* which interface is this packet addressed to? (dynamic_debug, see 13f) */
+		pr_debug("mu300-ipa: packet netid=%d src_id=%u len=%u\n",
+			 netid, src_id, skb->len);
 		ret2 = sipa_dummy_get_real_ndev(dummy, skb,
 						netid, src_id);
 		if (unlikely(ret2)) {
 			stats->rx_dropped++;
+			pr_warn_ratelimited("mu300-ipa: no netdev for netid=%d src_id=%u, dropped\n",
+					    netid, src_id);
 			dev_kfree_skb_any(skb);
 			continue;
 		}

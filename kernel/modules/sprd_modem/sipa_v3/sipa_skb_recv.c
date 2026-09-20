@@ -638,6 +638,11 @@ static void sipa_receiver_notify_cb(void *priv, enum sipa_hal_evt_type evt,
 		receiver->tx_danger_cnt++;
 	}
 
+	/* Is the accelerator signalling a receive at all? Enable with
+	 * echo 'module sipa_core +p' > /sys/kernel/debug/dynamic_debug/control   (docs/FINDINGS.md 13f)
+	 */
+	pr_debug("mu300-ipa: notify evt=0x%x irq=%d\n", evt, irq);
+
 	sipa_dummy_recv_trigger(irq - ipa->multi_intr[0]);
 }
 
