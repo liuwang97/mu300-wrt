@@ -25,6 +25,13 @@ if [ -f "$M/sipa-dele.ko" ] && ! grep -q '^sipa_dele ' /proc/modules; then
     insmod "$M/sipa-dele.ko" 2>/dev/null && echo "loaded sipa-dele" || echo "FAILED sipa-dele"
 fi
 
+# The PM co-processor keeps its own watchdog, and it power-cuts the device a few minutes after boot unless this
+# driver tells pm_sys to stop it (docs/FINDINGS.md 5). The 5.4 boot image has always loaded it; mainline boot
+# images built before it was ported do not, so load it here too.
+if [ -f "$M/sprd_pmic_wdt.ko" ] && ! grep -q '^sprd_pmic_wdt ' /proc/modules; then
+    insmod "$M/sprd_pmic_wdt.ko" 2>/dev/null && echo "loaded sprd_pmic_wdt" || echo "FAILED sprd_pmic_wdt"
+fi
+
 for m in sprd_soc_thm thermal-generic-adc sprd_cpu_cooling leds-sc27xx-bltc zte_sar zte_card_holder_det sc27xx-vibra sprd_cp_dvfs sprd_ddr_dvfs sprd_gpu_cooling mali_kbase; do
     if modprobe "$m" 2>/tmp/mu300-modprobe.err; then
         echo "loaded $m"

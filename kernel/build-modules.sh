@@ -13,6 +13,8 @@ for m in $mods; do
     rm -rf /src/mod-build/$m && mkdir -p /src/mod-build && cp -r /work/modules/$m /src/mod-build/$m
     # wlan/bt use wcn_bsp's exports and its vendor headers (../wcn_bsp/kinclude)
     [ -d /src/mod-build/wcn_bsp ] || cp -r /work/modules/wcn_bsp /src/mod-build/wcn_bsp
+    # the PMIC watchdog talks to pm_sys over SIPC, so it needs the modem stack's headers next to it
+    [ -d /src/mod-build/sprd_modem ] || cp -r /work/modules/sprd_modem /src/mod-build/sprd_modem
     # the Mali DDK needs its own configuration switches (same ones the 5.4 build uses)
     margs=
     kcflags=
