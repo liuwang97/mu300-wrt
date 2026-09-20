@@ -1,0 +1,102 @@
+#!/bin/sh
+# Bring up the Unisoc audio DSP, which is what real call audio needs.
+#
+#   mu300-audio-dsp status     what is loaded and whether the DSP is running
+#   mu300-audio-dsp start      load the drivers, and the firmware if there is one
+#   mu300-audio-dsp stop       stop the DSP (the modules stay)
+#
+# The drivers come from kernel/build-audio.sh and live in /lib/modules/<release>/audio. The firmware does not
+# and cannot: this project publishes no proprietary files, and unlike the Wi-Fi and modem firmware there is no
+# copy on the device to take - the F50 has no audio DSP partition, because ZTE built this board without a
+# speaker. Put an image at $FW (or set MU300_AGDSP_FW) and this will load it; without one the drivers still
+# load and the DSP simply stays down.
+#
+# There is no request_firmware() involved. sprd_audcp_boot takes the image through sysfs, in chunks, between
+# "stop" and "start" - see agdsp_store() in that driver.
+set -u
+export PATH="$PATH:/opt/mu300/bin:/opt/mu300/busybox-bin:/usr/sbin:/sbin"
+
+A=/lib/modules/$(uname -r)/audio
+BOOT=/sys/devices/platform/audiocp_boot
+FW=${MU300_AGDSP_FW:-/lib/firmware/agdsp.bin}
+
+# memory-region 0 and 1, which this board's device tree does not have. The kernel reserves these ranges through
+# CONFIG_OF_RESERVED_MEM_ADD; audio_mem takes them as parameters. Index 0 is the DDR32 shared memory, index 1
+# the DSP binary itself (docs/FINDINGS.md 24).
+DDR32=${MU300_AGDSP_DDR32:-0xafa00000,0x600000}
+DSPBIN=${MU300_AGDSP_DSPBIN:-0xaf700000,0x300000}
+
+# The order is a dependency order, not a preference: audio_sipc needs agdsp_access, the DAIs need the platform,
+# the card needs all of them. Loading is attempted twice because a probe that defers once will succeed on the
+# second pass once its component is there.
+MODULES="audio_mem agdsp_access audio_sipc sprd_audcp_boot sprd_audcp_dvfs
+audio-dsp-dump audio-pipe sprd_apipe mcdt_hw_r2p0 saudio
+sprd-dmaengine-pcm sprd-platform-pcm-routing sprd-compr-2stage-dma
+snd-soc-sprd-dai snd-soc-sprd-vaudio snd-soc-sprd-vbc-v4 snd-soc-sprd-vbc-fe
+snd-soc-sprd-codec-ump9620-power snd-soc-sprd-codec-ump9620-power-dev snd-soc-sprd-codec-ump9620
+snd-soc-sprd-pa-ucp1301 snd-soc-sprd-dummy-codec snd-soc-sprd-card"
+
+loaded() { grep -q "^$(echo "$1" | tr '-' '_') " /proc/modules; }
+
+load_all() {
+    [ -d "$A" ] || { echo "no audio drivers in $A - run kernel/build-audio.sh and install them" >&2; return 1; }
+    n=0
+    for pass in 1 2; do
+        for m in $MODULES; do
+            [ -f "$A/$m.ko" ] || continue
+            loaded "$m" && continue
+            args=
+            [ "$m" = audio_mem ] && args="ddr32_base=${DDR32%,*} ddr32_size=${DDR32#*,} dspbin_base=${DSPBIN%,*} dspbin_size=${DSPBIN#*,}"
+            # shellcheck disable=SC2086
+            insmod "$A/$m.ko" $args 2>/dev/null && n=$((n + 1))
+        done
+    done
+    echo "audio drivers: $(for m in $MODULES; do loaded "$m" && echo x; done | wc -l)/$(echo $MODULES | wc -w) loaded"
+}
+
+dsp_running() { [ "$(cat "$BOOT/status" 2>/dev/null)" = 1 ]; }
+
+case "${1:-status}" in
+start)
+    load_all || exit 1
+    [ -d "$BOOT" ] || { echo "no $BOOT - sprd_audcp_boot did not probe" >&2; exit 1; }
+    if [ ! -f "$FW" ]; then
+        echo "no DSP firmware at $FW, so the DSP stays down (drivers are loaded)" >&2
+        echo "set MU300_AGDSP_FW to an AGDSP image for this SoC to start it" >&2
+        exit 0
+    fi
+    dsp_running && { echo "the DSP is already running"; exit 0; }
+    echo 1 > "$BOOT/stop" 2>/dev/null
+    # one write, not a loop: the driver tracks its own offset across writes, and dd with a large block size
+    # keeps the chunking to what the driver expects
+    if dd if="$FW" of="$BOOT/agdsp" bs=4096 2>/dev/null; then
+        echo 1 > "$BOOT/start" 2>/dev/null
+        sleep 1
+        if dsp_running; then echo "DSP started from $FW ($(wc -c < "$FW") bytes)"
+        else echo "wrote $FW but the DSP did not come up; see dmesg" >&2; exit 1; fi
+    else
+        echo "could not write $FW to $BOOT/agdsp" >&2; exit 1
+    fi
+    ;;
+
+stop)
+    [ -d "$BOOT" ] || { echo "no $BOOT"; exit 0; }
+    echo 1 > "$BOOT/stop" 2>/dev/null && echo "DSP stopped"
+    ;;
+
+status)
+    echo "drivers:  $(for m in $MODULES; do loaded "$m" && echo x; done | wc -l)/$(echo $MODULES | wc -w) loaded"
+    echo "firmware: $([ -f "$FW" ] && echo "$FW ($(wc -c < "$FW") bytes)" || echo "not present at $FW")"
+    if [ -d "$BOOT" ]; then
+        echo "dsp:      $(dsp_running && echo running || echo down)  (status=$(cat "$BOOT/status" 2>/dev/null))"
+        echo "ldinfo:   $(cat "$BOOT/ldinfo" 2>/dev/null | head -1)"
+    else
+        echo "dsp:      sprd_audcp_boot has not probed"
+    fi
+    echo "cards:"; sed 's/^/  /' /proc/asound/cards 2>/dev/null
+    ;;
+
+*)
+    sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'
+    exit 2 ;;
+esac
