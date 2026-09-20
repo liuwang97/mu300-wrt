@@ -7,7 +7,8 @@
 #
 # The one case where the descriptor has to be replaced is a modem restart (AT+SFUN=4, or a CP crash): the old
 # descriptor then refers to a channel that no longer exists and stays silent for ever, while still occupying the
-# device. The loop below notices that and reopens - see the comment there.
+# device. Reopening is also the way to break a perfectly good channel, though, so the loop below only does it
+# once the modem has stopped talking on nr0 as well - see the comment there.
 #
 #   mu300-atd            run in the foreground (used by the service)
 #   mu300-at "AT+CSQ"    ask the daemon (see mu300-at)
@@ -61,7 +62,10 @@ echo $$ > "$LOCK/pid"
 # runs one per command (reply=$(collect ...)), so an EXIT trap here deletes the lock a second after taking it -
 # which is how the second daemon got in in the first place. A daemon that dies without being signalled leaves
 # the directory behind; the next one sees the owner is gone and takes over.
-trap 'rm -f "$CMD"; [ "$(cat "$LOCK/pid" 2>/dev/null)" = $$ ] && rm -rf "$LOCK"; exit 0' INT TERM
+# $drainers is filled in below, once the other channels are open; killing them here keeps them from holding
+# those channels after the daemon that started them is gone.
+drainers=
+trap 'kill $drainers 2>/dev/null; rm -f "$CMD"; [ "$(cat "$LOCK/pid" 2>/dev/null)" = $$ ] && rm -rf "$LOCK"; exit 0' INT TERM
 
 rm -f "$CMD"
 mkfifo -m 600 "$CMD"
@@ -75,11 +79,53 @@ open_tty() {
 }
 open_tty || { echo "mu300-atd: cannot open $DEV" >&2; exit 1; }
 
+# Keep the other AT channels drained, the way Android's RIL does - it holds nr0-nr5 open and reads all six.
+# /dev/stty_nr0 carries the modem's unsolicited output (+SIND, +ECIND, +SPERRLOG, ...), and each stty_nr<n> is
+# one sbuf ring in the memory shared with the modem: the modem writes into it whether or not anyone reads, so an
+# unread channel sits on a backlog (measured: half an hour unread, and the first read returns 1.8 KB at once).
+# Draining it is not a cure for a channel that has gone silent - that was tried, and it is not - but the URCs are
+# worth having: registration and PDP changes are announced there and nowhere else, and the reopen rule below is
+# built on this log. One capped log per channel, in RAM.
+#
+# Only nr0 by default. A drainer owns its channel as completely as this daemon owns nr1, so draining nr2-nr5 as
+# well (MU300_AT_URC_CHANNELS="0 2 3 4 5") would shut out anything that later wants a second command channel of
+# its own - and measured, those four say nothing at all. A drainer that reaches end of file stays gone on
+# purpose: reopening a SIPC channel is the one operation that can lose it.
+URCDIR=$DIR/urc
+URCMAX=${MU300_AT_URC_MAX:-65536}
+mkdir -p "$URCDIR"
+for n in ${MU300_AT_URC_CHANNELS:-0}; do
+    other=${DEV%[0-9]}$n
+    [ "$other" = "$DEV" ] && continue
+    [ -c "$other" ] || continue
+    (
+        exec 3<&-   # the command channel belongs to the parent, not to a drainer
+        log=$URCDIR/$(basename "$other").log
+        : > "$log"
+        while IFS= read -r urc; do
+            printf '%s\n' "${urc%"$CR"}" >> "$log"
+            # cheap cap: start over rather than grow without end, /run is RAM
+            [ "$(wc -c < "$log" 2>/dev/null || echo 0)" -gt "$URCMAX" ] && : > "$log"
+        done < "$other"
+    ) &
+    drainers="$drainers $!"
+done
+echo "mu300-atd: $DEV is ours, draining $(echo $drainers | wc -w) other channel(s) into $URCDIR" >&2
+
 trap "" PIPE   # a client that gave up waiting must not kill the daemon
 silent=0       # consecutive commands the modem did not answer
 last_reopen=0  # when the device was last reopened (see the reopen rule in the loop)
 
 now() { date +%s; }
+
+# Has the modem said anything at all lately? The drainers above append every unsolicited line to a log, so a log
+# that has been written to in the last few minutes means the modem is running, whatever it thinks of our
+# commands. With no drainer (a single-channel device) there is nothing to go on, and this answers "no".
+URCLOG=$URCDIR/$(basename "${DEV%[0-9]}0").log
+modem_alive() {
+    [ -f "$URCLOG" ] || return 1
+    [ "$(( $(now) - $(date -r "$URCLOG" +%s 2>/dev/null || echo 0) ))" -lt "${MU300_AT_URC_QUIET:-240}" ]
+}
 
 drain() {  # throw away whatever the modem sent while nobody was asking (URCs), so replies are not mixed up
     # DRAIN_MAX seconds at most, and stop as soon as the channel has been quiet for a second. After a command
@@ -134,15 +180,21 @@ while :; do
     reply=$(collect "$t")
     # When the modem restarts (AT+SFUN=4 during a bring-up, or a CP crash) this descriptor is left attached to a
     # channel that no longer exists: it reads nothing for ever, and because it still holds the channel, nobody
-    # else can talk to the modem either - which is what used to look like "the tty is wedged until the modem is
-    # restarted". Reopening it is the cure, but it is not free: closing and opening the SIPC channel is the one
-    # operation that can lose it (13b), so only do it when the silence really looks like a restarted modem -
-    # three unanswered commands in a row, and not more than once a minute. A busy device that makes this shell
-    # miss a reply now and then must not cost us the channel.
+    # else can talk to the modem either. Reopening is the only cure for that case - but it is also the way to
+    # *cause* it. Measured on the device: with the modem alive and answering, closing this descriptor and opening
+    # it again leaves the channel silent for good. Nothing brings it back - not another reopen, not draining the
+    # other channels, not restarting modem_control (which re-attaches without reloading the modem). Only a
+    # reboot does. So "three unanswered commands" is nowhere near enough to justify it: a busy device that makes
+    # this shell miss three replies would trade a working modem for a dead one.
+    #
+    # $URCDIR/$(basename nr0).log tells the two cases apart. The modem's unsolicited output goes to nr0 and never
+    # stops while it is running, so a growing log means the modem is alive and this descriptor is fine - whatever
+    # else is wrong, closing it can only make things worse. Only when nr0 has gone quiet too has the modem really
+    # gone away, and then there is nothing left to lose.
     if [ -z "$reply" ]; then
         silent=$((silent + 1))
-        if [ "$silent" -ge 3 ] && [ $(( $(now) - last_reopen )) -ge 60 ]; then
-            echo "mu300-atd: three unanswered commands, reopening $DEV" >&2
+        if [ "$silent" -ge 5 ] && [ $(( $(now) - last_reopen )) -ge 300 ] && ! modem_alive; then
+            echo "mu300-atd: no reply and no URCs either, the modem looks gone; reopening $DEV" >&2
             last_reopen=$(now)
             if open_tty; then
                 silent=0

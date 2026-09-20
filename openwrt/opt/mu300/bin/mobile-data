@@ -9,8 +9,17 @@ DEV=${MU300_AT_DEV:-/dev/stty_nr1}
 CID=1
 IFACE=sipa_eth$((CID - 1))
 
+ATLOCK=/run/mu300-at/lock
+
+# Is that pid a live process that holds the AT channel? mu300-atd and the direct path below both write their
+# pid into $ATLOCK/pid, and a bare pid says nothing once the number has been reused.
+at_owner_alive() {
+    [ -n "${1:-}" ] && [ -d "/proc/$1" ] &&
+        tr '\0' ' ' < "/proc/$1/cmdline" 2>/dev/null | grep -qE 'mu300-atd|mobile-data'
+}
+
 at() {  # at CMD [timeout] -> response lines up to the final result code
-    local cmd=$1 t=${2:-5} line
+    local cmd=$1 t=${2:-5} line owner
     # mu300-atd owns the AT channel when it runs: closing the SIPC tty wedges it until the modem restarts, so
     # ask the daemon instead of opening the device here
     if [ -p /run/mu300-at/cmd ]; then
@@ -18,6 +27,18 @@ at() {  # at CMD [timeout] -> response lines up to the final result code
         return
     fi
     [ -c "$DEV" ] || return 1   # never let the redirection create a regular file in /dev
+    # No command fifo, but the daemon can still be there with the channel open - that is what /run/mu300-at
+    # being removed under a running mu300-atd leaves behind. Opening the device here would make a second reader
+    # on a channel that hands each line to exactly one of them, so every command from then on reads somebody
+    # else's answer or nothing at all. Hold the daemon's own lock for the length of this command instead.
+    owner=$(cat "$ATLOCK/pid" 2>/dev/null || true)
+    if at_owner_alive "$owner" && [ "$owner" != $$ ]; then
+        echo "pid $owner holds $DEV and its command fifo is gone; restart mu300-atd" >&2
+        return 1
+    fi
+    mkdir -p "${ATLOCK%/*}" 2>/dev/null || true
+    mkdir "$ATLOCK" 2>/dev/null || { rm -rf "$ATLOCK"; mkdir "$ATLOCK" 2>/dev/null || return 1; }
+    echo $$ > "$ATLOCK/pid"
     exec 3<>"$DEV"
     # drop late responses/URCs left over from earlier commands
     while IFS= read -r -t 0.2 line <&3; do :; done
@@ -36,6 +57,7 @@ at() {  # at CMD [timeout] -> response lines up to the final result code
         case "$line" in OK|ERROR|+CME\ ERROR*|+CMS\ ERROR*|CONNECT*|NO\ CARRIER) break ;; esac
     done
     exec 3>&-
+    rm -rf "$ATLOCK"
 }
 
 # dotted netmask -> prefix length, in shell: the image has no python3 and a wrong prefix leaves the interface
@@ -82,6 +104,8 @@ modem_stack() { [ -e /dev/modem ] || [ -e /dev/pmsys ] || [ -c "$DEV" ]; }
 # mu300-atd owns the device it has already set the flags on its own descriptor, so leave the tty alone.
 tty_setup() {
     [ -p /run/mu300-at/cmd ] && return 0
+    # same for a daemon whose fifo has gone missing: its descriptor is still the one the modem talks to
+    at_owner_alive "$(cat "$ATLOCK/pid" 2>/dev/null || true)" && return 0
     stty -F "$DEV" raw -echo 2>/dev/null || true
 }
 
@@ -212,7 +236,9 @@ watch() {
     local wlock=/run/mu300-mobile-data-watch.lock wp=
     while ! mkdir "$wlock" 2>/dev/null; do
         wp=$(cat "$wlock/pid" 2>/dev/null || true)
-        if [ -n "$wp" ] && kill -0 "$wp" 2>/dev/null; then
+        # a live pid is not enough: the number gets reused, and taking the lock from a watchdog that is still
+        # running puts two of them on the AT channel
+        if at_owner_alive "$wp"; then
             echo "another watchdog is already running (pid $wp)" >&2
             exit 0
         fi
