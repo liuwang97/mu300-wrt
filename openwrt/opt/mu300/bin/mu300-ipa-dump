@@ -7,7 +7,7 @@
 # because that enum starts at zero. Android in the same idle moment says exactly the same thing. So a dump taken
 # with nothing in flight compares equal to a working system and tells you nothing at all.
 #
-#   mu300-ipa-dump [-i IFACE] [-t TARGET] [-n COUNT] > dump.txt
+#   mu300-ipa-dump [-i IFACE] [-t TARGET] [-n CONNECTS] > dump.txt
 #
 # The reference to compare it against - the same fields from stock Android on this device with data working - is
 # in docs/FINDINGS.md 13f.
@@ -15,14 +15,14 @@ set -u
 export PATH="$PATH:/opt/mu300/bin:/opt/mu300/busybox-bin:/usr/sbin:/sbin"
 
 IFACE=sipa_eth0
-TARGET=8.8.8.8
-COUNT=10
+TARGET=1.1.1.1
+COUNT=3
 while [ $# -gt 0 ]; do
     case $1 in
         -i) IFACE=$2; shift 2 ;;
         -t) TARGET=$2; shift 2 ;;
         -n) COUNT=$2; shift 2 ;;
-        *) echo "usage: $0 [-i IFACE] [-t TARGET] [-n COUNT]" >&2; exit 2 ;;
+        *) echo "usage: $0 [-i IFACE] [-t TARGET] [-n CONNECTS]" >&2; exit 2 ;;
     esac
 done
 
@@ -65,9 +65,28 @@ echo "counters: $(counters)"
 dump
 
 echo
-echo "=== pushing $COUNT packets at $TARGET through $IFACE"
-# -I binds to the interface, so this does not depend on the default route being ours
-ping -I "$IFACE" -c "$COUNT" -W 2 "$TARGET" 2>&1 | tail -3
+echo "=== pushing traffic at $TARGET through $IFACE"
+# TCP, not ping. On this network ICMP does not come back even over a working link: measured on stock Android,
+# where data demonstrably works, "ping -I sipa_eth0 8.8.8.8" reports 100% loss - and that form binds to the
+# device, so it is the cellular path and not a VPN eating the echo. A ping-based test here reads "nothing
+# arrives" on a link that is fine, which is how this investigation lost time more than once.
+#
+# What answers the question is not whether the connect succeeds - it may well be carried by a VPN, and on
+# Android it was - but whether rx_packets on this interface moves at all. Downlink is downlink whoever the
+# bytes belong to, and ours has never moved.
+src=$(ip -4 -br addr show "$IFACE" | awk '{print $3}' | cut -d/ -f1)
+n=0
+while [ "$n" -lt "$COUNT" ]; do
+    n=$((n + 1))
+    if [ -n "$src" ]; then
+        nc -w 4 -s "$src" "$TARGET" 443 < /dev/null > /dev/null 2>&1 && echo "  tcp/443 connect $n: ok" || echo "  tcp/443 connect $n: failed"
+    else
+        nc -w 4 "$TARGET" 443 < /dev/null > /dev/null 2>&1 && echo "  tcp/443 connect $n: ok" || echo "  tcp/443 connect $n: failed"
+    fi
+done
+# ICMP as well, only so the contrast is on the record rather than mistaken for the answer
+echo "  (ping, expected to fail on this carrier even when data works):"
+ping -I "$IFACE" -c 2 -W 2 "$TARGET" 2>&1 | tail -2 | sed 's/^/    /'
 
 echo
 echo "=== DURING/AFTER (this is the one to compare against the Android reference)"
