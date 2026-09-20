@@ -134,7 +134,10 @@ up_locked() {
     dns1=$(echo "$rdp" | cut -d, -f6 | tr -d '"')
     dns2=$(echo "$rdp" | cut -d, -f7 | tr -d '"')
     [ -n "$ip4" ] || { echo "no IPv4 address from AT+CGCONTRDP" >&2; exit 1; }
-    at "AT+CGDATA=\"M-ETHER\",$CID" 8 | grep -q CONNECT || true
+    # AT+CGDATA takes its time on this modem: measured, it answers "^ORIG: <cid>,<n>" and then CONNECT about
+    # ten to twenty seconds later. With the old eight-second budget the reply arrived after we had given up, so
+    # the next command read it instead of its own and the whole channel looked dead for a while.
+    at "AT+CGDATA=\"M-ETHER\",$CID" 45 | grep -q CONNECT || echo "AT+CGDATA did not answer CONNECT" >&2
     prefix=$(mask2prefix "$mask")
     if [ "${MU300_NETIFD:-0}" = 1 ]; then
         # OpenWrt: netifd (proto mu300cell) configures the address, routes, DNS and firewall itself
