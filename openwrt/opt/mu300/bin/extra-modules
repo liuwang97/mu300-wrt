@@ -32,14 +32,27 @@ if [ -f "$M/sprd_pmic_wdt.ko" ] && ! grep -q '^sprd_pmic_wdt ' /proc/modules; th
     insmod "$M/sprd_pmic_wdt.ko" 2>/dev/null && echo "loaded sprd_pmic_wdt" || echo "FAILED sprd_pmic_wdt"
 fi
 
-# snd-aloop is the virtual sound card: the board has no speaker path, so software that wants an ALSA device
-# (a SIP gateway on the device, for one) gets a playback/capture pair wired back to back instead. Harmless when
-# nothing opens it.
-for m in sprd_soc_thm thermal-generic-adc sprd_cpu_cooling leds-sc27xx-bltc zte_sar zte_card_holder_det sc27xx-vibra sprd_cp_dvfs sprd_ddr_dvfs sprd_gpu_cooling mali_kbase snd-aloop; do
+for m in sprd_soc_thm thermal-generic-adc sprd_cpu_cooling leds-sc27xx-bltc zte_sar zte_card_holder_det sc27xx-vibra sprd_cp_dvfs sprd_ddr_dvfs sprd_gpu_cooling mali_kbase; do
     if modprobe "$m" 2>/tmp/mu300-modprobe.err; then
         echo "loaded $m"
     else
         echo "FAILED $m: $(cat /tmp/mu300-modprobe.err)"
     fi
 done
+# The virtual sound card: the board has no speaker path, so software that wants an ALSA device (a SIP gateway
+# on the device, for one) gets a playback/capture pair wired back to back instead - write to hw:0,0 and read it
+# back on hw:0,1. Harmless when nothing opens it. modprobe only finds it once depmod has indexed the module, so
+# fall back to insmod from the directory the rootfs build puts it in.
+if ! grep -q '^snd_aloop ' /proc/modules; then
+    if modprobe snd-aloop 2>/dev/null; then
+        echo "loaded snd-aloop"
+    else
+        for f in "$M/extra/snd-aloop.ko" "$M/snd-aloop.ko"; do
+            [ -f "$f" ] || continue
+            insmod "$f" 2>/dev/null && echo "loaded snd-aloop" || echo "FAILED snd-aloop"
+            break
+        done
+    fi
+fi
+
 true
