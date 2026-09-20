@@ -172,6 +172,9 @@ up_locked() {
     # router solicitations and multicast into a bearer the carrier only gave us IPv4 on. Matching it costs
     # nothing while the context is "IP", and takes one more difference out of the downlink question
     # (FINDINGS 13f). MU300_PDP_TYPE=IPV4V6 leaves IPv6 alone, since then it is wanted.
+    # On OpenWrt this is undone a moment later - netifd turns IPv6 back on while it configures the interface -
+    # so the proto handler repeats it after proto_send_update. Here it is for the systemd path, which configures
+    # the interface itself and where it sticks.
     if [ "${MU300_PDP_TYPE:-IP}" = IP ] && [ -w "/proc/sys/net/ipv6/conf/$IFACE/disable_ipv6" ]; then
         echo 1 > "/proc/sys/net/ipv6/conf/$IFACE/disable_ipv6"
     fi

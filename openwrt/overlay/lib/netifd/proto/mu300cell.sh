@@ -49,6 +49,12 @@ proto_mu300cell_setup() {
 		[ -n "$dns2" ] && proto_add_dns_server "$dns2"
 	fi
 	proto_send_update "$config"
+	# After proto_send_update, not before: netifd turns IPv6 back on as it configures the interface, so
+	# mobile-data setting this itself has no effect on OpenWrt. The bearer is IPv4-only (the context is
+	# "IP", the way Android's RIL asks for it), and an interface left with a link-local address sends
+	# router solicitations and multicast into it for nothing. See docs/FINDINGS.md 13f.
+	[ "${MU300_PDP_TYPE:-IP}" = IP ] && [ -w "/proc/sys/net/ipv6/conf/$ifname/disable_ipv6" ] &&
+		echo 1 > "/proc/sys/net/ipv6/conf/$ifname/disable_ipv6"
 	[ -w /sys/class/leds/sc27xx:blue/brightness ] && echo 255 > /sys/class/leds/sc27xx:blue/brightness
 	logger -t mu300cell "connected: $ip/${prefix:-32} on $ifname"
 }
