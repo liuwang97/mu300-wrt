@@ -60,6 +60,17 @@ if [ -p "$DIR/cmd" ]; then
     exit 0
 fi
 
+# No command fifo is not the same as no daemon: remove $DIR under a running mu300-atd and its descriptor is still
+# the one the modem talks to. Opening the device here would make a second reader on a channel that hands each
+# line to exactly one of them, so refuse instead - and the direct path below is a one-shot in any case, because
+# closing this channel while the modem is running leaves it silent until a reboot (FINDINGS 13b).
+owner=$(cat "$DIR/lock/pid" 2>/dev/null || true)
+if [ -n "$owner" ] && [ -d "/proc/$owner" ] &&
+   tr '\0' ' ' < "/proc/$owner/cmdline" 2>/dev/null | grep -qE 'mu300-atd|mobile-data'; then
+    echo "mu300-at: pid $owner holds $DEV and its command fifo is gone; restart mu300-atd" >&2
+    exit 1
+fi
+
 echo "mu300-at: daemon not running, using $DEV directly (this can wedge the channel)" >&2
 [ -c "$DEV" ] || { echo "mu300-at: no $DEV" >&2; exit 1; }
 exec 3<>"$DEV"

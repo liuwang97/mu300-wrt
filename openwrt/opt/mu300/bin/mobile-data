@@ -147,7 +147,12 @@ up_locked() {
     done
     at 'AT+CEREG?' | grep -qE '\+CEREG: [0-9],(1|5)' || { echo "not registered on the network" >&2; exit 1; }
     if [ -n "${1:-}" ]; then
-        at "AT+CGDCONT=$CID,\"IPV4V6\",\"$1\"" >/dev/null
+        # "IP", not "IPV4V6", because that is what Android's RIL asks this modem for. Measured on the same
+        # device with data working, its sipa_eth0 carries one IPv4 address and has IPv6 switched off outright
+        # (/proc/sys/net/ipv6/conf/sipa_eth0/disable_ipv6 = 1). A dual-stack context is the one part of our
+        # bring-up the working system never performs, and downlink is what we are missing (FINDINGS 13f).
+        # MU300_PDP_TYPE=IPV4V6 asks for both again, for a carrier that needs it.
+        at "AT+CGDCONT=$CID,\"${MU300_PDP_TYPE:-IP}\",\"$1\"" >/dev/null
     fi
     at "AT+CGACT?" | grep -q "+CGACT:$CID,1" || at "AT+CGACT=1,$CID" 20 >/dev/null
     rdp=$(at "AT+CGCONTRDP=$CID" 4 | grep '^+CGCONTRDP:' | head -1)
@@ -163,6 +168,13 @@ up_locked() {
     # the next command read it instead of its own and the whole channel looked dead for a while.
     at "AT+CGDATA=\"M-ETHER\",$CID" 45 | grep -q CONNECT || echo "AT+CGDATA did not answer CONNECT" >&2
     prefix=$(mask2prefix "$mask")
+    # Android switches IPv6 off on this interface outright; ours was carrying a link-local address and sending
+    # router solicitations and multicast into a bearer the carrier only gave us IPv4 on. Matching it costs
+    # nothing while the context is "IP", and takes one more difference out of the downlink question
+    # (FINDINGS 13f). MU300_PDP_TYPE=IPV4V6 leaves IPv6 alone, since then it is wanted.
+    if [ "${MU300_PDP_TYPE:-IP}" = IP ] && [ -w "/proc/sys/net/ipv6/conf/$IFACE/disable_ipv6" ]; then
+        echo 1 > "/proc/sys/net/ipv6/conf/$IFACE/disable_ipv6"
+    fi
     if [ "${MU300_NETIFD:-0}" = 1 ]; then
         # OpenWrt: netifd (proto mu300cell) configures the address, routes, DNS and firewall itself
         printf 'IFACE=%s\nIP=%s\nPREFIX=%s\nDNS1=%s\nDNS2=%s\n' "$IFACE" "$ip4" "$prefix" "$dns1" "$dns2"
