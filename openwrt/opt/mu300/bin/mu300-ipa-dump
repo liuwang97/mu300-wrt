@@ -44,10 +44,26 @@ dump() {
     echo "--- sipa/flow_ctrl (non-zero only)"
     grep -v 'enter cnt = 0 exit cnt = 0' "$D/sipa/flow_ctrl" || echo "  (all zero)"
     echo "--- sipa_eth/$IFACE/stats"; cat "$D/sipa_eth/$IFACE/stats" 2>/dev/null
+    # The receive buffers the driver has posted for the modem to write into. If this is empty the modem has
+    # nowhere to put a packet and will never raise the receive interrupt, however healthy the bearer is.
+    # Android, with data flowing: 256 entries, all chan 0, 65536 bytes each - 16 MiB of them.
+    echo "--- sipa/mem: $(wc -l < "$D/sipa/mem") receive buffers posted"
+    head -3 "$D/sipa/mem"
+    echo "--- sipa/alloc_skb";    cat "$D/sipa/alloc_skb"
+    echo "--- sipa/no_recycled";  cat "$D/sipa/no_recycled"
+    echo "--- sipa/flex";         head -6 "$D/sipa/flex" 2>/dev/null
     echo "--- sipa_dummy/stats (CPUs that saw anything)"
     awk '/^CPU/{cpu=$0} /rx_packet [1-9]/{print cpu} /^Total/{print}' "$D/sipa_dummy/stats"
     echo "--- irq counts for sipa"
     grep -i sipa /proc/interrupts || echo "  (none named sipa)"
+    # The downlink is the modem's decision, not ours: it asks over SIPC channel 120 (SMSG_CH_COMM_SIPA, dst 5
+    # PSCP), sipa_dele grants SIPA_RM_RES_CONS_WWAN_DL and acks, and only then do packets arrive. Both sides of
+    # that exchange are pr_info, so silence here means the delegate is not talking to the modem at all - and a
+    # modem that is never asked never sends. See FINDINGS 13f.
+    echo "--- sipa_dele conversation (last 12 lines; empty is the answer, not a gap)"
+    dmesg | grep -E 'sipa_dele|sipa_rm' | tail -12 || true
+    echo "--- delegate thread:"
+    ps w 2>/dev/null | grep -E '[d]ele|[s]ipa' | head -5 || true
 }
 
 echo "=== $(date) $(uname -r) uptime=$(cut -d. -f1 /proc/uptime)s iface=$IFACE"
