@@ -82,7 +82,12 @@ last_reopen=0  # when the device was last reopened (see the reopen rule in the l
 now() { date +%s; }
 
 drain() {  # throw away whatever the modem sent while nobody was asking (URCs), so replies are not mixed up
-    end=$(( $(now) + 3 ))
+    # DRAIN_MAX seconds at most, and stop as soon as the channel has been quiet for a second. After a command
+    # that timed out the budget is larger: the late answer is still on its way, and if it arrives after we have
+    # written the next command we would read it as that command's reply and stay one answer behind for ever.
+    # This modem makes that easy to hit - AT+CGACT and AT+CGDATA answer "^ORIG: <cid>,<n>" first and OK or
+    # CONNECT ten to twenty seconds later (docs/FINDINGS.md 13f).
+    end=$(( $(now) + ${DRAIN_MAX:-3} ))
     while [ "$(now)" -lt "$end" ]; do
         junk=
         IFS= read -r -t 1 junk <&3 || break   # nothing for a second: the channel is quiet again
@@ -121,6 +126,9 @@ while :; do
         /*) answer=${rest%% *}; cmd=${rest#* } ;;
         *) cmd=$rest ;;
     esac
+    # after a timeout, give the late reply time to show up and throw it away before asking anything new
+    DRAIN_MAX=$([ "$silent" -gt 0 ] && echo 25 || echo 3)
+    export DRAIN_MAX
     drain
     printf '%s\r' "$cmd" >&3
     reply=$(collect "$t")
