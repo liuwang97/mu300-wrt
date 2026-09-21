@@ -93,13 +93,20 @@ bind_card() {
     sleep 10
 }
 
-dsp_running() { [ "$(cat "$BOOT/status" 2>/dev/null)" = 1 ]; }
+# status is a struct, not a string: three u32s, core_status / sys_status / sleep_status, and sys_status is
+# the one that matters - 0 means "power up finished", 7 means "power off". Reading it as text says nothing,
+# which is what made a working DSP look like a failed one for a while.
+dsp_running() {
+    set -- $(od -An -tu4 -N12 "$BOOT/status" 2>/dev/null)
+    [ "${2:-7}" = 0 ]
+}
 
 case "${1:-status}" in
 load)
     load_all || exit 1
     if grep -q sprdphone /proc/asound/cards 2>/dev/null; then
         echo "cards:"; sed 's/^/  /' /proc/asound/cards
+        echo "voice endpoint: $(grep -i VOICE_PCM /proc/asound/pcm 2>/dev/null | head -1)"
         echo "voice endpoint: $(grep -i VOICE_PCM /proc/asound/pcm 2>/dev/null | head -1)"
     else
         echo "the card did not register; see dmesg" >&2
@@ -108,8 +115,13 @@ load)
     ;;
 
 start)
+    # load_all brings the card up first, and that order is not cosmetic: with the card unregistered the AGDSP
+    # power domain is never enabled, and writing the reset registers below then reboots the device outright.
+    # Measured both ways - card first, no reboot; card missing, gone in seconds.
     load_all || exit 1
     [ -d "$BOOT" ] || { echo "no $BOOT - sprd_audcp_boot did not probe" >&2; exit 1; }
+    grep -q sprdphone /proc/asound/cards 2>/dev/null ||
+        { echo "the sound card is not registered; starting the DSP now would reboot the device" >&2; exit 1; }
     if [ ! -f "$FW" ]; then
         echo "no DSP firmware at $FW, so the DSP stays down (drivers are loaded)" >&2
         echo "set MU300_AGDSP_FW to an AGDSP image for this SoC to start it" >&2
@@ -132,6 +144,7 @@ start)
             sleep 2
         fi
         echo "cards:"; sed 's/^/  /' /proc/asound/cards
+        echo "voice endpoint: $(grep -i VOICE_PCM /proc/asound/pcm 2>/dev/null | head -1)"
     else
         echo "could not write $FW to $BOOT/agdsp" >&2; exit 1
     fi
@@ -146,7 +159,8 @@ status)
     echo "drivers:  $(for m in $MODULES; do loaded "$m" && echo x; done | wc -l)/$(echo $MODULES | wc -w) loaded"
     echo "firmware: $([ -f "$FW" ] && echo "$FW ($(wc -c < "$FW") bytes)" || echo "not present at $FW")"
     if [ -d "$BOOT" ]; then
-        echo "dsp:      $(dsp_running && echo running || echo down)  (status=$(cat "$BOOT/status" 2>/dev/null))"
+        set -- $(od -An -tu4 -N12 "$BOOT/status" 2>/dev/null)
+        echo "dsp:      $(dsp_running && echo running || echo down)  (core=$1 sys=$2 sleep=$3; sys 0 is up, 7 is off)"
         echo "ldinfo:   $(cat "$BOOT/ldinfo" 2>/dev/null | head -1)"
     else
         echo "dsp:      sprd_audcp_boot has not probed"
