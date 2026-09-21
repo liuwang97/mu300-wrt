@@ -1,17 +1,16 @@
 #!/bin/sh
 # Bring up the Unisoc audio DSP, which is what real call audio needs.
 #
-#   mu300-audio-dsp status     what is loaded and whether the DSP is running
-#   mu300-audio-dsp load       load the 23 drivers (safe; this is what you want)
-#   mu300-audio-dsp start      load, then write the firmware and start the DSP - SEE THE WARNING BELOW
+#   mu300-audio-dsp status     what is loaded, and whether the DSP wakes
+#   mu300-audio-dsp load       load the 23 drivers and bind the card
+#   mu300-audio-dsp start      load, write the firmware, start the DSP and open the audio routes
+#   mu300-audio-dsp routes     just the routes (see set_routes below)
 #   mu300-audio-dsp stop       stop the DSP (the modules stay)
 #
-# WARNING: "start" reboots this device. Measured: the drivers load, the firmware writes, and a few seconds
-# later the kernel logs an orderly "reboot: Restarting system" with a full CPU shutdown - a deliberate reboot
-# from userspace, not a panic. sprd_audcp_boot's start_store writes AUDCPBOOT_CTRL_SYS_RESET and
-# CORE_RESET through regmap, and on this board that appears to reset more than the audio core. Until that is
-# understood, "load" is the useful command: it brings up the whole stack, the DSP shared memory and the SIPC
-# channel, and leaves the DSP itself down.
+# "start" used to reboot this device, and the note here used to say so. It is fixed and the cause was ordering:
+# with the card unregistered the AGDSP power domain is never enabled, and writing the reset registers then
+# takes the whole board down. load_all registers the card first. Measured both ways - card first, no reboot;
+# card missing, gone in seconds.
 #
 # The drivers come from kernel/build-audio.sh and live in /lib/modules/<release>/audio. The firmware does not
 # and cannot: this project publishes no proprietary files, and unlike the Wi-Fi and modem firmware there is no
@@ -96,9 +95,50 @@ bind_card() {
 # status is a struct, not a string: three u32s, core_status / sys_status / sleep_status, and sys_status is
 # the one that matters - 0 means "power up finished", 7 means "power off". Reading it as text says nothing,
 # which is what made a working DSP look like a failed one for a while.
+#
+# It is still not a test of whether the firmware loaded, because the AGDSP power domain is only powered while
+# something is using it. A DSP that is loaded, healthy and idle reads 7, exactly like one that never started -
+# agdsp_access_enable() sends a mailbox message and waits for the power-up when a PCM is opened, and the domain
+# goes back down when it closes. Use dsp_wakes below to tell the two apart.
 dsp_running() {
     set -- $(od -An -tu4 -N12 "$BOOT/status" 2>/dev/null)
     [ "${2:-7}" = 0 ]
+}
+
+# The card registers with every route switched off, so opening any PCM fails with "no backend DAIs enabled for
+# FE_..." and aplay reports "Unable to install hw params" - which reads like a broken driver and is not one.
+# Android's HAL sets these from its own configuration; there is nothing to inherit here, so set the ones this
+# board can actually use. The voice pair is the interesting one: it reaches the modem and needs no speaker,
+# which this board does not have.
+ROUTES=${MU300_AGDSP_ROUTES:-"S_VOICE_PCM_P SWITCH|S_VOICE_P_CODEC SWITCH|S_VOICE_C_CODEC SWITCH|S_NORMAL_AP01_P_CODEC SWITCH"}
+set_routes() {
+    command -v amixer >/dev/null 2>&1 || { echo "no amixer; install alsa-utils to set the routes" >&2; return 1; }
+    card=$(awk '/sprdphone/ {print $1; exit}' /proc/asound/cards 2>/dev/null)
+    [ -n "$card" ] || return 1
+    n=0
+    # shellcheck disable=SC2086
+    old=$IFS; IFS='|'
+    for s in $ROUTES; do
+        IFS=$old
+        amixer -c "$card" cset name="$s" 1 >/dev/null 2>&1 && n=$((n + 1))
+        IFS='|'
+    done
+    IFS=$old
+    echo "audio routes: $n enabled on card $card"
+}
+
+# Does the DSP actually come up when asked? Open a PCM for a moment and watch sys_status. This is the only
+# honest answer, for the reason in dsp_running above.
+dsp_wakes() {
+    command -v aplay >/dev/null 2>&1 || return 2
+    card=$(awk '/sprdphone/ {print $1; exit}' /proc/asound/cards 2>/dev/null)
+    [ -n "$card" ] || return 2
+    head -c 192000 /dev/zero | aplay -D "hw:$card,0" -f S16_LE -r 48000 -c 2 -q >/dev/null 2>&1 &
+    p=$!
+    sleep 1
+    dsp_running; r=$?
+    kill $p 2>/dev/null; wait $p 2>/dev/null
+    return $r
 }
 
 case "${1:-status}" in
@@ -130,12 +170,20 @@ start)
     dsp_running && { echo "the DSP is already running"; exit 0; }
     echo 1 > "$BOOT/stop" 2>/dev/null
     # one write, not a loop: the driver tracks its own offset across writes, and dd with a large block size
-    # keeps the chunking to what the driver expects
+    # keeps the chunking to what the driver expects.
+    # agdsp_store() clamps every write to ldinfo's size minus what it has taken already, so a firmware larger
+    # than the reserved region is silently truncated and says nothing. $BOOT/ldinfo carries that size: on this
+    # board it reads 0xafa00000 / 0x600000, which is the image exactly.
     if dd if="$FW" of="$BOOT/agdsp" bs=4096 2>/dev/null; then
         echo 1 > "$BOOT/start" 2>/dev/null
-        sleep 1
-        dsp_running || { echo "wrote $FW but the DSP did not come up; see dmesg" >&2; exit 1; }
-        echo "DSP started from $FW ($(wc -c < "$FW") bytes)"
+        set_routes
+        # Not "dsp_running" - see dsp_wakes. An idle AGDSP reads powered off whether or not it ever loaded.
+        dsp_wakes; w=$?
+        case $w in
+            0) echo "DSP started from $FW ($(wc -c < "$FW") bytes) and wakes on demand" ;;
+            2) echo "DSP started from $FW ($(wc -c < "$FW") bytes); install alsa-utils to confirm it wakes" ;;
+            *) echo "wrote $FW but the DSP did not wake when a PCM was opened; see dmesg" >&2; exit 1 ;;
+        esac
         # The card is only built once the DSP answers, and the machine driver has already given up by now -
         # its probe returned before the firmware existed. Bind it again by hand.
         drv=/sys/bus/platform/drivers/vbc-rxpx-codec-sc27xx
@@ -160,12 +208,26 @@ status)
     echo "firmware: $([ -f "$FW" ] && echo "$FW ($(wc -c < "$FW") bytes)" || echo "not present at $FW")"
     if [ -d "$BOOT" ]; then
         set -- $(od -An -tu4 -N12 "$BOOT/status" 2>/dev/null)
-        echo "dsp:      $(dsp_running && echo running || echo down)  (core=$1 sys=$2 sleep=$3; sys 0 is up, 7 is off)"
-        echo "ldinfo:   $(cat "$BOOT/ldinfo" 2>/dev/null | head -1)"
+        echo "power:    core=$1 sys=$2 sleep=$3 (sys 0 is powered, 7 is off - and off is normal when idle)"
+        # ldinfo is a struct too: char name[32], u32 load_phy_addr, u32 size. Printed as text it is the name
+        # and then noise, and the two numbers are the ones worth seeing - the size is what agdsp_store clamps
+        # every firmware write to.
+        set -- $(od -An -tu4 -j32 -N8 "$BOOT/ldinfo" 2>/dev/null)
+        [ -n "${1:-}" ] && printf 'ldinfo:   %s loads at %#x, room for %s bytes\n' \
+            "$(head -c 32 "$BOOT/ldinfo" 2>/dev/null | tr -d '\0')" "$1" "$2"
+        case "$(dsp_wakes; echo $?)" in
+            0) echo "dsp:      loaded - it woke when a PCM was opened" ;;
+            2) echo "dsp:      unknown - install alsa-utils to open a PCM and find out" ;;
+            *) echo "dsp:      does not wake; run 'start' (needs the firmware at $FW)" ;;
+        esac
     else
         echo "dsp:      sprd_audcp_boot has not probed"
     fi
     echo "cards:"; sed 's/^/  /' /proc/asound/cards 2>/dev/null
+    ;;
+
+routes)
+    set_routes
     ;;
 
 *)
