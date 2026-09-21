@@ -1,0 +1,148 @@
+#!/bin/sh
+# Voice calls with audio, over the AGDSP path.
+#
+#   mu300-voice answer [-t SECONDS]   wait for a call, answer it, then run the demo below
+#   mu300-voice call NUMBER           place a call, then run the demo
+#   mu300-voice demo                  on a call that is already up: play the melody, then echo
+#   mu300-voice tone [SECONDS]        play the melody into the call
+#   mu300-voice echo [SECONDS]        record that many seconds and play them back, for ever
+#   mu300-voice status                what a call and the audio path are doing
+#   mu300-voice hangup
+#
+# The two ends of a call, neither of which needs a speaker - this board has none:
+#
+#   playback  hw:<card>,53   FE_ST_VOICE_PCM_P -> BE_DAI_ID_VOICE_PCM_P   what the other side hears
+#   capture   hw:<card>,9    FE_ST_VOICE_C                                what they said
+#
+# Both need their route switched on first; the card registers with all ~70 of them off and an unrouted PCM
+# fails with "Unable to install hw params", which looks like a format problem and is not one. See
+# mu300-audio-dsp routes and docs/FINDINGS.md 24.
+#
+# The melody is generated here rather than shipped: this repo carries no audio files, and busybox awk has
+# sin(), which is all a few notes need.
+set -u
+export PATH="$PATH:/opt/mu300/bin:/opt/mu300/busybox-bin:/usr/sbin:/sbin"
+
+RATE=${MU300_VOICE_RATE:-8000}
+DIR=${MU300_AT_DIR:-/run/mu300-at}
+URCLOG=$DIR/urc/stty_nr0.log
+TMP=${MU300_VOICE_TMP:-/tmp/mu300-voice}
+mkdir -p "$TMP"
+
+card=$(awk '/sprdphone/ {print $1; exit}' /proc/asound/cards 2>/dev/null)
+[ -n "$card" ] || { echo "mu300-voice: the sound card is not registered; run mu300-audio-dsp load" >&2; exit 1; }
+PLAY=hw:$card,53
+CAP=hw:$card,9
+
+at() { mu300-at -t "${2:-10}" "$1" 2>&1; }
+
+# A melody, as raw S16_LE mono at $RATE. Two voices and a slow decay, so it sounds like something rather than
+# a test tone - the point is for a human on the other end to recognise it instantly as "the device is playing
+# me music", not to be pretty.
+melody() {
+    awk -v rate="$RATE" 'BEGIN {
+        n = split("523,0.4 659,0.4 784,0.4 1047,0.8 784,0.4 659,0.4 523,0.8 587,0.4 " \
+                  "698,0.4 880,0.4 1175,0.8 880,0.4 698,0.4 587,0.8", notes, " ")
+        pi = 3.14159265358979
+        for (i = 1; i <= n; i++) {
+            split(notes[i], p, ",")
+            f = p[1] + 0; dur = p[2] + 0
+            samples = int(rate * dur)
+            for (s = 0; s < samples; s++) {
+                t = s / rate
+                env = 1 - (s / samples)          # decay, so the notes are separate
+                env = env * env
+                v = sin(2 * pi * f * t) * 0.55 + sin(2 * pi * f * 0.5 * t) * 0.2
+                a = int(v * env * 11000)
+                if (a < 0) a += 65536            # two.s complement, little endian
+                printf "%c%c", a % 256, int(a / 256) % 256
+            }
+        }
+    }'
+}
+
+tone() {
+    f=$TMP/melody.raw
+    [ -s "$f" ] || melody > "$f"
+    reps=${1:-1}
+    i=0
+    while [ "$i" -lt "$reps" ]; do
+        aplay -D "$PLAY" -f S16_LE -r "$RATE" -c 1 -q "$f" 2>&1 | head -2
+        i=$((i + 1))
+    done
+}
+
+# Record a slice and hand it straight back, for ever. The caller hears themselves one slice late, which is the
+# clearest proof there is that both directions of the call carry audio: uplink and downlink at once, from one
+# test, with no second device involved.
+echo_loop() {
+    secs=${1:-5}
+    echo "echoing every ${secs}s - ^C to stop" >&2
+    while :; do
+        arecord -D "$CAP" -f S16_LE -r "$RATE" -c 1 -d "$secs" -q "$TMP/echo.raw" 2>/dev/null || {
+            echo "mu300-voice: capture failed; is the call still up?" >&2; return 1; }
+        aplay -D "$PLAY" -f S16_LE -r "$RATE" -c 1 -q "$TMP/echo.raw" 2>/dev/null || {
+            echo "mu300-voice: playback failed" >&2; return 1; }
+    done
+}
+
+in_call() { at 'AT+CLCC' 8 | grep -q '^+CLCC:'; }
+
+demo() {
+    mu300-audio-dsp routes >/dev/null 2>&1
+    echo "playing the melody..."
+    tone 2
+    echo "now echoing you back every ${1:-5}s"
+    echo_loop "${1:-5}"
+}
+
+case "${1:-status}" in
+answer)
+    wait=300
+    [ "${2:-}" = -t ] && wait=$3
+    mu300-audio-dsp routes >/dev/null 2>&1
+    at 'AT+CLIP=1' 8 >/dev/null
+    [ -f "$URCLOG" ] || { echo "mu300-voice: no $URCLOG - mu300-atd is not draining nr0" >&2; exit 1; }
+    mark=$(wc -l < "$URCLOG")
+    echo "waiting up to ${wait}s for a call..."
+    end=$(( $(date +%s) + wait ))
+    while [ "$(date +%s)" -lt "$end" ]; do
+        line=$(tail -n +$((mark + 1)) "$URCLOG" 2>/dev/null | grep -m1 -E '^(RING|\+CLIP:)')
+        if [ -n "$line" ]; then
+            echo "incoming: $line"
+            at 'ATA' 15
+            sleep 2
+            in_call || { echo "mu300-voice: the call did not connect" >&2; exit 1; }
+            echo "answered"
+            demo "${4:-5}"
+            exit 0
+        fi
+        sleep 1
+    done
+    echo "mu300-voice: nobody called within ${wait}s" >&2
+    exit 1 ;;
+
+call)
+    num=${2:?usage: mu300-voice call NUMBER}
+    mu300-audio-dsp routes >/dev/null 2>&1
+    at "ATD$num;" 20
+    sleep 5
+    in_call || { echo "mu300-voice: the call did not connect" >&2; exit 1; }
+    demo "${3:-5}" ;;
+
+demo)   demo "${2:-5}" ;;
+tone)   mu300-audio-dsp routes >/dev/null 2>&1; tone "${2:-1}" ;;
+echo)   mu300-audio-dsp routes >/dev/null 2>&1; echo_loop "${2:-5}" ;;
+hangup) at 'AT+CHUP' 10 ;;
+
+status)
+    echo "call:     $(at 'AT+CLCC' 8 | tr '\n' ' ')"
+    echo "playback: $PLAY (FE_ST_VOICE_PCM_P)"
+    echo "capture:  $CAP (FE_ST_VOICE_C)"
+    echo "routes:   S_VOICE_PCM_P is $(amixer -c "$card" cget name='S_VOICE_PCM_P SWITCH' 2>/dev/null | sed -n 's/.*values=//p' | tail -1)"
+    mu300-audio-dsp status 2>/dev/null | sed -n 's/^dsp:/dsp:     /p' ;;
+
+*)
+    sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
+    exit 2 ;;
+esac
