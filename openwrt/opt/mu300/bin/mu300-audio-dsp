@@ -147,16 +147,24 @@ dsp_wakes() {
     return $r
 }
 
-# Is the core executing the image? A running AGDSP writes its own log over the audio SIPC sblock channel, so a
-# read that returns anything at all settles it. Silence means the firmware is not running - which is the state
-# this board is in, and the one the Android module has too ("AudioCP still times out on F50 even with the donor
-# memory layout", in its own service.sh).
-DSPLOG=/dev/audio_dsp_log
+# Is the core executing the image? Ask it something and see whether it answers.
+#
+# NOT by reading /dev/audio_dsp_log: that was tried, it returns nothing on a DSP that is demonstrably running,
+# and "the log is silent so the firmware is dead" is a wrong conclusion this file used to state. This build
+# simply does not log.
+#
+# What does settle it is aud_send_cmd's own trace. Its exit line is only reached when aud_recv_cmd returned a
+# reply - a command that goes unanswered falls into "failed to get command" and never prints it (audio-sipc.c
+# around line 700). So a recent "out,cmd =N ... repeat_count=1" is the DSP answering on the first try.
 dsp_alive() {
-    [ -c "$DSPLOG" ] || return 1
-    command -v timeout >/dev/null 2>&1 || return 1
-    # the subshell takes the shell's own "Terminated" notice with it when timeout kills the read
-    [ "$( (timeout "${MU300_AGDSP_LOGWAIT:-6}" dd if="$DSPLOG" bs=1 count=64 2>/dev/null) 2>/dev/null | wc -c)" -gt 0 ]
+    command -v aplay >/dev/null 2>&1 || return 1
+    card=$(awk '/sprdphone/ {print $1; exit}' /proc/asound/cards 2>/dev/null)
+    [ -n "$card" ] || return 1
+    dmesg -c >/dev/null 2>&1
+    # any PCM open sends the DSP a scene command; the reply is what we are looking for
+    head -c 192000 /dev/zero | aplay -D "hw:$card,0" -f S16_LE -r 48000 -c 2 -q >/dev/null 2>&1
+    dmesg 2>/dev/null | grep -q 'aud_send_cmd out,cmd' &&
+        ! dmesg 2>/dev/null | grep -q 'failed to get command'
 }
 
 case "${1:-status}" in
@@ -240,11 +248,12 @@ status)
             *) echo "power-up: no; run 'start' (needs the firmware at $FW)" ;;
         esac
         if dsp_alive; then
-            echo "dsp:      running - it is writing to $DSPLOG"
+            echo "dsp:      running - it answered a command on the first try"
+            echo "          (a PCM can still fail with EIO: the data path also needs the DSP profiles,"
+            echo "           /lib/firmware/{audio_structure,dsp_vbc,cvs} - docs/FINDINGS.md 24)"
         else
-            echo "dsp:      NOT running - $DSPLOG stayed silent, so the core is not executing the image."
-            echo "          Known: the AGDSP does not come up on this board, on Linux or on Android"
-            echo "          (docs/FINDINGS.md 24). Call audio through the DSP is blocked on it."
+            echo "dsp:      no reply - run 'start' (needs the firmware at $FW), then look for"
+            echo "          'aud_send_cmd out,cmd' against 'failed to get command' in dmesg"
         fi
     else
         echo "dsp:      sprd_audcp_boot has not probed"
