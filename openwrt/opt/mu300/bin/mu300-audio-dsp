@@ -5,6 +5,7 @@
 #   mu300-audio-dsp load       load the 23 drivers and bind the card
 #   mu300-audio-dsp start      load, write the firmware, start the DSP and open the audio routes
 #   mu300-audio-dsp routes     just the routes (see set_routes below)
+#   mu300-audio-dsp profiles [MODE]  load the DSP parameter blobs and select a call mode (default 7)
 #   mu300-audio-dsp stop       stop the DSP (the modules stay)
 #
 # "start" used to reboot this device and the note here used to say so, blaming the card not being registered.
@@ -12,8 +13,8 @@
 # card bound and with it unbound (the order Android's own module uses) and neither rebooted. The old reboot is
 # unexplained rather than explained; treat "start" as safe but do not be surprised by it.
 #
-# What "start" does NOT do is make the DSP run. On this board the core never executes the image - see
-# docs/FINDINGS.md 24, and note that Android does not manage it either.
+# The DSP does run and answers commands (see dsp_alive). What still does not work is audio actually moving:
+# every scene takes exactly one buffer and then stops. docs/FINDINGS.md 24 has the measurements.
 #
 # The drivers come from kernel/build-audio.sh and live in /lib/modules/<release>/audio. The firmware does not
 # and cannot: this project publishes no proprietary files, and unlike the Wi-Fi and modem firmware there is no
@@ -263,6 +264,42 @@ status)
 
 routes)
     set_routes
+    ;;
+
+profiles)
+    # Load the four DSP parameter blobs and apply one mode. Build them with tools/vbc-profile from a vendor
+    # parameter XML set; the kernel picks them up from /lib/firmware by these exact names.
+    #
+    # The mode number is a call scene, not a media one - audio_structure.xml's modes are Handset, Handsfree,
+    # Headset4P/3P, BTHS, TypeC, HighVolume and Hac, each with NB1/NB2/WB1/WB2/SWB1/FB1/VOIP1, plus four
+    # Loopback modes. There is no "media playback" mode, so these profiles are about a call.
+    #   0 Handset/NB1   7 Handsfree/NB1   9 Handsfree/WB1   28 BTHS/NB1   63 Loopback/Handset
+    #
+    # param_id 0x5e is not decoration. The select value is (mode << 24) | (param_id << 16) | dsp_case, and
+    # with param_id 0 the apply is a no-op; with 0x5e - which is what a working device of this family has in
+    # both selects - the driver actually copies the mode into the DSP's shared memory:
+    #   [Audio:SIPC] cmd =11 sharemem_info.id=…, phy_iram_addr=0xaf981210, size=0x6c4
+    # and 0xaf981210 is sprd,shmaddr-dsp-vbc from the device tree.
+    command -v amixer >/dev/null 2>&1 || { echo "no amixer; install alsa-utils" >&2; exit 1; }
+    card=$(awk '/sprdphone/ {print $1; exit}' /proc/asound/cards 2>/dev/null)
+    [ -n "$card" ] || { echo "the sound card is not registered" >&2; exit 1; }
+    mode=${2:-${MU300_AGDSP_MODE:-7}}
+    sel=$(( (mode << 24) | (0x5e << 16) ))
+    n=0
+    for p in audio_structure dsp_vbc cvs dsp_smartamp; do
+        [ -f "/lib/firmware/$p" ] || { echo "missing /lib/firmware/$p (see tools/vbc-profile)" >&2; continue; }
+        case $p in
+            audio_structure) u='Audio Structure Profile Update' ;;
+            dsp_vbc)         u='DSP VBC Profile Update' ;;
+            cvs)             u='CVS Profile Update' ;;
+            dsp_smartamp)    u='DSP SMARTAMP Update' ;;
+        esac
+        amixer -c "$card" cset name="$u" 1 >/dev/null 2>&1 && n=$((n + 1))
+    done
+    for s in 'Audio Structure Profile Select' 'DSP VBC Profile Select'; do
+        amixer -c "$card" cset name="$s" "$sel" >/dev/null 2>&1
+    done
+    echo "profiles: $n loaded, mode $mode selected (value $sel)"
     ;;
 
 *)
