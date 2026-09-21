@@ -218,6 +218,24 @@ function ucs2_pack(cp, n,    i, out, v) {
 
 BEGIN {
     gsm_init(); ord_init()
+    # A +CUSD body, which is not a PDU: with AT+CSCS="HEX" the modem converts the answer to characters and then
+    # hex-dumps them, one byte per character, so there are no packed septets to unpick here. Measured on this
+    # modem - eleven bytes for an eleven-character answer. Only the alphabet is in question, and the CBS coding
+    # scheme in the third +CUSD field says which: bits 3-2 == 10 means UCS2, anything else the GSM alphabet.
+    if (mode == "ussd") {
+        n = length(hex) / 2
+        if (and(dcs + 0, 12) == 8) { print ucs2_decode(hex, 0, n); exit }
+        out = ""; esc = 0
+        for (i = 0; i < n; i++) {
+            c = byteat(hex, i)
+            if (c > 127) { out = out utf8(c); continue }   # not the GSM alphabet; Latin-1 is the best guess left
+            if (c == 27) { esc = 1; continue }
+            if (esc) { esc = 0; out = out utf8(septet_esc(c, 0)); continue }
+            out = out utf8(septet_char(c, 0))
+        }
+        print out
+        exit
+    }
     if (mode == "encode") {
         n = utf8_points(text, cp)
         if (gsm7_encodable(cp, n)) { ud = gsm7_pack(cp, n); dcs = "00"; udl = SEPTETS }
