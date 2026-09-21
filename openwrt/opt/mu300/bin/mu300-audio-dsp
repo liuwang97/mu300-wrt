@@ -2,8 +2,16 @@
 # Bring up the Unisoc audio DSP, which is what real call audio needs.
 #
 #   mu300-audio-dsp status     what is loaded and whether the DSP is running
-#   mu300-audio-dsp start      load the drivers, and the firmware if there is one
+#   mu300-audio-dsp load       load the 23 drivers (safe; this is what you want)
+#   mu300-audio-dsp start      load, then write the firmware and start the DSP - SEE THE WARNING BELOW
 #   mu300-audio-dsp stop       stop the DSP (the modules stay)
+#
+# WARNING: "start" reboots this device. Measured: the drivers load, the firmware writes, and a few seconds
+# later the kernel logs an orderly "reboot: Restarting system" with a full CPU shutdown - a deliberate reboot
+# from userspace, not a panic. sprd_audcp_boot's start_store writes AUDCPBOOT_CTRL_SYS_RESET and
+# CORE_RESET through regmap, and on this board that appears to reset more than the audio core. Until that is
+# understood, "load" is the useful command: it brings up the whole stack, the DSP shared memory and the SIPC
+# channel, and leaves the DSP itself down.
 #
 # The drivers come from kernel/build-audio.sh and live in /lib/modules/<release>/audio. The firmware does not
 # and cannot: this project publishes no proprietary files, and unlike the Wi-Fi and modem firmware there is no
@@ -23,8 +31,10 @@ FW=${MU300_AGDSP_FW:-/lib/firmware/agdsp.bin}
 # memory-region 0 and 1, which this board's device tree does not have. The kernel reserves these ranges through
 # CONFIG_OF_RESERVED_MEM_ADD; audio_mem takes them as parameters. Index 0 is the DDR32 shared memory, index 1
 # the DSP binary itself (docs/FINDINGS.md 24).
-DDR32=${MU300_AGDSP_DDR32:-0xafa00000,0x600000}
-DSPBIN=${MU300_AGDSP_DSPBIN:-0xaf700000,0x300000}
+# The image is 6 MiB, which is what settles which region is which: the DSP binary goes in the larger one.
+# The community Android fix names them audio-mem 0xaf700000 3 MiB and audiodsp-mem 0xafa00000 6 MiB.
+DDR32=${MU300_AGDSP_DDR32:-0xaf700000,0x300000}
+DSPBIN=${MU300_AGDSP_DSPBIN:-0xafa00000,0x600000}
 
 # The order is a dependency order, not a preference: audio_sipc needs agdsp_access, the DAIs need the platform,
 # the card needs all of them. Loading is attempted twice because a probe that defers once will succeed on the
@@ -38,6 +48,9 @@ snd-soc-sprd-pa-ucp1301 snd-soc-sprd-dummy-codec snd-soc-sprd-card"
 
 loaded() { grep -q "^$(echo "$1" | tr '-' '_') " /proc/modules; }
 
+# Most of these are [permanent] in /proc/modules: rmmod cannot touch them, so a rebuilt driver only takes
+# effect after a reboot. A reload that seems to do nothing is this, not a bad build.
+
 load_all() {
     [ -d "$A" ] || { echo "no audio drivers in $A - run kernel/build-audio.sh and install them" >&2; return 1; }
     n=0
@@ -47,6 +60,9 @@ load_all() {
             loaded "$m" && continue
             args=
             [ "$m" = audio_mem ] && args="ddr32_base=${DDR32%,*} ddr32_size=${DDR32#*,} dspbin_base=${DSPBIN%,*} dspbin_size=${DSPBIN#*,}"
+            # dai link BE_FAST_P_SMART_AMP asks for an amplifier this board does not have, and a codec that
+            # defers for ever otherwise takes the whole card down with it (docs/FINDINGS.md 24)
+            [ "$m" = snd-soc-sprd-card ] && args="dummy_on_defer=${MU300_AGDSP_DUMMY_ON_DEFER:-1}"
             # shellcheck disable=SC2086
             insmod "$A/$m.ko" $args 2>/dev/null && n=$((n + 1))
         done
@@ -57,6 +73,11 @@ load_all() {
 dsp_running() { [ "$(cat "$BOOT/status" 2>/dev/null)" = 1 ]; }
 
 case "${1:-status}" in
+load)
+    load_all || exit 1
+    echo "the DSP itself is not started; see the warning at the top of this script"
+    ;;
+
 start)
     load_all || exit 1
     [ -d "$BOOT" ] || { echo "no $BOOT - sprd_audcp_boot did not probe" >&2; exit 1; }
@@ -72,8 +93,16 @@ start)
     if dd if="$FW" of="$BOOT/agdsp" bs=4096 2>/dev/null; then
         echo 1 > "$BOOT/start" 2>/dev/null
         sleep 1
-        if dsp_running; then echo "DSP started from $FW ($(wc -c < "$FW") bytes)"
-        else echo "wrote $FW but the DSP did not come up; see dmesg" >&2; exit 1; fi
+        dsp_running || { echo "wrote $FW but the DSP did not come up; see dmesg" >&2; exit 1; }
+        echo "DSP started from $FW ($(wc -c < "$FW") bytes)"
+        # The card is only built once the DSP answers, and the machine driver has already given up by now -
+        # its probe returned before the firmware existed. Bind it again by hand.
+        drv=/sys/bus/platform/drivers/vbc-rxpx-codec-sc27xx
+        if [ -d "$drv" ] && [ ! -e "$drv/sound@0" ]; then
+            echo sound@0 > "$drv/bind" 2>/dev/null
+            sleep 2
+        fi
+        echo "cards:"; sed 's/^/  /' /proc/asound/cards
     else
         echo "could not write $FW to $BOOT/agdsp" >&2; exit 1
     fi
