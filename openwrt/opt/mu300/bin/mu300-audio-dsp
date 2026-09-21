@@ -7,10 +7,13 @@
 #   mu300-audio-dsp routes     just the routes (see set_routes below)
 #   mu300-audio-dsp stop       stop the DSP (the modules stay)
 #
-# "start" used to reboot this device, and the note here used to say so. It is fixed and the cause was ordering:
-# with the card unregistered the AGDSP power domain is never enabled, and writing the reset registers then
-# takes the whole board down. load_all registers the card first. Measured both ways - card first, no reboot;
-# card missing, gone in seconds.
+# "start" used to reboot this device and the note here used to say so, blaming the card not being registered.
+# That is no longer reproducible: on the current memory reservation the firmware has been written both with the
+# card bound and with it unbound (the order Android's own module uses) and neither rebooted. The old reboot is
+# unexplained rather than explained; treat "start" as safe but do not be surprised by it.
+#
+# What "start" does NOT do is make the DSP run. On this board the core never executes the image - see
+# docs/FINDINGS.md 24, and note that Android does not manage it either.
 #
 # The drivers come from kernel/build-audio.sh and live in /lib/modules/<release>/audio. The firmware does not
 # and cannot: this project publishes no proprietary files, and unlike the Wi-Fi and modem firmware there is no
@@ -127,8 +130,11 @@ set_routes() {
     echo "audio routes: $n enabled on card $card"
 }
 
-# Does the DSP actually come up when asked? Open a PCM for a moment and watch sys_status. This is the only
-# honest answer, for the reason in dsp_running above.
+# Does the power domain come up when asked? Open a PCM for a moment and watch sys_status.
+#
+# This is NOT a test of the firmware, and reading it as one cost an evening: agdsp_access_enable() takes the
+# AGDSP power domain up through the PMU whether or not the core has anything to execute, so this says "powered"
+# and never "running". dsp_alive below is the test that distinguishes them.
 dsp_wakes() {
     command -v aplay >/dev/null 2>&1 || return 2
     card=$(awk '/sprdphone/ {print $1; exit}' /proc/asound/cards 2>/dev/null)
@@ -139,6 +145,18 @@ dsp_wakes() {
     dsp_running; r=$?
     kill $p 2>/dev/null; wait $p 2>/dev/null
     return $r
+}
+
+# Is the core executing the image? A running AGDSP writes its own log over the audio SIPC sblock channel, so a
+# read that returns anything at all settles it. Silence means the firmware is not running - which is the state
+# this board is in, and the one the Android module has too ("AudioCP still times out on F50 even with the donor
+# memory layout", in its own service.sh).
+DSPLOG=/dev/audio_dsp_log
+dsp_alive() {
+    [ -c "$DSPLOG" ] || return 1
+    command -v timeout >/dev/null 2>&1 || return 1
+    # the subshell takes the shell's own "Terminated" notice with it when timeout kills the read
+    [ "$( (timeout "${MU300_AGDSP_LOGWAIT:-6}" dd if="$DSPLOG" bs=1 count=64 2>/dev/null) 2>/dev/null | wc -c)" -gt 0 ]
 }
 
 case "${1:-status}" in
@@ -180,7 +198,8 @@ start)
         # Not "dsp_running" - see dsp_wakes. An idle AGDSP reads powered off whether or not it ever loaded.
         dsp_wakes; w=$?
         case $w in
-            0) echo "DSP started from $FW ($(wc -c < "$FW") bytes) and wakes on demand" ;;
+            0) echo "wrote $FW ($(wc -c < "$FW") bytes); the power domain comes up on demand"
+               dsp_alive && echo "and the DSP is running" || echo "but the core is not executing it - see status" ;;
             2) echo "DSP started from $FW ($(wc -c < "$FW") bytes); install alsa-utils to confirm it wakes" ;;
             *) echo "wrote $FW but the DSP did not wake when a PCM was opened; see dmesg" >&2; exit 1 ;;
         esac
@@ -216,10 +235,17 @@ status)
         [ -n "${1:-}" ] && printf 'ldinfo:   %s loads at %#x, room for %s bytes\n' \
             "$(head -c 32 "$BOOT/ldinfo" 2>/dev/null | tr -d '\0')" "$1" "$2"
         case "$(dsp_wakes; echo $?)" in
-            0) echo "dsp:      loaded - it woke when a PCM was opened" ;;
-            2) echo "dsp:      unknown - install alsa-utils to open a PCM and find out" ;;
-            *) echo "dsp:      does not wake; run 'start' (needs the firmware at $FW)" ;;
+            0) echo "power-up: yes - the domain came up when a PCM was opened" ;;
+            2) echo "power-up: unknown - install alsa-utils to open a PCM and find out" ;;
+            *) echo "power-up: no; run 'start' (needs the firmware at $FW)" ;;
         esac
+        if dsp_alive; then
+            echo "dsp:      running - it is writing to $DSPLOG"
+        else
+            echo "dsp:      NOT running - $DSPLOG stayed silent, so the core is not executing the image."
+            echo "          Known: the AGDSP does not come up on this board, on Linux or on Android"
+            echo "          (docs/FINDINGS.md 24). Call audio through the DSP is blocked on it."
+        fi
     else
         echo "dsp:      sprd_audcp_boot has not probed"
     fi
