@@ -9,7 +9,7 @@ DEV=${MU300_AT_DEV:-/dev/stty_nr1}
 CID=1
 IFACE=sipa_eth$((CID - 1))
 
-ATLOCK=/run/mu300-at/lock
+ATLOCK=/run/mu300-at/owner
 
 # Is that pid a live process that holds the AT channel? mu300-atd and the direct path below both write their
 # pid into $ATLOCK/pid, and a bare pid says nothing once the number has been reused.

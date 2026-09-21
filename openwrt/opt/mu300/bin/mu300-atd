@@ -42,7 +42,11 @@ mkdir -p "$DIR"
 # running - which is how "the modem stopped answering after a few minutes" kept happening. A second instance
 # (procd respawning, a service started twice) waits here instead of exiting, so that whoever holds the channel
 # keeps it and the spare takes over the moment that process is gone.
-LOCK=$DIR/lock
+# $DIR/owner, and deliberately not $DIR/lock: that one is the per-command mutex clients take and release around
+# every single command, and it used to be this one as well. The two have opposite lifetimes, so sharing a name
+# meant whichever ran second won - a client deleted the daemon's directory on its way out, and after a daemon
+# restart every client instead waited out its 90 s and printed "mu300-at: busy" over a completely idle channel.
+LOCK=$DIR/owner
 alive() {  # alive PID -> is that pid still a running mu300-atd?
     [ -n "$1" ] && [ -d "/proc/$1" ] && tr '\0' ' ' < "/proc/$1/cmdline" 2>/dev/null | grep -q mu300-atd
 }
@@ -137,6 +141,10 @@ drain() {  # throw away whatever the modem sent while nobody was asking (URCs), 
     while [ "$(now)" -lt "$end" ]; do
         junk=
         IFS= read -r -t 1 junk <&3 || break   # nothing for a second: the channel is quiet again
+        # Thrown away for the purpose of the next command, but not lost: answers that arrive after their OK
+        # land here, and some of them matter. +CUSD is the plain case - the network's reply to *101# comes
+        # seconds after the modem has already said OK - and +CMTI, announcing a new SMS, is another.
+        [ -n "$junk" ] && printf '%s\n' "${junk%"$CR"}" >> "$URCDIR/$(basename "$DEV").log" 2>/dev/null
     done
 }
 
