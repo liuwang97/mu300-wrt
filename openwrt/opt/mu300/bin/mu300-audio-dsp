@@ -39,6 +39,11 @@ DSPBIN=${MU300_AGDSP_DSPBIN:-0xafa00000,0x600000}
 # The order is a dependency order, not a preference: audio_sipc needs agdsp_access, the DAIs need the platform,
 # the card needs all of them. Loading is attempted twice because a probe that defers once will succeed on the
 # second pass once its component is there.
+# virt-dma and sprd-dma first, and they are the whole reason this used to fail. CONFIG_SPRD_DMA is a module
+# and nothing else pulls it in, so /sys/class/dma is empty, sprd-pcm-audio defers for want of a channel, its
+# component never registers, and snd_soc_register_card gives up with "failed to init link FE_NORMAL_AP01:
+# -517". Loading them brings up two controllers with sixty channels and the card follows.
+DMA_MODULES="virt-dma sprd-dma"
 MODULES="audio_mem agdsp_access audio_sipc sprd_audcp_boot sprd_audcp_dvfs
 audio-dsp-dump audio-pipe sprd_apipe mcdt_hw_r2p0 saudio
 sprd-dmaengine-pcm sprd-platform-pcm-routing sprd-compr-2stage-dma
@@ -53,6 +58,11 @@ loaded() { grep -q "^$(echo "$1" | tr '-' '_') " /proc/modules; }
 
 load_all() {
     [ -d "$A" ] || { echo "no audio drivers in $A - run kernel/build-audio.sh and install them" >&2; return 1; }
+    K=/lib/modules/$(uname -r)
+    for m in $DMA_MODULES; do
+        loaded "$m" && continue
+        [ -f "$K/$m.ko" ] && insmod "$K/$m.ko" 2>/dev/null
+    done
     n=0
     for pass in 1 2; do
         for m in $MODULES; do
@@ -68,6 +78,19 @@ load_all() {
         done
     done
     echo "audio drivers: $(for m in $MODULES; do loaded "$m" && echo x; done | wc -l)/$(echo $MODULES | wc -w) loaded"
+    bind_card
+}
+
+# The card's probe runs before the PCM platform components exist and is not retried - it returns 0 even when
+# snd_soc_register_card deferred - so bind it again by hand once everything is in place.
+bind_card() {
+    drv=/sys/bus/platform/drivers/vbc-rxpx-codec-sc27xx
+    [ -d "$drv" ] || return 0
+    grep -q sprdphone /proc/asound/cards 2>/dev/null && return 0
+    echo sound@0 > "$drv/unbind" 2>/dev/null
+    sleep 2
+    echo sound@0 > "$drv/bind" 2>/dev/null
+    sleep 10
 }
 
 dsp_running() { [ "$(cat "$BOOT/status" 2>/dev/null)" = 1 ]; }
@@ -75,6 +98,12 @@ dsp_running() { [ "$(cat "$BOOT/status" 2>/dev/null)" = 1 ]; }
 case "${1:-status}" in
 load)
     load_all || exit 1
+    if grep -q sprdphone /proc/asound/cards 2>/dev/null; then
+        echo "cards:"; sed 's/^/  /' /proc/asound/cards
+        echo "voice endpoint: $(grep -i VOICE_PCM /proc/asound/pcm 2>/dev/null | head -1)"
+    else
+        echo "the card did not register; see dmesg" >&2
+    fi
     echo "the DSP itself is not started; see the warning at the top of this script"
     ;;
 
