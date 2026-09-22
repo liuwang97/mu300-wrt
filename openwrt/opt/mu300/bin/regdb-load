@@ -5,7 +5,7 @@
 for f in regulatory.db regulatory.db.p7s; do
     src=/lib/firmware/$f
     [ -e "$src" ] || src=/usr/lib/firmware/$f
-    for n in 1 2 3 4 5 6 7 8 9 10; do [ -d /sys/class/firmware/$f ] && break; sleep 0.3; done
+    for n in 1 2 3 4 5 6 7 8 9 10; do [ -d /sys/class/firmware/$f ] && break; sleep 0.3 2>/dev/null || sleep 1; done
     s=/sys/class/firmware/$f
     [ -d $s ] && [ -e "$src" ] || continue
     echo 1 > $s/loading && cat "$src" > $s/data && echo 0 > $s/loading && echo "fed $f to the pending firmware request"

@@ -14,14 +14,26 @@ def adb(cmd):
         out=r.stdout
         i=out.rfind(b'__RC')
         if r.returncode==0 and i>=0:
-            return out[:i] if out[i+4:].strip()==b'0' else b''
+            # text can come back CRLF-ified when su runs on a pty; callers want plain LF
+            return out[:i].replace(b'\r\n', b'\n') if out[i+4:].strip()==b'0' else b''
         time.sleep(5)
     raise SystemExit('adb unavailable')
+# A binary read must not go through `adb exec-out "su -c ..."`: on some devices su gives the command a pty
+# whose ONLCR rewrites every LF as CRLF, and the file arrives inflated and unparsable (issue #2).
+def adb_pull_file(path):
+    dev = '/data/local/tmp/mu300-pull.bin'
+    subprocess.run(['adb', 'shell', f"su -c 'cat {path} > {dev}'"],
+                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
+    r = subprocess.run(['adb', 'exec-out', f'cat {dev}'], capture_output=True, stdin=subprocess.DEVNULL)
+    subprocess.run(['adb', 'shell', f"su -c 'rm -f {dev}'"],
+                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
+    return r.stdout if r.returncode == 0 else b''
+
 def pull(path):
     dst=ROOT/path.lstrip('/')
     if dst.exists(): return dst
     real=adb(f'readlink -f {path}').decode().strip()
-    data=adb(f'cat {real}')
+    data=adb_pull_file(real)
     if not data.startswith(b'\x7fELF') and path.endswith('.so'): return None
     dst.parent.mkdir(parents=True,exist_ok=True); dst.write_bytes(data); return dst
 def needed(p):

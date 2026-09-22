@@ -50,19 +50,28 @@ def main():
     cmd = 'tar -chf - ' + ' '.join(PULL) + ' 2>/dev/null'
     with tempfile.TemporaryDirectory() as tmp:
         blob = Path(tmp) / 'vendor.tar'
-        with open(blob, 'wb') as f:
-            # adb exec-out keeps stdout binary clean; su -c runs the device's toybox tar
-            p = subprocess.run(['adb', 'exec-out', f"su -c '{cmd}'"], stdout=f, stdin=subprocess.DEVNULL)
-        if p.returncode != 0 or blob.stat().st_size < 1_000_000:
+        # Build the tar on the device and pull it as a file. Streaming it through `adb exec-out "su -c ..."`
+        # is what the comment here used to claim was binary-clean, and on some devices it is not: su gives
+        # the command a pty whose ONLCR turns every LF into CRLF, and the archive arrives corrupt (issue #2).
+        devtar = '/data/local/tmp/mu300-subset.tar'
+        subprocess.run(['adb', 'shell', f"su -c 'tar -chf {devtar} " + ' '.join(PULL) + " 2>/dev/null'"],
+                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
+        p = subprocess.run(['adb', 'pull', devtar, str(blob)],
+                           stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(['adb', 'shell', f"su -c 'rm -f {devtar}'"],
+                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
+        if p.returncode != 0 or not blob.exists() or blob.stat().st_size < 1_000_000:
             sys.exit('pulling the vendor files failed (is the device in rooted Android?)')
-        if out.exists():
-            import shutil
-            shutil.rmtree(out)
-        out.mkdir(parents=True)
+        # Everything is checked before the output directory is touched: a half-done run used to leave an
+        # empty directory behind, and the callers' "skip if it exists" guard then skipped it for ever.
         with tarfile.open(blob) as tar:
             members = [m for m in tar.getmembers() if wanted(m.name)]
             if not members:
                 sys.exit('the archive from the device contains none of the expected files')
+            if out.exists():
+                import shutil
+                shutil.rmtree(out)
+            out.mkdir(parents=True)
             for m in members:
                 m.name = m.name.lstrip('./')
             kw = {'filter': 'fully_trusted'} if sys.version_info >= (3, 12) else {}
