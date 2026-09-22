@@ -53,6 +53,14 @@ case "${1:-}" in
             echo "$1 is not installed (available: $(systems))" >&2; exit 1
         fi
         mkdir -p "$DISK/.mu300"
+        # Whether Linux is the default boot is written per system (the initramfs reads it from the one it
+        # boots), but it is a choice about the device. Carry it over, or switching from a system where it is on
+        # to one where it never was makes the first reboot there land in Android.
+        if [ "$DISK" != / ] && [ -d "$DISK/$1/etc" ]; then
+            mkdir -p "$DISK/$1/etc/mu300"
+            if [ "$(cat /etc/mu300/default-boot 2>/dev/null)" = linux ]; then echo linux > "$DISK/$1/etc/mu300/default-boot"
+            else rm -f "$DISK/$1/etc/mu300/default-boot"; fi
+        fi
         echo "$1" > "$DISK/.mu300/boot-os.tmp" && mv "$DISK/.mu300/boot-os.tmp" "$DISK/.mu300/boot-os"
         sync
         echo "next Linux boot: $1 (reboot to apply)" ;;
