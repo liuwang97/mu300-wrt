@@ -146,6 +146,10 @@ up_locked() {
         sleep 2
     done
     at 'AT+CEREG?' | grep -qE '\+CEREG: [0-9],(1|5)' || { echo "not registered on the network" >&2; exit 1; }
+    # systemd has no way to pass an argument from a config file, so the APN can come from the environment too:
+    # /etc/mu300/mobile-data.conf is an EnvironmentFile for the service. The argument still wins, which is what
+    # the OpenWrt protocol handler uses.
+    set -- "${1:-${MU300_APN:-}}"
     if [ -n "${1:-}" ]; then
         # "IP", not "IPV4V6", because that is what Android's RIL asks this modem for. Measured on the same
         # device with data working, its sipa_eth0 carries one IPv4 address and has IPv6 switched off outright

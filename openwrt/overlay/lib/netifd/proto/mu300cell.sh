@@ -1,6 +1,7 @@
 #!/bin/sh
 # netifd protocol for the MU300 modem: attach with AT commands (mobile-data) and configure sipa_eth0.
 # /etc/config/network:  config interface 'wan' / option proto 'mu300cell' / option apn 'internet'
+# LuCI edits the same options through www/luci-static/resources/protocol/mu300cell.js.
 [ -n "$INCLUDE_ONLY" ] || {
 	. /lib/functions.sh
 	. ../netifd-proto.sh
@@ -11,16 +12,17 @@ proto_mu300cell_init_config() {
 	available=1
 	no_device=1
 	proto_config_add_string "apn"
+	proto_config_add_string "pdptype"
 	proto_config_add_boolean "peerdns"
 	proto_config_add_array "dns:list(ipaddr)"
 }
 
 proto_mu300cell_setup() {
 	local config="$1"
-	local apn peerdns out ifname ip prefix dns1 dns2
-	json_get_vars apn peerdns
+	local apn pdptype peerdns out ifname ip prefix dns1 dns2
+	json_get_vars apn pdptype peerdns
 
-	out=$(MU300_NETIFD=1 /opt/mu300/bin/mobile-data up $apn 2>/tmp/mu300cell.err)
+	out=$(MU300_NETIFD=1 MU300_PDP_TYPE="${pdptype:-IP}" /opt/mu300/bin/mobile-data up $apn 2>/tmp/mu300cell.err)
 	if [ $? = 3 ]; then
 		logger -t mu300cell "$(cat /tmp/mu300cell.err)"
 		proto_notify_error "$config" NO_MODEM
@@ -53,7 +55,7 @@ proto_mu300cell_setup() {
 	# mobile-data setting this itself has no effect on OpenWrt. The bearer is IPv4-only (the context is
 	# "IP", the way Android's RIL asks for it), and an interface left with a link-local address sends
 	# router solicitations and multicast into it for nothing. See docs/FINDINGS.md 13f.
-	[ "${MU300_PDP_TYPE:-IP}" = IP ] && [ -w "/proc/sys/net/ipv6/conf/$ifname/disable_ipv6" ] &&
+	[ "${pdptype:-IP}" = IP ] && [ -w "/proc/sys/net/ipv6/conf/$ifname/disable_ipv6" ] &&
 		echo 1 > "/proc/sys/net/ipv6/conf/$ifname/disable_ipv6"
 	[ -w /sys/class/leds/sc27xx:blue/brightness ] && echo 255 > /sys/class/leds/sc27xx:blue/brightness
 	logger -t mu300cell "connected: $ip/${prefix:-32} on $ifname"
