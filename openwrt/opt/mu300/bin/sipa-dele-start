@@ -21,6 +21,7 @@ export PATH="$PATH:/opt/mu300/bin:/opt/mu300/busybox-bin:/usr/sbin:/sbin"
 
 M=/lib/modules/$(uname -r)
 KO=$M/sipa-dele.ko
+[ -f "$KO" ] || KO=$M/extra/sipa-dele.ko   # the Ubuntu image keeps modules under extra/
 WAIT=${MU300_DELE_WAIT:-180}
 
 log() { echo "sipa-dele-start: $*"; }

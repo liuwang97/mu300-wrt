@@ -24,7 +24,9 @@ fi
 # is [permanent] so it cannot be reloaded. sipa-dele-start waits for the modem first; in the background, since
 # that takes about a minute and everything below it here (Wi-Fi, the GPU, the sound card) must not wait for the
 # modem to finish booting. See that script and docs/FINDINGS.md 13f.
-if [ -f "$M/sipa-dele.ko" ] && ! grep -q '^sipa_dele ' /proc/modules; then
+# Both places: OpenWrt keeps the modules flat in $M, the Ubuntu image under $M/extra. Looking only in $M meant
+# the delegate was never started on Ubuntu, and Ubuntu had no mobile data downlink at all.
+if { [ -f "$M/sipa-dele.ko" ] || [ -f "$M/extra/sipa-dele.ko" ]; } && ! grep -q '^sipa_dele ' /proc/modules; then
     /opt/mu300/bin/sipa-dele-start >/tmp/mu300-sipa-dele.log 2>&1 &
 fi
 
