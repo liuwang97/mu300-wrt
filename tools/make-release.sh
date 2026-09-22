@@ -29,6 +29,7 @@ docker run --rm -v "$TOP/tools":/src:ro -v "$IN/tools":/o mu300-kbuild sh -c '
 # cltest links against Android's libraries at build time only; use a local build when there is one
 [ -f "$TOP/tools/gpu/cltest" ] && cp "$TOP/tools/gpu/cltest" "$IN/tools/gpu/cltest"
 sh "$TOP/tools/fetch-sing-box.sh" "$IN/sing-box"
+sh "$TOP/tools/fetch-xray.sh" "$IN"
 
 echo "==> kernel bundle"
 K=$D/kernel && mkdir -p "$K"
@@ -44,7 +45,7 @@ cid=$(docker create mu300-ubuntu:24.04 /bin/true); docker export "$cid" > "$B/ba
 cltest=""; [ -f "$IN/tools/gpu/cltest" ] && cltest="-v $IN/tools/gpu/cltest:/cltest:ro"
 # shellcheck disable=SC2086
 docker run --rm -v "$B":/w -v "$IN/out/modules":/kmods:ro -v "$IN/out":/kout:ro -v "$IN/tools/logdw/logdw":/logdw:ro \
-  -v "$IN/tools/bt-init/mu300-bt-init":/bt-init:ro -v "$IN/sing-box":/sing-box:ro $cltest \
+  -v "$IN/tools/bt-init/mu300-bt-init":/bt-init:ro -v "$IN/sing-box":/sing-box:ro -v "$IN/xray":/xray:ro -v "$IN/hev-socks5-tunnel":/hev-socks5-tunnel:ro $cltest \
   -e MU300_VERSION="$TAG" mu300-ubuntu:24.04 bash /w/assemble.sh >/dev/null
 mv "$B/mu300-ubuntu-24.04-rootfs.tar.gz" "$D/mu300-ubuntu-rootfs.tar.gz"; rm -rf "$B"
 
@@ -91,7 +92,8 @@ Built from $REPO@$commit with \`kernel/build-all.sh\` and \`tools/make-release.s
 Corresponding source (GPL): kernel https://github.com/Enceka/android_kernel_zte_ums9620_mifi_u30air/tree/$kernel_rev ,
 Wi-Fi/Bluetooth/Mali modules https://github.com/realme-kernel-opensource/realme_C51_C53_Narzo-N53-AndroidT-kernel-source/tree/$modules_rev ,
 patches in \`kernel/patches\`. Ubuntu, OpenWrt and busybox packages come from their distributions' archives;
-sing-box from https://github.com/SagerNet/sing-box/releases.
+sing-box from https://github.com/SagerNet/sing-box/releases, Xray from https://github.com/XTLS/Xray-core/releases,
+hev-socks5-tunnel from https://github.com/heiher/hev-socks5-tunnel/releases.
 EOF
 if gh release view "$TAG" -R "$REPO" >/dev/null 2>&1; then
     gh release upload "$TAG" -R "$REPO" --clobber "$D"/*.tar.gz "$D/SHA256SUMS"

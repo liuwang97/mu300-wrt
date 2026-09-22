@@ -559,7 +559,7 @@ menu_wifi() {
 vpn_enabled() { [ -r "$VPN_CONF" ] && grep -q '^ENABLE=1' "$VPN_CONF"; }
 menu_vpn() {
     while :; do
-        title "VPN (VLESS / sing-box)"
+        title "VPN (VLESS)"
         printf '  service: %s   config: %s\n\n' "$(state_color "$(svc status mu300-vpn)")" \
             "$( [ -r "$VPN_CONF" ] && (vpn_enabled && echo "enabled" || echo "disabled") || echo "missing")"
         /opt/mu300/bin/mu300-vpn status 2>/dev/null | sed 's/^/  /'

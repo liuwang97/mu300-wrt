@@ -22,6 +22,8 @@ openwrt/*.tar.gz
 upstream/stub/*.elf
 upstream/stub/*.bin
 sing-box
+/xray
+/hev-socks5-tunnel
 release/
 backup/
 !stock/*.img
