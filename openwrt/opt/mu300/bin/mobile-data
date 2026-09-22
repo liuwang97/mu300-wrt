@@ -9,6 +9,15 @@ DEV=${MU300_AT_DEV:-/dev/stty_nr1}
 CID=1
 IFACE=sipa_eth$((CID - 1))
 
+# The blue LED only reports whether data is up. The PMIC rejects a brightness write now and then (seen as
+# "write error: Invalid argument"), and under `set -e` that killed up() one line before it could report the
+# connection it had just established - so the call was live while the caller saw a failure. Cosmetic writes
+# must never decide that.
+led() {
+    [ -w /sys/class/leds/sc27xx:blue/brightness ] || return 0
+    echo "$1" > /sys/class/leds/sc27xx:blue/brightness 2>/dev/null || true
+}
+
 ATLOCK=/run/mu300-at/owner
 
 # Is that pid a live process that holds the AT channel? mu300-atd and the direct path below both write their
@@ -213,13 +222,13 @@ table ip mu300_nat {
     }
 }
 NFT
-    [ -w /sys/class/leds/sc27xx:blue/brightness ] && echo 255 > /sys/class/leds/sc27xx:blue/brightness
+    led 255
     echo "mobile data up on $IFACE ($(at 'AT+COPS?' | sed -n 's/^+COPS: [0-9],[0-9],"\([^"]*\)".*/\1/p'))"
 }
 
 down() {
     touch /run/mu300-mobile-data-down   # tells watch not to reconnect
-    [ -w /sys/class/leds/sc27xx:blue/brightness ] && echo 0 > /sys/class/leds/sc27xx:blue/brightness
+    led 0
     nft delete table ip mu300_nat 2>/dev/null || true
     ip route del default dev "$IFACE" 2>/dev/null || true
     ip addr flush dev "$IFACE" 2>/dev/null || true
@@ -280,7 +289,7 @@ watch() {
         fails=$((fails + 1))
         [ "$fails" -lt 2 ] && continue
         echo "mobile data lost (modem reset or detached), reconnecting" >&2
-        [ -w /sys/class/leds/sc27xx:blue/brightness ] && echo 0 > /sys/class/leds/sc27xx:blue/brightness
+        led 0
         if [ "${MU300_NETIFD:-0}" = 1 ]; then
             ifup "${MU300_WAN:-wan}"   # OpenWrt: let netifd run the mu300cell protocol again
         else

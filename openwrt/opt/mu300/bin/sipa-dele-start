@@ -28,11 +28,24 @@ log() { echo "sipa-dele-start: $*"; }
 grep -q '^sipa_dele ' /proc/modules && { log "already loaded"; exit 0; }
 [ -f "$KO" ] || { log "no $KO (a kernel without the modem stack)"; exit 0; }
 
-# "The CP is talking" is not a single flag anywhere, but it has a reliable signature: the modem opens its sbuf
-# channels on dst 5 as it comes up, and the PM watchdog channel becomes ready at the same moment. Either line
-# means the far side is alive and will answer a channel open.
+# What counts as "the CP is talking" has to be the modem answering, not a log line on the way there.
+#
+# This used to grep dmesg for 'sprd-sbuf: channel 5-' / 'sbuf ready for pmic wdt init'. Both are printed while
+# the modem *loader* runs, long before modem_control has the CP up - so the wait was satisfied on its first
+# check ("modem is up after 0s"), sipa-dele went in early exactly as before, and the delegate thread found
+# nothing at the far end. The symptom is the one this script exists to prevent: rx_packets stays at zero for
+# the whole boot, the address is right, and there is no second chance because sipa_dele is [permanent].
+#
+# A bare AT coming back is not enough either: the AT channel answers about two seconds in, long before the
+# data side of the CP exists, so gating on it reproduces the same "modem is up after 2s" as the sbuf lines.
+#
+# AT+CGATT? is the signal that means what we need. 1 is the modem attached to the *packet* domain - the part
+# that carries data - so it cannot be true before the CP's data path is running. The sbuf line stays as a cheap
+# precondition so we do not open the AT channel before it exists.
 modem_up() {
-    dmesg | grep -qE 'sprd-sbuf: channel 5-|sbuf ready for pmic wdt init'
+    dmesg | grep -qE 'sprd-sbuf: channel 5-|sbuf ready for pmic wdt init' || return 1
+    [ -c /dev/stty_nr1 ] || return 1
+    mu300-at -t 8 'AT+CGATT?' 2>/dev/null | grep -q '+CGATT: *1'
 }
 
 n=0
