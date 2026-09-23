@@ -236,7 +236,7 @@ status)
     echo "firmware: $([ -f "$FW" ] && echo "$FW ($(wc -c < "$FW") bytes)" || echo "not present at $FW")"
     if [ -d "$BOOT" ]; then
         set -- $(od -An -tu4 -N12 "$BOOT/status" 2>/dev/null)
-        echo "power:    core=$1 sys=$2 sleep=$3 (sys 0 is powered, 7 is off - and off is normal when idle)"
+        echo "power:    core=${1:-?} sys=${2:-?} sleep=${3:-?} (sys 0 is powered, 7 is off - and off is normal when idle)"
         # ldinfo is a struct too: char name[32], u32 load_phy_addr, u32 size. Printed as text it is the name
         # and then noise, and the two numbers are the ones worth seeing - the size is what agdsp_store clamps
         # every firmware write to.

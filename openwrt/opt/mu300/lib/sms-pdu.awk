@@ -1,8 +1,10 @@
 # SMS PDU codec for the MU300. Decodes SMS-DELIVER and builds SMS-SUBMIT.
 #
-# In awk because that is what the device has: no python, no lua, no perl, only busybox awk - which does have
-# and()/or()/lshift()/rshift() and emits a raw byte for printf "%c" with a value under 256, so UTF-8 can be
-# written out a byte at a time. Everything here sticks to that subset and runs unchanged under gawk and mawk.
+# In awk because that is what the device has: no python, no lua, no perl, only an awk - busybox's on OpenWrt,
+# mawk on Ubuntu. printf "%c" with a value under 256 emits a raw byte in all of them, so UTF-8 is written out a
+# byte at a time. The bit operations are the b_* functions below rather than b_and()/b_or()/b_lshift()/b_rshift():
+# busybox awk and gawk have those built in, mawk does not, and on Ubuntu every USSD answer and every SMS
+# failed with "function and never defined". gawk will not let a script define its own b_and(), hence the prefix.
 #
 # PDU mode rather than text mode is not a preference. This modem returns a mangled address in text mode
 # whenever the sender is alphanumeric - a brand name rather than a number, which is most of what a SIM in a
@@ -15,6 +17,21 @@
 #
 # Decode prints one record per line, tab separated and with tabs and newlines escaped inside fields:
 #   index <TAB> sender <TAB> timestamp <TAB> ref <TAB> total <TAB> part <TAB> text
+
+# Bit operations on non-negative integers, in plain arithmetic so that every awk runs them (see the top).
+function b_and(a, b,    r, p) {
+    r = 0; p = 1
+    while (a > 0 && b > 0) { if (a % 2 == 1 && b % 2 == 1) r += p; a = int(a / 2); b = int(b / 2); p *= 2 }
+    return r
+}
+function b_or(a, b,    r, p) {
+    r = 0; p = 1
+    while (a > 0 || b > 0) { if (a % 2 == 1 || b % 2 == 1) r += p; a = int(a / 2); b = int(b / 2); p *= 2 }
+    return r
+}
+# no "^": busybox awk built without math support rejects it ("Math support is not compiled in")
+function b_lshift(a, n) { while (n-- > 0) a *= 2; return a }
+function b_rshift(a, n) { while (n-- > 0) a = int(a / 2); return a }
 
 function hexval(c) {
     c = toupper(c)
@@ -78,9 +95,9 @@ function gsm7_decode(h, off, n, skip, lang, langx,    i, bit, byte, sept, out, e
     for (i = 0; i < n; i++) {
         bit = i * 7
         byte = int(bit / 8)
-        sept = rshift(byteat(h, off + byte), bit % 8)
-        if ((bit % 8) > 1) sept = or(sept, lshift(byteat(h, off + byte + 1), 8 - (bit % 8)))
-        sept = and(sept, 127)
+        sept = b_rshift(byteat(h, off + byte), bit % 8)
+        if ((bit % 8) > 1) sept = b_or(sept, b_lshift(byteat(h, off + byte + 1), 8 - (bit % 8)))
+        sept = b_and(sept, 127)
         if (i < skip) continue
         if (sept == 27) { esc = 1; continue }
         if (esc) { esc = 0; out = out utf8(septet_esc(sept, langx)); continue }
@@ -98,7 +115,7 @@ function bcd_decode(h, off, digits,    i, b, lo, hi, out) {
     out = ""
     for (i = 0; i * 2 < digits; i++) {
         b = byteat(h, off + i)
-        lo = and(b, 15); hi = rshift(b, 4)
+        lo = b_and(b, 15); hi = b_rshift(b, 4)
         out = out substr("0123456789*#abc", lo + 1, 1)
         if (i * 2 + 1 < digits) out = out substr("0123456789*#abc", hi + 1, 1)
     }
@@ -108,7 +125,7 @@ function ts_decode(h, off,    i, b, d, p) {
     d = ""
     for (i = 0; i < 6; i++) {
         b = byteat(h, off + i)
-        d = d substr("0123456789", and(b, 15) + 1, 1) substr("0123456789", rshift(b, 4) + 1, 1)
+        d = d substr("0123456789", b_and(b, 15) + 1, 1) substr("0123456789", b_rshift(b, 4) + 1, 1)
         if (i == 2) d = d " "; else if (i < 2) d = d "-"; else if (i < 5) d = d ":"
     }
     return "20" d
@@ -120,13 +137,13 @@ function decode_pdu(idx, h,    i, smsc, first, oal, toa, oabytes, sender, pid, d
     i = 0
     smsc = byteat(h, i); i += 1 + smsc
     first = byteat(h, i); i += 1
-    if (and(first, 3) != 0) return ""        # not an SMS-DELIVER
+    if (b_and(first, 3) != 0) return ""        # not an SMS-DELIVER
     oal = byteat(h, i); i += 1
     toa = byteat(h, i); i += 1
     oabytes = int((oal + 1) / 2)
-    alpha = (and(toa, 112) == 80)
+    alpha = (b_and(toa, 112) == 80)
     if (alpha) sender = gsm7_decode(h, i, int(oal * 4 / 7), 0, 0, 0)
-    else       sender = (and(toa, 112) == 16 ? "+" : "") bcd_decode(h, i, oal)
+    else       sender = (b_and(toa, 112) == 16 ? "+" : "") bcd_decode(h, i, oal)
     i += oabytes
     pid = byteat(h, i); i += 1
     dcs = byteat(h, i); i += 1
@@ -134,7 +151,7 @@ function decode_pdu(idx, h,    i, smsc, first, oal, toa, oabytes, sender, pid, d
     udl = byteat(h, i); i += 1
 
     ref = ""; total = 1; part = 1; udhl = 0; lang = 0; langx = 0
-    if (and(first, 64)) {                    # UDHI: a header sits in front of the text
+    if (b_and(first, 64)) {                    # UDHI: a header sits in front of the text
         udhl = byteat(h, i)
         # walk every element; the concatenation one is not always first, and the language one never is
         j = i + 1; hend = i + 1 + udhl
@@ -148,9 +165,9 @@ function decode_pdu(idx, h,    i, smsc, first, oal, toa, oabytes, sender, pid, d
         }
     }
     off = i + (udhl ? udhl + 1 : 0)
-    if (and(dcs, 12) == 8) {                             # UCS2
+    if (b_and(dcs, 12) == 8) {                             # UCS2
         text = ucs2_decode(h, off, udl - (udhl ? udhl + 1 : 0))
-    } else if (and(dcs, 12) == 4) {                      # 8-bit
+    } else if (b_and(dcs, 12) == 4) {                      # 8-bit
         text = ""
         for (i = 0; i < udl - (udhl ? udhl + 1 : 0); i++) text = text utf8(byteat(h, off + i))
     } else {                                             # GSM 7-bit, septet aligned past the header
@@ -177,10 +194,10 @@ function utf8_points(s, cp,    i, b, c, n, extra, val) {
     while (i <= length(s)) {
         b = index_of_byte(s, i)
         if (b < 128) { val = b; extra = 0 }
-        else if (b < 224) { val = and(b, 31); extra = 1 }
-        else if (b < 240) { val = and(b, 15); extra = 2 }
-        else { val = and(b, 7); extra = 3 }
-        for (c = 1; c <= extra; c++) { i++; val = val * 64 + and(index_of_byte(s, i), 63) }
+        else if (b < 224) { val = b_and(b, 31); extra = 1 }
+        else if (b < 240) { val = b_and(b, 15); extra = 2 }
+        else { val = b_and(b, 7); extra = 3 }
+        for (c = 1; c <= extra; c++) { i++; val = val * 64 + b_and(index_of_byte(s, i), 63) }
         cp[++n] = val
         i++
     }
@@ -203,10 +220,10 @@ function gsm7_pack(cp, n,    i, sept, k, bit, byte, bits, out, val, hi) {
     SEPTETS = k
     out = ""; bits = 0; val = 0
     for (i = 0; i < k; i++) {
-        val = or(val, lshift(sept[i], bits)); bits += 7
-        while (bits >= 8) { out = out sprintf("%02X", and(val, 255)); val = rshift(val, 8); bits -= 8 }
+        val = b_or(val, b_lshift(sept[i], bits)); bits += 7
+        while (bits >= 8) { out = out sprintf("%02X", b_and(val, 255)); val = b_rshift(val, 8); bits -= 8 }
     }
-    if (bits > 0) out = out sprintf("%02X", and(val, 255))
+    if (bits > 0) out = out sprintf("%02X", b_and(val, 255))
     return out
 }
 function ucs2_pack(cp, n,    i, out, v) {
@@ -224,7 +241,7 @@ BEGIN {
     # scheme in the third +CUSD field says which: bits 3-2 == 10 means UCS2, anything else the GSM alphabet.
     if (mode == "ussd") {
         n = length(hex) / 2
-        if (and(dcs + 0, 12) == 8) { print ucs2_decode(hex, 0, n); exit }
+        if (b_and(dcs + 0, 12) == 8) { print ucs2_decode(hex, 0, n); exit }
         out = ""; esc = 0
         for (i = 0; i < n; i++) {
             c = byteat(hex, i)

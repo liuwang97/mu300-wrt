@@ -52,7 +52,24 @@ call_routes() {
     mix 'S_VOICE_PCM_P SWITCH' 1
     mix 'VBC_DSP_VOICE_CAPTURE_TYPE' "${MU300_VOICE_CAPTURE_TYPE:-0}"
     mix 'VBC_DSP_VOICE_PCM_PLAY_MODE' "${MU300_VOICE_PLAY_MODE:-1}"
+    # Hold the AGDSP power domain for the length of the call. Closing a voice stream runs mcdt_dac_dma_disable,
+    # which reads an AGCP register to check the MCDT clock - and if the domain has already dropped by then the
+    # read is a bus error and the kernel panics ("Asynchronous SError Interrupt", regmap_read <-
+    # check_agcp_mcdt_clock <- fe_hw_free). Android's HAL holds the domain the same way while a call is up.
+    mix 'agdsp_access_en' 1
 }
+
+# The call scene itself is a hostless front end (FE_VOICE, device 5): it carries no data and only has to be
+# opened and started, which is what puts the DSP into the call - the HAL does it with pcm_start(). aplay cannot
+# (it writes, and a hostless PCM answers EINVAL), so tools/pcmhost does it. Measured on the device: the scene
+# goes to RUNNING. Audio still does not move on this board; docs/FINDINGS.md 24 has why.
+SCENE_PID=/run/mu300-voice-scene.pid
+scene_start() {
+    command -v pcmhost >/dev/null 2>&1 || { echo "no pcmhost (tools/pcmhost); the call scene is not started" >&2; return 0; }
+    pcmhost "/dev/snd/pcmC${card}D5p" 16000 1 86400 >/dev/null 2>&1 &
+    echo $! > "$SCENE_PID"
+}
+scene_stop() { [ -f "$SCENE_PID" ] && kill "$(cat "$SCENE_PID")" 2>/dev/null; rm -f "$SCENE_PID"; }
 
 # A melody, as raw S16_LE mono at $RATE. Two voices and a slow decay, so it sounds like something rather than
 # a test tone - the point is for a human on the other end to recognise it instantly as "the device is playing
@@ -159,6 +176,7 @@ answer)
             sleep 2
             in_call || { echo "mu300-voice: the call did not connect" >&2; exit 1; }
             echo "answered"
+            scene_start
             demo "${4:-5}"
             exit 0
         fi
@@ -173,12 +191,13 @@ call)
     at "ATD$num;" 20
     sleep 5
     in_call || { echo "mu300-voice: the call did not connect" >&2; exit 1; }
+    scene_start
     demo "${3:-5}" ;;
 
 demo)   demo "${2:-5}" ;;
 tone)   call_routes; tone "${2:-1}" ;;
 echo)   call_routes; echo_loop "${2:-5}" ;;
-hangup) at 'AT+CHUP' 10 ;;
+hangup) at 'AT+CHUP' 10; scene_stop ;;
 
 status)
     echo "call:     $(at 'AT+CLCC' 8 | tr '\n' ' ')"

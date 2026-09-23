@@ -30,3 +30,4 @@ backup/
 arch/*.tar.gz
 arch/ArchLinuxARM-*
 android/magisk/*.zip
+/tools/pcmhost/pcmhost
