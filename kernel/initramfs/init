@@ -136,30 +136,67 @@ setup_usb_gadget() {
     mount -t configfs configfs /config
     g=/config/usb_gadget/linux
     mkdir -p "$g/strings/0x409" "$g/configs/c.1/strings/0x409"
-    # The USB network function: whichever of these the kernel actually has. Creating one it was not built with
+    # The USB network functions: whichever of these the kernel actually has. Creating one it was not built with
     # fails here, and a gadget that is never bound leaves the device with no console and no network at all - which
-    # is exactly what an "improvement" to NCM cost once.
-    netfunc=
-    for f in ${MU300_USBNET:-ecm ncm}; do
-        mkdir -p "$g/functions/$f.usb0" 2>/dev/null && { netfunc=$f; break; }
+    # is exactly what an "improvement" to NCM cost once (on a mainline build without it; both kernels have it now).
+    # RNDIS (the vendor kernel has it only as Unisoc's sprd_usb_f_rndis module, loaded from module-order) gets a
+    # configuration of its own, the first one: Windows only ever uses the first, and binds its inbox RNDIS driver
+    # to it through the MS OS descriptors below - every Windows from 7 on, no INF. The CDC function goes into the
+    # next one: NCM (Windows 10 2004+/11 would bind UsbNcm.sys to it as well), else ECM. Linux skips RNDIS
+    # configurations on purpose and takes that one, as macOS does with g_ether's identical layout.
+    # MU300_USBNET (kernel command line) picks the functions: "ecm" alone is the old single-configuration gadget.
+    rndis= netfunc=
+    for f in ${MU300_USBNET:-rndis ncm ecm}; do
+        case $f in
+            rndis) [ -z "$rndis" ] && mkdir -p "$g/functions/rndis.rn0" 2>/dev/null && rndis=1 ;;
+            *) [ -z "$netfunc" ] && mkdir -p "$g/functions/$f.usb0" 2>/dev/null && netfunc=$f ;;
+        esac
     done
-    [ -n "$netfunc" ] || log "stage=usb-no-net-function (console only)"
+    [ -n "$netfunc$rndis" ] || log "stage=usb-no-net-function (console only)"
+    cdc=c.1
+    [ -n "$rndis" ] && cdc=c.2
     echo 0x0525 > "$g/idVendor"
     echo 0xa4a1 > "$g/idProduct"
     echo 0x0200 > "$g/bcdUSB"
+    # Miscellaneous / IAD: the network and the ACM functions each span two interfaces, and without this device class
+    # Windows' composite driver ignores their association descriptors and hands out the interfaces one by one, so a
+    # class driver never sees its function as a whole
+    echo 0xEF > "$g/bDeviceClass"
+    echo 0x02 > "$g/bDeviceSubClass"
+    echo 0x01 > "$g/bDeviceProtocol"
     echo MU300LINUX > "$g/strings/0x409/serialnumber"
     echo Linux > "$g/strings/0x409/manufacturer"
     echo "MU300 Linux USB Ethernet" > "$g/strings/0x409/product"
-    echo "Linux ${netfunc:-no} net + ACM console" > "$g/configs/c.1/strings/0x409/configuration"
-    echo 250 > "$g/configs/c.1/MaxPower"
-    if [ -n "$netfunc" ]; then
-        echo 02:50:00:00:77:01 > "$g/functions/$netfunc.usb0/dev_addr"
-        echo 02:50:00:00:77:02 > "$g/functions/$netfunc.usb0/host_addr"
-        ln -s "$g/functions/$netfunc.usb0" "$g/configs/c.1/f1"
+    # USB serial console alongside the network function, in every configuration: recovery/debug access that does
+    # not depend on networking
+    mkdir -p "$g/functions/acm.GS0"
+    if [ -n "$rndis" ]; then
+        echo "RNDIS + ACM console" > "$g/configs/c.1/strings/0x409/configuration"
+        echo 250 > "$g/configs/c.1/MaxPower"
+        echo 02:50:00:00:77:03 > "$g/functions/rndis.rn0/dev_addr"
+        echo 02:50:00:00:77:04 > "$g/functions/rndis.rn0/host_addr"
+        ln -s "$g/functions/rndis.rn0" "$g/configs/c.1/f1"
+        ln -s "$g/functions/acm.GS0" "$g/configs/c.1/f2"
+        # MS OS descriptors: Windows asks for them with vendor request 0xcd and binds rndis.sys by compatible ID
+        echo 1 > "$g/os_desc/use"
+        echo 0xcd > "$g/os_desc/b_vendor_code"
+        echo MSFT100 > "$g/os_desc/qw_sign"
+        echo RNDIS > "$g/functions/rndis.rn0/os_desc/interface.rndis/compatible_id"
+        echo 5162001 > "$g/functions/rndis.rn0/os_desc/interface.rndis/sub_compatible_id"
+        ln -s "$g/configs/c.1" "$g/os_desc/c.1"
     fi
-    # USB serial console alongside ECM: recovery/debug access that does not depend on networking
-    mkdir -p "$g/functions/acm.GS0" && ln -s "$g/functions/acm.GS0" "$g/configs/c.1/f2"
-    log "stage=usb-net-function ${netfunc:-none}"
+    if [ -n "$netfunc" ] || [ -z "$rndis" ]; then
+        mkdir -p "$g/configs/$cdc/strings/0x409"
+        echo "${netfunc:-no} net + ACM console" > "$g/configs/$cdc/strings/0x409/configuration"
+        echo 250 > "$g/configs/$cdc/MaxPower"
+        if [ -n "$netfunc" ]; then
+            echo 02:50:00:00:77:01 > "$g/functions/$netfunc.usb0/dev_addr"
+            echo 02:50:00:00:77:02 > "$g/functions/$netfunc.usb0/host_addr"
+            ln -s "$g/functions/$netfunc.usb0" "$g/configs/$cdc/f1"
+        fi
+        ln -s "$g/functions/acm.GS0" "$g/configs/$cdc/f2"
+    fi
+    log "stage=usb-net-function ${rndis:+rndis+}${netfunc:-none}"
     log "stage=usb-wait-udc"
     for n in $(seq 1 40); do
         [ -e /sys/class/udc/25100000.dwc3 ] && break
@@ -178,8 +215,19 @@ setup_usb_gadget() {
     log "stage=usb-bind-done rc=$?"
     persist
 
-    # Bring usb0 up immediately after binding, before the host selects the ECM data interface:
-    # f_ecm reports the link state in its first CONNECT notification, and macOS' ECM driver does not
+    # The functions register their netdevs as they are bound, configuration by configuration, so RNDIS would take
+    # usb0 - the name lan-start and the OpenWrt bridge expect for the CDC link. Name them by function instead.
+    if [ -n "$rndis" ]; then
+        r=$(cat "$g/functions/rndis.rn0/ifname" 2>/dev/null)
+        c=$(cat "$g/functions/$netfunc.usb0/ifname" 2>/dev/null)
+        case $r in ""|"(unnamed net_device)"|rndis0) ;; *) ip link set "$r" name rndis0 ;; esac
+        case $c in ""|"(unnamed net_device)"|usb0) ;; *) ip link set "$c" name usb0 ;; esac
+        log "stage=usb-ifnames rndis=$r->rndis0 cdc=${c:-none}->usb0"
+        ifconfig rndis0 up
+    fi
+
+    # Bring usb0 up immediately after binding, before the host selects the data interface:
+    # f_ecm (and f_ncm alike) reports the link state in its first CONNECT notification, and macOS' ECM driver does not
     # pick up a later "connected" notification (v10 left usb0 down until systemd ran -> host "inactive").
     ifconfig usb0 up
 }

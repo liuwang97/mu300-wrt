@@ -19,6 +19,7 @@ dev=$(uci -q show network | sed -n "s/^network\.\(@device\[[0-9]*\]\)\.name='br-
 if [ -n "$dev" ]; then
 	uci -q delete network.$dev.ports
 	uci add_list network.$dev.ports='usb0'
+	uci add_list network.$dev.ports='rndis0'   # the gadget's RNDIS configuration (Windows)
 fi
 uci commit system
 uci commit network

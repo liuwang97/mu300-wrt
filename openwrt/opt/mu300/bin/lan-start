@@ -1,5 +1,5 @@
 #!/bin/bash
-# One LAN for USB and Wi-Fi clients: br-lan (192.168.77.1/24 unless lan.conf says otherwise) with usb0 (ECM gadget, bound in the initramfs)
+# One LAN for USB and Wi-Fi clients: br-lan (192.168.77.1/24 unless lan.conf says otherwise) with usb0 (NCM/ECM gadget, bound in the initramfs, plus rndis0 for Windows)
 # and wlan0 (added by hostapd via bridge=br-lan). A single dnsmasq serves DHCP/DNS on the bridge.
 set -euo pipefail
 # The address lives in /etc/mu300/lan.conf (LAN_IP=192.168.77.1), so two devices on one PC can each have their
@@ -15,6 +15,11 @@ for n in $(seq 1 30); do ip link show usb0 >/dev/null 2>&1 && break; sleep 1; do
 ip addr flush dev usb0 2>/dev/null || true
 ip link set usb0 master br-lan
 ip link set usb0 up
+# rndis0: the gadget's RNDIS configuration, which Windows uses (boot/init); only one of the two carries traffic
+if ip link show rndis0 >/dev/null 2>&1; then
+    ip link set rndis0 master br-lan
+    ip link set rndis0 up
+fi
 ip addr replace "$LAN_IP/24" dev br-lan
 ip link set br-lan up
 # IPv6: mobile-data puts the network's /64 on br-lan when the carrier gives one (and removes it again), and

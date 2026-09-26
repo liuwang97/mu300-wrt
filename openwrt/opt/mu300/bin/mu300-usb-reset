@@ -41,3 +41,4 @@ while [ "$n" -lt 10 ]; do
 done
 sleep 1
 ip link set usb0 up 2>/dev/null || ifconfig usb0 up 2>/dev/null
+ip link set rndis0 up 2>/dev/null || true   # the RNDIS configuration for Windows, when the gadget has one
