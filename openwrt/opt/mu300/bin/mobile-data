@@ -95,6 +95,110 @@ mask2prefix() {
     echo "$bits"
 }
 
+# Interface identifier (the low 64 bits, as a:b:c:d) of the IPv6 address the network assigned to the context, or
+# nothing when it gave IPv4 only. This, not MU300_PDP_TYPE, decides whether there is IPv6: a context that was
+# never redefined is whatever the modem kept (IPV4V6 on this one), and a carrier may answer IPV4V6 with IPv4 alone.
+# +CGPADDR: <cid>,<addr>[,<addr>]; with +CGPIAF 0 an IPv6 address is 16 dotted bytes, otherwise it is hex.
+v6_iid() {
+    at "AT+CGPADDR=$CID" 4 | awk -F'[ ,"]+' '/^\+CGPADDR:/ {
+        for (i = 3; i <= NF; i++) {
+            if (split($i, b, ".") == 16) {
+                printf "%x:%x:%x:%x\n", b[9] * 256 + b[10], b[11] * 256 + b[12], b[13] * 256 + b[14], b[15] * 256 + b[16]
+                exit
+            }
+            if ($i ~ /:/) {
+                s = $i
+                if (s ~ /::/) {   # expand "::" to the zero groups it stands for
+                    h = s; sub(/::.*/, "", h); t = s; sub(/.*::/, "", t)
+                    nh = (h == "") ? 0 : split(h, x, ":"); nt = (t == "") ? 0 : split(t, y, ":")
+                    s = h; for (j = 0; j < 8 - nh - nt; j++) s = s (s == "" ? "" : ":") "0"
+                    if (t != "") s = s ":" t
+                }
+                if (split(s, g, ":") == 8) { print g[5] ":" g[6] ":" g[7] ":" g[8]; exit }
+            }
+        }
+    }' | grep -v '^[0:]*$' || true
+}
+
+LAN6=/run/mu300-mobile-data-lan6   # the prefix address we put on br-lan, so down() removes only that one
+
+# IPv6 on the systemd path. The bearer is point-to-point: the network routes the whole /64 of its router
+# advertisement to us and never asks neighbour discovery for it. So the /64 is learnt from the RA on sipa_eth0 and
+# then moved to br-lan, where dnsmasq (lan-start, constructor:br-lan) advertises it to USB and Wi-Fi clients.
+# Keeping it on sipa_eth0 as well would give the kernel two routes to the same /64.
+v6_up() {  # v6_up IID
+    local c=/proc/sys/net/ipv6/conf/$IFACE prefix= n
+    [ -w "$c/disable_ipv6" ] || return 0
+    echo 1 > "$c/disable_ipv6"          # start clean: no address or route left from an earlier session
+    echo 2 > "$c/accept_ra"             # forwarding is on, and a router ignores RAs with the usual 1
+    echo 0 > "$c/accept_ra_defrtr"      # the default route is set below, as for IPv4
+    echo 1 > "$c/accept_ra_pinfo"
+    # 3GPP has the UE build its link-local address from the identifier the network assigned (Android does the
+    # same); the kernel's own EUI-64 one would come from sipa_eth0's made-up MAC
+    echo 1 > "$c/addr_gen_mode"
+    echo 0 > "$c/disable_ipv6"
+    ip -6 addr add "fe80::$1/64" dev "$IFACE" 2>/dev/null || true
+    for n in $(seq 1 20); do
+        prefix=$(ip -6 -o addr show dev "$IFACE" scope global | awk '{ print $4; exit }')
+        [ -n "$prefix" ] && break
+        sleep 1
+    done
+    ip -6 route replace default dev "$IFACE" metric 100
+    if [ -z "$prefix" ]; then
+        echo "the network assigned IPv6 but sent no router advertisement; IPv6 is not shared with the LAN" >&2
+        return 0
+    fi
+    prefix=$(prefix64 "${prefix%/*}")
+    sysctl -qw net.ipv6.conf.all.forwarding=1
+    if ip link show br-lan >/dev/null 2>&1; then
+        echo 0 > "$c/accept_ra_pinfo"   # or the next RA puts the address back
+        ip -6 addr flush dev "$IFACE" scope global
+        ip -6 route del "${prefix}/64" dev "$IFACE" 2>/dev/null || true
+        # br-lan hears dnsmasq's own advertisements; seen on the device, it took two more SLAAC addresses of
+        # the prefix from them while forwarding was still off
+        echo 0 > /proc/sys/net/ipv6/conf/br-lan/accept_ra
+        v6_lan_down
+        ip -6 addr add "${prefix}1/64" dev br-lan
+        echo "${prefix}1/64" > "$LAN6"
+    fi
+    nft -f - <<NFT
+table ip6 mu300_v6
+delete table ip6 mu300_v6
+table ip6 mu300_v6 {
+    chain forward {
+        type filter hook forward priority filter; policy accept;
+        tcp flags syn tcp option maxseg size set rt mtu
+    }
+}
+NFT
+    echo "IPv6 up on $IFACE, ${prefix}/64 shared on br-lan"
+}
+
+# "2001:db8:1:2:a:b:c:d" -> "2001:db8:1:2::" (the first four groups, for a /64 advertised by the network)
+prefix64() {
+    echo "$1" | awk -F: '{
+        s = $0
+        if (s ~ /::/) { h = s; sub(/::.*/, "", h); t = s; sub(/.*::/, "", t)
+            nh = (h == "") ? 0 : split(h, x, ":"); nt = (t == "") ? 0 : split(t, y, ":")
+            s = h; for (j = 0; j < 8 - nh - nt; j++) s = s (s == "" ? "" : ":") "0"
+            if (t != "") s = s ":" t }
+        split(s, g, ":"); print g[1] ":" g[2] ":" g[3] ":" g[4] "::"
+    }'
+}
+
+v6_lan_down() {
+    [ -f "$LAN6" ] && ip -6 addr del "$(cat "$LAN6")" dev br-lan 2>/dev/null || true
+    rm -f "$LAN6"
+}
+
+v6_off() {
+    v6_lan_down
+    nft delete table ip6 mu300_v6 2>/dev/null || true
+    ip -6 route del default dev "$IFACE" 2>/dev/null || true
+    [ -w "/proc/sys/net/ipv6/conf/$IFACE/disable_ipv6" ] && echo 1 > "/proc/sys/net/ipv6/conf/$IFACE/disable_ipv6"
+    return 0
+}
+
 # Make sure the radio is on (CFUN=1). SFUN=4 alone is enough from any state; the off/on cycle is the last resort,
 # because an interrupted cycle used to leave the radio switched off with nothing to turn it back on.
 radio_on() {
@@ -181,19 +285,16 @@ up_locked() {
     # the next command read it instead of its own and the whole channel looked dead for a while.
     at "AT+CGDATA=\"M-ETHER\",$CID" 45 | grep -q CONNECT || echo "AT+CGDATA did not answer CONNECT" >&2
     prefix=$(mask2prefix "$mask")
-    # Android switches IPv6 off on this interface outright; ours was carrying a link-local address and sending
-    # router solicitations and multicast into a bearer the carrier only gave us IPv4 on. Matching it costs
-    # nothing while the context is "IP", and takes one more difference out of the downlink question
-    # (FINDINGS 13f). MU300_PDP_TYPE=IPV4V6 leaves IPv6 alone, since then it is wanted.
+    iid=$(v6_iid)
+    # Without an IPv6 address from the network, switch IPv6 off on this interface, as Android does: otherwise it
+    # carries a link-local address and sends router solicitations and multicast into a bearer that is IPv4 only
+    # (FINDINGS 13f). With one, v6_up below (systemd) or the proto handler (OpenWrt) sets it up.
     # On OpenWrt this is undone a moment later - netifd turns IPv6 back on while it configures the interface -
-    # so the proto handler repeats it after proto_send_update. Here it is for the systemd path, which configures
-    # the interface itself and where it sticks.
-    if [ "${MU300_PDP_TYPE:-IP}" = IP ] && [ -w "/proc/sys/net/ipv6/conf/$IFACE/disable_ipv6" ]; then
-        echo 1 > "/proc/sys/net/ipv6/conf/$IFACE/disable_ipv6"
-    fi
+    # so the proto handler repeats it after proto_send_update.
+    [ -n "$iid" ] || v6_off
     if [ "${MU300_NETIFD:-0}" = 1 ]; then
         # OpenWrt: netifd (proto mu300cell) configures the address, routes, DNS and firewall itself
-        printf 'IFACE=%s\nIP=%s\nPREFIX=%s\nDNS1=%s\nDNS2=%s\n' "$IFACE" "$ip4" "$prefix" "$dns1" "$dns2"
+        printf 'IFACE=%s\nIP=%s\nPREFIX=%s\nDNS1=%s\nDNS2=%s\nIID6=%s\n' "$IFACE" "$ip4" "$prefix" "$dns1" "$dns2" "$iid"
         return 0
     fi
     ip link set "$IFACE" up
@@ -222,6 +323,7 @@ table ip mu300_nat {
     }
 }
 NFT
+    [ -n "$iid" ] && v6_up "$iid"
     led 255
     echo "mobile data up on $IFACE ($(at 'AT+COPS?' | sed -n 's/^+COPS: [0-9],[0-9],"\([^"]*\)".*/\1/p'))"
 }
@@ -230,6 +332,7 @@ down() {
     touch /run/mu300-mobile-data-down   # tells watch not to reconnect
     led 0
     nft delete table ip mu300_nat 2>/dev/null || true
+    v6_off
     ip route del default dev "$IFACE" 2>/dev/null || true
     ip addr flush dev "$IFACE" 2>/dev/null || true
     ip link set "$IFACE" down 2>/dev/null || true

@@ -17,5 +17,10 @@ ip link set usb0 master br-lan
 ip link set usb0 up
 ip addr replace "$LAN_IP/24" dev br-lan
 ip link set br-lan up
-exec dnsmasq --keep-in-foreground --conf-file=/dev/null --interface=br-lan --bind-interfaces \
-    --dhcp-range=$NET.2,$NET.200,255.255.255.0,12h --dhcp-leasefile=/run/mu300-lan.leases
+# IPv6: mobile-data puts the network's /64 on br-lan when the carrier gives one (and removes it again), and
+# constructor:br-lan advertises whatever global /64 is there - SLAAC, with DNS by RDNSS and stateless DHCPv6.
+# Nothing is advertised while br-lan has no global address. bind-dynamic rather than bind-interfaces, so DNS also
+# answers on that address, which appears after dnsmasq has started.
+exec dnsmasq --keep-in-foreground --conf-file=/dev/null --interface=br-lan --bind-dynamic \
+    --dhcp-range=$NET.2,$NET.200,255.255.255.0,12h --dhcp-leasefile=/run/mu300-lan.leases \
+    --enable-ra --dhcp-range=::,constructor:br-lan,ra-stateless,12h
