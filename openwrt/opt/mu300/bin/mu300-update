@@ -389,8 +389,17 @@ apply() {
         SYSTEM_CHANGED=1
     done
     # the kernel goes with the modules of the systems just installed, so it follows them
-    boot_update "$tag" || printf '\nThe boot image was not updated (see above); the systems were.\n'
-    [ -n "$SYSTEM_CHANGED$BOOT_CHANGED" ] || { printf '\nNothing to do.\n'; return 0; }
+    boot_ok=1
+    boot_update "$tag" || { boot_ok=; printf '\nThe boot image was not updated (see above)%s.\n' "${SYSTEM_CHANGED:+; the systems were}"; }
+    if [ -z "$SYSTEM_CHANGED$BOOT_CHANGED" ]; then
+        [ -n "$boot_ok" ] || return 1
+        printf '\nNothing to do.\n'
+        return 0
+    fi
+    if [ -z "$SYSTEM_CHANGED" ]; then
+        printf '\nReboot to start the new kernel. The previous boot image is kept: mu300-update rollback-boot\n'
+        return 0
+    fi
     case " $list " in
         *" $(running_os) "*) printf '\nReboot to start the updated %s. The previous version is kept: mu300-update rollback\n' "$(running_os)" ;;
         *) printf '\nDone. The updated system is used the next time you switch to it.\n' ;;
