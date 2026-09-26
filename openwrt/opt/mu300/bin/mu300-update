@@ -14,8 +14,8 @@
 # the next boot - so an interrupted download or unpack can never leave a half-updated system behind.
 #
 # The kernel and the boot image are updated here too, from releases that carry the generic boot ramdisk segment (see
-# boot_update). An mu300-update from before that installs the new system, which brings the new mu300-update: run
-# "mu300-update apply" once more and it updates the boot image as well.
+# boot_update). An mu300-update from before that installs the new system, which brings the new mu300-update: after
+# a reboot (the running system is still the old one until then), "mu300-update apply" updates the boot image too.
 export PATH="$PATH:/opt/mu300/bin:/opt/mu300/busybox-bin:/usr/sbin:/sbin"
 REPO=${MU300_REPO:-dikeckaan/mu300-linux}
 DISK=${MU300_DISK:-/mnt/mu300-disk}
@@ -92,6 +92,57 @@ vendor_list() {
     esac
 }
 
+# Accounts are settings too, and /etc/shadow is not in keep_list: an update used to leave the image's own password
+# (the well-known ubuntu/ubuntu, or OpenWrt's empty root) and drop the users added on the device. Take the old
+# entry of every account both systems have (password hashes, group memberships merged), and bring over the users
+# and groups the old system added (ids 1000-59999).
+ACCOUNTS_MARK=/etc/.mu300-accounts-from-image   # in the images; removed once the accounts are the device's own
+merge_accounts() {  # merge_accounts OLD_ROOT NEW_ROOT   ("" is the running system)
+    o=$1 n=$2
+    [ -f "$o/etc/shadow" ] && [ -f "$n/etc/shadow" ] || return 0
+    for f in passwd group shadow gshadow; do
+        [ -f "$o/etc/$f" ] && [ -f "$n/etc/$f" ] || continue
+        awk -F: -v OFS=: -v f="$f" -v op="$o/etc/passwd" -v og="$o/etc/group" '
+            BEGIN {
+                while ((getline l < op) > 0) { split(l, a, ":"); if (a[3] >= 1000 && a[3] < 60000) lu[a[1]] = 1 }
+                while ((getline l < og) > 0) { split(l, a, ":"); if (a[3] >= 1000 && a[3] < 60000) lg[a[1]] = 1 }
+            }
+            NR == FNR { old[$1] = $0; next }
+            {
+                seen[$1] = 1
+                if ((f == "shadow" || f == "gshadow") && ($1 in old)) { print old[$1]; next }
+                if (f == "group" && ($1 in old)) {
+                    split(old[$1], og4, ":"); m = $4; k = split(og4[4], om, ",")
+                    for (i = 1; i <= k; i++)
+                        if (om[i] != "" && index("," m ",", "," om[i] ",") == 0) m = (m == "" ? om[i] : m "," om[i])
+                    $4 = m
+                }
+                print
+            }
+            END {
+                for (x in old) if (!(x in seen)) {
+                    if ((f == "passwd" || f == "shadow") && (x in lu)) print old[x]
+                    if ((f == "group" || f == "gshadow") && (x in lg)) print old[x]
+                }
+            }' "$o/etc/$f" "$n/etc/$f" > "$n/etc/$f.mu300" || { rm -f "$n/etc/$f.mu300"; return 1; }
+        # cat, not mv: keeps the file's owner and mode (shadow is root:shadow 0640)
+        [ -s "$n/etc/$f.mu300" ] && cat "$n/etc/$f.mu300" > "$n/etc/$f"
+        rm -f "$n/etc/$f.mu300"
+    done
+    rm -f "$n$ACCOUNTS_MARK"
+}
+
+# at boot (mu300-accounts): a system that an older mu300-update installed still has the image's accounts, and the
+# system it replaced is still on the disk as <os>.old - take them from there before anyone can log in
+accounts() {
+    [ -e "$ACCOUNTS_MARK" ] || return 0
+    os=$(running_os)
+    if [ -f "$DISK/$os.old/etc/shadow" ]; then
+        merge_accounts "$DISK/$os.old" "" && echo "accounts and passwords carried over from the previous $os"
+    fi
+    rm -f "$ACCOUNTS_MARK"
+}
+
 apply_one() {  # apply_one OS TAG
     os=$1 tag=$2
     old=$DISK/$os
@@ -128,6 +179,7 @@ apply_one() {  # apply_one OS TAG
         rm -rf "$new/$k"
         cp -a "$old/$k" "$new/$k"
     done
+    merge_accounts "$old" "$new" || echo "$os: could not carry the accounts over; the image's default password applies" >&2
     if [ -n "$newver" ]; then
         mkdir -p "$new$CONF"
         printf '%s\n' "$newver" > "$new$VERSION_FILE"
@@ -383,6 +435,7 @@ case ${1:-check} in
           boot_update "$t" || exit 1; [ -n "${BOOT_CHANGED:-}" ] && printf '\nReboot to start the new kernel.\n' ;;
     rollback) shift; rollback "$@" ;;
     rollback-boot) rollback_boot ;;
+    accounts) accounts ;;
     clean) clean ;;
     -h|--help|help) sed -n '2,10s/^# \{0,1\}//p' "$0" ;;
     *) echo "usage: mu300-update check|apply [os...]|boot|rollback [os]|rollback-boot|clean" >&2; exit 2 ;;
