@@ -35,6 +35,11 @@ echo "==> kernel bundle"
 K=$D/kernel && mkdir -p "$K"
 cp -R "$IN/out/modules" "$K/modules"
 cp "$KOUT/Image" "$KOUT/modules.builtin" "$KOUT/modules.builtin.modinfo" "$IN/busybox" "$IN/tools/logdw/logdw" "$K/"
+# the device-independent part of the boot ramdisk, which mu300-update puts behind the device's own ramdisk to update
+# the kernel and the boot image without a computer (same builder and file list as install.sh)
+python3 "$TOP/boot/build-boot-image.py" --generic-ramdisk --modules "$IN/out/modules" --busybox "$IN/busybox" \
+  --logdw "$IN/tools/logdw/logdw" --ueventd-perms "$TOP/android-vendor/ueventd-perms.sh" \
+  --out "$K/ramdisk-generic.lz4" >/dev/null
 tar -C "$K" -czf "$D/mu300-kernel.tar.gz" .
 rm -rf "$K"
 
@@ -81,7 +86,7 @@ Prebuilt images for \`./install.sh\` (ZTE F50 / MU300). Check your device first 
 
 | file | contents |
 |---|---|
-| mu300-kernel.tar.gz | Linux 5.4.254 \`Image\` and modules, static busybox and logdw for the boot image |
+| mu300-kernel.tar.gz | Linux 5.4.254 \`Image\` and modules, static busybox and logdw for the boot image, and the generic boot ramdisk segment \`mu300-update\` uses |
 | mu300-ubuntu-rootfs.tar.gz | Ubuntu 24.04 LTS root filesystem |
 | mu300-openwrt-rootfs.tar.gz | OpenWrt 25.12.5 root filesystem |
 

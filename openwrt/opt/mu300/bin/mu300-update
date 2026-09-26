@@ -1,8 +1,11 @@
 #!/bin/sh
 # Update the installed systems from a published release, on the device itself.
 #   mu300-update check            what is installed, what is the newest release
-#   mu300-update apply [OS...]    download, unpack and switch (default: every installed system)
+#   mu300-update apply [OS...]    download, unpack and switch (default: every installed system), then the kernel and
+#                                 the boot image
+#   mu300-update boot             only the kernel and the boot image
 #   mu300-update rollback [OS]    go back to the previous version kept as <os>.old
+#   mu300-update rollback-boot    go back to the previous boot image
 #   mu300-update clean            delete the kept <os>.old copies
 #
 # How it works: the new filesystem is unpacked next to the old one as <os>.new on the Linux partition, your settings
@@ -10,8 +13,9 @@
 # <os>). Renaming the directory a running system boots from is safe - the running processes keep the old one until
 # the next boot - so an interrupted download or unpack can never leave a half-updated system behind.
 #
-# The kernel and the boot image are NOT updated: they have to be built with your device's own Android files, which
-# only ./install.sh on a computer can do. This is reported when a release needs a newer kernel.
+# The kernel and the boot image are updated here too, from releases that carry the generic boot ramdisk segment (see
+# boot_update). An mu300-update from before that installs the new system, which brings the new mu300-update: run
+# "mu300-update apply" once more and it updates the boot image as well.
 export PATH="$PATH:/opt/mu300/bin:/opt/mu300/busybox-bin:/usr/sbin:/sbin"
 REPO=${MU300_REPO:-dikeckaan/mu300-linux}
 DISK=${MU300_DISK:-/mnt/mu300-disk}
@@ -58,11 +62,13 @@ check() {
     printf 'newest release    %s\n' "$latest"
     printf 'systems on disk   %s\n' "$(installed_systems)"
     printf 'running now       %s\n' "$(running_os)"
-    printf 'kernel            %s\n' "$(uname -r)"
+    printf 'kernel            %s (boot image: %s)\n' "$(uname -r)" "$(cat "$BOOTDIR/installed.tag" 2>/dev/null || echo "from the installer")"
     for os in $(installed_systems); do
         [ -d "$DISK/$os.old" ] && printf 'rollback available for %s (%s)\n' "$os" "$(cat "$DISK/$os.old/etc/mu300/image-version" 2>/dev/null || echo unknown)"
     done
-    if [ "$(installed_version)" = "$latest" ]; then
+    if [ "$(installed_version)" = "$latest" ] && [ "$(cat "$BOOTDIR/installed.tag" 2>/dev/null)" != "$latest" ]; then
+        printf '\nThe system is up to date; the boot image may not be. Run: mu300-update apply\n'
+    elif [ "$(installed_version)" = "$latest" ]; then
         printf '\nUp to date.\n'
     else
         printf '\nRun: mu300-update apply\n'
@@ -164,20 +170,175 @@ apply_one() {  # apply_one OS TAG
     printf '%s: updated %s -> %s\n' "$os" "$(cat "$DISK/$os.old$VERSION_FILE" 2>/dev/null || echo unknown)" "$(cat "$old$VERSION_FILE" 2>/dev/null || echo unknown)"
 }
 
+# ---- the kernel and the boot image ------------------------------------------------------------------------------
+# The boot image in boot_b is the stock header and AVB tail of this device, the kernel, and a ramdisk that holds this
+# device's own Android files next to the generic part (init, busybox, modules). The kernel unpacks concatenated
+# ramdisk segments in turn and a later file replaces an earlier one, so an update keeps the device's ramdisk as it is
+# and appends the release's generic segment (ramdisk-generic.lz4 in mu300-kernel.tar.gz): nothing has to be
+# unpacked or compressed here, and nothing from Android is needed. The device's segment is kept in $BOOTDIR, so the
+# image does not grow with every update; it is taken from boot_b again whenever boot_b was not written by us (a new
+# install from a computer).
+BOOTDIR=$DISK/boot
+PERSIST_LOG=$((48 << 20))   # boot_b keeps the persistent init log from 48 MiB on (boot/build-boot-image.py)
+
+part_dev() {  # part_dev NAME -> /dev/<block device of that partition>
+    for u in /sys/class/block/*/uevent; do
+        grep -qx "PARTNAME=$1" "$u" 2>/dev/null || continue
+        d=${u%/uevent}
+        echo "/dev/${d##*/}"
+        return 0
+    done
+    return 1
+}
+u32() { od -An -tu4 -j "$2" -N4 "$1" | tr -d ' \n'; }                 # u32 FILE OFFSET (little endian)
+be64() { printf '%d' "0x$(od -An -tx1 -j "$2" -N8 "$1" | tr -d ' \n')"; }  # be64 FILE OFFSET
+bytes() {  # bytes VALUE COUNT le|be: the value as raw bytes
+    v=$1 n=$2 i=0
+    while [ "$i" -lt "$n" ]; do
+        if [ "$3" = le ]; then s=$((8 * i)); else s=$((8 * (n - 1 - i))); fi
+        printf "\\$(printf %o $(( (v >> s) & 255 )))"
+        i=$((i + 1))
+    done
+}
+poke() { dd of="$1" bs=1 seek="$2" conv=notrunc 2>/dev/null; }      # poke FILE OFFSET < bytes
+fsize() { wc -c < "$1" | tr -d ' '; }
+pad_page() { p=$(( (4096 - $(fsize "$1") % 4096) % 4096 )); [ "$p" = 0 ] || head -c "$p" /dev/zero >> "$1"; }
+head_sha() { dd if="$1" bs=4096 count=$(( ($2 + 4095) / 4096 )) 2>/dev/null | head -c "$2" | sha256sum | cut -d' ' -f1; }
+
+# write BODY (from offset 0), VBMETA right behind it and FOOTER into the last 64 bytes of boot_b, then read it back
+write_boot() {  # write_boot DEV PSIZE BODY VBMETA FOOTER
+    cat "$3" "$4" > "$3.all"
+    dd if="$3.all" of="$1" bs=4096 conv=notrunc 2>/dev/null && sync || return 1
+    dd if="$5" of="$1" bs=64 seek=$(($2 / 64 - 1)) conv=notrunc 2>/dev/null && sync || return 1
+    echo 3 > /proc/sys/vm/drop_caches 2>/dev/null
+    [ "$(head_sha "$1" "$(fsize "$3.all")")" = "$(sha256sum < "$3.all" | cut -d' ' -f1)" ] || return 1
+    [ "$(dd if="$1" bs=64 skip=$(($2 / 64 - 1)) count=1 2>/dev/null | sha256sum | cut -d' ' -f1)" = \
+      "$(sha256sum < "$5" | cut -d' ' -f1)" ] || return 1
+    rm -f "$3.all"
+}
+
+boot_update() {  # boot_update TAG   (MU300_KERNEL_BUNDLE=FILE uses a local mu300-kernel.tar.gz instead)
+    tag=$1
+    dev=$(part_dev boot_b) || { echo "boot: no boot_b partition found, boot image not updated" >&2; return 1; }
+    psize=$(( $(cat "/sys/class/block/${dev##*/}/size") * 512 ))
+    tmp=$DISK/.mu300-update/boot
+    rm -rf "$tmp"; mkdir -p "$tmp" "$BOOTDIR"
+
+    say "boot: kernel and boot image"
+    bundle=${MU300_KERNEL_BUNDLE:-}
+    if [ -z "$bundle" ]; then
+        base=https://github.com/$REPO/releases/download/$tag
+        sums=$(fetch_stdout "$base/SHA256SUMS") || { echo "boot: cannot download SHA256SUMS" >&2; return 1; }
+        want=$(printf '%s\n' "$sums" | awk '$2 == "mu300-kernel.tar.gz" || $2 == "*mu300-kernel.tar.gz" {print $1}')
+        [ -n "$want" ] || { echo "boot: release $tag has no kernel bundle" >&2; return 1; }
+        bundle=$tmp/mu300-kernel.tar.gz
+        fetch_file "$base/mu300-kernel.tar.gz" "$bundle" || { echo "boot: download failed" >&2; return 1; }
+        [ "$(sha256sum "$bundle" | cut -d' ' -f1)" = "$want" ] || { echo "boot: checksum mismatch, nothing was changed" >&2; return 1; }
+    fi
+    [ -s "$bundle" ] || { echo "boot: $bundle not found" >&2; return 1; }
+    tar -tzf "$bundle" > "$tmp/list" 2>/dev/null || { echo "boot: $bundle is not a readable tar.gz" >&2; return 1; }
+    if ! grep -qx './ramdisk-generic.lz4' "$tmp/list"; then
+        printf 'boot: release %s predates on-device boot updates; the boot image is unchanged\n' "$tag"
+        rm -rf "$tmp"; return 0
+    fi
+    tar -xzf "$bundle" -C "$tmp" ./Image ./ramdisk-generic.lz4 || { echo "boot: unpacking $bundle failed" >&2; return 1; }
+    [ -s "$tmp/Image" ] && [ -s "$tmp/ramdisk-generic.lz4" ] || { echo "boot: no kernel in the bundle" >&2; return 1; }
+    id=$(cat "$tmp/Image" "$tmp/ramdisk-generic.lz4" | sha256sum | cut -d' ' -f1)
+
+    # the image in boot_b now: stock header page, kernel, ramdisk; AVB footer in the last 64 bytes
+    dd if="$dev" of="$tmp/hdr" bs=4096 count=1 2>/dev/null
+    dd if="$dev" of="$tmp/footer" bs=64 skip=$((psize / 64 - 1)) count=1 2>/dev/null
+    [ "$(head -c 8 "$tmp/hdr")" = ANDROID! ] && [ "$(u32 "$tmp/hdr" 40)" = 4 ] ||
+        { echo "boot: boot_b does not hold a boot image header v4, not touching it" >&2; return 1; }
+    [ "$(head -c 4 "$tmp/footer")" = AVBf ] || { echo "boot: boot_b has no AVB footer, not touching it" >&2; return 1; }
+    ksz=$(u32 "$tmp/hdr" 8); rsz=$(u32 "$tmp/hdr" 12)
+    osize=$(be64 "$tmp/footer" 12); vbs=$(be64 "$tmp/footer" 28)
+    dd if="$dev" of="$tmp/body" bs=4096 count=$((osize / 4096)) 2>/dev/null
+    dd if="$dev" bs=4096 skip=$((osize / 4096)) count=$(( (vbs + 4095) / 4096 )) 2>/dev/null | head -c "$vbs" > "$tmp/vbmeta"
+    cur=$(sha256sum < "$tmp/body" | cut -d' ' -f1)
+    if [ "$cur" = "$(cat "$BOOTDIR/written.sha256" 2>/dev/null)" ] && [ "$id" = "$(cat "$BOOTDIR/installed.id" 2>/dev/null)" ]; then
+        printf 'boot: already up to date (%s)\n' "$(cat "$BOOTDIR/installed.tag" 2>/dev/null || echo "$tag")"
+        rm -rf "$tmp"; return 0
+    fi
+    if [ "$cur" != "$(cat "$BOOTDIR/written.sha256" 2>/dev/null)" ] || [ ! -s "$BOOTDIR/device-ramdisk.lz4" ]; then
+        # boot_b comes from an installer: its whole ramdisk becomes the device segment (its generic files are
+        # replaced by the ones appended below)
+        roff=$((4096 + (ksz + 4095) / 4096 * 4096))
+        head -c "$((roff + rsz))" "$tmp/body" | tail -c "$rsz" > "$BOOTDIR/device-ramdisk.lz4.new"
+        [ "$(od -An -tx1 -N4 "$BOOTDIR/device-ramdisk.lz4.new" | tr -d ' \n')" = 02214c18 ] ||
+            { rm -f "$BOOTDIR/device-ramdisk.lz4.new"; echo "boot: the ramdisk in boot_b is not LZ4 legacy, not touching it" >&2; return 1; }
+        mv "$BOOTDIR/device-ramdisk.lz4.new" "$BOOTDIR/device-ramdisk.lz4"
+    fi
+
+    # new image: same header with the new sizes, kernel, device segment + generic segment, AVB tail
+    nksz=$(fsize "$tmp/Image")
+    nrsz=$(( $(fsize "$BOOTDIR/device-ramdisk.lz4") + $(fsize "$tmp/ramdisk-generic.lz4") ))
+    cp "$tmp/hdr" "$tmp/new"
+    bytes "$nksz" 4 le | poke "$tmp/new" 8
+    bytes "$nrsz" 4 le | poke "$tmp/new" 12
+    cat "$tmp/Image" >> "$tmp/new"; pad_page "$tmp/new"
+    cat "$BOOTDIR/device-ramdisk.lz4" "$tmp/ramdisk-generic.lz4" >> "$tmp/new"; pad_page "$tmp/new"
+    nosize=$(fsize "$tmp/new")
+    [ $((nosize + vbs)) -le "$PERSIST_LOG" ] ||
+        { echo "boot: the new image ($nosize bytes) would reach the persistent log area, not touching boot_b" >&2; return 1; }
+    cp "$tmp/footer" "$tmp/newfooter"
+    { bytes "$nosize" 8 be; bytes "$nosize" 8 be; bytes "$vbs" 8 be; } | poke "$tmp/newfooter" 12
+
+    # keep the current image for rollback-boot, then write
+    cp "$tmp/body" "$BOOTDIR/prev.body"; cp "$tmp/vbmeta" "$BOOTDIR/prev.vbmeta"; cp "$tmp/footer" "$BOOTDIR/prev.footer"
+    cat "$BOOTDIR/installed.tag" > "$BOOTDIR/prev.tag" 2>/dev/null || echo installer > "$BOOTDIR/prev.tag"
+    sync
+    if ! write_boot "$dev" "$psize" "$tmp/new" "$tmp/vbmeta" "$tmp/newfooter"; then
+        echo "boot: writing boot_b failed verification; restoring the previous image" >&2
+        write_boot "$dev" "$psize" "$BOOTDIR/prev.body" "$BOOTDIR/prev.vbmeta" "$BOOTDIR/prev.footer" ||
+            echo "boot: RESTORE FAILED - do not reboot into Linux; reinstall with ./install.sh from a computer" >&2
+        return 1
+    fi
+    sha256sum < "$tmp/new" | cut -d' ' -f1 > "$BOOTDIR/written.sha256"
+    echo "$id" > "$BOOTDIR/installed.id"
+    echo "$tag" > "$BOOTDIR/installed.tag"
+    sync
+    rm -rf "$tmp"
+    printf 'boot: updated to %s (kernel %s bytes, ramdisk %s bytes). If it does not start, the device falls back\n' "$tag" "$nksz" "$nrsz"
+    printf '      to Android by itself; mu300-update rollback-boot restores the previous image.\n'
+    BOOT_CHANGED=1
+}
+
+rollback_boot() {
+    mounted_disk
+    [ -s "$BOOTDIR/prev.body" ] || die "no previous boot image kept"
+    dev=$(part_dev boot_b) || die "no boot_b partition found"
+    psize=$(( $(cat "/sys/class/block/${dev##*/}/size") * 512 ))
+    write_boot "$dev" "$psize" "$BOOTDIR/prev.body" "$BOOTDIR/prev.vbmeta" "$BOOTDIR/prev.footer" ||
+        die "writing the previous boot image failed verification"
+    sha256sum < "$BOOTDIR/prev.body" | cut -d' ' -f1 > "$BOOTDIR/written.sha256"
+    rm -f "$BOOTDIR/installed.id"
+    cat "$BOOTDIR/prev.tag" > "$BOOTDIR/installed.tag" 2>/dev/null
+    sync
+    printf 'boot: previous boot image (%s) restored. Reboot to start it.\n' "$(cat "$BOOTDIR/prev.tag" 2>/dev/null || echo unknown)"
+}
+
 apply() {
     mounted_disk
     tag=${MU300_RELEASE:-$(latest_release)}
     [ -n "$tag" ] || die "could not reach GitHub (is the device online?)"
     list=$*
     [ -n "$list" ] || list=$(installed_systems)
+    BOOT_CHANGED=
+    SYSTEM_CHANGED=
     for os in $list; do
         case $os in ubuntu|openwrt) ;; *) die "unknown system '$os'" ;; esac
+        # already there: an older mu300-update installed this release's system, and this run is for the boot image
+        if [ "$(cat "$DISK/$os$VERSION_FILE" 2>/dev/null)" = "$tag" ] && [ -z "${MU300_FORCE:-}" ]; then
+            printf '%s: already %s\n' "$os" "$tag"
+            continue
+        fi
         apply_one "$os" "$tag"
+        SYSTEM_CHANGED=1
     done
-    # the kernel lives in the boot image, which can only be built on a computer with your own Android files
-    krel=$(uname -r)
-    printf '\nThe kernel (%s) and the boot image are unchanged.\n' "$krel"
-    printf 'If the release notes mention a new kernel, run ./install.sh on your computer and choose "update".\n'
+    # the kernel goes with the modules of the systems just installed, so it follows them
+    boot_update "$tag" || printf '\nThe boot image was not updated (see above); the systems were.\n'
+    [ -n "$SYSTEM_CHANGED$BOOT_CHANGED" ] || { printf '\nNothing to do.\n'; return 0; }
     case " $list " in
         *" $(running_os) "*) printf '\nReboot to start the updated %s. The previous version is kept: mu300-update rollback\n' "$(running_os)" ;;
         *) printf '\nDone. The updated system is used the next time you switch to it.\n' ;;
@@ -218,8 +379,11 @@ clean() {
 case ${1:-check} in
     check) check ;;
     apply) shift; apply "$@" ;;
+    boot) mounted_disk; t=${MU300_RELEASE:-$(latest_release)}; [ -n "$t" ] || die "could not reach GitHub (is the device online?)"
+          boot_update "$t" || exit 1; [ -n "${BOOT_CHANGED:-}" ] && printf '\nReboot to start the new kernel.\n' ;;
     rollback) shift; rollback "$@" ;;
+    rollback-boot) rollback_boot ;;
     clean) clean ;;
-    -h|--help|help) sed -n '2,8s/^# \{0,1\}//p' "$0" ;;
-    *) echo "usage: mu300-update check|apply [os...]|rollback [os]|clean" >&2; exit 2 ;;
+    -h|--help|help) sed -n '2,10s/^# \{0,1\}//p' "$0" ;;
+    *) echo "usage: mu300-update check|apply [os...]|boot|rollback [os]|rollback-boot|clean" >&2; exit 2 ;;
 esac
