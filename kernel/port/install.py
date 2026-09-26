@@ -143,4 +143,17 @@ t = open(rp).read()
 if 'ump96xx-rtc' not in t:
     t = t.replace('\t{ .compatible = "sprd,sc2731-rtc", },\n', '\t{ .compatible = "sprd,sc2731-rtc", },\n\t{ .compatible = "sprd,ump96xx-rtc", },\n', 1)
     open(rp, 'w').write(t)
+# Every edit above is a text substitution, and one whose anchor drifted in a new kernel release changes nothing
+# without saying so. Check the result rather than trusting the substitutions.
+expect = [
+    ('drivers/mfd/sprd-sc27xx-spi.c', ['ump9620_data = {', '"sprd,ump9620"', '.name = "ump9620"']),
+    ('drivers/mmc/host/sdhci-sprd.c', ['MU300: only the non-removable eMMC', 'DLL_PHASE_INTERNAL\t0x2 /* MU300 r11p3 */']),
+    ('drivers/nvmem/sprd-efuse.c', ['"sprd,qogirn6pro-efuse"', 'econfig.read_only = true;']),
+    ('drivers/rtc/rtc-sc27xx.c', ['"sprd,ump96xx-rtc"']),
+    ('drivers/usb/dwc3/dwc3-of-simple.c', ['"sprd,qogirn6pro-dwc3"']),
+    ('drivers/usb/dwc3/core.c', ['"snps,sprd-dwc3"']),
+]
+missing = [(p, w) for p, ws in expect for w in ws if w not in open(os.path.join(tree, p)).read()]
+if missing:
+    sys.exit('port: edits did not apply (anchor changed in this kernel?): ' + '; '.join(f'{p}: {w}' for p, w in missing))
 print('port installed')

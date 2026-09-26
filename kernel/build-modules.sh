@@ -2,10 +2,14 @@
 # Build the out-of-tree vendor modules (WCN) against the mainline tree built by build.sh.
 # Run inside the mu300-mainline-build container: bash /work/build-modules.sh [module-dir...]
 set -eo pipefail
-K=/src/linux-6.18.52
-O=/src/out-6.18.52
-mods=${*:-wcn_bsp}
+KV=${KV:-6.18.54}
+K=/src/linux-$KV
+O=/src/out-$KV
+# every out-of-tree module, in dependency order (wlan/bt use wcn_bsp, the PMIC watchdog and Mali the modem's headers)
+mods=${*:-wcn_bsp sprd_wlan_combo sprdbt_tty sprd_modem sprd_pmic_wdt mali}
 mkdir -p /work/out/modules
+# a full build starts clean, so no module of another kernel release ends up next to the new ones
+[ $# -gt 0 ] || rm -f /work/out/modules/*.ko /work/out/modules/*.log
 # Module.symvers for the built-in exports (pcie-sprd etc.)
 make -C $K O=$O ARCH=arm64 -j"$(nproc)" modules > $O/modules.log 2>&1 || { tail -20 $O/modules.log; exit 1; }
 extra=
