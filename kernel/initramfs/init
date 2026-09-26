@@ -139,14 +139,15 @@ setup_usb_gadget() {
     # The USB network functions: whichever of these the kernel actually has. Creating one it was not built with
     # fails here, and a gadget that is never bound leaves the device with no console and no network at all - which
     # is exactly what an "improvement" to NCM cost once (on a mainline build without it; both kernels have it now).
-    # RNDIS (the vendor kernel has it only as Unisoc's sprd_usb_f_rndis module, loaded from module-order) gets a
-    # configuration of its own, the first one: Windows only ever uses the first, and binds its inbox RNDIS driver
-    # to it through the MS OS descriptors below - every Windows from 7 on, no INF. The CDC function goes into the
-    # next one: NCM (Windows 10 2004+/11 would bind UsbNcm.sys to it as well), else ECM. Linux skips RNDIS
-    # configurations on purpose and takes that one, as macOS does with g_ether's identical layout.
-    # MU300_USBNET (kernel command line) picks the functions: "ecm" alone is the old single-configuration gadget.
+    # NCM by default, in a single configuration with the ACM console: Windows 10 2004+/11 bind their inbox
+    # UsbNcm.sys to it, macOS and Linux their own drivers - all measured, none needs an INF. ECM, which Windows has
+    # no driver for, is the fallback. MU300_USBNET (kernel command line) picks the functions.
+    # "rndis ncm" is for Windows without NCM (7, 8, 10 before 2004): RNDIS gets configuration 1 and NCM moves to
+    # configuration 2. Windows only ever uses the first, and binds rndis.sys to it through the MS OS descriptors
+    # below; Linux skips RNDIS configurations on purpose. macOS does not: it takes configuration 1 as well, finds
+    # no driver for RNDIS and has no network (measured) - which is why RNDIS is not the default.
     rndis= netfunc=
-    for f in ${MU300_USBNET:-rndis ncm ecm}; do
+    for f in ${MU300_USBNET:-ncm ecm}; do
         case $f in
             rndis) [ -z "$rndis" ] && mkdir -p "$g/functions/rndis.rn0" 2>/dev/null && rndis=1 ;;
             *) [ -z "$netfunc" ] && mkdir -p "$g/functions/$f.usb0" 2>/dev/null && netfunc=$f ;;
