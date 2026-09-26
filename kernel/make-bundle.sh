@@ -6,6 +6,7 @@
 #     ./ramdisk-generic.lz4  boot/init, busybox, logdw and the modules of upstream/module-order.txt
 #     ./modules/*.ko         every module, for /lib/modules/<release> on the root filesystem
 #     ./kernel.release       the kernel's release string (uname -r)
+#     ./modules.builtin*     what the kernel has built in, for depmod/modprobe
 # busybox and logdw are the static helpers of the 5.4 bundle (default: the newest one under release/).
 set -eu
 TOP=$(cd "$(dirname "$0")/.." && pwd)
@@ -35,6 +36,7 @@ python3 "$TOP/boot/build-boot-image.py" --generic-ramdisk --modules "$U/out/modu
     --module-order "$U/module-order.txt" --busybox "$W/busybox" --logdw "$W/logdw" \
     --ueventd-perms "$TOP/android-vendor/ueventd-perms.sh" --out "$W/b/ramdisk-generic.lz4" >/dev/null
 cp "$U"/out/modules/*.ko "$W/b/modules/"
+for f in modules.builtin modules.builtin.modinfo; do [ ! -f "$U/out/$f" ] || cp "$U/out/$f" "$W/b/"; done
 echo "$krel" > "$W/b/kernel.release"
 tar -C "$W/b" -czf "$OUT" .
 echo "$OUT: kernel $krel, $(ls "$W/b/modules" | wc -l | tr -d ' ') modules, ramdisk segment $(wc -c < "$W/b/ramdisk-generic.lz4" | tr -d ' ') bytes"

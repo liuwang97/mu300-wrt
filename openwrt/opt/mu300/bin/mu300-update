@@ -328,12 +328,21 @@ boot_update() {  # boot_update TAG   (MU300_KERNEL_BUNDLE=FILE uses a local mu30
     # switch back. Ubuntu keeps them under extra/ and indexes them; OpenWrt keeps them flat and loads by path.
     if grep -qx './kernel.release' "$tmp/list"; then
         tar -xzf "$bundle" -C "$tmp" ./kernel.release ./modules || { echo "boot: unpacking the modules failed" >&2; return 1; }
+        for f in modules.builtin modules.builtin.modinfo; do
+            if grep -qx "./$f" "$tmp/list"; then tar -xzf "$bundle" -C "$tmp" "./$f" || true; fi
+        done
         krel=$(cat "$tmp/kernel.release")
         case $krel in ''|*/*|.*) echo "boot: bad kernel release '$krel' in the bundle" >&2; return 1 ;; esac
         for os in $(installed_systems); do
             case $os in ubuntu) d=$DISK/$os/lib/modules/$krel/extra ;; *) d=$DISK/$os/lib/modules/$krel ;; esac
             mkdir -p "$d" && cp "$tmp"/modules/*.ko "$d/" || { echo "boot: installing the modules into $os failed" >&2; return 1; }
-            if [ "$os" = ubuntu ] && command -v depmod >/dev/null; then depmod -b "$DISK/$os" "$krel" 2>/dev/null || true; fi
+            if [ "$os" = ubuntu ]; then
+                # what the kernel has built in (bundles from v2026.09.29 on): modprobe of a built-in driver then
+                # succeeds, and depmod stops warning
+                for f in modules.builtin modules.builtin.modinfo; do [ ! -f "$tmp/$f" ] || cp "$tmp/$f" "$DISK/$os/lib/modules/$krel/"; done
+                [ -e "$DISK/$os/lib/modules/$krel/modules.order" ] || : > "$DISK/$os/lib/modules/$krel/modules.order"
+                if command -v depmod >/dev/null; then depmod -b "$DISK/$os" "$krel" 2>/dev/null || true; fi
+            fi
         done
         printf 'boot: %s modules for %s installed into: %s\n' "$(ls "$tmp/modules" | wc -l | tr -d ' ')" "$krel" "$(installed_systems)"
     fi

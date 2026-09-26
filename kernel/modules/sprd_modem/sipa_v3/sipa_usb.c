@@ -376,7 +376,7 @@ static int sipa_usb_probe(struct platform_device *pdev)
 	ndev->irq = 0;
 	ndev->dma = 0;
 
-	random_ether_addr(ndev->dev_addr);
+	eth_hw_addr_random(ndev);	/* through dev_addr_set(), which newer kernels check */
 
 	SET_NETDEV_DEVTYPE(ndev, &gadget_type);
 

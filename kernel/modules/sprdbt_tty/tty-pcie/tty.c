@@ -609,7 +609,8 @@ static int mtty_tty_driver_init(struct mtty_device *device)
     /* initialize the tty driver */
     tty_set_operations(driver, &mtty_ops);
     tty_port_link_device(device->port0, driver, 0);
-    tty_port_link_device(device->port1, driver, 1);
+    /* the driver has MTTY_DEV_MAX_NR (1) line: linking port1 at index 1 wrote past driver->ports[] (newer kernels
+     * refuse it with a warning). port1 never carries data. */
     ret = tty_register_driver(driver);
     if (ret) {
         #if(LINUX_VERSION_CODE >= KERNEL_VERSION(5,15,0))

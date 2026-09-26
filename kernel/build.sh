@@ -45,4 +45,6 @@ cpp -nostdinc -undef -D__DTS__ -x assembler-with-cpp -I include -I scripts/dtc/i
   /work/dts/ums9620-mu300.dts | dtc -I dts -O dtb -o $O/ums9620-mu300.dtb -
 mkdir -p /work/out
 cp $O/arch/arm64/boot/Image $O/ums9620-mu300.dtb /work/out/
+# for depmod on the device: modprobe of a built-in driver fails without them
+cp $O/modules.builtin $O/modules.builtin.modinfo /work/out/
 ls -la /work/out

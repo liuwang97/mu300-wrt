@@ -353,7 +353,7 @@ static int sipa_eth_probe(struct platform_device *pdev)
 	netdev->netdev_ops = &sipa_eth_ops;
 	netdev->watchdog_timeo = 1 * HZ;
 
-	random_ether_addr(netdev->dev_addr);
+	eth_hw_addr_random(netdev);	/* through dev_addr_set(), which newer kernels check */
 
 	netdev->hw_features |= NETIF_F_SG;
 	netdev->hw_features |= NETIF_F_RXCSUM | NETIF_F_IP_CSUM |

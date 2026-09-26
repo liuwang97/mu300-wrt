@@ -902,7 +902,7 @@ static int seth_probe(struct platform_device *pdev)
 	netdev->irq = 0;
 	netdev->dma = 0;
 
-	random_ether_addr(netdev->dev_addr);
+	eth_hw_addr_random(netdev);	/* through dev_addr_set(), which newer kernels check */
 
 	netif_napi_add(netdev, &seth->napi,
 		       seth_rx_poll_handler, SETH_NAPI_WEIGHT);
