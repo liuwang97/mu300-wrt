@@ -1,8 +1,13 @@
 #!/bin/bash
-# One LAN for USB and Wi-Fi clients: br-lan (192.168.77.1/24) with usb0 (ECM gadget, bound in the initramfs)
+# One LAN for USB and Wi-Fi clients: br-lan (192.168.77.1/24 unless lan.conf says otherwise) with usb0 (ECM gadget, bound in the initramfs)
 # and wlan0 (added by hostapd via bridge=br-lan). A single dnsmasq serves DHCP/DNS on the bridge.
 set -euo pipefail
-LAN_IP=${MU300_LAN_IP:-192.168.77.1}
+# The address lives in /etc/mu300/lan.conf (LAN_IP=192.168.77.1), so two devices on one PC can each have their
+# own subnet. Always a /24; DHCP hands out .2-.200 of it.
+[ -f /etc/mu300/lan.conf ] && . /etc/mu300/lan.conf
+LAN_IP=${MU300_LAN_IP:-${LAN_IP:-192.168.77.1}}
+case $LAN_IP in *.*.*.*) ;; *) echo "bad LAN_IP '$LAN_IP' in /etc/mu300/lan.conf" >&2; exit 1 ;; esac
+NET=${LAN_IP%.*}
 ip link show br-lan >/dev/null 2>&1 || ip link add br-lan type bridge
 ip link set br-lan type bridge stp_state 0 forward_delay 0
 for n in $(seq 1 30); do ip link show usb0 >/dev/null 2>&1 && break; sleep 1; done
@@ -13,4 +18,4 @@ ip link set usb0 up
 ip addr replace "$LAN_IP/24" dev br-lan
 ip link set br-lan up
 exec dnsmasq --keep-in-foreground --conf-file=/dev/null --interface=br-lan --bind-interfaces \
-    --dhcp-range=192.168.77.2,192.168.77.200,255.255.255.0,12h --dhcp-leasefile=/run/mu300-lan.leases
+    --dhcp-range=$NET.2,$NET.200,255.255.255.0,12h --dhcp-leasefile=/run/mu300-lan.leases
