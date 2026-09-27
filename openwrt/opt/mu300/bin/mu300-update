@@ -85,6 +85,14 @@ rootfs_asset() {  # rootfs_asset OS
     case $u in 26.04) echo mu300-ubuntu-26.04-rootfs.tar.gz ;; *) echo mu300-ubuntu-rootfs.tar.gz ;; esac
 }
 
+# Unpack with GNU tar, and with busybox tar when that fails: the GNU tar of Ubuntu 26.04 needs openat2(), which
+# kernel 5.4 does not have ("Cannot open: Function not implemented" for everything below the top directory), and
+# busybox tar is on both systems. Without this a 26.04 that ended up on 5.4 could not even install another kernel.
+untar() {
+    tar "$@" 2>/dev/null && return 0
+    command -v busybox >/dev/null && busybox tar "$@"
+}
+
 installed_version() { [ -r "$VERSION_FILE" ] && cat "$VERSION_FILE" || echo unknown; }
 # the directory the running system booted from (it stays in use under any name until the reboot)
 is_root() { [ -d "$1" ] && [ / -ef "$1" ]; }
@@ -214,7 +222,7 @@ apply_one() {  # apply_one OS TAG
 
     say "$os: unpacking"
     rm -rf "$new"; mkdir -p "$new"
-    tar -xzpf "$tmp/$tarball" -C "$new" || { rm -rf "$new" "$tmp/$tarball"; die "unpacking failed, nothing was changed"; }
+    untar -xzpf "$tmp/$tarball" -C "$new" || { rm -rf "$new" "$tmp/$tarball"; die "unpacking failed, nothing was changed"; }
     rm -f "$tmp/$tarball"
     [ -x "$new/sbin/init" ] || [ -L "$new/sbin/init" ] || [ -x "$new/bin/busybox" ] || { rm -rf "$new"; die "the unpacked system looks wrong, nothing was changed"; }
 
@@ -349,15 +357,15 @@ boot_update() {  # boot_update TAG   (MU300_KERNEL_BUNDLE=FILE uses a local mu30
         printf 'boot: release %s predates on-device boot updates; the boot image is unchanged\n' "$tag"
         rm -rf "$tmp"; return 0
     fi
-    tar -xzf "$bundle" -C "$tmp" ./Image ./ramdisk-generic.lz4 || { echo "boot: unpacking $bundle failed" >&2; return 1; }
+    untar -xzf "$bundle" -C "$tmp" ./Image ./ramdisk-generic.lz4 || { echo "boot: unpacking $bundle failed" >&2; return 1; }
     [ -s "$tmp/Image" ] && [ -s "$tmp/ramdisk-generic.lz4" ] || { echo "boot: no kernel in the bundle" >&2; return 1; }
     # A kernel the systems were not built with (the mainline bundle) brings its modules along: they go into every
     # installed system before the boot image changes, next to the ones of the other kernel, which stay for a
     # switch back. Ubuntu keeps them under extra/ and indexes them; OpenWrt keeps them flat and loads by path.
     if grep -qx './kernel.release' "$tmp/list"; then
-        tar -xzf "$bundle" -C "$tmp" ./kernel.release ./modules || { echo "boot: unpacking the modules failed" >&2; return 1; }
+        untar -xzf "$bundle" -C "$tmp" ./kernel.release ./modules || { echo "boot: unpacking the modules failed" >&2; return 1; }
         for f in modules.builtin modules.builtin.modinfo; do
-            if grep -qx "./$f" "$tmp/list"; then tar -xzf "$bundle" -C "$tmp" "./$f" || true; fi
+            if grep -qx "./$f" "$tmp/list"; then untar -xzf "$bundle" -C "$tmp" "./$f" || true; fi
         done
         krel=$(cat "$tmp/kernel.release")
         case $krel in ''|*/*|.*) echo "boot: bad kernel release '$krel' in the bundle" >&2; return 1 ;; esac
@@ -438,6 +446,12 @@ boot_update() {  # boot_update TAG   (MU300_KERNEL_BUNDLE=FILE uses a local mu30
     BOOT_CHANGED=1
 }
 
+# Ubuntu 26.04 needs a mainline kernel: its GNU tar opens every file below the top with openat2(RESOLVE_BENEATH),
+# which 5.4 does not have (5.6 brought it), and fails with ENOSYS instead of falling back - no update or archive
+# with folders unpacks there. Other programs of that release can expect more of the kernel still.
+ubuntu_release() { sed -n 's/^VERSION_ID="\(.*\)"/\1/p' "$DISK/ubuntu/usr/lib/os-release" 2>/dev/null; }
+UBUNTU_2604_KERNEL="Ubuntu 26.04 needs a mainline kernel (6.18 or 7.2): its programs use system calls that 5.4 does not have"
+
 kernel_cmd() {  # kernel [5.4|6.18|7.2]: show or change the kernel, and install it
     mounted_disk
     case ${1:-} in
@@ -445,6 +459,8 @@ kernel_cmd() {  # kernel [5.4|6.18|7.2]: show or change the kernel, and install 
         5.4|6.18|7.2) ;;
         *) die "usage: mu300-update kernel [5.4|6.18|7.2]" ;;
     esac
+    [ "$1" = 5.4 ] && [ "$(ubuntu_release)" = 26.04 ] &&
+        die "$UBUNTU_2604_KERNEL (tar cannot unpack folders there). Stay on a mainline kernel, or move Ubuntu back first: sudo MU300_UBUNTU=24.04 mu300-update apply"
     mkdir -p "$BOOTDIR"
     old=$(kernel_choice)
     echo "$1" > "$KERNEL_CHOICE"
@@ -527,6 +543,8 @@ apply() {
     [ -n "$list" ] || list=$(installed_systems)
     BOOT_CHANGED=
     SYSTEM_CHANGED=
+    [ "${MU300_UBUNTU:-}" = 26.04 ] && [ "$(kernel_choice)" = 5.4 ] &&
+        die "$UBUNTU_2604_KERNEL. Change the kernel first: sudo mu300-update kernel 6.18 (or 7.2)"
     todo=
     for os in $list; do
         case $os in ubuntu|openwrt) ;; *) die "unknown system '$os'" ;; esac
