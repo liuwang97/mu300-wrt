@@ -246,6 +246,34 @@ setup_usb_gadget() {
 load_vendor_modules
 setup_usb_gadget
 ROOT_OFFSET=27762098176   # linux-boot/rootfs-region.env; outside every GPT partition
+# The region is not at the same place on every device (eMMC size, partition layout), and a number in this file is
+# not enough: the installer writes the device's offset in here, but the generic ramdisk segment that updates put
+# behind this one (mu300-update, and a mainline kernel from the installer) carries its own init, which replaces
+# this file - with the default above. Devices whose region is elsewhere then booted into standalone mode and went
+# back to Android. So find it the way the installer places it - the first 2 MiB boundary after the last partition
+# - and take the first candidate that really holds the mu300root filesystem (ext4 magic and label).
+is_mu300root() {  # is_mu300root OFFSET
+    [ "$(dd if=/dev/mmcblk0 bs=1 skip=$(($1 + 1080)) count=2 2>/dev/null | od -An -tx1 | tr -d ' \n')" = 53ef ] &&
+    [ "$(dd if=/dev/mmcblk0 bs=1 skip=$(($1 + 1144)) count=9 2>/dev/null)" = mu300root ]
+}
+find_root_offset() {
+    e=0
+    for p in /sys/block/mmcblk0/mmcblk0p*; do
+        [ -r "$p/start" ] || continue
+        x=$(( $(cat "$p/start") + $(cat "$p/size") ))
+        [ "$x" -gt "$e" ] && e=$x
+    done
+    for c in $(( (e / 4096 + 1) * 4096 * 512 )) $ROOT_OFFSET; do
+        is_mu300root "$c" && { echo "$c"; return 0; }
+    done
+    return 1
+}
+if found=$(find_root_offset); then
+    [ "$found" = "$ROOT_OFFSET" ] || log "stage=root-offset found=$found (default $ROOT_OFFSET)"
+    ROOT_OFFSET=$found
+else
+    log "stage=root-offset not-found (trying the default $ROOT_OFFSET)"
+fi
 mkdir -p /newroot
 # busybox mount only sets up a loop for regular files; for a block device the loop options would
 # be handed to ext4 (EINVAL), so attach the loop explicitly and verify its offset
