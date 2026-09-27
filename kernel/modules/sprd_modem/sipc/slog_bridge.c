@@ -534,7 +534,10 @@ static void slog_bridge_data_move(struct slog_action *sba, int param)
 		while (!(ushort volatile)log_transport) {
 			dev_dbg(sb->dev, "wait log_transport=%d\n",
 				log_transport);
-			msleep(2000);
+			/* interruptible: an uninterruptible msleep() kept this thread in D state - one more on the load
+			 * average, for good - while the modem log is off (a kthread gets no signals, so it still
+			 * sleeps the full 2 s) */
+			msleep_interruptible(2000);
 		}
 
 		kernel_vser_set_pass_mode(true);

@@ -1674,7 +1674,6 @@ static const struct file_operations sbuf_debug_fops = {
 	.release = single_release,
 };
 
-static DEVICE_ATTR(base_addr, 0440, NULL, NULL);
 
 int sbuf_init_debug(void)
 {
@@ -1708,7 +1707,8 @@ int sbuf_init_debug(void)
 	sbuf_dev->sys_dev = device_create(sbuf_class, NULL,
 				       dev_no,
 				       sbuf_dev, "sipc_sbuf");
-	device_create_file(&sbuf_dev->pdev.dev, &dev_attr_base_addr);
+	/* the vendor also created a "base_addr" attribute here: with neither show nor store, on a device that is
+	 * never registered - it could never be read, and newer kernels warn twice for it */
 
 	return 0;
 

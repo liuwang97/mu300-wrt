@@ -601,7 +601,7 @@ static int sipa_dummy_set_mac_address(struct net_device *ndev, void *priv)
 		return -EADDRNOTAVAIL;
 
 	ether_addr_copy(dummy->mac_addr, addr->sa_data);
-	ether_addr_copy(ndev->dev_addr, addr->sa_data);
+	eth_hw_addr_set(ndev, addr->sa_data);	/* dev_addr only through dev_addr_set() */
 
 	return 0;
 }
@@ -795,7 +795,7 @@ static void sipa_dummy_ndev_init(struct net_device *ndev)
 			    NETIF_F_IPV6_CSUM |
 			    NETIF_F_HW_CSUM);
 	eth_random_addr(dummy->mac_addr);
-	ether_addr_copy(ndev->dev_addr, dummy->mac_addr);
+	eth_hw_addr_set(ndev, dummy->mac_addr);	/* dev_addr only through dev_addr_set() */
 	pr_info("got MAC address: %pM\n", ndev->dev_addr);
 
 	for (i = 0; i < SIPA_DUMMY_MAX_CPUS; i++) {

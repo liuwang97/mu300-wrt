@@ -970,7 +970,6 @@ static const struct file_operations smsg_debug_fops = {
 	.release = single_release,
 };
 
-static DEVICE_ATTR(base_addr, 0440, NULL, NULL);
 
 int smsg_init_debug(void)
 {
@@ -1004,7 +1003,8 @@ int smsg_init_debug(void)
 	smsg_dev->sys_dev = device_create(smsg_class, NULL,
 				       dev_no,
 				       smsg_dev, "sipc_smsg");
-	device_create_file(&smsg_dev->pdev.dev, &dev_attr_base_addr);
+	/* the vendor also created a "base_addr" attribute here: with neither show nor store, on a device that is
+	 * never registered - it could never be read, and newer kernels warn twice for it */
 
 	return 0;
 

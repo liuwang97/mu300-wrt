@@ -1976,7 +1976,13 @@ void sc2355_tx_drop_tcp_msg(struct sprd_chip *chip, struct sprd_msg *msg)
 
 void sc2355_tx_down(struct tx_mgmt *tx_mgmt)
 {
+	/* the idle tx thread waits here: TASK_IDLE, not an uninterruptible wait, which counted it on the load
+	 * average all the time */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)
+	wait_for_completion_state(&tx_mgmt->tx_completed, TASK_IDLE);
+#else
 	wait_for_completion(&tx_mgmt->tx_completed);
+#endif
 }
 
 void sc2355_tx_up(struct tx_mgmt *tx_mgmt)

@@ -70,8 +70,6 @@ static const struct file_operations sprd_mbox_debug_ops = {
 	.release = single_release,
 };
 
-static DEVICE_ATTR(base_addr, 0440, NULL, NULL);
-
 static int sprd_mbox_debug(void)
 {
 	int rval;
@@ -104,7 +102,8 @@ static int sprd_mbox_debug(void)
 	mbox_dev->sys_dev = device_create(mbox_class, NULL,
 				       dev_no,
 				       mbox_dev, "mbox");
-	device_create_file(&mbox_dev->pdev.dev, &dev_attr_base_addr);
+	/* the vendor also created a "base_addr" attribute here: with neither show nor store, on mbox_dev->pdev - a
+	 * device that is never registered - so it could never be read, and newer kernels warn twice per mailbox */
 
 	return 0;
 
