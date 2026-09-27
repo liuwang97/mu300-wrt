@@ -7,7 +7,7 @@ Checking host tools and device	正在检查电脑上的工具和设备
 kernel outputs missing in {1} (run kernel/build-all.sh)	{1} 中缺少内核编译输出（请运行 kernel/build-all.sh）
 su does not work on the device	设备上的 su 无法使用
 device: {1}	设备：{1}
-This does not look like a ZTE F50/MU300. Continue anyway? (yes/no)	这看起来不是 ZTE F50/MU300。仍要继续吗？(是/否)
+This does not look like a ZTE F50/MU300 or U30 Air. Continue anyway? (yes/no)	这看起来不是 ZTE F50/MU300 或 U30 Air。仍要继续吗？(是/否)
 Android must be running from slot a	Android 必须从 a 槽 (slot a) 启动
 Not enough free space - this looks like the 32 GB variant	空闲空间不足——这似乎是 32 GB 版本
 could not read the partition table	无法读取分区表
@@ -97,8 +97,8 @@ Ubuntu	Ubuntu
 Ubuntu 26.04 needs a mainline kernel (6.18 or 7.2): its programs use system calls that 5.4 does not have (tar, for one, cannot unpack folders there).	Ubuntu 26.04 需要主线内核（6.18 或 7.2）：它的程序使用了 5.4 没有的系统调用（例如 tar 在 5.4 上无法解压包含文件夹的归档）。
 this copy has changes of its own, so {1} files were left as they are	此副本有自己的修改，因此 {1} 个文件保持原样
 no answer left for the question: {1}	这个问题已经没有可用的答案了：{1}
-more than one adb device: using {1} (F50/MU300)	连接了多个 adb 设备：使用 {1}（F50/MU300）
-more than one adb device - which one is the F50?	连接了多个 adb 设备——哪一个是 F50？
+more than one adb device: using {1} ({2})	连接了多个 adb 设备：使用 {1}（{2}）
+more than one adb device - which one is the F50 or U30 Air?	连接了多个 adb 设备——哪一个是 F50 或 U30 Air？
 Device	设备
 Kernel	内核
 enter 1, 2 or 3	请输入 1、2 或 3
@@ -190,3 +190,4 @@ restarting the updated installer	正在重新启动更新后的安装程序
 yes	是
 no	否
 update	update（更新）
+release {1} does not support this device yet; use a newer one	版本 {1} 尚不支持此设备；请使用更新的版本

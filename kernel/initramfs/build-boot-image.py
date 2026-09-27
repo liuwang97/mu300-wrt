@@ -16,6 +16,7 @@ Example:
     --ueventd-perms android-vendor/ueventd-perms.sh --out boot-linux-slotb.img
 """
 import argparse
+import re
 import hashlib
 import json
 import os
@@ -118,6 +119,12 @@ def main():
                          'mu300-update to put behind the ramdisk of the boot image already on the device')
     ap.add_argument('--modules', required=True, type=Path, help='flat directory with the built .ko files')
     ap.add_argument('--module-order', type=Path, default=HERE / 'module-order.txt')
+    ap.add_argument('--device-modules', action='append', default=[], metavar='NAME=DIR',
+                    help='modules built for another device of this family (u30air=out/u30air): they go to '
+                         'linux-modules/NAME/ with boot/module-order-NAME.txt, and init loads them in place of the '
+                         'ones of the same name when it runs on that device')
+    ap.add_argument('--device', help='the device this image is for (f50, u30air): written to /etc/mu300-device, '
+                                     'which init trusts over its own guess from the device tree')
     ap.add_argument('--init', type=Path, default=HERE / 'init')
     ap.add_argument('--busybox', required=True, type=Path, help='static arm64 busybox')
     ap.add_argument('--logdw', required=True, type=Path, help='tools/logdw build (static arm64)')
@@ -146,6 +153,28 @@ def main():
         if not ko.exists():
             sys.exit(f'missing module {ko}')
         files['linux-modules/' + name] = (ko.read_bytes(), stat.S_IFREG | 0o644)
+    for spec in a.device_modules:
+        dev, _, ddir = spec.partition('=')
+        order = HERE / f'module-order-{dev}.txt'
+        files[f'etc/module-order-{dev}'] = (order.read_bytes(), stat.S_IFREG | 0o644)
+        dirs.add('linux-modules/' + dev)
+        # the kernel these were built for: a mainline kernel's generic segment replaces the modules and the order
+        # of the base set, but not these, and init must not load them into a kernel they were not built for
+        vermagic = re.search(rb'vermagic=(\S+)', next(Path(ddir).glob('*.ko')).read_bytes()).group(1)
+        files[f'linux-modules/{dev}/kernel.release'] = (vermagic + b'\n', stat.S_IFREG | 0o644)
+        for name in order.read_text().split():
+            ko = Path(ddir) / name
+            if ko.exists():
+                files[f'linux-modules/{dev}/{name}'] = (ko.read_bytes(), stat.S_IFREG | 0o644)
+            elif 'linux-modules/' + name not in files:
+                if not (a.modules / name).exists():
+                    sys.exit(f'missing module {name} for {dev} (neither {ko} nor in --modules)')
+                files['linux-modules/' + name] = ((a.modules / name).read_bytes(), stat.S_IFREG | 0o644)
+    if a.device:
+        # only in the device segment: a generic segment is the same for every device
+        if a.generic_ramdisk:
+            ap.error('--device does not go into a generic ramdisk')
+        files['etc/mu300-device'] = (a.device.encode() + b'\n', stat.S_IFREG | 0o644)
     if a.generic_ramdisk:
         # The kernel unpacks concatenated ramdisk segments in turn and a later file replaces an earlier one of the
         # same name, so this segment behind the device's own ramdisk updates everything that is not the device's.

@@ -30,6 +30,8 @@ log() {
 # (image ends near 39 MiB). Survives a cold power cycle, unlike pstore.
 bootb=
 persist() {
+    # subshells (the reboot timer) started before the eMMC was found learn the device from this file
+    [ -n "$bootb" ] || bootb=$(cat /run/bootb 2>/dev/null)
     [ -n "$bootb" ] && [ -b "$bootb" ] || return
     # the periodic loop and the reboot timer both call this
     mkdir /run/persist.lock 2>/dev/null || return
@@ -82,36 +84,67 @@ echo 1 > /proc/sys/kernel/sysrq
  rmdir /run/persist.lock
  persist; reboot -f; sleep 10; echo b > /proc/sysrq-trigger) &
 
+# Which device this is. The ZTE U30 Air is the F50's board with a battery: ZTE's SQC charger stack, USB-PD, LEDs.
+# It runs the same kernel with its own build of a few modules (linux-modules/u30air/, see kernel/build-u30air.sh)
+# and its own load order; without them the charger manager never probes and USB stays down. The installer names
+# the device in /etc/mu300-device (the device segment of the ramdisk, which the generic segment of an update does
+# not replace); without that file the stock device tree tells: only the U30 Air's has the charger policy service.
+if [ -s /etc/mu300-device ]; then
+    DEVICE=$(cat /etc/mu300-device)
+elif [ -d /proc/device-tree/charger_policy_service ]; then
+    DEVICE=u30air
+else
+    DEVICE=f50
+fi
+# its modules only for the kernel they were built for (a mainline kernel brings its own set and order)
+MODULE_ORDER=/etc/module-order
+if [ "$DEVICE" != f50 ] && [ -s /etc/module-order-$DEVICE ] &&
+   [ "$(cat /linux-modules/$DEVICE/kernel.release 2>/dev/null)" = "$(uname -r)" ]; then
+    MODULE_ORDER=/etc/module-order-$DEVICE
+else
+    DEVICE_MODULES=none
+fi
+log "stage=device $DEVICE order=$MODULE_ORDER"
+
 load_vendor_modules() {
     loaded=0
     failed=0
     while read module; do
         # vendor_boot's /lib/modules were built for the stock kernel; only our rebuilt copies match
         file="/linux-modules/$module"
+        [ -z "${DEVICE_MODULES:-}" ] && [ -f "/linux-modules/$DEVICE/$module" ] && file="/linux-modules/$DEVICE/$module"
         if insmod "$file" 2>/run/insmod.err; then
             loaded=$((loaded + 1))
         else
             failed=$((failed + 1))
             log "insmod-fail $module $(cat /run/insmod.err)"
         fi
-    done < /etc/module-order
+    done < $MODULE_ORDER
     mdev -s
     log "stage=modules-done loaded=$loaded failed=$failed"
 }
 
-
-# Locate misc now; whether slot a is restored is decided once the rootfs is known.
+# misc and boot_b: where they are is known only once the eMMC is there, and its driver (sdhci-sprd) is one of
+# the vendor modules - an earlier lookup found nothing (U30 Air: misc-NOT-FOUND, no persistent log). So this runs
+# after load_vendor_modules; whether slot a is restored is decided once the rootfs is known.
 misc=
-for n in $(seq 1 20); do
-    for u in /sys/class/block/mmcblk*p*/uevent; do
-        grep -qx PARTNAME=misc "$u" 2>/dev/null || continue
-        misc=/dev/$(basename "$(dirname "$u")")
+find_partitions() {
+    for n in $(seq 1 20); do
+        for u in /sys/class/block/mmcblk*p*/uevent; do
+            grep -qx PARTNAME=misc "$u" 2>/dev/null && misc=/dev/$(basename "$(dirname "$u")")
+            grep -qx PARTNAME=boot_b "$u" 2>/dev/null && bootb=/dev/$(basename "$(dirname "$u")")
+        done
+        [ -b "$misc" ] && [ -b "$bootb" ] && break
+        sleep 1
+        mdev -s
     done
-    [ -n "$misc" ] && [ -b "$misc" ] && break
-    misc=
-    sleep 1
-    mdev -s
-done
+    [ -b "$misc" ] || misc=
+    [ -b "$bootb" ] || bootb=
+    echo "$bootb" > /run/bootb
+    log "stage=persist-target dev=${bootb:-none} misc=${misc:-none}"
+    persist
+    (while :; do sleep 15; persist; done) &
+}
 
 write_misc_bc() {  # write_misc_bc FILE STAGE
     [ -n "$misc" ] || { log "stage=misc-NOT-FOUND"; return 1; }
@@ -121,13 +154,6 @@ write_misc_bc() {  # write_misc_bc FILE STAGE
     if cmp -s /run/bc.bin "$1"; then log "stage=$2 dev=$misc"; else log "stage=$2-MISMATCH dev=$misc"; fi
 }
 restore_slot_a() { write_misc_bc /etc/misc-bc-slot-a.bin misc-restored; }
-
-for u in /sys/class/block/mmcblk*p*/uevent; do
-    grep -qx PARTNAME=boot_b "$u" 2>/dev/null && bootb=/dev/$(basename "$(dirname "$u")")
-done
-log "stage=persist-target dev=${bootb:-none}"
-persist
-(while :; do sleep 15; persist; done) &
 
 hostname mu300-linux
 ifconfig lo 127.0.0.1 up
@@ -244,6 +270,7 @@ setup_usb_gadget() {
 # appears and gives up after a few seconds, so the closer the gadget comes to the system that answers (the DHCP
 # server starts right after switch_root), the more reliably the host gets an address.
 load_vendor_modules
+find_partitions
 setup_usb_gadget
 ROOT_OFFSET=27762098176   # linux-boot/rootfs-region.env; outside every GPT partition
 # The region is not at the same place on every device (eMMC size, partition layout), and a number in this file is
@@ -337,6 +364,7 @@ if [ -n "$rootloop" ] && losetup -o $ROOT_OFFSET "$rootloop" /dev/mmcblk0 2>>/ru
     mkdir -p /run/mu300 && cp /etc/misc-bc-slot-a.bin /etc/misc-bc-slot-b-trial.bin /run/mu300/
     [ -n "$misc" ] && echo "$misc" > /run/mu300/misc-dev
     echo "$rootloop" > /run/mu300/disk-dev
+    echo "$DEVICE" > /run/mu300/device
     init=/sbin/init
     [ -x /newroot/lib/systemd/systemd ] && init=/lib/systemd/systemd
     log "stage=switch-root root=$rootdir init=$init os=$(sed -n 's/^PRETTY_NAME=//p' /newroot/etc/os-release)"
