@@ -90,6 +90,10 @@ Which kernel?	Hangi çekirdek?
 3) 7.2   the newest stable mainline Linux (7.2 for now): the newest drivers, the same functions	3) 7.2   en yeni kararlı ana hat (mainline) Linux (şimdilik 7.2): en yeni sürücüler, 6.18 ile aynı
          as 6.18; tested less than 6.18	         işlevler; 6.18'den daha az test edildi
 This can be changed later on the device: sudo mu300-update kernel 5.4|6.18|7.2	Bu seçim sonradan cihazda değiştirilebilir: sudo mu300-update kernel 5.4|6.18|7.2
+Which Ubuntu?	Hangi Ubuntu?
+1) 24.04 LTS  the longest tested, supported until 2029	1) 24.04 LTS  en uzun süre test edilen, 2029'a kadar destekleniyor
+2) 26.04 LTS  the newest (systemd 259, newer packages), supported until 2031; tested less	2) 26.04 LTS  en yenisi (systemd 259, daha yeni paketler), 2031'e kadar destekleniyor; daha az test edildi
+Ubuntu	Ubuntu
 Kernel	Çekirdek
 enter 1, 2 or 3	1, 2 ya da 3 girin
 A MU300 Linux installation is already on this device.	Bu cihazda zaten bir MU300 Linux kurulumu var.

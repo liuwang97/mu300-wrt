@@ -2,7 +2,7 @@
 # Update the installed systems from a published release, on the device itself.
 #   mu300-update check            what is installed, what is the newest release
 #   mu300-update apply [OS...]    download, unpack and switch (default: every installed system), then the kernel and
-#                                 the boot image
+#                                 the boot image (MU300_UBUNTU=24.04|26.04: move Ubuntu to that release)
 #   mu300-update boot             only the kernel and the boot image
 #   mu300-update rollback [OS]    go back to the previous version kept as <os>.old
 #   mu300-update rollback-boot    go back to the previous boot image
@@ -75,6 +75,14 @@ fetch_verified() {
     done
     echo "downloading $2 failed" >&2
     return 1
+}
+
+# The release file of a system. Ubuntu comes as 24.04 (mu300-ubuntu-rootfs.tar.gz) and as 26.04: an update keeps the
+# release that is installed (its os-release says which); MU300_UBUNTU=24.04|26.04 moves to the other one.
+rootfs_asset() {  # rootfs_asset OS
+    [ "$1" = ubuntu ] || { echo "mu300-$1-rootfs.tar.gz"; return; }
+    u=${MU300_UBUNTU:-$(sed -n 's/^VERSION_ID="\(.*\)"/\1/p' "$DISK/ubuntu/etc/os-release" 2>/dev/null)}
+    case $u in 26.04) echo mu300-ubuntu-26.04-rootfs.tar.gz ;; *) echo mu300-ubuntu-rootfs.tar.gz ;; esac
 }
 
 installed_version() { [ -r "$VERSION_FILE" ] && cat "$VERSION_FILE" || echo unknown; }
@@ -196,7 +204,7 @@ apply_one() {  # apply_one OS TAG
     old=$DISK/$os
     new=$DISK/$os.new
     [ -d "$old" ] || die "$os is not installed"
-    tarball=mu300-$os-rootfs.tar.gz
+    tarball=$(rootfs_asset "$os")
     tmp=$STAGE
     # downloaded and checked in apply() already, together with everything else this update needs
     [ -s "$tmp/$tarball" ] || die "$tarball was not downloaded"
@@ -521,7 +529,11 @@ apply() {
         case $os in ubuntu|openwrt) ;; *) die "unknown system '$os'" ;; esac
         [ -d "$DISK/$os" ] || die "$os is not installed"
         # already there: an older mu300-update installed this release's system, and this run is for the boot image
-        if [ "$(cat "$DISK/$os$VERSION_FILE" 2>/dev/null)" = "$tag" ] && [ -z "${MU300_FORCE:-}" ]; then
+        # (moving Ubuntu to the other release with MU300_UBUNTU is an update even at the same tag)
+        other=
+        [ "$os" = ubuntu ] && [ -n "${MU300_UBUNTU:-}" ] &&
+            [ "$MU300_UBUNTU" != "$(sed -n 's/^VERSION_ID="\(.*\)"/\1/p' "$DISK/ubuntu/etc/os-release" 2>/dev/null)" ] && other=1
+        if [ "$(cat "$DISK/$os$VERSION_FILE" 2>/dev/null)" = "$tag" ] && [ -z "${MU300_FORCE:-}$other" ]; then
             printf '%s: already %s\n' "$os" "$tag"
             continue
         fi
@@ -536,7 +548,7 @@ apply() {
     free=$(df -k "$DISK" | awk 'NR==2 {print $4}')
     [ "$free" -gt $((1000000 + 1000000 * $(echo $todo | wc -w))) ] || die "not enough free space on the Linux partition (about 1 GB, plus 1 GB for every system to update)"
     for os in $todo; do
-        fetch_verified "$tag" "mu300-$os-rootfs.tar.gz" || { offline_hint; die "nothing was changed; run mu300-update apply again to continue the download"; }
+        fetch_verified "$tag" "$(rootfs_asset "$os")" || { offline_hint; die "nothing was changed; run mu300-update apply again to continue the download"; }
     done
     boot_asset=
     if [ -z "${MU300_KERNEL_BUNDLE:-}" ]; then

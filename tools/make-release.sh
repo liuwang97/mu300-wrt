@@ -22,6 +22,7 @@ cp -R "$KOUT/modules" "$IN/out/modules"
 cp "$KOUT/modules.builtin" "$KOUT/modules.builtin.modinfo" "$IN/out/"
 docker build -q -t mu300-kbuild "$TOP/kernel" >/dev/null
 docker build -q -t mu300-ubuntu:24.04 "$TOP/rootfs" >/dev/null
+docker build -q --build-arg BASE=ubuntu:26.04 -t mu300-ubuntu:26.04 "$TOP/rootfs" >/dev/null
 docker run --rm mu300-ubuntu:24.04 cat /bin/busybox > "$IN/busybox"; chmod +x "$IN/busybox"
 docker run --rm -v "$TOP/tools":/src:ro -v "$IN/tools":/o mu300-kbuild sh -c '
   gcc -O2 -static -o /o/logdw/logdw /src/logdw/logdw.c &&
@@ -54,16 +55,20 @@ for kv in 6.18:out 7.2:out-7.2; do
     MU300_UPSTREAM_OUT=$o sh "$TOP/upstream/make-bundle.sh" "$D/mu300-kernel-$v.tar.gz" "$D/mu300-kernel.tar.gz"
 done
 
-echo "==> Ubuntu root filesystem (generic)"
-B=$D/ubuntu-build && mkdir -p "$B"
-tar -C "$TOP/rootfs" --exclude ./base.tar --exclude './*.tar.gz' -cf - . | tar -xf - -C "$B"
-cid=$(docker create mu300-ubuntu:24.04 /bin/true); docker export "$cid" > "$B/base.tar"; docker rm "$cid" >/dev/null
-cltest=""; [ -f "$IN/tools/gpu/cltest" ] && cltest="-v $IN/tools/gpu/cltest:/cltest:ro"
-# shellcheck disable=SC2086
-docker run --rm -v "$B":/w -v "$IN/out/modules":/kmods:ro -v "$IN/out":/kout:ro -v "$IN/tools/logdw/logdw":/logdw:ro \
-  -v "$IN/tools/bt-init/mu300-bt-init":/bt-init:ro -v "$IN/sing-box":/sing-box:ro -v "$IN/xray":/xray:ro -v "$IN/hev-socks5-tunnel":/hev-socks5-tunnel:ro $cltest \
-  -e MU300_VERSION="$TAG" mu300-ubuntu:24.04 bash /w/assemble.sh >/dev/null
-mv "$B/mu300-ubuntu-24.04-rootfs.tar.gz" "$D/mu300-ubuntu-rootfs.tar.gz"; rm -rf "$B"
+# 24.04 keeps the name it always had (older installers and mu300-update ask for it); 26.04 has its own
+for u in 24.04 26.04; do
+    echo "==> Ubuntu $u root filesystem (generic)"
+    B=$D/ubuntu-build && rm -rf "$B" && mkdir -p "$B"
+    tar -C "$TOP/rootfs" --exclude ./base.tar --exclude './*.tar.gz' -cf - . | tar -xf - -C "$B"
+    cid=$(docker create mu300-ubuntu:$u /bin/true); docker export "$cid" > "$B/base.tar"; docker rm "$cid" >/dev/null
+    cltest=""; [ -f "$IN/tools/gpu/cltest" ] && cltest="-v $IN/tools/gpu/cltest:/cltest:ro"
+    # shellcheck disable=SC2086
+    docker run --rm -v "$B":/w -v "$IN/out/modules":/kmods:ro -v "$IN/out":/kout:ro -v "$IN/tools/logdw/logdw":/logdw:ro \
+      -v "$IN/tools/bt-init/mu300-bt-init":/bt-init:ro -v "$IN/sing-box":/sing-box:ro -v "$IN/xray":/xray:ro -v "$IN/hev-socks5-tunnel":/hev-socks5-tunnel:ro $cltest \
+      -e MU300_VERSION="$TAG" mu300-ubuntu:$u bash /w/assemble.sh >/dev/null
+    out=mu300-ubuntu-rootfs.tar.gz; [ $u = 24.04 ] || out=mu300-ubuntu-$u-rootfs.tar.gz
+    mv "$B/mu300-ubuntu-$u-rootfs.tar.gz" "$D/$out"; rm -rf "$B"
+done
 
 echo "==> OpenWrt root filesystem (generic)"
 MU300_INPUTS="$IN" MU300_VERSION="$TAG" sh "$TOP/openwrt/build-rootfs.sh" mu300-openwrt-release.tar.gz >/dev/null
@@ -71,7 +76,7 @@ mv "$TOP/openwrt/mu300-openwrt-release.tar.gz" "$D/mu300-openwrt-rootfs.tar.gz"
 
 echo "==> audit"
 fail=0
-for a in mu300-kernel mu300-kernel-6.18 mu300-kernel-7.2 mu300-ubuntu-rootfs mu300-openwrt-rootfs; do
+for a in mu300-kernel mu300-kernel-6.18 mu300-kernel-7.2 mu300-ubuntu-rootfs mu300-ubuntu-26.04-rootfs mu300-openwrt-rootfs; do
     bad=$(tar -tzf "$D/$a.tar.gz" | sed 's|^\./||' | grep -E \
         -e '(^|/)lib/firmware/(wcnmodem|gnssmodem|wifi_board_config|bt_configure)' \
         -e '^opt/mu300/android/.+' -e '__properties__|dev-properties' \
@@ -103,6 +108,7 @@ Prebuilt images for \`./install.sh\` (ZTE F50 / MU300). Check your device first 
 | mu300-kernel-6.18.tar.gz | mainline Linux 6.18 (longterm) for \`mu300-update kernel 6.18\`: \`Image\`, modules, generic boot ramdisk segment |
 | mu300-kernel-7.2.tar.gz | mainline Linux 7.2 (newest stable) for \`mu300-update kernel 7.2\`: the same parts |
 | mu300-ubuntu-rootfs.tar.gz | Ubuntu 24.04 LTS root filesystem |
+| mu300-ubuntu-26.04-rootfs.tar.gz | Ubuntu 26.04 LTS root filesystem |
 | mu300-openwrt-rootfs.tar.gz | OpenWrt 25.12.5 root filesystem |
 | mu300-update | the on-device updater of this release (\`mu300-update apply\` switches to it before it changes anything) |
 
