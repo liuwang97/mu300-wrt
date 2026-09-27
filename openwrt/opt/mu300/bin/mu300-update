@@ -459,6 +459,10 @@ kernel_cmd() {  # kernel [5.4|6.18|7.2]: show or change the kernel, and install 
         5.4|6.18|7.2) ;;
         *) die "usage: mu300-update kernel [5.4|6.18|7.2]" ;;
     esac
+    # FINDINGS 33c: under a mainline kernel the U30 Air's USB never comes up (no network, no serial console), and
+    # its Wi-Fi drops clients - a device that can only be brought back by failing five boots
+    [ "$1" != 5.4 ] && [ "$(/opt/mu300/bin/mu300-device)" = u30air ] && [ -z "${MU300_FORCE:-}" ] &&
+        die "the U30 Air runs only the 5.4 kernel for now: under 6.18 and 7.2 its USB does not come up (MU300_FORCE=1 overrides this)"
     [ "$1" = 5.4 ] && [ "$(ubuntu_release)" = 26.04 ] &&
         die "$UBUNTU_2604_KERNEL (tar cannot unpack folders there). Stay on a mainline kernel, or move Ubuntu back first: sudo MU300_UBUNTU=24.04 mu300-update apply"
     mkdir -p "$BOOTDIR"

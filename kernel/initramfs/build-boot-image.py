@@ -125,6 +125,9 @@ def main():
                          'ones of the same name when it runs on that device')
     ap.add_argument('--device', help='the device this image is for (f50, u30air): written to /etc/mu300-device, '
                                      'which init trusts over its own guess from the device tree')
+    ap.add_argument('--trial-guard', type=int, metavar='SECONDS',
+                    help='for experiments only: reboot SECONDS after switch_root unless /run/stay exists (with a '
+                         'one-shot trial, that is back to Android when the kernel boots without USB)')
     ap.add_argument('--init', type=Path, default=HERE / 'init')
     ap.add_argument('--busybox', required=True, type=Path, help='static arm64 busybox')
     ap.add_argument('--logdw', required=True, type=Path, help='tools/logdw build (static arm64)')
@@ -170,6 +173,10 @@ def main():
                 if not (a.modules / name).exists():
                     sys.exit(f'missing module {name} for {dev} (neither {ko} nor in --modules)')
                 files['linux-modules/' + name] = ((a.modules / name).read_bytes(), stat.S_IFREG | 0o644)
+    if a.trial_guard:
+        if a.generic_ramdisk:
+            ap.error('--trial-guard does not go into a generic ramdisk')
+        files['etc/mu300-trial-guard'] = (b'%d\n' % a.trial_guard, stat.S_IFREG | 0o644)
     if a.device:
         # only in the device segment: a generic segment is the same for every device
         if a.generic_ramdisk:

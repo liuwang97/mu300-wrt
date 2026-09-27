@@ -195,3 +195,4 @@ installing the lz4 Python module (pip install --user lz4)	正在安装 lz4 Pytho
 start of the region: {1}	区域开头：{1}
 Python 3 is not installed; installing it for this user	未安装 Python 3；正在为当前用户安装
 {1} failed	{1} 失败
+U30 Air: kernel 5.4 and Ubuntu 24.04 (the mainline kernels, which Ubuntu 26.04 needs, do not bring up its USB yet)	U30 Air：内核 5.4 与 Ubuntu 24.04（Ubuntu 26.04 所需的主线内核尚无法启用其 USB）

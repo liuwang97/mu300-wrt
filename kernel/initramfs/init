@@ -378,6 +378,20 @@ if [ -n "$rootloop" ] && losetup -o $ROOT_OFFSET "$rootloop" /dev/mmcblk0 2>>/ru
     persist
     kill $(jobs -p) 2>/dev/null
     for p in /proc/[0-9]*; do [ "${p#/proc/}" = 1 ] || kill -9 "${p#/proc/}" 2>/dev/null; done
+    # Trial guard, only in images built with --trial-guard SECONDS (tools/flash-trial.sh experiments, never an
+    # install): the timer above ends here, and a trial kernel that boots but never brings up USB (6.18 on the U30
+    # Air) left a device that only failing five boots by hand brought back. So one more timer outlives
+    # switch_root: unless /run/stay exists by then (created over SSH), it reboots - into Android, as slot a is
+    # already restored. switch_root deletes this ramdisk, so it runs from a copy of busybox in /run, reached
+    # through its working directory once /run has moved.
+    if [ -s /etc/mu300-trial-guard ]; then
+        g=$(cat /etc/mu300-trial-guard)
+        # (named busybox: busybox takes the applet from its own name when that is not "busybox")
+        mkdir -p /run/.trial-guard && cp /bin/busybox /run/.trial-guard/busybox
+        log "stage=trial-guard ${g}s"
+        (cd /run && exec .trial-guard/busybox sh -c ".trial-guard/busybox sleep $g; [ -e stay ] && exit 0; .trial-guard/busybox sync; .trial-guard/busybox reboot -f") \
+            </dev/null >/dev/null 2>&1 &
+    fi
     umount /config 2>/dev/null
     mkdir -p /newroot/dev /newroot/proc /newroot/sys /newroot/run
     mount --move /dev /newroot/dev
