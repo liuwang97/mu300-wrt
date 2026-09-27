@@ -55,8 +55,14 @@ fetch_verified() {
     for try in 1 2 3; do
         [ -s "$STAGE/$2" ] && [ "$(sha256sum "$STAGE/$2" | cut -d' ' -f1)" = "$want" ] && return 0
         fetch_file "$base/$2" "$STAGE/$2" && [ "$(sha256sum "$STAGE/$2" | cut -d' ' -f1)" = "$want" ] && return 0
-        # a corrupt or stale file cannot be resumed: start over
+        # a corrupt or stale file cannot be resumed: start over. The kept SHA256SUMS may be the stale part - a
+        # release published again under the same tag - so it is fetched again too.
         rm -f "$STAGE/$2"
+        if _sums=$(fetch_stdout "$base/SHA256SUMS") && [ -n "$_sums" ]; then
+            printf '%s\n' "$_sums" > "$STAGE/SHA256SUMS"
+            want=$(awk -v f="$2" '$2 == f || $2 == "*" f {print $1}' "$STAGE/SHA256SUMS")
+            [ -n "$want" ] || { echo "$2 is not part of release $1" >&2; return 2; }
+        fi
         sleep 5
     done
     echo "downloading $2 failed" >&2
@@ -429,6 +435,7 @@ kernel_cmd() {  # kernel [5.4|6.18|7.2]: show or change the kernel, and install 
         echo "$old" > "$KERNEL_CHOICE"
         die "the $1 kernel was not installed; staying on $old"
     fi
+    rm -rf "$STAGE"
     sync
     printf '\nkernel %s selected. Reboot to start it (mu300-update rollback-boot goes back).\n' "$1"
 }
@@ -597,7 +604,7 @@ case ${1:-check} in
     check) check ;;
     apply) shift; apply "$@" ;;
     boot) mounted_disk; t=${MU300_RELEASE:-$(latest_release)}; [ -n "$t" ] || die "could not reach GitHub (is the device online?)"
-          boot_update "$t" || exit 1; [ -n "${BOOT_CHANGED:-}" ] && printf '\nReboot to start the new kernel.\n' ;;
+          boot_update "$t" || exit 1; rm -rf "$STAGE"; [ -n "${BOOT_CHANGED:-}" ] && printf '\nReboot to start the new kernel.\n' ;;
     rollback) shift; rollback "$@" ;;
     rollback-boot) rollback_boot ;;
     kernel) shift; kernel_cmd "$@" ;;
