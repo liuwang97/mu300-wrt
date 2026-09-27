@@ -1,0 +1,72 @@
+#!/bin/sh
+# mu300-ttl: the TTL (IPv6: hop limit) of every packet that leaves through mobile data (Ubuntu and OpenWrt).
+#   mu300-ttl                 show the setting and the rule in force
+#   mu300-ttl set N           everything out through mobile data leaves with TTL/hop limit N (1-255), kept across
+#                             reboots and updates
+#   mu300-ttl off             leave the TTLs alone (the default)
+#   mu300-ttl apply           apply the saved setting (at boot, from mu300-toolkit apply)
+#
+# Why: a phone or laptop behind the hotspot sends TTL 64 (Windows: 128); the device routes it, and it leaves with
+# 63 (127) - one less than what the device itself sends, which is how an operator can tell tethered traffic apart.
+# With "set 64" every packet leaves exactly like the device's own. The rule matches the interface by name
+# (sipa_eth*), so it survives mobile data reconnecting, and it lives in its own nftables table (inet mu300_ttl),
+# next to OpenWrt's fw4 and the Ubuntu firewall.
+export PATH="$PATH:/opt/mu300/bin:/usr/sbin:/sbin"
+CONF=/etc/mu300/ttl.conf
+TABLE="inet mu300_ttl"
+
+saved() { sed -n 's/^TTL=\([0-9]*\)$/\1/p' "$CONF" 2>/dev/null | tail -n1; }
+valid() { case $1 in ''|*[!0-9]*) return 1 ;; esac; [ "$1" -ge 1 ] && [ "$1" -le 255 ]; }
+
+apply() {
+    nft delete table $TABLE 2>/dev/null
+    t=$(saved)
+    valid "$t" || return 0
+    nft -f - <<NFT
+table $TABLE {
+    chain postrouting {
+        type filter hook postrouting priority mangle; policy accept;
+        oifname "sipa_eth*" ip ttl set $t counter
+        oifname "sipa_eth*" ip6 hoplimit set $t counter
+    }
+}
+NFT
+}
+
+status() {
+    t=$(saved)
+    if valid "$t"; then echo "TTL: fixed at $t for everything that leaves through mobile data"
+    else echo "TTL: not changed (default)"; fi
+    if [ "$(id -u)" != 0 ]; then
+        echo "rule in force: (only root can read it: sudo mu300-ttl)"
+    elif nft list table $TABLE >/dev/null 2>&1; then
+        nft list table $TABLE | awk '
+            /ip ttl set/   { for (i = 1; i <= NF; i++) { if ($i == "set") v = $(i + 1); if ($i == "packets") p = $(i + 1) }
+                             printf "rule in force: IPv4 TTL %s (%s packets so far)\n", v, p }
+            /hoplimit set/ { for (i = 1; i <= NF; i++) { if ($i == "set") v = $(i + 1); if ($i == "packets") p = $(i + 1) }
+                             printf "               IPv6 hop limit %s (%s packets so far)\n", v, p }'
+    else
+        echo "rule in force: none"
+    fi
+}
+
+root() { [ "$(id -u)" = 0 ] || { echo "run as root (sudo mu300-ttl ...)" >&2; exit 1; }; }
+
+case ${1:-status} in
+    status) status ;;
+    set)
+        root
+        valid "${2:-}" || { echo "usage: mu300-ttl set N   (N from 1 to 255; 64 is what the device itself sends)" >&2; exit 2; }
+        mkdir -p "${CONF%/*}"
+        echo "TTL=$2" > "$CONF"
+        apply || { echo "the rule could not be set (nftables)" >&2; exit 1; }
+        status ;;
+    off)
+        root
+        rm -f "$CONF"
+        apply
+        status ;;
+    apply) root; apply ;;
+    -h|--help|help) sed -n '2,8s/^# \{0,1\}//p' "$0" ;;
+    *) echo "usage: mu300-ttl [status|set N|off|apply]" >&2; exit 2 ;;
+esac
