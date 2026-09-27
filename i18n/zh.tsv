@@ -57,7 +57,7 @@ Nothing was written. Android version: {1}	未写入任何内容。Android 版本
 Type overwrite to use this region anyway	输入 overwrite 以仍然使用此区域
 cancelled	已取消
 What should be installed?	要安装什么？
-1) Ubuntu 24.04 LTS (full distribution, apt, ~500 MiB RAM in use)	1) Ubuntu 24.04 LTS（完整发行版，apt，约占用 500 MiB 内存）
+1) Ubuntu LTS: 24.04 or 26.04, asked next (full distribution, apt, ~500 MiB RAM in use)	1) Ubuntu LTS：24.04 或 26.04，稍后选择（完整发行版，apt，约占用 500 MiB 内存）
 2) OpenWrt {1} (router, LuCI web UI, ~140 MiB RAM in use)	2) OpenWrt {1}（路由器系统，LuCI 网页界面，约占用 140 MiB 内存）
 3) both (switch later with: mu300-os ubuntu|openwrt)	3) 两者都装（之后用 mu300-os ubuntu|openwrt 切换）
 (this device has {1}: {2})	（此设备有 {1}：{2}）

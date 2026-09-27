@@ -57,7 +57,7 @@ Nothing was written. Android version: {1}	Hiçbir şey yazılmadı. Android sür
 Type overwrite to use this region anyway	Bu alanı yine de kullanmak için overwrite yazın
 cancelled	iptal edildi
 What should be installed?	Ne kurulsun?
-1) Ubuntu 24.04 LTS (full distribution, apt, ~500 MiB RAM in use)	1) Ubuntu 24.04 LTS (tam dağıtım, apt, ~500 MiB RAM kullanımı)
+1) Ubuntu LTS: 24.04 or 26.04, asked next (full distribution, apt, ~500 MiB RAM in use)	1) Ubuntu LTS: 24.04 ya da 26.04, sonra sorulacak (tam dağıtım, apt, ~500 MiB RAM kullanımı)
 2) OpenWrt {1} (router, LuCI web UI, ~140 MiB RAM in use)	2) OpenWrt {1} (yönlendirici, LuCI web arayüzü, ~140 MiB RAM kullanımı)
 3) both (switch later with: mu300-os ubuntu|openwrt)	3) ikisi de (sonradan geçiş: mu300-os ubuntu|openwrt)
 (this device has {1}: {2})	(bu cihazda {1} var: {2})
