@@ -110,7 +110,10 @@ check() {
     for os in $(installed_systems); do
         [ -d "$DISK/$os.old" ] && printf 'rollback available for %s (%s)\n' "$os" "$(cat "$DISK/$os.old/etc/mu300/image-version" 2>/dev/null || echo unknown)"
     done
-    if [ "$(installed_version)" = "$latest" ] && [ "$(cat "$BOOTDIR/installed.tag" 2>/dev/null)" != "$latest" ]; then
+    # tags are dates (vYYYY.MM.DD), so they sort as text; a device ahead of the newest release runs a test one
+    if [ "$(printf '%s\n%s\n' "$(installed_version)" "$latest" | sort | tail -n1)" != "$latest" ]; then
+        printf '\nThis is newer than the newest release (a test release); mu300-update apply would go back to %s.\n' "$latest"
+    elif [ "$(installed_version)" = "$latest" ] && [ "$(cat "$BOOTDIR/installed.tag" 2>/dev/null)" != "$latest" ]; then
         printf '\nThe system is up to date; the boot image may not be. Run: mu300-update apply\n'
     elif [ "$(installed_version)" = "$latest" ]; then
         printf '\nUp to date.\n'
