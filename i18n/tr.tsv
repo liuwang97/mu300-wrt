@@ -95,6 +95,8 @@ Which Ubuntu?	Hangi Ubuntu?
 2) 26.04 LTS  BETA: the newest (systemd 259, newer packages), supported until 2031; tested less	2) 26.04 LTS  BETA: en yenisi (systemd 259, daha yeni paketler), 2031'e kadar destekleniyor; daha az test edildi
 Ubuntu	Ubuntu
 Ubuntu 26.04 needs a mainline kernel (6.18 or 7.2): its programs use system calls that 5.4 does not have (tar, for one, cannot unpack folders there).	Ubuntu 26.04 ana hat (mainline) bir çekirdek gerektirir (6.18 ya da 7.2): programları 5.4'te olmayan sistem çağrılarını kullanıyor (örneğin tar orada klasör içeren arşivleri açamıyor).
+this copy has changes of its own, so {1} files were left as they are	bu kopyanın kendi değişiklikleri var, {1} dosya olduğu gibi bırakıldı
+no answer left for the question: {1}	bu soru için başka cevap kalmadı: {1}
 Kernel	Çekirdek
 enter 1, 2 or 3	1, 2 ya da 3 girin
 A MU300 Linux installation is already on this device.	Bu cihazda zaten bir MU300 Linux kurulumu var.

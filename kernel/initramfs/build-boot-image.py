@@ -23,6 +23,7 @@ import stat
 import struct
 import subprocess
 import sys
+import tarfile
 import zlib
 from pathlib import Path
 
@@ -32,6 +33,9 @@ BOOT_CMDLINE = b'loglevel=5'
 MISC_BC_OFFSET = 0x800
 # persistent init log lives at 48 MiB inside boot_b (8 MiB); the image must end before it
 PERSIST_LOG_OFFSET = 48 << 20
+# written by android-vendor/extract_subset.py on a host whose file system cannot hold every name from the
+# device (Windows: the property area's u:object_r:<context>:s0); while it exists it holds the whole subset
+WINDOWS_TAR = 'windows-source.tar.gz'
 
 
 def cpio_record(name, data, mode, ino, rdev=(0, 0)):
@@ -166,14 +170,36 @@ def main():
     files['etc/misc-bc-slot-b-trial.bin'] = (slot_b_bc, stat.S_IFREG | 0o644)
     if a.android_subset:
         dirs.add('android')
-        for f in sorted(a.android_subset.rglob('*')):
-            rel = 'android/' + str(f.relative_to(a.android_subset))
-            if f.is_symlink():
-                files[rel] = (os.readlink(f).encode(), stat.S_IFLNK | 0o777)
-            elif f.is_dir():
-                dirs.add(rel)
-            else:
-                files[rel] = (f.read_bytes(), stat.S_IFREG | (0o755 if os.access(f, os.X_OK) else 0o644))
+        side = a.android_subset / WINDOWS_TAR
+        if side.is_file():
+            # a subset pulled on Windows: the tree there cannot hold the property area (its names contain
+            # ':') and it cannot hold the file modes either, so the whole subset comes from this archive
+            with tarfile.open(side, 'r:*') as stored:
+                for m in stored.getmembers():
+                    rel = 'android/' + m.name.lstrip('./')
+                    if m.isdir():
+                        dirs.add(rel)
+                    if m.issym():
+                        files[rel] = (m.linkname.encode(), stat.S_IFLNK | 0o777)
+                    elif m.isreg():
+                        files[rel] = (stored.extractfile(m).read(), stat.S_IFREG | (m.mode & 0o777))
+                    # the kernel does not create parents for the entries it unpacks, so add them all
+                    parts = rel.split('/')
+                    for i in range(2, len(parts)):
+                        dirs.add('/'.join(parts[:i]))
+        else:
+            for f in sorted(a.android_subset.rglob('*')):
+                if f.name == WINDOWS_TAR and f.parent == a.android_subset:
+                    continue
+                # the names must use '/': str() of a Windows path gives '\', and the kernel would take
+                # that as part of the file name and unpack one flat file instead of a directory tree
+                rel = 'android/' + str(f.relative_to(a.android_subset)).replace(os.sep, '/')
+                if f.is_symlink():
+                    files[rel] = (os.readlink(f).encode(), stat.S_IFLNK | 0o777)
+                elif f.is_dir():
+                    dirs.add(rel)
+                else:
+                    files[rel] = (f.read_bytes(), stat.S_IFREG | (0o755 if os.access(f, os.X_OK) else 0o644))
 
     # must match vendor_boot's LZ4 legacy framing: a gzip segment makes this 5.4 kernel fall
     # back to the /dev/ram0 image path and panic "Unable to mount root fs on unknown-block(1,0)"
@@ -184,6 +210,13 @@ def main():
         if extra[:4] != bytes.fromhex('02214c18'):
             sys.exit(f'{a.append_ramdisk} is not an LZ4 legacy ramdisk segment')
         ram += extra
+        # The appended segment carries an init of its own, and a later segment's file replaces an earlier one of
+        # the same name. When that bundle is older than this checkout - a release is usually older than the copy
+        # of the project that installs from it - its init is older too, and one from before v2026.09.29 knows
+        # only the default ROOT_OFFSET: a device whose Linux region is elsewhere then mounted an empty offset and
+        # booted into standalone mode (issue #5). Our init is the one built for this device (the installer writes
+        # its offset in) and searches for the region as well, so it goes behind as a third segment, unpacked last.
+        ram += lz4_legacy(cpio_archive(set(), {'init': files['init']}))
 
     kern = a.kernel.read_bytes()
     hdr = bytearray(base[:PAGE])

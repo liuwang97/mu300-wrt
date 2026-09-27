@@ -40,3 +40,5 @@ tools/ctlset/ctlset
 # written by the installer self-update in copies without git
 .mu300-source
 upstream/out-*/
+# the user's own list of files the self-update leaves alone (tools/self-update.sh, install.ps1)
+.mu300-keep
