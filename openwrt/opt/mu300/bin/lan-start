@@ -1,11 +1,12 @@
 #!/bin/bash
-# One LAN for USB and Wi-Fi clients: br-lan (192.168.77.1/24 unless lan.conf says otherwise) with usb0 (NCM/ECM gadget, bound in the initramfs, plus rndis0 for Windows)
+# One LAN for USB and Wi-Fi clients: br-lan (192.168.77.1/24 on an F50, 192.168.78.1/24 on a U30 Air, unless
+# lan.conf says otherwise) with usb0 (NCM/ECM gadget, bound in the initramfs, plus rndis0 for Windows)
 # and wlan0 (added by hostapd via bridge=br-lan). A single dnsmasq serves DHCP/DNS on the bridge.
 set -euo pipefail
 # The address lives in /etc/mu300/lan.conf (LAN_IP=192.168.77.1), so two devices on one PC can each have their
 # own subnet. Always a /24; DHCP hands out .2-.200 of it.
 [ -f /etc/mu300/lan.conf ] && . /etc/mu300/lan.conf
-LAN_IP=${MU300_LAN_IP:-${LAN_IP:-192.168.77.1}}
+LAN_IP=${MU300_LAN_IP:-${LAN_IP:-$(/opt/mu300/bin/mu300-lan-ip)}}
 case $LAN_IP in *.*.*.*) ;; *) echo "bad LAN_IP '$LAN_IP' in /etc/mu300/lan.conf" >&2; exit 1 ;; esac
 NET=${LAN_IP%.*}
 ip link show br-lan >/dev/null 2>&1 || ip link add br-lan type bridge

@@ -1,0 +1,45 @@
+#!/bin/sh
+# The device's LEDs by what they mean, so the services need not know which device they run on.
+#   mu300-led power on|off      Linux is up (set at boot, cleared at shutdown)
+#   mu300-led data on|off|error mobile data connected / not connected / no service (no SIM, not registered)
+#   mu300-led wifi on|off       the Wi-Fi hotspot is up
+#   mu300-led test              each LED in turn, 2 s each, with its name (to tell which one is where)
+# ZTE F50: one RGB LED of the PMIC; only blue is used (data). ZTE U30 Air: GPIO LEDs for power, network and
+# Wi-Fi (the battery LED is the charger's own, not software); network is blue when data is up, red without
+# service. The device comes from /run/mu300/device (boot/init); an LED this device has not is skipped.
+# Every write is best effort: the PMIC rejects a brightness write now and then (mobile-data), and a cosmetic
+# LED must never make a service fail.
+LEDS=/sys/class/leds
+DEVICE=$(cat /run/mu300/device 2>/dev/null)
+[ -n "$DEVICE" ] || DEVICE=f50
+
+set_led() {  # set_led NAME 0|1
+    [ -w "$LEDS/$1/brightness" ] || return 0
+    echo none > "$LEDS/$1/trigger" 2>/dev/null
+    if [ "$2" = 1 ]; then cat "$LEDS/$1/max_brightness" 2>/dev/null; else echo 0; fi > "$LEDS/$1/brightness" 2>/dev/null
+    return 0
+}
+
+case $DEVICE in
+    u30air) POWER=pwr_green DATA=net_blue NODATA=net_red WIFI=wifi_blue ;;
+    *)      POWER= DATA=sc27xx:blue NODATA= WIFI= ;;
+esac
+
+case "$1 $2" in
+    "power on")   [ -n "$POWER" ] && set_led $POWER 1 ;;
+    "power off")  [ -n "$POWER" ] && set_led $POWER 0 ;;
+    "data on")    [ -n "$NODATA" ] && set_led $NODATA 0; set_led $DATA 1 ;;
+    "data off")   [ -n "$NODATA" ] && set_led $NODATA 0; set_led $DATA 0 ;;
+    "data error") set_led $DATA 0; [ -n "$NODATA" ] && set_led $NODATA 1 ;;
+    "wifi on")    [ -n "$WIFI" ] && set_led $WIFI 1 ;;
+    "wifi off")   [ -n "$WIFI" ] && set_led $WIFI 0 ;;
+    "test "*)
+        for l in "$LEDS"/*; do
+            n=${l##*/}
+            case $n in mmc*|*backlight*) continue ;; esac
+            old=$(cat "$l/brightness" 2>/dev/null)
+            echo "$n"; set_led "$n" 1; sleep 2; echo "${old:-0}" > "$l/brightness" 2>/dev/null
+        done ;;
+    *) sed -n '2,6s/^# \{0,1\}//p' "$0" >&2; exit 2 ;;
+esac
+exit 0

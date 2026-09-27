@@ -151,7 +151,7 @@ boot_b verify failed (slot a still active, Android keeps booting)	boot_b 校验�
 Installing the on-device switch (Magisk module)	正在安装设备端切换工具（Magisk 模块）
 (skipped; the installer keeps working either way)	（已跳过；不影响安装程序的使用）
 Done. Rebooting into {1}	完成。正在重启进入 {1}
-USB network: 192.168.77.1   SSH: {1}	USB 网络：192.168.77.1   SSH：{1}
+USB network: {1}   SSH: {2}	USB 网络：{1}   SSH：{2}
 switch systems: mu300-os ubuntu|openwrt   back to Android: mu300-next-boot android	切换系统：mu300-os ubuntu|openwrt   回到 Android：mu300-next-boot android
 back to Linux from Android (with Magisk): su -c mu300-linux	从 Android 回到 Linux（需 Magisk）：su -c mu300-linux
 Type ERASE to rewrite the partition table and wipe Android's data	输入 ERASE 以重写分区表并清除 Android 数据

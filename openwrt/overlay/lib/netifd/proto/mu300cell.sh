@@ -77,7 +77,7 @@ proto_mu300cell_setup() {
 		[ -w "/proc/sys/net/ipv6/conf/$ifname/disable_ipv6" ] &&
 			echo 1 > "/proc/sys/net/ipv6/conf/$ifname/disable_ipv6"
 	fi
-	[ -w /sys/class/leds/sc27xx:blue/brightness ] && echo 255 > /sys/class/leds/sc27xx:blue/brightness
+	/opt/mu300/bin/mu300-led data on
 	logger -t mu300cell "connected: $ip/${prefix:-32} on $ifname"
 }
 

@@ -13,10 +13,8 @@ IFACE=sipa_eth$((CID - 1))
 # "write error: Invalid argument"), and under `set -e` that killed up() one line before it could report the
 # connection it had just established - so the call was live while the caller saw a failure. Cosmetic writes
 # must never decide that.
-led() {
-    [ -w /sys/class/leds/sc27xx:blue/brightness ] || return 0
-    echo "$1" > /sys/class/leds/sc27xx:blue/brightness 2>/dev/null || true
-}
+# led on|off|error: see mu300-led (which LED that is depends on the device)
+led() { /opt/mu300/bin/mu300-led data "$1" 2>/dev/null || true; }
 
 ATLOCK=/run/mu300-at/owner
 
@@ -258,7 +256,7 @@ up_locked() {
         [ $((n % 5)) -eq 0 ] && radio_on
         sleep 2
     done
-    at 'AT+CEREG?' | grep -qE '\+CEREG: [0-9],(1|5)' || { echo "not registered on the network" >&2; exit 1; }
+    at 'AT+CEREG?' | grep -qE '\+CEREG: [0-9],(1|5)' || { led error; echo "not registered on the network" >&2; exit 1; }
     # systemd has no way to pass an argument from a config file, so the APN can come from the environment too:
     # /etc/mu300/mobile-data.conf is an EnvironmentFile for the service. The argument still wins, which is what
     # the OpenWrt protocol handler uses.
@@ -324,13 +322,13 @@ table ip mu300_nat {
 }
 NFT
     [ -n "$iid" ] && v6_up "$iid"
-    led 255
+    led on
     echo "mobile data up on $IFACE ($(at 'AT+COPS?' | sed -n 's/^+COPS: [0-9],[0-9],"\([^"]*\)".*/\1/p'))"
 }
 
 down() {
     touch /run/mu300-mobile-data-down   # tells watch not to reconnect
-    led 0
+    led off
     nft delete table ip mu300_nat 2>/dev/null || true
     v6_off
     ip route del default dev "$IFACE" 2>/dev/null || true
@@ -403,7 +401,7 @@ watch() {
         fails=$((fails + 1))
         [ "$fails" -lt 2 ] && continue
         echo "mobile data lost (modem reset or detached), reconnecting" >&2
-        led 0
+        led off
         if [ "${MU300_NETIFD:-0}" = 1 ]; then
             ifup "${MU300_WAN:-wan}"   # OpenWrt: let netifd run the mu300cell protocol again
         else

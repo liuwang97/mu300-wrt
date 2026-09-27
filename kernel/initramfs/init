@@ -106,6 +106,13 @@ else
 fi
 log "stage=device $DEVICE order=$MODULE_ORDER"
 
+# The USB network. Its subnet goes with the kind of device, so that an F50 and a U30 Air on one computer do not
+# collide: F50 192.168.77.1, U30 Air 192.168.78.1 (the system's lan.conf overrides it after switch_root). The
+# gadget's MAC addresses go with the serial number: two devices on one computer used to have the same ones.
+case $DEVICE in u30air) NET=192.168.78 ;; *) NET=192.168.77 ;; esac
+h=$(sed -n 's/.*androidboot.serialno=\([^ ]*\).*/\1/p' /proc/cmdline | md5sum)
+MAC=02:50:$(echo "$h" | cut -c1-2):$(echo "$h" | cut -c3-4):${NET##*.}
+
 load_vendor_modules() {
     loaded=0
     failed=0
@@ -204,8 +211,8 @@ setup_usb_gadget() {
     if [ -n "$rndis" ]; then
         echo "RNDIS + ACM console" > "$g/configs/c.1/strings/0x409/configuration"
         echo 250 > "$g/configs/c.1/MaxPower"
-        echo 02:50:00:00:77:03 > "$g/functions/rndis.rn0/dev_addr"
-        echo 02:50:00:00:77:04 > "$g/functions/rndis.rn0/host_addr"
+        echo $MAC:03 > "$g/functions/rndis.rn0/dev_addr"
+        echo $MAC:04 > "$g/functions/rndis.rn0/host_addr"
         ln -s "$g/functions/rndis.rn0" "$g/configs/c.1/f1"
         ln -s "$g/functions/acm.GS0" "$g/configs/c.1/f2"
         # MS OS descriptors: Windows asks for them with vendor request 0xcd and binds rndis.sys by compatible ID.
@@ -224,8 +231,8 @@ setup_usb_gadget() {
         echo "${netfunc:-no} net + ACM console" > "$g/configs/$cdc/strings/0x409/configuration"
         echo 250 > "$g/configs/$cdc/MaxPower"
         if [ -n "$netfunc" ]; then
-            echo 02:50:00:00:77:01 > "$g/functions/$netfunc.usb0/dev_addr"
-            echo 02:50:00:00:77:02 > "$g/functions/$netfunc.usb0/host_addr"
+            echo $MAC:01 > "$g/functions/$netfunc.usb0/dev_addr"
+            echo $MAC:02 > "$g/functions/$netfunc.usb0/host_addr"
             ln -s "$g/functions/$netfunc.usb0" "$g/configs/$cdc/f1"
         fi
         ln -s "$g/functions/acm.GS0" "$g/configs/$cdc/f2"
@@ -381,11 +388,11 @@ if [ -n "$rootloop" ] && losetup -o $ROOT_OFFSET "$rootloop" /dev/mmcblk0 2>>/ru
 fi
 log "stage=rootfs-unavailable $(cat /run/rootmount.err)"
 restore_slot_a
-ifconfig usb0 192.168.77.1 netmask 255.255.255.0 up
+ifconfig usb0 $NET.1 netmask 255.255.255.0 up
 log "stage=usb0 $(ifconfig usb0 2>&1 | head -1)"
-cat > /etc/udhcpd.conf <<'EOF'
-start 192.168.77.2
-end 192.168.77.9
+cat > /etc/udhcpd.conf <<EOF
+start $NET.2
+end $NET.9
 interface usb0
 option subnet 255.255.255.0
 option lease 600
@@ -394,10 +401,10 @@ pidfile /run/udhcpd.pid
 EOF
 touch /run/udhcpd.leases
 udhcpd /etc/udhcpd.conf
-telnetd -b 192.168.77.1 -p 23 -l /bin/sh
+telnetd -b $NET.1 -p 23 -l /bin/sh
 mkdir -p /run/www
-echo "MU300 standalone Linux v5: telnet 192.168.77.1; auto reboot to Android after 300s unless /run/stay exists" > /run/www/index.html
-httpd -p 192.168.77.1:80 -h /run/www
+echo "MU300 standalone Linux v5: telnet $NET.1; auto reboot to Android after 300s unless /run/stay exists" > /run/www/index.html
+httpd -p $NET.1:80 -h /run/www
 log "stage=ready"
 
 # Android vendor services in a chroot. modem_control reloads pm_sys through Trusty; only then
