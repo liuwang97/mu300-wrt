@@ -119,6 +119,10 @@ def main():
     ap.add_argument('--logdw', required=True, type=Path, help='tools/logdw build (static arm64)')
     ap.add_argument('--ueventd-perms', required=True, type=Path)
     ap.add_argument('--android-subset', type=Path, help='directory produced by android-vendor/extract-subset.sh')
+    ap.add_argument('--append-ramdisk', type=Path,
+                    help='another LZ4 legacy ramdisk segment to put behind this one (the ramdisk-generic.lz4 of a '
+                         'kernel bundle such as mu300-kernel-6.18.tar.gz: its init and modules replace these, which '
+                         'is what mu300-update writes on the device when it installs that kernel)')
     ap.add_argument('--out', required=True, type=Path)
     a = ap.parse_args()
     if not a.generic_ramdisk and not (a.stock_boot and a.misc_head and a.kernel):
@@ -175,6 +179,11 @@ def main():
     # back to the /dev/ram0 image path and panic "Unable to mount root fs on unknown-block(1,0)"
     ram = lz4_legacy(cpio_archive(dirs, files))
     assert ram[:4] == bytes.fromhex('02214c18')
+    if a.append_ramdisk:
+        extra = a.append_ramdisk.read_bytes()
+        if extra[:4] != bytes.fromhex('02214c18'):
+            sys.exit(f'{a.append_ramdisk} is not an LZ4 legacy ramdisk segment')
+        ram += extra
 
     kern = a.kernel.read_bytes()
     hdr = bytearray(base[:PAGE])
