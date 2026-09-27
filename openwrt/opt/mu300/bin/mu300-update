@@ -45,10 +45,18 @@ STAGE=$DISK/.mu300-update
 fetch_verified() {
     base=https://github.com/$REPO/releases/download/$1
     mkdir -p "$STAGE"
-    if [ "$(cat "$STAGE/SHA256SUMS.tag" 2>/dev/null)" != "$1" ] || [ ! -s "$STAGE/SHA256SUMS" ]; then
-        fetch_stdout "$base/SHA256SUMS" > "$STAGE/SHA256SUMS" && [ -s "$STAGE/SHA256SUMS" ] ||
-            { rm -f "$STAGE/SHA256SUMS"; echo "cannot download SHA256SUMS of $1" >&2; return 1; }
-        echo "$1" > "$STAGE/SHA256SUMS.tag"
+    # SHA256SUMS is fetched once per run, never trusted from an earlier one: a release published again under the
+    # same tag left a stale copy that every file then failed (and the updater it had verified replaced this one).
+    # Only without GitHub does the kept copy of the same tag stand in.
+    if [ "${SUMS_FETCHED:-}" != "$1" ]; then
+        if _sums=$(fetch_stdout "$base/SHA256SUMS") && [ -n "$_sums" ]; then
+            printf '%s\n' "$_sums" > "$STAGE/SHA256SUMS"
+            echo "$1" > "$STAGE/SHA256SUMS.tag"
+            SUMS_FETCHED=$1
+        elif [ "$(cat "$STAGE/SHA256SUMS.tag" 2>/dev/null)" != "$1" ] || [ ! -s "$STAGE/SHA256SUMS" ]; then
+            echo "cannot download SHA256SUMS of $1" >&2
+            return 1
+        fi
     fi
     want=$(awk -v f="$2" '$2 == f || $2 == "*" f {print $1}' "$STAGE/SHA256SUMS")
     [ -n "$want" ] || { echo "$2 is not part of release $1" >&2; return 2; }
