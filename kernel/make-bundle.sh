@@ -6,6 +6,7 @@
 #     ./ramdisk-generic.lz4  boot/init, busybox, logdw and the modules of upstream/module-order.txt
 #     ./modules/*.ko         every module, for /lib/modules/<release> on the root filesystem
 #     ./kernel.release       the kernel's release string (uname -r)
+#     ./devices              the devices it runs on (f50 u30air)
 #     ./modules.builtin*     what the kernel has built in, for depmod/modprobe
 # busybox and logdw are the static helpers of the 5.4 bundle (default: the newest one under release/).
 set -eu
@@ -40,5 +41,8 @@ python3 "$TOP/boot/build-boot-image.py" --generic-ramdisk --modules "$UO/modules
 cp "$UO"/modules/*.ko "$W/b/modules/"
 for f in modules.builtin modules.builtin.modinfo; do [ ! -f "$UO/$f" ] || cp "$UO/$f" "$W/b/"; done
 echo "$krel" > "$W/b/kernel.release"
+# the devices this kernel runs on; mu300-update and the installers check it (FINDINGS 33c: mainline kernels from
+# before this file do not bring up the U30 Air's USB)
+echo "f50 u30air" > "$W/b/devices"
 tar -C "$W/b" -czf "$OUT" .
 echo "$OUT: kernel $krel, $(ls "$W/b/modules" | wc -l | tr -d ' ') modules, ramdisk segment $(wc -c < "$W/b/ramdisk-generic.lz4" | tr -d ' ') bytes"

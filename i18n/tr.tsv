@@ -195,4 +195,3 @@ installing the lz4 Python module (pip install --user lz4)	lz4 Python modülü ku
 start of the region: {1}	bölgenin başı: {1}
 Python 3 is not installed; installing it for this user	Python 3 kurulu değil; bu kullanıcı için kuruluyor
 {1} failed	{1} başarısız oldu
-U30 Air: kernel 5.4 and Ubuntu 24.04 (the mainline kernels, which Ubuntu 26.04 needs, do not bring up its USB yet)	U30 Air: kernel 5.4 ve Ubuntu 24.04 (Ubuntu 26.04'ün gerektirdiği ana hat kerneller henüz USB'sini çalıştırmıyor)

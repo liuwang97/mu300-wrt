@@ -37,6 +37,8 @@ echo "==> kernel bundle"
 K=$D/kernel && mkdir -p "$K"
 cp -R "$IN/out/modules" "$K/modules"
 cp -R "$KOUT/modules-u30air" "$K/modules-u30air"
+# the devices this bundle runs on (mu300-update and the installers check it)
+echo "f50 u30air" > "$K/devices"
 cp "$KOUT/Image" "$KOUT/modules.builtin" "$KOUT/modules.builtin.modinfo" "$IN/busybox" "$IN/tools/logdw/logdw" "$K/"
 # the device-independent part of the boot ramdisk, which mu300-update puts behind the device's own ramdisk to update
 # the kernel and the boot image without a computer (same builder and file list as install.sh)
