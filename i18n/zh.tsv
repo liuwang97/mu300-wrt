@@ -45,7 +45,7 @@ Locating free eMMC space after the last partition	正在查找最后一个分区
 could not read the partition table from the device (is su granted? try again)	无法从设备读取分区表（是否已授予 su 权限？请重试）
 eMMC: {1} ({2} sectors), partitions end at {3} (sector {4}), free after them: {5}	eMMC：{1}（{2} 个扇区），分区结束于 {3}（扇区 {4}），其后空闲：{5}
 Linux region: offset {1}, {2}, existing mu300root filesystem: {3}	Linux 区域：偏移 {1}，{2}，已有 mu300root 文件系统：{3}
-data check: {1} of 16 samples contain non-zero data	数据检查：16 个样本中有 {1} 个含有非零数据
+data check: {1} of 16 samples contain data	数据检查：16 个样本中有 {1} 个含有数据
 OK: a MU300 Linux installation is already present (it can be kept or replaced)	正常：已存在 MU300 Linux 安装（可以保留或替换）
 WARNING: the unpartitioned space is not empty; it may be used by this firmware. Installing overwrites it	警告：未分区空间并非空白，可能正被此固件使用。安装将覆盖它
 OK: free and empty, same layout as the tested device (~32 GiB after userdata on the 64 GB eMMC)	正常：空闲且为空，与测试设备布局相同（64 GB eMMC 上 userdata 之后约 32 GiB）
@@ -191,3 +191,7 @@ yes	是
 no	否
 update	update（更新）
 release {1} does not support this device yet; use a newer one	版本 {1} 尚不支持此设备；请使用更新的版本
+installing the lz4 Python module (pip install --user lz4)	正在安装 lz4 Python 模块（pip install --user lz4）
+start of the region: {1}	区域开头：{1}
+Python 3 is not installed; installing it for this user	未安装 Python 3；正在为当前用户安装
+{1} failed	{1} 失败

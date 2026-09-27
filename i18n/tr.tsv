@@ -45,7 +45,7 @@ Locating free eMMC space after the last partition	Son bölümden sonraki boş eM
 could not read the partition table from the device (is su granted? try again)	bölüm tablosu cihazdan okunamadı (su izni verildi mi? tekrar deneyin)
 eMMC: {1} ({2} sectors), partitions end at {3} (sector {4}), free after them: {5}	eMMC: {1} ({2} sektör), bölümler {3} konumunda bitiyor (sektör {4}), sonrasında boş: {5}
 Linux region: offset {1}, {2}, existing mu300root filesystem: {3}	Linux alanı: konum {1}, {2}, mevcut mu300root dosya sistemi: {3}
-data check: {1} of 16 samples contain non-zero data	veri kontrolü: 16 örnekten {1} tanesinde sıfırdan farklı veri var
+data check: {1} of 16 samples contain data	veri kontrolü: 16 örnekten {1} tanesinde veri var
 OK: a MU300 Linux installation is already present (it can be kept or replaced)	TAMAM: zaten bir MU300 Linux kurulumu var (korunabilir ya da değiştirilebilir)
 WARNING: the unpartitioned space is not empty; it may be used by this firmware. Installing overwrites it	UYARI: bölümlenmemiş alan boş değil; bu yazılım tarafından kullanılıyor olabilir. Kurulum üzerine yazar
 OK: free and empty, same layout as the tested device (~32 GiB after userdata on the 64 GB eMMC)	TAMAM: boş ve kullanılmıyor, test edilen cihazla aynı düzen (64 GB eMMC'de userdata'dan sonra ~32 GiB)
@@ -191,3 +191,7 @@ yes	evet
 no	hayır
 update	update (güncelle)
 release {1} does not support this device yet; use a newer one	{1} sürümü bu cihazı henüz desteklemiyor; daha yenisini kullanın
+installing the lz4 Python module (pip install --user lz4)	lz4 Python modülü kuruluyor (pip install --user lz4)
+start of the region: {1}	bölgenin başı: {1}
+Python 3 is not installed; installing it for this user	Python 3 kurulu değil; bu kullanıcı için kuruluyor
+{1} failed	{1} başarısız oldu
