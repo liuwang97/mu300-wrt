@@ -99,7 +99,6 @@ for n in /dev/sprd_cpp; do [ -e "$n" ] && chown 1000:1006 "$n" && chmod 0660 "$n
 for n in /dev/input/event*; do [ -e "$n" ] && chown 1000:1004 "$n" && chmod 0660 "$n"; done
 for n in /dev/map_user; do [ -e "$n" ] && chown 1000:1000 "$n" && chmod 0660 "$n"; done
 for n in /dev/iio:device*; do [ -e "$n" ] && chown 1000:1000 "$n" && chmod 0660 "$n"; done
-for n in /dev/rtc*; do [ -e "$n" ] && chown 1000:1000 "$n" && chmod 0660 "$n"; done
 for n in /dev/block/by-name/gnssmodem; do [ -e "$n" ] && chown 1000:0 "$n" && chmod 0660 "$n"; done
 for n in /dev/block/by-name/gnssmodem_a; do [ -e "$n" ] && chown 1000:0 "$n" && chmod 0660 "$n"; done
 for n in /dev/rpmb0; do [ -e "$n" ] && chown 1000:1000 "$n" && chmod 0660 "$n"; done
