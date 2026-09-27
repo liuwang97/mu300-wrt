@@ -92,7 +92,7 @@ Which kernel?	选择哪个内核？
 This can be changed later on the device: sudo mu300-update kernel 5.4|6.18|7.2	之后可以在设备上更改：sudo mu300-update kernel 5.4|6.18|7.2
 Which Ubuntu?	选择哪个 Ubuntu？
 1) 24.04 LTS  the longest tested, supported until 2029	1) 24.04 LTS  测试时间最长，支持到 2029 年
-2) 26.04 LTS  the newest (systemd 259, newer packages), supported until 2031; tested less	2) 26.04 LTS  最新版本（systemd 259，更新的软件包），支持到 2031 年；测试较少
+2) 26.04 LTS  BETA: the newest (systemd 259, newer packages), supported until 2031; tested less	2) 26.04 LTS  测试版（BETA）：最新版本（systemd 259，更新的软件包），支持到 2031 年；测试较少
 Ubuntu	Ubuntu
 Kernel	内核
 enter 1, 2 or 3	请输入 1、2 或 3
