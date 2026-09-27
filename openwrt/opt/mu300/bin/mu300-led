@@ -6,12 +6,11 @@
 #   mu300-led test              each LED in turn, 2 s each, with its name (to tell which one is where)
 # ZTE F50: one RGB LED of the PMIC; only blue is used (data). ZTE U30 Air: GPIO LEDs for power, network and
 # Wi-Fi (the battery LED is the charger's own, not software); network is blue when data is up, red without
-# service. The device comes from /run/mu300/device (boot/init); an LED this device has not is skipped.
+# service. The device comes from mu300-device; an LED this device has not is skipped.
 # Every write is best effort: the PMIC rejects a brightness write now and then (mobile-data), and a cosmetic
 # LED must never make a service fail.
 LEDS=/sys/class/leds
-DEVICE=$(cat /run/mu300/device 2>/dev/null)
-[ -n "$DEVICE" ] || DEVICE=f50
+DEVICE=$(/opt/mu300/bin/mu300-device)
 
 set_led() {  # set_led NAME 0|1
     [ -w "$LEDS/$1/brightness" ] || return 0
