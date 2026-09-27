@@ -43,10 +43,16 @@ python3 "$TOP/boot/build-boot-image.py" --generic-ramdisk --modules "$IN/out/mod
 tar -C "$K" -czf "$D/mu300-kernel.tar.gz" .
 rm -rf "$K"
 
-echo "==> mainline kernel bundle"
-# the 6.18 kernel for "mu300-update kernel 6.18": built by upstream/build.sh + build-modules.sh at this commit
-[ -f "$TOP/upstream/out/Image" ] || { echo "upstream/out/Image missing (upstream/build.sh, build-modules.sh)" >&2; exit 1; }
-sh "$TOP/upstream/make-bundle.sh" "$D/mu300-kernel-6.18.tar.gz" "$D/mu300-kernel.tar.gz"
+echo "==> mainline kernel bundles"
+# "mu300-update kernel 6.18|7.2": built by upstream/build.sh + build-modules.sh at this commit - 6.18 into
+# upstream/out, 7.2 into upstream/out-7.2 (OUTDIR=out-7.2 KV=7.2.x); each build must be the version its name says
+for kv in 6.18:out 7.2:out-7.2; do
+    v=${kv%%:*}; o=$TOP/upstream/${kv#*:}
+    [ -f "$o/Image" ] || { echo "$o/Image missing (upstream/build.sh, build-modules.sh)" >&2; exit 1; }
+    rel=$(strings "$o/Image" | sed -n 's/^Linux version \([^ ]*\) .*/\1/p' | head -1)
+    case $rel in "$v".*) ;; *) echo "$o holds $rel, not $v" >&2; exit 1 ;; esac
+    MU300_UPSTREAM_OUT=$o sh "$TOP/upstream/make-bundle.sh" "$D/mu300-kernel-$v.tar.gz" "$D/mu300-kernel.tar.gz"
+done
 
 echo "==> Ubuntu root filesystem (generic)"
 B=$D/ubuntu-build && mkdir -p "$B"
@@ -65,7 +71,7 @@ mv "$TOP/openwrt/mu300-openwrt-release.tar.gz" "$D/mu300-openwrt-rootfs.tar.gz"
 
 echo "==> audit"
 fail=0
-for a in mu300-kernel mu300-kernel-6.18 mu300-ubuntu-rootfs mu300-openwrt-rootfs; do
+for a in mu300-kernel mu300-kernel-6.18 mu300-kernel-7.2 mu300-ubuntu-rootfs mu300-openwrt-rootfs; do
     bad=$(tar -tzf "$D/$a.tar.gz" | sed 's|^\./||' | grep -E \
         -e '(^|/)lib/firmware/(wcnmodem|gnssmodem|wifi_board_config|bt_configure)' \
         -e '^opt/mu300/android/.+' -e '__properties__|dev-properties' \
@@ -95,6 +101,7 @@ Prebuilt images for \`./install.sh\` (ZTE F50 / MU300). Check your device first 
 |---|---|
 | mu300-kernel.tar.gz | Linux 5.4.254 \`Image\` and modules, static busybox and logdw for the boot image, and the generic boot ramdisk segment \`mu300-update\` uses |
 | mu300-kernel-6.18.tar.gz | mainline Linux 6.18 (longterm) for \`mu300-update kernel 6.18\`: \`Image\`, modules, generic boot ramdisk segment |
+| mu300-kernel-7.2.tar.gz | mainline Linux 7.2 (newest stable) for \`mu300-update kernel 7.2\`: the same parts |
 | mu300-ubuntu-rootfs.tar.gz | Ubuntu 24.04 LTS root filesystem |
 | mu300-openwrt-rootfs.tar.gz | OpenWrt 25.12.5 root filesystem |
 | mu300-update | the on-device updater of this release (\`mu300-update apply\` switches to it before it changes anything) |

@@ -87,11 +87,10 @@ Which kernel?	Hangi çekirdek?
 1) 5.4   Unisoc's vendor kernel (Android 12 base): the longest tested, everything this project supports	1) 5.4   Unisoc'un üretici çekirdeği (Android 12 tabanlı): en uzun süre test edilen, projenin desteklediği her şey çalışır
 2) 6.18  mainline Linux, current long-term (LTS) release: newer drivers and security fixes, the same	2) 6.18  ana hat (mainline) Linux, güncel uzun süreli destek (LTS) sürümü: daha yeni sürücüler ve güvenlik düzeltmeleri,
          functions (hotspot, mobile data, SMS, Bluetooth, VPN, GPU); no USB-C video output yet	         aynı işlevler (hotspot, mobil veri, SMS, Bluetooth, VPN, GPU); USB-C görüntü çıkışı henüz yok
-3) latest stable mainline kernel (7.2 for now)	3) en son kararlı ana hat çekirdeği (şimdilik 7.2)
-Either one can be changed later on the device: sudo mu300-update kernel 5.4|6.18	Seçim sonradan cihazda değiştirilebilir: sudo mu300-update kernel 5.4|6.18
+3) 7.2   the newest stable mainline Linux (7.2 for now): the newest drivers, the same functions	3) 7.2   en yeni kararlı ana hat (mainline) Linux (şimdilik 7.2): en yeni sürücüler, 6.18 ile aynı
+         as 6.18; tested less than 6.18	         işlevler; 6.18'den daha az test edildi
+This can be changed later on the device: sudo mu300-update kernel 5.4|6.18|7.2	Bu seçim sonradan cihazda değiştirilebilir: sudo mu300-update kernel 5.4|6.18|7.2
 Kernel	Çekirdek
-The latest stable kernel (7.2) already runs on the device and will be available very soon;	En son kararlı çekirdek (7.2) cihazda zaten çalışıyor ve çok yakında kullanıma sunulacak;
-for now please choose 5.4 or 6.18 (switching later is one command: mu300-update kernel).	şimdilik lütfen 5.4 ya da 6.18 seçin (sonradan geçiş tek komut: mu300-update kernel).
 enter 1, 2 or 3	1, 2 ya da 3 girin
 A MU300 Linux installation is already on this device.	Bu cihazda zaten bir MU300 Linux kurulumu var.
 update  reinstall the systems and keep settings and data (/etc/mu300, users and home directories,	update  sistemleri yeniden kurar, ayarları ve verileri korur (/etc/mu300, kullanıcılar ve ev dizinleri,

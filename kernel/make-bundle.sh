@@ -11,32 +11,34 @@
 set -eu
 TOP=$(cd "$(dirname "$0")/.." && pwd)
 U=$TOP/upstream
+# the build to package: upstream/out (6.18), or MU300_UPSTREAM_OUT=upstream/out-7.2 for another kernel
+UO=${MU300_UPSTREAM_OUT:-$U/out}
 OUT=${1:?usage: upstream/make-bundle.sh OUT.tar.gz [mu300-kernel.tar.gz]}
 REF=${2:-$(ls -t "$TOP"/release/*/mu300-kernel.tar.gz 2>/dev/null | head -1)}
-[ -f "$U/out/Image" ] || { echo "no upstream/out/Image (run build.sh)" >&2; exit 1; }
+[ -f "$UO/Image" ] || { echo "no $UO/Image (run build.sh)" >&2; exit 1; }
 [ -f "$REF" ] || { echo "no 5.4 kernel bundle for busybox/logdw (give one as the second argument)" >&2; exit 1; }
 
-krel=$(strings "$U/out/Image" | sed -n 's/^Linux version \([^ ]*\) .*/\1/p' | head -1)
+krel=$(strings "$UO/Image" | sed -n 's/^Linux version \([^ ]*\) .*/\1/p' | head -1)
 [ -n "$krel" ] || { echo "cannot read the kernel release from upstream/out/Image" >&2; exit 1; }
 # a module left over from another kernel release would only fail on the device, at insmod
-for m in "$U"/out/modules/*.ko; do
+for m in "$UO"/modules/*.ko; do
     v=$(strings "$m" | sed -n 's/^vermagic=\([^ ]*\) .*/\1/p' | head -1)
     [ "$v" = "$krel" ] || { echo "$m is built for '$v', the kernel is '$krel'" >&2; exit 1; }
 done
 for m in $(cat "$U/module-order.txt"); do
-    [ -f "$U/out/modules/$m" ] || { echo "module-order.txt names $m, which was not built" >&2; exit 1; }
+    [ -f "$UO/modules/$m" ] || { echo "module-order.txt names $m, which was not built" >&2; exit 1; }
 done
 
 W=$(mktemp -d)
 trap 'rm -rf "$W"' EXIT
 tar -xzf "$REF" -C "$W" ./busybox ./logdw
 mkdir "$W/b" "$W/b/modules"
-python3 "$U/wrap-image.py" "$U/out/Image" "$W/b/Image"
-python3 "$TOP/boot/build-boot-image.py" --generic-ramdisk --modules "$U/out/modules" \
+python3 "$U/wrap-image.py" "$UO/Image" "$W/b/Image"
+python3 "$TOP/boot/build-boot-image.py" --generic-ramdisk --modules "$UO/modules" \
     --module-order "$U/module-order.txt" --busybox "$W/busybox" --logdw "$W/logdw" \
     --ueventd-perms "$TOP/android-vendor/ueventd-perms.sh" --out "$W/b/ramdisk-generic.lz4" >/dev/null
-cp "$U"/out/modules/*.ko "$W/b/modules/"
-for f in modules.builtin modules.builtin.modinfo; do [ ! -f "$U/out/$f" ] || cp "$U/out/$f" "$W/b/"; done
+cp "$UO"/modules/*.ko "$W/b/modules/"
+for f in modules.builtin modules.builtin.modinfo; do [ ! -f "$UO/$f" ] || cp "$UO/$f" "$W/b/"; done
 echo "$krel" > "$W/b/kernel.release"
 tar -C "$W/b" -czf "$OUT" .
 echo "$OUT: kernel $krel, $(ls "$W/b/modules" | wc -l | tr -d ' ') modules, ramdisk segment $(wc -c < "$W/b/ramdisk-generic.lz4" | tr -d ' ') bytes"

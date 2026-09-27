@@ -495,7 +495,7 @@ int kbase_debug_job_fault_dev_init(struct kbase_device *kbdev)
 	spin_lock_init(&kbdev->job_fault_event_lock);
 
 	kbdev->job_fault_resume_workq = alloc_workqueue(
-			"kbase_job_fault_resume_work_queue", WQ_MEM_RECLAIM, 1);
+			"kbase_job_fault_resume_wq", WQ_MEM_RECLAIM | WQ_PERCPU, 1);	/* name: at most 31 characters */
 	if (!kbdev->job_fault_resume_workq)
 		return -ENOMEM;
 

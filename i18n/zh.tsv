@@ -87,11 +87,10 @@ Which kernel?	选择哪个内核？
 1) 5.4   Unisoc's vendor kernel (Android 12 base): the longest tested, everything this project supports	1) 5.4   紫光展锐的厂商内核（基于 Android 12）：测试时间最长，支持本项目的全部功能
 2) 6.18  mainline Linux, current long-term (LTS) release: newer drivers and security fixes, the same	2) 6.18  主线 Linux，当前的长期支持（LTS）版本：更新的驱动和安全修复，
          functions (hotspot, mobile data, SMS, Bluetooth, VPN, GPU); no USB-C video output yet	         功能相同（热点、移动数据、短信、蓝牙、VPN、GPU）；暂不支持 USB-C 视频输出
-3) latest stable mainline kernel (7.2 for now)	3) 最新稳定版主线内核（目前为 7.2）
-Either one can be changed later on the device: sudo mu300-update kernel 5.4|6.18	之后可以在设备上更改：sudo mu300-update kernel 5.4|6.18
+3) 7.2   the newest stable mainline Linux (7.2 for now): the newest drivers, the same functions	3) 7.2   最新的稳定版主线 Linux（目前为 7.2）：最新的驱动，功能与 6.18 相同；
+         as 6.18; tested less than 6.18	         测试比 6.18 少
+This can be changed later on the device: sudo mu300-update kernel 5.4|6.18|7.2	之后可以在设备上更改：sudo mu300-update kernel 5.4|6.18|7.2
 Kernel	内核
-The latest stable kernel (7.2) already runs on the device and will be available very soon;	最新稳定版内核（7.2）已能在设备上运行，很快就会提供；
-for now please choose 5.4 or 6.18 (switching later is one command: mu300-update kernel).	目前请选择 5.4 或 6.18（之后切换只需一条命令：mu300-update kernel）。
 enter 1, 2 or 3	请输入 1、2 或 3
 A MU300 Linux installation is already on this device.	此设备上已经安装了 MU300 Linux。
 update  reinstall the systems and keep settings and data (/etc/mu300, users and home directories,	update  重新安装系统，保留设置和数据（/etc/mu300、用户和主目录、

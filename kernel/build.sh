@@ -2,6 +2,8 @@
 # Build mainline for the MU300 inside mu300-mainline-build: Image + DTB. /work = this directory, /src = kernel tree volume
 set -eo pipefail
 KV=${KV:-6.18.54}
+# where Image, DTB and modules.builtin go: /work/out for 6.18, OUTDIR=out-7.2 keeps another kernel next to it
+OUT=/work/${OUTDIR:-out}
 # the kernel source, fetched once into the volume and checked against kernel.org's checksum list
 if [ ! -d /src/linux-$KV ]; then
     base=https://cdn.kernel.org/pub/linux/kernel/v${KV%%.*}.x
@@ -43,8 +45,8 @@ make O=$O ARCH=arm64 -j"$(nproc)" Image > $O/build.log 2>&1 || {
 }
 cpp -nostdinc -undef -D__DTS__ -x assembler-with-cpp -I include -I scripts/dtc/include-prefixes \
   /work/dts/ums9620-mu300.dts | dtc -I dts -O dtb -o $O/ums9620-mu300.dtb -
-mkdir -p /work/out
-cp $O/arch/arm64/boot/Image $O/ums9620-mu300.dtb /work/out/
+mkdir -p $OUT
+cp $O/arch/arm64/boot/Image $O/ums9620-mu300.dtb $OUT/
 # for depmod on the device: modprobe of a built-in driver fails without them
-cp $O/modules.builtin $O/modules.builtin.modinfo /work/out/
-ls -la /work/out
+cp $O/modules.builtin $O/modules.builtin.modinfo $OUT/
+ls -la $OUT

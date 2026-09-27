@@ -39,3 +39,4 @@ tools/ctlset/ctlset
 
 # written by the installer self-update in copies without git
 .mu300-source
+upstream/out-*/

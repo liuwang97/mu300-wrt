@@ -6,7 +6,8 @@
 #   mu300-update boot             only the kernel and the boot image
 #   mu300-update rollback [OS]    go back to the previous version kept as <os>.old
 #   mu300-update rollback-boot    go back to the previous boot image
-#   mu300-update kernel [5.4|6.18]  show, or change, the kernel (vendor 5.4 or mainline 6.18) and install it
+#   mu300-update kernel [5.4|6.18|7.2]  show, or change, the kernel (vendor 5.4, mainline 6.18 LTS or the newest
+#                                 stable mainline, 7.2) and install it
 #   mu300-update clean            delete the kept <os>.old copies
 #
 # How it works: the new filesystem is unpacked next to the old one as <os>.new on the Linux partition, your settings
@@ -257,12 +258,14 @@ apply_one() {  # apply_one OS TAG
 BOOTDIR=$DISK/boot
 PERSIST_LOG=$((48 << 20))   # boot_b keeps the persistent init log from 48 MiB on (boot/build-boot-image.py)
 
-# Which kernel this device runs: the vendor 5.4 (mu300-kernel.tar.gz) or mainline 6.18 (mu300-kernel-6.18.tar.gz).
+# Which kernel this device runs: the vendor 5.4 (mu300-kernel.tar.gz) or a mainline one (mu300-kernel-<version>.tar.gz:
+# 6.18, the long-term release, and 7.2, the newest stable one).
 # Kept on the Linux partition, so both systems and every update follow it - without it an update of a device on
 # 6.18 installed the release's 5.4 kernel. "mu300-update kernel 6.18" changes it.
 KERNEL_CHOICE=$BOOTDIR/kernel
-kernel_choice() { c=$(cat "$KERNEL_CHOICE" 2>/dev/null); case $c in 6.18) echo 6.18 ;; *) echo 5.4 ;; esac; }
-kernel_asset() { case $(kernel_choice) in 6.18) echo mu300-kernel-6.18.tar.gz ;; *) echo mu300-kernel.tar.gz ;; esac; }
+KERNELS="5.4 6.18 7.2"
+kernel_choice() { c=$(cat "$KERNEL_CHOICE" 2>/dev/null); case " $KERNELS " in *" $c "*) echo "$c" ;; *) echo 5.4 ;; esac; }
+kernel_asset() { case $(kernel_choice) in 5.4) echo mu300-kernel.tar.gz ;; *) echo "mu300-kernel-$(kernel_choice).tar.gz" ;; esac; }
 
 part_dev() {  # part_dev NAME -> /dev/<block device of that partition>
     for u in /sys/class/block/*/uevent; do
@@ -410,12 +413,12 @@ boot_update() {  # boot_update TAG   (MU300_KERNEL_BUNDLE=FILE uses a local mu30
     BOOT_CHANGED=1
 }
 
-kernel_cmd() {  # kernel [5.4|6.18]: show or change the kernel, and install it
+kernel_cmd() {  # kernel [5.4|6.18|7.2]: show or change the kernel, and install it
     mounted_disk
     case ${1:-} in
         '') printf 'kernel: %s (running %s)\n' "$(kernel_choice)" "$(uname -r)"; return 0 ;;
-        5.4|6.18) ;;
-        *) die "usage: mu300-update kernel [5.4|6.18]" ;;
+        5.4|6.18|7.2) ;;
+        *) die "usage: mu300-update kernel [5.4|6.18|7.2]" ;;
     esac
     mkdir -p "$BOOTDIR"
     old=$(kernel_choice)
@@ -600,6 +603,6 @@ case ${1:-check} in
     kernel) shift; kernel_cmd "$@" ;;
     accounts) accounts ;;
     clean) clean ;;
-    -h|--help|help) sed -n '2,11s/^# \{0,1\}//p' "$0" ;;
-    *) echo "usage: mu300-update check|apply [os...]|boot|kernel [5.4|6.18]|rollback [os]|rollback-boot|clean" >&2; exit 2 ;;
+    -h|--help|help) sed -n '2,12s/^# \{0,1\}//p' "$0" ;;
+    *) echo "usage: mu300-update check|apply [os...]|boot|kernel [5.4|6.18|7.2]|rollback [os]|rollback-boot|clean" >&2; exit 2 ;;
 esac
