@@ -8,6 +8,7 @@ export PATH="$PATH:/opt/mu300/busybox-bin"
 # is exactly what a hanging wifi-start did on the mainline kernel, leaving no way in at all.
 boot() {
 	/opt/mu300/bin/mu300-led power on
+	/opt/mu300/bin/mu300-usb boot
 	hw_bringup > /tmp/mu300-hw.log 2>&1 &
 }
 
