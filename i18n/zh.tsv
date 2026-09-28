@@ -97,8 +97,6 @@ Ubuntu	Ubuntu
 Ubuntu 26.04 needs a mainline kernel (6.18 or 7.2): its programs use system calls that 5.4 does not have (tar, for one, cannot unpack folders there).	Ubuntu 26.04 需要主线内核（6.18 或 7.2）：它的程序使用了 5.4 没有的系统调用（例如 tar 在 5.4 上无法解压包含文件夹的归档）。
 this copy has changes of its own, so {1} files were left as they are	此副本有自己的修改，因此 {1} 个文件保持原样
 no answer left for the question: {1}	这个问题已经没有可用的答案了：{1}
-more than one adb device: using {1} ({2})	连接了多个 adb 设备：使用 {1}（{2}）
-more than one adb device - which one is the F50 or U30 Air?	连接了多个 adb 设备——哪一个是 F50 或 U30 Air？
 Device	设备
 Kernel	内核
 enter 1, 2 or 3	请输入 1、2 或 3
@@ -196,3 +194,4 @@ start of the region: {1}	区域开头：{1}
 Python 3 is not installed; installing it for this user	未安装 Python 3；正在为当前用户安装
 {1} failed	{1} 失败
 waiting for Android to finish starting	正在等待 Android 启动完成
+which adb device is the F50 or U30 Air?	哪个 adb 设备是 F50 或 U30 Air？

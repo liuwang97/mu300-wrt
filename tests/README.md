@@ -13,7 +13,8 @@ macOS and Windows (`.github/workflows/tests.yml`).
 |---|---|
 | `test_static.py` | every script parses under each shell that runs it; device programs are executable; rules from past bugs (no double quotes in `install.ps1`'s device commands, ASCII-only PowerShell, init looks for partitions after the modules) |
 | `test_i18n.py` | `tools/i18n.sh`: every translation with every placeholder, arguments passed through untouched, answers in all three languages |
-| `test_device_scripts.py` | `mu300-device`, `mu300-lan-ip`, `mu300-led` (both devices, fake `/sys/class/leds`), `mu300-ttl` (stub `nft`) |
+| `test_device_scripts.py` | `mu300-device`, `mu300-lan-ip`, `mu300-led` (both devices, the timeout), `mu300-ttl` (stub `nft`), `mu300-wifi-band`, `mu300-buttons`, `mu300-usb` (a fake charger: never 5 V against a supply) |
+| `test_installer.py` | which adb device the installers take: they ask whenever it is not the only one and an F50/U30 Air |
 | `test_vpn.py` | `mu300-vpn`: VLESS URI parsing, JSON, which networks stay out of the tunnel, the sing-box config |
 | `test_update.py` | `mu300-update`: release files per system and kernel, boot image byte helpers, whether a kernel bundle may go onto this device |
 | `test_boot_image.py` | `boot/build-boot-image.py`: the generic ramdisk, the U30 Air's modules and order |

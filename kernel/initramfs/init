@@ -367,8 +367,10 @@ if [ -n "$rootloop" ] && losetup -o $ROOT_OFFSET "$rootloop" /dev/mmcblk0 2>>/ru
     fi
     # Default-Linux mode: leave LK's decremented tries (b: not successful). Userspace re-arms slot b (tries N+1)
     # once the system is up; N boots in a row that never get there and LK falls back to Android on the next one.
+    trial=1
     if [ "$(cat /newroot/etc/mu300/default-boot 2>/dev/null)" = linux ]; then
         log "stage=default-boot-linux (slot a restore skipped)"
+        trial=
     else
         restore_slot_a
     fi
@@ -388,7 +390,11 @@ if [ -n "$rootloop" ] && losetup -o $ROOT_OFFSET "$rootloop" /dev/mmcblk0 2>>/ru
     # switch_root: unless /run/stay exists by then (created over SSH), it reboots - into Android, as slot a is
     # already restored. switch_root deletes this ramdisk, so it runs from a copy of busybox in /run, reached
     # through its working directory once /run has moved.
-    if [ -s /etc/mu300-trial-guard ]; then
+    # Only in a trial boot: mu300-update keeps the device segment of whatever image is in boot_b, and a guard that
+    # came along from an experiment into an installed system restarted it every 10 minutes (FINDINGS 33e)
+    if [ -s /etc/mu300-trial-guard ] && [ -z "$trial" ]; then
+        log "stage=trial-guard-ignored (Linux is the default: not a trial)"
+    elif [ -s /etc/mu300-trial-guard ]; then
         g=$(cat /etc/mu300-trial-guard)
         # (named busybox: busybox takes the applet from its own name when that is not "busybox")
         mkdir -p /run/.trial-guard && cp /bin/busybox /run/.trial-guard/busybox

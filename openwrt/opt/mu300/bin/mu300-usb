@@ -12,6 +12,7 @@
 # after an I2C write unless it is kept alive, so host mode turns the watchdog off and device mode back on.
 # The F50 has no battery: its USB port is its power supply, so it cannot be a host.
 export PATH="$PATH:/opt/mu300/bin:/usr/sbin:/sbin"
+R=${MU300_SYSROOT:-}   # (for tests/: a fake /sys)
 ADDR=0x6b
 REG_CTRL1=0x01      # bit 5 OTG_CONFIG
 REG_TIMER=0x05      # bits 5:4 WATCHDOG (00 off, 01 40 s)
@@ -22,16 +23,16 @@ die() { echo "mu300-usb: $*" >&2; exit 1; }
 i2c() {  # i2c get|set ARGS: i2c-tools when there, else busybox's
     op=$1; shift
     if command -v "i2c$op" >/dev/null 2>&1 && [ "$(command -v "i2c$op")" != /usr/bin/busybox ]; then "i2c$op" -y "$@"
-    elif [ -x /opt/mu300/bin/busybox ]; then /opt/mu300/bin/busybox "i2c$op" -y "$@"
+    elif [ -z "$R" ] && [ -x /opt/mu300/bin/busybox ]; then /opt/mu300/bin/busybox "i2c$op" -y "$@"
     else busybox "i2c$op" -y "$@"; fi
 }
 bus() {  # the I2C bus of the charger: the controller at 22a0000 on the UMS9620
-    for a in /sys/bus/i2c/devices/i2c-*; do
+    for a in "$R"/sys/bus/i2c/devices/i2c-*; do
         case $(readlink -f "$a/of_node" 2>/dev/null) in *i2c@22a0000) echo "${a##*-}"; return 0 ;; esac
     done
     return 1
 }
-role_switch() { for r in /sys/class/usb_role/*; do [ -e "$r/role" ] && { echo "$r/role"; return 0; }; done; return 1; }
+role_switch() { for r in "$R"/sys/class/usb_role/*; do [ -e "$r/role" ] && { echo "$r/role"; return 0; }; done; return 1; }
 reg() { i2c get "$BUS" $ADDR "$1" 2>/dev/null; }
 setbits() {  # setbits REG MASK VALUE
     v=$(reg "$1") || die "cannot read the charger (I2C $BUS-$ADDR)"
@@ -63,8 +64,8 @@ case ${1:-status} in
     status)
         echo "role: $(cat "$ROLE" 2>/dev/null)"
         echo "5 V out (OTG boost): $(boost)"
-        if [ -d /sys/bus/usb/devices ]; then
-            for d in /sys/bus/usb/devices/[0-9]*; do
+        if [ -d "$R"/sys/bus/usb/devices ]; then
+            for d in "$R"/sys/bus/usb/devices/[0-9]*; do
                 [ -e "$d/product" ] || continue
                 case ${d##*/} in *:*) continue ;; esac
                 echo "  device: $(cat "$d/manufacturer" 2>/dev/null) $(cat "$d/product") ($(cat "$d/idVendor"):$(cat "$d/idProduct"))"
@@ -84,6 +85,7 @@ case ${1:-status} in
         echo device > "$ROLE" || die "could not switch the role"
         setbits $REG_CTRL1 0x20 0x00      # boost off
         setbits $REG_TIMER 0x30 0x10      # watchdog back (40 s): the chip returns to its own defaults
+        sleep 1   # the role switch works in the background
         echo "USB device: the USB network and serial console are back" ;;
     *) sed -n '2,6s/^# \{0,1\}//p' "$0" >&2; exit 2 ;;
 esac

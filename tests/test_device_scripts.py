@@ -289,5 +289,88 @@ class Ttl(ShellTest):
             self.assertEqual(self.ttl(shell).returncode, 0)  # status works without root
 
 
+
+class Usb(ShellTest):
+    """mu300-usb against a fake charger (busybox i2cget/i2cset on files) and a fake role switch."""
+
+    def setUp(self):
+        super().setUp()
+        r = self.root = self.tmp / 'root'
+        (r / 'run/mu300').mkdir(parents=True)
+        (r / 'run/mu300/device').write_text('u30air\n')
+        node = r / 'sys/firmware/devicetree/base/soc/i2c@22a0000'
+        node.mkdir(parents=True)
+        i2c = r / 'sys/bus/i2c/devices/i2c-6'
+        i2c.mkdir(parents=True)
+        (i2c / 'of_node').symlink_to(node)
+        role = r / 'sys/class/usb_role/25100000.dwc3-role-switch'
+        role.mkdir(parents=True)
+        (role / 'role').write_text('device\n')
+        self.stub('id', 'echo 0')
+        self.stub('sleep', ':')
+        # i2c-tools (which mu300-usb prefers to busybox's): i2cget -y BUS ADDR REG / i2cset -y BUS ADDR REG VALUE,
+        # one file per register. (Not a stub called busybox: that would also replace the "busybox sh" under test.)
+        self.stub('i2cget', '[ "$1" = -y ] && shift; cat "$STUBLOG/reg-$3" 2>/dev/null || echo 0x00')
+        self.stub('i2cset', '[ "$1" = -y ] && shift; printf "0x%02x\\n" $(( $4 )) > "$STUBLOG/reg-$3"; '
+                            'echo "$3=$(( $4 ))" >> "$STUBLOG/writes"')
+
+    def regs(self, **values):
+        for k, v in values.items():
+            (self.tmp / f'reg-0x{k[1:]}').write_text(v + '\n')
+
+    def reg(self, r):
+        return int((self.tmp / f'reg-{r}').read_text(), 16)
+
+    def usb(self, shell, *args):
+        return self.script(shell, BIN / 'mu300-usb', *args, MU300_SYSROOT=self.root,
+                           PATH=f'{self.stubs}:{BIN}:/usr/bin:/bin')
+
+    def role(self):
+        return (self.root / 'sys/class/usb_role/25100000.dwc3-role-switch/role').read_text().strip()
+
+    def test_host_and_back(self):
+        for shell in self.each_shell():
+            self.regs(r01='0x1a', r05='0x9f', r08='0x00')   # no outside supply
+            r = self.usb(shell, 'host')
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertEqual(self.role(), 'host')
+            self.assertEqual(self.reg('0x01'), 0x1a | 0x20)    # OTG_CONFIG on, the rest untouched
+            self.assertEqual(self.reg('0x05'), 0x9f & ~0x30)   # watchdog off
+            r = self.usb(shell, 'device')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(self.role(), 'device')
+            self.assertEqual(self.reg('0x01'), 0x1a)
+            self.assertEqual(self.reg('0x05'), (0x9f & ~0x30) | 0x10)
+
+    def test_refuses_while_powered(self):
+        for shell in self.each_shell():
+            self.regs(r01='0x1a', r05='0x9f', r08='0x24')   # power good, a USB host drives VBUS
+            (self.tmp / 'writes').unlink(missing_ok=True)
+            r = self.usb(shell, 'host')
+            self.assertEqual(r.returncode, 1)
+            self.assertIn('unplug it first', r.stderr)
+            self.assertFalse((self.tmp / 'writes').exists())   # not a single register written
+            self.assertEqual(self.role(), 'device')
+
+    def test_boot_switches_a_leftover_boost_off(self):
+        for shell in self.each_shell():
+            self.regs(r01='0x3a', r05='0x8f')
+            r = self.usb(shell, 'boot')
+            self.assertEqual(r.returncode, 0)
+            self.assertEqual(self.reg('0x01'), 0x1a)
+            self.assertIn('switched off', r.stdout)
+            # nothing to do, nothing written
+            (self.tmp / 'writes').unlink(missing_ok=True)
+            self.assertEqual(self.usb(shell, 'boot').stdout, '')
+            self.assertFalse((self.tmp / 'writes').exists())
+
+    def test_f50(self):
+        for shell in self.each_shell():
+            (self.root / 'run/mu300/device').write_text('f50\n')
+            r = self.usb(shell, 'host')
+            self.assertEqual(r.returncode, 1)
+            self.assertIn('only the U30 Air', r.stderr)
+            self.assertEqual(self.usb(shell, 'boot').returncode, 0)   # boot is quiet on every device
+
 if __name__ == '__main__':
     unittest.main()

@@ -16,8 +16,10 @@ cd /src/linux-$KV
 # MU300 patches (idempotent); MU300_PROBE_STAGE=N adds the boot-stage reset probe (debug)
 python3 /work/port/install.py .
 [ -n "${MU300_PROBE_STAGE:-}" ] && python3 /work/debug/install-probe.py . "$MU300_PROBE_STAGE"
-# a patch either applies or is applied already; anything else stops the build (it used to be skipped silently)
-for p in /work/patches/*.patch; do
+# a patch either applies or is applied already; anything else stops the build (it used to be skipped silently).
+# patches/<major.minor>/ holds what only one kernel needs (what a newer one has upstream already)
+for p in /work/patches/*.patch /work/patches/"$(echo "$KV" | cut -d. -f1,2)"/*.patch; do
+    [ -e "$p" ] || continue
     if patch -p1 -N -s --dry-run < "$p" >/dev/null 2>&1; then patch -p1 -N -s < "$p"
     elif patch -p1 -R -s -f --dry-run < "$p" >/dev/null 2>&1; then :
     else echo "patch does not apply to $KV: $p" >&2; exit 1; fi

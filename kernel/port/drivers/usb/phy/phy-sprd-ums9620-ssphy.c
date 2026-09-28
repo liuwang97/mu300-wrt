@@ -19,6 +19,7 @@
 #include <linux/regmap.h>
 #include <linux/regulator/consumer.h>
 #include <linux/slab.h>
+#include <linux/usb/otg.h>
 #include <linux/usb/phy.h>
 #include <dt-bindings/soc/sprd,qogirn6pro-mask.h>
 #include <dt-bindings/soc/sprd,qogirn6pro-regs.h>
@@ -721,6 +722,16 @@ static void sprd_ssphy_vbus_source(struct device *dev)
 	of_node_put(gpio);
 }
 
+/*
+ * dwc3 tells the PHY about a role change through otg_set_vbus() - host: the host eye pattern, an A-type ID and the
+ * D+/D- pull-downs; device: back. Without an otg structure it never did, and a host-mode port kept the device
+ * settings (a failed first descriptor read, "error -71", and slow transfers).
+ */
+static int sprd_ssphy_otg_set_vbus(struct usb_otg *otg, bool on)
+{
+	return sprd_ssphy_set_vbus(otg->usb_phy, on);
+}
+
 static int sprd_ssphy_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -790,6 +801,11 @@ static int sprd_ssphy_probe(struct platform_device *pdev)
 	phy->phy.notify_connect = sprd_ssphy_notify_connect;
 	phy->phy.notify_disconnect = sprd_ssphy_notify_disconnect;
 	phy->phy.vbus_nb.notifier_call = sprd_ssphy_vbus_notify;
+	phy->phy.otg = devm_kzalloc(dev, sizeof(*phy->phy.otg), GFP_KERNEL);
+	if (!phy->phy.otg)
+		return -ENOMEM;
+	phy->phy.otg->usb_phy = &phy->phy;
+	phy->phy.otg->set_vbus = sprd_ssphy_otg_set_vbus;
 
 	sprd_ssphy_vbus_source(dev);
 	ret = usb_add_phy_dev(&phy->phy);
