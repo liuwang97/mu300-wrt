@@ -195,3 +195,4 @@ installing the lz4 Python module (pip install --user lz4)	lz4 Python modülü ku
 start of the region: {1}	bölgenin başı: {1}
 Python 3 is not installed; installing it for this user	Python 3 kurulu değil; bu kullanıcı için kuruluyor
 {1} failed	{1} başarısız oldu
+waiting for Android to finish starting	Android'in açılmasını bitirmesi bekleniyor

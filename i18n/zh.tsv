@@ -195,3 +195,4 @@ installing the lz4 Python module (pip install --user lz4)	正在安装 lz4 Pytho
 start of the region: {1}	区域开头：{1}
 Python 3 is not installed; installing it for this user	未安装 Python 3；正在为当前用户安装
 {1} failed	{1} 失败
+waiting for Android to finish starting	正在等待 Android 启动完成

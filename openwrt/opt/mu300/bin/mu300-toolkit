@@ -11,8 +11,15 @@ CONF=/etc/mu300/toolkit.conf
 VPN_CONF=/etc/mu300/vpn.conf
 CPUFREQ=/sys/devices/system/cpu/cpufreq
 GPU=$(ls -d /sys/class/devfreq/*.gpu 2>/dev/null | head -n1)
-# the U30 Air's battery; none on the F50
-BATTERY=$(ls /sys/class/power_supply/battery/capacity /sys/class/power_supply/battery/status \
+# The U30 Air's battery: "battery" under 5.4 (the vendor charger manager), "sc27xx-fgu" under mainline. The F50 has
+# none, but the same PMIC: its fuel gauge shows up under mainline too, with made-up values - so only a U30 Air.
+BATDIR=
+if [ "$(/opt/mu300/bin/mu300-device 2>/dev/null)" = u30air ]; then
+    for d in /sys/class/power_supply/battery /sys/class/power_supply/sc27xx-fgu; do
+        [ -r "$d/capacity" ] && { BATDIR=$d; break; }
+    done
+fi
+BATTERY=$([ -n "$BATDIR" ] && ls "$BATDIR/capacity" "$BATDIR/status" \
     /sys/class/power_supply/usb/online /sys/class/power_supply/ac/online 2>/dev/null)
 PROFILES="eco balanced performance"
 
@@ -178,8 +185,8 @@ sec == "sys" {
     else if (leaf == "related_cpus") prel[node] = val
     else if (leaf == "scaling_governor") pgov[node] = val
     else if (leaf == "cur_freq") gpuf = val
-    else if (node == "battery" && leaf == "capacity") bcap = val
-    else if (node == "battery" && leaf == "status") bstat = val
+    else if ((node == "battery" || node == "sc27xx-fgu") && leaf == "capacity") bcap = val
+    else if ((node == "battery" || node == "sc27xx-fgu") && leaf == "status") bstat = val
     else if ((node == "usb" || node == "ac") && leaf == "online" && val == 1) bext = 1
 }
 sec == "extra" { nextra++; extra[nextra] = $0; next }
@@ -213,7 +220,7 @@ END {
     if (m["SwapTotal:"] > 0) line(sprintf("  swap %s / %s (zram)", human(m["SwapTotal:"] - m["SwapFree:"]), human(m["SwapTotal:"])))
     if (gpuf != "") line(sprintf("%sGPU%s  %d MHz", BO, NO, gpuf / 1000000))
     # (no bar: bar() colours a full one red, which is right for load and wrong for a battery)
-    if (bcap != "") line(sprintf("%sBAT%s  %d%%   %s", BO, NO, bcap, bstat == "Charging" ? "charging" : (bext ? "on USB power" : "on battery")))
+    if (bcap != "") line(sprintf("%sBAT%s  %d%%   %s", BO, NO, bcap, bstat == "Charging" ? "charging" : (bstat == "Full" ? "full, on USB power" : (bext ? "on USB power" : "on battery"))))
     line("")
     # temperatures: most useful zones first, then any other readable zone
     split("soc big7 mid4 mid5 lit0 gpu ai0 mm board chg pa nr", want, " ")
@@ -440,11 +447,12 @@ menu_stress() {
 # charging, full, on battery...: the SQC charger says "Unknown" once the battery is full, so the power source says
 # more than the status alone
 battery_state() {
-    st=$(cat /sys/class/power_supply/battery/status 2>/dev/null)
+    st=$(cat "$BATDIR/status" 2>/dev/null)
     [ "$st" = Unknown ] && st=
     ext=0; for s in usb ac; do [ "$(cat /sys/class/power_supply/$s/online 2>/dev/null)" = 1 ] && ext=1; done
     case $st in
         Charging) echo charging ;;
+        Full) echo "full, on USB power" ;;
         Discharging) [ $ext = 1 ] && echo "on USB power, not charging" || echo "on battery" ;;
         *) [ $ext = 1 ] && echo "on USB power${st:+ ($st)}" || echo "on battery${st:+ ($st)}" ;;
     esac
@@ -458,8 +466,8 @@ info() {
     hot=$(cat /sys/class/thermal/thermal_zone*/temp 2>/dev/null | sort -n | tail -n1)
     printf '%sTemp%s     hottest %s C, profile %s\n' "$B" "$N" "$((hot / 1000))" "$(current_profile)"
     # the U30 Air has a battery (the F50 has none)
-    [ -r /sys/class/power_supply/battery/capacity ] &&
-        printf '%sBattery%s  %s%%, %s\n' "$B" "$N" "$(cat /sys/class/power_supply/battery/capacity)" "$(battery_state)"
+    [ -n "$BATDIR" ] &&
+        printf '%sBattery%s  %s%%, %s\n' "$B" "$N" "$(cat "$BATDIR/capacity")" "$(battery_state)"
     printf '%sNetwork%s\n' "$B" "$N"
     ip -4 -br addr 2>/dev/null | awk '$1 !~ /^(lo|sipa_dummy)/ && $3 != "" {printf "  %-12s %s\n", $1, $3}'
     ip route show default 2>/dev/null | sed 's/^/  default /' | head -n2

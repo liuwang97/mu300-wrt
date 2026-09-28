@@ -5,7 +5,7 @@ import os, pty, select, sys, time
 host = os.environ.get('MU300_HOST', 'ubuntu@192.168.77.1')
 pw = os.environ.get('MU300_PASS', 'ubuntu').encode()
 cmd = ['ssh', '-o', 'StrictHostKeyChecking=no', '-o', 'UserKnownHostsFile=/dev/null', '-o', 'LogLevel=ERROR',
-       '-o', 'PubkeyAuthentication=no', host, ' '.join(sys.argv[1:]) + '; sleep 0.5']
+       '-o', 'PubkeyAuthentication=no', host, ' '.join(sys.argv[1:]) + '; sleep 1']
 pid, fd = pty.fork()
 if pid == 0:
     os.execvp(cmd[0], cmd)
