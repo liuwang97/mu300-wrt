@@ -12,6 +12,9 @@ is_openwrt() { [ -e /etc/openwrt_release ] && [ -z "${MU300_HOTSPOT_CONF:-}" ]; 
 current() {
     if is_openwrt; then
         case $(uci -q get wireless.radio0.band) in 2g) echo 2.4 ;; *) echo 5 ;; esac
+    elif [ ! -r "$CONF" ] && ch=$(iw dev wlan0 info 2>/dev/null | sed -n 's/.*channel \([0-9]*\).*/\1/p') && [ -n "$ch" ]; then
+        # the file holds the passphrase and only root reads it: the channel the hotspot runs on tells too
+        [ "$ch" -gt 14 ] && echo 5 || echo 2.4
     else
         case $(sed -n 's/^BAND=//p' "$CONF" 2>/dev/null | head -n1) in 2.4) echo 2.4 ;; *) echo 5 ;; esac
     fi

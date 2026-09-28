@@ -97,6 +97,15 @@ class Led(ShellTest):
                 self.assertEqual((s[lit], s[dark]), ('255', '0'), iw)
             self.led(shell, 'u30air', 'wifi', 'off')
             self.assertEqual((self.state()['wifi_blue'], self.state()['wifi_white']), ('0', '0'))
+            # the hotspot just started and has no channel yet: its setting decides
+            (self.tmp / 'iw.out').write_text('Interface wlan0\n\ttype AP\n')
+            conf = self.tmp / 'hotspot.conf'
+            for band, lit in (('2.4', 'wifi_white'), ('5', 'wifi_blue')):
+                conf.write_text(f'SSID=x\nPSK=12345678\nBAND={band}\n')
+                (self.root / 'run/mu300/device').write_text('u30air\n')
+                self.script(shell, BIN / 'mu300-led', 'wifi', 'on', MU300_SYSROOT=self.root, MU300_BIN=BIN,
+                            MU300_LED_CONF=self.conf, MU300_HOTSPOT_CONF=conf)
+                self.assertEqual(self.state()[lit], '255', band)
 
     def test_timeout(self):
         for shell in self.each_shell():
