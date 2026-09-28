@@ -4,7 +4,7 @@
 #   MU300_FLAVOUR=immortalwrt openwrt/build-rootfs.sh OUT.tar.gz
 # Inputs (same as rootfs/assemble.sh, all optional except modules):
 #   out/modules/*.ko  out/modules.builtin*  firmware/  android-subset/  android-gpu-subset/
-#   tools/logdw/logdw  tools/bt-init/mu300-bt-init  tools/gpu/cltest  busybox (static, full)
+#   tools/logdw/logdw  tools/bt-init/mu300-bt-init  tools/keys/mu300-keys  tools/gpu/cltest  busybox (static, full)
 #   xray, hev-socks5-tunnel (tools/fetch-xray.sh) and sing-box (tools/fetch-sing-box.sh), for mu300-vpn
 #   upstream/out/modules/*.ko (optional: out-of-tree WCN modules for the mainline 6.18 kernel)
 set -eu
@@ -46,7 +46,7 @@ ls "$IN/out/modules"/*.ko >/dev/null 2>&1 || {
 }
 # The optional ones decide whether the image can use the modem, Wi-Fi, the GPU or the VPN at all. Missing ones
 # used to be skipped silently, which produces an image that boots and then does nothing useful.
-for o in firmware android-subset android-gpu-subset tools/logdw/logdw tools/bt-init/mu300-bt-init tools/gpu/cltest busybox sing-box xray hev-socks5-tunnel upstream/out/modules; do
+for o in firmware android-subset android-gpu-subset tools/logdw/logdw tools/bt-init/mu300-bt-init tools/keys/mu300-keys tools/gpu/cltest busybox sing-box xray hev-socks5-tunnel upstream/out/modules; do
     [ -e "$IN/$o" ] && echo "  + $o" || echo "  - $o   (missing: the image is built without it)"
 done
 # shellcheck disable=SC2046
@@ -55,7 +55,7 @@ docker run --rm --platform linux/arm64 \
   -v "$TOP/boot/module-order.txt":/in/module-order.txt:ro -v "$IN/out/modules":/in/modules:ro \
   $(opt out/modules.builtin modules.builtin) $(opt out/modules.builtin.modinfo modules.builtin.modinfo) \
   $(opt firmware firmware) $(opt android-subset android-subset) $(opt android-gpu-subset android-gpu-subset) \
-  $(opt tools/logdw/logdw logdw) $(opt tools/bt-init/mu300-bt-init bt-init) $(opt tools/gpu/cltest cltest) \
+  $(opt tools/logdw/logdw logdw) $(opt tools/bt-init/mu300-bt-init bt-init) $(opt tools/keys/mu300-keys keys) $(opt tools/gpu/cltest cltest) \
   $(opt busybox busybox) $(opt sing-box sing-box) $(opt xray xray) $(opt hev-socks5-tunnel hev-socks5-tunnel) $(opt upstream/out/modules mainline-modules) -v "$TOP/openwrt":/out -v "$REGDB":/in/regdb:ro \
   -e KREL=$KREL -e OUT="$(basename "$OUT")" -e MU300_VERSION="${MU300_VERSION:-dev}" mu300-$FLAVOUR-base:$VER /bin/sh -eu -c '
 mkdir -p /var/lock /var/run /tmp
@@ -99,6 +99,7 @@ fi
 [ -e /in/cltest ] && { mkdir -p $R/opt/mu300/android/system/bin; cp /in/cltest $R/opt/mu300/android/system/bin/cltest; chmod 755 $R/opt/mu300/android/system/bin/cltest; }
 [ -e /in/logdw ] && { cp /in/logdw $R/opt/mu300/bin/logdw; chmod 755 $R/opt/mu300/bin/logdw; }
 [ -e /in/bt-init ] && { cp /in/bt-init $R/opt/mu300/bin/mu300-bt-init; chmod 755 $R/opt/mu300/bin/mu300-bt-init; }
+[ -e /in/keys ] && { cp /in/keys $R/opt/mu300/bin/mu300-keys; chmod 755 $R/opt/mu300/bin/mu300-keys; }
 [ -f /in/sing-box ] && { cp /in/sing-box $R/opt/mu300/bin/sing-box; chmod 755 $R/opt/mu300/bin/sing-box; }
 for b in xray hev-socks5-tunnel; do [ -f /in/$b ] && { cp /in/$b $R/opt/mu300/bin/$b; chmod 755 $R/opt/mu300/bin/$b; }; done
 # full static busybox for the tools OpenWrt busybox leaves out (od, timeout, mountpoint, losetup, rfkill, telnetd)
@@ -117,12 +118,12 @@ printf "%s\n" "${MU300_VERSION:-dev}" > $R/etc/mu300/image-version
 # enable the services (rc.common "enable" needs ubus, which is not running in the build container)
 # accounts still those of the image until an installer or mu300-update puts the device ones in place
 : > $R/etc/.mu300-accounts-from-image
-for s in mu300-accounts mu300-vendor mu300-hw mu300-post mu300-toolkit mu300-atd mu300-modem-log mu300-wifi-client; do
+for s in mu300-accounts mu300-vendor mu300-hw mu300-post mu300-toolkit mu300-atd mu300-modem-log mu300-wifi-client mu300-buttons; do
     n=$(sed -n "s/^START=//p" $R/etc/init.d/$s)
     ln -sf ../init.d/$s $R/etc/rc.d/S$n$s
 done
 # busybox PATH is /usr/sbin:/usr/bin:/sbin:/bin, so the commands go into /usr/bin
-for c in mu300-toolkit mu300-next-boot mu300-os mu300-update mobile-data mu300-at mu300-vpn wifi-client mu300-ttl; do ln -sf /opt/mu300/bin/$c $R/usr/bin/$c; done
+for c in mu300-toolkit mu300-next-boot mu300-os mu300-update mobile-data mu300-at mu300-vpn wifi-client mu300-ttl mu300-wifi-band mu300-led; do ln -sf /opt/mu300/bin/$c $R/usr/bin/$c; done
 # no kernel of its own: OpenWrt kmods (6.12) and grub are unused on this device
 rm -rf $R/lib/modules/6.* $R/boot
 # out-of-tree modules for the experimental mainline kernel (upstream/)

@@ -94,6 +94,15 @@ untar() {
 }
 
 installed_version() { [ -r "$VERSION_FILE" ] && cat "$VERSION_FILE" || echo unknown; }
+this_device() { "${MU300_BIN:-/opt/mu300/bin}/mu300-device"; }
+# bundle_runs_here BUNDLE LIST DIR: does this kernel bundle (LIST: its file list) run on this device? Bundles name
+# their devices in ./devices; one without it is from before the U30 Air and runs on the F50 only (see boot_update).
+bundle_runs_here() {
+    _me=$(this_device)
+    [ "$_me" = f50 ] && return 0
+    grep -qx './devices' "$2" || return 1
+    untar -xzf "$1" -C "$3" ./devices && grep -qw "$_me" "$3/devices"
+}
 # the directory the running system booted from (it stays in use under any name until the reboot)
 is_root() { [ -d "$1" ] && [ / -ef "$1" ]; }
 running_os() { [ -e /etc/openwrt_release ] && echo openwrt || echo ubuntu; }
@@ -360,14 +369,9 @@ boot_update() {  # boot_update TAG   (MU300_KERNEL_BUNDLE=FILE uses a local mu30
     # A bundle names the devices it runs on (./devices). One without that file is from before the U30 Air: its 5.4
     # ramdisk does not load the U30 Air's modules and its mainline kernel does not bring up its USB (FINDINGS 33,
     # 33c) - on a U30 Air either one boots to a device with no USB at all.
-    me=$(/opt/mu300/bin/mu300-device)
-    if [ "$me" != f50 ]; then
-        ok=
-        if grep -qx './devices' "$tmp/list"; then untar -xzf "$bundle" -C "$tmp" ./devices && grep -qw "$me" "$tmp/devices" && ok=1; fi
-        if [ -z "$ok" ]; then
-            printf 'boot: the kernel of %s does not support the %s; the boot image is unchanged\n' "$tag" "$me" >&2
-            rm -rf "$tmp"; return 1
-        fi
+    if ! bundle_runs_here "$bundle" "$tmp/list" "$tmp"; then
+        printf 'boot: the kernel of %s does not support the %s; the boot image is unchanged\n' "$tag" "$(this_device)" >&2
+        rm -rf "$tmp"; return 1
     fi
     untar -xzf "$bundle" -C "$tmp" ./Image ./ramdisk-generic.lz4 || { echo "boot: unpacking $bundle failed" >&2; return 1; }
     [ -s "$tmp/Image" ] && [ -s "$tmp/ramdisk-generic.lz4" ] || { echo "boot: no kernel in the bundle" >&2; return 1; }
@@ -650,6 +654,9 @@ clean() {
     sync
     df -h "$DISK" | tail -1
 }
+
+# tests/ source this file for its functions only (MU300_BIN, MU300_DISK: a fake device)
+[ -z "${MU300_LIB:-}" ] || return 0
 
 [ "$(id -u)" = 0 ] || { echo "run as root" >&2; exit 1; }
 case ${1:-check} in apply|boot|kernel) keepalive_start; trap 'keepalive_stop; resume_data' EXIT; trap 'exit 130' INT TERM HUP ;; esac

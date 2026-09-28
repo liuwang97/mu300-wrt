@@ -12,7 +12,7 @@
 # (sipa_eth*), so it survives mobile data reconnecting, and it lives in its own nftables table (inet mu300_ttl),
 # next to OpenWrt's fw4 and the Ubuntu firewall.
 export PATH="$PATH:/opt/mu300/bin:/usr/sbin:/sbin"
-CONF=/etc/mu300/ttl.conf
+CONF=${MU300_TTL_CONF:-/etc/mu300/ttl.conf}   # (the variable is for tests/)
 TABLE="inet mu300_ttl"
 
 saved() { sed -n 's/^TTL=\([0-9]*\)$/\1/p' "$CONF" 2>/dev/null | tail -n1; }
