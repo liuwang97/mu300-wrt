@@ -2,10 +2,13 @@
 mu300-ttl. They run on Ubuntu (dash, bash) and OpenWrt (busybox ash)."""
 import os
 import shutil
+import struct
+import subprocess
 import time
 import unittest
+import zlib
 
-from helpers import BIN, ShellTest
+from helpers import BIN, TOP, ShellTest
 
 
 class Device(ShellTest):
@@ -695,3 +698,65 @@ class Usb(ShellTest):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class NextBoot(ShellTest):
+    """mu300-next-boot (bash) re-arms the Linux slot with tries N+1 in the slot byte of whichever slot Linux is on."""
+
+    def setUp(self):
+        super().setUp()
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('bbi', TOP / 'boot' / 'build-boot-image.py')
+        self.bbi = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.bbi)
+        self.run_dir = self.tmp / 'run'
+        self.run_dir.mkdir()
+        self.misc = self.tmp / 'misc'
+        live = bytes.fromhex('5f61000042434142010200009f001e000000000000000000000000000be17146')
+        self.misc.write_bytes(bytes(0x800) + live + bytes(2016))
+        self.blocks = self.bbi.bootloader_control(self.misc.read_bytes())   # android_a, linux_b, android_b, linux_a
+        (self.run_dir / 'misc-dev').write_text(str(self.misc))
+        (self.tmp / 'default-boot').write_text('linux\n')
+
+    def nb(self, *args):
+        if not shutil.which('bash'):
+            self.skipTest('no bash')
+        return subprocess.run(['bash', str(BIN / 'mu300-next-boot'), *args], capture_output=True, text=True,
+                              env=self.env(MU300_RUN=self.run_dir, MU300_CONF=self.tmp / 'default-boot'))
+
+    def bc(self):
+        return self.misc.read_bytes()[0x800:0x820]
+
+    def test_slot_a(self):
+        android_a, linux_b, android_b, linux_a = self.blocks
+        (self.run_dir / 'linux-slot').write_text('a\n')
+        (self.run_dir / 'misc-bc-android.bin').write_bytes(android_b)
+        (self.run_dir / 'misc-bc-linux-trial.bin').write_bytes(linux_a)
+        r = self.nb('--rearm')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        # 5 attempts by default: tries 6 in slot a's byte (12), the rest as in the trial block, CRC fixed
+        want = bytearray(linux_a)
+        want[12] = 0x0f | (6 << 4)
+        want[28:32] = struct.pack('<I', zlib.crc32(bytes(want[:28])))
+        self.assertEqual(self.bc(), bytes(want))
+        self.nb('android')
+        self.assertEqual(self.bc(), android_b)
+
+    def test_slot_b_as_before(self):
+        android_a, linux_b, _, _ = self.blocks
+        (self.run_dir / 'misc-bc-slot-a.bin').write_bytes(android_a)          # an older initramfs: old names only
+        (self.run_dir / 'misc-bc-slot-b-trial.bin').write_bytes(linux_b)
+        self.assertEqual(self.nb('--rearm').returncode, 0)
+        self.assertEqual(self.bc()[14], 0x6f)
+        self.nb('android')
+        self.assertEqual(self.bc(), android_a)
+
+    def test_slot_a_never_falls_back_to_legacy_names(self):
+        android_a, linux_b, _, _ = self.blocks
+        (self.run_dir / 'linux-slot').write_text('a\n')
+        (self.run_dir / 'misc-bc-slot-a.bin').write_bytes(android_a)
+        (self.run_dir / 'misc-bc-slot-b-trial.bin').write_bytes(linux_b)
+        before = self.misc.read_bytes()
+        r = self.nb('android')
+        self.assertNotEqual(r.returncode, 0)
+        self.assertEqual(self.misc.read_bytes(), before)

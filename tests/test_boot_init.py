@@ -247,13 +247,14 @@ class Slot(ShellTest):
         self.assertIsNotNone(m, 'boot/init has no slot block')
         return m.group(1)
 
-    def run_slot(self, shell, cmdline=None, bootargs=None, image=None, call='linux_slot_detect; publish_slot'):
+    def run_slot(self, shell, cmdline=None, bootargs=None, image=None, call='linux_slot_detect; publish_slot',
+                 blocks=('slot-a', 'slot-b-trial', 'slot-b', 'slot-a-trial')):
         etc, run = self.tmp / 'etc', self.tmp / 'run'
         shutil.rmtree(run, ignore_errors=True)
-        etc.mkdir(exist_ok=True)
-        for n in ('slot-a', 'slot-b-trial', 'slot-b', 'slot-a-trial'):
+        shutil.rmtree(etc, ignore_errors=True)
+        etc.mkdir()
+        for n in blocks:
             (etc / f'misc-bc-{n}.bin').write_text(n)
-        (etc / 'mu300-linux-slot').unlink(missing_ok=True)
         if image:
             (etc / 'mu300-linux-slot').write_text(image + '\n')
         srcs = []
@@ -313,6 +314,20 @@ class Slot(ShellTest):
             _, _, run = self.run_slot(shell, cmdline='androidboot.slot_suffix=_a')
             self.assertFalse((run / 'mu300' / 'misc-bc-slot-a.bin').exists())
             self.assertFalse((run / 'mu300' / 'misc-bc-slot-b-trial.bin').exists())
+
+    def test_old_device_segment(self):
+        # the update every existing installation takes: a new init in the generic segment, the device segment of
+        # an older installer (only the slot-b pair, no etc/mu300-linux-slot), booted from b
+        for shell in self.each_shell():
+            out, _, run = self.run_slot(shell, cmdline='androidboot.slot_suffix=_b', blocks=('slot-a', 'slot-b-trial'))
+            self.assertEqual(out, 'linux=b android=a')
+            self.assertEqual((run / 'mu300' / 'linux-slot').read_text(), 'b\n')
+            for n, want in (('misc-bc-android.bin', 'slot-a'), ('misc-bc-linux-trial.bin', 'slot-b-trial'),
+                            ('misc-bc-slot-a.bin', 'slot-a'), ('misc-bc-slot-b-trial.bin', 'slot-b-trial')):
+                self.assertEqual((run / 'mu300' / n).read_text(), want, n)
+            _, log, _ = self.run_slot(shell, cmdline='androidboot.slot_suffix=_b', blocks=('slot-a', 'slot-b-trial'),
+                                      call='linux_slot_detect; restore_android')
+            self.assertIn(f'write {self.tmp}/etc/misc-bc-slot-a.bin', log)
 
 
 class Rules(unittest.TestCase):

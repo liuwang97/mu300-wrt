@@ -1,5 +1,6 @@
 #!/bin/sh /etc/rc.common
-# After boot: keep mobile data up across modem resets, and mark the boot successful (re-arm slot b if Linux is default)
+# After boot: keep mobile data up across modem resets, and mark the boot successful (re-arm the Linux slot if Linux
+# is the default)
 START=99
 USE_PROCD=1
 export PATH="$PATH:/opt/mu300/busybox-bin"

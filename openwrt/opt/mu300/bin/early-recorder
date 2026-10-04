@@ -1,11 +1,13 @@
 #!/bin/sh
 # Early boot recorder: for the first minutes after switch_root, copy dmesg + unit states into the persistent
-# log area inside boot_b (48 MiB, 8 MiB) every few seconds, so a power cut before journald flushes still
-# leaves evidence that tools/collect-logs.sh can read from Android.
+# log area inside the Linux slot's boot partition (48 MiB, 8 MiB) every few seconds, so a power cut before journald
+# flushes still leaves evidence that tools/collect-logs.sh can read from Android.
 # OpenWrt: od/timeout come from the static busybox in /opt/mu300/busybox-bin
 export PATH="$PATH:/opt/mu300/busybox-bin"
-BOOTB=$(readlink -f /dev/block/by-name/boot_b 2>/dev/null)
-[ -b "$BOOTB" ] || for u in /sys/class/block/mmcblk0p*/uevent; do grep -qx PARTNAME=boot_b "$u" && BOOTB=/dev/$(basename "$(dirname "$u")"); done
+# the slot Linux booted from, as the initramfs found it: boot_a when Android runs from b, and that one is Android's
+S=$(cat /run/mu300/linux-slot 2>/dev/null); case $S in a|b) ;; *) S=b ;; esac
+BOOTB=$(readlink -f /dev/block/by-name/boot_$S 2>/dev/null)
+[ -b "$BOOTB" ] || for u in /sys/class/block/mmcblk0p*/uevent; do grep -qx PARTNAME=boot_$S "$u" && BOOTB=/dev/$(basename "$(dirname "$u")"); done
 [ -b "$BOOTB" ] || exit 0
 end=$(( $(cut -d. -f1 /proc/uptime) + ${1:-300} ))
 while [ "$(cut -d. -f1 /proc/uptime)" -lt "$end" ]; do

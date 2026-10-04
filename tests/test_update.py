@@ -30,6 +30,15 @@ class Update(ShellTest):
             r = self.up(shell, 'echo loaded')
             self.assertEqual((r.returncode, r.stdout), (0, 'loaded\n'), r.stderr)
 
+    def test_linux_slot(self):
+        f = self.root / 'run/mu300/linux-slot'
+        for shell in self.each_shell():
+            f.unlink(missing_ok=True)
+            self.assertEqual(self.up(shell, 'linux_slot').stdout.strip(), 'b')
+            for v, want in (('a\n', 'a'), ('b\n', 'b'), ('x\n', 'b')):
+                f.write_text(v)
+                self.assertEqual(self.up(shell, 'linux_slot').stdout.strip(), want, v)
+
     def test_rootfs_asset(self):
         osr = self.disk / 'ubuntu' / 'etc' / 'os-release'
         cases = [('24.04', {}, 'mu300-ubuntu-rootfs.tar.gz'),

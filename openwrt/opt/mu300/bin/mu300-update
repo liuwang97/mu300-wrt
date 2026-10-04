@@ -296,15 +296,15 @@ apply_one() {  # apply_one OS TAG
 }
 
 # ---- the kernel and the boot image ------------------------------------------------------------------------------
-# The boot image in boot_b is the stock header and AVB tail of this device, the kernel, and a ramdisk that holds this
-# device's own Android files next to the generic part (init, busybox, modules). The kernel unpacks concatenated
-# ramdisk segments in turn and a later file replaces an earlier one, so an update keeps the device's ramdisk as it is
-# and appends the release's generic segment (ramdisk-generic.lz4 in mu300-kernel.tar.gz): nothing has to be
-# unpacked or compressed here, and nothing from Android is needed. The device's segment is kept in $BOOTDIR, so the
-# image does not grow with every update; it is taken from boot_b again whenever boot_b was not written by us (a new
-# install from a computer).
+# The boot image in the Linux slot's boot partition (boot_b, or boot_a when Android runs from b) is the stock header
+# and AVB tail of this device, the kernel, and a ramdisk that holds this device's own Android files next to the
+# generic part (init, busybox, modules). The kernel unpacks concatenated ramdisk segments in turn and a later file
+# replaces an earlier one, so an update keeps the device's ramdisk as it is and appends the release's generic segment
+# (ramdisk-generic.lz4 in mu300-kernel.tar.gz): nothing has to be unpacked or compressed here, and nothing from
+# Android is needed. The device's segment is kept in $BOOTDIR, so the image does not grow with every update; it is
+# taken from the partition again whenever it was not written by us (a new install from a computer).
 BOOTDIR=$DISK/boot
-PERSIST_LOG=$((48 << 20))   # boot_b keeps the persistent init log from 48 MiB on (boot/build-boot-image.py)
+PERSIST_LOG=$((48 << 20))   # the boot partition keeps the persistent init log from 48 MiB on (boot/build-boot-image.py)
 
 # Which kernel this device runs: the vendor 5.4 (mu300-kernel.tar.gz) or a mainline one (mu300-kernel-<version>.tar.gz:
 # 6.18, the long-term release, and 7.2, the newest stable one).
@@ -315,6 +315,8 @@ KERNELS="5.4 6.18 7.2"
 kernel_choice() { c=$(cat "$KERNEL_CHOICE" 2>/dev/null); case " $KERNELS " in *" $c "*) echo "$c" ;; *) echo 5.4 ;; esac; }
 kernel_asset() { case $(kernel_choice) in 5.4) echo mu300-kernel.tar.gz ;; *) echo "mu300-kernel-$(kernel_choice).tar.gz" ;; esac; }
 
+# the slot Linux runs from (the initramfs publishes it; Android may be on either). Without the file: b, as always.
+linux_slot() { _s=$(cat "${MU300_SYSROOT:-}/run/mu300/linux-slot" 2>/dev/null); case $_s in a|b) echo "$_s" ;; *) echo b ;; esac; }
 part_dev() {  # part_dev NAME -> /dev/<block device of that partition>
     for u in /sys/class/block/*/uevent; do
         grep -qx "PARTNAME=$1" "$u" 2>/dev/null || continue
@@ -339,7 +341,8 @@ fsize() { wc -c < "$1" | tr -d ' '; }
 pad_page() { p=$(( (4096 - $(fsize "$1") % 4096) % 4096 )); [ "$p" = 0 ] || head -c "$p" /dev/zero >> "$1"; }
 head_sha() { dd if="$1" bs=4096 count=$(( ($2 + 4095) / 4096 )) 2>/dev/null | head -c "$2" | sha256sum | cut -d' ' -f1; }
 
-# write BODY (from offset 0), VBMETA right behind it and FOOTER into the last 64 bytes of boot_b, then read it back
+# write BODY (from offset 0), VBMETA right behind it and FOOTER into the last 64 bytes of the boot partition, then
+# read it back
 write_boot() {  # write_boot DEV PSIZE BODY VBMETA FOOTER
     cat "$3" "$4" > "$3.all"
     dd if="$3.all" of="$1" bs=4096 conv=notrunc 2>/dev/null && sync || return 1
@@ -352,8 +355,8 @@ write_boot() {  # write_boot DEV PSIZE BODY VBMETA FOOTER
 }
 
 boot_update() {  # boot_update TAG   (MU300_KERNEL_BUNDLE=FILE uses a local mu300-kernel.tar.gz instead)
-    tag=$1
-    dev=$(part_dev boot_b) || { echo "boot: no boot_b partition found, boot image not updated" >&2; return 1; }
+    tag=$1 bp=boot_$(linux_slot)
+    dev=$(part_dev "$bp") || { echo "boot: no $bp partition found, boot image not updated" >&2; return 1; }
     psize=$(( $(cat "/sys/class/block/${dev##*/}/size") * 512 ))
     tmp=$STAGE/boot
     rm -rf "$tmp"; mkdir -p "$tmp" "$BOOTDIR"
@@ -410,12 +413,12 @@ boot_update() {  # boot_update TAG   (MU300_KERNEL_BUNDLE=FILE uses a local mu30
     fi
     id=$(cat "$tmp/Image" "$tmp/ramdisk-generic.lz4" | sha256sum | cut -d' ' -f1)
 
-    # the image in boot_b now: stock header page, kernel, ramdisk; AVB footer in the last 64 bytes
+    # the image in the Linux slot now: stock header page, kernel, ramdisk; AVB footer in the last 64 bytes
     dd if="$dev" of="$tmp/hdr" bs=4096 count=1 2>/dev/null
     dd if="$dev" of="$tmp/footer" bs=64 skip=$((psize / 64 - 1)) count=1 2>/dev/null
     [ "$(head -c 8 "$tmp/hdr")" = ANDROID! ] && [ "$(u32 "$tmp/hdr" 40)" = 4 ] ||
-        { echo "boot: boot_b does not hold a boot image header v4, not touching it" >&2; return 1; }
-    [ "$(head -c 4 "$tmp/footer")" = AVBf ] || { echo "boot: boot_b has no AVB footer, not touching it" >&2; return 1; }
+        { echo "boot: $bp does not hold a boot image header v4, not touching it" >&2; return 1; }
+    [ "$(head -c 4 "$tmp/footer")" = AVBf ] || { echo "boot: $bp has no AVB footer, not touching it" >&2; return 1; }
     ksz=$(u32 "$tmp/hdr" 8); rsz=$(u32 "$tmp/hdr" 12)
     osize=$(be64 "$tmp/footer" 12); vbs=$(be64 "$tmp/footer" 28)
     dd if="$dev" of="$tmp/body" bs=4096 count=$((osize / 4096)) 2>/dev/null
@@ -426,12 +429,12 @@ boot_update() {  # boot_update TAG   (MU300_KERNEL_BUNDLE=FILE uses a local mu30
         rm -rf "$tmp"; return 0
     fi
     if [ "$cur" != "$(cat "$BOOTDIR/written.sha256" 2>/dev/null)" ] || [ ! -s "$BOOTDIR/device-ramdisk.lz4" ]; then
-        # boot_b comes from an installer: its whole ramdisk becomes the device segment (its generic files are
+        # the image comes from an installer: its whole ramdisk becomes the device segment (its generic files are
         # replaced by the ones appended below)
         roff=$((4096 + (ksz + 4095) / 4096 * 4096))
         head -c "$((roff + rsz))" "$tmp/body" | tail -c "$rsz" > "$BOOTDIR/device-ramdisk.lz4.new"
         [ "$(od -An -tx1 -N4 "$BOOTDIR/device-ramdisk.lz4.new" | tr -d ' \n')" = 02214c18 ] ||
-            { rm -f "$BOOTDIR/device-ramdisk.lz4.new"; echo "boot: the ramdisk in boot_b is not LZ4 legacy, not touching it" >&2; return 1; }
+            { rm -f "$BOOTDIR/device-ramdisk.lz4.new"; echo "boot: the ramdisk in $bp is not LZ4 legacy, not touching it" >&2; return 1; }
         mv "$BOOTDIR/device-ramdisk.lz4.new" "$BOOTDIR/device-ramdisk.lz4"
     fi
 
@@ -445,7 +448,7 @@ boot_update() {  # boot_update TAG   (MU300_KERNEL_BUNDLE=FILE uses a local mu30
     cat "$BOOTDIR/device-ramdisk.lz4" "$tmp/ramdisk-generic.lz4" >> "$tmp/new"; pad_page "$tmp/new"
     nosize=$(fsize "$tmp/new")
     [ $((nosize + vbs)) -le "$PERSIST_LOG" ] ||
-        { echo "boot: the new image ($nosize bytes) would reach the persistent log area, not touching boot_b" >&2; return 1; }
+        { echo "boot: the new image ($nosize bytes) would reach the persistent log area, not touching $bp" >&2; return 1; }
     cp "$tmp/footer" "$tmp/newfooter"
     { bytes "$nosize" 8 be; bytes "$nosize" 8 be; bytes "$vbs" 8 be; } | poke "$tmp/newfooter" 12
 
@@ -455,7 +458,7 @@ boot_update() {  # boot_update TAG   (MU300_KERNEL_BUNDLE=FILE uses a local mu30
     cat "$BOOTDIR/installed.kernel" > "$BOOTDIR/prev.kernel" 2>/dev/null || echo 5.4 > "$BOOTDIR/prev.kernel"
     sync
     if ! write_boot "$dev" "$psize" "$tmp/new" "$tmp/vbmeta" "$tmp/newfooter"; then
-        echo "boot: writing boot_b failed verification; restoring the previous image" >&2
+        echo "boot: writing $bp failed verification; restoring the previous image" >&2
         write_boot "$dev" "$psize" "$BOOTDIR/prev.body" "$BOOTDIR/prev.vbmeta" "$BOOTDIR/prev.footer" ||
             echo "boot: RESTORE FAILED - do not reboot into Linux; reinstall with ./install.sh from a computer" >&2
         return 1
@@ -504,7 +507,7 @@ kernel_cmd() {  # kernel [5.4|6.18|7.2]: show or change the kernel, and install 
 rollback_boot() {
     mounted_disk
     [ -s "$BOOTDIR/prev.body" ] || die "no previous boot image kept"
-    dev=$(part_dev boot_b) || die "no boot_b partition found"
+    dev=$(part_dev "boot_$(linux_slot)") || die "no boot_$(linux_slot) partition found"
     psize=$(( $(cat "/sys/class/block/${dev##*/}/size") * 512 ))
     write_boot "$dev" "$psize" "$BOOTDIR/prev.body" "$BOOTDIR/prev.vbmeta" "$BOOTDIR/prev.footer" ||
         die "writing the previous boot image failed verification"
@@ -535,7 +538,7 @@ offline_hint() {
     printf 'until the next boot: reboot, then run mu300-update apply right away.\n' >&2
 }
 
-# While the update unpacks and writes boot_b, mobile data is left alone: the watchdog of the connection would
+# While the update unpacks and writes the boot image, mobile data is left alone: the watchdog of the connection would
 # otherwise redial (AT commands, the IPA brought down and up) in the middle of it. The connection stays as it is.
 pause_data() {
     DATA_PAUSED=
@@ -590,7 +593,7 @@ apply() {
 
     # Everything is downloaded and checked first, and only then is anything changed. Older boot images can lose
     # the mobile downlink after two quiet minutes (docs/FINDINGS.md 32): a download that followed the minutes of
-    # unpacking hung there, and a device that reset in the middle of writing boot_b could only start Android.
+    # unpacking hung there, and a device that reset in the middle of writing its boot image could only start Android.
     say "downloading $tag"
     free=$(df -k "$DISK" | awk 'NR==2 {print $4}')
     [ "$free" -gt $((1000000 + 1000000 * $(echo $todo | wc -w))) ] || die "not enough free space on the Linux partition (about 1 GB, plus 1 GB for every system to update)"
