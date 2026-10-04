@@ -693,5 +693,48 @@ class Usb(ShellTest):
             self.assertIn('only the U30 Air', r.stderr)
             self.assertEqual(self.usb(shell, 'boot').returncode, 0)   # boot is quiet on every device
 
+
+@unittest.skipIf(os.name == 'nt' or os.geteuid() == 0, 'needs a user that cannot write the daemon directory')
+class AtClient(ShellTest):
+    """mu300-at as a user who cannot write /run/mu300-at: it says so at once (it used to loop for ever on a stale
+    lock it could not remove, printing "rm: cannot remove .../lock/pid", and `mobile-data status` hung with it)."""
+
+    def setUp(self):
+        super().setUp()
+        self.dir = self.tmp / 'at'
+        self.dir.mkdir()
+        os.mkfifo(self.dir / 'cmd')
+
+    def tearDown(self):
+        for p in (self.dir / 'lock', self.dir):
+            if p.exists():
+                p.chmod(0o755)
+        super().tearDown()
+
+    def at(self, shell):
+        t = time.monotonic()
+        r = self.script(shell, BIN / 'mu300-at', 'AT+CSQ', MU300_AT_DIR=self.dir, MU300_AT_LOCK_WAIT=20)
+        return r, time.monotonic() - t
+
+    def test_a_user_is_told_to_be_root(self):
+        self.dir.chmod(0o555)
+        for shell in self.each_shell():
+            r, took = self.at(shell)
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn('root', r.stderr)
+            self.assertLess(took, 5)
+
+    def test_a_stale_lock_it_cannot_remove(self):
+        (self.dir / 'lock').mkdir()
+        (self.dir / 'lock' / 'pid').write_text('999999\n')   # an owner that is gone
+        (self.dir / 'lock').chmod(0o555)
+        self.dir.chmod(0o555)
+        for shell in self.each_shell():
+            r, took = self.at(shell)
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn('root', r.stderr)
+            self.assertLess(took, 5)
+            self.assertLess(r.stderr.count('\n'), 3, r.stderr)
+
 if __name__ == '__main__':
     unittest.main()
