@@ -2,7 +2,7 @@
 # Build the out-of-tree vendor modules (WCN) against the mainline tree built by build.sh.
 # Run inside the mu300-mainline-build container: bash /work/build-modules.sh [module-dir...]
 set -eo pipefail
-KV=${KV:-6.18.54}
+KV=${KV:-6.18.55}
 K=/src/linux-$KV
 O=/src/out-$KV
 OUT=/work/${OUTDIR:-out}   # as in build.sh
