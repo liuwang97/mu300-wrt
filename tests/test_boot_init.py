@@ -181,6 +181,38 @@ class RootSelect(ShellTest):
             self.assertIn('wait 8', log)
 
 
+class PickRoot(ShellTest):
+    def functions(self):
+        m = re.search(r'# --- pick-root begin\n(.*?)# --- pick-root end', INIT, re.S)
+        self.assertIsNotNone(m, 'boot/init has no pick-root block')
+        return m.group(1).replace('/disk', str(self.tmp / 'disk'))
+
+    def system(self, name, init='sbin/init'):
+        p = self.tmp / 'disk' / name / init
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text('#!/bin/sh\n'); p.chmod(0o755)
+
+    def pick(self, shell):
+        return self.sh(shell, self.functions() + '\npick_root').stdout.strip()
+
+    def test_only_the_third_system(self):
+        self.system('openwrt-luci')
+        for shell in self.each_shell():
+            self.assertEqual(self.pick(shell), f'{self.tmp}/disk/openwrt-luci')
+
+    def test_boot_os_chooses_it(self):
+        self.system('ubuntu', 'lib/systemd/systemd'); self.system('openwrt'); self.system('openwrt-luci')
+        (self.tmp / 'disk/.mu300').mkdir(); (self.tmp / 'disk/.mu300/boot-os').write_text('openwrt-luci\n')
+        for shell in self.each_shell():
+            self.assertEqual(self.pick(shell), f'{self.tmp}/disk/openwrt-luci')
+
+    def test_never_boots_a_kept_copy(self):
+        self.system('openwrt-luci.old')
+        (self.tmp / 'disk/.mu300').mkdir(); (self.tmp / 'disk/.mu300/boot-os').write_text('openwrt-luci.old\n')
+        for shell in self.each_shell():
+            self.assertEqual(self.pick(shell), '')
+
+
 class Rules(unittest.TestCase):
     def test_timer_stays_at_300(self):
         self.assertIn('(sleep 300\n', INIT)

@@ -329,17 +329,21 @@ find_root_offset() {
     done
     return 1
 }
-# The ext4 area holds one or more systems: /ubuntu, /openwrt (selected by /.mu300/boot-os), or a single
-# Ubuntu directly in its root (first installs). Pick one and remember how to start it.
+# --- pick-root begin
+# The ext4 area holds one or more systems: /ubuntu, /openwrt, /openwrt-luci (selected by /.mu300/boot-os), or a
+# single Ubuntu directly in its root (first installs). Explicit names only: a kept copy (openwrt.old, ubuntu.broken)
+# must never be what boots, so a boot-os with a dot in it is ignored.
 has_init() { [ -x "$1/lib/systemd/systemd" ] || [ -x "$1/sbin/init" ]; }
 pick_root() {
     want=$(cat /disk/.mu300/boot-os 2>/dev/null)
-    for os in $want ubuntu openwrt; do
+    case $want in *.*|*/*) want= ;; esac
+    for os in $want ubuntu openwrt openwrt-luci; do
         [ -d "/disk/$os" ] && has_init "/disk/$os" && { echo "/disk/$os"; return; }
         # legacy layout: Ubuntu in the filesystem root
         [ "$os" = ubuntu ] && [ -x /disk/lib/systemd/systemd ] && { echo /disk; return; }
     done
 }
+# --- pick-root end
 mkdir -p /disk /newroot
 # --- root-select begin
 mount_internal() {  # the mu300root region on the eMMC; busybox mount sets up a loop only for regular files, so
