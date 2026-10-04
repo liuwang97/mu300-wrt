@@ -205,3 +205,7 @@ writes:         SD card {1}, boot_b, 32 bytes of misc (the eMMC region, boot_a, 
 MU300_STORAGE=sd, but there is no usable SD card in the device	MU300_STORAGE=sd, ama cihazda kullanılabilir bir SD kart yok
 MU300_STORAGE must be internal or sd	MU300_STORAGE internal ya da sd olmalı
 Where should the Linux filesystem go: internal storage or the SD card ({1}, {2})? (internal/sd)	Linux dosya sistemi nereye kurulsun: dahili depolama mı, SD kart mı ({1}, {2})? (internal/sd)
+the SD card ({1}) holds another Linux (ext4) filesystem, and the installer never formats one that is not its own (mu300sd).	SD kartta ({1}) başka bir Linux (ext4) dosya sistemi var ve yükleyici kendisine ait olmayan (mu300sd olmayan) bir dosya sistemini asla biçimlendirmez.
+Copy off what you need and format the card elsewhere, use another card, or install to internal storage (MU300_STORAGE=internal).	Gerekenleri yedekleyip kartı başka bir yerde biçimlendirin, başka bir kart kullanın ya da dahili depolamaya kurun (MU300_STORAGE=internal).
+the SD card holds another Linux (ext4) filesystem; the installer will not format it	SD kartta başka bir Linux (ext4) dosya sistemi var; yükleyici onu biçimlendirmez
+too little free eMMC space for Linux; the installer will offer the SD card instead (no repartitioning needed)	eMMC'de Linux için yeterli boş alan yok; yükleyici bunun yerine SD kartı önerecek (yeniden bölümlendirme gerekmez)
