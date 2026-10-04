@@ -125,7 +125,11 @@ class Rules(unittest.TestCase):
         self.assertIn('if (!of_property_read_bool(pdev->dev.of_node, "non-removable") &&', port)
         self.assertIn('of_property_match_string(pdev->dev.of_node, "sprd,name", "sdio_sd") < 0)', port)
         self.assertIn('MU300: CD GPIO deferred', port)
-        self.assertIn("'MU300: only the eMMC and the card slot', 'MU300: CD GPIO deferred'", port)
+        # a deferral that is only masked leaves the rest of mmc_of_parse() undone (UHS modes, no-sdio, no-mmc): the
+        # unresolvable cd-gpios is dropped and the parse run again
+        self.assertIn('of_remove_property(pdev->dev.of_node, cd)', port)
+        self.assertIn("'MU300: only the eMMC and the card slot', 'MU300: CD GPIO deferred', "
+                      "'of_remove_property(pdev->dev.of_node, cd)'", port)
         self.assertRegex((TOP / 'upstream' / 'make-bundle.sh').read_text(), r"printf 'sdcard\\n' > \"\$W/b/features\"")
 
 

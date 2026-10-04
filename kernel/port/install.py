@@ -125,10 +125,27 @@ if marker not in t:
 \t\treturn -ENODEV;
 ''' + t[j:]
 # The stock device tree gives the slot a card-detect GPIO on line 35 of the EIC's sync bank; mainline's sprd-eic
-# gives that bank 24 lines, the lookup never succeeds and the host would stay deferred for ever (seen on the F50,
-# FINDINGS "SD host under mainline"). Only for the card slot, poll for the card instead.
+# gives that bank 24 lines, the lookup never succeeds and the host would stay deferred for ever (FINDINGS 31j). For
+# the card slot alone the property is dropped and the parse run again: mmc_of_parse() requests the CD GPIO before
+# it reads the write protect, the bus modes (sd-uhs-sdr104, no-sdio, no-mmc) and the power sequence, so a parse that
+# stopped at the CD GPIO would leave all of those out. The host then polls for the card.
 parse_old = '\tret = mmc_of_parse(host->mmc);\n\tif (ret)\n\t\treturn ret;\n'
 parse_new = '''\tret = mmc_of_parse(host->mmc);
+\tif (ret == -EPROBE_DEFER &&
+\t    of_property_match_string(pdev->dev.of_node, "sprd,name", "sdio_sd") >= 0) {
+\t\tstruct property *cd = of_find_property(pdev->dev.of_node, "cd-gpios", NULL);
+
+\t\tif (cd && !of_remove_property(pdev->dev.of_node, cd)) {
+\t\t\tdev_warn(&pdev->dev, "MU300: CD GPIO deferred, polling the card slot\\n");
+\t\t\tret = mmc_of_parse(host->mmc);
+\t\t\thost->mmc->caps |= MMC_CAP_NEEDS_POLL;
+\t\t}
+\t}
+\tif (ret)
+\t\treturn ret;
+'''
+# a tree prepared by the first version of this edit, which only masked the deferral (and so the rest of the parse)
+masked = '''\tret = mmc_of_parse(host->mmc);
 \tif (ret == -EPROBE_DEFER &&
 \t    of_property_present(pdev->dev.of_node, "cd-gpios") &&
 \t    of_property_match_string(pdev->dev.of_node, "sprd,name", "sdio_sd") >= 0) {
@@ -139,7 +156,8 @@ parse_new = '''\tret = mmc_of_parse(host->mmc);
 \tif (ret)
 \t\treturn ret;
 '''
-if 'MU300: CD GPIO deferred' not in t:
+t = t.replace(masked, parse_old)
+if 'of_remove_property(pdev->dev.of_node, cd)' not in t:
     if parse_old not in t:
         sys.exit('port: sdhci-sprd mmc_of_parse anchor changed')
     t = t.replace(parse_old, parse_new, 1)
@@ -203,7 +221,7 @@ expect = [
     ('drivers/mfd/sprd-sc27xx-spi.c', ['ump9620_data = {', '"sprd,ump9620"', '.name = "ump9620"']
      + (['case PMIC_TYPE_UMP9620:', 'if (pmic_type == PMIC_TYPE_UMP9620) {', 'linux/of_platform.h']
         if 'enum sprd_pmic_type' in open(os.path.join(tree, 'drivers/mfd/sprd-sc27xx-spi.c')).read() else [])),
-    ('drivers/mmc/host/sdhci-sprd.c', ['MU300: only the eMMC and the card slot', 'MU300: CD GPIO deferred', 'DLL_PHASE_INTERNAL\t0x2 /* MU300 r11p3 */']),
+    ('drivers/mmc/host/sdhci-sprd.c', ['MU300: only the eMMC and the card slot', 'MU300: CD GPIO deferred', 'of_remove_property(pdev->dev.of_node, cd)', 'DLL_PHASE_INTERNAL\t0x2 /* MU300 r11p3 */']),
     ('drivers/nvmem/sprd-efuse.c', ['"sprd,qogirn6pro-efuse"', 'econfig.read_only = true;']),
     ('drivers/rtc/rtc-sc27xx.c', ['"sprd,ump96xx-rtc"']),
     ('drivers/usb/dwc3/dwc3-of-simple.c', ['"sprd,qogirn6pro-dwc3"']),
