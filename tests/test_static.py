@@ -103,6 +103,29 @@ class Rules(unittest.TestCase):
         for f in ('uninstall.sh', 'uninstall.ps1', 'tools/reset-password.sh', 'tools/android-import-hotspot.sh'):
             self.assertIn('mu300sd', (TOP / f).read_text(), f)
 
+    def test_every_system_list_has_openwrt_luci(self):
+        # every place that names the systems knows the third one, by its name or by the OpenWrt kind pattern
+        files = ('boot/init', 'rootfs/overlay/opt/mu300/bin/mu300-update', 'rootfs/overlay/opt/mu300/bin/mu300-os',
+                 'tools/android-install.sh', 'tools/reset-password.sh', 'tools/vendor-overlay.py', 'install.sh',
+                 'install.ps1', 'tools/make-release.sh')
+        for f in files:
+            with self.subTest(file=f):
+                # each skip is lifted alone by the task that gives its file the third system
+                if f == 'install.sh':
+                    self.skipTest('install.sh: until Task 6')
+                if f == 'install.ps1':
+                    self.skipTest('install.ps1: until Task 7')
+                if f == 'tools/make-release.sh':
+                    self.skipTest('tools/make-release.sh: until Task 11')
+                text = (TOP / f).read_text()
+                self.assertTrue('openwrt-luci' in text or 'openwrt-*' in text or 'openwrt|openwrt-' in text, f)
+
+    def test_uninstallers_have_no_per_system_list(self):
+        # they remove the whole Linux filesystem; a per-system case arm added later would forget the third name
+        for f in ('uninstall.sh', 'uninstall.ps1'):
+            text = (TOP / f).read_text()
+            self.assertNotRegex(text, r'(^|\s)(ubuntu|openwrt)\)', f)
+
     def test_init_finds_partitions_after_the_modules(self):
         # the eMMC driver is one of the vendor modules: misc and boot_b cannot be found before they are loaded
         init = (TOP / 'boot' / 'init').read_text()

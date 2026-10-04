@@ -1,6 +1,6 @@
 #!/bin/sh
 # Choose which system on the Linux disk area boots next. Any directory with an /etc and an init counts, so
-# ubuntu, openwrt, immortalwrt, arch, debian, kali ... all work the same way.
+# ubuntu, openwrt, openwrt-luci, immortalwrt, arch, debian, kali ... all work the same way.
 #   mu300-os             show installed systems and the current choice
 #   mu300-os <name>      boot that system from now on (reboot to apply)
 # OpenWrt: od/timeout come from the static busybox in /opt/mu300/busybox-bin
