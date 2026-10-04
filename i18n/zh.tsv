@@ -209,3 +209,4 @@ the SD card ({1}) holds another Linux (ext4) filesystem, and the installer never
 Copy off what you need and format the card elsewhere, use another card, or install to internal storage (MU300_STORAGE=internal).	请先复制出需要的数据并在别处格式化该卡，或换一张卡，或安装到内部存储（MU300_STORAGE=internal）。
 the SD card holds another Linux (ext4) filesystem; the installer will not format it	SD 卡上有另一个 Linux（ext4）文件系统；安装程序不会格式化它
 too little free eMMC space for Linux; the installer will offer the SD card instead (no repartitioning needed)	eMMC 上的空闲空间不足以安装 Linux；安装程序将改为提供 SD 卡选项（无需重新分区）
+the {1} kernel of release {2} cannot read the SD card: choose kernel 5.4, a newer release, or internal storage (MU300_STORAGE=internal)	版本 {2} 的 {1} 内核无法读取 SD 卡：请选择 5.4 内核、更新的版本，或内部存储（MU300_STORAGE=internal）
