@@ -722,7 +722,8 @@ class NextBoot(ShellTest):
         if not shutil.which('bash'):
             self.skipTest('no bash')
         return subprocess.run(['bash', str(BIN / 'mu300-next-boot'), *args], capture_output=True, text=True,
-                              env=self.env(MU300_RUN=self.run_dir, MU300_CONF=self.tmp / 'default-boot'))
+                              env=self.env(MU300_RUN=self.run_dir, MU300_CONF=self.tmp / 'default-boot',
+                                           MU300_CMDLINE_SRC=self.tmp / 'cmdline'))
 
     def bc(self):
         return self.misc.read_bytes()[0x800:0x820]
@@ -751,6 +752,21 @@ class NextBoot(ShellTest):
         self.nb('android')
         self.assertEqual(self.bc(), android_a)
 
+    def test_without_the_file_the_booted_slot_decides(self):
+        # no linux-slot (or a garbled one) but LK booted slot a: the old names are not slot a's, nothing is written
+        android_a, linux_b, _, _ = self.blocks
+        (self.run_dir / 'misc-bc-slot-a.bin').write_bytes(android_a)
+        (self.run_dir / 'misc-bc-slot-b-trial.bin').write_bytes(linux_b)
+        (self.tmp / 'cmdline').write_text('console=x androidboot.slot_suffix=_a\n')
+        before = self.misc.read_bytes()
+        for slot in (None, 'x\n'):
+            if slot:
+                (self.run_dir / 'linux-slot').write_text(slot)
+            self.assertNotEqual(self.nb('android').returncode, 0, slot)
+            (self.tmp / 'default-boot').write_text('linux\n')
+            self.assertNotEqual(self.nb('--rearm').returncode, 0, slot)
+            self.assertEqual(self.misc.read_bytes(), before)
+
     def test_slot_a_never_falls_back_to_legacy_names(self):
         android_a, linux_b, _, _ = self.blocks
         (self.run_dir / 'linux-slot').write_text('a\n')
@@ -760,3 +776,25 @@ class NextBoot(ShellTest):
         r = self.nb('android')
         self.assertNotEqual(r.returncode, 0)
         self.assertEqual(self.misc.read_bytes(), before)
+
+
+class EarlyRecorder(ShellTest):
+    """early-recorder's choice of boot partition: the Linux slot's, never Android's."""
+
+    def test_slot(self):
+        import re
+        m = re.search(r'# --- slot begin\n(.*?)# --- slot end', (BIN / 'early-recorder').read_text(), re.S)
+        self.assertIsNotNone(m, 'early-recorder has no slot block')
+        run, cmdline = self.tmp / 'run', self.tmp / 'cmdline'
+        run.mkdir()
+        cases = [(None, None, 'b'), ('a\n', None, 'a'), ('b\n', 'androidboot.slot_suffix=_a', 'b'),
+                 (None, 'x androidboot.slot_suffix=_a y', 'a'), ('junk\n', 'androidboot.slot_suffix=_a', 'a'),
+                 ('junk\n', 'loglevel=5', 'b')]
+        for shell in self.each_shell():
+            for v, cl, want in cases:
+                for p, data in ((run / 'linux-slot', v), (cmdline, cl)):
+                    p.unlink(missing_ok=True)
+                    if data is not None:
+                        p.write_text(data)
+                r = self.sh(shell, m.group(1) + '\necho "$PART"', MU300_RUN=run, MU300_CMDLINE_SRC=cmdline)
+                self.assertEqual((r.stdout.strip(), r.stderr), (f'boot_{want}', ''), (v, cl))

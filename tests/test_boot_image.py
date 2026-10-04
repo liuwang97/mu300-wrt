@@ -206,6 +206,14 @@ class SlotBlocks(Fixtures):
         self.assertEqual(self.image()['etc/mu300-linux-slot'][1], b'b\n')
         self.assertEqual(self.image('--linux-slot', 'a')['etc/mu300-linux-slot'][1], b'a\n')
 
+    def test_header_says_linux(self):
+        # loglevel=5 in the header's command line is how the Magisk switch tells our image from another Android
+        # (after an OTA the other slot holds the previous one); mu300-update keeps the header page as it is
+        for extra in ((), ('--linux-slot', 'a')):
+            self.image(*extra)
+            hdr = (self.tmp / 'boot.img').read_bytes()[:4096]
+            self.assertEqual(hdr[44:55], b'loglevel=5\0', extra)
+
     def test_generic_has_no_slot(self):
         r, _ = self.build('--linux-slot', 'a')
         self.assertNotEqual(r.returncode, 0)

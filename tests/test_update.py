@@ -39,6 +39,69 @@ class Update(ShellTest):
                 f.write_text(v)
                 self.assertEqual(self.up(shell, 'linux_slot').stdout.strip(), want, v)
 
+    def test_linux_slot_without_the_file_is_the_booted_one(self):
+        # an initramfs that did not publish it (or a garbled file): the slot LK booted, from the command line or the
+        # bootargs in the device tree; b only when neither says
+        f = self.root / 'run/mu300/linux-slot'
+        cmdline = self.root / 'proc/cmdline'
+        bootargs = self.root / 'proc/device-tree/chosen/bootargs'
+        bootargs.parent.mkdir(parents=True)
+        cases = [(None, 'console=x androidboot.slot_suffix=_a quiet', None, 'a'),
+                 ('x\n', 'loglevel=5', b'console=x\0androidboot.slot_suffix=_a\0', 'a'),
+                 (None, 'loglevel=5', None, 'b'),
+                 (None, 'androidboot.slot_suffix=_b', b'androidboot.slot_suffix=_a\0', 'b'),
+                 ('b\n', 'androidboot.slot_suffix=_a', None, 'b')]       # what the initramfs published wins
+        for shell in self.each_shell():
+            for v, cl, ba, want in cases:
+                for p, data in ((f, v), (cmdline, cl), (bootargs, ba)):
+                    p.unlink(missing_ok=True)
+                    if data is not None:
+                        p.write_bytes(data if isinstance(data, bytes) else data.encode())
+                self.assertEqual(self.up(shell, 'linux_slot').stdout.strip(), want, (v, cl, ba))
+
+    def test_rollback_stays_on_its_slot(self):
+        # the kept image was taken from the slot Linux ran from then (no prev.slot: b); after Linux moved to a,
+        # rolling back would put an init that knows only slot b onto a - refused before anything is written
+        boot = self.disk / 'boot'
+        boot.mkdir()
+        (boot / 'prev.body').write_bytes(b'old image')
+        f = self.root / 'run/mu300/linux-slot'
+        for shell in self.each_shell():
+            for prev, now, refused in ((None, 'a', True), ('b', 'a', True), ('a', 'b', True), ('a', 'a', False),
+                                       (None, 'b', False), ('b', 'b', False)):
+                (boot / 'prev.slot').unlink(missing_ok=True)
+                if prev:
+                    (boot / 'prev.slot').write_text(prev + '\n')
+                f.write_text(now + '\n')
+                r = self.up(shell, 'part_dev() { echo "PART $1" >&2; return 1; }; rollback_boot')
+                self.assertNotEqual(r.returncode, 0)
+                if refused:
+                    self.assertIn('was taken from slot', r.stderr, (prev, now))
+                    self.assertNotIn('PART', r.stderr)
+                else:
+                    self.assertIn(f'PART boot_{now}', r.stderr, (prev, now))
+
+    def test_boot_update_keeps_the_slot_of_the_image(self):
+        src = (BIN / 'mu300-update').read_text()
+        self.assertIn('linux_slot > "$BOOTDIR/prev.slot"', src)
+        self.assertLess(src.index('cp "$tmp/body" "$BOOTDIR/prev.body"'),
+                        src.index('linux_slot > "$BOOTDIR/prev.slot"'))
+
+    def test_slot_a_needs_a_slot_aware_bundle(self):
+        # an older bundle's init knows only slot b: on Linux-on-a it would restore the wrong block and log into
+        # Android's boot partition
+        old = self.bundle('old.tar.gz', 'f50\n', 'sdcard\n')
+        new = self.bundle('new.tar.gz', 'f50\n', 'sdcard\nlinux-slot\n')
+        f = self.root / 'run/mu300/linux-slot'
+        for shell in self.each_shell():
+            for slot, b, ok in (('a', old, False), ('a', new, True), ('b', old, True), ('b', new, True)):
+                f.write_text(slot + '\n')
+                d = self.tmp / 'x'
+                d.mkdir(exist_ok=True)
+                r = self.up(shell, f'tar -tzf "{b}" > "{d}/list"; '
+                                   f'bundle_fits_slot "{b}" "{d}/list" && echo OK || echo REFUSE')
+                self.assertEqual(r.stdout.strip(), 'OK' if ok else 'REFUSE', (slot, b.name, r.stderr))
+
     def test_rootfs_asset(self):
         osr = self.disk / 'ubuntu' / 'etc' / 'os-release'
         cases = [('24.04', {}, 'mu300-ubuntu-rootfs.tar.gz'),

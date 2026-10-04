@@ -107,8 +107,13 @@ bundle_runs_here() {
 # an older bundle there would leave a device that cannot find its own root filesystem. A missing /run/mu300-root-dev
 # means "not on the card".
 root_on_sd() { d=$(cat "${MU300_ROOT_DEV_FILE:-/run/mu300-root-dev}" 2>/dev/null); [ -n "$d" ] && case $d in mmcblk0@*) return 1 ;; esac; }
-# bundle_has_sd BUNDLE LIST: does the bundle (LIST: its file list) say it has the SD host?
-bundle_has_sd() { grep -qx './features' "$2" && untar -xzOf "$1" ./features 2>/dev/null | grep -qx sdcard; }
+# bundle_has BUNDLE LIST FEATURE: does the bundle (LIST: its file list) list FEATURE in ./features?
+bundle_has() { grep -qx './features' "$2" && untar -xzOf "$1" ./features 2>/dev/null | grep -qx "$3"; }
+# bundle_has_sd BUNDLE LIST: does the bundle say it has the SD host?
+bundle_has_sd() { bundle_has "$1" "$2" sdcard; }
+# bundle_fits_slot BUNDLE LIST: can its init run from the slot Linux is on? One from before linux-slot knows only b:
+# on a it would restore the block that boots Linux, marked successful, and log into Android's boot partition.
+bundle_fits_slot() { [ "$(linux_slot)" = b ] || bundle_has "$1" "$2" linux-slot; }
 # the directory the running system booted from (it stays in use under any name until the reboot)
 is_root() { [ -d "$1" ] && [ / -ef "$1" ]; }
 running_os() { [ -e /etc/openwrt_release ] && echo openwrt || echo ubuntu; }
@@ -315,8 +320,19 @@ KERNELS="5.4 6.18 7.2"
 kernel_choice() { c=$(cat "$KERNEL_CHOICE" 2>/dev/null); case " $KERNELS " in *" $c "*) echo "$c" ;; *) echo 5.4 ;; esac; }
 kernel_asset() { case $(kernel_choice) in 5.4) echo mu300-kernel.tar.gz ;; *) echo "mu300-kernel-$(kernel_choice).tar.gz" ;; esac; }
 
-# the slot Linux runs from (the initramfs publishes it; Android may be on either). Without the file: b, as always.
-linux_slot() { _s=$(cat "${MU300_SYSROOT:-}/run/mu300/linux-slot" 2>/dev/null); case $_s in a|b) echo "$_s" ;; *) echo b ;; esac; }
+# The slot Linux runs from (Android may be on either): what the initramfs published, else the slot LK booted
+# (androidboot.slot_suffix on the command line, or in the bootargs a mainline kernel leaves in the device tree), and
+# b only when nothing says - an initramfs from before slot a, which LK can only have booted from b.
+linux_slot() {
+    _s=$(cat "${MU300_SYSROOT:-}/run/mu300/linux-slot" 2>/dev/null)
+    case $_s in a|b) echo "$_s"; return ;; esac
+    for _f in "${MU300_SYSROOT:-}/proc/cmdline" "${MU300_SYSROOT:-}/proc/device-tree/chosen/bootargs"; do
+        [ -r "$_f" ] || continue
+        _s=$(tr '\000' ' ' < "$_f" | sed -n 's/.*androidboot\.slot_suffix=_\([ab]\).*/\1/p')
+        [ -n "$_s" ] && { echo "$_s"; return; }
+    done
+    echo b
+}
 part_dev() {  # part_dev NAME -> /dev/<block device of that partition>
     for u in /sys/class/block/*/uevent; do
         grep -qx "PARTNAME=$1" "$u" 2>/dev/null || continue
@@ -384,6 +400,10 @@ boot_update() {  # boot_update TAG   (MU300_KERNEL_BUNDLE=FILE uses a local mu30
     fi
     if root_on_sd && ! bundle_has_sd "$bundle" "$tmp/list"; then
         echo "boot: this kernel bundle cannot read the SD card, and this system runs from it; nothing was changed" >&2
+        rm -rf "$tmp"; return 1
+    fi
+    if ! bundle_fits_slot "$bundle" "$tmp/list"; then
+        echo "boot: this kernel bundle's init runs only from slot b, and Linux is on $bp; nothing was changed" >&2
         rm -rf "$tmp"; return 1
     fi
     untar -xzf "$bundle" -C "$tmp" ./Image ./ramdisk-generic.lz4 || { echo "boot: unpacking $bundle failed" >&2; return 1; }
@@ -454,6 +474,7 @@ boot_update() {  # boot_update TAG   (MU300_KERNEL_BUNDLE=FILE uses a local mu30
 
     # keep the current image for rollback-boot, then write
     cp "$tmp/body" "$BOOTDIR/prev.body"; cp "$tmp/vbmeta" "$BOOTDIR/prev.vbmeta"; cp "$tmp/footer" "$BOOTDIR/prev.footer"
+    linux_slot > "$BOOTDIR/prev.slot"     # rollback-boot puts it back only on the slot it came from
     cat "$BOOTDIR/installed.tag" > "$BOOTDIR/prev.tag" 2>/dev/null || echo installer > "$BOOTDIR/prev.tag"
     cat "$BOOTDIR/installed.kernel" > "$BOOTDIR/prev.kernel" 2>/dev/null || echo 5.4 > "$BOOTDIR/prev.kernel"
     sync
@@ -507,6 +528,11 @@ kernel_cmd() {  # kernel [5.4|6.18|7.2]: show or change the kernel, and install 
 rollback_boot() {
     mounted_disk
     [ -s "$BOOTDIR/prev.body" ] || die "no previous boot image kept"
+    # The kept image was taken from the slot Linux ran from then (kept before prev.slot existed: b). On the other
+    # slot its init may know only b: it would restore the block that boots Linux again and log into Android's boot.
+    ps=$(cat "$BOOTDIR/prev.slot" 2>/dev/null || echo b)
+    [ "$ps" = "$(linux_slot)" ] ||
+        die "the previous boot image was taken from slot $ps, Linux now runs from $(linux_slot); nothing was written"
     dev=$(part_dev "boot_$(linux_slot)") || die "no boot_$(linux_slot) partition found"
     psize=$(( $(cat "/sys/class/block/${dev##*/}/size") * 512 ))
     write_boot "$dev" "$psize" "$BOOTDIR/prev.body" "$BOOTDIR/prev.vbmeta" "$BOOTDIR/prev.footer" ||

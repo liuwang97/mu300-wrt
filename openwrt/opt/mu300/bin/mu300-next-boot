@@ -14,10 +14,16 @@ export PATH="$PATH:/opt/mu300/busybox-bin"
 set -eu
 CONF=${MU300_CONF:-/etc/mu300/default-boot}
 RUN=${MU300_RUN:-/run/mu300}
-# The initramfs says which slot Linux runs from (Android may be on either). The blocks it publishes are the pair of
-# that slot; an initramfs from before that publishes only the old names, and only ever for Linux on b.
-LINUX_SLOT=$(cat "$RUN/linux-slot" 2>/dev/null || echo b)
-case $LINUX_SLOT in a) BYTE=12 ;; b) BYTE=14 ;; *) echo "unknown Linux slot '$LINUX_SLOT'" >&2; exit 1 ;; esac
+# The initramfs says which slot Linux runs from (Android may be on either); without that (or garbled), the slot LK
+# booted, from the command line or the device tree's bootargs, and b only when nothing says. The blocks it publishes
+# are the pair of that slot; an initramfs from before that publishes only the old names, and only ever for Linux on b.
+LINUX_SLOT=$(cat "$RUN/linux-slot" 2>/dev/null || true)
+case $LINUX_SLOT in a|b) ;; *)
+    LINUX_SLOT=$(for f in ${MU300_CMDLINE_SRC:-/proc/cmdline /proc/device-tree/chosen/bootargs}; do
+        [ -r "$f" ] && tr '\000' ' ' < "$f" | sed -n 's/.*androidboot\.slot_suffix=_\([ab]\).*/\1/p'; done | head -n1)
+    LINUX_SLOT=${LINUX_SLOT:-b} ;;
+esac
+case $LINUX_SLOT in a) BYTE=12 ;; *) BYTE=14 ;; esac
 BC_A=$RUN/misc-bc-android.bin
 BC_B=$RUN/misc-bc-linux-trial.bin
 if [ "$LINUX_SLOT" = b ]; then
