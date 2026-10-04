@@ -57,20 +57,138 @@ class SdRoot(ShellTest):
             self.assertEqual('rc=1', out.strip())
 
 
+# Stand-ins for what root selection touches on the device. One card (mmcblk1p1) and one internal region; the
+# scenario says which of them are there, when the card shows up and what is on it. mount and umount keep track
+# of what is on /disk in $ON, and pick_root answers from that.
+STUBS = r'''
+log() { echo "$*" >> "$T/log"; }
+find_sd_root() { [ "$CARD_NOW" = 1 ] && { echo /dev/mmcblk1p1; return 0; }; return 1; }
+wait_sd_root() { echo "wait $1" >> "$T/log"; [ "$CARD_LATE" = 1 ] && { echo /dev/mmcblk1p1; return 0; }; return 1; }
+find_root_offset() { [ "$INTERNAL" = 1 ] && { echo 4096; return 0; }; return 1; }
+losetup() { case $1 in -f) echo /dev/loop0 ;; -d) echo "detach $2" >> "$T/log" ;; esac; }
+cat() { case $1 in /sys/*) echo "$ROOT_OFFSET" ;; *) command cat "$@" ;; esac; }
+dd() { [ "$INTERNAL" = 1 ] && printf '\123\357'; }
+mount() {
+    case $5 in
+        /dev/loop*) [ "$INTERNAL" = 1 ] || return 1; ON=internal ;;
+        *) [ "$CARD_MOUNTS" = 0 ] && return 1; ON=card ;;
+    esac
+}
+umount() { ON=; }
+pick_root() { case $ON in internal) echo /disk/ubuntu ;; card) [ "$CARD_EMPTY" = 1 ] || echo /disk/openwrt ;; esac; }
+ON=
+ROOT_OFFSET=27762098176
+'''
+
+
+class RootSelect(ShellTest):
+    """Which filesystem ends up on /disk: the root-select block of init run against stubs."""
+
+    def region(self):
+        m = re.search(r'# --- root-select begin\n(.*?)# --- root-select end', INIT, re.S)
+        self.assertIsNotNone(m, 'boot/init has no root-select block')
+        code = m.group(1)
+        # the device paths are only redirected here, never changed in init
+        for path, repl in (('/run/mu300-root-dev', '$T/root-dev'), ('/run/rootmount.err', '$T/err'),
+                           ('/disk/.mu300/root-on-sd', '$T/root-on-sd')):
+            self.assertIn(path, code)
+            code = code.replace(path, repl)
+        return code
+
+    def select(self, shell, marker=False, **scenario):
+        for f in ('log', 'root-dev', 'root-on-sd'):
+            (self.tmp / f).unlink(missing_ok=True)
+        (self.tmp / 'log').touch()
+        if marker:
+            (self.tmp / 'root-on-sd').touch()
+        code = STUBS + self.region() + '\necho "mounted=$root_mounted on=$ON disk-dev=$diskdev"'
+        r = self.sh(shell, code, T=self.tmp, **scenario)
+        self.assertEqual('', r.stderr)
+        dev = self.tmp / 'root-dev'
+        return r.stdout.strip(), dev.read_text().strip() if dev.exists() else '', (self.tmp / 'log').read_text()
+
+    def test_card_only(self):
+        for shell in self.each_shell():
+            out, dev, log = self.select(shell, CARD_NOW=1, INTERNAL=0)
+            self.assertEqual('mounted=1 on=card disk-dev=/dev/mmcblk1p1', out)
+            self.assertEqual('/dev/mmcblk1p1', dev)
+            self.assertIn('stage=sd-root dev=/dev/mmcblk1p1', log)
+            self.assertNotIn('wait', log)
+
+    def test_card_wins_over_internal(self):
+        for shell in self.each_shell():
+            out, dev, log = self.select(shell, CARD_NOW=1, INTERNAL=1)
+            self.assertEqual('mounted=1 on=card disk-dev=/dev/mmcblk1p1', out)
+            self.assertEqual('/dev/mmcblk1p1', dev)
+            self.assertNotIn('root-offset', log)
+
+    def test_internal_without_marker_never_waits(self):
+        for shell in self.each_shell():
+            out, dev, log = self.select(shell, INTERNAL=1)
+            self.assertEqual('mounted=1 on=internal disk-dev=/dev/loop0', out)
+            self.assertEqual('mmcblk0@4096', dev)
+            self.assertNotIn('wait', log)
+
+    def test_marker_and_late_card(self):
+        for shell in self.each_shell():
+            out, dev, log = self.select(shell, marker=True, INTERNAL=1, CARD_LATE=1)
+            self.assertEqual('mounted=1 on=card disk-dev=/dev/mmcblk1p1', out)
+            self.assertEqual('/dev/mmcblk1p1', dev)
+            self.assertIn('wait 8\ndetach /dev/loop0\nstage=sd-root dev=/dev/mmcblk1p1', log)
+
+    def test_marker_and_no_card(self):
+        for shell in self.each_shell():
+            out, dev, log = self.select(shell, marker=True, INTERNAL=1)
+            self.assertEqual('mounted=1 on=internal disk-dev=/dev/loop0', out)
+            self.assertEqual('mmcblk0@4096', dev)
+            self.assertIn('wait 8\nstage=sd-root-missing', log)
+
+    def test_marker_and_late_card_that_is_empty(self):
+        for shell in self.each_shell():
+            out, dev, log = self.select(shell, marker=True, INTERNAL=1, CARD_LATE=1, CARD_EMPTY=1)
+            self.assertEqual('mounted=1 on=internal disk-dev=/dev/loop0', out)
+            self.assertEqual('mmcblk0@4096', dev)
+            self.assertIn('stage=sd-root-empty dev=/dev/mmcblk1p1\nstage=sd-root-failed', log)
+
+    def test_empty_card_falls_back_to_internal(self):
+        # a card with the label but no system inside must not end in standalone mode while an internal system exists
+        for shell in self.each_shell():
+            out, dev, log = self.select(shell, CARD_NOW=1, CARD_EMPTY=1, INTERNAL=1)
+            self.assertEqual('mounted=1 on=internal disk-dev=/dev/loop0', out)
+            self.assertEqual('mmcblk0@4096', dev)
+            self.assertIn('stage=sd-root-empty dev=/dev/mmcblk1p1', log)
+            self.assertNotIn('wait', log)
+
+    def test_card_that_does_not_mount_falls_back_to_internal(self):
+        for shell in self.each_shell():
+            out, dev, log = self.select(shell, CARD_NOW=1, CARD_MOUNTS=0, INTERNAL=1)
+            self.assertEqual('mounted=1 on=internal disk-dev=/dev/loop0', out)
+            self.assertEqual('mmcblk0@4096', dev)
+            self.assertNotIn('wait', log)
+
+    def test_nothing_at_all_waits_then_standalone(self):
+        for shell in self.each_shell():
+            out, dev, log = self.select(shell, INTERNAL=0)
+            self.assertEqual('mounted=0 on= disk-dev=', out)
+            self.assertEqual('', dev)
+            self.assertIn('stage=sd-wait (no internal system)\nwait 8', log)
+
+    def test_no_internal_and_late_card(self):
+        for shell in self.each_shell():
+            out, dev, log = self.select(shell, INTERNAL=0, CARD_LATE=1)
+            self.assertEqual('mounted=1 on=card disk-dev=/dev/mmcblk1p1', out)
+            self.assertEqual('/dev/mmcblk1p1', dev)
+            self.assertIn('wait 8', log)
+
+
 class Rules(unittest.TestCase):
     def test_timer_stays_at_300(self):
         self.assertIn('(sleep 300\n', INIT)
 
-    def test_card_before_internal_and_wait_is_conditional(self):
+    def test_wait_is_written_once(self):
+        # the 8 seconds are one constant, behind the two conditions the RootSelect tests exercise
         body = INIT[INIT.index('# --- sd-root end'):]
-        self.assertLess(body.index('sd=$(find_sd_root)'), body.index('elif mount_internal'))
-        # the wait must sit behind the two conditions, never on the plain path
-        self.assertRegex(body, r'root-on-sd')
         self.assertEqual(body.count('wait_sd_root 8'), 1)
-
-    def test_empty_card_falls_back(self):
-        # a card with the label but no system inside must not end in standalone mode while an internal system exists
-        self.assertIn('stage=sd-root-empty', INIT)
 
 
 if __name__ == '__main__':

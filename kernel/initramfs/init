@@ -341,6 +341,7 @@ pick_root() {
     done
 }
 mkdir -p /disk /newroot
+# --- root-select begin
 mount_internal() {  # the mu300root region on the eMMC; busybox mount sets up a loop only for regular files, so
     # attach it explicitly and verify its offset (the loop options would be handed to ext4: EINVAL)
     if found=$(find_root_offset); then
@@ -354,7 +355,7 @@ mount_internal() {  # the mu300root region on the eMMC; busybox mount sets up a 
        && [ "$(cat /sys/block/${rootloop#/dev/}/loop/offset)" = "$ROOT_OFFSET" ] \
        && [ "$(dd if="$rootloop" bs=1 skip=1080 count=2 2>/dev/null | od -An -tx1 | tr -d ' ')" = 53ef ] \
        && mount -t ext4 -o noatime "$rootloop" /disk 2>>/run/rootmount.err \
-       && echo "mmcblk0@$ROOT_OFFSET" > /run/mu300-root-dev
+       && echo "mmcblk0@$ROOT_OFFSET" > /run/mu300-root-dev && diskdev=$rootloop
 }
 mount_sd() {  # mount_sd DEV: the card, a block device of its own - no loop
     mount -t ext4 -o noatime "$1" /disk 2>>/run/rootmount.err || return 1
@@ -363,11 +364,11 @@ mount_sd() {  # mount_sd DEV: the card, a block device of its own - no loop
         # an internal system.
         log "stage=sd-root-empty dev=$1"; umount /disk; return 1
     fi
-    echo "$1" > /run/mu300-root-dev
+    echo "$1" > /run/mu300-root-dev; diskdev=$1
     log "stage=sd-root dev=$1"
 }
 sd_wait() { wait_sd_root 8; }
-root_mounted=0
+root_mounted=0 diskdev=
 if sd=$(find_sd_root) && mount_sd "$sd"; then
     root_mounted=1
 elif mount_internal; then
@@ -388,6 +389,7 @@ else
     log "stage=sd-wait (no internal system)"
     sd=$(sd_wait) && mount_sd "$sd" && root_mounted=1
 fi
+# --- root-select end
 if [ "$root_mounted" = 1 ] && rootdir=$(pick_root) && [ -n "$rootdir" ]; then
     # A way back to Android with no computer and no keyboard: cut the power during boot N times in a row (N is
     # .mu300/boot-attempts, 5 without it). Every boot counts up here and mu300-next-boot --rearm clears the count
@@ -432,7 +434,8 @@ if [ "$root_mounted" = 1 ] && rootdir=$(pick_root) && [ -n "$rootdir" ]; then
     fi
     mkdir -p /run/mu300 && cp /etc/misc-bc-slot-a.bin /etc/misc-bc-slot-b-trial.bin /run/mu300/
     [ -n "$misc" ] && echo "$misc" > /run/mu300/misc-dev
-    echo "$rootloop" > /run/mu300/disk-dev
+    # the device /disk was mounted from: the card, or the loop device over the internal region
+    echo "$diskdev" > /run/mu300/disk-dev
     echo "$DEVICE" > /run/mu300/device
     init=/sbin/init
     [ -x /newroot/lib/systemd/systemd ] && init=/lib/systemd/systemd
