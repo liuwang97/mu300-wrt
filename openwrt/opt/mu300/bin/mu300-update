@@ -23,6 +23,9 @@ REPO=${MU300_REPO:-dikeckaan/mu300-linux}
 DISK=${MU300_DISK:-/mnt/mu300-disk}
 CONF=/etc/mu300
 VERSION_FILE=$CONF/image-version
+SYSTEMS="ubuntu openwrt openwrt-luci"
+# a system's kind decides which files are its settings and how its accounts look (spec D2)
+os_kind() { case $1 in ubuntu) echo ubuntu ;; openwrt|openwrt-*) echo openwrt ;; *) return 1 ;; esac; }
 
 say() { printf '\n==> %s\n' "$*"; }
 die() { printf '\nERROR: %s\n' "$*" >&2; exit 1; }
@@ -111,11 +114,15 @@ root_on_sd() { d=$(cat "${MU300_ROOT_DEV_FILE:-/run/mu300-root-dev}" 2>/dev/null
 bundle_has_sd() { grep -qx './features' "$2" && untar -xzOf "$1" ./features 2>/dev/null | grep -qx sdcard; }
 # the directory the running system booted from (it stays in use under any name until the reboot)
 is_root() { [ -d "$1" ] && [ / -ef "$1" ]; }
-running_os() { [ -e /etc/openwrt_release ] && echo openwrt || echo ubuntu; }
+# the directory this system booted from; /etc/openwrt_release alone cannot tell the two OpenWrt systems apart
+running_os() {
+    for n in $SYSTEMS; do [ -d "$DISK/$n" ] && [ "${MU300_ROOT:-/}" -ef "$DISK/$n" ] && { echo "$n"; return; }; done
+    [ -e /etc/openwrt_release ] && echo openwrt || echo ubuntu
+}
 
 # systems present on the Linux partition
 installed_systems() {
-    for os in ubuntu openwrt; do
+    for os in $SYSTEMS; do
         [ -d "$DISK/$os" ] && printf '%s ' "$os"
     done
 }
@@ -126,7 +133,8 @@ latest_release() {
 }
 
 mounted_disk() {
-    [ -d "$DISK/ubuntu" ] || [ -d "$DISK/openwrt" ] || die "the Linux partition is not mounted at $DISK"
+    for n in $SYSTEMS; do [ -d "$DISK/$n" ] && return 0; done
+    die "the Linux partition is not mounted at $DISK"
 }
 
 check() {
@@ -155,14 +163,14 @@ check() {
 
 # everything that belongs to this device and must survive an update
 keep_list() {
-    case $1 in
+    case $(os_kind "$1") in
         ubuntu) echo "etc/mu300 etc/ssh etc/hostname etc/localtime etc/timezone etc/fstab home root srv usr/local var/lib/bluetooth" ;;
         openwrt) echo "etc/config etc/mu300 etc/dropbear etc/rc.local root" ;;
     esac
 }
 # vendor files that the published images deliberately do not contain
 vendor_list() {
-    case $1 in
+    case $(os_kind "$1") in
         ubuntu) echo "opt/mu300/android usr/lib/firmware" ;;
         # lib/modules: the release only ships modules for the kernel it was built with, so a hand-built set for
         # another kernel (the experimental 6.18 port) would be thrown away by an update without this
@@ -573,7 +581,7 @@ apply() {
         die "$UBUNTU_2604_KERNEL. Change the kernel first: sudo mu300-update kernel 6.18 (or 7.2)"
     todo=
     for os in $list; do
-        case $os in ubuntu|openwrt) ;; *) die "unknown system '$os'" ;; esac
+        case $os in ubuntu|openwrt|openwrt-luci) ;; *) die "unknown system '$os'" ;; esac
         [ -d "$DISK/$os" ] || die "$os is not installed"
         # already there: an older mu300-update installed this release's system, and this run is for the boot image
         # (moving Ubuntu to the other release with MU300_UBUNTU is an update even at the same tag)
@@ -655,7 +663,7 @@ rollback() {
 
 clean() {
     mounted_disk
-    for os in ubuntu openwrt; do
+    for os in $SYSTEMS; do
         if is_root "$DISK/$os.old"; then printf '%s: the previous version is still running: reboot first\n' "$os"
         elif [ -d "$DISK/$os.old" ]; then rm -rf "$DISK/$os.old" && printf '%s: previous version deleted\n' "$os"; fi
         is_root "$DISK/$os.broken" || rm -rf "$DISK/$os.broken"
@@ -681,5 +689,5 @@ case ${1:-check} in
     accounts) accounts ;;
     clean) clean ;;
     -h|--help|help) sed -n '2,12s/^# \{0,1\}//p' "$0" ;;
-    *) echo "usage: mu300-update check|apply [os...]|boot|kernel [5.4|6.18|7.2]|rollback [os]|rollback-boot|clean" >&2; exit 2 ;;
+    *) echo "usage: mu300-update check|apply [ubuntu|openwrt|openwrt-luci ...]|boot|kernel [5.4|6.18|7.2]|rollback [os]|rollback-boot|clean" >&2; exit 2 ;;
 esac

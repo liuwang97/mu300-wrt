@@ -46,6 +46,38 @@ class Update(ShellTest):
                 self.assertEqual(self.up(shell, 'rootfs_asset ubuntu', **env).stdout.strip(), want, (ver, env))
             self.assertEqual(self.up(shell, 'rootfs_asset openwrt').stdout.strip(), 'mu300-openwrt-rootfs.tar.gz')
 
+    def test_os_kind(self):
+        for shell in self.each_shell():
+            for name, kind in [('ubuntu', 'ubuntu'), ('openwrt', 'openwrt'), ('openwrt-luci', 'openwrt')]:
+                self.assertEqual(self.up(shell, f'os_kind {name}').stdout.strip(), kind)
+            self.assertEqual(self.up(shell, 'os_kind arch').returncode, 1)
+
+    def test_installed_systems_three(self):
+        for name in ('openwrt', 'openwrt-luci', 'openwrt-luci.old'):
+            (self.disk / name).mkdir()
+        for shell in self.each_shell():
+            self.assertEqual(self.up(shell, 'installed_systems').stdout.split(), ['ubuntu', 'openwrt', 'openwrt-luci'])
+
+    def test_lists_by_kind(self):
+        for shell in self.each_shell():
+            self.assertEqual(self.up(shell, 'keep_list openwrt-luci').stdout, self.up(shell, 'keep_list openwrt').stdout)
+            self.assertEqual(self.up(shell, 'vendor_list openwrt-luci').stdout, self.up(shell, 'vendor_list openwrt').stdout)
+            self.assertEqual(self.up(shell, 'rootfs_asset openwrt-luci').stdout.strip(), 'mu300-openwrt-luci-rootfs.tar.gz')
+
+    def test_running_os_by_directory(self):
+        (self.disk / 'openwrt-luci' / 'etc').mkdir(parents=True)
+        (self.disk / 'openwrt-luci' / 'etc' / 'openwrt_release').write_text('x')
+        for shell in self.each_shell():
+            r = self.up(shell, 'running_os', MU300_ROOT=self.disk / 'openwrt-luci')
+            self.assertEqual(r.stdout.strip(), 'openwrt-luci')
+
+    def test_clean_knows_the_third_system(self):
+        (self.disk / 'openwrt-luci.old').mkdir()
+        for shell in self.each_shell():
+            self.up(shell, 'STAGE=$MU300_DISK/.stage; df() { :; }; clean')
+            self.assertFalse((self.disk / 'openwrt-luci.old').exists())
+            (self.disk / 'openwrt-luci.old').mkdir()
+
     def test_kernel_choice(self):
         boot = self.disk / 'boot'
         boot.mkdir()
