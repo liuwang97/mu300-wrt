@@ -283,6 +283,29 @@ setup_usb_gadget() {
 load_vendor_modules
 find_partitions
 setup_usb_gadget
+# The SD card as the home of the Linux filesystem: ext4 with the label mu300sd, on the card's first partition or
+# on the whole card. Its own label, not mu300root - a device can hold both, and they must never be confused.
+# --- sd-root begin
+ext4_label() {  # ext4_label DEV: the volume label, nothing (and status 1) when DEV is not ext4
+    [ "$(dd if="$1" bs=1 skip=1080 count=2 2>/dev/null | od -An -tx1 | tr -d ' \n')" = 53ef ] || return 1
+    dd if="$1" bs=1 skip=1144 count=16 2>/dev/null | tr -d '\000'; echo
+}
+find_sd_root() {  # the first card device that holds mu300sd; the eMMC is mmcblk0 and never looked at
+    for d in ${MU300_SD_GLOB:-/dev/mmcblk[1-9]p1 /dev/mmcblk[1-9]}; do
+        [ -e "$d" ] || continue
+        [ "$(ext4_label "$d")" = mu300sd ] && { echo "$d"; return 0; }
+    done
+    return 1
+}
+wait_sd_root() {  # wait_sd_root SECONDS: a card that the polled host has not found yet
+    n=0
+    while [ "$n" -lt "$1" ]; do
+        find_sd_root && return 0
+        sleep 1; mdev -s; n=$((n + 1))
+    done
+    return 1
+}
+# --- sd-root end
 ROOT_OFFSET=27762098176   # linux-boot/rootfs-region.env; outside every GPT partition
 # The region is not at the same place on every device (eMMC size, partition layout), and a number in this file is
 # not enough: the installer writes the device's offset in here, but the generic ramdisk segment that updates put
@@ -306,15 +329,6 @@ find_root_offset() {
     done
     return 1
 }
-if found=$(find_root_offset); then
-    [ "$found" = "$ROOT_OFFSET" ] || log "stage=root-offset found=$found (default $ROOT_OFFSET)"
-    ROOT_OFFSET=$found
-else
-    log "stage=root-offset not-found (trying the default $ROOT_OFFSET)"
-fi
-mkdir -p /newroot
-# busybox mount only sets up a loop for regular files; for a block device the loop options would
-# be handed to ext4 (EINVAL), so attach the loop explicitly and verify its offset
 # The ext4 area holds one or more systems: /ubuntu, /openwrt (selected by /.mu300/boot-os), or a single
 # Ubuntu directly in its root (first installs). Pick one and remember how to start it.
 has_init() { [ -x "$1/lib/systemd/systemd" ] || [ -x "$1/sbin/init" ]; }
@@ -326,13 +340,55 @@ pick_root() {
         [ "$os" = ubuntu ] && [ -x /disk/lib/systemd/systemd ] && { echo /disk; return; }
     done
 }
-mkdir -p /disk
-rootloop=$(losetup -f 2>/run/rootmount.err)
-if [ -n "$rootloop" ] && losetup -o $ROOT_OFFSET "$rootloop" /dev/mmcblk0 2>>/run/rootmount.err \
-   && [ "$(cat /sys/block/${rootloop#/dev/}/loop/offset)" = "$ROOT_OFFSET" ] \
-   && [ "$(dd if="$rootloop" bs=1 skip=1080 count=2 2>/dev/null | od -An -tx1 | tr -d ' ')" = 53ef ] \
-   && mount -t ext4 -o noatime "$rootloop" /disk 2>>/run/rootmount.err \
-   && rootdir=$(pick_root) && [ -n "$rootdir" ]; then
+mkdir -p /disk /newroot
+mount_internal() {  # the mu300root region on the eMMC; busybox mount sets up a loop only for regular files, so
+    # attach it explicitly and verify its offset (the loop options would be handed to ext4: EINVAL)
+    if found=$(find_root_offset); then
+        [ "$found" = "$ROOT_OFFSET" ] || log "stage=root-offset found=$found (default $ROOT_OFFSET)"
+        ROOT_OFFSET=$found
+    else
+        log "stage=root-offset not-found (trying the default $ROOT_OFFSET)"
+    fi
+    rootloop=$(losetup -f 2>/run/rootmount.err)
+    [ -n "$rootloop" ] && losetup -o $ROOT_OFFSET "$rootloop" /dev/mmcblk0 2>>/run/rootmount.err \
+       && [ "$(cat /sys/block/${rootloop#/dev/}/loop/offset)" = "$ROOT_OFFSET" ] \
+       && [ "$(dd if="$rootloop" bs=1 skip=1080 count=2 2>/dev/null | od -An -tx1 | tr -d ' ')" = 53ef ] \
+       && mount -t ext4 -o noatime "$rootloop" /disk 2>>/run/rootmount.err \
+       && echo "mmcblk0@$ROOT_OFFSET" > /run/mu300-root-dev
+}
+mount_sd() {  # mount_sd DEV: the card, a block device of its own - no loop
+    mount -t ext4 -o noatime "$1" /disk 2>>/run/rootmount.err || return 1
+    if [ -z "$(pick_root)" ]; then
+        # the label without a system inside: an installation that was interrupted. Not a reason to give up on
+        # an internal system.
+        log "stage=sd-root-empty dev=$1"; umount /disk; return 1
+    fi
+    echo "$1" > /run/mu300-root-dev
+    log "stage=sd-root dev=$1"
+}
+sd_wait() { wait_sd_root 8; }
+root_mounted=0
+if sd=$(find_sd_root) && mount_sd "$sd"; then
+    root_mounted=1
+elif mount_internal; then
+    root_mounted=1
+    # A card installation on a device that also has an internal one leaves this marker in the internal one: the
+    # card is what should boot, and the polled SD host may simply not have found it yet. Only then is it worth
+    # waiting; a device without a card installation never waits.
+    if [ -e /disk/.mu300/root-on-sd ]; then
+        if sd=$(sd_wait); then
+            umount /disk && losetup -d "$rootloop" 2>/dev/null
+            mount_sd "$sd" || { log "stage=sd-root-failed dev=$sd"; mount_internal || root_mounted=0; }
+        else
+            log "stage=sd-root-missing (marker present, booting the internal system)"
+        fi
+    fi
+else
+    # nothing internal: the card is the only place a system can be, so give it its 8 seconds
+    log "stage=sd-wait (no internal system)"
+    sd=$(sd_wait) && mount_sd "$sd" && root_mounted=1
+fi
+if [ "$root_mounted" = 1 ] && rootdir=$(pick_root) && [ -n "$rootdir" ]; then
     # A way back to Android with no computer and no keyboard: cut the power during boot N times in a row (N is
     # .mu300/boot-attempts, 5 without it). Every boot counts up here and mu300-next-boot --rearm clears the count
     # once the system is really up, so only boots that never got that far add up. LK does the same with the
