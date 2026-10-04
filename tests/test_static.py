@@ -69,6 +69,13 @@ class Rules(unittest.TestCase):
                 if re.search(r'\bSuDo(ToFile)?\s+"|adb shell\s+"', code) and ('`"' in code or '""' in code):
                     self.fail(f'{name}:{n}: double quote inside a device command: {line.strip()}')
 
+    def test_init_restores_androids_slot(self):
+        # every restore goes through restore_android, so Linux on slot a returns to Android on b
+        init = (TOP / 'boot' / 'init').read_text()
+        self.assertNotIn('restore_slot_a', init)
+        self.assertNotIn('slot_suffix=_b/androidboot.slot_suffix=_a', init)
+        self.assertIn('sleep 300', init)
+
     def test_powershell_scripts_are_ascii(self):
         # Windows PowerShell 5.1 reads a file without a BOM as ANSI: non-ASCII text in the script is garbled
         for name in ('install.ps1', 'uninstall.ps1'):

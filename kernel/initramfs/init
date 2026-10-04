@@ -1,5 +1,5 @@
 #!/bin/busybox sh
-# MU300 standalone Linux initramfs v10 (switch_root to Ubuntu on the free eMMC region; comm fix; custom kernel + modem_control + node perms + slot a modem) (slot b, tries=2 one-shot trial).
+# MU300 standalone Linux initramfs v10 (switch_root to Ubuntu on the free eMMC region; comm fix; custom kernel + modem_control + node perms + Android's slot modem) (Linux on the other slot, tries=2 one-shot trial).
 # Every stage is written to /dev/kmsg at KERN_ERR so it survives in
 # /sys/fs/pstore/console-ramoops-0 after the fallback boot into Android.
 /bin/busybox mkdir -p /bin /sbin /proc /sys /dev /run /tmp /root /etc /config
@@ -26,7 +26,7 @@ log() {
     [ -d /run ] && echo "$(cut -d' ' -f1 /proc/uptime) $*" >> /run/stages
 }
 
-# Persistent log: 8 MiB at 48 MiB inside boot_b, past the image and its AVB data
+# Persistent log: 8 MiB at 48 MiB inside the Linux slot's boot partition, past the image and its AVB data
 # (image ends near 39 MiB). Survives a cold power cycle, unlike pstore.
 bootb=
 persist() {
@@ -75,7 +75,7 @@ echo 1 > /proc/sys/kernel/panic_on_oops
 [ -e /proc/sys/kernel/hardlockup_panic ] && echo 1 > /proc/sys/kernel/hardlockup_panic
 echo 1 > /proc/sys/kernel/sysrq
 
-# Safety net: reboot after 5 minutes. By then misc points back at slot a.
+# Safety net: reboot after 5 minutes. By then misc points back at Android's slot.
 # Create /run/stay (e.g. over telnet) to keep Linux running.
 (sleep 300
  if [ -e /run/stay ]; then log "stage=timer-skipped"; exit 0; fi
@@ -135,15 +135,53 @@ load_vendor_modules() {
     log "stage=modules-done loaded=$loaded failed=$failed"
 }
 
-# misc and boot_b: where they are is known only once the eMMC is there, and its driver (sdhci-sprd) is one of
-# the vendor modules - an earlier lookup found nothing (U30 Air: misc-NOT-FOUND, no persistent log). So this runs
-# after load_vendor_modules; whether slot a is restored is decided once the rootfs is known.
+# Which slot this Linux runs from, and so which one is Android's (after an OTA Android often runs from b, and the
+# Magisk installer then puts Linux on a). LK names the slot it booted on the command line; the mainline kernel
+# replaces that line, so the bootargs LK put in the device tree come next, as for the vendor daemons below. Then
+# the slot the image was built for (etc/mu300-linux-slot, from the installer), and b: every image before this one
+# was built for b.
+# --- slot begin
+linux_slot_detect() {
+    LINUX_SLOT=; _src=default
+    for _f in ${MU300_CMDLINE_SRC:-/proc/cmdline /proc/device-tree/chosen/bootargs}; do
+        [ -r "$_f" ] || continue
+        LINUX_SLOT=$(tr '\000' ' ' < "$_f" | sed -n 's/.*androidboot\.slot_suffix=_\([ab]\).*/\1/p')
+        [ -n "$LINUX_SLOT" ] && { _src=$_f; break; }
+    done
+    _img=$(cat "${MU300_ETC:-/etc}/mu300-linux-slot" 2>/dev/null)
+    case $_img in a|b) ;; *) _img= ;; esac
+    if [ -z "$LINUX_SLOT" ]; then
+        LINUX_SLOT=${_img:-b}
+        [ -n "$_img" ] && _src=image
+    fi
+    [ -z "$_img" ] || [ "$_img" = "$LINUX_SLOT" ] || log "stage=linux-slot-MISMATCH booted=$LINUX_SLOT image=$_img"
+    if [ "$LINUX_SLOT" = a ]; then ANDROID_SLOT=b; else ANDROID_SLOT=a; fi
+    log "stage=linux-slot slot=$LINUX_SLOT source=$_src"
+}
+restore_android() { write_misc_bc "${MU300_ETC:-/etc}/misc-bc-slot-$ANDROID_SLOT.bin" misc-restored; }
+# what userspace needs to choose the next boot (mu300-next-boot): the slot and the two blocks of this pair. The old
+# names, which an older mu300-next-boot reads, only where they mean what it thinks: Linux on b. With Linux on a its
+# "android" would write the slot-a block - Linux, marked successful - and without the files it fails instead.
+publish_slot() {
+    _r=${MU300_RUN:-/run}/mu300 _e=${MU300_ETC:-/etc}
+    mkdir -p "$_r"
+    echo "$LINUX_SLOT" > "$_r/linux-slot"
+    cp "$_e/misc-bc-slot-$ANDROID_SLOT.bin" "$_r/misc-bc-android.bin"
+    cp "$_e/misc-bc-slot-$LINUX_SLOT-trial.bin" "$_r/misc-bc-linux-trial.bin"
+    if [ "$LINUX_SLOT" = b ]; then cp "$_e/misc-bc-slot-a.bin" "$_e/misc-bc-slot-b-trial.bin" "$_r/"; fi
+}
+# --- slot end
+linux_slot_detect
+
+# misc and the Linux slot's boot partition: where they are is known only once the eMMC is there, and its driver
+# (sdhci-sprd) is one of the vendor modules - an earlier lookup found nothing (U30 Air: misc-NOT-FOUND, no persistent
+# log). So this runs after load_vendor_modules; whether Android's slot is restored is decided once the rootfs is known.
 misc=
 find_partitions() {
     for n in $(seq 1 20); do
         for u in /sys/class/block/mmcblk*p*/uevent; do
             grep -qx PARTNAME=misc "$u" 2>/dev/null && misc=/dev/$(basename "$(dirname "$u")")
-            grep -qx PARTNAME=boot_b "$u" 2>/dev/null && bootb=/dev/$(basename "$(dirname "$u")")
+            grep -qx "PARTNAME=boot_$LINUX_SLOT" "$u" 2>/dev/null && bootb=/dev/$(basename "$(dirname "$u")")
         done
         [ -b "$misc" ] && [ -b "$bootb" ] && break
         sleep 1
@@ -158,13 +196,13 @@ find_partitions() {
 }
 
 write_misc_bc() {  # write_misc_bc FILE STAGE
+    [ -s "$1" ] || { log "stage=misc-block-missing $1"; return 1; }
     [ -n "$misc" ] || { log "stage=misc-NOT-FOUND"; return 1; }
     dd if="$1" of="$misc" bs=1 seek=2048 conv=notrunc 2>/dev/null
     sync
     dd if="$misc" of=/run/bc.bin bs=1 skip=2048 count=32 2>/dev/null
     if cmp -s /run/bc.bin "$1"; then log "stage=$2 dev=$misc"; else log "stage=$2-MISMATCH dev=$misc"; fi
 }
-restore_slot_a() { write_misc_bc /etc/misc-bc-slot-a.bin misc-restored; }
 
 hostname mu300-linux
 ifconfig lo 127.0.0.1 up
@@ -428,7 +466,7 @@ if [ "$root_mounted" = 1 ] && rootdir=$(pick_root) && [ -n "$rootdir" ]; then
     if [ "$tries" -gt "$max" ]; then
         log "stage=boot-tries-exceeded count=$tries (booting Android instead)"
         echo 0 > /disk/.mu300/boot-tries && sync
-        restore_slot_a
+        restore_android
         persist
         sync
         reboot -f
@@ -442,16 +480,17 @@ if [ "$root_mounted" = 1 ] && rootdir=$(pick_root) && [ -n "$rootdir" ]; then
         # keep the whole disk reachable from inside (switching systems, editing the other one)
         mkdir -p /newroot/mnt/mu300-disk && mount --move /disk /newroot/mnt/mu300-disk
     fi
-    # Default-Linux mode: leave LK's decremented tries (b: not successful). Userspace re-arms slot b (tries N+1)
-    # once the system is up; N boots in a row that never get there and LK falls back to Android on the next one.
+    # Default-Linux mode: leave LK's decremented tries (Linux's slot: not successful). Userspace re-arms the Linux
+    # slot (tries N+1) once the system is up; N boots in a row that never get there and LK falls back to Android on
+    # the next one.
     trial=1
     if [ "$(cat /newroot/etc/mu300/default-boot 2>/dev/null)" = linux ]; then
-        log "stage=default-boot-linux (slot a restore skipped)"
+        log "stage=default-boot-linux (Android's slot restore skipped)"
         trial=
     else
-        restore_slot_a
+        restore_android
     fi
-    mkdir -p /run/mu300 && cp /etc/misc-bc-slot-a.bin /etc/misc-bc-slot-b-trial.bin /run/mu300/
+    publish_slot
     [ -n "$misc" ] && echo "$misc" > /run/mu300/misc-dev
     # the device /disk was mounted from: the card, or the loop device over the internal region
     echo "$diskdev" > /run/mu300/disk-dev
@@ -465,11 +504,12 @@ if [ "$root_mounted" = 1 ] && rootdir=$(pick_root) && [ -n "$rootdir" ]; then
     # Trial guard, only in images built with --trial-guard SECONDS (tools/flash-trial.sh experiments, never an
     # install): the timer above ends here, and a trial kernel that boots but never brings up USB (6.18 on the U30
     # Air) left a device that only failing five boots by hand brought back. So one more timer outlives
-    # switch_root: unless /run/stay exists by then (created over SSH), it reboots - into Android, as slot a is
-    # already restored. switch_root deletes this ramdisk, so it runs from a copy of busybox in /run, reached
+    # switch_root: unless /run/stay exists by then (created over SSH), it reboots - into Android, as Android's slot
+    # is already restored. switch_root deletes this ramdisk, so it runs from a copy of busybox in /run, reached
     # through its working directory once /run has moved.
-    # Only in a trial boot: mu300-update keeps the device segment of whatever image is in boot_b, and a guard that
-    # came along from an experiment into an installed system restarted it every 10 minutes (FINDINGS 33e)
+    # Only in a trial boot: mu300-update keeps the device segment of whatever image is in the Linux slot's boot
+    # partition, and a guard that came along from an experiment into an installed system restarted it every 10
+    # minutes (FINDINGS 33e)
     if [ -s /etc/mu300-trial-guard ] && [ -z "$trial" ]; then
         log "stage=trial-guard-ignored (Linux is the default: not a trial)"
     elif [ -s /etc/mu300-trial-guard ]; then
@@ -489,7 +529,7 @@ if [ "$root_mounted" = 1 ] && rootdir=$(pick_root) && [ -n "$rootdir" ]; then
     exec switch_root /newroot $init
 fi
 log "stage=rootfs-unavailable $(cat /run/rootmount.err)"
-restore_slot_a
+restore_android
 ifconfig usb0 $NET.1 netmask 255.255.255.0 up
 log "stage=usb0 $(ifconfig usb0 2>&1 | head -1)"
 cat > /etc/udhcpd.conf <<EOF
@@ -526,12 +566,12 @@ mount -t proc proc $A/proc
 mount -t sysfs sysfs $A/sys
 # modem_control switches to uid system(1000); apply Android's ueventd/init node ownership
 sh /etc/ueventd-perms.sh
-# LK boots us from slot b; the modem images Android uses (and keeps updated) are the _a copies
+# the modem images Android uses (and keeps updated) are the ones of Android's slot
 # the vendor daemons read androidboot.* (slot, modem config) from the command line; the mainline kernel forces its
 # own command line, so fall back to the bootargs LK put in the device tree
 src=/proc/cmdline
 grep -q androidboot.slot_suffix /proc/cmdline || [ ! -r /proc/device-tree/chosen/bootargs ] || src=/proc/device-tree/chosen/bootargs
-tr -d '\000' < $src | sed 's/androidboot.slot_suffix=_b/androidboot.slot_suffix=_a/' > /run/cmdline.android
+tr -d '\000' < $src | sed "s/androidboot.slot_suffix=_$LINUX_SLOT/androidboot.slot_suffix=_$ANDROID_SLOT/" > /run/cmdline.android
 mount --bind /run/cmdline.android $A/proc/cmdline
 # liblog sends to logd's datagram socket; capture it so vendor daemons are debuggable
 mkdir -p /dev/socket
