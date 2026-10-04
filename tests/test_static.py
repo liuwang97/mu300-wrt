@@ -8,6 +8,7 @@ import unittest
 from helpers import BIN, TOP, shells
 
 OPENWRT = TOP / 'openwrt' / 'overlay'
+LUCI_OVERLAY = TOP / 'openwrt' / 'luci-overlay'
 
 
 def shebang(p):
@@ -26,6 +27,7 @@ def shell_scripts():
         TOP / 'kernel' / 'build-all.sh', TOP / 'tools' / 'i18n.sh', TOP / 'tools' / 'self-update.sh',
         TOP / 'tools' / 'linux-mode.sh', TOP / 'tools' / 'storage.sh', TOP / 'android-vendor' / 'ueventd-perms.sh']
     cands += [p for p in OPENWRT.rglob('*') if p.is_file()]
+    cands += [p for p in LUCI_OVERLAY.rglob('*') if p.is_file()]
     out = []
     for p in sorted(set(cands)):
         if not p.is_file():
@@ -115,6 +117,22 @@ class Rules(unittest.TestCase):
                     self.skipTest('tools/make-release.sh: until Task 11')
                 text = (TOP / f).read_text()
                 self.assertTrue('openwrt-luci' in text or 'openwrt-*' in text or 'openwrt|openwrt-' in text, f)
+
+    def test_openwrt_luci_build_wiring(self):
+        # MU300_SYSTEM=openwrt-luci: the same build as plain OpenWrt plus the panel, its catalogs compiled from po/
+        # and Aurora pinned by hash (D3, D5); ImmortalWrt with the panel was never tested by anyone, so refused
+        text = (TOP / 'openwrt' / 'build-rootfs.sh').read_text()
+        for s in ('MU300_SYSTEM', '05f9015e0a4e2859f6a153f69e472f2984481490d4ce6db19b8a41bba7264f1e', 'po2lmo.py',
+                  'luci-overlay', 'packages.txt', 'luci-i18n-base-zh-cn', 'luci-i18n-firewall-tr'):
+            self.assertIn(s, text)
+        arm = re.search(r'^\s*openwrt-luci\)(.*?);;', text, re.M | re.S)
+        self.assertIsNotNone(arm, 'no openwrt-luci arm in the MU300_SYSTEM case')
+        self.assertRegex(arm.group(1), r'"\$FLAVOUR" = openwrt \]', 'openwrt-luci does not refuse immortalwrt')
+        self.assertIn('mu300-$SYSTEM-$VER-rootfs.tar.gz', text)
+        f = LUCI_OVERLAY / 'etc' / 'uci-defaults' / '91-mu300-luci'
+        self.assertTrue(f.is_file() and f.stat().st_mode & 0o111, f'{f} missing or not executable')
+        self.assertIn('/luci-static/aurora', f.read_text())
+        self.assertIn(f, [p for p, _ in shell_scripts()])   # so test_every_script_parses parses it
 
     def test_uninstallers_have_no_per_system_list(self):
         # they remove the whole Linux filesystem; a per-system case arm added later would forget the third name

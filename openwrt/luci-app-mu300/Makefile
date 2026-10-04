@@ -6,6 +6,8 @@ PKG_RELEASE:=3
 PKG_LICENSE:=MIT
 PKG_MAINTAINER:=MU300 Linux contributors
 PKGARCH:=all
+# po2lmo, built by luci-base for the host
+PKG_BUILD_DEPENDS:=luci-base/host
 
 include $(INCLUDE_DIR)/package.mk
 
@@ -27,13 +29,21 @@ define Package/luci-app-mu300/conffiles
 /etc/config/unisoc_modem
 endef
 
+# The catalogs are compiled from po/<lang>/mu300.po (no .lmo is committed). LuCI names Chinese zh-cn, as luci.mk
+# does (LUCI_LC_ALIAS.zh_Hans); po2lmo writes no file for a catalog without translations (English).
+MU300_LMO_LANG=$(if $(filter zh_Hans,$(1)),zh-cn,$(1))
+
 define Build/Compile
+	mkdir -p $(PKG_BUILD_DIR)/lmo
+	$(foreach po,$(wildcard $(CURDIR)/po/*/mu300.po),$(STAGING_DIR_HOSTPKG)/bin/po2lmo $(po) $(PKG_BUILD_DIR)/lmo/mu300.$(call MU300_LMO_LANG,$(notdir $(patsubst %/,%,$(dir $(po))))).lmo;)
 endef
 
 define Package/luci-app-mu300/install
 	$(INSTALL_DIR) $(1)/www
 	$(CP) ./htdocs/. $(1)/www/
 	$(CP) ./root/. $(1)/
+	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/i18n
+	find $(PKG_BUILD_DIR)/lmo -name 'mu300.*.lmo' -exec $(CP) {} $(1)/usr/lib/lua/luci/i18n/ \;
 	chmod 0755 $(1)/etc/init.d/unisoc-modem-ui $(1)/etc/hotplug.d/net/90-unisoc-usb-host $(1)/etc/hotplug.d/iface/90-unisoc-usb-host $(1)/usr/libexec/rpcd/mu300dash $(1)/usr/libexec/unisoc-modem/*
 endef
 

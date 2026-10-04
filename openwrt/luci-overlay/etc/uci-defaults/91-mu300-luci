@@ -1,0 +1,10 @@
+#!/bin/sh
+# First boot of openwrt-luci: Aurora is the LuCI theme (Bootstrap stays installed and selectable), and LuCI and the
+# MU300 panel follow the browser's language (English, Turkish or Chinese; any other language gets English).
+# Runs after 90-mu300 and after the themes' own uci-defaults, which would otherwise pick their own default.
+uci -q batch <<UCI
+set luci.main.mediaurlbase='/luci-static/aurora'
+set luci.main.lang='auto'
+UCI
+uci commit luci
+exit 0
