@@ -117,6 +117,17 @@ class Rules(unittest.TestCase):
             self.assertIn(dev, (TOP / 'install.sh').read_text())
             self.assertIn(dev, (TOP / 'install.ps1').read_text())
 
+    def test_mainline_keeps_the_sd_host(self):
+        # the SD card can hold the Linux filesystem: the port lets the card slot's host probe next to the eMMC, and
+        # still keeps any other sdhci host (the stock DT's sdio_wifi; Wi-Fi is on PCIe) out
+        port = (TOP / 'upstream' / 'port' / 'install.py').read_text()
+        self.assertIn('MU300: only the eMMC and the card slot', port)
+        self.assertIn('if (!of_property_read_bool(pdev->dev.of_node, "non-removable") &&', port)
+        self.assertIn('of_property_match_string(pdev->dev.of_node, "sprd,name", "sdio_sd") < 0)', port)
+        self.assertIn('MU300: CD GPIO deferred', port)
+        self.assertIn("'MU300: only the eMMC and the card slot', 'MU300: CD GPIO deferred'", port)
+        self.assertRegex((TOP / 'upstream' / 'make-bundle.sh').read_text(), r"printf 'sdcard\\n' > \"\$W/b/features\"")
+
 
 if __name__ == '__main__':
     unittest.main()

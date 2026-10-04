@@ -106,15 +106,43 @@ for path, anchor, line in [
 
 append_once('drivers/watchdog/Makefile', 'ump9620-pmic-wdt.o', 'obj-$(CONFIG_MFD_SC27XX_PMIC) += ump9620-pmic-wdt.o\n')
 
-# sdhci-sprd: the SD card controller is not populated on the MU300 and floods the log; probe only the eMMC
+# sdhci-sprd: the SD card can hold the Linux filesystem, so the card slot's host (sprd,name "sdio_sd") is probed
+# next to the non-removable eMMC. Any other host the stock device tree describes (sdio_wifi: Wi-Fi is on PCIe on
+# this board) stays unprobed, as before. An earlier version of this port let only the eMMC through; take that edit
+# out of a kernel tree that was prepared with it.
 sp = os.path.join(tree, 'drivers/mmc/host/sdhci-sprd.c')
 t = open(sp).read()
-marker = 'MU300: only the non-removable eMMC'
+t = t.replace('\t/* MU300: only the non-removable eMMC is used */\n'
+              '\tif (!of_property_read_bool(pdev->dev.of_node, "non-removable"))\n\t\treturn -ENODEV;\n', '')
+marker = 'MU300: only the eMMC and the card slot'
 if marker not in t:
     anchor = 'static int sdhci_sprd_probe(struct platform_device *pdev)\n{\n'
     i = t.index(anchor) + len(anchor)
     j = t.index('\n\n', i) + 1          # after the local variable declarations
-    t = t[:j] + '\t/* ' + marker + ' is used */\n\tif (!of_property_read_bool(pdev->dev.of_node, "non-removable"))\n\t\treturn -ENODEV;\n' + t[j:]
+    t = t[:j] + '\t/* ' + marker + ' */\n' + '''\
+\tif (!of_property_read_bool(pdev->dev.of_node, "non-removable") &&
+\t    of_property_match_string(pdev->dev.of_node, "sprd,name", "sdio_sd") < 0)
+\t\treturn -ENODEV;
+''' + t[j:]
+# The stock device tree gives the slot a card-detect GPIO on line 35 of the EIC's sync bank; mainline's sprd-eic
+# gives that bank 24 lines, the lookup never succeeds and the host would stay deferred for ever (seen on the F50,
+# FINDINGS "SD host under mainline"). Only for the card slot, poll for the card instead.
+parse_old = '\tret = mmc_of_parse(host->mmc);\n\tif (ret)\n\t\treturn ret;\n'
+parse_new = '''\tret = mmc_of_parse(host->mmc);
+\tif (ret == -EPROBE_DEFER &&
+\t    of_property_present(pdev->dev.of_node, "cd-gpios") &&
+\t    of_property_match_string(pdev->dev.of_node, "sprd,name", "sdio_sd") >= 0) {
+\t\tdev_warn(&pdev->dev, "MU300: CD GPIO deferred, polling the card slot\\n");
+\t\thost->mmc->caps |= MMC_CAP_NEEDS_POLL;
+\t\tret = 0;
+\t}
+\tif (ret)
+\t\treturn ret;
+'''
+if 'MU300: CD GPIO deferred' not in t:
+    if parse_old not in t:
+        sys.exit('port: sdhci-sprd mmc_of_parse anchor changed')
+    t = t.replace(parse_old, parse_new, 1)
 # UMS9620 has the r11p3 controller: the vendor driver programs DLL phase 0x2 (mainline 0x3,
 # which gives data CRC errors on HS400ES writes while reads work)
 t = t.replace('#define  SDHCI_SPRD_DLL_PHASE_INTERNAL\t0x3', '#define  SDHCI_SPRD_DLL_PHASE_INTERNAL\t0x2 /* MU300 r11p3 */')
@@ -175,7 +203,7 @@ expect = [
     ('drivers/mfd/sprd-sc27xx-spi.c', ['ump9620_data = {', '"sprd,ump9620"', '.name = "ump9620"']
      + (['case PMIC_TYPE_UMP9620:', 'if (pmic_type == PMIC_TYPE_UMP9620) {', 'linux/of_platform.h']
         if 'enum sprd_pmic_type' in open(os.path.join(tree, 'drivers/mfd/sprd-sc27xx-spi.c')).read() else [])),
-    ('drivers/mmc/host/sdhci-sprd.c', ['MU300: only the non-removable eMMC', 'DLL_PHASE_INTERNAL\t0x2 /* MU300 r11p3 */']),
+    ('drivers/mmc/host/sdhci-sprd.c', ['MU300: only the eMMC and the card slot', 'MU300: CD GPIO deferred', 'DLL_PHASE_INTERNAL\t0x2 /* MU300 r11p3 */']),
     ('drivers/nvmem/sprd-efuse.c', ['"sprd,qogirn6pro-efuse"', 'econfig.read_only = true;']),
     ('drivers/rtc/rtc-sc27xx.c', ['"sprd,ump96xx-rtc"']),
     ('drivers/usb/dwc3/dwc3-of-simple.c', ['"sprd,qogirn6pro-dwc3"']),
