@@ -56,6 +56,63 @@ class SdRoot(ShellTest):
             out = self.run_fn(shell, 'sleep() { :; }; wait_sd_root 3', f'{self.tmp}/none[1-9]')
             self.assertEqual('rc=1', out.strip())
 
+    # The wait beyond the first seconds: a fake /sys with the hosts and card devices of a scenario; sleep counts.
+    def fake_sys(self, hosts=(), card=None):
+        s = self.tmp / 'sys'
+        for h in hosts:
+            (s / 'class' / 'mmc_host' / h).mkdir(parents=True, exist_ok=True)
+        (s / 'bus' / 'mmc' / 'devices').mkdir(parents=True, exist_ok=True)
+        if card:  # card = (type, bound)
+            c = s / 'bus' / 'mmc' / 'devices' / 'mmc1:aaaa'
+            c.mkdir(parents=True, exist_ok=True)
+            (c / 'type').write_text(card[0] + '\n')
+            if card[1]:
+                (c / 'driver').mkdir(exist_ok=True)
+        return s
+
+    def waited(self, shell, kernel, sys, extra=''):
+        call = (f'n_sleep=0; sleep() {{ n_sleep=$((n_sleep + 1)); {extra} }}; uname() {{ echo {kernel}; }}; '
+                f'MU300_SYS={sys}; wait_sd_root 3 6; r=$?; echo "slept=$n_sleep"; (exit $r)')
+        return self.run_fn(shell, call, f'{self.tmp}/mmcblk[1-9]p1')
+
+    def test_mainline_empty_slot_keeps_the_short_wait(self):
+        # 6.18/7.2 poll the slot and find a card in about 2.5 s: a host without a card is no reason to wait longer
+        sys = self.fake_sys(hosts=('mmc0', 'mmc1'))
+        for shell in self.each_shell():
+            self.assertEqual('slept=3\nrc=1', self.waited(shell, '6.18.55', sys).strip())
+
+    def test_card_found_but_not_set_up_yet_extends_the_wait(self):
+        sys = self.fake_sys(hosts=('mmc0', 'mmc1'), card=('SD', False))
+        for shell in self.each_shell():
+            self.assertEqual('slept=6\nrc=1', self.waited(shell, '6.18.55', sys).strip())
+
+    def test_card_that_is_set_up_and_foreign_does_not_extend(self):
+        sys = self.fake_sys(hosts=('mmc0', 'mmc1'), card=('SD', True))
+        for shell in self.each_shell():
+            self.assertEqual('slept=3\nrc=1', self.waited(shell, '5.4.254-gb50db5b6224c', sys).strip())
+
+    def test_vendor_kernel_with_a_card_host_extends_the_wait(self):
+        # 5.4 has a card-detect line and no poll, and the card was once seen only at 23.75 s (FINDINGS 31j)
+        sys = self.fake_sys(hosts=('mmc0', 'mmc1', 'mmc2'))
+        for shell in self.each_shell():
+            self.assertEqual('slept=6\nrc=1', self.waited(shell, '5.4.254-gb50db5b6224c', sys).strip())
+
+    def test_vendor_kernel_without_a_card_host_keeps_the_short_wait(self):
+        # the U30 Air: the eMMC is its only host
+        sys = self.fake_sys(hosts=('mmc0',))
+        for shell in self.each_shell():
+            self.assertEqual('slept=3\nrc=1', self.waited(shell, '5.4.254-gb50db5b6224c', sys).strip())
+
+    def test_late_card_found_during_the_long_wait(self):
+        sys = self.fake_sys(hosts=('mmc0', 'mmc1', 'mmc2'))
+        src = self.tmp / 'card'
+        fake_ext4(src, 'mu300sd')
+        appear = f'[ $n_sleep = 5 ] && cp {src} {self.tmp}/mmcblk1p1;'
+        for shell in self.each_shell():
+            (self.tmp / 'mmcblk1p1').unlink(missing_ok=True)
+            out = self.waited(shell, '5.4.254-gb50db5b6224c', sys, appear)
+            self.assertEqual(f'{self.tmp}/mmcblk1p1\nslept=5\nrc=0', out.strip())
+
 
 # Stand-ins for what root selection touches on the device. One card (mmcblk1p1) and one internal region; the
 # scenario says which of them are there, when the card shows up and what is on it. mount and umount keep track
@@ -63,7 +120,7 @@ class SdRoot(ShellTest):
 STUBS = r'''
 log() { echo "$*" >> "$T/log"; }
 find_sd_root() { [ "$CARD_NOW" = 1 ] && { echo /dev/mmcblk1p1; return 0; }; return 1; }
-wait_sd_root() { echo "wait $1" >> "$T/log"; [ "$CARD_LATE" = 1 ] && { echo /dev/mmcblk1p1; return 0; }; return 1; }
+wait_sd_root() { echo "wait $*" >> "$T/log"; [ "$CARD_LATE" = 1 ] && { echo /dev/mmcblk1p1; return 0; }; return 1; }
 find_root_offset() { [ "$INTERNAL" = 1 ] && { echo 4096; return 0; }; return 1; }
 losetup() { case $1 in -f) echo /dev/loop0 ;; -d) echo "detach $2" >> "$T/log" ;; esac; }
 cat() { case $1 in /sys/*) echo "$ROOT_OFFSET" ;; *) command cat "$@" ;; esac; }
@@ -134,14 +191,14 @@ class RootSelect(ShellTest):
             out, dev, log = self.select(shell, marker=True, INTERNAL=1, CARD_LATE=1)
             self.assertEqual('mounted=1 on=card disk-dev=/dev/mmcblk1p1', out)
             self.assertEqual('/dev/mmcblk1p1', dev)
-            self.assertIn('wait 8\ndetach /dev/loop0\nstage=sd-root dev=/dev/mmcblk1p1', log)
+            self.assertIn('wait 8 30\ndetach /dev/loop0\nstage=sd-root dev=/dev/mmcblk1p1', log)
 
     def test_marker_and_no_card(self):
         for shell in self.each_shell():
             out, dev, log = self.select(shell, marker=True, INTERNAL=1)
             self.assertEqual('mounted=1 on=internal disk-dev=/dev/loop0', out)
             self.assertEqual('mmcblk0@4096', dev)
-            self.assertIn('wait 8\nstage=sd-root-missing', log)
+            self.assertIn('wait 8 30\nstage=sd-root-missing', log)
 
     def test_marker_and_late_card_that_is_empty(self):
         for shell in self.each_shell():
@@ -171,14 +228,14 @@ class RootSelect(ShellTest):
             out, dev, log = self.select(shell, INTERNAL=0)
             self.assertEqual('mounted=0 on= disk-dev=', out)
             self.assertEqual('', dev)
-            self.assertIn('stage=sd-wait (no internal system)\nwait 8', log)
+            self.assertIn('stage=sd-wait (no internal system)\nwait 8 30', log)
 
     def test_no_internal_and_late_card(self):
         for shell in self.each_shell():
             out, dev, log = self.select(shell, INTERNAL=0, CARD_LATE=1)
             self.assertEqual('mounted=1 on=card disk-dev=/dev/mmcblk1p1', out)
             self.assertEqual('/dev/mmcblk1p1', dev)
-            self.assertIn('wait 8', log)
+            self.assertIn('wait 8 30', log)
 
 
 class Rules(unittest.TestCase):
@@ -188,7 +245,7 @@ class Rules(unittest.TestCase):
     def test_wait_is_written_once(self):
         # the 8 seconds are one constant, behind the two conditions the RootSelect tests exercise
         body = INIT[INIT.index('# --- sd-root end'):]
-        self.assertEqual(body.count('wait_sd_root 8'), 1)
+        self.assertEqual(body.count('wait_sd_root 8 30'), 1)
 
 
 if __name__ == '__main__':

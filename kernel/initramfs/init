@@ -297,13 +297,32 @@ find_sd_root() {  # the first card device that holds mu300sd; the eMMC is mmcblk
     done
     return 1
 }
-wait_sd_root() {  # wait_sd_root SECONDS: a card that the polled host has not found yet
+# Is a card on its way, so that waiting past the first seconds can pay off? Mainline polls the slot and has a card
+# set up at about 2.5 s, so an empty slot there is simply empty. Two cases are not: a card the host has found whose
+# block device is still being set up (its driver is bound once the partitions are read), and the vendor 5.4 kernel,
+# whose host waits for a card-detect line instead of polling and was once seen to bring the card only at 23.75 s.
+sd_coming() {
+    s=${MU300_SYS:-/sys}
+    for c in "$s"/bus/mmc/devices/mmc[1-9]:*; do
+        [ "$(cat "$c/type" 2>/dev/null)" = SD ] || continue
+        [ -e "$c/driver" ] && return 1
+        return 0
+    done
+    case $(uname -r) in
+        5.4.*) for h in "$s"/class/mmc_host/mmc[1-9]; do [ -e "$h" ] && return 0; done ;;
+    esac
+    return 1
+}
+wait_sd_root() {  # wait_sd_root SECONDS [MAX]: a card the host has not found yet; up to MAX while sd_coming
     n=0
-    while [ "$n" -lt "$1" ]; do
+    while :; do
         find_sd_root && return 0
+        if [ "$n" -ge "$1" ]; then
+            [ "$n" -lt "${2:-$1}" ] && sd_coming || return 1
+            [ "$n" = "$1" ] && log "stage=sd-wait-longer (a card may still be coming, up to $2 s)"
+        fi
         sleep 1; mdev -s; n=$((n + 1))
     done
-    return 1
 }
 # --- sd-root end
 ROOT_OFFSET=27762098176   # linux-boot/rootfs-region.env; outside every GPT partition
@@ -367,7 +386,7 @@ mount_sd() {  # mount_sd DEV: the card, a block device of its own - no loop
     echo "$1" > /run/mu300-root-dev; diskdev=$1
     log "stage=sd-root dev=$1"
 }
-sd_wait() { wait_sd_root 8; }
+sd_wait() { wait_sd_root 8 30; }
 root_mounted=0 diskdev=
 if sd=$(find_sd_root) && mount_sd "$sd"; then
     root_mounted=1
@@ -385,7 +404,7 @@ elif mount_internal; then
         fi
     fi
 else
-    # nothing internal: the card is the only place a system can be, so give it its 8 seconds
+    # nothing internal: the card is the only place a system can be, so it gets 8 seconds (30 while one is coming)
     log "stage=sd-wait (no internal system)"
     sd=$(sd_wait) && mount_sd "$sd" && root_mounted=1
 fi
