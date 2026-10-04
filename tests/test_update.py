@@ -71,6 +71,13 @@ class Update(ShellTest):
             r = self.up(shell, 'running_os', MU300_ROOT=self.disk / 'openwrt-luci')
             self.assertEqual(r.stdout.strip(), 'openwrt-luci')
 
+    def test_running_os_after_apply_is_the_kept_copy(self):
+        (self.disk / 'openwrt-luci.old' / 'etc').mkdir(parents=True)
+        (self.disk / 'openwrt-luci.old' / 'etc' / 'openwrt_release').write_text('x')
+        for shell in self.each_shell():
+            r = self.up(shell, 'running_os', MU300_ROOT=self.disk / 'openwrt-luci.old')
+            self.assertEqual(r.stdout.strip(), 'openwrt-luci')
+
     def test_clean_knows_the_third_system(self):
         (self.disk / 'openwrt-luci.old').mkdir()
         for shell in self.each_shell():

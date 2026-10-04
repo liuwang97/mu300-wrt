@@ -116,7 +116,12 @@ bundle_has_sd() { grep -qx './features' "$2" && untar -xzOf "$1" ./features 2>/d
 is_root() { [ -d "$1" ] && [ / -ef "$1" ]; }
 # the directory this system booted from; /etc/openwrt_release alone cannot tell the two OpenWrt systems apart
 running_os() {
-    for n in $SYSTEMS; do [ -d "$DISK/$n" ] && [ "${MU300_ROOT:-/}" -ef "$DISK/$n" ] && { echo "$n"; return; }; done
+    # between apply and the reboot / is the kept copy: $n.old
+    for n in $SYSTEMS; do
+        for d in "$DISK/$n" "$DISK/$n.old"; do
+            [ -d "$d" ] && [ "${MU300_ROOT:-/}" -ef "$d" ] && { echo "$n"; return; }
+        done
+    done
     [ -e /etc/openwrt_release ] && echo openwrt || echo ubuntu
 }
 
