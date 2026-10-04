@@ -36,6 +36,45 @@ class Device(ShellTest):
                 self.assertEqual(out, want, device)
 
 
+class Os(ShellTest):
+    """mu300-os against a fake disk area: three systems, and a kept copy is never offered."""
+    def setUp(self):
+        super().setUp()
+        self.disk = self.tmp / 'disk'
+        for name in ('ubuntu', 'openwrt', 'openwrt-luci', 'openwrt-luci.old'):
+            init = self.disk / name / 'sbin' / 'init'
+            init.parent.mkdir(parents=True)
+            init.write_text('#!/bin/sh\n'); init.chmod(0o755)
+            (self.disk / name / 'etc').mkdir()
+        self.root = self.tmp / 'root'
+        (self.root / 'etc' / 'mu300').mkdir(parents=True)
+        (self.root / 'etc' / 'mu300' / 'default-boot').write_text('linux\n')
+        self.stub('mountpoint', 'exit 0')
+
+    def os(self, shell, *args):
+        return self.script(shell, BIN / 'mu300-os', *args, MU300_DISK=self.disk, MU300_SYSROOT=self.root)
+
+    def test_lists_the_third_system(self):
+        for shell in self.each_shell():
+            out = self.os(shell).stdout
+            self.assertIn('openwrt-luci: installed', out)
+            self.assertNotIn('.old', out)
+
+    def test_choosing_it(self):
+        for shell in self.each_shell():
+            (self.disk / 'openwrt-luci' / 'etc' / 'mu300' / 'default-boot').unlink(missing_ok=True)
+            r = self.os(shell, 'openwrt-luci')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual((self.disk / '.mu300' / 'boot-os').read_text().strip(), 'openwrt-luci')
+            self.assertEqual((self.disk / 'openwrt-luci' / 'etc' / 'mu300' / 'default-boot').read_text().strip(), 'linux')
+
+    def test_a_kept_copy_cannot_be_chosen(self):
+        for shell in self.each_shell():
+            r = self.os(shell, 'openwrt-luci.old')
+            self.assertEqual(r.returncode, 1)
+            self.assertFalse((self.disk / '.mu300' / 'boot-os').exists())
+
+
 class Led(ShellTest):
     # the U30 Air's: power is the battery LED's white (the PMIC's green channel), the network LED blue on 4G
     # (net_blue), white on 5G (zte-ldo0), red without service (keyboard-backlight); the Wi-Fi LED's colours are LDOs too
