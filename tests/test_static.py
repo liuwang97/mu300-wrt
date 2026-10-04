@@ -99,6 +99,10 @@ class Rules(unittest.TestCase):
                                         f'{name}:{m + 1}: an apostrophe inside the script of line {n + 1}')
                         break
 
+    def test_every_tool_that_mounts_the_filesystem_knows_the_card(self):
+        for f in ('uninstall.sh', 'uninstall.ps1', 'tools/reset-password.sh', 'tools/android-import-hotspot.sh'):
+            self.assertIn('mu300sd', (TOP / f).read_text(), f)
+
     def test_init_finds_partitions_after_the_modules(self):
         # the eMMC driver is one of the vendor modules: misc and boot_b cannot be found before they are loaded
         init = (TOP / 'boot' / 'init').read_text()
