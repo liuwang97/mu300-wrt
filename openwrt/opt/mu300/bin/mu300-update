@@ -103,6 +103,12 @@ bundle_runs_here() {
     grep -qx './devices' "$2" || return 1
     untar -xzf "$1" -C "$3" ./devices && grep -qw "$_me" "$3/devices"
 }
+# A system on the SD card boots only with a kernel that has the SD host (the bundle says so in ./features). Installing
+# an older bundle there would leave a device that cannot find its own root filesystem. A missing /run/mu300-root-dev
+# means "not on the card".
+root_on_sd() { d=$(cat "${MU300_ROOT_DEV_FILE:-/run/mu300-root-dev}" 2>/dev/null); [ -n "$d" ] && case $d in mmcblk0@*) return 1 ;; esac; }
+# bundle_has_sd BUNDLE LIST: does the bundle (LIST: its file list) say it has the SD host?
+bundle_has_sd() { grep -qx './features' "$2" && untar -xzOf "$1" ./features 2>/dev/null | grep -qx sdcard; }
 # the directory the running system booted from (it stays in use under any name until the reboot)
 is_root() { [ -d "$1" ] && [ / -ef "$1" ]; }
 running_os() { [ -e /etc/openwrt_release ] && echo openwrt || echo ubuntu; }
@@ -371,6 +377,10 @@ boot_update() {  # boot_update TAG   (MU300_KERNEL_BUNDLE=FILE uses a local mu30
     # 33c) - on a U30 Air either one boots to a device with no USB at all.
     if ! bundle_runs_here "$bundle" "$tmp/list" "$tmp"; then
         printf 'boot: the kernel of %s does not support the %s; the boot image is unchanged\n' "$tag" "$(this_device)" >&2
+        rm -rf "$tmp"; return 1
+    fi
+    if root_on_sd && ! bundle_has_sd "$bundle" "$tmp/list"; then
+        echo "boot: this kernel bundle cannot read the SD card, and this system runs from it; nothing was changed" >&2
         rm -rf "$tmp"; return 1
     fi
     untar -xzf "$bundle" -C "$tmp" ./Image ./ramdisk-generic.lz4 || { echo "boot: unpacking $bundle failed" >&2; return 1; }
