@@ -111,8 +111,6 @@ class Rules(unittest.TestCase):
         for f in files:
             with self.subTest(file=f):
                 # each skip is lifted alone by the task that gives its file the third system
-                if f == 'install.sh':
-                    self.skipTest('install.sh: until Task 6')
                 if f == 'install.ps1':
                     self.skipTest('install.ps1: until Task 7')
                 if f == 'tools/make-release.sh':
