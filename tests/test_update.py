@@ -2,14 +2,18 @@
 release it takes, the kernel choice, the byte helpers it edits boot image headers with, and whether a kernel bundle
 may go onto this device."""
 import io
+import shutil
 import struct
+import subprocess
+import sys
 import tarfile
 import unittest
 
-from helpers import BIN, ShellTest
+from helpers import BIN, TOP, ShellTest
+from test_boot_image import HAVE_LZ4, fake_stock, fake_misc, BOOT
 
 
-class Update(ShellTest):
+class UpdateBase(ShellTest):
     def setUp(self):
         super().setUp()
         self.disk = self.tmp / 'disk'
@@ -25,6 +29,8 @@ class Update(ShellTest):
         return self.sh(shell, f'. "{BIN}/mu300-update"; {code}', MU300_LIB=1, MU300_DISK=self.disk, MU300_BIN=BIN,
                        MU300_SYSROOT=self.root, **env)
 
+
+class Update(UpdateBase):
     def test_sourcing_does_nothing(self):
         for shell in self.each_shell():
             r = self.up(shell, 'echo loaded')
@@ -217,3 +223,98 @@ class Update(ShellTest):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+# Update's setUp, device() and up() live in UpdateBase, which has no tests; Update and FromStock both derive from it
+# (deriving from Update would run its tests twice).
+@unittest.skipIf(not HAVE_LZ4, 'neither the lz4 command nor the lz4 Python module is installed')
+class FromStock(UpdateBase):
+    """bootimg_from_stock gives the bytes boot/build-boot-image.py gives, from the same stock image, kernel and
+    ramdisk: the header page of Android's image with the new sizes, loglevel=5 and no signature, its vbmeta, its
+    footer with the new sizes."""
+
+    def python_image(self, stock):
+        mods = self.tmp / 'mods'; mods.mkdir(exist_ok=True)
+        for n in (BOOT / 'module-order.txt').read_text().split():
+            (mods / n).write_bytes(b'\x7fELF ' + n.encode())
+        for f in ('busybox', 'logdw'):
+            (self.tmp / f).write_bytes(b'\x7fELF ' + f.encode())
+        fake_misc(self.tmp / 'misc.bin')
+        (self.tmp / 'Image').write_bytes(b'\x7fkernel' * 12345)
+        out = self.tmp / 'py.img'
+        r = subprocess.run([sys.executable, str(BOOT / 'build-boot-image.py'), '--stock-boot', str(stock),
+                            '--misc-head', str(self.tmp / 'misc.bin'), '--kernel', str(self.tmp / 'Image'),
+                            '--modules', str(mods), '--busybox', str(self.tmp / 'busybox'), '--logdw', str(self.tmp / 'logdw'),
+                            '--ueventd-perms', str(TOP / 'android-vendor' / 'ueventd-perms.sh'), '--out', str(out)],
+                           capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        img = out.read_bytes()
+        ksz, rsz = struct.unpack_from('<II', img, 8)
+        roff = 4096 + (ksz + 4095) // 4096 * 4096
+        (self.tmp / 'ramdisk').write_bytes(img[roff:roff + rsz])
+        osz, _, vbs = struct.unpack_from('>QQQ', img, len(img) - 64 + 12)
+        return img[:osz + vbs], img[-64:]
+
+    def check(self, **stock_args):
+        stock = self.tmp / 'stock.img'
+        fake_stock(stock, **stock_args)
+        head, footer = self.python_image(stock)
+        d = self.tmp / 'out'
+        for shell in self.each_shell():
+            if d.exists():
+                shutil.rmtree(d)
+            d.mkdir()
+            r = self.up(shell, f'bootimg_from_stock "{stock}" "{self.tmp}/Image" "{self.tmp}/ramdisk" "{d}"')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual((d / 'new').read_bytes() + (d / 'vbmeta').read_bytes(), head, shell)
+            self.assertEqual((d / 'newfooter').read_bytes(), footer, shell)
+
+    def test_same_bytes_as_the_python_builder(self):
+        self.check()
+
+    def test_unaligned_vbmeta(self):
+        self.check(vbmeta_offset=(1 << 20) + 100)
+
+    def test_cmdline_is_loglevel_5_whatever_the_stock_one_is(self):
+        # the Android-side switch arms a slot only when it sees this marker; stock headers have it empty, but a
+        # stock image with a command line of its own must not leak it into the Linux image
+        stock = self.tmp / 'stock.img'
+        fake_stock(stock)
+        raw = bytearray(stock.read_bytes())
+        raw[44:44 + 1536] = b'console=ttyMSM0 androidboot.x=1'.ljust(1536, b'\0')
+        stock.write_bytes(bytes(raw))
+        (self.tmp / 'k').write_bytes(b'k'); (self.tmp / 'r').write_bytes(b'r')
+        d = self.tmp / 'out'
+        for shell in self.each_shell():
+            if d.exists():
+                shutil.rmtree(d)
+            d.mkdir()
+            r = self.up(shell, f'bootimg_from_stock "{stock}" "{self.tmp}/k" "{self.tmp}/r" "{d}"')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual((d / 'new').read_bytes()[44:44 + 1536], b'loglevel=5'.ljust(1536, b'\0'), shell)
+
+    def test_refuses_what_is_not_a_v4_image(self):
+        bad = self.tmp / 'bad.img'
+        bad.write_bytes(bytes(1 << 20))
+        (self.tmp / 'k').write_bytes(b'k'); (self.tmp / 'r').write_bytes(b'r')
+        for shell in self.each_shell():
+            r = self.up(shell, f'bootimg_from_stock "{bad}" "{self.tmp}/k" "{self.tmp}/r" "{self.tmp}"')
+            self.assertNotEqual(r.returncode, 0)
+
+    def test_modules_into_every_system(self):
+        b = self.tmp / 'bundle'
+        (b / 'modules').mkdir(parents=True)
+        (b / 'modules' / 'a.ko').write_bytes(b'a')
+        (b / 'kernel.release').write_text('6.18.55-mu300\n')
+        (b / 'modules.builtin').write_text('kernel/x.ko\n')
+        (self.disk / 'openwrt').mkdir()
+        for shell in self.each_shell():
+            r = self.up(shell, f'kernel_modules_into_systems "{b}"', MU300_NO_DEPMOD=1)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual((self.disk / 'ubuntu/lib/modules/6.18.55-mu300/extra/a.ko').read_bytes(), b'a')
+            self.assertTrue((self.disk / 'ubuntu/lib/modules/6.18.55-mu300/modules.builtin').exists())
+            self.assertEqual((self.disk / 'ubuntu/lib/modules/6.18.55-mu300/modules.order').read_bytes(), b'')
+            self.assertEqual((self.disk / 'openwrt/lib/modules/6.18.55-mu300/a.ko').read_bytes(), b'a')
+        (b / 'kernel.release').write_text('../evil\n')
+        for shell in self.each_shell():
+            self.assertNotEqual(self.up(shell, f'kernel_modules_into_systems "{b}"', MU300_NO_DEPMOD=1).returncode, 0)

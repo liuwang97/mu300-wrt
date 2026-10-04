@@ -370,6 +370,61 @@ write_boot() {  # write_boot DEV PSIZE BODY VBMETA FOOTER
     rm -f "$3.all"
 }
 
+part_size() { blockdev --getsize64 "$1" 2>/dev/null || fsize "$1"; }   # part_size DEV: bytes (a file in tests)
+
+# A boot image for the Linux slot made from Android's own (STOCK, a partition or a file): the Magisk installer has
+# no image of ours to start from, only Android's. Its header page with this kernel's and ramdisk's sizes, the
+# command line loglevel=5 and no signature; its vbmeta and its AVB footer with the new sizes. The same bytes
+# boot/build-boot-image.py makes on a computer (tests/test_update.py compares them). Writes DIR/new, DIR/vbmeta and
+# DIR/newfooter, which write_boot takes.
+bootimg_from_stock() {  # bootimg_from_stock STOCK KERNEL RAMDISK DIR
+    _ps=$(part_size "$1") || return 1
+    dd if="$1" of="$4/hdr" bs=4096 count=1 2>/dev/null
+    dd if="$1" of="$4/footer" bs=64 skip=$((_ps / 64 - 1)) count=1 2>/dev/null
+    [ "$(head -c 8 "$4/hdr")" = ANDROID! ] && [ "$(u32 "$4/hdr" 40)" = 4 ] ||
+        { echo "boot: $1 does not hold a boot image header v4" >&2; return 1; }
+    [ "$(head -c 4 "$4/footer")" = AVBf ] || { echo "boot: $1 has no AVB footer" >&2; return 1; }
+    _vo=$(be64 "$4/footer" 20); _vs=$(be64 "$4/footer" 28)
+    # vbmeta need not start on a page: read the pages that hold it and cut it out
+    dd if="$1" bs=4096 skip=$((_vo / 4096)) count=$(( (_vo % 4096 + _vs + 4095) / 4096 )) 2>/dev/null |
+        tail -c +$((_vo % 4096 + 1)) | head -c "$_vs" > "$4/vbmeta"
+    [ "$(fsize "$4/vbmeta")" = "$_vs" ] || { echo "boot: cannot read the vbmeta of $1" >&2; return 1; }
+    cp "$4/hdr" "$4/new"
+    bytes "$(fsize "$2")" 4 le | poke "$4/new" 8
+    bytes "$(fsize "$3")" 4 le | poke "$4/new" 12
+    { printf 'loglevel=5'; head -c 1526 /dev/zero; } | poke "$4/new" 44
+    bytes 0 4 le | poke "$4/new" 1580
+    cat "$2" >> "$4/new"; pad_page "$4/new"
+    cat "$3" >> "$4/new"; pad_page "$4/new"
+    _os=$(fsize "$4/new")
+    [ $((_os + _vs)) -le "$PERSIST_LOG" ] ||
+        { echo "boot: the new image ($_os bytes) would reach the persistent log area" >&2; return 1; }
+    cp "$4/footer" "$4/newfooter"
+    { bytes "$_os" 8 be; bytes "$_os" 8 be; bytes "$_vs" 8 be; } | poke "$4/newfooter" 12
+    rm -f "$4/hdr" "$4/footer"
+}
+
+# A kernel the systems were not built with (a mainline bundle) brings its modules along: they go into every system
+# on the Linux filesystem, next to the ones of the other kernel, which stay for a switch back. Ubuntu keeps them under
+# extra/ and indexes them (depmod; MU300_NO_DEPMOD=1 leaves that to its next boot, as the Magisk installer must: the
+# depmod Android has is busybox's); OpenWrt keeps them flat and loads by path.
+kernel_modules_into_systems() {  # kernel_modules_into_systems BUNDLE_DIR (unpacked)
+    _krel=$(cat "$1/kernel.release" 2>/dev/null)
+    case $_krel in ''|*/*|.*) echo "boot: bad kernel release '$_krel' in the bundle" >&2; return 1 ;; esac
+    for _os in $(installed_systems); do
+        case $_os in ubuntu) _d=$DISK/$_os/lib/modules/$_krel/extra ;; *) _d=$DISK/$_os/lib/modules/$_krel ;; esac
+        mkdir -p "$_d" && cp "$1"/modules/*.ko "$_d/" || { echo "boot: installing the modules into $_os failed" >&2; return 1; }
+        if [ "$_os" = ubuntu ]; then
+            # what the kernel has built in (bundles from v2026.09.29 on): modprobe of a built-in driver then
+            # succeeds, and depmod stops warning
+            for _f in modules.builtin modules.builtin.modinfo; do [ ! -f "$1/$_f" ] || cp "$1/$_f" "$DISK/$_os/lib/modules/$_krel/"; done
+            [ -e "$DISK/$_os/lib/modules/$_krel/modules.order" ] || : > "$DISK/$_os/lib/modules/$_krel/modules.order"
+            if [ -z "${MU300_NO_DEPMOD:-}" ] && command -v depmod >/dev/null; then depmod -b "$DISK/$_os" "$_krel" 2>/dev/null || true; fi
+        fi
+    done
+    printf 'boot: %s modules for %s installed into: %s\n' "$(ls "$1/modules" | wc -l | tr -d ' ')" "$_krel" "$(installed_systems)"
+}
+
 boot_update() {  # boot_update TAG   (MU300_KERNEL_BUNDLE=FILE uses a local mu300-kernel.tar.gz instead)
     tag=$1 bp=boot_$(linux_slot)
     dev=$(part_dev "$bp") || { echo "boot: no $bp partition found, boot image not updated" >&2; return 1; }
@@ -408,28 +463,13 @@ boot_update() {  # boot_update TAG   (MU300_KERNEL_BUNDLE=FILE uses a local mu30
     fi
     untar -xzf "$bundle" -C "$tmp" ./Image ./ramdisk-generic.lz4 || { echo "boot: unpacking $bundle failed" >&2; return 1; }
     [ -s "$tmp/Image" ] && [ -s "$tmp/ramdisk-generic.lz4" ] || { echo "boot: no kernel in the bundle" >&2; return 1; }
-    # A kernel the systems were not built with (the mainline bundle) brings its modules along: they go into every
-    # installed system before the boot image changes, next to the ones of the other kernel, which stay for a
-    # switch back. Ubuntu keeps them under extra/ and indexes them; OpenWrt keeps them flat and loads by path.
+    # the modules of a kernel the systems were not built with go in before the boot image changes
     if grep -qx './kernel.release' "$tmp/list"; then
         untar -xzf "$bundle" -C "$tmp" ./kernel.release ./modules || { echo "boot: unpacking the modules failed" >&2; return 1; }
         for f in modules.builtin modules.builtin.modinfo; do
             if grep -qx "./$f" "$tmp/list"; then untar -xzf "$bundle" -C "$tmp" "./$f" || true; fi
         done
-        krel=$(cat "$tmp/kernel.release")
-        case $krel in ''|*/*|.*) echo "boot: bad kernel release '$krel' in the bundle" >&2; return 1 ;; esac
-        for os in $(installed_systems); do
-            case $os in ubuntu) d=$DISK/$os/lib/modules/$krel/extra ;; *) d=$DISK/$os/lib/modules/$krel ;; esac
-            mkdir -p "$d" && cp "$tmp"/modules/*.ko "$d/" || { echo "boot: installing the modules into $os failed" >&2; return 1; }
-            if [ "$os" = ubuntu ]; then
-                # what the kernel has built in (bundles from v2026.09.29 on): modprobe of a built-in driver then
-                # succeeds, and depmod stops warning
-                for f in modules.builtin modules.builtin.modinfo; do [ ! -f "$tmp/$f" ] || cp "$tmp/$f" "$DISK/$os/lib/modules/$krel/"; done
-                [ -e "$DISK/$os/lib/modules/$krel/modules.order" ] || : > "$DISK/$os/lib/modules/$krel/modules.order"
-                if command -v depmod >/dev/null; then depmod -b "$DISK/$os" "$krel" 2>/dev/null || true; fi
-            fi
-        done
-        printf 'boot: %s modules for %s installed into: %s\n' "$(ls "$tmp/modules" | wc -l | tr -d ' ')" "$krel" "$(installed_systems)"
+        kernel_modules_into_systems "$tmp" || return 1
     fi
     id=$(cat "$tmp/Image" "$tmp/ramdisk-generic.lz4" | sha256sum | cut -d' ' -f1)
 
