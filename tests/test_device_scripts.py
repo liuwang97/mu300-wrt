@@ -736,5 +736,28 @@ class AtClient(ShellTest):
             self.assertLess(took, 5)
             self.assertLess(r.stderr.count('\n'), 3, r.stderr)
 
+
+class LanStart(ShellTest):
+    """lan-start (bash): the bridge has udev's persistent MAC before any port joins it. Otherwise br-lan took usb0's
+    MAC whenever it was up before udev got to it, its IPv6 link-local was made from that, and the address changed
+    from boot to boot (seen on the U30 Air under 7.2.9)."""
+
+    def test_udev_names_the_bridge_before_ports_join(self):
+        if not shutil.which('bash'):
+            self.skipTest('no bash')
+        self.stub('ip', 'echo "ip $*" >> "$STUBLOG/calls"; case "$*" in "link show br-lan") exit 1;; esac; exit 0')
+        self.stub('udevadm', 'echo "udevadm $*" >> "$STUBLOG/calls"')
+        self.stub('dnsmasq', 'echo "dnsmasq" >> "$STUBLOG/calls"')
+        r = self.script(['bash'], BIN / 'lan-start', MU300_LAN_IP='192.168.78.1')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        calls = (self.tmp / 'calls').read_text().splitlines()
+        add = calls.index('ip link add br-lan type bridge')
+        settle = next(i for i, c in enumerate(calls) if c.startswith('udevadm settle'))
+        join = calls.index('ip link set usb0 master br-lan')
+        up = calls.index('ip link set br-lan up')
+        self.assertLess(add, settle)
+        self.assertLess(settle, join)
+        self.assertLess(join, up)
+
 if __name__ == '__main__':
     unittest.main()
