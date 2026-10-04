@@ -1,10 +1,12 @@
 """boot/build-boot-image.py: the generic ramdisk segment (what every release and mu300-update ship) holds init,
 the modules of boot/module-order.txt and, for another device, its own modules, order and kernel release."""
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
 import unittest
+import zlib
 from pathlib import Path
 
 from helpers import TOP
@@ -53,8 +55,7 @@ def cpio_files(data):
         files[name] = (mode, body)
 
 
-@unittest.skipIf(not HAVE_LZ4, 'neither the lz4 command nor the lz4 Python module is installed')
-class GenericRamdisk(unittest.TestCase):
+class Fixtures(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix='mu300-bootimg-'))
         self.mods = self.tmp / 'modules'
@@ -84,6 +85,9 @@ class GenericRamdisk(unittest.TestCase):
                             '--out', str(out), *extra], capture_output=True, text=True)
         return r, out
 
+
+@unittest.skipIf(not HAVE_LZ4, 'neither the lz4 command nor the lz4 Python module is installed')
+class GenericRamdisk(Fixtures):
     def test_base(self):
         r, out = self.build()
         self.assertEqual(r.returncode, 0, r.stderr)
@@ -137,6 +141,74 @@ class GenericRamdisk(unittest.TestCase):
         r, _ = self.build()
         self.assertNotEqual(r.returncode, 0)
         self.assertIn('missing module', r.stderr)
+
+
+def fake_stock(path, size=4 << 20, vbmeta_offset=1 << 20, vbmeta=b'V' * 2304):
+    """An Android boot image header v4 with an AVB footer, as far as build-boot-image.py and mu300-update read it."""
+    img = bytearray(size)
+    img[0:8] = b'ANDROID!'
+    struct.pack_into('<I', img, 40, 4)
+    img[4096:8192] = b'k' * 4096
+    img[vbmeta_offset:vbmeta_offset + len(vbmeta)] = vbmeta
+    footer = bytearray(64)
+    footer[0:4] = b'AVBf'
+    struct.pack_into('>IIQQQ', footer, 4, 1, 0, vbmeta_offset, vbmeta_offset, len(vbmeta))
+    img[-64:] = footer
+    path.write_bytes(bytes(img))
+
+
+# the slot-a block of the F50 test board: AOSP bootloader_control, nothing device-specific in it
+LIVE_A = bytes.fromhex('5f61000042434142010200009f001e000000000000000000000000000be17146')
+
+
+def fake_misc(path, live=LIVE_A):
+    path.write_bytes(bytes(0x800) + live + bytes(4096 - 0x800 - 32))
+
+
+def with_slots(live, suffix, a, b):
+    x = bytearray(live)
+    x[0:4] = suffix
+    x[12] = a
+    x[14] = b
+    x[28:32] = struct.pack('<I', zlib.crc32(bytes(x[:28])))
+    return bytes(x)
+
+
+@unittest.skipIf(not HAVE_LZ4, 'neither the lz4 command nor the lz4 Python module is installed')
+class SlotBlocks(Fixtures):
+    def image(self, *extra):
+        fake_stock(self.tmp / 'stock.img')
+        fake_misc(self.tmp / 'misc.bin')
+        (self.tmp / 'Image').write_bytes(b'\x7fkernel' * 100)
+        out = self.tmp / 'boot.img'
+        r = subprocess.run([sys.executable, str(BOOT / 'build-boot-image.py'), '--stock-boot', str(self.tmp / 'stock.img'),
+                            '--misc-head', str(self.tmp / 'misc.bin'), '--kernel', str(self.tmp / 'Image'),
+                            '--modules', str(self.mods), '--busybox', str(self.tmp / 'busybox'),
+                            '--logdw', str(self.tmp / 'logdw'), '--device', 'f50',
+                            '--ueventd-perms', str(TOP / 'android-vendor' / 'ueventd-perms.sh'),
+                            '--out', str(out), *extra], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        img = out.read_bytes()
+        ksz, rsz = struct.unpack_from('<II', img, 8)
+        roff = 4096 + (ksz + 4095) // 4096 * 4096
+        return cpio_files(unlz4_legacy(img[roff:roff + rsz]))
+
+    def test_all_four_blocks(self):
+        files = self.image()
+        want = {'etc/misc-bc-slot-a.bin': with_slots(LIVE_A, b'_a\0\0', 0x9f, 0x1e),
+                'etc/misc-bc-slot-b-trial.bin': with_slots(LIVE_A, b'_b\0\0', 0x9e, 0x2f),
+                'etc/misc-bc-slot-b.bin': with_slots(LIVE_A, b'_b\0\0', 0x1e, 0x9f),
+                'etc/misc-bc-slot-a-trial.bin': with_slots(LIVE_A, b'_a\0\0', 0x2f, 0x9e)}
+        for name, data in want.items():
+            self.assertEqual(files[name][1], data, name)
+
+    def test_slot_default_and_choice(self):
+        self.assertEqual(self.image()['etc/mu300-linux-slot'][1], b'b\n')
+        self.assertEqual(self.image('--linux-slot', 'a')['etc/mu300-linux-slot'][1], b'a\n')
+
+    def test_generic_has_no_slot(self):
+        r, _ = self.build('--linux-slot', 'a')
+        self.assertNotEqual(r.returncode, 0)
 
 
 class ModuleOrder(unittest.TestCase):
