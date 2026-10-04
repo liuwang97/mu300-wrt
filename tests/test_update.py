@@ -221,10 +221,6 @@ class Update(UpdateBase):
             self.assertEqual(run(None, plain), 'OK')
 
 
-if __name__ == '__main__':
-    unittest.main()
-
-
 # Update's setUp, device() and up() live in UpdateBase, which has no tests; Update and FromStock both derive from it
 # (deriving from Update would run its tests twice).
 @unittest.skipIf(not HAVE_LZ4, 'neither the lz4 command nor the lz4 Python module is installed')
@@ -300,6 +296,28 @@ class FromStock(UpdateBase):
         for shell in self.each_shell():
             r = self.up(shell, f'bootimg_from_stock "{bad}" "{self.tmp}/k" "{self.tmp}/r" "{self.tmp}"')
             self.assertNotEqual(r.returncode, 0)
+            self.assertIn('does not hold a boot image header v4', r.stderr)
+
+    def test_refuses_a_v4_image_without_an_avb_footer(self):
+        stock = self.tmp / 'stock.img'
+        fake_stock(stock)
+        raw = bytearray(stock.read_bytes())
+        raw[-64:-60] = b'XXXX'
+        stock.write_bytes(bytes(raw))
+        (self.tmp / 'k').write_bytes(b'k'); (self.tmp / 'r').write_bytes(b'r')
+        for shell in self.each_shell():
+            r = self.up(shell, f'bootimg_from_stock "{stock}" "{self.tmp}/k" "{self.tmp}/r" "{self.tmp}"')
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn('has no AVB footer', r.stderr)
+
+    def test_refuses_a_result_that_reaches_the_persistent_log(self):
+        stock = self.tmp / 'stock.img'
+        fake_stock(stock)
+        (self.tmp / 'k').write_bytes(b'k' * 4096); (self.tmp / 'r').write_bytes(b'r')
+        for shell in self.each_shell():
+            r = self.up(shell, f'PERSIST_LOG=8192; bootimg_from_stock "{stock}" "{self.tmp}/k" "{self.tmp}/r" "{self.tmp}"')
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn('persistent log area', r.stderr)
 
     def test_modules_into_every_system(self):
         b = self.tmp / 'bundle'
@@ -318,3 +336,7 @@ class FromStock(UpdateBase):
         (b / 'kernel.release').write_text('../evil\n')
         for shell in self.each_shell():
             self.assertNotEqual(self.up(shell, f'kernel_modules_into_systems "{b}"', MU300_NO_DEPMOD=1).returncode, 0)
+
+
+if __name__ == '__main__':
+    unittest.main()

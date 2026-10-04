@@ -372,6 +372,25 @@ write_boot() {  # write_boot DEV PSIZE BODY VBMETA FOOTER
 
 part_size() { blockdev --getsize64 "$1" 2>/dev/null || fsize "$1"; }   # part_size DEV: bytes (a file in tests)
 
+# The part of a new boot image both builders share. DIR/new holds the header page (the caller has set what is its
+# own: the command line, the signature size), DIR/footer the footer to copy. This puts the kernel's and the ramdisks'
+# sizes into the header, appends kernel and ramdisks page-aligned, refuses a result that would reach the persistent
+# init log, and writes DIR/newfooter with the new sizes.
+bootimg_assemble() {  # bootimg_assemble DIR VBMETA_SIZE KERNEL RAMDISK...
+    _dir=$1 _vs=$2 _kernel=$3; shift 3
+    _rsz=0
+    for _r in "$@"; do _rsz=$((_rsz + $(fsize "$_r"))); done
+    bytes "$(fsize "$_kernel")" 4 le | poke "$_dir/new" 8
+    bytes "$_rsz" 4 le | poke "$_dir/new" 12
+    cat "$_kernel" >> "$_dir/new"; pad_page "$_dir/new"
+    cat "$@" >> "$_dir/new"; pad_page "$_dir/new"
+    _os=$(fsize "$_dir/new")
+    [ $((_os + _vs)) -le "$PERSIST_LOG" ] ||
+        { echo "boot: the new image ($_os bytes) would reach the persistent log area" >&2; return 1; }
+    cp "$_dir/footer" "$_dir/newfooter"
+    { bytes "$_os" 8 be; bytes "$_os" 8 be; bytes "$_vs" 8 be; } | poke "$_dir/newfooter" 12
+}
+
 # A boot image for the Linux slot made from Android's own (STOCK, a partition or a file): the Magisk installer has
 # no image of ours to start from, only Android's. Its header page with this kernel's and ramdisk's sizes, the
 # command line loglevel=5 and no signature; its vbmeta and its AVB footer with the new sizes. The same bytes
@@ -390,17 +409,9 @@ bootimg_from_stock() {  # bootimg_from_stock STOCK KERNEL RAMDISK DIR
         tail -c +$((_vo % 4096 + 1)) | head -c "$_vs" > "$4/vbmeta"
     [ "$(fsize "$4/vbmeta")" = "$_vs" ] || { echo "boot: cannot read the vbmeta of $1" >&2; return 1; }
     cp "$4/hdr" "$4/new"
-    bytes "$(fsize "$2")" 4 le | poke "$4/new" 8
-    bytes "$(fsize "$3")" 4 le | poke "$4/new" 12
     { printf 'loglevel=5'; head -c 1526 /dev/zero; } | poke "$4/new" 44
     bytes 0 4 le | poke "$4/new" 1580
-    cat "$2" >> "$4/new"; pad_page "$4/new"
-    cat "$3" >> "$4/new"; pad_page "$4/new"
-    _os=$(fsize "$4/new")
-    [ $((_os + _vs)) -le "$PERSIST_LOG" ] ||
-        { echo "boot: the new image ($_os bytes) would reach the persistent log area" >&2; return 1; }
-    cp "$4/footer" "$4/newfooter"
-    { bytes "$_os" 8 be; bytes "$_os" 8 be; bytes "$_vs" 8 be; } | poke "$4/newfooter" 12
+    bootimg_assemble "$4" "$_vs" "$2" "$3" || return 1
     rm -f "$4/hdr" "$4/footer"
 }
 
@@ -502,15 +513,8 @@ boot_update() {  # boot_update TAG   (MU300_KERNEL_BUNDLE=FILE uses a local mu30
     nksz=$(fsize "$tmp/Image")
     nrsz=$(( $(fsize "$BOOTDIR/device-ramdisk.lz4") + $(fsize "$tmp/ramdisk-generic.lz4") ))
     cp "$tmp/hdr" "$tmp/new"
-    bytes "$nksz" 4 le | poke "$tmp/new" 8
-    bytes "$nrsz" 4 le | poke "$tmp/new" 12
-    cat "$tmp/Image" >> "$tmp/new"; pad_page "$tmp/new"
-    cat "$BOOTDIR/device-ramdisk.lz4" "$tmp/ramdisk-generic.lz4" >> "$tmp/new"; pad_page "$tmp/new"
-    nosize=$(fsize "$tmp/new")
-    [ $((nosize + vbs)) -le "$PERSIST_LOG" ] ||
-        { echo "boot: the new image ($nosize bytes) would reach the persistent log area, not touching $bp" >&2; return 1; }
-    cp "$tmp/footer" "$tmp/newfooter"
-    { bytes "$nosize" 8 be; bytes "$nosize" 8 be; bytes "$vbs" 8 be; } | poke "$tmp/newfooter" 12
+    bootimg_assemble "$tmp" "$vbs" "$tmp/Image" "$BOOTDIR/device-ramdisk.lz4" "$tmp/ramdisk-generic.lz4" ||
+        { echo "boot: not touching $bp" >&2; return 1; }
 
     # keep the current image for rollback-boot, then write
     cp "$tmp/body" "$BOOTDIR/prev.body"; cp "$tmp/vbmeta" "$BOOTDIR/prev.vbmeta"; cp "$tmp/footer" "$BOOTDIR/prev.footer"
