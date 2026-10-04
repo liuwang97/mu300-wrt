@@ -132,6 +132,15 @@ class Rules(unittest.TestCase):
                       "'of_remove_property(pdev->dev.of_node, cd)'", port)
         self.assertRegex((TOP / 'upstream' / 'make-bundle.sh').read_text(), r"printf 'sdcard\\n' > \"\$W/b/features\"")
 
+    def test_every_release_kernel_bundle_has_the_sd_host(self):
+        # 5.4 reads the card as well (FINDINGS 31j): its bundle says so, and the release audit fails when any of the
+        # three bundles does not (mu300-update refuses such a bundle for a system on the card)
+        mr = (TOP / 'tools' / 'make-release.sh').read_text()
+        self.assertIn("printf 'sdcard\\n' > \"$K/features\"", mr)
+        self.assertLess(mr.index('$K/features'), mr.index('tar -C "$K" -czf "$D/mu300-kernel.tar.gz" .'))
+        self.assertIn('for a in mu300-kernel mu300-kernel-6.18 mu300-kernel-7.2; do\n'
+                      '    tar -xzOf "$D/$a.tar.gz" ./features 2>/dev/null | grep -qx sdcard', mr)
+
 
 if __name__ == '__main__':
     unittest.main()

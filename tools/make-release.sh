@@ -40,6 +40,8 @@ cp -R "$IN/out/modules" "$K/modules"
 cp -R "$KOUT/modules-u30air" "$K/modules-u30air"
 # the devices this bundle runs on (mu300-update and the installers check it)
 echo "f50 u30air" > "$K/devices"
+# what it can do that older bundles could not: 5.4 reads the SD card (FINDINGS 31j), so a system on the card may get it
+printf 'sdcard\n' > "$K/features"
 cp "$KOUT/Image" "$KOUT/modules.builtin" "$KOUT/modules.builtin.modinfo" "$IN/busybox" "$IN/tools/logdw/logdw" "$K/"
 # the device-independent part of the boot ramdisk, which mu300-update puts behind the device's own ramdisk to update
 # the kernel and the boot image without a computer (same builder and file list as install.sh)
@@ -92,6 +94,10 @@ for a in mu300-kernel mu300-kernel-6.18 mu300-kernel-7.2 mu300-ubuntu-rootfs mu3
     if [ -n "$bad" ]; then echo "$a contains files that must not be published:"; echo "$bad" | head -20; fail=1; fi
     mid=$(tar -xzOf "$D/$a.tar.gz" ./etc/machine-id 2>/dev/null || true)
     [ -z "$mid" ] || { echo "$a has a machine-id"; fail=1; }
+done
+# mu300-update refuses a kernel bundle without the SD host for a system on the card: every bundle must say it has it
+for a in mu300-kernel mu300-kernel-6.18 mu300-kernel-7.2; do
+    tar -xzOf "$D/$a.tar.gz" ./features 2>/dev/null | grep -qx sdcard || { echo "$a does not list sdcard in ./features"; fail=1; }
 done
 [ $fail = 0 ] || { echo "audit failed, nothing published" >&2; exit 1; }
 rm -rf "$IN"
