@@ -195,3 +195,13 @@ Python 3 is not installed; installing it for this user	Python 3 kurulu değil; b
 {1} failed	{1} başarısız oldu
 waiting for Android to finish starting	Android'in açılmasını bitirmesi bekleniyor
 which adb device is the F50 or U30 Air?	hangi adb cihazı F50 ya da U30 Air?
+SD card present but smaller than 700 MiB; not used	SD kart takılı ama 700 MiB'tan küçük; kullanılmıyor
+SD card: {1}, {2}, existing mu300sd filesystem: {3}	SD kart: {1}, {2}, mevcut mu300sd dosya sistemi: {3}
+Linux filesystem: SD card {1}, {2}, existing mu300sd filesystem: {3}	Linux dosya sistemi: SD kart {1}, {2}, mevcut mu300sd dosya sistemi: {3}
+OK: the SD card will be formatted; everything on it is erased	TAMAM: SD kart biçimlendirilecek; üzerindeki her şey silinir
+Everything on the SD card ({1}, {2}) will be erased. Type ERASE to continue	SD karttaki ({1}, {2}) her şey silinecek. Devam etmek için ERASE yazın
+CREATE new ext4 (erases the SD card)	YENİ ext4 OLUŞTUR (SD kartı siler)
+writes:         SD card {1}, boot_b, 32 bytes of misc (the eMMC region, boot_a, GPT and userdata are not touched)	yazılacaklar:   SD kart {1}, boot_b, misc'in 32 baytı (eMMC'deki Linux alanına, boot_a, GPT ve userdata'ya dokunulmaz)
+MU300_STORAGE=sd, but there is no usable SD card in the device	MU300_STORAGE=sd, ama cihazda kullanılabilir bir SD kart yok
+MU300_STORAGE must be internal or sd	MU300_STORAGE internal ya da sd olmalı
+Where should the Linux filesystem go: internal storage or the SD card ({1}, {2})? (internal/sd)	Linux dosya sistemi nereye kurulsun: dahili depolama mı, SD kart mı ({1}, {2})? (internal/sd)
