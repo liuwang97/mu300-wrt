@@ -79,14 +79,16 @@ checks. Other hardware can use the sysfs fallback or configure
 accepts `host` or `device`. The plugin must not bypass a known platform's
 power-safety checks.
 
-NCM/ECM/RNDIS selection is stored in `/etc/unisoc-modem/usb-boot.conf` only
-when "Enable selected protocol" is checked. The optional TF-platform hook in `boot/init`
-reads that file from the mounted TF root before gadget enumeration; other OpenWrt builds can
-implement the same two-line `mode=...`/`scope=...` contract at their own early
-gadget setup point. The plugin itself owns the policy and UI, not the kernel
-or gadget. `once` is consumed after a successful boot only if initramfs
-recorded that it applied the selection; subsequent boots use the platform's
-default NCM. Selecting persistent host mode automatically disables USB
+NCM/ECM/RNDIS selection is stored in `/etc/mu300/usb-net` (one line: `ncm`,
+`ecm` or `rndis`) only when "Enable selected protocol" is checked. `boot/init`
+reads that file from the system it has chosen to boot, after picking the root;
+when it asks for other functions than the gadget was bound with, init rebinds
+the gadget once before `switch_root` (`MU300_USBNET` on the kernel command line
+still wins). Other OpenWrt builds can implement the same one-line contract at
+their own gadget setup point. The plugin itself owns the policy and UI, not the
+kernel or gadget. `once` is consumed after a successful boot only if init left
+`/run/mu300/usb-net-applied` (the selection was in effect for that boot);
+subsequent boots use the platform's default NCM. Selecting persistent host mode automatically disables USB
 network auto-apply. While the current role is host, network-mode controls are
 disabled. The backend validates the same rules regardless of UI state.
 The TF boot implementation exposes RNDIS as a single USB configuration with

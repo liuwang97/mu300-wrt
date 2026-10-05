@@ -223,25 +223,30 @@ class Rules(unittest.TestCase):
         self.assertEqual(body.count('wait_sd_root 8'), 1)
 
 
-if __name__ == '__main__':
-    unittest.main()
-
-
-class UsbGadget(ShellTest):
+class GadgetHarness(ShellTest):
     """setup_usb_gadget, run against a directory that stands in for /config."""
 
-    def build(self, shell, usbnet):
-        m = re.search(r'# --- usb-gadget begin\n(.*?)# --- usb-gadget end', INIT, re.S)
-        self.assertIsNotNone(m, 'boot/init has no usb-gadget block')
-        body = m.group(1).replace('/config/usb_gadget', f'{self.tmp}/cfg/usb_gadget').replace('/sys/class/udc', f'{self.tmp}/udc')
+    @staticmethod
+    def block(name):
+        m = re.search(rf'# --- {name} begin\n(.*?)# --- {name} end', INIT, re.S)
+        assert m, f'boot/init has no {name} block'
+        return m.group(1)
+
+    def build(self, shell, usbnet, then=''):
+        """setup_usb_gadget with MU300_USBNET=USBNET (None: unset), then the shell code THEN."""
+        body = self.block('usb-gadget') + self.block('usb-net')
+        for path, repl in (('/config/usb_gadget', f'{self.tmp}/cfg/usb_gadget'), ('/sys/class/udc', f'{self.tmp}/udc'),
+                           ('/run/mu300', f'{self.tmp}/run/mu300')):
+            body = body.replace(path, repl)
         g = self.tmp / 'cfg' / 'usb_gadget' / 'linux'
         code = ('log() { echo "$*" >> "$T/log"; }; mount() { :; }; sleep() { :; }; persist() { :; }\n'
-                # configfs makes these itself when their parent is made
+                # configfs makes these itself when their parent is made, and takes them away with it
                 'mkdir() { command mkdir "$@" || return; for d; do case $d in */functions/rndis.rn0) command mkdir -p "$d/os_desc/interface.rndis" ;; esac; done; }\n'
+                'rmdir() { for d; do case $d in */functions/*) command rm -rf "$d" ;; *) command rmdir "$d" ;; esac; done; }\n'
                 'mkdir -p "%s/cfg/usb_gadget/linux/os_desc"\n' % self.tmp +
                 'ifconfig() { echo "ifconfig $*" >> "$T/log"; }; ip() { echo "ip $*" >> "$T/log"; }\n'
                 f'MAC=02:00:00:00:00 T={self.tmp}\n' + (f'MU300_USBNET="{usbnet}"\n' if usbnet is not None else '')
-                + body + '\nsetup_usb_gadget')
+                + body + '\nsetup_usb_gadget\n' + then)
         r = self.sh(shell, code)
         self.assertEqual(0, r.returncode, r.stderr)
         return g
@@ -252,6 +257,8 @@ class UsbGadget(ShellTest):
     def links(self, g, c):
         return {p.name: p.resolve().name for p in (g / 'configs' / c).iterdir() if p.is_symlink()}
 
+
+class UsbGadget(GadgetHarness):
     def test_rndis_one_configuration_with_console(self):
         for shell in self.each_shell():
             g = self.build(shell, 'rndis')
@@ -284,3 +291,136 @@ class UsbGadget(ShellTest):
                 self.assertFalse((g / 'os_desc' / 'use').exists())
                 self.assertFalse((g / 'functions' / 'rndis.rn0').exists())
                 self.tearDown(); self.setUp()
+
+
+class UsbNetPolicy(ShellTest):
+    """usb_net_policy ROOTDIR: the gadget functions etc/mu300/usb-net of the chosen system asks for (D12, K7)."""
+
+    def policy(self, shell, content, usbnet=None):
+        f = self.tmp / 'root' / 'etc' / 'mu300' / 'usb-net'
+        f.parent.mkdir(parents=True, exist_ok=True)
+        if content is None:
+            f.unlink(missing_ok=True)
+        else:
+            f.write_text(content)
+        env = {} if usbnet is None else {'MU300_USBNET': usbnet}
+        r = self.sh(shell, GadgetHarness.block('usb-net') + f'\nusb_net_policy "{self.tmp}/root"; echo "rc=$?"', **env)
+        self.assertEqual('', r.stderr)
+        return r.stdout
+
+    def test_each_value(self):
+        for shell in self.each_shell():
+            for value, functions in (('ncm', 'ncm ecm'), ('ecm', 'ecm ncm'), ('rndis', 'rndis'), ('ecm\n', 'ecm ncm')):
+                self.assertEqual(f'{functions}\nrc=0\n', self.policy(shell, value), value)
+
+    def test_garbage_and_missing_say_nothing(self):
+        for shell in self.each_shell():
+            for value in ('', 'RNDIS', 'ncm ecm', 'mode=ecm', 'ecm; reboot', '../x', None):
+                self.assertEqual('rc=0\n', self.policy(shell, value), value)
+
+    def test_command_line_wins(self):
+        for shell in self.each_shell():
+            for value in ('ncm', 'ecm', 'rndis'):
+                self.assertEqual('rc=0\n', self.policy(shell, value, usbnet='ncm ecm'), value)
+                self.assertEqual('rc=0\n', self.policy(shell, value, usbnet='rndis'), value)
+
+
+class UsbNetRebind(GadgetHarness):
+    """apply_usb_net ROOTDIR after pick_root: the gadget built at boot, rebuilt once when the system asks for other
+    functions (D12, K7), and the applied marker (K8)."""
+
+    def apply(self, shell, value, usbnet=None):
+        (self.tmp / 'udc' / '25100000.dwc3').mkdir(parents=True, exist_ok=True)
+        f = self.tmp / 'root' / 'etc' / 'mu300' / 'usb-net'
+        f.parent.mkdir(parents=True, exist_ok=True)
+        if value is not None:
+            f.write_text(value + '\n')
+        return self.build(shell, usbnet, f'apply_usb_net "{self.tmp}/root"')
+
+    def binds(self):
+        return (self.tmp / 'log').read_text().count('stage=usb-bind-start')
+
+    def marker(self):
+        m = self.tmp / 'run' / 'mu300' / 'usb-net-applied'
+        return m.read_text().strip() if m.exists() else None
+
+    def test_rndis_rebuilds_the_single_configuration_gadget(self):
+        for shell in self.each_shell():
+            g = self.apply(shell, 'rndis')
+            self.assertEqual(2, self.binds())
+            self.assertEqual(['c.1'], self.configs(g))
+            self.assertEqual({'f1': 'rndis.rn0', 'f2': 'acm.GS0'}, self.links(g, 'c.1'))
+            self.assertEqual(['acm.GS0', 'rndis.rn0'], sorted(p.name for p in (g / 'functions').iterdir()))
+            self.assertEqual('0x0302', (g / 'bcdDevice').read_text().strip())
+            self.assertEqual('1', (g / 'os_desc' / 'use').read_text().strip())
+            self.assertEqual('25100000.dwc3', (g / 'UDC').read_text().strip())
+            self.assertIn('ifconfig rndis0 up', (self.tmp / 'log').read_text())
+            self.assertEqual('rndis', self.marker())
+            self.tearDown(); self.setUp()
+
+    def test_ecm_rebuilds_with_ecm(self):
+        for shell in self.each_shell():
+            g = self.apply(shell, 'ecm')
+            self.assertEqual(2, self.binds())
+            self.assertEqual({'f1': 'ecm.usb0', 'f2': 'acm.GS0'}, self.links(g, 'c.1'))
+            self.assertEqual(['acm.GS0', 'ecm.usb0'], sorted(p.name for p in (g / 'functions').iterdir()))
+            self.assertEqual('0x0301', (g / 'bcdDevice').read_text().strip())
+            self.assertIn('stage=usb-net-policy ecm', (self.tmp / 'log').read_text())
+            self.assertEqual('ecm', self.marker())
+            self.tearDown(); self.setUp()
+
+    def test_ncm_is_what_was_bound_no_rebind(self):
+        for shell in self.each_shell():
+            g = self.apply(shell, 'ncm')
+            self.assertEqual(1, self.binds())
+            self.assertEqual({'f1': 'ncm.usb0', 'f2': 'acm.GS0'}, self.links(g, 'c.1'))
+            # the setting is in effect: a one-shot choice is consumed all the same
+            self.assertEqual('ncm', self.marker())
+            self.tearDown(); self.setUp()
+
+    def test_garbage_or_no_file_leaves_the_gadget(self):
+        for shell in self.each_shell():
+            for value in ('bogus', None):
+                g = self.apply(shell, value)
+                self.assertEqual(1, self.binds(), value)
+                self.assertEqual({'f1': 'ncm.usb0', 'f2': 'acm.GS0'}, self.links(g, 'c.1'))
+                self.assertIsNone(self.marker())
+                self.tearDown(); self.setUp()
+
+    def test_no_controller_no_second_wait(self):
+        for shell in self.each_shell():
+            (self.tmp / 'root' / 'etc' / 'mu300').mkdir(parents=True)
+            (self.tmp / 'root' / 'etc' / 'mu300' / 'usb-net').write_text('ecm\n')
+            g = self.build(shell, None, f'apply_usb_net "{self.tmp}/root"')
+            log = (self.tmp / 'log').read_text()
+            self.assertEqual(1, log.count('stage=usb-wait-udc'))
+            self.assertIn('skipped (no udc)', log)
+            self.assertEqual({'f1': 'ncm.usb0', 'f2': 'acm.GS0'}, self.links(g, 'c.1'))
+            self.assertIsNone(self.marker())
+            self.tearDown(); self.setUp()
+
+    def test_command_line_wins(self):
+        for shell in self.each_shell():
+            g = self.apply(shell, 'rndis', usbnet='ncm ecm')
+            self.assertEqual(1, self.binds())
+            self.assertEqual({'f1': 'ncm.usb0', 'f2': 'acm.GS0'}, self.links(g, 'c.1'))
+            self.assertIsNone(self.marker())
+            self.tearDown(); self.setUp()
+
+
+class UsbNetPlace(unittest.TestCase):
+    def test_after_pick_root_before_switch_root(self):
+        call = 'apply_usb_net "$rootdir"'
+        self.assertEqual(1, INIT.count(call))
+        self.assertLess(INIT.index('rootdir=$(pick_root)'), INIT.index(call))
+        self.assertLess(INIT.index(call), INIT.index('exec switch_root'))
+        # the gadget is still built before the root is looked for (D12: not the fork's order)
+        self.assertLess(INIT.index('\nsetup_usb_gadget\n'), INIT.index('# --- root-select begin'))
+
+    def test_one_gadget_builder(self):
+        self.assertEqual(1, INIT.count('echo 0x0302 > "$g/bcdDevice"'))
+        self.assertNotIn('cdc=', INIT)
+
+
+if __name__ == '__main__':
+    unittest.main()

@@ -73,7 +73,7 @@ define Package/luci-app-mu300/postrm
 	if [ "$$1" = remove ]; then
 		/etc/init.d/unisoc-modem-ui stop 2>/dev/null || true
 		/etc/init.d/unisoc-modem-ui disable 2>/dev/null || true
-		rm -f /etc/unisoc-modem/usb-boot.conf
+		rm -f /etc/mu300/usb-net
 	fi
 	rm -f /tmp/luci-indexcache /tmp/luci-modulecache/* 2>/dev/null
 	/etc/init.d/rpcd restart 2>/dev/null || true

@@ -12,7 +12,10 @@ LIB=${0%/*}/../../share/unisoc-modem/lib.sh
 
 CFG=unisoc_modem.usb
 ROLE_FILE=${MU300_USB_ROLE_FILE:-/sys/class/usb_role/25100000.dwc3-role-switch/role}
-BOOT_FILE=${MU300_USB_BOOT_FILE:-/etc/unisoc-modem/usb-boot.conf}
+# The USB network mode for the next boot: ncm, ecm or rndis, alone on its line. boot/init reads it from the system
+# it boots and rebinds the gadget once when it differs (D12), then leaves APPLIED_FILE behind (K8).
+BOOT_FILE=${MU300_USB_NET_FILE:-/etc/mu300/usb-net}
+APPLIED_FILE=${MU300_USB_APPLIED_FILE:-/run/mu300/usb-net-applied}
 NET_CLASS=${MU300_USB_NET_CLASS:-/sys/class/net}
 USB_BUS=${MU300_USB_BUS:-/sys/bus/usb/devices}
 RESCAN_MARKER=${MU300_USB_RESCAN_MARKER:-/run/unisoc-usb-host-rescan-done}
@@ -53,7 +56,7 @@ sync_boot_file() {
     case $scope in once|permanent) ;; *) error 'Invalid USB network scope' ;; esac
     mkdir -p "${BOOT_FILE%/*}" || error 'Cannot create USB boot settings directory'
     tmp="$BOOT_FILE.$$"
-    printf 'mode=%s\nscope=%s\n' "$mode" "$scope" > "$tmp" || error 'Cannot write USB boot settings'
+    printf '%s\n' "$mode" > "$tmp" || error 'Cannot write USB boot settings'
     chmod 600 "$tmp"
     mv "$tmp" "$BOOT_FILE" || error 'Cannot save USB boot settings'
 }
@@ -174,15 +177,16 @@ case ${1:-} in
         printf '{"ok":1}\n'
         ;;
     boot)
-        # initramfs applies the selected gadget mode before enumeration. A
-        # one-shot mode is consumed only after userspace has actually booted.
+        # boot/init applied the selected gadget mode before switch_root (one
+        # rebind when it differed). A one-shot mode is consumed only once init
+        # says it was in effect for this boot.
         if [ "$(get role_auto)" = 1 ] && [ "$(get net_auto)" = 1 ]; then
             ensure_section
             put net_auto 0 && uci commit unisoc_modem
             rm -f "$BOOT_FILE"
         fi
         if [ "$(get net_auto)" = 1 ] && [ "$(get net_scope)" = once ] &&
-           [ -f "${MU300_USB_APPLIED_FILE:-/run/unisoc-usb-net-applied}" ]; then
+           [ -f "$APPLIED_FILE" ]; then
             ensure_section
             put net_auto 0 && uci commit unisoc_modem
             rm -f "$BOOT_FILE"
