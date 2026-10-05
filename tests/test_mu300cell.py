@@ -414,13 +414,8 @@ exit 0''')
         self.assertRegex(text, r'(?m)^START=\d+$')
         self.assertIn('USE_PROCD=1', text)
 
-    def test_first_boot_selects_relay(self):
-        """K30, D9: 91-mu300-luci sets ipv6 relay, pdptype IPV4V6 and the fork's RA/DHCPv6 relay and masq6; run twice
-        (uci is a stand-in over a flat file), the result is the same. Review I1: no NDP relay on lan or wan (odhcpd's
-        relay pins any LAN-spoofed neighbour, even off-prefix, as a /128 to br-lan), and an earlier ndp or
-        ndproxy_routing value is removed. Review R38: the ULA OpenWrt generated is kept, never a fixed one."""
-        if not shutil.which('python3'):
-            self.skipTest('no python3')
+    def uci_db(self):
+        """A uci stand-in over the flat file uci.db (lines k='v'): the file."""
         db = self.tmp / 'uci.db'
         db.write_text("firewall.@zone[0].name='lan'\nfirewall.@zone[1].name='wan'\n")
         # uci stand-in: "set k=v", "get k", "show [cfg]", "commit", "batch" (stdin, lines of set/delete)
@@ -436,6 +431,14 @@ case $1 in
   batch) while read -r op kv; do case $op in set) setkv "$kv" ;; delete) grep -v "^$kv[=.]" "$db" > "$db.n"; mv "$db.n" "$db" ;; esac; done ;;
 esac
 exit 0''')
+        return db
+
+    def test_first_boot_selects_relay(self):
+        """K30, D9: 91-mu300-luci sets ipv6 relay, pdptype IPV4V6 and the fork's RA/DHCPv6 relay and masq6; run twice
+        (uci is a stand-in over a flat file), the result is the same. Review I1: no NDP relay on lan or wan (odhcpd's
+        relay pins any LAN-spoofed neighbour, even off-prefix, as a /128 to br-lan), and an earlier ndp or
+        ndproxy_routing value is removed. Review R38: the ULA OpenWrt generated is kept, never a fixed one."""
+        db = self.uci_db()
         want = {
             "network.wan.ipv6": 'relay', "network.wan.pdptype": 'IPV4V6', "network.lan.ip6assign": '60',
             "network.globals.ula_prefix": 'fd12:3456:789a::/48', "dhcp.wan": 'dhcp', "dhcp.wan.interface": 'wan',
@@ -460,8 +463,35 @@ exit 0''')
             self.assertNotIn('firewall.@zone[0].masq6', got)
             for k in got:
                 self.assertNotRegex(k, r'^dhcp\.(lan|wan)\.(ndp|ndproxy_routing)$', (shell, 'NDP relay left on'))
+            self.assertEqual(got.get('luci.mu300.defaults'), "'1'", shell)
             commits = set((self.tmp / 'commits').read_text().split())
             self.assertTrue({'network', 'dhcp', 'firewall', 'luci'} <= commits, commits)
+
+    def test_an_update_keeps_the_users_choices_and_still_removes_ndp_relay(self):
+        """Final review I3: 91-mu300-luci runs again on the first boot after every update (a fresh rootfs, the kept
+        /etc/config). The defaults are a first install's: the PDP type, IPv6 mode, relay settings, masq6, theme and
+        language the user set since stay; the NDP relay options are deleted on every run, whoever set them."""
+        db = self.uci_db()
+        user = {'network.wan.pdptype': 'IP', 'network.wan.ipv6': 'extend', 'network.lan.ip6assign': '64',
+                'dhcp.lan.ra': 'server', 'dhcp.lan.dhcpv6': 'server', 'dhcp.wan.master': '0',
+                'firewall.@zone[1].masq6': '0', 'luci.main.mediaurlbase': '/luci-static/bootstrap',
+                'luci.main.lang': 'tr'}
+        for shell in self.each_shell():
+            db.write_text("firewall.@zone[0].name='lan'\nfirewall.@zone[1].name='wan'\n")
+            r = self.script(shell, LUCI_DEFAULTS)                      # the first install
+            self.assertEqual(r.returncode, 0, r.stderr)
+            text = db.read_text()
+            for k, v in user.items():                                   # the user's choices since
+                text = ''.join(l + '\n' for l in text.splitlines() if not l.startswith(k + '=')) + f"{k}='{v}'\n"
+            text += "dhcp.lan.ndp='relay'\ndhcp.wan.ndproxy_routing='1'\n"  # NDP relay turned back on
+            db.write_text(text)
+            r = self.script(shell, LUCI_DEFAULTS)                      # the first boot after an update
+            self.assertEqual(r.returncode, 0, r.stderr)
+            got = dict(l.split('=', 1) for l in db.read_text().splitlines())
+            for k, v in user.items():
+                self.assertEqual(got.get(k), f"'{v}'", (shell, k))
+            for k in got:
+                self.assertNotRegex(k, r'^dhcp\.(lan|wan)\.(ndp|ndproxy_routing)$', (shell, 'NDP relay left on'))
 
 
 
