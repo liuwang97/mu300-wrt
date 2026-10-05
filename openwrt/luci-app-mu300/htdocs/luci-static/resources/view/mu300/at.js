@@ -2,16 +2,18 @@
 'require view';
 'require mu300.common as M';
 
-/* AT 终端 -- 专业串口调试风格：深色输出区、行级高亮（命令/OK/错误/数据）、
- * 每条耗时、↑↓ 翻本地历史、右侧会话历史可点选复用、常用命令分组。
- * 所有命令经 rpcd -> mu300-at 走 nr1 通道（采集器在 nr6/nr7，互不干扰）；守卫在后端：
- * 必须 AT 开头、禁止 ";" 级联、AT+SPENGMD=0,1,0 直接拒绝（会锁死 AT 口直到重启）。 */
+/* AT terminal -- in the style of a serial debugging tool: a dark output pane, lines highlighted by kind
+ * (command/OK/error/data), the time each command took, up/down through the local history, the session history on
+ * the right to click and reuse, common commands in groups.
+ * Every command goes rpcd -> mu300-at over the nr1 channel (the collectors are on nr6/nr7, out of the way); the
+ * guards are in the backend: it must start with AT, no ";" chaining, AT+SPENGMD=0,1,0 refused outright (it wedges
+ * the AT port until a reboot). */
 
 var GROUPS = [
-	[ '基础', [ 'AT', 'AT+CFUN?', 'AT+CPIN?', 'AT+CGMR', 'AT+CCID', 'AT+CIMI', 'AT+CGSN', 'AT+CNUM' ] ],
-	[ '注册/信号', [ 'AT+CSQ', 'AT+CESQ', 'AT+CEREG?', 'AT+C5GREG?', 'AT+COPS?', 'AT+CGATT?', 'AT+CGACT?' ] ],
-	[ '承载', [ 'AT+CGDCONT?', 'AT+CGPADDR=1', 'AT+CGCONTRDP=1', 'AT+CGEQOSRDP=1' ] ],
-	[ '工程模式', [ 'AT+SPENGMD=0,6,0', 'AT+SPENGMD=0,14,1', 'AT+SPENGMD=0,6,6', 'AT+SPQ5GNCELLEX', 'AT+SPENDC?', 'AT+SPTESTMODE?', 'AT+SP5GRAN?' ] ]
+	[ _('Basic'), [ 'AT', 'AT+CFUN?', 'AT+CPIN?', 'AT+CGMR', 'AT+CCID', 'AT+CIMI', 'AT+CGSN', 'AT+CNUM' ] ],
+	[ _('Registration/signal'), [ 'AT+CSQ', 'AT+CESQ', 'AT+CEREG?', 'AT+C5GREG?', 'AT+COPS?', 'AT+CGATT?', 'AT+CGACT?' ] ],
+	[ _('Bearer'), [ 'AT+CGDCONT?', 'AT+CGPADDR=1', 'AT+CGCONTRDP=1', 'AT+CGEQOSRDP=1' ] ],
+	[ _('Engineering mode'), [ 'AT+SPENGMD=0,6,0', 'AT+SPENGMD=0,14,1', 'AT+SPENGMD=0,6,6', 'AT+SPQ5GNCELLEX', 'AT+SPENDC?', 'AT+SPTESTMODE?', 'AT+SP5GRAN?' ] ]
 ];
 
 return view.extend({
@@ -24,20 +26,20 @@ return view.extend({
 		root.className = 'mud';
 		root.innerHTML = `
 <div class="mud-sec" style="margin-top:0">
-  <h3>AT 终端</h3>
+  <h3>${_('AT terminal')}</h3>
   <div style="display:flex;flex-direction:column;gap:8px">
     <div style="display:flex;gap:8px">
       <input id="mud-at-cmd" spellcheck="false" autocomplete="off"
         style="flex:1;min-width:0;padding:8px 12px;border:1px solid var(--hairline,var(--border,#ccc));border-radius:var(--radius-base,.5rem);background:var(--surface,var(--background,#fff));color:var(--text,#222);font-family:var(--font-mono,monospace);font-size:.85rem"
-        placeholder="AT 命令（↑↓ 翻历史，Enter 发送）"/>
-      <button class="mud-btn" id="mud-at-go" style="padding:8px 18px">发送</button>
-      <button class="mud-btn" id="mud-at-clear" style="padding:8px 12px">清屏</button>
+        placeholder="${_('AT command (↑↓ history, Enter to send)')}"/>
+      <button class="mud-btn" id="mud-at-go" style="padding:8px 18px">${_('Send')}</button>
+      <button class="mud-btn" id="mud-at-clear" style="padding:8px 12px">${_('Clear screen')}</button>
     </div>
     <div class="mud-at-grid">
-      <div class="mud-term" id="mud-at-out"><span class="ln-meta">就绪。
+      <div class="mud-term" id="mud-at-out"><span class="ln-meta">${_('Ready.')}
 </span></div>
       <div>
-        <div class="mud-note" style="margin:0 0 4px">会话历史（点击复用）</div>
+        <div class="mud-note" style="margin:0 0 4px">${_('Session history (click to reuse)')}</div>
         <div class="mud-scroll" id="mud-at-hist" style="font-family:var(--font-mono,monospace);font-size:.74rem"></div>
       </div>
     </div>
@@ -50,7 +52,6 @@ return view.extend({
     </div>
   </div>
 </div>`;
-		M.localize(root);
 		this.wire(root);
 		this.loadHist();
 		return root;
@@ -82,7 +83,7 @@ return view.extend({
 				r = r || {};
 				var ms = Date.now() - t0;
 				if (r.ok) {
-					(r.reply || M.translate('(无输出)')).split('\n').forEach(function(l) {
+					(r.reply || _('(no output)')).split('\n').forEach(function(l) {
 						if (/^OK$/.test(l)) line('ln-ok', l);
 						else if (/ERROR|^NO CARRIER/.test(l)) line('ln-err', l);
 						else if (l) line('ln-data', l);
@@ -90,9 +91,10 @@ return view.extend({
 					line('ln-meta', '—— ' + ms + ' ms');
 					self.loadHist();
 				} else {
-					line('ln-err', M.translate('错误：') + (r.error || M.translate('失败')) + (r.busy ? M.translate('（AT 通道正忙，命令未发出）') : ''));
+					line('ln-err', (r.busy ? _('Error: %s (the AT channel is busy; the command was not sent)') : _('Error: %s'))
+						.format(r.error || _('Failed')));
 				}
-			}, function() { line('ln-err', M.translate('调用失败')); });
+			}, function() { line('ln-err', _('Request failed')); });
 			self.Q('at-cmd').value = '';
 		};
 
@@ -130,7 +132,7 @@ return view.extend({
 					var cmd = l.replace(/^[0-9-]+ [0-9:]+ /, '');
 					return '<div style="padding:2px 4px;border-radius:6px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" data-cmd="' + M.esc(cmd) + '" title="' + M.esc(cmd) + '">' + M.esc(cmd) + '</div>';
 				}).join('')
-				: '<div class="mud-note">' + M.translate('（空）') + '</div>';
+				: '<div class="mud-note">' + _('(empty)') + '</div>';
 		});
 	}
 });

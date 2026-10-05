@@ -31,11 +31,6 @@ var callUsbSet = rpc.declare({ object: 'mu300dash', method: 'usb_set', params: [
 var callUsbNetList = rpc.declare({ object: 'mu300dash', method: 'usb_net_list', expect: { '': {} } });
 var callUsbNetAdd = rpc.declare({ object: 'mu300dash', method: 'usb_net_add', params: [ 'iface' ], expect: { '': {} } });
 
-/* Views not yet converted to _() still call these; they do nothing now, and go when the views stop calling them. */
-function translate(text) { return text == null ? '' : String(text); }
-function localize(root) {}
-function localizeMenu() {}
-
 /* Mainland carriers by PLMN, for when COPS gives the numeric format. The names are messages: translated once, when
  * the module loads (a page's language does not change without a reload). */
 var PLMN_CN = {
@@ -601,7 +596,6 @@ return baseclass.extend({
 	callUsbNetList: callUsbNetList, callUsbNetAdd: callUsbNetAdd,
 	carrierName: carrierName, qLevel: qLevel, qLevelLabel: qLevelLabel, qLabel: qLabel, qCol: qCol, qScore: qScore,
 	esc: esc, fmtBytes: fmtBytes, fmtRate: fmtRate, fmtUptime: fmtUptime, PLMN_CN: PLMN_CN,
-	translate: translate, localize: localize, localizeMenu: localizeMenu,
 	injectCss: injectCss, v: v, set: set, spark: spark, neighborRows: neighborRows,
 	toast: toast, busy: busy, confirmBox: confirmBox, alertBox: alertBox, choiceBox: choiceBox,
 	notify: notify, watchSms: watchSms

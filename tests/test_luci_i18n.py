@@ -363,7 +363,6 @@ if (selected !== true) throw Error('the Bootstrap token bridge must survive the 
 
 VIEWS = APP / 'htdocs/luci-static/resources/view/mu300'
 VIEW_NAMES = ('home', 'locks', 'sms', 'at', 'settings', 'device')
-CONVERTED = ('home', 'locks')
 CJK_RE = re.compile('[\u2e80-\u9fff\uf900-\ufaff\uff00-\uffef]')
 
 
@@ -384,16 +383,23 @@ String.prototype.format = function() {
 const used = [];
 const _ = (s) => { used.push(s); return Object.prototype.hasOwnProperty.call(CATALOG, s) ? CATALOG[s] : s; };
 const els = {}, toasts = [], timers = [];
-const el = (id) => ({ id: id, innerHTML: '', textContent: '', className: '', style: {}, children: [], value: '',
-    disabled: false, checked: false, firstChild: { nodeValue: '' }, lastChild: { textContent: '' },
+const el = (id) => { const e = { id: id, innerHTML: '', textContent: '', className: '', style: {}, children: [],
+    value: '', disabled: false, checked: false, firstChild: { nodeValue: '' }, lastChild: { textContent: '' },
     classList: { add: () => {}, remove: () => {}, toggle: () => {}, contains: () => false },
-    addEventListener: () => {}, removeEventListener: () => {}, appendChild: (c) => c, insertBefore: (c) => c,
+    on: {}, removeEventListener: () => {}, insertBefore: (c) => c,
     remove: () => {}, focus: () => {}, setAttribute: () => {}, getAttribute: () => null, contains: () => true,
-    querySelector: (sel) => sel[0] === '#' ? get(sel.slice(1)) : el(''), querySelectorAll: () => [] });
+    querySelector: (sel) => sel[0] === '#' ? get(sel.slice(1)) : el(''), querySelectorAll: () => [] };
+    e.appendChild = (c) => { e.children.push(c); return c; };
+    e.addEventListener = (type, fn) => { (e.on[type] = e.on[type] || []).push(fn); };
+    e.replaceChildren = () => { e.children = []; e.textContent = ''; };
+    return e; };
 const get = (id) => els[id] || (els[id] = el(id));
 get('mud-toasts').appendChild = (t) => { toasts.push(t); return t; };
 const document = { getElementById: get, createElement: () => el(''), documentElement: el('html'), body: el('body'),
-    head: el('head'), addEventListener: () => {}, removeEventListener: () => {} };
+    head: el('head'), addEventListener: () => {}, removeEventListener: () => {}, contains: () => true };
+// everything a page shows: every element's text and markup, the children it appended, and the toasts
+const shown = () => { const out = [], walk = (e) => { out.push(e.textContent, e.innerHTML, e.placeholder || '',
+    e.title || ''); e.children.forEach(walk); }; Object.values(els).forEach(walk); return out.concat(notes()); };
 const getComputedStyle = () => ({ getPropertyValue: () => '' });
 const window = { setInterval: () => 0, location: { reload: () => {} } };
 const setTimeout = (fn) => { timers.push(fn); return timers.length; };
@@ -441,12 +447,15 @@ const notes = () => toasts.map((t) => t.lastChild.textContent);
                 r = self.run_view(name, None, "return [ typeof V, typeof V.render ];")['result']
                 self.assertEqual(r, ['object', 'function'])
 
-    def test_converted_views_do_not_use_the_shims(self):
-        # translate/localize/localizeMenu did the fork's partial matching; a converted page has only _()
-        for name in CONVERTED:
+    def test_the_translate_shims_are_gone(self):
+        # translate/localize/localizeMenu did the fork's partial matching; the pages have only _() now, and
+        # common.js no longer has the no-op shims Task 13 left for them
+        for name in VIEW_NAMES:
             with self.subTest(view=name):
                 src = (VIEWS / f'{name}.js').read_text(encoding='utf-8')
-                self.assertEqual(re.findall(r'M\.(?:translate|localize|localizeMenu)\(', src), [])
+                self.assertEqual(re.findall(r'\b(?:translate|localize|localizeMenu)\(|\bt\(_\(', src), [])
+        r = self.run_view('home', None, "return [ 'translate', 'localize', 'localizeMenu' ].filter((k) => k in M);")
+        self.assertEqual(r['result'], [])
 
     HOME = '''
 const root = V.render();
@@ -492,9 +501,6 @@ return { html: root.innerHTML, op: text('op'), uptime: text('uptime'), reg: text
                 if lang != 'zh_Hans':
                     self.assertIsNone(CJK_RE.search(json.dumps(r, ensure_ascii=False)), r)
 
-    def test_home_in_an_unknown_language_is_english_and_catalogued(self):
-        self.assert_english_and_catalogued(self.run_view('home', 'de', self.HOME))
-
     LOCKS = '''
 const root = V.render();
 await flush();
@@ -538,8 +544,119 @@ return out;'''
                 if lang != 'zh_Hans':
                     self.assertIsNone(CJK_RE.search(json.dumps(r, ensure_ascii=False)), r)
 
-    def test_locks_in_an_unknown_language_is_english_and_catalogued(self):
-        self.assert_english_and_catalogued(self.run_view('locks', 'de', self.LOCKS))
+    SMS = '''
+const root = V.render();
+rpcReply = { pages: 1, total: 3, unread: 1, msgs: [ { id: '3', peer: '10086', dir: 'mo', preview: 'hi', time: 't3' },
+    { id: '2', peer: '10086', dir: 'mt', preview: 'yo', time: 't2', status: 'unread' },
+    { id: '1', peer: '+905551112233', dir: 'mt', preview: 'x', time: 't1' } ] };
+await V.reload(); await flush();
+const out = { html: root.innerHTML, stat: text('sms-stat'), convs: html('sms-convs') };
+toasts.length = 0;
+V.send();                                                   // no number, no text
+get('mud-sms-num').value = '10086'; get('mud-sms-text').value = 'hello';
+rpcReply = { ok: 0, error: 'E', busy: 1 }; V.send(); await flush();
+rpcReply = { ok: 0, error: 'E' }; V.send(); await flush();
+out.notes = notes();
+return out;'''
+
+    def test_sms_renders_in_each_language(self):
+        want = {
+            None: ('Sync from SIM', '· 3 messages, 1 unread · 2 conversations', 'Me: hi',
+                   ['Enter both a number and a message.', 'Sending…',
+                    'Sending failed: E (the AT channel is busy, try again shortly)', 'Sending…', 'Sending failed: E']),
+            'tr': ('SIM’den eşitle', '· 3 mesaj, 1 okunmamış · 2 görüşme', 'Ben: hi',
+                   ['Numara ve mesaj girin.', 'Gönderiliyor…',
+                    'Gönderme başarısız: E (AT kanalı meşgul, birazdan yeniden deneyin)', 'Gönderiliyor…',
+                    'Gönderme başarısız: E']),
+            'zh_Hans': ('\u4ece SIM \u540c\u6b65', '\xb7 3 \u6761\uff0c1 \u6761\u672a\u8bfb \xb7 2 \u4e2a\u4f1a\u8bdd',
+                        '\u6211: hi',
+                        ['\u53f7\u7801\u548c\u5185\u5bb9\u90fd\u8981\u586b\u3002', '\u53d1\u9001\u4e2d…',
+                         '\u53d1\u9001\u5931\u8d25\uff1aE\uff08AT \u901a\u9053\u6b63\u5fd9\uff0c\u7a0d\u540e\u91cd\u8bd5\uff09',
+                         '\u53d1\u9001\u4e2d…', '\u53d1\u9001\u5931\u8d25\uff1aE']),
+        }
+        for lang, (button, stat, me, notes) in want.items():
+            with self.subTest(lang=lang):
+                r = self.run_view('sms', lang, self.SMS)['result']
+                self.assertIn(button, r['html'])
+                self.assertEqual(r['stat'], stat)
+                self.assertIn('>%s<' % me, r['convs'])
+                self.assertEqual(r['notes'], notes)
+
+    AT = '''
+const root = V.render();
+const lines = [];
+get('mud-at-out').appendChild = (s) => { lines.push(s.textContent); return s; };
+get('mud-at-cmd').value = 'AT+CSQ';
+rpcReply = { ok: 0, error: 'E', busy: 1 }; V.send(); await flush();
+get('mud-at-cmd').value = 'AT';
+rpcReply = { ok: 1 }; V.send(); await flush();
+return { html: root.innerHTML, lines: lines.filter((l) => !/^(> |\\u2014)/.test(l)), hist: html('at-hist') };'''
+
+    def test_at_renders_in_each_language(self):
+        want = {
+            None: ('Clear screen', ['Error: E (the AT channel is busy; the command was not sent)\n', '(no output)\n'],
+                   '(empty)'),
+            'tr': ('Ekranı temizle', ['Hata: E (AT kanalı meşgul; komut gönderilmedi)\n', '(çıktı yok)\n'], '(boş)'),
+            'zh_Hans': ('\u6e05\u5c4f',
+                        ['\u9519\u8bef\uff1aE\uff08AT \u901a\u9053\u6b63\u5fd9\uff0c\u547d\u4ee4\u672a\u53d1\u51fa\uff09\n',
+                         '(\u65e0\u8f93\u51fa)\n'], '\uff08\u7a7a\uff09'),
+        }
+        for lang, (button, lines, empty) in want.items():
+            with self.subTest(lang=lang):
+                r = self.run_view('at', lang, self.AT)['result']
+                self.assertIn(button, r['html'])
+                self.assertEqual(r['lines'], lines)
+                self.assertIn('>%s<' % empty, r['hist'])
+
+    DEVICE = '''
+const root = V.render({ ok: 1, role: 'host', host_supported: 1 });
+await flush();
+get('mud-usb-adapters').children = [];
+rpcReply = { ok: 1, devices: [ { name: 'eth1', carrier: 1, in_lan: 1 }, { name: 'eth2', carrier: 0, in_lan: 0 } ] };
+V.refreshAdapters(); await flush();
+const texts = [], walk = (e) => { if (e.textContent) texts.push(e.textContent); e.children.forEach(walk); };
+walk(get('mud-usb-adapters'));
+// add eth2 to the LAN (confirmed): the toast says so in one message
+M.confirmBox = () => Promise.resolve(true);
+toasts.length = 0;
+rpcReply = { ok: 1 };
+get('mud-usb-adapters').children[1].children[1].on.click[0]();
+await flush(); await flush();
+return { html: root.innerHTML, role: text('usb-role-now'), note: text('usb-net-note'), adapters: texts, notes: notes() };'''
+
+    def test_device_renders_in_each_language(self):
+        # "Added to LAN" is one message (the fork's partial matching once made it half Chinese, half English)
+        want = {
+            None: ('USB adapters', 'Host mode', 'USB network mode is unavailable in host mode; host auto-start also '
+                   'disables USB network auto-start.', ['eth1', 'Link connected', 'Added to LAN', 'eth2',
+                                                        'No link; enable attempted', 'Add to LAN']),
+            'tr': ('USB bağdaştırıcıları', 'Ana makine modu', None, ['eth1', None, 'LAN’a eklendi', 'eth2', None,
+                                                                     'LAN’a ekle']),
+            'zh_Hans': ('USB \u7f51\u5361', '\u4e3b\u673a\u6a21\u5f0f', None,
+                        ['eth1', None, '\u5df2\u6dfb\u52a0\u5230 LAN', 'eth2', None, '\u6dfb\u52a0\u5230 LAN']),
+        }
+        for lang, (heading, role, note, adapters) in want.items():
+            with self.subTest(lang=lang):
+                r = self.run_view('device', lang, self.DEVICE)['result']
+                self.assertIn(heading, r['html'])
+                self.assertEqual(r['role'], role)
+                if note:
+                    self.assertEqual(r['note'], note)
+                self.assertEqual(len(r['adapters']), len(adapters), r['adapters'])
+                for got, exp in zip(r['adapters'], adapters):
+                    if exp is not None:
+                        self.assertEqual(got, exp)
+                self.assertEqual(r['notes'][-1], adapters[2])         # the toast after adding: the same message
+
+    SETTINGS = '''
+return V.render();'''
+
+    def test_every_view_in_an_unknown_language_is_english_and_catalogued(self):
+        # German has no catalog: everything a page shows is English, and every message it used is in both catalogs
+        for name in VIEW_NAMES:
+            with self.subTest(view=name):
+                body = 'await (async function() { %s })(); return shown();' % getattr(self, name.upper())
+                self.assert_english_and_catalogued(self.run_view(name, 'de', body))
 
 
 if __name__ == '__main__':

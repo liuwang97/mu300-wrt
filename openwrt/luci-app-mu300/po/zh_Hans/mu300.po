@@ -93,6 +93,204 @@ msgstr "未知号码"
 msgid "Select"
 msgstr "选择"
 
+msgid "Basic"
+msgstr "基础"
+
+msgid "Registration/signal"
+msgstr "注册/信号"
+
+msgid "Bearer"
+msgstr "承载"
+
+msgid "Engineering mode"
+msgstr "工程模式"
+
+msgid "AT command (↑↓ history, Enter to send)"
+msgstr "AT 命令（↑↓ 翻历史，Enter 发送）"
+
+msgid "Send"
+msgstr "发送"
+
+msgid "Clear screen"
+msgstr "清屏"
+
+msgid "Ready."
+msgstr "就绪。"
+
+msgid "Session history (click to reuse)"
+msgstr "会话历史（点击复用）"
+
+msgid "(no output)"
+msgstr "(无输出)"
+
+msgid "Error: %s (the AT channel is busy; the command was not sent)"
+msgstr "错误：%s（AT 通道正忙，命令未发出）"
+
+msgid "Error: %s"
+msgstr "错误：%s"
+
+msgid "Failed"
+msgstr "失败"
+
+msgid "Request failed"
+msgstr "调用失败"
+
+msgid "(empty)"
+msgstr "（空）"
+
+msgid "USB role"
+msgstr "USB 角色"
+
+msgid "Current role"
+msgstr "当前角色"
+
+msgid "Switch USB role"
+msgstr "切换 USB 角色"
+
+msgid "Device mode"
+msgstr "设备模式"
+
+msgid "Host mode"
+msgstr "主机模式"
+
+msgid "Enable host mode at boot"
+msgstr "开机自动启用主机模式"
+
+msgid "Apply role"
+msgstr "应用角色"
+
+msgid "Host mode disconnects USB networking and serial on this port. F50 has no battery; management may be lost and a USB adapter usually needs a powered hub."
+msgstr "主机模式会断开本端口的 USB 网络与串口。F50 没有电池；切换后可能失去管理连接，外接 USB 网卡通常需要自供电 Hub。"
+
+msgid "USB network mode"
+msgstr "USB 网络模式"
+
+msgid "Network protocol"
+msgstr "网络协议"
+
+msgid "Apply duration"
+msgstr "生效期限"
+
+msgid "Next reboot only"
+msgstr "仅下次重启"
+
+msgid "Permanent"
+msgstr "永久生效"
+
+msgid "Enable selected protocol"
+msgstr "启用所选协议"
+
+msgid "Save; apply after reboot"
+msgstr "保存，重启后生效"
+
+msgid "NCM is the default. Windows does not natively support ECM; RNDIS changes enumeration. With Enable selected protocol off, only your choice is saved. Next reboot only applies once, then returns to NCM."
+msgstr "NCM 为默认模式。Windows 不原生支持 ECM；RNDIS 会改变枚举方式。关闭“启用所选协议”时仅保存选择；选择“仅下次重启”则成功应用一次后恢复默认 NCM。"
+
+msgid "USB adapters"
+msgstr "USB 网卡"
+
+msgid "Refresh"
+msgstr "刷新"
+
+msgid "Available only in host mode. Refresh brings discovered USB adapters up; adding to LAN saves the bridge and reloads networking."
+msgstr "仅主机模式可用。刷新时会尝试启用发现的 USB 网卡；添加到 LAN 后将保存到网桥并重新加载网络。"
+
+msgid "Unavailable"
+msgstr "不可用"
+
+msgid "USB network mode is unavailable in host mode; host auto-start also disables USB network auto-start."
+msgstr "主机模式下不可选择 USB 网络模式；主机开机自启会自动关闭 USB 网络开机自启。"
+
+msgid "Host mode immediately disconnects USB management. F50 has no battery and peripherals may need external power; make sure another management path exists."
+msgstr "切换主机模式会立即断开 USB 管理连接。F50 没有电池，外设可能需要自供电；请确认有其他管理途径。"
+
+msgid "USB networking and serial will re-enumerate in device mode."
+msgstr "切回设备模式后 USB 网络和串口会重新枚举。"
+
+msgid "Switch USB role?"
+msgstr "确认切换 USB 角色？"
+
+msgid "Apply"
+msgstr "应用"
+
+msgid "Switching USB role…"
+msgstr "正在切换 USB 角色…"
+
+msgid "Switch failed: %s"
+msgstr "切换失败：%s"
+
+msgid "Unknown error"
+msgstr "未知错误"
+
+msgid "Management connection lost; reconnect to confirm the USB role."
+msgstr "管理连接已中断；请重新连接后确认 USB 角色。"
+
+msgid "Switch request accepted; the USB connection may briefly disconnect."
+msgstr "切换请求已接收，USB 连接可能短暂中断。"
+
+msgid "USB role applied"
+msgstr "USB 角色已应用"
+
+msgid "Save USB network mode?"
+msgstr "保存 USB 网络模式？"
+
+msgid "The network mode applies on the next reboot; USB management may need to reconnect."
+msgstr "网络模式将在下次重启时生效，USB 管理连接可能需要重新识别。"
+
+msgid "Save the selection only; with the selected protocol disabled, the next boot still uses default NCM."
+msgstr "只保存选择；未启用所选协议，下次重启仍使用默认 NCM。"
+
+msgid "Save"
+msgstr "保存"
+
+msgid "Saving USB network settings…"
+msgstr "正在保存 USB 网络设置…"
+
+msgid "Settings saved"
+msgstr "设置已保存"
+
+msgid "Save failed: %s"
+msgstr "保存失败：%s"
+
+msgid "Unable to confirm the role yet; reconnect and refresh the page."
+msgstr "暂时无法确认角色；请重新连接后刷新页面。"
+
+msgid "Switch to host mode to see USB adapters."
+msgstr "切换到主机模式后显示 USB 网卡。"
+
+msgid "Scanning USB adapters…"
+msgstr "正在扫描 USB 网卡…"
+
+msgid "No USB adapters found."
+msgstr "没有发现 USB 网卡。"
+
+msgid "Link connected"
+msgstr "链路已连接"
+
+msgid "No link; enable attempted"
+msgstr "链路未连接，已尝试启用"
+
+msgid "Added to LAN"
+msgstr "已添加到 LAN"
+
+msgid "Add to LAN"
+msgstr "添加到 LAN"
+
+msgid "Add USB adapter to LAN?"
+msgstr "添加 USB 网卡到 LAN？"
+
+msgid "This saves the bridge configuration and reloads networking; existing connections may briefly drop."
+msgstr "这会保存网桥配置并重新加载网络，现有连接可能短暂中断。"
+
+msgid "Add"
+msgstr "添加"
+
+msgid "Adding USB adapter…"
+msgstr "正在添加 USB 网卡…"
+
+msgid "Add failed: %s"
+msgstr "添加失败：%s"
+
 msgid "Modulation DL/UL"
 msgstr "调制方式 下/上"
 
@@ -239,12 +437,6 @@ msgstr "已执行：%s"
 
 msgid "Failed: %s"
 msgstr "失败：%s"
-
-msgid "Unknown error"
-msgstr "未知错误"
-
-msgid "Request failed"
-msgstr "调用失败"
 
 msgid "Disconnecting data…"
 msgstr "正在断开数据连接…"
@@ -453,9 +645,6 @@ msgstr "应用后协议栈重启（SFUN），蜂窝会短暂断开；设置会�
 msgid "Apply “%s”?"
 msgstr "应用「%s」？"
 
-msgid "Apply"
-msgstr "应用"
-
 msgid "Applying %s in the background…"
 msgstr "正在后台应用 %s …"
 
@@ -578,3 +767,159 @@ msgstr "自动（支持 %d 个）"
 
 msgid "%d locked: %s"
 msgstr "已锁 %d 个：%s"
+
+msgid "Configure how this plugin connects to the current Unisoc OpenWrt platform. Changes do not require editing the dashboard, AT, locks or SMS pages."
+msgstr "这里定义插件与当前紫光 OpenWrt 的边界。修改后无需改动看板、AT、锁定或短信页面。"
+
+msgid "Platform adapter"
+msgstr "平台适配"
+
+msgid "AT backend"
+msgstr "AT 后端"
+
+msgid "Auto-detect"
+msgstr "自动检测"
+
+msgid "atinout + serial port"
+msgstr "atinout + 串口"
+
+msgid "Custom adapter"
+msgstr "自定义适配器"
+
+msgid "AT serial port"
+msgstr "AT 串口"
+
+msgid "Custom AT adapter"
+msgstr "自定义 AT 适配器"
+
+msgid "The executable receives a timeout in seconds and the complete AT command, in that order. It must share the serial lock with the platform dialer."
+msgstr "可执行文件依次接收超时秒数和完整 AT 命令。它必须与平台拨号程序共享串口锁。"
+
+msgid "SMS adapter"
+msgstr "短信适配器"
+
+msgid "Implement the list, show, send, delete and sync subcommands; leave blank to find mu300-sms automatically."
+msgstr "实现 list、show、send、delete、sync 子命令；留空时自动查找 mu300-sms。"
+
+msgid "SMS pool directory"
+msgstr "短信池目录"
+
+msgid "Cellular logical interface"
+msgstr "蜂窝逻辑接口"
+
+msgid "Cellular IPv6 interface"
+msgstr "蜂窝 IPv6 接口"
+
+msgid "Cellular network device"
+msgstr "蜂窝网卡"
+
+msgid "Leave blank to detect from netifd"
+msgstr "留空则从 netifd 自动获取"
+
+msgid "LAN bridge"
+msgstr "LAN 网桥"
+
+msgid "Wi-Fi device"
+msgstr "Wi-Fi 网卡"
+
+msgid "USB device"
+msgstr "USB 网卡"
+
+msgid "Maximum wait for AT readiness (seconds)"
+msgstr "等待 AT 就绪上限（秒）"
+
+msgid "Home dashboard refresh interval (seconds)"
+msgstr "主页刷新间隔（秒）"
+
+msgid "Controls only the home dashboard refresh rate; 0.5–60 seconds. Reopen Home after saving to apply."
+msgstr "仅控制主页状态看板的刷新频率；允许 0.5–60 秒，保存后重新进入主页生效。"
+
+msgid "Persistent state directory"
+msgstr "持久化状态目录"
+
+msgid "Recipient: number, e.g. 10086 or +86..."
+msgstr "收件人：号码，如 10086 或 +86..."
+
+msgid "Sync from SIM"
+msgstr "从 SIM 同步"
+
+msgid "Clear local pool"
+msgstr "清空本地池"
+
+msgid "Loading…"
+msgstr "加载中…"
+
+msgid "Select a conversation on the left, or enter a number below to send."
+msgstr "选择左侧会话，或直接在下方输入号码发送。"
+
+msgid "Message (Enter to send, Shift+Enter for newline)"
+msgstr "短信内容（Enter 发送，Shift+Enter 换行）"
+
+msgid "Sending uses AT+CMGS (PDU mode); retry if the channel is busy. To delete one message, use the bin icon on its bubble."
+msgstr "发送走 AT+CMGS（PDU 模式）；通道忙会提示重试。删除单条：点气泡右上角的垃圾桶图标。"
+
+msgid "Syncing from the SIM in the background (AT+CMGL)…"
+msgstr "正在后台从 SIM 同步（AT+CMGL）…"
+
+msgid "SIM sync started; the list refreshes in a few seconds."
+msgstr "SIM 同步已开始，几秒后自动刷新。"
+
+msgid "Clear local SMS pool"
+msgstr "清空本地短信池"
+
+msgid "Only local files will be deleted; messages on the SIM remain."
+msgstr "只删本地文件，SIM 上的不动。"
+
+msgid "Clear"
+msgstr "清空"
+
+msgid "Delete this SMS"
+msgstr "删除这条短信"
+
+msgid "Deletion cannot be undone."
+msgstr "删除后不可恢复。"
+
+msgid "Local only"
+msgstr "仅删本地"
+
+msgid "Local + SIM"
+msgstr "本地 + SIM"
+
+msgid "Delete failed"
+msgstr "删除失败"
+
+msgid "Deleted (local + SIM)"
+msgstr "已删除（本地 + SIM）"
+
+msgid "Deleted (local only)"
+msgstr "已删除（仅本地）"
+
+msgid "Enter both a number and a message."
+msgstr "号码和内容都要填。"
+
+msgid "Sending…"
+msgstr "发送中…"
+
+msgid "Sent; the list refreshes shortly."
+msgstr "已发送，稍后自动刷新。"
+
+msgid "Sending failed: %s (the AT channel is busy, try again shortly)"
+msgstr "发送失败：%s（AT 通道正忙，稍后重试）"
+
+msgid "Sending failed: %s"
+msgstr "发送失败：%s"
+
+msgid "· %d messages, %d unread · %d conversations"
+msgstr "· %d 条，%d 条未读 · %d 个会话"
+
+msgid "· %d messages · %d conversations"
+msgstr "· %d 条 · %d 个会话"
+
+msgid "The pool is empty. Incoming and sent messages appear here, or select “Sync from SIM”."
+msgstr "池子是空的：收到/发出的短信会出现在这里，或点「从 SIM 同步」。"
+
+msgid "Me: %s"
+msgstr "我: %s"
+
+msgid "Delete"
+msgstr "删除"
