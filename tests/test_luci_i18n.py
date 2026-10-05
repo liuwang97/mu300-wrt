@@ -1,7 +1,7 @@
 """The control panel's catalogs: complete in Turkish and Chinese, no Chinese outside them (spec, Translations)."""
 import importlib.util, json, re, shutil, subprocess, sys, tempfile, unittest
 from pathlib import Path
-from helpers import TOP
+from helpers import GIT_CHECKOUT, TOP
 
 TOOL = [sys.executable, str(TOP / 'tools' / 'luci-i18n.py')]
 APP = TOP / 'openwrt' / 'luci-app-mu300'
@@ -88,10 +88,12 @@ class Catalogs(unittest.TestCase):
                 encoding='utf-8')
         return root
 
+    @unittest.skipUnless(GIT_CHECKOUT, 'no git checkout here: the check reads what git tracks')
     def test_check_is_clean(self):
         r = run('check')
         self.assertEqual((r.returncode, r.stdout), (0, ''), r.stderr)
 
+    @unittest.skipUnless(shutil.which('git'), 'no git')
     def test_default_check_scans_the_repository(self):
         # without --root the check reads the files git tracks: Chinese in a shared script is found, Chinese in the
         # installers' i18n data is not (a copy of the tool, the app and two such files in a scratch repository)

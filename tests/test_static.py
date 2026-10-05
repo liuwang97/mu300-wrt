@@ -29,6 +29,9 @@ def shell_scripts():
         TOP / 'install.sh', TOP / 'uninstall.sh', TOP / 'boot' / 'init', TOP / 'rootfs' / 'assemble.sh',
         TOP / 'kernel' / 'build-all.sh', TOP / 'tools' / 'i18n.sh', TOP / 'tools' / 'self-update.sh',
         TOP / 'tools' / 'linux-mode.sh', TOP / 'tools' / 'storage.sh', TOP / 'android-vendor' / 'ueventd-perms.sh']
+    cands += list((TOP / 'android' / 'magisk' / 'installer').glob('*.sh'))
+    cands += [TOP / 'android' / 'magisk' / 'installer' / 'update-binary']
+    cands += list((TOP / 'android' / 'magisk' / 'mu300-linux-switch').glob('*.sh'))
     cands += [p for p in OPENWRT.rglob('*') if p.is_file()]
     cands += [p for p in LUCI_OVERLAY.rglob('*') if p.is_file()]
     out = []
@@ -64,6 +67,19 @@ class Syntax(unittest.TestCase):
 
 
 class Rules(unittest.TestCase):
+    def test_customize_leaves_magisks_shell_alone(self):
+        # Magisk sources customize.sh: errexit or nounset there would end Magisk's own installer before its cleanup
+        c = (TOP / 'android' / 'magisk' / 'installer' / 'customize.sh').read_text()
+        code = '\n'.join(l for l in c.splitlines() if not l.lstrip().startswith('#'))
+        self.assertNotRegex(code, r'\bset\s+-[a-z]*[eu]')
+        self.assertNotRegex(code, r'(^|\s)exit\b')
+        self.assertIn('SKIPUNZIP=1', code)
+
+    def test_installer_never_writes_androids_boot_partition(self):
+        s = (TOP / 'android' / 'magisk' / 'installer' / 'mu300-install.sh').read_text()
+        self.assertNotRegex(s, r'of="?\$BOOT_ANDROID')
+        self.assertNotRegex(s, r'write_boot "?\$BOOT_ANDROID')
+
     def test_powershell_device_commands_have_no_double_quotes(self):
         # Windows PowerShell 5.1 drops the double quotes inside an argument to a native program: `tr -d "\000"`
         # reached the device as tr -d \000 ("delete the character 0"), and every empty region was "not empty".
@@ -73,6 +89,13 @@ class Rules(unittest.TestCase):
                 code = line.split('#', 1)[0] if not line.lstrip().startswith('#') else ''
                 if re.search(r'\bSuDo(ToFile)?\s+"|adb shell\s+"', code) and ('`"' in code or '""' in code):
                     self.fail(f'{name}:{n}: double quote inside a device command: {line.strip()}')
+
+    def test_init_restores_androids_slot(self):
+        # every restore goes through restore_android, so Linux on slot a returns to Android on b
+        init = (TOP / 'boot' / 'init').read_text()
+        self.assertNotIn('restore_slot_a', init)
+        self.assertNotIn('slot_suffix=_b/androidboot.slot_suffix=_a', init)
+        self.assertIn('sleep 300', init)
 
     def test_powershell_scripts_are_ascii(self):
         # Windows PowerShell 5.1 reads a file without a BOM as ANSI: non-ASCII text in the script is garbled
@@ -112,7 +135,8 @@ class Rules(unittest.TestCase):
         # every place that names the systems knows the third one, by its name or by the OpenWrt kind pattern
         files = ('boot/init', 'rootfs/overlay/opt/mu300/bin/mu300-update', 'rootfs/overlay/opt/mu300/bin/mu300-os',
                  'tools/android-install.sh', 'tools/reset-password.sh', 'tools/vendor-overlay.py', 'install.sh',
-                 'install.ps1', 'tools/make-release.sh')
+                 'install.ps1', 'tools/make-release.sh', 'rootfs/overlay/opt/mu300/bin/mu300-extra',
+                 'android/magisk/installer/mu300-install.sh')
         for f in files:
             with self.subTest(file=f):
                 text = (TOP / f).read_text()
@@ -146,6 +170,35 @@ class Rules(unittest.TestCase):
             text = (TOP / f).read_text()
             self.assertNotRegex(text, r'(^|\s)(ubuntu|openwrt)\)', f)
 
+    def test_the_commands_on_path_are_the_same_everywhere(self):
+        # the Ubuntu image, the OpenWrt image and the boot-time links (mu300-extra link, for systems installed before a
+        # command had one) link the same commands. They used to be three copies of the list: the fixups' lagged behind
+        # (mu300-led, mu300-device were "command not found" on an installed U30 Air), and all three left mu300-ussd out.
+        # Now there is one file, and every place reads it.
+        lst = (TOP / 'rootfs/overlay/opt/mu300/lib/path-commands').read_text().split()
+        self.assertIn('$R/opt/mu300/lib/path-commands', (TOP / 'rootfs/assemble.sh').read_text())
+        self.assertIn('/in/opt-mu300/lib/path-commands', (TOP / 'openwrt/build-rootfs.sh').read_text())
+        self.assertIn('/lib/path-commands', (BIN / 'mu300-extra').read_text())
+        self.assertIn('mu300-extra link', (BIN / 'rootfs-fixups').read_text())
+        self.assertIn('mu300-extra link', (OPENWRT / 'etc/init.d/mu300-post').read_text())
+        for c in ('mu300-device', 'mu300-led', 'mobile-data', 'mu300-update', 'mu300-ussd', 'sms', 'mu300-extra'):
+            self.assertIn(c, lst)
+        self.assertEqual(len(lst), len(set(lst)))
+        for c in lst:
+            self.assertTrue((BIN / c).is_file(), c)
+
+    def test_images_carry_no_vpn_engine(self):
+        # the engines are the vpn extra (mu300-extra): ~120 MB that a system without a VPN does not carry
+        for f in ('rootfs/assemble.sh', 'openwrt/build-rootfs.sh'):
+            src = (TOP / f).read_text()
+            for e in ('xray', 'sing-box', 'hev-socks5-tunnel'):
+                self.assertNotRegex(src, rf'opt/mu300/bin/{e}\b', (f, e))
+        rel = (TOP / 'tools/make-release.sh').read_text()
+        self.assertIn('make-extra.sh', rel)
+        self.assertIn('mu300-extra-', rel)
+        # the audit refuses an image that still has one
+        self.assertRegex(rel, r'opt/mu300/bin/\(xray\|sing-box\|hev-socks5-tunnel\)')
+
     def test_init_finds_partitions_after_the_modules(self):
         # the eMMC driver is one of the vendor modules: misc and boot_b cannot be found before they are loaded
         init = (TOP / 'boot' / 'init').read_text()
@@ -173,16 +226,39 @@ class Rules(unittest.TestCase):
         self.assertIn('of_remove_property(pdev->dev.of_node, cd)', port)
         self.assertIn("'MU300: only the eMMC and the card slot', 'MU300: CD GPIO deferred', "
                       "'of_remove_property(pdev->dev.of_node, cd)'", port)
-        self.assertRegex((TOP / 'upstream' / 'make-bundle.sh').read_text(), r"printf 'sdcard\\n' > \"\$W/b/features\"")
+        self.assertRegex((TOP / 'upstream' / 'make-bundle.sh').read_text(),
+                         r"printf 'sdcard\\nlinux-slot\\n' > \"\$W/b/features\"")
+
+    def test_mainline_keeps_the_emmc_at_mmc0(self):
+        # Both hosts probe asynchronously and the stock DT has no mmc aliases, so the card slot could take mmc0 and
+        # leave mmcblk1 to the eMMC: init then never found the card and rebooted at 300 s (FINDINGS 31l). The card
+        # slot's host waits until the eMMC's host is added.
+        port = (TOP / 'upstream' / 'port' / 'install.py').read_text()
+        self.assertIn('MU300: the eMMC is mmc0', port)
+        self.assertIn('static bool sdhci_sprd_emmc_added;', port)
+        self.assertIn('for_each_compatible_node(np, NULL, "sprd,sdhci-r11")', port)
+        # the deferral sits right after the host filter, before sdhci_pltfm_init() allocates the host index
+        self.assertIn('\\t    sdhci_sprd_emmc_pending(pdev->dev.of_node))\n\\t\\treturn -EPROBE_DEFER;\n', port)
+        # and says what that costs: without a working eMMC host the card slot never binds
+        self.assertIn("no SD root without a working eMMC host", port)
+        self.assertLess(port.index("t.replace(filt, filt + '''"), port.index('add_old = '))
+        # the flag is set only once the eMMC's host is added
+        self.assertIn("add_old = '\\tret = __sdhci_add_host(host);\\n\\tif (ret)\\n\\t\\tgoto err_cleanup_host;\\n'",
+                      port)
+        self.assertIn('\\t\\tWRITE_ONCE(sdhci_sprd_emmc_added, true);', port)
+        # and the build stops when the edit did not apply
+        self.assertIn("'MU300: the eMMC is mmc0', 'WRITE_ONCE(sdhci_sprd_emmc_added, true);'", port)
 
     def test_every_release_kernel_bundle_has_the_sd_host(self):
         # 5.4 reads the card as well (FINDINGS 31j): its bundle says so, and the release audit fails when any of the
         # three bundles does not (mu300-update refuses such a bundle for a system on the card)
         mr = (TOP / 'tools' / 'make-release.sh').read_text()
-        self.assertIn("printf 'sdcard\\n' > \"$K/features\"", mr)
+        self.assertIn("printf 'sdcard\\nlinux-slot\\n' > \"$K/features\"", mr)
         self.assertLess(mr.index('$K/features'), mr.index('tar -C "$K" -czf "$D/mu300-kernel.tar.gz" .'))
         self.assertIn('for a in mu300-kernel mu300-kernel-6.18 mu300-kernel-7.2; do\n'
                       '    tar -xzOf "$D/$a.tar.gz" ./features 2>/dev/null | grep -qx sdcard', mr)
+        # and that its init works with Linux on either slot (mu300-update refuses one without it on slot a)
+        self.assertIn('    tar -xzOf "$D/$a.tar.gz" ./features 2>/dev/null | grep -qx linux-slot', mr)
 
     def test_quiet_console_sysctl_on_both_systems(self):
         # K24: both images carry the same drop-in (systemd-sysctl on Ubuntu, procd's /etc/init.d/sysctl on OpenWrt)

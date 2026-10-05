@@ -31,15 +31,23 @@ if [ -p "$DIR/cmd" ]; then
     # the two were the same path once, and since the daemon never lets go, every client then waited out the
     # full 90 s and gave up on an idle modem (see mu300-atd).
     lock=$DIR/lock
+    # The lock, the command and the answer all live in $DIR, which is root's: as a user nothing below can work,
+    # and it used to loop for ever on a stale lock it could not remove ("mobile-data status" without sudo hung).
+    if [ ! -w "$DIR" ] || [ ! -w "$DIR/cmd" ]; then
+        echo "mu300-at: needs root (cannot write $DIR); try: sudo ${0##*/} ..." >&2
+        exit 1
+    fi
     wait=${MU300_AT_LOCK_WAIT:-90}
     n=0
     while ! mkdir "$lock" 2>/dev/null; do
-        # a client killed with SIGKILL cannot clean up after itself; take the lock over when its owner is gone
+        # a client killed with SIGKILL cannot clean up after itself; take the lock over when its owner is gone.
+        # Only "continue" (which skips the wait below) once the lock is really gone.
         owner=$(cat "$lock/pid" 2>/dev/null || true)
-        if [ -n "$owner" ] && ! kill -0 "$owner" 2>/dev/null; then rm -rf "$lock"; continue; fi
+        if [ -n "$owner" ] && ! kill -0 "$owner" 2>/dev/null; then
+            rm -rf "$lock" 2>/dev/null && continue
         # a daemon from before the split left its ownership directory here, and it will never release it
-        if [ -n "$owner" ] && tr '\0' ' ' < "/proc/$owner/cmdline" 2>/dev/null | grep -q mu300-atd; then
-            rm -rf "$lock"; continue
+        elif [ -n "$owner" ] && tr '\0' ' ' < "/proc/$owner/cmdline" 2>/dev/null | grep -q mu300-atd; then
+            rm -rf "$lock" 2>/dev/null && continue
         fi
         n=$((n + 1)); [ "$n" -gt $((wait * 10)) ] && { echo "mu300-at: busy" >&2; exit 1; }
         sleep 0.1 2>/dev/null || sleep 1

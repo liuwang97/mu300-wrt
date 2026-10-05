@@ -519,7 +519,9 @@ class Wiring(unittest.TestCase):
         self.assertIn('ln -sf /opt/mu300/bin/mu300-sms $R/usr/bin/mu300-sms', block)
         common = re.search(r'for s in (mu300-accounts[^;]*);', src).group(1)
         self.assertNotIn('smsd', common)
-        common = re.search(r'for c in (mu300-toolkit[^;]*);', src).group(1)
+        # the commands every system links come from the shared list
+        self.assertIn('for c in $(cat /in/opt-mu300/lib/path-commands)', src)
+        common = (TOP / 'rootfs' / 'overlay' / 'opt' / 'mu300' / 'lib' / 'path-commands').read_text().split()
         self.assertNotIn('mu300-sms', common)
         # the pool programs come from the luci overlay; the shared tree (every system) has none of them
         for name in ('mu300-sms', 'mu300-smsd'):

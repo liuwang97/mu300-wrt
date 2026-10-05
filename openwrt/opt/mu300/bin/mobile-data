@@ -503,6 +503,9 @@ up() {
 
 up_locked() {
     modem_stack || { echo "no modem stack in this kernel ($(uname -r))" >&2; exit 3; }
+    # a VPN with the kill switch has it up before there is a bearer to leak through (mu300-vpn run, which puts it
+    # up too, only starts after this)
+    "${MU300_VPN_CMD:-/opt/mu300/bin/mu300-vpn}" guard >/dev/null 2>&1 || true
     rm -f /run/mu300-mobile-data-down
     tty_setup
     mark dial-start

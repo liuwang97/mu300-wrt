@@ -2190,6 +2190,14 @@ int sblock_init_debug(void)
 	int rval;
 	dev_t dev_no;
 
+	/*
+	 * MU300: sprd_ipc_probe() calls this once per SIPC device (four of them), but there is one class and one
+	 * device of this name: every later call failed with "cannot create duplicate filename '/class/sblock'" and a
+	 * stack dump, and leaked a chrdev region and a cdev.
+	 */
+	if (sblock_dev)
+		return 0;
+
 	sblock_dev = kzalloc(sizeof(struct sblock_device), GFP_KERNEL);
 	if (!sblock_dev) {
 		pr_err("Failed to alloc memory for sblock dev\n");

@@ -213,3 +213,102 @@ the SD card ({1}) holds another Linux (ext4) filesystem, and the installer never
 Copy off what you need and format the card elsewhere, use another card, or install to internal storage (MU300_STORAGE=internal).	请先复制出需要的数据并在别处格式化该卡，或换一张卡，或安装到内部存储（MU300_STORAGE=internal）。
 the SD card holds another Linux (ext4) filesystem; the installer will not format it	SD 卡上有另一个 Linux（ext4）文件系统；安装程序不会格式化它
 too little free eMMC space for Linux; the installer will offer the SD card instead (no repartitioning needed)	eMMC 上的空闲空间不足以安装 Linux；安装程序将改为提供 SD 卡选项（无需重新分区）
+the {1} kernel of release {2} cannot read the SD card: choose kernel 5.4, a newer release, or internal storage (MU300_STORAGE=internal)	版本 {2} 的 {1} 内核无法读取 SD 卡：请选择 5.4 内核、更新的版本，或内部存储（MU300_STORAGE=internal）
+The SD card ({1}) holds a Linux installation (mu300sd), and the device always starts that one first: an installation to internal storage does not start while this card is in the slot.	SD 卡（{1}）上已有 Linux 安装（mu300sd），设备总是先启动它：只要这张卡还在卡槽中，安装到内部存储的系统就不会启动。
+Take the card out before the device restarts, or erase its installation first with the uninstaller.	请在设备重启前取出这张卡，或先用卸载程序（uninstall）清除卡上的安装。
+Type internal to install to internal storage anyway	输入 internal 以仍然安装到内部存储
+The VPN (mu300-vpn) needs the vpn extra: Xray and sing-box. It can also be added later on the device:	VPN（mu300-vpn）需要 vpn 扩展组件：Xray 和 sing-box。也可以稍后在设备上添加：
+Install the VPN extra (about 40 MB more to download, 120 MB on the device)? (yes/no)	安装 VPN 扩展组件吗（约多下载 40 MB，在设备上占用 120 MB）？(是/否)
+release {1} has no vpn extra: its systems still carry the VPN engines	版本 {1} 没有 vpn 扩展组件：其系统仍自带 VPN 引擎
+extras:         {1}	扩展组件：      {1}
+none	无
+Android runs from slot {1}; Linux goes to slot {2} (boot_{2})	Android 从槽位 {1} 运行；Linux 将安装到槽位 {2}（boot_{2}）
+CREATE new ext4 (erases what is there)	新建 ext4（会清除上面的内容）
+Dry run: nothing was written.	试运行：未写入任何内容。
+MU300_BOOT_OS={1}, but {1} is not installed	MU300_BOOT_OS={1}，但 {1} 未安装
+Magisk's magiskboot was not found; install this zip with Magisk 26 or newer	未找到 Magisk 的 magiskboot；请使用 Magisk 26 或更新版本安装此 zip
+Plan	计划
+Take the card out and install the zip again, or install to the card (MU300_STORAGE=sd in /sdcard/mu300-install.conf).	请取出这张卡后重新安装此 zip，或安装到卡上（在 /sdcard/mu300-install.conf 中写入 MU300_STORAGE=sd）。
+Ubuntu 26.04 is installed, and it needs a mainline kernel (6.18 or 7.2): use a zip with one of those kernels, or MU300_MODE=wipe.	已安装 Ubuntu 26.04，它需要主线内核（6.18 或 7.2）：请使用带有其中一个内核的 zip，或设置 MU300_MODE=wipe。
+Unpacking {1} and {2}	正在解压 {1} 和 {2}
+already there:  {1}	已有：          {1}
+boot_a and boot_b are the same partition	boot_a 和 boot_b 是同一个分区
+boots:          {1} ({2})	启动：          {1}（{2}）
+cannot tell which slot Android runs from	无法确定 Android 从哪个槽位运行
+could not mount the existing Linux filesystem	无法挂载现有的 Linux 文件系统
+could not unpack the kernel bundle	无法解压内核包
+could not unpack the zip	无法解压 zip
+default	默认
+keep: settings and data of {1} are kept	保留：{1} 的设置和数据会保留
+misc holds no valid boot control block; nothing was changed	misc 中没有有效的启动控制块；未做任何更改
+mu300-install.conf: MU300_PASSWORD must have at least 6 characters	mu300-install.conf：MU300_PASSWORD 至少需要 6 个字符
+mu300-install.conf: {1} is not a setting of this installer; ignored	mu300-install.conf：{1} 不是此安装程序的设置；已忽略
+mu300-install.conf: {1}={2} is not valid	mu300-install.conf：{1}={2} 无效
+not enough free space in {1}: {2} needed, {3} free	{1} 中空闲空间不足：需要 {2}，仅剩 {3}
+settings from {1}:{2}	来自 {1} 的设置：{2}
+storage:        SD card {1}, {2} ({3})	存储：          SD 卡 {1}，{2}（{3}）
+storage:        internal, offset {1}, {2} ({3})	存储：          内部，偏移 {1}，{2}（{3}）
+system:         {1} (zip {2}, kernel {3})	系统：          {1}（zip {2}，内核 {3}）
+the Linux region	Linux 区域
+the zip is damaged (checksum mismatch); download it again	zip 已损坏（校验和不匹配）；请重新下载
+this installer needs root	此安装程序需要 root 权限
+this is not an A/B device with misc, boot_a and boot_b	这不是带有 misc、boot_a 和 boot_b 的 A/B 设备
+this kernel cannot read the SD card; use a newer zip	此内核无法读取 SD 卡；请使用更新的 zip
+this kernel does not support the {1}	此内核不支持 {1}
+writes:         {1}, boot_{2}, 32 bytes of misc (boot_{3}, the partition table and userdata are not touched)	写入：          {1}、boot_{2}、misc 的 32 字节（不会触碰 boot_{3}、分区表和 userdata）
+mu300-install.conf: {1} is taken only from {2}, which only root can change; ignored in {3}	mu300-install.conf：{1} 只从 {2} 读取（只有 root 能修改该文件）；在 {3} 中已忽略
+To use{1}, make the file one only root can change: {2}	如要使用{1}，请把该文件变为只有 root 能修改：{2}
+{1} is not owned by root, or others can change it: it is read like a file on /sdcard	{1} 不属于 root，或其他用户可以修改它：按 /sdcard 上的文件对待
+This does not look like a ZTE F50/MU300 or U30 Air. If it is one, put MU300_DEVICE=f50 or u30air into {1}.	这看起来不是 ZTE F50/MU300 或 U30 Air。如果是，请在 {1} 中写入 MU300_DEVICE=f50 或 u30air。
+could not create a work directory in {1}	无法在 {1} 中创建工作目录
+A Linux filesystem is still mounted in {1}; it was left as it is. Restart the device before installing again.	{1} 中仍挂载着 Linux 文件系统；已保持原样。再次安装前请重启设备。
+There is too little free space inside for Linux, and the SD card ({1}) holds another Linux (ext4) filesystem, which the installer never formats. Copy off what you need and format the card elsewhere, or use another card.	内部存储空闲空间不足以安装 Linux，而 SD 卡（{1}）上有另一个 Linux（ext4）文件系统，安装程序绝不会格式化它。请先复制所需内容并在别处格式化该卡，或换一张卡。
+There is too little free space inside for Linux. The SD card ({1}, {2}) can hold it: put MU300_STORAGE=sd and MU300_SD_ERASE=yes into {3}, a file only root can change (everything on the card is erased).	内部存储空闲空间不足以安装 Linux。SD 卡（{1}，{2}）可以容纳：请在只有 root 能修改的 {3} 中写入 MU300_STORAGE=sd 和 MU300_SD_ERASE=yes（卡上的全部内容将被清除）。
+There is too little free space inside for Linux, and the SD card is smaller than 700 MiB. Use a bigger card (MU300_STORAGE=sd and MU300_SD_ERASE=yes in {1}), or make room with the installer for computers.	内部存储空闲空间不足以安装 Linux，且 SD 卡小于 700 MiB。请使用更大的卡（在 {1} 中写入 MU300_STORAGE=sd 和 MU300_SD_ERASE=yes），或用电脑版安装程序腾出空间。
+There is too little free space inside for Linux and no SD card. Insert a card (MU300_STORAGE=sd and MU300_SD_ERASE=yes in {1}), or make room with the installer for computers.	内部存储空闲空间不足以安装 Linux，且没有 SD 卡。请插入一张卡（在 {1} 中写入 MU300_STORAGE=sd 和 MU300_SD_ERASE=yes），或用电脑版安装程序腾出空间。
+MU300_MODE=wipe formats the SD card ({1}, {2}): the installation on it and everything else is erased. To allow that, put MU300_SD_ERASE=yes into {3} as well.	MU300_MODE=wipe 会格式化 SD 卡（{1}，{2}）：卡上的安装和其他所有内容都会被清除。如允许，请同时在 {3} 中写入 MU300_SD_ERASE=yes。
+could not unmount the Linux filesystem from {1}	无法从 {1} 卸载 Linux 文件系统
+password:       from {1}, written to {2}	密码：          来自 {1}，将写入 {2}
+password:       generated, written to {1}	密码：          自动生成，将写入 {1}
+the zip is incomplete or damaged (its manifest is not valid)	zip 不完整或已损坏（其 manifest 无效）
+The free space behind the partitions is not empty ({1} of 16 samples hold data); it may be used by this firmware. To use it anyway, put MU300_STORAGE=internal and MU300_REGION_OVERWRITE=yes into {2}, a file only root can change.	分区之后的空闲空间并不为空（16 个采样中有 {1} 个含有数据）；它可能正被此固件使用。如仍要使用，请在只有 root 能修改的 {2} 中写入 MU300_STORAGE=internal 和 MU300_REGION_OVERWRITE=yes。
+Installing to the SD card ({1}, {2}) erases everything on it. To allow that, put MU300_STORAGE=sd and MU300_SD_ERASE=yes into {3}, a file only root can change.	安装到 SD 卡（{1}，{2}）会清除卡上的全部内容。如允许，请在只有 root 能修改的 {3} 中写入 MU300_STORAGE=sd 和 MU300_SD_ERASE=yes。
+could not read the Android files the modem needs from this device	无法从本设备读取调制解调器所需的 Android 文件
+the Mali GPU files are incomplete on this device; installing without them	本设备上的 Mali GPU 文件不完整；将不带这些文件安装
+could not pack the vendor files	无法打包厂商文件
+could not build the boot control blocks	无法构建启动控制块
+could not copy the Android files into the boot ramdisk	无法将 Android 文件复制到启动 ramdisk 中
+Android runs from slot b, and the kernel of this zip cannot boot Linux from slot a yet; use a newer zip	Android 从 b 槽运行，而此 zip 的内核还不能从 a 槽启动 Linux；请使用更新的 zip
+could not build the boot ramdisk (magiskboot)	无法构建启动 ramdisk（magiskboot）
+could not build the boot image	无法构建启动镜像
+boot image for slot {1}: kernel {2}, {3} bytes	槽位 {1} 的启动镜像：内核 {2}，{3} 字节
+could not generate a password	无法生成密码
+could not hash the password	无法计算密码哈希
+could not copy the installer files	无法复制安装文件
+Installing {1} (this takes a few minutes)	正在安装 {1}（需要几分钟）
+installation on the device failed; boot_{1} and misc were not changed	设备上的安装失败；boot_{1} 和 misc 未被更改
+could not mount the Linux filesystem for the kernel modules	无法为内核模块挂载 Linux 文件系统
+could not install the kernel modules	无法安装内核模块
+Writing and verifying boot_{1}	正在写入并校验 boot_{1}
+boot_{1} did not verify after writing; misc was not changed, so Android keeps booting	写入后 boot_{1} 校验失败；misc 未被更改，Android 会照常启动
+misc changed during the installation; Linux was not armed. Install the zip again.	安装期间 misc 发生了变化；Linux 未被启用。请重新安装此 zip。
+could not write {1}	无法写入 {1}
+Done. Reboot to start {1}.	完成。重启即可启动 {1}。
+If Linux does not start, the device returns to Android by itself.	如果 Linux 无法启动，设备会自动回到 Android。
+could not keep a copy of the misc block; nothing was changed	无法保存 misc 块的副本；未做任何更改
+filesystem:     {1} ({2})	文件系统：      {1}（{2}）
+default boot:   {1} ({2})	默认启动：      {1}（{2}）
+Linux, Android after failed boots	Linux，启动失败后回到 Android
+boot attempts:  {1} failed boots in a row, then Android ({2})	启动尝试：      连续 {1} 次启动失败后回到 Android（{2}）
+hotspot:        {1} ({2})	热点：          {1}（{2}）
+name and password copied from Android	从 Android 复制名称和密码
+not copied	不复制
+GPU files:      {1} ({2})	GPU 文件：      {1}（{2}）
+included	包含
+not included	不包含
+misc did not verify after writing; the block it held before was written back and verified, so Android boots as before. Linux was not armed.	写入后 misc 校验失败；原来的块已写回并校验通过，Android 照常启动。Linux 未被启用。
+misc did not verify after writing, and the block it held before could not be written back: misc holds unknown bytes, and the device may not start Android. Do not reboot. Write the saved block back as root: {1}	写入后 misc 校验失败，且原来的块无法写回：misc 中是未知的数据，设备可能无法启动 Android。请不要重启。请以 root 身份写回保存的块：{1}
+password for {1}: "{2}"   (also in {3}; delete that file after the first login)	{1} 的密码："{2}"   （也保存在 {3} 中；首次登录后请删除该文件）
+could not write {1}; nothing was installed	无法写入 {1}；未安装任何内容
+used by this installation and removed from {1}:{2}	已在本次安装中使用并从 {1} 中删除：{2}
+could not remove{1} from {2}; remove it by hand	无法从 {2} 中删除：{1}；请手动删除

@@ -1,0 +1,157 @@
+#!/bin/sh
+# Optional parts that are not in the images, downloaded when you want them (Ubuntu and OpenWrt).
+#   mu300-extra list              what there is, and what is installed
+#   mu300-extra status            the installed extras: release, size, commands
+#   mu300-extra install NAME      download it from the release of this system, check it against the release's
+#                                 SHA256SUMS, install it and put its commands on the PATH
+#   mu300-extra remove NAME [--force]   (--force: the vpn extra even while the VPN is on)
+#   mu300-extra link              put the system's commands and the extras' on the PATH (run at every boot)
+#   mu300-extra adopt vpn         keep the VPN engines of the system an update replaced (<os>.old) as the vpn extra
+#
+# Extras live on the Linux partition (/mnt/mu300-disk/extra/NAME), not in a system: Ubuntu and OpenWrt share one
+# copy, and an update or reinstall of a system keeps it. mu300-update apply brings them to the new release.
+# There is one so far:
+#   vpn   Xray-core, hev-socks5-tunnel and sing-box, the engines of mu300-vpn
+#
+# MU300_RELEASE=TAG takes another release, MU300_RELEASE_URL=URL another server with the same files and SHA256SUMS,
+# MU300_EXTRA_FILE=FILE a mu300-extra-NAME.tar.gz on this device (not checked: you chose it).
+# The download, the checks and the installation are mu300-update's own (fetch_verified, extra_unpack).
+BIN=${MU300_BIN:-/opt/mu300/bin}
+_lib=${MU300_LIB:-}
+MU300_LIB=1
+. "$BIN/mu300-update"
+MU300_LIB=$_lib
+STAGE=$DISK/.mu300-extra
+OPT=${MU300_OPT:-/opt/mu300}
+SYSROOT=${MU300_SYSROOT:-}
+
+# where commands go: a directory on everybody's PATH, sudo's secure_path included (Ubuntu keeps usr/local across
+# updates; OpenWrt's busybox PATH has no /usr/local)
+link_dir() {
+    if [ -n "${MU300_LINKDIR:-}" ]; then echo "$MU300_LINKDIR"
+    elif [ -e "$SYSROOT/etc/openwrt_release" ]; then echo /usr/bin
+    else echo /usr/local/bin; fi
+}
+
+# link: the system's commands (one list, the same the images are built with) and every installed extra's. A file
+# or a link of somebody else's is never replaced; a link into an extra that is gone is removed.
+do_link() {
+    L=$(link_dir)
+    mkdir -p "$L"
+    if [ -r "$OPT/lib/path-commands" ]; then
+        for c in $(cat "$OPT/lib/path-commands"); do
+            [ -x "$OPT/bin/$c" ] || continue
+            [ -e "$L/$c" ] || [ -L "$L/$c" ] || ln -s "$OPT/bin/$c" "$L/$c" 2>/dev/null || true
+        done
+    fi
+    for x in $(extra_installed); do
+        for f in "$EXTRA/$x"/bin/*; do
+            [ -x "$f" ] || continue
+            c=${f##*/}
+            if [ -L "$L/$c" ]; then
+                case $(readlink "$L/$c") in "$EXTRA"/*) ln -sfn "$f" "$L/$c" ;; esac
+            elif [ ! -e "$L/$c" ]; then
+                ln -s "$f" "$L/$c" 2>/dev/null || true
+            fi
+        done
+    done
+    for l in "$L"/*; do
+        [ -L "$l" ] && [ ! -e "$l" ] || continue
+        case $(readlink "$l") in "$EXTRA"/*) rm -f "$l" ;; esac
+    done
+    return 0
+}
+
+need_root() { [ "$(id -u)" = 0 ] || die "run as root (sudo mu300-extra $*)"; }
+need_disk() { [ -d "$DISK/ubuntu" ] || [ -d "$DISK/openwrt" ] || [ -d "$DISK/openwrt-luci" ] || die "the Linux partition is not mounted at $DISK"; }
+known() { extra_known "$1" || die "there is no extra called '$1' (mu300-extra list)"; }
+
+# the release whose extra goes with this system: MU300_RELEASE, the system's own, or the newest
+system_release() {
+    v=$(cat "$SYSROOT/etc/mu300/image-version" 2>/dev/null)
+    case $v in v[0-9]*) echo "$v" ;; esac
+}
+
+do_install() {
+    name=$1
+    if [ -n "${MU300_EXTRA_FILE:-}" ]; then
+        [ -s "$MU300_EXTRA_FILE" ] || die "$MU300_EXTRA_FILE not found"
+        extra_unpack "$name" "$MU300_EXTRA_FILE" || die "$name was not installed"
+    else
+        tag=${MU300_RELEASE:-$(system_release)}
+        [ -n "$tag" ] || tag=$(latest_release)
+        [ -n "$tag" ] || die "could not reach GitHub (is the device online?)"
+        asset=$(extra_asset "$name")
+        say "downloading $asset of $tag"
+        fetch_verified "$tag" "$asset"; r=$?
+        # a system from before extras: its release has none, the newest one has
+        if [ "$r" = 2 ] && [ -z "${MU300_RELEASE:-}" ]; then
+            newest=$(latest_release)
+            if [ -n "$newest" ] && [ "$newest" != "$tag" ]; then
+                tag=$newest
+                say "downloading $asset of $tag"
+                fetch_verified "$tag" "$asset"; r=$?
+            fi
+        fi
+        [ "$r" = 0 ] || { rm -rf "$STAGE"; die "$name was not installed (no verified $asset of $tag)"; }
+        extra_unpack "$name" "$STAGE/$asset" || { rm -rf "$STAGE"; die "$name was not installed"; }
+        rm -rf "$STAGE"
+    fi
+    do_link
+    printf '%s %s installed in %s\n' "$name" "$(extra_release "$name")" "$EXTRA/$name"
+}
+
+do_remove() {
+    [ -d "$EXTRA/$1" ] || { echo "$1 is not installed"; return 0; }
+    # a VPN that is on loses its tunnel, and (kill switch up) the device its connection, until they are back
+    if [ "$1" = vpn ] && [ "${2:-}" != --force ] && extra_vpn_wanted "$SYSROOT"; then
+        echo "the VPN is on (ENABLE=1 in /etc/mu300/vpn.conf): turn it off first (mu300-toolkit, or ENABLE=0 and mu300-vpn off), or: mu300-extra remove vpn --force" >&2
+        return 1
+    fi
+    rm -rf "$EXTRA/$1" "$EXTRA/.$1.new" "$EXTRA/.$1.old"
+    sync
+    do_link
+    echo "$1 removed"
+}
+
+running() { echo "${MU300_RUNNING_OS:-$(running_os)}"; }
+
+# adopt vpn: the engines of the image this system replaced (an update to a release without them in the image)
+do_adopt() {
+    [ -d "$EXTRA/$1/bin" ] && { echo "$1 is installed already"; return 0; }
+    extra_adopt "$1" "$DISK/$(running).old" || return 1
+    do_link
+}
+
+do_list() {
+    for x in $EXTRAS; do
+        if [ -d "$EXTRA/$x/bin" ]; then st="installed ($(extra_release "$x"))"; else st="not installed"; fi
+        printf '%-6s %s\n       %s\n' "$x" "$st" "$(extra_desc "$x")"
+    done
+}
+
+do_status() {
+    any=
+    for x in $(extra_installed); do
+        any=1
+        printf '%s\n  release   %s\n  size      %s\n  commands ' "$x" "$(extra_release "$x")" "$(du -sh "$EXTRA/$x" 2>/dev/null | cut -f1)"
+        for f in "$EXTRA/$x"/bin/*; do printf ' %s' "${f##*/}"; done
+        printf '\n  location  %s\n' "$EXTRA/$x"
+        [ -s "$EXTRA/$x/components" ] && sed 's/^/  contains  /' "$EXTRA/$x/components"
+    done
+    [ -n "$any" ] || echo "no extras installed (mu300-extra list)"
+}
+
+# tests/ source this file for its functions only
+[ -z "${MU300_LIB:-}" ] || return 0
+
+case ${1:-list} in
+    list) do_list ;;
+    status) do_status ;;
+    install) [ -n "${2:-}" ] || die "usage: mu300-extra install NAME"; known "$2"; need_root install; need_disk; do_install "$2" ;;
+    remove) [ -n "${2:-}" ] || die "usage: mu300-extra remove NAME"; known "$2"; need_root remove; need_disk; do_remove "$2" "${3:-}" ;;
+    link) need_root link; do_link ;;
+    adopt) [ -n "${2:-}" ] || die "usage: mu300-extra adopt NAME"; known "$2"; need_root adopt; need_disk; do_adopt "$2" ;;
+    -h|--help|help) sed -n '2,18s/^# \{0,1\}//p' "$0" ;;
+    *) echo "usage: mu300-extra list|status|install NAME|remove NAME|link|adopt NAME" >&2; exit 2 ;;
+esac

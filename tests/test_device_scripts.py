@@ -5,10 +5,12 @@ import pty
 import re
 import select
 import shutil
+import struct
 import subprocess
 import threading
 import time
 import unittest
+import zlib
 from pathlib import Path
 
 from helpers import BIN, TOP, ShellTest
@@ -1840,5 +1842,185 @@ class Usb(ShellTest):
             self.assertIn('only the U30 Air', r.stderr)
             self.assertEqual(self.usb(shell, 'boot').returncode, 0)   # boot is quiet on every device
 
+
+@unittest.skipIf(os.name == 'nt' or os.geteuid() == 0, 'needs a user that cannot write the daemon directory')
+class AtClient(ShellTest):
+    """mu300-at as a user who cannot write /run/mu300-at: it says so at once (it used to loop for ever on a stale
+    lock it could not remove, printing "rm: cannot remove .../lock/pid", and `mobile-data status` hung with it)."""
+
+    def setUp(self):
+        super().setUp()
+        self.dir = self.tmp / 'at'
+        self.dir.mkdir()
+        os.mkfifo(self.dir / 'cmd')
+
+    def tearDown(self):
+        for p in (self.dir / 'lock', self.dir):
+            if p.exists():
+                p.chmod(0o755)
+        super().tearDown()
+
+    def at(self, shell):
+        t = time.monotonic()
+        r = self.script(shell, BIN / 'mu300-at', 'AT+CSQ', MU300_AT_DIR=self.dir, MU300_AT_LOCK_WAIT=20)
+        return r, time.monotonic() - t
+
+    def test_a_user_is_told_to_be_root(self):
+        self.dir.chmod(0o555)
+        for shell in self.each_shell():
+            r, took = self.at(shell)
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn('root', r.stderr)
+            self.assertLess(took, 5)
+
+    def test_a_stale_lock_it_cannot_remove(self):
+        (self.dir / 'lock').mkdir()
+        (self.dir / 'lock' / 'pid').write_text('999999\n')   # an owner that is gone
+        (self.dir / 'lock').chmod(0o555)
+        self.dir.chmod(0o555)
+        for shell in self.each_shell():
+            r, took = self.at(shell)
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn('root', r.stderr)
+            self.assertLess(took, 5)
+            self.assertLess(r.stderr.count('\n'), 3, r.stderr)
+
+    def test_a_stale_lock_it_cannot_remove_counts_as_busy(self):
+        # the loop itself: a writable directory, but a lock whose dead owner's files cannot be removed. It used
+        # to "continue" past the wait for ever; now it waits like for a live owner and gives up "busy".
+        (self.dir / 'lock').mkdir()
+        (self.dir / 'lock' / 'pid').write_text('999999\n')
+        (self.dir / 'lock').chmod(0o555)
+        for shell in self.each_shell():
+            t = time.monotonic()
+            r = self.script(shell, BIN / 'mu300-at', 'AT+CSQ', MU300_AT_DIR=self.dir, MU300_AT_LOCK_WAIT=1)
+            took = time.monotonic() - t
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn('busy', r.stderr)
+            self.assertLess(took, 15)
+
+
+class LanStart(ShellTest):
+    """lan-start (bash): the bridge has udev's persistent MAC before any port joins it. Otherwise br-lan took usb0's
+    MAC whenever it was up before udev got to it, its IPv6 link-local was made from that, and the address changed
+    from boot to boot (seen on the U30 Air under 7.2.9)."""
+
+    def test_udev_names_the_bridge_before_ports_join(self):
+        if not shutil.which('bash'):
+            self.skipTest('no bash')
+        self.stub('ip', 'echo "ip $*" >> "$STUBLOG/calls"; case "$*" in "link show br-lan") exit 1;; esac; exit 0')
+        self.stub('udevadm', 'echo "udevadm $*" >> "$STUBLOG/calls"')
+        self.stub('dnsmasq', 'echo "dnsmasq" >> "$STUBLOG/calls"')
+        r = self.script(['bash'], BIN / 'lan-start', MU300_LAN_IP='192.168.78.1')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        calls = (self.tmp / 'calls').read_text().splitlines()
+        add = calls.index('ip link add br-lan type bridge')
+        settle = next(i for i, c in enumerate(calls) if c.startswith('udevadm settle'))
+        join = calls.index('ip link set usb0 master br-lan')
+        up = calls.index('ip link set br-lan up')
+        self.assertLess(add, settle)
+        self.assertLess(settle, join)
+        self.assertLess(join, up)
+
 if __name__ == '__main__':
     unittest.main()
+
+
+class NextBoot(ShellTest):
+    """mu300-next-boot (bash) re-arms the Linux slot with tries N+1 in the slot byte of whichever slot Linux is on."""
+
+    def setUp(self):
+        super().setUp()
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('bbi', TOP / 'boot' / 'build-boot-image.py')
+        self.bbi = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.bbi)
+        self.run_dir = self.tmp / 'run'
+        self.run_dir.mkdir()
+        self.misc = self.tmp / 'misc'
+        live = bytes.fromhex('5f61000042434142010200009f001e000000000000000000000000000be17146')
+        self.misc.write_bytes(bytes(0x800) + live + bytes(2016))
+        self.blocks = self.bbi.bootloader_control(self.misc.read_bytes())   # android_a, linux_b, android_b, linux_a
+        (self.run_dir / 'misc-dev').write_text(str(self.misc))
+        (self.tmp / 'default-boot').write_text('linux\n')
+
+    def nb(self, *args):
+        if not shutil.which('bash'):
+            self.skipTest('no bash')
+        return subprocess.run(['bash', str(BIN / 'mu300-next-boot'), *args], capture_output=True, text=True,
+                              env=self.env(MU300_RUN=self.run_dir, MU300_CONF=self.tmp / 'default-boot',
+                                           MU300_CMDLINE_SRC=self.tmp / 'cmdline'))
+
+    def bc(self):
+        return self.misc.read_bytes()[0x800:0x820]
+
+    def test_slot_a(self):
+        android_a, linux_b, android_b, linux_a = self.blocks
+        (self.run_dir / 'linux-slot').write_text('a\n')
+        (self.run_dir / 'misc-bc-android.bin').write_bytes(android_b)
+        (self.run_dir / 'misc-bc-linux-trial.bin').write_bytes(linux_a)
+        r = self.nb('--rearm')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        # 5 attempts by default: tries 6 in slot a's byte (12), the rest as in the trial block, CRC fixed
+        want = bytearray(linux_a)
+        want[12] = 0x0f | (6 << 4)
+        want[28:32] = struct.pack('<I', zlib.crc32(bytes(want[:28])))
+        self.assertEqual(self.bc(), bytes(want))
+        self.nb('android')
+        self.assertEqual(self.bc(), android_b)
+
+    def test_slot_b_as_before(self):
+        android_a, linux_b, _, _ = self.blocks
+        (self.run_dir / 'misc-bc-slot-a.bin').write_bytes(android_a)          # an older initramfs: old names only
+        (self.run_dir / 'misc-bc-slot-b-trial.bin').write_bytes(linux_b)
+        self.assertEqual(self.nb('--rearm').returncode, 0)
+        self.assertEqual(self.bc()[14], 0x6f)
+        self.nb('android')
+        self.assertEqual(self.bc(), android_a)
+
+    def test_without_the_file_the_booted_slot_decides(self):
+        # no linux-slot (or a garbled one) but LK booted slot a: the old names are not slot a's, nothing is written
+        android_a, linux_b, _, _ = self.blocks
+        (self.run_dir / 'misc-bc-slot-a.bin').write_bytes(android_a)
+        (self.run_dir / 'misc-bc-slot-b-trial.bin').write_bytes(linux_b)
+        (self.tmp / 'cmdline').write_text('console=x androidboot.slot_suffix=_a\n')
+        before = self.misc.read_bytes()
+        for slot in (None, 'x\n'):
+            if slot:
+                (self.run_dir / 'linux-slot').write_text(slot)
+            self.assertNotEqual(self.nb('android').returncode, 0, slot)
+            (self.tmp / 'default-boot').write_text('linux\n')
+            self.assertNotEqual(self.nb('--rearm').returncode, 0, slot)
+            self.assertEqual(self.misc.read_bytes(), before)
+
+    def test_slot_a_never_falls_back_to_legacy_names(self):
+        android_a, linux_b, _, _ = self.blocks
+        (self.run_dir / 'linux-slot').write_text('a\n')
+        (self.run_dir / 'misc-bc-slot-a.bin').write_bytes(android_a)
+        (self.run_dir / 'misc-bc-slot-b-trial.bin').write_bytes(linux_b)
+        before = self.misc.read_bytes()
+        r = self.nb('android')
+        self.assertNotEqual(r.returncode, 0)
+        self.assertEqual(self.misc.read_bytes(), before)
+
+
+class EarlyRecorder(ShellTest):
+    """early-recorder's choice of boot partition: the Linux slot's, never Android's."""
+
+    def test_slot(self):
+        import re
+        m = re.search(r'# --- slot begin\n(.*?)# --- slot end', (BIN / 'early-recorder').read_text(), re.S)
+        self.assertIsNotNone(m, 'early-recorder has no slot block')
+        run, cmdline = self.tmp / 'run', self.tmp / 'cmdline'
+        run.mkdir()
+        cases = [(None, None, 'b'), ('a\n', None, 'a'), ('b\n', 'androidboot.slot_suffix=_a', 'b'),
+                 (None, 'x androidboot.slot_suffix=_a y', 'a'), ('junk\n', 'androidboot.slot_suffix=_a', 'a'),
+                 ('junk\n', 'loglevel=5', 'b')]
+        for shell in self.each_shell():
+            for v, cl, want in cases:
+                for p, data in ((run / 'linux-slot', v), (cmdline, cl)):
+                    p.unlink(missing_ok=True)
+                    if data is not None:
+                        p.write_text(data)
+                r = self.sh(shell, m.group(1) + '\necho "$PART"', MU300_RUN=run, MU300_CMDLINE_SRC=cmdline)
+                self.assertEqual((r.stdout.strip(), r.stderr), (f'boot_{want}', ''), (v, cl))

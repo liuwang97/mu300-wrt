@@ -18,7 +18,7 @@ import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from helpers import TOP, ShellTest
+from helpers import GIT_CHECKOUT, TOP, ShellTest
 
 APP = TOP / 'openwrt' / 'luci-app-mu300' / 'root'
 DASH = APP / 'usr' / 'libexec' / 'rpcd' / 'mu300dash'
@@ -768,6 +768,8 @@ class RuntimeDir(Mu300Dash):
             self.assertTrue('${MU300_DASH_DIR:-$RUN_DIR}' in text, path.name)
             self.assertFalse('/tmp/unisoc-modem' in text, path.name)
         self.assertIn('RUN_DIR=/var/run/unisoc-modem', LIB.read_text())
+        if not GIT_CHECKOUT:
+            self.skipTest('no git checkout here')
         r = subprocess.run(['git', 'grep', '-l', '/tmp/unisoc-modem', '--', 'openwrt', 'rootfs', 'README.md',
                             'docs/BUILD.md'], cwd=TOP, capture_output=True, text=True)
         if r.returncode not in (0, 1):

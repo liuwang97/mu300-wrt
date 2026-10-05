@@ -2,7 +2,7 @@
 import re
 import unittest
 
-from helpers import TOP
+from helpers import GIT_CHECKOUT, TOP
 
 INIT = TOP / 'openwrt' / 'luci-overlay' / 'etc' / 'init.d' / 'mu300-atd-dash'
 BUILD = TOP / 'openwrt' / 'build-rootfs.sh'
@@ -25,6 +25,7 @@ class AtdDash(unittest.TestCase):
         self.assertIn('/opt/mu300/bin/mu300-atd', f)
         self.assertIn('respawn 3600 10 0', f)
 
+    @unittest.skipUnless(GIT_CHECKOUT, 'no git checkout here')
     def test_executable_and_luci_only(self):
         import subprocess
         mode = subprocess.run(['git', 'ls-files', '-s', str(INIT)], cwd=TOP, capture_output=True,

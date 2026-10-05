@@ -140,6 +140,9 @@ int mbuf_pool_init(struct buffer_pool *pool, int size, int payload)
 
 int mbuf_pool_deinit(struct buffer_pool *pool)
 {
+	/* MU300: a channel whose EDMA init failed has no pool this time (its size is still the last one's) */
+	if (!pool->mem)
+		return 0;
 	memset(pool->mem, 0x00, (sizeof(struct mbuf_t) +
 	       pool->payload) * pool->size);
 	kfree(pool->mem);
