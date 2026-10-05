@@ -1,6 +1,7 @@
 #!/bin/bash
 # Mobile data on the MU300 modem without Android RIL: AT commands on /dev/stty_nr1, data over sipa_eth<cid-1>.
-# usage: mobile-data up [APN] | down | status | signal | at "CMD" | sim-reset | watch
+# usage: mobile-data up [APN] | radio-on | down | status | signal | at "CMD" | sim-reset | watch
+# radio-on: only switch the radio on (the OpenWrt boot does it early, beside the other init scripts)
 # MU300_NETIFD=1 mobile-data up [APN]: only attach and print IFACE/IP/PREFIX/DNS1/DNS2 (OpenWrt netifd protocol)
 # OpenWrt: od/timeout come from the static busybox in /opt/mu300/busybox-bin
 export PATH="$PATH:/opt/mu300/busybox-bin"
@@ -51,7 +52,7 @@ at_owner_alive() {
 }
 
 at() {  # at CMD [timeout] -> response lines up to the final result code
-    local cmd=$1 t=${2:-5} line owner
+    local cmd=$1 t=${2:-5} line owner me
     # mobile-data has its own AT channel (nr2, the same slot 0 group as nr1): AT+CGDATA blocks its channel for
     # 10-20 s, and on the shared nr1 every other AT user (toolkit signal checks, SMS) waited behind it. The nr2
     # daemon serves only this script.
@@ -71,14 +72,18 @@ at() {  # at CMD [timeout] -> response lines up to the final result code
     # being removed under a running mu300-atd leaves behind. Opening the device here would make a second reader
     # on a channel that hands each line to exactly one of them, so every command from then on reads somebody
     # else's answer or nothing at all. Hold the daemon's own lock for the length of this command instead.
+    # This process's own pid, not $$: a caller in a background subshell (operator_log) is a process of its own,
+    # and $$ would name the parent, which may have exited while this command still reads the channel.
+    # ($BASHPID needs bash 4; the fallback is the parent pid of a child exec'd in place of the substitution.)
+    me=${BASHPID:-$(exec sh -c 'echo $PPID')}
     owner=$(cat "$ATLOCK/pid" 2>/dev/null || true)
-    if at_owner_alive "$owner" && [ "$owner" != $$ ]; then
+    if at_owner_alive "$owner" && [ "$owner" != "$me" ]; then
         echo "pid $owner holds $DEV and its command fifo is gone; restart mu300-atd" >&2
         return 1
     fi
     mkdir -p "${ATLOCK%/*}" 2>/dev/null || true
     mkdir "$ATLOCK" 2>/dev/null || { rm -rf "$ATLOCK"; mkdir "$ATLOCK" 2>/dev/null || return 1; }
-    echo $$ > "$ATLOCK/pid"
+    echo "$me" > "$ATLOCK/pid"
     exec 3<>"$DEV"
     # drop late responses/URCs left over from earlier commands
     while IFS= read -r -t 0.2 line <&3; do :; done
@@ -230,15 +235,126 @@ v6_off() {
     return 0
 }
 
-# Make sure the radio is on (CFUN=1). SFUN=4 alone is enough from any state; the off/on cycle is the last resort,
-# because an interrupted cycle used to leave the radio switched off with nothing to turn it back on.
-radio_on() {
-    at 'AT+CFUN?' 4 | grep -q '+CFUN: 1' && return 0
-    at 'AT+SFUN=4' 15 >/dev/null || true
-    at 'AT+CFUN?' 4 | grep -q '+CFUN: 1' && return 0
+# Make sure the radio is on (CFUN=1), the way the vendor RIL starts it (K57, ported from kanoqwq/clean-tf-7.2
+# cd4fb28 and 6404c10). Measured in the fork (V50 boot study):
+#   1) After modem_control lets the CP go, the SIPC AT channels take a dozen seconds to answer, and the first answer
+#      is "+CFUN: 0". A command sent before that is answered by nobody; it only holds the AT client lock and every
+#      command queued behind it. nr0's first unsolicited line (mu300-atd logs it) is the sign that the CP is up.
+#   2) The old sequence asked CFUN? once right after AT+SFUN=4 and went on to the SFUN=2 + SFUN=4 power cycle when the
+#      radio was not on yet. That cycle reset the CP that was just coming up and cost a whole CP start (12 s and
+#      more). After SFUN=4 the radio needs time: wait for "+CFUN: 1", and keep the power cycle as the last resort.
+# Every decision goes to radio.log. Returns 1 when this round cannot switch the radio on; the caller retries later
+# (netifd's next attempt, systemd's restart, the watchdog).
+PLUGIN_LOCK=${MU300_PLUGIN_LOCK:-/usr/libexec/unisoc-modem/lock}
+radio_on_locked() {
+    local out silent=0 answered=0 t0 end
+    local ready_deadline=$((SECONDS + ${MU300_CFUN_WAIT:-30}))
+    mark radio-on-enter
+    # The CP announces itself on nr0. Wait for that before taking any AT lock (bounded; then try anyway). The log
+    # is created by nr0's first line and only ever emptied after that, so its existence is the event.
+    while [ "$SECONDS" -lt "$ready_deadline" ] && [ ! -f "$URCLOG" ]; do
+        sleep 0.2 2>/dev/null || sleep 1
+    done
+    # Android's slot 0 RIL opens nr0/nr1/nr2 and sends AT+SMMSWAP=0 as nr1's first command. Do the same, once per
+    # boot (/run is emptied by a reboot), before CFUN and before any dial-up command. So it goes to the nr1 daemon,
+    # not through at() (nr2). A dashboard or watchdog probe can hold the client lock for a moment as nr1 becomes
+    # ready: one second for that collision. No answer ends this round at once: recovery commands sent into a
+    # channel that has not finished its RIL handshake do not help.
+    if [ ! -e /run/mu300-ril-handshake ]; then
+        out=$(MU300_AT_LOCK_WAIT=1 MU300_AT_DIR=/run/mu300-at /opt/mu300/bin/mu300-at -t 4 'AT+SMMSWAP=0' 2>&1 || true)
+        case $out in
+            *OK*)
+                : > /run/mu300-ril-handshake
+                radio_say "slot 0 RIL handshake done (AT+SMMSWAP=0)"
+                mark ril-handshake-done
+                ;;
+            *)
+                radio_say "no valid answer to the RIL handshake (AT+SMMSWAP=0), ending this round: $(echo "${out:-nothing}" | tr -s '\n' ' ')"
+                return 1
+                ;;
+        esac
+    fi
+    out=$(at 'AT+CFUN?' 4 2>&1 || true)
+    case $out in
+        *"+CFUN: 1"*) return 0 ;;
+        *"+CFUN: 0"*) ;;
+        *)
+            radio_say "no answer to AT+CFUN?, ending this round without AT+SFUN: $(echo "${out:-nothing}" | tr -s '\n' ' ')"
+            return 1 ;;
+    esac
+    # K65: the optional unisoc-modem LuCI plugin may have saved mode, band or cell locks. This is the one safe early
+    # window for them: nr1 has done its handshake, the CP answers, and the radio is still off. The plugin keeps a
+    # late replay armed when this one fails; the radio never depends on the plugin.
+    if [ -x "$PLUGIN_LOCK" ] && [ ! -e /run/unisoc-modem-lock-replay-done ]; then
+        "$PLUGIN_LOCK" replay early ||
+            radio_say "early lock replay unverified; late fallback remains armed"
+    fi
+    radio_say "the AT channel answers and the radio is off; sending AT+SFUN=4"
+    t0=$SECONDS
+    at 'AT+SFUN=4' "${MU300_SFUN_TIMEOUT:-20}" >/dev/null || true
+    end=$((SECONDS + ${MU300_CFUN_UP_WAIT:-30}))
+    while [ "$SECONDS" -lt "$end" ]; do
+        out=$(at 'AT+CFUN?' 4 2>&1 || true)
+        case $out in
+            *"+CFUN: 1"*)
+                radio_say "radio on $((SECONDS - t0)) s after AT+SFUN=4"
+                mark radio-cfun1
+                return 0 ;;
+            *"+CFUN:"*) answered=1; silent=0 ;;
+            *) silent=$((silent + 1)) ;;
+        esac
+        # a channel that has gone silent cannot carry the recovery commands either: stop, a later round retries
+        if [ "$silent" -ge 2 ]; then
+            radio_say "the AT channel went silent after AT+SFUN=4, ending this round"
+            return 1
+        fi
+        sleep 2
+    done
+    [ "$answered" = 1 ] || return 1
+    radio_say "radio still off $((SECONDS - t0)) s after AT+SFUN=4; last resort: power cycle (AT+SFUN=2, AT+SFUN=4)"
     at 'AT+SFUN=2' 5 >/dev/null || true
     at 'AT+SFUN=4' 20 >/dev/null || true
-    at 'AT+CFUN?' 4 | grep -q '+CFUN: 1'
+    at 'AT+CFUN?' 4 2>/dev/null | grep '+CFUN: 1' >/dev/null
+}
+
+# One radio state machine at a time: the early warm-up (mu300-atd's radio-warmup instance on OpenWrt) and the dial
+# meet at boot, and the watchdog can step in later. A second caller waits for the first to finish (it then finds
+# the radio on with one question) rather than give up: the fork capped the wait at 8 s, but a dial that gives up
+# costs netifd's 20 s pause before the next attempt, longer than the warm-up it was waiting for.
+# MU300_RADIO_LOCK_WAIT (120 s) is above one round's worst case; a dead holder is taken over at once.
+RADIOLOCK=/run/mu300-radio-on.lock
+radio_owner_alive() {
+    [ -n "${1:-}" ] && kill -0 "$1" 2>/dev/null || return 1
+    # the number may have been reused by something else
+    [ -r "/proc/$1/cmdline" ] || return 0
+    tr '\0' ' ' < "/proc/$1/cmdline" 2>/dev/null | grep mobile-data >/dev/null
+}
+radio_on() {
+    local owner n=0 rc=0 me
+    while ! mkdir "$RADIOLOCK" 2>/dev/null; do
+        owner=$(cat "$RADIOLOCK/pid" 2>/dev/null || true)
+        if ! radio_owner_alive "$owner"; then
+            # just created and its pid not written yet: give the owner a moment before calling it dead
+            if [ -z "$owner" ] && [ "$n" -lt 5 ]; then n=$((n + 1)); sleep 0.2 2>/dev/null || sleep 1; continue; fi
+            rm -rf "$RADIOLOCK"
+            continue
+        fi
+        n=$((n + 1))
+        if [ "$n" -gt $(( ${MU300_RADIO_LOCK_WAIT:-120} * 5 )) ]; then
+            radio_say "another radio_on (pid $owner) is still running; giving up"
+            return 1
+        fi
+        sleep 0.2 2>/dev/null || sleep 1
+    done
+    # this process's own pid (see at()): two radio_on in subshells of one script are two owners
+    me=${BASHPID:-$(exec sh -c 'echo $PPID')}
+    echo "$me" > "$RADIOLOCK/pid"
+    radio_on_locked || rc=$?
+    [ "$(cat "$RADIOLOCK/pid" 2>/dev/null || true)" = "$me" ] && rm -rf "$RADIOLOCK"
+    # The plugin's generic worker keeps off nr1 until the handshake and the radio sequence have completed. A failed
+    # round leaves the marker: netifd or the watchdog retries.
+    [ "$rc" = 0 ] && rm -f /run/unisoc-modem-early-hook-pending
+    return $rc
 }
 
 # Registered (home or roaming)? is_registered reads AT+CEREG? answers (+CEREG: <n>,<stat>,...); is_registered urc
@@ -282,7 +398,8 @@ wait_registered() {
 }
 
 # The context's address, within SECONDS real seconds (8 by default): an active context is not an address yet -
-# the fork measured "CGACT up, no address for 40 s" on NR. Leaves the +CGCONTRDP line in rdp.
+# the fork measured "CGACT up, no address for 40 s" on NR. Leaves the +CGCONTRDP line in rdp. No query starts after
+# the budget and no pause runs past it; only the query in flight can overrun it (by its AT round, at most T + 2 s).
 fetch_addr() {
     local end=$((SECONDS + ${1:-8})) line am
     rdp=
@@ -293,6 +410,7 @@ fetch_addr() {
             ''|0.0.0.0*) ;;
             *.*.*.*) rdp=$line; return 0 ;;
         esac
+        [ $((SECONDS + 2)) -lt "$end" ] || break   # the next query would start after the budget
         sleep 2
     done
     return 1
@@ -340,8 +458,19 @@ up_locked() {
     rm -f /run/mu300-mobile-data-down
     tty_setup
     mark dial-start
-    radio_on
+    if ! radio_on; then
+        led error
+        echo "the radio did not come on (see $RADIOLOG)" >&2
+        exit 1
+    fi
     mark dial-radio-on-done
+    # K58: the IMS bearer SMS uses, which Android's RIL switches on. Idempotent, and nothing here waits for IMS.
+    at 'AT+CAVIMS=1' 5 >/dev/null || true
+    # A modem reset during this wait is not repaired inside this attempt (the old loop re-ran radio_on every 10 s;
+    # the fork dropped that). The attempt fails after MU300_REGISTER_WAIT, and the next one - netifd after 20 s,
+    # systemd after 30 s, or the watchdog - starts with radio_on, which brings the radio back. Switching the radio
+    # on from inside this wait could also cut across the LuCI plugin's lock replay, which takes the radio down on
+    # purpose.
     if ! wait_registered; then
         radio_say "not registered after ${MU300_REGISTER_WAIT:-60} s"
         led error
@@ -363,12 +492,15 @@ up_locked() {
         at "AT+CGDCONT=$CID,\"${MU300_PDP_TYPE:-IP}\",\"$1\"" >/dev/null
     fi
     # No AT+CGACT? first: at boot the context is always off, the question costs a whole AT round trip, and
-    # CGACT=1 on an active context (a reconnect) changes nothing. An error answer still ends the bring-up here.
+    # CGACT=1 on an active context (a reconnect) changes nothing. mu300-at exits 0 on any final result code,
+    # ERROR included, so only a channel that does not answer (a timeout) ends the bring-up here; an ERROR shows up
+    # as the missing address below.
     at "AT+CGACT=1,$CID" 20 >/dev/null
     mark dial-pdp-active
     # An active context is not an address yet. Reassert CGACT=1 once - idempotent, it nudges the context without
     # tearing it down. Never CGACT=0/1 here: the fork measured that taking down the context it had just created
-    # silenced the AT channel and left the WAN pending for minutes. Both waits are bounded (16 s by default).
+    # silenced the AT channel and left the WAN pending for minutes. Both waits are bounded: 16 s of budget by
+    # default; with each phase's last query overrunning (fetch_addr) and the reassert's own 8 s, about 36 s at worst.
     if ! fetch_addr "${MU300_ADDR_WAIT_FIRST:-8}"; then
         radio_say "context active but no address after ${MU300_ADDR_WAIT_FIRST:-8} s; reasserting AT+CGACT=1 once"
         at "AT+CGACT=1,$CID" 8 >/dev/null || true
@@ -583,6 +715,15 @@ status() {
 
 case "${1:-status}" in
     up) up "${2:-}" ;;
+    radio-on)
+        # K66: the radio alone, for the early warm-up (K20); the dial finds it on and goes straight to registering
+        modem_stack || { echo "no modem stack in this kernel ($(uname -r))" >&2; exit 3; }
+        tty_setup
+        mark radio-warmup-enter
+        radio_on
+        at 'AT+CAVIMS=1' 5 >/dev/null || true
+        mark radio-warmup-done
+        ;;
     signal) signal ;;
     at) [ -n "${2:-}" ] || { echo "usage: $0 at \"AT+COMMAND\"" >&2; exit 2; }
         tty_setup; at "$2" "${3:-6}" ;;
@@ -590,5 +731,5 @@ case "${1:-status}" in
     status) status ;;
     sim-reset) sim_reset ;;
     watch) watch ;;
-    *) echo "usage: $0 up [APN] | down | status | signal | at \"CMD\" | sim-reset | watch" >&2; exit 2 ;;
+    *) echo "usage: $0 up [APN] | radio-on | down | status | signal | at \"CMD\" | sim-reset | watch" >&2; exit 2 ;;
 esac

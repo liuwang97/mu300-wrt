@@ -354,20 +354,27 @@ at() {
 }
 '''
 
-    def lib(self, code, **env):
-        """Run CODE with bash after sourcing mobile-data (MU300_LIB=1) and replacing `at` by MODEM. /run is the scratch
-        directory's run/, mu300-led is the stub on PATH."""
+    def lib(self, code, modem=None, **env):
+        """Run CODE with bash after sourcing mobile-data (MU300_LIB=1) and replacing `at` by MODEM (or MODEM).
+        /run is the scratch directory's run/; mu300-led and mu300-at are stubs on PATH. The mu300-at stub is the nr1
+        daemon's client that radio_on's RIL handshake calls directly: it logs "nr1 <command>" to $STUBLOG/at and
+        answers $SMMSWAP (OK by default; "none" is a timeout)."""
         if not shutil.which('bash'):
             self.skipTest('no bash')
         text = (BIN / 'mobile-data').read_text()
         text = text.replace('/run/', f'{self.tmp}/run/').replace('/opt/mu300/bin/mu300-led', 'mu300-led')
+        text = text.replace('/opt/mu300/bin/mu300-at ', 'mu300-at ')
         lib = self.tmp / 'mobile-data.lib'
         lib.write_text(text)
         (self.tmp / 'run').mkdir(exist_ok=True)
-        for f in ('at', 'led'):
+        for f in ('at', 'led', 'rf', 'nr1env'):
             (self.tmp / f).unlink(missing_ok=True)
         self.stub('mu300-led', 'echo "$*" >> "$STUBLOG/led"')
-        r = self.sh(['bash'], f'MU300_LIB=1; . "{lib}"\n{self.MODEM}\nSECONDS=0\n{code}', **env)
+        self.stub('mu300-at', '[ "$1" = -t ] && shift 2\necho "nr1 $1" >> "$STUBLOG/at"\n'
+                  'echo "dir=$MU300_AT_DIR wait=$MU300_AT_LOCK_WAIT" > "$STUBLOG/nr1env"\n'
+                  'case ${SMMSWAP:-OK} in none) echo "mu300-at: no answer from the daemon" >&2; exit 1 ;; esac\n'
+                  'echo "${SMMSWAP:-OK}"')
+        r = self.sh(['bash'], f'MU300_LIB=1; . "{lib}"\n{modem or self.MODEM}\nSECONDS=0\n{code}', **env)
         sent = (self.tmp / 'at').read_text().splitlines() if (self.tmp / 'at').exists() else []
         return r, sent
 
@@ -406,9 +413,10 @@ at() {
         self.assertEqual(len([s for s in sent if 'AT+CEREG?' in s]), 2, sent)
 
     def test_fetch_addr_bounded(self):
-        """+CGCONTRDP keeps answering 0.0.0.0: fetch_addr gives up within its budget (in seconds, not rounds)."""
+        """+CGCONTRDP keeps answering 0.0.0.0: fetch_addr gives up within its budget (in seconds, not rounds), and
+        does not sleep past it (queries at 0 and 2 s; a third would start after the budget, so none is waited for)."""
         r, _ = self.lib('rc=0; fetch_addr 3 || rc=$?; echo "rc=$rc t=$SECONDS rdp=$rdp"', ADDR_AFTER=99)
-        self.assertRegex(r.stdout, r'rc=1 t=[3-5] rdp=$', r.stderr)
+        self.assertRegex(r.stdout, r'rc=1 t=[23] rdp=$', r.stderr)
         r, _ = self.lib('rc=0; fetch_addr 3 || rc=$?; echo "rc=$rc rdp=$rdp"', ADDR_AFTER=0)
         self.assertIn('rc=0 rdp=+CGCONTRDP: 1,5,"apn","10.1.2.3.255.255.255.0"', r.stdout, r.stderr)
 
@@ -416,11 +424,14 @@ at() {
         """up (netifd mode): no AT+CGACT? first, one idempotent CGACT=1 reassert when the address is late, never
         CGACT=0, and the decision is in radio.log (K60, K62)."""
         r, sent = self.lib('up_locked', MU300_NETIFD=1, MU300_AT_DEV='/dev/null', MU300_URC_LOG=self.tmp / 'none',
-                           CEREG='+CEREG: 2,1,"1A2B","0123ABCD",7', ADDR_AFTER=2,
+                           CEREG='+CEREG: 2,1,"1A2B","0123ABCD",7', ADDR_AFTER=2, MU300_CFUN_WAIT=0,
                            MU300_ADDR_WAIT_FIRST=2, MU300_ADDR_WAIT_RETRY=6)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn('IP=10.1.2.3\nPREFIX=24\nDNS1=8.8.8.8\nDNS2=1.1.1.1\n', r.stdout)
         cmds = [s.split(' ', 1)[1] for s in sent]
+        # K58: the IMS bearer SMS needs, once the radio is on and before the registration wait
+        self.assertLess(cmds.index('AT+CFUN?'), cmds.index('AT+CAVIMS=1'), cmds)
+        self.assertLess(cmds.index('AT+CAVIMS=1'), cmds.index('AT+CEREG?'), cmds)
         self.assertEqual(cmds.count('AT+CGACT=1,1'), 2, cmds)
         self.assertNotIn('AT+CGACT?', cmds)
         self.assertFalse([c for c in cmds if c.startswith('AT+CGACT=0')], cmds)
@@ -446,6 +457,160 @@ at() {
         self.assertIn('[ -n "$iid" ] || v6_off', body[:netifd])
         self.assertIn('[ -n "$iid" ] && v6_up "$iid"', body[netifd:])
         self.assertNotIn('MU300_PDP_TYPE:-IP}" != IP', body)   # the fork's replacement for v6_up
+
+    # radio_on (K57, K65, K66). The radio's state: "+CFUN: $CFUN" (0 by default, "none" = no answer) until AT+SFUN=4
+    # has been answered, then $RF_LAG more "+CFUN: 0" and "+CFUN: 1" from then on. AT+SFUN=4 takes $SFUN_DELAY s.
+    RADIO = r'''
+at() {
+    echo "$SECONDS $1" >> "$STUBLOG/at"
+    case $1 in
+        'AT+CFUN?')
+            [ "${CFUN:-}" = none ] && { echo "mu300-at: modem returned no final response" >&2; return 1; }
+            if [ -e "$STUBLOG/rf" ]; then
+                k=$(cat "$STUBLOG/rf")
+                if [ "$k" -gt 0 ]; then echo $((k - 1)) > "$STUBLOG/rf"; printf '+CFUN: 0\nOK\n'
+                else printf '+CFUN: 1\nOK\n'; fi
+            else
+                printf '+CFUN: %s\nOK\n' "${CFUN:-0}"
+            fi ;;
+        'AT+SFUN=4') sleep "${SFUN_DELAY:-0}"; echo "${RF_LAG:-0}" > "$STUBLOG/rf"; printf 'OK\n' ;;
+        *) printf 'OK\n' ;;
+    esac
+}
+'''
+
+    def radio(self, code, urc='+CEREG: 2\n', **env):
+        """CODE against RADIO, with nr0's URC log already written (URC=None: no log) and no plugin unless the test
+        names one (MU300_PLUGIN_LOCK)."""
+        log = self.tmp / 'stty_nr0.log'
+        log.unlink(missing_ok=True)
+        if urc is not None:
+            log.write_text(urc)
+        env.setdefault('MU300_PLUGIN_LOCK', self.tmp / 'no-plugin')
+        r, sent = self.lib(code, modem=self.RADIO, MU300_URC_LOG=log, **env)
+        return r, sent, [s.split(' ', 1)[1] for s in sent]
+
+    def radio_log(self):
+        p = self.tmp / 'run' / 'mu300' / 'radio.log'
+        return p.read_text() if p.exists() else ''
+
+    def test_ril_handshake_once_per_boot(self):
+        """AT+SMMSWAP=0 is nr1's first command, sent through the nr1 daemon once per boot (K57)."""
+        marker = self.tmp / 'run' / 'mu300-ril-handshake'
+        r, sent, cmds = self.radio('radio_on; radio_on; echo ok', RF_LAG=0)
+        self.assertIn('ok', r.stdout, r.stderr)
+        self.assertEqual(cmds.count('AT+SMMSWAP=0'), 1, cmds)
+        self.assertEqual(cmds[0], 'AT+SMMSWAP=0', cmds)
+        self.assertTrue(sent[0].startswith('nr1 '), sent)       # mu300-at to nr1, not at() (nr2)
+        self.assertEqual((self.tmp / 'nr1env').read_text().strip(), f'dir={self.tmp}/run/mu300-at wait=1')
+        self.assertTrue(marker.exists())
+        self.assertEqual(cmds.count('AT+SFUN=4'), 1, cmds)       # the second call found the radio on
+        # no answer to the handshake: the round ends there, nothing else is sent and the next round tries again
+        marker.unlink()
+        r, sent, cmds = self.radio('rc=0; radio_on || rc=$?; echo "rc=$rc"', SMMSWAP='none')
+        self.assertIn('rc=1', r.stdout, r.stderr)
+        self.assertEqual(cmds, ['AT+SMMSWAP=0'])
+        self.assertFalse(marker.exists())
+        self.assertIn('RIL handshake', self.radio_log())
+
+    def test_waits_for_nr0_first(self):
+        """Nothing is sent before nr0 has said something (the CP is still starting); the wait is bounded."""
+        r, sent, cmds = self.radio(f'(sleep 1; echo "+CEREG: 2" > "{self.tmp}/stty_nr0.log") &\nradio_on; echo ok',
+                                   urc=None, MU300_CFUN_WAIT=10)
+        self.assertIn('ok', r.stdout, r.stderr)
+        first = [s for s in sent if s[0].isdigit()][0]
+        self.assertGreaterEqual(int(first.split()[0]), 1, sent)
+        # nr0 never speaks: go ahead after MU300_CFUN_WAIT s anyway
+        r, sent, cmds = self.radio('radio_on; echo "ok t=$SECONDS"', urc=None, MU300_CFUN_WAIT=1)
+        self.assertRegex(r.stdout, r'ok t=[12]\b', r.stderr)
+        self.assertIn('AT+SFUN=4', cmds)
+
+    def test_no_sfun_when_cfun_is_unanswered(self):
+        """A channel that does not answer AT+CFUN? gets no AT+SFUN either (K57)."""
+        r, sent, cmds = self.radio('rc=0; radio_on || rc=$?; echo "rc=$rc"', CFUN='none')
+        self.assertIn('rc=1', r.stdout, r.stderr)
+        self.assertFalse([c for c in cmds if c.startswith('AT+SFUN')], cmds)
+        self.assertIn('no answer to AT+CFUN?', self.radio_log())
+
+    def test_radio_comes_up_late_without_a_power_cycle(self):
+        """After AT+SFUN=4 the radio says 0 twice and then 1: wait for it, no SFUN=2 off/on cycle (K57)."""
+        r, sent, cmds = self.radio('rc=0; radio_on || rc=$?; echo "rc=$rc t=$SECONDS"', RF_LAG=2)
+        self.assertRegex(r.stdout, r'rc=0 t=[4-6]\b', r.stderr)
+        self.assertEqual(cmds.count('AT+SFUN=4'), 1, cmds)
+        self.assertNotIn('AT+SFUN=2', cmds)
+        self.assertEqual(cmds.count('AT+CFUN?'), 4, cmds)     # before, then 0, 0, 1
+        self.assertRegex(self.radio_log(), r'radio on [4-6] s after AT\+SFUN=4')
+        # already on (and the handshake done this boot): one question, nothing switched
+        r, sent, cmds = self.radio('radio_on; echo ok', CFUN=1)
+        self.assertEqual(cmds, ['AT+CFUN?'])
+
+    def test_two_radio_on_one_state_machine(self):
+        """The warm-up and the dial meet: the second radio_on waits for the first instead of running its own CFUN/SFUN
+        sequence beside it, and then finds the radio on (K57)."""
+        r, sent, cmds = self.radio('radio_on & a=$!; radio_on & b=$!\n'
+                                   'ra=0; wait $a || ra=$?; rb=0; wait $b || rb=$?; echo "ra=$ra rb=$rb"',
+                                   SFUN_DELAY=1)
+        self.assertIn('ra=0 rb=0', r.stdout, r.stderr)
+        self.assertEqual(cmds.count('AT+SMMSWAP=0'), 1, cmds)
+        self.assertEqual(cmds.count('AT+SFUN=4'), 1, cmds)
+        self.assertEqual(cmds.count('AT+CFUN?'), 3, cmds)    # the first: 0, then 1; the second: 1
+        self.assertFalse((self.tmp / 'run' / 'mu300-radio-on.lock').exists())
+
+    def test_early_lock_replay_hook(self):
+        """K65: the plugin's lock replay runs after the handshake and the radio-off answer, before AT+SFUN=4; only
+        when the plugin is installed and has not replayed yet; a failed replay never stops the radio."""
+        hook = self.tmp / 'lock'
+        hook.write_text('#!/bin/sh\necho "- hook $*" >> "$STUBLOG/at"\nexit "${HOOK_RC:-0}"\n')
+        hook.chmod(0o755)
+        pending = self.tmp / 'run' / 'unisoc-modem-early-hook-pending'
+        pending.parent.mkdir(exist_ok=True)
+        pending.touch()
+        r, sent, cmds = self.radio('radio_on; echo ok', MU300_PLUGIN_LOCK=hook)
+        self.assertIn('ok', r.stdout, r.stderr)
+        self.assertEqual(cmds[:4], ['AT+SMMSWAP=0', 'AT+CFUN?', 'hook replay early', 'AT+SFUN=4'], cmds)
+        self.assertFalse(pending.exists())          # the plugin's generic worker may use nr1 now
+        # no plugin: no hook
+        r, sent, cmds = self.radio('radio_on; echo ok')
+        self.assertNotIn('hook replay early', cmds)
+        self.assertIn('AT+SFUN=4', cmds)
+        # the plugin already replayed its locks this boot
+        (self.tmp / 'run' / 'unisoc-modem-lock-replay-done').touch()
+        r, sent, cmds = self.radio('radio_on; echo ok', MU300_PLUGIN_LOCK=hook)
+        self.assertNotIn('hook replay early', cmds)
+        (self.tmp / 'run' / 'unisoc-modem-lock-replay-done').unlink()
+        # a failed replay: said in radio.log, the radio comes on all the same
+        r, sent, cmds = self.radio('radio_on; echo ok', MU300_PLUGIN_LOCK=hook, HOOK_RC=1)
+        self.assertIn('ok', r.stdout, r.stderr)
+        self.assertIn('AT+SFUN=4', cmds)
+        self.assertIn('early lock replay unverified; late fallback remains armed', self.radio_log())
+        # a failed radio_on keeps the marker: the worker stays away from nr1 until a round succeeds
+        pending.touch()
+        r, sent, cmds = self.radio('radio_on || echo failed', CFUN='none', MU300_PLUGIN_LOCK=hook)
+        self.assertIn('failed', r.stdout, r.stderr)
+        self.assertNotIn('hook replay early', cmds)
+        self.assertTrue(pending.exists())
+
+    def test_radio_on_subcommand(self):
+        """K66: `mobile-data radio-on` switches the radio on and asks for the IMS bearer (K58), nothing more."""
+        text = (BIN / 'mobile-data').read_text()
+        case = text[text.index('\ncase "${1:-status}" in'):]
+        self.assertRegex(case, r'\n    radio-on\)')
+        r, sent, cmds = self.radio('main() { set -- radio-on' + case + '\n}\nmain; echo ok',
+                                   MU300_AT_DEV='/dev/null')
+        self.assertIn('ok', r.stdout, r.stderr)
+        self.assertEqual(cmds, ['AT+SMMSWAP=0', 'AT+CFUN?', 'AT+SFUN=4', 'AT+CFUN?', 'AT+CAVIMS=1'])
+
+    def test_background_at_owns_the_lock_itself(self):
+        """R30: at() on the direct path (no daemon) in a background subshell writes its own pid into the AT lock, not
+        the parent's: the lock owner has to be the process that is reading the channel."""
+        r, _ = self.lib('unset -f at; . "$STUBLOG/mobile-data.lib"\n'
+                        '( at AT 2 >/dev/null ) & bg=$!\n'
+                        f'sleep 0.5; echo "owner=$(cat "{self.tmp}/run/mu300-at/owner/pid") bg=$bg parent=$$"; wait',
+                        MU300_AT_DEV='/dev/null')
+        m = re.search(r'owner=(\d+) bg=(\d+) parent=(\d+)', r.stdout)
+        self.assertTrue(m, r.stdout + r.stderr)
+        self.assertEqual(m.group(1), m.group(2))
+        self.assertNotEqual(m.group(1), m.group(3))
 
 
 class Bootmark(ShellTest):

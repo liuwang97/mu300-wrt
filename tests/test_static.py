@@ -209,7 +209,14 @@ class Rules(unittest.TestCase):
         # K16, K17, K18, K21: S19 (the dial at S20 asks the daemon), nr1 and nr2 only, nr2 without a URC channel
         f = (TOP / 'openwrt' / 'overlay' / 'etc' / 'init.d' / 'mu300-atd').read_text()
         self.assertRegex(f, r'(?m)^START=19$')
-        self.assertEqual(re.findall(r'procd_open_instance (\S+)', f), ['atd', 'atd2'])
+        # K20: radio-warmup is the third instance, and it opens no channel: it waits for nr1's daemon and asks it
+        self.assertEqual(re.findall(r'procd_open_instance (\S+)', f), ['atd', 'atd2', 'radio-warmup'])
+        warm = f[f.index('procd_open_instance radio-warmup'):]
+        warm = warm[:warm.index('procd_close_instance')]
+        self.assertIn('until [ -p /run/mu300-at/cmd ]', warm)
+        self.assertIn('exec /opt/mu300/bin/mobile-data radio-on', warm)
+        self.assertNotIn('stty_nr', warm)
+        self.assertNotIn('respawn', warm)   # one round per start; netifd's dial and watch retry
         self.assertIn('wait_and_exec /dev/stty_nr1 /opt/mu300/bin/mu300-atd', f)
         self.assertIn('wait_and_exec /dev/stty_nr2 /opt/mu300/bin/mu300-atd', f)
         self.assertIn('procd_set_param env MU300_AT_DEV=/dev/stty_nr2 MU300_AT_DIR=/run/mu300-at2 '
