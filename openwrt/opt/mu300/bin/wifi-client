@@ -2,10 +2,17 @@
 # Join an existing Wi-Fi network with the built-in radio (station mode).
 #
 #   wifi-client scan                 list the networks in range
-#   wifi-client connect SSID [PASS]  join one (no PASS = open network) and remember it
+#   wifi-client connect SSID         join one and remember it; asks for the password (nothing shown as you type,
+#                                    empty for an open network)
+#   wifi-client connect SSID -       the password from stdin (one line): printf '%s\n' "$PW" | wifi-client ...
+#   wifi-client connect SSID --password-file FILE   the first line of FILE
+#   wifi-client connect SSID PASS    works, but sudo writes the whole command line, password and all, to the
+#                                    system journal, and ps shows it to every user while it runs
 #   wifi-client status               what it is connected to, signal, address
-#   wifi-client up                   join the remembered network again (used at boot)
-#   wifi-client disconnect           leave, and put the hotspot back if it was running
+#   wifi-client up                   join the saved network if it is enabled (used at boot)
+#   wifi-client reconnect            enable the saved network again and join it
+#   wifi-client disconnect [--keep]  leave and put the hotspot back; the saved network is no longer joined at
+#                                    boot either (--keep: it still is)
 #   wifi-client forget               disconnect and delete the saved network
 #   wifi-client scan-mode on|off     off: hotspot as usual. on: the next boot (that one only) leaves the radio a
 #                                    station, so networks can be listed and joined from the menu; the hotspot
@@ -18,28 +25,36 @@
 # script joins it before mu300-hotspot starts, and the hotspot is skipped while it holds the radio. Going the
 # other way (back to the hotspot) works without a reboot, because that direction is the one hostapd can do.
 #
-# WPA2 networks work. WPA3/SAE does not: the access point rejects the association (status 1), so a Wi-Fi 7 or
-# WPA3-only network cannot be joined with this driver.
+# WPA2 networks work, and so do WPA2/WPA3 mixed ones (as WPA2). WPA3-only (SAE) needs SAE from the driver as
+# well as from wpa_supplicant, and the SC2355's has none ("wpa_cli get_capability key_mgmt" leaves SAE out; the
+# access point rejects an association attempt with status 1, FINDINGS 14b), so a Wi-Fi 7 or WPA3-only network is
+# refused as soon as the supplicant's scan shows that is what it is. A driver that offers SAE gets it.
 #
 # The Wi-Fi route gets a lower metric than mobile data (default 50 against 100), so while Wi-Fi is connected the
-# device uses it and the SIM stays idle; unplugging the Wi-Fi falls back to the modem by itself.
+# device uses it and the SIM stays idle; unplugging the Wi-Fi falls back to the modem by itself. The connection is
+# shared with the USB clients as mobile data's is (NAT on wlan0; on OpenWrt wlan0 joins fw4's wan zone).
+# With the VPN on, its policy routing still takes their traffic into the tunnel, and its kill switch covers wlan0.
 export PATH="$PATH:/opt/mu300/bin:/opt/mu300/busybox-bin:/usr/sbin:/sbin"
 IFACE=${MU300_WIFI_IFACE:-wlan0}
-CONF=/etc/mu300/wifi-client.conf
-WPACONF=/run/mu300-wifi-client.conf
-LEASE=/run/mu300-wifi-client.dhcp
-AP_FLAG=/run/mu300-wifi-client-had-ap
+R=${MU300_SYSROOT:-}   # (MU300_SYSROOT, MU300_VPN_CMD: for tests/, a fake / and a stub)
+CONF=$R/etc/mu300/wifi-client.conf
+WPACONF=$R/run/mu300-wifi-client.conf
+LEASE=$R/run/mu300-wifi-client.dhcp
+AP_FLAG=$R/run/mu300-wifi-client-had-ap
 # while this exists the hotspot service refuses to start: the radio cannot be both at once, and at boot the
 # hotspot would otherwise come up right after this script joined a network and take the radio back
-ACTIVE=/run/mu300-wifi-client.active
+ACTIVE=$R/run/mu300-wifi-client.active
+# the NAT that shares this uplink with the LAN (Ubuntu; fw4 does it on OpenWrt)
+NAT=mu300_wifi_nat
+VPN_CMD=${MU300_VPN_CMD:-/opt/mu300/bin/mu300-vpn}
 # set by "wifi-client scan-mode on": keeps the hotspot from starting at the next boot, so the radio stays a
 # station and can look for networks. It survives the reboot on purpose, and that boot takes it
 # (mu300-wifi-scan-mode.service: "scan-mode boot") into SCANRUN, for that boot alone. It used to stay until a
 # network was joined: someone who rebooted into it from an SSH session over the hotspot, and joined nothing,
 # found the hotspot gone at every boot after, and with it the way in. Now the next boot has the hotspot again,
 # and this one gets it back after SCAN_TIMEOUT when nothing was joined.
-SCANMODE=/etc/mu300/wifi-scan-mode
-SCANRUN=/run/mu300-wifi-scan-mode
+SCANMODE=$R/etc/mu300/wifi-scan-mode
+SCANRUN=$R/run/mu300-wifi-scan-mode
 SCAN_TIMEOUT=${MU300_SCAN_TIMEOUT:-10min}
 
 # --------------------------------------------------------------------- udhcpc calls this script back with an
@@ -72,10 +87,10 @@ set -u
 say() { printf '%s\n' "$*"; }
 die() { printf 'wifi-client: %s\n' "$*" >&2; exit 1; }
 [ "$(id -u)" = 0 ] || die "run as root"
-[ -e "/sys/class/net/$IFACE" ] || die "$IFACE does not exist (is the Wi-Fi driver loaded? mu300-wifi)"
+[ -e "$R/sys/class/net/$IFACE" ] || die "$IFACE does not exist (is the Wi-Fi driver loaded? mu300-wifi)"
 
 conf_get() { [ -r "$CONF" ] && sed -n "s/^$1=//p" "$CONF" | tail -n1; }
-is_openwrt() { [ -e /etc/openwrt_release ]; }
+is_openwrt() { [ -e "$R/etc/openwrt_release" ]; }
 
 ap_active() {  # ask the interface, not only the service: hostapd can also be running without it
     [ "$(iw dev "$IFACE" info 2>/dev/null | sed -n 's/^[[:space:]]*type //p')" = AP ] && return 0
@@ -137,8 +152,57 @@ start_ap() {
     fi
 }
 
+# ------------------------------------------------------------------ sharing the connection with the LAN
+# mobile-data sets up its own NAT for sipa_eth0; nothing did for wlan0, so a device whose only uplink was the Wi-Fi
+# client left its USB clients with no internet (ip_forward 0, no masquerade). Answers come back in; nothing from
+# the other network is forwarded into the LAN otherwise (it would only need a route to 192.168.x.0/24 via us).
+# The VPN is left alone: its policy routing sends client traffic into the tunnel before this NAT ever sees it,
+# and its kill switch (mu300-vpn, priority filter - 5) drops what would leave on wlan0 while the tunnel is down -
+# a drop in any chain is final, whatever this table accepts.
+share_uplink() {
+    if is_openwrt; then
+        wan_zone
+        return 0
+    fi
+    sysctl -qw net.ipv4.ip_forward=1 2>/dev/null || true
+    nft -f - <<NFT || say "could not set up the NAT for the LAN clients (nft)"
+table ip $NAT
+delete table ip $NAT
+table ip $NAT {
+    chain postrouting {
+        type nat hook postrouting priority srcnat; policy accept;
+        oifname "$IFACE" masquerade
+    }
+    chain forward {
+        type filter hook forward priority filter; policy accept;
+        iifname "$IFACE" ct state established,related accept
+        iifname "$IFACE" counter drop
+        oifname "$IFACE" tcp flags syn tcp option maxseg size set rt mtu
+    }
+}
+NFT
+}
+
+unshare_uplink() {
+    is_openwrt || nft delete table ip "$NAT" 2>/dev/null || true
+}
+
+# OpenWrt: fw4 masquerades for the wan zone, and an interface in no zone gets the defaults (no forwarding to it,
+# and input accepted from it). wlan0 in the wan zone fixes both. When it is the hotspot, it is a port of br-lan
+# and fw4 only ever sees br-lan, so the entry does nothing then; done once, left in place (as mu300-vpn does for
+# its tunnel).
+wan_zone() {
+    zone=$(uci -q show firewall 2>/dev/null | sed -n "s/^firewall\.@zone\[\([0-9]*\)\]\.name='wan'$/\1/p" | head -1)
+    [ -n "$zone" ] || return 0
+    uci -q get "firewall.@zone[$zone].device" 2>/dev/null | tr ' ' '\n' | grep -qx "$IFACE" && return 0
+    uci add_list "firewall.@zone[$zone].device=$IFACE" 2>/dev/null || return 0
+    uci commit firewall 2>/dev/null || return 0
+    "$R/etc/init.d/firewall" reload >/dev/null 2>&1 || true
+}
+
 stop_client() {
     rm -f "$ACTIVE"
+    unshare_uplink
     # the lease handler put the network's resolver on this link; leaving it there points DNS at a network the
     # device is no longer on
     command -v resolvectl >/dev/null 2>&1 && resolvectl revert "$IFACE" 2>/dev/null || true
@@ -157,10 +221,17 @@ scan() {
         wpa_cli -i "$IFACE" scan >/dev/null 2>&1
         sleep 4
         wpa_cli -i "$IFACE" scan_results 2>/dev/null | awk -F'\t' '
-            NR > 1 && NF >= 5 && $5 != "" {
-                enc = ($4 ~ /SAE/) ? "WPA3" : ($4 ~ /WPA|RSN/) ? "WPA2" : "open"
+            NR > 1 && NF >= 5 {
+                f = $4
+                if (f ~ /SAE/ && f ~ /PSK/) enc = "WPA2/3"
+                else if (f ~ /SAE/) enc = "WPA3"
+                else if (f ~ /PSK/) enc = "WPA2"
+                else if (f ~ /OWE/) enc = "OWE"
+                else if (f ~ /EAP/) enc = "EAP"
+                else if (f ~ /WEP/) enc = "WEP"
+                else enc = "open"
                 print $3 "\t" enc "\t" $5
-            }' | sort -rn | awk -F'\t' '!seen[$3]++ { printf "%4s dBm  %-5s  %s\n", $1, $2, $3 }'
+            }' | scan_list
         return 0
     fi
     # the first scan after the radio changes mode often comes back busy or empty
@@ -182,14 +253,67 @@ scan() {
                "$(iw dev "$IFACE" info 2>/dev/null | sed -n 's/^[[:space:]]*type //p')" >&2
            return 1 ;;
     esac
+    # Only the element lines of the BSS itself, one tab in: further in, a reduced neighbour report has
+    # "BSSID: 00:00:00:00:00:00", which an unanchored "SSID: " took for the name.
     printf '%s\n' "$out" | awk '
-        /^BSS /            { if (ssid != "") print sig "\t" enc "\t" ssid; ssid = ""; enc = "open"; sig = "" }
-        /signal:/          { sig = int($2) }
-        /SSID: /           { $1 = ""; sub(/^ /, ""); ssid = $0 }
-        /RSN:|WPA:/        { enc = "WPA2" }
-        /capability:.*PRIVACY/ { if (enc == "open") enc = "WEP" }
-        END                { if (ssid != "") print sig "\t" enc "\t" ssid }
-    ' | sort -rn | awk -F'\t' '!seen[$3]++ && $3 != "" { printf "%4s dBm  %-5s  %s\n", $1, $2, $3 }'
+        function flush() {
+            if (!seen_bss) return
+            if (rsn || wpa) {
+                if (sae && psk) enc = "WPA2/3"; else if (sae) enc = "WPA3"; else if (psk) enc = (rsn ? "WPA2" : "WPA")
+                else if (owe) enc = "OWE"; else if (eap) enc = "EAP"; else enc = (rsn ? "WPA2" : "WPA")
+            } else enc = priv ? "WEP" : "open"
+            print sig "\t" enc "\t" ssid
+        }
+        /^BSS /                  { flush(); seen_bss = 1; ssid = ""; sig = ""; rsn = wpa = priv = psk = sae = owe = eap = 0 }
+        /^\tsignal: /            { sig = int($2) }
+        /^\tSSID: /              { ssid = substr($0, 8) }
+        /^\tcapability: .*Privacy/ { priv = 1 }
+        /^\tRSN:/                { rsn = 1 }
+        /^\tWPA:/                { wpa = 1 }
+        /\* Authentication suites:/ {
+            sub(/.*Authentication suites: */, "")
+            n = split($0, a, " ")
+            for (i = 1; i <= n; i++) {
+                if (a[i] ~ /SAE/) sae = 1
+                else if (a[i] ~ /PSK/) psk = 1
+                else if (a[i] ~ /OWE/) owe = 1
+                else if (a[i] ~ /802\.1X|EAP|SUITE-B/) eap = 1
+            }
+        }
+        END                      { flush() }
+    ' | scan_list
+}
+
+# "SIGNAL<tab>LABEL<tab>NAME" lines, names as iw and wpa_cli escape them -> the list, strongest first, one line
+# per name, no hidden networks
+scan_list() {
+    unescape 3 | sort -t "$(printf '\t')" -k1,1 -rn | awk -F'\t' '
+        $3 == "" || $3 == "00:00:00:00:00:00" || $3 ~ /^(\\x00)+$/ { next }
+        !seen[$3]++ { printf "%4s dBm  %-6s  %s\n", $1, $2, $3 }'
+}
+
+# unescape COLUMN: iw and wpa_cli print every byte of a name outside printable ASCII as \xNN (wpa_cli also \\
+# and \"), so a UTF-8 name came out as \xc3\x87... - decode that. Control characters (and NUL) stay escaped: they
+# would act on the terminal. LC_ALL=C: gawk would otherwise turn %c of 0xc3 into the character U+00C3.
+unescape() {
+    LC_ALL=C awk -F'\t' -v OFS='\t' -v col="$1" '
+        function hv(c) { return index("0123456789abcdef", tolower(c)) - 1 }
+        {
+            s = $col; o = ""
+            while ((i = index(s, "\\")) > 0) {
+                o = o substr(s, 1, i - 1); c = substr(s, i + 1, 1); h = substr(s, i + 2, 2)
+                if (c == "x" && h ~ /^[0-9A-Fa-f][0-9A-Fa-f]$/) {
+                    n = hv(substr(h, 1, 1)) * 16 + hv(substr(h, 2, 1))
+                    o = o ((n >= 32 && n != 127) ? sprintf("%c", n) : "\\x" h)
+                    s = substr(s, i + 4)
+                } else if (c == "\\" || c == "\"") {
+                    o = o c; s = substr(s, i + 2)
+                } else {
+                    o = o "\\"; s = substr(s, i + 1)
+                }
+            }
+            $col = o s; print
+        }'
 }
 
 dhcp_run() {  # Ubuntu ships busybox without the applet symlinks, so udhcpc may only exist as "busybox udhcpc"
@@ -202,47 +326,104 @@ dhcp_run() {  # Ubuntu ships busybox without the applet symlinks, so udhcpc may 
     fi
 }
 
-wait_connected() {  # wait_connected SECONDS
+# Is every access point of that name in the supplicant's scan results WPA3-only (SAE and no PSK)? Without SAE
+# here such a network can never be joined, and the supplicant would just keep trying until the timeout.
+sae_only() {
+    wpa_cli -i "$IFACE" scan_results 2>/dev/null | unescape 5 | WANT=$1 awk -F'\t' '
+        NR > 1 && $5 == ENVIRON["WANT"] { n++; if ($4 !~ /SAE/ || $4 ~ /PSK/) other = 1 }
+        END { exit !(n && !other) }'
+}
+
+wait_connected() {  # wait_connected SECONDS SSID SAE(1 = this side can do SAE) -> 0 joined, 1 not, 2 WPA3-only
     n=0
     while [ "$n" -lt "$1" ]; do
         state=$(wpa_cli -i "$IFACE" status 2>/dev/null | sed -n 's/^wpa_state=//p')
         [ "$state" = COMPLETED ] && return 0
+        [ "$3" = 1 ] || ! sae_only "$2" || return 2
         n=$((n + 1)); sleep 1
     done
     return 1
 }
 
 save_network() {  # save_network SSID [PASS]
-    mkdir -p /etc/mu300
+    mkdir -p "$R/etc/mu300"
     umask 077
     { echo "SSID=$1"; [ -n "${2:-}" ] && echo "PSK=$2"; echo "ENABLE=1"
       echo "METRIC=$(conf_get METRIC | grep -E '^[0-9]+$' || echo 50)"; } > "$CONF"
 }
 
+set_enable() {  # set_enable 0|1: whether "up" (the boot) joins the saved network
+    [ -f "$CONF" ] || return 0
+    umask 077
+    { grep -v '^ENABLE=' "$CONF"; echo "ENABLE=$1"; } > "$CONF.new" && mv -f "$CONF.new" "$CONF"
+}
+
+hex() { printf '%s' "$1" | od -An -v -tx1 | tr -d ' \n'; }
+
+# the supplicant's network block. The name goes in hex, so any byte (quotes, UTF-8) is taken as it is. The
+# passphrase goes in as wpa_passphrase's hash, handed to it on stdin (an argument would be on its command line
+# for ps), and its "#psk=" comment with the plain passphrase is left out. SAE cannot use the hash: with SAE it
+# also goes in as sae_password, which is why the file is root's alone.
+network_block() {  # network_block SSID PASS SAE
+    printf 'network={\n\tssid=%s\n' "$(hex "$1")"
+    if [ -z "$2" ]; then
+        printf '\tkey_mgmt=NONE\n'
+    else
+        h=$(printf '%s\n' "$2" | wpa_passphrase "$1" 2>/dev/null | sed -n 's/^[[:space:]]*psk=\([0-9a-fA-F]\{64\}\)$/\1/p')
+        [ -n "$h" ] || return 1
+        printf '\tpsk=%s\n' "$h"
+        if [ "$3" = 1 ]; then
+            # WPA2, WPA2/WPA3 and WPA3-only networks alike; WPA3 requires management frame protection
+            printf '\tkey_mgmt=WPA-PSK SAE\n\tieee80211w=1\n\tsae_password=%s\n' "$(hex "$2")"
+        else
+            printf '\tkey_mgmt=WPA-PSK\n'
+        fi
+    fi
+    printf '}\n'
+}
+
 connect() {  # connect SSID [PASS]
     ssid=$1; psk=${2:-}
     command -v wpa_supplicant >/dev/null || die "wpa_supplicant is not installed"
+    # before anything is touched: a typo must not cost the connection that is up
+    if [ -n "$psk" ]; then
+        [ ${#psk} -ge 8 ] && [ ${#psk} -le 63 ] || die "a WPA passphrase is 8 to 63 characters long"
+    fi
     stop_client
     if ! prepare_station; then
         save_network "$ssid" "$psk"
         ap_mode_hint saved
         exit 3
     fi
+    # a VPN with the kill switch has it up before this uplink can carry anything (as mobile-data does)
+    [ -x "$VPN_CMD" ] && "$VPN_CMD" guard >/dev/null 2>&1 || true
 
+    # the supplicant first, with no network: whether it can do SAE depends on the driver too, and only the
+    # running supplicant can say
     umask 077
-    if [ -n "$psk" ]; then
-        [ ${#psk} -ge 8 ] || die "a WPA passphrase must be at least 8 characters"
-        # wpa_passphrase hashes it, so the plain passphrase is not written to /run
-        { echo "ctrl_interface=/run/wpa_supplicant"; wpa_passphrase "$ssid" "$psk"; } > "$WPACONF" \
-            || die "could not build the wpa_supplicant configuration"
-    else
-        printf 'ctrl_interface=/run/wpa_supplicant\nnetwork={\n\tssid="%s"\n\tkey_mgmt=NONE\n}\n' "$ssid" > "$WPACONF"
-    fi
-
+    printf 'ctrl_interface=/run/wpa_supplicant\n' > "$WPACONF"
     wpa_supplicant -B -i "$IFACE" -c "$WPACONF" >/dev/null 2>&1 || die "wpa_supplicant did not start"
-    if ! wait_connected 25; then
+    n=0; caps=
+    while [ "$n" -lt 5 ]; do
+        caps=$(wpa_cli -i "$IFACE" get_capability key_mgmt 2>/dev/null) && [ -n "$caps" ] && break
+        n=$((n + 1)); sleep 1
+    done
+    sae=0
+    case " $caps " in *" SAE "*) [ -n "$psk" ] && sae=1 ;; esac
+    # sae_pwe=2: hunting-and-pecking or hash-to-element, whichever the access point uses (6 GHz needs H2E)
+    if ! { printf 'ctrl_interface=/run/wpa_supplicant\n'; [ "$sae" = 1 ] && printf 'sae_pwe=2\n'; network_block "$ssid" "$psk" "$sae"; } > "$WPACONF.new"; then
+        rm -f "$WPACONF.new"; stop_client; [ -e "$AP_FLAG" ] && start_ap
+        die "could not build the wpa_supplicant configuration"
+    fi
+    mv -f "$WPACONF.new" "$WPACONF"
+    wpa_cli -i "$IFACE" reconfigure >/dev/null 2>&1
+
+    wait_connected 25 "$ssid" "$sae"; rc=$?
+    if [ "$rc" != 0 ]; then
         stop_client; [ -e "$AP_FLAG" ] && start_ap
-        die "could not join '$ssid' (wrong password, out of range, or WPA3/SAE - which this driver cannot do)"
+        [ "$rc" = 2 ] && die "'$ssid' is a WPA3-only network (SAE), and this Wi-Fi driver cannot do WPA3, so it" \
+            "cannot be joined. Set the router to WPA2/WPA3 mixed mode (or WPA2), or join another network."
+        die "could not join '$ssid' (wrong password, or out of range)"
     fi
 
     say "joined $ssid, asking for an address"
@@ -253,6 +434,7 @@ connect() {  # connect SSID [PASS]
         die "joined $ssid but got no address from it (no DHCP server?)"
     fi
 
+    share_uplink
     save_network "$ssid" "$psk"
     rm -f "$SCANMODE" "$SCANRUN"
     : > "$ACTIVE"
@@ -266,37 +448,82 @@ status() {
     if [ -n "$cur" ]; then
         sig=$(iw dev "$IFACE" link 2>/dev/null | sed -n 's/.*signal: //p' | head -1)
         printf 'mode        client (connected)\n'
-        printf 'network     %s\n' "$cur"
+        printf 'network     %s\n' "$(printf '%s\n' "$cur" | unescape 1)"
         [ -n "$sig" ] && printf 'signal      %s\n' "$sig"
         printf 'address     %s\n' "$(ip -4 -br addr show "$IFACE" 2>/dev/null | awk '{print $3}')"
         printf 'route       %s\n' "$(ip -4 route show default dev "$IFACE" 2>/dev/null | head -1)"
     elif ap_active; then
         printf 'mode        hotspot (this device is the access point)\n'
-        printf 'network     %s\n' "$(sed -n 's/^SSID=//p' /etc/mu300/hotspot.conf 2>/dev/null | head -1)"
+        printf 'network     %s\n' "$(sed -n 's/^SSID=//p' "$R/etc/mu300/hotspot.conf" 2>/dev/null | head -1)"
     else
         printf 'mode        off (neither hotspot nor connected)\n'
     fi
     [ -e "$SCANMODE" ] && printf 'scan mode   armed: the hotspot stays off at the next boot\n'
     [ -e "$SCANRUN" ] && printf 'scan mode   this boot: the hotspot is off until a network is joined (at most %s)\n' "$SCAN_TIMEOUT"
     saved=$(conf_get SSID)
-    [ -n "$saved" ] && printf 'saved       %s (rejoined at boot when ENABLE=1)\n' "$saved"
+    if [ -n "$saved" ]; then
+        if [ "$(conf_get ENABLE)" = 1 ]; then printf 'saved       %s (joined at boot)\n' "$saved"
+        else printf 'saved       %s (not joined at boot since "disconnect": wifi-client reconnect)\n' "$saved"; fi
+    fi
     true
+}
+
+# the password for "connect", from wherever the command line says; the argument form is the one sudo logs
+read_password() {  # read_password SSID [ - | --password-file FILE | PASS ]
+    case ${2-} in
+        -)  IFS= read -r pw || true ;;
+        --password-file)
+            [ -n "${3:-}" ] && [ -r "$3" ] || die "cannot read the password file '${3:-}'"
+            IFS= read -r pw < "$3" || true ;;
+        '') pw=
+            if [ -t 0 ]; then
+                printf 'password for %s (empty for an open network, nothing is shown as you type): ' "$1" >&2
+                trap 'stty echo 2>/dev/null; exit 130' INT TERM
+                stty -echo 2>/dev/null
+                IFS= read -r pw || true
+                stty echo 2>/dev/null
+                trap - INT TERM
+                printf '\n' >&2
+            fi ;;
+        *)  pw=$2
+            printf '%s\n' "wifi-client: note: a password on the command line ends up in the system journal (sudo logs" \
+                "             the whole command) and is shown by ps while this runs. Leave it out and type it when" \
+                "             asked:  sudo wifi-client connect \"$1\"   (or pipe it in with \"-\", or --password-file FILE)" >&2 ;;
+    esac
+    # a file written on Windows ends its line in CR
+    pw=$(printf '%s' "$pw" | tr -d '\r')
 }
 
 case ${1:-status} in
     scan) scan ;;
-    connect) shift; [ -n "${1:-}" ] || die "usage: wifi-client connect SSID [PASSWORD]"; connect "$@" ;;
+    connect)
+        shift; [ -n "${1:-}" ] || die "usage: wifi-client connect SSID [- | --password-file FILE]"
+        read_password "$@"
+        connect "$1" "$pw" ;;
     up)
         ssid=$(conf_get SSID)
         # not an error: the boot service runs this on every device, most of which have no saved network
-        [ -n "$ssid" ] || { say "no saved network (wifi-client connect SSID PASSWORD)"; exit 0; }
-        [ "$(conf_get ENABLE)" = 1 ] || { say "the saved network is disabled (ENABLE=0 in $CONF)"; exit 0; }
+        [ -n "$ssid" ] || { say "no saved network (wifi-client connect SSID)"; exit 0; }
+        [ "$(conf_get ENABLE)" = 1 ] || { say "the saved network ($ssid) is not joined at boot since it was disconnected; \"wifi-client reconnect\" joins it again"; exit 0; }
         connect "$ssid" "$(conf_get PSK)" ;;
-    disconnect) stop_client; rm -f "$SCANMODE" "$SCANRUN"; start_ap; say "disconnected" ;;
+    reconnect)
+        ssid=$(conf_get SSID)
+        [ -n "$ssid" ] || die "no saved network (wifi-client connect SSID)"
+        set_enable 1
+        connect "$ssid" "$(conf_get PSK)" ;;
+    disconnect)
+        stop_client; rm -f "$SCANMODE" "$SCANRUN"; start_ap
+        if [ "${2:-}" = --keep ]; then
+            say "disconnected (the saved network is still joined at the next boot)"
+        else
+            # without this the next boot joined the network again and left the device with no hotspot
+            set_enable 0
+            say "disconnected; the hotspot stays at the next boot too (\"wifi-client reconnect\" joins the saved network again)"
+        fi ;;
     forget) stop_client; rm -f "$CONF" "$SCANMODE" "$SCANRUN"; start_ap; say "the saved network was deleted" ;;
     scan-mode)
         case ${2:-} in
-            on) mkdir -p /etc/mu300; : > "$SCANMODE"
+            on) mkdir -p "$R/etc/mu300"; : > "$SCANMODE"
                 say "scan mode is armed: reboot, and for that boot the hotspot stays off so the radio can list"
                 say "networks. Joined to none within $SCAN_TIMEOUT, the hotspot comes back; the boot after has it anyway."
                 say "(\"wifi-client scan-mode off\" cancels it, and joining or disconnecting ends it too.)" ;;
@@ -315,6 +542,6 @@ case ${1:-status} in
                else say "scan mode: off"; fi ;;
         esac ;;
     status) status ;;
-    -h|--help|help) sed -n '2,15s/^# \{0,1\}//p' "$0" ;;
-    *) die "usage: wifi-client scan|connect SSID [PASS]|status|up|disconnect|forget" ;;
+    -h|--help|help) sed -n -e '2s/^# //p' -e '4,/^#$/s/^# \{0,1\}//p' "$0" ;;
+    *) die "usage: wifi-client scan|connect SSID [- | --password-file FILE]|status|up|reconnect|disconnect [--keep]|forget|scan-mode" ;;
 esac
