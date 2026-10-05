@@ -11,9 +11,11 @@ lists host-side USB network adapters for optional attachment to the LAN bridge.
 The dashboard follows LuCI's selected language (English, Turkish, or Simplified
 Chinese) without an extra language package. Its colors follow Aurora's existing
 tokens when present, or the official Bootstrap theme's light/dark tokens.
-The package also ships native LuCI menu catalogs (`lmo/`), so its top-level
-menu and submenu remain translated on unrelated LuCI pages where the dashboard
-JavaScript is not loaded. The corresponding editable source is in `po/`.
+The translations are standard LuCI catalogs: English message ids in the
+JavaScript, `po/tr/mu300.po` and `po/zh_Hans/mu300.po` as the editable source.
+`lmo/` is not kept in the tree; the image build compiles the catalogs with
+`tools/po2lmo.py`, so the top-level menu and submenu stay translated on
+unrelated LuCI pages where the dashboard JavaScript is not loaded.
 
 The package does not start or own the modem. Platform-specific access is behind
 small command adapters, so the LuCI and RPC code does not need to change for a
@@ -38,6 +40,11 @@ SIM storage details out of LuCI and lets each firmware supply its own adapter.
 `send` is called as `send --stdin NUMBER` with the text on stdin, so a message
 never becomes a command-line argument; an adapter that only knows
 `send NUMBER TEXT` refuses `--stdin` as a number and sends nothing.
+On openwrt-luci the adapter is the SMS pool (`mu300-sms`, `mu300-smsd`): the
+daemon syncs the SIM into `/etc/mu300/sms-pool` every 30 s and marks the
+messages it reads from the SIM as read, so `sms delete read` (the system's own
+SMS tool) deletes messages that no CLI user has seen. Delete from the panel or
+with `mu300-sms delete`, which touches the SIM only with `--sim`.
 
 Network interface and state paths are also configured in the same UCI section;
 none of the web code requires `sipa_eth0`, `wan`, `br-lan` or `/opt/mu300` from
@@ -91,10 +98,12 @@ kernel or gadget. `once` is consumed after a successful boot only if init left
 subsequent boots use the platform's default NCM. Selecting persistent host mode automatically disables USB
 network auto-apply. While the current role is host, network-mode controls are
 disabled. The backend validates the same rules regardless of UI state.
-The TF boot implementation exposes RNDIS as a single USB configuration with
-the ACM console; Windows does not bind a composite RNDIS adapter when the
-device offers both RNDIS and NCM configurations. On LAN handoff, the temporary
-initramfs IPv4 address is removed from `rndis0` so only `br-lan` owns it.
+On openwrt-luci, `boot/init` exposes RNDIS as a single USB configuration with
+the ACM console, and RNDIS replaces the other network function; Windows does
+not bind a composite RNDIS adapter when the device offers both RNDIS and NCM
+configurations. On LAN handoff, the early DHCP server of the initramfs is
+stopped and the address it used is removed from the bridge ports, so only
+`br-lan` owns it.
 
 USB adapter discovery uses the USB sysfs parent of each network device. On
 refresh it attempts to bring discovered devices up. “Add to LAN” adds only a
