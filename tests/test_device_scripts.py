@@ -8,6 +8,7 @@ import subprocess
 import threading
 import time
 import unittest
+from pathlib import Path
 
 from helpers import BIN, ShellTest
 
@@ -53,22 +54,22 @@ class At(ShellTest):
         self.sleeper.write_text('#!/usr/bin/env python3\nimport sys, time\n'
                                 'assert sys.argv[1] == "sleep"\ntime.sleep(float(sys.argv[2]))\n')
         self.sleeper.chmod(0o755)
-        self.stop = False
 
-    def tearDown(self):
-        self.stop = True
-        super().tearDown()
-
-    def daemon(self, reply, count=1):
-        """Answer COUNT commands with REPLY, like mu300-atd: read `T answer-file command`, write the answer file."""
+    def daemon(self, reply, count=1, open_delay=0, answer_delay=0):
+        """Answer COUNT commands with REPLY the way mu300-atd does: open the FIFO afresh for each command (after
+        OPEN_DELAY: the daemon is busy draining), read `T answer-file command`, write the answer file after
+        ANSWER_DELAY. A command whose writer has gone before the open is lost, as with the real daemon."""
         def run():
-            fd = os.open(self.dir / 'cmd', os.O_RDWR)
-            with os.fdopen(fd, 'r') as f:
-                for _ in range(count):
-                    line = f.readline()
-                    _t, answer, _cmd = line.rstrip('\n').split(' ', 2)
-                    with open(answer, 'w', newline='') as a:
-                        a.write(reply)
+            for _ in range(count):
+                time.sleep(open_delay)
+                line = ''
+                while not line:          # like the daemon: an empty read (no writer yet) just reopens
+                    with open(self.dir / 'cmd') as f:
+                        line = f.readline().rstrip('\n')
+                _t, answer, _cmd = line.split(' ', 2)
+                time.sleep(answer_delay)
+                with open(answer, 'w', newline='') as a:
+                    a.write(reply)
         th = threading.Thread(target=run, daemon=True)
         th.start()
         return th
@@ -95,6 +96,52 @@ class At(ShellTest):
             self.assertEqual(r.returncode, 1)
             self.assertIn('no answer from the daemon', r.stderr)
             self.assertFalse((self.dir / 'lock').exists())
+
+    def test_command_survives_a_busy_daemon(self):
+        # the daemon opens the FIFO only 0.5 s after the client wrote: the command must still be there
+        for shell in self.each_shell():
+            self.daemon('OK\r\n', open_delay=0.5)
+            r = self.at(shell, '-t', 2, 'AT')
+            self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_live_daemon_gets_a_long_budget(self):
+        # a live mu300-atd (owner/pid) may drain before it collects: an answer after T + 2 s is still taken
+        owner = subprocess.Popen(['sh', '-c', 'sleep 60; :', 'mu300-atd'])
+        try:
+            (self.dir / 'owner').mkdir()
+            (self.dir / 'owner' / 'pid').write_text(f'{owner.pid}\n')
+            if not Path(f'/proc/{owner.pid}/cmdline').exists():
+                self.skipTest('no /proc')
+            for shell in self.each_shell():
+                self.daemon('OK\r\n', answer_delay=3.5)
+                r = self.at(shell, '-t', 1, 'AT')
+                self.assertEqual(r.returncode, 0, r.stderr)
+        finally:
+            owner.kill()
+            owner.wait()
+
+    def test_signal_stops_the_client_and_frees_the_lock(self):
+        for shell in self.each_shell():
+            p = subprocess.Popen(shell + [str(BIN / 'mu300-at'), '-t', '20', 'AT'], stderr=subprocess.PIPE,
+                                 env=self.env(MU300_AT_DIR=self.dir, MU300_BUSYBOX=self.sleeper))
+            for _ in range(200):
+                if (self.dir / 'lock').exists():
+                    break
+                time.sleep(0.02)
+            time.sleep(0.3)
+            p.terminate()
+            self.assertEqual(p.wait(timeout=10), 143)
+            p.stderr.close()
+            self.assertFalse((self.dir / 'lock').exists())
+            self.assertEqual(list(self.dir.glob('answer.*')), [])
+
+    def test_vanished_fifo_is_not_replaced_by_a_file(self):
+        for shell in self.each_shell():
+            (self.dir / 'cmd').unlink()
+            r = self.at(shell, 'AT')           # no FIFO: the direct path, which has no tty here
+            self.assertNotEqual(r.returncode, 0)
+            self.assertFalse((self.dir / 'cmd').exists())
+            os.mkfifo(self.dir / 'cmd')
 
     def test_fast_round_trip(self):
         for shell in self.each_shell():
@@ -142,7 +189,8 @@ class Atd(ShellTest):
         e = self.env(MU300_AT_DEV=dev, MU300_AT_DIR=self.dir, **env)
         if 'MU300_AT_URC_CHANNELS' not in env:
             e.pop('MU300_AT_URC_CHANNELS', None)
-        proc = subprocess.Popen(shell + [str(BIN / 'mu300-atd')], stderr=subprocess.DEVNULL, env=e)
+        self.err = self.run_dir / 'atd.err'
+        proc = subprocess.Popen(shell + [str(BIN / 'mu300-atd')], stderr=self.err.open('w'), env=e)
         self.procs.append(proc)
         # the daemon makes urc/ once it has the tty (its stderr goes to /dev/null from then on, so no log line to wait for)
         for _ in range(250):
@@ -170,6 +218,11 @@ class Atd(ShellTest):
         while not answer.exists() and time.monotonic() - t0 < 40:
             time.sleep(0.02)
         return time.monotonic() - t0
+
+    def test_log_lines_after_open_reach_stderr(self):
+        for shell in self.each_shell():
+            self.start(shell)
+            self.assertIn('is ours, draining', self.err.read_text())
 
     def test_unset_urc_channels_open_nr0(self):
         for shell in self.each_shell():

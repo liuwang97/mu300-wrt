@@ -45,29 +45,50 @@ if [ -p "$DIR/cmd" ]; then
         sleep 0.1 2>/dev/null || sleep 1
     done
     echo $$ > "$lock/pid" 2>/dev/null || true
-    trap 'rm -rf "$lock" 2>/dev/null' EXIT INT TERM
+    trap 'rm -rf "$lock" 2>/dev/null' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
     # The answer comes back in a file of our own, not through a fifo: a fifo needs both ends at the same time,
     # so a client that gave up waiting used to leave the daemon (or a leftover writer) blocked for ever.
     answer=$DIR/answer.$$
     rm -f "$answer" "$answer.part"
-    trap 'rm -rf "$lock" "$answer" "$answer.part" 2>/dev/null' EXIT INT TERM
+    trap 'rm -rf "$lock" "$answer" "$answer.part" 2>/dev/null' EXIT
+    # a signalled client must stop, not keep polling while another client already holds the lock
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
     # Open the FIFO read-write. A write-only open blocks until a reader opens the *same inode*: if procd replaces
     # the daemon between the path lookup and that open, the client and the new daemon wait for ever on two
     # different, unlinked FIFOs while this client keeps the global command lock. O_RDWR never blocks; with no
     # daemon the answer timeout below releases the lock. (This also replaces the old `timeout N sh -c printf`
     # wrapper, which cost 200+ ms of forks per command on this SoC.)
-    # (A failing `exec` redirection ends a POSIX shell, and `2>/dev/null` on exec would stick; probe with `:` first.)
-    { : <> "$DIR/cmd"; } 2>/dev/null || {
-        echo "mu300-at: the daemon is not reading commands" >&2; exit 1; }
+    # Test -p right before the open, and again after it: `<>` creates a regular file when the FIFO vanished in
+    # between (daemon stopping), and later clients would then take the direct-tty path. A file we created that
+    # way is empty and removed again; the window is the microseconds between the open and the re-test.
+    # (A failing `exec` redirection ends a POSIX shell, and `2>/dev/null` on exec would stick, so no probe by open.)
+    [ -p "$DIR/cmd" ] || { echo "mu300-at: the daemon is not reading commands" >&2; exit 1; }
     exec 9<> "$DIR/cmd"
+    [ -p "$DIR/cmd" ] || {
+        [ -f "$DIR/cmd" ] && [ ! -s "$DIR/cmd" ] && rm -f "$DIR/cmd"
+        echo "mu300-at: the daemon is not reading commands" >&2; exit 1; }
+    # fd 9 stays open until the answer is in: mu300-atd opens the FIFO once per command, between its drain and
+    # collect phases it has no descriptor on it, and the kernel throws away buffered data when the last
+    # descriptor closes. Closing right after the write lost the command whenever the daemon was busy.
     printf '%s %s %s\n' "$T" "$answer" "$cmd" >&9 || {
-        exec 9>&-; echo "mu300-at: the daemon is not reading commands" >&2; exit 1; }
-    exec 9>&-
+        echo "mu300-at: the daemon is not reading commands" >&2; exit 1; }
     # Fast poll: the daemon typically answers in ~20 ms, so a 1 s sleep adds a full second to every AT round trip.
     # The image's busybox sleep rejects fractions when called as /bin/sleep, which used to sink the chain into
     # `sleep 1` (measured: 30 commands in 30.6 s). The static busybox next to us accepts them; use it when present.
     bb=${MU300_BUSYBOX:-/opt/mu300/bin/busybox}
-    end=$(( $(date +%s) + T + 1 ))
+    # Budget. A live mu300-atd (owner/pid) drains first (1-3 s, 25 s after a silent command), then collects for T
+    # plus up to 2 s of overrun: 25 + T + 2, and 3 s of slack make T + 30. Giving up earlier drops the lock
+    # while the daemon is still busy and orphans the answer file. With no live daemon nobody will ever answer, so
+    # exit within T + 2.
+    budget=$((T + 2))
+    owner=$(cat "$DIR/owner/pid" 2>/dev/null || true)
+    if [ -n "$owner" ] && tr '\0' ' ' < "/proc/$owner/cmdline" 2>/dev/null | grep -q mu300-atd; then
+        budget=$((T + 30))
+    fi
+    end=$(( $(date +%s) + budget ))
     while [ ! -e "$answer" ]; do
         [ "$(date +%s)" -ge "$end" ] && { echo "mu300-at: no answer from the daemon" >&2; exit 1; }
         if [ -x "$bb" ]; then "$bb" sleep 0.01 2>/dev/null || sleep 1
@@ -79,6 +100,7 @@ if [ -p "$DIR/cmd" ]; then
         echo "mu300-at: modem returned no final response" >&2
         exit 1
     }
+    exec 9>&-
     cat "$answer"
     exit 0
 fi

@@ -76,7 +76,8 @@ mkfifo -m 600 "$CMD"
 
 # the one open that everything else borrows
 open_tty() {
-    exec 3<&- 2>/dev/null || true
+    # the redirection is scoped to this one close: on a bare `exec` it would send every later log line to /dev/null
+    { exec 3<&-; } 2>/dev/null || true
     exec 3<>"$DEV" || return 1
     # on fd 3, not "stty -F $DEV": the -F form opens and closes the tty a second time
     stty raw -echo <&3 2>/dev/null || true
