@@ -346,10 +346,23 @@ exit 0''')
         bearer's /64 on br-lan, derived from the kernel's own address."""
         for shell in self.each_shell():
             calls = self.ndp_once(shell, self.HOSTILE_NEIGH, '')
-            self.assertIn('ip -6 route replace 240e:388:a:1234::/64 dev br-lan metric 1024', calls)
+            self.assertIn('ip -6 route replace 240e:388:a:1234::/64 dev br-lan metric 128', calls)
             self.assertFalse([c for c in calls if 'neigh' in c], calls)
             adds = [c for c in calls if ' add ' in f'{c} ' or c.startswith('ip -6 route replace')]
-            self.assertEqual(set(adds), {'ip -6 route replace 240e:388:a:1234::/64 dev br-lan metric 1024'}, calls)
+            self.assertEqual(set(adds), {'ip -6 route replace 240e:388:a:1234::/64 dev br-lan metric 128'}, calls)
+
+    def test_ndp_learn_lan_route_wins_over_the_bearer(self):
+        """Review I2: the carrier's RA puts the same /64 on sipa_eth0 at metric 256; the br-lan /64 must have a
+        lower metric, or NAT66 replies to clients leave by the bearer. A re-run replaces it in place (one route per
+        round), and the metric-1024 route an earlier ndp-learn installed is removed, never added."""
+        for shell in self.each_shell():
+            for _ in range(2):
+                calls = self.ndp_once(shell, '', self.HOSTILE_WAN)
+                lan = [c for c in calls if 'br-lan' in c and not c.startswith('ip -6 route show')]
+                self.assertEqual(lan, ['ip -6 route replace 240e:388:a:1234::/64 dev br-lan metric 128',
+                                       'ip -6 route del 240e:388:a:1234::/64 dev br-lan metric 1024'], (shell, calls))
+            m = re.search(r'LAN_METRIC=(\d+)', NDP_LEARN.read_text())
+            self.assertTrue(m and int(m.group(1)) < 256, 'the br-lan /64 must beat the RA route (metric 256)')
 
     def test_ndp_learn_removes_only_valid_in_prefix_wan_host_routes(self):
         """Host routes inside the /64 on sipa_eth0 (odhcpd's, which override the LAN /64) are removed; an
@@ -357,7 +370,7 @@ exit 0''')
         never reach ip's arguments."""
         for shell in self.each_shell():
             calls = self.ndp_once(shell, '', self.HOSTILE_WAN)
-            dels = [c for c in calls if ' del ' in c]
+            dels = [c for c in calls if ' del ' in c and 'sipa_eth0' in c]
             self.assertEqual(dels, ['ip -6 route del 240e:388:a:1234::5/128 dev sipa_eth0'], calls)
             self.assertFalse([c for c in calls if 'reboot' in c or ' -x' in c], calls)
 
@@ -365,7 +378,11 @@ exit 0''')
         """A bearer address that is not global unicast (multicast, link-local) gives no prefix, so no route."""
         fake = self.tmp / 'if_inet6'
         for line in ('ff020000000000000000000000000001 05 40 00 00 sipa_eth0\n',
-                     'fe800000000000000000000000000001 05 40 00 00 sipa_eth0\n'):
+                     'fe800000000000000000000000000001 05 40 00 00 sipa_eth0\n',
+                     'fd661126795600000000000000000001 05 40 00 00 sipa_eth0\n',     # ULA
+                     '00000000000000000000ffff0a000001 05 40 00 00 sipa_eth0\n',     # v4-mapped
+                     '240e0388000a12340000000000000001 05 40 00 00 sipa_eth0x\n',    # another interface
+                     '240e0388000a1234000000000000001 05 40 00 00 sipa_eth0\n'):     # 31 digits
             fake.write_text(line)
             for shell in self.each_shell():
                 r = self.script(shell, NDP_LEARN, '--prefix', MU300_IF_INET6=fake)
@@ -398,8 +415,10 @@ exit 0''')
         self.assertIn('USE_PROCD=1', text)
 
     def test_first_boot_selects_relay(self):
-        """K30, D9: 91-mu300-luci sets ipv6 relay, pdptype IPV4V6 and the fork's dhcp/firewall/ULA settings; run twice
-        (uci is a stand-in over a flat file), the result is the same."""
+        """K30, D9: 91-mu300-luci sets ipv6 relay, pdptype IPV4V6 and the fork's RA/DHCPv6 relay and masq6; run twice
+        (uci is a stand-in over a flat file), the result is the same. Review I1: no NDP relay on lan or wan (odhcpd's
+        relay pins any LAN-spoofed neighbour, even off-prefix, as a /128 to br-lan), and an earlier ndp or
+        ndproxy_routing value is removed. Review R38: the ULA OpenWrt generated is kept, never a fixed one."""
         if not shutil.which('python3'):
             self.skipTest('no python3')
         db = self.tmp / 'uci.db'
@@ -419,12 +438,16 @@ esac
 exit 0''')
         want = {
             "network.wan.ipv6": 'relay', "network.wan.pdptype": 'IPV4V6', "network.lan.ip6assign": '60',
-            "network.globals.ula_prefix": 'fd66:1126:7956::/48', "dhcp.wan": 'dhcp', "dhcp.wan.interface": 'wan',
-            "dhcp.wan.master": '1', "dhcp.wan.ra": 'relay', "dhcp.wan.dhcpv6": 'relay', "dhcp.wan.ndp": 'relay',
-            "dhcp.lan.ra": 'relay', "dhcp.lan.dhcpv6": 'relay', "dhcp.lan.ndp": 'relay',
+            "network.globals.ula_prefix": 'fd12:3456:789a::/48', "dhcp.wan": 'dhcp', "dhcp.wan.interface": 'wan',
+            "dhcp.wan.master": '1', "dhcp.wan.ra": 'relay', "dhcp.wan.dhcpv6": 'relay',
+            "dhcp.lan.ra": 'relay', "dhcp.lan.dhcpv6": 'relay',
             "firewall.@zone[1].masq6": '1', "luci.main.mediaurlbase": '/luci-static/aurora', "luci.main.lang": 'auto'}
+        before = ("firewall.@zone[0].name='lan'\nfirewall.@zone[1].name='wan'\n"
+                  "network.globals.ula_prefix='fd12:3456:789a::/48'\n"     # OpenWrt's own random ULA
+                  "dhcp.lan.ndp='relay'\ndhcp.wan.ndp='hybrid'\n"           # an earlier run's or a user's value
+                  "dhcp.lan.ndproxy_routing='1'\ndhcp.wan.ndproxy_routing='1'\n")
         for shell in self.each_shell():
-            db.write_text("firewall.@zone[0].name='lan'\nfirewall.@zone[1].name='wan'\n")
+            db.write_text(before)
             states = []
             for _ in range(2):
                 r = self.script(shell, LUCI_DEFAULTS)
@@ -435,6 +458,8 @@ exit 0''')
             for k, v in want.items():
                 self.assertEqual(got.get(k), f"'{v}'", (shell, k))
             self.assertNotIn('firewall.@zone[0].masq6', got)
+            for k in got:
+                self.assertNotRegex(k, r'^dhcp\.(lan|wan)\.(ndp|ndproxy_routing)$', (shell, 'NDP relay left on'))
             commits = set((self.tmp / 'commits').read_text().split())
             self.assertTrue({'network', 'dhcp', 'firewall', 'luci'} <= commits, commits)
 

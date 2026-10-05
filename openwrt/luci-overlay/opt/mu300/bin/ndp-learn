@@ -17,7 +17,12 @@
 # The /64 on br-lan is the mechanism: NDP there resolves each client on
 # demand, with no race for addresses that never showed up in the neighbour
 # table. The prefix is tracked so a carrier renumber replaces the route
-# instead of stacking a stale one.
+# instead of stacking a stale one. Its metric is below the RA's own route for
+# the same /64 on sipa_eth0 (metric 256, re-created by the carrier's RA after
+# every accept_ra cycle): the lower metric wins, so replies go to the LAN, not
+# back out the bearer. Nothing legitimate in the /64 lives behind sipa_eth0,
+# and the router's own address there is in the local table, which a main-table
+# route cannot override.
 #
 # Nothing is learnt from the LAN (security review of the port): the fork also
 # pinned a /128 to br-lan for every global address in br-lan's neighbour table,
@@ -60,9 +65,21 @@ in_prefix() {
     return 1
 }
 
+# Below the RA route's 256 (see above). Before review I2 this was 1024, which lost to the RA route; a route an
+# earlier ndp-learn installed at that metric is removed, so it never lingers beside this one.
+LAN_METRIC=128
+OLD_METRIC=1024
+
+# lan_route PREFIX: route PREFIX to br-lan. replace is idempotent, so every round can run it: one route, never two.
+lan_route() {
+    ip -6 route replace "$1" dev br-lan metric $LAN_METRIC 2>/dev/null
+    ip -6 route del "$1" dev br-lan metric $OLD_METRIC 2>/dev/null
+}
+
 drop_old_prefix() {
     [ -n "$1" ] || return 0
-    ip -6 route del "$1" dev br-lan 2>/dev/null
+    ip -6 route del "$1" dev br-lan metric $LAN_METRIC 2>/dev/null
+    ip -6 route del "$1" dev br-lan metric $OLD_METRIC 2>/dev/null
 }
 
 last_prefix=
@@ -72,23 +89,24 @@ learn_once() {
         drop_old_prefix "$last_prefix"
         last_prefix=
     fi
-    if [ -n "$prefix" ] && [ "$prefix" != "$last_prefix" ]; then
-        drop_old_prefix "$last_prefix"
-        ip -6 route replace "$prefix" dev br-lan metric 1024 2>/dev/null
-        last_prefix=$prefix
-        logger -t ndp-learn "LAN prefix route: $prefix dev br-lan"
-    fi
     [ -n "$prefix" ] || return 0
-    # odhcpd can learn a downstream client's /128 on the WAN side. That
-    # more-specific route overrides the LAN /64 and blackholes NAT66 replies.
-    # Remove only host routes inside the shared prefix; the LAN /64 resolves
-    # the client by NDP even before it appears in the neighbour table.
+    if [ "$prefix" != "$last_prefix" ]; then
+        drop_old_prefix "$last_prefix"
+        last_prefix=$prefix
+        logger -t ndp-learn "LAN prefix route: $prefix dev br-lan metric $LAN_METRIC"
+    fi
+    # every round, so a route someone or something removed comes back within one round
+    lan_route "$prefix"
+    # odhcpd's NDP relay can learn a downstream client's /128 on the WAN side.
+    # 91-mu300-luci leaves NDP relay off (review I1), but a hand-made config can
+    # turn it back on, and that more-specific route overrides the LAN /64 and
+    # blackholes NAT66 replies. Remove only host routes inside the shared
+    # prefix; the LAN /64 resolves the client by NDP even before it appears in
+    # the neighbour table.
     stem=${prefix%::/64}
     for r in $(ip -6 route show dev sipa_eth0 2>/dev/null | awk '$1 !~ /\// {print $1}'); do
         in_prefix "$r" "$stem" && ip -6 route del "$r/128" dev sipa_eth0 2>/dev/null
     done
-    ip -6 route show "$prefix" dev br-lan 2>/dev/null | grep -q 'dev br-lan' ||
-        ip -6 route replace "$prefix" dev br-lan metric 1024 2>/dev/null
     return 0
 }
 

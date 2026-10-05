@@ -12,29 +12,37 @@ uci commit luci
 # address: the real public address arrives by SLAAC from the carrier's RA on the bearer.
 # - wan.ipv6 relay + pdptype IPV4V6: mu300cell.sh lets sipa_eth0 accept the RA (accept_ra 2) and runs the event
 #   monitor mu300cell-v6.sh; plain OpenWrt keeps ipv6 'extend' (unset) and pdptype IP
-# - dhcp.wan master: odhcpd relays RS/RA, DHCPv6 and NDP both ways between the LAN and wan, so clients SLAAC public
+# - dhcp.wan master: odhcpd relays RS/RA and DHCPv6 both ways between the LAN and wan, so clients SLAAC public
 #   addresses out of the carrier's /64 (no separate wan6 interface: the relay master is the interface that owns
 #   sipa_eth0)
+# - no NDP relay (security review of the port, unlike the fork): odhcpd's NDP relay turns every br-lan neighbour entry
+#   into a /128 route to br-lan (ndproxy_routing, on by default), and a LAN host creates such an entry for any address
+#   with one spoofed neighbour solicitation, even off-prefix (a DNS server, say): a route hijack. NAT66 rewrites every
+#   client source to the router's own address, so the carrier never needs NDP for a client address. Any earlier ndp or
+#   ndproxy_routing value is deleted (odhcpd's default is no NDP relay).
 # - firewall masq6: egress NAT66 through the device's own public address (the carrier routes one address per bearer;
 #   Android's tethering does the same)
-# - lan ip6assign 60 and a ULA: a local range for the LAN itself
-# - init.d/mu300-ndp (ndp-learn) routes the carrier's /64 to br-lan, so NAT66 replies reach the clients
-# Every line sets a value, so a second run changes nothing.
+# - lan ip6assign 60: a local range for the LAN itself, from the random RFC 4193 ULA OpenWrt generated on its own
+#   first boot (no fixed ULA: one shared by every device collides when two LANs are joined, and fingerprints them)
+# - init.d/mu300-ndp (ndp-learn) routes the carrier's /64 to br-lan, below the RA route's metric, so NAT66 replies
+#   reach the clients
+# Every line sets or deletes a value, so a second run changes nothing.
 uci -q batch <<UCI
 set network.wan.ipv6='relay'
 set network.wan.pdptype='IPV4V6'
 set network.lan.ip6assign='60'
-set network.globals.ula_prefix='fd66:1126:7956::/48'
 set dhcp.wan=dhcp
 set dhcp.wan.interface='wan'
 set dhcp.wan.master='1'
 set dhcp.wan.ra='relay'
 set dhcp.wan.dhcpv6='relay'
-set dhcp.wan.ndp='relay'
 set dhcp.lan.ra='relay'
 set dhcp.lan.dhcpv6='relay'
-set dhcp.lan.ndp='relay'
 UCI
+# one by one, outside the batch: deleting an option that is not there is an error, which must not stop the others
+for o in dhcp.lan.ndp dhcp.wan.ndp dhcp.lan.ndproxy_routing dhcp.wan.ndproxy_routing; do
+    uci -q delete $o
+done
 zone=$(uci -q show firewall | sed -n "s/^\(firewall\.@zone\[[0-9]*\]\)\.name='wan'$/\1/p")
 [ -n "$zone" ] && uci -q set $zone.masq6='1'
 uci commit network
