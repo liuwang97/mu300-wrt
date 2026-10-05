@@ -161,6 +161,50 @@ if 'of_remove_property(pdev->dev.of_node, cd)' not in t:
     if parse_old not in t:
         sys.exit('port: sdhci-sprd mmc_of_parse anchor changed')
     t = t.replace(parse_old, parse_new, 1)
+# The eMMC is mmc0 and the card slot mmc1. The stock device tree has no mmc aliases, so the host index is the order
+# in which the two hosts reach sdhci_pltfm_init(), and both probe asynchronously: about one boot in twenty the card
+# slot came first, the card became mmcblk0 and the eMMC mmcblk1, and init (and everything after it) took the card
+# for the eMMC - it never found the card and rebooted at 300 s (FINDINGS 31l). The card slot's host now defers until
+# the eMMC's host is added; the deferral is checked before sdhci_pltfm_init(), which allocates the index.
+emmc_marker = 'MU300: the eMMC is mmc0'
+if emmc_marker not in t:
+    probe = 'static int sdhci_sprd_probe(struct platform_device *pdev)\n{\n'
+    t = t.replace(probe, '/* ' + emmc_marker + ''', the card slot mmc1: see sdhci_sprd_probe() */
+static bool sdhci_sprd_emmc_added;
+
+static bool sdhci_sprd_emmc_pending(struct device_node *self)
+{
+	struct device_node *np;
+
+	if (READ_ONCE(sdhci_sprd_emmc_added))
+		return false;
+	for_each_compatible_node(np, NULL, "sprd,sdhci-r11") {
+		if (np != self && of_device_is_available(np) &&
+		    of_property_read_bool(np, "non-removable")) {
+			of_node_put(np);
+			return true;
+		}
+	}
+	return false;
+}
+
+''' + probe, 1)
+    filt = '''\tif (!of_property_read_bool(pdev->dev.of_node, "non-removable") &&
+\t    of_property_match_string(pdev->dev.of_node, "sprd,name", "sdio_sd") < 0)
+\t\treturn -ENODEV;
+'''
+    if filt not in t:
+        sys.exit('port: sdhci-sprd host filter anchor changed')
+    t = t.replace(filt, filt + '''\tif (!of_property_read_bool(pdev->dev.of_node, "non-removable") &&
+\t    sdhci_sprd_emmc_pending(pdev->dev.of_node))
+\t\treturn -EPROBE_DEFER;
+''', 1)
+    add_old = '\tret = __sdhci_add_host(host);\n\tif (ret)\n\t\tgoto err_cleanup_host;\n'
+    if add_old not in t:
+        sys.exit('port: sdhci-sprd __sdhci_add_host anchor changed')
+    t = t.replace(add_old, add_old + '''\tif (of_property_read_bool(pdev->dev.of_node, "non-removable"))
+\t\tWRITE_ONCE(sdhci_sprd_emmc_added, true);
+''', 1)
 # UMS9620 has the r11p3 controller: the vendor driver programs DLL phase 0x2 (mainline 0x3,
 # which gives data CRC errors on HS400ES writes while reads work)
 t = t.replace('#define  SDHCI_SPRD_DLL_PHASE_INTERNAL\t0x3', '#define  SDHCI_SPRD_DLL_PHASE_INTERNAL\t0x2 /* MU300 r11p3 */')
@@ -221,7 +265,8 @@ expect = [
     ('drivers/mfd/sprd-sc27xx-spi.c', ['ump9620_data = {', '"sprd,ump9620"', '.name = "ump9620"']
      + (['case PMIC_TYPE_UMP9620:', 'if (pmic_type == PMIC_TYPE_UMP9620) {', 'linux/of_platform.h']
         if 'enum sprd_pmic_type' in open(os.path.join(tree, 'drivers/mfd/sprd-sc27xx-spi.c')).read() else [])),
-    ('drivers/mmc/host/sdhci-sprd.c', ['MU300: only the eMMC and the card slot', 'MU300: CD GPIO deferred', 'of_remove_property(pdev->dev.of_node, cd)', 'DLL_PHASE_INTERNAL\t0x2 /* MU300 r11p3 */']),
+    ('drivers/mmc/host/sdhci-sprd.c', ['MU300: only the eMMC and the card slot', 'MU300: CD GPIO deferred', 'of_remove_property(pdev->dev.of_node, cd)', 'DLL_PHASE_INTERNAL\t0x2 /* MU300 r11p3 */',
+                                     'MU300: the eMMC is mmc0', 'WRITE_ONCE(sdhci_sprd_emmc_added, true);']),
     ('drivers/nvmem/sprd-efuse.c', ['"sprd,qogirn6pro-efuse"', 'econfig.read_only = true;']),
     ('drivers/rtc/rtc-sc27xx.c', ['"sprd,ump96xx-rtc"']),
     ('drivers/usb/dwc3/dwc3-of-simple.c', ['"sprd,qogirn6pro-dwc3"']),

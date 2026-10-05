@@ -176,6 +176,24 @@ class Rules(unittest.TestCase):
         self.assertRegex((TOP / 'upstream' / 'make-bundle.sh').read_text(),
                          r"printf 'sdcard\\nlinux-slot\\n' > \"\$W/b/features\"")
 
+    def test_mainline_keeps_the_emmc_at_mmc0(self):
+        # Both hosts probe asynchronously and the stock DT has no mmc aliases, so the card slot could take mmc0 and
+        # leave mmcblk1 to the eMMC: init then never found the card and rebooted at 300 s (FINDINGS 31l). The card
+        # slot's host waits until the eMMC's host is added.
+        port = (TOP / 'upstream' / 'port' / 'install.py').read_text()
+        self.assertIn('MU300: the eMMC is mmc0', port)
+        self.assertIn('static bool sdhci_sprd_emmc_added;', port)
+        self.assertIn('for_each_compatible_node(np, NULL, "sprd,sdhci-r11")', port)
+        # the deferral sits right after the host filter, before sdhci_pltfm_init() allocates the host index
+        self.assertIn('\\t    sdhci_sprd_emmc_pending(pdev->dev.of_node))\n\\t\\treturn -EPROBE_DEFER;\n', port)
+        self.assertLess(port.index("t.replace(filt, filt + '''"), port.index('add_old = '))
+        # the flag is set only once the eMMC's host is added
+        self.assertIn("add_old = '\\tret = __sdhci_add_host(host);\\n\\tif (ret)\\n\\t\\tgoto err_cleanup_host;\\n'",
+                      port)
+        self.assertIn('\\t\\tWRITE_ONCE(sdhci_sprd_emmc_added, true);', port)
+        # and the build stops when the edit did not apply
+        self.assertIn("'MU300: the eMMC is mmc0', 'WRITE_ONCE(sdhci_sprd_emmc_added, true);'", port)
+
     def test_every_release_kernel_bundle_has_the_sd_host(self):
         # 5.4 reads the card as well (FINDINGS 31j): its bundle says so, and the release audit fails when any of the
         # three bundles does not (mu300-update refuses such a bundle for a system on the card)
