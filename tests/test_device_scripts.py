@@ -1569,6 +1569,82 @@ class Ttl(ShellTest):
 
 
 
+class UsbReset(ShellTest):
+    """mu300-usb-reset (K67): no rebind in host role, configfs mounted when init unmounted it, --fast-run."""
+
+    def setUp(self):
+        super().setUp()
+        self.gadget = self.tmp / 'gadget'
+        self.gadget.mkdir()
+        (self.gadget / 'UDC').write_text('5e100000.usb\n')
+        self.role = self.tmp / 'role'
+        self.role.write_text('device\n')
+        self.hook = self.tmp / 'hook'
+        self.hook.write_text('#!/bin/sh\necho "hook $ACTION $INTERFACE" >> "$STUBLOG/calls"\n')
+        self.hook.chmod(0o755)
+        self.run_dir = self.tmp / 'run'
+        self.run_dir.mkdir()
+        for n in ('sleep', 'usleep', 'ip', 'logger', 'mount'):
+            self.stub(n, f'echo "{n} $*" >> "$STUBLOG/calls"')
+
+    def reset(self, shell, *args, **env):
+        e = dict(MU300_GADGET=self.gadget, MU300_USB_ROLE=self.role, MU300_USB_HOOK=self.hook,
+                 MU300_RUN_DIR=self.run_dir, PATH=f'{self.stubs}:/usr/bin:/bin')
+        e.update(env)
+        return self.script(shell, BIN / 'mu300-usb-reset', *args, **e)
+
+    def calls(self):
+        p = self.tmp / 'calls'
+        return p.read_text() if p.exists() else ''
+
+    def test_host_role_exits_without_touching_udc(self):
+        self.role.write_text('host\n')
+        for shell in self.each_shell():
+            for arg in ('--fast-run', '--run', '--ready', '--if-no-lease'):
+                r = self.reset(shell, arg)
+                self.assertEqual(0, r.returncode, r.stderr)
+                self.assertEqual('5e100000.usb\n', (self.gadget / 'UDC').read_text(), arg)
+                self.assertEqual('', self.calls(), arg)
+
+    def test_fast_run_rebinds_in_100_ms_and_hands_off_the_lan(self):
+        # UDC is a plain file: the unbind is seen at once, the rebind writes the name back
+        for shell in self.each_shell():
+            (self.tmp / 'calls').unlink(missing_ok=True)
+            (self.gadget / 'UDC').write_text('5e100000.usb\n')
+            r = self.reset(shell, '--fast-run')
+            self.assertEqual(0, r.returncode, r.stderr)
+            self.assertEqual('5e100000.usb', (self.gadget / 'UDC').read_text().strip())
+            calls = self.calls()
+            self.assertIn('usleep 100000\n', calls)
+            self.assertNotIn('sleep 2', calls.replace('usleep', ''))
+            self.assertIn('hook ifup lan\n', calls)
+            self.assertIn('mu300-usb', calls)       # logger tag
+            self.assertTrue(float((self.run_dir / 'mu300-usb-rebind-done').read_text().split()[0]) >= 0)
+
+    def test_mounts_configfs_when_init_unmounted_it(self):
+        for shell in self.each_shell():
+            (self.tmp / 'calls').unlink(missing_ok=True)
+            r = self.reset(shell, '--fast-run', MU300_GADGET=self.tmp / 'nogadget')
+            self.assertEqual(1, r.returncode)
+            self.assertIn('mount -t configfs configfs /sys/kernel/config', self.calls())
+            self.assertIn('no gadget', r.stderr)
+
+    def test_ready_detaches_a_fast_run(self):
+        for shell in self.each_shell():
+            r = self.reset(shell, '--ready')
+            self.assertEqual(0, r.returncode, r.stderr)
+            self.assertNotIn('re-enumerating', r.stdout)
+
+    def test_lease_check_kept(self):
+        # --if-no-lease still exits quietly when a lease file exists (the interim, until the K12 gate)
+        lease = self.tmp / 'leases'
+        lease.write_text('1 aa:bb 10.0.0.2 h *\n')
+        for shell in self.each_shell():
+            r = self.reset(shell, '--if-no-lease', '0', MU300_LEASES=lease)
+            self.assertEqual(0, r.returncode, r.stderr)
+            self.assertEqual('5e100000.usb\n', (self.gadget / 'UDC').read_text())
+
+
 class Usb(ShellTest):
     """mu300-usb against a fake charger (busybox i2cget/i2cset on files) and a fake role switch."""
 
