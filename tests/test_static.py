@@ -25,6 +25,9 @@ def shell_scripts():
         TOP / 'install.sh', TOP / 'uninstall.sh', TOP / 'boot' / 'init', TOP / 'rootfs' / 'assemble.sh',
         TOP / 'kernel' / 'build-all.sh', TOP / 'tools' / 'i18n.sh', TOP / 'tools' / 'self-update.sh',
         TOP / 'tools' / 'linux-mode.sh', TOP / 'tools' / 'storage.sh', TOP / 'android-vendor' / 'ueventd-perms.sh']
+    cands += list((TOP / 'android' / 'magisk' / 'installer').glob('*.sh'))
+    cands += [TOP / 'android' / 'magisk' / 'installer' / 'update-binary']
+    cands += list((TOP / 'android' / 'magisk' / 'mu300-linux-switch').glob('*.sh'))
     cands += [p for p in OPENWRT.rglob('*') if p.is_file()]
     out = []
     for p in sorted(set(cands)):
@@ -59,6 +62,19 @@ class Syntax(unittest.TestCase):
 
 
 class Rules(unittest.TestCase):
+    def test_customize_leaves_magisks_shell_alone(self):
+        # Magisk sources customize.sh: errexit or nounset there would end Magisk's own installer before its cleanup
+        c = (TOP / 'android' / 'magisk' / 'installer' / 'customize.sh').read_text()
+        code = '\n'.join(l for l in c.splitlines() if not l.lstrip().startswith('#'))
+        self.assertNotRegex(code, r'\bset\s+-[a-z]*[eu]')
+        self.assertNotRegex(code, r'(^|\s)exit\b')
+        self.assertIn('SKIPUNZIP=1', code)
+
+    def test_installer_never_writes_androids_boot_partition(self):
+        s = (TOP / 'android' / 'magisk' / 'installer' / 'mu300-install.sh').read_text()
+        self.assertNotRegex(s, r'of="?\$BOOT_ANDROID')
+        self.assertNotRegex(s, r'write_boot "?\$BOOT_ANDROID')
+
     def test_powershell_device_commands_have_no_double_quotes(self):
         # Windows PowerShell 5.1 drops the double quotes inside an argument to a native program: `tr -d "\000"`
         # reached the device as tr -d \000 ("delete the character 0"), and every empty region was "not empty".
@@ -68,6 +84,13 @@ class Rules(unittest.TestCase):
                 code = line.split('#', 1)[0] if not line.lstrip().startswith('#') else ''
                 if re.search(r'\bSuDo(ToFile)?\s+"|adb shell\s+"', code) and ('`"' in code or '""' in code):
                     self.fail(f'{name}:{n}: double quote inside a device command: {line.strip()}')
+
+    def test_init_restores_androids_slot(self):
+        # every restore goes through restore_android, so Linux on slot a returns to Android on b
+        init = (TOP / 'boot' / 'init').read_text()
+        self.assertNotIn('restore_slot_a', init)
+        self.assertNotIn('slot_suffix=_b/androidboot.slot_suffix=_a', init)
+        self.assertIn('sleep 300', init)
 
     def test_powershell_scripts_are_ascii(self):
         # Windows PowerShell 5.1 reads a file without a BOM as ANSI: non-ASCII text in the script is garbled
@@ -159,16 +182,19 @@ class Rules(unittest.TestCase):
         self.assertIn('of_remove_property(pdev->dev.of_node, cd)', port)
         self.assertIn("'MU300: only the eMMC and the card slot', 'MU300: CD GPIO deferred', "
                       "'of_remove_property(pdev->dev.of_node, cd)'", port)
-        self.assertRegex((TOP / 'upstream' / 'make-bundle.sh').read_text(), r"printf 'sdcard\\n' > \"\$W/b/features\"")
+        self.assertRegex((TOP / 'upstream' / 'make-bundle.sh').read_text(),
+                         r"printf 'sdcard\\nlinux-slot\\n' > \"\$W/b/features\"")
 
     def test_every_release_kernel_bundle_has_the_sd_host(self):
         # 5.4 reads the card as well (FINDINGS 31j): its bundle says so, and the release audit fails when any of the
         # three bundles does not (mu300-update refuses such a bundle for a system on the card)
         mr = (TOP / 'tools' / 'make-release.sh').read_text()
-        self.assertIn("printf 'sdcard\\n' > \"$K/features\"", mr)
+        self.assertIn("printf 'sdcard\\nlinux-slot\\n' > \"$K/features\"", mr)
         self.assertLess(mr.index('$K/features'), mr.index('tar -C "$K" -czf "$D/mu300-kernel.tar.gz" .'))
         self.assertIn('for a in mu300-kernel mu300-kernel-6.18 mu300-kernel-7.2; do\n'
                       '    tar -xzOf "$D/$a.tar.gz" ./features 2>/dev/null | grep -qx sdcard', mr)
+        # and that its init works with Linux on either slot (mu300-update refuses one without it on slot a)
+        self.assertIn('    tar -xzOf "$D/$a.tar.gz" ./features 2>/dev/null | grep -qx linux-slot', mr)
 
 
 if __name__ == '__main__':

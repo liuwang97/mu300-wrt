@@ -35,7 +35,12 @@ mountpoint -q $A/sys || mount -t sysfs sysfs $A/sys
 # own command line, so fall back to the bootargs LK put in the device tree
 src=/proc/cmdline
 grep -q androidboot.slot_suffix /proc/cmdline || [ ! -r /proc/device-tree/chosen/bootargs ] || src=/proc/device-tree/chosen/bootargs
-tr -d '\000' < $src | sed 's/androidboot.slot_suffix=_b/androidboot.slot_suffix=_a/' > /run/mu300-cmdline.android
+# and they are Android's: they get Android's slot, the one Linux did not boot from (b when Linux runs from a). Linux's
+# slot is the one the initramfs published, else the one in this command line.
+L=$(cat /run/mu300/linux-slot 2>/dev/null)
+case $L in a|b) ;; *) L=$(tr '\000' ' ' < $src | sed -n 's/.*androidboot\.slot_suffix=_\([ab]\).*/\1/p') ;; esac
+case $L in a) AS=b ;; *) L=b; AS=a ;; esac
+tr -d '\000' < $src | sed "s/androidboot.slot_suffix=_$L/androidboot.slot_suffix=_$AS/" > /run/mu300-cmdline.android
 mount --bind /run/mu300-cmdline.android $A/proc/cmdline
 # sprd_modem_loader only accepts a task whose comm is exactly "modem_control": exec it directly
 # OpenWrt's procd preloads /lib/libsetlbf.so into services; the bionic linker in the chroot cannot load it

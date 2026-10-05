@@ -86,7 +86,7 @@ def cpio_archive(dirs, files):
 
 
 def bootloader_control(misc_head):
-    """Return (slot_a_block, slot_b_trial_block) derived from the live misc bootloader_control."""
+    """Return (android_a, linux_b_trial, android_b, linux_a_trial) blocks derived from the live misc bootloader_control."""
     bc = misc_head[MISC_BC_OFFSET:MISC_BC_OFFSET + 32]
     if bc[4:8] != b'BCAB':
         sys.exit('misc head has no bootloader_control magic at 0x800')
@@ -102,11 +102,14 @@ def bootloader_control(misc_head):
         return bytes(x)
 
     # slot_info byte: priority (4 bits) | tries_remaining (3 bits) | successful_boot (1 bit)
-    slot_a = with_slots(b'_a\0\0', 0x9f, 0x1e)          # a: prio 15, tries 1, successful
-    # Unisoc LK treats tries==1 && !successful as an already failed boot, so the one-shot
-    # trial needs tries=2 (LK decrements to 1; a failed boot then rolls back to slot a).
-    slot_b_trial = with_slots(b'_b\0\0', 0x9e, 0x2f)    # a: prio 14 successful, b: prio 15 tries 2
-    return slot_a, slot_b_trial
+    # Unisoc LK treats tries==1 && !successful as an already failed boot, so a one-shot trial needs tries=2 (LK
+    # decrements to 1; a failed boot then rolls back to Android's slot). Linux goes on the slot Android is not on,
+    # and Android may be on either (after an OTA it is often b): one pair of blocks for each case.
+    android_a = with_slots(b'_a\0\0', 0x9f, 0x1e)        # a: prio 15, successful
+    linux_b_trial = with_slots(b'_b\0\0', 0x9e, 0x2f)    # a: prio 14 successful, b: prio 15 tries 2
+    android_b = with_slots(b'_b\0\0', 0x1e, 0x9f)        # b: prio 15, successful
+    linux_a_trial = with_slots(b'_a\0\0', 0x2f, 0x9e)    # b: prio 14 successful, a: prio 15 tries 2
+    return android_a, linux_b_trial, android_b, linux_a_trial
 
 
 def main():
@@ -125,6 +128,9 @@ def main():
                          'ones of the same name when it runs on that device')
     ap.add_argument('--device', help='the device this image is for (f50, u30air): written to /etc/mu300-device, '
                                      'which init trusts over its own guess from the device tree')
+    ap.add_argument('--linux-slot', choices=['a', 'b'],
+                    help='the slot this image goes to (default b; a when Android runs from slot b): written to '
+                         '/etc/mu300-linux-slot, which init uses when the kernel command line does not say')
     ap.add_argument('--trial-guard', type=int, metavar='SECONDS',
                     help='for experiments only: reboot SECONDS after switch_root unless /run/stay exists (with a '
                          'one-shot trial, that is back to Android when the kernel boots without USB)')
@@ -178,6 +184,8 @@ def main():
                 files['linux-modules/' + name] = ((a.modules / name).read_bytes(), stat.S_IFREG | 0o644)
     if a.trial_guard and a.generic_ramdisk:
         ap.error('--trial-guard does not go into a generic ramdisk')
+    if a.linux_slot and a.generic_ramdisk:
+        ap.error('--linux-slot does not go into a generic ramdisk')
     if a.device:
         # only in the device segment: a generic segment is the same for every device
         if a.generic_ramdisk:
@@ -206,9 +214,13 @@ def main():
     base = a.stock_boot.read_bytes()
     if base[:8] != b'ANDROID!' or struct.unpack_from('<I', base, 40)[0] != 4:
         sys.exit('stock boot is not an Android boot image header v4')
-    slot_a_bc, slot_b_bc = bootloader_control(a.misc_head.read_bytes())
-    files['etc/misc-bc-slot-a.bin'] = (slot_a_bc, stat.S_IFREG | 0o644)
-    files['etc/misc-bc-slot-b-trial.bin'] = (slot_b_bc, stat.S_IFREG | 0o644)
+    android_a_bc, linux_b_bc, android_b_bc, linux_a_bc = bootloader_control(a.misc_head.read_bytes())
+    linux_slot = a.linux_slot or 'b'
+    files['etc/misc-bc-slot-a.bin'] = (android_a_bc, stat.S_IFREG | 0o644)
+    files['etc/misc-bc-slot-b-trial.bin'] = (linux_b_bc, stat.S_IFREG | 0o644)
+    files['etc/misc-bc-slot-b.bin'] = (android_b_bc, stat.S_IFREG | 0o644)
+    files['etc/misc-bc-slot-a-trial.bin'] = (linux_a_bc, stat.S_IFREG | 0o644)
+    files['etc/mu300-linux-slot'] = (linux_slot.encode() + b'\n', stat.S_IFREG | 0o644)
     if a.android_subset:
         dirs.add('android')
         side = a.android_subset / WINDOWS_TAR
@@ -284,7 +296,7 @@ def main():
     assert len(image) == len(base)
 
     a.out.write_bytes(image)
-    a.out.with_suffix('.misc-slot-b-trial.bin').write_bytes(slot_b_bc)
+    a.out.with_suffix('.misc-slot-b-trial.bin').write_bytes(linux_b_bc)
     manifest = {
         'image': a.out.name,
         'sha256': hashlib.sha256(image).hexdigest(),
@@ -293,8 +305,11 @@ def main():
         'kernel_sha256': hashlib.sha256(kern).hexdigest(),
         'ramdisk_size': len(ram),
         'modules': len(a.module_order.read_text().split()),
-        'misc_slot_b_trial_hex': slot_b_bc.hex(),
-        'misc_slot_a_hex': slot_a_bc.hex(),
+        'misc_slot_b_trial_hex': linux_b_bc.hex(),
+        'misc_slot_a_hex': android_a_bc.hex(),
+        'misc_slot_b_hex': android_b_bc.hex(),
+        'misc_slot_a_trial_hex': linux_a_bc.hex(),
+        'linux_slot': linux_slot,
     }
     a.out.with_suffix('.json').write_text(json.dumps(manifest, indent=2) + '\n')
     print(json.dumps(manifest, indent=2))

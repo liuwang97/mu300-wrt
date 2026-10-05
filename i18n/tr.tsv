@@ -218,3 +218,93 @@ Install the VPN extra (about 40 MB more to download, 120 MB on the device)? (yes
 release {1} has no vpn extra: its systems still carry the VPN engines	{1} sürümünde vpn eklentisi yok: sistemleri VPN motorlarını hâlâ kendi içinde taşıyor
 extras:         {1}	eklentiler:     {1}
 none	yok
+Android runs from slot {1}; Linux goes to slot {2} (boot_{2})	Android {1} yuvasından çalışıyor; Linux {2} yuvasına kurulacak (boot_{2})
+CREATE new ext4 (erases what is there)	yeni ext4 OLUŞTURULACAK (oradakiler silinir)
+Dry run: nothing was written.	Deneme çalıştırması: hiçbir şey yazılmadı.
+MU300_BOOT_OS={1}, but {1} is not installed	MU300_BOOT_OS={1}, ancak {1} kurulu değil
+Magisk's magiskboot was not found; install this zip with Magisk 26 or newer	Magisk'in magiskboot aracı bulunamadı; bu zip'i Magisk 26 veya daha yenisiyle kurun
+Plan	Plan
+Take the card out and install the zip again, or install to the card (MU300_STORAGE=sd in /sdcard/mu300-install.conf).	Kartı çıkarıp zip'i yeniden kurun ya da karta kurun (/sdcard/mu300-install.conf dosyasında MU300_STORAGE=sd).
+Ubuntu 26.04 is installed, and it needs a mainline kernel (6.18 or 7.2): use a zip with one of those kernels, or MU300_MODE=wipe.	Ubuntu 26.04 kurulu ve ana hat çekirdek (6.18 veya 7.2) gerektiriyor: bu çekirdeklerden birini içeren bir zip kullanın ya da MU300_MODE=wipe.
+Unpacking {1} and {2}	{1} ve {2} açılıyor
+already there:  {1}	zaten kurulu:   {1}
+boot_a and boot_b are the same partition	boot_a ve boot_b aynı bölüm
+boots:          {1} ({2})	açılan:         {1} ({2})
+cannot tell which slot Android runs from	Android'in hangi yuvadan çalıştığı anlaşılamadı
+could not mount the existing Linux filesystem	mevcut Linux dosya sistemi bağlanamadı
+could not unpack the kernel bundle	çekirdek paketi açılamadı
+could not unpack the zip	zip açılamadı
+default	varsayılan
+keep: settings and data of {1} are kept	korunuyor: {1} ayarları ve verileri korunur
+misc holds no valid boot control block; nothing was changed	misc geçerli bir açılış denetim bloğu içermiyor; hiçbir şey değiştirilmedi
+mu300-install.conf: MU300_PASSWORD must have at least 6 characters	mu300-install.conf: MU300_PASSWORD en az 6 karakter olmalı
+mu300-install.conf: {1} is not a setting of this installer; ignored	mu300-install.conf: {1} bu yükleyicinin bir ayarı değil; yok sayıldı
+mu300-install.conf: {1}={2} is not valid	mu300-install.conf: {1}={2} geçerli değil
+not enough free space in {1}: {2} needed, {3} free	{1} içinde yeterli boş alan yok: {2} gerekli, {3} boş
+settings from {1}:{2}	{1} içindeki ayarlar:{2}
+storage:        SD card {1}, {2} ({3})	depolama:       SD kart {1}, {2} ({3})
+storage:        internal, offset {1}, {2} ({3})	depolama:       dahili, konum {1}, {2} ({3})
+system:         {1} (zip {2}, kernel {3})	sistem:         {1} (zip {2}, çekirdek {3})
+the Linux region	Linux alanı
+the zip is damaged (checksum mismatch); download it again	zip bozuk (sağlama toplamı uyuşmuyor); yeniden indirin
+this installer needs root	bu yükleyici root yetkisi gerektirir
+this is not an A/B device with misc, boot_a and boot_b	bu, misc, boot_a ve boot_b bölümleri olan bir A/B cihaz değil
+this kernel cannot read the SD card; use a newer zip	bu çekirdek SD kartı okuyamıyor; daha yeni bir zip kullanın
+this kernel does not support the {1}	bu çekirdek {1} cihazını desteklemiyor
+writes:         {1}, boot_{2}, 32 bytes of misc (boot_{3}, the partition table and userdata are not touched)	yazılacaklar:   {1}, boot_{2}, misc'in 32 baytı (boot_{3}, bölüm tablosu ve userdata'ya dokunulmaz)
+mu300-install.conf: {1} is taken only from {2}, which only root can change; ignored in {3}	mu300-install.conf: {1} yalnızca {2} dosyasından alınır (onu yalnızca root değiştirebilir); {3} içinde yok sayıldı
+To use{1}, make the file one only root can change: {2}	Şunları kullanmak için:{1}, dosyayı yalnızca root'un değiştirebileceği hale getirin: {2}
+{1} is not owned by root, or others can change it: it is read like a file on /sdcard	{1} root'a ait değil ya da başkaları değiştirebiliyor: /sdcard'daki bir dosya gibi okunuyor
+This does not look like a ZTE F50/MU300 or U30 Air. If it is one, put MU300_DEVICE=f50 or u30air into {1}.	Bu bir ZTE F50/MU300 veya U30 Air gibi görünmüyor. Öyleyse {1} dosyasına MU300_DEVICE=f50 veya u30air yazın.
+could not create a work directory in {1}	{1} içinde çalışma dizini oluşturulamadı
+A Linux filesystem is still mounted in {1}; it was left as it is. Restart the device before installing again.	{1} içinde hâlâ bağlı bir Linux dosya sistemi var; olduğu gibi bırakıldı. Yeniden kurmadan önce cihazı yeniden başlatın.
+There is too little free space inside for Linux, and the SD card ({1}) holds another Linux (ext4) filesystem, which the installer never formats. Copy off what you need and format the card elsewhere, or use another card.	Dahili depolamada Linux için yeterli boş alan yok ve SD kartta ({1}) başka bir Linux (ext4) dosya sistemi var; yükleyici onu asla biçimlendirmez. Gerekenleri kopyalayıp kartı başka yerde biçimlendirin ya da başka bir kart kullanın.
+There is too little free space inside for Linux. The SD card ({1}, {2}) can hold it: put MU300_STORAGE=sd and MU300_SD_ERASE=yes into {3}, a file only root can change (everything on the card is erased).	Dahili depolamada Linux için yeterli boş alan yok. SD kart ({1}, {2}) yeterli: yalnızca root'un değiştirebildiği {3} dosyasına MU300_STORAGE=sd ve MU300_SD_ERASE=yes yazın (karttaki her şey silinir).
+There is too little free space inside for Linux, and the SD card is smaller than 700 MiB. Use a bigger card (MU300_STORAGE=sd and MU300_SD_ERASE=yes in {1}), or make room with the installer for computers.	Dahili depolamada Linux için yeterli boş alan yok ve SD kart 700 MiB'den küçük. Daha büyük bir kart kullanın ({1} dosyasında MU300_STORAGE=sd ve MU300_SD_ERASE=yes) ya da bilgisayar yükleyicisiyle yer açın.
+There is too little free space inside for Linux and no SD card. Insert a card (MU300_STORAGE=sd and MU300_SD_ERASE=yes in {1}), or make room with the installer for computers.	Dahili depolamada Linux için yeterli boş alan yok ve SD kart takılı değil. Bir kart takın ({1} dosyasında MU300_STORAGE=sd ve MU300_SD_ERASE=yes) ya da bilgisayar yükleyicisiyle yer açın.
+MU300_MODE=wipe formats the SD card ({1}, {2}): the installation on it and everything else is erased. To allow that, put MU300_SD_ERASE=yes into {3} as well.	MU300_MODE=wipe SD kartı ({1}, {2}) biçimlendirir: üzerindeki kurulum ve diğer her şey silinir. Buna izin vermek için {3} dosyasına MU300_SD_ERASE=yes de yazın.
+could not unmount the Linux filesystem from {1}	Linux dosya sistemi {1} konumundan ayrılamadı
+password:       from {1}, written to {2}	parola:         {1} dosyasından, {2} dosyasına yazılacak
+password:       generated, written to {1}	parola:         üretilecek, {1} dosyasına yazılacak
+the zip is incomplete or damaged (its manifest is not valid)	zip eksik ya da bozuk (manifest dosyası geçerli değil)
+The free space behind the partitions is not empty ({1} of 16 samples hold data); it may be used by this firmware. To use it anyway, put MU300_STORAGE=internal and MU300_REGION_OVERWRITE=yes into {2}, a file only root can change.	Bölümlerin arkasındaki boş alan boş değil (16 örnekten {1} tanesinde veri var); bu yazılım tarafından kullanılıyor olabilir. Yine de kullanmak için yalnızca root'un değiştirebildiği {2} dosyasına MU300_STORAGE=internal ve MU300_REGION_OVERWRITE=yes yazın.
+Installing to the SD card ({1}, {2}) erases everything on it. To allow that, put MU300_STORAGE=sd and MU300_SD_ERASE=yes into {3}, a file only root can change.	SD karta ({1}, {2}) kurulum karttaki her şeyi siler. Buna izin vermek için yalnızca root'un değiştirebildiği {3} dosyasına MU300_STORAGE=sd ve MU300_SD_ERASE=yes yazın.
+could not read the Android files the modem needs from this device	modemin ihtiyaç duyduğu Android dosyaları bu cihazdan okunamadı
+the Mali GPU files are incomplete on this device; installing without them	bu cihazdaki Mali GPU dosyaları eksik; onlarsız kuruluyor
+could not pack the vendor files	üretici dosyaları paketlenemedi
+could not build the boot control blocks	açılış denetim blokları oluşturulamadı
+could not copy the Android files into the boot ramdisk	Android dosyaları açılış ramdisk'ine kopyalanamadı
+Android runs from slot b, and the kernel of this zip cannot boot Linux from slot a yet; use a newer zip	Android b yuvasından çalışıyor ve bu zip'in çekirdeği Linux'u henüz a yuvasından başlatamıyor; daha yeni bir zip kullanın
+could not build the boot ramdisk (magiskboot)	açılış ramdisk'i oluşturulamadı (magiskboot)
+could not build the boot image	boot imajı oluşturulamadı
+boot image for slot {1}: kernel {2}, {3} bytes	{1} yuvası için boot imajı: çekirdek {2}, {3} bayt
+could not generate a password	parola üretilemedi
+could not hash the password	parolanın özeti (hash) hesaplanamadı
+could not copy the installer files	kurulum dosyaları kopyalanamadı
+Installing {1} (this takes a few minutes)	{1} kuruluyor (birkaç dakika sürer)
+installation on the device failed; boot_{1} and misc were not changed	cihazdaki kurulum başarısız oldu; boot_{1} ve misc değiştirilmedi
+could not mount the Linux filesystem for the kernel modules	çekirdek modülleri için Linux dosya sistemi bağlanamadı
+could not install the kernel modules	çekirdek modülleri kurulamadı
+Writing and verifying boot_{1}	boot_{1} yazılıyor ve doğrulanıyor
+boot_{1} did not verify after writing; misc was not changed, so Android keeps booting	boot_{1} yazıldıktan sonra doğrulanamadı; misc değiştirilmedi, Android açılmaya devam eder
+misc changed during the installation; Linux was not armed. Install the zip again.	misc kurulum sırasında değişti; Linux etkinleştirilmedi. Zip'i yeniden kurun.
+could not write {1}	{1} yazılamadı
+Done. Reboot to start {1}.	Tamamlandı. {1} sistemini başlatmak için yeniden başlatın.
+If Linux does not start, the device returns to Android by itself.	Linux açılmazsa cihaz kendiliğinden Android'e döner.
+could not keep a copy of the misc block; nothing was changed	misc bloğunun bir kopyası alınamadı; hiçbir şey değiştirilmedi
+filesystem:     {1} ({2})	dosya sistemi:  {1} ({2})
+default boot:   {1} ({2})	varsayılan:     {1} ({2})
+Linux, Android after failed boots	Linux, başarısız açılışlardan sonra Android
+boot attempts:  {1} failed boots in a row, then Android ({2})	açılış denemesi: arka arkaya {1} başarısız açılış, sonra Android ({2})
+hotspot:        {1} ({2})	hotspot:        {1} ({2})
+name and password copied from Android	adı ve parolası Android'den kopyalanır
+not copied	kopyalanmaz
+GPU files:      {1} ({2})	GPU dosyaları:  {1} ({2})
+included	dahil
+not included	dahil değil
+misc did not verify after writing; the block it held before was written back and verified, so Android boots as before. Linux was not armed.	misc yazıldıktan sonra doğrulanamadı; önceki blok geri yazıldı ve doğrulandı, Android eskisi gibi açılır. Linux etkinleştirilmedi.
+misc did not verify after writing, and the block it held before could not be written back: misc holds unknown bytes, and the device may not start Android. Do not reboot. Write the saved block back as root: {1}	misc yazıldıktan sonra doğrulanamadı ve önceki blok geri yazılamadı: misc bilinmeyen baytlar içeriyor, cihaz Android'i açamayabilir. Yeniden başlatmayın. Saklanan bloğu root olarak geri yazın: {1}
+password for {1}: "{2}"   (also in {3}; delete that file after the first login)	{1} için parola: "{2}"   ({3} dosyasında da var; ilk girişten sonra o dosyayı silin)
+could not write {1}; nothing was installed	{1} yazılamadı; hiçbir şey kurulmadı
+used by this installation and removed from {1}:{2}	bu kurulumda kullanıldı ve {1} dosyasından kaldırıldı:{2}
+could not remove{1} from {2}; remove it by hand	{2} dosyasından kaldırılamadı:{1}; elle kaldırın
