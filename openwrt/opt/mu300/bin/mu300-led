@@ -3,13 +3,16 @@
 #   mu300-led power on|off      Linux is up (set at boot, which also wakes the LEDs; cleared at shutdown)
 #   mu300-led data on|5g|off|error  mobile data connected (5g: over 5G) / not connected / no service (no SIM, not
 #                               registered)
-#   mu300-led wifi on|off       the Wi-Fi hotspot is up (U30 Air: blue on 5 GHz, white on 2.4 GHz)
+#   mu300-led wifi on|off|sync  the Wi-Fi hotspot is up (U30 Air: blue on 5 GHz, white on 2.4 GHz); sync: whatever
+#                               wlan0 is now (OpenWrt, after LuCI turned Wi-Fi off or on)
 #   mu300-led wake              show the LEDs again, for LED_TIMEOUT seconds (the power button, mu300-buttons)
 #   mu300-led sleep [--if-due]  dark now (--if-due: only once the timeout has passed; mu300-buttons asks)
 #   mu300-led test              each LED in turn, 2 s each, with its name (to tell which one is where)
-#   mu300-led alarm on|off      too hot (thermal-guard): the battery LED flashes its colours one at a time like a
-#                               siren (U30 Air: red, white, blue), also while the others are dark
-# ZTE F50: one RGB LED of the PMIC: blue is data, red and blue the alarm. ZTE U30 Air (found by lighting each one):
+#   mu300-led alarm on|off      too hot (thermal-guard): the PMIC's RGB LED flashes red, white, blue one at a time
+#                               like a siren, also while the others are dark
+# ZTE F50 (read from its Android): network = the PMIC's RGB LED, blue on 4G, white (its "green" channel) on 5G, red
+#   without service; Wi-Fi = the PMIC's keypad backlight sink ("keyboard-backlight"), at ZTE's 48 of 127, whichever
+#   band. No power LED. ZTE U30 Air (found by lighting each one):
 #   battery  the PMIC's RGB LED: its "green" channel is white (power: Linux is up), red, blue
 #   network  as ZTE's firmware: blue on 4G (a GPIO, net_blue), white on 5G (LDO VDDCAMA0), red without service
 #            (the PMIC's keypad backlight sink, "keyboard-backlight" under 5.4 and mainline)
@@ -33,11 +36,12 @@ DEVICE=$(${MU300_BIN:-/opt/mu300/bin}/mu300-device)
 case $DEVICE in
     u30air) POWER=sc27xx:green DATA=net_blue DATA5G=zte-ldo0 NODATA=keyboard-backlight WIFI5=zte-ldo2 WIFI24=zte-ldo1
             DEFAULT_TIMEOUT=60 ;;
-    *)      POWER= DATA=sc27xx:blue DATA5G=sc27xx:blue NODATA= WIFI5= WIFI24= DEFAULT_TIMEOUT=0 ;;
+    *)      POWER= DATA=sc27xx:blue DATA5G=sc27xx:green NODATA=sc27xx:red WIFI5=keyboard-backlight
+            WIFI24=keyboard-backlight DEFAULT_TIMEOUT=0 ;;
 esac
-# the PMIC's RGB LED on both, one colour at a time (the U30 Air's white, its power LED, outshines the others when
-# mixed): its battery LED, the F50's only one, where green is green and stays out
-case $DEVICE in u30air) SIREN="sc27xx:red sc27xx:green sc27xx:blue" ;; *) SIREN="sc27xx:red sc27xx:blue" ;; esac
+# the PMIC's RGB LED on both (the U30 Air's battery LED, the F50's network LED), one colour at a time: the white
+# outshines the others when mixed
+SIREN="sc27xx:red sc27xx:green sc27xx:blue"
 SIREN_PID=$R/run/mu300/led-siren.pid
 TIMEOUT=$(sed -n 's/^LED_TIMEOUT=\([0-9][0-9]*\)$/\1/p' "${MU300_LED_CONF:-/etc/mu300/led.conf}" 2>/dev/null | tail -n1)
 TIMEOUT=${TIMEOUT:-$DEFAULT_TIMEOUT}
@@ -54,11 +58,14 @@ vendor_ldo() {  # vendor_ldo zte-ldoN: the 5.4 kernel's switch for that LDO, if 
     return 1
 }
 has_led() { [ -e "$LEDS/$1" ] || vendor_ldo "$1" >/dev/null; }
+level() {  # level NAME: its brightness when lit (ZTE lights the F50's Wi-Fi LED at 48: a low-current sink)
+    case $DEVICE:$1 in f50:keyboard-backlight) echo 48 ;; *) cat "$LEDS/$1/max_brightness" 2>/dev/null ;; esac
+}
 write() {  # write NAME 0|1: the LED itself
     if [ ! -e "$LEDS/$1" ] && f=$(vendor_ldo "$1"); then echo "$2" > "$f" 2>/dev/null; return 0; fi
     [ -w "$LEDS/$1/brightness" ] || return 0
     echo none > "$LEDS/$1/trigger" 2>/dev/null
-    if [ "$2" = 1 ]; then cat "$LEDS/$1/max_brightness" 2>/dev/null; else echo 0; fi > "$LEDS/$1/brightness" 2>/dev/null
+    if [ "$2" = 1 ]; then level "$1"; else echo 0; fi > "$LEDS/$1/brightness" 2>/dev/null
     return 0
 }
 set_led() {  # set_led NAME 0|1: what it should show; lit only while awake
@@ -89,9 +96,14 @@ case "$1 ${2:-}" in
     "data off")   set_led "$NODATA" 0; set_led "$DATA5G" 0; set_led "$DATA" 0 ;;
     "data error") set_led "$DATA" 0; set_led "$DATA5G" 0; set_led "$NODATA" 1 ;;
     "wifi on")
-        if [ "$(wifi_band)" = 5 ]; then set_led "$WIFI24" 0; set_led "$WIFI5" 1
+        if [ "$WIFI5" = "$WIFI24" ]; then set_led "$WIFI5" 1
+        elif [ "$(wifi_band)" = 5 ]; then set_led "$WIFI24" 0; set_led "$WIFI5" 1
         else set_led "$WIFI5" 0; set_led "$WIFI24" 1; fi ;;
-    "wifi off")   set_led "$WIFI5" 0; set_led "$WIFI24" 0 ;;
+    "wifi off")   set_led "$WIFI5" 0; [ "$WIFI24" = "$WIFI5" ] || set_led "$WIFI24" 0 ;;
+    "wifi sync")  # a running AP has its SSID in iw's answer; a stopped hostapd leaves "type AP" without one
+        if iw dev wlan0 info 2>/dev/null | grep -q '^[[:space:]]*type AP' &&
+           iw dev wlan0 info 2>/dev/null | grep -q '^[[:space:]]*ssid '; then exec "$0" wifi on
+        else exec "$0" wifi off; fi ;;
     "wake "*)
         [ "$TIMEOUT" = 0 ] && exit 0
         mkdir -p "$STATE" 2>/dev/null
@@ -114,7 +126,7 @@ case "$1 ${2:-}" in
         rm -f "$SIREN_PID"
         nap 0.2
         for l in $SIREN; do write "$l" 0; done
-        if awake; then show_all; fi ;;   # the U30 Air's white is its power LED, the F50's blue its data LED
+        if awake; then show_all; fi ;;   # the U30 Air's white is its power LED, the F50's colours its network LED
     "siren "*)   # (alarm on runs this in the background)
         # Only the siren named in the pid file runs: one left behind (its alarm switched off while it was
         # between writes, a restarted service) stops by itself instead of flashing along with the new one.
