@@ -261,11 +261,12 @@ class Rules(unittest.TestCase):
         r = run(relay, 'openwrt-luci')
         self.assertEqual(r.returncode, 1, r.stderr)
         self.assertIn('mu300cell-v6.sh', r.stderr)
-        # with every file present the build goes on to its next check (the theme package here)
+        # with every file present neither check stops the build (it stops later, at an input this tree lacks)
         for files in (dict(patch, **{cell: 'x\n'}), dict(relay, **{v6: 'x\n'})):
             r = run(files, 'openwrt-luci')
             self.assertEqual(r.returncode, 1, r.stderr)
-            self.assertIn('theme package missing', r.stderr)
+            self.assertNotIn('required cellular protocol helper missing', r.stderr)
+            self.assertNotIn('fw4-sipa-offload.patch', r.stderr)
 
 
 if __name__ == '__main__':
