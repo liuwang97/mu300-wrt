@@ -9,6 +9,8 @@
 * as published by the Free Software Foundation.
 */
 
+#include <linux/ip.h>
+#include <net/ip.h>
 #include <net/ip6_checksum.h>
 
 #include "cmdevt.h"
@@ -26,47 +28,65 @@ static bool rx_mh_ipv6_ext_hdr(unsigned char nexthdr)
 		nexthdr == NEXTHDR_ROUTING || nexthdr == NEXTHDR_DEST);
 }
 
-static int rx_ipv6_csum(void *data, __wsum csum)
+/*
+ * MU300: the firmware hands each frame up with a 16-bit sum over the transport header and payload. It is checked
+ * here against the pseudo-header of the frame's own IP header (lengths from that header, every header inside the
+ * frame): true means the transport checksum is right. Only TCP and UDP (IPv4, IPv6) and ICMPv6 are checked; a
+ * fragment, any other protocol or anything that does not add up is false, and the stack checks the frame itself.
+ */
+static bool rx_l4_csum_ok(void *data, __wsum csum)
 {
-	int ret = 0;
 	struct rx_msdu_desc *msdu_desc = (struct rx_msdu_desc *)data;
-	struct ethhdr *eth = (struct ethhdr *)(data + msdu_desc->msdu_offset);
-	struct ipv6hdr *ip6h = NULL;
-	struct ipv6_opt_hdr *hp = NULL;
-	unsigned short dataoff = ETH_HLEN;
-	unsigned short nexthdr = 0;
+	unsigned char *frame = (unsigned char *)data + msdu_desc->msdu_offset;
+	unsigned int len = msdu_desc->msdu_len;
+	struct ethhdr *eth = (struct ethhdr *)frame;
+	unsigned int off = ETH_HLEN, end;
+	u8 proto;
 
-	pr_debug("%s: eth_type: 0x%x\n", __func__, eth->h_proto);
+	if (len < ETH_HLEN)
+		return false;
 
-	if (eth->h_proto == cpu_to_be16(ETH_P_IPV6)) {
-		data += msdu_desc->msdu_offset;
-		ip6h = data + dataoff;
-		nexthdr = ip6h->nexthdr;
-		dataoff += sizeof(*ip6h);
+	if (eth->h_proto == htons(ETH_P_IP)) {
+		struct iphdr *iph = (struct iphdr *)(frame + off);
+		unsigned int ihl;
 
-		while (rx_mh_ipv6_ext_hdr(nexthdr)) {
-			pr_debug("%s: nexthdr: %d\n", __func__, nexthdr);
-			hp = (struct ipv6_opt_hdr *)(data + dataoff);
-			dataoff += ipv6_optlen(hp);
-			nexthdr = hp->nexthdr;
-		}
-
-		pr_debug("%s: nexthdr: %d, dataoff: %d, len: %d\n",
-			 __func__, nexthdr, dataoff,
-			 (msdu_desc->msdu_len - dataoff));
-
-		if (!csum_ipv6_magic(&ip6h->saddr, &ip6h->daddr,
-				     (msdu_desc->msdu_len - dataoff),
-				     nexthdr, csum)) {
-			ret = 1;
-		} else {
-			ret = -1;
-		}
-
-		pr_debug("%s: ret: %d\n", __func__, ret);
+		if (len < off + sizeof(*iph))
+			return false;
+		ihl = iph->ihl * 4;
+		end = off + ntohs(iph->tot_len);
+		if (iph->version != 4 || ihl < sizeof(*iph) || off + ihl > end || end > len ||
+		    ip_is_fragment(iph))
+			return false;
+		proto = iph->protocol;
+		if (proto != IPPROTO_TCP && proto != IPPROTO_UDP)
+			return false;
+		return !csum_tcpudp_magic(iph->saddr, iph->daddr, end - off - ihl, proto, csum);
 	}
 
-	return ret;
+	if (eth->h_proto == htons(ETH_P_IPV6)) {
+		struct ipv6hdr *ip6h = (struct ipv6hdr *)(frame + off);
+
+		if (len < off + sizeof(*ip6h))
+			return false;
+		off += sizeof(*ip6h);
+		end = off + ntohs(ip6h->payload_len);
+		if (end > len)
+			return false;
+		proto = ip6h->nexthdr;
+		while (rx_mh_ipv6_ext_hdr(proto)) {
+			struct ipv6_opt_hdr *hp = (struct ipv6_opt_hdr *)(frame + off);
+
+			if (off + sizeof(*hp) > end || off + ipv6_optlen(hp) > end)
+				return false;
+			off += ipv6_optlen(hp);
+			proto = hp->nexthdr;
+		}
+		if (proto != IPPROTO_TCP && proto != IPPROTO_UDP && proto != IPPROTO_ICMPV6)
+			return false;
+		return !csum_ipv6_magic(&ip6h->saddr, &ip6h->daddr, end - off, proto, csum);
+	}
+
+	return false;
 }
 
 static void rx_send_cmd_process(struct sprd_priv *priv, void *data, int len,
@@ -313,7 +333,6 @@ sc2355_rx_mh_addr_process(struct rx_mgmt *rx_mgmt, void *data,
 	struct sprd_common_hdr *hdr =
 	    (struct sprd_common_hdr *)(data + hif->hif_offset);
 	struct sprd_work *misc_work = NULL;
-	static unsigned long time;
 
 	pr_debug("%s: rx_data_addr=0x%lx\n", __func__, (unsigned long)data);
 
@@ -325,14 +344,8 @@ sc2355_rx_mh_addr_process(struct rx_mgmt *rx_mgmt, void *data,
 
 	} else {
 		pr_debug("%s: Add TX complete code here\n", __func__);
-
-		if (time != 0 && ((jiffies - time) >= msecs_to_jiffies(1000))) {
-			pr_err_ratelimited("%s: out of time %d\n",
-			       __func__, jiffies_to_msecs(jiffies - time));
-		}
-
-		time = jiffies;
-
+		/* MU300: the vendor printed "out of time" here whenever two TX completions were more than a second
+		 * apart - which is every idle second (hundreds of lines an hour, none of them a problem) */
 		sc2355_tx_free_data_num(hif, (unsigned char *)data);
 		misc_work = sprd_alloc_work(sizeof(void *));
 
@@ -368,23 +381,23 @@ static void rx_net_work_queue(struct work_struct *work)
 
 
 
+/*
+ * MU300: verify the firmware's sum, never trust it and never drop a frame for it. The vendor code handed every
+ * frame but IPv6 up as CHECKSUM_COMPLETE with this sum unchecked - when the firmware had it wrong (seen: the DHCP
+ * DISCOVER of a client that was joining) the stack found the frame good and printed "hw csum failure" with a
+ * stack dump - and dropped any IPv6 frame whose sum did not match here: IPv6 fragments always, and TCP from Wi-Fi
+ * clients to the device (SYNs over a link-local address never arrived, ping6 did). A frame whose sum checks out is
+ * CHECKSUM_UNNECESSARY; every other frame goes up as CHECKSUM_NONE and the stack verifies (and drops) it.
+ * Always returns 0: the callers drop the frame for a negative value.
+ */
 inline int sc2355_fill_skb_csum(struct sk_buff *skb, unsigned short csum)
 {
-	int ret = 0;
-
-	if (csum) {
-		ret = rx_ipv6_csum(skb->data, (__force __wsum)csum);
-		if (!ret) {
-			skb->ip_summed = CHECKSUM_COMPLETE;
-			skb->csum = (__force __wsum)csum;
-		} else if (ret > 0) {
-			skb->ip_summed = CHECKSUM_UNNECESSARY;
-		}
-	} else {
+	if (csum && rx_l4_csum_ok(skb->data, (__force __wsum)csum))
+		skb->ip_summed = CHECKSUM_UNNECESSARY;
+	else
 		skb->ip_summed = CHECKSUM_NONE;
-	}
 
-	return ret;
+	return 0;
 }
 
 void sc2355_rx_send_cmd(struct sprd_hif *hif, void *data, int len,
