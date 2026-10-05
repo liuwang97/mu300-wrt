@@ -242,7 +242,6 @@ storage:        internal, offset {1}, {2} ({3})	存储：          内部，偏�
 system:         {1} (zip {2}, kernel {3})	系统：          {1}（zip {2}，内核 {3}）
 the Linux region	Linux 区域
 the zip is damaged (checksum mismatch); download it again	zip 已损坏（校验和不匹配）；请重新下载
-the zip is incomplete (no manifest)	zip 不完整（没有 manifest）
 this installer needs root	此安装程序需要 root 权限
 this is not an A/B device with misc, boot_a and boot_b	这不是带有 misc、boot_a 和 boot_b 的 A/B 设备
 this kernel cannot read the SD card; use a newer zip	此内核无法读取 SD 卡；请使用更新的 zip
@@ -258,9 +257,10 @@ There is too little free space inside for Linux, and the SD card ({1}) holds ano
 There is too little free space inside for Linux. The SD card ({1}, {2}) can hold it: put MU300_STORAGE=sd and MU300_SD_ERASE=yes into {3}, a file only root can change (everything on the card is erased).	内部存储空闲空间不足以安装 Linux。SD 卡（{1}，{2}）可以容纳：请在只有 root 能修改的 {3} 中写入 MU300_STORAGE=sd 和 MU300_SD_ERASE=yes（卡上的全部内容将被清除）。
 There is too little free space inside for Linux, and the SD card is smaller than 700 MiB. Use a bigger card (MU300_STORAGE=sd and MU300_SD_ERASE=yes in {1}), or make room with the installer for computers.	内部存储空闲空间不足以安装 Linux，且 SD 卡小于 700 MiB。请使用更大的卡（在 {1} 中写入 MU300_STORAGE=sd 和 MU300_SD_ERASE=yes），或用电脑版安装程序腾出空间。
 There is too little free space inside for Linux and no SD card. Insert a card (MU300_STORAGE=sd and MU300_SD_ERASE=yes in {1}), or make room with the installer for computers.	内部存储空闲空间不足以安装 Linux，且没有 SD 卡。请插入一张卡（在 {1} 中写入 MU300_STORAGE=sd 和 MU300_SD_ERASE=yes），或用电脑版安装程序腾出空间。
-The free space behind the partitions is not empty ({1} of 16 samples hold data); it may be used by this firmware. To use it anyway, put MU300_REGION_OVERWRITE=yes into {2}, a file only root can change.	分区之后的空闲空间并不为空（16 个采样中有 {1} 个含有数据）；它可能正被此固件使用。如仍要使用，请在只有 root 能修改的 {2} 中写入 MU300_REGION_OVERWRITE=yes。
 MU300_MODE=wipe formats the SD card ({1}, {2}): the installation on it and everything else is erased. To allow that, put MU300_SD_ERASE=yes into {3} as well.	MU300_MODE=wipe 会格式化 SD 卡（{1}，{2}）：卡上的安装和其他所有内容都会被清除。如允许，请同时在 {3} 中写入 MU300_SD_ERASE=yes。
-Installing to the SD card ({1}, {2}) erases everything on it. To allow that, put MU300_SD_ERASE=yes into {3}, a file only root can change.	安装到 SD 卡（{1}，{2}）会清除卡上的全部内容。如允许，请在只有 root 能修改的 {3} 中写入 MU300_SD_ERASE=yes。
 could not unmount the Linux filesystem from {1}	无法从 {1} 卸载 Linux 文件系统
 password:       from {1}, written to {2}	密码：          来自 {1}，将写入 {2}
 password:       generated, written to {1}	密码：          自动生成，将写入 {1}
+the zip is incomplete or damaged (its manifest is not valid)	zip 不完整或已损坏（其 manifest 无效）
+The free space behind the partitions is not empty ({1} of 16 samples hold data); it may be used by this firmware. To use it anyway, put MU300_STORAGE=internal and MU300_REGION_OVERWRITE=yes into {2}, a file only root can change.	分区之后的空闲空间并不为空（16 个采样中有 {1} 个含有数据）；它可能正被此固件使用。如仍要使用，请在只有 root 能修改的 {2} 中写入 MU300_STORAGE=internal 和 MU300_REGION_OVERWRITE=yes。
+Installing to the SD card ({1}, {2}) erases everything on it. To allow that, put MU300_STORAGE=sd and MU300_SD_ERASE=yes into {3}, a file only root can change.	安装到 SD 卡（{1}，{2}）会清除卡上的全部内容。如允许，请在只有 root 能修改的 {3} 中写入 MU300_STORAGE=sd 和 MU300_SD_ERASE=yes。

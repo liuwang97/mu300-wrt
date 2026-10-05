@@ -12,15 +12,15 @@ from test_boot_image import LIVE_A, fake_misc, fake_stock, with_slots
 ANDROID_SH = r'''#!/bin/sh
 # stand-in for /system/bin/sh running android-install.sh or android-mount-mu300root.sh
 log=$FAKE/android-sh.log
-echo "ASH_STANDALONE=${ASH_STANDALONE:-} PATH=$PATH $* MU300_RO=${MU300_RO:-} MU300_WORK=${MU300_WORK:-} $(ls -ld "${MU300_WORK:-/nonexistent}" 2>/dev/null | cut -c1-10)" >> "$log"
+echo "ASH_STANDALONE=${ASH_STANDALONE:-} PATH=$PATH $* MU300_RO=${MU300_RO:-} MU300_DEVICE_WORK=${MU300_DEVICE_WORK:-} $(ls -ld "${MU300_DEVICE_WORK:-/nonexistent}" 2>/dev/null | cut -c1-10)" >> "$log"
 case $1 in
     -c) shift; exec "$FAKE/devsh" -c "$@" ;;
     */android-install.sh)
-        cp "$MU300_WORK/mu300-install.env" "$FAKE/install.env"
+        cp "$MU300_DEVICE_WORK/mu300-install.env" "$FAKE/install.env"
         [ "${FAKE_INSTALL_FAILS:-0}" = 1 ] && { echo "[device] failing as asked"; exit 1; }
-        . "$MU300_WORK/mu300-install.env"
+        . "$MU300_DEVICE_WORK/mu300-install.env"
         # what would be installed: the tarballs it is given, by checksum
-        for os in $OSES; do sha256sum "$MU300_WORK/mu300-$os.tar.gz" >> "$FAKE/installed.sha256"; mkdir -p "$FAKE/fs/$os/etc"; done
+        for os in $OSES; do sha256sum "$MU300_DEVICE_WORK/mu300-$os.tar.gz" >> "$FAKE/installed.sha256"; mkdir -p "$FAKE/fs/$os/etc"; done
         echo MU300-INSTALL-OK ;;
     */android-mount-mu300root.sh)
         # a mount is a real directory holding a copy of $FAKE/fs, listed in $FAKE/mounts; unmounting empties it
