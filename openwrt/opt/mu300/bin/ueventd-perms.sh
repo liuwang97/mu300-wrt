@@ -110,9 +110,8 @@ for n in /dev/block/by-name/miscdata; do [ -e "$n" ] && chown 0:1000 "$n" && chm
 for n in /dev/block/by-name/persist; do [ -e "$n" ] && chown 1000:1000 "$n" && chmod 0660 "$n"; done
 for n in /dev/block/by-name/sysdumpdb; do [ -e "$n" ] && chown 1000:1000 "$n" && chmod 0660 "$n"; done
 for n in /dev/block/by-name/fulldumpdb; do [ -e "$n" ] && chown 1000:1000 "$n" && chmod 0660 "$n"; done
-for n in /dev/block/mmcblk1p*; do [ -e "$n" ] && chown 0:1000 "$n" && chmod 0660 "$n"; done
-for n in /dev/block/mmcblk0rpmb; do [ -e "$n" ] && chown 1000:1000 "$n" && chmod 0660 "$n"; done
-for n in /dev/mmcblk0rpmb; do [ -e "$n" ] && chown 1000:1000 "$n" && chmod 0660 "$n"; done
+for n in /dev/block/mmcblk*rpmb; do [ -e "$n" ] && chown 1000:1000 "$n" && chmod 0660 "$n"; done
+for n in /dev/mmcblk*rpmb; do [ -e "$n" ] && chown 1000:1000 "$n" && chmod 0660 "$n"; done
 for n in /dev/block/memdisk0p1; do [ -e "$n" ] && chown 1000:1000 "$n" && chmod 0770 "$n"; done
 for n in /dev/block/pmem0; do [ -e "$n" ] && chown 1000:1000 "$n" && chmod 0770 "$n"; done
 # chown/chmod from vendor init *.rc (Android init applies these after ueventd)

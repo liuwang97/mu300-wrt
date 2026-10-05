@@ -16,10 +16,24 @@ case $S in a|b) ;; *)
 esac
 PART=boot_$S
 # --- slot end
-LOGDEV=$(readlink -f /dev/block/by-name/$PART 2>/dev/null)
-[ -b "$LOGDEV" ] || for u in /sys/class/block/mmcblk0p*/uevent; do
-    grep -qx PARTNAME=$PART "$u" && LOGDEV=/dev/$(basename "$(dirname "$u")")
+# --- part begin
+# The partition named $PART on the eMMC, whatever number the eMMC has (FINDINGS 31l): the disk of type MMC, else the
+# first mmcblk disk that is not a card. Never a card's: one can carry the same GPT names (a raw clone of a device
+# backup), and this writes up to 8 MiB into what it finds.
+SYS=${MU300_SYS:-/sys}
+E=
+for b in "$SYS"/block/mmcblk*; do
+    case ${b##*/mmcblk} in ''|*[!0-9]*) continue ;; esac
+    t=$(cat "$b/device/type" 2>/dev/null)
+    [ "$t" = MMC ] && { E=${b##*/}; break; }
+    [ "$t" = SD ] || [ -n "$E" ] || E=${b##*/}
 done
+LOGDEV=
+[ -n "$E" ] && for u in "$SYS/block/$E/$E"p*/uevent; do
+    grep -qx "PARTNAME=$PART" "$u" 2>/dev/null || continue
+    u=${u%/uevent}; LOGDEV=/dev/${u##*/}; break
+done
+# --- part end
 [ -b "$LOGDEV" ] || exit 0
 end=$(( $(cut -d. -f1 /proc/uptime) + ${1:-300} ))
 while [ "$(cut -d. -f1 /proc/uptime)" -lt "$end" ]; do

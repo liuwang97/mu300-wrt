@@ -124,8 +124,8 @@ bundle_runs_here() {
 }
 # A system on the SD card boots only with a kernel that has the SD host (the bundle says so in ./features). Installing
 # an older bundle there would leave a device that cannot find its own root filesystem. A missing /run/mu300-root-dev
-# means "not on the card".
-root_on_sd() { d=$(cat "${MU300_ROOT_DEV_FILE:-/run/mu300-root-dev}" 2>/dev/null); [ -n "$d" ] && case $d in mmcblk0@*) return 1 ;; esac; }
+# means "not on the card"; the internal region is "<eMMC>@<offset>", and the eMMC is not always mmcblk0 (31l).
+root_on_sd() { d=$(cat "${MU300_ROOT_DEV_FILE:-/run/mu300-root-dev}" 2>/dev/null); [ -n "$d" ] && case $d in *@*) return 1 ;; esac; }
 # bundle_has BUNDLE LIST FEATURE: does the bundle (LIST: its file list) list FEATURE in ./features?
 bundle_has() { grep -qx './features' "$2" && untar -xzOf "$1" ./features 2>/dev/null | grep -qx "$3"; }
 # bundle_has_sd BUNDLE LIST: does the bundle say it has the SD host?
@@ -491,8 +491,19 @@ linux_slot() {
     done
     echo b
 }
-part_dev() {  # part_dev NAME -> /dev/<block device of that partition>
-    for u in /sys/class/block/*/uevent; do
+# The partition named NAME on the eMMC: the disk of type MMC, else the first mmcblk disk that is not a card, whatever
+# its number (FINDINGS 31l). Never a card's - one can carry the same GPT names (a raw clone of a device backup), and the
+# kernel is written to what this finds.
+part_dev() {  # part_dev NAME -> /dev/<block device of that partition>; status 1 when the eMMC has none
+    _e=
+    for _b in "${MU300_SYSROOT:-}"/sys/block/mmcblk*; do
+        case ${_b##*/mmcblk} in ''|*[!0-9]*) continue ;; esac
+        _t=$(cat "$_b/device/type" 2>/dev/null)
+        [ "$_t" = MMC ] && { _e=${_b##*/}; break; }
+        [ "$_t" = SD ] || [ -n "$_e" ] || _e=${_b##*/}
+    done
+    [ -n "$_e" ] || return 1
+    for u in "${MU300_SYSROOT:-}/sys/block/$_e/$_e"p*/uevent; do
         grep -qx "PARTNAME=$1" "$u" 2>/dev/null || continue
         d=${u%/uevent}
         echo "/dev/${d##*/}"
