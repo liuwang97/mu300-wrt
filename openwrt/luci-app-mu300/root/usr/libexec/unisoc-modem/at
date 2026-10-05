@@ -14,10 +14,15 @@ case $cmd in *"$(printf '\r')"*|*'
 '*) echo "unisoc-at: one command per call (no CR or LF)" >&2; exit 2 ;; esac
 case $timeout in ''|*[!0-9]*) timeout=8 ;; esac
 
-cfg() { uci -q get "unisoc_modem.main.$1" 2>/dev/null || true; }
-backend=$(cfg at_backend); backend=${backend:-auto}
-port=$(cfg at_port); port=${port:-/dev/stty_nr1}
-custom=$(cfg at_command)
+# the shared JSON escaper and uci allow-lists (/usr/share/unisoc-modem/lib.sh)
+LIB=${0%/*}/../../share/unisoc-modem/lib.sh
+[ -f "$LIB" ] || LIB=/usr/share/unisoc-modem/lib.sh
+. "$LIB"
+# The UI can write these options: the port must be a tty under /dev, the custom
+# command a program in the platform directory; anything else is ignored.
+backend=$(uci_get at_backend); backend=${backend:-auto}
+port=$(safe_tty "$(uci_get at_port)" /dev/stty_nr1)
+custom=$(safe_program "$(uci_get at_command)")
 
 find_mu300_at() {
 	for p in /opt/mu300/bin/mu300-at /usr/bin/mu300-at; do

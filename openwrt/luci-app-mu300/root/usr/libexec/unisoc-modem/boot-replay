@@ -3,10 +3,14 @@
 # own procd instance and applies saved locks as soon as the configured AT
 # adapter answers. No saved state or a disabled switch means zero AT traffic.
 
-cfg() { uci -q get "unisoc_modem.main.$1" 2>/dev/null || true; }
+# the shared JSON escaper and uci allow-lists (/usr/share/unisoc-modem/lib.sh)
+LIB=${0%/*}/../../share/unisoc-modem/lib.sh
+[ -f "$LIB" ] || LIB=/usr/share/unisoc-modem/lib.sh
+. "$LIB"
+cfg() { uci_get "$1"; }
 AT_BIN=${UNISOC_AT_BIN:-/usr/libexec/unisoc-modem/at}
 LOCK_BIN=${UNISOC_LOCK_BIN:-/usr/libexec/unisoc-modem/lock}
-state=$(cfg state_dir); state=${state:-/etc/unisoc-modem/lock-state.d}
+state=$(safe_state_dir "$(cfg state_dir)" /etc/unisoc-modem/lock-state.d)
 marker=${UNISOC_REPLAY_MARKER:-/run/unisoc-modem-lock-replay-done}
 early_pending=${UNISOC_EARLY_PENDING:-/run/unisoc-modem-early-hook-pending}
 deadline=$(cfg replay_timeout); deadline=${deadline:-90}

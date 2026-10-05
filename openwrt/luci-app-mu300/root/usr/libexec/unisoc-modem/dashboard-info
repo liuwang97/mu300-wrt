@@ -23,6 +23,10 @@
 #   * thermal zones are matched by type, never by zone number.
 
 export PATH="$PATH:/opt/mu300/bin:/opt/mu300/busybox-bin:/usr/libexec/unisoc-modem:/usr/sbin:/sbin"
+# the shared JSON escaper and uci allow-lists (/usr/share/unisoc-modem/lib.sh)
+LIB=${0%/*}/../../share/unisoc-modem/lib.sh
+[ -f "$LIB" ] || LIB=/usr/share/unisoc-modem/lib.sh
+. "$LIB"
 
 BB=/opt/mu300/bin/busybox
 [ -x "$BB" ] || BB=busybox
@@ -30,11 +34,11 @@ t3() { "$BB" timeout -s KILL 3 "$@" 2>/dev/null; }   # external asks: netifd, uc
 t2() { "$BB" timeout -s KILL 2 "$@" 2>/dev/null; }
 
 rd() { cat "$1" 2>/dev/null; }
-n_or_null() { case "$1" in ''|*[!0-9.-]*) echo null ;; *) echo "$1" ;; esac; }
-f_or_null() { case "$1" in ''|*[!0-9.-]*) echo null ;; *) echo "$1" ;; esac; }
-# JSON string escaping (and drop newlines: the output is one line)
-esc() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' | tr -d '\r\n'; }
-qs() { [ -n "$1" ] && printf '"%s"' "$(esc "$1")" || echo null; }
+# numbers and strings through the shared helpers (lib.sh): host names, SSIDs
+# and the APN come from other people's devices and from uci
+n_or_null() { json_num "$1"; }
+f_or_null() { json_num "$1"; }
+qs() { json_str_or_null "$1"; }
 
 # ------------------------------------------------------------- temperature
 # type -> label, the four zones this SoC actually has; hottest covers the rest
@@ -59,17 +63,18 @@ temp_hottest() {
 jval() { printf '%s' "$1" | sed -n "s/.*\"$2\": *\"\{0,1\}\([^,\"}\]*\).*/\1/p" | head -n1; }
 
 # ----------------------------------------------------------------- WAN (ubus)
-cfg() { uci -q get "unisoc_modem.main.$1" 2>/dev/null || true; }
-DATA_IFACE=$(cfg data_interface); DATA_IFACE=${DATA_IFACE:-wan}
-DATA_IFACE6=$(cfg data_interface_v6); DATA_IFACE6=${DATA_IFACE6:-wan6}
+# the UI can write these options: interface names only (they become ubus
+# object names, /sys paths and uci keys), else the defaults
+cfg() { uci_get "$1"; }
+DATA_IFACE=$(safe_iface "$(cfg data_interface)" wan)
+DATA_IFACE6=$(safe_iface "$(cfg data_interface_v6)" wan6)
 WANJSON=$(t3 ubus call "network.interface.$DATA_IFACE" status)
 WAN6JSON=$(t3 ubus call "network.interface.$DATA_IFACE6" status)
-DATA_DEVICE=$(cfg data_device)
-[ -n "$DATA_DEVICE" ] || DATA_DEVICE=$(jval "$WANJSON" l3_device)
-[ -n "$DATA_DEVICE" ] || DATA_DEVICE=sipa_eth0
-LAN_DEVICE=$(cfg lan_device); LAN_DEVICE=${LAN_DEVICE:-br-lan}
-WIFI_DEVICE=$(cfg wifi_device); WIFI_DEVICE=${WIFI_DEVICE:-wlan0}
-USB_DEVICE=$(cfg usb_device); USB_DEVICE=${USB_DEVICE:-usb0}
+DATA_DEVICE=$(safe_iface "$(cfg data_device)" '')
+[ -n "$DATA_DEVICE" ] || DATA_DEVICE=$(safe_iface "$(jval "$WANJSON" l3_device)" sipa_eth0)
+LAN_DEVICE=$(safe_iface "$(cfg lan_device)" br-lan)
+WIFI_DEVICE=$(safe_iface "$(cfg wifi_device)" wlan0)
+USB_DEVICE=$(safe_iface "$(cfg usb_device)" usb0)
 jaddr4() { printf '%s' "$1" | sed -n 's/.*"address": *"\([^"]*\)".*/\1/p' | head -n1; }
 jarr_dns() { printf '%s' "$1" | sed -n 's/.*"dns-server": *\[\([^]]*\)\].*/\1/p' | tr -d '"' ; }
 
@@ -196,7 +201,7 @@ while IFS='|' read -r mac sig txr rxr ct; do
     line=$(awk -v m="$umac" '$2 == m { print $3 "|" $4; exit }' /tmp/dhcp.leases 2>/dev/null)
     ip=${line%%|*}; host=${line#*|}
     [ "$host" = "$line" ] && host=
-    W_CLIST="$W_CLIST{\"mac\":\"$mac\",\"host\":$(qs "$host"),\"ip\":$(qs "$ip"),\"signal\":$(n_or_null "$sig"),\"tx\":$(qs "$txr"),\"rx\":$(qs "$rxr"),\"conn\":$(qs "$ct")},"
+    W_CLIST="$W_CLIST{\"mac\":$(qs "$mac"),\"host\":$(qs "$host"),\"ip\":$(qs "$ip"),\"signal\":$(n_or_null "$sig"),\"tx\":$(qs "$txr"),\"rx\":$(qs "$rxr"),\"conn\":$(qs "$ct")},"
     W_CN=$((W_CN + 1))
 done <<EOF2
 $(printf '%s\n' "$W_CLIENTS")
@@ -210,6 +215,7 @@ LEASES=
 while read -r exp mac ip host _cid; do
     [ -n "$mac" ] || continue
     [ "$host" = "*" ] && host=
+    case $exp in ''|*[!0-9]*) exp=$NOWS ;; esac   # never a file value in $(( ))
     left=$(( exp - NOWS ))
     [ "$left" -lt 0 ] && left=0
     LEASES="$LEASES{\"host\":$(qs "$host"),\"ip\":$(qs "$ip"),\"mac\":$(qs "$mac"),\"left\":$left},"

@@ -16,7 +16,7 @@
 #                     immediately ("started":1), fast ones run inline.
 #   at cmd            one raw AT command through mu300-at, with the same guards the
 #                     V50 panel used: must start with AT, no ";" command chaining, and
-#                     AT+SPENGMD=0,1,0 is hard-denied (it switches the port into
+#                     AT+SPENGMD=0,1,... is hard-denied in any spelling (it switches the port into
 #                     streaming mode and kills the AT channel until a reboot).
 #                     Reply includes the raw modem output; last 40 commands are kept
 #                     in the package runtime directory.
@@ -27,16 +27,26 @@
 
 export PATH="$PATH:/opt/mu300/bin:/opt/mu300/busybox-bin:/usr/libexec/unisoc-modem:/usr/sbin:/sbin"
 
+# the shared JSON escaper and uci allow-lists (/usr/share/unisoc-modem/lib.sh)
+LIB=${0%/*}/../../share/unisoc-modem/lib.sh
+[ -f "$LIB" ] || LIB=/usr/share/unisoc-modem/lib.sh
+. "$LIB"
+
 DASH=${MU300_DASH_BIN:-/usr/libexec/unisoc-modem}
 # One pool everywhere: a platform SMS adapter may honor this environment value.
-# Keep the former MU300 path as an automatic upgrade fallback.
-SMS_POOL=$(uci -q get unisoc_modem.main.sms_pool 2>/dev/null)
+# Keep the former MU300 path as an automatic upgrade fallback. The UI can write
+# both options: the pool must be under /etc/unisoc-modem or /etc/mu300, the
+# command a known mu300-sms or a program in the platform directory.
+SMS_POOL=$(safe_state_dir "$(uci_get sms_pool)" '')
 [ -d "${SMS_POOL:-/etc/unisoc-modem/sms}" ] || [ ! -d /etc/mu300/sms ] || SMS_POOL=/etc/mu300/sms
 export MU300_SMS_POOL=${MU300_SMS_POOL:-${SMS_POOL:-/etc/unisoc-modem/sms}}
-SMS=${MU300_SMS_BIN:-$(uci -q get unisoc_modem.main.sms_command 2>/dev/null)}
+SMS=${MU300_SMS_BIN:-$(safe_program "$(uci_get sms_command)" /opt/mu300/bin/mu300-sms /usr/bin/mu300-sms)}
 [ -n "$SMS" ] || SMS=$(command -v mu300-sms 2>/dev/null || true)
 AT=${MU300_AT:-/usr/libexec/unisoc-modem/at}
+# the runtime directory holds the AT history and the method log (SMS text
+# included): root only
 DIR=${MU300_DASH_DIR:-/tmp/unisoc-modem}
+private_dir "$DIR"
 CELL=$DIR/cell.json
 SIGF=$DIR/sig.json
 COLLECT_LCK=$DIR/collect.lck
@@ -58,7 +68,7 @@ export MU300_AT_LOCK_WAIT
 NL='
 '
 INPUT_MAX=16384
-INPUT=$(head -c $((INPUT_MAX + 1)) 2>/dev/null)
+INPUT=   # the request, read by "call" only (rpcd gives "list" no stdin)
 input_too_large() { [ $(($(printf '%s' "$INPUT" | wc -c))) -gt "$INPUT_MAX" ]; }
 
 # inp JSONPATH: the parameter, exactly as sent, in $V. A NUL becomes \001 (which
@@ -76,22 +86,6 @@ is_ascii_line() { [ "$(printf '%s' "$1" | LC_ALL=C tr -d ' -~'; echo x)" = x ]; 
 # allowed VALUE ERE: VALUE is one line of printable ASCII matching ^ERE$
 allowed() { is_ascii_line "$1" && printf '%s\n' "$1" | LC_ALL=C grep -Eqx -- "$2"; }
 
-# The JSON string escaper: the quote, the backslash and every control character.
-JSON_ESC='function jesc(s,   o, i, n, c) {
-    o = ""; n = length(s)
-    for (i = 1; i <= n; i++) { c = substr(s, i, 1); o = o ((c in JE) ? JE[c] : c) }
-    return o
-}
-BEGIN {
-    for (i = 1; i < 32; i++) JE[sprintf("%c", i)] = sprintf("\\u%04x", i)
-    JE[sprintf("%c", 127)] = "\\u007f"
-    JE["\\"] = "\\\\"; JE["\""] = "\\\""; JE["\n"] = "\\n"; JE["\t"] = "\\t"; JE["\r"] = "\\r"
-}'
-# json_str TEXT: TEXT as one JSON string, quotes included
-json_str() {
-    printf '%s\n' "$1" | awk "$JSON_ESC"'
-        BEGIN { printf "\"" } { printf "%s%s", (NR > 1 ? "\\n" : ""), jesc($0) } END { printf "\"" }'
-}
 # json_obj TEXT: TEXT as jsonfilter re-serialises it, if it is one JSON object
 # (trailing text dropped, raw control characters escaped); fails otherwise
 json_obj() {
@@ -205,6 +199,18 @@ m_act() {
 }
 
 AT_MAX=512
+# at_wedges CMD: CMD writes AT+SPENGMD with the parameters 0,1 first - the
+# streaming-mode family. Spaces and quotes are dropped and case is ignored;
+# each parameter is compared by its number (00 = 0, "1" = 1).
+at_wedges() {
+    printf '%s\n' "$1" | tr -d ' "' | tr 'a-z' 'A-Z' | awk '{
+        s = $0
+        while ((i = index(s, "+SPENGMD=")) > 0) {
+            s = substr(s, i + 9); split(s, p, ",")
+            if (p[1] ~ /^0+$/ && p[2] ~ /^0*1([^0-9]|$)/) found = 1
+        }
+    } END { exit !found }'
+}
 m_at() {
     local cmd reply
     inp '@.cmd'; cmd=$V
@@ -220,13 +226,12 @@ m_at() {
         ;;
     esac
     # AT+SPENGMD=0,1,0 switches the port into streaming mode and kills the AT
-    # channel until a reboot: denied in any spelling (case, spaces)
-    case $(printf '%s' "$cmd" | tr -d ' ' | tr 'a-z' 'A-Z') in
-        AT+SPENGMD=0,1,0)
-            refuse 'denied: this command wedges the AT port until a reboot'
-            return
-            ;;
-    esac
+    # channel until a reboot: denied in any spelling (case, spaces, quotes,
+    # leading zeros, more parameters, after another command on the same line)
+    if at_wedges "$cmd"; then
+        refuse 'denied: this command wedges the AT port until a reboot'
+        return
+    fi
     # a lock apply in flight means the modem is restarting (SFUN) - say so instead
     # of a generic busy, so it does not look like the console died
     if [ -d /run/unisoc-modem-lock-apply ]; then
@@ -342,7 +347,7 @@ m_sms_show() {
     if text=$("$SMS" show "$id" 2>/dev/null) && [ -n "$text" ]; then
         printf '{"ok":1,"text":%s}\n' "$(json_str "$text")"
     else
-        printf '{"ok":0,"error":%s}\n' "$(json_str "${text:-读取失败}")"
+        refuse 'Read failed' "$text"
     fi
 }
 
@@ -370,12 +375,12 @@ m_sms_send() {
         *sent*|*OK*)
             printf '{"ok":1,"reply":%s}\n' "$(json_str "$out")" ;;
         *)
-            printf '{"ok":0,"error":%s}\n' "$(json_str "$(printf '%s\n' "$out" | tail -n1)")" ;;
+            refuse 'Sending failed' "$(printf '%s\n' "$out" | tail -n1)" ;;
     esac
 }
 
 m_sms_delete() {
-    local id sim
+    local id sim out
     inp '@.id'; id=$V
     inp '@.sim'; sim=$V
     allowed "$id" "(all|$SMS_ID)" || { refuse 'bad id'; return; }
@@ -385,8 +390,11 @@ m_sms_delete() {
         1|true)     sim=1 ;;
         *)          refuse 'sim must be 0 or 1'; return ;;
     esac
-    [ "$sim" = 1 ] && "$SMS" delete "$id" --sim >/dev/null 2>&1 ||
-        "$SMS" delete "$id" >/dev/null 2>&1
+    if [ "$sim" = 1 ]; then
+        out=$("$SMS" delete "$id" --sim 2>&1)
+    else
+        out=$("$SMS" delete "$id" 2>&1)
+    fi || { refuse 'Delete failed' "$(printf '%s\n' "$out" | tail -n1)"; return; }
     printf '{"ok":1}\n'
 }
 
@@ -479,6 +487,7 @@ list)
     do_list
     ;;
 call)
+    INPUT=$(cat 2>/dev/null)
     if input_too_large; then
         refuse 'request too large'
         exit 0

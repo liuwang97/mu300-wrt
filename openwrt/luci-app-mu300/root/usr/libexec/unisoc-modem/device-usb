@@ -5,6 +5,10 @@
 # other known platforms retain their power-sequencing helper.
 set -u
 export PATH="$PATH:/opt/mu300/bin:/usr/sbin:/sbin"
+# the shared JSON escaper and uci allow-lists (/usr/share/unisoc-modem/lib.sh)
+LIB=${0%/*}/../../share/unisoc-modem/lib.sh
+[ -f "$LIB" ] || LIB=/usr/share/unisoc-modem/lib.sh
+. "$LIB"
 
 CFG=unisoc_modem.usb
 ROLE_FILE=${MU300_USB_ROLE_FILE:-/sys/class/usb_role/25100000.dwc3-role-switch/role}
@@ -16,20 +20,6 @@ NETWORK_SERVICE=${MU300_USB_NETWORK_SERVICE:-/etc/init.d/network}
 IP=${MU300_USB_IP_BIN:-ip}
 get() { uci -q get "$CFG.$1" 2>/dev/null || true; }
 put() { uci -q set "$CFG.$1=$2"; }
-# json_str TEXT: TEXT as one JSON string (the quote, the backslash and every
-# control character escaped); sysfs and interface names go through this
-json_str() {
-    printf '%s\n' "$1" | awk 'BEGIN {
-            for (i = 1; i < 32; i++) JE[sprintf("%c", i)] = sprintf("\\u%04x", i)
-            JE[sprintf("%c", 127)] = "\\u007f"
-            JE["\\"] = "\\\\"; JE["\""] = "\\\""; JE["\n"] = "\\n"; JE["\t"] = "\\t"; JE["\r"] = "\\r"
-            printf "\""
-        }
-        { o = ""; n = length($0)
-          for (i = 1; i <= n; i++) { c = substr($0, i, 1); o = o ((c in JE) ? JE[c] : c) }
-          printf "%s%s", (NR > 1 ? "\\n" : ""), o }
-        END { printf "\"" }'
-}
 error() { printf '{"ok":0,"error":%s}\n' "$(json_str "$1")"; exit 1; }
 role_now() { cat "$ROLE_FILE" 2>/dev/null || echo unavailable; }
 device_name() {
@@ -38,7 +28,8 @@ device_name() {
     else echo generic; fi
 }
 role_command() {
-    cmd=${MU300_USB_ROLE_COMMAND:-$(get role_command)}
+    # the UI can write role_command: only a program in the platform directory
+    cmd=${MU300_USB_ROLE_COMMAND:-$(safe_program "$(get role_command)")}
     if [ -n "$cmd" ]; then
         [ -x "$cmd" ] || error 'USB role adapter is not executable'
         "$cmd" "$1" || error 'USB role adapter failed'
@@ -83,7 +74,7 @@ usb_net() {
     return 1
 }
 bridge_section() {
-    bridge=$(uci -q get unisoc_modem.main.lan_device 2>/dev/null)
+    bridge=$(safe_iface "$(uci_get lan_device)" br-lan)
     [ -n "$bridge" ] || bridge=br-lan
     uci -q show network | sed -n "s/^\(network\.[^.]*\)\.name='$bridge'$/\1/p" | head -n1
 }
@@ -98,7 +89,7 @@ sync_host_nic() {
     usb_net "$name" || return 0
     section=$(bridge_section)
     [ -n "$section" ] && bridge_has "$section" "$name" || return 0
-    bridge=$(uci -q get unisoc_modem.main.lan_device 2>/dev/null)
+    bridge=$(safe_iface "$(uci_get lan_device)" br-lan)
     [ -n "$bridge" ] || bridge=br-lan
     "$IP" link set dev "$name" up >/dev/null 2>&1 || return 1
     "$IP" link set dev "$name" master "$bridge" >/dev/null 2>&1
@@ -264,7 +255,7 @@ case ${1:-} in
             uci commit network || error 'Cannot save LAN bridge'
             "$NETWORK_SERVICE" reload >/dev/null 2>&1 || error 'Network reload failed'
         fi
-        bridge=$(uci -q get unisoc_modem.main.lan_device 2>/dev/null)
+        bridge=$(safe_iface "$(uci_get lan_device)" br-lan)
         [ -n "$bridge" ] || bridge=br-lan
         "$IP" link set dev "$name" master "$bridge" >/dev/null 2>&1 || error 'Cannot attach USB interface to LAN bridge'
         printf '{"ok":1}\n'

@@ -33,10 +33,15 @@
 
 export PATH="$PATH:/opt/mu300/bin:/opt/mu300/busybox-bin:/usr/sbin:/sbin"
 
-cfg() { uci -q get "unisoc_modem.main.$1" 2>/dev/null || true; }
+# the shared JSON escaper and uci allow-lists (/usr/share/unisoc-modem/lib.sh)
+LIB=${0%/*}/../../share/unisoc-modem/lib.sh
+[ -f "$LIB" ] || LIB=/usr/share/unisoc-modem/lib.sh
+. "$LIB"
 AT=${MU300_AT:-/usr/libexec/unisoc-modem/at}
-STATE_DIR=$(cfg state_dir); STATE_DIR=${STATE_DIR:-/etc/unisoc-modem/lock-state.d}
-DATA_IFACE=$(cfg data_interface); DATA_IFACE=${DATA_IFACE:-wan}
+# the UI can write these options: a state directory under /etc/unisoc-modem or
+# /etc/mu300 and an interface name, else the defaults
+STATE_DIR=$(safe_state_dir "$(uci_get state_dir)" /etc/unisoc-modem/lock-state.d)
+DATA_IFACE=$(safe_iface "$(uci_get data_interface)" wan)
 RUNDIR=${MU300_DASH_DIR:-/tmp/unisoc-modem}
 APPLY_DIR=${UNISOC_APPLY_DIR:-/run/unisoc-modem-lock-apply}
 REPLAY_MARKER=${UNISOC_REPLAY_MARKER:-/run/unisoc-modem-lock-replay-done}
@@ -45,7 +50,8 @@ LOG=$RUNDIR/lock.log
 # AT round trips (about a second each on this firmware), so normal reads are
 # served from this cache and refreshed in the background. "get fresh" re-reads.
 LOCKCACHE=$RUNDIR/lock.json
-mkdir -p "$STATE_DIR" "$RUNDIR" 2>/dev/null
+mkdir -p "$STATE_DIR" 2>/dev/null
+private_dir "$RUNDIR"
 
 at() { "$AT" -t "${2:-6}" "$1" 2>/dev/null | tr -d '\r'; }
 # Never WRITE bands the module does not support - the n79 lock (from the old
@@ -70,20 +76,6 @@ nr_sup() {
 # each of them while the radio is deliberately held off.
 at_boot() { "$AT" -t 2 "$1" 2>/dev/null | tr -d '\r'; }
 say() { logger -t mu300-dash "$*" 2>/dev/null; echo "$(date '+%H:%M:%S') $*" >> "$LOG" 2>/dev/null; tail -n 30 "$LOG" > "$LOG.t" 2>/dev/null && mv "$LOG.t" "$LOG"; }
-# json_str TEXT: TEXT as one JSON string (the quote, the backslash and every
-# control character escaped) - modem answers go into the reply through this
-json_str() {
-    printf '%s\n' "$1" | awk 'BEGIN {
-            for (i = 1; i < 32; i++) JE[sprintf("%c", i)] = sprintf("\\u%04x", i)
-            JE[sprintf("%c", 127)] = "\\u007f"
-            JE["\\"] = "\\\\"; JE["\""] = "\\\""; JE["\n"] = "\\n"; JE["\t"] = "\\t"; JE["\r"] = "\\r"
-            printf "\""
-        }
-        { o = ""; n = length($0)
-          for (i = 1; i <= n; i++) { c = substr($0, i, 1); o = o ((c in JE) ? JE[c] : c) }
-          printf "%s%s", (NR > 1 ? "\\n" : ""), o }
-        END { printf "\"" }'
-}
 # digits VALUE [MAX]: VALUE is 1 to MAX (default 7) decimal digits
 digits() {
     case $1 in ''|*[!0-9]*) return 1 ;; esac
@@ -109,6 +101,7 @@ valid_value() {
 valid_cell() {
     local pair=${1#*:}
     case ${1%%:*} in nr|lte) ;; *) return 1 ;; esac
+    case $pair in *,*) ;; *) return 1 ;; esac   # exactly ARFCN,PCI
     digits "${pair%,*}" 7 && digits "${pair#*,}" 4
 }
 

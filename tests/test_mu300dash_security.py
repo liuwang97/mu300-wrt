@@ -10,6 +10,7 @@ raw control characters inside strings accepted), except that a NUL inside a stri
 which is the harder case for the backend."""
 import json
 import subprocess
+import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -80,6 +81,7 @@ printf '%s\0' "{name}" "$@" > "$f"
 [ "{name}" = sms ] && [ "${{1:-}}" = send ] && cat > "$f.stdin"
 if [ "{name}" = cell ] && [ -f "$STUB_OUT/sig.json" ]; then cp "$STUB_OUT/sig.json" "$MU300_DASH_DIR/sig.json"; fi
 if [ -f "$STUB_OUT/{name}" ]; then cat "$STUB_OUT/{name}"; else printf '%s\n' '{default}'; fi
+[ -f "$STUB_OUT/{name}.rc" ] && exit "$(cat "$STUB_OUT/{name}.rc")"
 exit 0
 '''
 
@@ -88,7 +90,12 @@ DEFAULTS = {
     'lock': '{"ok":1,"mode":{"label":"auto"}}', 'device-usb': '{"ok":1}', 'at': 'OK', 'sms': 'sent (12)',
 }
 
-# Hostile values: each is refused by every field that takes a fixed set, a number or a name.
+# The methods that start something with setsid (in the background of mu300dash)
+DETACHED = {'act', 'lock_set', 'sms_sync', 'status'}
+
+# Hostile values: each is refused by every field that takes a fixed set, a number or a name. The NUL cases: the
+# stand-in jsonfilter passes the NUL on (the backend maps it to \001 and refuses); the real jsonfilter prints strings
+# with %s and so ends the value at the NUL - on the device "a\u0000b" arrives as "a", neutralised rather than refused.
 HOSTILE = {
     'single quote': "'", 'double quote': '"', 'newline': 'x\ny', 'semicolon': ';reboot', 'subst': '$(reboot)',
     'backtick': '`reboot`', 'pipe': '|reboot', 'ampersand': '&reboot', 'leading dash': '-rf', 'nul': '\x00',
@@ -115,7 +122,9 @@ class Mu300Dash(ShellTest):
         self.stub('uci', 'exit 1')
         self.stub('logger', 'exit 0')
         # setsid: record what would have been started detached, start nothing
-        self.stub('setsid', 'f=$(mktemp "$STUB_CALLS/call.XXXXXX"); printf "%s\\0" setsid "$@" > "$f"')
+        # it runs in the background of mu300dash, so it writes its record whole (rename) and call() waits for it
+        self.stub('setsid', 't=$(mktemp "$STUB_CALLS/.tmp.XXXXXX"); printf "%s\\0" setsid "$@" > "$t"; '
+                            'mv "$t" "$STUB_CALLS/call.${t##*.}"')
         self.adapters = self.tmp / 'adapters'
         self.adapters.mkdir()
         for name, default in DEFAULTS.items():
@@ -130,7 +139,7 @@ class Mu300Dash(ShellTest):
         """What the stub NAME prints from now on."""
         (self.out / name).write_text(text)
 
-    def call(self, shell, method, params=None, raw=None):
+    def call(self, shell, method, params=None, raw=None, **extra):
         """Run `mu300dash call METHOD` with PARAMS (JSON) on stdin: (CompletedProcess, [[name, arg...], ...],
         {call index: stdin text})."""
         self.n += 1
@@ -145,9 +154,20 @@ class Mu300Dash(ShellTest):
         env = self.env(STUB_CALLS=calls, STUB_OUT=self.out, MU300_DASH_BIN=self.adapters,
                        MU300_DASH_DIR=run / 'dash', MU300_AT=self.adapters / 'at', MU300_SMS_BIN=self.adapters / 'sms',
                        MU300_SMS_POOL=run / 'pool')
+        env.update({k: str(v) for k, v in extra.items()})
+        env = {k: v for k, v in env.items() if v != ''}
         r = subprocess.run(shell + [str(DASH), 'call', method], input=stdin.encode(), capture_output=True,
                            env=env, timeout=60)
         r.stdout, r.stderr = r.stdout.decode('utf-8', 'replace'), r.stderr.decode('utf-8', 'replace')
+        # a detached start may land a moment after mu300dash has answered: wait until two looks 0.1 s apart agree
+        if method in DETACHED:
+            seen, deadline = None, time.monotonic() + 3
+            while time.monotonic() < deadline:
+                now = sorted(calls.glob('call.*'))
+                if now == seen:
+                    break
+                seen = now
+                time.sleep(0.1)
         recs, stdins = [], {}
         for f in sorted(calls.glob('call.*')):
             if f.suffix == '.stdin':
@@ -208,7 +228,8 @@ class Inventory(Mu300Dash):
 
     def test_the_changed_scripts_parse(self):
         for shell in self.each_shell():
-            for p in [DASH] + [ADAPTERS / n for n in ('action', 'at', 'device-usb', 'lock')]:
+            for p in [DASH, LIB] + [ADAPTERS / n for n in ('action', 'at', 'boot-replay', 'cell', 'dashboard-info',
+                                                         'device-usb', 'lock')]:
                 with self.subTest(p=p.name):
                     r = subprocess.run(shell + ['-n', str(p)], capture_output=True, text=True)
                     self.assertEqual(r.returncode, 0, r.stderr)
@@ -473,7 +494,7 @@ class Adapters(Mu300Dash):
         bad = [('mode', '5g'), ('mode', 'sa;reboot'), ('endc', 'yes'), ('auto_apply', 'on\n'), ('lte', '1,3;x'),
                ('lte', '-1'), ('nr', '78,'), ('nr', ',78'), ('nr', '1,,3'), ('lte', '1' * 128),
                ('cell', 'nr:627264,393;x'), ('cell', 'nr:627264'), ('cell', 'gsm:1,2'), ('cell', 'nr:12345678,1'),
-               ('cell', 'lte:1,2,3'), ('cell', 'lte:$(id),1'), ('shell', 'on')]
+               ('cell', 'lte:1,2,3'), ('cell', 'lte:$(id),1'), ('cell', 'nr:123'), ('shell', 'on')]
         for shell in self.each_shell():
             for kind, val in bad:
                 with self.subTest(kind=kind, val=val):
@@ -521,9 +542,10 @@ class Adapters(Mu300Dash):
 
 
 class Acl(unittest.TestCase):
-    READ = {'sysinfo', 'status', 'signal', 'at_history', 'lock_get', 'sms_list', 'sms_show', 'usb_get',
-            'usb_net_list'}
-    WRITE = {'act', 'at', 'lock_set', 'sms_send', 'sms_delete', 'sms_sync', 'usb_set', 'usb_net_add'}
+    # SMS bodies (one-time codes) and the AT history (AT+CPIN PINs) are not for read-only users (ruling R14)
+    READ = {'sysinfo', 'status', 'signal', 'lock_get', 'usb_get', 'usb_net_list'}
+    WRITE = {'act', 'at', 'at_history', 'lock_set', 'sms_list', 'sms_show', 'sms_send', 'sms_delete', 'sms_sync',
+             'usb_set', 'usb_net_add'}
 
     def test_actions_need_write_access(self):
         acl = json.loads(ACL.read_text())['luci-app-mu300']
@@ -532,6 +554,163 @@ class Acl(unittest.TestCase):
         self.assertEqual(read, self.READ)
         self.assertEqual(write, self.WRITE)
         self.assertEqual(read | write, Inventory.METHODS)
+
+
+LIB = APP / 'usr' / 'share' / 'unisoc-modem' / 'lib.sh'
+
+
+class Lib(ShellTest):
+    """The shared lib.sh: the one JSON escaper, and the allow-lists for uci options naming programs, paths, ttys."""
+
+    def lib(self, shell, code, **env):
+        return self.sh(shell, f'. "{LIB}"; {code}', **env)
+
+    def test_json_str(self):
+        texts = ['', 'plain', 'q"uote', 'back\\slash', 'new\nline', 'tab\tcr\r', ''.join(chr(c) for c in range(1, 32)),
+                 'del\x7f', 'ğüş 中文 😀', '\\"\\n', 'trailing\n\n', '\n']
+        for shell in self.each_shell():
+            for t in texts:
+                with self.subTest(text=t):
+                    (self.tmp / 'in').write_text(t)
+                    r = self.lib(shell, f'json_str "$(cat "{self.tmp}/in"; printf x)"')
+                    out = json.loads(r.stdout)
+                    self.assertEqual(out, t + 'x')
+                    self.assertTrue(all(ord(c) >= 32 for c in r.stdout), repr(r.stdout))
+            r = self.lib(shell, 'printf "%s|%s" "$(json_str_or_null "")" "$(json_str_or_null a)"')
+            self.assertEqual(r.stdout, 'null|"a"')
+
+    def test_json_num(self):
+        cases = {'0': '0', '12': '12', '-3': '-3', '45.5': '45.5', '-0.5': '-0.5', '': 'null', '-': 'null',
+                 '1-2': 'null', '1.2.3': 'null', '.5': 'null', '5.': 'null', '007': 'null', '1e5': 'null',
+                 '1;2': 'null', '--1': 'null'}
+        for shell in self.each_shell():
+            for v, want in cases.items():
+                with self.subTest(v=v):
+                    self.assertEqual(self.lib(shell, f"json_num '{v}'").stdout.strip(), want)
+
+    def test_uci_allow_lists(self):
+        cases = [
+            ('safe_iface wan x', 'wan'), ('safe_iface br-lan x', 'br-lan'), ('safe_iface eth0.2 x', 'eth0.2'),
+            ("safe_iface '-x' d", 'd'), ("safe_iface '..' d", 'd'), ("safe_iface 'a/b' d", 'd'),
+            ("safe_iface \"x'\" d", 'd'), ("safe_iface 'a b' d", 'd'), (f"safe_iface {'e' * 16} d", 'd'),
+            ("safe_iface '' d", 'd'),
+            ('safe_state_dir /etc/unisoc-modem/lock-state.d d', '/etc/unisoc-modem/lock-state.d'),
+            ('safe_state_dir /etc/mu300/sms-pool d', '/etc/mu300/sms-pool'),
+            ('safe_state_dir /etc/unisoc-modem/../init.d d', 'd'), ('safe_state_dir /etc/init.d d', 'd'),
+            ('safe_state_dir /tmp/x d', 'd'), ('safe_state_dir /etc/mu300x d', 'd'),
+            ("safe_state_dir '/etc/mu300/a b' d", 'd'), ('safe_state_dir /etc/mu300/.x d', 'd'),
+            ('safe_tty /dev/stty_nr1 d', '/dev/stty_nr1'), ('safe_tty /dev/ttyUSB2 d', '/dev/ttyUSB2'),
+            ('safe_tty /dev/sda d', 'd'), ('safe_tty /dev/tty d', 'd'), ('safe_tty /dev/ttyX/../sda d', 'd'),
+            ('safe_tty /etc/passwd d', 'd'),
+            ('safe_program /opt/mu300/bin/mu300-sms /opt/mu300/bin/mu300-sms', '/opt/mu300/bin/mu300-sms'),
+            ('safe_program /bin/sh /opt/mu300/bin/mu300-sms', ''), ('safe_program /tmp/x', ''),
+            ('safe_program /P/adapter', '/P/adapter'), ('safe_program /P/../bin/sh', ''),
+            ('safe_program /P/sub/x', ''), ('safe_program /P/.hidden', ''), ('safe_program /P/', ''),
+            ("safe_program '/P/a b'", ''),
+        ]
+        for shell in self.each_shell():
+            for code, want in cases:
+                with self.subTest(code=code):
+                    r = self.lib(shell, code, MU300_PLATFORM_DIR='/P')
+                    self.assertEqual(r.stdout.strip(), want, r.stderr)
+
+
+class FixRound1(Mu300Dash):
+    def test_spengmd_streaming_is_denied_in_any_spelling(self):
+        bad = ['AT+SPENGMD=0,1,0', 'at+spengmd=0,1,0', 'AT+SPENGMD = 0 , 1 , 0', 'AT+SPENGMD=0,1,00',
+               'AT+SPENGMD=0,01,0', 'AT+SPENGMD=00,1,0', 'AT+SPENGMD="0","1","0"', 'AT+SPENGMD=0,1',
+               'AT+SPENGMD=0,1,0,5', 'ATE0+SPENGMD=0,1,0', 'AT+SpEnGmD=0,1,7']
+        good = ['AT+SPENGMD=0,6,0', 'AT+SPENGMD=0,14,1', 'AT+SPENGMD=0,10,0', 'AT+SPENGMD?', 'AT+SPENGMD=1,1,0']
+        for shell in self.each_shell():
+            self.assert_refused(shell, [(c, 'at', {'cmd': c}) for c in bad])
+            for c in good:
+                r, recs, _ = self.call(shell, 'at', {'cmd': c})
+                self.assertEqual(recs, [['at', '-t', '8', c]], c)
+
+    def test_sms_failures_carry_a_fixed_error_and_a_detail(self):
+        self.output('sms', 'no message "4"\\x')
+        self.output('sms.rc', '1')
+        for shell in self.each_shell():
+            r, _, _ = self.call(shell, 'sms_show', {'id': '4'})
+            self.assertEqual(self.reply(r), {'ok': 0, 'error': 'Read failed', 'detail': 'no message "4"\\x'})
+            r, _, _ = self.call(shell, 'sms_send', {'num': '123', 'text': 'hi'})
+            self.assertEqual(self.reply(r), {'ok': 0, 'error': 'Sending failed', 'detail': 'no message "4"\\x'})
+            r, _, _ = self.call(shell, 'sms_delete', {'id': '4'})
+            self.assertEqual(self.reply(r), {'ok': 0, 'error': 'Delete failed', 'detail': 'no message "4"\\x'})
+
+    def test_the_runtime_directory_is_root_only(self):
+        for shell in self.each_shell():
+            r, _, _ = self.call(shell, 'at', {'cmd': 'ATI'})
+            self.reply(r)
+            d = self.tmp / f'run{self.n}' / 'dash'
+            self.assertEqual(d.stat().st_mode & 0o777, 0o700)
+
+    def test_sms_command_outside_the_allow_list_is_ignored(self):
+        self.stub('uci', '[ "$*" = "-q get unisoc_modem.main.sms_command" ] && echo "$STUB_SMS_COMMAND"; exit 0')
+        evil = self.tmp / 'evil'
+        evil.write_text('#!/bin/sh\ntouch "$STUBLOG/evil-ran"\n')
+        evil.chmod(0o755)
+        self.stub('mu300-sms', 'f=$(mktemp "$STUB_CALLS/call.XXXXXX"); printf "%s\\0" mu300-sms "$@" > "$f"; '
+                               'echo "pool: 0 message(s), 0 unread - page 1/1 (10 per page)"')
+        for shell in self.each_shell():
+            r, recs, _ = self.call(shell, 'sms_list', {}, MU300_SMS_BIN='', STUB_SMS_COMMAND=evil)
+            self.assertEqual(recs, [['mu300-sms', 'list', '1']], r.stdout)
+            self.assertFalse((self.tmp / 'evil-ran').exists())
+
+    def test_at_custom_command_must_be_in_the_platform_directory(self):
+        plat = self.tmp / 'platform'
+        plat.mkdir()
+        for p in (self.tmp / 'evil', plat / 'adapter'):
+            p.write_text('#!/bin/sh\necho "ran $0 $*"\n')
+            p.chmod(0o755)
+        for shell in self.each_shell():
+            for cmd, ran in [(self.tmp / 'evil', False), (plat / 'adapter', True)]:
+                self.stub('uci', f'case "$*" in *at_backend) echo custom ;; *at_command) echo "{cmd}" ;; esac; exit 0')
+                r = self.script(shell, ADAPTERS / 'at', '-t', '3', 'ATI', MU300_PLATFORM_DIR=plat)
+                self.assertEqual('ran ' in r.stdout, ran, (cmd, r.stdout, r.stderr))
+
+    def test_cell_escapes_operator_names_and_registration(self):
+        at = self.tmp / 'modem'
+        at.write_text(r"""#!/bin/sh
+case $3 in
+    'AT+CFUN?') echo '+CFUN: 1' ;;
+    'AT+CEREG?') printf '%s\n' '+CEREG: 2,1,"01\F0","0A\\B",13' ;;
+    'AT+COPS?') printf '+COPS: 0,0,"Op\\er\001ator",7\n' ;;
+    'AT+CGMI') printf '%s\n' 'Uni"soc\' ;;
+    'AT+CGSN') echo 123456789012345 ;;
+    'AT+CGEQOSRDP=1') echo '+CGEQOSRDP: 1,x"y,0,0,0,0,0,0' ;;
+esac
+""")
+        at.chmod(0o755)
+        for shell in self.each_shell():
+            run = self.tmp / f'cell{self.n}'
+            self.n += 1
+            r = self.script(shell, ADAPTERS / 'cell', MU300_AT=at, MU300_DASH_DIR=run, MU300_DASH_POOL_DIR=run / 'pool',
+                            MU300_DASH_IDENT_DIR=run / 'ident')
+            cell = json.loads((run / 'cell.json').read_text())
+            self.assertEqual(cell['operator']['name'], 'Op\\er\x01ator', r.stderr)
+            self.assertEqual(cell['reg']['tac'], '01\\F0')
+            self.assertEqual(cell['ident']['mfg'], 'Uni"soc\\')
+            self.assertIsNone(cell['qos'])
+            json.loads((run / 'sig.json').read_text())
+            self.assertEqual((run / 'cell.json').stat().st_mode & 0o777, 0o600)
+
+    def test_dashboard_info_escapes_names(self):
+        self.stub('busybox', 'shift 4; exec "$@"')   # busybox timeout -s KILL N CMD...
+        self.stub('uci', r"""case "$*" in
+    '-q get system.@system[0].hostname') printf 'h"o\\st\001\n' ;;
+    '-q show wireless') printf '%s\n' "wireless.default_radio0=wifi-iface" "wireless.default_radio0.ssid='my \"wifi\" \\ net'" ;;
+    '-q get unisoc_modem.main.lan_device') echo "br-lan'/w /tmp/x" ;;
+    '-q get unisoc_modem.main.wifi_device') echo '../../etc' ;;
+    *) exit 1 ;;
+esac""")
+        for name in ('ubus', 'ip', 'iw'):
+            self.stub(name, 'exit 1')
+        for shell in self.each_shell():
+            r = self.script(shell, ADAPTERS / 'dashboard-info')
+            info = json.loads(r.stdout)
+            self.assertEqual(info['host'], 'h"o\\st\x01')
+            self.assertEqual(info['wifi']['ssid'], 'my "wifi" \\ net')
 
 
 if __name__ == '__main__':

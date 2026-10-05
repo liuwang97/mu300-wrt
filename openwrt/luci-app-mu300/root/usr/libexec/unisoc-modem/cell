@@ -41,19 +41,26 @@
 #                            round in flight (the full round writes sig.json too).
 
 export PATH="$PATH:/opt/mu300/bin:/opt/mu300/busybox-bin:/usr/libexec/unisoc-modem:/usr/sbin:/sbin"
+# the shared JSON escaper and uci allow-lists (/usr/share/unisoc-modem/lib.sh)
+LIB=${0%/*}/../../share/unisoc-modem/lib.sh
+[ -f "$LIB" ] || LIB=/usr/share/unisoc-modem/lib.sh
+. "$LIB"
+# the caches and sim.json (IMSI, ICCID) are root's only
+umask 077
 
 MODE=${1:-full}
 DIR=${MU300_DASH_DIR:-/tmp/unisoc-modem}
 CELL=$DIR/cell.json
 SIGF=$DIR/sig.json
-STATE_DIR=$(uci -q get unisoc_modem.main.state_dir 2>/dev/null)
+STATE_DIR=$(safe_state_dir "$(uci_get state_dir)" '')
 IDENT_DIR=${MU300_DASH_IDENT_DIR:-${STATE_DIR%/lock-state.d}}
 [ -n "$IDENT_DIR" ] || IDENT_DIR=/etc/unisoc-modem
 IDENT=$IDENT_DIR/sim.json
 AT=${MU300_AT:-/usr/libexec/unisoc-modem/at}
 IDENT_MAXAGE=21600   # seconds; a SIM change goes through a reboot, 6 h is plenty
 
-mkdir -p "$DIR" "$IDENT_DIR" 2>/dev/null
+private_dir "$DIR"
+mkdir -p "$IDENT_DIR" 2>/dev/null
 
 # nr3/nr4/nr5 belong to SIM slot 1 and return the wrong state for slot 0.
 # The dashboard therefore uses the two verified slot-0-capable optional
@@ -76,7 +83,7 @@ at() {
 }
 now() { date +%s; }
 n_or_null() { case "$1" in ''|*[!0-9]*) echo null ;; *) echo "$1" ;; esac; }
-qs() { [ -n "$1" ] && printf '"%s"' "$(printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' | tr -d '\r\n')" || echo null; }
+qs() { json_str_or_null "$1"; }
 
 # --------------------------------------------------------------- one collector
 # the same "one owner, spare waits/takes over" pattern mu300-atd uses, so two
@@ -135,7 +142,7 @@ IDENT_JSON=null
 # busybox awk does not promise the GNU one.)
 sp_fragment() {  # sp_fragment MODE LINE [PHYLINE]  (MODE: lte | nr | ltenb)
     [ -n "$2" ] || { echo null; return; }
-    awk -v mode="$1" -v line="$2" -v phy="${3:-}" '
+    awk -v mode="$1" -v line="$2" -v phy="${3:-}" "$JSON_ESC"'
         function norm(l, arr,   s, n, i) {
             s = l; gsub(/\r/, "", s)
             gsub(/,-/, ",+", s); gsub(/--/, "-+", s); sub(/^-/, "+", s)
@@ -168,7 +175,7 @@ sp_fragment() {  # sp_fragment MODE LINE [PHYLINE]  (MODE: lte | nr | ltenb)
         function fs(x,   v) {
             v = x; sub(/,.*/, "", v)
             if (v ~ /^\+/) v = u32(substr(v, 2))
-            return (v == "" || v == "NA" || v == "N/A") ? "null" : "\"" v "\""
+            return (v == "" || v == "NA" || v == "N/A") ? "null" : "\"" jesc(v) "\""
         }
         function lteband(fr,   a,b,r,i,n) {
             n = split("1:0-599 2:600-1199 3:1200-1949 4:1950-2399 5:2400-2649 7:2750-3449 8:3450-3799 12:5010-5179 13:5180-5279 14:5280-5379 17:5730-5849 18:5850-5999 19:6000-6149 20:6150-6449 25:8040-8689 26:8690-9039 27:9040-9209 28:9210-9659 30:9770-9869 31:9870-9919 33:36000-36199 34:36200-36349 35:36350-36949 36:36950-37549 37:37550-37749 38:37750-38249 39:38250-38649 40:38650-39649 41:39650-41589 42:41590-43589 43:43590-45589 44:45590-46589 46:46790-54539 47:54540-55239 48:55240-56739 49:56740-58239 50:58240-59089 51:59090-59139 65:65536-66435 66:66436-67335", a, " ")
@@ -266,19 +273,19 @@ nr_neighbours() {  # SPQ5GNCELLEX CSV: serving 8-tuple, count at index 8, then 8
 # registration line "+CEREG: 2,1,\"01F0\",\"0ABCD123\",13" -> fragment
 reg_fragment() {  # reg_fragment LINE
     [ -n "$1" ] || { echo null; return; }
-    printf '%s\n' "$1" | sed 's/^+C[5]*EREG: *//' | tr -d '"' | awk -F',' '
-        { act = ($5 == "") ? "null" : $5
-          printf "{\"stat\":%s,\"tac\":%s,\"cid\":%s,\"act\":%s}",
-              (($2=="")?"null":$2), (($3=="")?"null":"\""$3"\""), (($4=="")?"null":"\""$4"\""), act }'
+    printf '%s\n' "$1" | sed 's/^+C[5]*EREG: *//' | tr -d '"' | awk -F',' "$JSON_ESC"'
+        function reg_num(x) { gsub(/ /, "", x); return (x ~ /^[0-9]+$/) ? x + 0 : "null" }
+        function reg_str(x) { return (x == "") ? "null" : "\"" jesc(x) "\"" }
+        { printf "{\"stat\":%s,\"tac\":%s,\"cid\":%s,\"act\":%s}", reg_num($2), reg_str($3), reg_str($4), reg_num($5) }'
 }
 
 cops_fragment() {  # COPS LINE -> name/plmn/act
     [ -n "$1" ] || { echo null; return; }
-    printf '%s\n' "$1" | awk -F'"' '{ name = $2; n = split($0, f, ","); act = f[n]; gsub(/[^0-9]/, "", act)
+    printf '%s\n' "$1" | awk -F'"' "$JSON_ESC"'{ name = $2; n = split($0, f, ","); act = f[n]; gsub(/[^0-9]/, "", act)
         plmn = (name ~ /^[0-9]+$/) ? name : ""
         if (plmn != "") name = ""
         printf "{\"name\":%s,\"plmn\":%s,\"act\":%s}",
-            (name==""?"null":"\""name"\""), (plmn==""?"null":"\""plmn"\""), (act==""?"null":act) }'
+            (name==""?"null":"\"" jesc(name) "\""), (plmn==""?"null":"\""plmn"\""), (act==""?"null":act+0) }'
 }
 
 cesq_fragment() {  # "+CESQ: 24,99,55,255,36,98"
@@ -292,8 +299,8 @@ cesq_fragment() {  # "+CESQ: 24,99,55,255,36,98"
 qos_fragment() {  # "+CGEQOSRDP: 1,9,..OK" (this modem glues OK onto the line)
     [ -n "$1" ] || { echo null; return; }
     printf '%s\n' "$1" | sed 's/OK$//; s/^+CGEQOSRDP: *//' | awk -F',' '
-        { if ($2 == "") { print "null"; exit }
-          printf "{\"qci\":%s,\"dl\":%s,\"ul\":%s}", $2,
+        { if ($2 !~ /^ *[0-9]+ *$/) { print "null"; exit }
+          printf "{\"qci\":%d,\"dl\":%s,\"ul\":%s}", $2 + 0,
               ($7 != "" && $7 > 0) ? sprintf("%.1f", $7/1000) : "null",
               ($8 != "" && $8 > 0) ? sprintf("%.1f", $8/1000) : "null" }'
 }
