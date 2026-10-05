@@ -25,6 +25,7 @@ def shell_scripts():
         TOP / 'install.sh', TOP / 'uninstall.sh', TOP / 'boot' / 'init', TOP / 'rootfs' / 'assemble.sh',
         TOP / 'kernel' / 'build-all.sh', TOP / 'tools' / 'i18n.sh', TOP / 'tools' / 'self-update.sh',
         TOP / 'tools' / 'linux-mode.sh', TOP / 'tools' / 'storage.sh', TOP / 'android-vendor' / 'ueventd-perms.sh']
+    cands += list((TOP / 'android' / 'magisk' / 'installer').glob('*.sh'))
     cands += [p for p in OPENWRT.rglob('*') if p.is_file()]
     out = []
     for p in sorted(set(cands)):

@@ -213,3 +213,44 @@ the {1} kernel of release {2} cannot read the SD card: choose kernel 5.4, a newe
 The SD card ({1}) holds a Linux installation (mu300sd), and the device always starts that one first: an installation to internal storage does not start while this card is in the slot.	SD kartta ({1}) bir Linux kurulumu (mu300sd) var ve cihaz her zaman önce onu başlatır: kart yuvadayken dahili depolamaya yapılan kurulum başlamaz.
 Take the card out before the device restarts, or erase its installation first with the uninstaller.	Cihaz yeniden başlamadan önce kartı çıkarın ya da önce karttaki kurulumu kaldırma aracıyla (uninstall) silin.
 Type internal to install to internal storage anyway	Yine de dahili depolamaya kurmak için internal yazın
+Android runs from slot {1}; Linux goes to slot {2} (boot_{2})	Android {1} yuvasından çalışıyor; Linux {2} yuvasına kurulacak (boot_{2})
+CREATE new ext4 (erases what is there)	yeni ext4 OLUŞTURULACAK (oradakiler silinir)
+Dry run: nothing was written.	Deneme çalıştırması: hiçbir şey yazılmadı.
+Installing to the SD card ({1}, {2}) erases everything on it. To allow that, put MU300_SD_ERASE=yes into /sdcard/mu300-install.conf.	SD karta ({1}, {2}) kurulum karttaki her şeyi siler. Buna izin vermek için /sdcard/mu300-install.conf dosyasına MU300_SD_ERASE=yes yazın.
+MU300_BOOT_OS={1}, but {1} is not installed	MU300_BOOT_OS={1}, ancak {1} kurulu değil
+Magisk's magiskboot was not found; install this zip with Magisk 26 or newer	Magisk'in magiskboot aracı bulunamadı; bu zip'i Magisk 26 veya daha yenisiyle kurun
+Plan	Plan
+Take the card out and install the zip again, or install to the card (MU300_STORAGE=sd in /sdcard/mu300-install.conf).	Kartı çıkarıp zip'i yeniden kurun ya da karta kurun (/sdcard/mu300-install.conf dosyasında MU300_STORAGE=sd).
+The free space behind the partitions is not empty ({1} of 16 samples hold data); it may be used by this firmware. To use it anyway, put MU300_REGION_OVERWRITE=yes into /sdcard/mu300-install.conf.	Bölümlerin arkasındaki boş alan boş değil (16 örnekten {1} tanesinde veri var); bu yazılım tarafından kullanılıyor olabilir. Yine de kullanmak için /sdcard/mu300-install.conf dosyasına MU300_REGION_OVERWRITE=yes yazın.
+There is too little free space inside for Linux and no SD card. Insert a card (MU300_STORAGE=sd, MU300_SD_ERASE=yes in /sdcard/mu300-install.conf), or make room with the installer for computers.	Dahili depolamada Linux için yeterli boş alan yok ve SD kart takılı değil. Bir kart takın (/sdcard/mu300-install.conf dosyasında MU300_STORAGE=sd, MU300_SD_ERASE=yes) ya da bilgisayar yükleyicisiyle yer açın.
+There is too little free space inside for Linux. The SD card ({1}, {2}) can hold it: put MU300_STORAGE=sd and MU300_SD_ERASE=yes into /sdcard/mu300-install.conf (everything on the card is erased).	Dahili depolamada Linux için yeterli boş alan yok. SD kart ({1}, {2}) yeterli: /sdcard/mu300-install.conf dosyasına MU300_STORAGE=sd ve MU300_SD_ERASE=yes yazın (karttaki her şey silinir).
+This does not look like a ZTE F50/MU300 or U30 Air. If it is one, set MU300_DEVICE=f50 or u30air in mu300-install.conf.	Bu bir ZTE F50/MU300 veya U30 Air gibi görünmüyor. Öyleyse mu300-install.conf dosyasında MU300_DEVICE=f50 veya u30air ayarlayın.
+Ubuntu 26.04 is installed, and it needs a mainline kernel (6.18 or 7.2): use a zip with one of those kernels, or MU300_MODE=wipe.	Ubuntu 26.04 kurulu ve ana hat çekirdek (6.18 veya 7.2) gerektiriyor: bu çekirdeklerden birini içeren bir zip kullanın ya da MU300_MODE=wipe.
+Unpacking {1} and {2}	{1} ve {2} açılıyor
+already there:  {1}	zaten kurulu:   {1}
+boot_a and boot_b are the same partition	boot_a ve boot_b aynı bölüm
+boots:          {1} ({2})	açılan:         {1} ({2})
+cannot tell which slot Android runs from	Android'in hangi yuvadan çalıştığı anlaşılamadı
+could not mount the existing Linux filesystem	mevcut Linux dosya sistemi bağlanamadı
+could not unpack the kernel bundle	çekirdek paketi açılamadı
+could not unpack the zip	zip açılamadı
+default	varsayılan
+keep: settings and data of {1} are kept	korunuyor: {1} ayarları ve verileri korunur
+misc holds no valid boot control block; nothing was changed	misc geçerli bir açılış denetim bloğu içermiyor; hiçbir şey değiştirilmedi
+mu300-install.conf	mu300-install.conf
+mu300-install.conf: MU300_PASSWORD must have at least 6 characters	mu300-install.conf: MU300_PASSWORD en az 6 karakter olmalı
+mu300-install.conf: {1} is not a setting of this installer; ignored	mu300-install.conf: {1} bu yükleyicinin bir ayarı değil; yok sayıldı
+mu300-install.conf: {1}={2} is not valid	mu300-install.conf: {1}={2} geçerli değil
+not enough free space in {1}: {2} needed, {3} free	{1} içinde yeterli boş alan yok: {2} gerekli, {3} boş
+settings from {1}:{2}	{1} içindeki ayarlar:{2}
+storage:        SD card {1}, {2} ({3})	depolama:       SD kart {1}, {2} ({3})
+storage:        internal, offset {1}, {2} ({3})	depolama:       dahili, konum {1}, {2} ({3})
+system:         {1} (zip {2}, kernel {3})	sistem:         {1} (zip {2}, çekirdek {3})
+the Linux region	Linux alanı
+the zip is damaged (checksum mismatch); download it again	zip bozuk (sağlama toplamı uyuşmuyor); yeniden indirin
+the zip is incomplete (no manifest)	zip eksik (manifest yok)
+this installer needs root	bu yükleyici root yetkisi gerektirir
+this is not an A/B device with misc, boot_a and boot_b	bu, misc, boot_a ve boot_b bölümleri olan bir A/B cihaz değil
+this kernel cannot read the SD card; use a newer zip	bu çekirdek SD kartı okuyamıyor; daha yeni bir zip kullanın
+this kernel does not support the {1}	bu çekirdek {1} cihazını desteklemiyor
+writes:         {1}, boot_{2}, 32 bytes of misc (boot_{3}, the partition table and userdata are not touched)	yazılacaklar:   {1}, boot_{2}, misc'in 32 baytı (boot_{3}, bölüm tablosu ve userdata'ya dokunulmaz)
