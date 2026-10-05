@@ -189,7 +189,9 @@ FILTER=mu300_wifi_filter
 # ranges, multicast, reserved and broadcast (224.0.0.0/3 is 224.0.0.0 to 255.255.255.255)
 PRIVATE4='0.0.0.0/8 10.0.0.0/8 100.64.0.0/10 169.254.0.0/16 172.16.0.0/12 192.0.0.0/24 192.168.0.0/16 198.18.0.0/15 224.0.0.0/3'
 
-rules() {  # rules closed|shared|none [SUBNET]
+# Each rule is written the way nft 1.0.9 lists it back (the burst of "limit", the order of an icmpv6 type set), since
+# fw_state compares the two line for line.
+rules_text() {  # rules_text closed|shared|none [SUBNET]: the transaction
     {
         printf 'table ip %s\ndelete table ip %s\ntable inet %s\ndelete table inet %s\n' "$NAT" "$NAT" "$FILTER" "$FILTER"
         [ "$1" = none ] && return 0
@@ -202,8 +204,8 @@ rules() {  # rules closed|shared|none [SUBNET]
         printf '        type filter hook input priority filter; policy accept;\n'
         printf '        iifname "%s" ct state established,related accept\n' "$IFACE"
         printf '        iifname "%s" udp sport 67 udp dport 68 accept\n' "$IFACE"
-        printf '        iifname "%s" icmp type echo-request limit rate 5/second accept\n' "$IFACE"
-        printf '        iifname "%s" icmpv6 type { echo-request, nd-neighbor-solicit, nd-neighbor-advert, nd-router-advert } accept\n' "$IFACE"
+        printf '        iifname "%s" icmp type echo-request limit rate 5/second burst 5 packets accept\n' "$IFACE"
+        printf '        iifname "%s" icmpv6 type { echo-request, nd-router-advert, nd-neighbor-solicit, nd-neighbor-advert } accept\n' "$IFACE"
         printf '        iifname "%s" counter drop\n    }\n    chain forward {\n' "$IFACE"
         printf '        type filter hook forward priority filter; policy accept;\n'
         if [ "$1" = shared ]; then
@@ -218,8 +220,10 @@ rules() {  # rules closed|shared|none [SUBNET]
             printf '        oifname "%s" counter drop\n' "$IFACE"
         fi
         printf '    }\n}\n'
-    } | nft -f -
+    }
 }
+
+rules() { rules_text "$@" | nft -f -; }
 
 # Forwarding goes off again unless mobile data still shares its bearer (its own table, mu300_nat): nothing is left
 # forwarding towards an uplink that is gone. (OpenWrt forwards always; fw4 decides.)
@@ -229,20 +233,64 @@ forwarding_off() {
 }
 
 # closed: before the join, and whenever the link is lost. A failure leaves the previous state, whichever it was.
-close_uplink() { rules closed; }
+# The state is what nft says, never what this script believes it set: no flag or file stands for it. After every
+# transaction nft's own listing of the filter table is compared, rule for rule (counters aside), with the table the
+# state asks for; anything else - a rule missing, one added (an accept before the drops), another order - is not that
+# state, and counts as a failure, which ends closed or, if even that cannot be confirmed, with nothing routed to wlan0.
+fw_normal() {  # the filter table as nft lists it (or as rules_text writes it), without indentation or counters
+    awk '{ sub(/^[ \t]+/, ""); sub(/[ \t]+$/, ""); gsub(/counter packets [0-9]+ bytes [0-9]+/, "counter") }
+         $0 == "table inet '"$FILTER"' {" { p = 1 }
+         p && $0 != ""'
+}
 
-# shared, with the subnet DHCP gave (for when it is not a private one); forwarding on only then
+fw_state() {  # fw_state [SUBNET] -> none | closed | shared (with SUBNET, default the one wlan0 is on) | unknown
+    if ! t=$(nft list table inet "$FILTER" 2>/dev/null); then
+        # gone, or nft cannot say: only a listing of the tables that lacks it is "none"
+        if tables=$(nft list tables 2>/dev/null) && ! printf '%s\n' "$tables" | grep -qx "table inet $FILTER"; then
+            echo none
+        else
+            echo unknown
+        fi
+        return
+    fi
+    t=$(printf '%s\n' "$t" | fw_normal)
+    if [ "$t" = "$(rules_text closed | fw_normal)" ]; then echo closed
+    elif [ "$t" = "$(rules_text shared "${1-$(uplink_net)}" | fw_normal)" ]; then echo shared
+    else echo unknown; fi
+}
+
+put_rules() {  # put_rules STATE [SUBNET]: the transaction, and nft's own listing that it took
+    rules "$@" && [ "$(fw_state "${2:-}")" = "$1" ]
+}
+
+close_uplink() { put_rules closed; }
+
+# a state nft would not take: closed if that can be confirmed; if not, the lease and its routes go, so that nothing
+# is forwarded to wlan0 whatever the tables and ip_forward are (mobile data's forwarding is left as it needs it)
+fail_closed() {
+    put_rules closed && return 0
+    drop_lease
+    forwarding_off
+    log "the firewall for $IFACE could not be confirmed (nft): its address and routes are gone, nothing is shared"
+    return 1
+}
+
+# shared, with the subnet DHCP gave (for when it is not a private one); forwarding on only once nft confirms it
 share_uplink() {
     if is_openwrt; then
-        wan_zone || return 1
+        wan_zone || { fail_closed; return 1; }
     fi
-    rules shared "$(uplink_net)" || return 1
+    put_rules shared "$(uplink_net)" || { fail_closed; return 1; }
     is_openwrt || sysctl -qw net.ipv4.ip_forward=1 2>/dev/null || true
 }
 
-# none. If the one transaction fails (nft refuses a part), each table goes on its own.
+# none (called once the radio is off the network). If the one transaction fails (nft refuses a part), each table goes
+# on its own; tables nft still shows are left closed.
 unshare_uplink() {
     rules none 2>/dev/null || { nft delete table ip "$NAT"; nft delete table inet "$FILTER"; } 2>/dev/null
+    if [ "$(fw_state)" != none ]; then
+        put_rules closed || log "the firewall tables for $IFACE could not be removed or closed (nft)"
+    fi
     forwarding_off
 }
 
@@ -266,7 +314,8 @@ lan_net() {
         [ -n "$a" ] || a=$(${MU300_BIN:-/opt/mu300/bin}/mu300-lan-ip 2>/dev/null)
         m=24
     fi
-    case $a in *.*.*.*) echo "$a/$m" ;; esac
+    # digits and dots only: it ends up in messages and in nft rules
+    case $a/$m in *[!0-9./]*|*/*/*) return ;; *.*.*.*/?|*.*.*.*/??) echo "$a/$m" ;; esac
 }
 
 # overlaps A/LEN B/LEN: whether two IPv4 networks share any address (the other network on the LAN's own subnet
@@ -409,7 +458,7 @@ event() {  # event CONNECTED|DISCONNECTED
     [ -e "$ACTIVE" ] && [ -s "$EVENTS_PID" ] && [ "$PPID" = "$(cat "$EVENTS_PID" 2>/dev/null)" ] || exit 0
     case $1 in
         DISCONNECTED)
-            close_uplink || log "could not close the firewall for $IFACE (nft)"
+            close_uplink || log "could not close the firewall for $IFACE (nft): its lease and routes go all the same"
             drop_lease
             forwarding_off
             log "link lost: $IFACE not shared until it is back" ;;
@@ -427,7 +476,7 @@ event() {  # event CONNECTED|DISCONNECTED
                 log "link back, not shared: $why"
                 exit 1
             fi
-            share_uplink || { log "could not share $IFACE (nft)"; exit 1; }
+            share_uplink || { log "could not share $IFACE (nft): closed"; exit 1; }
             log "link back: $IFACE shared again ($(uplink_net))" ;;
     esac
     exit 0
@@ -441,7 +490,14 @@ lease_changed() {  # lease_changed deconfig|bound|renew
     if command -v flock >/dev/null 2>&1; then
         exec 9>"$R/run/mu300-wifi-client.lock" && flock -n 9 || exit 0
     fi
-    close_uplink || { log "could not close the firewall for $IFACE (nft): the lease is left as it was"; exit 1; }
+    if ! close_uplink; then
+        # not even closed: the old address goes too (and the new one is not applied), so nothing is routed to wlan0
+        ip -4 addr flush dev "$IFACE" 2>/dev/null
+        rm -f "$LEASE"
+        forwarding_off
+        log "could not close the firewall for $IFACE (nft): no address kept"
+        exit 1
+    fi
     if [ "$1" = deconfig ]; then
         ip -4 addr flush dev "$IFACE" 2>/dev/null
         rm -f "$LEASE"
@@ -457,7 +513,7 @@ lease_changed() {  # lease_changed deconfig|bound|renew
         log "new address from the network, not shared: $why"
         exit 0
     fi
-    share_uplink || { log "could not share $IFACE (nft)"; exit 1; }
+    share_uplink || { log "could not share $IFACE (nft): closed"; exit 1; }
     log "new address from the network: $IFACE shared again ($(uplink_net))"
     exit 0
 }
@@ -798,6 +854,14 @@ status() {
     else
         printf 'mode        off (neither hotspot nor connected)\n'
     fi
+    # from nft itself, not from what this script last did
+    fw=$(fw_state)
+    case $fw in
+        shared) printf 'firewall    shared with the LAN (internet only)\n' ;;
+        closed) printf 'firewall    closed (not shared)\n' ;;
+        unknown) printf 'firewall    %s is not as wifi-client puts it: wifi-client disconnect, or reconnect\n' "$FILTER" ;;
+    esac
+    [ "$fw" = none ] || [ -e "$ACTIVE" ] || printf 'firewall    left over from a client that is gone: wifi-client disconnect\n'
     [ -e "$SCANMODE" ] && printf 'scan mode   armed: the hotspot stays off at the next boot\n'
     [ -e "$SCANRUN" ] && printf 'scan mode   this boot: the hotspot is off until a network is joined (at most %s)\n' "$SCAN_TIMEOUT"
     saved=$(conf_get SSID); [ -z "$saved" ] || saved=$(shown "$saved")
@@ -813,7 +877,7 @@ read_password() {  # read_password SSID [ - | --password-file FILE | PASS ]
     case ${2-} in
         -)  IFS= read -r pw || true ;;
         --password-file)
-            [ -n "${3:-}" ] && [ -r "$3" ] || die "cannot read the password file '${3:-}'"
+            [ -n "${3:-}" ] && [ -r "$3" ] || die "cannot read the password file '$(shown "${3:-}")'"
             IFS= read -r pw < "$3" || true ;;
         --open) pw= ;;
         '') pw=
@@ -847,6 +911,12 @@ case ${1:-status} in
         connect "$1" "$pw" ;;
     deconfig|bound|renew)   # (udhcpc, see the top)
         lease_changed "$1" ;;
+    release)      # (mu300-wifi-client.service stop) the client down, nothing else: no hotspot, no setting changed
+        lock
+        # with no client (the hotspot, or nothing saved) there is nothing to take down: the hotspot's interface and
+        # mobile data's forwarding are left alone
+        [ -e "$ACTIVE" ] || supplicant_running || [ "$(fw_state)" != none ] || exit 0
+        stop_client || exit 1 ;;
     valid-name)   # (mu300-toolkit) whether a typed name would be taken: the same check as connect's
         valid_text 1 32 "${2:-}" ;;
     shown-name)   # (mu300-toolkit) a name as it may be printed

@@ -138,10 +138,27 @@ class WifiClient(ShellTest):
                         '  "-4 -o addr show dev br-lan") echo "5: br-lan    inet 192.168.79.1/24 brd 192.168.79.255 scope global br-lan" ;;\n'
                         'esac\n'
                         'case "$1" in rule|route) echo "ip $*" >> "$STUBLOG/events" ;; esac\nexit 0')
-        # nft -f fails while $STUBLOG/nftfail exists; "list table ip mu300_nat" answers whether mobile data shares
+        # nft as the kernel keeps it: the filter table of the last transaction is what "list table" shows
+        # ($STUBLOG/filter), in nft 1.0.9's own listing format (tabs, counters, a blank line between chains; the rules
+        # themselves were checked against a real nft 1.0.9). nft -f fails while $STUBLOG/nftfail exists, only a
+        # sharing one while nftfailshare does, and with nftlie it says yes and changes nothing; with nftlisterr no
+        # listing works. "list table ip mu300_nat" answers whether mobile data shares.
         self.stub('nft', 'case "$1" in\n'
-                         '  -f) [ -e "$STUBLOG/nftfail" ] && exit 1; { echo "nft -f"; sed "s/^/  | /"; } >> "$STUBLOG/events" ;;\n'
-                         '  list) [ -e "$STUBLOG/mobile" ] ;;\n'
+                         '  -f) [ -e "$STUBLOG/nftfail" ] && exit 1; t=$(cat)\n'
+                         '      case $t in *"ip daddr {"*) [ -e "$STUBLOG/nftfailshare" ] && exit 1 ;; esac\n'
+                         '      { echo "nft -f"; printf "%s\\n" "$t" | sed "s/^/  | /"; } >> "$STUBLOG/events"\n'
+                         '      [ -e "$STUBLOG/nftlie" ] && exit 0\n'
+                         '      printf "%s\\n" "$t" | awk \'/^table inet mu300_wifi_filter [{]/ { p = 1 } p { gsub(/    /, "\\t");\n'
+                         '          sub(/counter /, "counter packets 0 bytes 0 "); if ($0 ~ /^\\tchain forward/) print ""; print }\' > "$STUBLOG/filter"\n'
+                         '      [ -s "$STUBLOG/filter" ] || rm -f "$STUBLOG/filter" ;;\n'
+                         '  list) [ -e "$STUBLOG/nftlisterr" ] && exit 1\n'
+                         '        case "$*" in\n'
+                         '          *mu300_nat*) [ -e "$STUBLOG/mobile" ] ;;\n'
+                         '          "list table inet mu300_wifi_filter") [ -e "$STUBLOG/filter" ] && cat "$STUBLOG/filter" ;;\n'
+                         '          "list tables") [ -e "$STUBLOG/filter" ] && echo "table inet mu300_wifi_filter"\n'
+                         '                         [ -e "$STUBLOG/mobile" ] && echo "table ip mu300_nat"; exit 0 ;;\n'
+                         '          *) exit 1 ;; esac ;;\n'
+                         '  delete) echo "nft $*" >> "$STUBLOG/events"; case "$*" in *mu300_wifi_filter*) rm -f "$STUBLOG/filter" ;; esac ;;\n'
                          '  *) echo "nft $*" >> "$STUBLOG/events" ;;\n'
                          'esac')
 
@@ -151,7 +168,7 @@ class WifiClient(ShellTest):
         return self.script(shell, WIFI, *args, stdin=stdin, **e)
 
     def fresh(self):
-        for n in ('events', 'sleeps', 'polls', 'nftfail', 'mobile', 'subnet', 'supplicant', 'addr', 'never', 'wpaconf.used', 'iftype',
+        for n in ('events', 'sleeps', 'polls', 'nftfail', 'nftfailshare', 'nftlie', 'nftlisterr', 'filter', 'mobile', 'subnet', 'supplicant', 'addr', 'never', 'wpaconf.used', 'iftype',
                   'stuck', 'assoc'):
             (self.tmp / n).unlink(missing_ok=True)
         for p in (self.conf, self.wpaconf, self.root / 'run/mu300-wifi-client.active',
@@ -499,8 +516,8 @@ class WifiClient(ShellTest):
         '        type filter hook input priority filter; policy accept;',
         '        iifname "wlan0" ct state established,related accept',
         '        iifname "wlan0" udp sport 67 udp dport 68 accept',
-        '        iifname "wlan0" icmp type echo-request limit rate 5/second accept',
-        '        iifname "wlan0" icmpv6 type { echo-request, nd-neighbor-solicit, nd-neighbor-advert, nd-router-advert } accept',
+        '        iifname "wlan0" icmp type echo-request limit rate 5/second burst 5 packets accept',
+        '        iifname "wlan0" icmpv6 type { echo-request, nd-router-advert, nd-neighbor-solicit, nd-neighbor-advert } accept',
         '        iifname "wlan0" counter drop',
         '    }']
     NATTABLE = [
@@ -1000,6 +1017,132 @@ class WifiClient(ShellTest):
             self.assertLess(ev.index('pkill -f ^wpa_supplicant'), ev.index('ip route flush dev wlan0'))
             self.assertLess(ev.index('ip route flush dev wlan0'), ev.index('  | delete table inet mu300_wifi_filter'))
             self.assertRemoved()
+
+    # ---- the ruleset nft shows is the truth: any doubt ends closed ---------------------------------------------
+    def filt(self):
+        f = self.tmp / 'filter'
+        return f.read_text() if f.exists() else None
+
+    def test_nft_that_says_yes_but_changes_nothing(self):
+        for shell in self.each_shell():
+            # before the radio: no closed table to be seen, so no join at all
+            self.fresh()
+            (self.tmp / 'nftlie').touch()
+            r = self.run_wc(shell, 'connect', 'KEDI 5G', '-', stdin='password1\n')
+            self.assertEqual(r.returncode, 1)
+            self.assertIn('firewall', r.stderr)
+            self.assertNotIn('\nwpa_supplicant ', self.events())
+            self.assertNotIn('ip_forward=1', self.events())
+            # once joined, a lease change whose sharing nft does not take: closed stays (the table nft shows)
+            self.joined(shell)
+            before = self.filt()
+            (self.root / 'run/mu300-wifi-client.dhcp').write_text('192.168.2.248/24\n')
+            (self.tmp / 'subnet').write_text('203.0.113.0/24')
+            (self.tmp / 'nftfailshare').touch()
+            r = self.lease(shell, 'bound', ip='203.0.113.7')
+            self.assertEqual(r.returncode, 1)
+            self.assertNotEqual(self.filt(), before)
+            self.assertIn('oifname "wlan0" counter packets 0 bytes 0 drop', self.filt())   # closed: nothing out
+            self.assertNotIn('ip daddr {', self.filt())
+            self.assertNotIn('ip_forward=1', self.events())
+            self.assertIn('closed (not shared)', self.run_wc(shell, 'status').stdout)
+
+    def test_a_join_whose_sharing_fails_ends_with_nothing(self):
+        for shell in self.each_shell():
+            self.fresh()
+            (self.root / 'run/mu300-wifi-client-had-ap').touch()
+            (self.tmp / 'nftfailshare').touch()
+            r = self.run_wc(shell, 'connect', 'KEDI 5G', '-', stdin='password1\n')
+            self.assertEqual(r.returncode, 1)
+            self.assertIsNone(self.filt())
+            self.assertRemoved()
+            self.assertNotIn('ip_forward=1', self.events())
+            self.assertFalse((self.tmp / 'supplicant').exists())
+            self.assertFalse((self.tmp / 'addr').exists())
+
+    def test_a_ruleset_changed_behind_its_back_is_not_taken_for_its_own(self):
+        tamper = {
+            'an accept before the drops': lambda t: t.replace('\t\tiifname "wlan0" counter packets 0 bytes 0 drop\n\t\toifname',
+                                                              '\t\taccept\n\t\tiifname "wlan0" counter packets 0 bytes 0 drop\n\t\toifname'),
+            'the IPv6 drop gone': lambda t: t.replace('\t\toifname "wlan0" meta nfproto ipv6 counter packets 0 bytes 0 drop\n', ''),
+            'a private range gone': lambda t: t.replace(' 10.0.0.0/8,', ''),
+            'the input drop gone': lambda t: t.replace('\t\tiifname "wlan0" counter packets 0 bytes 0 drop\n\t}\n\n', '\t}\n\n'),
+        }
+        for shell in self.each_shell():
+            for name, f in tamper.items():
+                self.joined(shell)
+                p = self.tmp / 'filter'
+                t = p.read_text()
+                self.assertNotEqual(f(t), t, name)
+                p.write_text(f(t))
+                st = self.run_wc(shell, 'status').stdout
+                self.assertIn('is not as wifi-client puts it', st, name)
+                self.assertNotIn('shared with the LAN', st, name)
+                # the next transaction replaces it whole, and nft's listing confirms the state again
+                (self.root / 'run/mu300-wifi-client.dhcp').write_text('192.168.2.248/24\n')
+                (self.tmp / 'subnet').write_text('203.0.113.0/24')
+                r = self.lease(shell, 'bound', ip='203.0.113.7')
+                self.assertEqual(r.returncode, 0, (name, r.stderr))
+                self.assertIn('shared with the LAN', self.run_wc(shell, 'status').stdout, name)
+                (self.tmp / 'subnet').unlink()
+            # nft that cannot list at all: not "none", not "shared"
+            self.joined(shell)
+            (self.tmp / 'nftlisterr').touch()
+            self.assertIn('is not as wifi-client puts it', self.run_wc(shell, 'status').stdout)
+            # a table left by a client that is gone is reported
+            self.joined(shell)
+            (self.root / 'run/mu300-wifi-client.active').unlink()
+            self.assertIn('left over from a client that is gone', self.run_wc(shell, 'status').stdout)
+
+    def test_nft_failing_on_a_lost_link_or_lease_still_takes_the_address(self):
+        for shell in self.each_shell():
+            self.joined(shell)
+            (self.tmp / 'nftfail').touch()
+            r = self.run_wc(shell, 'wlan0', 'DISCONNECTED')
+            self.assertFalse((self.tmp / 'addr').exists())
+            self.assertIn('ip route flush dev wlan0', self.events())
+            self.assertIn('ip_forward=0', self.events())
+            self.joined(shell)
+            (self.root / 'run/mu300-wifi-client.dhcp').write_text('192.168.2.248/24\n')
+            (self.tmp / 'nftfail').touch()
+            r = self.lease(shell, 'bound', ip='203.0.113.7')
+            self.assertEqual(r.returncode, 1)
+            self.assertFalse((self.tmp / 'addr').exists())
+            self.assertFalse((self.root / 'run/mu300-wifi-client.dhcp').exists())
+            self.assertIn('ip_forward=0', self.events())
+
+    def test_service_stop_releases_everything_and_changes_no_setting(self):
+        unit = (TOP / 'rootfs/overlay/etc/systemd/system/mu300-wifi-client.service').read_text()
+        self.assertIn('ExecStop=/opt/mu300/bin/wifi-client release', unit)
+        for shell in self.each_shell():
+            self.joined(shell)
+            r = self.run_wc(shell, 'release')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertRemoved()
+            self.assertIsNone(self.filt())
+            self.assertFalse((self.tmp / 'supplicant').exists())
+            self.assertNotIn('mu300-hotspot', self.events())
+            self.assertEqual(self.saved()['ENABLE'], '1')
+            # no client at all (the hotspot): nothing is touched, forwarding included
+            self.fresh()
+            r = self.run_wc(shell, 'release')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(self.events(), '')
+
+    def test_hostile_configuration_and_paths_are_shown_as_text(self):
+        for shell in self.each_shell():
+            self.fresh()
+            (self.root / 'etc/mu300/lan.conf').write_text('LAN_IP=10.1.2.3\x1b[31m‮\n')
+            r = self.run_wc(shell, 'connect', 'KEDI 5G', '-', stdin='password1\n', MU300_BIN=self.tmp / 'nothing')
+            self.assertEqual(r.returncode, 1)
+            self.assertIn('LAN subnet', r.stderr)
+            self.assertHostileFree(r.stdout + r.stderr)
+            self.assertNotIn('\x1b', self.events())
+            (self.root / 'etc/mu300/lan.conf').write_text('LAN_IP=192.168.79.1\n')
+            r = self.run_wc(shell, 'connect', 'KEDI 5G', '--password-file', self.tmp / 'no\x1b]0;x\x07such‮')
+            self.assertEqual(r.returncode, 1)
+            self.assertHostileFree(r.stderr)
+            self.assertIn('\\x1b', r.stderr)
 
     # ---- the VPN: its kill switch is never bypassed ----------------------------------------------------------
     def test_the_vpn_kill_switch_comes_first_and_is_never_overridden(self):
