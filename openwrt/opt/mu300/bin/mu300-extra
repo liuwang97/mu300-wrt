@@ -103,6 +103,10 @@ do_install() {
 
 do_remove() {
     [ -d "$EXTRA/$1" ] || { echo "$1 is not installed"; return 0; }
+    # the VPN that is on would download them again at its next start - unless the kill switch is up and stops that
+    if [ "$1" = vpn ] && extra_vpn_wanted "$SYSROOT"; then
+        echo "note: the VPN is on (ENABLE=1 in /etc/mu300/vpn.conf); turn it off first (mu300-toolkit, or ENABLE=0 and mu300-vpn off)" >&2
+    fi
     rm -rf "$EXTRA/$1" "$EXTRA/.$1.new" "$EXTRA/.$1.old"
     sync
     do_link
