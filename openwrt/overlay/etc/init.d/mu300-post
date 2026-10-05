@@ -14,16 +14,6 @@ start_service() {
 	procd_open_instance usb-lease
 	procd_set_param command /opt/mu300/bin/mu300-usb-reset --if-no-lease 25
 	procd_close_instance
-	# K12 (ported from the kanoqwq fork, cd4fb28), in addition to the lease check until its device gate has
-	# passed: one tracked 100 ms rebind once br-lan/dnsmasq are up. Never in host role.
-	if [ "$(cat /sys/class/usb_role/25100000.dwc3-role-switch/role 2>/dev/null)" != host ]; then
-		procd_open_instance usb-ready
-		procd_set_param command /opt/mu300/bin/mu300-usb-reset --fast-run
-		procd_set_param oneshot 1
-		procd_set_param stdout 1
-		procd_set_param stderr 1
-		procd_close_instance
-	fi
 	# K13 (ported from the kanoqwq fork, cd4fb28): the U30 Air has a second gadget netdev on some kernels; it
 	# belongs to the LAN like usb0
 	[ -e /sys/class/net/usb1 ] && ip link set usb1 master br-lan 2>/dev/null && ip link set usb1 up

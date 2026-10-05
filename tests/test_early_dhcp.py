@@ -267,11 +267,11 @@ class EarlyUsbOpenWrt(ShellTest):
     def test_post_bridges_usb1(self):
         text = (OPENWRT / 'etc' / 'init.d' / 'mu300-post').read_text()
         self.assertIn('[ -e /sys/class/net/usb1 ] && ip link set usb1 master br-lan', text)
-        # K12 is Task 26's gate: the lease check stays for now, and the fork's one-shot rebind runs besides it
+        # K12's gate was shown on macOS only (Windows and Linux hosts not measured): one behaviour for every host,
+        # the lease check and the re-enumeration; the fork's one-shot rebind at boot is not started
         self.assertIn('mu300-usb-reset --if-no-lease 25', text)
-        self.assertIn('procd_open_instance usb-ready', text)
-        self.assertIn('mu300-usb-reset --fast-run', text)
-        self.assertIn('procd_set_param oneshot 1', text)
+        self.assertNotIn('usb-ready', text)
+        self.assertNotIn('--fast-run', text)
 
     def test_overlay_scripts_are_executable(self):
         # the fork's mu300-post and mu300-usb-reset (Task 26) run the LAN hook directly
