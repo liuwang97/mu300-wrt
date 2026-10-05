@@ -225,3 +225,62 @@ class Rules(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class UsbGadget(ShellTest):
+    """setup_usb_gadget, run against a directory that stands in for /config."""
+
+    def build(self, shell, usbnet):
+        m = re.search(r'# --- usb-gadget begin\n(.*?)# --- usb-gadget end', INIT, re.S)
+        self.assertIsNotNone(m, 'boot/init has no usb-gadget block')
+        body = m.group(1).replace('/config/usb_gadget', f'{self.tmp}/cfg/usb_gadget').replace('/sys/class/udc', f'{self.tmp}/udc')
+        g = self.tmp / 'cfg' / 'usb_gadget' / 'linux'
+        code = ('log() { echo "$*" >> "$T/log"; }; mount() { :; }; sleep() { :; }; persist() { :; }\n'
+                # configfs makes these itself when their parent is made
+                'mkdir() { command mkdir "$@" || return; for d; do case $d in */functions/rndis.rn0) command mkdir -p "$d/os_desc/interface.rndis" ;; esac; done; }\n'
+                'mkdir -p "%s/cfg/usb_gadget/linux/os_desc"\n' % self.tmp +
+                'ifconfig() { echo "ifconfig $*" >> "$T/log"; }; ip() { echo "ip $*" >> "$T/log"; }\n'
+                f'MAC=02:00:00:00:00 T={self.tmp}\n' + (f'MU300_USBNET="{usbnet}"\n' if usbnet is not None else '')
+                + body + '\nsetup_usb_gadget')
+        r = self.sh(shell, code)
+        self.assertEqual(0, r.returncode, r.stderr)
+        return g
+
+    def configs(self, g):
+        return sorted(p.name for p in (g / 'configs').iterdir())
+
+    def links(self, g, c):
+        return {p.name: p.resolve().name for p in (g / 'configs' / c).iterdir() if p.is_symlink()}
+
+    def test_rndis_one_configuration_with_console(self):
+        for shell in self.each_shell():
+            g = self.build(shell, 'rndis')
+            self.assertEqual(['c.1'], self.configs(g))
+            self.assertEqual({'f1': 'rndis.rn0', 'f2': 'GS0'}, {k: v.replace('acm.', '') for k, v in self.links(g, 'c.1').items()})
+            self.assertEqual('0x0302', (g / 'bcdDevice').read_text().strip())
+            self.assertEqual('1', (g / 'os_desc' / 'use').read_text().strip())
+            self.assertEqual('c.1', (g / 'os_desc' / 'c.1').resolve().name)
+            self.assertFalse((g / 'functions' / 'ncm.usb0').exists())
+            self.assertIn('RNDIS', (g / 'configs' / 'c.1' / 'strings' / '0x409' / 'configuration').read_text())
+            self.assertIn('ifconfig rndis0 up', (self.tmp / 'log').read_text())
+            self.tearDown(); self.setUp()
+
+    def test_rndis_wins_whatever_the_order(self):
+        for shell in self.each_shell():
+            for usbnet in ('rndis ncm', 'ncm rndis'):
+                g = self.build(shell, usbnet)
+                self.assertEqual(['c.1'], self.configs(g), usbnet)
+                self.assertEqual(['acm.GS0', 'rndis.rn0'], sorted(p.name for p in (g / 'functions').iterdir()), usbnet)
+                self.assertEqual('0x0302', (g / 'bcdDevice').read_text().strip())
+                self.tearDown(); self.setUp()
+
+    def test_ncm_ecm_unchanged(self):
+        for shell in self.each_shell():
+            for usbnet in ('ncm ecm', None):
+                g = self.build(shell, usbnet)
+                self.assertEqual(['c.1'], self.configs(g))
+                self.assertEqual({'f1': 'ncm.usb0', 'f2': 'acm.GS0'}, self.links(g, 'c.1'))
+                self.assertEqual('0x0301', (g / 'bcdDevice').read_text().strip())
+                self.assertFalse((g / 'os_desc' / 'use').exists())
+                self.assertFalse((g / 'functions' / 'rndis.rn0').exists())
+                self.tearDown(); self.setUp()

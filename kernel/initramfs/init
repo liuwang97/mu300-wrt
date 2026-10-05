@@ -168,6 +168,7 @@ restore_slot_a() { write_misc_bc /etc/misc-bc-slot-a.bin misc-restored; }
 
 hostname mu300-linux
 ifconfig lo 127.0.0.1 up
+# --- usb-gadget begin
 setup_usb_gadget() {
     log "stage=usb-configfs"
     mount -t configfs configfs /config
@@ -179,27 +180,30 @@ setup_usb_gadget() {
     # NCM by default, in a single configuration with the ACM console: Windows 10 2004+/11 bind their inbox
     # UsbNcm.sys to it, macOS and Linux their own drivers - all measured, none needs an INF. ECM, which Windows has
     # no driver for, is the fallback. MU300_USBNET (kernel command line) picks the functions.
-    # "rndis ncm" is for Windows without NCM (7, 8, 10 before 2004): RNDIS gets configuration 1 and NCM moves to
-    # configuration 2. Windows only ever uses the first, and binds rndis.sys to it through the MS OS descriptors
-    # below; Linux skips RNDIS configurations on purpose. macOS does not: it takes configuration 1 as well, finds
-    # no driver for RNDIS and has no network (measured) - which is why RNDIS is not the default.
+    # "rndis" is for Windows without NCM (7, 8, 10 before 2004): RNDIS and the ACM console share the single
+    # configuration, and rndis.sys is bound to it through the MS OS descriptors below. Windows does not make its
+    # composite parent for a device with several configurations: the earlier RNDIS + NCM arrangement bound the
+    # whole device to usbser and showed no network adapter. macOS has no RNDIS driver, which is why RNDIS is not
+    # the default; when RNDIS is asked for, no other network function is made. (Ported from the kanoqwq fork, K6.)
     rndis= netfunc=
     for f in ${MU300_USBNET:-ncm ecm}; do
         case $f in
             rndis) [ -z "$rndis" ] && mkdir -p "$g/functions/rndis.rn0" 2>/dev/null && rndis=1 ;;
-            *) [ -z "$netfunc" ] && mkdir -p "$g/functions/$f.usb0" 2>/dev/null && netfunc=$f ;;
+            *) [ -z "$netfunc$rndis" ] && mkdir -p "$g/functions/$f.usb0" 2>/dev/null && netfunc=$f ;;
         esac
     done
+    # "ncm rndis" made NCM before it met RNDIS: RNDIS wins, the NCM function goes again
+    [ -n "$rndis" ] && [ -n "$netfunc" ] && { rmdir "$g/functions/$netfunc.usb0" 2>/dev/null; netfunc=; }
     [ -n "$netfunc$rndis" ] || log "stage=usb-no-net-function (console only)"
-    cdc=c.1
-    [ -n "$rndis" ] && cdc=c.2
     echo 0x0525 > "$g/idVendor"
     echo 0xa4a1 > "$g/idProduct"
     echo 0x0200 > "$g/bcdUSB"
     # Windows asks for the MS OS descriptors (below) once per VID/PID/bcdDevice and caches the answer, "none"
     # included: the default bcdDevice follows the kernel version and was cached as "none" by every PC that met
     # the earlier gadget. A value of our own makes them ask again. Change it whenever the descriptors change.
-    echo 0x0301 > "$g/bcdDevice"
+    # 0x0302 is the single-configuration RNDIS descriptor, 0x0301 everything else.
+    if [ -n "$rndis" ]; then echo 0x0302 > "$g/bcdDevice"
+    else echo 0x0301 > "$g/bcdDevice"; fi
     # Miscellaneous / IAD: the network and the ACM functions each span two interfaces, and without this device class
     # Windows' composite driver ignores their association descriptors and hands out the interfaces one by one, so a
     # class driver never sees its function as a whole
@@ -230,16 +234,15 @@ setup_usb_gadget() {
         echo 5162001 > "$g/functions/rndis.rn0/os_desc/interface.rndis/sub_compatible_id"
         ln -s "$g/configs/c.1" "$g/os_desc/c.1"
     fi
-    if [ -n "$netfunc" ] || [ -z "$rndis" ]; then
-        mkdir -p "$g/configs/$cdc/strings/0x409"
-        echo "${netfunc:-no} net + ACM console" > "$g/configs/$cdc/strings/0x409/configuration"
-        echo 250 > "$g/configs/$cdc/MaxPower"
+    if [ -z "$rndis" ]; then
+        echo "${netfunc:-no} net + ACM console" > "$g/configs/c.1/strings/0x409/configuration"
+        echo 250 > "$g/configs/c.1/MaxPower"
         if [ -n "$netfunc" ]; then
             echo $MAC:01 > "$g/functions/$netfunc.usb0/dev_addr"
             echo $MAC:02 > "$g/functions/$netfunc.usb0/host_addr"
-            ln -s "$g/functions/$netfunc.usb0" "$g/configs/$cdc/f1"
+            ln -s "$g/functions/$netfunc.usb0" "$g/configs/c.1/f1"
         fi
-        ln -s "$g/functions/acm.GS0" "$g/configs/$cdc/f2"
+        ln -s "$g/functions/acm.GS0" "$g/configs/c.1/f2"
     fi
     log "stage=usb-net-function ${rndis:+rndis+}${netfunc:-none}"
     log "stage=usb-wait-udc"
@@ -276,6 +279,7 @@ setup_usb_gadget() {
     # pick up a later "connected" notification (v10 left usb0 down until systemd ran -> host "inactive").
     ifconfig usb0 up
 }
+# --- usb-gadget end
 
 # The vendor modules first, the gadget last. The host starts asking for a DHCP lease the moment the gadget
 # appears and gives up after a few seconds, so the closer the gadget comes to the system that answers (the DHCP
