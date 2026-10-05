@@ -16,16 +16,30 @@ IFACE=sipa_eth$((CID - 1))
 # led on|5g|off|error: see mu300-led (which LED that is depends on the device)
 led() { /opt/mu300/bin/mu300-led data "$1" 2>/dev/null || true; }
 # data is up: the LED tells 4G from 5G as ZTE's firmware does (the U30 Air: blue on 4G, white on 5G). The access
-# technology changes under a live connection, so the watchdog asks again on every round.
+# technology changes under a live connection, so the watchdog asks again on every round. AT+CEREG? is a short
+# local status read; AT+COPS? took about two seconds on weak service and held the AT channel on every round.
+# +CEREG: <n>,<stat>[,<tac>,<ci>,<AcT>[,...]]: the AcT is the fifth field (with <n> 4 or 5 more fields follow it).
 led_up() {
-    case $(at 'AT+COPS?' 4 | sed -n 's/^+COPS: [0-9],[0-9],"[^"]*",\([0-9]*\).*/\1/p') in
-        11|12|13) led 5g ;;
+    case $(at 'AT+CEREG?' 4 2>/dev/null | awk -F, '/^\+CEREG:/ { gsub(/[" ]/, "", $5); print $5; exit }' || true) in
+        11|12|13|15) led 5g ;;
         *) led on ;;
     esac
 }
 
 # Boot timeline mark (/run/mu300/boot-timeline); harmless when bootmark is missing.
 mark() { [ -x /opt/mu300/bin/bootmark ] && /opt/mu300/bin/bootmark "$@" || true; }
+
+# size of a file in bytes, 0 when it is not there
+fsize() { if [ -f "$1" ]; then echo $(( $(wc -c < "$1") )); else echo 0; fi; }
+
+# The bring-up's decisions, one line each with the uptime, so a slow or failed boot can be read back afterwards.
+# /run is RAM: start over at 64 KiB rather than grow without end (the watchdog reconnects for months).
+RADIOLOG=/run/mu300/radio.log
+radio_say() {
+    mkdir -p "${RADIOLOG%/*}" 2>/dev/null || true
+    if [ "$(fsize "$RADIOLOG")" -gt 65536 ]; then : 2>/dev/null > "$RADIOLOG" || true; fi
+    printf 't=%-9s %s\n' "$(cut -d' ' -f1 /proc/uptime 2>/dev/null || true)" "$*" 2>/dev/null >> "$RADIOLOG" || true
+}
 
 ATLOCK=/run/mu300-at/owner
 
@@ -227,6 +241,63 @@ radio_on() {
     at 'AT+CFUN?' 4 | grep -q '+CFUN: 1'
 }
 
+# Registered (home or roaming)? is_registered reads AT+CEREG? answers (+CEREG: <n>,<stat>,...); is_registered urc
+# reads nr0's announcements (+CEREG: <stat>,...). The two forms cannot share one pattern: "+CEREG: 1,2" is a
+# registration as an announcement and "searching" as an answer. An announcement counts only as the last one.
+is_registered() {
+    if [ "${1:-}" = urc ]; then
+        grep '^+CEREG:' | tail -n 1 | grep -E '^\+CEREG: (1|5)(,|$)' >/dev/null
+    else
+        grep -E '^\+CEREG: [0-9]+,(1|5)(,|$)' >/dev/null   # not -q: an early exit would fail the pipe (pipefail)
+    fi
+}
+
+# Wait for the registration (MU300_REGISTER_WAIT seconds, 60 by default). nr0 announces every change at once, and
+# mu300-atd (the nr1 daemon) appends those announcements to its URC log. Only what is appended after the start
+# counts: an old registration says nothing about now. AT+CEREG? every 5 s is the fallback for a modem that
+# announces nothing; it replaces the old query every 2 s. When the modem's last word before the start was "not
+# registered", the change will be announced, so the first query waits 5 s too; otherwise (no log, nothing heard,
+# or registered) it is sent at once - a reconnect after a lost context is registered all along.
+URCLOG=${MU300_URC_LOG:-/run/mu300-at/urc/stty_nr0.log}
+wait_registered() {
+    local deadline=$((SECONDS + ${MU300_REGISTER_WAIT:-60})) next=$SECONDS seen size last
+    seen=$(fsize "$URCLOG")   # bytes of the log that were there before the start
+    last=$(grep '^+CEREG:' "$URCLOG" 2>/dev/null | tail -n 1 || true)
+    if [ -n "$last" ] && ! echo "$last" | is_registered urc; then
+        next=$((SECONDS + 5))
+    fi
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        size=$(fsize "$URCLOG")
+        [ "$size" -lt "$seen" ] && seen=0   # mu300-atd started the log over at its size cap
+        if [ "$size" -gt "$seen" ] && tail -c +"$((seen + 1))" "$URCLOG" 2>/dev/null | is_registered urc; then
+            return 0
+        fi
+        if [ "$SECONDS" -ge "$next" ]; then
+            at 'AT+CEREG?' 3 2>/dev/null | is_registered && return 0
+            next=$((SECONDS + 5))
+        fi
+        sleep 0.2 2>/dev/null || sleep 1
+    done
+    return 1
+}
+
+# The context's address, within SECONDS real seconds (8 by default): an active context is not an address yet -
+# the fork measured "CGACT up, no address for 40 s" on NR. Leaves the +CGCONTRDP line in rdp.
+fetch_addr() {
+    local end=$((SECONDS + ${1:-8})) line am
+    rdp=
+    while [ "$SECONDS" -lt "$end" ]; do
+        line=$(at "AT+CGCONTRDP=$CID" 4 2>/dev/null | grep '^+CGCONTRDP:' | head -n 1 || true)
+        am=$(echo "$line" | cut -d, -f4 | tr -d '"')
+        case $am in
+            ''|0.0.0.0*) ;;
+            *.*.*.*) rdp=$line; return 0 ;;
+        esac
+        sleep 2
+    done
+    return 1
+}
+
 # The modem needs the vendor modem loader/SIPC drivers (5.4 kernel); a kernel without them (mainline) has no modem.
 modem_stack() { [ -e /dev/modem ] || [ -e /dev/pmsys ] || [ -c "$DEV" ]; }
 
@@ -271,14 +342,14 @@ up_locked() {
     mark dial-start
     radio_on
     mark dial-radio-on-done
-    for n in $(seq 1 60); do
-        at 'AT+CEREG?' | grep -qE '\+CEREG: [0-9],(1|5)' && break
-        # the radio can be switched off again meanwhile (modem reset), so re-check it every 10 s
-        [ $((n % 5)) -eq 0 ] && radio_on
-        sleep 2
-    done
-    at 'AT+CEREG?' | grep -qE '\+CEREG: [0-9],(1|5)' || { led error; echo "not registered on the network" >&2; exit 1; }
+    if ! wait_registered; then
+        radio_say "not registered after ${MU300_REGISTER_WAIT:-60} s"
+        led error
+        echo "not registered on the network" >&2
+        exit 1
+    fi
     mark dial-registered
+    radio_say "registered"
     # systemd has no way to pass an argument from a config file, so the APN can come from the environment too:
     # /etc/mu300/mobile-data.conf is an EnvironmentFile for the service. The argument still wins, which is what
     # the OpenWrt protocol handler uses.
@@ -291,9 +362,22 @@ up_locked() {
         # MU300_PDP_TYPE=IPV4V6 asks for both again, for a carrier that needs it.
         at "AT+CGDCONT=$CID,\"${MU300_PDP_TYPE:-IP}\",\"$1\"" >/dev/null
     fi
-    at "AT+CGACT?" | grep -q "+CGACT:$CID,1" || at "AT+CGACT=1,$CID" 20 >/dev/null
+    # No AT+CGACT? first: at boot the context is always off, the question costs a whole AT round trip, and
+    # CGACT=1 on an active context (a reconnect) changes nothing. An error answer still ends the bring-up here.
+    at "AT+CGACT=1,$CID" 20 >/dev/null
     mark dial-pdp-active
-    rdp=$(at "AT+CGCONTRDP=$CID" 4 | grep '^+CGCONTRDP:' | head -1)
+    # An active context is not an address yet. Reassert CGACT=1 once - idempotent, it nudges the context without
+    # tearing it down. Never CGACT=0/1 here: the fork measured that taking down the context it had just created
+    # silenced the AT channel and left the WAN pending for minutes. Both waits are bounded (16 s by default).
+    if ! fetch_addr "${MU300_ADDR_WAIT_FIRST:-8}"; then
+        radio_say "context active but no address after ${MU300_ADDR_WAIT_FIRST:-8} s; reasserting AT+CGACT=1 once"
+        at "AT+CGACT=1,$CID" 8 >/dev/null || true
+        if ! fetch_addr "${MU300_ADDR_WAIT_RETRY:-8}"; then
+            radio_say "still no address after the reassert"
+            echo "no IPv4 address from AT+CGCONTRDP" >&2
+            exit 1
+        fi
+    fi
     # +CGCONTRDP: cid,bearer,apn,"a.b.c.d.m.m.m.m",gw,dns1,dns2,...
     addrmask=$(echo "$rdp" | cut -d, -f4 | tr -d '"')
     ip4=$(echo "$addrmask" | cut -d. -f1-4)
@@ -317,6 +401,7 @@ up_locked() {
     if [ "${MU300_NETIFD:-0}" = 1 ]; then
         # OpenWrt: netifd (proto mu300cell) configures the address, routes, DNS and firewall itself
         printf 'IFACE=%s\nIP=%s\nPREFIX=%s\nDNS1=%s\nDNS2=%s\nIID6=%s\n' "$IFACE" "$ip4" "$prefix" "$dns1" "$dns2" "$iid"
+        operator_log
         return 0
     fi
     ip link set "$IFACE" up
@@ -347,7 +432,15 @@ table ip mu300_nat {
 NFT
     [ -n "$iid" ] && v6_up "$iid"
     led_up
-    echo "mobile data up on $IFACE ($(at 'AT+COPS?' | sed -n 's/^+COPS: [0-9],[0-9],"\([^"]*\)".*/\1/p'))"
+    echo "mobile data up on $IFACE ($ip4/$prefix)"
+    operator_log
+}
+
+# The operator's name is one more AT round trip (about 2 s measured) and decides nothing: it goes to radio.log in
+# the background. Its output must not hold the caller's pipe - netifd reads up's output to its end.
+operator_log() {
+    ( radio_say "up on $IFACE ($ip4/$prefix), operator $(at 'AT+COPS?' 4 2>/dev/null |
+        sed -n 's/^+COPS: [0-9],[0-9],"\([^"]*\)".*/\1/p' || true)" ) </dev/null >/dev/null 2>&1 &
 }
 
 down() {
@@ -484,6 +577,9 @@ status() {
     at 'AT+COPS?'; at 'AT+CSQ'; at 'AT+CEREG?'; at 'AT+CGACT?'
     ip -br addr show "$IFACE"
 }
+
+# MU300_LIB=1: define the functions only (the tests source this script)
+[ -z "${MU300_LIB:-}" ] || return 0
 
 case "${1:-status}" in
     up) up "${2:-}" ;;

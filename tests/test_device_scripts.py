@@ -329,6 +329,124 @@ class MobileData(ShellTest):
             out = self.run_at(shell, nr2=False)
             self.assertEqual(out, 'dir= args=-t 4 AT+CSQ', shell)
 
+    # mobile-data's functions with MU300_LIB=1 (K56, K59-K62). mobile-data is a bash script (#!/bin/bash, on OpenWrt
+    # too), so these run under bash only; under alpine they still use busybox's tail, wc, sleep and awk.
+    # `at` is replaced by the modem below, which answers from a table and writes each command it was sent to
+    # $STUBLOG/at as "<seconds since the start> <command>".
+    MODEM = r'''
+at() {
+    echo "$SECONDS $1" >> "$STUBLOG/at"
+    case $1 in
+        'AT+CEREG?') printf '%s\nOK\n' "${CEREG:-+CEREG: 2,2}" ;;
+        'AT+CFUN?') printf '+CFUN: 1\nOK\n' ;;
+        AT+CGCONTRDP=*)
+            # the address arrives once CGACT=1 has been sent $ADDR_AFTER times
+            if [ "$(grep -c 'AT+CGACT=1' "$STUBLOG/at")" -ge "${ADDR_AFTER:-1}" ]; then
+                printf '%s\nOK\n' "${RDP:-+CGCONTRDP: 1,5,\"apn\",\"10.1.2.3.255.255.255.0\",\"10.1.2.1\",\"8.8.8.8\",\"1.1.1.1\"}"
+            else
+                printf '+CGCONTRDP: 1,5,"apn","0.0.0.0.0.0.0.0","0.0.0.0","0.0.0.0","0.0.0.0"\nOK\n'
+            fi ;;
+        AT+CGDATA=*) printf 'CONNECT\n' ;;
+        AT+CGPADDR=*) printf '+CGPADDR: 1,"10.1.2.3"\nOK\n' ;;
+        'AT+COPS?') printf '+COPS: 0,0,"Test Net",7\nOK\n' ;;
+        *) printf 'OK\n' ;;
+    esac
+}
+'''
+
+    def lib(self, code, **env):
+        """Run CODE with bash after sourcing mobile-data (MU300_LIB=1) and replacing `at` by MODEM. /run is the scratch
+        directory's run/, mu300-led is the stub on PATH."""
+        if not shutil.which('bash'):
+            self.skipTest('no bash')
+        text = (BIN / 'mobile-data').read_text()
+        text = text.replace('/run/', f'{self.tmp}/run/').replace('/opt/mu300/bin/mu300-led', 'mu300-led')
+        lib = self.tmp / 'mobile-data.lib'
+        lib.write_text(text)
+        (self.tmp / 'run').mkdir(exist_ok=True)
+        for f in ('at', 'led'):
+            (self.tmp / f).unlink(missing_ok=True)
+        self.stub('mu300-led', 'echo "$*" >> "$STUBLOG/led"')
+        r = self.sh(['bash'], f'MU300_LIB=1; . "{lib}"\n{self.MODEM}\nSECONDS=0\n{code}', **env)
+        sent = (self.tmp / 'at').read_text().splitlines() if (self.tmp / 'at').exists() else []
+        return r, sent
+
+    def test_registered_from_urc(self):
+        """nr0 announces the registration: wait_registered sees it in the URC log and asks nothing in the first 5 s."""
+        log = self.tmp / 'stty_nr0.log'
+        # the modem's last word before the call was "searching"; the registration is appended a second later
+        log.write_text('+CEREG: 2\n')
+        r, sent = self.lib('(sleep 1; printf \'+CEREG: 1,"1A2B","0123ABCD",7\\n\' >> "$MU300_URC_LOG") &\n'
+                           'rc=0; wait_registered || rc=$?; echo "rc=$rc t=$SECONDS"',
+                           MU300_URC_LOG=log, MU300_REGISTER_WAIT=20, CEREG='+CEREG: 2,2')
+        self.assertRegex(r.stdout, r'rc=0 t=[0-4]\b', r.stderr)
+        self.assertFalse([s for s in sent if 'AT+CEREG?' in s], sent)
+        # mu300-atd starts the log over at its size cap: a registration written after the cut still counts
+        log.write_text('+CEREG: 2\n' * 50)
+        r, sent = self.lib('(sleep 1; : > "$MU300_URC_LOG"; printf \'+CEREG: 5\\n\' >> "$MU300_URC_LOG") &\n'
+                           'rc=0; wait_registered || rc=$?; echo "rc=$rc t=$SECONDS"',
+                           MU300_URC_LOG=log, MU300_REGISTER_WAIT=20, CEREG='+CEREG: 2,2')
+        self.assertRegex(r.stdout, r'rc=0 t=[0-4]\b', r.stderr)
+        self.assertFalse([s for s in sent if 'AT+CEREG?' in s], sent)
+
+    def test_old_urc_does_not_count(self):
+        """A registration announced before the call proves nothing now: the query decides, and is sent at once."""
+        log = self.tmp / 'stty_nr0.log'
+        log.write_text('+CEREG: 2\n+CEREG: 1,"1A2B","0123ABCD",7\n')
+        r, sent = self.lib('rc=0; wait_registered || rc=$?; echo "rc=$rc t=$SECONDS"',
+                           MU300_URC_LOG=log, MU300_REGISTER_WAIT=20, CEREG='+CEREG: 2,1,"1A2B","0123ABCD",7')
+        self.assertRegex(r.stdout, r'rc=0 t=[01]\b', r.stderr)
+        self.assertTrue([s for s in sent if 'AT+CEREG?' in s], sent)
+        # nothing new arrives and the query says "searching": not registered when the budget is spent. "+CEREG: 1,2"
+        # is the query form with <n>=1 and <stat>=2, not a registration.
+        r, sent = self.lib('rc=0; wait_registered || rc=$?; echo "rc=$rc t=$SECONDS"',
+                           MU300_URC_LOG=log, MU300_REGISTER_WAIT=6, CEREG='+CEREG: 1,2')
+        self.assertRegex(r.stdout, r'rc=1 t=[6-8]\b', r.stderr)
+        # the fallback asks every 5 s, not every 2
+        self.assertEqual(len([s for s in sent if 'AT+CEREG?' in s]), 2, sent)
+
+    def test_fetch_addr_bounded(self):
+        """+CGCONTRDP keeps answering 0.0.0.0: fetch_addr gives up within its budget (in seconds, not rounds)."""
+        r, _ = self.lib('rc=0; fetch_addr 3 || rc=$?; echo "rc=$rc t=$SECONDS rdp=$rdp"', ADDR_AFTER=99)
+        self.assertRegex(r.stdout, r'rc=1 t=[3-5] rdp=$', r.stderr)
+        r, _ = self.lib('rc=0; fetch_addr 3 || rc=$?; echo "rc=$rc rdp=$rdp"', ADDR_AFTER=0)
+        self.assertIn('rc=0 rdp=+CGCONTRDP: 1,5,"apn","10.1.2.3.255.255.255.0"', r.stdout, r.stderr)
+
+    def test_address_after_one_cgact_reassert(self):
+        """up (netifd mode): no AT+CGACT? first, one idempotent CGACT=1 reassert when the address is late, never
+        CGACT=0, and the decision is in radio.log (K60, K62)."""
+        r, sent = self.lib('up_locked', MU300_NETIFD=1, MU300_AT_DEV='/dev/null', MU300_URC_LOG=self.tmp / 'none',
+                           CEREG='+CEREG: 2,1,"1A2B","0123ABCD",7', ADDR_AFTER=2,
+                           MU300_ADDR_WAIT_FIRST=2, MU300_ADDR_WAIT_RETRY=6)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn('IP=10.1.2.3\nPREFIX=24\nDNS1=8.8.8.8\nDNS2=1.1.1.1\n', r.stdout)
+        cmds = [s.split(' ', 1)[1] for s in sent]
+        self.assertEqual(cmds.count('AT+CGACT=1,1'), 2, cmds)
+        self.assertNotIn('AT+CGACT?', cmds)
+        self.assertFalse([c for c in cmds if c.startswith('AT+CGACT=0')], cmds)
+        radio = (self.tmp / 'run' / 'mu300' / 'radio.log').read_text()
+        self.assertRegex(radio, r'(?m)^t=\S* +registered\b')
+        self.assertIn('reasserting', radio)
+
+    def test_led_from_cereg(self):
+        """4G or 5G from the AcT field of AT+CEREG? (K56), not from AT+COPS?."""
+        for act, want in (('13', 'data 5g'), ('7', 'data on'), ('11', 'data 5g')):
+            r, sent = self.lib('led_up', CEREG=f'+CEREG: 2,1,"1A2B","0123ABCD",{act}')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual((self.tmp / 'led').read_text().strip(), want, act)
+            self.assertEqual([s.split(' ', 1)[1] for s in sent], ['AT+CEREG?'], act)
+
+    def test_systemd_path_keeps_v6_up(self):
+        """K63 is rejected: on the systemd path (Ubuntu) an IPv6 address from the network still runs v6_up, and none
+        switches IPv6 off."""
+        text = (BIN / 'mobile-data').read_text()
+        start = text.index('\nup_locked() {')
+        body = text[start:text.index('\ndown() {', start)]   # the nft here-documents have their own '}' lines
+        netifd = body.index('if [ "${MU300_NETIFD:-0}" = 1 ]; then')
+        self.assertIn('[ -n "$iid" ] || v6_off', body[:netifd])
+        self.assertIn('[ -n "$iid" ] && v6_up "$iid"', body[netifd:])
+        self.assertNotIn('MU300_PDP_TYPE:-IP}" != IP', body)   # the fork's replacement for v6_up
+
 
 class Bootmark(ShellTest):
     """bootmark (K42): one "t=<uptime> words" line per call on tmpfs, -r empties, never fails."""
