@@ -93,6 +93,13 @@ class Catalogs(unittest.TestCase):
         r = run('check')
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
+    def test_default_check_scans_the_repository(self):
+        # until Task 16 makes test_check_is_clean pass: the default run works, and finds the fork's Chinese
+        r = run('check')
+        self.assertNotIn('Traceback', r.stderr)
+        self.assertIn('cjk: openwrt/luci-app-mu300/', r.stdout)
+        self.assertNotIn('tools/i18n.sh', r.stdout)
+
     def test_extract_finds_every_kind_of_message_and_nothing_else(self):
         r = run('extract', '--root', str(self.mini()))
         self.assertEqual(r.returncode, 0, r.stderr)
@@ -145,11 +152,15 @@ class Catalogs(unittest.TestCase):
             ('missing', append(DASH, "\nm_y() { printf '{\"ok\":0,\"error\":\"A printf nobody translated\"}\\n'; }\n")),
             ('missing', append(DASH, '\n# i18n: A comment message nobody translated\n')),
             ('missing', both(append(VIEW, "\nE('p', {}, _('Empty in tr'));\n"), tr_entry('Empty in tr', ''))),
+            ('missing', append(DASH, '\nm_x() { awk \'END { print "{\\"error\\":\\"Escaped nobody translated\\"}" }\'; }\n')),
             ('placeholder', both(append(VIEW, "\nE('p', {}, _('%d new messages').format(n));\n"),
                                  tr_entry('%d new messages', '%s yeni mesaj'))),
             ('stale', tr_entry('A message no source uses', 'Kimse kullanmiyor')),
             ('dynamic', append(VIEW, "\nE('p', {}, _(someVariable));\n")),
             ('dynamic', append(VIEW, "\nE('p', {}, _('Half ' + 'a sentence'));\n")),
+            ('dynamic', append(DASH, '\nm_w() { printf \'{"ok":0,"error":%s}\\n\' "$(json_str "$msg")"; }\n')),
+            ('dynamic', append(DASH, '\nm_v() { printf \'{"ok":0,"error":"%s"}\\n\' "$msg"; }\n')),
+            ('plural', append(VIEW, "\nE('p', {}, N_(n, 'One item', '%d items').format(n));\n")),
         ]
         for base_name, base in (('the app', APP), ('a clean app', self.mini())):
             before = run('check', '--root', str(base))

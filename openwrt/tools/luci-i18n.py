@@ -13,18 +13,24 @@ Messages are English and come from:
     is an error, except the sites in DYNAMIC_OK, whose values are messages extracted from elsewhere.
   * root/usr/share/luci/menu.d/*.json: every "title"; root/usr/share/rpcd/acl.d/*.json: every "description".
   * the backend, root/usr/libexec/rpcd/mu300dash and root/usr/libexec/unisoc-modem/*, in three forms:
-      - a literal JSON value in the code:    printf '{"ok":0,"error":"Text"}\\n'   ("error" or "message")
+      - a literal JSON value in the code, "error" or "message", plain or escaped inside a "..." string:
+        printf '{"ok":0,"error":"Text"}\\n'   print "{\\"error\\":\\"Text\\"}"
+        Any other value of such a key (%s, a variable) outside the body of a reply helper is an error, unless the
+        code line is right after '# i18n: Text' line(s) naming the message(s) it can carry.
       - a literal argument of a reply helper: refuse 'Text' [DETAIL], reply_obj JSON 'Text' (mu300dash),
         fail OP 'Text' [DETAIL] (action), error 'Text' (device-usb); single or double quotes, no $ or `
         inside double quotes. A helper called with a non-literal message is an error, except in BACKEND_DYNAMIC_OK.
       - a comment line '# i18n: Text', for a message the code builds or passes through a variable.
+  * N_() is an error: the app has no plural messages (tools/po2lmo.py refuses msgid_plural).
 
 The problems `check` prints, one per line as RULE: PATH:LINE: WHAT (spec, Translations):
   cjk          a CJK character outside po/zh_Hans/ and the installers' i18n data
   missing      a message without an entry, or with an empty msgstr, in po/tr or po/zh_Hans (or no such .po)
   placeholder  a msgstr whose %s/%d/%% placeholders are not its msgid's, in the same order
   stale        a msgid that no source uses
-  dynamic      a _() or reply helper with a non-literal message not listed below
+  dynamic      a _(), a reply helper or an "error"/"message" key with a non-literal message, not allowed above
+  plural       an N_() call
+  js           a JavaScript file the scanner cannot read (its messages are then not extracted)
   po           a .po that LuCI's po2lmo (tools/po2lmo.py) would not compile
 """
 import argparse
@@ -54,7 +60,7 @@ CJK = re.compile('[\u2e80-\u9fff\uf900-\ufaff\uff00-\uffef]')
 CJK_SCOPE = ['openwrt', 'rootfs/overlay', 'boot', 'tools', 'install.sh', 'uninstall.sh']
 CJK_ALLOWED = re.compile(r'^(tools/i18n\.sh|i18n/[^/]+\.tsv|openwrt/luci-app-mu300/po/zh_Hans/.*|tests/fixtures/.*)$')
 
-PLACEHOLDER = re.compile(r'%(?:%|[-+ #0]*\d*(?:\.\d+)?[a-zA-Z])')
+PLACEHOLDER = re.compile(r'%(?:%|[-+#0]*\d*(?:\.\d+)?[a-zA-Z])')
 
 
 # ---------------------------------------------------------------------------------------------------- JavaScript
@@ -142,9 +148,13 @@ def _js_close(src, i):
     return len(src)
 
 
+N_PLURAL = object()      # js_calls' message for an N_() call
+
+
 def js_calls(src):
-    """[(offset, message or None, argument text)] for every _( ... ) call outside comments, strings and regexes.
-    message is the decoded literal when the argument is exactly one '...' or "..." string, else None."""
+    """[(offset, message or None, argument text)] for every _( ... ) and N_( ... ) call outside comments, strings
+    and regexes. message is the decoded literal when the argument of _() is exactly one '...' or "..." string,
+    N_PLURAL for N_(), else None."""
     calls, stack, i, last = [], [], 0, None       # last: the previous token's last character, or a keyword
     n = len(src)
     while i < n:
@@ -194,12 +204,14 @@ def js_calls(src):
             while j < n and (src[j].isalnum() or src[j] in '_$'):
                 j += 1
             word = src[i:j]
-            if word == '_' and last != '.':
+            if word in ('_', 'N_') and last != '.':
                 k = _js_skip(src, j)
                 if k < n and src[k] == '(':
                     a = _js_skip(src, k + 1)
                     msg = None
-                    if a < n and src[a] in '\'"':
+                    if word == 'N_':
+                        msg = N_PLURAL
+                    elif a < n and src[a] in '\'"':
                         value, b = _js_string(src, a)
                         if src[_js_skip(src, b):_js_skip(src, b) + 1] == ')':
                             msg = value
@@ -242,8 +254,14 @@ def _json_values(m, key, path, text):
 # a shell word: '...', "..." or unquoted characters, glued together
 SH_WORD = re.compile(r'''(?:'[^']*'|"(?:[^"\\]|\\.)*"|[^\s;&|()<>'"]+)+''')
 SH_HELPER = re.compile(r'(?:^|[;&|{(]|\bthen|\belse|\bdo|\))\s*(%s)[ \t]+' % '|'.join(HELPERS))
-SH_JSON = re.compile(r'"(?:error|message)":"((?:[^"\\]|\\.)*)"')
 SH_I18N = re.compile(r'^\s*# i18n: (.+?)\s*$')
+SH_DEF = re.compile(r'^(\s*)(\w+)\s*\(\)\s*\{')
+# an "error" or "message" key in JSON the code writes, plain ("error":) or escaped inside "..." (\"error\":)
+SH_KEY = re.compile(r'(\\?)"(?:error|message)\\?"\s*:\s*')
+SH_PLAIN_VALUE = re.compile(r'"((?:[^"\\]|\\.)*)"')
+SH_ESCAPED_VALUE = re.compile(r'\\"((?:[^"\\]|\\[^"])*)\\"')
+SH_CONST = re.compile(r'(?:null|true|false|-?\d)')
+CONVERSION = re.compile(r'%(?!%)')
 
 
 def _sh_literal(word):
@@ -255,9 +273,24 @@ def _sh_literal(word):
     return None
 
 
+def _json_keys(line):
+    """[(value or None, text)] for each "error"/"message" key on a shell line: value is the literal string the
+    key gets, None when it gets anything else (a %s, a variable, ...); text is what follows the key."""
+    out = []
+    for x in SH_KEY.finditer(line):
+        rest = line[x.end():]
+        v = (SH_ESCAPED_VALUE if x.group(1) else SH_PLAIN_VALUE).match(rest)
+        if v and not CONVERSION.search(v.group(1)):
+            value = v.group(1).replace('\\"', '"') if x.group(1) else v.group(1)
+            out.append((json.loads('"%s"' % value), rest))
+        elif not SH_CONST.match(rest):
+            out.append((None, rest[:30]))
+    return out
+
+
 def _backend(m, path, rel, name):
     lines = path.read_text(encoding='utf-8', errors='replace').split('\n')
-    no = 0
+    no, helper_end, covered = 0, None, False      # helper_end: the closing line of the helper being read
     while no < len(lines):
         start, line = no + 1, lines[no]
         while line.endswith('\\') and no + 1 < len(lines):     # continued lines are one command
@@ -267,11 +300,25 @@ def _backend(m, path, rel, name):
         c = SH_I18N.match(line)
         if c:
             m.add(c.group(1), rel, start)
+            covered = True
             continue
-        if line.lstrip().startswith('#'):
+        if not line.strip() or line.lstrip().startswith('#'):
             continue
-        for x in SH_JSON.finditer(line):
-            m.add(json.loads('"%s"' % x.group(1)), rel, start)
+        d = SH_DEF.match(line)
+        in_helper = helper_end is not None
+        if d and d.group(2) in HELPERS:
+            in_helper = True
+            if not line.rstrip().endswith('}'):
+                helper_end = re.compile(r'^%s\}\s*$' % re.escape(d.group(1)))
+        elif helper_end is not None and helper_end.match(line):
+            helper_end = None
+        for value, text in _json_keys(line):
+            if value is not None:
+                m.add(value, rel, start)
+            elif not in_helper and not covered:
+                m.problem('dynamic', rel, start, f'a non-literal error/message ({text.strip()}) without a '
+                          '"# i18n:" line above it')
+        covered = False
         for x in SH_HELPER.finditer(line):
             helper = x.group(1)
             words = SH_WORD.findall(line, x.end())
@@ -301,10 +348,12 @@ def extract(root, base=None):
         try:
             calls = js_calls(src)
         except (ValueError, IndexError) as e:
-            m.problem('dynamic', rel(p), 1, f'cannot read the JavaScript: {e}')
+            m.problem('js', rel(p), 1, f'cannot read the JavaScript: {e}')
             continue
         for off, msg, arg in calls:
-            if msg is not None:
+            if msg is N_PLURAL:
+                m.problem('plural', rel(p), _line(src, off), f'N_({arg}): this app has no plural messages')
+            elif msg is not None:
                 m.add(msg, rel(p), _line(src, off))
             elif arg not in DYNAMIC_OK:
                 m.problem('dynamic', rel(p), _line(src, off), f'_({arg}) is not one string literal')
