@@ -30,6 +30,11 @@ AWK=${MU300_SMS_AWK:-/opt/mu300/lib/sms-pdu.awk}
 PAGE=${MU300_SMS_PAGE:-10}
 case $PAGE in ''|*[!0-9]*|0) PAGE=10 ;; esac
 TAB=$(printf '\t')
+# The pool lock lives in RAM, not in the pool: the pool is on flash (/etc), and smsd syncs every 30 s. One lock per
+# pool path.
+RUNDIR=${MU300_SMS_RUN:-/run}
+[ -d "$RUNDIR" ] || RUNDIR=${TMPDIR:-/tmp}
+LOCK=$RUNDIR/mu300-sms-pool.$(printf '%s' "$POOL" | cksum | cut -d' ' -f1).lock
 
 die() { echo "mu300-sms: $*" >&2; exit 1; }
 
@@ -46,10 +51,13 @@ need_atd() {
 # ------------------------------------------------------------------ the pool
 # One file per message: "field: value" headers, a blank line, then the body to the end of the file. Everything is
 # written as NAME.part and renamed, so a reader never sees half a message; the pool lock keeps two writers from
-# taking one id.
+# taking one id. The pool is on flash: nothing here writes to it unless something in it changes (a list, or a sync
+# of an unchanged SIM, writes nothing at all).
 pool_init() {
-    mkdir -p "$MSGDIR" 2>/dev/null || die "cannot create $MSGDIR"
-    chmod 700 "$POOL" 2>/dev/null   # message text: root only
+    if [ ! -d "$MSGDIR" ]; then
+        mkdir -p "$MSGDIR" 2>/dev/null || die "cannot create $MSGDIR"
+        chmod 700 "$POOL" 2>/dev/null   # message text: root only
+    fi
     [ -f "$POOL/next_id" ] || echo 0 > "$POOL/next_id"
 }
 
@@ -63,20 +71,20 @@ alive() {
 # mkdir lock; a holder killed with SIGKILL leaves the directory behind, so a dead holder's lock is taken over
 pool_lock() {
     _n=0
-    while ! mkdir "$POOL/.lock" 2>/dev/null; do
-        if alive "$(cat "$POOL/.lock/pid" 2>/dev/null)" mu300-sms; then
+    while ! mkdir "$LOCK" 2>/dev/null; do
+        if alive "$(cat "$LOCK/pid" 2>/dev/null)" mu300-sms; then
             _n=$((_n + 1)); [ "$_n" -gt 120 ] && die "another mu300-sms has held the pool for two minutes"
             sleep 1
             continue
         fi
-        rm -rf "$POOL/.lock"
+        rm -rf "$LOCK"
     done
-    echo $$ > "$POOL/.lock/pid"
+    echo $$ > "$LOCK/pid"
     trap pool_unlock EXIT
     trap 'exit 130' INT
     trap 'exit 143' TERM
 }
-pool_unlock() { rm -rf "$POOL/.lock" 2>/dev/null; trap - EXIT; }
+pool_unlock() { rm -rf "$LOCK" 2>/dev/null; trap - EXIT; }
 
 hdr() {  # hdr FILE FIELD (headers only: the body may contain any "field: " line)
     sed -n "1,/^\$/s/^$2: //p" "$1" 2>/dev/null | head -n 1
@@ -228,13 +236,13 @@ cmd_sync() {
         _new=$((_new + 1))
         echo "new: $_id from ${_from:-?} ${_ts:-}"
     done < "$_tmp"
-    # tombstones of messages no longer on the SIM are not needed any more: nothing can bring those back
-    if [ -s "$_seen" ] && [ -f "$POOL/deleted" ]; then
-        grep -xFf "$_seen" "$POOL/deleted" > "$POOL/deleted.part"; mv "$POOL/deleted.part" "$POOL/deleted"
-    elif [ -f "$POOL/deleted" ]; then
-        : > "$POOL/deleted"
+    # tombstones of messages no longer on the SIM are not needed any more: nothing can bring those back. The list is
+    # rewritten only when that drops something (it is on flash).
+    if [ -s "$POOL/deleted" ]; then
+        if [ -s "$_seen" ]; then grep -xFf "$_seen" "$POOL/deleted" > "$_tmp.del"; else : > "$_tmp.del"; fi
+        cmp -s "$_tmp.del" "$POOL/deleted" || { cat "$_tmp.del" > "$POOL/deleted.part" && mv "$POOL/deleted.part" "$POOL/deleted"; }
     fi
-    rm -f "$_tmp" "$_fps" "$_seen"
+    rm -f "$_tmp" "$_fps" "$_seen" "$_tmp.del"
     echo "sync: $_new new, $_total on the SIM, $(ids_newest_first | wc -l | tr -d ' ') in the pool${_waiting:+, $_waiting waiting for its other parts}"
     pool_unlock
 }
@@ -364,7 +372,9 @@ cmd_send() {
         die "the modem did not take the message: $(printf '%s\n' "$_r" | grep -E 'CMS|ERROR' | head -n 1)"; }
     case $_r in
         *+CMGS:*) ;;
-        *) die "the modem did not take the message: $(printf '%s\n' "$_r" | tr '\n' ' ')" ;;
+        # only an error line is quoted: a bare OK in a refusal would read as success to the panel's backend
+        *) _e=$(printf '%s\n' "$_r" | grep -E 'CMS|CME|ERROR' | head -n 1)
+           die "the modem did not take the message: ${_e:-no +CMGS confirmation}" ;;
     esac
     pool_init
     pool_lock
@@ -397,21 +407,25 @@ cmd_delete() {
     done
     pool_init
     [ "$_sim" = 1 ] && need_atd
+    # The SIM first (AT calls, so without the pool lock), then the tombstones and the files under the pool lock: a
+    # tombstone written while a sync rewrites the list would be lost, and the message would come back.
     if [ "$_what" = all ]; then
-        for _id in $(ids_newest_first); do
-            tombstone "$MSGDIR/$_id"
-            [ "$_sim" = 1 ] && sim_delete "$MSGDIR/$_id"
-        done
+        if [ "$_sim" = 1 ]; then
+            for _id in $(ids_newest_first); do sim_delete "$MSGDIR/$_id"; done
+        fi
         pool_lock
+        for _id in $(ids_newest_first); do tombstone "$MSGDIR/$_id"; done
         rm -f "$MSGDIR"/[0-9]*
         pool_unlock
         echo "pool emptied"
         return 0
     fi
     _f=$(msg_file "$_what" "delete needs an id or \"all\" (and --sim to delete it on the SIM too)") || exit 1
-    tombstone "$_f"
     [ "$_sim" = 1 ] && sim_delete "$_f"
+    pool_lock
+    [ -f "$_f" ] && tombstone "$_f"
     rm -f "$_f"
+    pool_unlock
     echo "deleted $_what"
 }
 # a deleted message is remembered by its fingerprint, so that the next sync does not bring it back from the SIM

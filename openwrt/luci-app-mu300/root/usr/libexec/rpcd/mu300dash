@@ -371,12 +371,14 @@ m_sms_send() {
     # the text travels on stdin (adapter contract: send --stdin NUMBER), never
     # as an argument where it could read as an option
     out=$(printf '%s' "$text" | "$SMS" send --stdin "$num" 2>&1)
+    # success is the adapter's last line saying so ("sent ..." from mu300-sms, or a bare OK), not those words
+    # anywhere in a refusal
     case "$out" in
         *"busy"*) printf '{"ok":0,"busy":1,"error":"The AT channel is busy; the command was not sent, try again"}\n' ;;
-        *sent*|*OK*)
-            printf '{"ok":1,"reply":%s}\n' "$(json_str "$out")" ;;
-        *)
-            refuse 'Sending failed' "$(printf '%s\n' "$out" | tail -n1)" ;;
+        *) case $(printf '%s\n' "$out" | tail -n 1) in
+               sent|'sent '*|OK) printf '{"ok":1,"reply":%s}\n' "$(json_str "$out")" ;;
+               *) refuse 'Sending failed' "$(printf '%s\n' "$out" | tail -n1)" ;;
+           esac ;;
     esac
 }
 

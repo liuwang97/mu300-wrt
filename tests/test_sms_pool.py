@@ -61,6 +61,8 @@ class Pool(ShellTest):
         self.atdir.mkdir()
         os.mkfifo(self.atdir / 'cmd')
         self.pool = self.tmp / 'pool'
+        self.run = self.tmp / 'run'   # where the pool lock goes (/run on the device)
+        self.run.mkdir()
 
     def fresh(self):
         """An empty pool, an empty AT log and the default answers (for the next shell)."""
@@ -79,7 +81,7 @@ class Pool(ShellTest):
         return p.read_text().splitlines() if p.exists() else []
 
     def run_sms(self, shell, *args, stdin=None, **env):
-        e = dict(MU300_SMS_POOL=self.pool, MU300_AT_DIR=self.atdir, MU300_SMS_AWK=AWK)
+        e = dict(MU300_SMS_POOL=self.pool, MU300_AT_DIR=self.atdir, MU300_SMS_AWK=AWK, MU300_SMS_RUN=self.run)
         e.update(env)
         return self.script(shell, SMS, *args, stdin=stdin, **e)
 
@@ -288,20 +290,85 @@ class Pool(ShellTest):
             for args, stdin in ((('--stdin', '-1'), 'hi'), (('--stdin', '+'), 'hi'), (('--stdin', '12+3'), 'hi'),
                                 (('--stdin', '1' * 21), 'hi'), (('--stdin', '--stdin'), 'hi'),
                                 (('--stdin', '123'), ''), (('--stdin',), 'hi'), (('--stdin', '123'), 'a' * 161),
-                                (('--stdin', '123'), 'ğ' * 71), (('--stdin', '123'), 'hi')):
+                                (('--stdin', '123'), 'ğ' * 71), (('--stdin', '123'), 'hi'), ('bare OK', 'hi')):
                 with self.subTest(args=args, text=stdin[:8]):
+                    if args == 'bare OK':   # the modem says OK without a +CMGS: not taken, and no OK in the refusal
+                        self.answer('CMGS', 'OK\n')
+                        args = ('--stdin', '123')
                     r = self.run_sms(shell, 'send', *args, stdin=stdin)
                     self.assertEqual(r.returncode, 1, r.stdout)
                     out = r.stdout + r.stderr
                     self.assertNotRegex(out, 'sent|OK|busy')
                     self.assertTrue(r.stderr.startswith('mu300-sms: '), r.stderr)
             self.assertFalse([h for h, _ in self.msgs().values() if h['dir'] == 'mo'])
+            # the panel's backend on the same refusal: Sending failed, not Sent
+            r = self.dash(shell, 'sms_send', {'num': '123', 'text': 'hi'})
+            self.assertEqual((r['ok'], r['error']), (0, 'Sending failed'))
+            self.assertEqual(r['detail'], 'mu300-sms: the modem did not take the message: no +CMGS confirmation')
             # one part's worth goes out: 160 GSM characters, 70 UCS-2 ones
             self.answer('CMGS', '+CMGS: 1\nOK\n')
             for text in ('a' * 160, 'ğ' * 70):
                 self.assertEqual(self.run_sms(shell, 'send', '--stdin', '123', stdin=text).returncode, 0)
             (self.tmp / 'at' / 'CMGS').write_text('+CMS ERROR: 500\n')
             shutil.rmtree(self.pool)
+
+    def stat_tree(self, *dirs):
+        """{path: (mtime_ns, ctime_ns, size, mode)} of every file and directory under DIRS, the DIRS included."""
+        out = {}
+        for d in dirs:
+            for p in [d] + sorted(d.rglob('*')):
+                st = p.stat()
+                out[str(p)] = (st.st_mtime_ns, st.st_ctime_ns, st.st_size, st.st_mode)
+        return out
+
+    def test_an_unchanged_sim_writes_nothing_to_the_pool(self):
+        # the pool is on flash and smsd syncs every 30 s: a sync of an unchanged SIM, a list, and a show of a read
+        # message leave every file and directory of the pool as it was (no lock, no chmod, no tombstone rewrite)
+        for shell in self.each_shell():
+            self.fresh()
+            self.run_sms(shell, 'sync')
+            ids = {h['from']: i for i, (h, _) in self.msgs().items()}
+            self.run_sms(shell, 'delete', ids['ADANA BLD'])          # a tombstone that stays (still on the SIM)
+            self.run_sms(shell, 'show', ids['+31641600986'])        # read now
+            time.sleep(0.05)
+            before = self.stat_tree(self.pool)
+            time.sleep(0.05)
+            for args in (('sync',), ('sync',), ('list',), ('show', ids['+31641600986'])):
+                r = self.run_sms(shell, *args)
+                self.assertEqual(r.returncode, 0, (args, r.stderr))
+            self.assertEqual(self.stat_tree(self.pool), before)
+            self.assertEqual(list(self.run.iterdir()), [])          # the lock is in RAM, and released
+            # a tombstone that is no longer needed is the one change a sync of a changed SIM makes to the list
+            self.answer('CMGL4', f'+CMGL: 3,0,,40\n{PDU_GSM}\nOK\n')
+            self.run_sms(shell, 'sync')
+            self.assertEqual((self.pool / 'deleted').read_text(), '')
+
+    @unittest.skipUnless(os.path.isdir('/proc/self'), 'a live lock holder is told by /proc/PID/cmdline')
+    def test_delete_waits_for_the_pool_lock(self):
+        # tombstone and removal under the pool lock: a tombstone written while a sync rewrote the list was lost
+        key = subprocess.run(['cksum'], input=str(self.pool), capture_output=True, text=True).stdout.split()[0]
+        for shell in self.each_shell():
+            self.fresh()
+            self.run_sms(shell, 'sync')
+            mid = sorted(self.msgs())[0]
+            lock = self.run / f'mu300-sms-pool.{key}.lock'
+            lock.mkdir()
+            # a live holder named mu300-sms ("; true": the shell must not exec sleep and lose its command line)
+            holder = subprocess.Popen(['sh', '-c', 'sleep 2; true', 'mu300-sms'])
+            (lock / 'pid').write_text(f'{holder.pid}\n')
+            try:
+                d = subprocess.Popen(shell + [str(SMS), 'delete', mid], env=self.env(
+                    MU300_SMS_POOL=self.pool, MU300_SMS_RUN=self.run), stdout=subprocess.PIPE, text=True)
+                time.sleep(1)
+                self.assertIsNone(d.poll(), 'delete did not wait for the lock')
+                self.assertIn(mid, self.msgs())
+                holder.wait()
+                shutil.rmtree(lock)
+                self.assertEqual(d.communicate(timeout=10)[0], f'deleted {mid}\n')
+                self.assertNotIn(mid, self.msgs())
+                self.assertEqual((self.pool / 'deleted').read_text().count('\n'), 1)
+            finally:
+                holder.kill()
 
     def test_a_busy_channel_says_busy(self):
         (self.tmp / 'at' / 'BUSY').write_text('')
@@ -318,7 +385,7 @@ class Pool(ShellTest):
                          'printf "%s\\n" "$UCI_POOL" && exit 0; exit 1')
         self.stub('logger', 'exit 0')
         e = self.env(MU300_SMS_BIN=SMS, MU300_SMS_POOL=self.pool, MU300_AT_DIR=self.atdir, MU300_SMS_AWK=AWK,
-                     MU300_DASH_DIR=self.tmp / 'dash', MU300_DASH_BIN=self.tmp / 'none')
+                     MU300_SMS_RUN=self.run, MU300_DASH_DIR=self.tmp / 'dash', MU300_DASH_BIN=self.tmp / 'none')
         e.update({k: str(v) for k, v in env.items()})
         e = {k: v for k, v in e.items() if v != ''}
         r = subprocess.run(shell + [str(DASH), 'call', method], input=json.dumps(params).encode(),
