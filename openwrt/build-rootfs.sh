@@ -225,6 +225,11 @@ done
 if [ -d /in/luci-plugin ]; then
     n=$(sed -n "s/^START=//p" $R/etc/init.d/unisoc-modem-ui)
     ln -sf ../init.d/unisoc-modem-ui $R/etc/rc.d/S${n}unisoc-modem-ui
+    # the SMS pool behind the panel (K69, D11): openwrt-luci only, the sms command stays the SMS tool of every system
+    chmod 0755 $R/opt/mu300/bin/mu300-sms $R/opt/mu300/bin/mu300-smsd $R/etc/init.d/mu300-smsd
+    n=$(sed -n "s/^START=//p" $R/etc/init.d/mu300-smsd)
+    ln -sf ../init.d/mu300-smsd $R/etc/rc.d/S${n}mu300-smsd
+    ln -sf /opt/mu300/bin/mu300-sms $R/usr/bin/mu300-sms
 fi
 # what apk installed, for comparing two builds (packages on the release feed are not pinned)
 apk list --installed | sort > $R/etc/mu300/packages.txt

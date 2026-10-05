@@ -30,7 +30,7 @@ return view.extend({
 		o.description = _('Implement the list, show, send, delete and sync subcommands; leave blank to find mu300-sms automatically.');
 
 		o = s.option(form.Value, 'sms_pool', _('SMS pool directory'));
-		o.placeholder = '/etc/unisoc-modem/sms';
+		o.placeholder = '/etc/mu300/sms-pool';
 
 		o = s.option(form.Value, 'data_interface', _('Cellular logical interface'));
 		o.placeholder = 'wan';
