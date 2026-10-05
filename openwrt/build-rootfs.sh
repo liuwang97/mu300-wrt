@@ -45,7 +45,9 @@ fi
 # sipa_eth0 into fw4's software flowtable (applied below, the build fails when it no longer applies)
 FW4PATCH=$TOP/openwrt/patches/fw4-sipa-offload.patch
 [ -s "$FW4PATCH" ] || { echo "missing $FW4PATCH" >&2; exit 1; }
-LUCI=""
+# the docker mounts of the panel system, as the positional parameters (OUT is read above): each path stays one
+# argument, spaces and all
+set --
 if [ "$SYSTEM" = openwrt-luci ]; then
     # Keep the upstream Aurora theme reproducible. Its APK is installed while
     # assembling the rootfs, so the theme is present on first boot without a
@@ -75,8 +77,8 @@ if [ "$SYSTEM" = openwrt-luci ]; then
     done
     [ -s "$CAT/mu300.tr.lmo" ] || { echo "no Turkish catalog built from openwrt/luci-app-mu300/po/tr" >&2; exit 1; }
     [ -s "$CAT/mu300.zh_Hans.lmo" ] || { echo "no Chinese catalog built from openwrt/luci-app-mu300/po/zh_Hans" >&2; exit 1; }
-    LUCI="-v $THEME_APK:/in/luci-theme-aurora.apk:ro -v $TOP/openwrt/luci-app-mu300:/in/luci-plugin:ro"
-    LUCI="$LUCI -v $TOP/openwrt/luci-overlay:/in/luci-overlay:ro -v $CAT:/in/catalogs:ro"
+    set -- -v "$THEME_APK:/in/luci-theme-aurora.apk:ro" -v "$TOP/openwrt/luci-app-mu300:/in/luci-plugin:ro" \
+        -v "$TOP/openwrt/luci-overlay:/in/luci-overlay:ro" -v "$CAT:/in/catalogs:ro"
 fi
 TARBALL=$FLAVOUR-$VER-armsr-armv8-rootfs.tar.gz
 URL=$BASEURL/$VER/targets/armsr/armv8
@@ -115,7 +117,7 @@ docker run --rm --platform linux/arm64 \
   $(opt out/modules.builtin modules.builtin) $(opt out/modules.builtin.modinfo modules.builtin.modinfo) \
   $(opt firmware firmware) $(opt android-subset android-subset) $(opt android-gpu-subset android-gpu-subset) \
   $(opt tools/logdw/logdw logdw) $(opt tools/bt-init/mu300-bt-init bt-init) $(opt tools/keys/mu300-keys keys) $(opt tools/gpu/cltest cltest) \
-  $(opt busybox busybox) $(opt sing-box sing-box) $(opt xray xray) $(opt hev-socks5-tunnel hev-socks5-tunnel) $(opt upstream/out/modules mainline-modules) -v "$TOP/openwrt":/out -v "$REGDB":/in/regdb:ro $LUCI \
+  $(opt busybox busybox) $(opt sing-box sing-box) $(opt xray xray) $(opt hev-socks5-tunnel hev-socks5-tunnel) $(opt upstream/out/modules mainline-modules) -v "$TOP/openwrt":/out -v "$REGDB":/in/regdb:ro "$@" \
   -e KREL=$KREL -e OUT="$(basename "$OUT")" -e MU300_VERSION="${MU300_VERSION:-dev}" mu300-$FLAVOUR-base:$VER /bin/sh -eu -c '
 mkdir -p /var/lock /var/run /tmp
 apk update >/dev/null

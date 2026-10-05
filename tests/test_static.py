@@ -301,6 +301,22 @@ class Rules(unittest.TestCase):
                 self.assertNotIn('required cellular protocol helper missing', r.stderr)
                 self.assertNotIn('fw4-sipa-offload.patch', r.stderr)
 
+    def test_panel_mounts_survive_spaces_in_paths(self):
+        # final review minor 5: the panel system's docker mounts were one word-split string; a checkout or a
+        # MU300_LUCI_THEME_APK path with a space broke the build. They are the positional parameters now, each path
+        # one argument: the build's own `set --` statement is run with spaces in every path
+        text = (TOP / 'openwrt' / 'build-rootfs.sh').read_text()
+        self.assertNotIn('$LUCI', text)
+        m = re.search(r'\n    (set -- -v "\$THEME_APK:.*?:/in/catalogs:ro")\n', text, re.S)
+        self.assertTrue(m, 'the luci mounts are not one set -- statement')
+        self.assertRegex(text, r'-v "\$REGDB":/in/regdb:ro "\$@" \\\n')
+        for sh in shells():
+            r = subprocess.run(sh + ['-c', m.group(1) + '\nprintf "%s\\n" "$@"'], capture_output=True, text=True,
+                               env=dict(os.environ, THEME_APK='/a b/theme.apk', TOP='/my repo', CAT='/t m/cat'))
+            self.assertEqual(r.stdout.splitlines(), [
+                '-v', '/a b/theme.apk:/in/luci-theme-aurora.apk:ro', '-v', '/my repo/openwrt/luci-app-mu300:/in/luci-plugin:ro',
+                '-v', '/my repo/openwrt/luci-overlay:/in/luci-overlay:ro', '-v', '/t m/cat:/in/catalogs:ro'], sh)
+
     def test_openwrt_luci_starts_ndp_learn(self):
         # K37: init.d/mu300-ndp is enabled in openwrt-luci's image (it does nothing unless wan is in relay mode) and
         # is executable there, beside the SMS service
