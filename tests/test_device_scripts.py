@@ -1061,6 +1061,26 @@ class VendorStart(ShellTest):
             self.assertEqual(self.sh(shell, body + f'\nlink_partitions {self.tmp}/none {dev}').returncode, 0, shell)
             shutil.rmtree(dev / 'block'); (dev / 'block' / 'by-name').mkdir(parents=True)
 
+    def test_slot_without_the_initramfs_file(self):
+        # a boot image from before the slot work publishes no /run/mu300/linux-slot: under set -e the script must
+        # go on with the slot from the command line, not end before modem_control (seen on F50 #1: no modem)
+        text = (BIN / 'android-vendor-start').read_text()
+        m = re.search(r'# --- slot begin\n(.*?)# --- slot end', text, re.S)
+        self.assertIsNotNone(m, 'android-vendor-start has no slot block')
+        cmd = self.tmp / 'cmdline'
+        run = self.tmp / 'run'
+        for shell in self.each_shell():
+            for slot, want in (('a', 'L=a AS=b'), ('b', 'L=b AS=a')):
+                cmd.write_text(f'console=ttyS1 androidboot.slot_suffix=_{slot} quiet')
+                r = self.sh(shell, f'set -e\nsrc={cmd}\n' + m.group(1) + 'echo "L=$L AS=$AS"', MU300_RUN=run)
+                self.assertEqual(r.stdout.strip(), want, (shell, r.stderr))
+            (run / 'mu300').mkdir(parents=True, exist_ok=True)
+            (run / 'mu300' / 'linux-slot').write_text('a\n')
+            cmd.write_text('androidboot.slot_suffix=_b')
+            r = self.sh(shell, f'set -e\nsrc={cmd}\n' + m.group(1) + 'echo "L=$L AS=$AS"', MU300_RUN=run)
+            self.assertEqual(r.stdout.strip(), 'L=a AS=b', shell)
+            shutil.rmtree(run)
+
     def test_no_forks_in_the_loop_and_no_sleep_after_logdw(self):
         text = (BIN / 'android-vendor-start').read_text()
         body = text[text.index('\nlink_partitions() {'):text.index('\n}\n', text.index('\nlink_partitions() {'))]
