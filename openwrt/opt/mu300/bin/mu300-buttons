@@ -14,7 +14,7 @@ is_openwrt() { [ -e /etc/openwrt_release ]; }
 hotspot_toggle() {
     if is_openwrt; then
         if ubus call hostapd.wlan0 get_status >/dev/null 2>&1; then wifi down; mu300-led wifi off
-        else wifi up; fi
+        else wifi up; ( mu300-led wifi sync 60 ) </dev/null >/dev/null 2>&1 & fi
     elif systemctl is-active --quiet mu300-hotspot; then systemctl stop mu300-hotspot
     else systemctl start mu300-hotspot; fi
 }

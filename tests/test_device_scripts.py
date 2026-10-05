@@ -195,6 +195,21 @@ class Led(ShellTest):
             s = self.state()
             self.assertEqual((s['net_blue'], s['zte-ldo0'], s['zte-ldo1'], s['zte-ldo2']), ('0', '0', '0', '0'))
 
+    def test_wifi_sync_follows_a_slow_hotspot(self):
+        # LuCI turned Wi-Fi on, hostapd comes up seconds later: "wifi sync S" keeps looking and lights it then
+        import threading
+        ap = 'Interface wlan0\n\tssid F50\n\ttype AP\n\tchannel 36 (5180 MHz), width: 80 MHz\n'
+        for shell in self.each_shell():
+            self.reset()
+            (self.tmp / 'iw.out').write_text('Interface wlan0\n\ttype AP\n')
+            t = threading.Timer(1.0, lambda: (self.tmp / 'iw.out').write_text(ap))
+            t.start()
+            try:
+                self.assertEqual(self.led(shell, 'f50', 'wifi', 'sync', '4').returncode, 0)
+            finally:
+                t.cancel()
+            self.assertEqual(self.state()['keyboard-backlight'], '48')
+
     def test_wifi_sync(self):
         # OpenWrt has no hook when LuCI turns Wi-Fi off or on: "wifi sync" reads whether wlan0 is a running AP
         for shell in self.each_shell():
@@ -811,8 +826,11 @@ class KmsgForward(ShellTest):
     def test_first_start_reads_from_the_start_restart_only_new(self):
         self.stub('dmesg', 'echo "dmesg $*" >> "$STUBLOG/calls"; echo "[    1.234567] early trace"')
         self.stub('systemd-cat', 'echo "systemd-cat $*" >> "$STUBLOG/calls"; cat >> "$STUBLOG/journal"')
+        # (it runs on Ubuntu only: GNU grep's --line-buffered, which busybox's grep has not, filters the ignore list)
+        import subprocess
+        gnu = subprocess.run(['grep', '--line-buffered', 'x'], input='x\n', capture_output=True, text=True).returncode == 0
         for shell in self.each_shell():
-            for ignore in ('', 'chatter\n'):
+            for ignore in ('', 'chatter\n') if gnu else ('',):
                 mark = self.tmp / 'run' / 'kmsg-forwarded'
                 (self.tmp / 'ignore').write_text(ignore)
                 for f in ('calls', 'journal'):

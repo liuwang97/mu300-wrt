@@ -3,8 +3,8 @@
 #   mu300-led power on|off      Linux is up (set at boot, which also wakes the LEDs; cleared at shutdown)
 #   mu300-led data on|5g|off|error  mobile data connected (5g: over 5G) / not connected / no service (no SIM, not
 #                               registered)
-#   mu300-led wifi on|off|sync  the Wi-Fi hotspot is up (U30 Air: blue on 5 GHz, white on 2.4 GHz); sync: whatever
-#                               wlan0 is now (OpenWrt, after LuCI turned Wi-Fi off or on)
+#   mu300-led wifi on|off|sync [S]  the Wi-Fi hotspot is up (U30 Air: blue on 5 GHz, white on 2.4 GHz); sync: whatever
+#                               wlan0 is now, and again every 2 s for S seconds (OpenWrt: LuCI or the button)
 #   mu300-led wake              show the LEDs again, for LED_TIMEOUT seconds (the power button, mu300-buttons)
 #   mu300-led sleep [--if-due]  dark now (--if-due: only once the timeout has passed; mu300-buttons asks)
 #   mu300-led test              each LED in turn, 2 s each, with its name (to tell which one is where)
@@ -101,9 +101,16 @@ case "$1 ${2:-}" in
         else set_led "$WIFI5" 0; set_led "$WIFI24" 1; fi ;;
     "wifi off")   set_led "$WIFI5" 0; [ "$WIFI24" = "$WIFI5" ] || set_led "$WIFI24" 0 ;;
     "wifi sync")  # a running AP has its SSID in iw's answer; a stopped hostapd leaves "type AP" without one
-        if iw dev wlan0 info 2>/dev/null | grep -q '^[[:space:]]*type AP' &&
-           iw dev wlan0 info 2>/dev/null | grep -q '^[[:space:]]*ssid '; then exec "$0" wifi on
-        else exec "$0" wifi off; fi ;;
+        # (a hotspot that LuCI turned on can take longer than any one moment to come up: S follows it a while)
+        n=${3:-0} last=
+        case $n in ''|*[!0-9]*) n=0 ;; esac
+        while :; do
+            if iw dev wlan0 info 2>/dev/null | grep -q '^[[:space:]]*type AP' &&
+               iw dev wlan0 info 2>/dev/null | grep -q '^[[:space:]]*ssid '; then s=on; else s=off; fi
+            [ "$s" = "$last" ] || { "$0" wifi "$s"; last=$s; }
+            [ "$n" -gt 0 ] || break
+            nap 2; n=$((n - 2))
+        done ;;
     "wake "*)
         [ "$TIMEOUT" = 0 ] && exit 0
         mkdir -p "$STATE" 2>/dev/null
@@ -145,7 +152,7 @@ case "$1 ${2:-}" in
     "test "*)
         for l in "$LEDS"/*; do
             n=${l##*/}
-            case $n in mmc*|*backlight*) continue ;; esac
+            case $DEVICE:$n in *:mmc*) continue ;; f50:keyboard-backlight) ;; *:*backlight*) continue ;; esac
             old=$(cat "$l/brightness" 2>/dev/null)
             echo "$n"; write "$n" 1; sleep 2; echo "${old:-0}" > "$l/brightness" 2>/dev/null
         done ;;
