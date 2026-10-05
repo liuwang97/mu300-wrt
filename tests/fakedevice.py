@@ -1,7 +1,9 @@
 """A fake F50 for the Magisk installer: block devices are files, sysfs a directory tree, Android's tools stubs.
 The device shell (MU300_DEVICE_SH) rewrites the absolute device paths in the commands storage.sh sends, the way
 tests/test_installer.py's Region does; android-install.sh and the mount helper are replaced by MU300_ANDROID_SH,
-which records what it was given and acts on a directory standing in for the Linux filesystem."""
+which records what it was given and acts on a directory standing in for the Linux filesystem. A mount is a real
+directory holding a copy of that filesystem and a line in a fake mount table (MU300_MOUNTS), so a cleanup that
+deleted a mounted filesystem would delete files a test can look for."""
 import os
 import shutil
 
@@ -10,17 +12,29 @@ from test_boot_image import LIVE_A, fake_misc, fake_stock, with_slots
 ANDROID_SH = r'''#!/bin/sh
 # stand-in for /system/bin/sh running android-install.sh or android-mount-mu300root.sh
 log=$FAKE/android-sh.log
-echo "ASH_STANDALONE=${ASH_STANDALONE:-} PATH=$PATH $*" >> "$log"
+echo "ASH_STANDALONE=${ASH_STANDALONE:-} PATH=$PATH $* MU300_RO=${MU300_RO:-} MU300_WORK=${MU300_WORK:-} $(ls -ld "${MU300_WORK:-/nonexistent}" 2>/dev/null | cut -c1-10)" >> "$log"
 case $1 in
     -c) shift; exec "$FAKE/devsh" -c "$@" ;;
     */android-install.sh)
-        cp "$MU300_TMP/mu300-install.env" "$FAKE/install.env"
+        cp "$MU300_WORK/mu300-install.env" "$FAKE/install.env"
         [ "${FAKE_INSTALL_FAILS:-0}" = 1 ] && { echo "[device] failing as asked"; exit 1; }
-        . "$MU300_TMP/mu300-install.env"
-        for os in $OSES; do mkdir -p "$FAKE/fs/$os/etc"; done
+        . "$MU300_WORK/mu300-install.env"
+        # what would be installed: the tarballs it is given, by checksum
+        for os in $OSES; do sha256sum "$MU300_WORK/mu300-$os.tar.gz" >> "$FAKE/installed.sha256"; mkdir -p "$FAKE/fs/$os/etc"; done
         echo MU300-INSTALL-OK ;;
     */android-mount-mu300root.sh)
-        if [ "$2" = -u ]; then rm -f "$3"; echo UNMOUNTED; else ln -s "$FAKE/fs" "$2"; echo "MOUNTED fake on $2"; fi ;;
+        # a mount is a real directory holding a copy of $FAKE/fs, listed in $FAKE/mounts; unmounting empties it
+        if [ "$2" = -u ]; then
+            [ "${FAKE_UMOUNT_FAILS:-0}" = 1 ] && { echo "umount: $3: Device or resource busy" >&2; exit 1; }
+            rm -rf "$3"/* "$3"/.[!.]*
+            grep -v " $3 " "$FAKE/mounts" > "$FAKE/mounts.new"; mv "$FAKE/mounts.new" "$FAKE/mounts"
+            echo UNMOUNTED
+        else
+            [ "${FAKE_MOUNT_FAILS:-0}" = 1 ] && { echo "ALREADY-MOUNTED loop7"; exit 1; }
+            mkdir -p "$2" && cp -R "$FAKE/fs/." "$2/"
+            echo "/dev/block/loop7 $2 ext4 ${MU300_RO:+ro} 0 0" >> "$FAKE/mounts"
+            echo "MOUNTED fake on $2"
+        fi ;;
 esac
 '''
 # A device path that comes back from the device (sd_probe's /dev/block/mmcblk1) is already rewritten when storage.sh
@@ -52,7 +66,9 @@ class FakeDevice:
         r = self.root
         if product is None:
             product = 'mu300' if model == 'ZTE MU300' else model.lower().replace(' ', '')
-        for d in ('dev/block/by-name', 'sys/block/mmcblk0/mmcblk0p1', 'sdcard', 'tmp', 'fs', 'magisk', 'android'):
+        # tmp is /data/local/tmp, which the installer must never use; data/adb holds its work directory
+        for d in ('dev/block/by-name', 'sys/block/mmcblk0/mmcblk0p1', 'sdcard', 'tmp', 'data/adb', 'fs', 'magisk',
+                  'android'):
             (r / d).mkdir(parents=True, exist_ok=True)
         by = r / 'dev/block/by-name'
         fake_stock(by / 'boot_a')
@@ -74,6 +90,7 @@ class FakeDevice:
         (r / 'props').write_text(f'ro.product.model={model}\nro.product.device={product}\nro.boot.slot_suffix={slot}\n'
                                  'persist.sys.locale=en-US\n')
         (r / 'volumes').write_text('private mounted null\n')
+        (r / 'mounts').write_text('')
         for name, body in (('android-sh', ANDROID_SH), ('devsh', DEVSH), ('ubb', UBB)):
             (r / name).write_text(body); (r / name).chmod(0o755)
         for name, body in (('getprop', GETPROP), ('sm', SM)):
@@ -81,7 +98,9 @@ class FakeDevice:
 
     def env(self, mu300_dir, magiskboot):
         r = self.root
-        return {'FAKE': r, 'MU300_DIR': mu300_dir, 'MU300_TMP': r / 'tmp', 'MU300_BY_NAME': r / 'dev/block/by-name',
+        return {'FAKE': r, 'MU300_DIR': mu300_dir, 'MU300_WORK_PARENT': r / 'data/adb',
+                'MU300_TRUSTED_CONF': r / 'data/adb/mu300-install.conf', 'MU300_TRUSTED_UID': os.getuid(),
+                'MU300_PW_DIR': r / 'data/adb', 'MU300_MOUNTS': r / 'mounts', 'MU300_BY_NAME': r / 'dev/block/by-name',
                 'MU300_SDCARD': r / 'sdcard', 'MU300_DEVICE_SH': r / 'devsh', 'MU300_ANDROID_SH': r / 'android-sh',
                 'MU300_ANDROID_PATH': os.environ['PATH'], 'MU300_ANDROID_ROOT': r / 'android',
                 'MU300_FW_DIRS': f'{r}/android/vendor/firmware', 'MAGISKBIN': r / 'magisk',
