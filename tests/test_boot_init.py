@@ -20,7 +20,9 @@ class SdRoot(ShellTest):
     def functions(self):
         m = re.search(r'# --- sd-root begin\n(.*?)# --- sd-root end', INIT, re.S)
         self.assertIsNotNone(m, 'boot/init has no sd-root block')
-        return m.group(1)
+        e = re.search(r'# --- emmc begin\n(.*?)# --- emmc end', INIT, re.S)
+        self.assertIsNotNone(e, 'boot/init has no emmc block')
+        return e.group(1) + m.group(1)
 
     def run_fn(self, shell, call, glob):
         code = 'log() { :; }; mdev() { :; }\n' + self.functions() + f'\nMU300_SD_GLOB="{glob}"\n{call}\necho "rc=$?"'

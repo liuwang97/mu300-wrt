@@ -165,7 +165,8 @@ if 'of_remove_property(pdev->dev.of_node, cd)' not in t:
 # in which the two hosts reach sdhci_pltfm_init(), and both probe asynchronously: about one boot in twenty the card
 # slot came first, the card became mmcblk0 and the eMMC mmcblk1, and init (and everything after it) took the card
 # for the eMMC - it never found the card and rebooted at 300 s (FINDINGS 31l). The card slot's host now defers until
-# the eMMC's host is added; the deferral is checked before sdhci_pltfm_init(), which allocates the index.
+# the eMMC's host is added; the deferral is checked before sdhci_pltfm_init(), which allocates the index. If the eMMC's
+# host never binds, the card slot's host stays deferred: there is no root on the card without a working eMMC host.
 emmc_marker = 'MU300: the eMMC is mmc0'
 if emmc_marker not in t:
     probe = 'static int sdhci_sprd_probe(struct platform_device *pdev)\n{\n'
@@ -195,7 +196,9 @@ static bool sdhci_sprd_emmc_pending(struct device_node *self)
 '''
     if filt not in t:
         sys.exit('port: sdhci-sprd host filter anchor changed')
-    t = t.replace(filt, filt + '''\tif (!of_property_read_bool(pdev->dev.of_node, "non-removable") &&
+    t = t.replace(filt, filt + '''\t/* MU300: the card slot waits for the eMMC's host. If that never binds, the card slot stays deferred:
+\t * no SD root without a working eMMC host. */
+\tif (!of_property_read_bool(pdev->dev.of_node, "non-removable") &&
 \t    sdhci_sprd_emmc_pending(pdev->dev.of_node))
 \t\treturn -EPROBE_DEFER;
 ''', 1)

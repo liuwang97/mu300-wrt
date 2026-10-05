@@ -186,6 +186,8 @@ class Rules(unittest.TestCase):
         self.assertIn('for_each_compatible_node(np, NULL, "sprd,sdhci-r11")', port)
         # the deferral sits right after the host filter, before sdhci_pltfm_init() allocates the host index
         self.assertIn('\\t    sdhci_sprd_emmc_pending(pdev->dev.of_node))\n\\t\\treturn -EPROBE_DEFER;\n', port)
+        # and says what that costs: without a working eMMC host the card slot never binds
+        self.assertIn("no SD root without a working eMMC host", port)
         self.assertLess(port.index("t.replace(filt, filt + '''"), port.index('add_old = '))
         # the flag is set only once the eMMC's host is added
         self.assertIn("add_old = '\\tret = __sdhci_add_host(host);\\n\\tif (ret)\\n\\t\\tgoto err_cleanup_host;\\n'",
