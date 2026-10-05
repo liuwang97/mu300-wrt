@@ -946,14 +946,18 @@ class WifiClient(ShellTest):
             self.assertEqual(self.applied(), [self.closed()])
             self.assertFalse((self.tmp / 'addr').exists())
             self.assertIn('ip_forward=0', self.events())
-            # the first lease of a join is applied only: connect (or the event handler) checks it itself
+            # the first lease of a join (dhcp_run marks it) is applied only: connect (or the event handler) checks it
             self.fresh()
+            (self.root / 'run/mu300-wifi-client.dhcp.first').touch()
             r = self.lease(shell, 'bound')
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertEqual(self.rulesets(), [])
             self.assertTrue((self.tmp / 'addr').exists())
+            self.assertFalse((self.root / 'run/mu300-wifi-client.dhcp.first').exists())
             # and outside a session nothing at all happens to a renewal
             (self.tmp / 'addr').unlink()
+            self.assertEqual(self.lease(shell, 'bound').returncode, 0)
+            self.assertFalse((self.tmp / 'addr').exists())
             self.assertEqual(self.lease(shell, 'deconfig').returncode, 0)
             self.assertEqual(self.rulesets(), [])
 
@@ -1046,6 +1050,12 @@ class WifiClient(ShellTest):
             self.assertNotIn('ip daddr {', self.filt())
             self.assertNotIn('ip_forward=1', self.events())
             self.assertIn('closed (not shared)', self.run_wc(shell, 'status').stdout)
+            # a lying nft on a lost link: off the network
+            self.joined(shell)
+            (self.tmp / 'nftlie').touch()
+            (self.tmp / 'filter').unlink()
+            self.run_wc(shell, 'wlan0', 'DISCONNECTED')
+            self.assertFalse((self.tmp / 'supplicant').exists())
 
     def test_a_join_whose_sharing_fails_ends_with_nothing(self):
         for shell in self.each_shell():
@@ -1094,12 +1104,37 @@ class WifiClient(ShellTest):
             (self.root / 'run/mu300-wifi-client.active').unlink()
             self.assertIn('left over from a client that is gone', self.run_wc(shell, 'status').stdout)
 
+    def test_a_lease_after_a_lost_one_is_checked(self):
+        # the lease lost and a new one later on the same link (no link event): checked, not just applied
+        for shell in self.each_shell():
+            self.joined(shell)
+            (self.root / 'run/mu300-wifi-client.dhcp').write_text('192.168.2.248/24\n')
+            self.lease(shell, 'deconfig')
+            self.ev.unlink()
+            (self.tmp / 'subnet').write_text('192.168.79.0/24')
+            r = self.lease(shell, 'bound', ip='192.168.79.9')
+            self.assertEqual(self.applied(), [self.closed()])
+            self.assertFalse((self.tmp / 'addr').exists())
+            self.ev.unlink()
+            (self.tmp / 'subnet').write_text('203.0.113.0/24')
+            r = self.lease(shell, 'bound', ip='203.0.113.7')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(self.applied(), [self.closed(), self.expected('203.0.113.0/24')])
+
+    def test_tables_flushed_under_a_running_client_show_as_open(self):
+        for shell in self.each_shell():
+            self.joined(shell)
+            (self.tmp / 'filter').unlink()
+            self.assertIn('firewall    OPEN', self.run_wc(shell, 'status').stdout)
+
     def test_nft_failing_on_a_lost_link_or_lease_still_takes_the_address(self):
         for shell in self.each_shell():
             self.joined(shell)
             (self.tmp / 'nftfail').touch()
             r = self.run_wc(shell, 'wlan0', 'DISCONNECTED')
             self.assertFalse((self.tmp / 'addr').exists())
+            # and the radio leaves the network: unconfirmed means not on it
+            self.assertFalse((self.tmp / 'supplicant').exists())
             self.assertIn('ip route flush dev wlan0', self.events())
             self.assertIn('ip_forward=0', self.events())
             self.joined(shell)
@@ -1108,6 +1143,7 @@ class WifiClient(ShellTest):
             r = self.lease(shell, 'bound', ip='203.0.113.7')
             self.assertEqual(r.returncode, 1)
             self.assertFalse((self.tmp / 'addr').exists())
+            self.assertFalse((self.tmp / 'supplicant').exists())
             self.assertFalse((self.root / 'run/mu300-wifi-client.dhcp').exists())
             self.assertIn('ip_forward=0', self.events())
 

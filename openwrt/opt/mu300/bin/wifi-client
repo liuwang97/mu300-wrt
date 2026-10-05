@@ -85,7 +85,9 @@ case ${1:-} in
         [ -s "$LEASE" ] || exit 0 ;;
     bound|renew)
         [ "$(cat "$LEASE" 2>/dev/null)" = "$ip/${mask:-24}" ] && exit 0
-        [ -s "$LEASE" ] || { apply_lease; exit 0; } ;;
+        # only the lease a join (or the event handler) is waiting for, marked by dhcp_run: any later one - also one
+        # after a lost lease - goes through lease_changed's checks
+        if [ -e "$LEASE.first" ]; then rm -f "$LEASE.first"; apply_lease; exit 0; fi ;;
     leasefail|nak)
         exit 0 ;;
 esac
@@ -238,7 +240,8 @@ forwarding_off() {
 # state asks for; anything else - a rule missing, one added (an accept before the drops), another order - is not that
 # state, and counts as a failure, which ends closed or, if even that cannot be confirmed, with nothing routed to wlan0.
 fw_normal() {  # the filter table as nft lists it (or as rules_text writes it), without indentation or counters
-    awk '{ sub(/^[ \t]+/, ""); sub(/[ \t]+$/, ""); gsub(/counter packets [0-9]+ bytes [0-9]+/, "counter") }
+    awk '{ sub(/^[ \t]+/, ""); sub(/[ \t]+$/, ""); gsub(/counter packets [0-9]+ bytes [0-9]+/, "counter")
+           sub(/limit rate 5\/second burst 5 packets/, "limit rate 5/second") }
          $0 == "table inet '"$FILTER"' {" { p = 1 }
          p && $0 != ""'
 }
@@ -271,7 +274,10 @@ fail_closed() {
     put_rules closed && return 0
     drop_lease
     forwarding_off
-    log "the firewall for $IFACE could not be confirmed (nft): its address and routes are gone, nothing is shared"
+    # and off the network: with no filter it confirms, wlan0 must not stay on it (mobile data may keep forwarding on,
+    # and IPv6 link-local needs no address)
+    leave_network
+    log "the firewall for $IFACE could not be confirmed (nft): it has left the network, nothing is shared"
     return 1
 }
 
@@ -381,7 +387,7 @@ wan_zone() {
 drop_lease() {
     [ -s "$LEASE.pid" ] && kill "$(cat "$LEASE.pid")" 2>/dev/null
     pkill -f "^(busybox )?udhcpc -i $IFACE " 2>/dev/null || true
-    rm -f "$LEASE" "$LEASE.pid"
+    rm -f "$LEASE" "$LEASE.pid" "$LEASE.first"
     ip route flush dev "$IFACE" 2>/dev/null || true
     ip -4 addr flush dev "$IFACE" 2>/dev/null || true
     ip -6 addr flush dev "$IFACE" scope global 2>/dev/null || true
@@ -458,7 +464,7 @@ event() {  # event CONNECTED|DISCONNECTED
     [ -e "$ACTIVE" ] && [ -s "$EVENTS_PID" ] && [ "$PPID" = "$(cat "$EVENTS_PID" 2>/dev/null)" ] || exit 0
     case $1 in
         DISCONNECTED)
-            close_uplink || log "could not close the firewall for $IFACE (nft): its lease and routes go all the same"
+            fail_closed || exit 1
             drop_lease
             forwarding_off
             log "link lost: $IFACE not shared until it is back" ;;
@@ -490,14 +496,8 @@ lease_changed() {  # lease_changed deconfig|bound|renew
     if command -v flock >/dev/null 2>&1; then
         exec 9>"$R/run/mu300-wifi-client.lock" && flock -n 9 || exit 0
     fi
-    if ! close_uplink; then
-        # not even closed: the old address goes too (and the new one is not applied), so nothing is routed to wlan0
-        ip -4 addr flush dev "$IFACE" 2>/dev/null
-        rm -f "$LEASE"
-        forwarding_off
-        log "could not close the firewall for $IFACE (nft): no address kept"
-        exit 1
-    fi
+    # not even closed: no address kept (the new one is not applied) and the radio off the network
+    fail_closed || exit 1
     if [ "$1" = deconfig ]; then
         ip -4 addr flush dev "$IFACE" 2>/dev/null
         rm -f "$LEASE"
@@ -668,6 +668,12 @@ unescape() {
 }
 
 dhcp_run() {  # Ubuntu ships busybox without the applet symlinks, so udhcpc may only exist as "busybox udhcpc"
+    : > "$LEASE.first"
+    dhcp_client; rc=$?
+    rm -f "$LEASE.first"
+    return "$rc"
+}
+dhcp_client() {
     if command -v udhcpc >/dev/null 2>&1; then
         udhcpc -i "$IFACE" -n -t 8 -s "$SELF" -p "$LEASE.pid" </dev/null >/dev/null 2>&1 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&-
     elif command -v busybox >/dev/null 2>&1; then
@@ -860,6 +866,7 @@ status() {
         shared) printf 'firewall    shared with the LAN (internet only)\n' ;;
         closed) printf 'firewall    closed (not shared)\n' ;;
         unknown) printf 'firewall    %s is not as wifi-client puts it: wifi-client disconnect, or reconnect\n' "$FILTER" ;;
+        none) [ -e "$ACTIVE" ] && printf 'firewall    OPEN: the client is up but %s is gone (nft flush?): wifi-client reconnect\n' "$FILTER" ;;
     esac
     [ "$fw" = none ] || [ -e "$ACTIVE" ] || printf 'firewall    left over from a client that is gone: wifi-client disconnect\n'
     [ -e "$SCANMODE" ] && printf 'scan mode   armed: the hotspot stays off at the next boot\n'
