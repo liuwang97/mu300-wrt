@@ -2,6 +2,7 @@
 mu300-ttl. They run on Ubuntu (dash, bash) and OpenWrt (busybox ash)."""
 import os
 import shutil
+import threading
 import time
 import unittest
 
@@ -34,6 +35,71 @@ class Device(ShellTest):
             for shell in self.each_shell():
                 out = self.script(shell, BIN / 'mu300-lan-ip', MU300_SYSROOT=r, MU300_BIN=BIN).stdout.strip()
                 self.assertEqual(out, want, device)
+
+
+class At(ShellTest):
+    """mu300-at against a fake daemon directory: a FIFO `cmd` and a thread that answers through the answer file."""
+
+    def setUp(self):
+        super().setUp()
+        self.dir = self.tmp / 'at'
+        self.dir.mkdir()
+        os.mkfifo(self.dir / 'cmd')
+        (self.tmp / 'bb').mkdir()
+        self.sleeper = self.tmp / 'bb' / 'busybox'
+        self.sleeper.write_text('#!/usr/bin/env python3\nimport sys, time\n'
+                                'assert sys.argv[1] == "sleep"\ntime.sleep(float(sys.argv[2]))\n')
+        self.sleeper.chmod(0o755)
+        self.stop = False
+
+    def tearDown(self):
+        self.stop = True
+        super().tearDown()
+
+    def daemon(self, reply, count=1):
+        """Answer COUNT commands with REPLY, like mu300-atd: read `T answer-file command`, write the answer file."""
+        def run():
+            fd = os.open(self.dir / 'cmd', os.O_RDWR)
+            with os.fdopen(fd, 'r') as f:
+                for _ in range(count):
+                    line = f.readline()
+                    _t, answer, _cmd = line.rstrip('\n').split(' ', 2)
+                    with open(answer, 'w', newline='') as a:
+                        a.write(reply)
+        th = threading.Thread(target=run, daemon=True)
+        th.start()
+        return th
+
+    def at(self, shell, *args):
+        return self.script(shell, BIN / 'mu300-at', *args, MU300_AT_DIR=self.dir, MU300_BUSYBOX=self.sleeper)
+
+    def test_answer_needs_a_final_result_code(self):
+        for shell in self.each_shell():
+            self.daemon('\r\n')
+            r = self.at(shell, 'AT')
+            self.assertEqual(r.returncode, 1)
+            self.assertIn('modem returned no final response', r.stderr)
+            self.daemon('+CSQ: 20,99\r\nOK\r\n')
+            r = self.at(shell, 'AT+CSQ')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(r.stdout.replace('\r', ''), '+CSQ: 20,99\nOK\n')   # text mode folds CRLF
+
+    def test_no_daemon_does_not_hang(self):
+        for shell in self.each_shell():
+            t0 = time.monotonic()
+            r = self.at(shell, '-t', 1, 'AT')
+            self.assertLess(time.monotonic() - t0, 3 + 0.5)
+            self.assertEqual(r.returncode, 1)
+            self.assertIn('no answer from the daemon', r.stderr)
+            self.assertFalse((self.dir / 'lock').exists())
+
+    def test_fast_round_trip(self):
+        for shell in self.each_shell():
+            self.daemon('OK\r\n', 20)
+            t0 = time.monotonic()
+            for _ in range(20):
+                self.assertEqual(self.at(shell, 'AT').returncode, 0)
+            self.assertLess(time.monotonic() - t0, 3)
 
 
 class Os(ShellTest):

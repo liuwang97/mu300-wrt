@@ -51,18 +51,34 @@ if [ -p "$DIR/cmd" ]; then
     answer=$DIR/answer.$$
     rm -f "$answer" "$answer.part"
     trap 'rm -rf "$lock" "$answer" "$answer.part" 2>/dev/null' EXIT INT TERM
-    if command -v timeout >/dev/null 2>&1; then
-        timeout $((T + 6)) sh -c 'printf "%s %s %s\n" "$1" "$2" "$3" > "$4"' _ "$T" "$answer" "$cmd" "$DIR/cmd" || {
-            echo "mu300-at: the daemon is not reading commands" >&2; exit 1; }
-    else
-        printf '%s %s %s\n' "$T" "$answer" "$cmd" > "$DIR/cmd"
-    fi
-    n=0
+    # Open the FIFO read-write. A write-only open blocks until a reader opens the *same inode*: if procd replaces
+    # the daemon between the path lookup and that open, the client and the new daemon wait for ever on two
+    # different, unlinked FIFOs while this client keeps the global command lock. O_RDWR never blocks; with no
+    # daemon the answer timeout below releases the lock. (This also replaces the old `timeout N sh -c printf`
+    # wrapper, which cost 200+ ms of forks per command on this SoC.)
+    # (A failing `exec` redirection ends a POSIX shell, and `2>/dev/null` on exec would stick; probe with `:` first.)
+    { : <> "$DIR/cmd"; } 2>/dev/null || {
+        echo "mu300-at: the daemon is not reading commands" >&2; exit 1; }
+    exec 9<> "$DIR/cmd"
+    printf '%s %s %s\n' "$T" "$answer" "$cmd" >&9 || {
+        exec 9>&-; echo "mu300-at: the daemon is not reading commands" >&2; exit 1; }
+    exec 9>&-
+    # Fast poll: the daemon typically answers in ~20 ms, so a 1 s sleep adds a full second to every AT round trip.
+    # The image's busybox sleep rejects fractions when called as /bin/sleep, which used to sink the chain into
+    # `sleep 1` (measured: 30 commands in 30.6 s). The static busybox next to us accepts them; use it when present.
+    bb=${MU300_BUSYBOX:-/opt/mu300/bin/busybox}
+    end=$(( $(date +%s) + T + 1 ))
     while [ ! -e "$answer" ]; do
-        n=$((n + 1))
-        [ "$n" -gt $(( (T + 8) * 10 )) ] && { echo "mu300-at: no answer from the daemon" >&2; exit 1; }
-        sleep 0.1 2>/dev/null || sleep 1
+        [ "$(date +%s)" -ge "$end" ] && { echo "mu300-at: no answer from the daemon" >&2; exit 1; }
+        if [ -x "$bb" ]; then "$bb" sleep 0.01 2>/dev/null || sleep 1
+        else sleep 0.1 2>/dev/null || sleep 1; fi
     done
+    # atd always creates the answer file, even for a timeout, so an empty or partial file is not success: callers
+    # such as atwatch use the exit code to tell a responding channel from a silent one. Require a final result code.
+    grep -aEq '^(OK|ERROR|\+CME ERROR|\+CMS ERROR|CONNECT|NO CARRIER)' "$answer" 2>/dev/null || {
+        echo "mu300-at: modem returned no final response" >&2
+        exit 1
+    }
     cat "$answer"
     exit 0
 fi
