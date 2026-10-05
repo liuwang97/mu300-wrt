@@ -143,13 +143,15 @@ msg_file() {
 # ------------------------------------------------------------------ the SIM
 # The modem keeps messages on the SIM (SM) or in its own memory (ME): the one that holds any, as `sms` picks it.
 # Some firmwares refuse the three-argument AT+CPMS; the one-argument form is tried after it.
+# _store_unsure is set when a store that was asked did not answer (a SIM still busy after a boot, say): the listing
+# then says nothing about that store, and sync keeps its tombstones.
 pick_store() {
-    _store=
+    _store=; _store_unsure=
     for _s in SM ME; do
         _out=$(at "AT+CPMS=\"$_s\",\"$_s\",\"$_s\"" 10 2>/dev/null) || _out=
         case $_out in *ERROR*|"")
             _out=$(at "AT+CPMS=\"$_s\"" 10 2>/dev/null) || _out=
-            case $_out in *ERROR*|"") continue ;; esac ;;
+            case $_out in *ERROR*|"") _store_unsure=1; continue ;; esac ;;
         esac
         _store=$_s
         _used=$(printf '%s\n' "$_out" | sed -n 's/^+CPMS: *\([0-9]*\),.*/\1/p' | head -n 1)
@@ -238,8 +240,9 @@ cmd_sync() {
         echo "new: $_id from ${_from:-?} ${_ts:-}"
     done < "$_tmp"
     # tombstones of messages no longer on the SIM are not needed any more: nothing can bring those back. The list is
-    # rewritten only when that drops something (it is on flash).
-    if [ -s "$POOL/deleted" ]; then
+    # rewritten only when that drops something (it is on flash), and only after a listing that saw every store: one
+    # that skipped a store that did not answer would drop the tombstones of what is still there.
+    if [ -s "$POOL/deleted" ] && [ -z "$_store_unsure" ]; then
         if [ -s "$_seen" ]; then grep -xFf "$_seen" "$POOL/deleted" > "$_tmp.del"; else : > "$_tmp.del"; fi
         cmp -s "$_tmp.del" "$POOL/deleted" || { cat "$_tmp.del" > "$POOL/deleted.part" && mv "$POOL/deleted.part" "$POOL/deleted"; }
     fi

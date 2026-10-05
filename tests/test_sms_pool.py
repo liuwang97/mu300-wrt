@@ -242,6 +242,38 @@ class Pool(ShellTest):
             self.run_sms(shell, 'sync')
             self.assertEqual((self.pool / 'deleted').read_text().count('\n'), 0)
 
+    def test_a_busy_sim_does_not_drop_the_tombstones(self):
+        # AT+CPMS="SM" refused (SIM busy) and an empty ME listed instead: that says nothing about the SIM, so the
+        # tombstones stay, and the deleted message does not come back on the next good listing
+        for shell in self.each_shell():
+            self.fresh()
+            self.run_sms(shell, 'sync')
+            ids = {h['from']: i for i, (h, _) in self.msgs().items()}
+            self.run_sms(shell, 'delete', ids['ADANA BLD'])
+            self.answer('CPMSSM', '+CME ERROR: 14\n')            # both forms of AT+CPMS="SM"...
+            self.answer('CPMSME', '+CPMS: 0,100,0,100,0,100\nOK\n')
+            self.answer('CMGL4', 'OK\n')                         # ...and an empty ME
+            r = self.run_sms(shell, 'sync')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn('AT+CPMS="ME","ME","ME"', self.at_log())
+            self.assertEqual((self.pool / 'deleted').read_text().count('\n'), 1)
+            # the SIM answers again
+            (self.tmp / 'at' / 'CPMSSM').unlink()
+            (self.tmp / 'at' / 'CPMSME').unlink()
+            self.answer('CMGL4', CMGL)
+            self.run_sms(shell, 'sync')
+            self.assertEqual([h['from'] for h, _ in self.msgs().values()], ['+31641600986'])
+            # an SM that answers but holds nothing, and an ME that does not answer: not sure either
+            self.answer('CPMS', '+CPMS: 0,50,0,50,0,50\nOK\n')
+            self.answer('CPMSME', 'ERROR\n')
+            self.answer('CMGL4', 'OK\n')
+            self.run_sms(shell, 'sync')
+            self.assertEqual((self.pool / 'deleted').read_text().count('\n'), 1)
+            # both answer and neither holds it: now it is really gone, and so is the tombstone
+            self.answer('CPMSME', '+CPMS: 0,100,0,100,0,100\nOK\n')
+            self.run_sms(shell, 'sync')
+            self.assertEqual((self.pool / 'deleted').read_text().count('\n'), 0)
+
     def test_delete_sim_removes_the_matching_slot(self):
         for shell in self.each_shell():
             self.fresh()
