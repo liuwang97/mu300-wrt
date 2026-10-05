@@ -321,7 +321,8 @@ radio_on_locked() {
 # meet at boot, and the watchdog can step in later. A second caller waits for the first to finish (it then finds
 # the radio on with one question) rather than give up: the fork capped the wait at 8 s, but a dial that gives up
 # costs netifd's 20 s pause before the next attempt, longer than the warm-up it was waiting for.
-# MU300_RADIO_LOCK_WAIT (120 s) is above one round's worst case; a dead holder is taken over at once.
+# MU300_RADIO_LOCK_WAIT (120 s) covers a normal round several times over (one that overruns every AT budget can
+# take longer: then this caller gives up and the next attempt retries); a dead holder is taken over at once.
 RADIOLOCK=/run/mu300-radio-on.lock
 radio_owner_alive() {
     [ -n "${1:-}" ] && kill -0 "$1" 2>/dev/null || return 1
