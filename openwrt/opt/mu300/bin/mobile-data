@@ -274,14 +274,20 @@ radio_on_locked() {
     # boot (/run is emptied by a reboot), before CFUN and before any dial-up command. So it goes to the nr1 daemon,
     # not through at() (nr2). A dashboard or watchdog probe can hold the client lock for a moment as nr1 becomes
     # ready: one second for that collision. No answer ends this round at once: recovery commands sent into a
-    # channel that has not finished its RIL handshake do not help.
+    # channel that has not finished its RIL handshake do not help. An ERROR is an answer, from a live channel (a
+    # firmware that does not take the command): it is logged, and the round goes on to CFUN as after OK.
     if [ ! -e /run/mu300-ril-handshake ]; then
         out=$(MU300_AT_LOCK_WAIT=1 MU300_AT_DIR=/run/mu300-at /opt/mu300/bin/mu300-at -t 4 'AT+SMMSWAP=0' 2>&1 || true)
-        case $out in
-            *OK*)
+        case $(printf '%s\n' "$out" | tr -d '\r' | grep -E '^(OK|ERROR|\+CME ERROR|\+CMS ERROR)' | tail -n 1) in
+            OK)
                 : > /run/mu300-ril-handshake
                 radio_say "slot 0 RIL handshake done (AT+SMMSWAP=0)"
                 mark ril-handshake-done
+                ;;
+            ERROR*|+CME\ ERROR*|+CMS\ ERROR*)
+                : > /run/mu300-ril-handshake
+                radio_say "the modem refused the RIL handshake (AT+SMMSWAP=0): $(echo "$out" | tr -s '\r\n' '  '), going on"
+                mark ril-handshake-refused
                 ;;
             *)
                 radio_say "no valid answer to the RIL handshake (AT+SMMSWAP=0), ending this round: $(echo "${out:-nothing}" | tr -s '\n' ' ')"

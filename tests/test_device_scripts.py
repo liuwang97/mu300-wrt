@@ -358,7 +358,7 @@ at() {
         """Run CODE with bash after sourcing mobile-data (MU300_LIB=1) and replacing `at` by MODEM (or MODEM).
         /run is the scratch directory's run/; mu300-led and mu300-at are stubs on PATH. The mu300-at stub is the nr1
         daemon's client that radio_on's RIL handshake calls directly: it logs "nr1 <command>" to $STUBLOG/at and
-        answers $SMMSWAP (OK by default; "none" is a timeout)."""
+        answers $SMMSWAP (OK by default; "none" is a timeout, "busy" the client lock held)."""
         if not shutil.which('bash'):
             self.skipTest('no bash')
         text = (BIN / 'mobile-data').read_text()
@@ -389,7 +389,8 @@ at() {
                   'echo "sipa-dele-start: stub"\nexit "${DELE_RC:-0}"')
         self.stub('mu300-at', '[ "$1" = -t ] && shift 2\necho "nr1 $1" >> "$STUBLOG/at"\n'
                   'echo "dir=$MU300_AT_DIR wait=$MU300_AT_LOCK_WAIT" > "$STUBLOG/nr1env"\n'
-                  'case ${SMMSWAP:-OK} in none) echo "mu300-at: no answer from the daemon" >&2; exit 1 ;; esac\n'
+                  'case ${SMMSWAP:-OK} in none) echo "mu300-at: no answer from the daemon" >&2; exit 1 ;;\n'
+                  '    busy) echo "mu300-at: busy" >&2; exit 1 ;; esac\n'
                   'echo "${SMMSWAP:-OK}"')
         r = self.sh(['bash'], f'MU300_LIB=1; . "{lib}"\n{modem or self.MODEM}\nSECONDS=0\n{code}', **env)
         sent = (self.tmp / 'at').read_text().splitlines() if (self.tmp / 'at').exists() else []
@@ -634,6 +635,28 @@ at() {
         self.assertEqual(cmds, ['AT+SMMSWAP=0'])
         self.assertFalse(marker.exists())
         self.assertIn('RIL handshake', self.radio_log())
+
+    def test_ril_handshake_error_is_an_answer(self):
+        """Final review minor 2: a firmware that refuses AT+SMMSWAP=0 still answers from a live channel. The refusal
+        is logged, the handshake counts as done for this boot, and the round goes on to CFUN; only no answer at all
+        (a timeout, the lock busy, no final result code) ends the round."""
+        marker = self.tmp / 'run' / 'mu300-ril-handshake'
+        for answer in ('ERROR', '+CME ERROR: 4'):
+            with self.subTest(answer=answer):
+                marker.unlink(missing_ok=True)
+                (self.tmp / 'run' / 'mu300' / 'radio.log').unlink(missing_ok=True)
+                r, sent, cmds = self.radio('rc=0; radio_on || rc=$?; echo "rc=$rc"', SMMSWAP=answer, RF_LAG=0)
+                self.assertIn('rc=0', r.stdout, r.stderr)
+                self.assertEqual(cmds[:3], ['AT+SMMSWAP=0', 'AT+CFUN?', 'AT+SFUN=4'], cmds)
+                self.assertTrue(marker.exists())
+                self.assertIn(f'refused the RIL handshake (AT+SMMSWAP=0): {answer}', self.radio_log())
+        for answer in ('busy', 'garbage'):
+            with self.subTest(answer=answer):
+                marker.unlink(missing_ok=True)
+                r, sent, cmds = self.radio('rc=0; radio_on || rc=$?; echo "rc=$rc"', SMMSWAP=answer)
+                self.assertIn('rc=1', r.stdout, r.stderr)
+                self.assertEqual(cmds, ['AT+SMMSWAP=0'])
+                self.assertFalse(marker.exists())
 
     def test_waits_for_nr0_first(self):
         """Nothing is sent before nr0 has said something (the CP is still starting); the wait is bounded."""
