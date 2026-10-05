@@ -1911,7 +1911,6 @@ int sc2355_pcie_fc_get_send_num(struct sprd_hif *hif,
 {
 	int free_num = 0;
 	struct tx_mgmt *tx_mgmt = hif->tx_mgmt;
-	static unsigned long caller_jiffies;
 	/*send all data in buff with PCIe interface*/
 	unsigned int tx_buf_max = get_max_fw_tx_dscr() >
 				  pcie_get_tx_buf_num() ?
@@ -1922,12 +1921,6 @@ int sc2355_pcie_fc_get_send_num(struct sprd_hif *hif,
 		return 0;
 
 	free_num = atomic_read(&tx_mgmt->xmit_msg_list.free_num);
-	if (printk_timed_ratelimit(&caller_jiffies, 1000)) {
-		pr_debug("%s, free_num=%d, data_num=%d\n", __func__,
-			free_num, data_num);
-		if (list_empty(&tx_mgmt->xmit_msg_list.to_free_list))
-			pr_info("%s: to free list empty\n", __func__);
-	}
 
 	if ((free_num + data_num) >= tx_buf_max) {
 		pr_debug("%s, free_num=%d, data_num=%d\n", __func__,
@@ -1944,7 +1937,6 @@ int sc2355_pcie_fc_test_send_num(struct sprd_hif *hif,
 {
 	int free_num = 0;
 	struct tx_mgmt *tx_mgmt = hif->tx_mgmt;
-	static unsigned long caller_jiffies;
 	/*send all data in buff with PCIe interface, TODO*/
 	unsigned int tx_buf_max = get_max_fw_tx_dscr() >
 				  pcie_get_tx_buf_num() ?
@@ -1955,12 +1947,6 @@ int sc2355_pcie_fc_test_send_num(struct sprd_hif *hif,
 		return 0;
 
 	free_num = atomic_read(&tx_mgmt->xmit_msg_list.free_num);
-	if (printk_timed_ratelimit(&caller_jiffies, 1000)) {
-		pr_debug("%s,%d free_num=%d, data_num=%d\n", __func__,
-			__LINE__, free_num, data_num);
-		if (list_empty(&tx_mgmt->xmit_msg_list.to_free_list))
-			pr_info("%s: to free list empty\n", __func__);
-	}
 
 	if ((free_num + data_num) >= tx_buf_max) {
 		pr_err("%s,%d free_num=%d, data_num=%d\n",
@@ -2034,6 +2020,14 @@ int pcie_post_init(struct sprd_hif *hif)
 	int ret = -EINVAL, chn = 0;
 
 	sc2355_hif.hif = (void *)hif;
+	/*
+	 * MU300 (from kanoqwq/mu300-linux): a failed/aborted earlier power cycle clears this pointer in the
+	 * error path below.  The vendor driver only restores it in pcie_init(),
+	 * but a later WCN power-on may call post_init directly.  Passing
+	 * &NULL[0] to mchn_init then makes Wi-Fi permanently fail until reboot.
+	 * The channel table is static, so make every post-init self-contained.
+	 */
+	sc2355_hif.mchn_ops = sc2355_pcie_hif_ops;
 	sc2355_hif.max_num =
 		sizeof(sc2355_pcie_hif_ops) / sizeof(struct mchn_ops_t);
 
@@ -2055,7 +2049,9 @@ int pcie_post_init(struct sprd_hif *hif)
 err:
 	pr_err("%s: unregister %d ops\n", __func__, sc2355_hif.max_num);
 
-	for (; chn > 0; chn--)
+	/* MU300: undo the channels that were set up and the one that failed, chn .. 0 (the vendor loop stopped at
+	 * 1; a failed channel can be registered with half its EDMA state, and deinit skips one never registered) */
+	for (; chn >= 0; chn--)
 		sprdwcn_bus_chn_deinit(&sc2355_hif.mchn_ops[chn]);
 	sc2355_hif.mchn_ops = NULL;
 	sc2355_hif.max_num = 0;
