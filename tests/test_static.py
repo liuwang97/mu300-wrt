@@ -26,6 +26,8 @@ def shell_scripts():
         TOP / 'kernel' / 'build-all.sh', TOP / 'tools' / 'i18n.sh', TOP / 'tools' / 'self-update.sh',
         TOP / 'tools' / 'linux-mode.sh', TOP / 'tools' / 'storage.sh', TOP / 'android-vendor' / 'ueventd-perms.sh']
     cands += list((TOP / 'android' / 'magisk' / 'installer').glob('*.sh'))
+    cands += [TOP / 'android' / 'magisk' / 'installer' / 'update-binary']
+    cands += list((TOP / 'android' / 'magisk' / 'mu300-linux-switch').glob('*.sh'))
     cands += [p for p in OPENWRT.rglob('*') if p.is_file()]
     out = []
     for p in sorted(set(cands)):
@@ -60,6 +62,19 @@ class Syntax(unittest.TestCase):
 
 
 class Rules(unittest.TestCase):
+    def test_customize_leaves_magisks_shell_alone(self):
+        # Magisk sources customize.sh: errexit or nounset there would end Magisk's own installer before its cleanup
+        c = (TOP / 'android' / 'magisk' / 'installer' / 'customize.sh').read_text()
+        code = '\n'.join(l for l in c.splitlines() if not l.lstrip().startswith('#'))
+        self.assertNotRegex(code, r'\bset\s+-[a-z]*[eu]')
+        self.assertNotRegex(code, r'(^|\s)exit\b')
+        self.assertIn('SKIPUNZIP=1', code)
+
+    def test_installer_never_writes_androids_boot_partition(self):
+        s = (TOP / 'android' / 'magisk' / 'installer' / 'mu300-install.sh').read_text()
+        self.assertNotRegex(s, r'of="?\$BOOT_ANDROID')
+        self.assertNotRegex(s, r'write_boot "?\$BOOT_ANDROID')
+
     def test_powershell_device_commands_have_no_double_quotes(self):
         # Windows PowerShell 5.1 drops the double quotes inside an argument to a native program: `tr -d "\000"`
         # reached the device as tr -d \000 ("delete the character 0"), and every empty region was "not empty".
