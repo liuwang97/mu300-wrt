@@ -229,6 +229,10 @@ if [ -d /in/luci-plugin ]; then
     chmod 0755 $R/opt/mu300/bin/mu300-sms $R/opt/mu300/bin/mu300-smsd $R/etc/init.d/mu300-smsd
     n=$(sed -n "s/^START=//p" $R/etc/init.d/mu300-smsd)
     ln -sf ../init.d/mu300-smsd $R/etc/rc.d/S${n}mu300-smsd
+    # the dashboard AT channels, nr6 and nr7 (K19): the collector of the panel prefers them over nr1
+    chmod 0755 $R/etc/init.d/mu300-atd-dash
+    n=$(sed -n "s/^START=//p" $R/etc/init.d/mu300-atd-dash)
+    ln -sf ../init.d/mu300-atd-dash $R/etc/rc.d/S${n}mu300-atd-dash
     ln -sf /opt/mu300/bin/mu300-sms $R/usr/bin/mu300-sms
 fi
 # what apk installed, for comparing two builds (packages on the release feed are not pinned)

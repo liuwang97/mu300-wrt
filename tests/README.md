@@ -15,6 +15,7 @@ macOS and Windows (`.github/workflows/tests.yml`).
 | `test_i18n.py` | `tools/i18n.sh`: every translation with every placeholder, arguments passed through untouched, answers in all three languages |
 | `test_device_scripts.py` | `mu300-device`, `mu300-lan-ip`, `mu300-led` (both devices, 4G/5G, the timeout, the siren, the 5.4 LDO switches), `thermal-guard` (the heat alarm), `mu300-nfc` (a fake NFC tag: ZTE's own Wi-Fi record byte for byte, URLs, text, what `sync` leaves alone), `mu300-ttl` (stub `nft`), `mu300-wifi-band`, `mu300-buttons`, `mu300-usb` (a fake charger: never 5 V against a supply) |
 | `test_mu300cell.py` | `mu300cell.sh` (the OpenWrt netifd protocol), sourced with the netifd functions, `ip`, `mobile-data` stubbed: external updates, the v4 address installed by the script, v6 flush, teardown, `sleep 20` after an attach failure, the extendprefix interface |
+| `test_atd_dash.py` | `init.d/mu300-atd-dash` (K19): two procd instances on nr6/nr7 with their own `MU300_AT_DIR` and no URC channel, START 19, mode 100755, enabled only in the luci block of `build-rootfs.sh`; the panel's collector tries `/run/mu300-at6`, `at7`, then nr1 |
 | `test_ttl.py` | `mu300-ttl` with fake `uci`/`fw4`: OpenWrt's flow offloading is off while a TTL is set (also at boot), back on after `off`, untouched without fw4 (Ubuntu) |
 | `test_installer.py` | which adb device the installers take: they ask whenever it is not the only one and an F50/U30 Air |
 | `test_vpn.py` | `mu300-vpn`: VLESS URI parsing, JSON, which networks stay out of the tunnel, the sing-box config |
