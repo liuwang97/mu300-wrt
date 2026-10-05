@@ -91,8 +91,9 @@ return view.extend({
 					line('ln-meta', '—— ' + ms + ' ms');
 					self.loadHist();
 				} else {
-					/* a busy channel or a lock apply in flight: the backend's sentence says so (and that it was not sent) */
-					line('ln-err', _('Error: %s').format(M.errText(r)));
+					/* a busy channel or a lock apply in flight: the backend's sentence says so (and that it was not sent);
+					 * it is a whole sentence already, so nothing goes in front of it */
+					line('ln-err', M.errText(r));
 				}
 			}, function() { line('ln-err', _('Request failed')); });
 			self.Q('at-cmd').value = '';

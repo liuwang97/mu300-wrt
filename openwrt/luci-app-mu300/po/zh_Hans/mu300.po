@@ -126,9 +126,6 @@ msgstr "会话历史（点击复用）"
 msgid "(no output)"
 msgstr "(无输出)"
 
-msgid "Error: %s"
-msgstr "错误：%s"
-
 msgid "Request failed"
 msgstr "调用失败"
 

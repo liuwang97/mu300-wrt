@@ -607,13 +607,14 @@ return { html: root.innerHTML, lines: lines.filter((l) => !/^(> |\\u2014)/.test(
 
     def test_at_renders_in_each_language(self):
         want = {
-            None: ('Clear screen', ['Error: The AT channel is busy; the command was not sent, try again\n',
+            # the backend's sentence alone: it is a whole sentence already, an "Error: " in front doubled it (R31)
+            None: ('Clear screen', ['The AT channel is busy; the command was not sent, try again\n',
                                     '(no output)\n'],
                    '(empty)'),
-            'tr': ('Ekranı temizle', ['Hata: AT kanalı meşgul; komut gönderilmedi, yeniden deneyin\n',
+            'tr': ('Ekranı temizle', ['AT kanalı meşgul; komut gönderilmedi, yeniden deneyin\n',
                                       '(çıktı yok)\n'], '(boş)'),
             'zh_Hans': ('\u6e05\u5c4f',
-                        ['\u9519\u8bef\uff1aAT \u901a\u9053\u6b63\u5fd9\uff0c\u547d\u4ee4\u672a\u53d1\u51fa\uff0c\u8bf7\u91cd\u8bd5\n',
+                        ['AT \u901a\u9053\u6b63\u5fd9\uff0c\u547d\u4ee4\u672a\u53d1\u51fa\uff0c\u8bf7\u91cd\u8bd5\n',
                          '(\u65e0\u8f93\u51fa)\n'], '\uff08\u7a7a\uff09'),
         }
         for lang, (button, lines, empty) in want.items():
@@ -688,6 +689,13 @@ V.delMsg('4'); await flush(); await flush();
 return [ convs.replace(/<[^>]*>/g, ''), notes().pop() ];""",
          [(None, 'mu300-sms is not available (the SMS service is not installed or not running)', None),
           (None, 'Delete failed', 'no message 4')]),
+        # a message whose full text cannot be read says so, as send and delete do (R31: it used to stay silent)
+        ('sms', """V.render();
+rpcReply = { pages: 1, total: 1, msgs: [ { id: '9', peer: '10086', dir: 'mt', preview: 'x', time: 't9' } ] };
+await V.reload(); await flush(); toasts.length = 0;
+rpcReply = { ok: 0, error: 'Read failed', detail: 'mu300-sms: no message 9' };
+V.open('10086'); await flush(); await flush();
+return notes();""", [(None, 'Read failed', 'mu300-sms: no message 9')]),
         ('device', """V.render({ ok: 1, role: 'host', host_supported: 1 }); await flush();
 get('mud-usb-adapters').children = [];
 rpcReply = { ok: 1, devices: [ { name: 'eth2', carrier: 0, in_lan: 0 } ] };

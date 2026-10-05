@@ -207,6 +207,7 @@ return view.extend({
 		});
 		var cv = this.convs[peer];
 		var msgsEl = this.Q('sms-msgs');
+		var readFailed = false;
 		msgsEl.innerHTML = '';
 		cv.msgs.slice().reverse().forEach(function(m) {   /* old -> new */
 			var div = document.createElement('div');
@@ -223,7 +224,11 @@ return view.extend({
 			if (!full) {
 				L.resolveDefault(M.callSmsShow(m.id)).then(function(r) {
 					r = r || {};
-					if (!r.ok) return;
+					/* a failed read says why, as send and delete do (once per conversation drawn, not once per bubble) */
+					if (!r.ok) {
+						if (!readFailed) { readFailed = true; self.note(M.errText(r), 'error'); }
+						return;
+					}
 					/* show prints the header + "---" + the body (single newlines, no blank line): splitting at \n\n
 					 * gave an empty string -- which used to empty the bubble */
 					var body = (r.text || '').split('\n---\n').slice(1).join('\n---\n').trim();
