@@ -559,7 +559,7 @@ wifi_pick_and_join() {
         [ -n "$ssid" ] || return
     fi
     printf '\n  password for %s%s%s (empty for an open network, nothing is shown as you type): ' "$B" "$ssid" "$N"
-    stty -echo 2>/dev/null; read -r pass; stty echo 2>/dev/null; printf '\n\n'
+    stty -echo 2>/dev/null; IFS= read -r pass; stty echo 2>/dev/null; printf '\n\n'
     # on stdin: as an argument it would show in ps
     printf '%s\n' "$pass" | /opt/mu300/bin/wifi-client connect "$ssid" - 2>&1 | sed 's/^/  /'
     rc=$?

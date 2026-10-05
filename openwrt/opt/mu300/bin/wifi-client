@@ -6,6 +6,7 @@
 #                                    empty for an open network)
 #   wifi-client connect SSID -       the password from stdin (one line): printf '%s\n' "$PW" | wifi-client ...
 #   wifi-client connect SSID --password-file FILE   the first line of FILE
+#   wifi-client connect SSID --open  an open network (no password)
 #   wifi-client connect SSID PASS    works, but sudo writes the whole command line, password and all, to the
 #                                    system journal, and ps shows it to every user while it runs
 #   wifi-client status               what it is connected to, signal, address
@@ -154,29 +155,55 @@ start_ap() {
 
 # ------------------------------------------------------------------ sharing the connection with the LAN
 # mobile-data sets up its own NAT for sipa_eth0; nothing did for wlan0, so a device whose only uplink was the Wi-Fi
-# client left its USB clients with no internet (ip_forward 0, no masquerade). Answers come back in; nothing from
-# the other network is forwarded into the LAN otherwise (it would only need a route to 192.168.x.0/24 via us).
-# The VPN is left alone: its policy routing sends client traffic into the tunnel before this NAT ever sees it,
-# and its kill switch (mu300-vpn, priority filter - 5) drops what would leave on wlan0 while the tunnel is down -
-# a drop in any chain is final, whatever this table accepts.
+# client left its USB clients with no internet (ip_forward 0, no masquerade). This is the same model as mobile
+# data's, with the other network treated as the cellular side is:
+#   * LAN clients reach the internet through it, and nothing else on that network: forwarded traffic to private,
+#     link-local and shared (CGNAT) addresses, and to the network's own subnet, is dropped. The access point is
+#     their way out (the default route), not something they can talk to - a guest on this device's USB does not
+#     get onto the home or hotel network it is a client of.
+#   * From the other network, only answers come in: nothing is forwarded to the LAN, and the device's own services
+#     (SSH, DNS, ...) are closed to it, as firewall.nft closes them to the modem. DHCP and ping are let in.
+#   * The VPN is left alone: its policy routing takes client traffic into the tunnel before it would leave on
+#     wlan0, and its kill switch (mu300-vpn, priority filter - 5) drops what would leave on wlan0 while the tunnel
+#     is down - a drop in any chain is final, whatever these tables accept.
+# Two tables: the NAT (ip, as mobile-data's) and the filter (inet, so IPv6 on wlan0 is closed too). Gone on disconnect.
+FILTER=mu300_wifi_filter
 share_uplink() {
     if is_openwrt; then
         wan_zone
         return 0
     fi
+    # the network's own subnet, for when it is not a private one
+    net=$(ip -4 route show dev "$IFACE" proto kernel scope link 2>/dev/null | awk '$1 ~ /^[0-9.]+\/[0-9]+$/ {print $1; exit}')
+    subnet=; [ -n "$net" ] && subnet="oifname \"$IFACE\" ip daddr $net counter drop"
     sysctl -qw net.ipv4.ip_forward=1 2>/dev/null || true
     nft -f - <<NFT || say "could not set up the NAT for the LAN clients (nft)"
 table ip $NAT
 delete table ip $NAT
+table inet $FILTER
+delete table inet $FILTER
 table ip $NAT {
     chain postrouting {
         type nat hook postrouting priority srcnat; policy accept;
         oifname "$IFACE" masquerade
     }
+}
+table inet $FILTER {
+    chain input {
+        type filter hook input priority filter; policy accept;
+        iifname "$IFACE" ct state established,related accept
+        iifname "$IFACE" udp sport 67 udp dport 68 accept
+        iifname "$IFACE" icmp type echo-request limit rate 5/second accept
+        iifname "$IFACE" icmpv6 type { echo-request, nd-neighbor-solicit, nd-neighbor-advert, nd-router-advert } accept
+        iifname "$IFACE" counter drop
+    }
     chain forward {
         type filter hook forward priority filter; policy accept;
         iifname "$IFACE" ct state established,related accept
         iifname "$IFACE" counter drop
+        oifname "$IFACE" ip daddr { 10.0.0.0/8, 100.64.0.0/10, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16 } counter drop
+        $subnet
+        oifname "$IFACE" meta nfproto ipv6 counter drop
         oifname "$IFACE" tcp flags syn tcp option maxseg size set rt mtu
     }
 }
@@ -184,18 +211,36 @@ NFT
 }
 
 unshare_uplink() {
-    is_openwrt || nft delete table ip "$NAT" 2>/dev/null || true
+    is_openwrt && return 0
+    nft delete table ip "$NAT" 2>/dev/null || true
+    nft delete table inet "$FILTER" 2>/dev/null || true
 }
 
 # OpenWrt: fw4 masquerades for the wan zone, and an interface in no zone gets the defaults (no forwarding to it,
-# and input accepted from it). wlan0 in the wan zone fixes both. When it is the hotspot, it is a port of br-lan
-# and fw4 only ever sees br-lan, so the entry does nothing then; done once, left in place (as mu300-vpn does for
-# its tunnel).
+# and input accepted from it). wlan0 in the wan zone fixes both: input and forwarding from it rejected but for
+# answers, as for the modem. fw4 forwards lan to wan to any address, so a rule on wlan0 alone keeps LAN clients off
+# the other network's private addresses, as on Ubuntu. When wlan0 is the hotspot it is a port of br-lan and fw4
+# only ever sees br-lan, so neither does anything then; done once, left in place (as mu300-vpn does for its tunnel).
+PRIVATE4='10.0.0.0/8 100.64.0.0/10 169.254.0.0/16 172.16.0.0/12 192.168.0.0/16'
 wan_zone() {
     zone=$(uci -q show firewall 2>/dev/null | sed -n "s/^firewall\.@zone\[\([0-9]*\)\]\.name='wan'$/\1/p" | head -1)
     [ -n "$zone" ] || return 0
-    uci -q get "firewall.@zone[$zone].device" 2>/dev/null | tr ' ' '\n' | grep -qx "$IFACE" && return 0
-    uci add_list "firewall.@zone[$zone].device=$IFACE" 2>/dev/null || return 0
+    changed=
+    if ! uci -q get "firewall.@zone[$zone].device" 2>/dev/null | tr ' ' '\n' | grep -qx "$IFACE"; then
+        uci add_list "firewall.@zone[$zone].device=$IFACE" 2>/dev/null && changed=1
+    fi
+    if ! uci -q show firewall 2>/dev/null | grep -q "\.name='mu300-wifi-client-private'$"; then
+        r=$(uci add firewall rule 2>/dev/null) && {
+            uci set "firewall.$r.name=mu300-wifi-client-private"
+            uci set "firewall.$r.src=lan"; uci set "firewall.$r.dest=wan"
+            uci set "firewall.$r.device=$IFACE"; uci set "firewall.$r.direction=out"
+            uci set "firewall.$r.family=ipv4"; uci set "firewall.$r.proto=all"
+            for a in $PRIVATE4; do uci add_list "firewall.$r.dest_ip=$a"; done
+            uci set "firewall.$r.target=REJECT"
+            changed=1
+        } 2>/dev/null
+    fi
+    [ -n "$changed" ] || return 0
     uci commit firewall 2>/dev/null || return 0
     "$R/etc/init.d/firewall" reload >/dev/null 2>&1 || true
 }
@@ -293,26 +338,50 @@ scan_list() {
 }
 
 # unescape COLUMN: iw and wpa_cli print every byte of a name outside printable ASCII as \xNN (wpa_cli also \\
-# and \"), so a UTF-8 name came out as \xc3\x87... - decode that. Control characters (and NUL) stay escaped: they
-# would act on the terminal. LC_ALL=C: gawk would otherwise turn %c of 0xc3 into the character U+00C3.
+# and \"), so a UTF-8 name came out as \xc3\x87... - decode that, and nothing else. A name is whatever the access
+# point broadcasts, so what reaches the terminal is only printable text: valid UTF-8 of printable characters. C0
+# controls, DEL, ESC, C1 controls (U+0080-U+009F, which some terminals obey as escape sequences too), the
+# bidirectional overrides and bytes that are not valid UTF-8 are shown as \xNN instead. LC_ALL=C: awk works on
+# bytes (gawk would otherwise turn %c of 0xc3 into the character U+00C3).
 unescape() {
     LC_ALL=C awk -F'\t' -v OFS='\t' -v col="$1" '
+        BEGIN { for (k = 1; k < 256; k++) ord[sprintf("%c", k)] = k }
         function hv(c) { return index("0123456789abcdef", tolower(c)) - 1 }
+        function x(v) { return sprintf("\\x%02x", v) }
         {
-            s = $col; o = ""
-            while ((i = index(s, "\\")) > 0) {
-                o = o substr(s, 1, i - 1); c = substr(s, i + 1, 1); h = substr(s, i + 2, 2)
-                if (c == "x" && h ~ /^[0-9A-Fa-f][0-9A-Fa-f]$/) {
-                    n = hv(substr(h, 1, 1)) * 16 + hv(substr(h, 2, 1))
-                    o = o ((n >= 32 && n != 127) ? sprintf("%c", n) : "\\x" h)
-                    s = substr(s, i + 4)
-                } else if (c == "\\" || c == "\"") {
-                    o = o c; s = substr(s, i + 2)
-                } else {
-                    o = o "\\"; s = substr(s, i + 1)
-                }
+            # the bytes of the name, escapes decoded
+            s = $col; n = 0; L = length(s)
+            for (i = 1; i <= L; i++) {
+                c = substr(s, i, 1); h = substr(s, i + 2, 2)
+                if (c == "\\" && substr(s, i + 1, 1) == "x" && h ~ /^[0-9A-Fa-f][0-9A-Fa-f]$/) {
+                    b[++n] = hv(substr(h, 1, 1)) * 16 + hv(substr(h, 2, 1)); i += 3
+                } else if (c == "\\" && (substr(s, i + 1, 1) == "\\" || substr(s, i + 1, 1) == "\"")) {
+                    b[++n] = ord[substr(s, i + 1, 1)]; i++
+                } else b[++n] = ord[c]
             }
-            $col = o s; print
+            # back to text: printable ASCII and well-formed UTF-8 as they are, every other byte escaped
+            o = ""
+            for (i = 1; i <= n; i++) {
+                v = b[i]
+                if (v >= 32 && v < 127) { o = o sprintf("%c", v); continue }
+                if (v < 194 || v > 244) { o = o x(v); continue }
+                m = (v < 224) ? 1 : (v < 240) ? 2 : 3
+                lo = 128; hi = 191
+                if (v == 194) lo = 160          # U+0080-U+009F: the C1 controls
+                if (v == 224) lo = 160          # overlong
+                if (v == 237) hi = 159          # surrogates
+                if (v == 240) lo = 144          # overlong
+                if (v == 244) hi = 143          # above U+10FFFF
+                ok = (i + m <= n) && b[i + 1] >= lo && b[i + 1] <= hi
+                for (j = 2; ok && j <= m; j++) ok = b[i + j] >= 128 && b[i + j] <= 191
+                # and the bidirectional controls (U+200E/F, U+202A-E, U+2066-9), which make a name read as another
+                if (ok && v == 226 && ((b[i + 1] == 128 && (b[i + 2] == 142 || b[i + 2] == 143 || (b[i + 2] >= 170 && b[i + 2] <= 174))) ||
+                                       (b[i + 1] == 129 && b[i + 2] >= 166 && b[i + 2] <= 169))) ok = 0
+                if (!ok) { o = o x(v); continue }
+                for (j = 0; j <= m; j++) o = o sprintf("%c", b[i + j])
+                i += m
+            }
+            $col = o; print
         }'
 }
 
@@ -348,7 +417,8 @@ wait_connected() {  # wait_connected SECONDS SSID SAE(1 = this side can do SAE) 
 save_network() {  # save_network SSID [PASS]
     mkdir -p "$R/etc/mu300"
     umask 077
-    { echo "SSID=$1"; [ -n "${2:-}" ] && echo "PSK=$2"; echo "ENABLE=1"
+    # printf, not echo: dash's echo would turn a backslash in a name or password into an escape
+    { printf 'SSID=%s\n' "$1"; [ -n "${2:-}" ] && printf 'PSK=%s\n' "$2"; echo "ENABLE=1"
       echo "METRIC=$(conf_get METRIC | grep -E '^[0-9]+$' || echo 50)"; } > "$CONF"
 }
 
@@ -396,13 +466,17 @@ connect() {  # connect SSID [PASS]
         exit 3
     fi
     # a VPN with the kill switch has it up before this uplink can carry anything (as mobile-data does)
-    [ -x "$VPN_CMD" ] && "$VPN_CMD" guard >/dev/null 2>&1 || true
+    if [ -x "$VPN_CMD" ] && ! "$VPN_CMD" guard >/dev/null 2>&1; then
+        [ -e "$AP_FLAG" ] && start_ap
+        die "the VPN's kill switch could not be put up (mu300-vpn guard): not joining without it"
+    fi
 
     # the supplicant first, with no network: whether it can do SAE depends on the driver too, and only the
     # running supplicant can say
     umask 077
     printf 'ctrl_interface=/run/wpa_supplicant\n' > "$WPACONF"
-    wpa_supplicant -B -i "$IFACE" -c "$WPACONF" >/dev/null 2>&1 || die "wpa_supplicant did not start"
+    wpa_supplicant -B -i "$IFACE" -c "$WPACONF" >/dev/null 2>&1 ||
+        { stop_client; [ -e "$AP_FLAG" ] && start_ap; die "wpa_supplicant did not start"; }
     n=0; caps=
     while [ "$n" -lt 5 ]; do
         caps=$(wpa_cli -i "$IFACE" get_capability key_mgmt 2>/dev/null) && [ -n "$caps" ] && break
@@ -475,7 +549,11 @@ read_password() {  # read_password SSID [ - | --password-file FILE | PASS ]
         --password-file)
             [ -n "${3:-}" ] && [ -r "$3" ] || die "cannot read the password file '${3:-}'"
             IFS= read -r pw < "$3" || true ;;
+        --open) pw= ;;
         '') pw=
+            # no terminal to ask on: a script that forgot the password must not drop the link it has for an open
+            # network it never meant
+            [ -t 0 ] || die "no password given and no terminal to ask on: use \"-\" (stdin), --password-file FILE, or --open"
             if [ -t 0 ]; then
                 printf 'password for %s (empty for an open network, nothing is shown as you type): ' "$1" >&2
                 trap 'stty echo 2>/dev/null; exit 130' INT TERM
@@ -497,7 +575,7 @@ read_password() {  # read_password SSID [ - | --password-file FILE | PASS ]
 case ${1:-status} in
     scan) scan ;;
     connect)
-        shift; [ -n "${1:-}" ] || die "usage: wifi-client connect SSID [- | --password-file FILE]"
+        shift; [ -n "${1:-}" ] || die "usage: wifi-client connect SSID [- | --password-file FILE | --open]"
         read_password "$@"
         connect "$1" "$pw" ;;
     up)
@@ -543,5 +621,5 @@ case ${1:-status} in
         esac ;;
     status) status ;;
     -h|--help|help) sed -n -e '2s/^# //p' -e '4,/^#$/s/^# \{0,1\}//p' "$0" ;;
-    *) die "usage: wifi-client scan|connect SSID [- | --password-file FILE]|status|up|reconnect|disconnect [--keep]|forget|scan-mode" ;;
+    *) die "usage: wifi-client scan|connect SSID [- | --password-file FILE | --open]|status|up|reconnect|disconnect [--keep]|forget|scan-mode" ;;
 esac

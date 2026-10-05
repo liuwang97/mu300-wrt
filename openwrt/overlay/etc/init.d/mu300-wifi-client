@@ -9,6 +9,6 @@ start() {
 }
 
 stop() {
-	# --keep: a stop (a shutdown, too) is not the user disconnecting, the next boot still joins the network
+	# --keep: a service stop is not the user disconnecting, the next boot still joins the network
 	/opt/mu300/bin/wifi-client disconnect --keep 2>/dev/null
 }
