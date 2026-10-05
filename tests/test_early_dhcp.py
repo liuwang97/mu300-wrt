@@ -1,6 +1,7 @@
 """The USB host's early DHCP lease, from boot/init into the system (K5, K9, K11, K13, K25-K27): OpenWrt's preinit
 server on the system's own subnet, the LAN hook that ends it, the first-boot defaults, and Ubuntu's lan-start. The
 scripts run against a scratch directory and stub commands, under each shell (busybox ash on OpenWrt)."""
+import json
 import shutil
 import subprocess
 import unittest
@@ -9,6 +10,129 @@ from helpers import BIN, TOP, ShellTest
 
 
 OPENWRT = TOP / 'openwrt' / 'overlay'
+LUCI_DEFAULTS = TOP / 'openwrt' / 'luci-overlay' / 'etc' / 'uci-defaults' / '91-mu300-luci'
+
+# A uci stand-in that keeps the configuration (JSON in $STUBLOG/uci.json) and logs every call to $STUBLOG/uci.log
+# ("uci ARGS", a batch's lines as "batch: LINE", commits to $STUBLOG/commits). It knows what the defaults scripts use:
+# get, set, delete, add_list, add, show, commit and batch, with named sections, @type[N] and the ids `add` gives
+# (cfg0e1, cfg0e2, ...), and shows anonymous sections as @type[N] as uci does. UCI_NOLOG=1: a test's own edit.
+UCI_STANDIN = r"""
+import json, os, re, shlex, sys
+log = os.environ['STUBLOG']
+dbf = os.path.join(log, 'uci.json')
+db = json.load(open(dbf)) if os.path.exists(dbf) else {}
+def note(line):
+    if not os.environ.get('UCI_NOLOG'):
+        open(os.path.join(log, 'uci.log'), 'a').write(line + '\n')
+args = sys.argv[1:]
+note('uci ' + ' '.join(args))
+if args[:1] == ['-q']:
+    args = args[1:]
+def find(cfg, sec):
+    secs = db.get(cfg, [])
+    m = re.fullmatch(r'@(\w+)\[(-?\d+)\]', sec)
+    if m:
+        of = [s for s in secs if s['type'] == m.group(1)]
+        try:
+            return of[int(m.group(2))]
+        except IndexError:
+            return None
+    return next((s for s in secs if s['name'] == sec), None)
+def split(key):
+    parts = key.split('.', 2)
+    return parts + [None] * (3 - len(parts))
+def label(cfg, s):
+    if not s['anon']:
+        return s['name']
+    of = [x for x in db[cfg] if x['type'] == s['type']]
+    return '@%s[%d]' % (s['type'], of.index(s))
+def q(v):
+    return ' '.join("'%s'" % x for x in v) if isinstance(v, list) else "'%s'" % v
+def run(op, rest):
+    if op == 'get':
+        cfg, sec, opt = split(rest[0])
+        s = find(cfg, sec)
+        if s is None or (opt and opt not in s['opts']):
+            return 1
+        v = s['opts'][opt] if opt else s['type']
+        print(' '.join(v) if isinstance(v, list) else v)
+    elif op in ('set', 'add_list'):
+        key, _, val = rest[0].partition('=')
+        cfg, sec, opt = split(key)
+        s = find(cfg, sec)
+        if opt is None:
+            if s is None:
+                db.setdefault(cfg, []).append({'name': sec, 'type': val, 'anon': False, 'opts': {}})
+            else:
+                s['type'] = val
+            return 0
+        if s is None:
+            return 1
+        if op == 'set':
+            s['opts'][opt] = val
+        else:
+            cur = s['opts'].get(opt, [])
+            s['opts'][opt] = (cur if isinstance(cur, list) else [cur]) + [val]
+    elif op == 'delete':
+        cfg, sec, opt = split(rest[0])
+        s = find(cfg, sec)
+        if s is None or (opt and opt not in s['opts']):
+            return 1
+        if opt:
+            del s['opts'][opt]
+        else:
+            db[cfg].remove(s)
+    elif op == 'add':
+        n = db.setdefault('_ids', 0) + 1
+        db['_ids'] = n
+        sid = 'cfg0e%x' % n
+        db.setdefault(rest[0], []).append({'name': sid, 'type': rest[1], 'anon': True, 'opts': {}})
+        print(sid)
+    elif op == 'show':
+        cfgs = [rest[0]] if rest else [c for c in db if c != '_ids']
+        for cfg in cfgs:
+            for s in db.get(cfg, []):
+                print('%s.%s=%s' % (cfg, label(cfg, s), s['type']))
+                for k, v in s['opts'].items():
+                    print('%s.%s.%s=%s' % (cfg, label(cfg, s), k, q(v)))
+    elif op == 'commit':
+        open(os.path.join(log, 'commits'), 'a').write((rest[0] if rest else 'all') + '\n')
+    return 0
+rc = 0
+if args[:1] == ['batch']:
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        note('batch: ' + line)
+        w = shlex.split(line)
+        rc = run(w[0], w[1:]) or rc
+else:
+    rc = run(args[0], args[1:])
+json.dump(db, open(dbf, 'w'))
+sys.exit(rc)
+"""
+
+
+def fresh_openwrt_config():
+    """The configuration an armsr first boot has when uci-defaults run (config_generate's, abridged)."""
+    def sec(_name, _type, _anon=False, **opts):
+        return {'name': _name, 'type': _type, 'anon': _anon, 'opts': opts}
+    return {
+        'system': [sec('cfg01e48a', 'system', True, hostname='OpenWrt', timezone='UTC', ttylogin='0')],
+        'network': [sec('loopback', 'interface', proto='static', ipaddr='127.0.0.1', netmask='255.0.0.0'),
+                    sec('globals', 'globals', ula_prefix='fd12:3456:789a::/48'),
+                    sec('cfg030f15', 'device', True, name='br-lan', type='bridge', ports=['eth0']),
+                    sec('lan', 'interface', device='br-lan', proto='static', ipaddr='192.168.1.1',
+                        netmask='255.255.255.0', ip6assign='60'),
+                    sec('wan', 'interface', device='eth1', proto='dhcp'),
+                    sec('wan6', 'interface', device='eth1', proto='dhcpv6')],
+        'firewall': [sec('cfg01e63d', 'defaults', True, input='REJECT', output='ACCEPT', forward='REJECT'),
+                     sec('cfg02dc81', 'zone', True, name='lan', network=['lan']),
+                     sec('cfg03dc81', 'zone', True, name='wan', network=['wan', 'wan6'], masq='1')],
+        'dhcp': [sec('lan', 'dhcp', interface='lan', start='100', limit='150', leasetime='12h'),
+                 sec('wan', 'dhcp', interface='wan', ignore='1')],
+    }
 
 
 class EarlyUsbOpenWrt(ShellTest):
@@ -196,21 +320,14 @@ class EarlyUsbOpenWrt(ShellTest):
                 self.assertFalse((self.tmp / 'kill.log').exists(), env)
 
     # --- uci-defaults 90-mu300 (K25, K26, K27)
-    def defaults(self, shell, runs=1, mac='02:50:aa:bb:77:02', lan='192.168.77.1'):
+    def defaults(self, shell, runs=1, mac='02:50:aa:bb:77:02', lan='192.168.77.1', config=None):
+        """Run 90-mu300 RUNS times against the uci stand-in, on CONFIG (a fresh first boot's when None and there is
+        none yet): uci.log."""
         (self.tmp / 'inittab').write_text('')
         if mac:
             (self.tmp / 'run' / 'mu300-usb-host-mac').write_text(mac + '\n')
         self.stub('mu300-lan-ip', f'echo {lan}')
-        # a uci that remembers what was added: `show firewall` lists the earlyusb zone once one was named so
-        self.stub('uci', 'echo "uci $*" >> "$STUBLOG/uci.log"\n'
-                         '[ "$1" = -q ] && shift\n'
-                         'case "$1 $2" in\n'
-                         '"show firewall") echo "firewall.@zone[1].name=\'wan\'"\n'
-                         '  grep -q "^uci set firewall\\.cfg0e1.name=earlyusb$" "$STUBLOG/uci.log" && echo "firewall.@zone[2].name=\'earlyusb\'" ;;\n'
-                         '"show network") echo "network.@device[0].name=\'br-lan\'" ;;\n'
-                         '"add firewall") echo cfg0e1 ;;\n'
-                         '"batch ") sed "s/^/batch: /" >> "$STUBLOG/uci.log" ;;\n'
-                         'esac\nexit 0')
+        self.uci_standin(config)
         body = self.text('etc/uci-defaults/90-mu300', **{'/lib/mu300/usb-host.sh': str(OPENWRT / 'lib' / 'mu300' / 'usb-host.sh'), 
             '/opt/mu300/bin/': f'{self.stubs}/', '/run/': f'{self.tmp}/run/', '/sys/': f'{self.tmp}/sys/',
             '/etc/inittab': f'{self.tmp}/inittab'})
@@ -218,6 +335,19 @@ class EarlyUsbOpenWrt(ShellTest):
             r = self.sh(shell, body)
             self.assertEqual(0, r.returncode, r.stderr)
         return (self.tmp / 'uci.log').read_text()
+
+    def uci_standin(self, config=None):
+        (self.stubs / 'uci.py').write_text(UCI_STANDIN)
+        self.stub('uci', f'exec python3 "{self.stubs}/uci.py" "$@"')
+        db = self.tmp / 'uci.json'
+        if config is not None or not db.exists():
+            db.write_text(json.dumps(fresh_openwrt_config() if config is None else config))
+
+    def uci(self, *args):
+        """The stand-in, as the test's own edit (not logged): its stdout."""
+        r = subprocess.run(['python3', str(self.stubs / 'uci.py')] + list(args), capture_output=True, text=True,
+                           env=self.env(UCI_NOLOG=1))
+        return r.stdout.strip() if r.returncode == 0 else None
 
     def test_defaults_pin_the_usb_host_with_broadcast(self):
         for shell in self.each_shell():
@@ -262,6 +392,103 @@ class EarlyUsbOpenWrt(ShellTest):
                 self.assertEqual(present, "uci add_list network.@device[0].ports=rndis0\n" in log)
                 self.assertIn("uci set network.@device[0].bridge_empty=1\n", log)
                 self.tearDown(); self.setUp()
+
+    # --- 90-mu300 again after an update (a fresh rootfs, the kept /etc/config)
+    USER = {'network.lan.ipaddr': '10.9.8.1', 'network.lan.netmask': '255.255.0.0', 'network.lan.ip6assign': '48',
+            'network.wan.apn': 'internet.example', 'system.@system[0].hostname': 'myrouter',
+            'system.@system[0].zonename': 'Europe/Berlin', 'system.@system[0].timezone': 'CET-1CEST,M3.5.0,M10.5.0/3',
+            'firewall.@defaults[0].flow_offloading': '0', 'dhcp.mu300_usb.ip': '10.9.8.50'}
+
+    def user_changes(self):
+        """What a user changes after the first install: USER, br-lan's members, and a wan6 of their own."""
+        for k, v in self.USER.items():
+            self.uci('set', f'{k}={v}')
+        self.uci('delete', 'network.@device[0].ports')
+        self.uci('add_list', 'network.@device[0].ports=usb0')
+        self.uci('add_list', 'network.@device[0].ports=eth9')
+        self.uci('set', 'network.wan6=interface')
+        self.uci('set', 'network.wan6.proto=dhcpv6')
+
+    def test_first_install_sets_the_defaults_and_the_marker_last(self):
+        for shell in self.each_shell():
+            log = self.defaults(shell)
+            want = {'network.lan.ipaddr': '192.168.77.1', 'network.lan.netmask': '255.255.255.0',
+                    'network.lan.ip6assign': '64', 'network.wan.proto': 'mu300cell', 'network.wan.apn': '',
+                    'system.@system[0].hostname': 'mu300', 'system.@system[0].zonename': 'Europe/Istanbul',
+                    'system.@system[0].timezone': '<+03>-3', 'firewall.@defaults[0].flow_offloading': '1',
+                    'firewall.@defaults[0].flow_offloading_hw': '0', 'network.@device[0].ports': 'usb0',
+                    'network.@device[0].bridge_empty': '1', 'dhcp.mu300_usb.ip': '192.168.77.200',
+                    'system.mu300.defaults': '1'}
+            for k, v in want.items():
+                self.assertEqual(self.uci('get', k), v, (shell, k))
+            self.assertIsNone(self.uci('get', 'network.wan6'))
+            # the marker is set and committed after every other commit
+            lines = log.splitlines()
+            self.assertEqual(lines[-2:], ["batch: set system.mu300.defaults='1'", 'uci commit system'])
+            self.assertEqual((self.tmp / 'commits').read_text().split()[-2:], ['network', 'system'])
+            self.tearDown(); self.setUp()
+
+    def test_an_update_keeps_the_users_settings(self):
+        # the first boot after an update runs 90-mu300 again on the kept configuration: what the user set stays,
+        # what the system needs is still there
+        for shell in self.each_shell():
+            self.defaults(shell)                                    # the first install
+            self.user_changes()
+            self.uci('set', 'network.wan.proto=dhcp')               # something set wan aside
+            self.defaults(shell, mac='02:50:aa:bb:77:09')           # the first boot after an update
+            for k, v in self.USER.items():
+                self.assertEqual(self.uci('get', k), v, (shell, k))
+            self.assertEqual(self.uci('get', 'network.@device[0].ports'), 'usb0 eth9', shell)
+            self.assertEqual(self.uci('get', 'network.wan6.proto'), 'dhcpv6', shell)
+            self.assertEqual(self.uci('get', 'dhcp.mu300_usb.mac'), '02:50:aa:bb:77:02', shell)
+            self.assertEqual(self.uci('get', 'network.wan.proto'), 'mu300cell', shell)
+            self.assertEqual(self.uci('get', 'network.@device[0].bridge_empty'), '1', shell)
+            self.assertEqual(self.uci('show', 'firewall').count("name='earlyusb'"), 1, shell)
+            self.assertEqual((self.tmp / 'inittab').read_text().count('ttyGS0:'), 1, shell)
+            self.tearDown(); self.setUp()
+
+    def test_an_update_of_an_install_from_before_the_marker(self):
+        # set up by an earlier 90-mu300 (wan proto mu300cell, no marker, no K25 host entry, no earlyusb zone, no
+        # flowtable, no bridge_empty): the user's settings stay; it gets what it lacked, and the marker
+        old = fresh_openwrt_config()
+        for s in old['network']:
+            if s['name'] == 'lan':
+                s['opts'].update(ipaddr='10.9.8.1', netmask='255.255.255.0', ip6assign='64')
+            if s['name'] == 'wan':
+                s['opts'] = {'proto': 'mu300cell', 'apn': 'internet.example'}
+            if s['type'] == 'device':
+                s['opts']['ports'] = ['usb0']
+        old['network'] = [s for s in old['network'] if s['name'] != 'wan6']
+        old['system'][0]['opts'].update(hostname='myrouter', zonename='Europe/Berlin')
+        for shell in self.each_shell():
+            self.defaults(shell, config=old)
+            for k, v in {'network.lan.ipaddr': '10.9.8.1', 'network.lan.ip6assign': '64',
+                         'network.wan.apn': 'internet.example', 'system.@system[0].hostname': 'myrouter',
+                         'system.@system[0].zonename': 'Europe/Berlin', 'network.wan.proto': 'mu300cell',
+                         'firewall.@defaults[0].flow_offloading': '1', 'network.@device[0].bridge_empty': '1',
+                         # the host entry on the LAN as configured, as preinit's early server gives it
+                         'dhcp.mu300_usb.ip': '10.9.8.200', 'system.mu300.defaults': '1'}.items():
+                self.assertEqual(self.uci('get', k), v, (shell, k))
+            self.assertEqual(self.uci('show', 'firewall').count("name='earlyusb'"), 1, shell)
+            # and from now on it is an update like any other: the flowtable the user turns off stays off
+            self.uci('set', 'firewall.@defaults[0].flow_offloading=0')
+            self.defaults(shell)
+            self.assertEqual(self.uci('get', 'firewall.@defaults[0].flow_offloading'), '0', shell)
+            self.tearDown(); self.setUp()
+
+    def test_openwrt_luci_first_install_ends_with_ip6assign_60(self):
+        # 90-mu300 then 91-mu300-luci: the panel system's first install asks for a /60 from the ULA (K30); an update
+        # keeps what the user chose
+        for shell in self.each_shell():
+            self.defaults(shell)
+            r = self.script(shell, LUCI_DEFAULTS)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(self.uci('get', 'network.lan.ip6assign'), '60', shell)
+            self.uci('set', 'network.lan.ip6assign=64')
+            self.defaults(shell)
+            self.assertEqual(self.script(shell, LUCI_DEFAULTS).returncode, 0)
+            self.assertEqual(self.uci('get', 'network.lan.ip6assign'), '64', shell)
+            self.tearDown(); self.setUp()
 
     # --- init.d/mu300-post (K13)
     def test_post_bridges_usb1(self):

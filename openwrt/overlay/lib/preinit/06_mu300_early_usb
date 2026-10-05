@@ -20,20 +20,9 @@ mu300_early_usb() {
 	[ -n "$dev" ] || return 0
 	. /lib/mu300/usb-host.sh
 	# the LAN as netifd will set it: ipaddr (A.B.C.D or A.B.C.D/N) and netmask, the device's /24 without them
-	cidr=$(uci -q get network.lan.ipaddr)
-	cidr=${cidr%% *}
-	lan=${cidr%/*}
-	mask=255.255.255.0
-	case $lan in
-		*.*.*.*)
-			case $cidr in
-				*/*) p=${cidr#*/}
-				     case $p in 8|9|[12][0-9]|30) mask=$(mu300_prefix2mask "$p") ;; esac ;;
-				*) m=$(uci -q get network.lan.netmask)
-				   case $m in *.*.*.*) mask=$m ;; esac ;;
-			esac ;;
-		*) lan=$(/opt/mu300/bin/mu300-lan-ip) ;;
-	esac
+	mu300_lan "$(uci -q get network.lan.ipaddr)" "$(uci -q get network.lan.netmask)"
+	lan=${mu300_lan_addr:-$(/opt/mu300/bin/mu300-lan-ip)}
+	mask=$mu300_lan_mask
 	host=$(mu300_usb_host_ip "$lan" "$mask")
 	$bb ifconfig $dev "$lan" netmask "$mask" up
 	cat > /run/udhcpd-usb0.conf <<EOF

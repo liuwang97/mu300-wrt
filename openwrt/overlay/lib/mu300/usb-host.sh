@@ -1,6 +1,6 @@
 #!/bin/sh
 # MU300: the USB host's address on the LAN, sourced by preinit (06_mu300_early_usb) and uci-defaults (90-mu300) so
-# both give the host the same one. .200 of the router's /24 when that is inside the LAN subnet and not the router
+# both read the LAN alike and give the host the same one. .200 of the router's /24 when that is inside the LAN subnet and not the router
 # itself (.199 then); in a smaller subnet (a /25 without .200), the last host address that is not the router.
 mu300_ip2int() {  # mu300_ip2int A.B.C.D
 	set -- $(echo "$1" | tr . ' ')
@@ -22,4 +22,21 @@ mu300_usb_host_ip() {  # mu300_usb_host_ip ROUTER NETMASK
 		[ $_h -eq $_r ] && _h=$(( _bc - 2 ))
 	fi
 	mu300_int2ip $_h
+}
+# mu300_lan IPADDR NETMASK: the LAN as netifd will set it from network.lan's ipaddr (A.B.C.D or A.B.C.D/N) and
+# netmask, in mu300_lan_addr and mu300_lan_mask; mu300_lan_addr is empty when IPADDR is no address (the caller takes
+# the device's default then), and the mask a /24 when neither gives one
+mu300_lan() {
+	_c=${1%% *}
+	mu300_lan_addr=${_c%/*}
+	mu300_lan_mask=255.255.255.0
+	case $mu300_lan_addr in
+		*.*.*.*)
+			case $_c in
+				*/*) _p=${_c#*/}
+				     case $_p in 8|9|[12][0-9]|30) mu300_lan_mask=$(mu300_prefix2mask "$_p") ;; esac ;;
+				*) case $2 in *.*.*.*) mu300_lan_mask=$2 ;; esac ;;
+			esac ;;
+		*) mu300_lan_addr= ;;
+	esac
 }
