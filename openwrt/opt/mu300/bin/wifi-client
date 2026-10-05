@@ -60,27 +60,32 @@ SCANRUN=$R/run/mu300-wifi-scan-mode
 SCAN_TIMEOUT=${MU300_SCAN_TIMEOUT:-10min}
 
 # --------------------------------------------------------------------- udhcpc calls this script back with an
-# action in $1 and the lease in the environment; keep it first so nothing else runs in that context
+# action in $1 and the lease in the environment. udhcpc stays after the first lease, to renew it. The first lease
+# is applied here and checked by whoever asked for it (connect, the event handler); a renewal that keeps the
+# address changes nothing; one that changes it, or a lost lease, goes on to lease_changed below, which closes the
+# sharing, applies it, checks the new address and only then shares again.
+apply_lease() {
+    metric=$(sed -n 's/^METRIC=//p' "$CONF" 2>/dev/null | tail -n1); metric=${metric:-50}
+    ip -4 addr flush dev "$interface" 2>/dev/null
+    ip -4 addr add "$ip/${mask:-24}" dev "$interface"
+    ip link set "$interface" up
+    for r in ${router:-}; do
+        ip -4 route replace default via "$r" dev "$interface" metric "$metric" 2>/dev/null && break
+    done
+    if command -v resolvectl >/dev/null 2>&1; then
+        # shellcheck disable=SC2086
+        resolvectl dns "$interface" ${dns:-} 2>/dev/null || true
+    elif [ -n "${dns:-}" ] && [ ! -L /etc/resolv.conf ]; then
+        { for d in $dns; do echo "nameserver $d"; done; } > /etc/resolv.conf
+    fi
+    echo "$ip/${mask:-24}" > "$LEASE"
+}
 case ${1:-} in
     deconfig)
-        ip -4 addr flush dev "$interface" 2>/dev/null
-        exit 0 ;;
+        [ -s "$LEASE" ] || exit 0 ;;
     bound|renew)
-        metric=$(sed -n 's/^METRIC=//p' "$CONF" 2>/dev/null | tail -n1); metric=${metric:-50}
-        ip -4 addr flush dev "$interface" 2>/dev/null
-        ip -4 addr add "$ip/${mask:-24}" dev "$interface"
-        ip link set "$interface" up
-        for r in ${router:-}; do
-            ip -4 route replace default via "$r" dev "$interface" metric "$metric" 2>/dev/null && break
-        done
-        if command -v resolvectl >/dev/null 2>&1; then
-            # shellcheck disable=SC2086
-            resolvectl dns "$interface" ${dns:-} 2>/dev/null || true
-        elif [ -n "${dns:-}" ] && [ ! -L /etc/resolv.conf ]; then
-            { for d in $dns; do echo "nameserver $d"; done; } > /etc/resolv.conf
-        fi
-        echo "$ip" > "$LEASE"
-        exit 0 ;;
+        [ "$(cat "$LEASE" 2>/dev/null)" = "$ip/${mask:-24}" ] && exit 0
+        [ -s "$LEASE" ] || { apply_lease; exit 0; } ;;
     leasefail|nak)
         exit 0 ;;
 esac
@@ -124,7 +129,7 @@ ap_mode_hint() {  # ap_mode_hint scan|saved
     echo "             client without a reboot." >&2
     if [ "${1:-}" = scan ]; then
         echo "             So it cannot scan either. Give the network name yourself:" >&2
-        echo "                 wifi-client connect \"NAME\" \"PASSWORD\"" >&2
+        echo "                 wifi-client connect \"NAME\"   (it asks for the password)" >&2
         echo "             That saves it, and after a reboot the device joins it before the hotspot starts." >&2
     else
         echo "             The network is saved, so reboot and the device joins it before the hotspot starts." >&2
@@ -326,16 +331,18 @@ wan_zone() {
 # network the device is no longer on would hold the traffic that mobile data could carry).
 drop_lease() {
     [ -s "$LEASE.pid" ] && kill "$(cat "$LEASE.pid")" 2>/dev/null
-    pkill -f "udhcpc -i $IFACE" 2>/dev/null || true
+    pkill -f "^(busybox )?udhcpc -i $IFACE " 2>/dev/null || true
     rm -f "$LEASE" "$LEASE.pid"
     ip route flush dev "$IFACE" 2>/dev/null || true
     ip -4 addr flush dev "$IFACE" 2>/dev/null || true
     ip -6 addr flush dev "$IFACE" scope global 2>/dev/null || true
+    # an RA's default route (the link-local route stays: the interface keeps its fe80 address)
+    n=0; while [ "$n" -lt 8 ] && ip -6 route del default dev "$IFACE" 2>/dev/null; do n=$((n + 1)); done
     command -v resolvectl >/dev/null 2>&1 && resolvectl revert "$IFACE" 2>/dev/null || true
 }
 
 associated() { iw dev "$IFACE" link 2>/dev/null | grep -q '^Connected to'; }
-supplicant_running() { pgrep -f "wpa_supplicant -B -i $IFACE" >/dev/null 2>&1; }
+supplicant_running() { pgrep -f "^wpa_supplicant -B -i $IFACE " >/dev/null 2>&1; }
 
 # The supplicant asked to go (it deauthenticates as it does), and waited for, and the radio checked: until then
 # wlan0 may still be on the other network, and its rules must stay. Not "ip link set down": on this board that
@@ -344,10 +351,10 @@ supplicant_running() { pgrep -f "wpa_supplicant -B -i $IFACE" >/dev/null 2>&1; }
 leave_network() {
     if supplicant_running; then
         wpa_cli -i "$IFACE" terminate >/dev/null 2>&1
-        pkill -f "wpa_supplicant -B -i $IFACE" 2>/dev/null
+        pkill -f "^wpa_supplicant -B -i $IFACE " 2>/dev/null
         n=0
         while supplicant_running && [ "$n" -lt 5 ]; do n=$((n + 1)); sleep 1; done
-        supplicant_running && { pkill -9 -f "wpa_supplicant -B -i $IFACE" 2>/dev/null; sleep 1; }
+        supplicant_running && { pkill -9 -f "^wpa_supplicant -B -i $IFACE " 2>/dev/null; sleep 1; }
         supplicant_running && return 1
     fi
     associated || return 0
@@ -356,13 +363,15 @@ leave_network() {
     ! associated
 }
 
+# (Processes are found by their command line from its start, so that no other one that only mentions it - a
+# shell running "pgrep -f wpa_supplicant ..." - is taken for them.)
 # Everything the client set up goes, in this order: the event handler (or the supplicant's going would look like a
 # lost link to it), the supplicant and the association, the lease, and only then the rules - wlan0 is never on
 # the other network without them. A radio that cannot be got off it keeps them, closed, and this fails.
 stop_client() {
     rm -f "$ACTIVE"
-    [ -s "$EVENTS_PID" ] && kill "$(cat "$EVENTS_PID")" 2>/dev/null
-    pkill -f "wpa_cli -i $IFACE -a" 2>/dev/null || true
+    # (by its command line: the pid in the file could be another process's by now)
+    pkill -f "^wpa_cli -i $IFACE -a " 2>/dev/null || true
     rm -f "$EVENTS_PID"
     if ! leave_network; then
         close_uplink
@@ -378,7 +387,8 @@ stop_client() {
 
 # Only one of these at a time: a join, a disconnect, and the handler of the supplicant's events would otherwise
 # each put up their own rules over the others'. (Without flock, as in tests on macOS, nothing is serialised.)
-# Daemons started under it get the descriptor closed (9>&-), or they would hold the lock for good.
+# Daemons get every descriptor above 2 closed: this one would hold the lock for good, and a caller's (the toolkit
+# reads wifi-client's output and exit status through a pipe) would never see its end while they run.
 lock() {
     command -v flock >/dev/null 2>&1 || return 0
     exec 9>"$R/run/mu300-wifi-client.lock" && flock 9
@@ -394,7 +404,9 @@ log() {  # the event handler has no terminal: the journal (syslog on OpenWrt)
 # Without this, a link that came back kept the old lease's address and rules, whatever the network now uses.
 event() {  # event CONNECTED|DISCONNECTED
     lock
-    [ -e "$ACTIVE" ] || exit 0
+    # only the handler of this session's wpa_cli: one that was waiting for the lock while the client left and joined
+    # again belongs to the old session (stop_client removes the pid file), and must not touch the new one
+    [ -e "$ACTIVE" ] && [ -s "$EVENTS_PID" ] && [ "$PPID" = "$(cat "$EVENTS_PID" 2>/dev/null)" ] || exit 0
     case $1 in
         DISCONNECTED)
             close_uplink || log "could not close the firewall for $IFACE (nft)"
@@ -421,11 +433,40 @@ event() {  # event CONNECTED|DISCONNECTED
     exit 0
 }
 
+# udhcpc's renewal with another address, or a lost lease (see the top). Only if the lock is free: whoever holds it
+# is a join or the event handler waiting for this very udhcpc (they check the address themselves once it has
+# answered), or a disconnect, which takes everything down - udhcpc included.
+lease_changed() {  # lease_changed deconfig|bound|renew
+    [ -e "$ACTIVE" ] || exit 0
+    if command -v flock >/dev/null 2>&1; then
+        exec 9>"$R/run/mu300-wifi-client.lock" && flock -n 9 || exit 0
+    fi
+    close_uplink || { log "could not close the firewall for $IFACE (nft): the lease is left as it was"; exit 1; }
+    if [ "$1" = deconfig ]; then
+        ip -4 addr flush dev "$IFACE" 2>/dev/null
+        rm -f "$LEASE"
+        forwarding_off
+        log "lease lost: $IFACE not shared until it has an address again"
+        exit 0
+    fi
+    apply_lease
+    why=$(lan_check)
+    if [ -n "$why" ]; then
+        ip -4 addr flush dev "$IFACE" 2>/dev/null
+        forwarding_off
+        log "new address from the network, not shared: $why"
+        exit 0
+    fi
+    share_uplink || { log "could not share $IFACE (nft)"; exit 1; }
+    log "new address from the network: $IFACE shared again ($(uplink_net))"
+    exit 0
+}
+
 scan() {
     prepare_station || { ap_mode_hint scan; return 1; }
     # While wpa_supplicant owns the interface, "iw scan" can block until it gives the radio back; ask the
     # supplicant instead, which knows how to schedule a scan around the connection it is holding.
-    if pgrep -f "wpa_supplicant -B -i $IFACE" >/dev/null 2>&1; then
+    if pgrep -f "^wpa_supplicant -B -i $IFACE " >/dev/null 2>&1; then
         wpa_cli -i "$IFACE" scan >/dev/null 2>&1
         sleep 4
         wpa_cli -i "$IFACE" scan_results 2>/dev/null | awk -F'\t' '
@@ -518,7 +559,7 @@ unescape() {
         # format, filler, variation-selector, blank and spacing characters, noncharacters, private use: whatever
         # shows as nothing (or as an ordinary space) and so can make one name look like another
         function invisible(c) {
-            return c == 160 || c == 173 || c == 847 || c == 1564 || (c >= 1536 && c <= 1541) || c == 1757 ||
+            return c == 160 || c == 173 || c == 5760 || c == 847 || c == 1564 || (c >= 1536 && c <= 1541) || c == 1757 ||
                    c == 1807 || c == 2274 || c == 4447 || c == 4448 || c == 6068 || c == 6069 ||
                    (c >= 6155 && c <= 6159) || (c >= 8192 && c <= 8207) || (c >= 8232 && c <= 8239) ||
                    (c >= 8287 && c <= 8303) || c == 10240 || c == 12288 || c == 12644 || (c >= 57344 && c <= 63743) ||
@@ -544,6 +585,8 @@ unescape() {
             for (i = 1; i <= n; i++) {
                 v = b[i]
                 # a backslash too, so that a name with the text "\x1b" never looks like one with the byte
+                # and a space at either end, so that "Home " never looks like "Home"
+                if (v == 32 && (i == 1 || i == n)) { o = o x(v); continue }
                 if (v >= 32 && v < 127 && v != 92) { o = o sprintf("%c", v); continue }
                 if (v < 194 || v > 244) { o = o x(v); continue }
                 m = (v < 224) ? 1 : (v < 240) ? 2 : 3
@@ -570,9 +613,9 @@ unescape() {
 
 dhcp_run() {  # Ubuntu ships busybox without the applet symlinks, so udhcpc may only exist as "busybox udhcpc"
     if command -v udhcpc >/dev/null 2>&1; then
-        udhcpc -i "$IFACE" -n -q -t 8 -s "$SELF" -p "$LEASE.pid" >/dev/null 2>&1 9>&-
+        udhcpc -i "$IFACE" -n -t 8 -s "$SELF" -p "$LEASE.pid" </dev/null >/dev/null 2>&1 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&-
     elif command -v busybox >/dev/null 2>&1; then
-        busybox udhcpc -i "$IFACE" -n -q -t 8 -s "$SELF" -p "$LEASE.pid" >/dev/null 2>&1 9>&-
+        busybox udhcpc -i "$IFACE" -n -t 8 -s "$SELF" -p "$LEASE.pid" </dev/null >/dev/null 2>&1 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&-
     else
         return 1
     fi
@@ -685,6 +728,8 @@ connect() {  # connect SSID [PASS]
     # From here every way out but success - an error, a signal - takes the client down again, rules and all, and
     # gives the hotspot back if it was on.
     joining=1
+    # the hotspot stays off from here (mu300-hotspot.service, scan-mode timeout): it would take the radio mid-join
+    : > "$ACTIVE"
     trap 'abort_join' EXIT
     trap 'exit 130' INT TERM HUP
     close_uplink || die "could not put up the firewall for $IFACE (nft): not joining without it"
@@ -693,7 +738,7 @@ connect() {  # connect SSID [PASS]
     # running supplicant can say
     umask 077
     printf 'ctrl_interface=/run/wpa_supplicant\n' > "$WPACONF"
-    wpa_supplicant -B -i "$IFACE" -c "$WPACONF" >/dev/null 2>&1 9>&- || die "wpa_supplicant did not start"
+    wpa_supplicant -B -i "$IFACE" -c "$WPACONF" </dev/null >/dev/null 2>&1 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&- || die "wpa_supplicant did not start"
     n=0; caps=
     while [ "$n" -lt 5 ]; do
         caps=$(wpa_cli -i "$IFACE" get_capability key_mgmt 2>/dev/null) && [ -n "$caps" ] && break
@@ -728,11 +773,10 @@ connect() {  # connect SSID [PASS]
     share_uplink || die "could not set up sharing for $IFACE (nft)"
     save_network "$ssid" "$psk"
     rm -f "$SCANMODE" "$SCANRUN"
-    : > "$ACTIVE"
     joining=0
     trap - EXIT INT TERM HUP
     # from now on the supplicant's events keep the sharing in step with the link (event())
-    wpa_cli -i "$IFACE" -a "$SELF" -B -P "$EVENTS_PID" >/dev/null 2>&1 9>&- ||
+    wpa_cli -i "$IFACE" -a "$SELF" -B -P "$EVENTS_PID" </dev/null >/dev/null 2>&1 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&- ||
         say "the link is not watched (wpa_cli -a did not start): if it drops and comes back, run wifi-client reconnect"
     say "connected: $(shown "$ssid")  $addr"
     status
@@ -742,7 +786,7 @@ status() {
     st=$(wpa_cli -i "$IFACE" status 2>/dev/null)
     cur=$(printf '%s\n' "$st" | sed -n 's/^ssid=//p' | head -1)
     if [ -n "$cur" ]; then
-        sig=$(iw dev "$IFACE" link 2>/dev/null | sed -n 's/.*signal: //p' | head -1)
+        sig=$(iw dev "$IFACE" link 2>/dev/null | sed -n 's/^[[:space:]]*signal: //p' | head -1)
         printf 'mode        client (connected)\n'
         printf 'network     %s\n' "$(printf '%s\n' "$cur" | unescape 1)"
         [ -n "$sig" ] && printf 'signal      %s\n' "$sig"
@@ -791,7 +835,7 @@ read_password() {  # read_password SSID [ - | --password-file FILE | PASS ]
                 "             asked:  sudo wifi-client connect \"$(shown "$1")\"   (or pipe it in with \"-\", or --password-file FILE)" >&2 ;;
     esac
     # a file written on Windows ends its line in CR
-    pw=$(printf '%s' "$pw" | tr -d '\r')
+    cr=$(printf '\r'); pw=${pw%"$cr"}
 }
 
 case ${1:-status} in
@@ -801,6 +845,8 @@ case ${1:-status} in
         read_password "$@"
         lock
         connect "$1" "$pw" ;;
+    deconfig|bound|renew)   # (udhcpc, see the top)
+        lease_changed "$1" ;;
     valid-name)   # (mu300-toolkit) whether a typed name would be taken: the same check as connect's
         valid_text 1 32 "${2:-}" ;;
     shown-name)   # (mu300-toolkit) a name as it may be printed
@@ -838,7 +884,9 @@ case ${1:-status} in
                 say "scan mode is armed: reboot, and for that boot the hotspot stays off so the radio can list"
                 say "networks. Joined to none within $SCAN_TIMEOUT, the hotspot comes back; the boot after has it anyway."
                 say "(\"wifi-client scan-mode off\" cancels it, and joining or disconnecting ends it too.)" ;;
-            off) rm -f "$SCANMODE" "$SCANRUN"; start_ap; say "scan mode is off, the hotspot is back" ;;
+            off) lock; rm -f "$SCANMODE" "$SCANRUN"
+                # (not under a join, finished or under way: the hotspot would take the radio from it)
+                [ -e "$ACTIVE" ] || start_ap; say "scan mode is off, the hotspot is back" ;;
             boot)   # (mu300-wifi-scan-mode.service, at boot before the hotspot) this boot only
                 [ -e "$SCANMODE" ] || exit 0
                 rm -f "$SCANMODE"; : > "$SCANRUN"
@@ -846,6 +894,7 @@ case ${1:-status} in
                     /opt/mu300/bin/wifi-client scan-mode timeout 2>/dev/null || true
                 say "scan mode for this boot: the hotspot stays off (at most $SCAN_TIMEOUT unless a network is joined)" ;;
             timeout)   # nothing joined in time: the hotspot again, so a device reached over it is reachable again
+                lock
                 [ -e "$SCANRUN" ] && [ ! -e "$ACTIVE" ] || exit 0
                 rm -f "$SCANRUN"; start_ap; say "scan mode timed out, the hotspot is back" ;;
             *) if [ -e "$SCANRUN" ]; then say "scan mode: this boot"

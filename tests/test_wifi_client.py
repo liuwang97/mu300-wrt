@@ -1,6 +1,7 @@
 """wifi-client: the radio as a client of another network, against a fake / (MU300_SYSROOT) and stubs for iw,
 wpa_supplicant, wpa_cli, udhcpc, nft and the rest. The scan parsing uses the real format of iw 6.7 and of
 wpa_supplicant 2.10's scan_results (captured on an F50); the rest is what the script asks those tools to do."""
+import os
 import re
 
 from helpers import BIN, TOP, ShellTest
@@ -642,7 +643,7 @@ class WifiClient(ShellTest):
             self.ev.unlink()
             self.run_wc(shell, 'disconnect')
             ev = self.events()
-            self.assertLess(ev.index('pkill -f wpa_supplicant'), ev.index('  | delete table inet mu300_wifi_filter'))
+            self.assertLess(ev.index('pkill -f ^wpa_supplicant'), ev.index('  | delete table inet mu300_wifi_filter'))
 
     def test_hostile_names_in_messages(self):
         for shell in self.each_shell():
@@ -796,6 +797,8 @@ class WifiClient(ShellTest):
         r = self.run_wc(shell, 'connect', 'KEDI 5G', '-', stdin='password1\n')
         self.assertEqual(r.returncode, 0, r.stderr)
         self.ev.unlink()
+        # wpa_cli -a's pid, as it writes it: the handler runs as its child (here: as this process's)
+        (self.root / 'run/mu300-wifi-client.events.pid').write_text(f'{os.getpid()}\n')
 
     def test_the_link_is_watched_once_joined(self):
         for shell in self.each_shell():
@@ -809,7 +812,7 @@ class WifiClient(ShellTest):
             self.ev.unlink()
             self.run_wc(shell, 'disconnect')
             ev = self.events()
-            self.assertLess(ev.index('pkill -f wpa_cli -i wlan0 -a'), ev.index('wpa_cli terminate'))
+            self.assertLess(ev.index('pkill -f ^wpa_cli -i wlan0 -a '), ev.index('wpa_cli terminate'))
 
     def test_a_lost_link_closes_the_sharing(self):
         for shell in self.each_shell():
@@ -866,6 +869,106 @@ class WifiClient(ShellTest):
                 self.assertEqual(self.run_wc(shell, 'wlan0', e).returncode, 0)
             self.assertEqual(self.events(), '')
 
+    def test_a_stale_event_handler_changes_nothing(self):
+        # a handler of the session before (it waited for the lock while the client left and joined again): its
+        # wpa_cli is not this session's, so it leaves the new session alone
+        for shell in self.each_shell():
+            self.joined(shell)
+            (self.root / 'run/mu300-wifi-client.events.pid').write_text('1\n')
+            for e in ('CONNECTED', 'DISCONNECTED'):
+                self.assertEqual(self.run_wc(shell, 'wlan0', e).returncode, 0)
+            self.assertEqual(self.events(), '')
+            self.assertTrue((self.tmp / 'addr').exists())
+
+    # ---- DHCP: the lease renewed, and a new address checked before it is shared ------------------------------
+    def lease(self, shell, action, ip='192.168.2.248', **extra):
+        env = dict(interface='wlan0', ip=ip, mask='24', router='192.168.2.1')
+        env.update(extra)
+        return self.run_wc(shell, action, **env)
+
+    def test_dhcp_keeps_renewing(self):
+        for shell in self.each_shell():
+            self.fresh()
+            self.run_wc(shell, 'connect', 'KEDI 5G', '-', stdin='password1\n')
+            udhcpc = [l for l in self.events().splitlines() if l.startswith('udhcpc ')]
+            self.assertEqual(len(udhcpc), 1)
+            self.assertNotIn(' -q', udhcpc[0])     # it stays, to renew the lease
+            self.assertIn(' -n ', udhcpc[0])
+
+    def test_a_renewal_with_the_same_address_changes_nothing(self):
+        for shell in self.each_shell():
+            self.joined(shell)
+            (self.root / 'run/mu300-wifi-client.dhcp').write_text('192.168.2.248/24\n')
+            r = self.lease(shell, 'renew')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(self.events(), '')
+
+    def test_a_new_address_is_checked_before_it_is_shared(self):
+        for shell in self.each_shell():
+            # another public subnet: closed, the address applied, then shared with the new subnet
+            self.joined(shell)
+            (self.root / 'run/mu300-wifi-client.dhcp').write_text('192.168.2.248/24\n')
+            (self.tmp / 'subnet').write_text('203.0.113.0/24')
+            r = self.lease(shell, 'bound', ip='203.0.113.7')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(self.applied(), [self.closed(), self.expected('203.0.113.0/24')])
+            self.assertTrue((self.tmp / 'addr').exists())
+            self.assertEqual((self.root / 'run/mu300-wifi-client.dhcp').read_text(), '203.0.113.7/24\n')
+            # one on the LAN's subnet: closed, not shared, no address
+            self.ev.unlink()
+            (self.tmp / 'subnet').write_text('192.168.79.0/24')
+            r = self.lease(shell, 'bound', ip='192.168.79.9')
+            self.assertEqual(self.applied(), [self.closed()])
+            self.assertFalse((self.tmp / 'addr').exists())
+            self.assertIn('ip_forward=0', self.events())
+            # the lease lost: closed, no address, forwarding off
+            self.joined(shell)
+            (self.root / 'run/mu300-wifi-client.dhcp').write_text('192.168.2.248/24\n')
+            r = self.lease(shell, 'deconfig')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(self.applied(), [self.closed()])
+            self.assertFalse((self.tmp / 'addr').exists())
+            self.assertIn('ip_forward=0', self.events())
+            # the first lease of a join is applied only: connect (or the event handler) checks it itself
+            self.fresh()
+            r = self.lease(shell, 'bound')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(self.rulesets(), [])
+            self.assertTrue((self.tmp / 'addr').exists())
+            # and outside a session nothing at all happens to a renewal
+            (self.tmp / 'addr').unlink()
+            self.assertEqual(self.lease(shell, 'deconfig').returncode, 0)
+            self.assertEqual(self.rulesets(), [])
+
+    # ---- daemons do not hold the caller's descriptors -----------------------------------------------------
+    def test_daemons_get_no_descriptor_of_the_caller(self):
+        # the toolkit reads wifi-client's output and status through pipes on fds 3 and 4: a daemon that kept one
+        # would hold the menu until it exits
+        probe = '\nfor fd in 3 4 5 6 7 8 9; do { true >&$fd; } 2>/dev/null && echo "$(basename "$0") has fd $fd" >> "$STUBLOG/events"; done'
+        log = 'echo "$(basename "$0") $*" >> "$STUBLOG/events"'
+        wrapper = self.tmp / 'withfds.sh'
+        wrapper.write_text('exec 3>/dev/null 4>/dev/null 5>/dev/null 6>/dev/null 7>/dev/null 8>/dev/null\n"$@"\n')
+        for shell in self.each_shell():
+            self.fresh()
+            self.stub('wpa_supplicant', log + probe + '\n: > "$STUBLOG/supplicant"')
+            self.stub('udhcpc', log + probe + '\n: > "$STUBLOG/addr"')
+            self.stub('wpa_cli', (self.stubs / 'wpa_cli').read_text().split('\n', 1)[1].replace(
+                '  -a) echo', '  -a) ' + probe.strip().replace('\n', ' ') + '; echo'))
+            r = self.script(shell, wrapper, *shell, WIFI, 'connect', 'KEDI 5G', '-', stdin='password1\n',
+                            MU300_SYSROOT=self.root, MU300_VPN_CMD=self.stubs / 'vpn')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            ev = self.events()
+            self.assertIn('wpa_cli -a', ev)
+            self.assertNotIn('has fd', ev)
+        self.setUp()
+
+    def test_names_that_look_like_others(self):
+        for shell in self.each_shell():
+            self.fresh()
+            for name, want in ((' Home', '\\x20Home'), ('Home ', 'Home\\x20'), ('Ho me', 'Ho me'),
+                               ('Ogham space', 'Ogham\\xe1\\x9a\\x80space')):
+                self.assertEqual(self.run_wc(shell, 'shown-name', name).stdout, want + '\n', repr(name))
+
     def test_a_supplicant_that_will_not_go_keeps_the_rules(self):
         # the supplicant stays whatever it is sent, or it goes and the radio stays associated all the same
         for cmd, how in ((['disconnect'], 'stuck'), (['forget'], 'stuck'), (['connect', 'cafe', '--open'], 'stuck'),
@@ -881,7 +984,7 @@ class WifiClient(ShellTest):
                 # closed (not removed), and nothing else is started on the radio
                 self.assertIn('wpa_cli terminate', ev)
                 if how == 'stuck':
-                    self.assertIn('pkill -9 -f wpa_supplicant -B -i wlan0', ev)
+                    self.assertIn('pkill -9 -f ^wpa_supplicant -B -i wlan0 ', ev)
                 else:
                     self.assertIn('iw dev wlan0 disconnect', ev)
                 self.assertEqual(self.applied(), [self.closed()], cmd)
@@ -893,8 +996,8 @@ class WifiClient(ShellTest):
             self.joined(shell)
             self.run_wc(shell, 'disconnect')
             ev = self.events()
-            self.assertLess(ev.index('wpa_cli terminate'), ev.index('pkill -f wpa_supplicant'))
-            self.assertLess(ev.index('pkill -f wpa_supplicant'), ev.index('ip route flush dev wlan0'))
+            self.assertLess(ev.index('wpa_cli terminate'), ev.index('pkill -f ^wpa_supplicant'))
+            self.assertLess(ev.index('pkill -f ^wpa_supplicant'), ev.index('ip route flush dev wlan0'))
             self.assertLess(ev.index('ip route flush dev wlan0'), ev.index('  | delete table inet mu300_wifi_filter'))
             self.assertRemoved()
 
