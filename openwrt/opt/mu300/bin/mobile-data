@@ -720,7 +720,8 @@ watch() {
         fails=$((fails + 1))
         [ "$fails" -lt 2 ] && continue
         echo "mobile data lost (modem reset or detached), reconnecting" >&2
-        led off
+        # no service (no SIM, not registered) stays red through the two minutes up() waits, as ZTE shows it
+        if at 'AT+CEREG?' | grep -qE '\+CEREG: [0-9],(1|5)'; then led off; else led error; fi
         if [ "${MU300_NETIFD:-0}" = 1 ]; then
             ifup "${MU300_WAN:-wan}"   # OpenWrt: let netifd run the mu300cell protocol again
         else

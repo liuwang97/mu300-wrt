@@ -1269,17 +1269,65 @@ class Led(ShellTest):
                 self.assertEqual(self.state()[lit], '255', device)
 
     def test_f50(self):
+        # ZTE's F50 (read from its Android): one network light on the PMIC's RGB LED - blue on 4G, white (the green
+        # channel) on 5G, red without service - and the Wi-Fi light on the keypad backlight sink, at ZTE's 48
+        rgb = ('sc27xx:red', 'sc27xx:green', 'sc27xx:blue')
         for shell in self.each_shell():
             self.reset()
-            for args in (('power', 'on'), ('wifi', 'on'), ('data', 'error'), ('wake',), ('sleep',)):
-                # nothing to show on an F50: no error, and no LED of the U30 Air switched
+            for args in (('power', 'on'), ('wake',), ('sleep',), ('power', 'off')):
+                # no power LED and no timeout on an F50: no error, nothing lit
                 self.assertEqual(self.led(shell, 'f50', *args).returncode, 0, args)
+            self.assertEqual(set(self.state().values()), {'0'})
+            for args, lit in ((('data', 'error'), 'sc27xx:red'), (('data', 'on'), 'sc27xx:blue'),
+                              (('data', '5g'), 'sc27xx:green'), (('data', 'on'), 'sc27xx:blue'),
+                              (('data', 'error'), 'sc27xx:red'), (('data', '5g'), 'sc27xx:green')):
+                self.assertEqual(self.led(shell, 'f50', *args).returncode, 0, args)
+                s = self.state()
+                self.assertEqual({n: s[n] for n in rgb}, {n: '255' if n == lit else '0' for n in rgb}, args)
+            self.led(shell, 'f50', 'data', 'off')
+            self.assertEqual({self.state()[n] for n in rgb}, {'0'})
+            for iw in ('channel 36 (5180 MHz), width: 80 MHz', 'channel 6 (2437 MHz), width: 20 MHz'):
+                (self.tmp / 'iw.out').write_text(f'Interface wlan0\n\tssid F50\n\ttype AP\n\t{iw}\n')
+                self.led(shell, 'f50', 'wifi', 'on')       # one colour, whichever band
+                self.assertEqual(self.state()['keyboard-backlight'], '48', iw)
+                self.led(shell, 'f50', 'wifi', 'off')
+                self.assertEqual(self.state()['keyboard-backlight'], '0', iw)
+            # none of the U30 Air's own LEDs switched
             self.led(shell, 'f50', 'data', 'on')
+            self.led(shell, 'f50', 'wifi', 'on')
             s = self.state()
-            self.assertEqual(s['sc27xx:blue'], '255')
-            self.assertEqual({v for k, v in s.items() if k != 'sc27xx:blue'}, {'0'})
-            self.led(shell, 'f50', 'data', '5g')              # one LED: blue on 5G too
-            self.assertEqual(self.state()['sc27xx:blue'], '255')
+            self.assertEqual((s['net_blue'], s['zte-ldo0'], s['zte-ldo1'], s['zte-ldo2']), ('0', '0', '0', '0'))
+
+    def test_wifi_sync_follows_a_slow_hotspot(self):
+        # LuCI turned Wi-Fi on, hostapd comes up seconds later: "wifi sync S" keeps looking and lights it then
+        import threading
+        ap = 'Interface wlan0\n\tssid F50\n\ttype AP\n\tchannel 36 (5180 MHz), width: 80 MHz\n'
+        for shell in self.each_shell():
+            self.reset()
+            (self.tmp / 'iw.out').write_text('Interface wlan0\n\ttype AP\n')
+            t = threading.Timer(1.0, lambda: (self.tmp / 'iw.out').write_text(ap))
+            t.start()
+            try:
+                self.assertEqual(self.led(shell, 'f50', 'wifi', 'sync', '4').returncode, 0)
+            finally:
+                t.cancel()
+            self.assertEqual(self.state()['keyboard-backlight'], '48')
+
+    def test_wifi_sync(self):
+        # OpenWrt has no hook when LuCI turns Wi-Fi off or on: "wifi sync" reads whether wlan0 is a running AP
+        for shell in self.each_shell():
+            for device, lit, level in (('f50', 'keyboard-backlight', '48'), ('u30air', 'zte-ldo2', '255')):
+                self.reset()
+                self.conf.write_text('LED_TIMEOUT=0\n')
+                (self.tmp / 'iw.out').write_text('Interface wlan0\n\tssid F50\n\ttype AP\n'
+                                                  '\tchannel 36 (5180 MHz), width: 80 MHz\n')
+                self.assertEqual(self.led(shell, device, 'wifi', 'sync').returncode, 0)
+                self.assertEqual(self.state()[lit], level, device)
+                for iw in ('Interface wlan0\n\ttype AP\n', 'Interface wlan0\n\ttype managed\n', ''):
+                    (self.tmp / 'iw.out').write_text(iw)       # an AP without SSID is a stopped hostapd
+                    self.led(shell, device, 'wifi', 'on')
+                    self.led(shell, device, 'wifi', 'sync')
+                    self.assertEqual(self.state()[lit], '0', (device, iw))
 
     def test_stale_siren_stops(self):
         # a siren the pid file does not name (left behind by a restart) stops by itself: two of them flashed
@@ -1323,7 +1371,7 @@ class Led(ShellTest):
             self.setUp_leds()
 
     def test_alarm_siren(self):
-        # too hot: red and blue take turns on the PMIC's LED until the alarm is off, then the LEDs are as before
+        # too hot: red, white and blue take turns on the PMIC's LED until the alarm is off, then the LEDs are as before
         for shell in self.each_shell():
             for device in ('u30air', 'f50'):
                 self.reset()
@@ -1336,8 +1384,7 @@ class Led(ShellTest):
                     self.assertTrue(pid.exists())
                     self.led(shell, device, 'alarm', 'on')        # a second one starts no second siren
                     # one colour at a time: white (the U30 Air's green channel) never mixed in
-                    want = ({('255', '0', '0'), ('0', '255', '0'), ('0', '0', '255')} if device == 'u30air'
-                            else {('255', '0', '0'), ('0', '0', '255')})
+                    want = {('255', '0', '0'), ('0', '255', '0'), ('0', '0', '255')}
                     seen = set()
                     deadline = time.time() + 4
                     while time.time() < deadline and not want <= seen:
@@ -1345,15 +1392,13 @@ class Led(ShellTest):
                         seen.add((s['sc27xx:red'], s['sc27xx:green'], s['sc27xx:blue']))
                         time.sleep(0.03)
                     self.assertLessEqual(want, seen, device)
-                    if device == 'f50':
-                        self.assertEqual({g for _, g, _ in seen}, {'0'})    # the F50's green is green
                 finally:
                     self.led(shell, device, 'alarm', 'off')
                 self.assertFalse(pid.exists())
                 time.sleep(0.4)                                   # a killed siren writes no more
                 s = self.state()
                 self.assertEqual(s['sc27xx:red'], '0')
-                # the F50's blue is its data LED: back on; the U30 Air's white is its power LED
+                # the F50's RGB LED is its network light: blue (4G) again; the U30 Air's white is its power LED
                 self.assertEqual(s['sc27xx:blue'], '255' if device == 'f50' else '0', device)
                 self.assertEqual(s['sc27xx:green'], '255' if device == 'u30air' else '0', device)
                 self.assertEqual(self.led(shell, device, 'alarm', 'off').returncode, 0)   # off twice
@@ -1951,6 +1996,40 @@ class LanStart(ShellTest):
         self.assertLess(add, settle)
         self.assertLess(settle, join)
         self.assertLess(join, up)
+
+
+class KmsgForward(ShellTest):
+    """kmsg-forward: the first start of a boot forwards the ring buffer from its start (the early call traces came
+    before the service and were lost with --follow-new); a restart forwards only what is new, so nothing twice."""
+
+    def test_first_start_reads_from_the_start_restart_only_new(self):
+        self.stub('dmesg', 'echo "dmesg $*" >> "$STUBLOG/calls"; echo "[    1.234567] early trace"')
+        self.stub('systemd-cat', 'echo "systemd-cat $*" >> "$STUBLOG/calls"; cat >> "$STUBLOG/journal"')
+        # (it runs on Ubuntu only: GNU grep's --line-buffered, which busybox's grep has not, filters the ignore list)
+        import subprocess
+        gnu = subprocess.run(['grep', '--line-buffered', 'x'], input='x\n', capture_output=True, text=True).returncode == 0
+        for shell in self.each_shell():
+            for ignore in ('', 'chatter\n') if gnu else ('',):
+                mark = self.tmp / 'run' / 'kmsg-forwarded'
+                (self.tmp / 'ignore').write_text(ignore)
+                for f in ('calls', 'journal'):
+                    (self.tmp / f).unlink(missing_ok=True)
+                if mark.exists():
+                    mark.unlink()
+                env = dict(MU300_KMSG_MARK=mark, MU300_KMSG_IGNORE=self.tmp / 'ignore')
+                for _ in range(2):
+                    r = self.script(shell, BIN / 'kmsg-forward', **env)
+                    self.assertEqual(r.returncode, 0, r.stderr)
+                d = [c for c in (self.tmp / 'calls').read_text().splitlines() if c.startswith('dmesg')]
+                self.assertEqual(len(d), 2, d)
+                self.assertIn('--follow ', d[0] + ' ')
+                self.assertNotIn('--follow-new', d[0])
+                self.assertIn('--follow-new', d[1])
+                for c in d:
+                    self.assertNotIn('--notime', c)                     # the kernel's timestamps stay
+                    self.assertIn('--level=emerg,alert,crit,err,warn', c)
+                self.assertIn('[    1.234567] early trace', (self.tmp / 'journal').read_text())
+
 
 if __name__ == '__main__':
     unittest.main()

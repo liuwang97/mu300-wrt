@@ -272,6 +272,16 @@ static int sipa_free_thread(void *data)
 	struct sched_param param = {.sched_priority = 90};
 
 	sched_setscheduler(current, SCHED_RR, &param);
+	/*
+	 * MU300: the vendor created this thread with kthread_create() and woke it only at the IPA's first runtime
+	 * resume; on a device whose IPA never resumes (no SIM) it stayed in the kthread pre-start sleep, which is
+	 * TASK_UNINTERRUPTIBLE: +1 load and a hung-task report every two minutes. It now starts at once and waits here,
+	 * interruptibly, until that resume; from then on the loop is the vendor's (which must not run before it:
+	 * the IPA is not powered, hence the loop around an early return).
+	 */
+	while (!READ_ONCE(sender->free_started) && !kthread_should_stop())
+		wait_event_interruptible(sender->free_waitq,
+					 READ_ONCE(sender->free_started) || kthread_should_stop());
 	while (!kthread_should_stop()) {
 		wait_event_interruptible(sender->free_waitq,
 					 !sipa_sender_ck_unfree(sender) ||
@@ -339,7 +349,9 @@ int sipa_sender_prepare_resume(struct sipa_skb_sender *sender)
 {
 	atomic_set(&sender->check_suspend, 0);
 	if (unlikely(sender->init_flag)) {
-		wake_up_process(sender->free_thread);
+		/* MU300: what used to be the thread's first wake-up (sipa_free_thread) */
+		WRITE_ONCE(sender->free_started, true);
+		wake_up(&sender->free_waitq);
 		sender->init_flag = false;
 	}
 
@@ -403,6 +415,7 @@ int sipa_create_skb_sender(struct sipa_plat_drv_cfg *ipa,
 		kfree(sender);
 		return ret;
 	}
+	wake_up_process(sender->free_thread);	/* MU300: it waits for free_started */
 
 	*sender_pp = sender;
 
