@@ -377,6 +377,14 @@ function neighborRows(c, lockedCell) {
 	}).join('');
 }
 
+/* M.errText(res): a backend reply's error for the page. The backend sends one fixed English sentence in res.error
+ * (its catalog entries are extracted from the backend's sources) and the value it carried, if any, in res.detail:
+ * the sentence in the page's language, then the value as data. No error: 'Unknown error'. */
+function errText(res) {
+	if (!res || !res.error) return _('Unknown error');
+	return res.detail ? _(res.error) + ' (' + res.detail + ')' : _(res.error);
+}
+
 /* --------------------------------------------------------------- feedback
  * M.toast(text, {type, timeout}): one notice at the top, type = info|success|error|busy (busy has a spinner, for
  * work in progress). Returns {update(text, type), close()}, so a long operation updates one toast instead of
@@ -597,6 +605,6 @@ return baseclass.extend({
 	carrierName: carrierName, qLevel: qLevel, qLevelLabel: qLevelLabel, qLabel: qLabel, qCol: qCol, qScore: qScore,
 	esc: esc, fmtBytes: fmtBytes, fmtRate: fmtRate, fmtUptime: fmtUptime, PLMN_CN: PLMN_CN,
 	injectCss: injectCss, v: v, set: set, spark: spark, neighborRows: neighborRows,
-	toast: toast, busy: busy, confirmBox: confirmBox, alertBox: alertBox, choiceBox: choiceBox,
+	errText: errText, toast: toast, busy: busy, confirmBox: confirmBox, alertBox: alertBox, choiceBox: choiceBox,
 	notify: notify, watchSms: watchSms
 });

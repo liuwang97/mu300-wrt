@@ -357,8 +357,8 @@ fi
 
 # "no answer at all" is a modem/daemon problem, not "no signal".
 if [ -z "$CFUN$CEREG$CESQ$SP_LTE$SP_NR$COPS" ]; then
-    ERR="AT backend did not answer (radio off, modem restarting, or adapter unavailable)"
-    printf '{"ts":%d,"error":%s}\n' "$(now)" "$(qs "$ERR")" > "$SIGF.part" && mv "$SIGF.part" "$SIGF"
+    printf '{"ts":%d,"error":"AT backend did not answer (radio off, modem restarting, or adapter unavailable)"}\n' \
+        "$(now)" > "$SIGF.part" && mv "$SIGF.part" "$SIGF"
     [ "$MODE" = full ] && cp "$SIGF" "$CELL"
     exit 0
 fi

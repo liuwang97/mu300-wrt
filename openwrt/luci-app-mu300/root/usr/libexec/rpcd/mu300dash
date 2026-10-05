@@ -120,7 +120,7 @@ age_of() { [ -s "$1" ] && echo $(( $(now) - $(date -r "$1" +%s 2>/dev/null || ec
 
 m_status() {
     local info cage sage busy=0 fbusy=0
-    info=$(json_obj "$("$DASH/dashboard-info" 2>/dev/null)") || info='{"error":"dashboard-info failed"}'
+    info=$(json_obj "$("$DASH/dashboard-info" 2>/dev/null)") || info='{"error":"Dashboard info failed"}'
     cage=$(age_of "$CELL"); sage=$(age_of "$SIGF")
     # two refresh tiers, both detached: the fast one keeps the serving-cell data
     # within ~3 s of reality, the full one refreshes neighbours/QoS/operator.
@@ -155,7 +155,7 @@ m_signal() {
     # read's output. Serve the last snapshot until the apply finishes.
     if [ -d /run/unisoc-modem-lock-apply ]; then
         json_obj "$(cat "$SIGF" 2>/dev/null)" ||
-            printf '{"error":"正在应用网络锁定，暂无实时信号"}\n'
+            printf '{"error":"Applying network locks: no live signal right now"}\n'
         return
     fi
     local live="$DIR/live.$$"
@@ -166,7 +166,7 @@ m_signal() {
     MU300_DASH_DIR="$live" MU300_DASH_LOCK_DIR="$DIR" \
         "$DASH/cell" fast >/dev/null 2>&1
     json_obj "$(cat "$live/sig.json" 2>/dev/null)" ||
-        printf '{"error":"live signal read failed"}\n'
+        printf '{"error":"Live signal read failed"}\n'
     rm -rf "$live"
 }
 
@@ -181,8 +181,8 @@ m_act() {
         vpn)                allowed "$arg" '(start|stop)' ;;
         os)                 allowed "$arg" 'android' ;;
         modem-reset|reboot) [ -z "$arg" ] ;;
-        *)                  refuse 'unknown op'; return ;;
-    esac || { refuse 'invalid argument for this op'; return; }
+        *)                  refuse 'Unknown op'; return ;;
+    esac || { refuse 'Invalid argument for this op'; return; }
     case $op in
         # the SFUN dance can run half a minute: never inside the request
         radio|modem-reset|reboot|vpn)
@@ -193,7 +193,7 @@ m_act() {
         # rejected, tool missing) must reach the page instead of a silent no-op
         data|wifi|os)
             out=$("$DASH/action" "$op" "$arg" 2>/dev/null)
-            reply_obj "$out" 'the action gave no valid reply'
+            reply_obj "$out" 'The action gave no valid reply'
             ;;
     esac
 }
@@ -216,12 +216,12 @@ m_at() {
     inp '@.cmd'; cmd=$V
     # one line of printable ASCII (a CR or LF would send a second command)
     if ! is_ascii_line "$cmd" || [ ${#cmd} -gt "$AT_MAX" ]; then
-        refuse 'an AT command is one line of printable ASCII, at most 512 characters'
+        refuse 'An AT command is one line of printable ASCII, at most 512 characters'
         return
     fi
-    allowed "$cmd" '[Aa][Tt].*' || { refuse 'must be an AT command'; return; }
+    allowed "$cmd" '[Aa][Tt].*' || { refuse 'Must be an AT command'; return; }
     case "$cmd" in *';'*)
-        refuse 'no ";" command chaining'
+        refuse 'No ";" command chaining'
         return
         ;;
     esac
@@ -229,20 +229,20 @@ m_at() {
     # channel until a reboot: denied in any spelling (case, spaces, quotes,
     # leading zeros, more parameters, after another command on the same line)
     if at_wedges "$cmd"; then
-        refuse 'denied: this command wedges the AT port until a reboot'
+        refuse 'Denied: this command wedges the AT port until a reboot'
         return
     fi
     # a lock apply in flight means the modem is restarting (SFUN) - say so instead
     # of a generic busy, so it does not look like the console died
     if [ -d /run/unisoc-modem-lock-apply ]; then
-        printf '{"ok":0,"busy":1,"error":"正在应用网络锁定，调制解调器重启中（约半分钟），请稍后再试"}\n'
+        printf '{"ok":0,"busy":1,"error":"Applying network locks: the modem is restarting (about half a minute), try again shortly"}\n'
         return
     fi
     # mu300-at itself gives up waiting for the lock and says so; turn that into a
     # retryable "busy" instead of letting the page show a dead console
     reply=$("$AT" -t 8 "$cmd" 2>&1)
     case "$reply" in *"busy"*)
-        printf '{"ok":0,"busy":1,"error":"AT 通道正忙，命令未发出，请重试"}\n'
+        printf '{"ok":0,"busy":1,"error":"The AT channel is busy; the command was not sent, try again"}\n'
         return
         ;;
     esac
@@ -259,7 +259,7 @@ m_at_history() {
 m_lock_get() {
     local fresh out
     inp '@.fresh'; fresh=$V
-    allowed "$fresh" '(0|1)?' || { refuse 'fresh must be 0 or 1'; return; }
+    allowed "$fresh" '(0|1)?' || { refuse 'The fresh parameter must be 0 or 1'; return; }
     # default serves the lock cache instantly (a real read is seven AT
     # round trips, about a second each); fresh=1 does the real read -
     # the page uses it only behind the manual refresh button
@@ -268,7 +268,7 @@ m_lock_get() {
     else
         out=$("$DASH/lock" get 2>/dev/null)
     fi
-    json_obj "$out" || printf '{"error":"lock read failed"}\n'
+    json_obj "$out" || printf '{"error":"Lock read failed"}\n'
 }
 
 # the values unisoc-modem/lock apply takes, per kind: bands are up to 32
@@ -290,9 +290,9 @@ m_lock_set() {
     inp '@.val'; val=$V
     case "$kind" in
         mode|endc|lte|nr|cell|auto_apply) ;;
-        *) refuse 'unknown lock kind'; return ;;
+        *) refuse 'Unknown lock kind'; return ;;
     esac
-    lock_val_ok "$kind" "$val" || { refuse 'invalid value for this lock kind'; return; }
+    lock_val_ok "$kind" "$val" || { refuse 'Invalid value for this lock kind'; return; }
     # applying restarts the protocol stack (SFUN 5 -> 4): half a minute without
     # cellular - exactly the thing that must never run inside a request
     # queued=1 tells the page another apply is still running (SFUN restart);
@@ -311,9 +311,9 @@ SMS_ID='[0-9]{1,6}'
 m_sms_list() {
     local page out
     inp '@.page'; page=${V:-1}
-    allowed "$page" "$SMS_ID" || { refuse 'invalid page'; return; }
+    allowed "$page" "$SMS_ID" || { refuse 'Invalid page'; return; }
     out=$("$SMS" list "$page" 2>/dev/null) || out=''
-    [ -n "$out" ] || { printf '{"error":"mu300-sms 不可用（短信服务没装或没起来）"}\n'; return; }
+    [ -n "$out" ] || { printf '{"error":"mu300-sms is not available (the SMS service is not installed or not running)"}\n'; return; }
     # first line "pool: N message(s), U unread - page P/T (10 per page)",
     # then fixed-width rows (see mu300-sms cmd_list); parse by column position
     printf '%s\n' "$out" | awk "$JSON_ESC"'
@@ -337,13 +337,13 @@ m_sms_list() {
                 printf "%s{\"id\":\"%s\",\"status\":\"%s\",\"dir\":\"%s\",\"peer\":\"%s\",\"time\":\"%s\",\"preview\":\"%s\"}",
                     (n++ ? "," : ""), id, jesc(st), jesc(dir), jesc(peer), jesc(tm), jesc(prev)
         }
-        END { if (NR) print "]}"; else print "{\"error\":\"no output\"}" }'
+        END { if (NR) print "]}"; else print "{\"error\":\"No output\"}" }'
 }
 
 m_sms_show() {
     local id text
     inp '@.id'; id=$V
-    allowed "$id" "$SMS_ID" || { refuse 'bad id'; return; }
+    allowed "$id" "$SMS_ID" || { refuse 'Bad ID'; return; }
     if text=$("$SMS" show "$id" 2>/dev/null) && [ -n "$text" ]; then
         printf '{"ok":1,"text":%s}\n' "$(json_str "$text")"
     else
@@ -363,15 +363,15 @@ m_sms_send() {
     local num text out
     inp '@.num'; num=$V
     inp '@.text'; text=$V
-    allowed "$num" '\+?[0-9]{1,20}' || { printf '{"ok":0,"error":"号码只能是数字（可带 +）"}\n'; return; }
-    [ -n "$text" ] || { printf '{"ok":0,"error":"内容为空"}\n'; return; }
-    [ "$(sms_chars "$text")" -le "$SMS_MAX" ] || { printf '{"ok":0,"error":"内容太长（>480 字符）"}\n'; return; }
-    sms_text_ok "$text" || { refuse 'the message contains a control character'; return; }
+    allowed "$num" '\+?[0-9]{1,20}' || { refuse 'The number may only contain digits (and a leading +)'; return; }
+    [ -n "$text" ] || { refuse 'The message is empty'; return; }
+    [ "$(sms_chars "$text")" -le "$SMS_MAX" ] || { refuse 'The message is too long (over 480 characters)'; return; }
+    sms_text_ok "$text" || { refuse 'The message contains a control character'; return; }
     # the text travels on stdin (adapter contract: send --stdin NUMBER), never
     # as an argument where it could read as an option
     out=$(printf '%s' "$text" | "$SMS" send --stdin "$num" 2>&1)
     case "$out" in
-        *"busy"*) printf '{"ok":0,"busy":1,"error":"AT 通道正忙，命令未发出，请重试"}\n' ;;
+        *"busy"*) printf '{"ok":0,"busy":1,"error":"The AT channel is busy; the command was not sent, try again"}\n' ;;
         *sent*|*OK*)
             printf '{"ok":1,"reply":%s}\n' "$(json_str "$out")" ;;
         *)
@@ -383,12 +383,12 @@ m_sms_delete() {
     local id sim out
     inp '@.id'; id=$V
     inp '@.sim'; sim=$V
-    allowed "$id" "(all|$SMS_ID)" || { refuse 'bad id'; return; }
+    allowed "$id" "(all|$SMS_ID)" || { refuse 'Bad ID'; return; }
     # sim=1 (the page sends true) also removes the message from the SIM storage
     case $sim in
         ''|0|false) sim=0 ;;
         1|true)     sim=1 ;;
-        *)          refuse 'sim must be 0 or 1'; return ;;
+        *)          refuse 'The sim parameter must be 0 or 1'; return ;;
     esac
     if [ "$sim" = 1 ]; then
         out=$("$SMS" delete "$id" --sim 2>&1)
@@ -405,12 +405,12 @@ m_sms_sync() {
 
 m_sysinfo() {
     # A purely local snapshot: no AT, no cache, no kick - the first screen draws this first
-    json_obj "$("$DASH/dashboard-info" 2>/dev/null)" || printf '{"error":"dashboard-info failed"}\n'
+    json_obj "$("$DASH/dashboard-info" 2>/dev/null)" || printf '{"error":"Dashboard info failed"}\n'
 }
 
 # ---------------------------------------------------------------------- USB
-m_usb_get() { reply_obj "$("$DASH/device-usb" get 2>/dev/null)" 'device-usb gave no valid reply'; }
-m_usb_net_list() { reply_obj "$("$DASH/device-usb" net-list 2>/dev/null)" 'device-usb gave no valid reply'; }
+m_usb_get() { reply_obj "$("$DASH/device-usb" get 2>/dev/null)" 'The USB adapter (device-usb) gave no valid reply'; }
+m_usb_net_list() { reply_obj "$("$DASH/device-usb" net-list 2>/dev/null)" 'The USB adapter (device-usb) gave no valid reply'; }
 
 m_usb_set() {
     local kind value scope auto out
@@ -418,22 +418,22 @@ m_usb_set() {
     inp '@.value'; value=$V
     inp '@.scope'; scope=$V
     inp '@.auto'; auto=$V
-    allowed "$auto" '(0|1)' || { refuse 'auto must be 0 or 1'; return; }
+    allowed "$auto" '(0|1)' || { refuse 'The auto parameter must be 0 or 1'; return; }
     case $kind in
         role)
-            allowed "$value" '(host|device)' || { refuse 'invalid USB role'; return; }
-            [ -z "$scope" ] || { refuse 'a USB role takes no scope'; return; }
+            allowed "$value" '(host|device)' || { refuse 'Invalid USB role'; return; }
+            [ -z "$scope" ] || { refuse 'A USB role takes no scope'; return; }
             out=$("$DASH/device-usb" set-role "$value" "$auto" 2>/dev/null)
             ;;
         net)
-            allowed "$value" '(ncm|ecm|rndis)' || { refuse 'invalid USB network mode'; return; }
-            allowed "$scope" '(once|permanent)' || { refuse 'invalid USB network scope'; return; }
+            allowed "$value" '(ncm|ecm|rndis)' || { refuse 'Invalid USB network mode'; return; }
+            allowed "$scope" '(once|permanent)' || { refuse 'Invalid USB network scope'; return; }
             out=$("$DASH/device-usb" set-net "$value" "$scope" "$auto" 2>/dev/null)
             ;;
         *)
-            refuse 'unknown USB setting'; return ;;
+            refuse 'Unknown USB setting'; return ;;
     esac
-    reply_obj "$out" 'device-usb gave no valid reply'
+    reply_obj "$out" 'The USB adapter (device-usb) gave no valid reply'
 }
 
 # a network interface name: at most 15 characters (IFNAMSIZ), starting with a
@@ -441,8 +441,8 @@ m_usb_set() {
 m_usb_net_add() {
     local iface
     inp '@.iface'; iface=$V
-    allowed "$iface" '[A-Za-z0-9][A-Za-z0-9_.:-]{0,14}' || { refuse 'invalid interface name'; return; }
-    reply_obj "$("$DASH/device-usb" net-add "$iface" 2>/dev/null)" 'device-usb gave no valid reply'
+    allowed "$iface" '[A-Za-z0-9][A-Za-z0-9_.:-]{0,14}' || { refuse 'Invalid interface name'; return; }
+    reply_obj "$("$DASH/device-usb" net-add "$iface" 2>/dev/null)" 'The USB adapter (device-usb) gave no valid reply'
 }
 
 do_list() {
@@ -489,7 +489,7 @@ list)
 call)
     INPUT=$(cat 2>/dev/null)
     if input_too_large; then
-        refuse 'request too large'
+        refuse 'Request too large'
         exit 0
     fi
     case ${2:-} in
@@ -510,7 +510,7 @@ call)
         usb_set)      run_m usb_set      m_usb_set ;;
         usb_net_list) run_m usb_net_list m_usb_net_list ;;
         usb_net_add)  run_m usb_net_add  m_usb_net_add ;;
-        *)            refuse 'no such method' ;;
+        *)            refuse 'No such method' ;;
     esac
     ;;
 *)

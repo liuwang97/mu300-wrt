@@ -96,7 +96,7 @@ return view.extend({
 					if (!choice) return;
 					L.resolveDefault(M.callSmsDel(id, choice === 'sim')).then(function(r) {
 						r = r || {};
-						if (r.ok === false) { self.note(_('Delete failed'), 'error'); return; }
+						if (!r.ok) { self.note(r.error ? M.errText(r) : _('Delete failed'), 'error'); return; }
 						delete self.cache[id];
 						self.note(choice === 'sim' ? _('Deleted (local + SIM)') : _('Deleted (local only)'), 'success');
 						self.reload();
@@ -123,8 +123,9 @@ return view.extend({
 				self.Q('sms-text').value = '';
 				setTimeout(function() { self.reload(); }, 2500);
 			} else {
-				self.note((r.busy ? _('Sending failed: %s (the AT channel is busy, try again shortly)') : _('Sending failed: %s'))
-					.format(r.error || _('Unknown error')), 'error');
+				/* the backend's error is a whole sentence (the busy channel, a refused number, "Sending failed" with
+				 * the modem's last line in detail): shown alone, so nothing is said twice */
+				self.note(r.error ? M.errText(r) : _('Sending failed'), 'error');
 			}
 		}, function() { M.busy(btn, false); self.note(_('Request failed'), 'error'); });
 	},
@@ -137,7 +138,7 @@ return view.extend({
 			return L.resolveDefault(M.callSmsList(page)).then(function(r) {
 				r = r || {};
 				if (r.error) {
-					self.Q('sms-convs').innerHTML = '<div class="mud-note">' + M.esc(r.error) + '</div>';
+					self.Q('sms-convs').innerHTML = '<div class="mud-note">' + M.esc(M.errText(r)) + '</div>';
 					return;
 				}
 				all = all.concat(r.msgs || []);

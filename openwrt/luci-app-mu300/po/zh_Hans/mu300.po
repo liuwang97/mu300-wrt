@@ -75,6 +75,9 @@ msgstr "已锁定"
 msgid "Lock"
 msgstr "锁定"
 
+msgid "Unknown error"
+msgstr "未知错误"
+
 msgid "Confirm"
 msgstr "确认"
 
@@ -123,14 +126,8 @@ msgstr "会话历史（点击复用）"
 msgid "(no output)"
 msgstr "(无输出)"
 
-msgid "Error: %s (the AT channel is busy; the command was not sent)"
-msgstr "错误：%s（AT 通道正忙，命令未发出）"
-
 msgid "Error: %s"
 msgstr "错误：%s"
-
-msgid "Failed"
-msgstr "失败"
 
 msgid "Request failed"
 msgstr "调用失败"
@@ -218,9 +215,6 @@ msgstr "正在切换 USB 角色…"
 
 msgid "Switch failed: %s"
 msgstr "切换失败：%s"
-
-msgid "Unknown error"
-msgstr "未知错误"
 
 msgid "Management connection lost; reconnect to confirm the USB role."
 msgstr "管理连接已中断；请重新连接后确认 USB 角色。"
@@ -747,15 +741,6 @@ msgstr "EN-DC 状态回读超时，点「刷新锁定状态」确认"
 msgid "Apply-at-startup status readback timed out; use “Refresh lock status” to confirm"
 msgstr "开机自动应用状态回读超时，点「刷新锁定状态」确认"
 
-msgid "Automatic (5G/4G)"
-msgstr "自动（5G/4G）"
-
-msgid "5G SA only"
-msgstr "仅 5G SA"
-
-msgid "5G NSA only"
-msgstr "仅 5G NSA"
-
 msgid "Locked cells"
 msgstr "已锁定小区"
 
@@ -903,11 +888,8 @@ msgstr "发送中…"
 msgid "Sent; the list refreshes shortly."
 msgstr "已发送，稍后自动刷新。"
 
-msgid "Sending failed: %s (the AT channel is busy, try again shortly)"
-msgstr "发送失败：%s（AT 通道正忙，稍后重试）"
-
-msgid "Sending failed: %s"
-msgstr "发送失败：%s"
+msgid "Sending failed"
+msgstr "发送失败"
 
 msgid "· %d messages, %d unread · %d conversations"
 msgstr "· %d 条，%d 条未读 · %d 个会话"
@@ -923,3 +905,210 @@ msgstr "我: %s"
 
 msgid "Delete"
 msgstr "删除"
+
+msgid "Dashboard info failed"
+msgstr "获取仪表盘信息失败"
+
+msgid "Applying network locks: no live signal right now"
+msgstr "正在应用网络锁定，暂无实时信号"
+
+msgid "Live signal read failed"
+msgstr "读取实时信号失败"
+
+msgid "Unknown op"
+msgstr "未知操作"
+
+msgid "Invalid argument for this op"
+msgstr "此操作的参数无效"
+
+msgid "The action gave no valid reply"
+msgstr "操作没有返回有效结果"
+
+msgid "An AT command is one line of printable ASCII, at most 512 characters"
+msgstr "AT 命令须为一行可打印 ASCII 字符，最多 512 个字符"
+
+msgid "Must be an AT command"
+msgstr "必须是 AT 命令"
+
+msgid "No \";\" command chaining"
+msgstr "不允许用 \";\" 串联命令"
+
+msgid "Denied: this command wedges the AT port until a reboot"
+msgstr "已拒绝：此命令会让 AT 端口卡死，直到重启"
+
+msgid "Applying network locks: the modem is restarting (about half a minute), try again shortly"
+msgstr "正在应用网络锁定，调制解调器重启中（约半分钟），请稍后再试"
+
+msgid "The AT channel is busy; the command was not sent, try again"
+msgstr "AT 通道正忙，命令未发出，请重试"
+
+msgid "The fresh parameter must be 0 or 1"
+msgstr "fresh 参数必须是 0 或 1"
+
+msgid "Lock read failed"
+msgstr "读取锁定状态失败"
+
+msgid "Unknown lock kind"
+msgstr "未知的锁定类型"
+
+msgid "Invalid value for this lock kind"
+msgstr "此锁定类型的值无效"
+
+msgid "Invalid page"
+msgstr "页码无效"
+
+msgid "mu300-sms is not available (the SMS service is not installed or not running)"
+msgstr "mu300-sms 不可用（短信服务没装或没起来）"
+
+msgid "No output"
+msgstr "无输出"
+
+msgid "Bad ID"
+msgstr "ID 无效"
+
+msgid "Read failed"
+msgstr "读取失败"
+
+msgid "The number may only contain digits (and a leading +)"
+msgstr "号码只能是数字（可带 +）"
+
+msgid "The message is empty"
+msgstr "内容为空"
+
+msgid "The message is too long (over 480 characters)"
+msgstr "内容太长（超过 480 个字符）"
+
+msgid "The message contains a control character"
+msgstr "内容包含控制字符"
+
+msgid "The sim parameter must be 0 or 1"
+msgstr "sim 参数必须是 0 或 1"
+
+msgid "The USB adapter (device-usb) gave no valid reply"
+msgstr "USB 适配程序（device-usb）没有返回有效结果"
+
+msgid "The auto parameter must be 0 or 1"
+msgstr "auto 参数必须是 0 或 1"
+
+msgid "Invalid USB role"
+msgstr "USB 角色无效"
+
+msgid "A USB role takes no scope"
+msgstr "USB 角色不带生效范围"
+
+msgid "Invalid USB network mode"
+msgstr "USB 网络模式无效"
+
+msgid "Invalid USB network scope"
+msgstr "USB 网络生效范围无效"
+
+msgid "Unknown USB setting"
+msgstr "未知的 USB 设置"
+
+msgid "Invalid interface name"
+msgstr "接口名称无效"
+
+msgid "Request too large"
+msgstr "请求过大"
+
+msgid "No such method"
+msgstr "没有此方法"
+
+msgid "Radio did not come up"
+msgstr "射频未能开启"
+
+msgid "Expected on or off"
+msgstr "应为 on 或 off"
+
+msgid "VPN integration is not provided by this platform"
+msgstr "此平台不提供 VPN 集成"
+
+msgid "Dual-boot integration is not provided by this platform"
+msgstr "此平台不提供双系统启动集成"
+
+msgid "mu300-next-boot failed"
+msgstr "mu300-next-boot 执行失败"
+
+msgid "AT backend did not answer (radio off, modem restarting, or adapter unavailable)"
+msgstr "AT 后端无应答（射频关闭、调制解调器重启中或适配器不可用）"
+
+msgid "USB role adapter is not executable"
+msgstr "USB 角色适配程序不可执行"
+
+msgid "USB role adapter failed"
+msgstr "USB 角色适配程序执行失败"
+
+msgid "USB role switch is unavailable"
+msgstr "USB 角色切换不可用"
+
+msgid "USB role switch failed"
+msgstr "USB 角色切换失败"
+
+msgid "USB role switch was refused by platform safety checks"
+msgstr "USB 角色切换被平台安全检查拒绝"
+
+msgid "Cannot create USB boot settings directory"
+msgstr "无法创建 USB 启动设置目录"
+
+msgid "Cannot write USB boot settings"
+msgstr "无法写入 USB 启动设置"
+
+msgid "Cannot save USB boot settings"
+msgstr "无法保存 USB 启动设置"
+
+msgid "Invalid boot-auto value"
+msgstr "开机自动应用的值无效"
+
+msgid "Device is the boot default; host auto-apply is the only persistent role"
+msgstr "设备模式是开机默认；只有主机模式的开机自动应用会保留"
+
+msgid "Cannot save USB role policy"
+msgstr "无法保存 USB 角色策略"
+
+msgid "Cannot disable USB network boot policy"
+msgstr "无法关闭 USB 网络开机策略"
+
+msgid "Cannot commit USB role policy"
+msgstr "无法提交 USB 角色策略"
+
+msgid "USB network mode is unavailable in host role"
+msgstr "主机模式下不能使用 USB 网络模式"
+
+msgid "Disable host boot-auto before configuring USB network"
+msgstr "配置 USB 网络前请先关闭主机模式的开机自动应用"
+
+msgid "Cannot save USB network policy"
+msgstr "无法保存 USB 网络策略"
+
+msgid "Cannot commit USB network policy"
+msgstr "无法提交 USB 网络策略"
+
+msgid "USB host mode is required"
+msgstr "需要 USB 主机模式"
+
+msgid "Not a USB network interface"
+msgstr "不是 USB 网络接口"
+
+msgid "LAN bridge device section was not found"
+msgstr "未找到 LAN 网桥设备配置节"
+
+msgid "Cannot bring USB network interface up"
+msgstr "无法启用 USB 网络接口"
+
+msgid "Cannot add interface to LAN bridge"
+msgstr "无法把接口加入 LAN 网桥"
+
+msgid "Cannot save LAN bridge"
+msgstr "无法保存 LAN 网桥"
+
+msgid "Network reload failed"
+msgstr "网络重新加载失败"
+
+msgid "Cannot attach USB interface to LAN bridge"
+msgstr "无法把 USB 接口接入 LAN 网桥"
+
+msgid "Lock cache unavailable"
+msgstr "锁定缓存不可用"
+
+msgid "No serving cell to lock to"
+msgstr "没有可锁定的服务小区"

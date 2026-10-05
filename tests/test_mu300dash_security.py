@@ -10,6 +10,7 @@ raw control characters inside strings accepted), except that a NUL inside a stri
 which is the harder case for the backend."""
 import json
 import subprocess
+import sys
 import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
@@ -637,6 +638,45 @@ class FixRound1(Mu300Dash):
             self.assertEqual(self.reply(r), {'ok': 0, 'error': 'Sending failed', 'detail': 'no message "4"\\x'})
             r, _, _ = self.call(shell, 'sms_delete', {'id': '4'})
             self.assertEqual(self.reply(r), {'ok': 0, 'error': 'Delete failed', 'detail': 'no message "4"\\x'})
+
+    def test_errors_are_english_sentences_in_the_catalogs(self):
+        # the page shows _(error): each error is one fixed English sentence that tools/luci-i18n.py extracts (so it
+        # is in po/tr and po/zh_Hans), never Chinese; the value it carries, if any, is in detail
+        known = set(subprocess.run([sys.executable, str(TOP / 'tools' / 'luci-i18n.py'), 'extract'], check=True,
+                                   capture_output=True, text=True, encoding='utf-8').stdout.splitlines())
+        busy = 'The AT channel is busy; the command was not sent, try again'
+        cases = [
+            # (label, method, params, {stub: output}, error)
+            ('number', 'sms_send', {'num': '12a', 'text': 'hi'}, {},
+             'The number may only contain digits (and a leading +)'),
+            ('empty', 'sms_send', {'num': '12', 'text': ''}, {}, 'The message is empty'),
+            ('too long', 'sms_send', {'num': '12', 'text': 'x' * 481}, {},
+             'The message is too long (over 480 characters)'),
+            ('sms busy', 'sms_send', {'num': '12', 'text': 'hi'}, {'sms': 'AT channel busy\n'}, busy),
+            ('at busy', 'at', {'cmd': 'ATI'}, {'at': 'mu300-at: lock busy\n'}, busy),
+            ('no sms', 'sms_list', {}, {'sms': ''},
+             'mu300-sms is not available (the SMS service is not installed or not running)'),
+            ('read', 'sms_show', {'id': '4'}, {'sms': ''}, 'Read failed'),
+            ('op', 'act', {'op': 'dance'}, {}, 'Unknown op'),
+            ('kind', 'lock_set', {'kind': 'x', 'val': 'on'}, {}, 'Unknown lock kind'),
+            ('id', 'sms_show', {'id': 'x'}, {}, 'Bad ID'),
+            ('wedge', 'at', {'cmd': 'AT+SPENGMD=0,1,0'}, {}, 'Denied: this command wedges the AT port until a reboot'),
+            ('not at', 'at', {'cmd': 'ti'}, {}, 'Must be an AT command'),
+            ('usb', 'usb_set', {'kind': 'x', 'auto': '0'}, {}, 'Unknown USB setting'),
+            ('lock read', 'lock_get', {}, {'lock': 'garbage'}, 'Lock read failed'),
+            ('method', 'nosuch', {}, {}, 'No such method'),
+        ]
+        for shell in self.each_shell():
+            for label, method, params, outputs, error in cases:
+                with self.subTest(case=label):
+                    for p in self.out.iterdir():
+                        p.unlink()
+                    for name, text in outputs.items():
+                        self.output(name, text)
+                    obj = self.reply(self.call(shell, method, params)[0])
+                    self.assertEqual(obj.get('error'), error, obj)
+                    self.assertIn(error, known)
+                    self.assertNotIn('detail', obj)
 
     def test_the_runtime_directory_is_root_only(self):
         for shell in self.each_shell():

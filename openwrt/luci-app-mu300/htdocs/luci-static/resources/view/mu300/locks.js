@@ -115,7 +115,7 @@ return view.extend({
 				r = r || {};
 				if (!r.ok) {
 					M.busy(btn, false);
-					self.note(_('Failed: %s').format(r.error || _('Unknown error')), 'error');
+					self.note(_('Failed: %s').format(M.errText(r)), 'error');
 					return;
 				}
 				if (kind == 'endc') {
@@ -234,7 +234,7 @@ return view.extend({
 			L.resolveDefault(M.callLockSet('cell', 'off-' + rat)).then(function(r) {
 				r = r || {};
 				M.busy(btn, false);
-				if (!r.ok) { self.note(_('Unlock failed: %s').format(r.error || _('Unknown error')), 'error'); return; }
+				if (!r.ok) { self.note(_('Unlock failed: %s').format(M.errText(r)), 'error'); return; }
 					self.note(_('Unlock started in background (SFUN restart, about 30 seconds); reading the status back…'), 'busy');
 					self.readback(Date.now());
 				});
@@ -255,7 +255,7 @@ return view.extend({
 			L.resolveDefault(M.callLockSet('cell', key)).then(function(r) {
 				r = r || {};
 				M.busy(btn, false);
-				if (!r.ok) { self.note(_('Lock failed: %s').format(r.error || _('Unknown error')), 'error'); return; }
+				if (!r.ok) { self.note(_('Lock failed: %s').format(M.errText(r)), 'error'); return; }
 					self.note(_('Locked %s in the background (SFUN restart, about 30 seconds); reading the status back…').format(key), 'busy');
 					self.readback(Date.now());
 				});
@@ -299,7 +299,7 @@ return view.extend({
 		var e = this.Q('srv'); if (!e) return;
 		this.lastCell = c;
 		if (!c || c.error) {
-			this.Q('srv-rat').textContent = c && c.error ? c.error : _('No serving-network data');
+			this.Q('srv-rat').textContent = c && c.error ? M.errText(c) : _('No serving-network data');
 			e.innerHTML = '';
 			return;
 		}
@@ -398,8 +398,7 @@ return view.extend({
 		var l = this.lastLock || {};
 		var self = this;
 		var setR = function(id, txt) { var e = self.Q(id); if (e) e.textContent = (txt == null || txt === '') ? '--' : txt; };
-		if (l.error) { setR('lock-nrline', l.error); setR('lock-lteline', ''); return; }
-		var MODE_TXT = { auto: _('Automatic (5G/4G)'), '4g': _('4G only'), sa: _('5G SA only'), nsa: _('5G NSA only') };
+		if (l.error) { setR('lock-nrline', M.errText(l)); setR('lock-lteline', ''); return; }
 		var cur = this.Q('lock-modes');
 		if (cur) Array.prototype.forEach.call(cur.querySelectorAll('.mud-btn'), function(b) {
 			b.className = (b.getAttribute('data-mode') === (l.mode && l.mode.label)) ? 'mud-btn on' : 'mud-btn';

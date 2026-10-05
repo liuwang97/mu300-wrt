@@ -243,7 +243,7 @@ return view.extend({
 				r = r || {};
 				M.busy(btn, false);
 				M.toast(r.ok ? (r.started ? _('Started in background: %s') : _('Done: %s')).format(r.op || op)
-					: _('Failed: %s').format(r.error || _('Unknown error')),
+					: _('Failed: %s').format(M.errText(r)),
 					{ type: r.ok ? 'success' : 'error' });
 			}, function() { M.busy(btn, false); M.toast(_('Request failed'), { type: 'error' }); });
 		};
@@ -303,7 +303,7 @@ return view.extend({
 				r = r || {};
 				M.busy(btn, false);
 					M.toast(r.ok ? _('Locked %s in the background; the status will refresh shortly').format(key)
-						: _('Lock failed: %s').format(r.error || _('Unknown error')),
+						: _('Lock failed: %s').format(M.errText(r)),
 						{ type: r.ok ? 'success' : 'error' });
 					setTimeout(function() { self.refreshLock(); }, 35000);
 				});
@@ -460,7 +460,7 @@ return view.extend({
 			reg = regmap[c.reg.stat] || _('Status %s').format(c.reg.stat);
 			if (c.reg.tac) reg += ' · TAC ' + c.reg.tac;
 			if (c.reg5g && c.reg5g.stat == 1) reg += ' · 5G ' + regmap[c.reg5g.stat];
-		} else if (c && c.error) reg = c.error;
+		} else if (c && c.error) reg = M.errText(c);
 		M.set('reg', reg);
 
 		var anchor = (c && c.lte && c.lte.band) ? c.lte : null;

@@ -99,7 +99,7 @@ return view.extend({
 				M.callUsbSet('role', role, '', auto).then(function(r) {
 					M.busy(btn, false);
 					if (!r || r.ok !== 1) {
-						msg.update(r && r.ok === 0 ? _('Switch failed: %s').format(r.error || _('Unknown error')) : _('Management connection lost; reconnect to confirm the USB role.'), r && r.ok === 0 ? 'error' : 'info');
+						msg.update(r && r.ok === 0 ? _('Switch failed: %s').format(M.errText(r)) : _('Management connection lost; reconnect to confirm the USB role.'), r && r.ok === 0 ? 'error' : 'info');
 						setTimeout(function() { msg.close(); }, 6000);
 						return;
 					}
@@ -124,7 +124,7 @@ return view.extend({
 				var btn = self.q('net-apply'); M.busy(btn, true);
 				var msg = M.toast(_('Saving USB network settings…'), { type: 'busy', timeout: 0 });
 				L.resolveDefault(M.callUsbSet('net', mode, scope, auto), {}).then(function(r) {
-					M.busy(btn, false); msg.update(r.ok ? _('Settings saved') : _('Save failed: %s').format(r.error || _('Unknown error')), r.ok ? 'success' : 'error');
+					M.busy(btn, false); msg.update(r.ok ? _('Settings saved') : _('Save failed: %s').format(M.errText(r)), r.ok ? 'success' : 'error');
 					setTimeout(function() { msg.close(); }, 3500);
 					if (r.ok) self.reloadState();
 				});
@@ -188,7 +188,7 @@ return view.extend({
 						if (!yes) return;
 						M.busy(btn, true); var msg = M.toast(_('Adding USB adapter…'), { type: 'busy', timeout: 0 });
 						L.resolveDefault(M.callUsbNetAdd(d.name), {}).then(function(a) {
-							M.busy(btn, false); msg.update(a.ok ? _('Added to LAN') : _('Add failed: %s').format(a.error || _('Unknown error')), a.ok ? 'success' : 'error');
+							M.busy(btn, false); msg.update(a.ok ? _('Added to LAN') : _('Add failed: %s').format(M.errText(a)), a.ok ? 'success' : 'error');
 							setTimeout(function() { msg.close(); }, 3500); self.refreshAdapters();
 						});
 					});

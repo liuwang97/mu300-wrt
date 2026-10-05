@@ -88,17 +88,27 @@ class Catalogs(unittest.TestCase):
                 encoding='utf-8')
         return root
 
-    @unittest.expectedFailure          # the fork's state; Tasks 13-16 make it clean, Task 16 removes this line
     def test_check_is_clean(self):
         r = run('check')
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual((r.returncode, r.stdout), (0, ''), r.stderr)
 
     def test_default_check_scans_the_repository(self):
-        # until Task 16 makes test_check_is_clean pass: the default run works, and finds the fork's Chinese
-        r = run('check')
+        # without --root the check reads the files git tracks: Chinese in a shared script is found, Chinese in the
+        # installers' i18n data is not (a copy of the tool, the app and two such files in a scratch repository)
+        repo = self.tmp / 'repo'
+        shutil.copytree(APP, repo / 'openwrt' / 'luci-app-mu300')
+        (repo / 'tools').mkdir()
+        for name in ('luci-i18n.py', 'po2lmo.py'):
+            shutil.copy(TOP / 'tools' / name, repo / 'tools' / name)
+        (repo / 'tools' / 'i18n.sh').write_text('# %s\n' % CJK, encoding='utf-8')
+        (repo / 'rootfs' / 'overlay').mkdir(parents=True)
+        (repo / 'rootfs' / 'overlay' / 'x.sh').write_text('echo %s\n' % CJK, encoding='utf-8')
+        subprocess.run(['git', 'init', '-q', str(repo)], check=True)
+        subprocess.run(['git', '-C', str(repo), 'add', '.'], check=True)
+        r = subprocess.run([sys.executable, str(repo / 'tools' / 'luci-i18n.py'), 'check'], capture_output=True,
+                           text=True, encoding='utf-8')
         self.assertNotIn('Traceback', r.stderr)
-        self.assertIn('cjk: openwrt/luci-app-mu300/', r.stdout)
-        self.assertNotIn('tools/i18n.sh', r.stdout)
+        self.assertEqual(r.stdout, 'cjk: rootfs/overlay/x.sh:1: echo %s\n' % CJK)
 
     def test_extract_finds_every_kind_of_message_and_nothing_else(self):
         r = run('extract', '--root', str(self.mini()))
@@ -478,7 +488,7 @@ return { html: root.innerHTML, op: text('op'), uptime: text('uptime'), reg: text
                    'Anchor B3', 'Cluster 0', 'Recent DHCP leases', '2 h'),
             'tr': ('Bağlantı ve trafik', 'China Unicom · Sinyal İyi 7.8/10', 'Çalışma süresi 1 sa 2 dk',
                    'Kayıtlı · TAC AB', 'Çevrimiçi · AT bağdaştırıcısı kullanılamıyor', '2 istemci', '7 kayıt',
-                   'Toplam 1.0 MB · boş 512 KB', 'Bağlantı noktası B3', 'Küme 0', 'Son DHCP kiraları', '2 sa'),
+                   'Toplam 1.0 MB · boş 512 KB', 'Ankraj hücresi B3', 'Küme 0', 'Son DHCP kiraları', '2 sa'),
             'zh_Hans': ('\u94fe\u8def\u4e0e\u6d41\u91cf',
                         '\u4e2d\u56fd\u8054\u901a \xb7 \u4fe1\u53f7 \u826f\u597d 7.8 \u5206',
                         '\u5df2\u8fd0\u884c 1 \u5c0f\u65f6 2 \u5206', '\u5df2\u6ce8\u518c \xb7 TAC AB',
@@ -554,8 +564,9 @@ const out = { html: root.innerHTML, stat: text('sms-stat'), convs: html('sms-con
 toasts.length = 0;
 V.send();                                                   // no number, no text
 get('mud-sms-num').value = '10086'; get('mud-sms-text').value = 'hello';
-rpcReply = { ok: 0, error: 'E', busy: 1 }; V.send(); await flush();
-rpcReply = { ok: 0, error: 'E' }; V.send(); await flush();
+rpcReply = { ok: 0, busy: 1, error: 'The AT channel is busy; the command was not sent, try again' };
+V.send(); await flush();
+rpcReply = { ok: 0, error: 'Sending failed', detail: '+CMS ERROR: 500' }; V.send(); await flush();
 out.notes = notes();
 return out;'''
 
@@ -563,16 +574,17 @@ return out;'''
         want = {
             None: ('Sync from SIM', '· 3 messages, 1 unread · 2 conversations', 'Me: hi',
                    ['Enter both a number and a message.', 'Sending…',
-                    'Sending failed: E (the AT channel is busy, try again shortly)', 'Sending…', 'Sending failed: E']),
+                    'The AT channel is busy; the command was not sent, try again', 'Sending…',
+                    'Sending failed (+CMS ERROR: 500)']),
             'tr': ('SIM’den eşitle', '· 3 mesaj, 1 okunmamış · 2 görüşme', 'Ben: hi',
                    ['Numara ve mesaj girin.', 'Gönderiliyor…',
-                    'Gönderme başarısız: E (AT kanalı meşgul, birazdan yeniden deneyin)', 'Gönderiliyor…',
-                    'Gönderme başarısız: E']),
+                    'AT kanalı meşgul; komut gönderilmedi, yeniden deneyin', 'Gönderiliyor…',
+                    'Gönderme başarısız (+CMS ERROR: 500)']),
             'zh_Hans': ('\u4ece SIM \u540c\u6b65', '\xb7 3 \u6761\uff0c1 \u6761\u672a\u8bfb \xb7 2 \u4e2a\u4f1a\u8bdd',
                         '\u6211: hi',
                         ['\u53f7\u7801\u548c\u5185\u5bb9\u90fd\u8981\u586b\u3002', '\u53d1\u9001\u4e2d…',
-                         '\u53d1\u9001\u5931\u8d25\uff1aE\uff08AT \u901a\u9053\u6b63\u5fd9\uff0c\u7a0d\u540e\u91cd\u8bd5\uff09',
-                         '\u53d1\u9001\u4e2d…', '\u53d1\u9001\u5931\u8d25\uff1aE']),
+                         'AT \u901a\u9053\u6b63\u5fd9\uff0c\u547d\u4ee4\u672a\u53d1\u51fa\uff0c\u8bf7\u91cd\u8bd5',
+                         '\u53d1\u9001\u4e2d…', '\u53d1\u9001\u5931\u8d25 (+CMS ERROR: 500)']),
         }
         for lang, (button, stat, me, notes) in want.items():
             with self.subTest(lang=lang):
@@ -587,18 +599,21 @@ const root = V.render();
 const lines = [];
 get('mud-at-out').appendChild = (s) => { lines.push(s.textContent); return s; };
 get('mud-at-cmd').value = 'AT+CSQ';
-rpcReply = { ok: 0, error: 'E', busy: 1 }; V.send(); await flush();
+rpcReply = { ok: 0, busy: 1, error: 'The AT channel is busy; the command was not sent, try again' };
+V.send(); await flush();
 get('mud-at-cmd').value = 'AT';
 rpcReply = { ok: 1 }; V.send(); await flush();
 return { html: root.innerHTML, lines: lines.filter((l) => !/^(> |\\u2014)/.test(l)), hist: html('at-hist') };'''
 
     def test_at_renders_in_each_language(self):
         want = {
-            None: ('Clear screen', ['Error: E (the AT channel is busy; the command was not sent)\n', '(no output)\n'],
+            None: ('Clear screen', ['Error: The AT channel is busy; the command was not sent, try again\n',
+                                    '(no output)\n'],
                    '(empty)'),
-            'tr': ('Ekranı temizle', ['Hata: E (AT kanalı meşgul; komut gönderilmedi)\n', '(çıktı yok)\n'], '(boş)'),
+            'tr': ('Ekranı temizle', ['Hata: AT kanalı meşgul; komut gönderilmedi, yeniden deneyin\n',
+                                      '(çıktı yok)\n'], '(boş)'),
             'zh_Hans': ('\u6e05\u5c4f',
-                        ['\u9519\u8bef\uff1aE\uff08AT \u901a\u9053\u6b63\u5fd9\uff0c\u547d\u4ee4\u672a\u53d1\u51fa\uff09\n',
+                        ['\u9519\u8bef\uff1aAT \u901a\u9053\u6b63\u5fd9\uff0c\u547d\u4ee4\u672a\u53d1\u51fa\uff0c\u8bf7\u91cd\u8bd5\n',
                          '(\u65e0\u8f93\u51fa)\n'], '\uff08\u7a7a\uff09'),
         }
         for lang, (button, lines, empty) in want.items():
@@ -650,6 +665,52 @@ return { html: root.innerHTML, role: text('usb-role-now'), note: text('usb-net-n
 
     SETTINGS = '''
 return V.render();'''
+
+    # a backend error on each page: (view, body returning what was shown, [(template, error, detail)]); the
+    # page shows the error through the catalog, inside its template if any, and the detail after it as data
+    BACKEND_ERRORS = [
+        ('home', """V.render(); await flush(); toasts.length = 0;
+rpcReply = { ok: 0, op: 'wifi on', error: 'Expected on or off' };
+get('mud-btn-wifi').onclick.call(get('mud-btn-wifi')); await flush();
+return [ notes().pop() ];""", [('Failed: %s', 'Expected on or off', None)]),
+        ('locks', """V.render(); await flush();
+V.lastLock = { error: 'Lock cache unavailable' }; V.paint();
+V.paintServing({ error: 'Applying network locks: no live signal right now' });
+return [ text('lock-nrline'), text('srv-rat') ];""",
+         [(None, 'Lock cache unavailable', None), (None, 'Applying network locks: no live signal right now', None)]),
+        ('sms', """V.render();
+rpcReply = { error: 'mu300-sms is not available (the SMS service is not installed or not running)' };
+await V.reload(); await flush();
+const convs = html('sms-convs');
+M.choiceBox = () => Promise.resolve('local'); toasts.length = 0;
+rpcReply = { ok: 0, error: 'Delete failed', detail: 'no message 4' };
+V.delMsg('4'); await flush(); await flush();
+return [ convs.replace(/<[^>]*>/g, ''), notes().pop() ];""",
+         [(None, 'mu300-sms is not available (the SMS service is not installed or not running)', None),
+          (None, 'Delete failed', 'no message 4')]),
+        ('device', """V.render({ ok: 1, role: 'host', host_supported: 1 }); await flush();
+get('mud-usb-adapters').children = [];
+rpcReply = { ok: 1, devices: [ { name: 'eth2', carrier: 0, in_lan: 0 } ] };
+V.refreshAdapters(); await flush();
+M.confirmBox = () => Promise.resolve(true); toasts.length = 0;
+rpcReply = { ok: 0, error: 'Not a USB network interface' };
+get('mud-usb-adapters').children[0].children[1].on.click[0](); await flush(); await flush();
+return [ notes().pop() ];""", [('Add failed: %s', 'Not a USB network interface', None)]),
+    ]
+
+    def test_backend_errors_are_shown_through_the_catalogs(self):
+        for lang in (None, 'tr', 'zh_Hans'):
+            cat = catalog(lang) if lang else {}
+            for name, body, shown in self.BACKEND_ERRORS:
+                with self.subTest(lang=lang, view=name):
+                    want = []
+                    for template, error, detail in shown:
+                        self.assertIn(error, set(run('extract').stdout.splitlines()))
+                        if lang:
+                            self.assertIn(error, cat)
+                        text = cat.get(error, error) + (' (%s)' % detail if detail else '')
+                        want.append(cat.get(template, template).replace('%s', text) if template else text)
+                    self.assertEqual(self.run_view(name, lang, body)['result'], want)
 
     def test_every_view_in_an_unknown_language_is_english_and_catalogued(self):
         # German has no catalog: everything a page shows is English, and every message it used is in both catalogs

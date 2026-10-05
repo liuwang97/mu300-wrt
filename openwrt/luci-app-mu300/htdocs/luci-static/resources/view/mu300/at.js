@@ -91,8 +91,8 @@ return view.extend({
 					line('ln-meta', '—— ' + ms + ' ms');
 					self.loadHist();
 				} else {
-					line('ln-err', (r.busy ? _('Error: %s (the AT channel is busy; the command was not sent)') : _('Error: %s'))
-						.format(r.error || _('Failed')));
+					/* a busy channel or a lock apply in flight: the backend's sentence says so (and that it was not sent) */
+					line('ln-err', _('Error: %s').format(M.errText(r)));
 				}
 			}, function() { line('ln-err', _('Request failed')); });
 			self.Q('at-cmd').value = '';

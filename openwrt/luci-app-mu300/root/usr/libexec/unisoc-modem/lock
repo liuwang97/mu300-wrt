@@ -337,7 +337,7 @@ cell_state_remove() {
 emit_state() {
     local enabled=0
     auto_apply_enabled && enabled=1
-    [ -s "$LOCKCACHE" ] || { printf '{"auto_apply":%s,"error":"lock cache unavailable"}\n' "$enabled"; return; }
+    [ -s "$LOCKCACHE" ] || { printf '{"auto_apply":%s,"error":"Lock cache unavailable"}\n' "$enabled"; return; }
     sed "s/^{/{\"auto_apply\":$enabled,/" "$LOCKCACHE"
 }
 
@@ -430,14 +430,14 @@ do_apply() {  # do_apply KIND VALUE
                             val="lte:$fr,$pc"
                         else
                             say "cell lock: no serving cell to lock to"
-                            printf '{"ok":0,"error":"no serving cell to lock to"}\n'
+                            printf '{"ok":0,"error":"No serving cell to lock to"}\n'
                             exit 1
                         fi
                     fi
                     # the cache is the collector's reading of the modem: digits only
                     valid_cell "$val" || {
                         say "cell lock: the serving cell in the cache is not ARFCN,PCI"
-                        printf '{"ok":0,"error":"no serving cell to lock to"}\n'
+                        printf '{"ok":0,"error":"No serving cell to lock to"}\n'
                         exit 1
                     }
                     rat=${val%%:*}; pair=${val#*:}; fr=${pair%,*}; pc=${pair#*,}
