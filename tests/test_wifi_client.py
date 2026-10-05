@@ -44,6 +44,12 @@ IWSCAN = (
     + bss('5c:7d:ae:b4:0b:c1', 'raw\\x9b\\xff\\xc3end', -43, rsn('PSK'))        # not UTF-8 at all
     + bss('5c:7d:ae:b4:0b:c2', 'bidi\\xe2\\x80\\xaegpj.exe', -44, rsn('PSK'))   # U+202E
     + bss('5c:7d:ae:b4:0b:c3', 'bell\\x07\\x7f\\x0a', -45, rsn('PSK'))
+    + bss('5c:7d:ae:b4:0b:c4', 'Ho\\xe2\\x80\\x8bme', -46, rsn('PSK'))               # zero-width space
+    + bss('5c:7d:ae:b4:0b:c5', '\\xef\\xbb\\xbfbom\\xd8\\x9cALM', -47, rsn('PSK'))     # BOM, U+061C
+    + bss('5c:7d:ae:b4:0b:c6', 'ls\\xe2\\x80\\xa8iso\\xe2\\x81\\xa6', -48, rsn('PSK'))  # U+2028, U+2066
+    + bss('5c:7d:ae:b4:0b:c7', 'over\\xc0\\xaf\\xe0\\x80\\xaf\\xed\\xa0\\x80', -49, rsn('PSK'))  # overlong, surrogate
+    + bss('5c:7d:ae:b4:0b:c8', 'tag\\xf3\\xa0\\x80\\x81\\xf0\\x9f\\x98\\x80', -50, rsn('PSK'))  # a tag, an emoji
+    + bss('5c:7d:ae:b4:0b:c9', 'esc\\x5cx1b', -51, rsn('PSK'))                       # a real backslash
     + bss('6c:5a:b0:ea:60:74', 'old router', -70, rsn('PSK', wpa1=True))
     + bss('6c:5a:b0:ea:60:75', 'office', -72, rsn('IEEE 802.1X'))
     + bss('6c:5a:b0:ea:60:76', 'cafe', -75, '', capability='ESS ShortSlotTime (0x0401)')
@@ -99,7 +105,7 @@ class WifiClient(ShellTest):
         self.stub('wpa_supplicant', log + '\n: > "$STUBLOG/supplicant"')
         # status: COMPLETED once the configuration it was handed has a network in it, unless told otherwise
         self.stub('wpa_cli', 'case $3 in\n'
-                             '  status) [ -e "$STUBLOG/supplicant" ] || exit 1\n'
+                             '  status) echo poll >> "$STUBLOG/polls"; [ -e "$STUBLOG/supplicant" ] || exit 1\n'
                              '          if [ -e "$STUBLOG/never" ]; then echo wpa_state=SCANNING; exit 0; fi\n'
                              '          grep -q "network=" "$MU300_SYSROOT/run/mu300-wifi-client.conf" 2>/dev/null || { echo wpa_state=DISCONNECTED; exit 0; }\n'
                              '          echo wpa_state=COMPLETED; echo "ssid=KEDI 5G" ;;\n'
@@ -117,12 +123,16 @@ class WifiClient(ShellTest):
         self.stub('ip', 'case "$*" in\n'
                         '  "-4 -br addr show wlan0") [ -e "$STUBLOG/addr" ] && echo "wlan0 UP 192.168.2.248/24" ;;\n'
                         '  "-4 route show default dev wlan0") echo "default via 192.168.2.1 metric 50" ;;\n'
-                        '  "-4 route show dev wlan0 proto kernel scope link") echo "$(cat "$STUBLOG/subnet" 2>/dev/null || echo 192.168.2.0/24) src 192.168.2.248" ;;\n'
+                        '  "-4 route show dev wlan0 proto kernel scope link") [ -e "$STUBLOG/addr" ] && echo "$(cat "$STUBLOG/subnet" 2>/dev/null || echo 192.168.2.0/24) src 192.168.2.248" ;;\n'
                         '  "-4 addr flush dev wlan0") rm -f "$STUBLOG/addr" ;;\n'
+                        '  "-4 addr add "*" dev wlan0") : > "$STUBLOG/addr" ;;\n'
+                        '  "-4 -o addr show dev br-lan") echo "5: br-lan    inet 192.168.79.1/24 brd 192.168.79.255 scope global br-lan" ;;\n'
                         'esac\n'
                         'case "$1" in rule|route) echo "ip $*" >> "$STUBLOG/events" ;; esac\nexit 0')
+        # nft -f fails while $STUBLOG/nftfail exists; "list table ip mu300_nat" answers whether mobile data shares
         self.stub('nft', 'case "$1" in\n'
-                         '  -f) { echo "nft -f"; sed "s/^/  | /"; } >> "$STUBLOG/events" ;;\n'
+                         '  -f) [ -e "$STUBLOG/nftfail" ] && exit 1; { echo "nft -f"; sed "s/^/  | /"; } >> "$STUBLOG/events" ;;\n'
+                         '  list) [ -e "$STUBLOG/mobile" ] ;;\n'
                          '  *) echo "nft $*" >> "$STUBLOG/events" ;;\n'
                          'esac')
 
@@ -132,9 +142,10 @@ class WifiClient(ShellTest):
         return self.script(shell, WIFI, *args, stdin=stdin, **e)
 
     def fresh(self):
-        for n in ('events', 'sleeps', 'supplicant', 'addr', 'never', 'wpaconf.used', 'iftype'):
+        for n in ('events', 'sleeps', 'polls', 'nftfail', 'mobile', 'subnet', 'supplicant', 'addr', 'never', 'wpaconf.used', 'iftype'):
             (self.tmp / n).unlink(missing_ok=True)
-        for p in (self.conf, self.wpaconf, self.root / 'run/mu300-wifi-client.active'):
+        for p in (self.conf, self.wpaconf, self.root / 'run/mu300-wifi-client.active',
+                  self.root / 'run/mu300-wifi-client-had-ap', self.root / 'etc/mu300/vpn.conf'):
             p.unlink(missing_ok=True)
 
     def events(self):
@@ -145,6 +156,11 @@ class WifiClient(ShellTest):
         for chunk in self.events().split('nft -f\n')[1:]:
             out.append('\n'.join(l[4:] for l in chunk.splitlines() if l.startswith('  | ')))
         return out
+
+    def polls(self):
+        # busybox sh can run its own sleep applet rather than the stub: count the supplicant's status polls instead
+        p = self.tmp / 'polls'
+        return len(p.read_text().splitlines()) if p.exists() else 0
 
     def sleeps(self):
         p = self.tmp / 'sleeps'
@@ -185,11 +201,17 @@ class WifiClient(ShellTest):
             self.assertIn('raw\\x9b\\xff\\xc3end', names)
             self.assertIn('bidi\\xe2\\x80\\xaegpj.exe', names)
             self.assertIn('bell\\x07\\x7f\\x0a', names)
+            self.assertIn('Ho\\xe2\\x80\\x8bme', names)
+            self.assertIn('\\xef\\xbb\\xbfbom\\xd8\\x9cALM', names)
+            self.assertIn('ls\\xe2\\x80\\xa8iso\\xe2\\x81\\xa6', names)
+            self.assertIn('over\\xc0\\xaf\\xe0\\x80\\xaf\\xed\\xa0\\x80', names)
+            self.assertIn('tag\\xf3\\xa0\\x80\\x81😀', names)
+            self.assertIn('esc\\x1b', names)          # the text, not the byte
             self.assertHostileFree(r.stdout)
             # no neighbour report's BSSID taken for a name, no hidden network
             self.assertNotIn('00:00:00:00:00:00', r.stdout)
             self.assertNotIn('\\x00', r.stdout)
-            self.assertEqual(len(rows), 13, r.stdout)
+            self.assertEqual(len(rows), 19, r.stdout)
             self.assertEqual([s for s, _, _ in rows], sorted([s for s, _, _ in rows], reverse=True))
 
     def assertHostileFree(self, text):
@@ -198,8 +220,8 @@ class WifiClient(ShellTest):
         raw.decode('utf-8')
         for ch in raw.decode('utf-8'):
             o = ord(ch)
-            self.assertFalse(o < 32 and ch != '\n' or 0x7f <= o <= 0x9f or ch in '\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069',
-                             repr(ch))
+            self.assertFalse(o < 32 and ch != '\n' or 0x7f <= o <= 0x9f or 0x200b <= o <= 0x200f or 0x2028 <= o <= 0x202e
+                             or 0x2060 <= o <= 0x206f or o in (0x61c, 0x180e, 0xfeff) or 0xe0000 <= o <= 0xe007f, repr(ch))
 
     def test_scan_through_the_supplicant(self):
         for shell in self.each_shell():
@@ -289,13 +311,20 @@ class WifiClient(ShellTest):
                 if case == 'supplicant':
                     self.stub('wpa_supplicant', 'exit 1')
                 else:
+                    # fatal only with the VPN on and its kill switch: a broken mu300-vpn with the VPN off is not
                     self.stub('vpn', 'exit 1')
+                    r = self.run_wc(shell, 'connect', 'KEDI 5G', '-', stdin='password1\n')
+                    self.assertEqual(r.returncode, 0, r.stderr)
+                    self.fresh()
+                    (self.root / 'run/mu300-wifi-client-had-ap').touch()
+                    (self.root / 'etc/mu300/vpn.conf').write_text('ENABLE=1\n')
                 r = self.run_wc(shell, 'connect', 'KEDI 5G', '-', stdin='password1\n')
                 self.assertEqual(r.returncode, 1, case)
                 self.assertIn('systemctl start mu300-hotspot', self.events(), case)
                 if case == 'guard':
                     self.assertIn('kill switch', r.stderr)
                     self.assertNotIn('\nwpa_supplicant', self.events())
+            (self.root / 'etc/mu300/vpn.conf').unlink(missing_ok=True)
             log = 'echo "$(basename "$0") $*" >> "$STUBLOG/events"'
             self.stub('wpa_supplicant', log + '\n: > "$STUBLOG/supplicant"')
             self.stub('vpn', log)
@@ -331,16 +360,16 @@ class WifiClient(ShellTest):
             self.assertEqual(r.returncode, 1)
             self.assertIn('WPA3', r.stderr)
             self.assertIn('cannot', r.stderr)
-            self.assertLess(self.sleeps(), 8, 'not the 25 s wait')
+            self.assertLess(self.polls(), 8, 'not the 25 s wait')
             self.assertFalse((self.tmp / 'supplicant').exists())
             self.assertFalse(self.conf.exists())
             # a WPA2 network that does not answer still gets the whole wait, and the generic message
             self.fresh()
             (self.tmp / 'never').touch()
-            r = self.run_wc(shell, 'connect', 'KEDI 5G', '-', stdin='password1\n')
+            r = self.run_wc(shell, 'connect', 'KEDI 5G', '-', stdin='password1\n', MU300_JOIN_WAIT=12)
             self.assertEqual(r.returncode, 1)
             self.assertNotIn('WPA3', r.stderr)
-            self.assertGreaterEqual(self.sleeps(), 25)
+            self.assertGreaterEqual(self.polls(), 12)
 
     def test_sae_when_the_supplicant_and_driver_can(self):
         for shell in self.each_shell():
@@ -371,8 +400,9 @@ class WifiClient(ShellTest):
             (self.tmp / 'subnet').write_text(subnet)
         r = self.run_wc(shell, 'connect', 'KEDI 5G', '-', stdin='password1\n')
         self.assertEqual(r.returncode, 0, r.stderr)
-        rs = self.rulesets()
-        self.assertEqual(len(rs), 1, self.events())
+        rs = [x for x in self.rulesets() if 'table inet mu300_wifi_filter {' in x]
+        self.assertEqual(len(rs), 2, self.events())   # before the radio joins, and with the subnet after DHCP
+        rs = [rs[-1]]
         def chain(table, name):
             t = rs[0].split(f'table {table} {{', 1)[1].split(f'chain {name} {{', 1)[1]
             body = []
@@ -426,7 +456,7 @@ class WifiClient(ShellTest):
                 # the other network's private, link-local and CGNAT addresses: its other hosts and its router's
                 # admin page are not for LAN clients; the router is only their way out
                 self.assertIn('oifname "wlan0" ip daddr { 10.0.0.0/8, 100.64.0.0/10, 169.254.0.0/16, 172.16.0.0/12, '
-                              '192.168.0.0/16 } counter drop', out)
+                              '192.168.0.0/16, 224.0.0.0/3, 255.255.255.255 } counter drop', out)
                 self.assertIn(f'oifname "wlan0" ip daddr {subnet or "192.168.2.0/24"} counter drop', out)
                 self.assertIn('oifname "wlan0" meta nfproto ipv6 counter drop', out)
                 # every drop before the only other rule, the MSS clamp; nothing accepted towards wlan0
@@ -441,8 +471,154 @@ class WifiClient(ShellTest):
                 self.ev.unlink()
                 r = self.run_wc(shell, *cmd)
                 self.assertEqual(r.returncode, 0, r.stderr)
-                self.assertIn('nft delete table ip mu300_wifi_nat', self.events(), cmd)
-                self.assertIn('nft delete table inet mu300_wifi_filter', self.events(), cmd)
+                self.assertRemoved(cmd)
+
+    REMOVED = ('table ip mu300_wifi_nat\ndelete table ip mu300_wifi_nat\n'
+               'table inet mu300_wifi_filter\ndelete table inet mu300_wifi_filter')
+
+    def assertRemoved(self, msg=None):
+        """the last word on the sharing rules: both tables gone, in one transaction"""
+        rs = self.rulesets()
+        self.assertTrue(rs, msg)
+        self.assertEqual(rs[-1], self.REMOVED, msg)
+
+    def expected(self, subnet):
+        return '\n'.join(l for l in f"""table ip mu300_wifi_nat
+delete table ip mu300_wifi_nat
+table inet mu300_wifi_filter
+delete table inet mu300_wifi_filter
+table ip mu300_wifi_nat {{
+    chain postrouting {{
+        type nat hook postrouting priority srcnat; policy accept;
+        oifname "wlan0" masquerade
+    }}
+}}
+table inet mu300_wifi_filter {{
+    chain input {{
+        type filter hook input priority filter; policy accept;
+        iifname "wlan0" ct state established,related accept
+        iifname "wlan0" udp sport 67 udp dport 68 accept
+        iifname "wlan0" icmp type echo-request limit rate 5/second accept
+        iifname "wlan0" icmpv6 type {{ echo-request, nd-neighbor-solicit, nd-neighbor-advert, nd-router-advert }} accept
+        iifname "wlan0" counter drop
+    }}
+    chain forward {{
+        type filter hook forward priority filter; policy accept;
+        iifname "wlan0" ct state established,related accept
+        iifname "wlan0" counter drop
+        oifname "wlan0" ip daddr {{ 10.0.0.0/8, 100.64.0.0/10, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16, 224.0.0.0/3, 255.255.255.255 }} counter drop
+        {f'oifname "wlan0" ip daddr {subnet} counter drop' if subnet else ''}
+        oifname "wlan0" meta nfproto ipv6 counter drop
+        oifname "wlan0" tcp flags syn tcp option maxseg size set rt mtu
+    }}
+}}""".splitlines() if l.strip())
+
+    def applied(self):
+        return ['\n'.join(l for l in x.splitlines() if l.strip()) for x in self.rulesets()]
+
+    def test_exact_rules_through_a_join(self):
+        for shell in self.each_shell():
+            self.fresh()
+            r = self.run_wc(shell, 'connect', 'KEDI 5G', '-', stdin='password1\n')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            ev = self.events()
+            # stop_client first (nothing left from before), the rules without the subnet before the radio joins,
+            # then with it once DHCP has answered; forwarding on only then
+            self.assertEqual(self.applied(), [self.REMOVED, self.expected(None), self.expected('192.168.2.0/24')])
+            first = ev.index('  | table inet mu300_wifi_filter {')
+            self.assertLess(first, ev.index('\nwpa_supplicant '))
+            self.assertLess(ev.index('\nudhcpc '), ev.rindex('  | table inet mu300_wifi_filter {'))
+            self.assertLess(ev.rindex('  | table inet mu300_wifi_filter {'), ev.index('ip_forward=1'))
+            # disconnect: both tables gone in one transaction, forwarding off (mobile data is not sharing)
+            self.ev.unlink()
+            self.run_wc(shell, 'disconnect')
+            self.assertRemoved()
+            self.assertIn('sysctl -qw net.ipv4.ip_forward=0', self.events())
+            # with mobile data sharing its bearer, forwarding stays on
+            self.run_wc(shell, 'connect', 'KEDI 5G', '-', stdin='password1\n')
+            (self.tmp / 'mobile').touch()
+            self.ev.unlink()
+            self.run_wc(shell, 'disconnect')
+            self.assertRemoved()
+            self.assertNotIn('ip_forward=0', self.events())
+
+    def test_a_failed_join_leaves_nothing(self):
+        cases = {'no answer': 'never', 'no address': 'noaddr', 'overlaps the LAN': 'overlap', 'nft fails': 'nftfail'}
+        for name, how in cases.items():
+            for shell in self.each_shell():
+                self.fresh()
+                (self.root / 'run/mu300-wifi-client-had-ap').touch()
+                self.stub('udhcpc', 'echo "udhcpc $*" >> "$STUBLOG/events"\n' +
+                          ('' if how == 'noaddr' else ': > "$STUBLOG/addr"'))
+                if how == 'never':
+                    (self.tmp / 'never').touch()
+                if how == 'overlap':
+                    (self.tmp / 'subnet').write_text('192.168.79.0/24')
+                if how == 'nftfail':
+                    (self.tmp / 'nftfail').touch()
+                r = self.run_wc(shell, 'connect', 'KEDI 5G', '-', stdin='password1\n', MU300_JOIN_WAIT=2)
+                self.assertEqual(r.returncode, 1, (name, r.stdout))
+                ev = self.events()
+                if how == 'nftfail':
+                    self.assertNotIn('\nwpa_supplicant ', ev)      # not joining with the interface open
+                else:
+                    self.assertRemoved(name)
+                self.assertNotIn('ip_forward=1', ev, name)
+                self.assertFalse((self.tmp / 'supplicant').exists(), name)
+                self.assertFalse((self.root / 'run/mu300-wifi-client.active').exists(), name)
+                self.assertIn('systemctl start mu300-hotspot', ev, name)
+                if how == 'overlap':
+                    self.assertIn('overlaps', r.stderr)
+        self.stub('udhcpc', 'echo "udhcpc $*" >> "$STUBLOG/events"\n: > "$STUBLOG/addr"')
+
+    def test_a_signal_mid_join_leaves_nothing(self):
+        import signal, subprocess, time
+        for shell in self.each_shell():
+            for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+                self.fresh()
+                (self.tmp / 'never').touch()
+                env = self.env(MU300_SYSROOT=self.root, MU300_VPN_CMD=self.stubs / 'vpn', MU300_JOIN_WAIT=60)
+                self.stub('sleep', 'echo sleep >> "$STUBLOG/sleeps"; exec /bin/sleep 0.2')
+                p = subprocess.Popen(shell + [str(WIFI), 'connect', 'KEDI 5G', '-'], env=env, stdin=subprocess.PIPE,
+                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True,
+                                     preexec_fn=lambda: [signal.signal(x, signal.SIG_DFL) for x in (signal.SIGINT, signal.SIGHUP)])
+                p.stdin.write(b'password1\n'); p.stdin.close()
+                t = time.time()
+                while not (self.tmp / 'polls').exists() and time.time() - t < 20:
+                    time.sleep(0.1)
+                time.sleep(0.5)
+                p.send_signal(sig)
+                p.wait(timeout=20)
+                p.stdout.close(); p.stderr.close()
+                self.assertNotEqual(p.returncode, 0)
+                self.assertRemoved(sig.name)
+                self.assertFalse((self.tmp / 'supplicant').exists(), sig.name)
+            self.stub('sleep', 'echo sleep >> "$STUBLOG/sleeps"')
+
+    def test_a_renewal_into_another_subnet_updates_the_rules(self):
+        for shell in self.each_shell():
+            self.fresh()
+            self.run_wc(shell, 'connect', 'KEDI 5G', '-', stdin='password1\n')
+            (self.tmp / 'subnet').write_text('203.0.113.0/24')
+            self.ev.unlink()
+            r = self.script(shell, WIFI, 'renew', MU300_SYSROOT=self.root, MU300_VPN_CMD=self.stubs / 'vpn',
+                            interface='wlan0', ip='203.0.113.5', mask='24', router='203.0.113.1')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(self.applied()[-1], self.expected('203.0.113.0/24'))
+
+    def test_hostile_names_in_messages(self):
+        for shell in self.each_shell():
+            self.fresh()
+            bad = 'x\x1b]0;pwn\x07‮Y​'
+            r = self.run_wc(shell, 'connect', bad, '-', stdin='password1\n')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn('x\\x1b]0;pwn\\x07\\xe2\\x80\\xaeY\\xe2\\x80\\x8b', r.stdout)
+            self.assertHostileFree(r.stdout + r.stderr)
+            self.assertHostileFree(self.run_wc(shell, 'status').stdout)
+            self.run_wc(shell, 'disconnect')
+            r = self.run_wc(shell, 'up')
+            self.assertHostileFree(r.stdout + r.stderr)
+            self.assertIn('\\x1b', r.stdout)
 
     def test_openwrt_puts_the_client_in_the_wan_zone(self):
         (self.root / 'etc/openwrt_release').write_text("DISTRIB_ID='OpenWrt'\n")

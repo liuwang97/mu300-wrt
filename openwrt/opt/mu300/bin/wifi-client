@@ -79,6 +79,8 @@ case ${1:-} in
             { for d in $dns; do echo "nameserver $d"; done; } > /etc/resolv.conf
         fi
         echo "$ip" > "$LEASE"
+        # a renewal can move to another subnet: the sharing rules name it (connect itself does the first one)
+        [ -e "$ACTIVE" ] && "$0" share-refresh >/dev/null 2>&1
         exit 0 ;;
     leasefail|nak)
         exit 0 ;;
@@ -168,16 +170,19 @@ start_ap() {
 #     is down - a drop in any chain is final, whatever these tables accept.
 # Two tables: the NAT (ip, as mobile-data's) and the filter (inet, so IPv6 on wlan0 is closed too). Gone on disconnect.
 FILTER=mu300_wifi_filter
-share_uplink() {
+# share_uplink: the rules are only about wlan0 by name, so they are put up before the radio joins anything (the
+# interface is closed to the other network from its first packet, and nothing is forwarded into it unfiltered
+# while DHCP runs) and replaced, in one nft transaction, once the subnet is known. Forwarding is turned on only
+# then. They name no address of the other network but its subnet, so a dropped or roaming link changes nothing.
+share_uplink() {  # share_uplink [pre]: pre = before the join (no subnet yet, forwarding left as it is)
     if is_openwrt; then
         wan_zone
         return 0
     fi
     # the network's own subnet, for when it is not a private one
-    net=$(ip -4 route show dev "$IFACE" proto kernel scope link 2>/dev/null | awk '$1 ~ /^[0-9.]+\/[0-9]+$/ {print $1; exit}')
+    net=; [ "${1:-}" = pre ] || net=$(uplink_net)
     subnet=; [ -n "$net" ] && subnet="oifname \"$IFACE\" ip daddr $net counter drop"
-    sysctl -qw net.ipv4.ip_forward=1 2>/dev/null || true
-    nft -f - <<NFT || say "could not set up the NAT for the LAN clients (nft)"
+    nft -f - <<NFT || return 1
 table ip $NAT
 delete table ip $NAT
 table inet $FILTER
@@ -201,19 +206,40 @@ table inet $FILTER {
         type filter hook forward priority filter; policy accept;
         iifname "$IFACE" ct state established,related accept
         iifname "$IFACE" counter drop
-        oifname "$IFACE" ip daddr { 10.0.0.0/8, 100.64.0.0/10, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16 } counter drop
+        oifname "$IFACE" ip daddr { 10.0.0.0/8, 100.64.0.0/10, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16, 224.0.0.0/3, 255.255.255.255 } counter drop
         $subnet
         oifname "$IFACE" meta nfproto ipv6 counter drop
         oifname "$IFACE" tcp flags syn tcp option maxseg size set rt mtu
     }
 }
 NFT
+    [ "${1:-}" = pre ] || sysctl -qw net.ipv4.ip_forward=1 2>/dev/null || true
 }
 
+uplink_net() {
+    ip -4 route show dev "$IFACE" proto kernel scope link 2>/dev/null | awk '$1 ~ /^[0-9.]+\/[0-9]+$/ {print $1; exit}'
+}
+
+# Both tables in one transaction ("table" first, so a missing one is no error). Forwarding goes off again unless
+# mobile data still shares its bearer (its own table, mu300_nat): nothing is left forwarding towards an uplink
+# that is gone.
 unshare_uplink() {
     is_openwrt && return 0
-    nft delete table ip "$NAT" 2>/dev/null || true
-    nft delete table inet "$FILTER" 2>/dev/null || true
+    nft -f - <<NFT 2>/dev/null || { nft delete table ip "$NAT"; nft delete table inet "$FILTER"; } 2>/dev/null
+table ip $NAT
+delete table ip $NAT
+table inet $FILTER
+delete table inet $FILTER
+NFT
+    nft list table ip mu300_nat >/dev/null 2>&1 || sysctl -qw net.ipv4.ip_forward=0 2>/dev/null || true
+}
+
+# overlaps A/LEN B/LEN: whether two IPv4 networks share any address (the other network on the LAN's own subnet
+# would make the LAN's addresses ambiguous: replies to a USB client could leave on wlan0)
+overlaps() {
+    awk -v a="$1" -v b="$2" 'function n(s,  p) { split(s, p, "."); return ((p[1] * 256 + p[2]) * 256 + p[3]) * 256 + p[4] }
+        BEGIN { split(a, x, "/"); split(b, y, "/"); l = x[2] < y[2] ? x[2] : y[2]; d = 2 ^ (32 - l)
+                exit !(int(n(x[1]) / d) == int(n(y[1]) / d)) }'
 }
 
 # OpenWrt: fw4 masquerades for the wan zone, and an interface in no zone gets the defaults (no forwarding to it,
@@ -221,6 +247,13 @@ unshare_uplink() {
 # answers, as for the modem. fw4 forwards lan to wan to any address, so a rule on wlan0 alone keeps LAN clients off
 # the other network's private addresses, as on Ubuntu. When wlan0 is the hotspot it is a port of br-lan and fw4
 # only ever sees br-lan, so neither does anything then; done once, left in place (as mu300-vpn does for its tunnel).
+private_rule() {  # private_rule SECTION: fill in the rule, all or nothing
+    uci set "firewall.$1.name=mu300-wifi-client-private" && uci set "firewall.$1.src=lan" &&
+        uci set "firewall.$1.dest=wan" && uci set "firewall.$1.device=$IFACE" &&
+        uci set "firewall.$1.direction=out" && uci set "firewall.$1.family=ipv4" &&
+        uci set "firewall.$1.proto=all" && uci set "firewall.$1.target=REJECT" || return 1
+    for a in $PRIVATE4; do uci add_list "firewall.$1.dest_ip=$a" || return 1; done
+}
 PRIVATE4='10.0.0.0/8 100.64.0.0/10 169.254.0.0/16 172.16.0.0/12 192.168.0.0/16'
 wan_zone() {
     zone=$(uci -q show firewall 2>/dev/null | sed -n "s/^firewall\.@zone\[\([0-9]*\)\]\.name='wan'$/\1/p" | head -1)
@@ -230,15 +263,14 @@ wan_zone() {
         uci add_list "firewall.@zone[$zone].device=$IFACE" 2>/dev/null && changed=1
     fi
     if ! uci -q show firewall 2>/dev/null | grep -q "\.name='mu300-wifi-client-private'$"; then
-        r=$(uci add firewall rule 2>/dev/null) && {
-            uci set "firewall.$r.name=mu300-wifi-client-private"
-            uci set "firewall.$r.src=lan"; uci set "firewall.$r.dest=wan"
-            uci set "firewall.$r.device=$IFACE"; uci set "firewall.$r.direction=out"
-            uci set "firewall.$r.family=ipv4"; uci set "firewall.$r.proto=all"
-            for a in $PRIVATE4; do uci add_list "firewall.$r.dest_ip=$a"; done
-            uci set "firewall.$r.target=REJECT"
-            changed=1
-        } 2>/dev/null
+        if r=$(uci add firewall rule 2>/dev/null); then
+            # all of it or none: a half-built rule would never be repaired (the name check skips it)
+            if private_rule "$r"; then
+                changed=1
+            else
+                uci -q delete "firewall.$r"
+            fi
+        fi 2>/dev/null
     fi
     [ -n "$changed" ] || return 0
     uci commit firewall 2>/dev/null || return 0
@@ -337,29 +369,36 @@ scan_list() {
         !seen[$3]++ { printf "%4s dBm  %-6s  %s\n", $1, $2, $3 }'
 }
 
-# unescape COLUMN: iw and wpa_cli print every byte of a name outside printable ASCII as \xNN (wpa_cli also \\
-# and \"), so a UTF-8 name came out as \xc3\x87... - decode that, and nothing else. A name is whatever the access
-# point broadcasts, so what reaches the terminal is only printable text: valid UTF-8 of printable characters. C0
-# controls, DEL, ESC, C1 controls (U+0080-U+009F, which some terminals obey as escape sequences too), the
-# bidirectional overrides and bytes that are not valid UTF-8 are shown as \xNN instead. LC_ALL=C: awk works on
-# bytes (gawk would otherwise turn %c of 0xc3 into the character U+00C3).
+# unescape COLUMN [raw]: iw and wpa_cli print every byte of a name outside printable ASCII as \xNN (wpa_cli also
+# \\ and \"), so a UTF-8 name came out as \xc3\x87... - decode that (not with "raw": a name typed or saved, taken
+# as it is). A name is whatever the access point broadcasts, so what reaches the terminal (or the journal, or the
+# toolkit's menu) is printable text only: well-formed UTF-8 of printable characters. Every other byte is shown as
+# \xNN - C0 controls, ESC, DEL, the C1 controls U+0080-U+009F (some terminals obey them as escape sequences),
+# bytes that are not UTF-8 or are overlong or surrogate encodings - and so are the invisible characters that make
+# a name look like another: zero-width ones, the bidirectional controls, line separators, tags. The check is on
+# the decoded bytes, so no escape can smuggle anything past it. LC_ALL=C: awk works on bytes (gawk would
+# otherwise turn %c of 0xc3 into the character U+00C3).
 unescape() {
-    LC_ALL=C awk -F'\t' -v OFS='\t' -v col="$1" '
+    LC_ALL=C awk -F'\t' -v OFS='\t' -v col="$1" -v raw="${2:-}" '
         BEGIN { for (k = 1; k < 256; k++) ord[sprintf("%c", k)] = k }
         function hv(c) { return index("0123456789abcdef", tolower(c)) - 1 }
         function x(v) { return sprintf("\\x%02x", v) }
+        function invisible(c) {
+            return c == 1564 || c == 6158 || (c >= 8203 && c <= 8207) || (c >= 8232 && c <= 8238) ||
+                   (c >= 8288 && c <= 8303) || c == 65279 || (c >= 65529 && c <= 65531) || (c >= 917504 && c <= 917631)
+        }
         {
             # the bytes of the name, escapes decoded
             s = $col; n = 0; L = length(s)
             for (i = 1; i <= L; i++) {
-                c = substr(s, i, 1); h = substr(s, i + 2, 2)
-                if (c == "\\" && substr(s, i + 1, 1) == "x" && h ~ /^[0-9A-Fa-f][0-9A-Fa-f]$/) {
+                c = substr(s, i, 1); h = substr(s, i + 2, 2); c2 = substr(s, i + 1, 1)
+                if (raw == "" && c == "\\" && c2 == "x" && h ~ /^[0-9A-Fa-f][0-9A-Fa-f]$/) {
                     b[++n] = hv(substr(h, 1, 1)) * 16 + hv(substr(h, 2, 1)); i += 3
-                } else if (c == "\\" && (substr(s, i + 1, 1) == "\\" || substr(s, i + 1, 1) == "\"")) {
-                    b[++n] = ord[substr(s, i + 1, 1)]; i++
+                } else if (raw == "" && c == "\\" && (c2 == "\\" || c2 == "\"")) {
+                    b[++n] = ord[c2]; i++
                 } else b[++n] = ord[c]
             }
-            # back to text: printable ASCII and well-formed UTF-8 as they are, every other byte escaped
+            # back to text: printable ASCII and well-formed UTF-8 of visible characters as they are, the rest \xNN
             o = ""
             for (i = 1; i <= n; i++) {
                 v = b[i]
@@ -374,9 +413,11 @@ unescape() {
                 if (v == 244) hi = 143          # above U+10FFFF
                 ok = (i + m <= n) && b[i + 1] >= lo && b[i + 1] <= hi
                 for (j = 2; ok && j <= m; j++) ok = b[i + j] >= 128 && b[i + j] <= 191
-                # and the bidirectional controls (U+200E/F, U+202A-E, U+2066-9), which make a name read as another
-                if (ok && v == 226 && ((b[i + 1] == 128 && (b[i + 2] == 142 || b[i + 2] == 143 || (b[i + 2] >= 170 && b[i + 2] <= 174))) ||
-                                       (b[i + 1] == 129 && b[i + 2] >= 166 && b[i + 2] <= 169))) ok = 0
+                if (ok) {
+                    cp = (m == 1) ? v - 192 : (m == 2) ? v - 224 : v - 240
+                    for (j = 1; j <= m; j++) cp = cp * 64 + b[i + j] - 128
+                    if (invisible(cp)) ok = 0
+                }
                 if (!ok) { o = o x(v); continue }
                 for (j = 0; j <= m; j++) o = o sprintf("%c", b[i + j])
                 i += m
@@ -452,6 +493,21 @@ network_block() {  # network_block SSID PASS SAE
     printf '}\n'
 }
 
+vpn_kill_switch() {
+    f=$R/etc/mu300/vpn.conf
+    [ -r "$f" ] && grep -q '^ENABLE=1' "$f" && ! grep -q '^KILL_SWITCH=0' "$f"
+}
+
+abort_join() {
+    [ "${joining:-0}" = 1 ] || return 0
+    joining=0
+    stop_client
+    [ -e "$AP_FLAG" ] && start_ap
+}
+
+# shown TEXT: a name typed or saved, as it may be printed (the same rules as for the scan, nothing decoded)
+shown() { printf '%s\n' "$1" | unescape 1 raw; }
+
 connect() {  # connect SSID [PASS]
     ssid=$1; psk=${2:-}
     command -v wpa_supplicant >/dev/null || die "wpa_supplicant is not installed"
@@ -466,17 +522,23 @@ connect() {  # connect SSID [PASS]
         exit 3
     fi
     # a VPN with the kill switch has it up before this uplink can carry anything (as mobile-data does)
-    if [ -x "$VPN_CMD" ] && ! "$VPN_CMD" guard >/dev/null 2>&1; then
+    # (fatal only when the VPN is on with its kill switch: a broken vpn.conf with the VPN off must not stop the join)
+    if [ -x "$VPN_CMD" ] && ! "$VPN_CMD" guard >/dev/null 2>&1 && vpn_kill_switch; then
         [ -e "$AP_FLAG" ] && start_ap
         die "the VPN's kill switch could not be put up (mu300-vpn guard): not joining without it"
     fi
+    # From here every way out but success - an error, a signal - takes the client down again, rules and all, and
+    # gives the hotspot back if it was on.
+    joining=1
+    trap 'abort_join' EXIT
+    trap 'exit 130' INT TERM HUP
+    share_uplink pre || die "could not put up the firewall for $IFACE (nft): not joining without it"
 
     # the supplicant first, with no network: whether it can do SAE depends on the driver too, and only the
     # running supplicant can say
     umask 077
     printf 'ctrl_interface=/run/wpa_supplicant\n' > "$WPACONF"
-    wpa_supplicant -B -i "$IFACE" -c "$WPACONF" >/dev/null 2>&1 ||
-        { stop_client; [ -e "$AP_FLAG" ] && start_ap; die "wpa_supplicant did not start"; }
+    wpa_supplicant -B -i "$IFACE" -c "$WPACONF" >/dev/null 2>&1 || die "wpa_supplicant did not start"
     n=0; caps=
     while [ "$n" -lt 5 ]; do
         caps=$(wpa_cli -i "$IFACE" get_capability key_mgmt 2>/dev/null) && [ -n "$caps" ] && break
@@ -486,33 +548,39 @@ connect() {  # connect SSID [PASS]
     case " $caps " in *" SAE "*) [ -n "$psk" ] && sae=1 ;; esac
     # sae_pwe=2: hunting-and-pecking or hash-to-element, whichever the access point uses (6 GHz needs H2E)
     if ! { printf 'ctrl_interface=/run/wpa_supplicant\n'; [ "$sae" = 1 ] && printf 'sae_pwe=2\n'; network_block "$ssid" "$psk" "$sae"; } > "$WPACONF.new"; then
-        rm -f "$WPACONF.new"; stop_client; [ -e "$AP_FLAG" ] && start_ap
+        rm -f "$WPACONF.new"
         die "could not build the wpa_supplicant configuration"
     fi
     mv -f "$WPACONF.new" "$WPACONF"
     wpa_cli -i "$IFACE" reconfigure >/dev/null 2>&1
 
-    wait_connected 25 "$ssid" "$sae"; rc=$?
+    wait_connected "${MU300_JOIN_WAIT:-25}" "$ssid" "$sae"; rc=$?   # (MU300_JOIN_WAIT: for tests/)
     if [ "$rc" != 0 ]; then
-        stop_client; [ -e "$AP_FLAG" ] && start_ap
-        [ "$rc" = 2 ] && die "'$ssid' is a WPA3-only network (SAE), and this Wi-Fi driver cannot do WPA3, so it" \
+        [ "$rc" = 2 ] && die "'$(shown "$ssid")' is a WPA3-only network (SAE), and this Wi-Fi driver cannot do WPA3, so it" \
             "cannot be joined. Set the router to WPA2/WPA3 mixed mode (or WPA2), or join another network."
-        die "could not join '$ssid' (wrong password, or out of range)"
+        die "could not join '$(shown "$ssid")' (wrong password, or out of range)"
     fi
 
-    say "joined $ssid, asking for an address"
+    say "joined $(shown "$ssid"), asking for an address"
     dhcp_run || say "no DHCP client (busybox udhcpc) found - set the address by hand"
     addr=$(ip -4 -br addr show "$IFACE" 2>/dev/null | awk '{print $3}')
     if [ -z "$addr" ]; then
-        stop_client; [ -e "$AP_FLAG" ] && start_ap
-        die "joined $ssid but got no address from it (no DHCP server?)"
+        die "joined $(shown "$ssid") but got no address from it (no DHCP server?)"
     fi
 
-    share_uplink
+    lan=$(ip -4 -o addr show dev br-lan 2>/dev/null | awk '$3 == "inet" {print $4; exit}')
+    net=$(uplink_net)
+    if [ -n "$lan" ] && [ -n "$net" ] && overlaps "$lan" "$net"; then
+        die "$(shown "$ssid") uses $net, which overlaps this device's own LAN ($lan): not joined. Give the LAN another" \
+            "subnet (LAN_IP in /etc/mu300/lan.conf) or join another network."
+    fi
+    share_uplink || die "could not set up sharing for $IFACE (nft)"
     save_network "$ssid" "$psk"
     rm -f "$SCANMODE" "$SCANRUN"
     : > "$ACTIVE"
-    say "connected: $ssid  $addr"
+    joining=0
+    trap - EXIT INT TERM HUP
+    say "connected: $(shown "$ssid")  $addr"
     status
 }
 
@@ -528,13 +596,13 @@ status() {
         printf 'route       %s\n' "$(ip -4 route show default dev "$IFACE" 2>/dev/null | head -1)"
     elif ap_active; then
         printf 'mode        hotspot (this device is the access point)\n'
-        printf 'network     %s\n' "$(sed -n 's/^SSID=//p' "$R/etc/mu300/hotspot.conf" 2>/dev/null | head -1)"
+        printf 'network     %s\n' "$(shown "$(sed -n 's/^SSID=//p' "$R/etc/mu300/hotspot.conf" 2>/dev/null | head -1)")"
     else
         printf 'mode        off (neither hotspot nor connected)\n'
     fi
     [ -e "$SCANMODE" ] && printf 'scan mode   armed: the hotspot stays off at the next boot\n'
     [ -e "$SCANRUN" ] && printf 'scan mode   this boot: the hotspot is off until a network is joined (at most %s)\n' "$SCAN_TIMEOUT"
-    saved=$(conf_get SSID)
+    saved=$(conf_get SSID); [ -z "$saved" ] || saved=$(shown "$saved")
     if [ -n "$saved" ]; then
         if [ "$(conf_get ENABLE)" = 1 ]; then printf 'saved       %s (joined at boot)\n' "$saved"
         else printf 'saved       %s (not joined at boot since "disconnect": wifi-client reconnect)\n' "$saved"; fi
@@ -555,7 +623,7 @@ read_password() {  # read_password SSID [ - | --password-file FILE | PASS ]
             # network it never meant
             [ -t 0 ] || die "no password given and no terminal to ask on: use \"-\" (stdin), --password-file FILE, or --open"
             if [ -t 0 ]; then
-                printf 'password for %s (empty for an open network, nothing is shown as you type): ' "$1" >&2
+                printf 'password for %s (empty for an open network, nothing is shown as you type): ' "$(shown "$1")" >&2
                 trap 'stty echo 2>/dev/null; exit 130' INT TERM
                 stty -echo 2>/dev/null
                 IFS= read -r pw || true
@@ -566,7 +634,7 @@ read_password() {  # read_password SSID [ - | --password-file FILE | PASS ]
         *)  pw=$2
             printf '%s\n' "wifi-client: note: a password on the command line ends up in the system journal (sudo logs" \
                 "             the whole command) and is shown by ps while this runs. Leave it out and type it when" \
-                "             asked:  sudo wifi-client connect \"$1\"   (or pipe it in with \"-\", or --password-file FILE)" >&2 ;;
+                "             asked:  sudo wifi-client connect \"$(shown "$1")\"   (or pipe it in with \"-\", or --password-file FILE)" >&2 ;;
     esac
     # a file written on Windows ends its line in CR
     pw=$(printf '%s' "$pw" | tr -d '\r')
@@ -582,7 +650,7 @@ case ${1:-status} in
         ssid=$(conf_get SSID)
         # not an error: the boot service runs this on every device, most of which have no saved network
         [ -n "$ssid" ] || { say "no saved network (wifi-client connect SSID)"; exit 0; }
-        [ "$(conf_get ENABLE)" = 1 ] || { say "the saved network ($ssid) is not joined at boot since it was disconnected; \"wifi-client reconnect\" joins it again"; exit 0; }
+        [ "$(conf_get ENABLE)" = 1 ] || { say "the saved network ($(shown "$ssid")) is not joined at boot since it was disconnected; \"wifi-client reconnect\" joins it again"; exit 0; }
         connect "$ssid" "$(conf_get PSK)" ;;
     reconnect)
         ssid=$(conf_get SSID)
@@ -619,6 +687,8 @@ case ${1:-status} in
                elif [ -e "$SCANMODE" ]; then say "scan mode: armed for the next boot"
                else say "scan mode: off"; fi ;;
         esac ;;
+    share-refresh)   # (the DHCP handler, on a renewal) the subnet in the sharing rules
+        [ -e "$ACTIVE" ] && share_uplink ;;
     status) status ;;
     -h|--help|help) sed -n -e '2s/^# //p' -e '4,/^#$/s/^# \{0,1\}//p' "$0" ;;
     *) die "usage: wifi-client scan|connect SSID [- | --password-file FILE | --open]|status|up|reconnect|disconnect [--keep]|forget|scan-mode" ;;
