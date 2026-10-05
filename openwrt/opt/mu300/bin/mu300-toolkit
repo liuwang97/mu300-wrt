@@ -557,13 +557,18 @@ wifi_pick_and_join() {
         # the scan output is "%4s dBm  %-6s  %s", so the name starts at column 19 and may contain spaces
         ssid=$(printf '%s' "$line" | cut -c19-)
         [ -n "$ssid" ] || return
+        # a name shown with \xNN escapes (control or invisible characters, a backslash) is not its real name
+        case $ssid in *'\x'*)
+            printf '\n  %sThis name has characters that are shown escaped; join it with\n' "$Y"
+            printf '  sudo wifi-client connect "<its real name>"%s\n' "$N"; pause; return ;;
+        esac
     fi
     printf '\n  password for %s%s%s (empty for an open network, nothing is shown as you type): ' "$B" "$ssid" "$N"
     stty -echo 2>/dev/null; IFS= read -r pass; stty echo 2>/dev/null; printf '\n\n'
     # on stdin: as an argument it would show in ps
     printf '%s\n' "$pass" | /opt/mu300/bin/wifi-client connect "$ssid" - 2>&1 | sed 's/^/  /'
     rc=$?
-    if [ "$rc" = 3 ] || grep -q "^SSID=$ssid$" /etc/mu300/wifi-client.conf 2>/dev/null && [ ! -e /run/mu300-wifi-client.active ]; then
+    if [ "$rc" = 3 ] || grep -qFx "SSID=$ssid" /etc/mu300/wifi-client.conf 2>/dev/null && [ ! -e /run/mu300-wifi-client.active ]; then
         printf '\n  %sReboot now to join it?%s [y/N] ' "$B" "$N"
         read -r a
         case $a in y|Y|e|E) printf '\n  rebooting...\n'; sync; reboot ;; esac

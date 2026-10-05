@@ -81,6 +81,8 @@ class WifiClient(ShellTest):
         (self.root / 'run').mkdir()
         self.conf = self.root / 'etc/mu300/wifi-client.conf'
         self.wpaconf = self.root / 'run/mu300-wifi-client.conf'
+        # the LAN's subnet comes from its configuration (br-lan has no address yet at a boot join)
+        (self.root / 'etc/mu300/lan.conf').write_text('LAN_IP=192.168.79.1\n')
         self.ev = self.tmp / 'events'
         (self.tmp / 'iwscan').write_text(IWSCAN)
         (self.tmp / 'scan_results').write_text(SCAN_RESULTS)
@@ -206,7 +208,7 @@ class WifiClient(ShellTest):
             self.assertIn('ls\\xe2\\x80\\xa8iso\\xe2\\x81\\xa6', names)
             self.assertIn('over\\xc0\\xaf\\xe0\\x80\\xaf\\xed\\xa0\\x80', names)
             self.assertIn('tag\\xf3\\xa0\\x80\\x81😀', names)
-            self.assertIn('esc\\x1b', names)          # the text, not the byte
+            self.assertIn('esc\\x5cx1b', names)       # the text: its backslash shown as \\x5c, so not the byte
             self.assertHostileFree(r.stdout)
             # no neighbour report's BSSID taken for a name, no hidden network
             self.assertNotIn('00:00:00:00:00:00', r.stdout)
@@ -220,7 +222,7 @@ class WifiClient(ShellTest):
         raw.decode('utf-8')
         for ch in raw.decode('utf-8'):
             o = ord(ch)
-            self.assertFalse(o < 32 and ch != '\n' or 0x7f <= o <= 0x9f or 0x200b <= o <= 0x200f or 0x2028 <= o <= 0x202e
+            self.assertFalse(o < 32 and ch != '\n' or o in (0xad, 0xa0) or 0xfe00 <= o <= 0xfe0f or 0x7f <= o <= 0x9f or 0x200b <= o <= 0x200f or 0x2028 <= o <= 0x202e
                              or 0x2060 <= o <= 0x206f or o in (0x61c, 0x180e, 0xfeff) or 0xe0000 <= o <= 0xe007f, repr(ch))
 
     def test_scan_through_the_supplicant(self):
@@ -238,7 +240,7 @@ class WifiClient(ShellTest):
             self.assertEqual(names['office'], 'EAP')
             self.assertEqual(names['cafe'], 'open')
             self.assertIn('Çay Evi', names)
-            self.assertIn('back\\slash "quoted"', names)
+            self.assertIn('back\\x5cslash "quoted"', names)
             self.assertIn('evil\\x1b]0;title\\x07\\xc2\\x85x', names)
             self.assertHostileFree(r.stdout)
             self.assertEqual(sum(1 for _, _, n in rows if n == 'KEDI MLO'), 1)   # one line per name
@@ -456,7 +458,7 @@ class WifiClient(ShellTest):
                 # the other network's private, link-local and CGNAT addresses: its other hosts and its router's
                 # admin page are not for LAN clients; the router is only their way out
                 self.assertIn('oifname "wlan0" ip daddr { 10.0.0.0/8, 100.64.0.0/10, 169.254.0.0/16, 172.16.0.0/12, '
-                              '192.168.0.0/16, 224.0.0.0/3, 255.255.255.255 } counter drop', out)
+                              '192.168.0.0/16, 224.0.0.0/3 } counter drop', out)
                 self.assertIn(f'oifname "wlan0" ip daddr {subnet or "192.168.2.0/24"} counter drop', out)
                 self.assertIn('oifname "wlan0" meta nfproto ipv6 counter drop', out)
                 # every drop before the only other rule, the MSS clamp; nothing accepted towards wlan0
@@ -506,7 +508,7 @@ table inet mu300_wifi_filter {{
         type filter hook forward priority filter; policy accept;
         iifname "wlan0" ct state established,related accept
         iifname "wlan0" counter drop
-        oifname "wlan0" ip daddr {{ 10.0.0.0/8, 100.64.0.0/10, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16, 224.0.0.0/3, 255.255.255.255 }} counter drop
+        oifname "wlan0" ip daddr {{ 10.0.0.0/8, 100.64.0.0/10, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16, 224.0.0.0/3 }} counter drop
         {f'oifname "wlan0" ip daddr {subnet} counter drop' if subnet else ''}
         oifname "wlan0" meta nfproto ipv6 counter drop
         oifname "wlan0" tcp flags syn tcp option maxseg size set rt mtu
@@ -595,24 +597,43 @@ table inet mu300_wifi_filter {{
                 self.assertFalse((self.tmp / 'supplicant').exists(), sig.name)
             self.stub('sleep', 'echo sleep >> "$STUBLOG/sleeps"')
 
-    def test_a_renewal_into_another_subnet_updates_the_rules(self):
+    def test_the_lan_subnet_comes_from_configuration(self):
+        # no lan.conf: the device's default (mu300-lan-ip); neither: no join, since the overlap cannot be checked
+        lanip = self.tmp / 'bin'
+        lanip.mkdir()
+        (lanip / 'mu300-lan-ip').write_text('#!/bin/sh\necho 192.168.2.1\n')
+        (lanip / 'mu300-lan-ip').chmod(0o755)
+        for shell in self.each_shell():
+            self.fresh()
+            (self.root / 'etc/mu300/lan.conf').unlink()
+            r = self.run_wc(shell, 'connect', 'KEDI 5G', '-', stdin='password1\n', MU300_BIN=lanip)
+            self.assertEqual(r.returncode, 1)
+            self.assertIn('overlaps', r.stderr)
+            self.fresh()
+            r = self.run_wc(shell, 'connect', 'KEDI 5G', '-', stdin='password1\n', MU300_BIN=self.tmp / 'nothing')
+            self.assertEqual(r.returncode, 1)
+            self.assertIn('LAN subnet', r.stderr)
+            self.assertRemoved()
+            (self.root / 'etc/mu300/lan.conf').write_text('LAN_IP=192.168.79.1\n')
+
+    def test_leaving_takes_the_link_down_before_the_rules(self):
         for shell in self.each_shell():
             self.fresh()
             self.run_wc(shell, 'connect', 'KEDI 5G', '-', stdin='password1\n')
-            (self.tmp / 'subnet').write_text('203.0.113.0/24')
             self.ev.unlink()
-            r = self.script(shell, WIFI, 'renew', MU300_SYSROOT=self.root, MU300_VPN_CMD=self.stubs / 'vpn',
-                            interface='wlan0', ip='203.0.113.5', mask='24', router='203.0.113.1')
-            self.assertEqual(r.returncode, 0, r.stderr)
-            self.assertEqual(self.applied()[-1], self.expected('203.0.113.0/24'))
+            self.run_wc(shell, 'disconnect')
+            ev = self.events()
+            self.assertLess(ev.index('pkill -f wpa_supplicant'), ev.index('  | delete table inet mu300_wifi_filter'))
 
     def test_hostile_names_in_messages(self):
         for shell in self.each_shell():
             self.fresh()
-            bad = 'x\x1b]0;pwn\x07‮Y​'
+            # tabs and newlines too: the whole name is checked, not its first field or line
+            bad = 'x\x1b]0;pwn\x07\u202eY\u200b\tZ\x1b[31m\u00ad\ufe0f\nW'
             r = self.run_wc(shell, 'connect', bad, '-', stdin='password1\n')
             self.assertEqual(r.returncode, 0, r.stderr)
-            self.assertIn('x\\x1b]0;pwn\\x07\\xe2\\x80\\xaeY\\xe2\\x80\\x8b', r.stdout)
+            self.assertIn('x\\x1b]0;pwn\\x07\\xe2\\x80\\xaeY\\xe2\\x80\\x8b\\x09Z\\x1b[31m'
+                          '\\xc2\\xad\\xef\\xb8\\x8f\\x0aW', r.stdout)
             self.assertHostileFree(r.stdout + r.stderr)
             self.assertHostileFree(self.run_wc(shell, 'status').stdout)
             self.run_wc(shell, 'disconnect')
@@ -632,6 +653,7 @@ table inet mu300_wifi_filter {{
                          '      [ -e "$STUBLOG/inzone" ] && echo "firewall.@rule[9].name=\'mu300-wifi-client-private\'" ;;\n'
                          '  "-q get firewall.@zone[1].device") [ -e "$STUBLOG/inzone" ] && echo "sbtun wlan0" || echo sbtun ;;\n'
                          '  "add firewall rule") echo cfg0a ;;\n'
+                         '  "-q get network.lan.ipaddr") echo 192.168.1.1 ;;\n'
                          'esac\nexit 0')
         self.stub('wifi', 'exit 0')
         for shell in self.each_shell():
