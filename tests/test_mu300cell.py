@@ -305,6 +305,72 @@ esac''')
             r = self.script(shell, NDP_LEARN, '--prefix', MU300_IF_INET6=fake)
             self.assertEqual((r.returncode, r.stdout), (0, ''), (shell, r.stderr))
 
+    # Security review: ndp-learn takes nothing from the LAN. ip is a stub that logs every call to $STUBLOG/ipcalls;
+    # the neighbour table on br-lan and the host routes on sipa_eth0 are hostile ($T_NEIGH, $T_WANROUTES).
+    HOSTILE_NEIGH = ('2001:4860:4860::8888 lladdr 02:00:00:00:00:01 REACHABLE\n'      # off-prefix (a DNS server)
+                     '240e:388:a:1234::5 lladdr 02:00:00:00:00:02 REACHABLE\n'        # inside the prefix
+                     '240e:388:a:1234::1 lladdr 02:00:00:00:00:03 REACHABLE\n'        # the router's own address
+                     '240e:388:a:1234:: lladdr 02:00:00:00:00:04 STALE\n'             # subnet-router anycast
+                     'fe80::1 lladdr 02:00:00:00:00:05 REACHABLE\n'
+                     'ff02::1 lladdr 33:33:00:00:00:01 NOARP\n'
+                     '-6 lladdr 02:00:00:00:00:06 REACHABLE\n'
+                     '2a00::1;reboot lladdr 02:00:00:00:00:07 REACHABLE\n')
+    HOSTILE_WAN = ('240e:388:a:1234::5 proto static metric 1024\n'                   # odhcpd's stray host route
+                   '2001:4860:4860::8888 proto static metric 1024\n'                 # off-prefix: not ours to delete
+                   '240e:388:a:1234::6;reboot proto static\n'
+                   '240e:388:a:1234:-x proto static\n'
+                   '240e:388:a:1234::/64 proto ra metric 256\n'
+                   'default via fe80::1 proto ra metric 1024\n')
+
+    def ndp_once(self, shell, neigh, wan):
+        fake = self.tmp / 'if_inet6'
+        fake.write_text('240e0388000a12340000000000000001 05 40 00 00 sipa_eth0\n')
+        (self.tmp / 'neigh').write_text(neigh)
+        (self.tmp / 'wan').write_text(wan)
+        (self.tmp / 'ipcalls').write_text('')
+        self.stub('ip', '''echo "ip $*" >> "$STUBLOG/ipcalls"
+case "$*" in
+  "-6 neigh show"*) cat "$STUBLOG/neigh" ;;
+  "-6 route show dev sipa_eth0") cat "$STUBLOG/wan" ;;
+esac
+exit 0''')
+        self.stub('logger', 'exit 0')
+        r = self.script(shell, NDP_LEARN, '--once', MU300_IF_INET6=fake)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return (self.tmp / 'ipcalls').read_text().splitlines()
+
+    def test_ndp_learn_takes_nothing_from_the_lan(self):
+        """Security review: a LAN client's spoofed neighbour advertisements must not make the router route any
+        address (off-prefix, its own, link-local, multicast, anycast, malformed) to br-lan: ndp-learn does not read
+        the neighbour table at all, adds no host route and no proxy entry. The only route it installs is the
+        bearer's /64 on br-lan, derived from the kernel's own address."""
+        for shell in self.each_shell():
+            calls = self.ndp_once(shell, self.HOSTILE_NEIGH, '')
+            self.assertIn('ip -6 route replace 240e:388:a:1234::/64 dev br-lan metric 1024', calls)
+            self.assertFalse([c for c in calls if 'neigh' in c], calls)
+            adds = [c for c in calls if ' add ' in f'{c} ' or c.startswith('ip -6 route replace')]
+            self.assertEqual(set(adds), {'ip -6 route replace 240e:388:a:1234::/64 dev br-lan metric 1024'}, calls)
+
+    def test_ndp_learn_removes_only_valid_in_prefix_wan_host_routes(self):
+        """Host routes inside the /64 on sipa_eth0 (odhcpd's, which override the LAN /64) are removed; an
+        off-prefix one, the /64, the default and anything that is not strictly an IPv6 address are left alone and
+        never reach ip's arguments."""
+        for shell in self.each_shell():
+            calls = self.ndp_once(shell, '', self.HOSTILE_WAN)
+            dels = [c for c in calls if ' del ' in c]
+            self.assertEqual(dels, ['ip -6 route del 240e:388:a:1234::5/128 dev sipa_eth0'], calls)
+            self.assertFalse([c for c in calls if 'reboot' in c or ' -x' in c], calls)
+
+    def test_ndp_learn_never_routes_a_bad_prefix(self):
+        """A bearer address that is not global unicast (multicast, link-local) gives no prefix, so no route."""
+        fake = self.tmp / 'if_inet6'
+        for line in ('ff020000000000000000000000000001 05 40 00 00 sipa_eth0\n',
+                     'fe800000000000000000000000000001 05 40 00 00 sipa_eth0\n'):
+            fake.write_text(line)
+            for shell in self.each_shell():
+                r = self.script(shell, NDP_LEARN, '--prefix', MU300_IF_INET6=fake)
+                self.assertEqual((r.returncode, r.stdout), (0, ''), (shell, line))
+
     def init_start(self, shell, ipv6):
         self.stub('uci', f'[ "$*" = "-q get network.wan.ipv6" ] && {{ [ -n "{ipv6}" ] && echo "{ipv6}"; exit 0; }}\n'
                          'exit 1')

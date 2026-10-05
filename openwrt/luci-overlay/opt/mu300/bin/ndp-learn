@@ -14,23 +14,32 @@
 # queries for the whole network - "DNS resolves nothing over IPv6, IPv6 looks
 # dead end to end" - until the next reconnect forgot the verdict.
 #
-# The /64 on br-lan is the primary mechanism: NDP there resolves each client
-# on demand, with no race for addresses that never showed up in the neighbour
-# table. The per-neighbour /128 pins below are kept as a small latency
-# optimisation for known neighbours. The prefix is tracked so a carrier
-# renumber replaces the route instead of stacking a stale one.
+# The /64 on br-lan is the mechanism: NDP there resolves each client on
+# demand, with no race for addresses that never showed up in the neighbour
+# table. The prefix is tracked so a carrier renumber replaces the route
+# instead of stacking a stale one.
+#
+# Nothing is learnt from the LAN (security review of the port): the fork also
+# pinned a /128 to br-lan for every global address in br-lan's neighbour table,
+# "a small latency optimisation". Any LAN client can put any address there with
+# a spoofed neighbour advertisement, so that pinned another client's address,
+# the router's own, or an internet host's (a DNS server, say) to br-lan: a route
+# hijack. The pins are left out; the /64 route does the work. Every value that
+# reaches `ip` is checked to be a plain IPv6 address inside the bearer's /64.
 #
 # Relay mode of mu300cell only (K37, spec D9; openwrt-luci): init.d/mu300-ndp starts this when network.wan.ipv6 is
-# relay. Ported from kanoqwq/clean-tf-7.2 (cd4fb28, 89b376d).
+# relay. Ported from kanoqwq/clean-tf-7.2 (cd4fb28, 89b376d), without the neighbour pins.
 # ndp-learn --prefix: print the bearer's /64 (nothing when it has none) and exit.
+# ndp-learn --once: one round (no router solicitation, no sleep) and exit.
 
 # fixed-width hex, one line per address: address, ifindex, prefix length, scope, flags, name
 IF_INET6=${MU300_IF_INET6:-/proc/net/if_inet6}
 
-# The bearer's global /64, from $IF_INET6. That file uses fixed-width hex, so this also handles prefixes whose first
-# four hextets are compressed by `ip -6 addr`.
+# The bearer's global /64, from $IF_INET6 (the kernel's own address, never the LAN's). That file uses fixed-width
+# hex, so this also handles prefixes whose first four hextets are compressed by `ip -6 addr`. Global unicast only
+# (2000::/3): never link-local, multicast or anything else a misconfigured scope could let through.
 bearer_prefix() {
-    awk '$6=="sipa_eth0" && $4=="00" {
+    awk '$6=="sipa_eth0" && $4=="00" && $1 ~ /^[23][0-9a-f]{31}$/ {
         for (i=1; i<=4; i++) {
             h=substr($1,(i-1)*4+1,4); sub(/^0+/,"",h);
             if (h=="") h="0";
@@ -40,24 +49,24 @@ bearer_prefix() {
     }' "$IF_INET6" 2>/dev/null
 }
 
-if [ "${1:-}" = --prefix ]; then
-    bearer_prefix
-    exit 0
-fi
+# in_prefix ADDR STEM: ADDR is a plain IPv6 address (hex digits and colons only, so nothing ip could read as an
+# option or a second argument) that starts with STEM: (inside the /64), and is not the subnet-router anycast STEM::.
+in_prefix() {
+    case $1 in
+        ''|-*|*[!0-9a-f:]*) return 1 ;;
+        "$2::") return 1 ;;
+        "$2:"*) return 0 ;;
+    esac
+    return 1
+}
 
 drop_old_prefix() {
-    [ -n "$1" ] || return
+    [ -n "$1" ] || return 0
     ip -6 route del "$1" dev br-lan 2>/dev/null
-    old_stem=${1%::/64}
-    # `ip route show` prints host routes without the implicit /128 suffix.
-    for r in $(ip -6 route show dev br-lan 2>/dev/null |
-               awk -v stem="$old_stem:" '$1 !~ /\// && index($1,stem)==1 {print $1}'); do
-        ip -6 route del "$r/128" dev br-lan 2>/dev/null
-    done
 }
 
 last_prefix=
-while :; do
+learn_once() {
     prefix=$(bearer_prefix)
     if [ -z "$prefix" ] && [ -n "$last_prefix" ]; then
         drop_old_prefix "$last_prefix"
@@ -69,24 +78,27 @@ while :; do
         last_prefix=$prefix
         logger -t ndp-learn "LAN prefix route: $prefix dev br-lan"
     fi
+    [ -n "$prefix" ] || return 0
     # odhcpd can learn a downstream client's /128 on the WAN side. That
     # more-specific route overrides the LAN /64 and blackholes NAT66 replies.
     # Remove only host routes inside the shared prefix; the LAN /64 resolves
     # the client by NDP even before it appears in the neighbour table.
-    if [ -n "$prefix" ]; then
-        stem=${prefix%::/64}
-        for r in $(ip -6 route show dev sipa_eth0 2>/dev/null |
-                   awk -v stem="$stem:" '$1 !~ /\// && index($1,stem)==1 {print $1}'); do
-            ip -6 route del "$r/128" dev sipa_eth0 2>/dev/null
-        done
-        ip -6 route show "$prefix" dev br-lan 2>/dev/null | grep -q 'dev br-lan' ||
-            ip -6 route replace "$prefix" dev br-lan metric 1024 2>/dev/null
-    fi
-    for a in $(ip -6 neigh show dev br-lan 2>/dev/null | cut -d' ' -f1 |
-               grep -E '^[23][0-9a-f]*:'); do
-        ip -6 route show "$a/128" 2>/dev/null | grep -q 'dev br-lan' ||
-            ip -6 route add "$a/128" dev br-lan 2>/dev/null
+    stem=${prefix%::/64}
+    for r in $(ip -6 route show dev sipa_eth0 2>/dev/null | awk '$1 !~ /\// {print $1}'); do
+        in_prefix "$r" "$stem" && ip -6 route del "$r/128" dev sipa_eth0 2>/dev/null
     done
+    ip -6 route show "$prefix" dev br-lan 2>/dev/null | grep -q 'dev br-lan' ||
+        ip -6 route replace "$prefix" dev br-lan metric 1024 2>/dev/null
+    return 0
+}
+
+case ${1:-} in
+    --prefix) bearer_prefix; exit 0 ;;
+    --once) learn_once; exit 0 ;;
+esac
+
+while :; do
+    learn_once
     # Self-heal the bearer's own public address: the carrier's RA can be missed while the
     # bearer settles after boot, and nothing else ever re-solicits - flip accept_ra to send
     # a fresh router solicitation whenever the bearer has no global address.
