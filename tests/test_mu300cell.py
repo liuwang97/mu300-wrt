@@ -98,7 +98,8 @@ exit 0''')
         e = dict(T_APN='internet', T_PDPTYPE='IP', T_PEERDNS='1', T_IPV6='', T_LEFT='', T_NO_REPLACE='',
                  SCRIPT=self.script_copy)
         e.update(env)
-        r = self.sh(shell, HARNESS + f'{func} wan\n', **e)
+        # sleep as a function too: busybox ash runs its own sleep applet without looking at PATH
+        r = self.sh(shell, 'sleep() { echo "sleep $*" >> "$STUBLOG/calls"; }\n' + HARNESS + f'{func} wan\n', **e)
         self.assertEqual(r.returncode, ok, r.stderr)
         return (self.tmp / 'calls').read_text().splitlines()
 

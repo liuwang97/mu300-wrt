@@ -312,8 +312,11 @@ class Pool(ShellTest):
                     self.assertTrue(r.stdout.endswith('sent (reference 12)\n'), r.stdout)
                     enc = subprocess.run(['awk', '-v', 'mode=encode', '-v', 'number=+905551112233', '-v',
                                           'text=' + text.replace('\\', '\\\\').replace('\n', '\\n'), '-f', str(AWK)],
-                                         capture_output=True, text=True, stdin=subprocess.DEVNULL).stdout.split()
+                                         capture_output=True, text=True, stdin=subprocess.DEVNULL,
+                                         env=dict(os.environ, LC_ALL='C')).stdout.split()
                     self.assertEqual(self.at_log(), ['AT+CMGF=0', f'AT+CMGS={enc[0]}^{enc[1]}~'])
+                    if 'ğüş' in text:   # UCS-2 of the letters, also under gawk in a UTF-8 locale
+                        self.assertIn('011F00FC015F', enc[1])
                     sent = [(h, b) for h, b in self.msgs().values() if h['dir'] == 'mo']
                     self.assertEqual((sent[-1][0]['to'], sent[-1][0]['status'], sent[-1][1]),
                                      ('+905551112233', 'sent', text + '\n'))

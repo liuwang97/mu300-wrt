@@ -38,7 +38,8 @@ def shells():
         key = (os.path.realpath(path),) + tuple(argv[1:])
         if key not in seen:
             seen.add(key)
-            found.append(argv)
+            # by its full path: a test that stubs a command of the same name (busybox) must not replace the shell
+            found.append([path] + argv[1:])
     return found
 
 

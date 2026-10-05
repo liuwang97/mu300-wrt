@@ -22,6 +22,9 @@
 # of its text-mode parser.
 set -u
 export PATH="$PATH:/opt/mu300/bin:/opt/mu300/busybox-bin:/usr/sbin:/sbin"
+# bytes, not characters: sms-pdu.awk writes UTF-8 a byte at a time with printf "%c", which gawk in a UTF-8 locale
+# would encode a second time (busybox awk and mawk never do)
+export LC_ALL=C
 
 POOL=${MU300_SMS_POOL:-/etc/mu300/sms-pool}
 MSGDIR=$POOL/msg
