@@ -184,14 +184,13 @@ report
 # Kill processes a previous monitor left behind (never in --once test mode:
 # that must not disturb the running instance). netifd's teardown signal does
 # not reach pipeline members, so every re-setup that missed the kill left an
-# event farm behind. The ps snapshot goes through a file: an environment
-# prefix does not cross a pipe, and awk -v would otherwise match the awk line
-# in a piped ps.
+# event farm behind. The ps snapshot is taken whole before awk starts (in a
+# variable, never a file: no fixed path a root process writes through), so
+# awk's own line, which carries the pattern in -v, is not in it.
 reap() {
-	local pat=$1 pids pid
-	ps w > /tmp/mu300cell-reap.ps
-	pids=$(awk -v pat="$pat" 'NR>1 && index($0, pat) { print $1 }' /tmp/mu300cell-reap.ps)
-	rm -f /tmp/mu300cell-reap.ps
+	local pat=$1 snap pids pid
+	snap=$(ps w)
+	pids=$(printf '%s\n' "$snap" | awk -v pat="$pat" 'NR>1 && index($0, pat) { print $1 }')
 	for pid in $pids; do
 		[ "$pid" != "$$" ] && kill "$pid" 2>/dev/null
 	done

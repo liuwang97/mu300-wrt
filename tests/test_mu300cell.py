@@ -245,6 +245,32 @@ exit 0''')
 class Relay(ShellTest):
     """The luci-overlay half of relay mode: mu300cell-v6.sh, ndp-learn, init.d/mu300-ndp, 91-mu300-luci."""
 
+    def test_reap_kills_the_old_monitor_without_a_file(self):
+        """Final review minor 6: reap() kills the processes a previous monitor left (matched in a ps snapshot) and
+        writes no file: there was a fixed /tmp/mu300cell-reap.ps written by root."""
+        text = MONITOR.read_text()
+        m = re.search(r'\nreap\(\) \{\n.*?\n\}\n', text, re.S)
+        self.assertTrue(m)
+        self.assertNotIn('/tmp/', m.group(0))
+        for shell in self.each_shell():
+            old = subprocess.Popen(['sleep', '30'])
+            other = subprocess.Popen(['sleep', '30'])
+            try:
+                self.stub('ps', f'''printf '%s\\n' '  PID USER       VSZ STAT COMMAND' \\
+  ' {old.pid} root      1234 S    /bin/sh /lib/netifd/proto/mu300cell-v6.sh wan sipa_eth0 10.0.0.1' \\
+  ' {other.pid} root      1234 S    /bin/sh /lib/netifd/proto/mu300cell-v6.sh wwan sipa_eth1 10.0.0.1' ''')
+                before = sorted(self.tmp.rglob('*'))
+                r = self.sh(shell, m.group(0) + 'cd "$STUBLOG" && reap "mu300cell-v6.sh wan sipa_eth0"')
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertEqual(sorted(self.tmp.rglob('*')), before)
+                self.assertIsNotNone(old.wait(timeout=5))
+                self.assertIsNone(other.poll())
+            finally:
+                for p in (old, other):
+                    if p.poll() is None:
+                        p.kill()
+                    p.wait()
+
     def test_monitor_probe_exits_at_once(self):
         """netifd probes every *.sh in its proto directory with '<script> "" dump'; the monitor is not a protocol and
         must exit at once (it would otherwise block the scan, or wait on a fifo for ever). /lib/functions.sh does not

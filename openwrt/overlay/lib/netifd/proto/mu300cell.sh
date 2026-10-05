@@ -13,7 +13,7 @@
 # (and in relay mode mu300cell-v6.sh) is the only writer.
 #
 # option ipv6: 'relay' (openwrt-luci, set by its first boot; K35-K37, spec D9) takes IPv6 the way kanoqwq's fork
-# does: sipa_eth0 accepts the carrier's RA, odhcpd relays RA/DHCPv6/NDP to the LAN, fw4 masquerades (NAT66), and the
+# does: sipa_eth0 accepts the carrier's RA, odhcpd relays RA/DHCPv6 to the LAN, fw4 masquerades (NAT66), and the
 # event monitor mu300cell-v6.sh (openwrt-luci's overlay) reports the RA's addresses and routes to netifd. It works on
 # carriers that never fill in +CGCONTRDP's v6 address. Unset or 'extend' (plain OpenWrt): the RFC 7278 design
 # below, which needs that address. Relay applies to a dual-stack context only (pdptype other than IP).
