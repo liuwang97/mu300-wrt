@@ -18,7 +18,13 @@ if ! [ -s /dev/__properties__/property_info ]; then
     mkdir -p /dev/__properties__
     mount --bind $A/dev-properties /dev/__properties__
 fi
-for u in /sys/class/block/mmcblk0p*/uevent; do
+# Android's by-name links: the eMMC's partitions, found by type - its number follows probe order (FINDINGS 31l)
+E=mmcblk0
+for b in /sys/block/mmcblk*; do
+    case ${b##*/mmcblk} in ''|*[!0-9]*) continue ;; esac
+    [ "$(cat "$b/device/type" 2>/dev/null)" = MMC ] && { E=${b##*/}; break; }
+done
+for u in /sys/class/block/${E}p*/uevent; do
     d=$(basename "$(dirname "$u")")
     n=$(sed -n 's/^PARTNAME=//p' "$u")
     ln -sfn /dev/$d /dev/block/$d

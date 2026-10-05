@@ -62,6 +62,10 @@ class SdRoot(ShellTest):
         s = self.tmp / 'sys'
         for h in hosts:
             (s / 'class' / 'mmc_host' / h).mkdir(parents=True, exist_ok=True)
+        if 'mmc0' in hosts:  # the eMMC, set up long before root selection
+            e = s / 'class' / 'mmc_host' / 'mmc0' / 'mmc0:0001'
+            e.mkdir()
+            (e / 'type').write_text('MMC\n')
         (s / 'bus' / 'mmc' / 'devices').mkdir(parents=True, exist_ok=True)
         if card:  # card = (type, bound)
             c = s / 'bus' / 'mmc' / 'devices' / 'mmc1:aaaa'
@@ -115,6 +119,117 @@ class SdRoot(ShellTest):
             self.assertEqual(f'{self.tmp}/mmcblk1p1\nslept=5\nrc=0', out.strip())
 
 
+    # The eMMC and the card by type, never by number (FINDINGS 31l: the card slot's host once took mmc0).
+    def fake_disks(self, layout):
+        """layout: {'mmcblk0': 'SD', 'mmcblk1': 'MMC', ...}; /sys/block/<n>/device/type in self.tmp/sys,
+        the block devices as files in self.tmp/dev"""
+        s, d = self.tmp / 'sys', self.tmp / 'dev'
+        d.mkdir(exist_ok=True)
+        for n, typ in layout.items():
+            (s / 'block' / n / 'device').mkdir(parents=True, exist_ok=True)
+            (s / 'block' / n / 'device' / 'type').write_text(typ + '\n')
+        return s, d
+
+    def by_type(self, shell, call, layout):
+        s, d = self.fake_disks(layout)
+        return self.run_fn(shell, f'MU300_SYS={s}; MU300_DEV={d}; {call}', '')
+
+    def test_emmc_by_type(self):
+        for shell in self.each_shell():
+            for layout, want in (({'mmcblk0': 'MMC', 'mmcblk0boot0': 'MMC', 'mmcblk1': 'SD'}, 'mmcblk0'),
+                                 ({'mmcblk0': 'SD', 'mmcblk1': 'MMC', 'mmcblk1boot0': 'MMC'}, 'mmcblk1')):
+                shutil.rmtree(self.tmp / 'sys', ignore_errors=True)
+                self.assertIn(f'{self.tmp}/dev/{want}\nrc=0', self.by_type(shell, 'emmc_dev', layout))
+            # nothing in sysfs: mmcblk0, as before
+            shutil.rmtree(self.tmp / 'sys', ignore_errors=True)
+            self.assertIn(f'{self.tmp}/dev/mmcblk0\nrc=0', self.by_type(shell, 'emmc_dev', {}))
+
+    def test_card_on_mmcblk0_is_found(self):
+        # the card slot took mmc0: the card is mmcblk0, the eMMC mmcblk1
+        layout = {'mmcblk0': 'SD', 'mmcblk1': 'MMC', 'mmcblk1boot0': 'MMC'}
+        self.fake_disks(layout)
+        fake_ext4(self.tmp / 'dev' / 'mmcblk0p1', 'mu300sd')
+        fake_ext4(self.tmp / 'dev' / 'mmcblk1p1', 'mu300sd')   # never looked at: the eMMC
+        for shell in self.each_shell():
+            self.assertIn(f'{self.tmp}/dev/mmcblk0p1\nrc=0', self.by_type(shell, 'find_sd_root', layout))
+
+    def test_the_emmc_is_never_taken_for_the_card(self):
+        layout = {'mmcblk0': 'SD', 'mmcblk1': 'MMC'}
+        self.fake_disks(layout)
+        fake_ext4(self.tmp / 'dev' / 'mmcblk0p1', 'photos')
+        fake_ext4(self.tmp / 'dev' / 'mmcblk1p1', 'mu300sd')
+        fake_ext4(self.tmp / 'dev' / 'mmcblk1', 'mu300sd')
+        for shell in self.each_shell():
+            self.assertEqual('rc=1', self.by_type(shell, 'find_sd_root', layout).strip())
+
+    def test_card_on_mmcblk1_still_found(self):
+        layout = {'mmcblk0': 'MMC', 'mmcblk1': 'SD'}
+        self.fake_disks(layout)
+        fake_ext4(self.tmp / 'dev' / 'mmcblk1', 'mu300sd')   # the whole card, no partition table
+        for shell in self.each_shell():
+            self.assertIn(f'{self.tmp}/dev/mmcblk1\nrc=0', self.by_type(shell, 'find_sd_root', layout))
+
+    def test_card_coming_under_any_host_number(self):
+        # a card on mmc0 whose block device is still being set up extends the wait as one on mmc1 did
+        s = self.tmp / 'sys'
+        c = s / 'bus' / 'mmc' / 'devices' / 'mmc0:aaaa'
+        c.mkdir(parents=True)
+        (c / 'type').write_text('SD\n')
+        for shell in self.each_shell():
+            self.assertEqual('slept=6\nrc=1', self.waited(shell, '6.18.55', s).strip())
+
+    def test_vendor_kernel_card_host_under_any_number(self):
+        # 5.4 with the eMMC on mmc1 and the card host on mmc0: still a card host, still the long wait
+        s = self.tmp / 'sys'
+        (s / 'class' / 'mmc_host' / 'mmc0').mkdir(parents=True)
+        e = s / 'class' / 'mmc_host' / 'mmc1' / 'mmc1:0001'
+        e.mkdir(parents=True)
+        (e / 'type').write_text('MMC\n')
+        (s / 'bus' / 'mmc' / 'devices').mkdir(parents=True)
+        for shell in self.each_shell():
+            self.assertEqual('slept=6\nrc=1', self.waited(shell, '5.4.254-gb50db5b6224c', s).strip())
+
+
+class Region(ShellTest):
+    """The internal region is looked for on the eMMC ($EMMC), whatever its number, and never past its end."""
+
+    def block(self):
+        m = re.search(r'# --- region begin\n(.*?)# --- region end', INIT, re.S)
+        self.assertIsNotNone(m, 'boot/init has no region block')
+        return m.group(1)
+
+    def setup_disk(self, name, parts_end, size, region_at=None):
+        b = self.tmp / 'sys' / 'block' / name
+        p = b / f'{name}p1'
+        p.mkdir(parents=True)
+        (p / 'start').write_text('34\n')
+        (p / 'size').write_text(f'{parts_end - 34}\n')
+        (b / 'size').write_text(f'{size // 512}\n')
+        dev = self.tmp / name
+        with open(dev, 'wb') as f:
+            f.truncate(size)
+            if region_at is not None:
+                f.seek(region_at + 1080); f.write(b'\x53\xef')
+                f.seek(region_at + 1144); f.write(b'mu300root')
+        return dev
+
+    def find(self, shell, emmc, root_offset):
+        code = self.block() + f'\nMU300_SYS={self.tmp}/sys; EMMC={emmc}; ROOT_OFFSET={root_offset}; find_root_offset; echo "rc=$?"'
+        return self.sh(shell, code).stdout
+
+    def test_region_on_an_emmc_that_is_mmcblk1(self):
+        # partitions end at sector 100: the region is at the first 2 MiB boundary after them
+        emmc = self.setup_disk('mmcblk1', 100, 4 << 20, region_at=2 << 20)
+        for shell in self.each_shell():
+            self.assertEqual(f'{2 << 20}\nrc=0', self.find(shell, emmc, 3 << 20).strip())
+
+    def test_never_reads_past_the_end(self):
+        # the default offset lies beyond this disk: skipped, not read up to (busybox dd would read the whole disk)
+        emmc = self.setup_disk('mmcblk1', 100, 4 << 20)
+        for shell in self.each_shell():
+            self.assertEqual('rc=1', self.find(shell, emmc, 27762098176).strip())
+
+
 # Stand-ins for what root selection touches on the device. One card (mmcblk1p1) and one internal region; the
 # scenario says which of them are there, when the card shows up and what is on it. mount and umount keep track
 # of what is on /disk in $ON, and pick_root answers from that.
@@ -123,7 +238,7 @@ log() { echo "$*" >> "$T/log"; }
 find_sd_root() { [ "$CARD_NOW" = 1 ] && { echo /dev/mmcblk1p1; return 0; }; return 1; }
 wait_sd_root() { echo "wait $*" >> "$T/log"; [ "$CARD_LATE" = 1 ] && { echo /dev/mmcblk1p1; return 0; }; return 1; }
 find_root_offset() { [ "$INTERNAL" = 1 ] && { echo 4096; return 0; }; return 1; }
-losetup() { case $1 in -f) echo /dev/loop0 ;; -d) echo "detach $2" >> "$T/log" ;; esac; }
+losetup() { case $1 in -f) echo /dev/loop0 ;; -d) echo "detach $2" >> "$T/log" ;; -o) echo "attach $4" >> "$T/log" ;; esac; }
 cat() { case $1 in /sys/*) echo "$ROOT_OFFSET" ;; *) command cat "$@" ;; esac; }
 dd() { [ "$INTERNAL" = 1 ] && printf '\123\357'; }
 mount() {
@@ -136,6 +251,7 @@ umount() { ON=; }
 pick_root() { case $ON in internal) echo /disk/ubuntu ;; card) [ "$CARD_EMPTY" = 1 ] || echo /disk/openwrt ;; esac; }
 ON=
 ROOT_OFFSET=27762098176
+EMMC=${EMMC:-/dev/mmcblk0}
 '''
 
 
@@ -230,6 +346,14 @@ class RootSelect(ShellTest):
             self.assertEqual('mounted=0 on= disk-dev=', out)
             self.assertEqual('', dev)
             self.assertIn('stage=sd-wait (no internal system)\nwait 8 30', log)
+
+    def test_internal_on_an_emmc_that_is_mmcblk1(self):
+        # the card slot took mmc0: the region is attached from the eMMC, and root-dev names it
+        for shell in self.each_shell():
+            out, dev, log = self.select(shell, INTERNAL=1, EMMC='/dev/mmcblk1')
+            self.assertEqual('mounted=1 on=internal disk-dev=/dev/loop0', out)
+            self.assertEqual('mmcblk1@4096', dev)
+            self.assertIn('attach /dev/mmcblk1', log)
 
     def test_no_internal_and_late_card(self):
         for shell in self.each_shell():

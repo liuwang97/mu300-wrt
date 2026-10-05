@@ -17,7 +17,8 @@ esac
 PART=boot_$S
 # --- slot end
 LOGDEV=$(readlink -f /dev/block/by-name/$PART 2>/dev/null)
-[ -b "$LOGDEV" ] || for u in /sys/class/block/mmcblk0p*/uevent; do
+# partition names are the eMMC's GPT, whatever number the eMMC has (FINDINGS 31l)
+[ -b "$LOGDEV" ] || for u in /sys/class/block/mmcblk*p*/uevent; do
     grep -qx PARTNAME=$PART "$u" && LOGDEV=/dev/$(basename "$(dirname "$u")")
 done
 [ -b "$LOGDEV" ] || exit 0

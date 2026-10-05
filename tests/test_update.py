@@ -256,6 +256,8 @@ class Update(UpdateBase):
             self.assertEqual(run('/dev/mmcblk1p1', empty), 'REFUSE')
             self.assertEqual(run('/dev/mmcblk1p1', sd), 'OK')
             self.assertEqual(run('mmcblk0@27762098176', plain), 'OK')
+            # the internal region on an eMMC that came up as mmcblk1 (FINDINGS 31l)
+            self.assertEqual(run('mmcblk1@27762098176', plain), 'OK')
             self.assertEqual(run(None, plain), 'OK')
 
 

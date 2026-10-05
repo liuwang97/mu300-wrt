@@ -338,8 +338,25 @@ ext4_label() {  # ext4_label DEV: the volume label, nothing (and status 1) when 
     [ "$(dd if="$1" bs=1 skip=1080 count=2 2>/dev/null | od -An -tx1 | tr -d ' \n')" = 53ef ] || return 1
     dd if="$1" bs=1 skip=1144 count=16 2>/dev/null | tr -d '\000'; echo
 }
-find_sd_root() {  # the first card device that holds mu300sd; the eMMC is mmcblk0 and never looked at
-    for d in ${MU300_SD_GLOB:-/dev/mmcblk[1-9]p1 /dev/mmcblk[1-9]}; do
+# The eMMC and the card by what they are, never by number: the host index follows probe order, and under mainline
+# the card slot once took mmc0 and left mmcblk1 to the eMMC (FINDINGS 31l).
+mmc_disks() {  # mmc_disks TYPE: the whole mmcblkN disks whose card is of TYPE (MMC: the eMMC, SD: a card)
+    for b in "${MU300_SYS:-/sys}"/block/mmcblk*; do
+        case ${b##*/mmcblk} in ''|*[!0-9]*) continue ;; esac   # not mmcblk0boot0, mmcblk0rpmb, ...
+        [ "$(cat "$b/device/type" 2>/dev/null)" = "$1" ] && echo "${b##*/}"
+    done
+}
+emmc_dev() {  # the eMMC's block device; mmcblk0 when sysfs does not say (the order every kernel had until 31l)
+    set -- $(mmc_disks MMC)
+    echo "${MU300_DEV:-/dev}/${1:-mmcblk0}"
+}
+sd_candidates() {  # the card's first partition, then the whole card, for every SD card there is
+    [ -n "${MU300_SD_GLOB:-}" ] && { echo $MU300_SD_GLOB; return; }
+    for n in $(mmc_disks SD); do echo "${MU300_DEV:-/dev}/${n}p1"; done
+    for n in $(mmc_disks SD); do echo "${MU300_DEV:-/dev}/$n"; done
+}
+find_sd_root() {  # the first card device that holds mu300sd; the eMMC is never looked at
+    for d in $(sd_candidates); do
         [ -e "$d" ] || continue
         [ "$(ext4_label "$d")" = mu300sd ] && { echo "$d"; return 0; }
     done
@@ -351,13 +368,17 @@ find_sd_root() {  # the first card device that holds mu300sd; the eMMC is mmcblk
 # whose host waits for a card-detect line instead of polling and was once seen to bring the card only at 23.75 s.
 sd_coming() {
     s=${MU300_SYS:-/sys}
-    for c in "$s"/bus/mmc/devices/mmc[1-9]:*; do
+    for c in "$s"/bus/mmc/devices/mmc*:*; do
         [ "$(cat "$c/type" 2>/dev/null)" = SD ] || continue
         [ -e "$c/driver" ] && return 1
         return 0
     done
     case $(uname -r) in
-        5.4.*) for h in "$s"/class/mmc_host/mmc[1-9]; do [ -e "$h" ] && return 0; done ;;
+        5.4.*) for h in "$s"/class/mmc_host/mmc*; do   # a host that is not the eMMC's
+                   [ -e "$h" ] || continue
+                   e=0; for c in "$h"/mmc*:*; do [ "$(cat "$c/type" 2>/dev/null)" = MMC ] && e=1; done
+                   [ "$e" = 0 ] && return 0
+               done ;;
     esac
     return 1
 }
@@ -380,22 +401,28 @@ ROOT_OFFSET=27762098176   # linux-boot/rootfs-region.env; outside every GPT part
 # this file - with the default above. Devices whose region is elsewhere then booted into standalone mode and went
 # back to Android. So find it the way the installer places it - the first 2 MiB boundary after the last partition
 # - and take the first candidate that really holds the mu300root filesystem (ext4 magic and label).
-is_mu300root() {  # is_mu300root OFFSET
-    [ "$(dd if=/dev/mmcblk0 bs=1 skip=$(($1 + 1080)) count=2 2>/dev/null | od -An -tx1 | tr -d ' \n')" = 53ef ] &&
-    [ "$(dd if=/dev/mmcblk0 bs=1 skip=$(($1 + 1144)) count=9 2>/dev/null)" = mu300root ]
+# --- region begin
+is_mu300root() {  # is_mu300root OFFSET: on the eMMC ($EMMC)
+    [ "$(dd if="$EMMC" bs=1 skip=$(($1 + 1080)) count=2 2>/dev/null | od -An -tx1 | tr -d ' \n')" = 53ef ] &&
+    [ "$(dd if="$EMMC" bs=1 skip=$(($1 + 1144)) count=9 2>/dev/null)" = mu300root ]
 }
 find_root_offset() {
+    b=${MU300_SYS:-/sys}/block/${EMMC##*/}
     e=0
-    for p in /sys/block/mmcblk0/mmcblk0p*; do
+    for p in "$b/${EMMC##*/}"p*; do
         [ -r "$p/start" ] || continue
         x=$(( $(cat "$p/start") + $(cat "$p/size") ))
         [ "$x" -gt "$e" ] && e=$x
     done
+    # never past the disk's end: busybox dd reads its way to an offset it cannot seek to, byte by byte
+    size=$(( $(cat "$b/size" 2>/dev/null || echo 0) * 512 ))
     for c in $(( (e / 4096 + 1) * 4096 * 512 )) $ROOT_OFFSET; do
+        [ "$size" = 0 ] || [ $((c + 4096)) -le "$size" ] || continue
         is_mu300root "$c" && { echo "$c"; return 0; }
     done
     return 1
 }
+# --- region end
 # The ext4 area holds one or more systems: /ubuntu, /openwrt (selected by /.mu300/boot-os), or a single
 # Ubuntu directly in its root (first installs). Pick one and remember how to start it.
 has_init() { [ -x "$1/lib/systemd/systemd" ] || [ -x "$1/sbin/init" ]; }
@@ -408,6 +435,8 @@ pick_root() {
     done
 }
 mkdir -p /disk /newroot
+EMMC=$(emmc_dev)   # find_partitions has waited for the eMMC's partitions, so its disk is there
+log "stage=emmc dev=$EMMC sd=$(mmc_disks SD | tr '\n' ' ')"
 # --- root-select begin
 mount_internal() {  # the mu300root region on the eMMC; busybox mount sets up a loop only for regular files, so
     # attach it explicitly and verify its offset (the loop options would be handed to ext4: EINVAL)
@@ -418,11 +447,11 @@ mount_internal() {  # the mu300root region on the eMMC; busybox mount sets up a 
         log "stage=root-offset not-found (trying the default $ROOT_OFFSET)"
     fi
     rootloop=$(losetup -f 2>/run/rootmount.err)
-    [ -n "$rootloop" ] && losetup -o $ROOT_OFFSET "$rootloop" /dev/mmcblk0 2>>/run/rootmount.err \
+    [ -n "$rootloop" ] && losetup -o $ROOT_OFFSET "$rootloop" "$EMMC" 2>>/run/rootmount.err \
        && [ "$(cat /sys/block/${rootloop#/dev/}/loop/offset)" = "$ROOT_OFFSET" ] \
        && [ "$(dd if="$rootloop" bs=1 skip=1080 count=2 2>/dev/null | od -An -tx1 | tr -d ' ')" = 53ef ] \
        && mount -t ext4 -o noatime "$rootloop" /disk 2>>/run/rootmount.err \
-       && echo "mmcblk0@$ROOT_OFFSET" > /run/mu300-root-dev && diskdev=$rootloop
+       && echo "${EMMC##*/}@$ROOT_OFFSET" > /run/mu300-root-dev && diskdev=$rootloop
 }
 mount_sd() {  # mount_sd DEV: the card, a block device of its own - no loop
     mount -t ext4 -o noatime "$1" /disk 2>>/run/rootmount.err || return 1
@@ -564,7 +593,7 @@ log "stage=ready"
 A=/android
 cp -a $A/dev/__properties__ /dev/__properties__
 mkdir -p /dev/block/by-name
-for u in /sys/class/block/mmcblk0p*/uevent; do
+for u in /sys/class/block/${EMMC##*/}p*/uevent; do
     d=$(basename "$(dirname "$u")")
     n=$(sed -n 's/^PARTNAME=//p' "$u")
     ln -sf /dev/$d /dev/block/$d

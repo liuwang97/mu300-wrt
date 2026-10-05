@@ -122,8 +122,8 @@ bundle_runs_here() {
 }
 # A system on the SD card boots only with a kernel that has the SD host (the bundle says so in ./features). Installing
 # an older bundle there would leave a device that cannot find its own root filesystem. A missing /run/mu300-root-dev
-# means "not on the card".
-root_on_sd() { d=$(cat "${MU300_ROOT_DEV_FILE:-/run/mu300-root-dev}" 2>/dev/null); [ -n "$d" ] && case $d in mmcblk0@*) return 1 ;; esac; }
+# means "not on the card"; the internal region is "<eMMC>@<offset>", and the eMMC is not always mmcblk0 (31l).
+root_on_sd() { d=$(cat "${MU300_ROOT_DEV_FILE:-/run/mu300-root-dev}" 2>/dev/null); [ -n "$d" ] && case $d in *@*) return 1 ;; esac; }
 # bundle_has BUNDLE LIST FEATURE: does the bundle (LIST: its file list) list FEATURE in ./features?
 bundle_has() { grep -qx './features' "$2" && untar -xzOf "$1" ./features 2>/dev/null | grep -qx "$3"; }
 # bundle_has_sd BUNDLE LIST: does the bundle say it has the SD host?
