@@ -1,12 +1,26 @@
 #!/bin/sh
 # Early boot recorder: for the first minutes after switch_root, copy dmesg + unit states into the persistent
-# log area inside boot_b (48 MiB, 8 MiB) every few seconds, so a power cut before journald flushes still
-# leaves evidence that tools/collect-logs.sh can read from Android.
+# log area inside the Linux slot's boot partition (48 MiB, 8 MiB) every few seconds, so a power cut before journald
+# flushes still leaves evidence that tools/collect-logs.sh can read from Android.
 # OpenWrt: od/timeout come from the static busybox in /opt/mu300/busybox-bin
 export PATH="$PATH:/opt/mu300/busybox-bin"
-BOOTB=$(readlink -f /dev/block/by-name/boot_b 2>/dev/null)
-[ -b "$BOOTB" ] || for u in /sys/class/block/mmcblk0p*/uevent; do grep -qx PARTNAME=boot_b "$u" && BOOTB=/dev/$(basename "$(dirname "$u")"); done
-[ -b "$BOOTB" ] || exit 0
+# --- slot begin
+# The boot partition of the slot Linux runs from (boot_a when Android runs from b - boot_b is then Android's): what
+# the initramfs published, else the slot LK booted (command line, or the bootargs in the device tree), b only when
+# nothing says.
+S=$(cat "${MU300_RUN:-/run/mu300}/linux-slot" 2>/dev/null)
+case $S in a|b) ;; *)
+    S=$(for f in ${MU300_CMDLINE_SRC:-/proc/cmdline /proc/device-tree/chosen/bootargs}; do
+        [ -r "$f" ] && tr '\000' ' ' < "$f" | sed -n 's/.*androidboot\.slot_suffix=_\([ab]\).*/\1/p'; done | head -n1)
+    S=${S:-b} ;;
+esac
+PART=boot_$S
+# --- slot end
+LOGDEV=$(readlink -f /dev/block/by-name/$PART 2>/dev/null)
+[ -b "$LOGDEV" ] || for u in /sys/class/block/mmcblk0p*/uevent; do
+    grep -qx PARTNAME=$PART "$u" && LOGDEV=/dev/$(basename "$(dirname "$u")")
+done
+[ -b "$LOGDEV" ] || exit 0
 end=$(( $(cut -d. -f1 /proc/uptime) + ${1:-300} ))
 while [ "$(cut -d. -f1 /proc/uptime)" -lt "$end" ]; do
     {
@@ -27,7 +41,7 @@ while [ "$(cut -d. -f1 /proc/uptime)" -lt "$end" ]; do
     # older bytes left after it do no harm.
     blocks=$(( ($(wc -c < /run/mu300-early.txt) + 4095) / 4096 ))
     [ "$blocks" -gt 2048 ] && blocks=2048
-    dd if=/run/mu300-early.txt of="$BOOTB" bs=4096 seek=12288 count="$blocks" conv=notrunc 2>/dev/null
+    dd if=/run/mu300-early.txt of="$LOGDEV" bs=4096 seek=12288 count="$blocks" conv=notrunc 2>/dev/null
     sync
     # every 2 s for the first minute and a half, where the intermittent early hangs have happened; a 10 s gap
     # left a single snapshot of a boot that died between 11 and 21 s

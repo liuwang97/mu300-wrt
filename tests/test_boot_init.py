@@ -1,6 +1,7 @@
 """boot/init: where the Linux filesystem is looked for. The card functions are cut out of init between their
 markers and run against files that stand in for block devices."""
 import re
+import shutil
 import unittest
 
 from helpers import TOP, ShellTest
@@ -236,6 +237,97 @@ class RootSelect(ShellTest):
             self.assertEqual('mounted=1 on=card disk-dev=/dev/mmcblk1p1', out)
             self.assertEqual('/dev/mmcblk1p1', dev)
             self.assertIn('wait 8 30', log)
+
+
+class Slot(ShellTest):
+    """The slot block of init: which slot Linux booted from, which block restores Android, what userspace gets."""
+
+    def block(self):
+        m = re.search(r'# --- slot begin\n(.*?)# --- slot end', INIT, re.S)
+        self.assertIsNotNone(m, 'boot/init has no slot block')
+        return m.group(1)
+
+    def run_slot(self, shell, cmdline=None, bootargs=None, image=None, call='linux_slot_detect; publish_slot',
+                 blocks=('slot-a', 'slot-b-trial', 'slot-b', 'slot-a-trial')):
+        etc, run = self.tmp / 'etc', self.tmp / 'run'
+        shutil.rmtree(run, ignore_errors=True)
+        shutil.rmtree(etc, ignore_errors=True)
+        etc.mkdir()
+        for n in blocks:
+            (etc / f'misc-bc-{n}.bin').write_text(n)
+        if image:
+            (etc / 'mu300-linux-slot').write_text(image + '\n')
+        srcs = []
+        for name, text in (('cmdline', cmdline), ('bootargs', bootargs)):
+            if text is not None:
+                (self.tmp / name).write_bytes(text.encode() + b'\0')
+                srcs.append(str(self.tmp / name))
+        code = (f'log() {{ echo "$*" >> "{self.tmp}/log"; }}\n'
+                f'write_misc_bc() {{ echo "write $1" >> "{self.tmp}/log"; }}\n' + self.block() + f'\n{call}\n'
+                'echo "linux=$LINUX_SLOT android=$ANDROID_SLOT"')
+        (self.tmp / 'log').write_text('')
+        r = self.sh(shell, code, MU300_CMDLINE_SRC=' '.join(srcs) or f'{self.tmp}/none', MU300_ETC=etc, MU300_RUN=run)
+        self.assertEqual(r.stderr, '')
+        return r.stdout.strip(), (self.tmp / 'log').read_text(), run
+
+    def test_cmdline_names_the_slot(self):
+        for shell in self.each_shell():
+            out, log, run = self.run_slot(shell, cmdline='console=x androidboot.slot_suffix=_a loglevel=5')
+            self.assertEqual(out, 'linux=a android=b')
+            self.assertIn('stage=linux-slot slot=a source=', log)
+            self.assertEqual((run / 'mu300' / 'linux-slot').read_text(), 'a\n')
+            self.assertEqual((run / 'mu300' / 'misc-bc-android.bin').read_text(), 'slot-b')
+            self.assertEqual((run / 'mu300' / 'misc-bc-linux-trial.bin').read_text(), 'slot-a-trial')
+
+    def test_bootargs_when_the_kernel_replaced_the_cmdline(self):
+        for shell in self.each_shell():
+            out, _, _ = self.run_slot(shell, cmdline='loglevel=5', bootargs='androidboot.slot_suffix=_b')
+            self.assertEqual(out, 'linux=b android=a')
+
+    def test_image_then_default(self):
+        for shell in self.each_shell():
+            self.assertEqual(self.run_slot(shell, image='a')[0], 'linux=a android=b')
+            out, log, _ = self.run_slot(shell)
+            self.assertEqual(out, 'linux=b android=a')
+            self.assertIn('source=default', log)
+
+    def test_mismatch_is_logged_and_the_booted_slot_wins(self):
+        for shell in self.each_shell():
+            out, log, _ = self.run_slot(shell, cmdline='androidboot.slot_suffix=_b', image='a')
+            self.assertEqual(out, 'linux=b android=a')
+            self.assertIn('stage=linux-slot-MISMATCH booted=b image=a', log)
+
+    def test_restore_writes_androids_block(self):
+        for shell in self.each_shell():
+            _, log, _ = self.run_slot(shell, cmdline='androidboot.slot_suffix=_a', call='linux_slot_detect; restore_android')
+            self.assertIn(f'write {self.tmp}/etc/misc-bc-slot-b.bin', log)
+            _, log, _ = self.run_slot(shell, cmdline='androidboot.slot_suffix=_b', call='linux_slot_detect; restore_android')
+            self.assertIn(f'write {self.tmp}/etc/misc-bc-slot-a.bin', log)
+
+    def test_legacy_names_only_for_slot_b(self):
+        # an older mu300-next-boot writes misc-bc-slot-a.bin for "android": with Linux on a that block would boot
+        # Linux, marked successful, for ever - so with Linux on a the old names must not exist at all
+        for shell in self.each_shell():
+            _, _, run = self.run_slot(shell, cmdline='androidboot.slot_suffix=_b')
+            self.assertEqual((run / 'mu300' / 'misc-bc-slot-a.bin').read_text(), 'slot-a')
+            self.assertEqual((run / 'mu300' / 'misc-bc-slot-b-trial.bin').read_text(), 'slot-b-trial')
+            _, _, run = self.run_slot(shell, cmdline='androidboot.slot_suffix=_a')
+            self.assertFalse((run / 'mu300' / 'misc-bc-slot-a.bin').exists())
+            self.assertFalse((run / 'mu300' / 'misc-bc-slot-b-trial.bin').exists())
+
+    def test_old_device_segment(self):
+        # the update every existing installation takes: a new init in the generic segment, the device segment of
+        # an older installer (only the slot-b pair, no etc/mu300-linux-slot), booted from b
+        for shell in self.each_shell():
+            out, _, run = self.run_slot(shell, cmdline='androidboot.slot_suffix=_b', blocks=('slot-a', 'slot-b-trial'))
+            self.assertEqual(out, 'linux=b android=a')
+            self.assertEqual((run / 'mu300' / 'linux-slot').read_text(), 'b\n')
+            for n, want in (('misc-bc-android.bin', 'slot-a'), ('misc-bc-linux-trial.bin', 'slot-b-trial'),
+                            ('misc-bc-slot-a.bin', 'slot-a'), ('misc-bc-slot-b-trial.bin', 'slot-b-trial')):
+                self.assertEqual((run / 'mu300' / n).read_text(), want, n)
+            _, log, _ = self.run_slot(shell, cmdline='androidboot.slot_suffix=_b', blocks=('slot-a', 'slot-b-trial'),
+                                      call='linux_slot_detect; restore_android')
+            self.assertIn(f'write {self.tmp}/etc/misc-bc-slot-a.bin', log)
 
 
 class UsbId(ShellTest):
