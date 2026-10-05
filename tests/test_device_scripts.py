@@ -121,6 +121,33 @@ class At(ShellTest):
             owner.kill()
             owner.wait()
 
+    def test_a_caller_budget_caps_the_wait(self):
+        # final review minor 4: a caller with a hard limit of its own (the LuCI panel; rpcd ends a call at 30 s)
+        # caps the wait with MU300_AT_BUDGET, even for a live daemon; it never lengthens it, and junk is ignored
+        owner = subprocess.Popen(['sh', '-c', 'sleep 60; :', 'mu300-atd'])
+        try:
+            (self.dir / 'owner').mkdir()
+            (self.dir / 'owner' / 'pid').write_text(f'{owner.pid}\n')
+            if not Path(f'/proc/{owner.pid}/cmdline').exists():
+                self.skipTest('no /proc')
+            for shell in self.each_shell():
+                for budget, ok in (('2', False), ('x', True), ('60', True)):
+                    with self.subTest(budget=budget):
+                        th = self.daemon('OK\r\n', answer_delay=3.5)
+                        t0 = time.monotonic()
+                        r = self.script(shell, BIN / 'mu300-at', '-t', 1, 'AT', MU300_AT_DIR=self.dir,
+                                        MU300_BUSYBOX=self.sleeper, MU300_AT_BUDGET=budget)
+                        self.assertEqual(r.returncode == 0, ok, r.stderr)
+                        if not ok:
+                            self.assertLess(time.monotonic() - t0, 3)
+                            self.assertIn('no answer from the daemon', r.stderr)
+                        th.join(timeout=10)
+                        for f in self.dir.glob('answer.*'):
+                            f.unlink()
+        finally:
+            owner.kill()
+            owner.wait()
+
     def test_signal_stops_the_client_and_frees_the_lock(self):
         for shell in self.each_shell():
             p = subprocess.Popen(shell + [str(BIN / 'mu300-at'), '-t', '20', 'AT'], stderr=subprocess.PIPE,

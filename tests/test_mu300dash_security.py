@@ -941,5 +941,29 @@ class RadioLock(Mu300Dash):
             self.assertEqual(self.log('md'), [])
 
 
+
+class AtBudget(Mu300Dash):
+    """Final review minor 4: the AT terminal's whole wait (channel lock plus answer, mu300-at's MU300_AT_LOCK_WAIT and
+    MU300_AT_BUDGET) stays under rpcd's 30 s limit, and a budget that runs out is a translated "busy", not a call
+    rpcd kills."""
+
+    def test_the_wait_is_capped_under_30_seconds(self):
+        at = self.tmp / 'modem'
+        at.write_text('#!/bin/sh\necho "lock=$MU300_AT_LOCK_WAIT budget=$MU300_AT_BUDGET" > "$STUBLOG/env"\n'
+                      'case $3 in AT+SLOW) echo "mu300-at: no answer from the daemon" >&2; exit 1 ;; esac\necho OK\n')
+        at.chmod(0o755)
+        slow = 'The modem did not answer in time; the command may still run, check before sending it again'
+        known = set(subprocess.run([sys.executable, str(TOP / 'tools' / 'luci-i18n.py'), 'extract'], check=True,
+                                   capture_output=True, text=True, encoding='utf-8').stdout.splitlines())
+        self.assertIn(slow, known)
+        for shell in self.each_shell():
+            r, _, _ = self.call(shell, 'at', {'cmd': 'ATI'}, MU300_AT=at)
+            self.assertEqual(self.reply(r).get('ok'), 1, r.stdout)
+            env = dict(kv.split('=') for kv in (self.tmp / 'env').read_text().split())
+            self.assertLess(int(env['lock']) + int(env['budget']), 30)
+            r, _, _ = self.call(shell, 'at', {'cmd': 'AT+SLOW'}, MU300_AT=at)
+            self.assertEqual(self.reply(r), {'ok': 0, 'busy': 1, 'error': slow})
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -88,6 +88,13 @@ if [ -p "$DIR/cmd" ]; then
     if [ -n "$owner" ] && tr '\0' ' ' < "/proc/$owner/cmdline" 2>/dev/null | grep -q mu300-atd; then
         budget=$((T + 30))
     fi
+    # MU300_AT_BUDGET (seconds) shortens that for a caller with a hard limit of its own (the LuCI panel: rpcd ends a
+    # call at 30 s), which would rather say "no answer" than be killed. The daemon still runs the command then, and
+    # its late answer file is left behind; nobody else sets it.
+    case ${MU300_AT_BUDGET:-} in
+        ''|*[!0-9]*) ;;
+        *) [ "$MU300_AT_BUDGET" -lt "$budget" ] && budget=$MU300_AT_BUDGET ;;
+    esac
     end=$(( $(date +%s) + budget ))
     while [ ! -e "$answer" ]; do
         [ "$(date +%s)" -ge "$end" ] && { echo "mu300-at: no answer from the daemon" >&2; exit 1; }

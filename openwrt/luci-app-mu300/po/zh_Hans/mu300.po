@@ -942,6 +942,9 @@ msgstr "正在应用网络锁定，调制解调器重启中（约半分钟），
 msgid "The AT channel is busy; the command was not sent, try again"
 msgstr "AT 通道正忙，命令未发出，请重试"
 
+msgid "The modem did not answer in time; the command may still run, check before sending it again"
+msgstr "调制解调器未及时应答；命令可能仍在执行，再次发送前请先检查"
+
 msgid "The fresh parameter must be 0 or 1"
 msgstr "fresh 参数必须是 0 或 1"
 
