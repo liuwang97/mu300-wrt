@@ -8,6 +8,11 @@ timeout=8
 [ "${1:-}" = -t ] && { timeout=${2:-8}; shift 2; }
 cmd=${1:-}
 [ "$available" = 1 ] || [ -n "$cmd" ] || { echo "unisoc-at: command required" >&2; exit 2; }
+# one command per call: a CR or LF inside it would reach the modem as a second
+# command (the atinout backend writes it to the tty as it is)
+case $cmd in *"$(printf '\r')"*|*'
+'*) echo "unisoc-at: one command per call (no CR or LF)" >&2; exit 2 ;; esac
+case $timeout in ''|*[!0-9]*) timeout=8 ;; esac
 
 cfg() { uci -q get "unisoc_modem.main.$1" 2>/dev/null || true; }
 backend=$(cfg at_backend); backend=${backend:-auto}

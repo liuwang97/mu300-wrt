@@ -16,7 +16,21 @@ NETWORK_SERVICE=${MU300_USB_NETWORK_SERVICE:-/etc/init.d/network}
 IP=${MU300_USB_IP_BIN:-ip}
 get() { uci -q get "$CFG.$1" 2>/dev/null || true; }
 put() { uci -q set "$CFG.$1=$2"; }
-error() { printf '{"ok":0,"error":"%s"}\n' "$1"; exit 1; }
+# json_str TEXT: TEXT as one JSON string (the quote, the backslash and every
+# control character escaped); sysfs and interface names go through this
+json_str() {
+    printf '%s\n' "$1" | awk 'BEGIN {
+            for (i = 1; i < 32; i++) JE[sprintf("%c", i)] = sprintf("\\u%04x", i)
+            JE[sprintf("%c", 127)] = "\\u007f"
+            JE["\\"] = "\\\\"; JE["\""] = "\\\""; JE["\n"] = "\\n"; JE["\t"] = "\\t"; JE["\r"] = "\\r"
+            printf "\""
+        }
+        { o = ""; n = length($0)
+          for (i = 1; i <= n; i++) { c = substr($0, i, 1); o = o ((c in JE) ? JE[c] : c) }
+          printf "%s%s", (NR > 1 ? "\\n" : ""), o }
+        END { printf "\"" }'
+}
+error() { printf '{"ok":0,"error":%s}\n' "$(json_str "$1")"; exit 1; }
 role_now() { cat "$ROLE_FILE" 2>/dev/null || echo unavailable; }
 device_name() {
     if [ -n "${MU300_USB_DEVICE:-}" ]; then echo "$MU300_USB_DEVICE"
@@ -54,7 +68,10 @@ sync_boot_file() {
 }
 usb_net() {
     name=$1
-    case $name in ''|*[!a-zA-Z0-9_.:-]*) return 1 ;; esac
+    # an interface name (IFNAMSIZ: 15 characters) that is never an option, "."
+    # or "..": it becomes part of a /sys path and an ip/uci argument
+    case $name in ''|[!a-zA-Z0-9]*|*[!a-zA-Z0-9_.:-]*) return 1 ;; esac
+    [ ${#name} -le 15 ] || return 1
     [ -d "$NET_CLASS/$name" ] || return 1
     sub=$(readlink -f "$NET_CLASS/$name/device/subsystem" 2>/dev/null)
     # Configfs gadget interfaces (usb0/rndis0) are not host-side USB NICs.
@@ -111,8 +128,8 @@ case ${1:-} in
         if [ "$role" = host ] || [ "$role_auto" = 1 ]; then available=0; fi
         host_supported=1
         [ -e "$ROLE_FILE" ] || host_supported=0
-        printf '{"ok":1,"role":"%s","role_auto":%s,"host_supported":%s,"net_mode":"%s","net_scope":"%s","net_auto":%s,"net_available":%s}\n' \
-            "$role" "$role_auto" "$host_supported" "$mode" "$scope" "$net_auto" "$available"
+        printf '{"ok":1,"role":%s,"role_auto":%s,"host_supported":%s,"net_mode":"%s","net_scope":"%s","net_auto":%s,"net_available":%s}\n' \
+            "$(json_str "$role")" "$role_auto" "$host_supported" "$mode" "$scope" "$net_auto" "$available"
         ;;
     set-role)
         role=${2:-}; auto=${3:-}
@@ -231,7 +248,7 @@ case ${1:-} in
                 sync_host_nic "$name" || true
             fi
             carrier=$(cat "$dir/carrier" 2>/dev/null); case $carrier in 1) ;; *) carrier=0 ;; esac
-            printf '{"name":"%s","carrier":%s,"in_lan":%s}' "$name" "$carrier" "$joined"
+            printf '{"name":%s,"carrier":%s,"in_lan":%s}' "$(json_str "$name")" "$carrier" "$joined"
         done
         printf ']}\n'
         ;;

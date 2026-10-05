@@ -35,6 +35,9 @@ Configure `/etc/config/unisoc_modem`:
 The SMS page uses `sms_command`, whose CLI contract is the existing
 `mu300-sms` interface: `list`, `show`, `send`, `delete` and `sync`. This keeps
 SIM storage details out of LuCI and lets each firmware supply its own adapter.
+`send` is called as `send --stdin NUMBER` with the text on stdin, so a message
+never becomes a command-line argument; an adapter that only knows
+`send NUMBER TEXT` refuses `--stdin` as a number and sends nothing.
 
 Network interface and state paths are also configured in the same UCI section;
 none of the web code requires `sipa_eth0`, `wan`, `br-lan` or `/opt/mu300` from

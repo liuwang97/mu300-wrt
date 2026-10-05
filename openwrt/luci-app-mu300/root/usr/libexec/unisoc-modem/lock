@@ -70,7 +70,47 @@ nr_sup() {
 # each of them while the radio is deliberately held off.
 at_boot() { "$AT" -t 2 "$1" 2>/dev/null | tr -d '\r'; }
 say() { logger -t mu300-dash "$*" 2>/dev/null; echo "$(date '+%H:%M:%S') $*" >> "$LOG" 2>/dev/null; tail -n 30 "$LOG" > "$LOG.t" 2>/dev/null && mv "$LOG.t" "$LOG"; }
-qs() { [ -n "$1" ] && printf '"%s"' "$(printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' | tr -d '\r\n')" || echo null; }
+# json_str TEXT: TEXT as one JSON string (the quote, the backslash and every
+# control character escaped) - modem answers go into the reply through this
+json_str() {
+    printf '%s\n' "$1" | awk 'BEGIN {
+            for (i = 1; i < 32; i++) JE[sprintf("%c", i)] = sprintf("\\u%04x", i)
+            JE[sprintf("%c", 127)] = "\\u007f"
+            JE["\\"] = "\\\\"; JE["\""] = "\\\""; JE["\n"] = "\\n"; JE["\t"] = "\\t"; JE["\r"] = "\\r"
+            printf "\""
+        }
+        { o = ""; n = length($0)
+          for (i = 1; i <= n; i++) { c = substr($0, i, 1); o = o ((c in JE) ? JE[c] : c) }
+          printf "%s%s", (NR > 1 ? "\\n" : ""), o }
+        END { printf "\"" }'
+}
+# digits VALUE [MAX]: VALUE is 1 to MAX (default 7) decimal digits
+digits() {
+    case $1 in ''|*[!0-9]*) return 1 ;; esac
+    [ ${#1} -le "${2:-7}" ]
+}
+# valid_value KIND VALUE: the values apply takes (the rpcd backend checks the
+# same before it starts us; this is the adapter's own guard)
+valid_value() {
+    case $1 in
+        mode) case $2 in auto|4g|sa|nsa) return 0 ;; esac; return 1 ;;
+        endc|auto_apply) case $2 in on|off) return 0 ;; esac; return 1 ;;
+        lte|nr)
+            # up to 32 band numbers of up to 3 digits, comma-separated; empty = automatic
+            case $2 in *[!0-9,]*|,*|*,|*,,*) return 1 ;; esac
+            [ ${#2} -le 127 ] ;;
+        cell)
+            case $2 in auto|off|off-nr|off-lte) return 0 ;; nr:*|lte:*) ;; *) return 1 ;; esac
+            valid_cell "$2" ;;
+        *) return 1 ;;
+    esac
+}
+# valid_cell RAT:ARFCN,PCI - one pair, ARFCN up to 7 digits, PCI up to 4
+valid_cell() {
+    local pair=${1#*:}
+    case ${1%%:*} in nr|lte) ;; *) return 1 ;; esac
+    digits "${pair%,*}" 7 && digits "${pair#*,}" 4
+}
 
 # ------------------------------------------------------------------ codecs
 # LTE band <-> five 16-bit masks over bases [49,33,17,1,65] (order = the modem's)
@@ -210,8 +250,13 @@ do_get() {
         sort -n | awk 'NR>1{printf ","}{printf "%s", $1}')
     [ -n "$nrcap" ] || nrcap=1,5,6,8,28,41,78
     ltecap=1,3,5,8,34,38,39,40,41
-    printf '{"ts":%d,"mode":{"label":"%s","work":"%s","gran":"%s","m1":"%s","prim":"%s"},"endc":"%s","lte":{"locked":"%s","raw":"%s"},"nr":{"locked":"%s","raw":"%s"},"cell":"%s","cells":%s,"caps":{"nr":"%s","lte":"%s"}}\n' \
-        "$(date +%s)" "$lbl" "${m0:-}" "${gran:-}" "$m1" "$prim" "${endc:-}" "${lte_b:-}" "${ltem:-}" "${nr_b:-}" "${nrm:-}" "${cell%%,*}" "${cells:-[]}" "${nrcap:-}" "${ltecap:-}" \
+    # every modem-derived value goes through json_str; cells is built above
+    # from digits matched by a regex only
+    printf '{"ts":%d,"mode":{"label":%s,"work":%s,"gran":%s,"m1":%s,"prim":%s},"endc":%s,"lte":{"locked":%s,"raw":%s},"nr":{"locked":%s,"raw":%s},"cell":%s,"cells":%s,"caps":{"nr":%s,"lte":%s}}\n' \
+        "$(date +%s)" "$(json_str "$lbl")" "$(json_str "${m0:-}")" "$(json_str "${gran:-}")" "$(json_str "$m1")" \
+        "$(json_str "$prim")" "$(json_str "${endc:-}")" "$(json_str "${lte_b:-}")" "$(json_str "${ltem:-}")" \
+        "$(json_str "${nr_b:-}")" "$(json_str "${nrm:-}")" "$(json_str "${cell%%,*}")" "${cells:-[]}" \
+        "$(json_str "${nrcap:-}")" "$(json_str "${ltecap:-}")" \
         | tee "$LOCKCACHE.part" && mv "$LOCKCACHE.part" "$LOCKCACHE"
 }
 
@@ -305,6 +350,7 @@ emit_state() {
 
 do_apply() {  # do_apply KIND VALUE
     _t0=$(date +%s)
+    valid_value "$1" "$2" || { echo "invalid lock setting" >&2; exit 2; }
     # auto_apply only edits the replay switch: no AT, no SFUN - never queue it
     # behind a running apply, the toggle must answer instantly
     if [ "$1" = auto_apply ]; then
@@ -395,6 +441,12 @@ do_apply() {  # do_apply KIND VALUE
                             exit 1
                         fi
                     fi
+                    # the cache is the collector's reading of the modem: digits only
+                    valid_cell "$val" || {
+                        say "cell lock: the serving cell in the cache is not ARFCN,PCI"
+                        printf '{"ok":0,"error":"no serving cell to lock to"}\n'
+                        exit 1
+                    }
                     rat=${val%%:*}; pair=${val#*:}; fr=${pair%,*}; pc=${pair#*,}
                     case $rat in nr) p=16 ;; *) p=12 ;; esac
                     at "AT+SPFORCEFRQ=$p,6,$fr,$pc" 6 >/dev/null
@@ -564,6 +616,7 @@ do_apply_quiet() {
             if [ -n "$val" ]; then at_boot "AT+SPLBAND=2,$(nr_masks "$val" | awk -F, '{print $1",0,"$2","$3}')" >/dev/null
             else at_boot 'AT+SPLBAND=2,0,0,0,0' >/dev/null; fi ;;
         cell)
+            valid_cell "$val" || return 0
             case $val in
                 nr:*) p=16 ;;
                 lte:*) p=12 ;;
