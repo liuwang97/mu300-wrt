@@ -251,9 +251,11 @@ write_misc_bc() {  # write_misc_bc FILE STAGE
 
 hostname mu300-linux
 ifconfig lo 127.0.0.1 up
-setup_usb_gadget() {
+# --- usb-gadget begin
+setup_usb_gadget() {  # setup_usb_gadget [FUNCTIONS]: FUNCTIONS, else MU300_USBNET, else "ncm ecm" (see below)
+    usbnet_bound=${1:-${MU300_USBNET:-ncm ecm}}
     log "stage=usb-configfs"
-    mount -t configfs configfs /config
+    [ -d /config/usb_gadget ] || mount -t configfs configfs /config
     g=/config/usb_gadget/linux
     mkdir -p "$g/strings/0x409" "$g/configs/c.1/strings/0x409"
     # The USB network functions: whichever of these the kernel actually has. Creating one it was not built with
@@ -261,28 +263,32 @@ setup_usb_gadget() {
     # is exactly what an "improvement" to NCM cost once (on a mainline build without it; both kernels have it now).
     # NCM by default, in a single configuration with the ACM console: Windows 10 2004+/11 bind their inbox
     # UsbNcm.sys to it, macOS and Linux their own drivers - all measured, none needs an INF. ECM, which Windows has
-    # no driver for, is the fallback. MU300_USBNET (kernel command line) picks the functions.
-    # "rndis ncm" is for Windows without NCM (7, 8, 10 before 2004): RNDIS gets configuration 1 and NCM moves to
-    # configuration 2. Windows only ever uses the first, and binds rndis.sys to it through the MS OS descriptors
-    # below; Linux skips RNDIS configurations on purpose. macOS does not: it takes configuration 1 as well, finds
-    # no driver for RNDIS and has no network (measured) - which is why RNDIS is not the default.
+    # no driver for, is the fallback. MU300_USBNET (kernel command line) picks the functions; without it, the
+    # system that boots may ask for others in its etc/mu300/usb-net (apply_usb_net below, D12).
+    # "rndis" is for Windows without NCM (7, 8, 10 before 2004): RNDIS and the ACM console share the single
+    # configuration, and rndis.sys is bound to it through the MS OS descriptors below. Windows does not make its
+    # composite parent for a device with several configurations: the earlier RNDIS + NCM arrangement bound the
+    # whole device to usbser and showed no network adapter. macOS has no RNDIS driver, which is why RNDIS is not
+    # the default; when RNDIS is made, no other network function is. (Ported from the kanoqwq fork, K6.)
     rndis= netfunc=
-    for f in ${MU300_USBNET:-ncm ecm}; do
+    for f in $usbnet_bound; do
         case $f in
             rndis) [ -z "$rndis" ] && mkdir -p "$g/functions/rndis.rn0" 2>/dev/null && rndis=1 ;;
-            *) [ -z "$netfunc" ] && mkdir -p "$g/functions/$f.usb0" 2>/dev/null && netfunc=$f ;;
+            *) [ -z "$netfunc$rndis" ] && mkdir -p "$g/functions/$f.usb0" 2>/dev/null && netfunc=$f ;;
         esac
     done
+    # "ncm rndis" made NCM before it met RNDIS: RNDIS wins, the NCM function goes again
+    [ -n "$rndis" ] && [ -n "$netfunc" ] && { rmdir "$g/functions/$netfunc.usb0" 2>/dev/null; netfunc=; }
     [ -n "$netfunc$rndis" ] || log "stage=usb-no-net-function (console only)"
-    cdc=c.1
-    [ -n "$rndis" ] && cdc=c.2
     echo 0x0525 > "$g/idVendor"
     echo 0xa4a1 > "$g/idProduct"
     echo 0x0200 > "$g/bcdUSB"
     # Windows asks for the MS OS descriptors (below) once per VID/PID/bcdDevice and caches the answer, "none"
     # included: the default bcdDevice follows the kernel version and was cached as "none" by every PC that met
     # the earlier gadget. A value of our own makes them ask again. Change it whenever the descriptors change.
-    echo 0x0301 > "$g/bcdDevice"
+    # 0x0302 is the single-configuration RNDIS descriptor, 0x0301 everything else.
+    if [ -n "$rndis" ]; then echo 0x0302 > "$g/bcdDevice"
+    else echo 0x0301 > "$g/bcdDevice"; fi
     # Miscellaneous / IAD: the network and the ACM functions each span two interfaces, and without this device class
     # Windows' composite driver ignores their association descriptors and hands out the interfaces one by one, so a
     # class driver never sees its function as a whole
@@ -313,16 +319,15 @@ setup_usb_gadget() {
         echo 5162001 > "$g/functions/rndis.rn0/os_desc/interface.rndis/sub_compatible_id"
         ln -s "$g/configs/c.1" "$g/os_desc/c.1"
     fi
-    if [ -n "$netfunc" ] || [ -z "$rndis" ]; then
-        mkdir -p "$g/configs/$cdc/strings/0x409"
-        echo "${netfunc:-no} net + ACM console" > "$g/configs/$cdc/strings/0x409/configuration"
-        echo 250 > "$g/configs/$cdc/MaxPower"
+    if [ -z "$rndis" ]; then
+        echo "${netfunc:-no} net + ACM console" > "$g/configs/c.1/strings/0x409/configuration"
+        echo 250 > "$g/configs/c.1/MaxPower"
         if [ -n "$netfunc" ]; then
             echo $MAC:01 > "$g/functions/$netfunc.usb0/dev_addr"
             echo $MAC:02 > "$g/functions/$netfunc.usb0/host_addr"
-            ln -s "$g/functions/$netfunc.usb0" "$g/configs/$cdc/f1"
+            ln -s "$g/functions/$netfunc.usb0" "$g/configs/c.1/f1"
         fi
-        ln -s "$g/functions/acm.GS0" "$g/configs/$cdc/f2"
+        ln -s "$g/functions/acm.GS0" "$g/configs/c.1/f2"
     fi
     log "stage=usb-net-function ${rndis:+rndis+}${netfunc:-none}"
     log "stage=usb-wait-udc"
@@ -347,10 +352,8 @@ setup_usb_gadget() {
     # usb0 - the name lan-start and the OpenWrt bridge expect for the CDC link. Name them by function instead.
     if [ -n "$rndis" ]; then
         r=$(cat "$g/functions/rndis.rn0/ifname" 2>/dev/null)
-        c=$(cat "$g/functions/$netfunc.usb0/ifname" 2>/dev/null)
         case $r in ""|"(unnamed net_device)"|rndis0) ;; *) ip link set "$r" name rndis0 ;; esac
-        case $c in ""|"(unnamed net_device)"|usb0) ;; *) ip link set "$c" name usb0 ;; esac
-        log "stage=usb-ifnames rndis=$r->rndis0 cdc=${c:-none}->usb0"
+        log "stage=usb-ifnames rndis=${r:-none}->rndis0"
         ifconfig rndis0 up
     fi
 
@@ -358,7 +361,48 @@ setup_usb_gadget() {
     # f_ecm (and f_ncm alike) reports the link state in its first CONNECT notification, and macOS' ECM driver does not
     # pick up a later "connected" notification (v10 left usb0 down until systemd ran -> host "inactive").
     ifconfig usb0 up
+
+    # Early DHCP (K5, ported from the kanoqwq fork, 1f5b82a): the host asks for a lease as soon as the gadget
+    # enumerates - Windows long before any system's server runs - so answer it from here, on the gadget's netdev
+    # (rndis0 with RNDIS, usb0 otherwise), with the one address $NET.200. The lease is 120 s, not the fork's 3600:
+    # the system may use another subnet (lan.conf, network.lan.ipaddr), and the host must not keep this one for
+    # an hour; it renews after 60 s and then gets the system's own (OpenWrt's preinit restarts this server on the
+    # system's subnet; Ubuntu's dnsmasq NAKs the renewal and leases afresh). The host's MAC is left in /run for
+    # OpenWrt's first-boot dnsmasq entry. One server at a time: apply_usb_net builds the gadget a second time,
+    # and that build replaces the first server (whose netdev may be gone) with one on the new netdev. It runs in
+    # the foreground of a background job so that its pid is known at once; killall ends it before switch_root.
+    early_net=usb0 early_host_mac=$MAC:02
+    [ -n "$rndis" ] && { early_net=rndis0; early_host_mac=$MAC:04; }
+    [ -s /run/udhcpd-usb0.pid ] && kill "$(cat /run/udhcpd-usb0.pid)" 2>/dev/null
+    rm -f /run/udhcpd-usb0.pid
+    if [ -e "/sys/class/net/$early_net" ]; then
+        ifconfig "$early_net" "$NET.1" netmask 255.255.255.0 up
+        echo "$early_host_mac" > /run/mu300-usb-host-mac
+        cat > /run/udhcpd-usb0.conf <<EOF
+start $NET.200
+end $NET.200
+interface $early_net
+option subnet 255.255.255.0
+option router $NET.1
+option dns $NET.1
+option lease 120
+lease_file /run/udhcpd-usb0.leases
+EOF
+        touch /run/udhcpd-usb0.leases
+        udhcpd -f /run/udhcpd-usb0.conf >/dev/null 2>&1 &
+        echo $! > /run/udhcpd-usb0.pid
+        log "stage=usb-dhcp-early dev=$early_net ip=$NET.1 host=$NET.200 lease=120"
+    fi
 }
+teardown_usb_gadget() {  # unbind and take the functions away; setup_usb_gadget builds it again
+    g=/config/usb_gadget/linux
+    echo "" > "$g/UDC" 2>/dev/null
+    rm -f "$g/configs/c.1/f1" "$g/configs/c.1/f2" "$g/os_desc/c.1"
+    [ -e "$g/os_desc/use" ] && echo 0 > "$g/os_desc/use"
+    for f in "$g/functions"/*; do [ -d "$f" ] && rmdir "$f"; done
+    log "stage=usb-unbound"
+}
+# --- usb-gadget end
 
 # The vendor modules first, the gadget last. The host starts asking for a DHCP lease the moment the gadget
 # appears and gives up after a few seconds, so the closer the gadget comes to the system that answers (the DHCP
@@ -446,17 +490,52 @@ find_root_offset() {
     return 1
 }
 # --- region end
-# The ext4 area holds one or more systems: /ubuntu, /openwrt (selected by /.mu300/boot-os), or a single
-# Ubuntu directly in its root (first installs). Pick one and remember how to start it.
+# --- usb-net begin
+# The USB network mode the panel's Device page chose (D12): a file of the system that boots, etc/mu300/usb-net,
+# holding ncm, ecm or rndis. It is read once the root is known, not before the gadget is made: the gadget comes up
+# as early as before (the card scan can take 8 s), and a different choice costs one rebind. MU300_USBNET on the
+# kernel command line still wins.
+usb_net_policy() {  # usb_net_policy ROOTDIR: the functions ROOTDIR asks for, or nothing
+    [ -z "${MU300_USBNET:-}" ] || return 0
+    case $(cat "$1/etc/mu300/usb-net" 2>/dev/null) in
+        ncm) echo 'ncm ecm' ;;
+        ecm) echo 'ecm ncm' ;;
+        # NCM, then ECM, only when this kernel cannot make RNDIS (setup_usb_gadget lets RNDIS win): a saved choice
+        # must never leave a system with no USB network function at all, boot after boot
+        rndis) echo 'rndis ncm ecm' ;;
+    esac
+}
+apply_usb_net() {  # apply_usb_net ROOTDIR: rebind once if ROOTDIR asks for other functions than were bound
+    usbnet_want=$(usb_net_policy "$1")
+    [ -n "$usbnet_want" ] || return 0
+    # no controller came up for the first gadget: another 40 s of waiting for it would change nothing
+    [ -n "$udc" ] || { log "stage=usb-net-policy $usbnet_want skipped (no udc)"; return 0; }
+    if [ "$usbnet_want" != "$usbnet_bound" ]; then
+        log "stage=usb-net-policy $usbnet_want (bound: $usbnet_bound)"
+        teardown_usb_gadget
+        setup_usb_gadget "$usbnet_want"
+    fi
+    # the choice is in effect: the system's device-usb consumes a one-boot choice when it finds this (K8). It names
+    # the function made, which is NCM or ECM when this kernel has no RNDIS.
+    if [ -n "$rndis" ]; then usbnet_made=rndis; else usbnet_made=${netfunc:-none}; fi
+    mkdir -p /run/mu300 && echo "$usbnet_made" > /run/mu300/usb-net-applied
+}
+# --- usb-net end
+# --- pick-root begin
+# The ext4 area holds one or more systems: /ubuntu, /openwrt, /openwrt-luci (selected by /.mu300/boot-os), or a
+# single Ubuntu directly in its root (first installs). Explicit names only: a kept copy (openwrt.old, ubuntu.broken)
+# must never be what boots, so a boot-os with a dot in it is ignored.
 has_init() { [ -x "$1/lib/systemd/systemd" ] || [ -x "$1/sbin/init" ]; }
 pick_root() {
     want=$(cat /disk/.mu300/boot-os 2>/dev/null)
-    for os in $want ubuntu openwrt; do
+    case $want in *.*|*/*) want= ;; esac
+    for os in $want ubuntu openwrt openwrt-luci; do
         [ -d "/disk/$os" ] && has_init "/disk/$os" && { echo "/disk/$os"; return; }
         # legacy layout: Ubuntu in the filesystem root
         [ "$os" = ubuntu ] && [ -x /disk/lib/systemd/systemd ] && { echo /disk; return; }
     done
 }
+# --- pick-root end
 mkdir -p /disk /newroot
 EMMC=$(emmc_dev)   # find_partitions has waited for the eMMC's partitions, so its disk is there
 log "stage=emmc dev=$EMMC sd=$(mmc_disks SD | tr '\n' ' ')"
@@ -535,6 +614,8 @@ if [ "$root_mounted" = 1 ] && rootdir=$(pick_root) && [ -n "$rootdir" ]; then
         sleep 30
     fi
 
+    # the USB mode this system's panel chose (D12): one rebind before switch_root when it differs
+    apply_usb_net "$rootdir"
     if [ "$rootdir" = /disk ]; then
         mount --move /disk /newroot
     else
@@ -583,6 +664,9 @@ if [ "$root_mounted" = 1 ] && rootdir=$(pick_root) && [ -n "$rootdir" ]; then
             </dev/null >/dev/null 2>&1 &
     fi
     umount /config 2>/dev/null
+    # the early DHCP server ends with this ramdisk (K5): the host keeps its lease, and the system's server answers
+    # the renewal (the kill loop above has already stopped it; this says so where it matters)
+    killall udhcpd 2>/dev/null
     mkdir -p /newroot/dev /newroot/proc /newroot/sys /newroot/run
     mount --move /dev /newroot/dev
     mount --move /proc /newroot/proc
@@ -604,6 +688,9 @@ lease_file /run/udhcpd.leases
 pidfile /run/udhcpd.pid
 EOF
 touch /run/udhcpd.leases
+# this server, with its pool, replaces the early one (setup_usb_gadget) on usb0; with RNDIS (no usb0) the early
+# one on rndis0 stays, the only one there is
+[ -e /sys/class/net/usb0 ] && killall udhcpd 2>/dev/null
 udhcpd /etc/udhcpd.conf
 telnetd -b $NET.1 -p 23 -l /bin/sh
 mkdir -p /run/www

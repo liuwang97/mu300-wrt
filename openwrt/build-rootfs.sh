@@ -2,10 +2,13 @@
 # Build the MU300 OpenWrt (or ImmortalWrt) rootfs tarball (runs on the host; needs Docker with arm64 support).
 #   openwrt/build-rootfs.sh OUT.tar.gz
 #   MU300_FLAVOUR=immortalwrt openwrt/build-rootfs.sh OUT.tar.gz
+#   MU300_SYSTEM=openwrt-luci openwrt/build-rootfs.sh OUT.tar.gz   (OpenWrt with the MU300 control panel and Aurora)
+# OUT is written into openwrt/ under its base name.
 # Inputs (same as rootfs/assemble.sh, all optional except modules):
 #   out/modules/*.ko  out/modules.builtin*  firmware/  android-subset/  android-gpu-subset/
 #   tools/logdw/logdw  tools/bt-init/mu300-bt-init  tools/keys/mu300-keys  tools/gpu/cltest  busybox (static, full)
 #   upstream/out/modules/*.ko (optional: out-of-tree WCN modules for the mainline 6.18 kernel)
+# openwrt-luci only: MU300_LUCI_THEME_APK, a local copy of the pinned Aurora .apk (offline builds; else downloaded)
 set -eu
 FLAVOUR=${MU300_FLAVOUR:-openwrt}
 case $FLAVOUR in
@@ -14,11 +17,68 @@ case $FLAVOUR in
     immortalwrt) VER=${MU300_WRT_VER:-25.12.2}; BASEURL=https://downloads.immortalwrt.org/releases ;;
     *) echo "unknown flavour '$FLAVOUR' (openwrt or immortalwrt)" >&2; exit 1 ;;
 esac
+SYSTEM=${MU300_SYSTEM:-openwrt}
+case $SYSTEM in
+    openwrt) ;;
+    # the panel on ImmortalWrt was never tested by anyone
+    openwrt-luci)
+        [ "$FLAVOUR" = openwrt ] || { echo "MU300_SYSTEM=openwrt-luci is built on OpenWrt only, not $FLAVOUR" >&2; exit 1; } ;;
+    *) echo "unknown system '$SYSTEM' (openwrt or openwrt-luci)" >&2; exit 1 ;;
+esac
 KREL=5.4.254-gb50db5b6224c
-OUT=${1:-mu300-$FLAVOUR-$VER-rootfs.tar.gz}
+# the default name: mu300-<system>-<version>-rootfs.tar.gz; ImmortalWrt keeps its own (it has only the plain system)
+if [ "$FLAVOUR" = immortalwrt ]; then OUT=${1:-mu300-immortalwrt-$VER-rootfs.tar.gz}; else OUT=${1:-mu300-$SYSTEM-$VER-rootfs.tar.gz}; fi
 TOP=$(cd "$(dirname "$0")/.." && pwd)
 # build inputs (out/, firmware/, android-subset/, tools binaries, busybox) may live outside the checkout
 IN=${MU300_INPUTS:-$TOP}
+# Without its cellular protocol netifd has no wan and the image boots without mobile data. openwrt-luci also needs
+# the IPv6 relay monitor: its first boot selects relay mode (91-mu300-luci), and mu300cell.sh then runs it. Plain
+# OpenWrt never selects relay, and builds without it.
+CELL=$TOP/openwrt/overlay/lib/netifd/proto/mu300cell.sh
+[ -s "$CELL" ] || { echo "required cellular protocol helper missing: $CELL" >&2; exit 1; }
+if [ "$SYSTEM" = openwrt-luci ]; then
+    [ -s "$TOP/openwrt/luci-overlay/lib/netifd/proto/mu300cell-v6.sh" ] || {
+        echo "required cellular protocol helper missing: openwrt/luci-overlay/lib/netifd/proto/mu300cell-v6.sh" >&2; exit 1;
+    }
+fi
+# sipa_eth0 into fw4's software flowtable (applied below, the build fails when it no longer applies)
+FW4PATCH=$TOP/openwrt/patches/fw4-sipa-offload.patch
+[ -s "$FW4PATCH" ] || { echo "missing $FW4PATCH" >&2; exit 1; }
+# the docker mounts of the panel system, as the positional parameters (OUT is read above): each path stays one
+# argument, spaces and all
+set --
+if [ "$SYSTEM" = openwrt-luci ]; then
+    # Keep the upstream Aurora theme reproducible. Its APK is installed while
+    # assembling the rootfs, so the theme is present on first boot without a
+    # network-dependent uci-defaults install step. Bootstrap remains available.
+    THEME_APK=${MU300_LUCI_THEME_APK:-$TOP/work/luci-theme-aurora-1.4.0-r20260920.apk}
+    # pinned here, not overridable: MU300_LUCI_THEME_APK may swap the file, never the hash it is checked against
+    THEME_SHA=05f9015e0a4e2859f6a153f69e472f2984481490d4ce6db19b8a41bba7264f1e
+    if [ ! -s "$THEME_APK" ]; then
+        [ -z "${MU300_LUCI_THEME_APK:-}" ] || {
+            echo "theme package missing: $THEME_APK" >&2; exit 1;
+        }
+        mkdir -p "$TOP/work"
+        curl -fL -o "$THEME_APK.part" \
+          https://github.com/eamonxg/luci-theme-aurora/releases/download/v1.4.0/luci-theme-aurora-1.4.0-r20260920.apk
+        mv "$THEME_APK.part" "$THEME_APK"
+    fi
+    theme_hash=$(shasum -a 256 "$THEME_APK" 2>/dev/null || sha256sum "$THEME_APK")
+    [ "${theme_hash%% *}" = "$THEME_SHA" ] || {
+        echo "Aurora APK checksum mismatch: $THEME_APK" >&2; exit 1;
+    }
+    # The panel's catalogs, from every po/<lang>/mu300.po there is. A catalog without translations (English: the
+    # msgids are the English text) is no file at all; Turkish and Chinese must be one each.
+    CAT=$(mktemp -d)
+    for po in "$TOP"/openwrt/luci-app-mu300/po/*/mu300.po; do
+        l=${po%/mu300.po}; l=${l##*/}
+        python3 "$TOP/tools/po2lmo.py" "$po" "$CAT/mu300.$l.lmo"
+    done
+    [ -s "$CAT/mu300.tr.lmo" ] || { echo "no Turkish catalog built from openwrt/luci-app-mu300/po/tr" >&2; exit 1; }
+    [ -s "$CAT/mu300.zh_Hans.lmo" ] || { echo "no Chinese catalog built from openwrt/luci-app-mu300/po/zh_Hans" >&2; exit 1; }
+    set -- -v "$THEME_APK:/in/luci-theme-aurora.apk:ro" -v "$TOP/openwrt/luci-app-mu300:/in/luci-plugin:ro" \
+        -v "$TOP/openwrt/luci-overlay:/in/luci-overlay:ro" -v "$CAT:/in/catalogs:ro"
+fi
 TARBALL=$FLAVOUR-$VER-armsr-armv8-rootfs.tar.gz
 URL=$BASEURL/$VER/targets/armsr/armv8
 
@@ -51,11 +111,12 @@ done
 # shellcheck disable=SC2046
 docker run --rm --platform linux/arm64 \
   -v "$TOP/rootfs/overlay/opt/mu300":/in/opt-mu300:ro -v "$TOP/rootfs/overlay/etc/mu300/vpn.conf.example":/in/vpn.conf.example:ro -v "$TOP/openwrt/overlay":/in/overlay:ro \
+  -v "$FW4PATCH":/in/fw4-sipa-offload.patch:ro \
   -v "$TOP/boot/module-order.txt":/in/module-order.txt:ro -v "$IN/out/modules":/in/modules:ro \
   $(opt out/modules.builtin modules.builtin) $(opt out/modules.builtin.modinfo modules.builtin.modinfo) \
   $(opt firmware firmware) $(opt android-subset android-subset) $(opt android-gpu-subset android-gpu-subset) \
   $(opt tools/logdw/logdw logdw) $(opt tools/bt-init/mu300-bt-init bt-init) $(opt tools/keys/mu300-keys keys) $(opt tools/gpu/cltest cltest) \
-  $(opt busybox busybox) $(opt upstream/out/modules mainline-modules) -v "$TOP/openwrt":/out -v "$REGDB":/in/regdb:ro \
+  $(opt busybox busybox) $(opt upstream/out/modules mainline-modules) -v "$TOP/openwrt":/out -v "$REGDB":/in/regdb:ro "$@" \
   -e KREL=$KREL -e OUT="$(basename "$OUT")" -e MU300_VERSION="${MU300_VERSION:-dev}" mu300-$FLAVOUR-base:$VER /bin/sh -eu -c '
 mkdir -p /var/lock /var/run /tmp
 apk update >/dev/null
@@ -63,6 +124,11 @@ apk update >/dev/null
 # i2c-tools, gpiod-tools: mu300-usb (the charger of the U30 Air) and mu300-nfc (its NFC tag)
 apk add wpad-basic-mbedtls wifi-scripts iwinfo wireless-regdb iw bash ip-full coreutils-stty openssl-util \
     i2c-tools gpiod-tools >/dev/null
+if [ -d /in/luci-plugin ]; then
+    # LuCI itself in the languages of the panel, and the pinned Aurora theme
+    apk add luci-i18n-base-tr luci-i18n-base-zh-cn luci-i18n-firewall-tr luci-i18n-firewall-zh-cn >/dev/null
+    apk add --allow-untrusted /in/luci-theme-aurora.apk >/dev/null
+fi
 # ujail drops CAP_PERFMON (38), which this 5.4 kernel does not know: jailed services (dnsmasq, ntpd) crash-loop
 apk del procd-ujail procd-seccomp >/dev/null 2>&1 || true
 # online firmware upgrades flash whole-disk armsr images: that would overwrite the eMMC, so remove them
@@ -83,6 +149,41 @@ printf "127.0.0.1\tlocalhost\n\n::1\tlocalhost ip6-localhost ip6-loopback\nff02:
 printf "mu300\n" > $R/etc/hostname   # the real one comes from uci (etc/uci-defaults/90-mu300)
 cp -a /in/opt-mu300 $R/opt/mu300
 cp -a /in/overlay/. $R/
+# mu300cell reports sipa_eth0 as l3_device only, so fw4 leaves it out of its software flowtable and the cellular
+# downlink takes the slow forwarding path. --fuzz=0: a changed fw4 that no longer matches fails the build.
+# (patch goes into the build container only: the image was copied above)
+apk add patch >/dev/null
+patch --batch --fuzz=0 -d $R -p1 -i /in/fw4-sipa-offload.patch
+grep -q sipa_eth0 $R/usr/share/ucode/fw4.uc || { echo "fw4 patch not applied" >&2; exit 1; }
+apk del patch >/dev/null   # out of packages.txt below, which lists what the image has
+if [ -d /in/luci-plugin ]; then
+    [ -d /in/luci-overlay ] && cp -a /in/luci-overlay/. $R/
+    cp -a /in/luci-plugin/root/. $R/
+    cp -a /in/luci-plugin/htdocs/. $R/www/
+    chmod 0755 $R/etc/init.d/unisoc-modem-ui $R/etc/hotplug.d/net/90-unisoc-usb-host $R/etc/hotplug.d/iface/90-unisoc-usb-host $R/usr/libexec/rpcd/mu300dash $R/usr/libexec/unisoc-modem/*
+    L=$R/usr/lib/lua/luci/i18n
+    # LuCI names its Chinese catalog after its own language code (base.zh-cn.lmo), not after the po directory
+    # (zh_Hans): the panel catalog must carry the same name to be loaded
+    zh=$(ls $L/base.zh*.lmo 2>/dev/null | head -1); zh=${zh##*/base.}; zh=${zh%.lmo}
+    [ -n "$zh" ] || { echo "no Chinese LuCI catalog (base.zh*.lmo) in the image" >&2; exit 1; }
+    for f in /in/catalogs/mu300.*.lmo; do
+        [ -e "$f" ] || continue
+        l=${f#/in/catalogs/mu300.}; l=${l%.lmo}
+        [ "$l" = zh_Hans ] && l=$zh
+        cp "$f" $L/mu300.$l.lmo
+    done
+    # the languages LuCI offers; the base catalogs normally register their own, this covers one that did not
+    uci -c $R/etc/config -q get luci.languages.tr >/dev/null || uci -c $R/etc/config set luci.languages.tr="Türkçe"
+    uci -c $R/etc/config -q get luci.languages.zh_cn >/dev/null ||
+        uci -c $R/etc/config set luci.languages.zh_cn="$(printf "\344\270\255\346\226\207 (Chinese)")"
+    uci -c $R/etc/config commit luci
+    uci -c $R/etc/config show luci.languages
+    [ -s $R/www/luci-static/aurora/main.css ] || { echo "Aurora theme assets missing" >&2; exit 1; }
+    # the default theme is set on first boot (etc/uci-defaults/91-mu300-luci), after the themes pick their own
+    grep -q "mediaurlbase=.*/luci-static/aurora" $R/etc/uci-defaults/91-mu300-luci || {
+        echo "Aurora theme is not the LuCI default" >&2; exit 1;
+    }
+fi
 mv $R/sbin/sysupgrade $R/sbin/sysupgrade.openwrt && mv $R/usr/libexec/mu300-sysupgrade $R/sbin/sysupgrade
 M=$R/lib/modules/$KREL; mkdir -p $M
 cp /in/modules/*.ko $M/          # ubox kmodloader expects the modules flat in /lib/modules/<release>/
@@ -122,6 +223,25 @@ for s in mu300-accounts mu300-vendor mu300-hw mu300-post mu300-toolkit mu300-atd
     n=$(sed -n "s/^START=//p" $R/etc/init.d/$s)
     ln -sf ../init.d/$s $R/etc/rc.d/S$n$s
 done
+if [ -d /in/luci-plugin ]; then
+    n=$(sed -n "s/^START=//p" $R/etc/init.d/unisoc-modem-ui)
+    ln -sf ../init.d/unisoc-modem-ui $R/etc/rc.d/S${n}unisoc-modem-ui
+    # the SMS pool behind the panel (K69, D11): openwrt-luci only, the sms command stays the SMS tool of every system
+    chmod 0755 $R/opt/mu300/bin/mu300-sms $R/opt/mu300/bin/mu300-smsd $R/etc/init.d/mu300-smsd
+    n=$(sed -n "s/^START=//p" $R/etc/init.d/mu300-smsd)
+    ln -sf ../init.d/mu300-smsd $R/etc/rc.d/S${n}mu300-smsd
+    # the dashboard AT channels, nr6 and nr7 (K19): the collector of the panel prefers them over nr1
+    chmod 0755 $R/etc/init.d/mu300-atd-dash
+    n=$(sed -n "s/^START=//p" $R/etc/init.d/mu300-atd-dash)
+    ln -sf ../init.d/mu300-atd-dash $R/etc/rc.d/S${n}mu300-atd-dash
+    # the routes of relay mode to the LAN (K37): it starts ndp-learn only when wan is in relay mode
+    chmod 0755 $R/opt/mu300/bin/ndp-learn $R/lib/netifd/proto/mu300cell-v6.sh $R/etc/init.d/mu300-ndp
+    n=$(sed -n "s/^START=//p" $R/etc/init.d/mu300-ndp)
+    ln -sf ../init.d/mu300-ndp $R/etc/rc.d/S${n}mu300-ndp
+    ln -sf /opt/mu300/bin/mu300-sms $R/usr/bin/mu300-sms
+fi
+# what apk installed, for comparing two builds (packages on the release feed are not pinned)
+apk list --installed | sort > $R/etc/mu300/packages.txt
 # busybox PATH is /usr/sbin:/usr/bin:/sbin:/bin, so the commands go into /usr/bin (the same list as Ubuntu)
 for c in $(cat /in/opt-mu300/lib/path-commands); do ln -sf /opt/mu300/bin/$c $R/usr/bin/$c; done
 # no kernel of its own: OpenWrt kmods (6.12) and grub are unused on this device
@@ -134,4 +254,4 @@ if ls /in/mainline-modules/*.ko >/dev/null 2>&1; then
 fi
 cd $R && tar -czf /out/$OUT .
 ls -la /out/$OUT'
-rm -rf "$REGDB"
+rm -rf "$REGDB" ${CAT:+"$CAT"}

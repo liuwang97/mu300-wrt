@@ -1,13 +1,17 @@
 """Checks over every script without running it: syntax under each shell that runs it, executable bits, and rules
 that past bugs taught (see each test)."""
+import os
 import re
 import shutil
 import subprocess
+import tempfile
 import unittest
+from pathlib import Path
 
 from helpers import BIN, TOP, shells
 
 OPENWRT = TOP / 'openwrt' / 'overlay'
+LUCI_OVERLAY = TOP / 'openwrt' / 'luci-overlay'
 
 
 def shebang(p):
@@ -29,6 +33,7 @@ def shell_scripts():
     cands += [TOP / 'android' / 'magisk' / 'installer' / 'update-binary']
     cands += list((TOP / 'android' / 'magisk' / 'mu300-linux-switch').glob('*.sh'))
     cands += [p for p in OPENWRT.rglob('*') if p.is_file()]
+    cands += [p for p in LUCI_OVERLAY.rglob('*') if p.is_file()]
     out = []
     for p in sorted(set(cands)):
         if not p.is_file():
@@ -126,6 +131,45 @@ class Rules(unittest.TestCase):
         for f in ('uninstall.sh', 'uninstall.ps1', 'tools/reset-password.sh', 'tools/android-import-hotspot.sh'):
             self.assertIn('mu300sd', (TOP / f).read_text(), f)
 
+    def test_every_system_list_has_openwrt_luci(self):
+        # every place that names the systems knows the third one, by its name or by the OpenWrt kind pattern
+        files = ('boot/init', 'rootfs/overlay/opt/mu300/bin/mu300-update', 'rootfs/overlay/opt/mu300/bin/mu300-os',
+                 'tools/android-install.sh', 'tools/reset-password.sh', 'tools/vendor-overlay.py', 'install.sh',
+                 'install.ps1', 'tools/make-release.sh', 'rootfs/overlay/opt/mu300/bin/mu300-extra',
+                 'android/magisk/installer/mu300-install.sh')
+        for f in files:
+            with self.subTest(file=f):
+                text = (TOP / f).read_text()
+                self.assertTrue('openwrt-luci' in text or 'openwrt-*' in text or 'openwrt|openwrt-' in text, f)
+
+    def test_openwrt_luci_build_wiring(self):
+        # MU300_SYSTEM=openwrt-luci: the same build as plain OpenWrt plus the panel, its catalogs compiled from po/
+        # and Aurora pinned by hash (D3, D5); ImmortalWrt with the panel was never tested by anyone, so refused
+        text = (TOP / 'openwrt' / 'build-rootfs.sh').read_text()
+        for s in ('MU300_SYSTEM', '05f9015e0a4e2859f6a153f69e472f2984481490d4ce6db19b8a41bba7264f1e', 'po2lmo.py',
+                  'luci-overlay', 'packages.txt', 'luci-i18n-base-zh-cn', 'luci-i18n-firewall-tr'):
+            self.assertIn(s, text)
+        arm = re.search(r'^\s*openwrt-luci\)(.*?);;', text, re.M | re.S)
+        self.assertIsNotNone(arm, 'no openwrt-luci arm in the MU300_SYSTEM case')
+        self.assertRegex(arm.group(1), r'"\$FLAVOUR" = openwrt \]', 'openwrt-luci does not refuse immortalwrt')
+        self.assertIn('mu300-$SYSTEM-$VER-rootfs.tar.gz', text)
+        # ImmortalWrt keeps the name it had; the Aurora hash is pinned in the script, only the file may be overridden
+        self.assertIn('mu300-immortalwrt-$VER-rootfs.tar.gz', text)
+        self.assertNotIn('MU300_LUCI_THEME_SHA256', text)
+        self.assertRegex(text, r'(?m)^\s*THEME_SHA=05f9015e0a4e2859f6a153f69e472f2984481490d4ce6db19b8a41bba7264f1e$')
+        mk = (TOP / 'openwrt' / 'luci-app-mu300' / 'Makefile').read_text()
+        self.assertRegex(mk, r'set -e; \$\(foreach', 'a failing catalog must fail the compile')
+        f = LUCI_OVERLAY / 'etc' / 'uci-defaults' / '91-mu300-luci'
+        self.assertTrue(f.is_file() and f.stat().st_mode & 0o111, f'{f} missing or not executable')
+        self.assertIn('/luci-static/aurora', f.read_text())
+        self.assertIn(f, [p for p, _ in shell_scripts()])   # so test_every_script_parses parses it
+
+    def test_uninstallers_have_no_per_system_list(self):
+        # they remove the whole Linux filesystem; a per-system case arm added later would forget the third name
+        for f in ('uninstall.sh', 'uninstall.ps1'):
+            text = (TOP / f).read_text()
+            self.assertNotRegex(text, r'(^|\s)(ubuntu|openwrt)\)', f)
+
     def test_the_commands_on_path_are_the_same_everywhere(self):
         # the Ubuntu image, the OpenWrt image and the boot-time links (mu300-extra link, for systems installed before a
         # command had one) link the same commands. They used to be three copies of the list: the fixups' lagged behind
@@ -216,6 +260,162 @@ class Rules(unittest.TestCase):
         # and that its init works with Linux on either slot (mu300-update refuses one without it on slot a)
         self.assertIn('    tar -xzOf "$D/$a.tar.gz" ./features 2>/dev/null | grep -qx linux-slot', mr)
 
+    def test_proc_reads_are_braced(self):
+        # `tr < /proc/$pid/cmdline 2>/dev/null` reports a failed redirection (the process just went) before its own
+        # 2>/dev/null applies, so "can't open /proc/..." reaches the log: the read is braced, `{ tr < ...; } 2>/dev/null`
+        files = [p for p, _ in shell_scripts()]
+        files += [p for p in (TOP / 'openwrt' / 'luci-app-mu300' / 'root').rglob('*')
+                  if p.is_file() and shebang(p).endswith('sh')]
+        bad = re.compile(r'<\s*"?/proc/\$[^\s;|]*\s+2>\s*/dev/null')
+        found = []
+        for p in sorted(set(files)):
+            for n, line in enumerate(p.read_text(errors='replace').splitlines(), 1):
+                if bad.search(line):
+                    found.append(f'{p.relative_to(TOP)}:{n}')
+        self.assertEqual(found, [])
+
+    def test_quiet_console_sysctl_on_both_systems(self):
+        # K24: both images carry the same drop-in (systemd-sysctl on Ubuntu, procd's /etc/init.d/sysctl on OpenWrt)
+        a = (TOP / 'rootfs' / 'overlay' / 'etc' / 'sysctl.d' / '99-mu300-console.conf').read_text()
+        b = (TOP / 'openwrt' / 'overlay' / 'etc' / 'sysctl.d' / '99-mu300-console.conf').read_text()
+        self.assertEqual(a, b)
+        self.assertRegex(a, r'(?m)^kernel\.printk = 1$')
+
+    def test_modem_control_is_released_early_and_without_a_fixed_wait(self):
+        # K22, K23: S09 (leading zero kept, rc.common embeds START verbatim: S9 would sort after S19) and no
+        # unconditional sleep before android-vendor-start, which waits for the modem nodes itself
+        f = (TOP / 'openwrt' / 'overlay' / 'etc' / 'init.d' / 'mu300-vendor').read_text()
+        self.assertRegex(f, r'(?m)^START=09$')
+        self.assertIn('leading zero', f)
+        self.assertIn('procd_set_param command /opt/mu300/bin/android-vendor-start\n', f)
+        self.assertNotRegex(f, r'sleep 5')
+        # nothing else may order itself in front of it
+        for s in (TOP / 'openwrt' / 'overlay' / 'etc' / 'init.d').iterdir():
+            m = re.search(r'(?m)^START=(\d+)', s.read_text())
+            if s.name != 'mu300-vendor' and m:
+                self.assertGreater(int(m.group(1)), 9, s.name)
+
+    def test_atd_before_the_network_with_a_second_daemon_on_nr2(self):
+        # K16, K17, K18, K21: S19 (the dial at S20 asks the daemon), nr1 and nr2 only, nr2 without a URC channel
+        f = (TOP / 'openwrt' / 'overlay' / 'etc' / 'init.d' / 'mu300-atd').read_text()
+        self.assertRegex(f, r'(?m)^START=19$')
+        # K20: radio-warmup is the third instance, and it opens no channel: it waits for nr1's daemon and asks it
+        self.assertEqual(re.findall(r'procd_open_instance (\S+)', f), ['atd', 'atd2', 'radio-warmup'])
+        warm = f[f.index('procd_open_instance radio-warmup'):]
+        warm = warm[:warm.index('procd_close_instance')]
+        self.assertIn('until [ -p /run/mu300-at/cmd ]', warm)
+        self.assertIn('exec /opt/mu300/bin/mobile-data radio-on', warm)
+        self.assertNotIn('stty_nr', warm)
+        self.assertNotIn('respawn', warm)   # one round per start; netifd's dial and watch retry
+        self.assertIn('wait_and_exec /dev/stty_nr1 /opt/mu300/bin/mu300-atd', f)
+        self.assertIn('wait_and_exec /dev/stty_nr2 /opt/mu300/bin/mu300-atd', f)
+        self.assertIn('procd_set_param env MU300_AT_DEV=/dev/stty_nr2 MU300_AT_DIR=/run/mu300-at2 '
+                      'MU300_AT_URC_CHANNELS=\n', f)
+        self.assertNotRegex(f, r'stty_nr[3-7]')
+        self.assertIn('[ ! -x /usr/libexec/unisoc-modem/lock ] || : > /run/unisoc-modem-early-hook-pending', f)
+        u = (TOP / 'rootfs' / 'overlay' / 'etc' / 'systemd' / 'system' / 'mu300-atd2.service').read_text()
+        for line in ('Environment=MU300_AT_DEV=/dev/stty_nr2', 'Environment=MU300_AT_DIR=/run/mu300-at2',
+                     'Environment=MU300_AT_URC_CHANNELS=\n', 'ConditionPathExists=|/dev/stty_nr2'):
+            self.assertIn(line, u)
+        self.assertIn('mu300-atd2.service:multi-user.target', (TOP / 'rootfs' / 'assemble.sh').read_text())
+        self.assertIn('mu300-atd2.service:multi-user.target', (TOP / 'arch' / 'build-rootfs.sh').read_text())
+
+    def test_cellular_downlink_in_the_software_flowtable(self):
+        # K28, K29: mu300cell reports sipa_eth0 as l3_device only, so fw4 leaves it out of its flowtable and the
+        # downlink takes the slow forwarding path. The patch puts it in; it is applied with --fuzz=0 to every OpenWrt
+        # system (outside the panel block), so a changed fw4 fails the build instead of shipping without it.
+        patch = (TOP / 'openwrt' / 'patches' / 'fw4-sipa-offload.patch').read_text()
+        self.assertIn('+++ b/usr/share/ucode/fw4.uc', patch)
+        self.assertIn("+\t\t\tif (fs.access('/sys/class/net/sipa_eth0'))", patch)
+        self.assertIn("+\t\t\t\tpush(devices, 'sipa_eth0');", patch)
+        text = (TOP / 'openwrt' / 'build-rootfs.sh').read_text()
+        self.assertIn('-v "$FW4PATCH":/in/fw4-sipa-offload.patch:ro', text)
+        apply = 'patch --batch --fuzz=0 -d $R -p1 -i /in/fw4-sipa-offload.patch'
+        self.assertIn(apply, text)
+        self.assertLess(text.index('cp -a /in/overlay/. $R/'), text.index(apply))
+        self.assertLess(text.index(apply), text.index('if [ -d /in/luci-plugin ]; then\n    [ -d /in/luci-overlay ]'))
+        # the patch tool is installed after the copy into $R: the build container has it, the image does not
+        self.assertLess(text.index('for e in /*; do'), text.index('apk add patch'))
+        self.assertLess(text.index(apply), text.index('apk del patch'))
+        self.assertLess(text.index('apk del patch'), text.index('apk list --installed'))
+        # software offloading on, hardware off: the SIPA and SC2355 drivers have no nftables hardware offload
+        uci = (OPENWRT / 'etc' / 'uci-defaults' / '90-mu300').read_text()
+        self.assertIn("uci -q set firewall.@defaults[0].flow_offloading='1'", uci)
+        self.assertIn("uci -q set firewall.@defaults[0].flow_offloading_hw='0'", uci)
+        self.assertIn('uci commit firewall', uci)
+
+    def test_build_stops_without_the_cellular_protocol(self):
+        # K74: without mu300cell.sh netifd has no wan, and the image would boot without mobile data; openwrt-luci's
+        # first boot selects relay mode (K30), which runs mu300cell-v6.sh: its overlay must have it, whatever
+        # mu300cell.sh says. Checked before any download.
+        def run(files, system, extra_env=None):
+            with tempfile.TemporaryDirectory() as d:
+                top = Path(d)
+                (top / 'openwrt').mkdir()
+                shutil.copy(TOP / 'openwrt' / 'build-rootfs.sh', top / 'openwrt' / 'build-rootfs.sh')
+                for rel, body in files.items():
+                    (top / rel).parent.mkdir(parents=True, exist_ok=True)
+                    (top / rel).write_text(body)
+                env = dict(os.environ, MU300_SYSTEM=system, MU300_INPUTS=d, PATH='/usr/bin:/bin',
+                           MU300_LUCI_THEME_APK=str(top / 'no-theme.apk'))
+                env.update(extra_env or {})
+                return subprocess.run(['sh', str(top / 'openwrt' / 'build-rootfs.sh'), 'x.tar.gz'], env=env,
+                                      capture_output=True, text=True, timeout=30)
+        cell = 'openwrt/overlay/lib/netifd/proto/mu300cell.sh'
+        v6 = 'openwrt/luci-overlay/lib/netifd/proto/mu300cell-v6.sh'
+        patch = {'openwrt/patches/fw4-sipa-offload.patch': 'x\n'}
+        for system in ('openwrt', 'openwrt-luci'):
+            with self.subTest(system=system, missing='mu300cell.sh'):
+                r = run(patch, system)
+                self.assertEqual(r.returncode, 1, r.stderr)
+                self.assertIn('mu300cell.sh', r.stderr)
+            with self.subTest(system=system, missing='the patch'):
+                r = run({cell: 'x\n', v6: 'x\n'}, system)
+                self.assertEqual(r.returncode, 1, r.stderr)
+                self.assertIn('fw4-sipa-offload.patch', r.stderr)
+        # openwrt-luci needs the monitor even when mu300cell.sh does not name it; plain OpenWrt (never relay) does not
+        r = run(dict(patch, **{cell: 'x\n'}), 'openwrt-luci')
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertIn('mu300cell-v6.sh', r.stderr)
+        # with every file present neither check stops the build (it stops later: openwrt-luci at the theme this tree
+        # lacks, plain OpenWrt at its download, which a curl stub refuses)
+        with tempfile.TemporaryDirectory() as stubs:
+            curl = Path(stubs) / 'curl'
+            curl.write_text('#!/bin/sh\necho "curl: stub refuses" >&2\nexit 22\n')
+            curl.chmod(0o755)
+            for system, files in (('openwrt', dict(patch, **{cell: 'x\n'})),
+                                  ('openwrt-luci', dict(patch, **{cell: 'x\n', v6: 'x\n'}))):
+                r = run(files, system, {'PATH': f'{stubs}:/usr/bin:/bin'})
+                self.assertNotEqual(r.returncode, 0, r.stderr)
+                self.assertIn('stub refuses' if system == 'openwrt' else 'theme package missing', r.stderr)
+                self.assertNotIn('required cellular protocol helper missing', r.stderr)
+                self.assertNotIn('fw4-sipa-offload.patch', r.stderr)
+
+    def test_panel_mounts_survive_spaces_in_paths(self):
+        # final review minor 5: the panel system's docker mounts were one word-split string; a checkout or a
+        # MU300_LUCI_THEME_APK path with a space broke the build. They are the positional parameters now, each path
+        # one argument: the build's own `set --` statement is run with spaces in every path
+        text = (TOP / 'openwrt' / 'build-rootfs.sh').read_text()
+        self.assertNotIn('$LUCI', text)
+        m = re.search(r'\n    (set -- -v "\$THEME_APK:.*?:/in/catalogs:ro")\n', text, re.S)
+        self.assertTrue(m, 'the luci mounts are not one set -- statement')
+        self.assertRegex(text, r'-v "\$REGDB":/in/regdb:ro "\$@" \\\n')
+        for sh in shells():
+            r = subprocess.run(sh + ['-c', m.group(1) + '\nprintf "%s\\n" "$@"'], capture_output=True, text=True,
+                               env=dict(os.environ, THEME_APK='/a b/theme.apk', TOP='/my repo', CAT='/t m/cat'))
+            self.assertEqual(r.stdout.splitlines(), [
+                '-v', '/a b/theme.apk:/in/luci-theme-aurora.apk:ro', '-v', '/my repo/openwrt/luci-app-mu300:/in/luci-plugin:ro',
+                '-v', '/my repo/openwrt/luci-overlay:/in/luci-overlay:ro', '-v', '/t m/cat:/in/catalogs:ro'], sh)
+
+    def test_openwrt_luci_starts_ndp_learn(self):
+        # K37: init.d/mu300-ndp is enabled in openwrt-luci's image (it does nothing unless wan is in relay mode) and
+        # is executable there, beside the SMS service
+        text = (TOP / 'openwrt' / 'build-rootfs.sh').read_text()
+        block = text[text.index('ln -sf ../init.d/unisoc-modem-ui $R/etc/rc.d/'):text.index('apk list --installed')]
+        self.assertIn('$R/etc/init.d/mu300-ndp', block)
+        self.assertIn('ln -sf ../init.d/mu300-ndp $R/etc/rc.d/S${n}mu300-ndp', block)
+        for f in ('etc/init.d/mu300-ndp', 'opt/mu300/bin/ndp-learn', 'lib/netifd/proto/mu300cell-v6.sh'):
+            self.assertTrue((LUCI_OVERLAY / f).stat().st_mode & 0o111, f)
 
 if __name__ == '__main__':
     unittest.main()
