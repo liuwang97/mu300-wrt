@@ -33,10 +33,11 @@ TOP=$(cd "$(dirname "$0")/.." && pwd)
 # build inputs (out/, firmware/, android-subset/, tools binaries, busybox) may live outside the checkout
 IN=${MU300_INPUTS:-$TOP}
 # Without its cellular protocol netifd has no wan and the image boots without mobile data. openwrt-luci also needs
-# the IPv6 relay monitor once mu300cell.sh runs it (relay mode); plain OpenWrt never selects relay.
+# the IPv6 relay monitor: its first boot selects relay mode (91-mu300-luci), and mu300cell.sh then runs it. Plain
+# OpenWrt never selects relay, and builds without it.
 CELL=$TOP/openwrt/overlay/lib/netifd/proto/mu300cell.sh
 [ -s "$CELL" ] || { echo "required cellular protocol helper missing: $CELL" >&2; exit 1; }
-if [ "$SYSTEM" = openwrt-luci ] && grep -q mu300cell-v6 "$CELL"; then
+if [ "$SYSTEM" = openwrt-luci ]; then
     [ -s "$TOP/openwrt/luci-overlay/lib/netifd/proto/mu300cell-v6.sh" ] || {
         echo "required cellular protocol helper missing: openwrt/luci-overlay/lib/netifd/proto/mu300cell-v6.sh" >&2; exit 1;
     }
@@ -233,6 +234,10 @@ if [ -d /in/luci-plugin ]; then
     chmod 0755 $R/etc/init.d/mu300-atd-dash
     n=$(sed -n "s/^START=//p" $R/etc/init.d/mu300-atd-dash)
     ln -sf ../init.d/mu300-atd-dash $R/etc/rc.d/S${n}mu300-atd-dash
+    # the routes of relay mode to the LAN (K37): it starts ndp-learn only when wan is in relay mode
+    chmod 0755 $R/opt/mu300/bin/ndp-learn $R/lib/netifd/proto/mu300cell-v6.sh $R/etc/init.d/mu300-ndp
+    n=$(sed -n "s/^START=//p" $R/etc/init.d/mu300-ndp)
+    ln -sf ../init.d/mu300-ndp $R/etc/rc.d/S${n}mu300-ndp
     ln -sf /opt/mu300/bin/mu300-sms $R/usr/bin/mu300-sms
 fi
 # what apk installed, for comparing two builds (packages on the release feed are not pinned)

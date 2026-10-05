@@ -256,7 +256,8 @@ class Rules(unittest.TestCase):
 
     def test_build_stops_without_the_cellular_protocol(self):
         # K74: without mu300cell.sh netifd has no wan, and the image would boot without mobile data; openwrt-luci's
-        # relay mode runs mu300cell-v6.sh, which must then be in its overlay. Checked before any download.
+        # first boot selects relay mode (K30), which runs mu300cell-v6.sh: its overlay must have it, whatever
+        # mu300cell.sh says. Checked before any download.
         def run(files, system, extra_env=None):
             with tempfile.TemporaryDirectory() as d:
                 top = Path(d)
@@ -266,7 +267,8 @@ class Rules(unittest.TestCase):
                     (top / rel).parent.mkdir(parents=True, exist_ok=True)
                     (top / rel).write_text(body)
                 env = dict(os.environ, MU300_SYSTEM=system, MU300_INPUTS=d, PATH='/usr/bin:/bin',
-                           MU300_LUCI_THEME_APK=str(top / 'no-theme.apk'), **(extra_env or {}))
+                           MU300_LUCI_THEME_APK=str(top / 'no-theme.apk'))
+                env.update(extra_env or {})
                 return subprocess.run(['sh', str(top / 'openwrt' / 'build-rootfs.sh'), 'x.tar.gz'], env=env,
                                       capture_output=True, text=True, timeout=30)
         cell = 'openwrt/overlay/lib/netifd/proto/mu300cell.sh'
@@ -278,21 +280,36 @@ class Rules(unittest.TestCase):
                 self.assertEqual(r.returncode, 1, r.stderr)
                 self.assertIn('mu300cell.sh', r.stderr)
             with self.subTest(system=system, missing='the patch'):
-                r = run({cell: 'x\n'}, system)
+                r = run({cell: 'x\n', v6: 'x\n'}, system)
                 self.assertEqual(r.returncode, 1, r.stderr)
                 self.assertIn('fw4-sipa-offload.patch', r.stderr)
-        # relay mode named in mu300cell.sh: openwrt-luci needs the monitor, plain OpenWrt (never in relay) does not
-        relay = dict(patch, **{cell: 'proto_run_command "$cfg" /lib/netifd/proto/mu300cell-v6.sh\n'})
-        r = run(relay, 'openwrt-luci')
+        # openwrt-luci needs the monitor even when mu300cell.sh does not name it; plain OpenWrt (never relay) does not
+        r = run(dict(patch, **{cell: 'x\n'}), 'openwrt-luci')
         self.assertEqual(r.returncode, 1, r.stderr)
         self.assertIn('mu300cell-v6.sh', r.stderr)
-        # with every file present neither check stops the build (it stops later, at an input this tree lacks)
-        for files in (dict(patch, **{cell: 'x\n'}), dict(relay, **{v6: 'x\n'})):
-            r = run(files, 'openwrt-luci')
-            self.assertEqual(r.returncode, 1, r.stderr)
-            self.assertNotIn('required cellular protocol helper missing', r.stderr)
-            self.assertNotIn('fw4-sipa-offload.patch', r.stderr)
+        # with every file present neither check stops the build (it stops later: openwrt-luci at the theme this tree
+        # lacks, plain OpenWrt at its download, which a curl stub refuses)
+        with tempfile.TemporaryDirectory() as stubs:
+            curl = Path(stubs) / 'curl'
+            curl.write_text('#!/bin/sh\necho "curl: stub refuses" >&2\nexit 22\n')
+            curl.chmod(0o755)
+            for system, files in (('openwrt', dict(patch, **{cell: 'x\n'})),
+                                  ('openwrt-luci', dict(patch, **{cell: 'x\n', v6: 'x\n'}))):
+                r = run(files, system, {'PATH': f'{stubs}:/usr/bin:/bin'})
+                self.assertNotEqual(r.returncode, 0, r.stderr)
+                self.assertIn('stub refuses' if system == 'openwrt' else 'theme package missing', r.stderr)
+                self.assertNotIn('required cellular protocol helper missing', r.stderr)
+                self.assertNotIn('fw4-sipa-offload.patch', r.stderr)
 
+    def test_openwrt_luci_starts_ndp_learn(self):
+        # K37: init.d/mu300-ndp is enabled in openwrt-luci's image (it does nothing unless wan is in relay mode) and
+        # is executable there, beside the SMS service
+        text = (TOP / 'openwrt' / 'build-rootfs.sh').read_text()
+        block = text[text.index('ln -sf ../init.d/unisoc-modem-ui $R/etc/rc.d/'):text.index('apk list --installed')]
+        self.assertIn('$R/etc/init.d/mu300-ndp', block)
+        self.assertIn('ln -sf ../init.d/mu300-ndp $R/etc/rc.d/S${n}mu300-ndp', block)
+        for f in ('etc/init.d/mu300-ndp', 'opt/mu300/bin/ndp-learn', 'lib/netifd/proto/mu300cell-v6.sh'):
+            self.assertTrue((LUCI_OVERLAY / f).stat().st_mode & 0o111, f)
 
 if __name__ == '__main__':
     unittest.main()

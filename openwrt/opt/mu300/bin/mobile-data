@@ -3,6 +3,7 @@
 # usage: mobile-data up [APN] | radio-on | down | status | signal | at "CMD" | sim-reset | watch
 # radio-on: only switch the radio on (the OpenWrt boot does it early, beside the other init scripts)
 # MU300_NETIFD=1 mobile-data up [APN]: only attach and print IFACE/IP/PREFIX/DNS1/DNS2 (OpenWrt netifd protocol)
+# MU300_IPV6=relay with it: mu300cell's relay mode (openwrt-luci), see v6_relay_ra
 # OpenWrt: od/timeout come from the static busybox in /opt/mu300/busybox-bin
 export PATH="$PATH:/opt/mu300/busybox-bin"
 set -euo pipefail
@@ -232,6 +233,20 @@ v6_off() {
     nft delete table ip6 mu300_v6 2>/dev/null || true
     ip -6 route del default dev "$IFACE" 2>/dev/null || true
     [ -w "/proc/sys/net/ipv6/conf/$IFACE/disable_ipv6" ] && echo 1 > "/proc/sys/net/ipv6/conf/$IFACE/disable_ipv6"
+    return 0
+}
+
+# K64, openwrt-luci's relay mode only (spec D9; kanoqwq/clean-tf-7.2 cd4fb28): mu300cell's ipv6 'relay' passes
+# MU300_IPV6=relay. On that netifd path a dual-stack context keeps IPv6 on and takes the carrier's RA (accept_ra 2:
+# forwarding is on) whether or not +CGPADDR carries an interface identifier: carriers that never fill in the context's
+# v6 address (China Telecom IoT, measured in the fork) give the public address by SLAAC only. Returns 1, touching
+# nothing, everywhere else (plain OpenWrt, Ubuntu's systemd path, an IPv4 context).
+v6_relay_ra() {
+    local c=/proc/sys/net/ipv6/conf/$IFACE
+    [ "${MU300_NETIFD:-0}" = 1 ] && [ "${MU300_IPV6:-}" = relay ] || return 1
+    case ${MU300_PDP_TYPE:-IP} in IP) return 1 ;; esac
+    if [ -w "$c/disable_ipv6" ]; then echo 0 > "$c/disable_ipv6"; fi
+    if [ -w "$c/accept_ra" ]; then echo 2 > "$c/accept_ra"; fi
     return 0
 }
 
@@ -560,8 +575,8 @@ up_locked() {
     # carries a link-local address and sends router solicitations and multicast into a bearer that is IPv4 only
     # (FINDINGS 13f). With one, v6_up below (systemd) or the proto handler (OpenWrt) sets it up.
     # On OpenWrt this is undone a moment later - netifd turns IPv6 back on while it configures the interface -
-    # so the proto handler repeats it after proto_send_update.
-    [ -n "$iid" ] || v6_off
+    # so the proto handler repeats it after proto_send_update. Relay mode (v6_relay_ra) keeps it on instead.
+    v6_relay_ra || { [ -n "$iid" ] || v6_off; }
     if [ "${MU300_NETIFD:-0}" = 1 ]; then
         # OpenWrt: netifd (proto mu300cell) configures the address, routes, DNS and firewall itself
         printf 'IFACE=%s\nIP=%s\nPREFIX=%s\nDNS1=%s\nDNS2=%s\nIID6=%s\n' "$IFACE" "$ip4" "$prefix" "$dns1" "$dns2" "$iid"
