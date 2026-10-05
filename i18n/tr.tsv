@@ -283,9 +283,23 @@ could not install the kernel modules	çekirdek modülleri kurulamadı
 Writing and verifying boot_{1}	boot_{1} yazılıyor ve doğrulanıyor
 boot_{1} did not verify after writing; misc was not changed, so Android keeps booting	boot_{1} yazıldıktan sonra doğrulanamadı; misc değiştirilmedi, Android açılmaya devam eder
 misc changed during the installation; Linux was not armed. Install the zip again.	misc kurulum sırasında değişti; Linux etkinleştirilmedi. Zip'i yeniden kurun.
-misc did not verify after writing; reboot normally, Android is not affected	misc yazıldıktan sonra doğrulanamadı; normal şekilde yeniden başlatın, Android etkilenmez
 could not write {1}	{1} yazılamadı
-could not remove MU300_PASSWORD from {1}; remove it by hand	MU300_PASSWORD {1} dosyasından kaldırılamadı; elle kaldırın
 Done. Reboot to start {1}.	Tamamlandı. {1} sistemini başlatmak için yeniden başlatın.
-password for {1}: {2}   (also in {3}; delete that file after the first login)	{1} için parola: {2}   ({3} dosyasında da var; ilk girişten sonra o dosyayı silin)
 If Linux does not start, the device returns to Android by itself.	Linux açılmazsa cihaz kendiliğinden Android'e döner.
+could not keep a copy of the misc block; nothing was changed	misc bloğunun bir kopyası alınamadı; hiçbir şey değiştirilmedi
+filesystem:     {1} ({2})	dosya sistemi:  {1} ({2})
+default boot:   {1} ({2})	varsayılan:     {1} ({2})
+Linux, Android after failed boots	Linux, başarısız açılışlardan sonra Android
+boot attempts:  {1} failed boots in a row, then Android ({2})	açılış denemesi: arka arkaya {1} başarısız açılış, sonra Android ({2})
+hotspot:        {1} ({2})	hotspot:        {1} ({2})
+name and password copied from Android	adı ve parolası Android'den kopyalanır
+not copied	kopyalanmaz
+GPU files:      {1} ({2})	GPU dosyaları:  {1} ({2})
+included	dahil
+not included	dahil değil
+misc did not verify after writing; the block it held before was written back and verified, so Android boots as before. Linux was not armed.	misc yazıldıktan sonra doğrulanamadı; önceki blok geri yazıldı ve doğrulandı, Android eskisi gibi açılır. Linux etkinleştirilmedi.
+misc did not verify after writing, and the block it held before could not be written back: misc holds unknown bytes, and the device may not start Android. Do not reboot. Write the saved block back as root: {1}	misc yazıldıktan sonra doğrulanamadı ve önceki blok geri yazılamadı: misc bilinmeyen baytlar içeriyor, cihaz Android'i açamayabilir. Yeniden başlatmayın. Saklanan bloğu root olarak geri yazın: {1}
+password for {1}: "{2}"   (also in {3}; delete that file after the first login)	{1} için parola: "{2}"   ({3} dosyasında da var; ilk girişten sonra o dosyayı silin)
+could not write {1}; nothing was installed	{1} yazılamadı; hiçbir şey kurulmadı
+used by this installation and removed from {1}:{2}	bu kurulumda kullanıldı ve {1} dosyasından kaldırıldı:{2}
+could not remove{1} from {2}; remove it by hand	{2} dosyasından kaldırılamadı:{1}; elle kaldırın

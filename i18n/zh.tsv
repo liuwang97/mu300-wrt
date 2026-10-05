@@ -283,9 +283,23 @@ could not install the kernel modules	无法安装内核模块
 Writing and verifying boot_{1}	正在写入并校验 boot_{1}
 boot_{1} did not verify after writing; misc was not changed, so Android keeps booting	写入后 boot_{1} 校验失败；misc 未被更改，Android 会照常启动
 misc changed during the installation; Linux was not armed. Install the zip again.	安装期间 misc 发生了变化；Linux 未被启用。请重新安装此 zip。
-misc did not verify after writing; reboot normally, Android is not affected	写入后 misc 校验失败；请正常重启，Android 不受影响
 could not write {1}	无法写入 {1}
-could not remove MU300_PASSWORD from {1}; remove it by hand	无法从 {1} 中删除 MU300_PASSWORD；请手动删除
 Done. Reboot to start {1}.	完成。重启即可启动 {1}。
-password for {1}: {2}   (also in {3}; delete that file after the first login)	{1} 的密码：{2}   （也保存在 {3} 中；首次登录后请删除该文件）
 If Linux does not start, the device returns to Android by itself.	如果 Linux 无法启动，设备会自动回到 Android。
+could not keep a copy of the misc block; nothing was changed	无法保存 misc 块的副本；未做任何更改
+filesystem:     {1} ({2})	文件系统：      {1}（{2}）
+default boot:   {1} ({2})	默认启动：      {1}（{2}）
+Linux, Android after failed boots	Linux，启动失败后回到 Android
+boot attempts:  {1} failed boots in a row, then Android ({2})	启动尝试：      连续 {1} 次启动失败后回到 Android（{2}）
+hotspot:        {1} ({2})	热点：          {1}（{2}）
+name and password copied from Android	从 Android 复制名称和密码
+not copied	不复制
+GPU files:      {1} ({2})	GPU 文件：      {1}（{2}）
+included	包含
+not included	不包含
+misc did not verify after writing; the block it held before was written back and verified, so Android boots as before. Linux was not armed.	写入后 misc 校验失败；原来的块已写回并校验通过，Android 照常启动。Linux 未被启用。
+misc did not verify after writing, and the block it held before could not be written back: misc holds unknown bytes, and the device may not start Android. Do not reboot. Write the saved block back as root: {1}	写入后 misc 校验失败，且原来的块无法写回：misc 中是未知的数据，设备可能无法启动 Android。请不要重启。请以 root 身份写回保存的块：{1}
+password for {1}: "{2}"   (also in {3}; delete that file after the first login)	{1} 的密码："{2}"   （也保存在 {3} 中；首次登录后请删除该文件）
+could not write {1}; nothing was installed	无法写入 {1}；未安装任何内容
+used by this installation and removed from {1}:{2}	已在本次安装中使用并从 {1} 中删除：{2}
+could not remove{1} from {2}; remove it by hand	无法从 {2} 中删除：{1}；请手动删除
