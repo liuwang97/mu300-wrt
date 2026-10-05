@@ -606,6 +606,7 @@ apply() {
     # Everything is downloaded and checked first, and only then is anything changed. Older boot images can lose
     # the mobile downlink after two quiet minutes (docs/FINDINGS.md 32): a download that followed the minutes of
     # unpacking hung there, and a device that reset in the middle of writing boot_b could only start Android.
+    clean_broken
     say "downloading $tag"
     free=$(df -k "$DISK" | awk 'NR==2 {print $4}')
     [ "$free" -gt $((1000000 + 1000000 * $(echo $todo | wc -w))) ] || die "not enough free space on the Linux partition (about 1 GB, plus 1 GB for every system to update)"
@@ -644,6 +645,18 @@ apply() {
         *" $(running_os) "*) printf '\nReboot to start the updated %s. The previous version is kept: mu300-update rollback\n' "$(running_os)" ;;
         *) printf '\nDone. The updated system is used the next time you switch to it.\n' ;;
     esac
+}
+
+# <os>.broken is what a rollback left behind: the system it rolled back from, kept until the reboot because it may
+# be the one running. Once it is not running any more nothing needs it (it was the newer version: apply installs it
+# again), so apply removes it - before counting free space, as it is a whole system (655 MB on the second F50).
+clean_broken() {
+    for os in ubuntu openwrt; do
+        [ -d "$DISK/$os.broken" ] || continue
+        is_root "$DISK/$os.broken" && continue
+        rm -rf "$DISK/$os.broken" && printf '%s: removed the copy left by a rollback (%s.broken)\n' "$os" "$os"
+    done
+    return 0
 }
 
 rollback() {
