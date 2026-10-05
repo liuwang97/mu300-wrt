@@ -364,12 +364,19 @@ at() {
         text = (BIN / 'mobile-data').read_text()
         text = text.replace('/run/', f'{self.tmp}/run/').replace('/opt/mu300/bin/mu300-led', 'mu300-led')
         text = text.replace('/opt/mu300/bin/mu300-at ', 'mu300-at ')
+        # K47: the delegate loader is a stub that logs "- sipa-dele-start wait=<MU300_DELE_WAIT>" in the AT order and
+        # exits $DELE_RC (0 by default); /proc/modules is the scratch directory's proc-modules
+        text = text.replace('/opt/mu300/bin/sipa-dele-start', 'sipa-dele-start')
+        text = text.replace('/proc/modules', f'{self.tmp}/proc-modules')
+        text = text.replace('/tmp/mu300-sipa-dele.log', f'{self.tmp}/sipa-dele.log')
         lib = self.tmp / 'mobile-data.lib'
         lib.write_text(text)
         (self.tmp / 'run').mkdir(exist_ok=True)
         for f in ('at', 'led', 'rf', 'nr1env'):
             (self.tmp / f).unlink(missing_ok=True)
         self.stub('mu300-led', 'echo "$*" >> "$STUBLOG/led"')
+        self.stub('sipa-dele-start', 'echo "- sipa-dele-start wait=$MU300_DELE_WAIT" >> "$STUBLOG/at"\n'
+                  'echo "sipa-dele-start: stub"\nexit "${DELE_RC:-0}"')
         self.stub('mu300-at', '[ "$1" = -t ] && shift 2\necho "nr1 $1" >> "$STUBLOG/at"\n'
                   'echo "dir=$MU300_AT_DIR wait=$MU300_AT_LOCK_WAIT" > "$STUBLOG/nr1env"\n'
                   'case ${SMMSWAP:-OK} in none) echo "mu300-at: no answer from the daemon" >&2; exit 1 ;; esac\n'
@@ -438,6 +445,39 @@ at() {
         radio = (self.tmp / 'run' / 'mu300' / 'radio.log').read_text()
         self.assertRegex(radio, r'(?m)^t=\S* +registered\b')
         self.assertIn('reasserting', radio)
+
+    def test_sipa_dele_between_registration_and_cgact(self):
+        """K47: the IPA delegate is loaded by the dial itself, after the registration and before the PDP context
+        (AT+CGACT=1), with a 20 s wait; when it does not load, the dial stops there and activates nothing; once it
+        is loaded, a later dial does not call the loader again."""
+        env = dict(MU300_NETIFD=1, MU300_AT_DEV='/dev/null', MU300_URC_LOG=self.tmp / 'none', MU300_CFUN_WAIT=0,
+                   CEREG='+CEREG: 2,1,"1A2B","0123ABCD",7')
+        r, sent = self.lib('up_locked', **env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn('IP=10.1.2.3\n', r.stdout)
+        self.assertNotIn('stub', r.stdout)                      # its output does not reach netifd's parser
+        cmds = [s.split(' ', 1)[1] for s in sent]
+        self.assertEqual(cmds.count('sipa-dele-start wait=20'), 1, cmds)
+        dele = cmds.index('sipa-dele-start wait=20')
+        last_cereg = len(cmds) - 1 - cmds[::-1].index('AT+CEREG?')
+        self.assertLess(last_cereg, dele, cmds)                    # after the registration
+        self.assertLess(dele, cmds.index('AT+CGACT=1,1'), cmds)    # before the PDP context
+        # the loader refuses (the packet domain never came up, or insmod failed): no CGACT, exit 1, said why
+        r, sent = self.lib('up_locked', DELE_RC=1, **env)
+        cmds = [s.split(' ', 1)[1] for s in sent]
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn('sipa-dele-start wait=20', cmds)
+        self.assertFalse([c for c in cmds if c.startswith('AT+CGACT')], cmds)
+        self.assertNotIn('IP=', r.stdout)
+        self.assertIn('IPA delegate', r.stderr)
+        self.assertIn('IPA delegate', (self.tmp / 'run' / 'mu300' / 'radio.log').read_text())
+        # already in /proc/modules (a reconnect): straight on to the context, the loader is not called
+        (self.tmp / 'proc-modules').write_text('sipa_dele 16384 0 - Live 0x0000000000000000 (O)\n')
+        r, sent = self.lib('up_locked', DELE_RC=1, **env)
+        cmds = [s.split(' ', 1)[1] for s in sent]
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse([c for c in cmds if c.startswith('sipa-dele-start')], cmds)
+        self.assertIn('AT+CGACT=1,1', cmds)
 
     def test_led_from_cereg(self):
         """4G or 5G from the AcT field of AT+CEREG? (K56), not from AT+COPS?."""
@@ -554,7 +594,55 @@ at() {
         self.assertEqual(cmds.count('AT+SMMSWAP=0'), 1, cmds)
         self.assertEqual(cmds.count('AT+SFUN=4'), 1, cmds)
         self.assertEqual(cmds.count('AT+CFUN?'), 3, cmds)    # the first: 0, then 1; the second: 1
-        self.assertFalse((self.tmp / 'run' / 'mu300-radio-on.lock').exists())
+        self.assertEqual(self.radio_lock_files(), [])
+
+    def radio_lock_files(self):
+        return sorted(p.name for p in (self.tmp / 'run').iterdir() if p.name.startswith('mu300-radio-on'))
+
+    # R32: radio_on's lock. A wrapped radio_owner_alive takes $DEAD_DELAY s (0.5) more over every "dead" verdict and
+    # $ALIVE_DELAY s (0) over every "alive" one: two waiters can both see the dead owner before either acts on it.
+    SLOW_DEAD = ('eval "orig_$(declare -f radio_owner_alive)"\n'
+                 'radio_owner_alive() { if orig_radio_owner_alive "$@"; then sleep "${ALIVE_DELAY:-0}"; return 0; fi;'
+                 ' sleep "${DEAD_DELAY:-0.5}"; return 1; }\n')
+
+    def test_two_waiters_on_a_dead_owners_lock(self):
+        """R32: the lock's owner was killed in the middle of its round (SIGKILL: nothing released). Two radio_on
+        callers find it at the same moment: exactly one of them takes it over and runs the radio state machine,
+        the other waits for that one and finds the radio on; nothing of the lock is left afterwards. The second one
+        acts on its "dead" verdict only once the first has taken the lock over (the old lock removed that one)."""
+        r, sent, cmds = self.radio(
+            self.SLOW_DEAD +
+            'SFUN_DELAY=5; ( radio_on ) >/dev/null 2>&1 & h=$!\n'
+            'sleep 1; kill -9 $h; wait $h 2>/dev/null || true\n'
+            'SFUN_DELAY=1\n'
+            '( DEAD_DELAY=0.2; radio_on ) & a=$!; ( DEAD_DELAY=0.8; radio_on ) & b=$!\n'
+            'ra=0; wait $a || ra=$?; rb=0; wait $b || rb=$?; echo "ra=$ra rb=$rb"', CFUN=0)
+        self.assertIn('ra=0 rb=0', r.stdout, r.stderr)
+        # the killed owner's AT+SFUN=4, then one more from the one that took over; never a third
+        self.assertEqual(cmds.count('AT+SFUN=4'), 2, cmds)
+        self.assertEqual(self.radio_lock_files(), [])
+
+    def test_lock_holder_is_named_from_the_start(self):
+        """R32: the lock never exists without its owner's pid (no window in which a waiter reads an empty owner
+        and calls the lock dead)."""
+        r, sent, cmds = self.radio(
+            'SFUN_DELAY=2; ( radio_on ) >/dev/null 2>&1 & h=$!\n'
+            f'sleep 1; echo "owner=$(readlink "{self.tmp}/run/mu300-radio-on.owner") h=$h"; wait $h')
+        m = re.search(r'owner=(\d+) h=(\d+)', r.stdout)
+        self.assertTrue(m, r.stdout + r.stderr)
+        self.assertEqual(m.group(1), m.group(2))
+        self.assertEqual(self.radio_lock_files(), [])
+
+    def test_radio_lock_wait_is_in_seconds(self):
+        """R32: MU300_RADIO_LOCK_WAIT is a deadline in real seconds, not a number of polls: with a slow liveness
+        check (0.3 s each) a 2 s wait still ends after about 2 s."""
+        r, sent, cmds = self.radio(
+            self.SLOW_DEAD +
+            'SFUN_DELAY=8; ( radio_on ) >/dev/null 2>&1 & h=$!\n'
+            'sleep 1; ALIVE_DELAY=0.3; t0=$SECONDS; rc=0; radio_on || rc=$?; t=$((SECONDS - t0))\n'
+            'kill -9 $h; echo "rc=$rc t=$t"', MU300_RADIO_LOCK_WAIT=2)
+        self.assertRegex(r.stdout, r'rc=1 t=[23]\b', r.stderr)
+        self.assertIn('still running; giving up', self.radio_log())
 
     def test_early_lock_replay_hook(self):
         """K65: the plugin's lock replay runs after the handshake and the radio-off answer, before AT+SFUN=4; only
@@ -611,6 +699,98 @@ at() {
         self.assertTrue(m, r.stdout + r.stderr)
         self.assertEqual(m.group(1), m.group(2))
         self.assertNotEqual(m.group(1), m.group(3))
+
+
+class SipaDele(ShellTest):
+    """K45, K46: extra-modules and sipa-dele-start, copied with /lib/modules, /proc/modules, /opt/mu300/bin and
+    /dev/stty_nr1 pointed at the scratch directory (and /dev/null); uname, insmod, modprobe, dmesg, sleep, mu300-at
+    and sipa-dele-start are stubs that write what they were asked to $STUBLOG/calls."""
+
+    def setUp(self):
+        super().setUp()
+        self.mods = self.tmp / 'lib' / 'modules' / '5.4.test'
+        self.mods.mkdir(parents=True)
+        self.stub('uname', 'echo 5.4.test')
+        self.stub('insmod', 'echo "insmod $*" >> "$STUBLOG/calls"\nexit "${INSMOD_RC:-0}"')
+        self.stub('modprobe', 'echo "modprobe $*" >> "$STUBLOG/calls"')
+        # the sbuf lines from the modem loader's start may have left the ring buffer long ago: not asked for
+        self.stub('dmesg', 'echo "[  80.1] sipa_dele: channel 5-120 send open msg"')
+        self.stub('sleep', ':')
+        self.stub('mu300-at', 'echo "mu300-at $*" >> "$STUBLOG/calls"\nprintf "%s\\nOK\\n" "${CGATT:-+CGATT: 1}"')
+        self.stub('sipa-dele-start', 'echo "sipa-dele-start" >> "$STUBLOG/calls"')
+
+    def copy(self, name):
+        text = (BIN / name).read_text()
+        for a, b in (('/lib/modules/', f'{self.tmp}/lib/modules/'), ('/proc/modules', f'{self.tmp}/proc-modules'),
+                     ('/opt/mu300/bin/', f'{self.stubs}/'), ('/dev/stty_nr1', '/dev/null')):
+            text = text.replace(a, b)
+        p = self.tmp / name
+        p.write_text(text)
+        return p
+
+    def run_script(self, shell, name, modules='', **env):
+        (self.tmp / 'proc-modules').write_text(modules)
+        (self.tmp / 'calls').unlink(missing_ok=True)
+        r = self.script(shell, self.copy(name), **env)
+        time.sleep(0.3)   # anything started in the background has written its line by now
+        calls = (self.tmp / 'calls').read_text() if (self.tmp / 'calls').exists() else ''
+        return r, calls
+
+    def test_extra_modules_never_starts_the_delegate(self):
+        """K45: on every system (OpenWrt's flat modules and Ubuntu's extra/), extra-modules leaves the delegate to
+        mobile-data: it neither starts sipa-dele-start nor inserts the module itself."""
+        for ko in (self.mods / 'sipa-dele.ko', self.mods / 'extra' / 'sipa-dele.ko'):
+            ko.parent.mkdir(exist_ok=True)
+            ko.write_text('')
+            for shell in self.each_shell():
+                r, calls = self.run_script(shell, 'extra-modules')
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertIn('modprobe mali_kbase', calls)       # it did run
+                self.assertNotIn('sipa-dele-start', calls)
+                self.assertNotIn('sipa-dele', calls.replace('sipa-dele-start', ''))
+            ko.unlink()
+
+    def test_refuses_after_the_wait(self):
+        """K46: the packet domain never comes up: exit 1 after MU300_DELE_WAIT s, the module is not inserted."""
+        (self.mods / 'sipa-dele.ko').write_text('')
+        for shell in self.each_shell():
+            t = time.monotonic()
+            r, calls = self.run_script(shell, 'sipa-dele-start', MU300_DELE_WAIT=1, CGATT='+CGATT: 0')
+            self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+            self.assertIn('mu300-at -t 8 AT+CGATT?', calls)
+            self.assertNotIn('insmod', calls)
+            self.assertIn('refusing', r.stdout)
+            self.assertLess(time.monotonic() - t, 8)   # a deadline in seconds (sleep is a no-op here)
+
+    def test_loads_once_the_packet_domain_is_attached(self):
+        """+CGATT: 1: the module is inserted from where the system keeps it (flat on OpenWrt, extra/ on Ubuntu)."""
+        for sub in ('', 'extra'):
+            ko = self.mods / sub / 'sipa-dele.ko'
+            ko.parent.mkdir(exist_ok=True)
+            ko.write_text('')
+            for shell in self.each_shell():
+                r, calls = self.run_script(shell, 'sipa-dele-start', MU300_DELE_WAIT=20)
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                self.assertEqual([c for c in calls.splitlines() if c.startswith('insmod')], [f'insmod {ko}'])
+            ko.unlink()
+
+    def test_failures_and_nothing_to_do(self):
+        """insmod fails: exit 1 (the dial must not go on). Already loaded, or no module in this kernel: exit 0,
+        nothing inserted."""
+        (self.mods / 'sipa-dele.ko').write_text('')
+        for shell in self.each_shell():
+            r, calls = self.run_script(shell, 'sipa-dele-start', MU300_DELE_WAIT=20, INSMOD_RC=1)
+            self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+            self.assertIn('FAILED', r.stdout)
+            r, calls = self.run_script(shell, 'sipa-dele-start', 'sipa_dele 16384 0 - Live 0x0 (O)\n',
+                                       MU300_DELE_WAIT=20)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertEqual(calls, '')
+        (self.mods / 'sipa-dele.ko').unlink()
+        for shell in self.each_shell():
+            r, calls = self.run_script(shell, 'sipa-dele-start', MU300_DELE_WAIT=20)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertNotIn('insmod', calls)
 
 
 class Bootmark(ShellTest):

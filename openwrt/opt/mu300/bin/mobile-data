@@ -321,37 +321,54 @@ radio_on_locked() {
 # meet at boot, and the watchdog can step in later. A second caller waits for the first to finish (it then finds
 # the radio on with one question) rather than give up: the fork capped the wait at 8 s, but a dial that gives up
 # costs netifd's 20 s pause before the next attempt, longer than the warm-up it was waiting for.
-# MU300_RADIO_LOCK_WAIT (120 s) covers a normal round several times over (one that overruns every AT budget can
-# take longer: then this caller gives up and the next attempt retries); a dead holder is taken over at once.
-RADIOLOCK=/run/mu300-radio-on.lock
+# MU300_RADIO_LOCK_WAIT (120 real seconds) covers a normal round several times over (one that overruns every AT
+# budget can take longer: then this caller gives up and the next attempt retries); a dead holder is taken over.
+#
+# The lock is a symbolic link whose target is the owner's pid. ln -s makes it in one step, so it never exists
+# without its owner (a directory with a pid file inside had a moment with none, and a waiter that read an empty pid
+# then could remove a lock that had just been taken). The name is not the old directory's, so a directory left by
+# an older mobile-data in the same boot cannot swallow the link (ln would put it inside and report success).
+RADIOLOCK=/run/mu300-radio-on.owner
 radio_owner_alive() {
     [ -n "${1:-}" ] && kill -0 "$1" 2>/dev/null || return 1
     # the number may have been reused by something else
     [ -r "/proc/$1/cmdline" ] || return 0
     tr '\0' ' ' < "/proc/$1/cmdline" 2>/dev/null | grep mobile-data >/dev/null
 }
+# radio_reap LINK DEADPID ME: remove LINK if it still names the dead process DEADPID. Only one process at a time may
+# do that for one (LINK, DEADPID): the one that makes the marker LINK.dead.DEADPID (made in one step, naming ME), and
+# it looks again under the marker. Nothing else removes a link that names a dead process, so the link cannot change
+# between that look and the rm: two waiters that both saw the same dead owner can no longer remove, the second one,
+# the lock the first had just taken. A marker whose maker died is reaped the same way, one level down.
+radio_reap() {
+    local m="$1.dead.$2" t
+    until ln -sn "$3" "$m" 2>/dev/null; do
+        t=$(readlink "$m" 2>/dev/null || true)
+        [ -n "$t" ] || return 1                     # its maker has just finished: the caller looks again
+        radio_owner_alive "$t" && return 1          # another waiter is taking over; leave it to that one
+        radio_reap "$m" "$t" "$3" || return 1
+    done
+    if [ "$(readlink "$1" 2>/dev/null || true)" = "$2" ] && ! radio_owner_alive "$2"; then rm -f "$1"; fi
+    rm -f "$m"
+}
 radio_on() {
-    local owner n=0 rc=0 me
-    while ! mkdir "$RADIOLOCK" 2>/dev/null; do
-        owner=$(cat "$RADIOLOCK/pid" 2>/dev/null || true)
-        if ! radio_owner_alive "$owner"; then
-            # just created and its pid not written yet: give the owner a moment before calling it dead
-            if [ -z "$owner" ] && [ "$n" -lt 5 ]; then n=$((n + 1)); sleep 0.2 2>/dev/null || sleep 1; continue; fi
-            rm -rf "$RADIOLOCK"
-            continue
+    local owner rc=0 me end=$((SECONDS + ${MU300_RADIO_LOCK_WAIT:-120}))
+    # this process's own pid (see at()): two radio_on in subshells of one script are two owners
+    me=${BASHPID:-$(exec sh -c 'echo $PPID')}
+    until ln -sn "$me" "$RADIOLOCK" 2>/dev/null; do
+        owner=$(readlink "$RADIOLOCK" 2>/dev/null || true)
+        # empty: released in between, and the next try comes after the pause below
+        if [ -n "$owner" ] && ! radio_owner_alive "$owner"; then
+            radio_reap "$RADIOLOCK" "$owner" "$me" && continue
         fi
-        n=$((n + 1))
-        if [ "$n" -gt $(( ${MU300_RADIO_LOCK_WAIT:-120} * 5 )) ]; then
-            radio_say "another radio_on (pid $owner) is still running; giving up"
+        if [ "$SECONDS" -ge "$end" ]; then
+            radio_say "another radio_on (pid ${owner:-?}) is still running; giving up"
             return 1
         fi
         sleep 0.2 2>/dev/null || sleep 1
     done
-    # this process's own pid (see at()): two radio_on in subshells of one script are two owners
-    me=${BASHPID:-$(exec sh -c 'echo $PPID')}
-    echo "$me" > "$RADIOLOCK/pid"
     radio_on_locked || rc=$?
-    [ "$(cat "$RADIOLOCK/pid" 2>/dev/null || true)" = "$me" ] && rm -rf "$RADIOLOCK"
+    if [ "$(readlink "$RADIOLOCK" 2>/dev/null || true)" = "$me" ]; then rm -f "$RADIOLOCK"; fi
     # The plugin's generic worker keeps off nr1 until the handshake and the radio sequence have completed. A failed
     # round leaves the marker: netifd or the watchdog retries.
     [ "$rc" = 0 ] && rm -f /run/unisoc-modem-early-hook-pending
@@ -480,6 +497,20 @@ up_locked() {
     fi
     mark dial-registered
     radio_say "registered"
+    # K47: the IPA delegate (sipa_dele), here and nowhere else. It has to probe once the CP's packet domain exists
+    # (sipa-dele-start waits for +CGATT: 1) and before the PDP context makes the SIPA resources active: loaded in the
+    # background beside this dial it raced AT+CGACT, and the fork recorded a reproducible CFI panic in the delegate
+    # (cd4fb28). Without it the modem never sends downlink (FINDINGS 13f), so a dial that cannot load it stops here;
+    # the next attempt tries again. It is [permanent]: once in /proc/modules, a reconnect goes straight on.
+    if ! grep -q '^sipa_dele ' /proc/modules 2>/dev/null; then
+        if ! MU300_DELE_WAIT=${MU300_DELE_WAIT:-20} /opt/mu300/bin/sipa-dele-start >/tmp/mu300-sipa-dele.log 2>&1; then
+            radio_say "the IPA delegate did not load (see /tmp/mu300-sipa-dele.log); no PDP context without it"
+            led error
+            echo "the IPA delegate (sipa-dele) did not load; not activating the PDP context" >&2
+            exit 1
+        fi
+        mark dial-sipa-dele
+    fi
     # systemd has no way to pass an argument from a config file, so the APN can come from the environment too:
     # /etc/mu300/mobile-data.conf is an EnvironmentFile for the service. The argument still wins, which is what
     # the OpenWrt protocol handler uses.
