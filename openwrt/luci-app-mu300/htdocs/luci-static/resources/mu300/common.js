@@ -52,34 +52,45 @@ function carrierName(carrier) {
 	return PLMN_CN[carrier.plmn] || carrier.plmn || '--';
 }
 
-/* Signal quality grade (thresholds from ufi_tools' SignalQuality.kt), shown as a translated label; qCol gives the
- * label's CSS colour expression */
-function qLabel(rsrp, rsrq, sinr) {
-	if (rsrp == null && sinr == null && rsrq == null) return _('Unknown');
+/* Signal quality grade (thresholds from ufi_tools' SignalQuality.kt) as a level key: 'excellent', 'good', 'fair',
+ * 'poor' or 'unknown'. qCol gives a level's CSS colour expression, the same in every language; qLabel the level's
+ * translated name (qLabel(rsrp, rsrq, sinr) grades first, qLevelLabel names a level a page graded itself). */
+function qLevel(rsrp, rsrq, sinr) {
+	if (rsrp == null && sinr == null && rsrq == null) return 'unknown';
 	if (rsrp != null) {
-		if (rsrp >= -90) return _('Excellent');
-		if (rsrp >= -100) return _('Good');
-		if (rsrp >= -110) return _('Fair');
-		return _('Poor');
+		if (rsrp >= -90) return 'excellent';
+		if (rsrp >= -100) return 'good';
+		if (rsrp >= -110) return 'fair';
+		return 'poor';
 	}
 	if (sinr != null) {
-		if (sinr >= 20) return _('Excellent');
-		if (sinr >= 13) return _('Good');
-		if (sinr >= 0) return _('Fair');
-		return _('Poor');
+		if (sinr >= 20) return 'excellent';
+		if (sinr >= 13) return 'good';
+		if (sinr >= 0) return 'fair';
+		return 'poor';
 	}
-	if (rsrq >= -8) return _('Excellent');
-	if (rsrq >= -11) return _('Good');
-	if (rsrq >= -14) return _('Fair');
-	return _('Poor');
+	if (rsrq >= -8) return 'excellent';
+	if (rsrq >= -11) return 'good';
+	if (rsrq >= -14) return 'fair';
+	return 'poor';
 }
-function qCol(label) {
-	switch (label) {
-		case _('Excellent'): return 'var(--success, #2FBF71)';
-		case _('Good'): return 'color-mix(in oklab, var(--success, #7BC96F) 62%, var(--text, #444))';
-		case _('Fair'): return 'var(--warning, #F2B544)';
-		case _('Poor'): return 'var(--danger, #E25555)';
-		default:     return 'var(--text-subtle, var(--text-light, #8A8F98))';
+function qLevelLabel(level) {
+	switch (level) {
+		case 'excellent': return _('Excellent');
+		case 'good': return _('Good');
+		case 'fair': return _('Fair');
+		case 'poor': return _('Poor');
+		default: return _('Unknown');
+	}
+}
+function qLabel(rsrp, rsrq, sinr) { return qLevelLabel(qLevel(rsrp, rsrq, sinr)); }
+function qCol(level) {
+	switch (level) {
+		case 'excellent': return 'var(--success, #2FBF71)';
+		case 'good': return 'color-mix(in oklab, var(--success, #7BC96F) 62%, var(--text, #444))';
+		case 'fair': return 'var(--warning, #F2B544)';
+		case 'poor': return 'var(--danger, #E25555)';
+		default: return 'var(--text-subtle, var(--text-light, #8A8F98))';
 	}
 }
 /* A 0-10 score: RSRP 40% / RSRQ 25% / SINR 35%, interpolated between anchors, a missing value's weight shared out */
@@ -357,13 +368,13 @@ function neighborRows(c, lockedCell) {
 		return '<tr><td colspan="7" style="color:var(--text-muted,var(--text-light,#777))">' + esc(_('No neighbor-cell data')) + '</td></tr>';
 	var lk = Array.isArray(lockedCell) ? lockedCell.join('|') : (lockedCell || '');
 	return nb.map(function(n) {
-		var l = qLabel(n.rsrp, n.rsrq, n.sinr);
+		var level = qLevel(n.rsrp, n.rsrq, n.sinr);
 		var key = n.rat + ':' + n.arfcn + ',' + n.pci;
 		var isLocked = lk.split('|').indexOf(key) >= 0;
 		return '<tr><td>' + (n.rat == 'nr' ? 'NR n' + esc(n.band) : 'LTE B' + esc(n.band)) + '</td>' +
 			'<td>' + esc(n.pci != null ? n.pci : '--') + '</td>' +
 			'<td>' + esc(n.arfcn != null ? n.arfcn : '--') + '</td>' +
-			'<td style="color:' + qCol(l) + '">' + (n.rsrp != null ? n.rsrp.toFixed(1) : '--') + '</td>' +
+			'<td style="color:' + qCol(level) + '">' + (n.rsrp != null ? n.rsrp.toFixed(1) : '--') + '</td>' +
 			'<td>' + (n.rsrq != null ? n.rsrq.toFixed(1) : '--') + '</td>' +
 			'<td>' + (n.sinr != null ? n.sinr.toFixed(1) : '--') + '</td>' +
 			'<td><button class="mud-lockbtn' + (isLocked ? ' locked' : '') + '" data-lock="' + key + '"' +
@@ -588,7 +599,7 @@ return baseclass.extend({
 	callSmsDel: callSmsDel, callSmsSync: callSmsSync,
 	callUsbGet: callUsbGet, callUsbSet: callUsbSet,
 	callUsbNetList: callUsbNetList, callUsbNetAdd: callUsbNetAdd,
-	carrierName: carrierName, qLabel: qLabel, qCol: qCol, qScore: qScore,
+	carrierName: carrierName, qLevel: qLevel, qLevelLabel: qLevelLabel, qLabel: qLabel, qCol: qCol, qScore: qScore,
 	esc: esc, fmtBytes: fmtBytes, fmtRate: fmtRate, fmtUptime: fmtUptime, PLMN_CN: PLMN_CN,
 	translate: translate, localize: localize, localizeMenu: localizeMenu,
 	injectCss: injectCss, v: v, set: set, spark: spark, neighborRows: neighborRows,

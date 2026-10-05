@@ -1,5 +1,5 @@
 """The control panel's catalogs: complete in Turkish and Chinese, no Chinese outside them (spec, Translations)."""
-import importlib.util, json, shutil, subprocess, sys, tempfile, unittest
+import importlib.util, json, re, shutil, subprocess, sys, tempfile, unittest
 from pathlib import Path
 from helpers import TOP
 
@@ -244,7 +244,7 @@ return {
     neighbours: M.neighborRows({}),
     locks: M.neighborRows({ neigh: [ { rat: 'nr', band: 78, pci: 1, arfcn: 2, rsrp: -80 },
                                      { rat: 'lte', band: 3, pci: 4, arfcn: 5, rsrp: -90 } ] }, 'nr:2,1'),
-    colour: M.qCol(M.qLabel(-115)),
+    colour: M.qCol(M.qLevel(-115)),
     sms: notes.map((n) => n.querySelector('b').textContent)
 };'''
 
@@ -272,8 +272,48 @@ return {
                 self.assertIn('>%s</td>' % empty, r['neighbours'])
                 self.assertIn('>%s</button>' % locked, r['locks'])
                 self.assertIn('>%s</button>' % lock, r['locks'])
-                self.assertEqual(r['colour'], 'var(--danger, #E25555)')   # the colour follows the translated label
+                self.assertEqual(r['colour'], 'var(--danger, #E25555)')   # a level's colour, whatever the language
                 self.assertEqual(r['sms'], sms)
+
+    LEVELS = ('excellent', 'good', 'fair', 'poor', 'unknown')
+
+    def test_quality_colour_is_the_same_in_every_language(self):
+        # qCol takes a level key, never a translated label: a page that grades by itself (home.js: the Wi-Fi
+        # clients, the temperatures, no modem answer) gets the same colour in every language, and qLabel/qLevel
+        # agree for every reading
+        body = '''
+const levels = %s, readings = [ [ -85 ], [ -95 ], [ -105 ], [ -115 ], [], [ null, null, 25 ], [ null, -12 ] ];
+return { colours: levels.map((l) => M.qCol(l)),
+         graded: readings.map((r) => [ M.qLevel.apply(null, r), M.qLabel.apply(null, r) ]),
+         names: levels.map((l) => M.qLevelLabel(l)) };''' % json.dumps(self.LEVELS)
+        runs = {lang: self.run_js(lang, body)['result'] for lang in (None, 'tr', 'zh_Hans')}
+        colours = runs[None]['colours']
+        self.assertEqual(len(set(colours)), 5, colours)                   # five levels, five colours
+        self.assertIn('var(--text-subtle', colours[4])                    # unknown is the neutral grey
+        for lang, r in runs.items():
+            with self.subTest(lang=lang):
+                self.assertEqual(r['colours'], colours)
+                names = dict(zip(self.LEVELS, r['names']))
+                self.assertEqual([g[0] for g in r['graded']],
+                                 ['excellent', 'good', 'fair', 'poor', 'unknown', 'excellent', 'fair'])
+                self.assertEqual([g[1] for g in r['graded']], [names[g[0]] for g in r['graded']])
+
+    def test_views_pass_level_keys_to_qcol(self):
+        # every qCol argument in the views is a level key literal or a qLevel result, never a (Chinese or
+        # translated) label; the literals the pages grade with (home.js) are all level keys
+        views = APP / 'htdocs/luci-static/resources/view/mu300'
+        for js in sorted(views.glob('*.js')):
+            src = js.read_text(encoding='utf-8')
+            for arg in re.findall(r'M\.qCol\(([^()]*(?:\([^()]*\))?[^()]*)\)', src):
+                with self.subTest(view=js.name, arg=arg):
+                    lit = re.fullmatch(r"'([^']*)'", arg)
+                    self.assertTrue(lit and lit.group(1) in self.LEVELS or arg.startswith('M.qLevel(')
+                                    or arg in ('level', 'l', 'lab'), arg)
+        home = (views / 'home.js').read_text(encoding='utf-8')
+        for var in ('l', 'lab'):
+            # the variable passed to qCol is assigned only level keys
+            assign = re.search(r'var %s = ([^;]*);' % var, home).group(1)
+            self.assertEqual(set(re.findall(r"'([^']*)'", assign)) - set(self.LEVELS), set(), assign)
 
     def test_carrier_names_follow_locale(self):
         # the fork's cases (a COPS name, a PLMN from the table) with the name COPS gives in English
@@ -314,12 +354,11 @@ if (selected !== true) throw Error('the Bootstrap token bridge must survive the 
         self.assertFalse((APP / 'po' / 'en').exists(), 'English is the source: no po/en catalog')
 
     def test_build_requires_the_chinese_catalog(self):
-        # once po/zh_Hans exists, an image without mu300.zh-cn.lmo is a Chinese panel in English: the build stops
+        # once po/zh_Hans exists, the build stops when mu300.zh_Hans.lmo (installed as LuCI's mu300.zh-cn.lmo) was
+        # not compiled from it: without it the panel is in English in a Chinese browser
         self.assertTrue((APP / 'po' / 'zh_Hans' / 'mu300.po').is_file())
         self.assertTrue('[ -s "$CAT/mu300.zh_Hans.lmo" ] ||' in BUILD.read_text(encoding='utf-8'),
                         'build-rootfs.sh does not stop without the Chinese panel catalog')
-
-
 
 
 if __name__ == '__main__':

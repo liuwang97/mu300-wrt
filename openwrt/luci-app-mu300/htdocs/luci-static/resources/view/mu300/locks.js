@@ -301,14 +301,14 @@ return view.extend({
 			return;
 		}
 		var ratTxt = (c.nr && c.nr.band) ? ((c.lte && c.lte.band) ? '5G NSA' : '5G SA') : 'LTE';
-		var sig = c.sig || {}, label = M.qLabel(sig.rsrp, sig.rsrq, sig.sinr);
+		var sig = c.sig || {}, level = M.qLevel(sig.rsrp, sig.rsrq, sig.sinr);
 		var operName = M.carrierName(c.operator);
 			if (operName === '--' && c.ident && c.ident.imsi)
 				operName = M.translate(M.PLMN_CN[c.ident.imsi.substring(0, 5)] || c.ident.imsi.substring(0, 5));
 			this.Q('srv-rat').textContent = ratTxt + ' · ' + operName;
-		this.Q('srv-rat').style.color = M.qCol(label);
+		this.Q('srv-rat').style.color = M.qCol(level);
 		var rsrpEl = this.Q('srv-rsrp');
-		if (sig.rsrp != null) { rsrpEl.innerHTML = sig.rsrp.toFixed(1) + '<small> dBm</small>'; rsrpEl.style.color = M.qCol(label); }
+		if (sig.rsrp != null) { rsrpEl.innerHTML = sig.rsrp.toFixed(1) + '<small> dBm</small>'; rsrpEl.style.color = M.qCol(level); }
 		this.Q('srv-chips').innerHTML =
 			(sig.rsrq != null ? '<span class="mud-tag">RSRQ ' + sig.rsrq.toFixed(1) + '</span>' : '') +
 			(sig.sinr != null ? '<span class="mud-tag">SINR ' + sig.sinr.toFixed(1) + '</span>' : '');

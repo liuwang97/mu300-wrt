@@ -371,7 +371,7 @@ return view.extend({
 		 * 是同一数据源的另一个时间戳——仅作 sinr 缺失时的回退，绝不并列展示 */
 		if (sinr == null && c && c.lte && !c.nr && c.lte.sinr != null) sinr = c.lte.sinr;
 		var label = M.qLabel(rsrp, rsrq, sinr), score = M.qScore({ rsrp: rsrp, rsrq: rsrq, sinr: sinr });
-		var col = M.qCol(label);
+		var col = M.qCol(M.qLevel(rsrp, rsrq, sinr));
 
 		var rat = '--';
 		if (c && !c.error) {
@@ -384,7 +384,7 @@ return view.extend({
 				rat = (act == 13) ? '5G NSA' : (act == 11 || act == 18 || act == 19) ? '5G' : (act == 7 || act == 10) ? '4G' : (act >= 2 && act <= 6) ? '3G' : '4G';
 			} else if (c.cfun === 0) rat = '无线电已关';
 		}
-		if (c && c.error) { rat = '无应答'; col = M.qCol('较差'); }
+		if (c && c.error) { rat = '无应答'; col = M.qCol('poor'); }
 		var ratEl = M.v('rat');
 		ratEl.firstChild.nodeValue = rat;
 		ratEl.style.color = col;
@@ -489,7 +489,7 @@ return view.extend({
 		M.set('wcl', (wf.clients_n != null ? wf.clients_n : '--') + ' 台');
 		M.set('wleases', (i.lan ? i.lan.leases : '--') + ' 条');
 		M.v('clist').innerHTML = (wf.clients || []).map(function(cl) {
-			var l = cl.signal != null ? (cl.signal >= -55 ? '优秀' : cl.signal >= -67 ? '良好' : cl.signal >= -80 ? '一般' : '较差') : '未知';
+			var l = cl.signal != null ? (cl.signal >= -55 ? 'excellent' : cl.signal >= -67 ? 'good' : cl.signal >= -80 ? 'fair' : 'poor') : 'unknown';
 			return '<div class="mud-cli"><div class="t"><b>' + M.esc(cl.host || cl.ip || cl.mac) + '</b>' +
 				(cl.signal != null ? '<span style="color:' + M.qCol(l) + ';font-variant-numeric:tabular-nums">' + cl.signal + ' dBm</span>' : '') +
 				'</div><div class="s">' + (cl.ip ? M.esc(cl.ip) + ' · ' : '') + M.esc(cl.mac) +
@@ -511,7 +511,7 @@ return view.extend({
 		M.v('temps').innerHTML = [ [ 'SoC', t.soc ], [ 'CPU', t.cpu ], [ '调制解调器', t.modem ], [ '主板', t.board ] ]
 			.filter(function(x) { return x[1] != null; })
 			.map(function(x) {
-				var lab = x[1] >= 75 ? '较差' : x[1] >= 60 ? '一般' : '良好';
+				var lab = x[1] >= 75 ? 'poor' : x[1] >= 60 ? 'fair' : 'good';
 				return '<span style="color:' + M.qCol(lab) + '">' + x[0] + ' ' + x[1] + '°C</span>';
 			}).join('') || '<span style="color:var(--text-muted,var(--text-light,#777))">无温度读数</span>';
 
