@@ -34,7 +34,8 @@ TAB=$(printf '\t')
 # pool path.
 RUNDIR=${MU300_SMS_RUN:-/run}
 [ -d "$RUNDIR" ] || RUNDIR=${TMPDIR:-/tmp}
-LOCK=$RUNDIR/mu300-sms-pool.$(printf '%s' "$POOL" | cksum | cut -d' ' -f1).lock
+# md5sum first: OpenWrt's busybox has no cksum
+LOCK=$RUNDIR/mu300-sms-pool.$(printf '%s' "$POOL" | { md5sum 2>/dev/null || cksum; } | cut -d' ' -f1).lock
 
 die() { echo "mu300-sms: $*" >&2; exit 1; }
 

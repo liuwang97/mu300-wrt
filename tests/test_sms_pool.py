@@ -64,6 +64,16 @@ class Pool(ShellTest):
         self.run = self.tmp / 'run'   # where the pool lock goes (/run on the device)
         self.run.mkdir()
 
+    def test_no_cksum_on_the_device(self):
+        # OpenWrt's busybox has md5sum but no cksum: the pool lock is named without it, and nothing is printed
+        self.stub('cksum', 'echo "cksum: not found" >&2; exit 127')
+        for shell in self.each_shell():
+            self.fresh()
+            r = self.run_sms(shell, 'list')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertNotIn('cksum', r.stderr, shell)
+            self.assertRegex(r.stderr + r.stdout, r'^(?!.*not found)', shell)
+
     def fresh(self):
         """An empty pool, an empty AT log and the default answers (for the next shell)."""
         shutil.rmtree(self.pool, ignore_errors=True)
