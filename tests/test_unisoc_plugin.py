@@ -20,15 +20,17 @@ LIB = APP / 'usr' / 'share' / 'unisoc-modem' / 'lib.sh'
 
 class Adapter(ShellTest):
     def tree(self):
-        """A copy of the plugin's scripts with /etc/unisoc-modem moved into the scratch directory; returns the
-        scripts (at, boot-replay, lock) and the state directory the copy uses as its default."""
+        """A copy of the plugin's scripts with /etc/unisoc-modem and the runtime directory /var/run/unisoc-modem
+        moved into the scratch directory; returns the scripts (at, boot-replay, lock) and the state directory the
+        copy uses as its default."""
         root = self.tmp / 'tree'
         shutil.copytree(APP / 'usr' / 'libexec' / 'unisoc-modem', root / 'libexec' / 'unisoc-modem')
         shutil.copytree(APP / 'usr' / 'share' / 'unisoc-modem', root / 'share' / 'unisoc-modem')
         etc = self.tmp / 'etc' / 'unisoc-modem'
         for f in root.rglob('*'):
             if f.is_file():
-                f.write_text(f.read_text().replace('/etc/unisoc-modem', str(etc)))
+                f.write_text(f.read_text().replace('/etc/unisoc-modem', str(etc))
+                             .replace('/var/run/unisoc-modem', str(self.tmp / 'var-run' / 'unisoc-modem')))
         base = root / 'libexec' / 'unisoc-modem'
         return base / 'at', base / 'boot-replay', base / 'lock', etc / 'lock-state.d'
 
