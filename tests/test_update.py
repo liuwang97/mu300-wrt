@@ -30,6 +30,19 @@ class UpdateBase(ShellTest):
         return self.sh(shell, f'. "{BIN}/mu300-update"; {code}', MU300_LIB=1, MU300_DISK=self.disk, MU300_BIN=BIN,
                        MU300_SYSROOT=self.root, **env)
 
+    def busybox_applets(self, shell):
+        """For busybox sh, {'PATH': ...} that runs the applets the update uses from busybox, as on OpenWrt: busybox sh
+        on Ubuntu runs /usr/bin/cp, GNU's, which hides what busybox's own cp does. {} for the other shells."""
+        if os.path.basename(shell[0]) != 'busybox':
+            return {}
+        d = self.tmp / 'busybox-applets'
+        if not d.exists():
+            d.mkdir()
+            for a in ('cp', 'find', 'mkdir', 'rm', 'mv', 'ln', 'cat', 'dirname', 'tar', 'gzip', 'awk', 'sed', 'grep'):
+                (d / a).write_text(f'#!/bin/sh\nexec "{shell[0]}" {a} "$@"\n')
+                (d / a).chmod(0o755)
+        return {'PATH': f'{d}{os.pathsep}{self.stubs}{os.pathsep}{os.environ.get("PATH", "")}'}
+
 
 class Update(UpdateBase):
     def test_sourcing_does_nothing(self):
@@ -455,7 +468,7 @@ class FromStock(UpdateBase):
                 shutil.rmtree(self.disk / d, ignore_errors=True)
             stage.mkdir(exist_ok=True)
             subprocess.run(['tar', '-czf', str(stage / 'mu300-openwrt-rootfs.tar.gz'), '-C', str(img), '.'], check=True)
-            r = self.up(shell, 'is_root() { false; }; apply_one openwrt v2')
+            r = self.up(shell, 'is_root() { false; }; apply_one openwrt v2', **self.busybox_applets(shell))
             self.assertEqual(r.returncode, 0, r.stderr)
             new = self.disk / 'openwrt'
             self.assertEqual((new / 'opt/mu300/android/system/bin/cp_diskserver').read_bytes(), b'vendor')
@@ -478,11 +491,49 @@ class FromStock(UpdateBase):
         b.mkdir(); outside.mkdir()
         (b / 'd').symlink_to(outside)
         for shell in self.each_shell():
-            r = self.up(shell, f'copy_missing "{a}" "{b}"')
+            r = self.up(shell, f'copy_missing "{a}" "{b}"', **self.busybox_applets(shell))
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertEqual(list(outside.iterdir()), [])
             self.assertEqual((b / 'name with space').read_text(), 's')
             (b / 'name with space').unlink()
+            r = self.up(shell, f'copy_missing "{self.tmp}/missing" "{b}"', **self.busybox_applets(shell))
+            self.assertNotEqual(r.returncode, 0)
+
+    def test_apply_takes_the_vendor_files_only_the_previous_old_copy_still_has(self):
+        # a device updated by an updater with the busybox cp bug: the system in place has the image's vendor
+        # directories but none of the device's files, and the only copy is in openwrt.old, which the update replaces
+        img = self.tmp / 'img'
+        for f, data in [('sbin/init', b'#!/bin/sh\n'), ('opt/mu300/android/system/bin/cltest', b'image'),
+                        ('lib/firmware/regulatory.db', b'image')]:
+            (img / f).parent.mkdir(parents=True, exist_ok=True)
+            (img / f).write_bytes(data)
+        (img / 'sbin/init').chmod(0o755)
+        stage = self.disk / '.mu300-update'
+        for shell in self.each_shell():
+            for d in ('openwrt', 'openwrt.old', 'openwrt.new'):
+                shutil.rmtree(self.disk / d, ignore_errors=True)
+            hit, good = self.disk / 'openwrt', self.disk / 'openwrt.old'
+            for f, data in [('sbin/init', b'#!/bin/sh\n'), ('opt/mu300/android/system/bin/cltest', b'image'),
+                            ('lib/firmware/regulatory.db', b'image'), ('lib/firmware/mine.bin', b'newer')]:
+                (hit / f).parent.mkdir(parents=True, exist_ok=True)
+                (hit / f).write_bytes(data)
+            for f, data in [('sbin/init', b'#!/bin/sh\n'), ('opt/mu300/android/system/bin/cp_diskserver', b'vendor'),
+                            ('opt/mu300/android/vendor/lib/libril.so', b'vendor'),
+                            ('lib/firmware/wcnmodem.bin', b'fw'), ('lib/firmware/mine.bin', b'older'),
+                            ('lib/firmware/regulatory.db', b'old')]:
+                (good / f).parent.mkdir(parents=True, exist_ok=True)
+                (good / f).write_bytes(data)
+            stage.mkdir(exist_ok=True)
+            subprocess.run(['tar', '-czf', str(stage / 'mu300-openwrt-rootfs.tar.gz'), '-C', str(img), '.'], check=True)
+            r = self.up(shell, 'is_root() { false; }; apply_one openwrt v2', **self.busybox_applets(shell))
+            self.assertEqual(r.returncode, 0, r.stderr)
+            new = self.disk / 'openwrt'
+            self.assertEqual((new / 'opt/mu300/android/system/bin/cp_diskserver').read_bytes(), b'vendor')
+            self.assertEqual((new / 'opt/mu300/android/vendor/lib/libril.so').read_bytes(), b'vendor')
+            self.assertEqual((new / 'lib/firmware/wcnmodem.bin').read_bytes(), b'fw')
+            # gaps only: the system in place and the image come first
+            self.assertEqual((new / 'lib/firmware/mine.bin').read_bytes(), b'newer')
+            self.assertEqual((new / 'lib/firmware/regulatory.db').read_bytes(), b'image')
 
     def test_modules_into_every_system(self):
         b = self.tmp / 'bundle'
