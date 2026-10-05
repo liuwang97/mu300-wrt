@@ -803,5 +803,36 @@ class LanStart(ShellTest):
         self.assertLess(settle, join)
         self.assertLess(join, up)
 
+
+class KmsgForward(ShellTest):
+    """kmsg-forward: the first start of a boot forwards the ring buffer from its start (the early call traces came
+    before the service and were lost with --follow-new); a restart forwards only what is new, so nothing twice."""
+
+    def test_first_start_reads_from_the_start_restart_only_new(self):
+        self.stub('dmesg', 'echo "dmesg $*" >> "$STUBLOG/calls"; echo "[    1.234567] early trace"')
+        self.stub('systemd-cat', 'echo "systemd-cat $*" >> "$STUBLOG/calls"; cat >> "$STUBLOG/journal"')
+        for shell in self.each_shell():
+            for ignore in ('', 'chatter\n'):
+                mark = self.tmp / 'run' / 'kmsg-forwarded'
+                (self.tmp / 'ignore').write_text(ignore)
+                for f in ('calls', 'journal'):
+                    (self.tmp / f).unlink(missing_ok=True)
+                if mark.exists():
+                    mark.unlink()
+                env = dict(MU300_KMSG_MARK=mark, MU300_KMSG_IGNORE=self.tmp / 'ignore')
+                for _ in range(2):
+                    r = self.script(shell, BIN / 'kmsg-forward', **env)
+                    self.assertEqual(r.returncode, 0, r.stderr)
+                d = [c for c in (self.tmp / 'calls').read_text().splitlines() if c.startswith('dmesg')]
+                self.assertEqual(len(d), 2, d)
+                self.assertIn('--follow ', d[0] + ' ')
+                self.assertNotIn('--follow-new', d[0])
+                self.assertIn('--follow-new', d[1])
+                for c in d:
+                    self.assertNotIn('--notime', c)                     # the kernel's timestamps stay
+                    self.assertIn('--level=emerg,alert,crit,err,warn', c)
+                self.assertIn('[    1.234567] early trace', (self.tmp / 'journal').read_text())
+
+
 if __name__ == '__main__':
     unittest.main()
