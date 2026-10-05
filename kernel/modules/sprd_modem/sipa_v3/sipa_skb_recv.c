@@ -789,6 +789,10 @@ static int sipa_fill_recv_thread(void *data)
 
 	sched_setscheduler(current, SCHED_RR, &param);
 
+	/* MU300: started at creation, waits (interruptibly) for the first resume; see sipa_free_thread */
+	while (!READ_ONCE(receiver->fill_started) && !kthread_should_stop())
+		wait_event_interruptible(receiver->fill_recv_waitq,
+					 READ_ONCE(receiver->fill_started) || kthread_should_stop());
 	while (!kthread_should_stop()) {
 		wait_event_interruptible(receiver->fill_recv_waitq,
 					 sipa_check_need_fill_cnt());
@@ -844,7 +848,9 @@ int sipa_receiver_prepare_resume(struct sipa_skb_receiver *receiver)
 {
 	atomic_set(&receiver->check_suspend, 0);
 
-	wake_up_process(receiver->fill_recv_thread);
+	/* MU300: the vendor's wake_up_process(); the thread waits on this queue from its start */
+	WRITE_ONCE(receiver->fill_started, true);
+	wake_up(&receiver->fill_recv_waitq);
 
 	return sipa_hal_cmn_fifo_stop_recv(receiver->dev,
 					   receiver->ep->recv_fifo.idx,
@@ -928,6 +934,7 @@ int sipa_create_skb_receiver(struct sipa_plat_drv_cfg *ipa,
 			ep->id);
 		return PTR_ERR(receiver->fill_recv_thread);
 	}
+	wake_up_process(receiver->fill_recv_thread);	/* MU300: it waits for fill_started */
 
 	*receiver_pp = receiver;
 	return 0;
