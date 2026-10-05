@@ -16,6 +16,13 @@
 # The initramfs used to load it with the rest of the modem stack, around twenty seconds in, while modem_control
 # does not have the CP up until about sixty. Android loads it the other way round. So this waits for the modem
 # to be talking before the module is ever inserted.
+#
+# Too late is as bad as too early (K45-K47). Started in the background by extra-modules, it raced the dial: inserted
+# after AT+CGACT had made the SIPA resources active, the delegate's probe hit a reproducible CFI panic (kanoqwq's
+# fork, cd4fb28). So the only caller is now mobile-data, between the registration and the PDP context, on every
+# system; and when the packet domain does not come up within MU300_DELE_WAIT seconds this refuses (exit 1) instead
+# of loading anyway: the dial stops there and its next attempt calls this again. Exit 0: loaded now, already loaded,
+# or a kernel without the module. Exit 1: not loaded, and the PDP context must not be activated.
 set -u
 export PATH="$PATH:/opt/mu300/bin:/opt/mu300/busybox-bin:/usr/sbin:/sbin"
 
@@ -41,19 +48,27 @@ grep -q '^sipa_dele ' /proc/modules && { log "already loaded"; exit 0; }
 # data side of the CP exists, so gating on it reproduces the same "modem is up after 2s" as the sbuf lines.
 #
 # AT+CGATT? is the signal that means what we need. 1 is the modem attached to the *packet* domain - the part
-# that carries data - so it cannot be true before the CP's data path is running. The sbuf line stays as a cheap
-# precondition so we do not open the AT channel before it exists.
+# that carries data - so it cannot be true before the CP's data path is running.
+#
+# The sbuf line in dmesg used to be a precondition as well, so that the AT channel was not opened before it
+# existed. The caller now asks only after the modem has registered, over that same channel, so it proves nothing
+# more; and a first dial hours into the boot (no SIM or no signal until then) could find the line gone from the
+# kernel's ring buffer and refuse for the rest of the boot.
 modem_up() {
-    dmesg | grep -qE 'sprd-sbuf: channel 5-|sbuf ready for pmic wdt init' || return 1
     [ -c /dev/stty_nr1 ] || return 1
-    mu300-at -t 8 'AT+CGATT?' 2>/dev/null | grep -q '+CGATT: *1'
+    mu300-at -t 8 'AT+CGATT?' 2>/dev/null | grep '+CGATT: *1' >/dev/null
 }
 
-n=0
-while [ "$n" -lt "$WAIT" ]; do
+# a deadline in seconds: one round is an AT answer (up to 8 s) plus the pause, not the 2 s the old count assumed
+start=$(date +%s)
+while :; do
     if modem_up; then
-        log "modem is up after ${n}s"
-        insmod "$KO" 2>/dev/null && log "loaded sipa-dele" || log "FAILED sipa-dele"
+        log "packet domain attached after $(( $(date +%s) - start ))s"
+        if ! insmod "$KO" 2>/dev/null; then
+            log "FAILED sipa-dele"
+            exit 1
+        fi
+        log "loaded sipa-dele"
         # Both halves of the handshake are pr_info, so this says immediately whether it took.
         sleep 3
         if dmesg | grep -q 'channel 5-120 send open msg'; then
@@ -63,9 +78,9 @@ while [ "$n" -lt "$WAIT" ]; do
         fi
         exit 0
     fi
-    n=$((n + 2))
+    [ $(( $(date +%s) - start + 2 )) -lt "$WAIT" ] || break
     sleep 2
 done
 
-log "modem still silent after ${WAIT}s, loading anyway so the resources exist"
-insmod "$KO" 2>/dev/null && log "loaded sipa-dele" || log "FAILED sipa-dele"
+log "packet domain not attached after ${WAIT}s; refusing to load the delegate (it would race the PDP context)"
+exit 1

@@ -27,6 +27,10 @@ hw_bringup() {
 		iw reg set "$country"
 		for n in $(seq 1 10); do iw reg get | grep -q "country $country:" && break; sleep 1; done
 	fi
+	# a reload does not restart a hostapd interface that went AP-DISABLED while the world regulatory domain
+	# was still active; one down/up right after the country is live does
+	wifi down >>/tmp/mu300-wifi-start.log 2>&1
+	wifi up >>/tmp/mu300-wifi-start.log 2>&1
 }
 
 start() {

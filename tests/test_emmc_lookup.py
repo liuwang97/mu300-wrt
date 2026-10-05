@@ -75,6 +75,19 @@ class EmmcLookup(ShellTest):
             got = self.lookups(shell, root, 'misc')
             self.assertEqual(got, dict.fromkeys(got, '/dev/mmcblk1p5'), shell)
 
+    def test_a_disk_without_a_type_does_not_end_android_vendor_start(self):
+        # android-vendor-start runs under set -e: a disk with no device/type is a lookup that goes on, not the end
+        # of the script (and of the modem's start)
+        src = (BIN / 'android-vendor-start').read_text()
+        self.assertRegex(src, r'(?m)^set -e')
+        for layout, want in ((({'mmcblk0': (None, EMMC_GPT)}), 'mmcblk0'),
+                             ({'mmcblk0': ('SD', CARD_GPT), 'mmcblk1': (None, EMMC_GPT)}, 'mmcblk1')):
+            root = self.fake(layout)
+            for shell in self.each_shell():
+                r = self.sh(shell, 'set -e\n' + block(src, 'emmc') + '\necho "E=$E"', MU300_SYS=root / 'sys')
+                self.assertEqual((r.returncode, r.stdout), (0, f'E={want}\n'), (shell, r.stderr))
+            shutil.rmtree(root)
+
 
 class EmmcDev(ShellTest):
     def run_init(self, shell, layout, call):

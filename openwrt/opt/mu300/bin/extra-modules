@@ -19,16 +19,11 @@ if [ -f "$M/sipc-core.ko" ] && ! [ -e /dev/modem ]; then
     done
 fi
 
-# The IPA delegate answers the modem when it asks permission to send downlink, and it only gets one attempt at
-# opening its SIPC channel - inserted before the modem is up, its thread dies or waits for ever, and the module
-# is [permanent] so it cannot be reloaded. sipa-dele-start waits for the modem first; in the background, since
-# that takes about a minute and everything below it here (Wi-Fi, the GPU, the sound card) must not wait for the
-# modem to finish booting. See that script and docs/FINDINGS.md 13f.
-# Both places: OpenWrt keeps the modules flat in $M, the Ubuntu image under $M/extra. Looking only in $M meant
-# the delegate was never started on Ubuntu, and Ubuntu had no mobile data downlink at all.
-if { [ -f "$M/sipa-dele.ko" ] || [ -f "$M/extra/sipa-dele.ko" ]; } && ! grep -q '^sipa_dele ' /proc/modules; then
-    /opt/mu300/bin/sipa-dele-start >/tmp/mu300-sipa-dele.log 2>&1 &
-fi
+# The IPA delegate (sipa-dele) is not loaded here, nor started from here (K45). It has to come after the modem
+# is attached to the packet domain and before the PDP context: loaded in the background from here it raced the
+# dial, and inserted after AT+CGACT its probe hit a reproducible CFI panic (kanoqwq's fork, cd4fb28, where only
+# OpenWrt was changed; the race is the same on Ubuntu). mobile-data loads it itself, through sipa-dele-start,
+# between the registration and AT+CGACT, on every system. See those two scripts and docs/FINDINGS.md 13f.
 
 # The PM co-processor keeps its own watchdog, and it power-cuts the device a few minutes after boot unless this
 # driver tells pm_sys to stop it (docs/FINDINGS.md 5). The 5.4 boot image has always loaded it; mainline boot

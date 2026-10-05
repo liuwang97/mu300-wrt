@@ -46,31 +46,76 @@ if [ -p "$DIR/cmd" ]; then
         if [ -n "$owner" ] && ! kill -0 "$owner" 2>/dev/null; then
             rm -rf "$lock" 2>/dev/null && continue
         # a daemon from before the split left its ownership directory here, and it will never release it
-        elif [ -n "$owner" ] && tr '\0' ' ' < "/proc/$owner/cmdline" 2>/dev/null | grep -q mu300-atd; then
+        elif [ -n "$owner" ] && { tr '\0' ' ' < "/proc/$owner/cmdline"; } 2>/dev/null | grep -q mu300-atd; then
             rm -rf "$lock" 2>/dev/null && continue
         fi
         n=$((n + 1)); [ "$n" -gt $((wait * 10)) ] && { echo "mu300-at: busy" >&2; exit 1; }
         sleep 0.1 2>/dev/null || sleep 1
     done
     echo $$ > "$lock/pid" 2>/dev/null || true
-    trap 'rm -rf "$lock" 2>/dev/null' EXIT INT TERM
+    trap 'rm -rf "$lock" 2>/dev/null' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
     # The answer comes back in a file of our own, not through a fifo: a fifo needs both ends at the same time,
     # so a client that gave up waiting used to leave the daemon (or a leftover writer) blocked for ever.
     answer=$DIR/answer.$$
     rm -f "$answer" "$answer.part"
-    trap 'rm -rf "$lock" "$answer" "$answer.part" 2>/dev/null' EXIT INT TERM
-    if command -v timeout >/dev/null 2>&1; then
-        timeout $((T + 6)) sh -c 'printf "%s %s %s\n" "$1" "$2" "$3" > "$4"' _ "$T" "$answer" "$cmd" "$DIR/cmd" || {
-            echo "mu300-at: the daemon is not reading commands" >&2; exit 1; }
-    else
-        printf '%s %s %s\n' "$T" "$answer" "$cmd" > "$DIR/cmd"
+    trap 'rm -rf "$lock" "$answer" "$answer.part" 2>/dev/null' EXIT
+    # a signalled client must stop, not keep polling while another client already holds the lock
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    # Open the FIFO read-write. A write-only open blocks until a reader opens the *same inode*: if procd replaces
+    # the daemon between the path lookup and that open, the client and the new daemon wait for ever on two
+    # different, unlinked FIFOs while this client keeps the global command lock. O_RDWR never blocks; with no
+    # daemon the answer timeout below releases the lock. (This also replaces the old `timeout N sh -c printf`
+    # wrapper, which cost 200+ ms of forks per command on this SoC.)
+    # Test -p right before the open, and again after it: `<>` creates a regular file when the FIFO vanished in
+    # between (daemon stopping), and later clients would then take the direct-tty path. A file we created that
+    # way is empty and removed again; the window is the microseconds between the open and the re-test.
+    # (A failing `exec` redirection ends a POSIX shell, and `2>/dev/null` on exec would stick, so no probe by open.)
+    [ -p "$DIR/cmd" ] || { echo "mu300-at: the daemon is not reading commands" >&2; exit 1; }
+    exec 9<> "$DIR/cmd"
+    [ -p "$DIR/cmd" ] || {
+        [ -f "$DIR/cmd" ] && [ ! -s "$DIR/cmd" ] && rm -f "$DIR/cmd"
+        echo "mu300-at: the daemon is not reading commands" >&2; exit 1; }
+    # fd 9 stays open until the answer is in: mu300-atd opens the FIFO once per command, between its drain and
+    # collect phases it has no descriptor on it, and the kernel throws away buffered data when the last
+    # descriptor closes. Closing right after the write lost the command whenever the daemon was busy.
+    printf '%s %s %s\n' "$T" "$answer" "$cmd" >&9 || {
+        echo "mu300-at: the daemon is not reading commands" >&2; exit 1; }
+    # Fast poll: the daemon typically answers in ~20 ms, so a 1 s sleep adds a full second to every AT round trip.
+    # The image's busybox sleep rejects fractions when called as /bin/sleep, which used to sink the chain into
+    # `sleep 1` (measured: 30 commands in 30.6 s). The static busybox next to us accepts them; use it when present.
+    bb=${MU300_BUSYBOX:-/opt/mu300/bin/busybox}
+    # Budget. A live mu300-atd (owner/pid) drains first (1-3 s, 25 s after a silent command), then collects for T
+    # plus up to 2 s of overrun: 25 + T + 2, and 3 s of slack make T + 30. Giving up earlier drops the lock
+    # while the daemon is still busy and orphans the answer file. With no live daemon nobody will ever answer, so
+    # exit within T + 2.
+    budget=$((T + 2))
+    owner=$(cat "$DIR/owner/pid" 2>/dev/null || true)
+    if [ -n "$owner" ] && { tr '\0' ' ' < "/proc/$owner/cmdline"; } 2>/dev/null | grep -q mu300-atd; then
+        budget=$((T + 30))
     fi
-    n=0
+    # MU300_AT_BUDGET (seconds) shortens that for a caller with a hard limit of its own (the LuCI panel: rpcd ends a
+    # call at 30 s), which would rather say "no answer" than be killed. The daemon still runs the command then, and
+    # its late answer file is left behind; nobody else sets it.
+    case ${MU300_AT_BUDGET:-} in
+        ''|*[!0-9]*) ;;
+        *) [ "$MU300_AT_BUDGET" -lt "$budget" ] && budget=$MU300_AT_BUDGET ;;
+    esac
+    end=$(( $(date +%s) + budget ))
     while [ ! -e "$answer" ]; do
-        n=$((n + 1))
-        [ "$n" -gt $(( (T + 8) * 10 )) ] && { echo "mu300-at: no answer from the daemon" >&2; exit 1; }
-        sleep 0.1 2>/dev/null || sleep 1
+        [ "$(date +%s)" -ge "$end" ] && { echo "mu300-at: no answer from the daemon" >&2; exit 1; }
+        if [ -x "$bb" ]; then "$bb" sleep 0.01 2>/dev/null || sleep 1
+        else sleep 0.1 2>/dev/null || sleep 1; fi
     done
+    # atd always creates the answer file, even for a timeout, so an empty or partial file is not success: callers
+    # such as atwatch use the exit code to tell a responding channel from a silent one. Require a final result code.
+    grep -aEq '^(OK|ERROR|\+CME ERROR|\+CMS ERROR|CONNECT|NO CARRIER)' "$answer" 2>/dev/null || {
+        echo "mu300-at: modem returned no final response" >&2
+        exit 1
+    }
+    exec 9>&-
     cat "$answer"
     exit 0
 fi
@@ -81,7 +126,7 @@ fi
 # closing this channel while the modem is running leaves it silent until a reboot (FINDINGS 13b).
 owner=$(cat "$DIR/owner/pid" 2>/dev/null || true)
 if [ -n "$owner" ] && [ -d "/proc/$owner" ] &&
-   tr '\0' ' ' < "/proc/$owner/cmdline" 2>/dev/null | grep -qE 'mu300-atd|mobile-data'; then
+   { tr '\0' ' ' < "/proc/$owner/cmdline"; } 2>/dev/null | grep -qE 'mu300-atd|mobile-data'; then
     echo "mu300-at: pid $owner holds $DEV and its command fifo is gone; restart mu300-atd" >&2
     exit 1
 fi

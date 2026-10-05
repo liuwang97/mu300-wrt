@@ -240,6 +240,16 @@ class Extras(ShellTest):
             self.assertEqual((self.links / 'hev-socks5-tunnel').read_text(), 'mine')
             (self.links / 'hev-socks5-tunnel').unlink()
 
+    def test_install_on_a_disk_with_only_openwrt_luci(self):
+        # the third system alone is a mounted Linux partition too
+        f = extra_tarball(self.tmp / 'local.tar.gz', release='dev')
+        for os_ in ('ubuntu', 'openwrt'):
+            shutil.rmtree(self.disk / os_)
+        (self.disk / 'openwrt-luci/etc/mu300').mkdir(parents=True)
+        for shell in self.each_shell():
+            r = self.ex(shell, 'install', 'vpn', MU300_EXTRA_FILE=f)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
     def test_remove_refuses_while_the_vpn_is_on(self):
         f = extra_tarball(self.tmp / 'local.tar.gz', release='dev')
         (self.root / 'etc/mu300').mkdir(parents=True, exist_ok=True)

@@ -22,6 +22,8 @@ ip link set usb0 master br-lan
 ip link set usb0 up
 # rndis0: the gadget's RNDIS configuration, which Windows uses (boot/init); only one of the two carries traffic
 if ip link show rndis0 >/dev/null 2>&1; then
+    # with RNDIS, init's early DHCP server put the address on rndis0 (K5): only the bridge may hold the subnet
+    ip addr flush dev rndis0 2>/dev/null || true
     ip link set rndis0 master br-lan
     ip link set rndis0 up
 fi

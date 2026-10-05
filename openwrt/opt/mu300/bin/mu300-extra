@@ -63,7 +63,7 @@ do_link() {
 }
 
 need_root() { [ "$(id -u)" = 0 ] || die "run as root (sudo mu300-extra $*)"; }
-need_disk() { [ -d "$DISK/ubuntu" ] || [ -d "$DISK/openwrt" ] || die "the Linux partition is not mounted at $DISK"; }
+need_disk() { [ -d "$DISK/ubuntu" ] || [ -d "$DISK/openwrt" ] || [ -d "$DISK/openwrt-luci" ] || die "the Linux partition is not mounted at $DISK"; }
 known() { extra_known "$1" || die "there is no extra called '$1' (mu300-extra list)"; }
 
 # the release whose extra goes with this system: MU300_RELEASE, the system's own, or the newest

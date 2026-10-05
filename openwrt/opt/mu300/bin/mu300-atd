@@ -48,7 +48,7 @@ mkdir -p "$DIR"
 # restart every client instead waited out its 90 s and printed "mu300-at: busy" over a completely idle channel.
 LOCK=$DIR/owner
 alive() {  # alive PID -> is that pid still a running mu300-atd?
-    [ -n "$1" ] && [ -d "/proc/$1" ] && tr '\0' ' ' < "/proc/$1/cmdline" 2>/dev/null | grep -q mu300-atd
+    [ -n "$1" ] && [ -d "/proc/$1" ] && { tr '\0' ' ' < "/proc/$1/cmdline"; } 2>/dev/null | grep -q mu300-atd
 }
 while :; do
     if mkdir "$LOCK" 2>/dev/null; then break; fi
@@ -76,7 +76,8 @@ mkfifo -m 600 "$CMD"
 
 # the one open that everything else borrows
 open_tty() {
-    exec 3<&- 2>/dev/null || true
+    # the redirection is scoped to this one close: on a bare `exec` it would send every later log line to /dev/null
+    { exec 3<&-; } 2>/dev/null || true
     exec 3<>"$DEV" || return 1
     # on fd 3, not "stty -F $DEV": the -F form opens and closes the tty a second time
     stty raw -echo <&3 2>/dev/null || true
@@ -98,7 +99,9 @@ open_tty || { echo "mu300-atd: cannot open $DEV" >&2; exit 1; }
 URCDIR=$DIR/urc
 URCMAX=${MU300_AT_URC_MAX:-65536}
 mkdir -p "$URCDIR"
-for n in ${MU300_AT_URC_CHANNELS:-0}; do
+# '-' and not ':-': a value that is set but empty means this daemon opens no URC channel at all. With ':-' a
+# second daemon (another command channel) fell back to nr0 as well, and several readers split that stream.
+for n in ${MU300_AT_URC_CHANNELS-0}; do
     other=${DEV%[0-9]}$n
     [ "$other" = "$DEV" ] && continue
     [ -c "$other" ] || continue
@@ -118,6 +121,7 @@ echo "mu300-atd: $DEV is ours, draining $(echo $drainers | wc -w) other channel(
 
 trap "" PIPE   # a client that gave up waiting must not kill the daemon
 silent=0       # consecutive commands the modem did not answer
+clean=0        # the last reply ended in a final result code (the first command drains the slow way)
 last_reopen=0  # when the device was last reopened (see the reopen rule in the loop)
 
 now() { date +%s; }
@@ -131,24 +135,41 @@ modem_alive() {
     [ "$(( $(now) - $(date -r "$URCLOG" +%s 2>/dev/null || echo 0) ))" -lt "${MU300_AT_URC_QUIET:-240}" ]
 }
 
-drain() {  # throw away whatever the modem sent while nobody was asking (URCs), so replies are not mixed up
-    # DRAIN_MAX seconds at most, and stop as soon as the channel has been quiet for a second. After a command
-    # that timed out the budget is larger: the late answer is still on its way, and if it arrives after we have
-    # written the next command we would read it as that command's reply and stay one answer behind for ever.
+# The wait that ends a drain after a clean reply: a tenth of a second where "read -t" takes fractions (bash 4 and
+# later, busybox ash). bash 3.2 takes whole seconds only, and there every drain waits the full second.
+QUICK=0.1
+if [ -n "$(read -t 0.1 _probe </dev/null 2>&1)" ]; then
+    QUICK=1
+    echo "mu300-atd: this shell's read -t takes whole seconds; every command waits 1 s for stray lines first" >&2
+fi
+
+drain() {  # drain WAIT: throw away what the modem sent while nobody was asking (URCs), so replies are not mixed up
+    # Before every command, never skipped: a line that arrives while the channel is idle - a URC, an unsolicited
+    # NO CARRIER, an OK that came after its command's reply was taken - would otherwise be read as the next
+    # command's reply, and the daemon would stay one answer behind for ever, every shifted reply still ending
+    # in a final result code.
+    #
+    # It stops once the channel has been quiet for WAIT seconds, and after DRAIN_MAX seconds at most. After a
+    # clean reply (one that ended in a final result code) WAIT is short: nothing is known to be on its way, so
+    # only what is already there is taken, and the round trip does not pay a second for nothing. Otherwise it
+    # is a second, and after a command that timed out the budget is larger: the late answer is still coming.
     # This modem makes that easy to hit - AT+CGACT and AT+CGDATA answer "^ORIG: <cid>,<n>" first and OK or
     # CONNECT ten to twenty seconds later (docs/FINDINGS.md 13f).
     end=$(( $(now) + ${DRAIN_MAX:-3} ))
     while [ "$(now)" -lt "$end" ]; do
         junk=
-        IFS= read -r -t 1 junk <&3 || break   # nothing for a second: the channel is quiet again
+        IFS= read -r -t "$1" junk <&3
+        rc=$?
         # Thrown away for the purpose of the next command, but not lost: answers that arrive after their OK
         # land here, and some of them matter. +CUSD is the plain case - the network's reply to *101# comes
         # seconds after the modem has already said OK - and +CMTI, announcing a new SMS, is another.
-        [ -n "$junk" ] && printf '%s\n' "${junk%"$CR"}" >> "$URCDIR/$(basename "$DEV").log" 2>/dev/null
+        junk=${junk%"$CR"}
+        [ -n "$junk" ] && printf '%s\n' "$junk" >> "$URCDIR/$(basename "$DEV").log" 2>/dev/null
+        [ "$rc" = 0 ] || break   # nothing for WAIT seconds (a partial line was kept above): quiet again
     done
 }
 
-collect() {  # collect TIMEOUT -> the reply lines, up to the final result code
+collect() {  # collect TIMEOUT -> the reply lines, up to the final result code; fails if none came in time
     end=$(( $(now) + $1 ))
     while [ "$(now)" -lt "$end" ]; do
         l=
@@ -160,6 +181,7 @@ collect() {  # collect TIMEOUT -> the reply lines, up to the final result code
             OK|ERROR|+CME\ ERROR*|+CMS\ ERROR*|CONNECT*|NO\ CARRIER) return 0 ;;
         esac
     done
+    return 1
 }
 
 while :; do
@@ -183,9 +205,11 @@ while :; do
     # after a timeout, give the late reply time to show up and throw it away before asking anything new
     DRAIN_MAX=$([ "$silent" -gt 0 ] && echo 25 || echo 3)
     export DRAIN_MAX
-    drain
+    drain "$([ "$clean" = 1 ] && echo "$QUICK" || echo 1)"
     printf '%s\r' "$cmd" >&3
-    reply=$(collect "$t")
+    # clean: the reply ended in a final result code, by collect's own exact test of its last line
+    clean=0
+    reply=$(collect "$t") && clean=1
     # When the modem restarts (AT+SFUN=4 during a bring-up, or a CP crash) this descriptor is left attached to a
     # channel that no longer exists: it reads nothing for ever, and because it still holds the channel, nobody
     # else can talk to the modem either. Reopening is the only cure for that case - but it is also the way to
@@ -206,9 +230,9 @@ while :; do
             last_reopen=$(now)
             if open_tty; then
                 silent=0
-                drain
+                drain 1
                 printf '%s\r' "$cmd" >&3
-                reply=$(collect "$t")
+                reply=$(collect "$t") && clean=1
             fi
         fi
     else

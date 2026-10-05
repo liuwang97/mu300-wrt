@@ -65,8 +65,12 @@ one system fits, not both	只能装一个系统，不能同时装两个
 only OpenWrt fits	只能装 OpenWrt
 Choice	选择
 invalid choice	无效的选择
+Which OpenWrt?	要哪个 OpenWrt？
+1) OpenWrt {1}: the standard LuCI web interface	1) OpenWrt {1}：标准的 LuCI 网页界面
+2) OpenWrt {1} with the MU300 control panel: dashboard, cellular locks, SMS, AT terminal, USB modes (by kanoqwq)	2) OpenWrt {1} 搭配 MU300 控制面板：仪表盘、蜂窝锁定、短信、AT 终端、USB 模式（kanoqwq 制作）
+MU300_OPENWRT must be plain or luci	MU300_OPENWRT 必须是 plain 或 luci
 that choice needs about {1} MiB and this device has {2} MiB of free space	该选择需要约 {1} MiB，而此设备只有 {2} MiB 空闲空间
-Which one should boot (ubuntu/openwrt)	启动哪个系统（ubuntu/openwrt）
+Which one should boot ({1})	启动哪个系统（{1}）
 invalid system	无效的系统
 Boot Linux by default instead of Android (falls back to Android if Linux fails)? (yes/no)	默认启动 Linux 而不是 Android 吗（Linux 启动失败时会回到 Android）？(是/否)
 How many failed Linux boots in a row before the device goes back to Android by itself?	Linux 连续启动失败多少次后，设备自动回到 Android？
@@ -150,7 +154,7 @@ Installing the on-device switch (Magisk module)	正在安装设备端切换工�
 (skipped; the installer keeps working either way)	（已跳过；不影响安装程序的使用）
 Done. Rebooting into {1}	完成。正在重启进入 {1}
 USB network: {1}   SSH: {2}	USB 网络：{1}   SSH：{2}
-switch systems: mu300-os ubuntu|openwrt   back to Android: mu300-next-boot android	切换系统：mu300-os ubuntu|openwrt   回到 Android：mu300-next-boot android
+switch systems: mu300-os {1}   back to Android: mu300-next-boot android	切换系统：mu300-os {1}   回到 Android：mu300-next-boot android
 back to Linux from Android (with Magisk): su -c mu300-linux	从 Android 回到 Linux（需 Magisk）：su -c mu300-linux
 Type ERASE to rewrite the partition table and wipe Android's data	输入 ERASE 以重写分区表并清除 Android 数据
 The backup copy at the end of the disk was written first, so Android's own repair may still fix this. Do not power off.	磁盘末尾的备份副本已先写入，Android 自身的修复仍可能解决此问题。请勿断电。

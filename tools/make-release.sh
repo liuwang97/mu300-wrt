@@ -85,9 +85,14 @@ echo "==> OpenWrt root filesystem (generic)"
 MU300_INPUTS="$IN" MU300_VERSION="$TAG" sh "$TOP/openwrt/build-rootfs.sh" mu300-openwrt-release.tar.gz >/dev/null
 mv "$TOP/openwrt/mu300-openwrt-release.tar.gz" "$D/mu300-openwrt-rootfs.tar.gz"
 
+echo "==> OpenWrt with the MU300 control panel"
+MU300_SYSTEM=openwrt-luci MU300_INPUTS="$IN" MU300_VERSION="$TAG" sh "$TOP/openwrt/build-rootfs.sh" mu300-openwrt-luci-release.tar.gz >/dev/null
+mv "$TOP/openwrt/mu300-openwrt-luci-release.tar.gz" "$D/mu300-openwrt-luci-rootfs.tar.gz"
+
 echo "==> audit"
 fail=0
-for a in mu300-kernel mu300-kernel-6.18 mu300-kernel-7.2 mu300-ubuntu-rootfs mu300-ubuntu-26.04-rootfs mu300-openwrt-rootfs; do
+for a in mu300-kernel mu300-kernel-6.18 mu300-kernel-7.2 mu300-ubuntu-rootfs mu300-ubuntu-26.04-rootfs mu300-openwrt-rootfs \
+         mu300-openwrt-luci-rootfs; do
     bad=$(tar -tzf "$D/$a.tar.gz" | sed 's|^\./||' | grep -E \
         -e '(^|/)lib/firmware/(wcnmodem|gnssmodem|wifi_board_config|bt_configure)' \
         -e '^opt/mu300/android/.+' -e '__properties__|dev-properties' \
@@ -99,6 +104,30 @@ for a in mu300-kernel mu300-kernel-6.18 mu300-kernel-7.2 mu300-ubuntu-rootfs mu3
     mid=$(tar -xzOf "$D/$a.tar.gz" ./etc/machine-id 2>/dev/null || true)
     [ -z "$mid" ] || { echo "$a has a machine-id"; fail=1; }
 done
+# the panel: everything of it is in the luci asset, and nothing of it (nor Aurora) in the plain OpenWrt one
+list_of() { tar -tzf "$D/$1.tar.gz" | sed 's|^\./||'; }
+panel=$(list_of mu300-openwrt-luci-rootfs)
+for f in usr/share/luci/menu.d/luci-app-mu300.json www/luci-static/resources/view/mu300/home.js \
+         usr/libexec/rpcd/mu300dash usr/lib/lua/luci/i18n/mu300.tr.lmo usr/lib/lua/luci/i18n/mu300.zh-cn.lmo \
+         www/luci-static/aurora/main.css etc/mu300/packages.txt; do
+    printf '%s\n' "$panel" | grep -qx "$f" || { echo "mu300-openwrt-luci-rootfs lacks $f"; fail=1; }
+done
+plain=$(list_of mu300-openwrt-rootfs)
+for f in usr/libexec/rpcd/mu300dash www/luci-static/aurora/main.css; do
+    ! printf '%s\n' "$plain" | grep -qx "$f" || { echo "mu300-openwrt-rootfs has $f, which is only for openwrt-luci"; fail=1; }
+done
+printf '%s\n' "$plain" | grep -qx etc/mu300/packages.txt || { echo "mu300-openwrt-rootfs lacks etc/mu300/packages.txt"; fail=1; }
+# what the package list changed since the last release (MU300_PREV_RELEASE: its directory, with the assets)
+if [ -n "${MU300_PREV_RELEASE:-}" ]; then
+    for a in mu300-openwrt-rootfs mu300-openwrt-luci-rootfs; do
+        [ -f "$MU300_PREV_RELEASE/$a.tar.gz" ] || { echo "$a: no previous asset in $MU300_PREV_RELEASE"; continue; }
+        echo "==> $a: etc/mu300/packages.txt against the previous release"
+        tar -xzOf "$MU300_PREV_RELEASE/$a.tar.gz" ./etc/mu300/packages.txt > "$D/packages.prev" 2>/dev/null || : > "$D/packages.prev"
+        tar -xzOf "$D/$a.tar.gz" ./etc/mu300/packages.txt > "$D/packages.new" 2>/dev/null || : > "$D/packages.new"
+        diff -u "$D/packages.prev" "$D/packages.new" || true
+        rm -f "$D/packages.prev" "$D/packages.new"
+    done
+fi
 # an extra holds what its name says, for the release it is published with (mu300-update compares ./release)
 for x in vpn; do
     [ "$(tar -xzOf "$D/mu300-extra-$x.tar.gz" ./name)" = $x ] && [ "$(tar -xzOf "$D/mu300-extra-$x.tar.gz" ./release)" = "$TAG" ] ||
@@ -134,6 +163,7 @@ first with \`./install.sh --check\`.
 | mu300-ubuntu-rootfs.tar.gz | Ubuntu 24.04 LTS root filesystem |
 | mu300-ubuntu-26.04-rootfs.tar.gz | Ubuntu 26.04 LTS root filesystem |
 | mu300-openwrt-rootfs.tar.gz | OpenWrt 25.12.5 root filesystem |
+| mu300-openwrt-luci-rootfs.tar.gz | OpenWrt 25.12.5 with the MU300 control panel (luci-app-mu300 by kanoqwq, Aurora theme by eamonxg) |
 | mu300-extra-vpn.tar.gz | the VPN engines, not part of the images: \`mu300-extra install vpn\` on the device (or the installer's question) puts them on the Linux partition; Xray-core $(sed -n 's/^XRAY_VER=//p' "$TOP/tools/fetch-xray.sh"), hev-socks5-tunnel $(sed -n 's/^HEV_VER=//p' "$TOP/tools/fetch-xray.sh"), sing-box $(sed -n 's/^VER=//p' "$TOP/tools/fetch-sing-box.sh") |
 | mu300-update | the on-device updater of this release (\`mu300-update apply\` switches to it before it changes anything) |
 
@@ -145,7 +175,8 @@ Corresponding source (GPL): kernel https://github.com/Enceka/android_kernel_zte_
 Wi-Fi/Bluetooth/Mali modules https://github.com/realme-kernel-opensource/realme_C51_C53_Narzo-N53-AndroidT-kernel-source/tree/$modules_rev ,
 patches in \`kernel/patches\`. Ubuntu, OpenWrt and busybox packages come from their distributions' archives;
 sing-box from https://github.com/SagerNet/sing-box/releases, Xray from https://github.com/XTLS/Xray-core/releases,
-hev-socks5-tunnel from https://github.com/heiher/hev-socks5-tunnel/releases.
+hev-socks5-tunnel from https://github.com/heiher/hev-socks5-tunnel/releases,
+Aurora (luci-theme-aurora 1.4.0) from https://github.com/eamonxg/luci-theme-aurora/releases/tag/v1.4.0.
 EOF
 if gh release view "$TAG" -R "$REPO" >/dev/null 2>&1; then
     gh release upload "$TAG" -R "$REPO" --clobber "$D"/*.tar.gz "$D/mu300-update" "$D/SHA256SUMS"

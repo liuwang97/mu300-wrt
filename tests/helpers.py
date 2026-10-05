@@ -13,6 +13,10 @@ from pathlib import Path
 
 TOP = Path(__file__).resolve().parents[1]
 BIN = TOP / 'rootfs' / 'overlay' / 'opt' / 'mu300' / 'bin'
+# the tests that read what git tracks (file modes, ls-files) skip where there is no git or no checkout of this tree,
+# e.g. a container with the worktree mounted but not the repository it belongs to
+GIT_CHECKOUT = bool(shutil.which('git')) and subprocess.run(['git', '-C', str(TOP), 'rev-parse', '--git-dir'],
+                                                           capture_output=True).returncode == 0
 
 
 def _works(argv):
@@ -34,7 +38,8 @@ def shells():
         key = (os.path.realpath(path),) + tuple(argv[1:])
         if key not in seen:
             seen.add(key)
-            found.append(argv)
+            # by its full path: a test that stubs a command of the same name (busybox) must not replace the shell
+            found.append([path] + argv[1:])
     return found
 
 
