@@ -127,24 +127,33 @@ class Rules(unittest.TestCase):
             self.assertIn('mu300sd', (TOP / f).read_text(), f)
 
     def test_the_commands_on_path_are_the_same_everywhere(self):
-        # the Ubuntu image, the OpenWrt image and rootfs-fixups (which adds the links on systems installed before a
-        # command had one) link the same commands; the fixups' list lagged behind and mu300-led, mu300-device were
-        # "command not found" on an installed U30 Air
-        def names(path, pattern):
-            m = re.search(pattern, (TOP / path).read_text())
-            self.assertIsNotNone(m, path)
-            return m.group(1).split()
-        lists = {
-            'ubuntu': names('rootfs/assemble.sh', r'for c in ([^;]+); do ln -sfn /opt/mu300/bin/\$c \$R/usr/local/bin'),
-            'openwrt': names('openwrt/build-rootfs.sh', r'for c in ([^;]+); do ln -sf /opt/mu300/bin/\$c \$R/usr/bin'),
-            'fixups': names('rootfs/overlay/opt/mu300/bin/rootfs-fixups', r'for c in ([^;]+); do\n'),
-        }
-        self.assertEqual(lists['ubuntu'], lists['openwrt'])
-        self.assertEqual(lists['ubuntu'], lists['fixups'])
-        for c in ('mu300-device', 'mu300-led', 'mobile-data', 'mu300-update'):
-            self.assertIn(c, lists['ubuntu'])
-        for c in lists['ubuntu']:
+        # the Ubuntu image, the OpenWrt image and the boot-time links (mu300-extra link, for systems installed before a
+        # command had one) link the same commands. They used to be three copies of the list: the fixups' lagged behind
+        # (mu300-led, mu300-device were "command not found" on an installed U30 Air), and all three left mu300-ussd out.
+        # Now there is one file, and every place reads it.
+        lst = (TOP / 'rootfs/overlay/opt/mu300/lib/path-commands').read_text().split()
+        self.assertIn('$R/opt/mu300/lib/path-commands', (TOP / 'rootfs/assemble.sh').read_text())
+        self.assertIn('/in/opt-mu300/lib/path-commands', (TOP / 'openwrt/build-rootfs.sh').read_text())
+        self.assertIn('/lib/path-commands', (BIN / 'mu300-extra').read_text())
+        self.assertIn('mu300-extra link', (BIN / 'rootfs-fixups').read_text())
+        self.assertIn('mu300-extra link', (OPENWRT / 'etc/init.d/mu300-post').read_text())
+        for c in ('mu300-device', 'mu300-led', 'mobile-data', 'mu300-update', 'mu300-ussd', 'sms', 'mu300-extra'):
+            self.assertIn(c, lst)
+        self.assertEqual(len(lst), len(set(lst)))
+        for c in lst:
             self.assertTrue((BIN / c).is_file(), c)
+
+    def test_images_carry_no_vpn_engine(self):
+        # the engines are the vpn extra (mu300-extra): ~120 MB that a system without a VPN does not carry
+        for f in ('rootfs/assemble.sh', 'openwrt/build-rootfs.sh'):
+            src = (TOP / f).read_text()
+            for e in ('xray', 'sing-box', 'hev-socks5-tunnel'):
+                self.assertNotRegex(src, rf'opt/mu300/bin/{e}\b', (f, e))
+        rel = (TOP / 'tools/make-release.sh').read_text()
+        self.assertIn('make-extra.sh', rel)
+        self.assertIn('mu300-extra-', rel)
+        # the audit refuses an image that still has one
+        self.assertRegex(rel, r'opt/mu300/bin/\(xray\|sing-box\|hev-socks5-tunnel\)')
 
     def test_init_finds_partitions_after_the_modules(self):
         # the eMMC driver is one of the vendor modules: misc and boot_b cannot be found before they are loaded

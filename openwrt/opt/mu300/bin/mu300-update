@@ -11,6 +11,7 @@
 #   mu300-update clean            delete the kept <os>.old copies
 #   mu300-update notice           only look: a note for the login message and mu300-toolkit when a newer release is
 #                                 out (at boot and every 6 hours; nothing is installed without apply)
+# Installed extras (mu300-extra: the VPN engines) are updated with the release.
 #
 # How it works: the new filesystem is unpacked next to the old one as <os>.new on the Linux partition, your settings
 # and the vendor files are carried over, and only then are the directories swapped (<os> -> <os>.old, <os>.new ->
@@ -60,7 +61,8 @@ fetch_file() {  # fetch_file URL OUT (resumes a partial OUT)
 # already there and matches is not downloaded again, a partial one is resumed
 STAGE=$DISK/.mu300-update
 fetch_verified() {
-    base=https://github.com/$REPO/releases/download/$1
+    # MU300_RELEASE_URL: another server with the same files and SHA256SUMS (a local test server), as for install.sh
+    base=${MU300_RELEASE_URL:-https://github.com/$REPO/releases/download/$1}
     mkdir -p "$STAGE"
     # SHA256SUMS is fetched once per run, never trusted from an earlier one: a release published again under the
     # same tag left a stale copy that every file then failed (and the updater it had verified replaced this one).
@@ -180,6 +182,8 @@ check() {
     printf 'newest release    %s\n' "$latest"
     printf 'systems on disk   %s\n' "$(installed_systems)"
     printf 'running now       %s\n' "$(running_os)"
+    _xs=; for x in $(extra_installed); do _xs="$_xs $x ($(extra_release "$x"))"; done
+    printf 'extras           %s\n' "${_xs:- none (mu300-extra list)}"
     printf 'kernel            %s (boot image: %s; kernel choice %s)\n' "$(uname -r)" "$(cat "$BOOTDIR/installed.tag" 2>/dev/null || echo "from the installer")" "$(kernel_choice)"
     for os in $(installed_systems); do
         [ -d "$DISK/$os.old" ] && printf 'rollback available for %s (%s)\n' "$os" "$(cat "$DISK/$os.old/etc/mu300/image-version" 2>/dev/null || echo unknown)"
@@ -336,6 +340,122 @@ apply_one() {  # apply_one OS TAG
     mv "$new" "$old" || { mv "$DISK/$os.old" "$old"; die "could not put the new system in place (old one restored)"; }
     sync
     printf '%s: updated %s -> %s\n' "$os" "$(cat "$DISK/$os.old$VERSION_FILE" 2>/dev/null || echo unknown)" "$(cat "$old$VERSION_FILE" 2>/dev/null || echo unknown)"
+}
+
+# ---- extras -----------------------------------------------------------------------------------------------------
+# Optional parts that are not in the images: release assets mu300-extra-<name>.tar.gz (tools/make-extra.sh: ./name,
+# ./release, ./components, ./bin/...), installed on the Linux partition next to the systems, so both systems use
+# one copy and nothing that replaces a system touches it. mu300-extra is the command; the functions are here
+# because an update installs and refreshes them too, and the updater of the new release runs before the system
+# that has mu300-extra exists.
+EXTRA=$DISK/extra
+EXTRAS=vpn
+VPN_ENGINES="xray hev-socks5-tunnel sing-box"
+extra_desc() {
+    case $1 in
+        vpn) echo "the VPN engines for mu300-vpn: Xray-core, hev-socks5-tunnel, sing-box (about 40 MB to download, 120 MB installed)" ;;
+    esac
+}
+extra_asset() { echo "mu300-extra-$1.tar.gz"; }
+extra_known() { case " $EXTRAS " in *" $1 "*) return 0 ;; esac; return 1; }
+extra_installed() {
+    for d in "$EXTRA"/*; do
+        [ -d "$d/bin" ] && printf '%s ' "${d##*/}"
+    done
+    return 0
+}
+extra_release() { cat "$EXTRA/$1/release" 2>/dev/null || echo unknown; }
+
+# extra_put NAME DIR: DIR (on the same filesystem) becomes the extra; the one it replaces is removed afterwards.
+# Running programs keep their files, as with a system that is updated while it runs.
+extra_put() {
+    # an earlier swap cut off between its two renames: the old one is still the one there is
+    [ -d "$EXTRA/$1" ] || [ ! -d "$EXTRA/.$1.old" ] || mv "$EXTRA/.$1.old" "$EXTRA/$1" || return 1
+    rm -rf "$EXTRA/.$1.old"
+    if [ -d "$EXTRA/$1" ]; then mv "$EXTRA/$1" "$EXTRA/.$1.old" || return 1; fi
+    if ! mv "$2" "$EXTRA/$1"; then
+        [ -d "$EXTRA/.$1.old" ] && mv "$EXTRA/.$1.old" "$EXTRA/$1"
+        return 1
+    fi
+    rm -rf "$EXTRA/.$1.old"
+    sync
+}
+
+# extra_unpack NAME TARBALL: install a downloaded (and verified) extra; the old one stays when anything is wrong
+extra_unpack() {
+    case $1 in ''|*[!a-z0-9-]*) echo "extra: bad name '$1'" >&2; return 1 ;; esac
+    _new=$EXTRA/.$1.new
+    rm -rf "$_new"; mkdir -p "$_new" || return 1
+    if ! untar -xzf "$2" -C "$_new" 2>/dev/null; then
+        rm -rf "$_new"; echo "extra $1: $2 is not a readable tar.gz" >&2; return 1
+    fi
+    if [ "$(cat "$_new/name" 2>/dev/null)" != "$1" ]; then
+        rm -rf "$_new"; echo "extra $1: $2 is not the $1 extra" >&2; return 1
+    fi
+    _n=0
+    for _f in "$_new"/bin/*; do [ -f "$_f" ] && [ -x "$_f" ] && _n=$((_n + 1)); done
+    if [ "$_n" = 0 ]; then rm -rf "$_new"; echo "extra $1: no programs in $2" >&2; return 1; fi
+    extra_put "$1" "$_new" || { rm -rf "$_new"; echo "extra $1: could not put it in place" >&2; return 1; }
+}
+
+# does the system at ROOT use the VPN? (only the switch is read, never the rest of the file)
+extra_vpn_wanted() { grep -q '^ENABLE=1' "$1/etc/mu300/vpn.conf" 2>/dev/null; }
+# does the image at ROOT carry the engines itself (the images before the vpn extra)?
+vpn_engines_in() { [ -x "$1/opt/mu300/bin/xray" ] || [ -x "$1/opt/mu300/bin/sing-box" ]; }
+
+# extra_adopt vpn ROOT: the engines of an image from before the vpn extra become the extra, without a download.
+# Its release is that system's, so the next update replaces them with the release's.
+extra_adopt() {
+    [ "$1" = vpn ] || { echo "extra $1: nothing to adopt" >&2; return 1; }
+    vpn_engines_in "$2" || return 1
+    _new=$EXTRA/.$1.new
+    rm -rf "$_new"; mkdir -p "$_new/bin" || return 1
+    for _e in $VPN_ENGINES; do
+        [ -x "$2/opt/mu300/bin/$_e" ] || continue
+        cp -p "$2/opt/mu300/bin/$_e" "$_new/bin/$_e" || { rm -rf "$_new"; return 1; }
+    done
+    echo "$1" > "$_new/name"
+    cat "$2/etc/mu300/image-version" > "$_new/release" 2>/dev/null || echo unknown > "$_new/release"
+    echo "taken from the image of $2" > "$_new/components"
+    extra_put "$1" "$_new" || { rm -rf "$_new"; return 1; }
+    echo "extra $1: the engines of $2 are kept as the $1 extra"
+}
+
+# extras_to_fetch TAG "OS...": the extras an update to TAG downloads - the installed ones that are not TAG's, and
+# the vpn extra for a system being updated that uses the VPN with the engines of its image (they are gone from the
+# images since the vpn extra exists; without them the VPN would not come back after the reboot)
+extras_to_fetch() {
+    _want=
+    for _x in $(extra_installed); do
+        extra_known "$_x" || continue
+        [ "$(extra_release "$_x")" = "$1" ] || _want="$_want $_x"
+    done
+    if [ ! -d "$EXTRA/vpn/bin" ]; then
+        for _o in $2; do
+            extra_vpn_wanted "$DISK/$_o" && { _want="$_want vpn"; break; }
+        done
+    fi
+    echo $_want
+}
+
+# extras_install TAG "OS..." "NAMES": after the systems are in place, install the extras downloaded into $STAGE;
+# then make sure every updated system that uses the VPN has engines (the extra, or those of the image it replaced)
+extras_install() {
+    for _x in $3; do
+        if extra_unpack "$_x" "$STAGE/$(extra_asset "$_x")"; then
+            printf 'extra %s: %s\n' "$_x" "$1"
+            EXTRA_CHANGED=1
+        else
+            echo "extra $_x: not updated (see above)" >&2
+        fi
+        rm -f "$STAGE/$(extra_asset "$_x")"
+    done
+    for _o in $2; do
+        extra_vpn_wanted "$DISK/$_o" && [ ! -d "$EXTRA/vpn/bin" ] && ! vpn_engines_in "$DISK/$_o" || continue
+        extra_adopt vpn "$DISK/$_o.old" && EXTRA_CHANGED=1 ||
+            echo "extra vpn: no VPN engines for $_o; after the reboot run: mu300-extra install vpn" >&2
+    done
+    return 0
 }
 
 # ---- the kernel and the boot image ------------------------------------------------------------------------------
@@ -708,6 +828,14 @@ apply() {
     for os in $todo; do
         fetch_verified "$tag" "$(rootfs_asset "$os")" || { offline_hint; die "nothing was changed; run mu300-update apply again to continue the download"; }
     done
+    # the extras: an installed one follows the release, and a system that uses the VPN with the engines of its image
+    # gets the vpn extra (a release from before extras has none - its images still carry the engines: r=2)
+    extras=
+    for x in $(extras_to_fetch "$tag" "$todo"); do
+        fetch_verified "$tag" "$(extra_asset "$x")"; r=$?
+        [ "$r" = 0 ] && { extras="$extras $x"; continue; }
+        [ "$r" = 2 ] || { offline_hint; die "nothing was changed; run mu300-update apply again to continue the download"; }
+    done
     boot_asset=
     if [ -z "${MU300_KERNEL_BUNDLE:-}" ]; then
         boot_asset=$(kernel_asset)
@@ -722,6 +850,8 @@ apply() {
         apply_one "$os" "$tag"
         SYSTEM_CHANGED=1
     done
+    EXTRA_CHANGED=
+    extras_install "$tag" "$todo" "$extras"
     # the kernel goes with the modules of the systems just installed, so it follows them
     boot_ok=1
     boot_update "$tag" || { boot_ok=; printf '\nThe boot image was not updated (see above)%s.\n' "${SYSTEM_CHANGED:+; the systems were}"; }
@@ -729,7 +859,7 @@ apply() {
     [ -z "$boot_ok" ] || rm -rf "$STAGE"
     if [ -z "$SYSTEM_CHANGED$BOOT_CHANGED" ]; then
         [ -n "$boot_ok" ] || return 1
-        printf '\nNothing to do.\n'
+        if [ -n "$EXTRA_CHANGED" ]; then printf '\nThe extras are up to date now.\n'; else printf '\nNothing to do.\n'; fi
         return 0
     fi
     if [ -z "$SYSTEM_CHANGED" ]; then
@@ -792,6 +922,6 @@ case ${1:-check} in
     accounts) accounts ;;
     clean) clean ;;
     notice) notice ;;
-    -h|--help|help) sed -n '2,14s/^# \{0,1\}//p' "$0" ;;
+    -h|--help|help) sed -n '2,15s/^# \{0,1\}//p' "$0" ;;
     *) echo "usage: mu300-update check|apply [os...]|boot|kernel [5.4|6.18|7.2]|rollback [os]|rollback-boot|clean|notice" >&2; exit 2 ;;
 esac
