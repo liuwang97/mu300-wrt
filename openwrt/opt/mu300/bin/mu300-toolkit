@@ -611,6 +611,11 @@ menu_vpn() {
                if grep -q '^VLESS_URI=""' "$VPN_CONF" || ! grep -q '^VLESS_URI=' "$VPN_CONF"; then
                    echo "  set VLESS_URI first (Edit config)"; pause; continue
                fi
+               # the engines are an extra, not part of the system
+               if ! /opt/mu300/bin/mu300-vpn engines >/dev/null 2>&1; then
+                   echo "  the VPN engines are not installed yet; downloading the vpn extra"
+                   /opt/mu300/bin/mu300-extra install vpn || { echo "  could not install them (mu300-extra install vpn)"; pause; continue; }
+               fi
                sed -i 's/^ENABLE=.*/ENABLE=1/' "$VPN_CONF"; svc enable mu300-vpn; sleep 3 ;;
             2) [ -r "$VPN_CONF" ] && sed -i 's/^ENABLE=.*/ENABLE=0/' "$VPN_CONF"
                svc disable mu300-vpn; /opt/mu300/bin/mu300-vpn off ;;

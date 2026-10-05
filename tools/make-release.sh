@@ -31,8 +31,10 @@ docker run --rm -v "$TOP/tools":/src:ro -v "$IN/tools":/o mu300-kbuild sh -c '
   mkdir -p /o/keys && gcc -O2 -static -o /o/keys/mu300-keys /src/keys/mu300-keys.c'
 # cltest links against Android's libraries at build time only; use a local build when there is one
 [ -f "$TOP/tools/gpu/cltest" ] && cp "$TOP/tools/gpu/cltest" "$IN/tools/gpu/cltest"
-sh "$TOP/tools/fetch-sing-box.sh" "$IN/sing-box"
-sh "$TOP/tools/fetch-xray.sh" "$IN"
+
+echo "==> extras"
+# not in the images: mu300-extra installs them on the devices that want them (mu300-extra-<name>.tar.gz)
+sh "$TOP/tools/make-extra.sh" vpn "$D/mu300-extra-vpn.tar.gz" "$TAG"
 
 echo "==> kernel bundle"
 K=$D/kernel && mkdir -p "$K"
@@ -73,7 +75,7 @@ for u in 24.04 26.04; do
     cltest=""; [ -f "$IN/tools/gpu/cltest" ] && cltest="-v $IN/tools/gpu/cltest:/cltest:ro"
     # shellcheck disable=SC2086
     docker run --rm -v "$B":/w -v "$IN/out/modules":/kmods:ro -v "$IN/out":/kout:ro -v "$IN/tools/logdw/logdw":/logdw:ro \
-      -v "$IN/tools/bt-init/mu300-bt-init":/bt-init:ro -v "$IN/tools/keys/mu300-keys":/keys:ro -v "$IN/sing-box":/sing-box:ro -v "$IN/xray":/xray:ro -v "$IN/hev-socks5-tunnel":/hev-socks5-tunnel:ro $cltest \
+      -v "$IN/tools/bt-init/mu300-bt-init":/bt-init:ro -v "$IN/tools/keys/mu300-keys":/keys:ro $cltest \
       -e MU300_VERSION="$TAG" mu300-ubuntu:$u bash /w/assemble.sh >/dev/null
     out=mu300-ubuntu-rootfs.tar.gz; [ $u = 24.04 ] || out=mu300-ubuntu-$u-rootfs.tar.gz
     mv "$B/mu300-ubuntu-$u-rootfs.tar.gz" "$D/$out"; rm -rf "$B"
@@ -91,10 +93,16 @@ for a in mu300-kernel mu300-kernel-6.18 mu300-kernel-7.2 mu300-ubuntu-rootfs mu3
         -e '^opt/mu300/android/.+' -e '__properties__|dev-properties' \
         -e '(^|/)(libmali|libOpenCL|libGLES|libEGL|libvulkan)[^/]*\.so' \
         -e '^etc/ssh/ssh_host_' -e '^etc/mu300/(hotspot|vpn|toolkit)\.conf$' -e '^etc/dropbear/dropbear_.*_host_key' \
+        -e '^opt/mu300/bin/(xray|sing-box|hev-socks5-tunnel)$' \
         | grep -vE '^opt/mu300/android/system/?$|^opt/mu300/android/system/bin/?$|^opt/mu300/android/system/bin/cltest$' || true)
     if [ -n "$bad" ]; then echo "$a contains files that must not be published:"; echo "$bad" | head -20; fail=1; fi
     mid=$(tar -xzOf "$D/$a.tar.gz" ./etc/machine-id 2>/dev/null || true)
     [ -z "$mid" ] || { echo "$a has a machine-id"; fail=1; }
+done
+# an extra holds what its name says, for the release it is published with (mu300-update compares ./release)
+for x in vpn; do
+    [ "$(tar -xzOf "$D/mu300-extra-$x.tar.gz" ./name)" = $x ] && [ "$(tar -xzOf "$D/mu300-extra-$x.tar.gz" ./release)" = "$TAG" ] ||
+        { echo "mu300-extra-$x.tar.gz is not the $x extra of $TAG"; fail=1; }
 done
 # mu300-update refuses a kernel bundle without the SD host for a system on the card, and one whose init runs only from
 # slot b for a Linux on slot a: every bundle must say it has both
@@ -126,6 +134,7 @@ first with \`./install.sh --check\`.
 | mu300-ubuntu-rootfs.tar.gz | Ubuntu 24.04 LTS root filesystem |
 | mu300-ubuntu-26.04-rootfs.tar.gz | Ubuntu 26.04 LTS root filesystem |
 | mu300-openwrt-rootfs.tar.gz | OpenWrt 25.12.5 root filesystem |
+| mu300-extra-vpn.tar.gz | the VPN engines, not part of the images: \`mu300-extra install vpn\` on the device (or the installer's question) puts them on the Linux partition; Xray-core $(sed -n 's/^XRAY_VER=//p' "$TOP/tools/fetch-xray.sh"), hev-socks5-tunnel $(sed -n 's/^HEV_VER=//p' "$TOP/tools/fetch-xray.sh"), sing-box $(sed -n 's/^VER=//p' "$TOP/tools/fetch-sing-box.sh") |
 | mu300-update | the on-device updater of this release (\`mu300-update apply\` switches to it before it changes anything) |
 
 The images contain **no proprietary files**: the installer pulls the Wi-Fi/Bluetooth firmware and the Android
