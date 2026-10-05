@@ -112,9 +112,6 @@ class Rules(unittest.TestCase):
                  'install.ps1', 'tools/make-release.sh')
         for f in files:
             with self.subTest(file=f):
-                # each skip is lifted alone by the task that gives its file the third system
-                if f == 'tools/make-release.sh':
-                    self.skipTest('tools/make-release.sh: until Task 11')
                 text = (TOP / f).read_text()
                 self.assertTrue('openwrt-luci' in text or 'openwrt-*' in text or 'openwrt|openwrt-' in text, f)
 
@@ -129,6 +126,12 @@ class Rules(unittest.TestCase):
         self.assertIsNotNone(arm, 'no openwrt-luci arm in the MU300_SYSTEM case')
         self.assertRegex(arm.group(1), r'"\$FLAVOUR" = openwrt \]', 'openwrt-luci does not refuse immortalwrt')
         self.assertIn('mu300-$SYSTEM-$VER-rootfs.tar.gz', text)
+        # ImmortalWrt keeps the name it had; the Aurora hash is pinned in the script, only the file may be overridden
+        self.assertIn('mu300-immortalwrt-$VER-rootfs.tar.gz', text)
+        self.assertNotIn('MU300_LUCI_THEME_SHA256', text)
+        self.assertRegex(text, r'(?m)^\s*THEME_SHA=05f9015e0a4e2859f6a153f69e472f2984481490d4ce6db19b8a41bba7264f1e$')
+        mk = (TOP / 'openwrt' / 'luci-app-mu300' / 'Makefile').read_text()
+        self.assertRegex(mk, r'set -e; \$\(foreach', 'a failing catalog must fail the compile')
         f = LUCI_OVERLAY / 'etc' / 'uci-defaults' / '91-mu300-luci'
         self.assertTrue(f.is_file() and f.stat().st_mode & 0o111, f'{f} missing or not executable')
         self.assertIn('/luci-static/aurora', f.read_text())

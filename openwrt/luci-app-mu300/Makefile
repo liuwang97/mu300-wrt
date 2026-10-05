@@ -35,7 +35,7 @@ MU300_LMO_LANG=$(if $(filter zh_Hans,$(1)),zh-cn,$(1))
 
 define Build/Compile
 	mkdir -p $(PKG_BUILD_DIR)/lmo
-	$(foreach po,$(wildcard $(CURDIR)/po/*/mu300.po),$(STAGING_DIR_HOSTPKG)/bin/po2lmo $(po) $(PKG_BUILD_DIR)/lmo/mu300.$(call MU300_LMO_LANG,$(notdir $(patsubst %/,%,$(dir $(po))))).lmo;)
+	set -e; $(foreach po,$(wildcard $(CURDIR)/po/*/mu300.po),$(STAGING_DIR_HOSTPKG)/bin/po2lmo $(po) $(PKG_BUILD_DIR)/lmo/mu300.$(call MU300_LMO_LANG,$(notdir $(patsubst %/,%,$(dir $(po))))).lmo;)
 endef
 
 define Package/luci-app-mu300/install

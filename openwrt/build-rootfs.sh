@@ -27,7 +27,8 @@ case $SYSTEM in
     *) echo "unknown system '$SYSTEM' (openwrt or openwrt-luci)" >&2; exit 1 ;;
 esac
 KREL=5.4.254-gb50db5b6224c
-OUT=${1:-mu300-$SYSTEM-$VER-rootfs.tar.gz}
+# the default name: mu300-<system>-<version>-rootfs.tar.gz; ImmortalWrt keeps its own (it has only the plain system)
+if [ "$FLAVOUR" = immortalwrt ]; then OUT=${1:-mu300-immortalwrt-$VER-rootfs.tar.gz}; else OUT=${1:-mu300-$SYSTEM-$VER-rootfs.tar.gz}; fi
 TOP=$(cd "$(dirname "$0")/.." && pwd)
 # build inputs (out/, firmware/, android-subset/, tools binaries, busybox) may live outside the checkout
 IN=${MU300_INPUTS:-$TOP}
@@ -37,7 +38,8 @@ if [ "$SYSTEM" = openwrt-luci ]; then
     # assembling the rootfs, so the theme is present on first boot without a
     # network-dependent uci-defaults install step. Bootstrap remains available.
     THEME_APK=${MU300_LUCI_THEME_APK:-$TOP/work/luci-theme-aurora-1.4.0-r20260920.apk}
-    THEME_SHA=${MU300_LUCI_THEME_SHA256:-05f9015e0a4e2859f6a153f69e472f2984481490d4ce6db19b8a41bba7264f1e}
+    # pinned here, not overridable: MU300_LUCI_THEME_APK may swap the file, never the hash it is checked against
+    THEME_SHA=05f9015e0a4e2859f6a153f69e472f2984481490d4ce6db19b8a41bba7264f1e
     if [ ! -s "$THEME_APK" ]; then
         [ -z "${MU300_LUCI_THEME_APK:-}" ] || {
             echo "theme package missing: $THEME_APK" >&2; exit 1;
