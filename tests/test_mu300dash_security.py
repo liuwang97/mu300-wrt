@@ -768,9 +768,11 @@ class RuntimeDir(Mu300Dash):
             self.assertTrue('${MU300_DASH_DIR:-$RUN_DIR}' in text, path.name)
             self.assertFalse('/tmp/unisoc-modem' in text, path.name)
         self.assertIn('RUN_DIR=/var/run/unisoc-modem', LIB.read_text())
-        listed = subprocess.run(['git', 'grep', '-l', '/tmp/unisoc-modem', '--', 'openwrt', 'rootfs', 'README.md',
-                                 'docs/BUILD.md'], cwd=TOP, capture_output=True, text=True).stdout
-        self.assertEqual(listed, '')
+        r = subprocess.run(['git', 'grep', '-l', '/tmp/unisoc-modem', '--', 'openwrt', 'rootfs', 'README.md',
+                            'docs/BUILD.md'], cwd=TOP, capture_output=True, text=True)
+        if r.returncode not in (0, 1):
+            self.skipTest('no git checkout here: ' + r.stderr.strip())
+        self.assertEqual(r.stdout, '')
 
     def test_a_new_or_own_directory_becomes_owner_only(self):
         for shell in self.each_shell():
