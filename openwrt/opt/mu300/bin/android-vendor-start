@@ -49,7 +49,7 @@ SYS=${MU300_SYS:-/sys}
 E=
 for b in "$SYS"/block/mmcblk*; do
     case ${b##*/mmcblk} in ''|*[!0-9]*) continue ;; esac
-    t=$(cat "$b/device/type" 2>/dev/null)
+    t=$(cat "$b/device/type" 2>/dev/null) || t=   # set -e: no type is not the end of the script
     [ "$t" = MMC ] && { E=${b##*/}; break; }
     [ "$t" = SD ] || [ -n "$E" ] || E=${b##*/}
 done
