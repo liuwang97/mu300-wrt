@@ -5,13 +5,14 @@ USE_PROCD=1
 export PATH="$PATH:/opt/mu300/busybox-bin"
 
 # LuCI (or "uci commit wireless; reload_config") turning the hotspot off or on: no hostapd hook tells mu300-led,
-# so the Wi-Fi LED follows what wlan0 is for a minute (hostapd can take that long). (A reload only runs this.)
+# so the Wi-Fi LED follows what wlan0 is for two minutes: Wi-Fi turned off and on again at once took hostapd 63 s
+# to come back on F50 #1 (6.18). (A reload only runs this.)
 service_triggers() {
 	procd_add_reload_trigger wireless
 }
 
 reload_service() {
-	( sleep 5; /opt/mu300/bin/mu300-led wifi sync 60 ) >/dev/null 2>&1 &
+	( sleep 5; /opt/mu300/bin/mu300-led wifi sync 120 ) >/dev/null 2>&1 &
 }
 
 start_service() {
