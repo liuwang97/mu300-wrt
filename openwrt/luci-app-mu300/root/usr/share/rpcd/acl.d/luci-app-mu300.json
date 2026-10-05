@@ -1,6 +1,6 @@
 {
  "luci-app-mu300": {
-  "description": "MU300 控制中心：状态看板、网络锁定、AT 终端与短信",
+  "description": "MU300 control center: status dashboard, network locks, AT terminal and SMS",
   "read": {
    "ubus": {
     "mu300dash": [ "sysinfo", "status", "signal", "lock_get", "usb_get", "usb_net_list" ]

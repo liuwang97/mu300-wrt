@@ -1,0 +1,94 @@
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+"Language: zh_Hans\n"
+
+msgid "Status dashboard"
+msgstr "状态看板"
+
+msgid "Cellular"
+msgstr "蜂窝"
+
+msgid "Network locks"
+msgstr "网络锁定"
+
+msgid "SMS"
+msgstr "短信"
+
+msgid "AT terminal"
+msgstr "AT 终端"
+
+msgid "Adapter settings"
+msgstr "适配设置"
+
+msgid "Device management"
+msgstr "设备管理"
+
+msgid "MU300 control center: status dashboard, network locks, AT terminal and SMS"
+msgstr "MU300 控制中心：状态看板、网络锁定、AT 终端与短信"
+
+msgid "China Mobile"
+msgstr "中国移动"
+
+msgid "China Unicom"
+msgstr "中国联通"
+
+msgid "China Telecom"
+msgstr "中国电信"
+
+msgid "China Broadnet"
+msgstr "中国广电"
+
+msgid "China Tietong"
+msgstr "中国铁通"
+
+msgid "Unknown"
+msgstr "未知"
+
+msgid "Excellent"
+msgstr "优秀"
+
+msgid "Good"
+msgstr "良好"
+
+msgid "Fair"
+msgstr "一般"
+
+msgid "Poor"
+msgstr "较差"
+
+msgid "%d d %d h"
+msgstr "%d 天 %d 小时"
+
+msgid "%d h %d min"
+msgstr "%d 小时 %d 分"
+
+msgid "%d min"
+msgstr "%d 分"
+
+msgid "No neighbor-cell data"
+msgstr "暂无邻区数据"
+
+msgid "Locked"
+msgstr "已锁定"
+
+msgid "Lock"
+msgstr "锁定"
+
+msgid "Confirm"
+msgstr "确认"
+
+msgid "OK"
+msgstr "确定"
+
+msgid "Cancel"
+msgstr "取消"
+
+msgid "New SMS · %s"
+msgstr "新短信 · %s"
+
+msgid "Unknown number"
+msgstr "未知号码"
+
+msgid "Select"
+msgstr "选择"

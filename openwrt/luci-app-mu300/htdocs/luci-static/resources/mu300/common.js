@@ -1,15 +1,16 @@
 'use strict';
 'require rpc';
 'require baseclass';
-/* mu300 面板共享模块：rpc 声明、格式化/信号质量助手、主题感知的样式表。
- * 页面通过 'require mu300.common' 引用（LuCI 的 dotted require 映射到
- * /luci-static/resources/mu300/common.js）。
+/* The mu300 panel's shared module: rpc declarations, formatting and signal-quality helpers, a theme-aware style
+ * sheet. Pages load it with 'require mu300.common' (LuCI maps the dotted name to
+ * /luci-static/resources/mu300/common.js).
  *
- * 样式只引用主题令牌：本机装的是 luci-theme-aurora（--surface/--hairline/
- * --brand/--text-muted/--success 等，html[data-darkmode] 一键翻转深浅色），
- * 其它主题时逐级回退到 LuCI 标准变量（--background-alt/--border/--primary...）。
- * 质量色不用写死的色值，走 --success/--warning/--danger 与 color-mix，
- * 深浅两套模式都跟随主题。 */
+ * Every text the user sees is an English _() message translated by po/<lang>/mu300.po (spec D6).
+ *
+ * The styles use theme tokens only: luci-theme-aurora's (--surface/--hairline/--brand/--text-muted/--success...,
+ * html[data-darkmode] flips light and dark), falling back step by step to LuCI's standard variables
+ * (--background-alt/--border/--primary...) under other themes. Quality colours are not fixed values: they use
+ * --success/--warning/--danger and color-mix, so both modes follow the theme. */
 
 var callStatus = rpc.declare({ object: 'mu300dash', method: 'status', expect: { '': {} } });
 var callSignal = rpc.declare({ object: 'mu300dash', method: 'signal', expect: { '': {} } });
@@ -30,461 +31,58 @@ var callUsbSet = rpc.declare({ object: 'mu300dash', method: 'usb_set', params: [
 var callUsbNetList = rpc.declare({ object: 'mu300dash', method: 'usb_net_list', expect: { '': {} } });
 var callUsbNetAdd = rpc.declare({ object: 'mu300dash', method: 'usb_net_add', params: [ 'iface' ], expect: { '': {} } });
 
-/* Dashboard translations deliberately ship as a tiny runtime catalog: a
- * standalone package works in any OpenWrt buildroot without po2lmo or extra
- * language packages. Chinese remains the source/fallback language. */
-var DASH_I18N = {
-	'设备管理': ['Device management', 'Cihaz yönetimi'],
-	'USB 角色': ['USB role', 'USB rolü'],
-	'当前角色': ['Current role', 'Geçerli rol'],
-	'切换 USB 角色': ['Switch USB role', 'USB rolünü değiştir'],
-	'设备模式': ['Device mode', 'Cihaz modu'],
-	'主机模式': ['Host mode', 'Ana makine modu'],
-	'开机自动启用主机模式': ['Enable host mode at boot', 'Açılışta ana makine modunu etkinleştir'],
-	'应用角色': ['Apply role', 'Rolü uygula'],
-	'主机模式会断开本端口的 USB 网络与串口。F50 没有电池；切换后可能失去管理连接，外接 USB 网卡通常需要自供电 Hub。': ['Host mode disconnects USB networking and serial on this port. F50 has no battery; management may be lost and a USB adapter usually needs a powered hub.', 'Ana makine modu bu bağlantı noktasındaki USB ağını ve seri bağlantıyı keser. F50 bataryasızdır; yönetim bağlantısı kaybolabilir ve USB bağdaştırıcısı genellikle harici güçlü bir hub gerektirir.'],
-	'USB 网络模式': ['USB network mode', 'USB ağ modu'],
-	'网络协议': ['Network protocol', 'Ağ protokolü'],
-	'生效期限': ['Apply duration', 'Uygulama süresi'],
-	'仅下次重启': ['Next reboot only', 'Yalnızca sonraki yeniden başlatma'],
-	'永久生效': ['Permanent', 'Kalıcı'],
-	'启用所选协议': ['Enable selected protocol', 'Seçilen protokolü etkinleştir'],
-	'保存，重启后生效': ['Save; apply after reboot', 'Kaydet; yeniden başlatınca uygula'],
-	'NCM 为默认模式。Windows 不原生支持 ECM；RNDIS 会改变枚举方式。关闭“启用所选协议”时仅保存选择；选择“仅下次重启”则成功应用一次后恢复默认 NCM。': ['NCM is the default. Windows does not natively support ECM; RNDIS changes enumeration. With Enable selected protocol off, only your choice is saved. Next reboot only applies once, then returns to NCM.', 'NCM varsayılandır. Windows ECM’yi yerel olarak desteklemez; RNDIS aygıt tanımayı değiştirir. Seçilen protokolü etkinleştir kapalıysa yalnızca seçim kaydedilir. Yalnızca sonraki yeniden başlatma bir kez uygulanır, ardından NCM’ye dönülür.'],
-	'主机模式下不可选择 USB 网络模式；主机开机自启会自动关闭 USB 网络开机自启。': ['USB network mode is unavailable in host mode; host auto-start also disables USB network auto-start.', 'Ana makine modunda USB ağ modu kullanılamaz; ana makine otomatik başlatma USB ağının otomatik başlatmasını da kapatır.'],
-	'USB 网卡': ['USB network adapters', 'USB ağ bağdaştırıcıları'],
-	'仅主机模式可用。刷新时会尝试启用发现的 USB 网卡；添加到 LAN 后将保存到网桥并重新加载网络。': ['Available only in host mode. Refresh brings discovered USB adapters up; adding to LAN saves the bridge and reloads networking.', 'Yalnızca ana makine modunda kullanılabilir. Yenileme bulunan USB bağdaştırıcılarını açar; LAN’a ekleme köprüyü kaydeder ve ağı yeniden yükler.'],
-	'切换到主机模式后显示 USB 网卡。': ['Switch to host mode to see USB adapters.', 'USB bağdaştırıcılarını görmek için ana makine moduna geçin.'],
-	'正在扫描 USB 网卡…': ['Scanning USB adapters…', 'USB bağdaştırıcıları taranıyor…'],
-	'没有发现 USB 网卡。': ['No USB adapters found.', 'USB bağdaştırıcısı bulunamadı.'],
-	'链路已连接': ['Link connected', 'Bağlantı kuruldu'],
-	'链路未连接，已尝试启用': ['No link; enable attempted', 'Bağlantı yok; etkinleştirme denendi'],
-	'已加入 LAN': ['Added to LAN', 'LAN’a eklendi'],
-	'添加到 LAN': ['Add to LAN', 'LAN’a ekle'],
-	'确认切换 USB 角色？': ['Switch USB role?', 'USB rolü değiştirilsin mi?'],
-	'切换主机模式会立即断开 USB 管理连接。F50 没有电池，外设可能需要自供电；请确认有其他管理途径。': ['Host mode immediately disconnects USB management. F50 has no battery and peripherals may need external power; make sure another management path exists.', 'Ana makine modu USB yönetimini hemen keser. F50 bataryasızdır ve çevre birimleri harici güç gerektirebilir; başka bir yönetim yolu olduğundan emin olun.'],
-	'切回设备模式后 USB 网络和串口会重新枚举。': ['USB networking and serial will re-enumerate in device mode.', 'Cihaz modunda USB ağı ve seri bağlantı yeniden tanınır.'],
-	'正在切换 USB 角色…': ['Switching USB role…', 'USB rolü değiştiriliyor…'],
-	'切换请求已接收，USB 连接可能短暂中断。': ['Switch request accepted; the USB connection may briefly disconnect.', 'Geçiş isteği alındı; USB bağlantısı kısa süreli kesilebilir.'],
-	'管理连接已中断；请重新连接后确认 USB 角色。': ['Management connection lost; reconnect to confirm the USB role.', 'Yönetim bağlantısı kesildi; USB rolünü doğrulamak için yeniden bağlanın.'],
-	'暂时无法确认角色；请重新连接后刷新页面。': ['Unable to confirm the role yet; reconnect and refresh the page.', 'Rol henüz doğrulanamadı; yeniden bağlanıp sayfayı yenileyin.'],
-	'USB 角色已应用': ['USB role applied', 'USB rolü uygulandı'],
-	'保存 USB 网络模式？': ['Save USB network mode?', 'USB ağ modu kaydedilsin mi?'],
-	'网络模式将在下次重启时生效，USB 管理连接可能需要重新识别。': ['The network mode applies on the next reboot; USB management may need to reconnect.', 'Ağ modu sonraki yeniden başlatmada uygulanır; USB yönetimi yeniden bağlanabilir.'],
-	'只保存选择；未启用所选协议，下次重启仍使用默认 NCM。': ['Save the selection only; with the selected protocol disabled, the next boot still uses default NCM.', 'Yalnızca seçim kaydedilir; seçilen protokol etkin değilse sonraki açılışta varsayılan NCM kullanılır.'],
-	'正在保存 USB 网络设置…': ['Saving USB network settings…', 'USB ağ ayarları kaydediliyor…'],
-	'设置已保存': ['Settings saved', 'Ayarlar kaydedildi'],
-	'添加 USB 网卡到 LAN？': ['Add USB adapter to LAN?', 'USB bağdaştırıcısı LAN’a eklensin mi?'],
-	'这会保存网桥配置并重新加载网络，现有连接可能短暂中断。': ['This saves the bridge configuration and reloads networking; existing connections may briefly drop.', 'Bu işlem köprü yapılandırmasını kaydedip ağı yeniden yükler; mevcut bağlantılar kısa süreli kesilebilir.'],
-	'正在添加 USB 网卡…': ['Adding USB adapter…', 'USB bağdaştırıcısı ekleniyor…'],
-	'添加失败：': ['Add failed: ', 'Ekleme başarısız: '],
-	'切换失败：': ['Switch failed: ', 'Değiştirme başarısız: '],
-	'保存失败：': ['Save failed: ', 'Kaydetme başarısız: '],
-	'不可用': ['Unavailable', 'Kullanılamıyor'],
-	'保存': ['Save', 'Kaydet'],
-	'添加': ['Add', 'Ekle'],
-	'USB role adapter is not executable': ['USB role adapter is not executable', 'USB rol bağdaştırıcısı çalıştırılabilir değil'],
-	'USB role adapter failed': ['USB role adapter failed', 'USB rol bağdaştırıcısı başarısız'],
-	'Device is the boot default; host auto-apply is the only persistent role': ['Device is the boot default; host auto-apply is the only persistent role', 'Cihaz modu açılış varsayılanıdır; yalnızca ana makine otomatik uygulaması kalıcıdır'],
-	'Cannot save USB role policy': ['Cannot save USB role policy', 'USB rol ilkesi kaydedilemiyor'],
-	'Cannot disable USB network boot policy': ['Cannot disable USB network boot policy', 'USB ağı açılış ilkesi kapatılamıyor'],
-	'Cannot commit USB role policy': ['Cannot commit USB role policy', 'USB rol ilkesi uygulanamıyor'],
-	'Cannot save USB network policy': ['Cannot save USB network policy', 'USB ağ ilkesi kaydedilemiyor'],
-	'Cannot commit USB network policy': ['Cannot commit USB network policy', 'USB ağ ilkesi uygulanamıyor'],
-	'Cannot create USB boot settings directory': ['Cannot create USB boot settings directory', 'USB açılış ayarları dizini oluşturulamıyor'],
-	'Cannot write USB boot settings': ['Cannot write USB boot settings', 'USB açılış ayarları yazılamıyor'],
-	'Cannot save USB boot settings': ['Cannot save USB boot settings', 'USB açılış ayarları kaydedilemiyor'],
-	'Invalid USB role': ['Invalid USB role', 'Geçersiz USB rolü'],
-	'Invalid USB network mode': ['Invalid USB network mode', 'Geçersiz USB ağ modu'],
-	'Invalid USB network scope': ['Invalid USB network scope', 'Geçersiz USB ağ süresi'],
-	'Invalid boot-auto value': ['Invalid boot-auto value', 'Geçersiz otomatik başlatma değeri'],
-	'USB role switch is unavailable': ['USB role switch is unavailable', 'USB rol anahtarı kullanılamıyor'],
-	'USB role readback did not match': ['USB role readback did not match', 'USB rolü geri okuması eşleşmedi'],
-	'USB role switch was refused by platform safety checks': ['USB role switch was refused by platform safety checks', 'USB rol değişimi platform güvenlik denetimi tarafından reddedildi'],
-	'USB network mode is unavailable in host role': ['USB network mode is unavailable in host role', 'Ana makine rolünde USB ağ modu kullanılamaz'],
-	'Disable host boot-auto before configuring USB network': ['Disable host boot-auto before configuring USB network', 'USB ağını yapılandırmadan önce ana makine otomatik başlatmasını kapatın'],
-	'USB host mode is required': ['USB host mode is required', 'USB ana makine modu gerekli'],
-	'Not a USB network interface': ['Not a USB network interface', 'USB ağ arayüzü değil'],
-	'LAN bridge device section was not found': ['LAN bridge device section was not found', 'LAN köprü aygıtı bölümü bulunamadı'],
-	'Cannot bring USB network interface up': ['Cannot bring USB network interface up', 'USB ağ arayüzü etkinleştirilemiyor'],
-	'Cannot add interface to LAN bridge': ['Cannot add interface to LAN bridge', 'Arayüz LAN köprüsüne eklenemiyor'],
-	'Cannot save LAN bridge': ['Cannot save LAN bridge', 'LAN köprüsü kaydedilemiyor'],
-	'Cannot attach USB interface to LAN bridge': ['Cannot attach USB interface to LAN bridge', 'USB arayüzü LAN köprüsüne bağlanamıyor'],
-	'Network reload failed': ['Network reload failed', 'Ağ yeniden yüklenemedi'],
-	'链路与流量': ['Link & traffic', 'Bağlantı ve trafik'],
-	'下行速率': ['Download rate', 'İndirme hızı'],
-	'上行速率': ['Upload rate', 'Yükleme hızı'],
-	'累计接收': ['Total received', 'Toplam alınan'],
-	'累计发送': ['Total sent', 'Toplam gönderilen'],
-	'会话时长': ['Session duration', 'Oturum süresi'],
-	'注册状态': ['Registration', 'Kayıt durumu'],
-	'调制方式 下/上': ['Modulation DL/UL', 'Modülasyon İndirme/Yükleme'],
-	'MCS 下/上': ['MCS DL/UL', 'MCS İndirme/Yükleme'],
-	'BLER 下/上': ['BLER DL/UL', 'BLER İndirme/Yükleme'],
-	'按当前 MCS 估算': ['Estimated from current MCS', 'Geçerli MCS değerinden tahmin'],
-	'频宽': ['Bandwidth', 'Bant genişliği'],
-	'AMBR 下/上': ['AMBR DL/UL', 'AMBR İndirme/Yükleme'],
-	'无线 · 局域网 · 设备 · SIM': ['Wi-Fi · LAN · Device · SIM', 'Wi-Fi · LAN · Cihaz · SIM'],
-	'CPU 占用': ['CPU usage', 'CPU kullanımı'],
-	'内存': ['Memory', 'Bellek'],
-	'存储': ['Storage', 'Depolama'],
-	'电源': ['Power', 'Güç'],
-	'信道': ['Channel', 'Kanal'],
-	'加密': ['Encryption', 'Şifreleme'],
-	'隐藏 SSID': ['Hidden SSID', 'Gizli SSID'],
-	'国家': ['Country', 'Ülke'],
-	'AP 状态': ['AP status', 'AP durumu'],
-	'USB 网络': ['USB network', 'USB ağı'],
-	'连接跟踪': ['Connection tracking', 'Bağlantı izleme'],
-	'LAN 地址': ['LAN address', 'LAN adresi'],
-	'无线客户端': ['Wi-Fi clients', 'Wi-Fi istemcileri'],
-	'DHCP 租约': ['DHCP leases', 'DHCP kiraları'],
-	'设备型号': ['Device model', 'Cihaz modeli'],
-	'系统': ['System', 'Sistem'],
-	'调制解调器': ['Modem', 'Modem'],
-	'运营商': ['Carrier', 'Operatör'],
-	'模组': ['Module', 'Modül'],
-	'固件': ['Firmware', 'Ürün yazılımı'],
-	'显示卡号信息': ['Show SIM identifiers', 'SIM kimliklerini göster'],
-	'隐藏卡号信息': ['Hide SIM identifiers', 'SIM kimliklerini gizle'],
-	'快捷控制': ['Quick controls', 'Hızlı denetimler'],
-	'数据连接': ['Data connection', 'Veri bağlantısı'],
-	'蜂窝射频': ['Cellular radio', 'Hücresel radyo'],
-	'Wi-Fi 热点': ['Wi-Fi hotspot', 'Wi-Fi erişim noktası'],
-	'重启调制解调器': ['Restart modem', 'Modemi yeniden başlat'],
-	'重启设备': ['Restart device', 'Cihazı yeniden başlat'],
-	'切换到 Android': ['Switch to Android', 'Android’e geç'],
-	'邻区': ['Neighbor cells', 'Komşu hücreler'],
-	'制式/频段': ['RAT/Band', 'Teknoloji/Bant'],
-	'频点': ['Frequency', 'Frekans'],
-	'暂无邻区数据': ['No neighbor-cell data', 'Komşu hücre verisi yok'],
-	'已锁定': ['Locked', 'Kilitli'],
-	'锁定小区': ['Lock cell', 'Hücreyi kilitle'],
-	'锁定': ['Lock', 'Kilitle'],
-	'已运行': ['Uptime', 'Çalışma süresi'],
-	'无线电已关': ['Radio off', 'Radyo kapalı'],
-	'未驻留小区': ['No serving cell', 'Bağlı olunan hücre yok'],
-	'无应答': ['No response', 'Yanıt yok'],
-	'信号': ['Signal', 'Sinyal'],
-	'优秀': ['Excellent', 'Mükemmel'],
-	'良好': ['Good', 'İyi'],
-	'一般': ['Fair', 'Orta'],
-	'较差': ['Poor', 'Zayıf'],
-	'未知': ['Unknown', 'Bilinmiyor'],
-	'未注册': ['Not registered', 'Kayıtlı değil'],
-	'已注册（漫游）': ['Registered (roaming)', 'Kayıtlı (dolaşım)'],
-	'已注册': ['Registered', 'Kayıtlı'],
-	'搜索中': ['Searching', 'Aranıyor'],
-	'注册被拒': ['Registration denied', 'Kayıt reddedildi'],
-	'仅紧急': ['Emergency only', 'Yalnızca acil arama'],
-	'状态': ['Status', 'Durum'],
-	'LTE 锚点': ['LTE anchor', 'LTE bağlantı noktası'],
-	'LTE 链路': ['LTE link', 'LTE bağlantısı'],
-	'锚点': ['Anchor', 'Bağlantı noktası'],
-	'已隐藏': ['Hidden', 'Gizli'],
-	'运行中': ['Running', 'Çalışıyor'],
-	'未运行': ['Not running', 'Çalışmıyor'],
-	'已连接': ['Connected', 'Bağlı'],
-	'未连接': ['Disconnected', 'Bağlı değil'],
-	'未读': ['unread', 'okunmamış'],
-	' 条未读': [' unread', ' okunmamış'],
-	'约半分钟': ['about 30 seconds', 'yaklaşık 30 saniye'],
-	'近期 DHCP 租约': ['Recent DHCP leases', 'Son DHCP kiraları'],
-	'主板': ['Board', 'Anakart'],
-	'无温度读数': ['No temperature readings', 'Sıcaklık verisi yok'],
-	'在线': ['Online', 'Çevrimiçi'],
-	'AT 适配器不可用': ['AT adapter unavailable', 'AT bağdaştırıcısı kullanılamıyor'],
-	'正在执行': ['Running', 'Çalıştırılıyor'],
-	'已后台执行': ['Started in background', 'Arka planda başlatıldı'],
-	'已执行': ['Done', 'Tamamlandı'],
-	'失败': ['Failed', 'Başarısız'],
-	'未知错误': ['Unknown error', 'Bilinmeyen hata'],
-	'调用失败': ['Request failed', 'İstek başarısız'],
-	'正在断开数据连接': ['Disconnecting data', 'Veri bağlantısı kesiliyor'],
-	'正在拨号': ['Connecting data', 'Veri bağlantısı kuruluyor'],
-	'关闭蜂窝射频': ['Turn off cellular radio', 'Hücresel radyoyu kapat'],
-	'打开蜂窝射频': ['Turn on cellular radio', 'Hücresel radyoyu aç'],
-	'蜂窝连接会中断': ['Cellular connectivity will be interrupted', 'Hücresel bağlantı kesilecek'],
-	'将执行 SFUN 上电序列（最多约 1 分钟）': ['The SFUN power-on sequence will run (up to about 1 minute)', 'SFUN açılış sırası çalışacak (yaklaşık 1 dakikaya kadar)'],
-	'蜂窝连接会中断 1-2 分钟': ['Cellular connectivity may stop for 1–2 minutes', 'Hücresel bağlantı 1–2 dakika kesilebilir'],
-	'重启整个设备': ['Restart the entire device', 'Tüm cihazı yeniden başlat'],
-	'所有连接会断开': ['All connections will be interrupted', 'Tüm bağlantılar kesilecek'],
-	'切换到 Android 系统': ['Switch to Android', 'Android sistemine geç'],
-	'下次启动将进入 Android 并立即重启，此管理页面与蜂窝共享都会断开': ['The next boot will enter Android and reboot now. This management page and cellular sharing will disconnect', 'Sonraki açılış Android’e geçecek ve cihaz şimdi yeniden başlayacak. Yönetim sayfası ve hücresel paylaşım kesilecek'],
-	'回到 OpenWrt：在 Android 上执行 mu300-next-boot linux 后重启': ['To return to OpenWrt, run mu300-next-boot linux in Android and reboot', 'OpenWrt’ye dönmek için Android’de mu300-next-boot linux çalıştırıp yeniden başlatın'],
-	'或什么都不做，连续 5 次开机未完成会自动回退': ['Or do nothing: five failed boots trigger automatic fallback', 'Ya da hiçbir şey yapmayın: beş başarısız açılışta otomatik geri dönülür'],
-	'切换并重启': ['Switch and reboot', 'Geç ve yeniden başlat'],
-	'正在武装 Android 引导并重启': ['Preparing Android boot and rebooting', 'Android açılışı hazırlanıyor ve yeniden başlatılıyor'],
-	'协议栈会重启（SFUN），蜂窝断开约半分钟': ['The radio stack will restart (SFUN); cellular service will stop for about 30 seconds', 'Radyo yığını yeniden başlayacak (SFUN); hücresel bağlantı yaklaşık 30 saniye kesilecek'],
-	'正在后台锁定': ['Locking in background', 'Arka planda kilitleniyor'],
-	'已后台锁定': ['Lock started in background', 'Kilit arka planda başlatıldı'],
-	'稍后自动刷新状态': ['status will refresh shortly', 'durum birazdan yenilenecek'],
-	'锁定失败': ['Lock failed', 'Kilitleme başarısız'],
-	'确认': ['Confirm', 'Onayla'],
-	'确定': ['OK', 'Tamam'],
-	'取消': ['Cancel', 'İptal'],
-	'新短信': ['New SMS', 'Yeni SMS'],
-	'未知号码': ['Unknown number', 'Bilinmeyen numara'],
-	'中国移动': ['China Mobile', 'China Mobile'],
-	'中国联通': ['China Unicom', 'China Unicom'],
-	'中国电信': ['China Telecom', 'China Telecom'],
-	'中国广电': ['China Broadnet', 'China Broadnet'],
-	'中国铁通': ['China Tietong', 'China Tietong'],
-	' 天 ': [' d ', ' gün '],
-	' 小时': [' h', ' sa'],
-	' 分': [' min', ' dk'],
-	' 条': [' entries', ' kayıt'],
-	' 台': [' clients', ' istemci'],
-	' 簇': [' cluster', ' küme'],
-	'共 ': ['Total ', 'Toplam '],
-	'余 ': ['Free ', 'Boş '],
-	'簇': ['Cluster ', 'Küme '],
-	'否': ['No', 'Hayır'],
-	'状态看板': ['Dashboard', 'Durum paneli'],
-	'蜂窝': ['Cellular', 'Hücresel'],
-	'网络锁定': ['Network locks', 'Ağ kilitleri'],
-	'短信': ['SMS', 'SMS'],
-	'AT 终端': ['AT terminal', 'AT terminali'],
-	'适配设置': ['Adapter settings', 'Bağdaştırıcı ayarları'],
-	'主页刷新间隔（秒）': ['Home dashboard refresh interval (seconds)', 'Ana pano yenileme aralığı (saniye)'],
-	'仅控制主页状态看板的刷新频率；允许 0.5–60 秒，保存后重新进入主页生效。': ['Controls only the home dashboard refresh rate; 0.5–60 seconds. Reopen Home after saving to apply.', 'Yalnızca ana panonun yenileme hızını kontrol eder; 0,5–60 saniye. Kaydettikten sonra uygulamak için Ana Sayfa’yı yeniden açın.'],
-	'当前驻网': ['Serving network', 'Bağlı olunan ağ'],
-	'网络模式 · EN-DC': ['Network mode · EN-DC', 'Ağ modu · EN-DC'],
-	'自动（5G/4G）': ['Automatic (5G/4G)', 'Otomatik (5G/4G)'],
-	'仅 4G': ['4G only', 'Yalnızca 4G'],
-	'仅 5G SA': ['5G SA only', 'Yalnızca 5G SA'],
-	'仅 5G NSA': ['5G NSA only', 'Yalnızca 5G NSA'],
-	'自动': ['Automatic', 'Otomatik'],
-	'刷新锁定状态': ['Refresh lock status', 'Kilit durumunu yenile'],
-	'开机自动应用': ['Apply at startup', 'Başlangıçta uygula'],
-	'开机自动应用已': ['Apply at startup is ', 'Başlangıçta uygulama '],
-	'关闭后只停止下次开机回放，已保存的网络模式、EN-DC、频段和小区配置不会被删除。': ['Turning this off only stops replay at the next boot; saved network mode, EN-DC, band and cell settings remain.', 'Kapatılması yalnızca sonraki açılışta yeniden uygulamayı durdurur; kayıtlı ağ modu, EN-DC, bant ve hücre ayarları korunur.'],
-	'频段锁定': ['Band locking', 'Bant kilitleme'],
-	'NR 频段': ['NR bands', 'NR bantları'],
-	'LTE 频段': ['LTE bands', 'LTE bantları'],
-	'应用 NR 频段': ['Apply NR bands', 'NR bantlarını uygula'],
-	'应用 LTE 频段': ['Apply LTE bands', 'LTE bantlarını uygula'],
-	'邻区与小区锁定': ['Neighbor cells and cell locking', 'Komşu hücreler ve hücre kilidi'],
-	'锁定当前服务小区': ['Lock current serving cell', 'Geçerli hizmet hücresini kilitle'],
-	'解除小区锁定': ['Unlock cell', 'Hücre kilidini kaldır'],
-	'已锁定小区': ['Locked cells', 'Kilitli hücreler'],
-	'解锁': ['Unlock', 'Kilidi kaldır'],
-	' 小区锁定': [' cell lock', ' hücre kilidi'],
-	' 的小区锁定': [' cell lock', ' hücre kilidi'],
-	'应用后协议栈重启（SFUN），蜂窝会短暂断开；设置会持久保存，并在启用“开机自动应用”时由插件于 AT 就绪后回放。接入平台的射频前钩子时可无重启回放。频段全不选再点应用 = 恢复自动。': ['Applying restarts the radio stack (SFUN) and briefly interrupts cellular service. Settings are saved and replayed by the plugin after AT is ready when Apply at startup is enabled. A platform pre-radio hook can replay without a restart. Apply with no bands selected to restore automatic mode.', 'Uygulama radyo yığınını (SFUN) yeniden başlatır ve hücresel bağlantıyı kısa süre keser. Ayarlar kaydedilir ve Başlangıçta uygula etkinse AT hazır olduğunda eklenti tarafından yeniden uygulanır. Platformun radyo öncesi kancasıyla yeniden başlatmadan uygulanabilir. Otomatik moda dönmek için hiçbir bant seçmeden uygulayın.'],
-	'正在后台应用': ['Applying in background', 'Arka planda uygulanıyor'],
-	'协议栈会重启（SFUN），约半分钟': ['The radio stack will restart (SFUN), taking about 30 seconds', 'Radyo yığını yeniden başlayacak (SFUN), yaklaşık 30 saniye sürecek'],
-	'协议栈会重启（SFUN），蜂窝断开约半分钟': ['The radio stack will restart (SFUN); cellular service will stop for about 30 seconds', 'Radyo yığını yeniden başlayacak (SFUN); hücresel bağlantı yaklaşık 30 saniye kesilecek'],
-	'SFUN 重启约半分钟': ['SFUN restart takes about 30 seconds', 'SFUN yeniden başlatması yaklaşık 30 saniye sürer'],
-	'SFUN 重启 + 重新驻网，约半分钟': ['SFUN restart and re-registration take about 30 seconds', 'SFUN yeniden başlatması ve ağa yeniden kayıt yaklaşık 30 saniye sürer'],
-	'约半分钟': ['about 30 seconds', 'yaklaşık 30 saniye'],
-	'自动回读状态': ['status will be read back automatically', 'durum otomatik olarak geri okunacak'],
-	'NR 频段锁定': ['NR band lock', 'NR bant kilidi'],
-	'LTE 频段锁定': ['LTE band lock', 'LTE bant kilidi'],
-	'选择': ['Select', 'Seç'],
-	'已后台执行': ['Started in background', 'Arka planda başlatıldı'],
-	'已排队：另一项锁定正在应用（SFUN 重启中），随后自动生效': ['Queued: another lock is being applied during SFUN restart; this will take effect afterward', 'Sıraya alındı: SFUN yeniden başlarken başka bir kilit uygulanıyor; ardından etkinleşecek'],
-	'正在确认 EN-DC 状态': ['Confirming EN-DC status', 'EN-DC durumu doğrulanıyor'],
-	'正在确认开机自动应用': ['Confirming startup setting', 'Başlangıç ayarı doğrulanıyor'],
-	'正在直读调制解调器（最多几秒）': ['Reading modem directly (a few seconds at most)', 'Modem doğrudan okunuyor (en fazla birkaç saniye)'],
-	'已刷新': ['Refreshed', 'Yenilendi'],
-	'刷新失败': ['Refresh failed', 'Yenileme başarısız'],
-	'暂无驻网数据': ['No serving-network data', 'Bağlı olunan ağ verisi yok'],
-	'NR 服务小区': ['NR serving cell', 'NR hizmet hücresi'],
-	'回读超时，请点「刷新锁定状态」': ['Readback timed out; select “Refresh lock status”', 'Geri okuma zaman aşımına uğradı; “Kilit durumunu yenile”yi seçin'],
-	'状态已回读': ['Status confirmed', 'Durum doğrulandı'],
-	'已生效（EN-DC 不需要重启协议栈）': ['Applied (EN-DC does not require a radio-stack restart)', 'Uygulandı (EN-DC için radyo yığını yeniden başlatılmaz)'],
-	'状态回读超时，点「刷新锁定状态」确认': ['Status readback timed out; use “Refresh lock status” to confirm', 'Durum geri okuması zaman aşımına uğradı; doğrulamak için “Kilit durumunu yenile”yi kullanın'],
-	'已锁': ['Locked', 'Kilitli'],
-	'支持': ['supported', 'destekleniyor'],
-	' 个会话': [' conversations', ' görüşme'],
-	' 个': [' bands', ' bant'],
-	'网络模式': ['Network mode', 'Ağ modu'],
-	'关闭 EN-DC': ['Disable EN-DC', 'EN-DC’yi kapat'],
-	'开启 EN-DC': ['Enable EN-DC', 'EN-DC’yi aç'],
-	'关闭开机自动应用': ['Disable apply at startup', 'Başlangıçta uygulamayı kapat'],
-	'开启开机自动应用': ['Enable apply at startup', 'Başlangıçta uygulamayı aç'],
-	'关闭': ['Disabled', 'Kapalı'],
-	'开启': ['Enabled', 'Açık'],
-	'已开启': [' enabled', ' etkin'],
-	'已关闭': [' disabled', ' devre dışı'],
-	'应用': ['Apply', 'Uygula'],
-	'恢复自动': ['Restore automatic', 'Otomatiğe dön'],
-	'解除': ['Unlock', 'Kilidi kaldır'],
-	'正在解除': ['Unlocking', 'Kilit kaldırılıyor'],
-	'解锁失败': ['Unlock failed', 'Kilit kaldırılamadı'],
-	'已后台解除': ['Unlock started in background', 'Kilit kaldırma arka planda başlatıldı'],
-	'重新驻网': ['re-registering', 'yeniden ağa kaydoluyor'],
-	'回读状态': ['read back status', 'durumu geri oku'],
-	'基础': ['Basic', 'Temel'],
-	'注册/信号': ['Registration/signal', 'Kayıt/sinyal'],
-	'承载': ['Bearer', 'Taşıyıcı'],
-	'工程模式': ['Engineering mode', 'Mühendislik modu'],
-	'AT 命令（↑↓ 翻历史，Enter 发送）': ['AT command (↑↓ history, Enter to send)', 'AT komutu (↑↓ geçmiş, göndermek için Enter)'],
-	'发送': ['Send', 'Gönder'],
-	'清屏': ['Clear screen', 'Ekranı temizle'],
-	'就绪': ['Ready', 'Hazır'],
-	'会话历史（点击复用）': ['Session history (click to reuse)', 'Oturum geçmişi (yeniden kullanmak için tıklayın)'],
-	'无输出': ['No output', 'Çıktı yok'],
-	'错误': ['Error', 'Hata'],
-	'AT 通道正忙，命令未发出': ['AT channel busy; command not sent', 'AT kanalı meşgul; komut gönderilmedi'],
-	'空': ['Empty', 'Boş'],
-	'收件人：号码，如 10086 或 +86...': ['Recipient: number, e.g. 10086 or +86...', 'Alıcı: numara, ör. 10086 veya +86...'],
-	'刷新': ['Refresh', 'Yenile'],
-	'从 SIM 同步': ['Sync from SIM', 'SIM’den eşitle'],
-	'清空本地池': ['Clear local pool', 'Yerel havuzu temizle'],
-	'加载中': ['Loading', 'Yükleniyor'],
-	'选择左侧会话，或直接在下方输入号码发送。': ['Select a conversation on the left, or enter a number below to send.', 'Soldan bir görüşme seçin veya göndermek için aşağıya bir numara girin.'],
-	'短信内容（Enter 发送，Shift+Enter 换行）': ['Message (Enter to send, Shift+Enter for newline)', 'Mesaj (göndermek için Enter, yeni satır için Shift+Enter)'],
-	'发送走 AT+CMGS（PDU 模式）；通道忙会提示重试。删除单条：在气泡上右键（手机长按）。': ['Sending uses AT+CMGS (PDU mode); retry if the channel is busy. To delete one message, right-click its bubble (long-press on mobile).', 'Gönderme AT+CMGS (PDU modu) kullanır; kanal meşgulse yeniden deneyin. Bir mesajı silmek için balona sağ tıklayın (mobilde uzun basın).'],
-	'正在后台从 SIM 同步（AT+CMGL）': ['Syncing from SIM in background (AT+CMGL)', 'SIM’den arka planda eşitleniyor (AT+CMGL)'],
-	'SIM 同步已开始，几秒后自动刷新': ['SIM sync started; refreshing shortly', 'SIM eşitlemesi başladı; birazdan yenilenecek'],
-	'清空本地短信池': ['Clear local SMS pool', 'Yerel SMS havuzunu temizle'],
-	'只删本地文件，SIM 上的不动': ['Only local files will be deleted; messages on the SIM remain.', 'Yalnızca yerel dosyalar silinir; SIM’deki mesajlar korunur.'],
-	'清空': ['Clear', 'Temizle'],
-	'删除这条短信': ['Delete this SMS', 'Bu SMS’i sil'],
-	'删除后不可恢复': ['Deletion cannot be undone', 'Silme işlemi geri alınamaz'],
-	'仅删本地': ['Local only', 'Yalnızca yerel'],
-	'本地 + SIM': ['Local + SIM', 'Yerel + SIM'],
-	'删除失败': ['Delete failed', 'Silme başarısız'],
-	'已删除': ['Deleted', 'Silindi'],
-	'已删除（仅本地）': ['Deleted (local only)', 'Silindi (yalnızca yerel)'],
-	'删除': ['Delete', 'Sil'],
-	'号码和内容都要填': ['Enter both a number and a message', 'Numara ve mesaj girin'],
-	'发送中': ['Sending', 'Gönderiliyor'],
-	'已发送，稍后自动刷新': ['Sent; refreshing shortly', 'Gönderildi; birazdan yenilenecek'],
-	'发送失败': ['Send failed', 'Gönderme başarısız'],
-	'AT 通道正忙，稍后重试': ['AT channel busy; retry shortly', 'AT kanalı meşgul; birazdan yeniden deneyin'],
-	'池子是空的：收到/发出的短信会出现在这里，或点「从 SIM 同步」。': ['The pool is empty. Incoming and sent messages appear here, or select “Sync from SIM”.', 'Havuz boş. Gelen ve gönderilen mesajlar burada görünür veya “SIM’den eşitle”yi seçin.'],
-	'我: ': ['Me: ', 'Ben: '],
-	'这里定义插件与当前紫光 OpenWrt 的边界。修改后无需改动看板、AT、锁定或短信页面。': ['Configure how this plugin connects to the current Unisoc OpenWrt platform. Changes do not require editing the dashboard, AT, locks or SMS pages.', 'Bu eklentinin mevcut Unisoc OpenWrt platformuna nasıl bağlandığını yapılandırın. Değişiklikler panel, AT, kilit veya SMS sayfalarını düzenlemeyi gerektirmez.'],
-	'平台适配': ['Platform adapter', 'Platform bağdaştırıcısı'],
-	'AT 后端': ['AT backend', 'AT arka ucu'],
-	'自动检测': ['Auto-detect', 'Otomatik algıla'],
-	'atinout + 串口': ['atinout + serial port', 'atinout + seri port'],
-	'自定义适配器': ['Custom adapter', 'Özel bağdaştırıcı'],
-	'AT 串口': ['AT serial port', 'AT seri portu'],
-	'自定义 AT 适配器': ['Custom AT adapter', 'Özel AT bağdaştırıcısı'],
-	'可执行文件依次接收超时秒数和完整 AT 命令。它必须与平台拨号程序共享串口锁。': ['The executable receives a timeout in seconds and the complete AT command, in that order. It must share the serial lock with the platform dialer.', 'Yürütülebilir dosya sırayla saniye cinsinden zaman aşımını ve tam AT komutunu alır. Seri port kilidini platform arama programıyla paylaşmalıdır.'],
-	'短信适配器': ['SMS adapter', 'SMS bağdaştırıcısı'],
-	'实现 list、show、send、delete、sync 子命令；留空时自动查找 mu300-sms。': ['Implement the list, show, send, delete and sync subcommands; leave blank to find mu300-sms automatically.', 'list, show, send, delete ve sync alt komutlarını uygulayın; mu300-sms otomatik bulunsun diye boş bırakın.'],
-	'短信池目录': ['SMS pool directory', 'SMS havuzu dizini'],
-	'蜂窝逻辑接口': ['Cellular logical interface', 'Hücresel mantıksal arabirim'],
-	'蜂窝 IPv6 接口': ['Cellular IPv6 interface', 'Hücresel IPv6 arabirimi'],
-	'蜂窝网卡': ['Cellular network device', 'Hücresel ağ aygıtı'],
-	'留空则从 netifd 自动获取': ['Leave blank to detect from netifd', 'netifd’den otomatik algılamak için boş bırakın'],
-	'LAN 网桥': ['LAN bridge', 'LAN köprüsü'],
-	'Wi-Fi 网卡': ['Wi-Fi device', 'Wi-Fi aygıtı'],
-	'USB 网卡': ['USB device', 'USB aygıtı'],
-	'等待 AT 就绪上限（秒）': ['Maximum wait for AT readiness (seconds)', 'AT hazır olma üst bekleme süresi (saniye)'],
-	'持久化状态目录': ['Persistent state directory', 'Kalıcı durum dizini'],
-	'，': [', ', ', '],
-	'。': ['.', '.'],
-	'；': ['; ', '; '],
-	'：': [': ', ': '],
-	'（': ['(', '('],
-	'）': [')', ')'],
-	'？': ['?', '?'],
-	'「': ['“', '“'],
-	'」': ['”', '”']
-};
-var DASH_KEYS = Object.keys(DASH_I18N).sort(function(a, b) { return b.length - a.length; });
-var DASH_PATTERN = new RegExp(DASH_KEYS.map(function(k) { return k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }).join('|'), 'g');
-function uiLanguage() {
-	var lang = (L.env && L.env.lang) || document.documentElement.lang || navigator.language || 'en';
-	if (lang === 'auto') lang = document.documentElement.lang || navigator.language || 'en';
-	lang = String(lang).toLowerCase().replace('_', '-');
-	return lang.indexOf('zh') === 0 ? 'zh' : lang.indexOf('tr') === 0 ? 'tr' : 'en';
-}
-function translate(text) {
-	var lang = uiLanguage();
-	if (lang === 'zh' || text == null) return String(text == null ? '' : text);
-	var column = lang === 'tr' ? 1 : 0;
-	return String(text).replace(DASH_PATTERN, function(key) { return DASH_I18N[key][column]; });
-}
-function localize(root) {
-	if (uiLanguage() === 'zh' || !root) return;
-	var walk = document.createTreeWalker(root, NodeFilter.SHOW_TEXT), node;
-	while ((node = walk.nextNode())) {
-		if (node.parentElement && /^(SCRIPT|STYLE|TEXTAREA)$/.test(node.parentElement.tagName)) continue;
-		var translated = translate(node.nodeValue);
-		if (translated !== node.nodeValue) node.nodeValue = translated;
-	}
-	var elements = [root].concat(Array.prototype.slice.call(root.querySelectorAll('*')));
-	elements.forEach(function(el) {
-		[ 'title', 'placeholder', 'aria-label' ].forEach(function(attr) {
-			if (el.hasAttribute && el.hasAttribute(attr)) el.setAttribute(attr, translate(el.getAttribute(attr)));
-		});
-	});
-}
-var menuObserver, menuRoot;
-function localizeMenu() {
-	/* Bootstrap builds #topmenu asynchronously, often after the view renders.
-	 * Its parent dropdown uses href="#", so link-URL matching alone misses 蜂窝. */
-	var root = document.getElementById('topmenu');
-	if (!root || !root.querySelectorAll) return;
-	var update = function() {
-		if (uiLanguage() === 'zh') return;
-		Array.prototype.forEach.call(root.querySelectorAll('a[href*="/admin/home"], a[href*="/admin/modem"]'), localize);
-		Array.prototype.forEach.call(root.children, function(li) {
-			var a = li.querySelector('a');
-			if (a && a.textContent.trim() === '蜂窝') localize(a);
-		});
-	};
-	if (menuRoot !== root) {
-		if (menuObserver) menuObserver.disconnect();
-		menuRoot = root;
-		if (typeof MutationObserver !== 'undefined') {
-			menuObserver = new MutationObserver(update);
-			menuObserver.observe(root, { childList: true, subtree: true });
-		}
-	}
-	update();
-}
+/* Views not yet converted to _() still call these; they do nothing now, and go when the views stop calling them. */
+function translate(text) { return text == null ? '' : String(text); }
+function localize(root) {}
+function localizeMenu() {}
 
-/* 大陆运营商 PLMN -> 名称；COPS 给数字格式时用它还原 */
+/* Mainland carriers by PLMN, for when COPS gives the numeric format. The names are messages: translated once, when
+ * the module loads (a page's language does not change without a reload). */
 var PLMN_CN = {
-	'46000': '中国移动', '46002': '中国移动', '46004': '中国移动', '46007': '中国移动', '46008': '中国移动',
-	'46001': '中国联通', '46006': '中国联通', '46009': '中国联通',
-	'46003': '中国电信', '46005': '中国电信', '46011': '中国电信', '46012': '中国电信',
-	'46015': '中国广电', '46020': '中国铁通'
+	'46000': _('China Mobile'), '46002': _('China Mobile'), '46004': _('China Mobile'), '46007': _('China Mobile'), '46008': _('China Mobile'),
+	'46001': _('China Unicom'), '46006': _('China Unicom'), '46009': _('China Unicom'),
+	'46003': _('China Telecom'), '46005': _('China Telecom'), '46011': _('China Telecom'), '46012': _('China Telecom'),
+	'46015': _('China Broadnet'), '46020': _('China Tietong')
 };
 
-function carrierName(op) {
-	if (!op) return '--';
-	return translate(op.name || PLMN_CN[op.plmn] || op.plmn || '--');
+/* COPS gives a name (shown through the catalogs, so a known English name is translated) or a numeric PLMN */
+function carrierName(carrier) {
+	if (!carrier) return '--';
+	if (carrier.name) return _(carrier.name);
+	return PLMN_CN[carrier.plmn] || carrier.plmn || '--';
 }
 
-/* 信号质量分级（阈值来自 ufi_tools 的 SignalQuality.kt），返回 CSS 颜色表达式 */
+/* Signal quality grade (thresholds from ufi_tools' SignalQuality.kt), shown as a translated label; qCol gives the
+ * label's CSS colour expression */
 function qLabel(rsrp, rsrq, sinr) {
-	if (rsrp == null && sinr == null && rsrq == null) return '未知';
+	if (rsrp == null && sinr == null && rsrq == null) return _('Unknown');
 	if (rsrp != null) {
-		if (rsrp >= -90) return '优秀';
-		if (rsrp >= -100) return '良好';
-		if (rsrp >= -110) return '一般';
-		return '较差';
+		if (rsrp >= -90) return _('Excellent');
+		if (rsrp >= -100) return _('Good');
+		if (rsrp >= -110) return _('Fair');
+		return _('Poor');
 	}
 	if (sinr != null) {
-		if (sinr >= 20) return '优秀';
-		if (sinr >= 13) return '良好';
-		if (sinr >= 0) return '一般';
-		return '较差';
+		if (sinr >= 20) return _('Excellent');
+		if (sinr >= 13) return _('Good');
+		if (sinr >= 0) return _('Fair');
+		return _('Poor');
 	}
-	if (rsrq >= -8) return '优秀';
-	if (rsrq >= -11) return '良好';
-	if (rsrq >= -14) return '一般';
-	return '较差';
+	if (rsrq >= -8) return _('Excellent');
+	if (rsrq >= -11) return _('Good');
+	if (rsrq >= -14) return _('Fair');
+	return _('Poor');
 }
 function qCol(label) {
 	switch (label) {
-		case '优秀': return 'var(--success, #2FBF71)';
-		case '良好': return 'color-mix(in oklab, var(--success, #7BC96F) 62%, var(--text, #444))';
-		case '一般': return 'var(--warning, #F2B544)';
-		case '较差': return 'var(--danger, #E25555)';
+		case _('Excellent'): return 'var(--success, #2FBF71)';
+		case _('Good'): return 'color-mix(in oklab, var(--success, #7BC96F) 62%, var(--text, #444))';
+		case _('Fair'): return 'var(--warning, #F2B544)';
+		case _('Poor'): return 'var(--danger, #E25555)';
 		default:     return 'var(--text-subtle, var(--text-light, #8A8F98))';
 	}
 }
-/* 10 分制：RSRP 40% / RSRQ 25% / SINR 35%，锚点插值，缺项权重重分配 */
+/* A 0-10 score: RSRP 40% / RSRQ 25% / SINR 35%, interpolated between anchors, a missing value's weight shared out */
 function interp(v, pts) {
 	if (v == null) return null;
 	for (var i = 0; i < pts.length - 1; i++)
@@ -503,7 +101,7 @@ function qScore(s) {
 	return w == 0 ? null : Math.max(0, Math.min(10, sum / w));
 }
 
-/* ---------------------------------------------------------------- 格式化 */
+/* ------------------------------------------------------------- formatting */
 function esc(s) {
 	return String(s == null ? '' : s).replace(/[&<>"']/g, function(c) {
 		return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
@@ -524,12 +122,12 @@ function fmtRate(bps) {
 function fmtUptime(s) {
 	if (s == null) return '--';
 	var d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60);
-	if (d > 0) return d + ' 天 ' + h + ' 小时';
-	if (h > 0) return h + ' 小时 ' + m + ' 分';
-	return m + ' 分';
+	if (d > 0) return _('%d d %d h').format(d, h);
+	if (h > 0) return _('%d h %d min').format(h, m);
+	return _('%d min').format(m);
 }
 
-/* ------------------------------------------------------------------ 样式 */
+/* ----------------------------------------------------------------- styles */
 var CSS = `
 /* Bootstrap exposes a different token family. Only activate this bridge when
  * Aurora's --surface token is absent, so existing Aurora styling wins intact.
@@ -548,10 +146,11 @@ html.mud-bootstrap-theme{--surface:var(--background-color-high);--surface-sunken
 .mud-sec>h3::before{content:'';display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--brand,var(--primary,#2f7bf6));margin-right:7px;vertical-align:1px}
 .mud-cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:0 28px}
 .mud-body>.mud-sec+.mud-sec{border-top:1px dashed color-mix(in oklab,var(--hairline,var(--border,#ddd)) 60%,transparent);margin-top:14px;padding-top:2px}
-/* 首屏骨架：卡片正常占位，只让待填字段呼吸；第一份快照到达后停止。 */
+/* First-paint skeleton: the cards keep their place, only the fields still to fill pulse; it stops at the first
+ * snapshot. */
 @keyframes mudpulse{0%,100%{opacity:1}50%{opacity:.35}}
 .mud-booting .mud-v,.mud-booting .mud-kpi b,.mud-booting .mud-rsrp,.mud-booting .mud-rat,.mud-booting .mud-temp span{animation:mudpulse 1.1s ease-in-out infinite}
-/* 紧凑键值行：键与值相邻排布（不两端对齐拉开），用于驻网参照等 */
+/* Compact key-value line: key and value side by side (not justified apart), e.g. for the serving network */
 .mud-srvline{display:flex;flex-wrap:wrap;gap:4px 10px;padding:2px 0;font-size:.84rem}
 .mud-srvline .k{color:var(--text-muted,var(--text-light,#777));flex:0 0 auto}
 .mud-srvline .v{font-variant-numeric:tabular-nums;font-weight:500}
@@ -607,7 +206,7 @@ html.mud-bootstrap-theme{--surface:var(--background-color-high);--surface-sunken
 .mud-cli{padding:4px 8px;border-radius:var(--radius-base,.5rem);border:1px solid color-mix(in oklab,var(--hairline,var(--border,#ddd)) 55%,transparent);margin-bottom:5px}
 .mud-cli .t{display:flex;justify-content:space-between;gap:8px;align-items:baseline}
 .mud-cli .s{font-size:.72rem;color:var(--text-muted,var(--text-light,#888));font-variant-numeric:tabular-nums;margin-top:1px}
-/* ---- 聊天式短信 ---- */
+/* ---- chat-style SMS ---- */
 .mud-chat{display:flex;gap:12px;min-height:420px}
 .mud-convs{flex:0 0 240px;overflow:auto;max-height:520px}
 .mud-conv{padding:7px 9px;border-radius:var(--radius-base,.5rem);cursor:pointer;margin-bottom:4px;border:1px solid transparent}
@@ -625,7 +224,7 @@ html.mud-bootstrap-theme{--surface:var(--background-color-high);--surface-sunken
 .mud-comp input{flex:0 0 170px}
 .mud-comp textarea{flex:1;resize:none;min-height:40px;max-height:120px}
 @media(max-width:700px){.mud-chat{flex-direction:column}.mud-convs{flex:none;max-height:150px}.mud-thread{border-left:none;padding-left:0;border-top:1px solid var(--hairline,var(--border,#ddd));padding-top:8px}}
-/* ---- 专业 AT 终端 ---- */
+/* ---- AT terminal ---- */
 .mud-at-grid{display:grid;grid-template-columns:1fr 220px;gap:10px}
 .mud-at-grid .mud-scroll{max-height:340px}
 @media(max-width:700px){.mud-at-grid{grid-template-columns:1fr}.mud-term{height:300px}.mud-at-grid .mud-scroll{max-height:120px}}
@@ -650,14 +249,15 @@ html.mud-bootstrap-theme{--surface:var(--background-color-high);--surface-sunken
 .mud-sms-item:hover{background:var(--hover-faint,rgba(127,127,127,.05))}
 .mud-sms-top{display:flex;justify-content:space-between;gap:8px;align-items:baseline}
 .mud-badge{display:flex;align-items:center;justify-content:center;font-size:.68rem;padding:0 7px;min-width:20px;height:20px;box-sizing:border-box;border-radius:99px;background:var(--brand,var(--primary,#2f7bf6));color:var(--on-brand,#fff)}
-/* 手机端 hero 与锁定页一致：信息块在上、RSRP 块自然换行到下一行（右对齐） */
+/* Phone-width hero, as on the lock page: the info block on top, the RSRP block wrapping to the next line (right-
+ * aligned) */
 @media(max-width:600px){
 .mud-hero{gap:8px}
 .mud-hero-l{flex:1 1 100%}
 .mud-hero-r{flex:1 0 100%;flex-direction:row;justify-content:space-between;align-items:baseline;text-align:left}
 .mud-rsrp{font-size:1.9rem}
 .mud-chips{justify-content:flex-end}}
-/* ---- 顶部 toast 与按钮忙碌态（各页共用的反馈框架） ---- */
+/* ---- top toasts and busy buttons (the feedback framework every page shares) ---- */
 .mud-toasts{position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:9999;display:flex;flex-direction:column;gap:8px;align-items:center;pointer-events:none;width:max-content;max-width:min(92vw,560px)}
 .mud-toast{pointer-events:auto;display:flex;align-items:center;gap:9px;padding:9px 16px;border-radius:99px;background:var(--surface,var(--background,#fff));border:1px solid var(--hairline,var(--border,#ddd));box-shadow:0 6px 24px rgba(0,0,0,.14);font-size:.82rem;color:var(--text,#222);animation:mudtoast-in .22s ease-out;max-width:100%}
 .mud-toast.out{animation:mudtoast-out .25s ease-in forwards}
@@ -674,29 +274,29 @@ html.mud-bootstrap-theme{--surface:var(--background-color-high);--surface-sunken
 .mud-toast.notify .mud-nb span{font-size:.76rem;color:var(--text-muted,var(--text-light,#888));overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
 .mud-btn .mud-spin,.mud-lockbtn .mud-spin{flex:0 0 auto;width:12px;height:12px;border-radius:50%;border:2px solid color-mix(in oklab,currentColor 30%,transparent);border-top-color:currentColor;animation:mudspin .7s linear infinite}
 .mud-btn.busy,.mud-lockbtn.busy{pointer-events:none;opacity:.75}
-/* ---- 主题化对话框（替代浏览器 confirm/alert） ---- */
+/* ---- themed dialogs (instead of the browser's confirm/alert) ---- */
 .mud-dlg-wrap{position:fixed;inset:0;z-index:10000;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.42);animation:mudfade-in .16s ease-out;padding:20px}
 .mud-dlg{background:var(--surface,var(--background,#fff));border:1px solid var(--hairline,var(--border,#ddd));border-radius:calc(var(--radius-base,.5rem) + .5rem);box-shadow:0 18px 50px rgba(0,0,0,.28);max-width:420px;width:100%;padding:18px 20px 16px;animation:muddlg-in .2s cubic-bezier(.2,.9,.3,1.15)}
 .mud-dlg h4{margin:0 0 8px;font-size:.95rem;font-weight:700;color:var(--text,#222)}
 .mud-dlg .mud-dlg-msg{font-size:.84rem;line-height:1.6;color:var(--text-muted,var(--text-light,#666));white-space:pre-wrap;word-break:break-word}
 .mud-dlg .mud-dlg-btns{display:flex;gap:8px;justify-content:flex-end;margin-top:16px;flex-wrap:wrap}
-/* 短信气泡的删除按钮：红色垃圾桶，平时隐淡、悬停显形；正文留出右侧空间防重叠 */
+/* An SMS bubble's delete button: a red bin, faint until hovered; the text keeps room on the right so they do not
+ * overlap */
 .mud-bub{position:relative;padding-right:28px}
 .mud-del{position:absolute;top:2px;right:2px;display:flex;align-items:center;justify-content:center;width:24px;height:24px;padding:0;border:none;background:transparent;color:var(--danger,#E25555);opacity:.4;cursor:pointer;border-radius:50%}
 .mud-del:hover{opacity:.9;background:color-mix(in oklab,var(--danger,#E25555) 12%,transparent)}
 .mud-del svg{display:block}
-/* 预览 -> 全文回填的过渡动画，消除首载的生硬跳变 */
+/* Fade from the preview to the full text, so the first load does not jump */
 @keyframes mudfadein{from{opacity:.25}to{opacity:1}}
 .mud-bub .bd.fadein{animation:mudfadein .25s ease-out}
 @keyframes muddlg-in{from{opacity:0;transform:scale(.94) translateY(10px)}to{opacity:1;transform:none}}
 @keyframes mudfade-in{from{opacity:0}to{opacity:1}}
-/* 手机端锁定页 hero：RSRP 数字左对齐（其余屏幕保持右对齐） */
+/* Phone-width lock page hero: the RSRP number left-aligned (right-aligned on other screens) */
 @media(max-width:600px){
 .mud-rsrp{text-align:left}}
 `;
 
 function injectCss() {
-	localizeMenu();
 	// Discard our own aliases before probing, otherwise the second LuCI page
 	// would mistake this bridge for Aurora and turn it off.
 	document.documentElement.classList.remove('mud-bootstrap-theme');
@@ -725,7 +325,7 @@ function spark(el, arr, min, max, win) {
 		pts.push([ i / (win - 1) * w,
 			h - Math.max(0, Math.min(1, (arr[i] - min) / (max - min || 1))) * (h - 3) - 1.5 ]);
 	}
-	/* Catmull-Rom 转三次贝塞尔：折线变平滑曲线 */
+	/* Catmull-Rom to cubic Bezier: the polyline becomes a smooth curve */
 	var d = 'M' + pts[0][0].toFixed(1) + ',' + pts[0][1].toFixed(1);
 	for (var i = 0; i < pts.length - 1; i++) {
 		var p0 = pts[Math.max(0, i - 1)], p1 = pts[i], p2 = pts[i + 1], p3 = pts[Math.min(pts.length - 1, i + 2)];
@@ -744,9 +344,9 @@ function spark(el, arr, min, max, win) {
 		'<path d="' + d + '" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" vector-effect="non-scaling-stroke"/></svg>';
 }
 
-/* 邻区表（主页与网络锁定页共用）：NR 置顶按 RSRP 排序，行尾带锁定按钮。
- * lockedCell 是 lock_get 的 cell 字段（如 "nr:627264,501"），命中行显示灰色"已锁定"。
- * 点击事件由页面用事件委托绑定（[data-lock] 属性："<rat>:<arfcn>,<pci>"）。 */
+/* The neighbour-cell table (home and lock pages): NR first, by RSRP, a lock button at the end of each row.
+ * lockedCell is lock_get's cell field (e.g. "nr:627264,501"); a matching row shows a grey "Locked".
+ * Pages bind the clicks by event delegation ([data-lock] attribute: "<rat>:<arfcn>,<pci>"). */
 function neighborRows(c, lockedCell) {
 	var nb = (c && c.neigh) || [];
 	nb.sort(function(a, b) {
@@ -754,7 +354,7 @@ function neighborRows(c, lockedCell) {
 		return (b.rsrp || -999) - (a.rsrp || -999);
 	});
 	if (!nb.length)
-		return '<tr><td colspan="7" style="color:var(--text-muted,var(--text-light,#777))">' + esc(translate('暂无邻区数据')) + '</td></tr>';
+		return '<tr><td colspan="7" style="color:var(--text-muted,var(--text-light,#777))">' + esc(_('No neighbor-cell data')) + '</td></tr>';
 	var lk = Array.isArray(lockedCell) ? lockedCell.join('|') : (lockedCell || '');
 	return nb.map(function(n) {
 		var l = qLabel(n.rsrp, n.rsrq, n.sinr);
@@ -767,15 +367,15 @@ function neighborRows(c, lockedCell) {
 			'<td>' + (n.rsrq != null ? n.rsrq.toFixed(1) : '--') + '</td>' +
 			'<td>' + (n.sinr != null ? n.sinr.toFixed(1) : '--') + '</td>' +
 			'<td><button class="mud-lockbtn' + (isLocked ? ' locked' : '') + '" data-lock="' + key + '"' +
-			(isLocked ? ' disabled' : '') + '>' + esc(translate(isLocked ? '已锁定' : '锁定')) + '</button></td></tr>';
+			(isLocked ? ' disabled' : '') + '>' + esc(isLocked ? _('Locked') : _('Lock')) + '</button></td></tr>';
 	}).join('');
 }
 
-/* ------------------------------------------------------------------ 反馈框架
- * M.toast(text, {type, timeout})：顶部弹出的统一提示，type = info|success|error|busy
- * （busy 自带转圈点，适合“正在…”进行态）。返回句柄 {update(text,type), close()}，
- * 长操作可以一路 update 下去而不堆叠。timeout=0 表示不自动消失。
- * M.busy(btn[, on])：给按钮加/去内嵌转圈并禁点；不传 on 则翻转。 */
+/* --------------------------------------------------------------- feedback
+ * M.toast(text, {type, timeout}): one notice at the top, type = info|success|error|busy (busy has a spinner, for
+ * work in progress). Returns {update(text, type), close()}, so a long operation updates one toast instead of
+ * stacking them. timeout = 0: it stays. text is shown as given (callers pass _() messages).
+ * M.busy(btn[, on]): adds/removes a spinner in a button and disables it; without on, toggles. */
 function toast(text, opts) {
 	opts = opts || {};
 	if (!document.getElementById('mud-toasts')) {
@@ -787,7 +387,7 @@ function toast(text, opts) {
 	var t = document.createElement('div');
 	t.className = 'mud-toast ' + (opts.type || 'info');
 	t.innerHTML = '<i class="mud-tico"></i><span></span>';
-	t.lastChild.textContent = translate(text);
+	t.lastChild.textContent = text == null ? '' : text;
 	document.getElementById('mud-toasts').appendChild(t);
 	var timer = null, dead = false;
 	var life = opts.timeout !== undefined ? opts.timeout : 3500;
@@ -806,7 +406,7 @@ function toast(text, opts) {
 	return {
 		update: function(text2, type2) {
 			if (dead) return;
-			t.lastChild.textContent = translate(text2);
+			t.lastChild.textContent = text2 == null ? '' : text2;
 			if (type2) t.className = 'mud-toast ' + type2;
 			arm();
 		},
@@ -828,11 +428,11 @@ function busy(btn, on) {
 	}
 }
 
-/* ------------------------------------------------------------------ 对话框
- * M.confirmBox(title, message, opts) -> Promise<boolean>：主题化确认框，
- * 取消/遮罩/Escape 都 resolve(false)，确定/Enter resolve(true)。
- * M.alertBox(title, message, opts) -> Promise<true>：单按钮提示框。
- * opts: { danger:true 红色确认键, okText, cancelText }；danger 时默认焦点在取消上。 */
+/* ---------------------------------------------------------------- dialogs
+ * M.confirmBox(title, message, opts) -> Promise<boolean>: a themed confirmation; Cancel, the backdrop and Escape
+ * resolve false, OK and Enter resolve true.
+ * M.alertBox(title, message, opts) -> Promise<true>: one button.
+ * opts: { danger: true for a red OK button, okText, cancelText }; with danger, the focus starts on Cancel. */
 function dialog(opts) {
 	opts = opts || {};
 	return new Promise(function(resolve) {
@@ -844,11 +444,11 @@ function dialog(opts) {
 			(withCancel ? '<button type="button" class="mud-btn" data-r="0"></button>' : '') +
 			'<button type="button" class="mud-btn' + (opts.danger ? ' warn' : '') + '" data-r="1"></button>' +
 			'</div></div>';
-		wrap.querySelector('h4').textContent = translate(opts.title || '确认');
-		wrap.querySelector('.mud-dlg-msg').textContent = translate(opts.message || '');
+		wrap.querySelector('h4').textContent = opts.title || _('Confirm');
+		wrap.querySelector('.mud-dlg-msg').textContent = opts.message || '';
 		var btns = wrap.querySelectorAll('.mud-dlg-btns .mud-btn');
-		btns[btns.length - 1].textContent = translate(opts.okText || '确定');
-		if (withCancel) btns[0].textContent = translate(opts.cancelText || '取消');
+		btns[btns.length - 1].textContent = opts.okText || _('OK');
+		if (withCancel) btns[0].textContent = opts.cancelText || _('Cancel');
 		var done = function(r) {
 			document.removeEventListener('keydown', onKey, true);
 			wrap.remove();
@@ -865,11 +465,11 @@ function dialog(opts) {
 		});
 		document.addEventListener('keydown', onKey, true);
 		document.body.appendChild(wrap);
-		/* 危险操作默认焦点给取消，防手滑回车 */
+		/* a dangerous action starts focused on Cancel, so a stray Enter does nothing */
 		(withCancel && opts.danger ? btns[0] : btns[btns.length - 1]).focus();
 	});
 }
-/* 手机通知样式的横幅：标题（发件人）+ 两行预览，默认 6 s */
+/* A phone-notification style banner: a title (the sender) and a two-line preview, 6 s by default */
 function notify(title, message, opts) {
 	opts = opts || {};
 	if (!document.getElementById('mud-toasts')) {
@@ -881,7 +481,7 @@ function notify(title, message, opts) {
 	var t = document.createElement('div');
 	t.className = 'mud-toast notify ' + (opts.type || 'info');
 	t.innerHTML = '<i class="mud-tico"></i><div class="mud-nb"><b></b><span></span></div>';
-	t.querySelector('b').textContent = translate(title);
+	t.querySelector('b').textContent = title == null ? '' : title;
 	t.querySelector('span').textContent = message == null ? '' : String(message);
 	document.getElementById('mud-toasts').appendChild(t);
 	var life = opts.timeout !== undefined ? opts.timeout : 6000;
@@ -896,10 +496,10 @@ function notify(title, message, opts) {
 	return t;
 }
 
-/* 新短信监视（每个页面 render 时调用一次，内部单例）：
- * 每 5 s 读一次本地池第 1 页（纯文件读，不打 AT），首次只记基线；
- * 之后出现更大的消息 id 且为收件（mt）时，按手机通知样式弹出
- * 「发件人 + 预览」。池子被清空（id 回落）时静默重建基线。 */
+/* New-SMS watcher (each page's render calls it; one instance): every 5 s it reads page 1 of the local pool (a file
+ * read, no AT), the first time only to set the baseline. A higher message id that is incoming (mt) then shows a
+ * notification with the sender and a preview. When the pool is cleared (the id drops) the baseline is reset
+ * silently. */
 var smsWatch = null;
 function watchSms() {
 	if (smsWatch) return;
@@ -918,7 +518,7 @@ function watchSms() {
 				msgs.forEach(function(m) {
 					var id = parseInt(m.id, 10) || 0;
 					if (id > smsWatch.seen && m.dir === 'mt')
-						notify('新短信 · ' + (m.peer || '未知号码'), m.preview || '', { type: 'success' });
+						notify(_('New SMS · %s').format(m.peer || _('Unknown number')), m.preview || '', { type: 'success' });
 				});
 				smsWatch.seen = max;
 			}
@@ -940,9 +540,8 @@ function alertBox(title, message, opts) {
 	return dialog(opts);
 }
 
-/* 多选对话框：M.choiceBox(title, message, [{label, value, danger}], opts)
- * -> Promise(选中项的 value)；取消/遮罩/Escape resolve(undefined)。
- * choices 里的按钮从左到右排，danger 项红色。 */
+/* A multiple-choice dialog: M.choiceBox(title, message, [{label, value, danger}], opts) -> Promise(the chosen
+ * value); the backdrop and Escape resolve undefined. The buttons go left to right, danger ones red. */
 function choiceBox(title, message, choices, opts) {
 	opts = opts || {};
 	return new Promise(function(resolve) {
@@ -955,10 +554,10 @@ function choiceBox(title, message, choices, opts) {
 		wrap.innerHTML = '<div class="mud-dlg" role="dialog" aria-modal="true">' +
 			'<h4></h4><div class="mud-dlg-msg"></div>' +
 			'<div class="mud-dlg-btns">' + btns + '</div></div>';
-		wrap.querySelector('h4').textContent = translate(title || '选择');
-		wrap.querySelector('.mud-dlg-msg').textContent = translate(message || '');
+		wrap.querySelector('h4').textContent = title || _('Select');
+		wrap.querySelector('.mud-dlg-msg').textContent = message || '';
 		(choices || []).forEach(function(c, i) {
-			wrap.querySelector('[data-i="' + i + '"]').textContent = translate(c.label || '?');
+			wrap.querySelector('[data-i="' + i + '"]').textContent = c.label || '?';
 		});
 		var done = function(v) {
 			document.removeEventListener('keydown', onKey, true);
@@ -980,7 +579,8 @@ function choiceBox(title, message, choices, opts) {
 	});
 }
 
-/* LuCI 的 require 把模块当类工厂：必须返回 baseclass 派生的类，加载后拿到的是它的实例 */
+/* LuCI's require treats a module as a class factory: it must return a baseclass subclass, and the loader hands out
+ * an instance of it */
 return baseclass.extend({
 	callStatus: callStatus, callSignal: callSignal, callSysinfo: callSysinfo, callAct: callAct, callAt: callAt, callAtHist: callAtHist,
 	callLockGet: callLockGet, callLockFresh: callLockFresh, callLockSet: callLockSet,
@@ -990,7 +590,7 @@ return baseclass.extend({
 	callUsbNetList: callUsbNetList, callUsbNetAdd: callUsbNetAdd,
 	carrierName: carrierName, qLabel: qLabel, qCol: qCol, qScore: qScore,
 	esc: esc, fmtBytes: fmtBytes, fmtRate: fmtRate, fmtUptime: fmtUptime, PLMN_CN: PLMN_CN,
-	uiLanguage: uiLanguage, translate: translate, localize: localize, localizeMenu: localizeMenu,
+	translate: translate, localize: localize, localizeMenu: localizeMenu,
 	injectCss: injectCss, v: v, set: set, spark: spark, neighborRows: neighborRows,
 	toast: toast, busy: busy, confirmBox: confirmBox, alertBox: alertBox, choiceBox: choiceBox,
 	notify: notify, watchSms: watchSms

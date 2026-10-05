@@ -1,6 +1,6 @@
 {
 	"admin/home": {
-		"title": "状态看板",
+		"title": "Status dashboard",
 		"order": 5,
 		"action": {
 			"type": "view",
@@ -12,7 +12,7 @@
 	},
 
 	"admin/modem": {
-		"title": "蜂窝",
+		"title": "Cellular",
 		"order": 25,
 		"action": {
 			"type": "firstchild"
@@ -23,7 +23,7 @@
 	},
 
 	"admin/modem/locks": {
-		"title": "网络锁定",
+		"title": "Network locks",
 		"order": 1,
 		"action": {
 			"type": "view",
@@ -35,7 +35,7 @@
 	},
 
 	"admin/modem/sms": {
-		"title": "短信",
+		"title": "SMS",
 		"order": 2,
 		"action": {
 			"type": "view",
@@ -47,7 +47,7 @@
 	},
 
 	"admin/modem/at": {
-		"title": "AT 终端",
+		"title": "AT terminal",
 		"order": 3,
 		"action": {
 			"type": "view",
@@ -59,7 +59,7 @@
 	},
 
 	"admin/modem/settings": {
-		"title": "适配设置",
+		"title": "Adapter settings",
 		"order": 5,
 		"action": {
 			"type": "view",
@@ -70,7 +70,7 @@
 		}
 	},
 	"admin/modem/device": {
-		"title": "设备管理",
+		"title": "Device management",
 		"order": 4,
 		"action": { "type": "view", "path": "mu300/device" },
 		"depends": { "acl": [ "luci-app-mu300" ] }

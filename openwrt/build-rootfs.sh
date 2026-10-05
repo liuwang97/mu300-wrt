@@ -66,13 +66,14 @@ if [ "$SYSTEM" = openwrt-luci ]; then
         echo "Aurora APK checksum mismatch: $THEME_APK" >&2; exit 1;
     }
     # The panel's catalogs, from every po/<lang>/mu300.po there is. A catalog without translations (English: the
-    # msgids are the English text) is no file at all; Turkish must be one.
+    # msgids are the English text) is no file at all; Turkish and Chinese must be one each.
     CAT=$(mktemp -d)
     for po in "$TOP"/openwrt/luci-app-mu300/po/*/mu300.po; do
         l=${po%/mu300.po}; l=${l##*/}
         python3 "$TOP/tools/po2lmo.py" "$po" "$CAT/mu300.$l.lmo"
     done
     [ -s "$CAT/mu300.tr.lmo" ] || { echo "no Turkish catalog built from openwrt/luci-app-mu300/po/tr" >&2; exit 1; }
+    [ -s "$CAT/mu300.zh_Hans.lmo" ] || { echo "no Chinese catalog built from openwrt/luci-app-mu300/po/zh_Hans" >&2; exit 1; }
     LUCI="-v $THEME_APK:/in/luci-theme-aurora.apk:ro -v $TOP/openwrt/luci-app-mu300:/in/luci-plugin:ro"
     LUCI="$LUCI -v $TOP/openwrt/luci-overlay:/in/luci-overlay:ro -v $CAT:/in/catalogs:ro"
 fi
