@@ -100,6 +100,16 @@ class At(ShellTest):
             self.assertIn('no answer from the daemon', r.stderr)
             self.assertFalse((self.dir / 'lock').exists())
 
+    def test_dead_owner_says_only_no_answer(self):
+        # owner/pid naming a process that is gone (the daemon died, or the modem never came up): the client says
+        # "no answer" and nothing else - mobile-data copies its stderr into radio.log
+        (self.dir / 'owner').mkdir()
+        (self.dir / 'owner' / 'pid').write_text('999999\n')
+        for shell in self.each_shell():
+            r = self.at(shell, '-t', 1, 'AT')
+            self.assertEqual(r.returncode, 1)
+            self.assertEqual(r.stderr.strip(), 'mu300-at: no answer from the daemon', shell)
+
     def test_command_survives_a_busy_daemon(self):
         # the daemon opens the FIFO only 0.5 s after the client wrote: the command must still be there
         for shell in self.each_shell():

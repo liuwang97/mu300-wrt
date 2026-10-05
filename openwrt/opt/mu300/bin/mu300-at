@@ -46,7 +46,7 @@ if [ -p "$DIR/cmd" ]; then
         if [ -n "$owner" ] && ! kill -0 "$owner" 2>/dev/null; then
             rm -rf "$lock" 2>/dev/null && continue
         # a daemon from before the split left its ownership directory here, and it will never release it
-        elif [ -n "$owner" ] && tr '\0' ' ' < "/proc/$owner/cmdline" 2>/dev/null | grep -q mu300-atd; then
+        elif [ -n "$owner" ] && { tr '\0' ' ' < "/proc/$owner/cmdline"; } 2>/dev/null | grep -q mu300-atd; then
             rm -rf "$lock" 2>/dev/null && continue
         fi
         n=$((n + 1)); [ "$n" -gt $((wait * 10)) ] && { echo "mu300-at: busy" >&2; exit 1; }
@@ -93,7 +93,7 @@ if [ -p "$DIR/cmd" ]; then
     # exit within T + 2.
     budget=$((T + 2))
     owner=$(cat "$DIR/owner/pid" 2>/dev/null || true)
-    if [ -n "$owner" ] && tr '\0' ' ' < "/proc/$owner/cmdline" 2>/dev/null | grep -q mu300-atd; then
+    if [ -n "$owner" ] && { tr '\0' ' ' < "/proc/$owner/cmdline"; } 2>/dev/null | grep -q mu300-atd; then
         budget=$((T + 30))
     fi
     # MU300_AT_BUDGET (seconds) shortens that for a caller with a hard limit of its own (the LuCI panel: rpcd ends a
@@ -126,7 +126,7 @@ fi
 # closing this channel while the modem is running leaves it silent until a reboot (FINDINGS 13b).
 owner=$(cat "$DIR/owner/pid" 2>/dev/null || true)
 if [ -n "$owner" ] && [ -d "/proc/$owner" ] &&
-   tr '\0' ' ' < "/proc/$owner/cmdline" 2>/dev/null | grep -qE 'mu300-atd|mobile-data'; then
+   { tr '\0' ' ' < "/proc/$owner/cmdline"; } 2>/dev/null | grep -qE 'mu300-atd|mobile-data'; then
     echo "mu300-at: pid $owner holds $DEV and its command fifo is gone; restart mu300-atd" >&2
     exit 1
 fi

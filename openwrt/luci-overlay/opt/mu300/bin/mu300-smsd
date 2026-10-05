@@ -27,7 +27,7 @@ LOCK=${MU300_SMS_LOCK:-/run/mu300-smsd.lock}
 alive() {
     [ -n "$1" ] && kill -0 "$1" 2>/dev/null || return 1
     [ -d /proc/self ] || return 0
-    tr '\0' ' ' < "/proc/$1/cmdline" 2>/dev/null | grep -q mu300-smsd
+    { tr '\0' ' ' < "/proc/$1/cmdline"; } 2>/dev/null | grep -q mu300-smsd
 }
 while ! mkdir "$LOCK" 2>/dev/null; do
     owner=$(cat "$LOCK/pid" 2>/dev/null || true)

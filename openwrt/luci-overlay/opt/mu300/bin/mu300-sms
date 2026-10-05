@@ -65,7 +65,7 @@ pool_init() {
 alive() {
     [ -n "$1" ] && kill -0 "$1" 2>/dev/null || return 1
     [ -d /proc/self ] || return 0
-    tr '\0' ' ' < "/proc/$1/cmdline" 2>/dev/null | grep -q "$2"
+    { tr '\0' ' ' < "/proc/$1/cmdline"; } 2>/dev/null | grep -q "$2"
 }
 
 # mkdir lock; a holder killed with SIGKILL leaves the directory behind, so a dead holder's lock is taken over

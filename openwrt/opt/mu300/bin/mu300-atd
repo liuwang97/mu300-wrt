@@ -48,7 +48,7 @@ mkdir -p "$DIR"
 # restart every client instead waited out its 90 s and printed "mu300-at: busy" over a completely idle channel.
 LOCK=$DIR/owner
 alive() {  # alive PID -> is that pid still a running mu300-atd?
-    [ -n "$1" ] && [ -d "/proc/$1" ] && tr '\0' ' ' < "/proc/$1/cmdline" 2>/dev/null | grep -q mu300-atd
+    [ -n "$1" ] && [ -d "/proc/$1" ] && { tr '\0' ' ' < "/proc/$1/cmdline"; } 2>/dev/null | grep -q mu300-atd
 }
 while :; do
     if mkdir "$LOCK" 2>/dev/null; then break; fi

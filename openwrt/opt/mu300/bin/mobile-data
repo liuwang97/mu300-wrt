@@ -50,7 +50,7 @@ ATLOCK=/run/mu300-at/owner
 # pid into $ATLOCK/pid, and a bare pid says nothing once the number has been reused.
 at_owner_alive() {
     [ -n "${1:-}" ] && [ -d "/proc/$1" ] &&
-        tr '\0' ' ' < "/proc/$1/cmdline" 2>/dev/null | grep -qE 'mu300-atd|mobile-data'
+        { tr '\0' ' ' < "/proc/$1/cmdline"; } 2>/dev/null | grep -qE 'mu300-atd|mobile-data'
 }
 
 at() {  # at CMD [timeout] -> response lines up to the final result code
@@ -356,7 +356,7 @@ lock_owner_alive() {
     [ -n "${1:-}" ] && kill -0 "$1" 2>/dev/null || return 1
     # the number may have been reused by something else
     [ -r "/proc/$1/cmdline" ] || return 0
-    tr '\0' ' ' < "/proc/$1/cmdline" 2>/dev/null | grep mobile-data >/dev/null
+    { tr '\0' ' ' < "/proc/$1/cmdline"; } 2>/dev/null | grep mobile-data >/dev/null
 }
 # lock_reap LINK DEADPID ME: remove LINK if it still names the dead process DEADPID. Only one process at a time may
 # do that for one (LINK, DEADPID): the one that makes the marker LINK.dead.DEADPID (made in one step, naming ME), and
