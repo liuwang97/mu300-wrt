@@ -10,6 +10,7 @@
 */
 
 #include <linux/ip.h>
+#include <linux/udp.h>
 #include <net/ip.h>
 #include <net/ip6_checksum.h>
 
@@ -22,17 +23,14 @@
 #include "rx.h"
 #include "txrx.h"
 
-static bool rx_mh_ipv6_ext_hdr(unsigned char nexthdr)
-{
-	return (nexthdr == NEXTHDR_HOP ||
-		nexthdr == NEXTHDR_ROUTING || nexthdr == NEXTHDR_DEST);
-}
-
 /*
  * MU300: the firmware hands each frame up with a 16-bit sum over the transport header and payload. It is checked
  * here against the pseudo-header of the frame's own IP header (lengths from that header, every header inside the
- * frame): true means the transport checksum is right. Only TCP and UDP (IPv4, IPv6) and ICMPv6 are checked; a
- * fragment, any other protocol or anything that does not add up is false, and the stack checks the frame itself.
+ * frame): true means the transport checksum is right. Only TCP and UDP (IPv4, IPv6) and ICMPv6 are checked, and only
+ * behind a plain IP header (no IPv4 options, no IPv6 extension headers: where the firmware starts its sum is not
+ * documented, so bytes it may cover that the pseudo-header does not are not trusted). A UDP datagram is checked only
+ * when its own length is the IP payload's (the stack trims to it and would not look again). A fragment, any other
+ * protocol or anything that does not add up is false, and the stack checks the frame itself.
  */
 static bool rx_l4_csum_ok(void *data, __wsum csum)
 {
@@ -41,6 +39,7 @@ static bool rx_l4_csum_ok(void *data, __wsum csum)
 	unsigned int len = msdu_desc->msdu_len;
 	struct ethhdr *eth = (struct ethhdr *)frame;
 	unsigned int off = ETH_HLEN, end;
+	struct udphdr *uh;
 	u8 proto;
 
 	if (len < ETH_HLEN)
@@ -48,19 +47,23 @@ static bool rx_l4_csum_ok(void *data, __wsum csum)
 
 	if (eth->h_proto == htons(ETH_P_IP)) {
 		struct iphdr *iph = (struct iphdr *)(frame + off);
-		unsigned int ihl;
 
 		if (len < off + sizeof(*iph))
 			return false;
-		ihl = iph->ihl * 4;
 		end = off + ntohs(iph->tot_len);
-		if (iph->version != 4 || ihl < sizeof(*iph) || off + ihl > end || end > len ||
+		if (iph->version != 4 || iph->ihl != 5 || off + sizeof(*iph) > end || end > len ||
 		    ip_is_fragment(iph))
 			return false;
+		off += sizeof(*iph);
 		proto = iph->protocol;
 		if (proto != IPPROTO_TCP && proto != IPPROTO_UDP)
 			return false;
-		return !csum_tcpudp_magic(iph->saddr, iph->daddr, end - off - ihl, proto, csum);
+		if (proto == IPPROTO_UDP) {
+			uh = (struct udphdr *)(frame + off);
+			if (off + sizeof(*uh) > end || ntohs(uh->len) != end - off)
+				return false;
+		}
+		return !csum_tcpudp_magic(iph->saddr, iph->daddr, end - off, proto, csum);
 	}
 
 	if (eth->h_proto == htons(ETH_P_IPV6)) {
@@ -73,16 +76,13 @@ static bool rx_l4_csum_ok(void *data, __wsum csum)
 		if (end > len)
 			return false;
 		proto = ip6h->nexthdr;
-		while (rx_mh_ipv6_ext_hdr(proto)) {
-			struct ipv6_opt_hdr *hp = (struct ipv6_opt_hdr *)(frame + off);
-
-			if (off + sizeof(*hp) > end || off + ipv6_optlen(hp) > end)
-				return false;
-			off += ipv6_optlen(hp);
-			proto = hp->nexthdr;
-		}
 		if (proto != IPPROTO_TCP && proto != IPPROTO_UDP && proto != IPPROTO_ICMPV6)
 			return false;
+		if (proto == IPPROTO_UDP) {
+			uh = (struct udphdr *)(frame + off);
+			if (off + sizeof(*uh) > end || ntohs(uh->len) != end - off)
+				return false;
+		}
 		return !csum_ipv6_magic(&ip6h->saddr, &ip6h->daddr, end - off, proto, csum);
 	}
 
