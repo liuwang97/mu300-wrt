@@ -24,6 +24,9 @@ led_up() {
     esac
 }
 
+# Boot timeline mark (/run/mu300/boot-timeline); harmless when bootmark is missing.
+mark() { [ -x /opt/mu300/bin/bootmark ] && /opt/mu300/bin/bootmark "$@" || true; }
+
 ATLOCK=/run/mu300-at/owner
 
 # Is that pid a live process that holds the AT channel? mu300-atd and the direct path below both write their
@@ -265,7 +268,9 @@ up_locked() {
     modem_stack || { echo "no modem stack in this kernel ($(uname -r))" >&2; exit 3; }
     rm -f /run/mu300-mobile-data-down
     tty_setup
+    mark dial-start
     radio_on
+    mark dial-radio-on-done
     for n in $(seq 1 60); do
         at 'AT+CEREG?' | grep -qE '\+CEREG: [0-9],(1|5)' && break
         # the radio can be switched off again meanwhile (modem reset), so re-check it every 10 s
@@ -273,6 +278,7 @@ up_locked() {
         sleep 2
     done
     at 'AT+CEREG?' | grep -qE '\+CEREG: [0-9],(1|5)' || { led error; echo "not registered on the network" >&2; exit 1; }
+    mark dial-registered
     # systemd has no way to pass an argument from a config file, so the APN can come from the environment too:
     # /etc/mu300/mobile-data.conf is an EnvironmentFile for the service. The argument still wins, which is what
     # the OpenWrt protocol handler uses.
@@ -286,6 +292,7 @@ up_locked() {
         at "AT+CGDCONT=$CID,\"${MU300_PDP_TYPE:-IP}\",\"$1\"" >/dev/null
     fi
     at "AT+CGACT?" | grep -q "+CGACT:$CID,1" || at "AT+CGACT=1,$CID" 20 >/dev/null
+    mark dial-pdp-active
     rdp=$(at "AT+CGCONTRDP=$CID" 4 | grep '^+CGCONTRDP:' | head -1)
     # +CGCONTRDP: cid,bearer,apn,"a.b.c.d.m.m.m.m",gw,dns1,dns2,...
     addrmask=$(echo "$rdp" | cut -d, -f4 | tr -d '"')
@@ -294,6 +301,7 @@ up_locked() {
     dns1=$(echo "$rdp" | cut -d, -f6 | tr -d '"')
     dns2=$(echo "$rdp" | cut -d, -f7 | tr -d '"')
     [ -n "$ip4" ] || { echo "no IPv4 address from AT+CGCONTRDP" >&2; exit 1; }
+    mark dial-addr-ok
     # AT+CGDATA takes its time on this modem: measured, it answers "^ORIG: <cid>,<n>" and then CONNECT about
     # ten to twenty seconds later. With the old eight-second budget the reply arrived after we had given up, so
     # the next command read it instead of its own and the whole channel looked dead for a while.

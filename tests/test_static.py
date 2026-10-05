@@ -221,6 +221,7 @@ class Rules(unittest.TestCase):
                      'Environment=MU300_AT_URC_CHANNELS=\n', 'ConditionPathExists=|/dev/stty_nr2'):
             self.assertIn(line, u)
         self.assertIn('mu300-atd2.service:multi-user.target', (TOP / 'rootfs' / 'assemble.sh').read_text())
+        self.assertIn('mu300-atd2.service:multi-user.target', (TOP / 'arch' / 'build-rootfs.sh').read_text())
 
     def test_cellular_downlink_in_the_software_flowtable(self):
         # K28, K29: mu300cell reports sipa_eth0 as l3_device only, so fw4 leaves it out of its flowtable and the

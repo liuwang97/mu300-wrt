@@ -11,7 +11,7 @@ import time
 import unittest
 from pathlib import Path
 
-from helpers import BIN, ShellTest
+from helpers import BIN, TOP, ShellTest
 
 
 class Device(ShellTest):
@@ -328,6 +328,86 @@ class MobileData(ShellTest):
             # the nr1 daemon takes over while nr2's is not there (yet): mu300-at's own default directory
             out = self.run_at(shell, nr2=False)
             self.assertEqual(out, 'dir= args=-t 4 AT+CSQ', shell)
+
+
+class Bootmark(ShellTest):
+    """bootmark (K42): one "t=<uptime> words" line per call on tmpfs, -r empties, never fails."""
+
+    def test_two_calls_two_lines_and_reset_empties(self):
+        up = self.tmp / 'uptime'
+        up.write_text('12.34 56.78\n')
+        os.environ['MU300_UPTIME'] = str(up)
+        self.addCleanup(os.environ.pop, 'MU300_UPTIME', None)
+        for shell in self.each_shell():
+            f = self.tmp / 'run' / 'boot-timeline'   # its directory does not exist yet: bootmark creates it
+            shutil.rmtree(f.parent, ignore_errors=True)
+            for words in ('first mark', 'second'):
+                r = self.script(shell, BIN / 'bootmark', *words.split(), MU300_TIMELINE=str(f))
+                self.assertEqual(r.returncode, 0, shell)
+            lines = f.read_text().splitlines()
+            self.assertEqual(len(lines), 2, shell)
+            self.assertRegex(lines[0], r'^t=12\.34 +first mark$', shell)
+            self.assertRegex(lines[1], r'^t=12\.34 +second$', shell)
+            self.script(shell, BIN / 'bootmark', '-r', 'fresh', MU300_TIMELINE=str(f))
+            self.assertEqual(len(f.read_text().splitlines()), 1, shell)
+            self.assertIn(' fresh', f.read_text(), shell)
+            self.script(shell, BIN / 'bootmark', '-r', MU300_TIMELINE=str(f))
+            self.assertEqual(f.read_text().strip(), '', shell)
+
+    def test_unwritable_path_is_exit_zero(self):
+        for shell in self.each_shell():
+            for path in ('/proc/nonexistent/x/boot-timeline', str(self.tmp)):   # no such directory; a directory
+                r = self.script(shell, BIN / 'bootmark', 'x', MU300_TIMELINE=path)
+                self.assertEqual(r.returncode, 0, (shell, path))
+                r = self.script(shell, BIN / 'bootmark', '-r', 'x', MU300_TIMELINE=path)
+                self.assertEqual(r.returncode, 0, (shell, path))
+
+    def test_the_default_is_on_tmpfs_and_the_callers_guard_it(self):
+        self.assertIn('${MU300_TIMELINE:-/run/mu300/boot-timeline}', (BIN / 'bootmark').read_text())
+        self.assertTrue(os.access(BIN / 'bootmark', os.X_OK))
+        for f in (BIN / 'android-vendor-start', BIN / 'mobile-data',
+                  TOP / 'openwrt' / 'overlay' / 'etc' / 'init.d' / 'mu300-atd'):
+            text = f.read_text()
+            self.assertRegex(text, r'\[ -x /opt/mu300/bin/bootmark \] && /opt/mu300/bin/bootmark .*\|\| true', f.name)
+            # no bare call: every bootmark call sits behind the guard or inside mark()
+            self.assertNotRegex(text, r'(?m)^\s*/opt/mu300/bin/bootmark', f.name)
+        self.assertIn('bootmark S19-atd-init', (TOP / 'openwrt' / 'overlay' / 'etc' / 'init.d' / 'mu300-atd').read_text())
+
+
+class VendorStart(ShellTest):
+    """android-vendor-start (K40, K41): the partition links without forks, and no sleep after logdw."""
+
+    def test_link_partitions_from_a_fake_sysfs(self):
+        text = (BIN / 'android-vendor-start').read_text()
+        body = text[text.index('\nlink_partitions() {'):text.index('\n}\n', text.index('\nlink_partitions() {')) + 3]
+        sysdir, dev = self.tmp / 'sys', self.tmp / 'dev'
+        (dev / 'block' / 'by-name').mkdir(parents=True)
+        for name, uevent in (('mmcblk0p1', 'MAJOR=179\nMINOR=1\nPARTNAME=boot_a\nDEVTYPE=partition\n'),
+                             ('mmcblk0p2', 'MAJOR=179\nMINOR=2\nPARTNAME=system a=b\n'),
+                             ('mmcblk0p3', 'MAJOR=179\nMINOR=3\n')):    # no PARTNAME: only the block link
+            (sysdir / name).mkdir(parents=True)
+            (sysdir / name / 'uevent').write_text(uevent)
+        (sysdir / 'mmcblk0boot0').mkdir()   # not a partition: not matched by mmcblk0p*
+        for shell in self.each_shell():
+            r = self.sh(shell, body + f'\nlink_partitions {sysdir} {dev}')
+            self.assertEqual(r.returncode, 0, (shell, r.stderr))
+            links = {p.relative_to(dev).as_posix(): os.readlink(p) for p in dev.rglob('*') if p.is_symlink()}
+            self.assertEqual(links, {
+                'block/mmcblk0p1': f'{dev}/mmcblk0p1', 'block/mmcblk0p2': f'{dev}/mmcblk0p2',
+                'block/mmcblk0p3': f'{dev}/mmcblk0p3',
+                'block/by-name/boot_a': f'{dev}/mmcblk0p1', 'block/by-name/system a=b': f'{dev}/mmcblk0p2'}, shell)
+            # a second run over existing links is fine, and an absent sysfs is not an error
+            self.assertEqual(self.sh(shell, body + f'\nlink_partitions {sysdir} {dev}').returncode, 0, shell)
+            self.assertEqual(self.sh(shell, body + f'\nlink_partitions {self.tmp}/none {dev}').returncode, 0, shell)
+            shutil.rmtree(dev / 'block'); (dev / 'block' / 'by-name').mkdir(parents=True)
+
+    def test_no_forks_in_the_loop_and_no_sleep_after_logdw(self):
+        text = (BIN / 'android-vendor-start').read_text()
+        body = text[text.index('\nlink_partitions() {'):text.index('\n}\n', text.index('\nlink_partitions() {'))]
+        for cmd in ('basename', 'dirname', 'sed', '$(', '`'):
+            self.assertNotIn(cmd, body)
+        self.assertNotRegex(text, r'logdw[^\n]*sleep 1')
+        self.assertNotRegex(text, r'(?m)^\s*\[ -S /dev/socket/logdw \] \|\|')
 
 
 class Os(ShellTest):

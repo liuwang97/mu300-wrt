@@ -24,6 +24,8 @@ wait_and_exec() {
 }
 
 start_service() {
+	# boot timeline mark; harmless without bootmark
+	[ -x /opt/mu300/bin/bootmark ] && /opt/mu300/bin/bootmark S19-atd-init || true
 	# Optional plugin handshake: it does nothing without the unisoc-modem panel (the file it tests for is the
 	# panel's); with it, nr1's first-command window is reserved for the panel's radio-on path.
 	[ ! -x /usr/libexec/unisoc-modem/lock ] || : > /run/unisoc-modem-early-hook-pending
