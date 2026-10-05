@@ -72,7 +72,7 @@ class Pool(ShellTest):
             r = self.run_sms(shell, 'list')
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertNotIn('cksum', r.stderr, shell)
-            self.assertRegex(r.stderr + r.stdout, r'^(?!.*not found)', shell)
+            self.assertNotIn('not found', r.stderr + r.stdout, shell)
 
     def fresh(self):
         """An empty pool, an empty AT log and the default answers (for the next shell)."""
