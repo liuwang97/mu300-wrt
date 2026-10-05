@@ -356,7 +356,9 @@ class Pool(ShellTest):
     @unittest.skipUnless(os.path.isdir('/proc/self'), 'a live lock holder is told by /proc/PID/cmdline')
     def test_delete_waits_for_the_pool_lock(self):
         # tombstone and removal under the pool lock: a tombstone written while a sync rewrote the list was lost
-        key = subprocess.run(['cksum'], input=str(self.pool), capture_output=True, text=True).stdout.split()[0]
+        # named the way mu300-sms names it: md5sum where there is one (OpenWrt, Linux), else cksum
+        key = subprocess.run(['md5sum' if shutil.which('md5sum') else 'cksum'], input=str(self.pool), capture_output=True,
+                             text=True).stdout.split()[0]
         for shell in self.each_shell():
             self.fresh()
             self.run_sms(shell, 'sync')
