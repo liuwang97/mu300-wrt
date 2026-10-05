@@ -654,8 +654,8 @@ class FixRound1(Mu300Dash):
             ('empty', 'sms_send', {'num': '12', 'text': ''}, {}, 'The message is empty'),
             ('too long', 'sms_send', {'num': '12', 'text': 'x' * 481}, {},
              'The message is too long (over 480 characters)'),
-            ('sms busy', 'sms_send', {'num': '12', 'text': 'hi'}, {'sms': 'AT channel busy\n'}, busy),
-            ('at busy', 'at', {'cmd': 'ATI'}, {'at': 'mu300-at: lock busy\n'}, busy),
+            ('sms busy', 'sms_send', {'num': '12', 'text': 'hi'}, {'sms': 'mu300-at: busy\n'}, busy),
+            ('at busy', 'at', {'cmd': 'ATI'}, {'at': 'mu300-at: busy\n'}, busy),
             ('no sms', 'sms_list', {}, {'sms': ''},
              'mu300-sms is not available (the SMS service is not installed or not running)'),
             ('read', 'sms_show', {'id': '4'}, {'sms': ''}, 'Read failed'),
@@ -679,6 +679,27 @@ class FixRound1(Mu300Dash):
                     self.assertEqual(obj.get('error'), error, obj)
                     self.assertIn(error, known)
                     self.assertNotIn('detail', obj)
+
+    def test_busy_is_the_at_clients_own_line_not_the_modems_word(self):
+        # "busy" is what mu300-at and the plugin's at adapter print when they gave up on the AT lock; a modem reply
+        # with the word in it ("+CME ERROR: SIM busy") is a reply that came back, shown as one
+        busy = {'ok': 0, 'busy': 1, 'error': 'The AT channel is busy; the command was not sent, try again'}
+        for shell in self.each_shell():
+            for label, text in (('mu300-at', 'mu300-at: busy\n'), ('unisoc-at', 'unisoc-at: busy\n')):
+                with self.subTest(client=label):
+                    self.output('at', text)
+                    self.assertEqual(self.reply(self.call(shell, 'at', {'cmd': 'ATI'})[0]), busy)
+                    # mu300-sms passes mu300-at's line on, with its own after it
+                    self.output('sms', text + 'mu300-sms: the modem did not take the message\n')
+                    self.output('sms.rc', '1')
+                    self.assertEqual(self.reply(self.call(shell, 'sms_send', {'num': '12', 'text': 'hi'})[0]), busy)
+            self.output('at', '+CME ERROR: SIM busy\n')
+            obj = self.reply(self.call(shell, 'at', {'cmd': 'AT+CPMS?'})[0])
+            self.assertEqual((obj['ok'], obj.get('busy'), obj['reply']), (1, None, '+CME ERROR: SIM busy'))
+            self.output('sms', 'mu300-sms: the modem did not take the message: +CMS ERROR: SIM busy\n')
+            obj = self.reply(self.call(shell, 'sms_send', {'num': '12', 'text': 'hi'})[0])
+            self.assertEqual((obj['ok'], obj.get('busy'), obj['error']), (0, None, 'Sending failed'))
+            self.assertIn('SIM busy', obj['detail'])
 
     def test_the_runtime_directory_is_root_only(self):
         for shell in self.each_shell():
