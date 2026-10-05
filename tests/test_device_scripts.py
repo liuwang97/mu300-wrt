@@ -300,6 +300,36 @@ class Atd(ShellTest):
                              ['OK', '+CMTI: "SM",3', 'NO CARRIER', ''])
 
 
+class MobileData(ShellTest):
+    """mobile-data's at(): which daemon directory the command goes to (K17). The function is cut out of the script and
+    its absolute paths pointed at the scratch directory, so nothing else of mobile-data runs."""
+
+    def run_at(self, shell, nr2, nr1=True):
+        run = self.tmp / 'run'
+        shutil.rmtree(run, ignore_errors=True)
+        for flag, name in ((nr1, 'mu300-at'), (nr2, 'mu300-at2')):
+            d = run / name
+            d.mkdir(parents=True, exist_ok=True)
+            if flag:
+                os.mkfifo(d / 'cmd')
+        self.stub('mu300-at', 'echo "dir=$MU300_AT_DIR args=$*" >> "$STUBLOG/calls"')
+        text = (BIN / 'mobile-data').read_text()
+        body = text[text.index('\nat() {'):text.index('\n}\n', text.index('\nat() {')) + 3]
+        body = body.replace('/run/', f'{run}/').replace('/opt/mu300/bin/mu300-at', 'mu300-at')
+        (self.tmp / 'calls').unlink(missing_ok=True)
+        r = self.sh(shell, body + '\nat "AT+CSQ" 4', MU300_AT_DIR='')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return (self.tmp / 'calls').read_text().strip()
+
+    def test_at_prefers_the_nr2_daemon(self):
+        for shell in self.each_shell():
+            out = self.run_at(shell, nr2=True)
+            self.assertRegex(out, r'^dir=\S*/run/mu300-at2 args=-t 4 AT\+CSQ$', shell)
+            # the nr1 daemon takes over while nr2's is not there (yet): mu300-at's own default directory
+            out = self.run_at(shell, nr2=False)
+            self.assertEqual(out, 'dir= args=-t 4 AT+CSQ', shell)
+
+
 class Os(ShellTest):
     """mu300-os against a fake disk area: three systems, and a kept copy is never offered."""
     def setUp(self):

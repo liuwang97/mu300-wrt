@@ -205,6 +205,23 @@ class Rules(unittest.TestCase):
             if s.name != 'mu300-vendor' and m:
                 self.assertGreater(int(m.group(1)), 9, s.name)
 
+    def test_atd_before_the_network_with_a_second_daemon_on_nr2(self):
+        # K16, K17, K18, K21: S19 (the dial at S20 asks the daemon), nr1 and nr2 only, nr2 without a URC channel
+        f = (TOP / 'openwrt' / 'overlay' / 'etc' / 'init.d' / 'mu300-atd').read_text()
+        self.assertRegex(f, r'(?m)^START=19$')
+        self.assertEqual(re.findall(r'procd_open_instance (\S+)', f), ['atd', 'atd2'])
+        self.assertIn('wait_and_exec /dev/stty_nr1 /opt/mu300/bin/mu300-atd', f)
+        self.assertIn('wait_and_exec /dev/stty_nr2 /opt/mu300/bin/mu300-atd', f)
+        self.assertIn('procd_set_param env MU300_AT_DEV=/dev/stty_nr2 MU300_AT_DIR=/run/mu300-at2 '
+                      'MU300_AT_URC_CHANNELS=\n', f)
+        self.assertNotRegex(f, r'stty_nr[3-7]')
+        self.assertIn('[ ! -x /usr/libexec/unisoc-modem/lock ] || : > /run/unisoc-modem-early-hook-pending', f)
+        u = (TOP / 'rootfs' / 'overlay' / 'etc' / 'systemd' / 'system' / 'mu300-atd2.service').read_text()
+        for line in ('Environment=MU300_AT_DEV=/dev/stty_nr2', 'Environment=MU300_AT_DIR=/run/mu300-at2',
+                     'Environment=MU300_AT_URC_CHANNELS=\n', 'ConditionPathExists=|/dev/stty_nr2'):
+            self.assertIn(line, u)
+        self.assertIn('mu300-atd2.service:multi-user.target', (TOP / 'rootfs' / 'assemble.sh').read_text())
+
     def test_cellular_downlink_in_the_software_flowtable(self):
         # K28, K29: mu300cell reports sipa_eth0 as l3_device only, so fw4 leaves it out of its flowtable and the
         # downlink takes the slow forwarding path. The patch puts it in; it is applied with --fuzz=0 to every OpenWrt
