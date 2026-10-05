@@ -108,14 +108,30 @@ log "stage=device $DEVICE order=$MODULE_ORDER"
 
 # The USB network. Its subnet goes with the kind of device, so that an F50 and a U30 Air on one computer do not
 # collide: F50 192.168.77.1, U30 Air 192.168.78.1 (the system's lan.conf overrides it after switch_root). The
-# gadget's MAC addresses and USB serial number go with the device's serial number: two devices on one computer
-# used to have the same ones, and macOS then gave the second one no network interface at all.
+# gadget's MAC addresses and USB serial number go with the device's serial number and its eMMC's: two devices on one
+# computer used to have the same ones, and macOS then gave the second one no network interface at all. The serial
+# number alone was not enough: a device restored from another's backup has its androidboot.serialno too.
 case $DEVICE in u30air) NET=192.168.78 ;; *) NET=192.168.77 ;; esac
+# --- usb-id begin
+# usb_id BOOTARGS...: USBID (serial number-eMMC serial) and MAC (its first five bytes) from the bootloader's
+# arguments; the eMMC serial from the card's CID (its product serial, hex 21-28) when the arguments lack it
+usb_id() {
+    SERIALNO=$(cat "$@" 2>/dev/null | tr '\0' ' ' | sed -n 's/.*androidboot.serialno=\([^ ]*\).*/\1/p' | head -n1)
+    EMMCID=$(cat "$@" 2>/dev/null | tr '\0' ' ' | sed -n 's/.*androidboot.emmcid=\([^ ]*\).*/\1/p' | head -n1)
+    if [ -z "$EMMCID" ]; then
+        for d in "${MU300_SYS:-/sys}"/bus/mmc/devices/*; do
+            [ "$(cat "$d/type" 2>/dev/null)" = MMC ] || continue
+            EMMCID=$(cut -c21-28 "$d/cid" 2>/dev/null)
+            break
+        done
+    fi
+    USBID=$SERIALNO${EMMCID:+-$EMMCID}
+    h=$(echo "$USBID" | md5sum)
+    MAC=02:50:$(echo "$h" | cut -c1-2):$(echo "$h" | cut -c3-4):${NET##*.}
+}
+# --- usb-id end
 # (a mainline kernel forces its own command line: the bootloader's is still in the device tree)
-SERIALNO=$(cat /proc/cmdline /proc/device-tree/chosen/bootargs 2>/dev/null | tr '\0' ' ' |
-    sed -n 's/.*androidboot.serialno=\([^ ]*\).*/\1/p' | head -n1)
-h=$(echo "$SERIALNO" | md5sum)
-MAC=02:50:$(echo "$h" | cut -c1-2):$(echo "$h" | cut -c3-4):${NET##*.}
+usb_id /proc/cmdline /proc/device-tree/chosen/bootargs
 
 load_vendor_modules() {
     loaded=0
@@ -206,7 +222,7 @@ setup_usb_gadget() {
     echo 0xEF > "$g/bDeviceClass"
     echo 0x02 > "$g/bDeviceSubClass"
     echo 0x01 > "$g/bDeviceProtocol"
-    echo "MU300LINUX${SERIALNO:+-$SERIALNO}" > "$g/strings/0x409/serialnumber"
+    echo "MU300LINUX${USBID:+-$USBID}" > "$g/strings/0x409/serialnumber"
     echo Linux > "$g/strings/0x409/manufacturer"
     echo "MU300 Linux USB Ethernet" > "$g/strings/0x409/product"
     # USB serial console alongside the network function, in every configuration: recovery/debug access that does

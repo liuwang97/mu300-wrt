@@ -238,6 +238,66 @@ class RootSelect(ShellTest):
             self.assertIn('wait 8 30', log)
 
 
+class UsbId(ShellTest):
+    """The gadget's MACs and USB serial: the device's serial number and its eMMC's, so that two devices restored from
+    one backup (the same androidboot.serialno) still differ on one computer."""
+    def functions(self):
+        m = re.search(r'# --- usb-id begin\n(.*?)# --- usb-id end', INIT, re.S)
+        self.assertIsNotNone(m, 'boot/init has no usb-id block')
+        return m.group(1)
+
+    def ident(self, shell, bootargs, cids=(), net='192.168.77'):
+        b = self.tmp / 'bootargs'
+        b.write_bytes(bootargs.encode() + b'\0')
+        s = self.tmp / 'sys'
+        (s / 'bus' / 'mmc' / 'devices').mkdir(parents=True, exist_ok=True)
+        for i, (kind, cid) in enumerate(cids):
+            d = s / 'bus' / 'mmc' / 'devices' / f'mmc{i}:000{i}'
+            d.mkdir(exist_ok=True)
+            (d / 'type').write_text(kind + '\n')
+            (d / 'cid').write_text(cid + '\n')
+        code = f'NET={net}; MU300_SYS={s}\n' + self.functions() + f'\nusb_id {self.tmp}/none {b}\necho "$USBID $MAC"'
+        return self.sh(shell, code).stdout.strip()
+
+    @staticmethod
+    def mac(text, last='77'):
+        import hashlib
+        h = hashlib.md5((text + '\n').encode()).hexdigest()
+        return f'02:50:{h[0:2]}:{h[2:4]}:{last}'
+
+    def test_serial_and_emmc(self):
+        for shell in self.each_shell():
+            out = self.ident(shell, 'console=ttyS1 androidboot.serialno=324950664950 androidboot.emmcid=2128e853 x=1')
+            self.assertEqual(out, '324950664950-2128e853 ' + self.mac('324950664950-2128e853'))
+
+    def test_clones_differ(self):
+        for shell in self.each_shell():
+            a = self.ident(shell, 'androidboot.serialno=324950664950 androidboot.emmcid=2128e853')
+            b = self.ident(shell, 'androidboot.serialno=324950664950 androidboot.emmcid=7f0011aa')
+            self.assertNotEqual(a.split()[1], b.split()[1])
+
+    def test_emmc_from_cid_when_bootargs_lack_it(self):
+        # the CID's product serial (hex 21-28) is what the bootloader passes as emmcid; a card is not the eMMC
+        cids = (('SD', '035344534c333247804c4d97b2017800'), ('MMC', 'ea010e325931384347102128e8539c00'))
+        for shell in self.each_shell():
+            out = self.ident(shell, 'androidboot.serialno=324950664950', cids)
+            self.assertEqual(out, '324950664950-2128e853 ' + self.mac('324950664950-2128e853'))
+
+    def test_u30air_subnet_byte(self):
+        for shell in self.each_shell():
+            out = self.ident(shell, 'androidboot.serialno=323960377386 androidboot.emmcid=203edc81', net='192.168.78')
+            self.assertEqual(out.split()[1], self.mac('323960377386-203edc81', '78'))
+
+    def test_nothing_known_is_the_old_identity(self):
+        for shell in self.each_shell():
+            self.assertEqual(self.ident(shell, 'console=ttyS1'), self.mac(''))
+            self.assertEqual(self.ident(shell, 'androidboot.serialno=1234'), '1234 ' + self.mac('1234'))
+
+    def test_serial_string_uses_it(self):
+        self.assertIn('echo "MU300LINUX${USBID:+-$USBID}" > "$g/strings/0x409/serialnumber"', INIT)
+        self.assertIn('usb_id /proc/cmdline /proc/device-tree/chosen/bootargs', INIT)
+
+
 class Rules(unittest.TestCase):
     def test_timer_stays_at_300(self):
         self.assertIn('(sleep 300\n', INIT)
