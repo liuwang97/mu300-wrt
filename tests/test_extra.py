@@ -4,6 +4,7 @@ mu300-extra is the command, and both systems' boot runs `mu300-extra link`."""
 import hashlib
 import io
 import os
+import shutil
 import tarfile
 import unittest
 
@@ -238,6 +239,33 @@ class Extras(ShellTest):
             self.assertFalse(os.path.lexists(self.links / 'sing-box'))
             self.assertEqual((self.links / 'hev-socks5-tunnel').read_text(), 'mine')
             (self.links / 'hev-socks5-tunnel').unlink()
+
+    def test_remove_refuses_while_the_vpn_is_on(self):
+        f = extra_tarball(self.tmp / 'local.tar.gz', release='dev')
+        (self.root / 'etc/mu300').mkdir(parents=True, exist_ok=True)
+        (self.root / 'etc/mu300/vpn.conf').write_text('ENABLE=1\n')
+        for shell in self.each_shell():
+            r = self.ex(shell, 'install', 'vpn', MU300_EXTRA_FILE=f)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            r = self.ex(shell, 'remove', 'vpn')
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn('--force', r.stderr)
+            self.assertTrue(self.vpn().exists())
+            r = self.ex(shell, 'remove', 'vpn', '--force')
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertFalse(self.vpn().exists())
+
+    def test_a_swap_cut_off_between_its_renames_is_recovered(self):
+        f = extra_tarball(self.tmp / 'local.tar.gz', release='dev')
+        for shell in self.each_shell():
+            r = self.up(shell, f'extra_unpack vpn "{f}"')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            # cut off after "vpn -> .vpn.old": the next swap (here one that fails) must not throw the old one away
+            os.rename(self.vpn(), self.vpn().parent / '.vpn.old')
+            r = self.up(shell, f'extra_put vpn "{self.tmp}/nosuch"')
+            self.assertNotEqual(r.returncode, 0)
+            self.assertTrue((self.vpn() / 'bin/xray').exists(), shell)
+            shutil.rmtree(self.vpn())
 
     def test_unknown_and_usage(self):
         for shell in self.each_shell():
