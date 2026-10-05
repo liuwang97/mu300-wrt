@@ -361,5 +361,186 @@ if (selected !== true) throw Error('the Bootstrap token bridge must survive the 
                         'build-rootfs.sh does not stop without the Chinese panel catalog')
 
 
+VIEWS = APP / 'htdocs/luci-static/resources/view/mu300'
+VIEW_NAMES = ('home', 'locks', 'sms', 'at', 'settings', 'device')
+CONVERTED = ('home', 'locks')
+CJK_RE = re.compile('[\u2e80-\u9fff\uf900-\ufaff\uff00-\uffef]')
+
+
+@unittest.skipUnless(shutil.which('node'), 'Node.js is needed for the LuCI JS tests')
+class Views(unittest.TestCase):
+    """The six pages under Node: each view module is evaluated as LuCI evaluates it (a function body whose
+    'require'd modules are arguments), with view/uci/poll/form/ui/dom stubbed, the real common.js as M and _ looking
+    messages up in the chosen catalog. A small DOM stub keeps one element per id, so what a page writes into
+    #mud-<id> can be read back; setTimeout only queues (timers), the body runs what it wants."""
+
+    HARNESS = r'''
+const fs = require('fs');
+const CATALOG = __CATALOG__;
+String.prototype.format = function() {
+    const args = arguments; let i = 0;
+    return this.replace(/%(%|s|d)/g, (m, c) => c === '%' ? '%' : c === 'd' ? String(Math.trunc(args[i++])) : String(args[i++]));
+};
+const used = [];
+const _ = (s) => { used.push(s); return Object.prototype.hasOwnProperty.call(CATALOG, s) ? CATALOG[s] : s; };
+const els = {}, toasts = [], timers = [];
+const el = (id) => ({ id: id, innerHTML: '', textContent: '', className: '', style: {}, children: [], value: '',
+    disabled: false, checked: false, firstChild: { nodeValue: '' }, lastChild: { textContent: '' },
+    classList: { add: () => {}, remove: () => {}, toggle: () => {}, contains: () => false },
+    addEventListener: () => {}, removeEventListener: () => {}, appendChild: (c) => c, insertBefore: (c) => c,
+    remove: () => {}, focus: () => {}, setAttribute: () => {}, getAttribute: () => null, contains: () => true,
+    querySelector: (sel) => sel[0] === '#' ? get(sel.slice(1)) : el(''), querySelectorAll: () => [] });
+const get = (id) => els[id] || (els[id] = el(id));
+get('mud-toasts').appendChild = (t) => { toasts.push(t); return t; };
+const document = { getElementById: get, createElement: () => el(''), documentElement: el('html'), body: el('body'),
+    head: el('head'), addEventListener: () => {}, removeEventListener: () => {} };
+const getComputedStyle = () => ({ getPropertyValue: () => '' });
+const window = { setInterval: () => 0, location: { reload: () => {} } };
+const setTimeout = (fn) => { timers.push(fn); return timers.length; };
+const clearTimeout = () => {};
+let rpcReply = {};
+const rpc = { declare: () => () => Promise.resolve(rpcReply) };
+const L = { resolveDefault: (p, d) => Promise.resolve(p).catch(() => d), env: {}, bind: (f, self) => f.bind(self) };
+const M = new Function('rpc', 'baseclass', '_', 'document', 'getComputedStyle', 'window', 'setTimeout', 'clearTimeout',
+    fs.readFileSync(process.argv[2], 'utf8'))(rpc, { extend: (o) => o }, _, document, getComputedStyle, window,
+    setTimeout, clearTimeout);
+const stub = () => new Proxy(function() {}, { get: (t, k) => k === 'then' ? undefined : stub(), apply: () => stub(),
+    construct: () => stub() });
+const view = { extend: (o) => o };
+const uci = { load: () => Promise.resolve(), get: () => null, set: () => {}, save: () => Promise.resolve() };
+const poll = { add: () => {}, remove: () => {} };
+const V = new Function('view', 'uci', 'poll', 'form', 'ui', 'dom', 'M', '_', 'L', 'document', 'window', 'setTimeout',
+    'clearTimeout', 'getComputedStyle', 'E', fs.readFileSync(process.argv[3], 'utf8'))(view, uci, poll, stub(), stub(),
+    stub(), M, _, L, document, window, setTimeout, clearTimeout, getComputedStyle, stub());
+const flush = () => new Promise((r) => setImmediate(r));
+const text = (id) => get('mud-' + id).textContent, html = (id) => get('mud-' + id).innerHTML;
+const notes = () => toasts.map((t) => t.lastChild.textContent);
+(async function() { __BODY__ })().then((result) => process.stdout.write(JSON.stringify({ result: result, used: used })),
+    (e) => { console.error(e); process.exit(1); });
+'''
+
+    def run_view(self, name, lang, body):
+        cat = catalog(lang) if lang in ('tr', 'zh_Hans') else {}
+        harness = self.HARNESS.replace('__CATALOG__', json.dumps(cat, ensure_ascii=True)).replace('__BODY__', body)
+        r = subprocess.run(['node', '-', str(COMMON), str(VIEWS / f'{name}.js')], input=harness, capture_output=True,
+                           text=True, encoding='utf-8')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return json.loads(r.stdout)
+
+    def assert_english_and_catalogued(self, out):
+        # no Chinese left in what the page shows, and every message it used is extracted and in both catalogs
+        self.assertIsNone(CJK_RE.search(json.dumps(out['result'], ensure_ascii=False)), out['result'])
+        self.assertLessEqual(set(out['used']), set(run('extract').stdout.splitlines()))
+        for lang in ('tr', 'zh_Hans'):
+            self.assertLessEqual(set(out['used']), set(catalog(lang)), lang)
+
+    def test_every_view_loads(self):
+        # the module of each page evaluates and returns a view object with render()
+        for name in VIEW_NAMES:
+            with self.subTest(view=name):
+                r = self.run_view(name, None, "return [ typeof V, typeof V.render ];")['result']
+                self.assertEqual(r, ['object', 'function'])
+
+    def test_converted_views_do_not_use_the_shims(self):
+        # translate/localize/localizeMenu did the fork's partial matching; a converted page has only _()
+        for name in CONVERTED:
+            with self.subTest(view=name):
+                src = (VIEWS / f'{name}.js').read_text(encoding='utf-8')
+                self.assertEqual(re.findall(r'M\.(?:translate|localize|localizeMenu)\(', src), [])
+
+    HOME = '''
+const root = V.render();
+await flush();
+V.update({ info: { ts: 10, host: 'mu300', uptime: 3720, modem: { alive: true, atd: false },
+                   wifi: { ssid: 'x', channel: 36, band: '5g', clients_n: 2, hidden: 1, up: 1 },
+                   lan: { ip: '192.168.0.1', leases: 3, list: [ { host: 'a', ip: '1', mac: 'm', left: 7200 } ] },
+                   temps: { soc: 50 }, mem: { total_kb: 1024, avail_kb: 512 }, power: { present: 1, capacity: 80,
+                   status: 'Charging' }, conns: 7, cpu: { freqs: [ { cur: 1000, max: 2000 } ] } },
+           cell: { ts: 5, cfun: 1, reg: { stat: 1, tac: 'AB' }, sig: { rsrp: -95, rsrq: -10, sinr: 15 },
+                   lte: { band: 3, pci: 1, earfcn: 1850, sinr: 15 }, ident: { imsi: '460011234567890' } } });
+return { html: root.innerHTML, op: text('op'), uptime: text('uptime'), reg: text('reg'), modem: text('modem'),
+         wcl: text('wcl'), conntrack: text('conntrack'), ram: text('ram-sub'), cell: html('cellline'),
+         freqs: html('freqs'), leases: html('leases') };'''
+
+    def test_home_renders_in_each_language(self):
+        want = {
+            None: ('Link & traffic', 'China Unicom · Signal Good 7.8/10', 'Uptime 1 h 2 min', 'Registered · TAC AB',
+                   'Online · AT adapter unavailable', '2 clients', '7 entries', 'Total 1.0 MB · free 512 KB',
+                   'Anchor B3', 'Cluster 0', 'Recent DHCP leases', '2 h'),
+            'tr': ('Bağlantı ve trafik', 'China Unicom · Sinyal İyi 7.8/10', 'Çalışma süresi 1 sa 2 dk',
+                   'Kayıtlı · TAC AB', 'Çevrimiçi · AT bağdaştırıcısı kullanılamıyor', '2 istemci', '7 kayıt',
+                   'Toplam 1.0 MB · boş 512 KB', 'Bağlantı noktası B3', 'Küme 0', 'Son DHCP kiraları', '2 sa'),
+            'zh_Hans': ('\u94fe\u8def\u4e0e\u6d41\u91cf',
+                        '\u4e2d\u56fd\u8054\u901a \xb7 \u4fe1\u53f7 \u826f\u597d 7.8 \u5206',
+                        '\u5df2\u8fd0\u884c 1 \u5c0f\u65f6 2 \u5206', '\u5df2\u6ce8\u518c \xb7 TAC AB',
+                        '\u5728\u7ebf \xb7 AT \u9002\u914d\u5668\u4e0d\u53ef\u7528', '2 \u53f0', '7 \u6761',
+                        '\u5171 1.0 MB \xb7 \u4f59 512 KB', '\u951a\u70b9 B3', '\u7c070',
+                        '\u8fd1\u671f DHCP \u79df\u7ea6', '2 \u5c0f\u65f6'),
+        }
+        for lang, (heading, op, uptime, reg, modem, wcl, conns, ram, cell, cluster, leases, hours) in want.items():
+            with self.subTest(lang=lang):
+                r = self.run_view('home', lang, self.HOME)['result']
+                self.assertIn(heading, r['html'])
+                self.assertEqual(r['op'], op)
+                self.assertEqual((r['uptime'], r['reg'], r['modem'], r['wcl'], r['conntrack']),
+                                 (uptime, reg, modem, wcl, conns))
+                self.assertEqual(r['ram'], ram)
+                self.assertIn(cell, r['cell'])
+                self.assertIn('>%s<' % cluster, r['freqs'])
+                self.assertIn(leases, r['leases'])
+                self.assertIn('>%s<' % hours, r['leases'])
+                if lang != 'zh_Hans':
+                    self.assertIsNone(CJK_RE.search(json.dumps(r, ensure_ascii=False)), r)
+
+    def test_home_in_an_unknown_language_is_english_and_catalogued(self):
+        self.assert_english_and_catalogued(self.run_view('home', 'de', self.HOME))
+
+    LOCKS = '''
+const root = V.render();
+await flush();
+V.lastLock = { mode: { label: 'auto' }, endc: '1', auto_apply: 1, cells: [ 'nr:627264,1' ],
+               nr: { locked: '78' }, lte: { locked: '' } };
+V.paint();
+V.paintServing({ nr: { band: 78, pci: 1, arfcn: 627264 }, lte: { band: 3, pci: 2, earfcn: 1850 },
+                 sig: { rsrp: -90 }, ident: { imsi: '460001234567890' } });
+const out = { html: root.innerHTML, nr: text('lock-nrline'), lte: text('lock-lteline'), auto: text('lock-auto-apply'),
+              cells: html('lockedcells'), srv: text('srv-rat'), lines: html('srv') };
+// a confirmed apply-at-startup switch, on and then off: one whole message each
+toasts.length = 0;
+rpcReply = { auto_apply: 1 }; V.confirmToggle('auto_apply', 'on', null);
+timers.splice(0).forEach((f) => f()); await flush();
+rpcReply = { auto_apply: 0 }; V.confirmToggle('auto_apply', 'off', null);
+timers.splice(0).forEach((f) => f()); await flush();
+out.notes = notes();
+return out;'''
+
+    def test_locks_renders_in_each_language(self):
+        want = {
+            None: ('Band locking', '1 locked: n78', 'Automatic (9 supported)', 'Apply at startup ✓', 'Unlock NR',
+                   '5G NSA · China Mobile', 'NR serving cell', ['Apply at startup is on', 'Apply at startup is off']),
+            'tr': ('Bant kilitleme', '1 kilitli: n78', 'Otomatik (9 destekleniyor)', 'Başlangıçta uygula ✓',
+                   'NR kilidini kaldır', '5G NSA · China Mobile', 'NR hizmet hücresi',
+                   ['Başlangıçta uygulama açık', 'Başlangıçta uygulama kapalı']),
+            'zh_Hans': ('\u9891\u6bb5\u9501\u5b9a', '\u5df2\u9501 1 \u4e2a\uff1an78',
+                        '\u81ea\u52a8\uff08\u652f\u6301 9 \u4e2a\uff09', '\u5f00\u673a\u81ea\u52a8\u5e94\u7528 ✓',
+                        '\u89e3\u9501 NR', '5G NSA \xb7 \u4e2d\u56fd\u79fb\u52a8', 'NR \u670d\u52a1\u5c0f\u533a',
+                        ['\u5f00\u673a\u81ea\u52a8\u5e94\u7528\u5df2\u5f00\u542f',
+                         '\u5f00\u673a\u81ea\u52a8\u5e94\u7528\u5df2\u5173\u95ed']),
+        }
+        for lang, (heading, nr, lte, auto, unlock, srv, line, notes) in want.items():
+            with self.subTest(lang=lang):
+                r = self.run_view('locks', lang, self.LOCKS)['result']
+                self.assertIn(heading, r['html'])
+                self.assertEqual((r['nr'], r['lte'], r['auto'], r['srv']), (nr, lte, auto, srv))
+                self.assertIn('>%s</button>' % unlock, r['cells'])
+                self.assertIn(line, r['lines'])
+                self.assertEqual(r['notes'], notes)
+                if lang != 'zh_Hans':
+                    self.assertIsNone(CJK_RE.search(json.dumps(r, ensure_ascii=False)), r)
+
+    def test_locks_in_an_unknown_language_is_english_and_catalogued(self):
+        self.assert_english_and_catalogued(self.run_view('locks', 'de', self.LOCKS))
+
+
 if __name__ == '__main__':
     unittest.main()

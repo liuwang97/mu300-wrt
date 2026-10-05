@@ -3,15 +3,17 @@
 'require uci';
 'require mu300.common as M';
 
-/* MU300 状态看板 -- LuCI 落地页（menu.d 挂在 admin/home）。
+/* MU300 status dashboard -- the LuCI landing page (menu.d hangs it at admin/home).
  *
- * 布局：顶部驻网卡片是唯一的卡片；其余都是全宽分区（链路与流量 / 邻区 / 无线·局域网·
- * 设备·SIM / 快捷控制）。锁频、短信、AT 终端在「蜂窝」子菜单。
+ * Layout: the serving-cell card at the top is the only card; the rest are full-width sections (link & traffic /
+ * neighbor cells / Wi-Fi, LAN, device, SIM / quick controls). Locks, SMS and the AT terminal are in the Cellular
+ * submenu.
  *
- * 数据只有一个来源：ubus mu300dash status（info 快照 + sig 快档蜂窝缓存 + cell 慢档缓存）。
- * 页面默认 1.5 s 一轮：信号/速率/CPU 每轮都刷；邻区/QoS/身份只在慢档时间戳变化时重绘。
- * 邻区行内「锁定」走 lock_set cell（SFUN 重启协议栈，约半分钟断网）；锁定状态来自
- * lock_get（页面加载时取一次，锁定操作后刷新）。 */
+ * One data source: ubus mu300dash status (the info snapshot + the fast-tier cellular cache sig + the slow-tier
+ * cache cell). The page polls every 1.5 s by default: signal, rates and CPU refresh every round; neighbors, QoS
+ * and identity are redrawn only when the slow tier's timestamp changes.
+ * A neighbor row's Lock goes through lock_set cell (SFUN restarts the radio stack, about half a minute without
+ * service); the lock state comes from lock_get (read once when the page loads, again after a lock). */
 
 var DEFAULT_POLL_S = 1.5;
 var RATE_WIN = 40;
@@ -21,8 +23,8 @@ function pollSeconds(value) {
 	return Number.isFinite(seconds) && seconds >= 0.5 && seconds <= 60 ? seconds : DEFAULT_POLL_S;
 }
 
-/* 工程口只提供 MCS/BLER；调制方式按 3GPP 常用 MCS table 1 就地换算，
- * 不为展示项增加 AT 请求。LTE 上行的 MCS 分界与下行/NR 不同。 */
+/* The engineering port gives only MCS/BLER; the modulation is derived here from the common 3GPP MCS table 1,
+ * without an extra AT request for a display item. LTE uplink has other MCS boundaries than downlink/NR. */
 function modulation(mcs, rat, uplink) {
 	if (mcs == null || isNaN(Number(mcs))) return '--';
 	mcs = Number(mcs);
@@ -47,10 +49,10 @@ function radioMetricRows(label, rat, cell) {
 	var pair = function(a, b, suffix) {
 		return (a != null ? a + suffix : '--') + ' / ' + (b != null ? b + suffix : '--');
 	};
-	return '<div class="mud-r"><span class="mud-k">' + prefix + '调制方式 下/上</span>' +
-		'<span class="mud-v" title="按当前 MCS 估算">' + modulation(dlMcs, rat, false) + ' / ' + modulation(ulMcs, rat, true) + '</span></div>' +
-		'<div class="mud-r"><span class="mud-k">' + prefix + 'MCS 下/上</span><span class="mud-v">' + pair(dlMcs, ulMcs, '') + '</span></div>' +
-		'<div class="mud-r"><span class="mud-k">' + prefix + 'BLER 下/上</span><span class="mud-v">' + pair(dlBler, ulBler, '%') + '</span></div>';
+	return '<div class="mud-r"><span class="mud-k">' + prefix + _('Modulation DL/UL') + '</span>' +
+		'<span class="mud-v" title="' + _('Estimated from current MCS') + '">' + modulation(dlMcs, rat, false) + ' / ' + modulation(ulMcs, rat, true) + '</span></div>' +
+		'<div class="mud-r"><span class="mud-k">' + prefix + _('MCS DL/UL') + '</span><span class="mud-v">' + pair(dlMcs, ulMcs, '') + '</span></div>' +
+		'<div class="mud-r"><span class="mud-k">' + prefix + _('BLER DL/UL') + '</span><span class="mud-v">' + pair(dlBler, ulBler, '%') + '</span></div>';
 }
 
 return view.extend({
@@ -64,14 +66,13 @@ return view.extend({
 		this._bootEl = root;
 		root.className = 'mud mud-booting';
 		root.innerHTML = this.html();
-		M.localize(root);
 		this.wire(root);
 		var self = this;
 		var intervalMs = DEFAULT_POLL_S * 1000;
 		var config = L.resolveDefault(uci.load('unisoc_modem')).then(function() {
 			intervalMs = pollSeconds(uci.get('unisoc_modem', 'main', 'home_refresh_interval')) * 1000;
 		});
-		/* 立即取一次完整状态；不要同时重复执行 sysinfo 与 status 两轮本地采集。 */
+		/* Read the full status once now; never run the sysinfo and status collections twice at the same time. */
 		var first = L.resolveDefault(M.callStatus()).then(function(st) {
 			self.update(st || {});
 		});
@@ -114,42 +115,42 @@ return view.extend({
 <div class="mud-card mud-body">
 
 <div class="mud-sec">
-  <h3>链路与流量</h3>
+  <h3>${_('Link & traffic')}</h3>
   <div class="mud-charts">
     <div class="mud-chart" style="color:var(--brand,var(--primary,#2f7bf6))">
-      <div class="t"><b id="mud-dl">--</b><span>下行速率</span></div>
+      <div class="t"><b id="mud-dl">--</b><span>${_('Download rate')}</span></div>
       <div class="c" id="mud-spark-dl"></div>
     </div>
     <div class="mud-chart" style="color:var(--success,#2FBF71)">
-      <div class="t"><b id="mud-ul">--</b><span>上行速率</span></div>
+      <div class="t"><b id="mud-ul">--</b><span>${_('Upload rate')}</span></div>
       <div class="c" id="mud-spark-ul"></div>
     </div>
   </div>
   <div class="mud-kpis">
-    <div class="mud-kpi"><b id="mud-rx">--</b><span>累计接收</span></div>
-    <div class="mud-kpi"><b id="mud-tx">--</b><span>累计发送</span></div>
+    <div class="mud-kpi"><b id="mud-rx">--</b><span>${_('Total received')}</span></div>
+    <div class="mud-kpi"><b id="mud-tx">--</b><span>${_('Total sent')}</span></div>
   </div>
   <div class="mud-cols">
     <div>
       <div class="mud-rows">
         <div class="mud-r"><span class="mud-k">IPv4 / IPv6</span><span class="mud-v" id="mud-ip">--</span></div>
         <div class="mud-r"><span class="mud-k">APN</span><span class="mud-v" id="mud-apn">--</span></div>
-        <div class="mud-r"><span class="mud-k">会话时长</span><span class="mud-v" id="mud-sess">--</span></div>
-        <div class="mud-r"><span class="mud-k">注册状态</span><span class="mud-v" id="mud-reg">--</span></div>
+        <div class="mud-r"><span class="mud-k">${_('Session duration')}</span><span class="mud-v" id="mud-sess">--</span></div>
+        <div class="mud-r"><span class="mud-k">${_('Registration')}</span><span class="mud-v" id="mud-reg">--</span></div>
         <div class="mud-r"><span class="mud-k">DNS</span><span class="mud-v" id="mud-dns">--</span></div>
       </div>
     </div>
     <div>
       <div class="mud-rows" id="mud-lteanchor"></div>
       <div class="mud-rows" id="mud-radio-metrics">
-        <div class="mud-r"><span class="mud-k">调制方式 下/上</span><span class="mud-v">-- / --</span></div>
-        <div class="mud-r"><span class="mud-k">MCS 下/上</span><span class="mud-v">-- / --</span></div>
-        <div class="mud-r"><span class="mud-k">BLER 下/上</span><span class="mud-v">-- / --</span></div>
+        <div class="mud-r"><span class="mud-k">${_('Modulation DL/UL')}</span><span class="mud-v">-- / --</span></div>
+        <div class="mud-r"><span class="mud-k">${_('MCS DL/UL')}</span><span class="mud-v">-- / --</span></div>
+        <div class="mud-r"><span class="mud-k">${_('BLER DL/UL')}</span><span class="mud-v">-- / --</span></div>
       </div>
       <div class="mud-rows">
-        <div class="mud-r"><span class="mud-k">频宽</span><span class="mud-v" id="mud-bw">--</span></div>
+        <div class="mud-r"><span class="mud-k">${_('Bandwidth')}</span><span class="mud-v" id="mud-bw">--</span></div>
         <div class="mud-r"><span class="mud-k">QCI</span><span class="mud-v" id="mud-qci">--</span></div>
-        <div class="mud-r"><span class="mud-k">AMBR 下/上</span><span class="mud-v" id="mud-ambr">--</span></div>
+        <div class="mud-r"><span class="mud-k">${_('AMBR DL/UL')}</span><span class="mud-v" id="mud-ambr">--</span></div>
       </div>
     </div>
   </div>
@@ -157,46 +158,46 @@ return view.extend({
 
 
 <div class="mud-sec">
-  <h3>无线 · 局域网 · 设备 · SIM</h3>
+  <h3>${_('Wi-Fi · LAN · Device · SIM')}</h3>
   <div class="mud-temp" id="mud-temps"></div>
   <div class="mud-kpis" style="margin-top:8px">
-    <div class="mud-kpi"><b id="mud-cpu">--</b><span>CPU 占用</span><div class="mud-meter"><i id="mud-cpu-bar" style="background:var(--brand,var(--primary,#3b82f6))"></i></div></div>
-    <div class="mud-kpi"><b id="mud-ram">--</b><span>内存 · <span class="mud-sub" id="mud-ram-sub">--</span></span><div class="mud-meter"><i id="mud-ram-bar" style="background:var(--info,#0ea5e9)"></i></div></div>
-    <div class="mud-kpi"><b id="mud-disk">--</b><span>存储</span><div class="mud-meter"><i id="mud-disk-bar" style="background:var(--warning,#f59e0b)"></i></div></div>
-    <div class="mud-kpi"><b id="mud-batt">--</b><span id="mud-batt-l">电源</span></div>
+    <div class="mud-kpi"><b id="mud-cpu">--</b><span>${_('CPU usage')}</span><div class="mud-meter"><i id="mud-cpu-bar" style="background:var(--brand,var(--primary,#3b82f6))"></i></div></div>
+    <div class="mud-kpi"><b id="mud-ram">--</b><span>${_('Memory')} · <span class="mud-sub" id="mud-ram-sub">--</span></span><div class="mud-meter"><i id="mud-ram-bar" style="background:var(--info,#0ea5e9)"></i></div></div>
+    <div class="mud-kpi"><b id="mud-disk">--</b><span>${_('Storage')}</span><div class="mud-meter"><i id="mud-disk-bar" style="background:var(--warning,#f59e0b)"></i></div></div>
+    <div class="mud-kpi"><b id="mud-batt">--</b><span id="mud-batt-l">${_('Power')}</span></div>
   </div>
   <div id="mud-freqs" class="mud-freqs"></div>
   <div class="mud-cols">
     <div>
       <div class="mud-rows">
         <div class="mud-r"><span class="mud-k">SSID</span><span class="mud-v" id="mud-ssid">--</span></div>
-        <div class="mud-r"><span class="mud-k">信道</span><span class="mud-v" id="mud-chan">--</span></div>
-        <div class="mud-r"><span class="mud-k">加密</span><span class="mud-v" id="mud-wenc">--</span></div>
-        <div class="mud-r"><span class="mud-k">隐藏 SSID</span><span class="mud-v" id="mud-whid">--</span></div>
-        <div class="mud-r"><span class="mud-k">国家</span><span class="mud-v" id="mud-wcountry">--</span></div>
-        <div class="mud-r"><span class="mud-k">AP 状态</span><span class="mud-v" id="mud-whostapd">--</span></div>
-        <div class="mud-r"><span class="mud-k">USB 网络</span><span class="mud-v" id="mud-wusb">--</span></div>
-        <div class="mud-r"><span class="mud-k">连接跟踪</span><span class="mud-v" id="mud-conntrack">--</span></div>
-        <div class="mud-r"><span class="mud-k">LAN 地址</span><span class="mud-v" id="mud-lanip">--</span></div>
-        <div class="mud-r"><span class="mud-k">无线客户端</span><span class="mud-v" id="mud-wcl">--</span></div>
-        <div class="mud-r"><span class="mud-k">DHCP 租约</span><span class="mud-v" id="mud-wleases">--</span></div>
+        <div class="mud-r"><span class="mud-k">${_('Channel')}</span><span class="mud-v" id="mud-chan">--</span></div>
+        <div class="mud-r"><span class="mud-k">${_('Encryption')}</span><span class="mud-v" id="mud-wenc">--</span></div>
+        <div class="mud-r"><span class="mud-k">${_('Hidden SSID')}</span><span class="mud-v" id="mud-whid">--</span></div>
+        <div class="mud-r"><span class="mud-k">${_('Country')}</span><span class="mud-v" id="mud-wcountry">--</span></div>
+        <div class="mud-r"><span class="mud-k">${_('AP status')}</span><span class="mud-v" id="mud-whostapd">--</span></div>
+        <div class="mud-r"><span class="mud-k">${_('USB network')}</span><span class="mud-v" id="mud-wusb">--</span></div>
+        <div class="mud-r"><span class="mud-k">${_('Connection tracking')}</span><span class="mud-v" id="mud-conntrack">--</span></div>
+        <div class="mud-r"><span class="mud-k">${_('LAN address')}</span><span class="mud-v" id="mud-lanip">--</span></div>
+        <div class="mud-r"><span class="mud-k">${_('Wi-Fi clients')}</span><span class="mud-v" id="mud-wcl">--</span></div>
+        <div class="mud-r"><span class="mud-k">${_('DHCP leases')}</span><span class="mud-v" id="mud-wleases">--</span></div>
       </div>
       <div id="mud-clist" style="margin-top:8px"></div>
     </div>
     <div>
       <div class="mud-rows">
-        <div class="mud-r"><span class="mud-k">设备型号</span><span class="mud-v" id="mud-model">--</span></div>
-        <div class="mud-r"><span class="mud-k">系统</span><span class="mud-v" id="mud-fwos">--</span></div>
-        <div class="mud-r"><span class="mud-k">调制解调器</span><span class="mud-v" id="mud-modem">--</span></div>
-        <div class="mud-r"><span class="mud-k">运营商</span><span class="mud-v" id="mud-carr">--</span></div>
+        <div class="mud-r"><span class="mud-k">${_('Device model')}</span><span class="mud-v" id="mud-model">--</span></div>
+        <div class="mud-r"><span class="mud-k">${_('System')}</span><span class="mud-v" id="mud-fwos">--</span></div>
+        <div class="mud-r"><span class="mud-k">${_('Modem')}</span><span class="mud-v" id="mud-modem">--</span></div>
+        <div class="mud-r"><span class="mud-k">${_('Carrier')}</span><span class="mud-v" id="mud-carr">--</span></div>
         <div class="mud-r"><span class="mud-k">PLMN</span><span class="mud-v" id="mud-plmn">--</span></div>
         <div class="mud-r"><span class="mud-k">IMEI</span><span class="mud-v" id="mud-imei">--</span></div>
         <div class="mud-r"><span class="mud-k">IMSI</span><span class="mud-v" id="mud-imsi">--</span></div>
         <div class="mud-r"><span class="mud-k">ICCID</span><span class="mud-v" id="mud-iccid">--</span></div>
-        <div class="mud-r"><span class="mud-k">模组</span><span class="mud-v" id="mud-fwmodel">--</span></div>
-        <div class="mud-r"><span class="mud-k">固件</span><span class="mud-v" id="mud-fw">--</span></div>
+        <div class="mud-r"><span class="mud-k">${_('Module')}</span><span class="mud-v" id="mud-fwmodel">--</span></div>
+        <div class="mud-r"><span class="mud-k">${_('Firmware')}</span><span class="mud-v" id="mud-fw">--</span></div>
       </div>
-      <div class="mud-chiprow"><span class="mud-chip" id="mud-reveal">显示卡号信息</span></div>
+      <div class="mud-chiprow"><span class="mud-chip" id="mud-reveal">${_('Show SIM identifiers')}</span></div>
     </div>
   </div>
   <div id="mud-leases" style="margin-top:10px"></div>
@@ -204,20 +205,20 @@ return view.extend({
 
 
 <div class="mud-sec">
-  <h3>快捷控制</h3>
+  <h3>${_('Quick controls')}</h3>
   <div class="mud-ctl" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr))">
-    <button class="mud-btn" id="mud-btn-data">数据连接</button>
-    <button class="mud-btn" id="mud-btn-radio">蜂窝射频</button>
-    <button class="mud-btn" id="mud-btn-wifi">Wi-Fi 热点</button>
-    <button class="mud-btn warn" id="mud-btn-modem">重启调制解调器</button>
-    <button class="mud-btn warn" id="mud-btn-reboot">重启设备</button>
-    <button class="mud-btn warn" id="mud-btn-android">切换到 Android</button>
+    <button class="mud-btn" id="mud-btn-data">${_('Data connection')}</button>
+    <button class="mud-btn" id="mud-btn-radio">${_('Cellular radio')}</button>
+    <button class="mud-btn" id="mud-btn-wifi">${_('Wi-Fi hotspot')}</button>
+    <button class="mud-btn warn" id="mud-btn-modem">${_('Restart modem')}</button>
+    <button class="mud-btn warn" id="mud-btn-reboot">${_('Restart device')}</button>
+    <button class="mud-btn warn" id="mud-btn-android">${_('Switch to Android')}</button>
   </div>
 </div>
 <div class="mud-sec">
-  <h3>邻区</h3>
+  <h3>${_('Neighbor cells')}</h3>
   <div class="mud-scroll">
-  <table class="mud-table"><thead><tr><th>制式/频段</th><th>PCI</th><th>频点</th><th>RSRP</th><th>RSRQ</th><th>SINR</th><th></th></tr></thead>
+  <table class="mud-table"><thead><tr><th>${_('RAT/Band')}</th><th>PCI</th><th>${_('Frequency')}</th><th>RSRP</th><th>RSRQ</th><th>SINR</th><th></th></tr></thead>
   <tbody id="mud-neigh"><tr><td colspan="7" style="color:var(--text-muted,var(--text-light,#777))">--</td></tr></tbody></table>
   </div>
 </div>
@@ -231,30 +232,31 @@ return view.extend({
 		this.dlHist = []; this.ulHist = [];
 		this.lastNet = null; this.lastCpu = null; this.lastFullTs = 0;
 		this.lockedCell = '';
-		/* render() 在节点挂进文档之前运行，这里相对 root 查找（挂载后 update 用全文档查找） */
+		/* render() runs before the node is in the document, so look up relative to root (update, once mounted, looks in the whole document) */
 		var q = function(id) { return root.querySelector('#mud-' + id); };
 
-		/* 统一反馈：按钮转圈（M.busy）+ 顶部 toast，与锁定/短信页同一框架 */
+		/* One kind of feedback: a spinning button (M.busy) + a toast at the top, the same as on the lock and SMS pages */
 		var act = function(op, arg, note, btn) {
 			M.busy(btn, true);
-			M.toast(note || ('正在执行 ' + op + ' …'), { type: 'busy' });
+			M.toast(note || _('Running %s…').format(op), { type: 'busy' });
 			return L.resolveDefault(M.callAct(op, arg)).then(function(r) {
 				r = r || {};
 				M.busy(btn, false);
-				M.toast(r.ok ? ((r.started ? '已后台执行：' : '已执行：') + (r.op || op)) : ('失败：' + (r.error || '未知错误')),
+				M.toast(r.ok ? (r.started ? _('Started in background: %s') : _('Done: %s')).format(r.op || op)
+					: _('Failed: %s').format(r.error || _('Unknown error')),
 					{ type: r.ok ? 'success' : 'error' });
-			}, function() { M.busy(btn, false); M.toast('调用失败', { type: 'error' }); });
+			}, function() { M.busy(btn, false); M.toast(_('Request failed'), { type: 'error' }); });
 		};
 		q('btn-data').onclick = function() {
 			var up = self.lastInfo && self.lastInfo.wan && self.lastInfo.wan.up;
-			act('data', up ? 'down' : 'up', up ? '正在断开数据连接…' : '正在拨号…', this);
+			act('data', up ? 'down' : 'up', up ? _('Disconnecting data…') : _('Connecting data…'), this);
 		};
 		q('btn-radio').onclick = function() {
 			var on = self.lastCell && self.lastCell.cfun === 1;
 			var btn = this;
 			(on
-				? M.confirmBox('关闭蜂窝射频', '蜂窝连接会中断。', { danger: true })
-				: M.confirmBox('打开蜂窝射频', '将执行 SFUN 上电序列（最多约 1 分钟）。')
+				? M.confirmBox(_('Turn off cellular radio'), _('Cellular connectivity will be interrupted.'), { danger: true })
+				: M.confirmBox(_('Turn on cellular radio'), _('The SFUN power-on sequence will run (up to about 1 minute).'))
 			).then(function(go) { if (go) act('radio', on ? 'off' : 'on', null, btn); });
 		};
 		q('btn-wifi').onclick = function() {
@@ -263,43 +265,45 @@ return view.extend({
 		};
 		q('btn-modem').onclick = function() {
 			var btn = this;
-			M.confirmBox('重启调制解调器', '蜂窝连接会中断 1-2 分钟。', { danger: true })
+			M.confirmBox(_('Restart modem'), _('Cellular connectivity may stop for 1–2 minutes.'), { danger: true })
 				.then(function(go) { if (go) act('modem-reset', null, null, btn); });
 		};
 		q('btn-reboot').onclick = function() {
 			var btn = this;
-			M.confirmBox('重启整个设备', '所有连接会断开。', { danger: true })
+			M.confirmBox(_('Restart the entire device'), _('All connections will be interrupted.'), { danger: true })
 				.then(function(go) { if (go) act('reboot', null, null, btn); });
 		};
 		q('btn-android').onclick = function() {
 			var btn = this;
-			M.confirmBox('切换到 Android 系统',
-				'下次启动将进入 Android 并立即重启，此管理页面与蜂窝共享都会断开。\n' +
-				'回到 OpenWrt：在 Android 上执行 mu300-next-boot linux 后重启；\n' +
-				'或什么都不做，连续 5 次开机未完成会自动回退。',
-				{ danger: true, okText: '切换并重启' })
-				.then(function(go) { if (go) act('os', 'android', '正在武装 Android 引导并重启…', btn); });
+			M.confirmBox(_('Switch to Android'),
+				[ _('The next boot will enter Android and reboot now. This management page and cellular sharing will disconnect.'),
+				  _('To return to OpenWrt, run mu300-next-boot linux in Android and reboot.'),
+				  _('Or do nothing: after five boots that do not finish, it falls back automatically.') ].join('\n'),
+				{ danger: true, okText: _('Switch and reboot') })
+				.then(function(go) { if (go) act('os', 'android', _('Preparing Android boot and rebooting…'), btn); });
 		};
 		q('reveal').onclick = function() {
 			self.identShown = !self.identShown;
-			M.v('reveal').textContent = self.identShown ? '隐藏卡号信息' : '显示卡号信息';
+			M.v('reveal').textContent = self.identShown ? _('Hide SIM identifiers') : _('Show SIM identifiers');
 			self.paintIdent(self.lastCell);
 		};
 
-		/* 邻区行内锁定（事件委托） */
+		/* Lock from a neighbor row (event delegation) */
 		q('neigh').addEventListener('click', function(ev) {
 			var btn = ev.target;
 			if (!btn.getAttribute || !btn.getAttribute('data-lock')) return;
 			var key = btn.getAttribute('data-lock');
-			M.confirmBox('锁定小区 ' + key.replace(':', ' ') + '?', '协议栈会重启（SFUN），蜂窝断开约半分钟。', { danger: true })
+			M.confirmBox(_('Lock cell %s?').format(key.replace(':', ' ')),
+				_('The radio stack will restart (SFUN); cellular service will stop for about 30 seconds.'), { danger: true })
 				.then(function(go) {
 				if (!go) return;
 				M.busy(btn, true);
-			M.toast('正在后台锁定 ' + key + '，约半分钟', { type: 'busy' });
+			M.toast(_('Locking %s in the background, about 30 seconds').format(key), { type: 'busy' });
 			L.resolveDefault(M.callLockSet('cell', key)).then(function(r) {
 				r = r || {};
 				M.busy(btn, false);
-					M.toast(r.ok ? '已后台锁定 ' + key + '，稍后自动刷新状态' : '锁定失败：' + (r.error || '未知错误'),
+					M.toast(r.ok ? _('Locked %s in the background; the status will refresh shortly').format(key)
+						: _('Lock failed: %s').format(r.error || _('Unknown error')),
 						{ type: r.ok ? 'success' : 'error' });
 					setTimeout(function() { self.refreshLock(); }, 35000);
 				});
@@ -341,12 +345,12 @@ return view.extend({
 			this._bootEl.classList.remove('mud-booting');
 			this._bootEl = null;
 		}
-		/* 快档覆盖：sig（服务小区/注册，1.5 s 级）盖在慢档缓存 c 的对应字段上 */
+		/* Fast tier on top: sig (serving cell/registration, every 1.5 s) overrides the same fields of the slow-tier cache c */
 		var c = st.cell || null;
 		var s = st.sig || null;
 		if (s && !s.error && (!c || !c.ts || (s.ts || 0) >= c.ts)) {
 			if (c && s.partial) {
-				/* 核心首包先更新驻网状态，但不让临时 CESQ 空值擦掉上一份工程信号。 */
+				/* The first core reply updates the registration, but a transient empty CESQ does not wipe the last engineering signal. */
 				c = Object.assign({}, c, {
 					ts: s.ts, cfun: s.cfun, reg: s.reg, reg5g: s.reg5g
 				});
@@ -356,19 +360,19 @@ return view.extend({
 			}) : s;
 		}
 		this.lastCell = c;
-		/* 慢档数据（邻区/运营商/身份）只在整份缓存的时间戳变化时重绘 */
+		/* Slow-tier data (neighbors/carrier/identity) is redrawn only when the whole cache's timestamp changes */
 		var fullTs = (st.cell && st.cell.ts) || 0;
 		var slowChanged = fullTs !== this.lastFullTs;
 		this.lastFullTs = fullTs;
 
 		M.set('host', i.host);
-		M.set('uptime', i.uptime ? '已运行 ' + M.fmtUptime(i.uptime) : '');
+		M.set('uptime', i.uptime ? _('Uptime %s').format(M.fmtUptime(i.uptime)) : '');
 		M.v('dot').className = 'mud-dot' + (i.modem && i.modem.alive ? ' on' : '');
 
 		var sig = c && !c.error ? (c.sig || {}) : {};
 		var rsrp = sig.rsrp, rsrq = sig.rsrq, sinr = sig.sinr;
-		/* 4G 时 sig 就是 LTE 块（后端 sig_src 优先 NR > LTE > CESQ），c.lte.sinr
-		 * 是同一数据源的另一个时间戳——仅作 sinr 缺失时的回退，绝不并列展示 */
+		/* On 4G sig is the LTE block (the backend's sig_src prefers NR > LTE > CESQ); c.lte.sinr is the same source
+		 * at another timestamp -- only a fallback when sinr is missing, never shown next to it */
 		if (sinr == null && c && c.lte && !c.nr && c.lte.sinr != null) sinr = c.lte.sinr;
 		var label = M.qLabel(rsrp, rsrq, sinr), score = M.qScore({ rsrp: rsrp, rsrq: rsrq, sinr: sinr });
 		var col = M.qCol(M.qLevel(rsrp, rsrq, sinr));
@@ -382,9 +386,9 @@ return view.extend({
 			else if (lte) {
 				var act = (c.operator && c.operator.act) || (c.reg && c.reg.act);
 				rat = (act == 13) ? '5G NSA' : (act == 11 || act == 18 || act == 19) ? '5G' : (act == 7 || act == 10) ? '4G' : (act >= 2 && act <= 6) ? '3G' : '4G';
-			} else if (c.cfun === 0) rat = '无线电已关';
+			} else if (c.cfun === 0) rat = _('Radio off');
 		}
-		if (c && c.error) { rat = '无应答'; col = M.qCol('poor'); }
+		if (c && c.error) { rat = _('No response'); col = M.qCol('poor'); }
 		var ratEl = M.v('rat');
 		ratEl.firstChild.nodeValue = rat;
 		ratEl.style.color = col;
@@ -395,19 +399,19 @@ return view.extend({
 		}
 
 		var oper = M.carrierName(c && c.operator);
-		/* COPS 空时（重启后的过渡态），从 IMSI 前 5-6 位推导 PLMN */
+		/* With COPS empty (the transition after a restart), the PLMN comes from the first 5-6 digits of the IMSI */
 		if (oper === '--' && c && c.ident && c.ident.imsi) {
 			var imsi = c.ident.imsi;
 			var plmn5 = imsi.substring(0, 5), plmn6 = imsi.substring(0, 6);
-			oper = M.translate(M.PLMN_CN[plmn5] || M.PLMN_CN[plmn6] || plmn5);
+			oper = M.PLMN_CN[plmn5] || M.PLMN_CN[plmn6] || plmn5;
 		}
-		M.set('op', oper + (score != null ? ' · 信号 ' + label + ' ' + score.toFixed(1) + ' 分' : ' · 信号 ' + label));
+		M.set('op', score != null ? _('%s · Signal %s %s/10').format(oper, label, score.toFixed(1)) : _('%s · Signal %s').format(oper, label));
 
 		var cl = [];
 		if (c && c.nr && c.nr.band) cl.push('n' + c.nr.band + (c.nr.bw_mhz ? ' · ' + c.nr.bw_mhz + ' MHz' : '') + ' · PCI ' + c.nr.pci + ' · ARFCN ' + c.nr.arfcn);
-		if (c && c.lte && c.lte.band) cl.push('锚点 B' + c.lte.band + ' · PCI ' + c.lte.pci + ' · EARFCN ' + c.lte.earfcn +
+		if (c && c.lte && c.lte.band) cl.push(_('Anchor B%s').format(c.lte.band) + ' · PCI ' + c.lte.pci + ' · EARFCN ' + c.lte.earfcn +
 			(c.lte.sinr != null ? ' · SINR ' + c.lte.sinr.toFixed(1) + ' dB' : ''));
-		M.v('cellline').innerHTML = cl.map(M.esc).join('<br>') || '<span style="color:var(--text-muted,var(--text-light,#777))">未驻留小区</span>';
+		M.v('cellline').innerHTML = cl.map(M.esc).join('<br>') || '<span style="color:var(--text-muted,var(--text-light,#777))">' + _('No serving cell') + '</span>';
 
 		M.set('rsrp', '--');
 		if (rsrp != null) M.v('rsrp').innerHTML = rsrp.toFixed(1) + '<small> dBm</small>';
@@ -417,7 +421,7 @@ return view.extend({
 			(rsrq != null ? '<span class="mud-tag">RSRQ ' + rsrq.toFixed(1) + '</span>' : '') +
 			(sinr != null ? '<span class="mud-tag">SINR ' + sinr.toFixed(1) + '</span>' : '');
 
-		/* -- 链路与流量 */
+		/* -- link & traffic */
 		var nrk = (c && c.nr) || null;
 		var radioMetrics = '';
 		if (c && c.nr && c.nr.band) radioMetrics += radioMetricRows('5G', 'nr', c.nr);
@@ -450,10 +454,10 @@ return view.extend({
 		M.set('dns', w.dns || '--');
 		M.set('apn', w.apn || '--');
 		M.set('sess', w.uptime ? M.fmtUptime(w.uptime) : '--');
-		var regmap = { 0: '未注册', 1: '已注册', 2: '搜索中', 3: '注册被拒', 4: '未知', 5: '已注册（漫游）', 7: '仅紧急', 8: '仅紧急', 10: '已注册' };
+		var regmap = { 0: _('Not registered'), 1: _('Registered'), 2: _('Searching'), 3: _('Registration denied'), 4: _('Unknown'), 5: _('Registered (roaming)'), 7: _('Emergency only'), 8: _('Emergency only'), 10: _('Registered') };
 		var reg = '--';
 		if (c && c.reg) {
-			reg = regmap[c.reg.stat] || ('状态 ' + c.reg.stat);
+			reg = regmap[c.reg.stat] || _('Status %s').format(c.reg.stat);
 			if (c.reg.tac) reg += ' · TAC ' + c.reg.tac;
 			if (c.reg5g && c.reg5g.stat == 1) reg += ' · 5G ' + regmap[c.reg5g.stat];
 		} else if (c && c.error) reg = c.error;
@@ -461,12 +465,12 @@ return view.extend({
 
 		var anchor = (c && c.lte && c.lte.band) ? c.lte : null;
 		M.v('lteanchor').innerHTML = anchor ?
-			'<div class="mud-r"><span class="mud-k">' + (c.nr && c.nr.band ? 'LTE 锚点' : 'LTE 链路') + '</span><span class="mud-v">B' + M.esc(anchor.band) +
+			'<div class="mud-r"><span class="mud-k">' + (c.nr && c.nr.band ? _('LTE anchor') : _('LTE link')) + '</span><span class="mud-v">B' + M.esc(anchor.band) +
 			' · RSRP ' + (anchor.rsrp != null ? anchor.rsrp.toFixed(1) : '--') +
 			(anchor.sinr != null ? ' · SINR ' + anchor.sinr.toFixed(1) : '') +
 			(anchor.ca ? ' · ' + M.esc(anchor.ca) : '') + '</span></div>' : '';
 
-		/* -- 慢档分区 */
+		/* -- slow-tier sections */
 		if (slowChanged) {
 			this.repaintNeigh();
 			M.set('carr', oper);
@@ -475,19 +479,19 @@ return view.extend({
 			this.paintIdent(c);
 		}
 
-		/* -- 无线 · 局域网 · 设备 · SIM */
+		/* -- Wi-Fi, LAN, device, SIM */
 		var wf = i.wifi || {};
 		M.set('ssid', wf.ssid || '--');
-		M.set('chan', (wf.channel || '--') + (wf.band ? '（' + wf.band + (wf.width ? ' · ' + wf.width : '') + '）' : ''));
+		M.set('chan', (wf.channel || '--') + (wf.band ? ' (' + wf.band + (wf.width ? ' · ' + wf.width : '') + ')' : ''));
 		M.set('wenc', wf.enc || '--');
-		M.set('whid', wf.hidden == 1 ? '已隐藏' : '否');
+		M.set('whid', wf.hidden == 1 ? _('Hidden') : _('No'));
 		M.set('wcountry', wf.country || '--');
-		M.set('whostapd', wf.hostapd ? '运行中' : '未运行');
-		M.set('wusb', (i.net && i.net.usb0 && i.net.usb0.up) ? '已连接' : '未连接');
-		M.set('conntrack', i.conns != null ? i.conns + ' 条' : '--');
+		M.set('whostapd', wf.hostapd ? _('Running') : _('Not running'));
+		M.set('wusb', (i.net && i.net.usb0 && i.net.usb0.up) ? _('Connected') : _('Disconnected'));
+		M.set('conntrack', i.conns != null ? _('%s entries').format(i.conns) : '--');
 		M.set('lanip', (i.lan && i.lan.ip) || '--');
-		M.set('wcl', (wf.clients_n != null ? wf.clients_n : '--') + ' 台');
-		M.set('wleases', (i.lan ? i.lan.leases : '--') + ' 条');
+		M.set('wcl', _('%s clients').format(wf.clients_n != null ? wf.clients_n : '--'));
+		M.set('wleases', _('%s entries').format(i.lan ? i.lan.leases : '--'));
 		M.v('clist').innerHTML = (wf.clients || []).map(function(cl) {
 			var l = cl.signal != null ? (cl.signal >= -55 ? 'excellent' : cl.signal >= -67 ? 'good' : cl.signal >= -80 ? 'fair' : 'poor') : 'unknown';
 			return '<div class="mud-cli"><div class="t"><b>' + M.esc(cl.host || cl.ip || cl.mac) + '</b>' +
@@ -496,24 +500,24 @@ return view.extend({
 				((cl.tx || cl.rx) ? ' · ↑' + M.esc(cl.tx || '--') + ' ↓' + M.esc(cl.rx || '--') : '') +
 				(cl.conn ? ' · ' + M.esc(cl.conn) : '') + '</div></div>';
 		}).join('') || '';
-		/* 近期 DHCP 租约：没人连着的时候这里也能看出谁来过 */
+		/* Recent DHCP leases: shows who has been here even when nobody is connected */
 		M.v('leases').innerHTML = (i.lan && i.lan.list && i.lan.list.length)
-			? '<div class="mud-note" style="margin:0 0 4px">近期 DHCP 租约</div>' +
+			? '<div class="mud-note" style="margin:0 0 4px">' + _('Recent DHCP leases') + '</div>' +
 				'<table class="mud-table"><tbody>' +
 				i.lan.list.slice(0, 8).map(function(l) {
 					return '<tr><td>' + M.esc(l.host || l.ip || '?') + '</td><td>' + M.esc(l.ip || '') + '</td>' +
 						'<td style="color:var(--text-subtle,var(--text-light,#999))">' + M.esc(l.mac) + '</td>' +
-						'<td>' + (l.left >= 3600 ? Math.round(l.left / 3600) + ' 小时' : Math.max(0, Math.round(l.left / 60)) + ' 分') + '</td></tr>';
+						'<td>' + (l.left >= 3600 ? _('%d h').format(Math.round(l.left / 3600)) : _('%d min').format(Math.max(0, Math.round(l.left / 60)))) + '</td></tr>';
 				}).join('') + '</tbody></table>'
 			: '';
 
 		var t = i.temps || {};
-		M.v('temps').innerHTML = [ [ 'SoC', t.soc ], [ 'CPU', t.cpu ], [ '调制解调器', t.modem ], [ '主板', t.board ] ]
+		M.v('temps').innerHTML = [ [ 'SoC', t.soc ], [ 'CPU', t.cpu ], [ _('Modem'), t.modem ], [ _('Board'), t.board ] ]
 			.filter(function(x) { return x[1] != null; })
 			.map(function(x) {
 				var lab = x[1] >= 75 ? 'poor' : x[1] >= 60 ? 'fair' : 'good';
 				return '<span style="color:' + M.qCol(lab) + '">' + x[0] + ' ' + x[1] + '°C</span>';
-			}).join('') || '<span style="color:var(--text-muted,var(--text-light,#777))">无温度读数</span>';
+			}).join('') || '<span style="color:var(--text-muted,var(--text-light,#777))">' + _('No temperature readings') + '</span>';
 
 		if (i.cpu && this.lastCpu && i.cpu.total != null && this.lastCpu.total != null) {
 			var dt2 = i.cpu.total - this.lastCpu.total, di = i.cpu.idle - this.lastCpu.idle;
@@ -524,11 +528,11 @@ return view.extend({
 			}
 		}
 		this.lastCpu = i.cpu || null;
-		/* 每簇一条 cur/max 频率条 */
+		/* One cur/max frequency bar per cluster */
 		M.v('freqs').innerHTML = ((i.cpu && i.cpu.freqs) || []).map(function(f, n) {
 			if (f.cur == null || f.max == null || !f.max) return '';
 			var w = Math.max(2, Math.round(f.cur * 100 / f.max));
-			return '<div class="mud-freq"><span class="mud-k">簇' + n + '</span>' +
+			return '<div class="mud-freq"><span class="mud-k">' + _('Cluster %d').format(n) + '</span>' +
 				'<div class="mud-meter" style="flex:1;margin:4px 8px 0"><i style="width:' + w + '%;background:var(--brand,var(--primary,#3b82f6))"></i></div>' +
 				'<span class="mud-v" style="flex:0 0 auto">' + (f.cur / 1000).toFixed(0) + ' <span style="opacity:.55">/ ' + (f.max / 1000).toFixed(0) + ' MHz</span></span></div>';
 		}).join('');
@@ -536,7 +540,7 @@ return view.extend({
 		if (i.mem && i.mem.total_kb) {
 			var used = i.mem.total_kb - i.mem.avail_kb, pct = Math.round(used * 100 / i.mem.total_kb);
 			M.set('ram', pct + '%'); M.v('ram-bar').style.width = pct + '%';
-			M.set('ram-sub', '共 ' + M.fmtBytes(i.mem.total_kb * 1024) + ' · 余 ' + M.fmtBytes(i.mem.avail_kb * 1024));
+			M.set('ram-sub', _('Total %s · free %s').format(M.fmtBytes(i.mem.total_kb * 1024), M.fmtBytes(i.mem.avail_kb * 1024)));
 		}
 		if (i.storage && i.storage.total_kb) {
 			var pct2 = Math.round(i.storage.used_kb * 100 / i.storage.total_kb);
@@ -545,21 +549,20 @@ return view.extend({
 		var p = i.power || {};
 		if (p.present && p.capacity != null) {
 			M.set('batt', p.capacity + '%');
-			M.set('batt-l', '电源 · ' + (p.status || '') + (p.volt != null ? ' · ' + p.volt + ' V' : '') + (p.usb ? ' · USB' : ''));
+			M.set('batt-l', _('Power') + ' · ' + (p.status || '') + (p.volt != null ? ' · ' + p.volt + ' V' : '') + (p.usb ? ' · USB' : ''));
 		} else {
 			M.set('batt', p.usb ? 'USB' : '--');
-			M.set('batt-l', '电源' + (p.volt != null ? ' · ' + p.volt + ' V' : ''));
+			M.set('batt-l', _('Power') + (p.volt != null ? ' · ' + p.volt + ' V' : ''));
 		}
 		M.set('model', i.model || '--');
 		M.set('fwos', i.fw || '--');
-		M.set('modem', (i.modem && i.modem.alive ? '在线' : '无应答') + (i.modem && i.modem.atd ? '' : ' · AT 适配器不可用'));
+		M.set('modem', (i.modem && i.modem.alive ? _('Online') : _('No response')) + (i.modem && i.modem.atd ? '' : ' · ' + _('AT adapter unavailable')));
 		var androidBtn = M.v('btn-android');
 		if (androidBtn) androidBtn.style.display = i.capabilities && i.capabilities.dualboot ? '' : 'none';
 
 		var b;
-		b = M.v('btn-data'); b.className = 'mud-btn' + (w.up ? ' on' : ''); b.textContent = '数据连接';
-		b = M.v('btn-radio'); b.className = 'mud-btn' + (c && c.cfun === 1 ? ' on' : ''); b.textContent = '蜂窝射频';
-		b = M.v('btn-wifi'); b.className = 'mud-btn' + (wf.up ? ' on' : ''); b.textContent = 'Wi-Fi 热点';
-		M.localize(this._root);
+		b = M.v('btn-data'); b.className = 'mud-btn' + (w.up ? ' on' : ''); b.textContent = _('Data connection');
+		b = M.v('btn-radio'); b.className = 'mud-btn' + (c && c.cfun === 1 ? ' on' : ''); b.textContent = _('Cellular radio');
+		b = M.v('btn-wifi'); b.className = 'mud-btn' + (wf.up ? ' on' : ''); b.textContent = _('Wi-Fi hotspot');
 	}
 });

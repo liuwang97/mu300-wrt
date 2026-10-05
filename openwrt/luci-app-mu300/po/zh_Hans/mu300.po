@@ -42,9 +42,6 @@ msgstr "中国广电"
 msgid "China Tietong"
 msgstr "中国铁通"
 
-msgid "Unknown"
-msgstr "未知"
-
 msgid "Excellent"
 msgstr "优秀"
 
@@ -56,6 +53,9 @@ msgstr "一般"
 
 msgid "Poor"
 msgstr "较差"
+
+msgid "Unknown"
+msgstr "未知"
 
 msgid "%d d %d h"
 msgstr "%d 天 %d 小时"
@@ -92,3 +92,489 @@ msgstr "未知号码"
 
 msgid "Select"
 msgstr "选择"
+
+msgid "Modulation DL/UL"
+msgstr "调制方式 下/上"
+
+msgid "Estimated from current MCS"
+msgstr "按当前 MCS 估算"
+
+msgid "MCS DL/UL"
+msgstr "MCS 下/上"
+
+msgid "BLER DL/UL"
+msgstr "BLER 下/上"
+
+msgid "Link & traffic"
+msgstr "链路与流量"
+
+msgid "Download rate"
+msgstr "下行速率"
+
+msgid "Upload rate"
+msgstr "上行速率"
+
+msgid "Total received"
+msgstr "累计接收"
+
+msgid "Total sent"
+msgstr "累计发送"
+
+msgid "Session duration"
+msgstr "会话时长"
+
+msgid "Registration"
+msgstr "注册状态"
+
+msgid "Bandwidth"
+msgstr "频宽"
+
+msgid "AMBR DL/UL"
+msgstr "AMBR 下/上"
+
+msgid "Wi-Fi · LAN · Device · SIM"
+msgstr "无线 · 局域网 · 设备 · SIM"
+
+msgid "CPU usage"
+msgstr "CPU 占用"
+
+msgid "Memory"
+msgstr "内存"
+
+msgid "Storage"
+msgstr "存储"
+
+msgid "Power"
+msgstr "电源"
+
+msgid "Channel"
+msgstr "信道"
+
+msgid "Encryption"
+msgstr "加密"
+
+msgid "Hidden SSID"
+msgstr "隐藏 SSID"
+
+msgid "Country"
+msgstr "国家"
+
+msgid "AP status"
+msgstr "AP 状态"
+
+msgid "USB network"
+msgstr "USB 网络"
+
+msgid "Connection tracking"
+msgstr "连接跟踪"
+
+msgid "LAN address"
+msgstr "LAN 地址"
+
+msgid "Wi-Fi clients"
+msgstr "无线客户端"
+
+msgid "DHCP leases"
+msgstr "DHCP 租约"
+
+msgid "Device model"
+msgstr "设备型号"
+
+msgid "System"
+msgstr "系统"
+
+msgid "Modem"
+msgstr "调制解调器"
+
+msgid "Carrier"
+msgstr "运营商"
+
+msgid "Module"
+msgstr "模组"
+
+msgid "Firmware"
+msgstr "固件"
+
+msgid "Show SIM identifiers"
+msgstr "显示卡号信息"
+
+msgid "Quick controls"
+msgstr "快捷控制"
+
+msgid "Data connection"
+msgstr "数据连接"
+
+msgid "Cellular radio"
+msgstr "蜂窝射频"
+
+msgid "Wi-Fi hotspot"
+msgstr "Wi-Fi 热点"
+
+msgid "Restart modem"
+msgstr "重启调制解调器"
+
+msgid "Restart device"
+msgstr "重启设备"
+
+msgid "Switch to Android"
+msgstr "切换到 Android"
+
+msgid "Neighbor cells"
+msgstr "邻区"
+
+msgid "RAT/Band"
+msgstr "制式/频段"
+
+msgid "Frequency"
+msgstr "频点"
+
+msgid "Running %s…"
+msgstr "正在执行 %s …"
+
+msgid "Started in background: %s"
+msgstr "已后台执行：%s"
+
+msgid "Done: %s"
+msgstr "已执行：%s"
+
+msgid "Failed: %s"
+msgstr "失败：%s"
+
+msgid "Unknown error"
+msgstr "未知错误"
+
+msgid "Request failed"
+msgstr "调用失败"
+
+msgid "Disconnecting data…"
+msgstr "正在断开数据连接…"
+
+msgid "Connecting data…"
+msgstr "正在拨号…"
+
+msgid "Turn off cellular radio"
+msgstr "关闭蜂窝射频"
+
+msgid "Cellular connectivity will be interrupted."
+msgstr "蜂窝连接会中断。"
+
+msgid "Turn on cellular radio"
+msgstr "打开蜂窝射频"
+
+msgid "The SFUN power-on sequence will run (up to about 1 minute)."
+msgstr "将执行 SFUN 上电序列（最多约 1 分钟）。"
+
+msgid "Cellular connectivity may stop for 1–2 minutes."
+msgstr "蜂窝连接会中断 1-2 分钟。"
+
+msgid "Restart the entire device"
+msgstr "重启整个设备"
+
+msgid "All connections will be interrupted."
+msgstr "所有连接会断开。"
+
+msgid "The next boot will enter Android and reboot now. This management page and cellular sharing will disconnect."
+msgstr "下次启动将进入 Android 并立即重启，此管理页面与蜂窝共享都会断开。"
+
+msgid "To return to OpenWrt, run mu300-next-boot linux in Android and reboot."
+msgstr "回到 OpenWrt：在 Android 上执行 mu300-next-boot linux 后重启；"
+
+msgid "Or do nothing: after five boots that do not finish, it falls back automatically."
+msgstr "或什么都不做，连续 5 次开机未完成会自动回退。"
+
+msgid "Switch and reboot"
+msgstr "切换并重启"
+
+msgid "Preparing Android boot and rebooting…"
+msgstr "正在武装 Android 引导并重启…"
+
+msgid "Hide SIM identifiers"
+msgstr "隐藏卡号信息"
+
+msgid "Lock cell %s?"
+msgstr "锁定小区 %s?"
+
+msgid "The radio stack will restart (SFUN); cellular service will stop for about 30 seconds."
+msgstr "协议栈会重启（SFUN），蜂窝断开约半分钟。"
+
+msgid "Locking %s in the background, about 30 seconds"
+msgstr "正在后台锁定 %s，约半分钟"
+
+msgid "Locked %s in the background; the status will refresh shortly"
+msgstr "已后台锁定 %s，稍后自动刷新状态"
+
+msgid "Lock failed: %s"
+msgstr "锁定失败：%s"
+
+msgid "Uptime %s"
+msgstr "已运行 %s"
+
+msgid "Radio off"
+msgstr "无线电已关"
+
+msgid "No response"
+msgstr "无应答"
+
+msgid "%s · Signal %s %s/10"
+msgstr "%s · 信号 %s %s 分"
+
+msgid "%s · Signal %s"
+msgstr "%s · 信号 %s"
+
+msgid "Anchor B%s"
+msgstr "锚点 B%s"
+
+msgid "No serving cell"
+msgstr "未驻留小区"
+
+msgid "Not registered"
+msgstr "未注册"
+
+msgid "Registered"
+msgstr "已注册"
+
+msgid "Searching"
+msgstr "搜索中"
+
+msgid "Registration denied"
+msgstr "注册被拒"
+
+msgid "Registered (roaming)"
+msgstr "已注册（漫游）"
+
+msgid "Emergency only"
+msgstr "仅紧急"
+
+msgid "Status %s"
+msgstr "状态 %s"
+
+msgid "LTE anchor"
+msgstr "LTE 锚点"
+
+msgid "LTE link"
+msgstr "LTE 链路"
+
+msgid "Hidden"
+msgstr "已隐藏"
+
+msgid "No"
+msgstr "否"
+
+msgid "Running"
+msgstr "运行中"
+
+msgid "Not running"
+msgstr "未运行"
+
+msgid "Connected"
+msgstr "已连接"
+
+msgid "Disconnected"
+msgstr "未连接"
+
+msgid "%s entries"
+msgstr "%s 条"
+
+msgid "%s clients"
+msgstr "%s 台"
+
+msgid "Recent DHCP leases"
+msgstr "近期 DHCP 租约"
+
+msgid "%d h"
+msgstr "%d 小时"
+
+msgid "Board"
+msgstr "主板"
+
+msgid "No temperature readings"
+msgstr "无温度读数"
+
+msgid "Cluster %d"
+msgstr "簇%d"
+
+msgid "Total %s · free %s"
+msgstr "共 %s · 余 %s"
+
+msgid "Online"
+msgstr "在线"
+
+msgid "AT adapter unavailable"
+msgstr "AT 适配器不可用"
+
+msgid "Automatic"
+msgstr "自动"
+
+msgid "4G only"
+msgstr "仅 4G"
+
+msgid "Serving network"
+msgstr "当前驻网"
+
+msgid "Network mode · EN-DC"
+msgstr "网络模式 · EN-DC"
+
+msgid "Refresh lock status"
+msgstr "刷新锁定状态"
+
+msgid "Apply at startup"
+msgstr "开机自动应用"
+
+msgid "Turning this off only stops replay at the next boot; saved network mode, EN-DC, band and cell settings remain."
+msgstr "关闭后只停止下次开机回放，已保存的网络模式、EN-DC、频段和小区配置不会被删除。"
+
+msgid "Band locking"
+msgstr "频段锁定"
+
+msgid "NR bands"
+msgstr "NR 频段"
+
+msgid "LTE bands"
+msgstr "LTE 频段"
+
+msgid "Apply NR bands"
+msgstr "应用 NR 频段"
+
+msgid "Apply LTE bands"
+msgstr "应用 LTE 频段"
+
+msgid "Neighbor cells and cell locking"
+msgstr "邻区与小区锁定"
+
+msgid "Lock current serving cell"
+msgstr "锁定当前服务小区"
+
+msgid "Unlock cell"
+msgstr "解除小区锁定"
+
+msgid "Applying restarts the radio stack (SFUN) and briefly interrupts cellular service. Settings are saved and replayed by the plugin after AT is ready when Apply at startup is enabled. A platform pre-radio hook can replay without a restart. Apply with no bands selected to restore automatic mode."
+msgstr "应用后协议栈重启（SFUN），蜂窝会短暂断开；设置会持久保存，并在启用“开机自动应用”时由插件于 AT 就绪后回放。接入平台的射频前钩子时可无重启回放。频段全不选再点应用 = 恢复自动。"
+
+msgid "Apply “%s”?"
+msgstr "应用「%s」？"
+
+msgid "Apply"
+msgstr "应用"
+
+msgid "Applying %s in the background…"
+msgstr "正在后台应用 %s …"
+
+msgid "Applying %s in the background… (SFUN restart and re-registration, about 30 seconds)"
+msgstr "正在后台应用 %s …（SFUN 重启 + 重新驻网，约半分钟）"
+
+msgid "Queued: another lock is being applied during SFUN restart; this will take effect afterward"
+msgstr "已排队：另一项锁定正在应用（SFUN 重启中），随后自动生效"
+
+msgid "Confirming the EN-DC status…"
+msgstr "正在确认 EN-DC 状态…"
+
+msgid "Confirming apply at startup…"
+msgstr "正在确认开机自动应用…"
+
+msgid "Started in background: %s (SFUN restart, about 30 seconds); reading the status back…"
+msgstr "已后台执行：%s（SFUN 重启约半分钟），自动回读状态…"
+
+msgid "Network mode: %s"
+msgstr "网络模式：%s"
+
+msgid "Disable EN-DC (NSA anchor)"
+msgstr "关闭 EN-DC（NSA 锚点）"
+
+msgid "Enable EN-DC (NSA anchor)"
+msgstr "开启 EN-DC（NSA 锚点）"
+
+msgid "Disable apply at startup"
+msgstr "关闭开机自动应用"
+
+msgid "Enable apply at startup"
+msgstr "开启开机自动应用"
+
+msgid "Reading the modem directly (a few seconds at most)…"
+msgstr "正在直读调制解调器（最多几秒）…"
+
+msgid "Refreshed"
+msgstr "已刷新"
+
+msgid "Refresh failed"
+msgstr "刷新失败"
+
+msgid "NR bands: back to automatic"
+msgstr "NR 频段：恢复自动"
+
+msgid "NR band lock: %s"
+msgstr "NR 频段锁定：%s"
+
+msgid "LTE bands: back to automatic"
+msgstr "LTE 频段：恢复自动"
+
+msgid "LTE band lock: %s"
+msgstr "LTE 频段锁定：%s"
+
+msgid "Remove the %s cell lock"
+msgstr "解除 %s 的小区锁定"
+
+msgid "The radio stack will restart (SFUN), taking about 30 seconds."
+msgstr "协议栈会重启（SFUN），约半分钟。"
+
+msgid "Removing the %s cell lock…"
+msgstr "正在解除 %s 小区锁定…"
+
+msgid "Unlock failed: %s"
+msgstr "解锁失败：%s"
+
+msgid "Unlock started in background (SFUN restart, about 30 seconds); reading the status back…"
+msgstr "已后台解除，SFUN 重启约半分钟，自动回读状态…"
+
+msgid "Locking %s in the background…"
+msgstr "正在后台锁定 %s …"
+
+msgid "Locked %s in the background (SFUN restart, about 30 seconds); reading the status back…"
+msgstr "已后台锁定 %s（SFUN 重启约半分钟），自动回读状态…"
+
+msgid "No serving-network data"
+msgstr "暂无驻网数据"
+
+msgid "NR serving cell"
+msgstr "NR 服务小区"
+
+msgid "Status confirmed"
+msgstr "状态已回读"
+
+msgid "Readback timed out; select “Refresh lock status”"
+msgstr "回读超时，请点「刷新锁定状态」"
+
+msgid "Applied (EN-DC does not require a radio-stack restart)"
+msgstr "已生效（EN-DC 不需要重启协议栈）"
+
+msgid "Apply at startup is on"
+msgstr "开机自动应用已开启"
+
+msgid "Apply at startup is off"
+msgstr "开机自动应用已关闭"
+
+msgid "EN-DC status readback timed out; use “Refresh lock status” to confirm"
+msgstr "EN-DC 状态回读超时，点「刷新锁定状态」确认"
+
+msgid "Apply-at-startup status readback timed out; use “Refresh lock status” to confirm"
+msgstr "开机自动应用状态回读超时，点「刷新锁定状态」确认"
+
+msgid "Automatic (5G/4G)"
+msgstr "自动（5G/4G）"
+
+msgid "5G SA only"
+msgstr "仅 5G SA"
+
+msgid "5G NSA only"
+msgstr "仅 5G NSA"
+
+msgid "Locked cells"
+msgstr "已锁定小区"
+
+msgid "Unlock %s"
+msgstr "解锁 %s"
+
+msgid "Automatic (%d supported)"
+msgstr "自动（支持 %d 个）"
+
+msgid "%d locked: %s"
+msgstr "已锁 %d 个：%s"
