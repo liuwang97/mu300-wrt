@@ -595,11 +595,15 @@ fi
 # tries it was armed with (N+1) and normally gets there first; this is the backstop, and it goes to Android
 # on the boot after the Nth failed one, exactly when LK would.
 # lk_tries: the tries LK left the Linux slot with (it counts down before it starts the kernel); empty when unknown
+# (only from a bootloader_control block, magic BCAB, and only while the slot is not marked successful: LK does not
+# count down a successful slot, so its tries field says nothing about a fallback)
 lk_tries() {
     [ -n "$misc" ] || return 0
+    [ "$(dd if="$misc" bs=1 skip=2052 count=4 2>/dev/null)" = BCAB ] || return 0
     case $LINUX_SLOT in a) _o=2060 ;; *) _o=2062 ;; esac
     _v=$(dd if="$misc" bs=1 skip=$_o count=1 2>/dev/null | od -An -tu1 | tr -d ' \n')
     case $_v in ''|*[!0-9]*) return 0 ;; esac
+    [ $((_v & 128)) = 0 ] || return 0
     echo $(( (_v >> 4) & 7 ))
 }
 # boot_tries_exceeded ROOTDIR DISK: count this boot; true when the backstop sends it to Android
