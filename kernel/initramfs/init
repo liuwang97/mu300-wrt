@@ -278,6 +278,38 @@ setup_usb_gadget() {  # setup_usb_gadget [FUNCTIONS]: FUNCTIONS, else MU300_USBN
     # f_ecm (and f_ncm alike) reports the link state in its first CONNECT notification, and macOS' ECM driver does not
     # pick up a later "connected" notification (v10 left usb0 down until systemd ran -> host "inactive").
     ifconfig usb0 up
+
+    # Early DHCP (K5, ported from the kanoqwq fork, 1f5b82a): the host asks for a lease as soon as the gadget
+    # enumerates - Windows long before any system's server runs - so answer it from here, on the gadget's netdev
+    # (rndis0 with RNDIS, usb0 otherwise), with the one address $NET.200. The lease is 120 s, not the fork's 3600:
+    # the system may use another subnet (lan.conf, network.lan.ipaddr), and the host must not keep this one for
+    # an hour; it renews after 60 s and then gets the system's own (OpenWrt's preinit restarts this server on the
+    # system's subnet; Ubuntu's dnsmasq NAKs the renewal and leases afresh). The host's MAC is left in /run for
+    # OpenWrt's first-boot dnsmasq entry. One server at a time: apply_usb_net builds the gadget a second time,
+    # and that build replaces the first server (whose netdev may be gone) with one on the new netdev. It runs in
+    # the foreground of a background job so that its pid is known at once; killall ends it before switch_root.
+    early_net=usb0 early_host_mac=$MAC:02
+    [ -n "$rndis" ] && { early_net=rndis0; early_host_mac=$MAC:04; }
+    [ -s /run/udhcpd-usb0.pid ] && kill "$(cat /run/udhcpd-usb0.pid)" 2>/dev/null
+    rm -f /run/udhcpd-usb0.pid
+    if [ -e "/sys/class/net/$early_net" ]; then
+        ifconfig "$early_net" "$NET.1" netmask 255.255.255.0 up
+        echo "$early_host_mac" > /run/mu300-usb-host-mac
+        cat > /run/udhcpd-usb0.conf <<EOF
+start $NET.200
+end $NET.200
+interface $early_net
+option subnet 255.255.255.0
+option router $NET.1
+option dns $NET.1
+option lease 120
+lease_file /run/udhcpd-usb0.leases
+EOF
+        touch /run/udhcpd-usb0.leases
+        udhcpd -f /run/udhcpd-usb0.conf >/dev/null 2>&1 &
+        echo $! > /run/udhcpd-usb0.pid
+        log "stage=usb-dhcp-early dev=$early_net ip=$NET.1 host=$NET.200 lease=120"
+    fi
 }
 teardown_usb_gadget() {  # unbind and take the functions away; setup_usb_gadget builds it again
     g=/config/usb_gadget/linux
@@ -507,6 +539,9 @@ if [ "$root_mounted" = 1 ] && rootdir=$(pick_root) && [ -n "$rootdir" ]; then
             </dev/null >/dev/null 2>&1 &
     fi
     umount /config 2>/dev/null
+    # the early DHCP server ends with this ramdisk (K5): the host keeps its lease, and the system's server answers
+    # the renewal (the kill loop above has already stopped it; this says so where it matters)
+    killall udhcpd 2>/dev/null
     mkdir -p /newroot/dev /newroot/proc /newroot/sys /newroot/run
     mount --move /dev /newroot/dev
     mount --move /proc /newroot/proc
@@ -528,6 +563,9 @@ lease_file /run/udhcpd.leases
 pidfile /run/udhcpd.pid
 EOF
 touch /run/udhcpd.leases
+# this server, with its pool, replaces the early one (setup_usb_gadget) on usb0; with RNDIS (no usb0) the early
+# one on rndis0 stays, the only one there is
+[ -e /sys/class/net/usb0 ] && killall udhcpd 2>/dev/null
 udhcpd /etc/udhcpd.conf
 telnetd -b $NET.1 -p 23 -l /bin/sh
 mkdir -p /run/www

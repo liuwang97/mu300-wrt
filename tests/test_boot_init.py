@@ -236,16 +236,20 @@ class GadgetHarness(ShellTest):
         """setup_usb_gadget with MU300_USBNET=USBNET (None: unset), then the shell code THEN."""
         body = self.block('usb-gadget') + self.block('usb-net')
         for path, repl in (('/config/usb_gadget', f'{self.tmp}/cfg/usb_gadget'), ('/sys/class/udc', f'{self.tmp}/udc'),
-                           ('/run/mu300', f'{self.tmp}/run/mu300')):
+                           ('/sys/class/net/', f'{self.tmp}/net/'), ('/run/', f'{self.tmp}/run/')):
             body = body.replace(path, repl)
+        (self.tmp / 'run').mkdir(exist_ok=True)
         g = self.tmp / 'cfg' / 'usb_gadget' / 'linux'
         code = ('log() { echo "$*" >> "$T/log"; }; mount() { :; }; sleep() { :; }; persist() { :; }\n'
+                # the early DHCP server: recorded, never run
+                'udhcpd() { echo "udhcpd $*" >> "$T/log"; }; kill() { echo "kill $*" >> "$T/log"; }\n'
+                'killall() { echo "killall $*" >> "$T/log"; }\n'
                 # configfs makes these itself when their parent is made, and takes them away with it
                 'mkdir() { command mkdir "$@" || return; for d; do case $d in */functions/rndis.rn0) command mkdir -p "$d/os_desc/interface.rndis" ;; esac; done; }\n'
                 'rmdir() { for d; do case $d in */functions/*) command rm -rf "$d" ;; *) command rmdir "$d" ;; esac; done; }\n'
                 'mkdir -p "%s/cfg/usb_gadget/linux/os_desc"\n' % self.tmp +
                 'ifconfig() { echo "ifconfig $*" >> "$T/log"; }; ip() { echo "ip $*" >> "$T/log"; }\n'
-                f'MAC=02:00:00:00:00 T={self.tmp}\n' + (f'MU300_USBNET="{usbnet}"\n' if usbnet is not None else '')
+                f'MAC=02:00:00:00:00 NET=192.168.77 T={self.tmp}\n' + (f'MU300_USBNET="{usbnet}"\n' if usbnet is not None else '')
                 + body + '\nsetup_usb_gadget\n' + then)
         r = self.sh(shell, code)
         self.assertEqual(0, r.returncode, r.stderr)
@@ -406,6 +410,83 @@ class UsbNetRebind(GadgetHarness):
             self.assertEqual({'f1': 'ncm.usb0', 'f2': 'acm.GS0'}, self.links(g, 'c.1'))
             self.assertIsNone(self.marker())
             self.tearDown(); self.setUp()
+
+
+class EarlyDhcp(GadgetHarness):
+    """K5: the host gets a lease the moment the gadget is bound, from a server on the gadget's netdev, on init's own
+    subnet ($NET) and for 120 s only - the system may use another subnet, and its server takes over at the renewal."""
+
+    def netdevs(self, *names):
+        for n in names:
+            (self.tmp / 'net' / n).mkdir(parents=True, exist_ok=True)
+
+    def conf(self):
+        return (self.tmp / 'run' / 'udhcpd-usb0.conf').read_text()
+
+    def starts(self):
+        return [l for l in (self.tmp / 'log').read_text().splitlines() if l.startswith('udhcpd ')]
+
+    def test_ncm_serves_usb0(self):
+        for shell in self.each_shell():
+            self.netdevs('usb0')
+            self.build(shell, None)
+            conf = self.conf()
+            for line in ('start 192.168.77.200', 'end 192.168.77.200', 'interface usb0', 'option router 192.168.77.1',
+                         'option subnet 255.255.255.0', 'option lease 120'):
+                self.assertIn(line + '\n', conf)
+            self.assertNotIn('3600', conf)
+            self.assertIn('ifconfig usb0 192.168.77.1 netmask 255.255.255.0 up', (self.tmp / 'log').read_text())
+            self.assertEqual(['udhcpd -f ' + str(self.tmp / 'run' / 'udhcpd-usb0.conf')], self.starts())
+            self.assertEqual('02:00:00:00:00:02', (self.tmp / 'run' / 'mu300-usb-host-mac').read_text().strip())
+            self.assertTrue((self.tmp / 'run' / 'udhcpd-usb0.pid').read_text().strip().isdigit())
+            self.tearDown(); self.setUp()
+
+    def test_rndis_serves_rndis0(self):
+        for shell in self.each_shell():
+            self.netdevs('rndis0')
+            self.build(shell, 'rndis')
+            self.assertIn('interface rndis0\n', self.conf())
+            self.assertIn('ifconfig rndis0 192.168.77.1 netmask 255.255.255.0 up', (self.tmp / 'log').read_text())
+            self.assertEqual('02:00:00:00:00:04', (self.tmp / 'run' / 'mu300-usb-host-mac').read_text().strip())
+            self.tearDown(); self.setUp()
+
+    def test_no_netdev_no_server(self):
+        for shell in self.each_shell():
+            self.build(shell, None)
+            self.assertEqual([], self.starts())
+            self.assertFalse((self.tmp / 'run' / 'udhcpd-usb0.conf').exists())
+            self.tearDown(); self.setUp()
+
+    def test_a_rebuilt_gadget_replaces_the_server(self):
+        # apply_usb_net builds the gadget a second time (D12): one server at a time, on the new netdev
+        for shell in self.each_shell():
+            self.netdevs('usb0', 'rndis0')
+            (self.tmp / 'udc' / '25100000.dwc3').mkdir(parents=True)
+            (self.tmp / 'root' / 'etc' / 'mu300').mkdir(parents=True)
+            (self.tmp / 'root' / 'etc' / 'mu300' / 'usb-net').write_text('rndis\n')
+            self.build(shell, None, f'apply_usb_net "{self.tmp}/root"')
+            log = (self.tmp / 'log').read_text().splitlines()
+            starts = [i for i, l in enumerate(log) if l.startswith('udhcpd ')]
+            kills = [i for i, l in enumerate(log) if l.startswith('kill ')]
+            self.assertEqual(2, len(starts))
+            self.assertEqual(1, len(kills), log)
+            self.assertLess(starts[0], kills[0])
+            self.assertLess(kills[0], starts[1])
+            self.assertIn('interface rndis0\n', self.conf())
+            self.assertEqual('02:00:00:00:00:04', (self.tmp / 'run' / 'mu300-usb-host-mac').read_text().strip())
+            self.tearDown(); self.setUp()
+
+    def test_place_in_init(self):
+        block = self.block('usb-gadget')
+        self.assertIn('start $NET.200', block)
+        self.assertIn('option lease 120', block)
+        # gone before the system starts: its own server answers (Ubuntu's dnsmasq, OpenWrt's preinit then dnsmasq)
+        self.assertEqual(1, INIT.count('killall udhcpd 2>/dev/null\n    mkdir -p /newroot/dev'))
+        self.assertLess(INIT.index('killall udhcpd'), INIT.index('exec switch_root'))
+        # the standalone fallback starts its own server on usb0 in place of the early one
+        tail = INIT[INIT.index('stage=rootfs-unavailable'):]
+        self.assertLess(tail.index('killall udhcpd'), tail.index('udhcpd /etc/udhcpd.conf'))
+        self.assertIn('(sleep 300\n', INIT)
 
 
 class UsbNetPlace(unittest.TestCase):

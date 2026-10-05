@@ -2,11 +2,20 @@
 # First boot: one LAN for USB and Wi-Fi (192.168.77.1/24 on an F50, 192.168.78.1/24 on a U30 Air), cellular WAN through the modem, hostname, USB console.
 # lan ip6assign 64: a carrier hands out one /64 (the wan_6 that mu300cell adds), and the default /60 request
 # would leave the LAN without IPv6
+lan_ip=$(/opt/mu300/bin/mu300-lan-ip)
+# The USB host's MAC (K25): boot/init leaves it in /run (the gadget's host_addr); else the gadget's own address
+# tells it (init gives the host the next one: :01 -> :02 for usb0, :03 -> :04 for rndis0).
+usb_host_mac=$(cat /run/mu300-usb-host-mac 2>/dev/null)
+for nic in usb0:02 rndis0:04; do
+	[ -z "$usb_host_mac" ] || break
+	devmac=$(cat /sys/class/net/${nic%:*}/address 2>/dev/null)
+	[ -n "$devmac" ] && usb_host_mac=${devmac%:*}:${nic#*:}
+done
 uci -q batch <<UCI
 set system.@system[0].hostname='mu300'
 set system.@system[0].zonename='Europe/Istanbul'
 set system.@system[0].timezone='<+03>-3'
-set network.lan.ipaddr='$(/opt/mu300/bin/mu300-lan-ip)'
+set network.lan.ipaddr='$lan_ip'
 set network.lan.netmask='255.255.255.0'
 set network.lan.ip6assign='64'
 delete network.wan6
@@ -23,10 +32,39 @@ dev=$(uci -q show network | sed -n "s/^network\.\(@device\[[0-9]*\]\)\.name='br-
 if [ -n "$dev" ]; then
 	uci -q delete network.$dev.ports
 	uci add_list network.$dev.ports='usb0'
-	uci add_list network.$dev.ports='rndis0'   # the gadget's RNDIS configuration (Windows)
+	# the gadget's RNDIS netdev (Windows without NCM) exists only when init made RNDIS; the LAN hook
+	# (hotplug.d/iface/10-mu300-usb) bridges it when a later boot does (K27, kanoqwq fork cd4fb28 and 4e70d02)
+	[ -e /sys/class/net/rndis0 ] && uci add_list network.$dev.ports='rndis0'
+	# the wired LAN does not wait for a member that is not there yet (Wi-Fi, a gadget netdev)
+	uci set network.$dev.bridge_empty='1'
+fi
+# K25 (ported from the kanoqwq fork, cd4fb28): the USB host keeps the address it had from the early server
+# (.200), and dnsmasq broadcasts its OFFER/ACK: Windows can keep asking for the early lease after it has already
+# removed that address, and a unicast reply to the removed address is lost in the NCM host stack.
+if [ -n "$usb_host_mac" ]; then
+	uci -q batch <<UCI
+set dhcp.mu300_usb=host
+set dhcp.mu300_usb.name='mu300-usb-host'
+set dhcp.mu300_usb.mac='$usb_host_mac'
+set dhcp.mu300_usb.ip='${lan_ip%.*}.200'
+set dhcp.mu300_usb.broadcast='1'
+UCI
+fi
+# K26 (same fork commit): before netifd makes br-lan, the early address lives on the gadget's netdev itself (preinit
+# 06_mu300_early_usb); the host's DHCP and management traffic there gets the LAN's input policy, never forwarding.
+# Bridged, the packets come in through br-lan as usual. Added once.
+if ! uci -q show firewall | grep -q "^firewall\.@zone\[[0-9]*\]\.name='earlyusb'$"; then
+	early=$(uci add firewall zone)
+	uci set firewall.$early.name='earlyusb'
+	uci add_list firewall.$early.device='usb0'
+	uci add_list firewall.$early.device='rndis0'
+	uci set firewall.$early.input='ACCEPT'
+	uci set firewall.$early.output='ACCEPT'
+	uci set firewall.$early.forward='REJECT'
 fi
 uci commit system
 uci commit network
+uci commit dhcp
 uci commit firewall
 grep -q '^ttyGS0:' /etc/inittab || echo 'ttyGS0::askfirst:/usr/libexec/login.sh' >> /etc/inittab
 exit 0
