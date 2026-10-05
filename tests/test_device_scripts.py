@@ -1,7 +1,10 @@
 """Small device scripts, against a fake / (MU300_SYSROOT) and stub commands: mu300-device, mu300-lan-ip, mu300-led,
 mu300-ttl. They run on Ubuntu (dash, bash) and OpenWrt (busybox ash)."""
 import os
+import pty
+import select
 import shutil
+import subprocess
 import threading
 import time
 import unittest
@@ -100,6 +103,98 @@ class At(ShellTest):
             for _ in range(20):
                 self.assertEqual(self.at(shell, 'AT').returncode, 0)
             self.assertLess(time.monotonic() - t0, 3)
+
+
+class Atd(ShellTest):
+    """mu300-atd on a pseudo terminal pair: the test is the modem (the pty master), the daemon runs for real."""
+
+    def setUp(self):
+        super().setUp()
+        self.dir = self.tmp / 'at'
+        self.procs = []
+        self.masters = []
+
+    def tearDown(self):
+        for p in self.procs:
+            p.kill()
+            p.wait()
+        for m in self.masters:
+            os.close(m)
+        super().tearDown()
+
+    def pty(self, name):
+        """A character device RUN/NAME (a symlink to a pty slave) and the master fd behind it."""
+        master, slave = pty.openpty()
+        self.masters.append(master)
+        self.slave_fds = getattr(self, 'slave_fds', []) + [slave]   # keep the slave open: no hangup
+        link = self.run_dir / name
+        link.symlink_to(os.ttyname(slave))
+        return link, master
+
+    def start(self, shell, nr0=True, **env):
+        """Start the daemon on tty_nr1 (and a tty_nr0 if NR0); wait until it owns the channel."""
+        self.run_dir = self.tmp / f'run{len(self.procs)}'   # one per daemon: each_shell starts several
+        self.run_dir.mkdir()
+        self.dir = self.run_dir / 'at'
+        dev, master = self.pty('tty_nr1')
+        if nr0:
+            self.pty('tty_nr0')
+        e = self.env(MU300_AT_DEV=dev, MU300_AT_DIR=self.dir, **env)
+        if 'MU300_AT_URC_CHANNELS' not in env:
+            e.pop('MU300_AT_URC_CHANNELS', None)
+        proc = subprocess.Popen(shell + [str(BIN / 'mu300-atd')], stderr=subprocess.DEVNULL, env=e)
+        self.procs.append(proc)
+        # the daemon makes urc/ once it has the tty (its stderr goes to /dev/null from then on, so no log line to wait for)
+        for _ in range(250):
+            if (self.dir / 'urc').is_dir():
+                break
+            time.sleep(0.02)
+        self.assertTrue((self.dir / 'urc').is_dir(), 'the daemon did not come up')
+        time.sleep(0.5)   # the drainers open their channels in the background
+        return sorted(p.name for p in (self.dir / 'urc').iterdir()), master
+
+    def send(self, master, cmd, reply, t=1):
+        """Hand the daemon CMD (as a client does), answer on the pty when it arrives; seconds until the answer file."""
+        answer = self.tmp / 'answer'
+        answer.unlink(missing_ok=True)
+        t0 = time.monotonic()
+        with open(self.dir / 'cmd', 'w') as f:
+            f.write(f'{t} {answer} {cmd}\n')
+        buf = b''
+        while cmd.encode() + b'\r' not in buf:
+            if not select.select([master], [], [], 10)[0]:
+                break
+            buf += os.read(master, 256)
+        if reply is not None:
+            os.write(master, reply)
+        while not answer.exists() and time.monotonic() - t0 < 40:
+            time.sleep(0.02)
+        return time.monotonic() - t0
+
+    def test_unset_urc_channels_open_nr0(self):
+        for shell in self.each_shell():
+            logs, _m = self.start(shell)
+            self.assertEqual(logs, ['tty_nr0.log'])
+
+    def test_empty_urc_channels_open_none(self):
+        for shell in self.each_shell():
+            logs, _m = self.start(shell, MU300_AT_URC_CHANNELS='')
+            self.assertEqual(logs, [])
+
+    def test_no_drain_wait_after_a_clean_reply(self):
+        for shell in self.each_shell():
+            _l, m = self.start(shell, nr0=False)
+            self.send(m, 'AT', b'\r\nOK\r\n')                 # the first command drains slowly: nothing known yet
+            for reply in (b'\r\nOK\r\n', b'\r\nERROR\r\n'):
+                self.assertLess(self.send(m, 'AT', reply), 0.7)
+
+    def test_slow_drain_after_a_timeout(self):
+        for shell in self.each_shell():
+            _l, m = self.start(shell, nr0=False)
+            self.send(m, 'AT', b'\r\nOK\r\n')
+            self.send(m, 'AT+X', None, t=1)                      # no answer: the timeout path
+            self.assertGreater(self.send(m, 'AT', b'\r\nOK\r\n'), 0.9)
+            self.assertLess(self.send(m, 'AT', b'\r\nOK\r\n'), 0.7)   # and a clean one makes it fast again
 
 
 class Os(ShellTest):

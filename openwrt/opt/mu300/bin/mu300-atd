@@ -98,7 +98,9 @@ open_tty || { echo "mu300-atd: cannot open $DEV" >&2; exit 1; }
 URCDIR=$DIR/urc
 URCMAX=${MU300_AT_URC_MAX:-65536}
 mkdir -p "$URCDIR"
-for n in ${MU300_AT_URC_CHANNELS:-0}; do
+# '-' and not ':-': a value that is set but empty means this daemon opens no URC channel at all. With ':-' a
+# second daemon (another command channel) fell back to nr0 as well, and several readers split that stream.
+for n in ${MU300_AT_URC_CHANNELS-0}; do
     other=${DEV%[0-9]}$n
     [ "$other" = "$DEV" ] && continue
     [ -c "$other" ] || continue
@@ -137,6 +139,11 @@ drain() {  # throw away whatever the modem sent while nobody was asking (URCs), 
     # written the next command we would read it as that command's reply and stay one answer behind for ever.
     # This modem makes that easy to hit - AT+CGACT and AT+CGDATA answer "^ORIG: <cid>,<n>" first and OK or
     # CONNECT ten to twenty seconds later (docs/FINDINGS.md 13f).
+    #
+    # Fast path: when the previous reply ended in a final result code the channel is known to be quiet, so there
+    # is nothing to drain and the one second wait would be paid on every AT round trip for nothing. The slow
+    # path stays for the first command and for the one after a timeout, where a late reply can still arrive.
+    [ "${PREV_CLEAN:-0}" = 1 ] && { PREV_CLEAN=0; return 0; }
     end=$(( $(now) + ${DRAIN_MAX:-3} ))
     while [ "$(now)" -lt "$end" ]; do
         junk=
@@ -186,6 +193,9 @@ while :; do
     drain
     printf '%s\r' "$cmd" >&3
     reply=$(collect "$t")
+    # a reply that ends in a final result code leaves the channel quiet: the next drain may skip its wait
+    PREV_CLEAN=0
+    echo "$reply" | grep -qE '^(OK|ERROR|\+CME ERROR|\+CMS ERROR|CONNECT|NO CARRIER)' && PREV_CLEAN=1
     # When the modem restarts (AT+SFUN=4 during a bring-up, or a CP crash) this descriptor is left attached to a
     # channel that no longer exists: it reads nothing for ever, and because it still holds the channel, nobody
     # else can talk to the modem either. Reopening is the only cure for that case - but it is also the way to
