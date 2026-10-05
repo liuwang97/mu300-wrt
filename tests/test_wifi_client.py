@@ -628,18 +628,103 @@ table inet mu300_wifi_filter {{
     def test_hostile_names_in_messages(self):
         for shell in self.each_shell():
             self.fresh()
-            # tabs and newlines too: the whole name is checked, not its first field or line
-            bad = 'x\x1b]0;pwn\x07\u202eY\u200b\tZ\x1b[31m\u00ad\ufe0f\nW'
+            # valid as a name (no control bytes), still shown escaped: bidi, zero-width, soft hyphen, variation
+            # selector, a C1 control encoded in UTF-8, a backslash
+            bad = 'x‮Y​­️\u0085Z\\x1b'
             r = self.run_wc(shell, 'connect', bad, '-', stdin='password1\n')
             self.assertEqual(r.returncode, 0, r.stderr)
-            self.assertIn('x\\x1b]0;pwn\\x07\\xe2\\x80\\xaeY\\xe2\\x80\\x8b\\x09Z\\x1b[31m'
-                          '\\xc2\\xad\\xef\\xb8\\x8f\\x0aW', r.stdout)
+            self.assertIn('x\\xe2\\x80\\xaeY\\xe2\\x80\\x8b\\xc2\\xad\\xef\\xb8\\x8f\\xc2\\x85Z\\x5cx1b', r.stdout)
             self.assertHostileFree(r.stdout + r.stderr)
             self.assertHostileFree(self.run_wc(shell, 'status').stdout)
             self.run_wc(shell, 'disconnect')
             r = self.run_wc(shell, 'up')
             self.assertHostileFree(r.stdout + r.stderr)
-            self.assertIn('\\x1b', r.stdout)
+            self.assertIn('\\xe2\\x80\\xae', r.stdout)
+
+    # one validator for every way in: the same hostile values through argument, stdin, file, prompt-less stdin
+    # and the saved file, in bytes whatever the shell
+    HOSTILE_SSIDS = ['a\nPSK=injected', 'tab\there', 'esc\x1b[31m', 'cr\rx', 'del\x7f', 'x' * 33, 'é' * 17, '']
+    HOSTILE_PSKS = ['abcdefgh\nENABLE=1', 'pass\tword1', 'esc\x1b[2Jxyz', 'short', 'ç' * 3 + 'a', 'x' * 64,
+                    'é' * 32]
+    GOOD_PSKS = ['çççç', 'é' * 31 + 'a', 'pass word with spaces', '\\backslash\\', '"quoted" \'too\'']
+
+    def ways_in(self, shell, ssid, psk):
+        f = self.tmp / 'pwfile'
+        f.write_bytes(psk.encode() + b'\n')
+        yield 'argument', self.run_wc(shell, 'connect', ssid, psk)
+        if '\n' not in psk:
+            yield 'stdin', self.run_wc(shell, 'connect', ssid, '-', stdin=psk + '\n')
+            yield 'file', self.run_wc(shell, 'connect', ssid, '--password-file', f)
+
+    def test_one_validator_for_every_way_in(self):
+        for shell in self.each_shell():
+            for ssid in self.HOSTILE_SSIDS:
+                self.fresh()
+                for how, r in self.ways_in(shell, ssid, 'password1'):
+                    self.assertEqual(r.returncode, 1, (how, repr(ssid)))
+                    self.assertIn('network name' if ssid else 'usage', r.stderr)
+                    self.assertNotIn('pkill', self.events(), how)   # nothing touched
+                    self.assertFalse(self.conf.exists(), (how, repr(ssid)))
+            for psk in self.HOSTILE_PSKS:
+                self.fresh()
+                for how, r in self.ways_in(shell, 'KEDI 5G', psk):
+                    if how != 'argument' and '\n' in psk:
+                        continue
+                    self.assertEqual(r.returncode, 1, (how, repr(psk)))
+                    self.assertIn('passphrase', r.stderr)
+                    self.assertFalse(self.conf.exists(), (how, repr(psk)))
+            for psk in self.GOOD_PSKS:
+                for how, r in self.ways_in(shell, 'Kafe Ç', psk):
+                    self.assertEqual(r.returncode, 0, (how, repr(psk), r.stderr))
+                    self.assertEqual(self.saved()['PSK'], psk, how)
+                    self.assertEqual(self.saved()['SSID'], 'Kafe Ç', how)
+            # a hand-edited saved file goes through the same check at boot
+            for line in ('SSID=esc\x1b[31m\nPSK=password1\nENABLE=1\n', 'SSID=KEDI 5G\nPSK=sh\nENABLE=1\n'):
+                self.fresh()
+                self.conf.write_text(line)
+                r = self.run_wc(shell, 'up')
+                self.assertEqual(r.returncode, 1, repr(line))
+                self.assertHostileFree(r.stdout + r.stderr)
+                self.assertNotIn('\nwpa_supplicant ', self.events())
+
+    def test_leaving_never_takes_the_interface_down(self):
+        # "ip link set wlan0 down" powers the WCN chip off on the F50, and the radio is dead until a reboot
+        for shell in self.each_shell():
+            for iftype in ('managed', 'AP'):
+                self.fresh()
+                (self.tmp / 'iftype').write_text(iftype)
+                self.stub('ip', 'echo "ip $*" >> "$STUBLOG/events"; exit 0')
+                self.run_wc(shell, 'disconnect')
+                self.run_wc(shell, 'forget')
+                self.assertNotIn('ip link set wlan0 down', self.events())
+            (self.tmp / 'iftype').unlink()
+        self.setUp()
+
+    def test_leaving_the_hotspot_alone(self):
+        # disconnect while the radio is the hotspot: the interface is hostapd's and stays up
+        for shell in self.each_shell():
+            self.fresh()
+            (self.tmp / 'iftype').write_text('AP')
+            self.stub('ip', 'echo "ip $*" >> "$STUBLOG/events"; exit 0')
+            self.run_wc(shell, 'disconnect')
+            self.assertNotIn('ip link set wlan0 down', self.events())
+            r = self.run_wc(shell, 'connect', 'KEDI 5G', '-', stdin='password1\n')
+            self.assertEqual(r.returncode, 3, r.stderr)
+            self.assertNotIn('ip link set wlan0 down', self.events())
+            (self.tmp / 'iftype').unlink()
+        self.setUp()
+
+    def test_overlap_with_the_live_lan_too(self):
+        # lan.conf already says another subnet, br-lan still has the old one that the network overlaps
+        for shell in self.each_shell():
+            self.fresh()
+            (self.root / 'etc/mu300/lan.conf').write_text('LAN_IP=10.9.9.1\n')
+            (self.tmp / 'subnet').write_text('192.168.79.0/24')
+            r = self.run_wc(shell, 'connect', 'KEDI 5G', '-', stdin='password1\n')
+            self.assertEqual(r.returncode, 1)
+            self.assertIn('overlaps', r.stderr)
+            self.assertRemoved()
+            (self.root / 'etc/mu300/lan.conf').write_text('LAN_IP=192.168.79.1\n')
 
     def test_openwrt_puts_the_client_in_the_wan_zone(self):
         (self.root / 'etc/openwrt_release').write_text("DISTRIB_ID='OpenWrt'\n")

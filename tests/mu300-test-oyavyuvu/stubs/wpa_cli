@@ -1,0 +1,12 @@
+#!/bin/sh
+case $3 in
+  status) echo poll >> "$STUBLOG/polls"; [ -e "$STUBLOG/supplicant" ] || exit 1
+          if [ -e "$STUBLOG/never" ]; then echo wpa_state=SCANNING; exit 0; fi
+          grep -q "network=" "$MU300_SYSROOT/run/mu300-wifi-client.conf" 2>/dev/null || { echo wpa_state=DISCONNECTED; exit 0; }
+          echo wpa_state=COMPLETED; echo "ssid=KEDI 5G" ;;
+  scan_results) cat "$STUBLOG/scan_results" ;;
+  scan) echo OK ;;
+  get_capability) [ "$4" = key_mgmt ] && cat "$STUBLOG/capa" ;;
+  reconfigure) echo "wpa_cli reconfigure" >> "$STUBLOG/events"
+               cp "$MU300_SYSROOT/run/mu300-wifi-client.conf" "$STUBLOG/wpaconf.used"; echo OK ;;
+esac

@@ -1,0 +1,4 @@
+#!/bin/sh
+echo "$(basename "$0") $*" >> "$STUBLOG/events"
+[ "$1" = is-active ] && echo inactive
+exit 0

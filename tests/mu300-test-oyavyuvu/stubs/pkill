@@ -1,0 +1,4 @@
+#!/bin/sh
+echo "$(basename "$0") $*" >> "$STUBLOG/events"
+case "$*" in *wpa_supplicant*) rm -f "$STUBLOG/supplicant" ;; esac
+exit 0

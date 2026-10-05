@@ -1,0 +1,6 @@
+#!/bin/sh
+case "$*" in
+  "dev wlan0 info") printf "\ttype %s\n" "$(cat "$STUBLOG/iftype" 2>/dev/null || echo managed)" ;;
+  "dev wlan0 scan") cat "$STUBLOG/iwscan" ;;
+  "dev wlan0 link") printf "\tsignal: -40 dBm\n" ;;
+esac

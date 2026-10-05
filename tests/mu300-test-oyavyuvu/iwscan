@@ -1,0 +1,325 @@
+BSS 2e:16:9d:c0:49:d0(on wlan0)
+	TSF: 2705885027 usec (0d, 00:45:05)
+	freq: 5560
+	beacon interval: 100 TUs
+	capability: ESS Privacy SpectrumMgmt RadioMeasure (0x1111)
+	signal: -32.00 dBm
+	last seen: 1312 ms ago
+	SSID: KEDI 5G
+	Supported rates: 6.0* 9.0 12.0* 18.0 24.0* 36.0 48.0 54.0 
+	RSN:	 * Version: 1
+		 * Group cipher: CCMP
+		 * Pairwise ciphers: CCMP
+		 * Authentication suites: PSK
+		 * Capabilities: 16-PTKSA-RC 1-GTKSA-RC MFP-capable (0x00cc)
+	BSS Load:
+		 * station count: 5
+BSS 2e:16:9d:c0:49:d6(on wlan0)
+	TSF: 2705885027 usec (0d, 00:45:05)
+	freq: 5560
+	beacon interval: 100 TUs
+	capability: ESS Privacy SpectrumMgmt RadioMeasure (0x1111)
+	signal: -33.00 dBm
+	last seen: 1312 ms ago
+	SSID: KEDI MLO
+	Supported rates: 6.0* 9.0 12.0* 18.0 24.0* 36.0 48.0 54.0 
+	RSN:	 * Version: 1
+		 * Group cipher: CCMP
+		 * Pairwise ciphers: CCMP
+		 * Authentication suites: SAE
+		 * Capabilities: 16-PTKSA-RC 1-GTKSA-RC MFP-capable (0x00cc)
+	BSS Load:
+		 * station count: 5
+	Reduced Neighbor Report:
+		 * TBTT Information Header: 0x0001
+			 * BSSID: 00:00:00:00:00:00
+			 * Short SSID: 0x12345678
+BSS 2e:16:9d:c0:49:d2(on wlan0)
+	TSF: 2705885027 usec (0d, 00:45:05)
+	freq: 5560
+	beacon interval: 100 TUs
+	capability: ESS Privacy SpectrumMgmt RadioMeasure (0x1111)
+	signal: -34.00 dBm
+	last seen: 1312 ms ago
+	SSID: KEDI MISAFIR 5G
+	Supported rates: 6.0* 9.0 12.0* 18.0 24.0* 36.0 48.0 54.0 
+	RSN:	 * Version: 1
+		 * Group cipher: CCMP
+		 * Pairwise ciphers: CCMP
+		 * Authentication suites: PSK SAE
+		 * Capabilities: 16-PTKSA-RC 1-GTKSA-RC MFP-capable (0x00cc)
+	BSS Load:
+		 * station count: 5
+BSS 2a:16:9d:c0:49:d0(on wlan0)
+	TSF: 2705885027 usec (0d, 00:45:05)
+	freq: 5560
+	beacon interval: 100 TUs
+	capability: ESS Privacy SpectrumMgmt RadioMeasure (0x1111)
+	signal: -35.00 dBm
+	last seen: 1312 ms ago
+	Supported rates: 6.0* 9.0 12.0* 18.0 24.0* 36.0 48.0 54.0 
+	RSN:	 * Version: 1
+		 * Group cipher: CCMP
+		 * Pairwise ciphers: CCMP
+		 * Authentication suites: PSK
+		 * Capabilities: 16-PTKSA-RC 1-GTKSA-RC MFP-capable (0x00cc)
+	BSS Load:
+		 * station count: 5
+BSS 2a:16:9d:c0:49:d9(on wlan0)
+	TSF: 2705885027 usec (0d, 00:45:05)
+	freq: 5560
+	beacon interval: 100 TUs
+	capability: ESS Privacy SpectrumMgmt RadioMeasure (0x1111)
+	signal: -36.00 dBm
+	last seen: 1312 ms ago
+	SSID: \x00\x00\x00\x00
+	Supported rates: 6.0* 9.0 12.0* 18.0 24.0* 36.0 48.0 54.0 
+	RSN:	 * Version: 1
+		 * Group cipher: CCMP
+		 * Pairwise ciphers: CCMP
+		 * Authentication suites: PSK
+		 * Capabilities: 16-PTKSA-RC 1-GTKSA-RC MFP-capable (0x00cc)
+	BSS Load:
+		 * station count: 5
+BSS 5c:7d:ae:b4:0b:be(on wlan0)
+	TSF: 2705885027 usec (0d, 00:45:05)
+	freq: 5560
+	beacon interval: 100 TUs
+	capability: ESS Privacy SpectrumMgmt RadioMeasure (0x1111)
+	signal: -40.00 dBm
+	last seen: 1312 ms ago
+	SSID: \xc3\x87ay Evi \xe2\x98\x95
+	Supported rates: 6.0* 9.0 12.0* 18.0 24.0* 36.0 48.0 54.0 
+	RSN:	 * Version: 1
+		 * Group cipher: CCMP
+		 * Pairwise ciphers: CCMP
+		 * Authentication suites: PSK
+		 * Capabilities: 16-PTKSA-RC 1-GTKSA-RC MFP-capable (0x00cc)
+	BSS Load:
+		 * station count: 5
+BSS 5c:7d:ae:b4:0b:bf(on wlan0)
+	TSF: 2705885027 usec (0d, 00:45:05)
+	freq: 5560
+	beacon interval: 100 TUs
+	capability: ESS Privacy SpectrumMgmt RadioMeasure (0x1111)
+	signal: -41.00 dBm
+	last seen: 1312 ms ago
+	SSID: bad\x1b[2Jname
+	Supported rates: 6.0* 9.0 12.0* 18.0 24.0* 36.0 48.0 54.0 
+	RSN:	 * Version: 1
+		 * Group cipher: CCMP
+		 * Pairwise ciphers: CCMP
+		 * Authentication suites: PSK
+		 * Capabilities: 16-PTKSA-RC 1-GTKSA-RC MFP-capable (0x00cc)
+	BSS Load:
+		 * station count: 5
+BSS 5c:7d:ae:b4:0b:c0(on wlan0)
+	TSF: 2705885027 usec (0d, 00:45:05)
+	freq: 5560
+	beacon interval: 100 TUs
+	capability: ESS Privacy SpectrumMgmt RadioMeasure (0x1111)
+	signal: -42.00 dBm
+	last seen: 1312 ms ago
+	SSID: c1\xc2\x9b31mcsi
+	Supported rates: 6.0* 9.0 12.0* 18.0 24.0* 36.0 48.0 54.0 
+	RSN:	 * Version: 1
+		 * Group cipher: CCMP
+		 * Pairwise ciphers: CCMP
+		 * Authentication suites: PSK
+		 * Capabilities: 16-PTKSA-RC 1-GTKSA-RC MFP-capable (0x00cc)
+	BSS Load:
+		 * station count: 5
+BSS 5c:7d:ae:b4:0b:c1(on wlan0)
+	TSF: 2705885027 usec (0d, 00:45:05)
+	freq: 5560
+	beacon interval: 100 TUs
+	capability: ESS Privacy SpectrumMgmt RadioMeasure (0x1111)
+	signal: -43.00 dBm
+	last seen: 1312 ms ago
+	SSID: raw\x9b\xff\xc3end
+	Supported rates: 6.0* 9.0 12.0* 18.0 24.0* 36.0 48.0 54.0 
+	RSN:	 * Version: 1
+		 * Group cipher: CCMP
+		 * Pairwise ciphers: CCMP
+		 * Authentication suites: PSK
+		 * Capabilities: 16-PTKSA-RC 1-GTKSA-RC MFP-capable (0x00cc)
+	BSS Load:
+		 * station count: 5
+BSS 5c:7d:ae:b4:0b:c2(on wlan0)
+	TSF: 2705885027 usec (0d, 00:45:05)
+	freq: 5560
+	beacon interval: 100 TUs
+	capability: ESS Privacy SpectrumMgmt RadioMeasure (0x1111)
+	signal: -44.00 dBm
+	last seen: 1312 ms ago
+	SSID: bidi\xe2\x80\xaegpj.exe
+	Supported rates: 6.0* 9.0 12.0* 18.0 24.0* 36.0 48.0 54.0 
+	RSN:	 * Version: 1
+		 * Group cipher: CCMP
+		 * Pairwise ciphers: CCMP
+		 * Authentication suites: PSK
+		 * Capabilities: 16-PTKSA-RC 1-GTKSA-RC MFP-capable (0x00cc)
+	BSS Load:
+		 * station count: 5
+BSS 5c:7d:ae:b4:0b:c3(on wlan0)
+	TSF: 2705885027 usec (0d, 00:45:05)
+	freq: 5560
+	beacon interval: 100 TUs
+	capability: ESS Privacy SpectrumMgmt RadioMeasure (0x1111)
+	signal: -45.00 dBm
+	last seen: 1312 ms ago
+	SSID: bell\x07\x7f\x0a
+	Supported rates: 6.0* 9.0 12.0* 18.0 24.0* 36.0 48.0 54.0 
+	RSN:	 * Version: 1
+		 * Group cipher: CCMP
+		 * Pairwise ciphers: CCMP
+		 * Authentication suites: PSK
+		 * Capabilities: 16-PTKSA-RC 1-GTKSA-RC MFP-capable (0x00cc)
+	BSS Load:
+		 * station count: 5
+BSS 5c:7d:ae:b4:0b:c4(on wlan0)
+	TSF: 2705885027 usec (0d, 00:45:05)
+	freq: 5560
+	beacon interval: 100 TUs
+	capability: ESS Privacy SpectrumMgmt RadioMeasure (0x1111)
+	signal: -46.00 dBm
+	last seen: 1312 ms ago
+	SSID: Ho\xe2\x80\x8bme
+	Supported rates: 6.0* 9.0 12.0* 18.0 24.0* 36.0 48.0 54.0 
+	RSN:	 * Version: 1
+		 * Group cipher: CCMP
+		 * Pairwise ciphers: CCMP
+		 * Authentication suites: PSK
+		 * Capabilities: 16-PTKSA-RC 1-GTKSA-RC MFP-capable (0x00cc)
+	BSS Load:
+		 * station count: 5
+BSS 5c:7d:ae:b4:0b:c5(on wlan0)
+	TSF: 2705885027 usec (0d, 00:45:05)
+	freq: 5560
+	beacon interval: 100 TUs
+	capability: ESS Privacy SpectrumMgmt RadioMeasure (0x1111)
+	signal: -47.00 dBm
+	last seen: 1312 ms ago
+	SSID: \xef\xbb\xbfbom\xd8\x9cALM
+	Supported rates: 6.0* 9.0 12.0* 18.0 24.0* 36.0 48.0 54.0 
+	RSN:	 * Version: 1
+		 * Group cipher: CCMP
+		 * Pairwise ciphers: CCMP
+		 * Authentication suites: PSK
+		 * Capabilities: 16-PTKSA-RC 1-GTKSA-RC MFP-capable (0x00cc)
+	BSS Load:
+		 * station count: 5
+BSS 5c:7d:ae:b4:0b:c6(on wlan0)
+	TSF: 2705885027 usec (0d, 00:45:05)
+	freq: 5560
+	beacon interval: 100 TUs
+	capability: ESS Privacy SpectrumMgmt RadioMeasure (0x1111)
+	signal: -48.00 dBm
+	last seen: 1312 ms ago
+	SSID: ls\xe2\x80\xa8iso\xe2\x81\xa6
+	Supported rates: 6.0* 9.0 12.0* 18.0 24.0* 36.0 48.0 54.0 
+	RSN:	 * Version: 1
+		 * Group cipher: CCMP
+		 * Pairwise ciphers: CCMP
+		 * Authentication suites: PSK
+		 * Capabilities: 16-PTKSA-RC 1-GTKSA-RC MFP-capable (0x00cc)
+	BSS Load:
+		 * station count: 5
+BSS 5c:7d:ae:b4:0b:c7(on wlan0)
+	TSF: 2705885027 usec (0d, 00:45:05)
+	freq: 5560
+	beacon interval: 100 TUs
+	capability: ESS Privacy SpectrumMgmt RadioMeasure (0x1111)
+	signal: -49.00 dBm
+	last seen: 1312 ms ago
+	SSID: over\xc0\xaf\xe0\x80\xaf\xed\xa0\x80
+	Supported rates: 6.0* 9.0 12.0* 18.0 24.0* 36.0 48.0 54.0 
+	RSN:	 * Version: 1
+		 * Group cipher: CCMP
+		 * Pairwise ciphers: CCMP
+		 * Authentication suites: PSK
+		 * Capabilities: 16-PTKSA-RC 1-GTKSA-RC MFP-capable (0x00cc)
+	BSS Load:
+		 * station count: 5
+BSS 5c:7d:ae:b4:0b:c8(on wlan0)
+	TSF: 2705885027 usec (0d, 00:45:05)
+	freq: 5560
+	beacon interval: 100 TUs
+	capability: ESS Privacy SpectrumMgmt RadioMeasure (0x1111)
+	signal: -50.00 dBm
+	last seen: 1312 ms ago
+	SSID: tag\xf3\xa0\x80\x81\xf0\x9f\x98\x80
+	Supported rates: 6.0* 9.0 12.0* 18.0 24.0* 36.0 48.0 54.0 
+	RSN:	 * Version: 1
+		 * Group cipher: CCMP
+		 * Pairwise ciphers: CCMP
+		 * Authentication suites: PSK
+		 * Capabilities: 16-PTKSA-RC 1-GTKSA-RC MFP-capable (0x00cc)
+	BSS Load:
+		 * station count: 5
+BSS 5c:7d:ae:b4:0b:c9(on wlan0)
+	TSF: 2705885027 usec (0d, 00:45:05)
+	freq: 5560
+	beacon interval: 100 TUs
+	capability: ESS Privacy SpectrumMgmt RadioMeasure (0x1111)
+	signal: -51.00 dBm
+	last seen: 1312 ms ago
+	SSID: esc\x5cx1b
+	Supported rates: 6.0* 9.0 12.0* 18.0 24.0* 36.0 48.0 54.0 
+	RSN:	 * Version: 1
+		 * Group cipher: CCMP
+		 * Pairwise ciphers: CCMP
+		 * Authentication suites: PSK
+		 * Capabilities: 16-PTKSA-RC 1-GTKSA-RC MFP-capable (0x00cc)
+	BSS Load:
+		 * station count: 5
+BSS 6c:5a:b0:ea:60:74(on wlan0)
+	TSF: 2705885027 usec (0d, 00:45:05)
+	freq: 5560
+	beacon interval: 100 TUs
+	capability: ESS Privacy SpectrumMgmt RadioMeasure (0x1111)
+	signal: -70.00 dBm
+	last seen: 1312 ms ago
+	SSID: old router
+	Supported rates: 6.0* 9.0 12.0* 18.0 24.0* 36.0 48.0 54.0 
+	WPA:	 * Version: 1
+		 * Group cipher: CCMP
+		 * Pairwise ciphers: CCMP
+		 * Authentication suites: PSK
+		 * Capabilities: 16-PTKSA-RC 1-GTKSA-RC MFP-capable (0x00cc)
+	BSS Load:
+		 * station count: 5
+BSS 6c:5a:b0:ea:60:75(on wlan0)
+	TSF: 2705885027 usec (0d, 00:45:05)
+	freq: 5560
+	beacon interval: 100 TUs
+	capability: ESS Privacy SpectrumMgmt RadioMeasure (0x1111)
+	signal: -72.00 dBm
+	last seen: 1312 ms ago
+	SSID: office
+	Supported rates: 6.0* 9.0 12.0* 18.0 24.0* 36.0 48.0 54.0 
+	RSN:	 * Version: 1
+		 * Group cipher: CCMP
+		 * Pairwise ciphers: CCMP
+		 * Authentication suites: IEEE 802.1X
+		 * Capabilities: 16-PTKSA-RC 1-GTKSA-RC MFP-capable (0x00cc)
+	BSS Load:
+		 * station count: 5
+BSS 6c:5a:b0:ea:60:76(on wlan0)
+	TSF: 2705885027 usec (0d, 00:45:05)
+	freq: 5560
+	beacon interval: 100 TUs
+	capability: ESS ShortSlotTime (0x0401)
+	signal: -75.00 dBm
+	last seen: 1312 ms ago
+	SSID: cafe
+	Supported rates: 6.0* 9.0 12.0* 18.0 24.0* 36.0 48.0 54.0 
+BSS 6c:5a:b0:ea:60:77(on wlan0)
+	TSF: 2705885027 usec (0d, 00:45:05)
+	freq: 5560
+	beacon interval: 100 TUs
+	capability: ESS Privacy ShortSlotTime (0x0411)
+	signal: -76.00 dBm
+	last seen: 1312 ms ago
+	SSID: museum
+	Supported rates: 6.0* 9.0 12.0* 18.0 24.0* 36.0 48.0 54.0 
