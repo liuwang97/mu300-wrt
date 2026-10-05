@@ -15,10 +15,11 @@ macOS and Windows (`.github/workflows/tests.yml`).
 | `test_i18n.py` | `tools/i18n.sh`: every translation with every placeholder, arguments passed through untouched, answers in all three languages |
 | `test_device_scripts.py` | `mu300-device`, `mu300-lan-ip`, `mu300-led` (both devices, 4G/5G, the timeout, the siren, the 5.4 LDO switches), `thermal-guard` (the heat alarm), `mu300-nfc` (a fake NFC tag: ZTE's own Wi-Fi record byte for byte, URLs, text, what `sync` leaves alone), `mu300-ttl` (stub `nft`), `mu300-wifi-band`, `mu300-buttons`, `mu300-usb` (a fake charger: never 5 V against a supply) |
 | `test_installer.py` | which adb device the installers take: they ask whenever it is not the only one and an F50/U30 Air |
-| `test_vpn.py` | `mu300-vpn`: VLESS URI parsing, JSON, which networks stay out of the tunnel, the sing-box config |
+| `test_vpn.py` | `mu300-vpn`: VLESS URI parsing, JSON, which networks stay out of the tunnel, the sing-box config, where the engines are found and how a VPN that is on gets them back |
+| `test_extra.py` | extras: `mu300-update`'s install, adopt and update of extras (a VPN in use keeps its engines), `mu300-extra` install/remove/link against a fake release server |
 | `test_update.py` | `mu300-update`: release files per system and kernel, boot image byte helpers, whether a kernel bundle may go onto this device |
 | `test_boot_init.py` | `boot/init`: the card is looked for before the internal region, under any `mmcblkN`; a foreign or empty card falls back; the 300 s timer and the conditional wait |
-| `test_android_install.py` | `tools/android-install.sh` on the SD card: a blank card is formatted, a foreign ext4 and an adopted or busy card are refused |
+| `test_android_install.py` | `tools/android-install.sh` on the SD card: a blank card is formatted, a foreign ext4 and an adopted or busy card are refused; pushed extras, and the engines a VPN in use keeps on update |
 | `test_boot_image.py` | `boot/build-boot-image.py`: the generic ramdisk, the U30 Air's modules and order |
 | `installer.Tests.ps1` | `install.ps1`: `T` with every translation, `NormalizeAnswer`, `Gib` |
 

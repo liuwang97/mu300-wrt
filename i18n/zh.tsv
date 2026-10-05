@@ -213,3 +213,8 @@ the {1} kernel of release {2} cannot read the SD card: choose kernel 5.4, a newe
 The SD card ({1}) holds a Linux installation (mu300sd), and the device always starts that one first: an installation to internal storage does not start while this card is in the slot.	SD 卡（{1}）上已有 Linux 安装（mu300sd），设备总是先启动它：只要这张卡还在卡槽中，安装到内部存储的系统就不会启动。
 Take the card out before the device restarts, or erase its installation first with the uninstaller.	请在设备重启前取出这张卡，或先用卸载程序（uninstall）清除卡上的安装。
 Type internal to install to internal storage anyway	输入 internal 以仍然安装到内部存储
+The VPN (mu300-vpn) needs the vpn extra: Xray and sing-box. It can also be added later on the device:	VPN（mu300-vpn）需要 vpn 扩展组件：Xray 和 sing-box。也可以稍后在设备上添加：
+Install the VPN extra (about 40 MB more to download, 120 MB on the device)? (yes/no)	安装 VPN 扩展组件吗（约多下载 40 MB，在设备上占用 120 MB）？(是/否)
+release {1} has no vpn extra: its systems still carry the VPN engines	版本 {1} 没有 vpn 扩展组件：其系统仍自带 VPN 引擎
+extras:         {1}	扩展组件：      {1}
+none	无
