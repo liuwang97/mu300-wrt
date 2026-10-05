@@ -209,6 +209,36 @@ class Update(UpdateBase):
             self.assertEqual(self.up(shell, 'installed_systems').stdout.split(), ['ubuntu', 'openwrt'])
             (self.disk / 'openwrt').rmdir()
 
+    def test_stale_broken_copies_are_removed(self):
+        # a rollback leaves the system it left as <os>.broken (it may still be running until the reboot); nothing
+        # removed it after that but a second rollback or "clean" - 655 MB stayed on the second F50 through an update
+        for shell in self.each_shell():
+            for os_ in ('ubuntu', 'openwrt'):
+                (self.disk / f'{os_}.broken' / 'etc').mkdir(parents=True, exist_ok=True)
+                (self.disk / f'{os_}.old' / 'etc').mkdir(parents=True, exist_ok=True)
+            r = self.up(shell, 'clean_broken')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertFalse((self.disk / 'ubuntu.broken').exists())
+            self.assertFalse((self.disk / 'openwrt.broken').exists())
+            self.assertIn('ubuntu: removed the copy left by a rollback (ubuntu.broken)', r.stdout)
+            self.assertTrue((self.disk / 'ubuntu.old').is_dir())          # the rollback copy stays
+            self.assertTrue((self.disk / 'ubuntu').is_dir())
+            # the running system (rolled back from, not rebooted yet) is never removed
+            (self.disk / 'ubuntu.broken' / 'etc').mkdir(parents=True)
+            r = self.up(shell, f'is_root() {{ [ "$1" = "{self.disk}/ubuntu.broken" ]; }}; clean_broken')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertTrue((self.disk / 'ubuntu.broken').is_dir())
+            self.assertEqual(self.up(shell, 'clean_broken; echo rc=$?').stdout.strip().splitlines()[-1], 'rc=0')
+            for d in ('ubuntu.broken', 'ubuntu.old', 'openwrt.old'):
+                import shutil
+                shutil.rmtree(self.disk / d, ignore_errors=True)
+
+    def test_apply_cleans_before_it_counts_free_space(self):
+        src = (BIN / 'mu300-update').read_text()
+        body = src[src.index('\napply() {'):src.index('\nrollback() {')]
+        self.assertIn('clean_broken', body)
+        self.assertLess(body.index('clean_broken'), body.index('not enough free space'))
+
     def bundle(self, name, devices, features=None):
         p = self.tmp / name
         with tarfile.open(p, 'w:gz') as t:
