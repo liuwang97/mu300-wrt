@@ -195,6 +195,46 @@ esac
             self.assertNotIn('AT+SFUN=', commands)
             self.assertTrue(marker.exists())
 
+    def test_the_stack_restart_takes_the_radio_lock(self):
+        """Final review minor 3: lock apply's and a late replay's SFUN restart run under mobile-data's radio lock
+        (mobile-data radio-locked, waiting up to 120 s for the dial or the watchdog); when it stays busy, no SFUN is
+        sent and the replay still finishes (the saved settings were sent; they apply at the radio's next restart)."""
+        _, _, lock, state = self.tree()
+        at = self.tmp / 'at'
+        at.write_text('#!/bin/sh\necho "$* locked=${MU300_RADIO_LOCKED:-}" >> "$STUBLOG/at.commands"\n'
+                      'case "$*" in *"AT+SPTESTMODE?"*) echo "+SPTESTMODE: 134,134,0" ;; *"AT+CFUN?"*) echo "+CFUN: 1" ;; esac\n'
+                      'echo OK\n')
+        at.chmod(0o755)
+        md = self.tmp / 'mobile-data'
+        md.write_text('#!/bin/sh\necho "$* wait=${MU300_RADIO_LOCK_WAIT:-}" >> "$STUBLOG/md"\n'
+                      '[ "$1" = radio-locked ] || exit 0\n'
+                      '[ -n "${MD_BUSY:-}" ] && exit 75\nshift; exec "$@"\n')
+        md.chmod(0o755)
+        self.stub('uci', 'exit 0')
+        self.stub('ifup', 'exit 0')
+        self.stub('sleep', 'exit 0')
+        marker = self.tmp / 'replayed'
+        for shell in self.each_shell():
+            for busy in ('', '1'):
+                with self.subTest(busy=busy):
+                    state.mkdir(parents=True, exist_ok=True)
+                    (state / 'mode').write_text('4g')
+                    for f in ('at.commands', 'md'):
+                        (self.tmp / f).unlink(missing_ok=True)
+                    marker.unlink(missing_ok=True)
+                    r = self.script(shell, lock, 'replay', MU300_AT=at, MU300_MOBILE_DATA=md, MD_BUSY=busy,
+                                    UNISOC_APPLY_DIR=self.tmp / 'apply', UNISOC_REPLAY_MARKER=marker)
+                    self.assertEqual(r.returncode, 0, r.stderr)
+                    self.assertTrue(marker.exists())
+                    self.assertEqual((self.tmp / 'md').read_text().splitlines(),
+                                     [f'radio-locked {lock} sfun-restart late wait=120'])
+                    sent = (self.tmp / 'at.commands').read_text().splitlines()
+                    sfun = [l for l in sent if 'AT+SFUN=' in l]
+                    if busy:
+                        self.assertEqual(sfun, [])
+                    else:
+                        self.assertEqual(sfun[:2], ['-t 10 AT+SFUN=5 locked=1', '-t 30 AT+SFUN=4 locked=1'])
+
     def test_early_replay_readback_failure_keeps_late_fallback(self):
         _, _, lock, state = self.tree()
         state.mkdir(parents=True)

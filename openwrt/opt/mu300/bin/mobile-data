@@ -1,6 +1,7 @@
 #!/bin/bash
 # Mobile data on the MU300 modem without Android RIL: AT commands on /dev/stty_nr1, data over sipa_eth<cid-1>.
 # usage: mobile-data up [APN] | radio-on | down | status | signal | at "CMD" | sim-reset | watch
+#        mobile-data radio-locked CMD [ARG...] | radio-busy
 # radio-on: only switch the radio on (the OpenWrt boot does it early, beside the other init scripts)
 # MU300_NETIFD=1 mobile-data up [APN]: only attach and print IFACE/IP/PREFIX/DNS1/DNS2 (OpenWrt netifd protocol)
 # MU300_IPV6=relay with it: mu300cell's relay mode (openwrt-luci), see v6_relay_ra
@@ -796,5 +797,29 @@ case "${1:-status}" in
     status) status ;;
     sim-reset) sim_reset ;;
     watch) watch ;;
-    *) echo "usage: $0 up [APN] | radio-on | down | status | signal | at \"CMD\" | sim-reset | watch" >&2; exit 2 ;;
+    radio-locked)
+        # Another program's radio sequence (the LuCI panel's radio on/off, modem reset and lock apply) under the radio
+        # lock, so it never runs beside the dial's, the watchdog's or the warm-up's radio_on (K57): this process holds
+        # the lock (lock_owner_alive knows it by its name) while CMD runs. MU300_RADIO_LOCK_WAIT: how long to wait for
+        # a holder, 0 by default (the panel answers "busy" instead). Exit 75 when it is still held: CMD did not run.
+        # A TERM is acted on once CMD has finished (bash waits for a foreground command), so the lock covers it.
+        shift
+        [ $# -gt 0 ] || { echo "usage: $0 radio-locked CMD [ARG...]" >&2; exit 2; }
+        if ! lock_take "$RADIOLOCK" "${MU300_RADIO_LOCK_WAIT:-0}"; then
+            echo "mobile-data: the radio is busy (pid ${LOCK_HOLDER:-?})" >&2
+            exit 75
+        fi
+        trap 'lock_drop "$RADIOLOCK"' EXIT
+        trap 'exit 143' TERM INT
+        rc=0
+        "$@" || rc=$?
+        exit "$rc"
+        ;;
+    radio-busy)
+        # exit 0, printing the holder's pid, while a live process holds the radio lock
+        holder=$(readlink "$RADIOLOCK" 2>/dev/null || true)
+        lock_owner_alive "$holder" || exit 1
+        echo "$holder"
+        ;;
+    *) echo "usage: $0 up [APN] | radio-on | down | status | signal | at \"CMD\" | sim-reset | watch | radio-locked CMD | radio-busy" >&2; exit 2 ;;
 esac

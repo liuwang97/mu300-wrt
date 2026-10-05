@@ -74,6 +74,13 @@ available; a successful marker prevents duplicate application. `early` is
 deliberately not a user-selectable setting because it is only safe at that exact
 point in the platform radio sequence.
 
+Where the platform has `/opt/mu300/bin/mobile-data`, the panel's radio on/off
+and modem reset, and the SFUN restart of a lock apply or a late replay, run
+under its radio lock (`mobile-data radio-locked`), so they never run beside the
+dial's or the watchdog's radio sequence. Radio on/off and modem reset answer
+"busy" while another sequence holds the lock; a lock apply waits up to two
+minutes for it.
+
 ## USB device management
 
 USB role defaults to device at every boot. The page can switch it immediately;

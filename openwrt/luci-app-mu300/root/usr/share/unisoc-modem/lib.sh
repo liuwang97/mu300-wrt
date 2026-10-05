@@ -114,3 +114,20 @@ private_dir() {
     esac
     chmod 700 "$1"
 }
+
+# -------------------------------------------------------------------- radio
+# MOBILE_DATA: the platform dialer. Its radio lock keeps one radio state machine at a time (the dial, the watchdog,
+# the boot warm-up: K57); the panel's own radio sequences take the same lock through it (mobile-data radio-locked),
+# never a copy of its locking. A platform without it runs them unlocked, as before. MU300_MOBILE_DATA: the tests.
+MOBILE_DATA=${MU300_MOBILE_DATA:-/opt/mu300/bin/mobile-data}
+# radio_busy: a live process holds the radio lock (the panel answers "busy" instead of starting a sequence)
+radio_busy() { [ -x "$MOBILE_DATA" ] && "$MOBILE_DATA" radio-busy >/dev/null 2>&1; }
+# radio_locked CMD...: CMD under the radio lock, waiting MU300_RADIO_LOCK_WAIT seconds (0 by default) for a holder;
+# status 75 when the lock stayed busy and CMD did not run. MU300_RADIO_LOCKED=1 in CMD's environment.
+radio_locked() {
+    if [ -x "$MOBILE_DATA" ]; then
+        MU300_RADIO_LOCKED=1 "$MOBILE_DATA" radio-locked "$@"
+    else
+        MU300_RADIO_LOCKED=1 "$@"
+    fi
+}

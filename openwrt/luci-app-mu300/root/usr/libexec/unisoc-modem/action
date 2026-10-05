@@ -4,6 +4,7 @@
 #   mu300-dash-act data up|down     netifd wan interface up/down (no AT in-band)
 #   mu300-dash-act wifi on|off      uci wireless disabled flag + wifi up/down
 #   mu300-dash-act modem-reset      the SFUN 5/3/2/4 sequence mobile-data uses for sim-reset
+# radio, modem-reset: under mobile-data's radio lock, or "busy" (lib.sh radio_locked)
 #   mu300-dash-act vpn start|stop   /etc/init.d/mu300-vpn
 #   mu300-dash-act reboot           the whole box, after a 3 s grace for the HTTP reply
 #
@@ -52,6 +53,22 @@ radio_off() {
     "$AT" -t 6 'AT+CFUN=0' >/dev/null 2>&1
 }
 
+# The radio ops run under mobile-data's radio lock (lib.sh radio_locked): this script runs itself again inside it.
+# A lock another radio sequence holds is "busy" at once; nothing is sent to the modem.
+case "${1:-}:${2:-}" in
+    radio:on|radio:off|modem-reset:)
+        if [ "${MU300_RADIO_LOCKED:-}" != 1 ]; then
+            rc=0
+            out=$(radio_locked "$0" "$@") || rc=$?
+            if [ "$rc" = 75 ]; then
+                fail "$1${2:+ $2}" 'The radio is busy: the dial or the watchdog is switching it, try again shortly'
+            else
+                printf '%s\n' "$out"
+            fi
+            exit "$rc"
+        fi
+        ;;
+esac
 case "${1:-}:${2:-}" in
     radio:on)
         radio_on && ok "radio on" || fail "radio on" "Radio did not come up"
@@ -78,8 +95,8 @@ case "${1:-}:${2:-}" in
         ok "wifi $2"
         ;;
     modem-reset:)
-        if [ -x /opt/mu300/bin/mobile-data ]; then
-            /opt/mu300/bin/mobile-data sim-reset >/dev/null 2>&1
+        if [ -x "$MOBILE_DATA" ]; then
+            "$MOBILE_DATA" sim-reset >/dev/null 2>&1
         else
             "$AT" -t 10 'AT+SFUN=5' >/dev/null 2>&1
             "$AT" -t 30 'AT+SFUN=4' >/dev/null 2>&1

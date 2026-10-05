@@ -918,6 +918,9 @@ msgstr "未知操作"
 msgid "Invalid argument for this op"
 msgstr "此操作的参数无效"
 
+msgid "The radio is busy: the dial or the watchdog is switching it, try again shortly"
+msgstr "射频正忙：拨号或看门狗正在切换它，请稍后再试"
+
 msgid "The action gave no valid reply"
 msgstr "操作没有返回有效结果"
 

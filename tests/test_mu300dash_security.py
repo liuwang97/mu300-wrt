@@ -847,5 +847,99 @@ class RuntimeDir(Mu300Dash):
         self.assertIn('"status"', r.stdout)
 
 
+# mobile-data as the panel meets it: radio-busy and radio-locked (MD_BUSY set: another radio sequence holds the lock)
+MOBILE_DATA_STUB = r"""#!/bin/sh
+echo "md $* wait=${MU300_RADIO_LOCK_WAIT:-} locked=${MU300_RADIO_LOCKED:-}" >> "$STUBLOG/md"
+case $1 in
+    radio-busy) [ -n "${MD_BUSY:-}" ] && { echo 4242; exit 0; }; exit 1 ;;
+    radio-locked)
+        [ -n "${MD_BUSY:-}" ] && { echo "mobile-data: the radio is busy (pid 4242)" >&2; exit 75; }
+        shift; exec "$@" ;;
+esac
+exit 0
+"""
+BUSY_RADIO = 'The radio is busy: the dial or the watchdog is switching it, try again shortly'
+
+
+class RadioLock(Mu300Dash):
+    """Final review minor 3: the panel's radio on/off and modem reset run under mobile-data's radio lock (through
+    mobile-data radio-locked, never a copy of its locking), so they never race the dial's or the watchdog's radio_on;
+    a held lock is answered "busy" (translated) and nothing reaches the modem."""
+
+    def setUp(self):
+        super().setUp()
+        self.md = self.tmp / 'mobile-data'
+        self.md.write_text(MOBILE_DATA_STUB)
+        self.md.chmod(0o755)
+        self.at = self.tmp / 'modem'
+        self.at.write_text('#!/bin/sh\necho "at $* locked=${MU300_RADIO_LOCKED:-}" >> "$STUBLOG/at.log"\n'
+                           'echo "+CFUN: 1"; echo OK\n')
+        self.at.chmod(0o755)
+        for name in ('ifup', 'ifdown'):
+            self.stub(name, 'exit 0')
+
+    def log(self, name):
+        p = self.tmp / name
+        text = p.read_text().splitlines() if p.exists() else []
+        p.unlink(missing_ok=True)
+        return text
+
+    def action(self, shell, *args, **env):
+        e = dict(MU300_AT=self.at, MU300_MOBILE_DATA=self.md, MU300_DASH_DIR=self.tmp / 'run')
+        e.update(env)
+        return self.script(shell, ADAPTERS / 'action', *args, **e)
+
+    def test_radio_ops_run_under_the_lock(self):
+        for shell in self.each_shell():
+            for args, op, sent in ((('radio', 'off'), 'radio off', ['at -t 6 AT+CFUN=0 locked=1']),
+                                   (('radio', 'on'), 'radio on', ['at -t 20 AT+SFUN=4 locked=1',
+                                                                  'at -t 4 AT+CFUN? locked=1'])):
+                with self.subTest(op=op):
+                    r = self.action(shell, *args)
+                    self.assertEqual(json.loads(r.stdout), {'ok': 1, 'op': op}, r.stderr)
+                    self.assertEqual(self.log('md'), [f'md radio-locked {ADAPTERS / "action"} {" ".join(args)} '
+                                                      'wait= locked=1'])
+                    self.assertEqual(self.log('at.log'), sent)
+            r = self.action(shell, 'modem-reset')
+            self.assertEqual(json.loads(r.stdout), {'ok': 1, 'op': 'modem-reset'}, r.stderr)
+            self.assertEqual(self.log('md'), [f'md radio-locked {ADAPTERS / "action"} modem-reset wait= locked=1',
+                                              'md sim-reset wait= locked=1'])
+
+    def test_a_busy_radio_is_answered_busy_and_nothing_is_sent(self):
+        for shell in self.each_shell():
+            for args, op in ((('radio', 'on'), 'radio on'), (('radio', 'off'), 'radio off'),
+                             (('modem-reset',), 'modem-reset')):
+                with self.subTest(op=op):
+                    r = self.action(shell, *args, MD_BUSY=1)
+                    self.assertEqual(json.loads(r.stdout), {'ok': 0, 'op': op, 'error': BUSY_RADIO})
+                    self.assertEqual(self.log('at.log'), [])
+                    self.assertEqual([l.split()[1] for l in self.log('md')], ['radio-locked'])
+
+    def test_without_mobile_data_the_ops_run_as_before(self):
+        for shell in self.each_shell():
+            r = self.action(shell, 'radio', 'off', MU300_MOBILE_DATA=self.tmp / 'none')
+            self.assertEqual(json.loads(r.stdout), {'ok': 1, 'op': 'radio off'}, r.stderr)
+            self.assertEqual(self.log('at.log'), ['at -t 6 AT+CFUN=0 locked=1'])
+
+    def test_the_backend_says_busy_before_starting_anything(self):
+        known = set(subprocess.run([sys.executable, str(TOP / 'tools' / 'luci-i18n.py'), 'extract'], check=True,
+                                   capture_output=True, text=True, encoding='utf-8').stdout.splitlines())
+        self.assertIn(BUSY_RADIO, known)
+        for shell in self.each_shell():
+            for params in ({'op': 'radio', 'arg': 'on'}, {'op': 'radio', 'arg': 'off'}, {'op': 'modem-reset'}):
+                with self.subTest(params=params):
+                    r, recs, _ = self.call(shell, 'act', params, MU300_MOBILE_DATA=self.md, MD_BUSY=1)
+                    self.assertEqual(self.reply(r), {'ok': 0, 'busy': 1, 'error': BUSY_RADIO})
+                    self.assertEqual(recs, [])
+                    r, recs, _ = self.call(shell, 'act', params, MU300_MOBILE_DATA=self.md)
+                    self.assertEqual(self.reply(r).get('started'), 1, r.stdout)
+                    self.assertEqual(recs[0][:3], ['setsid', 'action', params['op']])
+            # the other ops never ask
+            self.log('md')
+            r, recs, _ = self.call(shell, 'act', {'op': 'data', 'arg': 'up'}, MU300_MOBILE_DATA=self.md, MD_BUSY=1)
+            self.assertEqual(self.reply(r).get('ok'), 1, r.stdout)
+            self.assertEqual(self.log('md'), [])
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -186,6 +186,14 @@ m_act() {
         modem-reset|reboot) [ -z "$arg" ] ;;
         *)                  refuse 'Unknown op'; return ;;
     esac || { refuse 'Invalid argument for this op'; return; }
+    # the radio ops take mobile-data's radio lock (unisoc-modem/action): while the dial, the watchdog or another
+    # radio op holds it, say so now - once detached, a refusal would never reach the page
+    case $op in radio|modem-reset)
+        if radio_busy; then
+            printf '{"ok":0,"busy":1,"error":"The radio is busy: the dial or the watchdog is switching it, try again shortly"}\n'
+            return
+        fi ;;
+    esac
     case $op in
         # the SFUN dance can run half a minute: never inside the request
         radio|modem-reset|reboot|vpn)

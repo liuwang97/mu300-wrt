@@ -806,6 +806,69 @@ at() {
         self.assertNotEqual(m.group(1), m.group(3))
 
 
+class RadioLocked(ShellTest):
+    """mobile-data radio-locked CMD / radio-busy: another program's radio sequence (the LuCI panel's) runs under the
+    radio lock radio_on takes, held by mobile-data itself; a held lock is "busy" (75), nothing run (final review
+    minor 3). mobile-data is copied (still named mobile-data: lock_owner_alive knows the holder by that name) with
+    /run/ in the scratch directory."""
+
+    def setUp(self):
+        super().setUp()
+        if not shutil.which('bash'):
+            self.skipTest('no bash')
+        (self.tmp / 'run').mkdir()
+        self.md = self.tmp / 'mobile-data'
+        self.md.write_text((BIN / 'mobile-data').read_text().replace('/run/', f'{self.tmp}/run/'))
+        self.md.chmod(0o755)
+        self.link = self.tmp / 'run' / 'mu300-radio-on.owner'
+
+    def run_md(self, *args, **env):
+        return subprocess.run(['bash', str(self.md)] + list(args), capture_output=True, text=True, timeout=30,
+                              env=self.env(**env))
+
+    def test_runs_the_command_holding_the_lock(self):
+        r = self.run_md('radio-locked', 'sh', '-c', f'readlink "{self.link}"; exit 3')
+        self.assertEqual(r.returncode, 3, r.stderr)        # the command's own status
+        self.assertTrue(r.stdout.strip().isdigit(), r.stdout)
+        self.assertFalse(os.path.lexists(self.link))         # dropped again
+        self.assertEqual(self.run_md('radio-busy').returncode, 1)
+
+    def test_a_held_lock_is_busy_and_nothing_runs(self):
+        holder = subprocess.Popen(['bash', str(self.md), 'radio-locked', 'sleep', '3'], env=self.env())
+        try:
+            deadline = time.monotonic() + 10
+            while not os.path.lexists(self.link) and time.monotonic() < deadline:
+                time.sleep(0.05)
+            self.assertEqual(os.readlink(self.link), str(holder.pid))
+            r = self.run_md('radio-busy')
+            self.assertEqual((r.returncode, r.stdout.strip()), (0, str(holder.pid)))
+            t0 = time.monotonic()
+            r = self.run_md('radio-locked', 'touch', str(self.tmp / 'ran'))
+            self.assertEqual(r.returncode, 75, r.stderr)
+            self.assertIn('busy', r.stderr)
+            self.assertLess(time.monotonic() - t0, 5)         # no wait by default
+            self.assertFalse((self.tmp / 'ran').exists())
+            # TERM: the holder keeps the lock while its command still runs, and drops it on its way out
+            holder.terminate()
+            time.sleep(0.5)
+            self.assertTrue(os.path.lexists(self.link))
+            holder.wait(timeout=10)
+            self.assertFalse(os.path.lexists(self.link))
+        finally:
+            if holder.poll() is None:
+                holder.kill()
+                holder.wait()
+
+    def test_a_dead_holder_is_taken_over(self):
+        dead = subprocess.Popen(['true'])
+        dead.wait()
+        os.symlink(str(dead.pid), self.link)
+        self.assertEqual(self.run_md('radio-busy').returncode, 1)
+        r = self.run_md('radio-locked', 'touch', str(self.tmp / 'ran'))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue((self.tmp / 'ran').exists())
+
+
 class SipaDele(ShellTest):
     """K45, K46: extra-modules and sipa-dele-start, copied with /lib/modules, /proc/modules, /opt/mu300/bin and
     /dev/stty_nr1 pointed at the scratch directory (and /dev/null); uname, insmod, modprobe, dmesg, sleep, mu300-at

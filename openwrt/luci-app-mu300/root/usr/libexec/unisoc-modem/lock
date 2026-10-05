@@ -280,6 +280,19 @@ sfun_restart() {
     say "stack restarted ($(( $(date +%s) - ${_t0:-$(date +%s)} ))s), radio $(at 'AT+CFUN?' 4 2>/dev/null | grep -q '+CFUN: 1' && echo on || echo 'checking')"
 }
 
+# sfun_restart_locked [PHASE]: sfun_restart under mobile-data's radio lock (lib.sh radio_locked), so the stack
+# restart never runs beside the dial's or the watchdog's radio_on; it waits up to two minutes for one of those to
+# finish (an apply is already detached from the page). If the lock stays busy, the setting is saved and sent but
+# takes effect at the radio's next restart.
+sfun_restart_locked() {
+    local rc=0
+    [ "${MU300_RADIO_LOCKED:-}" = 1 ] && { sfun_restart "$@"; return; }
+    export _t0   # the restart's report counts from the apply's start
+    MU300_RADIO_LOCK_WAIT=${MU300_RADIO_LOCK_WAIT:-120} radio_locked "$0" sfun-restart "${1:-late}" || rc=$?
+    [ "$rc" = 75 ] && say "the radio stayed busy (dial or watchdog): no stack restart, the setting applies at the next one"
+    return 0
+}
+
 # one apply at a time: overlapping SFUN dances (band lock + cell unlock + mode in
 # quick succession) leave the radio off. A second apply waits for the running one.
 apply_lock() {
@@ -461,7 +474,7 @@ do_apply() {  # do_apply KIND VALUE
             ;;
     esac
     [ "$state_saved" = 1 ] || save_state "$kind" "$val"
-    sfun_restart
+    sfun_restart_locked
     say "apply $kind=$val done"
     # the cache must not keep serving the pre-apply state; retry because the
     # lock reads can lag registration by a few seconds after the restart
@@ -584,7 +597,7 @@ do_replay() {
     # In the boot path radio-on itself is the activation event, so an SFUN cycle
     # would only tear down the modem we are trying to start. `replay` without
     # `early` remains available for a deliberate manual recovery.
-    [ "$phase" = early ] || [ "$need_restart" = 0 ] || sfun_restart "$phase"
+    [ "$phase" = early ] || [ "$need_restart" = 0 ] || sfun_restart_locked "$phase"
     : > "$marker"
     say "replay done ($phase)"
 }
@@ -637,5 +650,7 @@ case "${1:-}" in
         ;;
     apply)  do_apply "${2:-}" "${3:-}" ;;
     replay) do_replay "${2:-late}" ;;
+    # run by sfun_restart_locked, under the radio lock
+    sfun-restart) sfun_restart "${2:-late}" ;;
     *)      echo "usage: $0 get [fresh] | apply KIND VALUE | replay [early]" >&2; exit 2 ;;
 esac
