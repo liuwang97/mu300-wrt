@@ -136,6 +136,24 @@ bundle_has_sd() { bundle_has "$1" "$2" sdcard; }
 # bundle_fits_slot BUNDLE LIST: can its init run from the slot Linux is on? One from before linux-slot knows only b:
 # on a it would restore the block that boots Linux, marked successful, and log into Android's boot partition.
 bundle_fits_slot() { [ "$(linux_slot)" = b ] || bundle_has "$1" "$2" linux-slot; }
+# copy_missing FROM TO: copy what FROM has and TO lacks, never replacing anything of TO. Not `cp -an FROM/. TO/`:
+# busybox cp -n skips a directory that exists without looking into it, so an update run from OpenWrt copied none of
+# the vendor files into the image's own opt/mu300/android and lib/firmware (no modem, no Wi-Fi after the reboot).
+# Nothing is written below a link of TO (find lists a directory before what is in it).
+copy_missing() {
+    ( cd "$1" && find . ! -name . ) | {
+        skip=
+        while IFS= read -r p; do
+            case $p in "$skip"/*) continue ;; esac
+            if [ -e "$2/$p" ] || [ -L "$2/$p" ]; then
+                { [ -d "$2/$p" ] && [ ! -L "$2/$p" ]; } || skip=$p
+                continue
+            fi
+            cp -a "$1/$p" "$2/$p" || exit 1
+            skip=$p
+        done
+    }
+}
 # the directory the running system booted from (it stays in use under any name until the reboot)
 is_root() { [ -d "$1" ] && [ / -ef "$1" ]; }
 # the directory this system booted from; /etc/openwrt_release alone cannot tell the two OpenWrt systems apart
@@ -320,7 +338,7 @@ apply_one() {  # apply_one OS TAG
     for v in $(vendor_list "$os"); do
         [ -d "$old/$v" ] || continue
         mkdir -p "$new/$v"
-        cp -an "$old/$v/." "$new/$v/" 2>/dev/null || true
+        copy_missing "$old/$v" "$new/$v" || { rm -rf "$new"; die "$os: copying the vendor files failed, nothing was changed"; }
     done
     # services enabled by hand (the links point into the system, so test with -L)
     if [ "$os" = ubuntu ]; then

@@ -2,6 +2,7 @@
 release it takes, the kernel choice, the byte helpers it edits boot image headers with, and whether a kernel bundle
 may go onto this device."""
 import io
+import os
 import shutil
 import struct
 import subprocess
@@ -427,6 +428,61 @@ class FromStock(UpdateBase):
             r = self.up(shell, f'PERSIST_LOG=8192; bootimg_from_stock "{stock}" "{self.tmp}/k" "{self.tmp}/r" "{self.tmp}"')
             self.assertNotEqual(r.returncode, 0)
             self.assertIn('persistent log area', r.stderr)
+
+    def test_apply_keeps_the_vendor_files_the_image_has_a_directory_for(self):
+        # the images ship opt/mu300/android/system/bin/cltest and a few firmware files, so the vendor directories
+        # exist in the new system; busybox's `cp -an old/. new/` then skips them as existing and copies nothing (an
+        # update run from OpenWrt left every system without the Android userspace: no modem, no Wi-Fi)
+        img = self.tmp / 'img'
+        for f, data in [('sbin/init', b'#!/bin/sh\n'), ('opt/mu300/android/system/bin/cltest', b'image'),
+                        ('lib/firmware/regulatory.db', b'image'), ('etc/mu300/image-version', b'v2\n')]:
+            (img / f).parent.mkdir(parents=True, exist_ok=True)
+            (img / f).write_bytes(data)
+        (img / 'sbin/init').chmod(0o755)
+        old = self.disk / 'openwrt'
+        for f, data in [('sbin/init', b'#!/bin/sh\n'), ('opt/mu300/android/system/bin/cltest', b'old'),
+                        ('opt/mu300/android/system/bin/cp_diskserver', b'vendor'),
+                        ('opt/mu300/android/vendor/lib/libril.so', b'vendor'),
+                        ('opt/mu300/android/dev-properties/property_info', b'props'),
+                        ('lib/firmware/wcnmodem.bin', b'fw'), ('lib/firmware/regulatory.db', b'old'),
+                        ('lib/modules/5.4.254/x.ko', b'ko'), ('etc/mu300/vpn.conf', b'mine')]:
+            (old / f).parent.mkdir(parents=True, exist_ok=True)
+            (old / f).write_bytes(data)
+        (old / 'opt/mu300/android/system/lib').symlink_to('../vendor/lib')
+        stage = self.disk / '.mu300-update'
+        for shell in self.each_shell():
+            for d in ('openwrt.old', 'openwrt.new'):
+                shutil.rmtree(self.disk / d, ignore_errors=True)
+            stage.mkdir(exist_ok=True)
+            subprocess.run(['tar', '-czf', str(stage / 'mu300-openwrt-rootfs.tar.gz'), '-C', str(img), '.'], check=True)
+            r = self.up(shell, 'is_root() { false; }; apply_one openwrt v2')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            new = self.disk / 'openwrt'
+            self.assertEqual((new / 'opt/mu300/android/system/bin/cp_diskserver').read_bytes(), b'vendor')
+            self.assertEqual((new / 'opt/mu300/android/vendor/lib/libril.so').read_bytes(), b'vendor')
+            self.assertEqual((new / 'opt/mu300/android/dev-properties/property_info').read_bytes(), b'props')
+            self.assertEqual(os.readlink(new / 'opt/mu300/android/system/lib'), '../vendor/lib')
+            self.assertEqual((new / 'lib/firmware/wcnmodem.bin').read_bytes(), b'fw')
+            self.assertEqual((new / 'lib/modules/5.4.254/x.ko').read_bytes(), b'ko')
+            # what the image has stays the image's
+            self.assertEqual((new / 'opt/mu300/android/system/bin/cltest').read_bytes(), b'image')
+            self.assertEqual((new / 'lib/firmware/regulatory.db').read_bytes(), b'image')
+            self.assertEqual((new / 'etc/mu300/vpn.conf').read_bytes(), b'mine')
+            # the next shell updates from this one (disk/openwrt again)
+
+    def test_copy_missing_never_writes_through_a_link_of_the_target(self):
+        a, b, outside = self.tmp / 'a', self.tmp / 'b', self.tmp / 'outside'
+        (a / 'd/x').mkdir(parents=True)
+        (a / 'd/x/f').write_text('a')
+        (a / 'name with space').write_text('s')
+        b.mkdir(); outside.mkdir()
+        (b / 'd').symlink_to(outside)
+        for shell in self.each_shell():
+            r = self.up(shell, f'copy_missing "{a}" "{b}"')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(list(outside.iterdir()), [])
+            self.assertEqual((b / 'name with space').read_text(), 's')
+            (b / 'name with space').unlink()
 
     def test_modules_into_every_system(self):
         b = self.tmp / 'bundle'
