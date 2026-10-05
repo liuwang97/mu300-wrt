@@ -45,8 +45,9 @@ AP_FLAG=$R/run/mu300-wifi-client-had-ap
 # while this exists the hotspot service refuses to start: the radio cannot be both at once, and at boot the
 # hotspot would otherwise come up right after this script joined a network and take the radio back
 ACTIVE=$R/run/mu300-wifi-client.active
-# the NAT that shares this uplink with the LAN (Ubuntu; fw4 does it on OpenWrt)
-NAT=mu300_wifi_nat
+EVENTS_PID=$R/run/mu300-wifi-client.events.pid
+# this script by its full path, for the programs that call it back (udhcpc, wpa_cli -a) from another directory
+case $0 in /*) SELF=$0 ;; *) SELF=$(pwd)/$0 ;; esac
 VPN_CMD=${MU300_VPN_CMD:-/opt/mu300/bin/mu300-vpn}
 # set by "wifi-client scan-mode on": keeps the hotspot from starting at the next boot, so the radio stays a
 # station and can look for networks. It survives the reboot on purpose, and that boot takes it
@@ -158,78 +159,90 @@ start_ap() {
 # client left its USB clients with no internet (ip_forward 0, no masquerade). This is the same model as mobile
 # data's, with the other network treated as the cellular side is:
 #   * LAN clients reach the internet through it, and nothing else on that network: forwarded traffic to private,
-#     link-local and shared (CGNAT) addresses, and to the network's own subnet, is dropped. The access point is
-#     their way out (the default route), not something they can talk to - a guest on this device's USB does not
-#     get onto the home or hotel network it is a client of.
+#     link-local, shared (CGNAT), multicast and other special-purpose addresses, to the network's own subnet, and
+#     all IPv6, is dropped. The access point is their way out (the default route), not something they can talk to -
+#     a guest on this device's USB does not get onto the home or hotel network it is a client of.
 #   * From the other network, only answers come in: nothing is forwarded to the LAN, and the device's own services
-#     (SSH, DNS, ...) are closed to it, as firewall.nft closes them to the modem. DHCP and ping are let in.
+#     (SSH, DNS, ...) are closed to it, as firewall.nft closes them to the modem. DHCP, ping and IPv6 neighbour and
+#     router discovery are let in.
 #   * The VPN is left alone: its policy routing takes client traffic into the tunnel before it would leave on
 #     wlan0, and its kill switch (mu300-vpn, priority filter - 5) drops what would leave on wlan0 while the tunnel
-#     is down - a drop in any chain is final, whatever these tables accept.
-# Two tables: the NAT (ip, as mobile-data's) and the filter (inet, so IPv6 on wlan0 is closed too). Gone on disconnect.
+#     is down - a drop in any chain is final, whatever these tables accept, and these accept nothing new.
+# Three states, each put up by one nft transaction that replaces both tables whole (so there is never a moment
+# with a half of one and a half of the other):
+#   closed  wlan0 may be on the other network but is not shared: input as below, nothing forwarded to or from it,
+#           no NAT. From before the supplicant starts until DHCP has answered, and again whenever the link is lost.
+#   shared  the address is known and checked: NAT, and forwarding to the internet only (with its subnet).
+#   none    wlan0 is on no network any more (the supplicant has gone and the radio is not associated).
+# The rules name only the interface, never an address of the other network but its subnet. (A rename cannot slip
+# past them: the kernel renames only an interface that is down, and down takes it off the network - on this board
+# it powers the chip off - and the supplicant with it. A new wlan0 is covered by the same rules.) On OpenWrt fw4 does
+# the NAT (wlan0 in its wan zone) and these filter tables come on top, the same as on Ubuntu.
+NAT=mu300_wifi_nat
 FILTER=mu300_wifi_filter
-# share_uplink: the rules are only about wlan0 by name, so they are put up before the radio joins anything (the
-# interface is closed to the other network from its first packet, and nothing is forwarded into it unfiltered
-# while DHCP runs) and replaced, in one nft transaction, once the subnet is known. Forwarding is turned on only
-# then. They name no address of the other network but its subnet, so a dropped or roaming link changes nothing.
-share_uplink() {  # share_uplink [pre]: pre = before the join (no subnet yet, forwarding left as it is)
+# every IPv4 destination that is not the internet: this network, private, CGNAT, link-local, IETF and benchmark
+# ranges, multicast, reserved and broadcast (224.0.0.0/3 is 224.0.0.0 to 255.255.255.255)
+PRIVATE4='0.0.0.0/8 10.0.0.0/8 100.64.0.0/10 169.254.0.0/16 172.16.0.0/12 192.0.0.0/24 192.168.0.0/16 198.18.0.0/15 224.0.0.0/3'
+
+rules() {  # rules closed|shared|none [SUBNET]
+    {
+        printf 'table ip %s\ndelete table ip %s\ntable inet %s\ndelete table inet %s\n' "$NAT" "$NAT" "$FILTER" "$FILTER"
+        [ "$1" = none ] && return 0
+        if [ "$1" = shared ] && ! is_openwrt; then
+            printf 'table ip %s {\n    chain postrouting {\n' "$NAT"
+            printf '        type nat hook postrouting priority srcnat; policy accept;\n'
+            printf '        oifname "%s" masquerade\n    }\n}\n' "$IFACE"
+        fi
+        printf 'table inet %s {\n    chain input {\n' "$FILTER"
+        printf '        type filter hook input priority filter; policy accept;\n'
+        printf '        iifname "%s" ct state established,related accept\n' "$IFACE"
+        printf '        iifname "%s" udp sport 67 udp dport 68 accept\n' "$IFACE"
+        printf '        iifname "%s" icmp type echo-request limit rate 5/second accept\n' "$IFACE"
+        printf '        iifname "%s" icmpv6 type { echo-request, nd-neighbor-solicit, nd-neighbor-advert, nd-router-advert } accept\n' "$IFACE"
+        printf '        iifname "%s" counter drop\n    }\n    chain forward {\n' "$IFACE"
+        printf '        type filter hook forward priority filter; policy accept;\n'
+        if [ "$1" = shared ]; then
+            printf '        iifname "%s" ct state established,related accept\n' "$IFACE"
+            printf '        iifname "%s" counter drop\n' "$IFACE"
+            printf '        oifname "%s" ip daddr { %s } counter drop\n' "$IFACE" "$(echo $PRIVATE4 | sed 's/ /, /g')"
+            [ -n "${2:-}" ] && printf '        oifname "%s" ip daddr %s counter drop\n' "$IFACE" "$2"
+            printf '        oifname "%s" meta nfproto ipv6 counter drop\n' "$IFACE"
+            printf '        oifname "%s" tcp flags syn tcp option maxseg size set rt mtu\n' "$IFACE"
+        else
+            printf '        iifname "%s" counter drop\n' "$IFACE"
+            printf '        oifname "%s" counter drop\n' "$IFACE"
+        fi
+        printf '    }\n}\n'
+    } | nft -f -
+}
+
+# Forwarding goes off again unless mobile data still shares its bearer (its own table, mu300_nat): nothing is left
+# forwarding towards an uplink that is gone. (OpenWrt forwards always; fw4 decides.)
+forwarding_off() {
+    is_openwrt && return 0
+    nft list table ip mu300_nat >/dev/null 2>&1 || sysctl -qw net.ipv4.ip_forward=0 2>/dev/null || true
+}
+
+# closed: before the join, and whenever the link is lost. A failure leaves the previous state, whichever it was.
+close_uplink() { rules closed; }
+
+# shared, with the subnet DHCP gave (for when it is not a private one); forwarding on only then
+share_uplink() {
     if is_openwrt; then
-        wan_zone
-        return
+        wan_zone || return 1
     fi
-    # the network's own subnet, for when it is not a private one
-    net=; [ "${1:-}" = pre ] || net=$(uplink_net)
-    subnet=; [ -n "$net" ] && subnet="oifname \"$IFACE\" ip daddr $net counter drop"
-    nft -f - <<NFT || return 1
-table ip $NAT
-delete table ip $NAT
-table inet $FILTER
-delete table inet $FILTER
-table ip $NAT {
-    chain postrouting {
-        type nat hook postrouting priority srcnat; policy accept;
-        oifname "$IFACE" masquerade
-    }
+    rules shared "$(uplink_net)" || return 1
+    is_openwrt || sysctl -qw net.ipv4.ip_forward=1 2>/dev/null || true
 }
-table inet $FILTER {
-    chain input {
-        type filter hook input priority filter; policy accept;
-        iifname "$IFACE" ct state established,related accept
-        iifname "$IFACE" udp sport 67 udp dport 68 accept
-        iifname "$IFACE" icmp type echo-request limit rate 5/second accept
-        iifname "$IFACE" icmpv6 type { echo-request, nd-neighbor-solicit, nd-neighbor-advert, nd-router-advert } accept
-        iifname "$IFACE" counter drop
-    }
-    chain forward {
-        type filter hook forward priority filter; policy accept;
-        iifname "$IFACE" ct state established,related accept
-        iifname "$IFACE" counter drop
-        oifname "$IFACE" ip daddr { 10.0.0.0/8, 100.64.0.0/10, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16, 224.0.0.0/3 } counter drop
-        $subnet
-        oifname "$IFACE" meta nfproto ipv6 counter drop
-        oifname "$IFACE" tcp flags syn tcp option maxseg size set rt mtu
-    }
-}
-NFT
-    [ "${1:-}" = pre ] || sysctl -qw net.ipv4.ip_forward=1 2>/dev/null || true
+
+# none. If the one transaction fails (nft refuses a part), each table goes on its own.
+unshare_uplink() {
+    rules none 2>/dev/null || { nft delete table ip "$NAT"; nft delete table inet "$FILTER"; } 2>/dev/null
+    forwarding_off
 }
 
 uplink_net() {
     ip -4 route show dev "$IFACE" proto kernel scope link 2>/dev/null | awk '$1 ~ /^[0-9.]+\/[0-9]+$/ {print $1; exit}'
-}
-
-# Both tables in one transaction ("table" first, so a missing one is no error). Forwarding goes off again unless
-# mobile data still shares its bearer (its own table, mu300_nat): nothing is left forwarding towards an uplink
-# that is gone.
-unshare_uplink() {
-    is_openwrt && return 0
-    nft -f - <<NFT 2>/dev/null || { nft delete table ip "$NAT"; nft delete table inet "$FILTER"; } 2>/dev/null
-table ip $NAT
-delete table ip $NAT
-table inet $FILTER
-delete table inet $FILTER
-NFT
-    nft list table ip mu300_nat >/dev/null 2>&1 || sysctl -qw net.ipv4.ip_forward=0 2>/dev/null || true
 }
 
 # The LAN's subnet, from its configuration (br-lan has no address yet when the boot join runs): Ubuntu's lan.conf
@@ -259,11 +272,25 @@ overlaps() {
                 exit !(int(n(x[1]) / d) == int(n(y[1]) / d)) }'
 }
 
+# lan_check: why the address this network gave cannot be shared, or nothing. The LAN's configured subnet and, if
+# br-lan is up already, the one it has (a changed lan.conf not applied yet).
+lan_check() {
+    lan=$(lan_net)
+    net=$(uplink_net)
+    [ -n "$lan" ] || { echo "this device's own LAN subnet could not be worked out: not sharing $IFACE with it"; return; }
+    live=$(ip -4 -o addr show dev br-lan 2>/dev/null | awk '$3 == "inet" {print $4; exit}')
+    if [ -n "$net" ] && { overlaps "$lan" "$net" || { [ -n "$live" ] && overlaps "$live" "$net"; }; }; then
+        echo "the network uses $net, which overlaps this device's own LAN ($lan): not joined. Give the LAN another" \
+            "subnet (LAN_IP in /etc/mu300/lan.conf) or join another network."
+    fi
+}
+
 # OpenWrt: fw4 masquerades for the wan zone, and an interface in no zone gets the defaults (no forwarding to it,
 # and input accepted from it). wlan0 in the wan zone fixes both: input and forwarding from it rejected but for
 # answers, as for the modem. fw4 forwards lan to wan to any address, so a rule on wlan0 alone keeps LAN clients off
-# the other network's private addresses, as on Ubuntu. When wlan0 is the hotspot it is a port of br-lan and fw4
-# only ever sees br-lan, so neither does anything then; done once, left in place (as mu300-vpn does for its tunnel).
+# the other network's private addresses (the filter tables above do it too, with IPv6 and the subnet). When wlan0 is
+# the hotspot it is a port of br-lan and fw4 only ever sees br-lan, so neither does anything then; done once, left in
+# place (as mu300-vpn does for its tunnel).
 private_rule() {  # private_rule SECTION: fill in the rule, all or nothing
     uci set "firewall.$1.name=mu300-wifi-client-private" && uci set "firewall.$1.src=lan" &&
         uci set "firewall.$1.dest=wan" && uci set "firewall.$1.device=$IFACE" &&
@@ -271,10 +298,9 @@ private_rule() {  # private_rule SECTION: fill in the rule, all or nothing
         uci set "firewall.$1.proto=all" && uci set "firewall.$1.target=REJECT" || return 1
     for a in $PRIVATE4; do uci add_list "firewall.$1.dest_ip=$a" || return 1; done
 }
-PRIVATE4='10.0.0.0/8 100.64.0.0/10 169.254.0.0/16 172.16.0.0/12 192.168.0.0/16'
 wan_zone() {
     zone=$(uci -q show firewall 2>/dev/null | sed -n "s/^firewall\.@zone\[\([0-9]*\)\]\.name='wan'$/\1/p" | head -1)
-    # no wan zone to put it in: no isolation either, so no join
+    # no wan zone to put it in: no NAT either, so no join
     [ -n "$zone" ] || return 1
     changed=
     if ! uci -q get "firewall.@zone[$zone].device" 2>/dev/null | tr ' ' '\n' | grep -qx "$IFACE"; then
@@ -296,23 +322,103 @@ wan_zone() {
     "$R/etc/init.d/firewall" reload >/dev/null 2>&1 || true
 }
 
-# The link goes first, the rules after: until the supplicant is gone and the addresses are flushed, wlan0 is still
-# on the other network, and without its filter it would be open to it for that moment.
-stop_client() {
-    rm -f "$ACTIVE"
+# The address and the routes this network gave, and its resolver: gone when the link is (the default route via a
+# network the device is no longer on would hold the traffic that mobile data could carry).
+drop_lease() {
     [ -s "$LEASE.pid" ] && kill "$(cat "$LEASE.pid")" 2>/dev/null
     pkill -f "udhcpc -i $IFACE" 2>/dev/null || true
-    pkill -f "wpa_supplicant -B -i $IFACE" 2>/dev/null || true
-    rm -f "$LEASE" "$LEASE.pid" "$WPACONF"
+    rm -f "$LEASE" "$LEASE.pid"
+    ip route flush dev "$IFACE" 2>/dev/null || true
     ip -4 addr flush dev "$IFACE" 2>/dev/null || true
     ip -6 addr flush dev "$IFACE" scope global 2>/dev/null || true
-    # Not "ip link set down": on this board that powers the WCN chip off, and the firmware asserts at the next
-    # scan (CP2 assert, sc2355_scan failed -5) until a reboot. So the supplicant goes first and the addresses
-    # are flushed, and only then the filter (only the IPv6 link-local address is left on the interface).
-    unshare_uplink
-    # the lease handler put the network's resolver on this link; leaving it there points DNS at a network the
-    # device is no longer on
     command -v resolvectl >/dev/null 2>&1 && resolvectl revert "$IFACE" 2>/dev/null || true
+}
+
+associated() { iw dev "$IFACE" link 2>/dev/null | grep -q '^Connected to'; }
+supplicant_running() { pgrep -f "wpa_supplicant -B -i $IFACE" >/dev/null 2>&1; }
+
+# The supplicant asked to go (it deauthenticates as it does), and waited for, and the radio checked: until then
+# wlan0 may still be on the other network, and its rules must stay. Not "ip link set down": on this board that
+# powers the WCN chip off, and the firmware asserts at the next scan (CP2 assert, sc2355_scan failed -5) until a
+# reboot. 0 = off the network.
+leave_network() {
+    if supplicant_running; then
+        wpa_cli -i "$IFACE" terminate >/dev/null 2>&1
+        pkill -f "wpa_supplicant -B -i $IFACE" 2>/dev/null
+        n=0
+        while supplicant_running && [ "$n" -lt 5 ]; do n=$((n + 1)); sleep 1; done
+        supplicant_running && { pkill -9 -f "wpa_supplicant -B -i $IFACE" 2>/dev/null; sleep 1; }
+        supplicant_running && return 1
+    fi
+    associated || return 0
+    iw dev "$IFACE" disconnect 2>/dev/null
+    sleep 1
+    ! associated
+}
+
+# Everything the client set up goes, in this order: the event handler (or the supplicant's going would look like a
+# lost link to it), the supplicant and the association, the lease, and only then the rules - wlan0 is never on
+# the other network without them. A radio that cannot be got off it keeps them, closed, and this fails.
+stop_client() {
+    rm -f "$ACTIVE"
+    [ -s "$EVENTS_PID" ] && kill "$(cat "$EVENTS_PID")" 2>/dev/null
+    pkill -f "wpa_cli -i $IFACE -a" 2>/dev/null || true
+    rm -f "$EVENTS_PID"
+    if ! leave_network; then
+        close_uplink
+        drop_lease
+        echo "wifi-client: $IFACE is still on the network (the supplicant or the association would not go): its" \
+            "firewall stays closed" >&2
+        return 1
+    fi
+    rm -f "$WPACONF"
+    drop_lease
+    unshare_uplink
+}
+
+# Only one of these at a time: a join, a disconnect, and the handler of the supplicant's events would otherwise
+# each put up their own rules over the others'. (Without flock, as in tests on macOS, nothing is serialised.)
+# Daemons started under it get the descriptor closed (9>&-), or they would hold the lock for good.
+lock() {
+    command -v flock >/dev/null 2>&1 || return 0
+    exec 9>"$R/run/mu300-wifi-client.lock" && flock 9
+}
+
+log() {  # the event handler has no terminal: the journal (syslog on OpenWrt)
+    logger -t wifi-client "$*" 2>/dev/null || printf 'wifi-client: %s\n' "$*" >&2
+}
+
+# The supplicant's events (wpa_cli -a, started by connect once joined), for as long as the client is up: a lost
+# link (out of range, the access point gone) closes the sharing and drops the lease; a link back (the same
+# network, maybe another access point of it) asks DHCP again, checks the address as connect does, and shares it.
+# Without this, a link that came back kept the old lease's address and rules, whatever the network now uses.
+event() {  # event CONNECTED|DISCONNECTED
+    lock
+    [ -e "$ACTIVE" ] || exit 0
+    case $1 in
+        DISCONNECTED)
+            close_uplink || log "could not close the firewall for $IFACE (nft)"
+            drop_lease
+            forwarding_off
+            log "link lost: $IFACE not shared until it is back" ;;
+        CONNECTED)
+            close_uplink || { log "could not close the firewall for $IFACE (nft): not asking for an address"; exit 1; }
+            drop_lease
+            dhcp_run
+            why=$(lan_check)
+            if [ -z "$(ip -4 -br addr show "$IFACE" 2>/dev/null | awk '{print $3}')" ]; then
+                why="no address from the network"
+            fi
+            if [ -n "$why" ]; then
+                drop_lease
+                forwarding_off
+                log "link back, not shared: $why"
+                exit 1
+            fi
+            share_uplink || { log "could not share $IFACE (nft)"; exit 1; }
+            log "link back: $IFACE shared again ($(uplink_net))" ;;
+    esac
+    exit 0
 }
 
 scan() {
@@ -349,7 +455,7 @@ scan() {
     done
     case $out in
         *"BSS "*) ;;
-        *) printf 'wifi-client: the scan found nothing (%s)\n' "$(printf '%s' "$out" | head -1)" >&2
+        *) printf 'wifi-client: the scan found nothing (%s)\n' "$(shown "$(printf '%s' "$out" | head -1)")" >&2
            printf 'wifi-client: interface is %s, type %s\n' \
                "$(cat "/sys/class/net/$IFACE/operstate" 2>/dev/null)" \
                "$(iw dev "$IFACE" info 2>/dev/null | sed -n 's/^[[:space:]]*type //p')" >&2
@@ -464,9 +570,9 @@ unescape() {
 
 dhcp_run() {  # Ubuntu ships busybox without the applet symlinks, so udhcpc may only exist as "busybox udhcpc"
     if command -v udhcpc >/dev/null 2>&1; then
-        udhcpc -i "$IFACE" -n -q -t 8 -s "$0" -p "$LEASE.pid" >/dev/null 2>&1
+        udhcpc -i "$IFACE" -n -q -t 8 -s "$SELF" -p "$LEASE.pid" >/dev/null 2>&1 9>&-
     elif command -v busybox >/dev/null 2>&1; then
-        busybox udhcpc -i "$IFACE" -n -q -t 8 -s "$0" -p "$LEASE.pid" >/dev/null 2>&1
+        busybox udhcpc -i "$IFACE" -n -q -t 8 -s "$SELF" -p "$LEASE.pid" >/dev/null 2>&1 9>&-
     else
         return 1
     fi
@@ -564,7 +670,7 @@ connect() {  # connect SSID [PASS]
     if [ -n "$psk" ]; then
         valid_text 8 63 "$psk" || die "a WPA passphrase is 8 to 63 bytes, without control characters"
     fi
-    stop_client
+    stop_client || die "could not take $IFACE off the network it is on: not joining another"
     if ! prepare_station; then
         save_network "$ssid" "$psk"
         ap_mode_hint saved
@@ -581,13 +687,13 @@ connect() {  # connect SSID [PASS]
     joining=1
     trap 'abort_join' EXIT
     trap 'exit 130' INT TERM HUP
-    share_uplink pre || die "could not put up the firewall for $IFACE (nft): not joining without it"
+    close_uplink || die "could not put up the firewall for $IFACE (nft): not joining without it"
 
     # the supplicant first, with no network: whether it can do SAE depends on the driver too, and only the
     # running supplicant can say
     umask 077
     printf 'ctrl_interface=/run/wpa_supplicant\n' > "$WPACONF"
-    wpa_supplicant -B -i "$IFACE" -c "$WPACONF" >/dev/null 2>&1 || die "wpa_supplicant did not start"
+    wpa_supplicant -B -i "$IFACE" -c "$WPACONF" >/dev/null 2>&1 9>&- || die "wpa_supplicant did not start"
     n=0; caps=
     while [ "$n" -lt 5 ]; do
         caps=$(wpa_cli -i "$IFACE" get_capability key_mgmt 2>/dev/null) && [ -n "$caps" ] && break
@@ -617,21 +723,17 @@ connect() {  # connect SSID [PASS]
         die "joined $(shown "$ssid") but got no address from it (no DHCP server?)"
     fi
 
-    lan=$(lan_net)
-    net=$(uplink_net)
-    [ -n "$lan" ] || die "this device's own LAN subnet could not be worked out: not sharing $IFACE with it"
-    # the configured subnet and, if br-lan is up already, the one it has (a changed lan.conf not applied yet)
-    live=$(ip -4 -o addr show dev br-lan 2>/dev/null | awk '$3 == "inet" {print $4; exit}')
-    if [ -n "$net" ] && { overlaps "$lan" "$net" || { [ -n "$live" ] && overlaps "$live" "$net"; }; }; then
-        die "$(shown "$ssid") uses $net, which overlaps this device's own LAN ($lan): not joined. Give the LAN another" \
-            "subnet (LAN_IP in /etc/mu300/lan.conf) or join another network."
-    fi
+    why=$(lan_check)
+    [ -z "$why" ] || die "$(shown "$ssid"): $why"
     share_uplink || die "could not set up sharing for $IFACE (nft)"
     save_network "$ssid" "$psk"
     rm -f "$SCANMODE" "$SCANRUN"
     : > "$ACTIVE"
     joining=0
     trap - EXIT INT TERM HUP
+    # from now on the supplicant's events keep the sharing in step with the link (event())
+    wpa_cli -i "$IFACE" -a "$SELF" -B -P "$EVENTS_PID" >/dev/null 2>&1 9>&- ||
+        say "the link is not watched (wpa_cli -a did not start): if it drops and comes back, run wifi-client reconnect"
     say "connected: $(shown "$ssid")  $addr"
     status
 }
@@ -697,20 +799,31 @@ case ${1:-status} in
     connect)
         shift; [ -n "${1:-}" ] || die "usage: wifi-client connect SSID [- | --password-file FILE | --open]"
         read_password "$@"
+        lock
         connect "$1" "$pw" ;;
+    valid-name)   # (mu300-toolkit) whether a typed name would be taken: the same check as connect's
+        valid_text 1 32 "${2:-}" ;;
+    shown-name)   # (mu300-toolkit) a name as it may be printed
+        say "$(shown "${2:-}")" ;;
+    "$IFACE")     # (wpa_cli -a) the supplicant's events
+        case ${2:-} in CONNECTED|DISCONNECTED) event "$2" ;; esac ;;
     up)
+        lock
         ssid=$(conf_get SSID)
         # not an error: the boot service runs this on every device, most of which have no saved network
         [ -n "$ssid" ] || { say "no saved network (wifi-client connect SSID)"; exit 0; }
         [ "$(conf_get ENABLE)" = 1 ] || { say "the saved network ($(shown "$ssid")) is not joined at boot since it was disconnected; \"wifi-client reconnect\" joins it again"; exit 0; }
         connect "$ssid" "$(conf_get PSK)" ;;
     reconnect)
+        lock
         ssid=$(conf_get SSID)
         [ -n "$ssid" ] || die "no saved network (wifi-client connect SSID)"
         set_enable 1
         connect "$ssid" "$(conf_get PSK)" ;;
     disconnect)
-        stop_client; rm -f "$SCANMODE" "$SCANRUN"; start_ap
+        lock
+        stop_client || exit 1
+        rm -f "$SCANMODE" "$SCANRUN"; start_ap
         if [ "${2:-}" = --keep ]; then
             say "disconnected (the saved network is still joined at the next boot)"
         else
@@ -718,7 +831,7 @@ case ${1:-status} in
             set_enable 0
             say "disconnected; the hotspot stays at the next boot too (\"wifi-client reconnect\" joins the saved network again)"
         fi ;;
-    forget) stop_client; rm -f "$CONF" "$SCANMODE" "$SCANRUN"; start_ap; say "the saved network was deleted" ;;
+    forget) lock; stop_client || exit 1; rm -f "$CONF" "$SCANMODE" "$SCANRUN"; start_ap; say "the saved network was deleted" ;;
     scan-mode)
         case ${2:-} in
             on) mkdir -p "$R/etc/mu300"; : > "$SCANMODE"

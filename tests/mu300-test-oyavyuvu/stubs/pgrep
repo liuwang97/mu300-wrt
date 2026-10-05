@@ -1,2 +1,0 @@
-#!/bin/sh
-case "$*" in *wpa_supplicant*) [ -e "$STUBLOG/supplicant" ] ;; *) exit 1 ;; esac

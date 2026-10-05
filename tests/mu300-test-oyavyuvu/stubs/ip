@@ -1,2 +1,0 @@
-#!/bin/sh
-echo "ip $*" >> "$STUBLOG/events"; exit 0

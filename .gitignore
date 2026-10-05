@@ -43,3 +43,5 @@ tools/ctlset/ctlset
 upstream/out-*/
 # the user's own list of files the self-update leaves alone (tools/self-update.sh, install.ps1)
 .mu300-keep
+# a test run with TMPDIR inside the tree
+tests/mu300-test-*/

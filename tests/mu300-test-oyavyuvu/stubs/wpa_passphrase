@@ -1,4 +1,0 @@
-#!/bin/sh
-echo "$(basename "$0") $*" >> "$STUBLOG/events"
-if [ $# -ge 2 ]; then p=$2; else echo "# reading passphrase from stdin"; IFS= read -r p; fi
-printf 'network={\n\tssid="%s"\n\t#psk="%s"\n\tpsk=abababababababababababababababababababababababababababababababab\n}\n' "$1" "$p"

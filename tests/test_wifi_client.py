@@ -100,10 +100,14 @@ class WifiClient(ShellTest):
         self.stub('iw', 'case "$*" in\n'
                         '  "dev wlan0 info") printf "\\ttype %s\\n" "$(cat "$STUBLOG/iftype" 2>/dev/null || echo managed)" ;;\n'
                         '  "dev wlan0 scan") cat "$STUBLOG/iwscan" ;;\n'
-                        '  "dev wlan0 link") printf "\\tsignal: -40 dBm\\n" ;;\n'
+                        '  "dev wlan0 link") if [ -e "$STUBLOG/supplicant" ] || [ -e "$STUBLOG/assoc" ]; then\n'
+                        '                      printf "Connected to 2e:16:9d:c0:49:d0 (on wlan0)\\n\\tsignal: -40 dBm\\n"\n'
+                        '                    else echo "Not connected."; fi ;;\n'
+                        '  "dev wlan0 disconnect") echo "iw $*" >> "$STUBLOG/events" ;;\n'
                         'esac')
         self.stub('pgrep', 'case "$*" in *wpa_supplicant*) [ -e "$STUBLOG/supplicant" ] ;; *) exit 1 ;; esac')
-        self.stub('pkill', log + '\ncase "$*" in *wpa_supplicant*) rm -f "$STUBLOG/supplicant" ;; esac\nexit 0')
+        # a supplicant that will not go ($STUBLOG/stuck) stays whatever it is sent
+        self.stub('pkill', log + '\ncase "$*" in *wpa_supplicant*) [ -e "$STUBLOG/stuck" ] || rm -f "$STUBLOG/supplicant" ;; esac\nexit 0')
         self.stub('wpa_supplicant', log + '\n: > "$STUBLOG/supplicant"')
         # status: COMPLETED once the configuration it was handed has a network in it, unless told otherwise
         self.stub('wpa_cli', 'case $3 in\n'
@@ -114,6 +118,8 @@ class WifiClient(ShellTest):
                              '  scan_results) cat "$STUBLOG/scan_results" ;;\n'
                              '  scan) echo OK ;;\n'
                              '  get_capability) [ "$4" = key_mgmt ] && cat "$STUBLOG/capa" ;;\n'
+                             '  terminate) echo "wpa_cli terminate" >> "$STUBLOG/events" ;;\n'
+                             '  -a) echo "wpa_cli -a $4 $5 $6 $7" >> "$STUBLOG/events" ;;\n'
                              '  reconfigure) echo "wpa_cli reconfigure" >> "$STUBLOG/events"\n'
                              '               cp "$MU300_SYSROOT/run/mu300-wifi-client.conf" "$STUBLOG/wpaconf.used"; echo OK ;;\n'
                              'esac')
@@ -144,7 +150,8 @@ class WifiClient(ShellTest):
         return self.script(shell, WIFI, *args, stdin=stdin, **e)
 
     def fresh(self):
-        for n in ('events', 'sleeps', 'polls', 'nftfail', 'mobile', 'subnet', 'supplicant', 'addr', 'never', 'wpaconf.used', 'iftype'):
+        for n in ('events', 'sleeps', 'polls', 'nftfail', 'mobile', 'subnet', 'supplicant', 'addr', 'never', 'wpaconf.used', 'iftype',
+                  'stuck', 'assoc'):
             (self.tmp / n).unlink(missing_ok=True)
         for p in (self.conf, self.wpaconf, self.root / 'run/mu300-wifi-client.active',
                   self.root / 'run/mu300-wifi-client-had-ap', self.root / 'etc/mu300/vpn.conf'):
@@ -457,8 +464,8 @@ class WifiClient(ShellTest):
                 out = [r for r in fwd if r.startswith('oifname "wlan0"')]
                 # the other network's private, link-local and CGNAT addresses: its other hosts and its router's
                 # admin page are not for LAN clients; the router is only their way out
-                self.assertIn('oifname "wlan0" ip daddr { 10.0.0.0/8, 100.64.0.0/10, 169.254.0.0/16, 172.16.0.0/12, '
-                              '192.168.0.0/16, 224.0.0.0/3 } counter drop', out)
+                self.assertIn('oifname "wlan0" ip daddr { %s } counter drop' % self.PRIVATE, out)
+                self.assertEqual(self.applied()[-1], self.expected(subnet or '192.168.2.0/24'))
                 self.assertIn(f'oifname "wlan0" ip daddr {subnet or "192.168.2.0/24"} counter drop', out)
                 self.assertIn('oifname "wlan0" meta nfproto ipv6 counter drop', out)
                 # every drop before the only other rule, the MSS clamp; nothing accepted towards wlan0
@@ -484,36 +491,48 @@ class WifiClient(ShellTest):
         self.assertTrue(rs, msg)
         self.assertEqual(rs[-1], self.REMOVED, msg)
 
-    def expected(self, subnet):
-        return '\n'.join(l for l in f"""table ip mu300_wifi_nat
-delete table ip mu300_wifi_nat
-table inet mu300_wifi_filter
-delete table inet mu300_wifi_filter
-table ip mu300_wifi_nat {{
-    chain postrouting {{
-        type nat hook postrouting priority srcnat; policy accept;
-        oifname "wlan0" masquerade
-    }}
-}}
-table inet mu300_wifi_filter {{
-    chain input {{
-        type filter hook input priority filter; policy accept;
-        iifname "wlan0" ct state established,related accept
-        iifname "wlan0" udp sport 67 udp dport 68 accept
-        iifname "wlan0" icmp type echo-request limit rate 5/second accept
-        iifname "wlan0" icmpv6 type {{ echo-request, nd-neighbor-solicit, nd-neighbor-advert, nd-router-advert }} accept
-        iifname "wlan0" counter drop
-    }}
-    chain forward {{
-        type filter hook forward priority filter; policy accept;
-        iifname "wlan0" ct state established,related accept
-        iifname "wlan0" counter drop
-        oifname "wlan0" ip daddr {{ 10.0.0.0/8, 100.64.0.0/10, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16, 224.0.0.0/3 }} counter drop
-        {f'oifname "wlan0" ip daddr {subnet} counter drop' if subnet else ''}
-        oifname "wlan0" meta nfproto ipv6 counter drop
-        oifname "wlan0" tcp flags syn tcp option maxseg size set rt mtu
-    }}
-}}""".splitlines() if l.strip())
+    PRIVATE = ('0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 169.254.0.0/16, 172.16.0.0/12, 192.0.0.0/24, 192.168.0.0/16, '
+               '198.18.0.0/15, 224.0.0.0/3')
+    INPUT = [
+        '    chain input {',
+        '        type filter hook input priority filter; policy accept;',
+        '        iifname "wlan0" ct state established,related accept',
+        '        iifname "wlan0" udp sport 67 udp dport 68 accept',
+        '        iifname "wlan0" icmp type echo-request limit rate 5/second accept',
+        '        iifname "wlan0" icmpv6 type { echo-request, nd-neighbor-solicit, nd-neighbor-advert, nd-router-advert } accept',
+        '        iifname "wlan0" counter drop',
+        '    }']
+    NATTABLE = [
+        'table ip mu300_wifi_nat {',
+        '    chain postrouting {',
+        '        type nat hook postrouting priority srcnat; policy accept;',
+        '        oifname "wlan0" masquerade',
+        '    }',
+        '}']
+
+    def expected(self, subnet, nat=True):
+        """the rules while shared, every line in order: NAT, input closed, forwarding to the internet only"""
+        return '\n'.join([self.REMOVED] + (self.NATTABLE if nat else []) + ['table inet mu300_wifi_filter {'] + self.INPUT + [
+            '    chain forward {',
+            '        type filter hook forward priority filter; policy accept;',
+            '        iifname "wlan0" ct state established,related accept',
+            '        iifname "wlan0" counter drop',
+            '        oifname "wlan0" ip daddr { %s } counter drop' % self.PRIVATE]
+            + (['        oifname "wlan0" ip daddr %s counter drop' % subnet] if subnet else []) + [
+            '        oifname "wlan0" meta nfproto ipv6 counter drop',
+            '        oifname "wlan0" tcp flags syn tcp option maxseg size set rt mtu',
+            '    }',
+            '}'])
+
+    def closed(self):
+        """the rules while wlan0 may be on the network but is not shared: input closed, nothing forwarded, no NAT"""
+        return '\n'.join([self.REMOVED, 'table inet mu300_wifi_filter {'] + self.INPUT + [
+            '    chain forward {',
+            '        type filter hook forward priority filter; policy accept;',
+            '        iifname "wlan0" counter drop',
+            '        oifname "wlan0" counter drop',
+            '    }',
+            '}'])
 
     def applied(self):
         return ['\n'.join(l for l in x.splitlines() if l.strip()) for x in self.rulesets()]
@@ -526,7 +545,7 @@ table inet mu300_wifi_filter {{
             ev = self.events()
             # stop_client first (nothing left from before), the rules without the subnet before the radio joins,
             # then with it once DHCP has answered; forwarding on only then
-            self.assertEqual(self.applied(), [self.REMOVED, self.expected(None), self.expected('192.168.2.0/24')])
+            self.assertEqual(self.applied(), [self.REMOVED, self.closed(), self.expected('192.168.2.0/24')])
             first = ev.index('  | table inet mu300_wifi_filter {')
             self.assertLess(first, ev.index('\nwpa_supplicant '))
             self.assertLess(ev.index('\nudhcpc '), ev.rindex('  | table inet mu300_wifi_filter {'))
@@ -763,9 +782,184 @@ table inet mu300_wifi_filter {{
                                  'uci add_list firewall.cfg0a.dest_ip=10.0.0.0/8'):
                         self.assertIn(want, ev)
                     self.assertLess(ev.index('uci commit firewall'), ev.index('firewall reload'))
-                # fw4 does the NAT and the forwarding there
-                self.assertNotIn('mu300_wifi_nat', ev)
+                # fw4 does the NAT and the forwarding there; the filter is the same as on Ubuntu (IPv6, the subnet)
+                self.assertNotIn('table ip mu300_wifi_nat {', ev)
                 self.assertNotIn('sysctl', ev)
+                self.assertEqual(self.applied(), [self.REMOVED, self.closed(), self.expected('192.168.2.0/24', nat=False)])
+                self.ev.unlink()
+                self.run_wc(shell, 'disconnect')
+                self.assertRemoved()
+
+    # ---- the link lost and back: the supplicant's events (wpa_cli -a) -----------------------------------------
+    def joined(self, shell):
+        self.fresh()
+        r = self.run_wc(shell, 'connect', 'KEDI 5G', '-', stdin='password1\n')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.ev.unlink()
+
+    def test_the_link_is_watched_once_joined(self):
+        for shell in self.each_shell():
+            self.fresh()
+            self.run_wc(shell, 'connect', 'KEDI 5G', '-', stdin='password1\n')
+            ev = self.events()
+            # wpa_cli calls this script back, by its full path, only once the join is complete and shared
+            self.assertIn(f'wpa_cli -a {WIFI} -B -P {self.root}/run/mu300-wifi-client.events.pid', ev)
+            self.assertLess(ev.rindex('  | table inet mu300_wifi_filter {'), ev.index('wpa_cli -a'))
+            # and it is the first thing to go when leaving: the supplicant's going is not a lost link to handle
+            self.ev.unlink()
+            self.run_wc(shell, 'disconnect')
+            ev = self.events()
+            self.assertLess(ev.index('pkill -f wpa_cli -i wlan0 -a'), ev.index('wpa_cli terminate'))
+
+    def test_a_lost_link_closes_the_sharing(self):
+        for shell in self.each_shell():
+            self.joined(shell)
+            r = self.run_wc(shell, 'wlan0', 'DISCONNECTED')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            # closed in one transaction (no NAT, nothing forwarded, input as before), then the lease and its route
+            # gone, forwarding off (mobile data is not sharing)
+            self.assertEqual(self.applied(), [self.closed()])
+            ev = self.events()
+            self.assertLess(ev.index('nft -f'), ev.index('ip route flush dev wlan0'))
+            self.assertFalse((self.tmp / 'addr').exists())
+            self.assertIn('sysctl -qw net.ipv4.ip_forward=0', ev)
+            self.assertTrue((self.root / 'run/mu300-wifi-client.active').exists())   # still the client's radio
+
+    def test_a_link_back_is_checked_and_shared_again(self):
+        for shell in self.each_shell():
+            # the same network, another subnet now (another access point of it, a router that was reset)
+            self.joined(shell)
+            self.run_wc(shell, 'wlan0', 'DISCONNECTED')
+            self.ev.unlink()
+            (self.tmp / 'subnet').write_text('203.0.113.0/24')
+            r = self.run_wc(shell, 'wlan0', 'CONNECTED')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            ev = self.events()
+            # closed while DHCP runs, shared with the new subnet only after it answered, forwarding on only then
+            self.assertEqual(self.applied(), [self.closed(), self.expected('203.0.113.0/24')])
+            self.assertLess(ev.index('udhcpc '), ev.rindex('nft -f'))
+            self.assertLess(ev.rindex('nft -f'), ev.index('ip_forward=1'))
+            # a network that now overlaps the LAN: not shared, no address kept
+            self.ev.unlink()
+            (self.tmp / 'subnet').write_text('192.168.79.0/24')
+            r = self.run_wc(shell, 'wlan0', 'CONNECTED')
+            self.assertEqual(r.returncode, 1)
+            self.assertEqual(self.applied(), [self.closed()])
+            self.assertFalse((self.tmp / 'addr').exists())
+            self.assertNotIn('ip_forward=1', self.events())
+            # no address at all: the same
+            self.ev.unlink()
+            (self.tmp / 'subnet').unlink()
+            self.stub('udhcpc', 'echo "udhcpc $*" >> "$STUBLOG/events"')
+            r = self.run_wc(shell, 'wlan0', 'CONNECTED')
+            self.assertEqual(r.returncode, 1)
+            self.assertEqual(self.applied(), [self.closed()])
+            self.stub('udhcpc', 'echo "udhcpc $*" >> "$STUBLOG/events"\n: > "$STUBLOG/addr"')
+
+    def test_events_after_leaving_change_nothing(self):
+        # an event handler that was already on its way when the client left: no rules come back
+        for shell in self.each_shell():
+            self.joined(shell)
+            self.run_wc(shell, 'disconnect')
+            self.ev.unlink()
+            for e in ('CONNECTED', 'DISCONNECTED', 'TERMINATING'):
+                self.assertEqual(self.run_wc(shell, 'wlan0', e).returncode, 0)
+            self.assertEqual(self.events(), '')
+
+    def test_a_supplicant_that_will_not_go_keeps_the_rules(self):
+        # the supplicant stays whatever it is sent, or it goes and the radio stays associated all the same
+        for cmd, how in ((['disconnect'], 'stuck'), (['forget'], 'stuck'), (['connect', 'cafe', '--open'], 'stuck'),
+                         (['disconnect'], 'assoc'), (['connect', 'cafe', '--open'], 'assoc')):
+            for shell in self.each_shell():
+                self.joined(shell)
+                (self.tmp / how).touch()
+                r = self.run_wc(shell, *cmd)
+                self.assertEqual(r.returncode, 1, (cmd, r.stdout))
+                self.assertIn('still on the network', r.stderr)
+                ev = self.events()
+                # asked to go, then killed, then the radio told to leave: none of it worked, so the rules stay,
+                # closed (not removed), and nothing else is started on the radio
+                self.assertIn('wpa_cli terminate', ev)
+                if how == 'stuck':
+                    self.assertIn('pkill -9 -f wpa_supplicant -B -i wlan0', ev)
+                else:
+                    self.assertIn('iw dev wlan0 disconnect', ev)
+                self.assertEqual(self.applied(), [self.closed()], cmd)
+                self.assertNotIn('systemctl start mu300-hotspot', ev)
+                self.assertNotIn('\nwpa_supplicant ', ev)
+
+    def test_the_rules_go_only_once_the_radio_has_left(self):
+        for shell in self.each_shell():
+            self.joined(shell)
+            self.run_wc(shell, 'disconnect')
+            ev = self.events()
+            self.assertLess(ev.index('wpa_cli terminate'), ev.index('pkill -f wpa_supplicant'))
+            self.assertLess(ev.index('pkill -f wpa_supplicant'), ev.index('ip route flush dev wlan0'))
+            self.assertLess(ev.index('ip route flush dev wlan0'), ev.index('  | delete table inet mu300_wifi_filter'))
+            self.assertRemoved()
+
+    # ---- the VPN: its kill switch is never bypassed ----------------------------------------------------------
+    def test_the_vpn_kill_switch_comes_first_and_is_never_overridden(self):
+        vpn = (BIN / 'mu300-vpn').read_text()
+        # the kill switch's forward chain runs before these (filter - 5 against filter): its drop is final
+        self.assertRegex(vpn, r'chain forward \{\s*type filter hook forward priority filter - 5; policy accept;'
+                              r'\s*oifname "sipa_eth\*" counter drop\s*oifname "\$WIFI_IF" counter drop')
+        for shell in self.each_shell():
+            self.fresh()
+            (self.root / 'etc/mu300/vpn.conf').write_text('ENABLE=1\nKILL_SWITCH=1\n')
+            r = self.run_wc(shell, 'connect', 'KEDI 5G', '-', stdin='password1\n')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            ev = self.events()
+            self.assertLess(ev.index('vpn guard'), ev.index('\nwpa_supplicant '))
+            for rs in self.applied():
+                # no chain of these before the kill switch, none that drops by policy, nothing new let through
+                # towards wlan0, and the VPN's own tables and routing never touched
+                self.assertNotIn('priority filter -', rs)
+                self.assertNotRegex(rs, r'priority -?\d')
+                self.assertNotIn('policy drop', rs)
+                self.assertFalse([l for l in rs.splitlines() if 'oifname "wlan0"' in l and l.strip().endswith('accept')])
+                self.assertNotIn('mu300_vpn', rs)
+            self.assertNotIn('ip rule', ev)
+
+    # ---- one validator, and every name printed as text ---------------------------------------------------------
+    def test_the_toolkit_asks_wifi_client(self):
+        for shell in self.each_shell():
+            self.fresh()
+            for name in self.HOSTILE_SSIDS:
+                self.assertEqual(self.run_wc(shell, 'valid-name', name).returncode, 1, repr(name))
+            for name in ('KEDI 5G', 'Kafe Ç', 'x' * 32, 'é' * 16, 'a\\b'):
+                self.assertEqual(self.run_wc(shell, 'valid-name', name).returncode, 0, repr(name))
+            r = self.run_wc(shell, 'shown-name', 'x‮Y​Z\\x1b')
+            self.assertEqual(r.stdout, 'x\\xe2\\x80\\xaeY\\xe2\\x80\\x8bZ\\x5cx1b\n')
+        toolkit = (BIN / 'mu300-toolkit').read_text()
+        self.assertIn('wifi-client valid-name "$ssid"', toolkit)
+        self.assertIn('wifi-client shown-name "$ssid"', toolkit)
+        # the exit status is wifi-client's (3: saved, reboot to join), not that of the sed after it
+        self.assertIn('echo "$?" >&3', toolkit)
+
+    def test_the_toolkit_reports_wifi_clients_exit_status(self):
+        # the toolkit's own pipeline, with a stand-in for wifi-client that says 3
+        body = re.search(r"\{ rc=\$\(.*?\} 4>&1", (BIN / 'mu300-toolkit').read_text(), re.S).group(0)
+        body = body.replace('/opt/mu300/bin/wifi-client', 'fake')
+        for shell in self.each_shell():
+            script = self.tmp / 'rc.sh'
+            script.write_text('fake() { cat >/dev/null; echo "saved"; return 3; }\npass=x; ssid=y\n' + body +
+                              '\necho "rc=$rc"\n')
+            r = self.script(shell, script)
+            self.assertEqual(r.stdout, '  saved\nrc=3\n', r.stderr)
+
+    def test_scan_failure_shown_as_text(self):
+        for shell in self.each_shell():
+            self.fresh()
+            self.stub('iw', 'case "$*" in\n'
+                            '  "dev wlan0 info") printf "\\ttype managed\\n" ;;\n'
+                            '  "dev wlan0 scan") printf "busy \\033]0;x\\007\\n" ;;\n'
+                            'esac')
+            r = self.run_wc(shell, 'scan')
+            self.assertEqual(r.returncode, 1)
+            self.assertIn('busy \\x1b]0;x\\x07', r.stderr)
+            self.assertHostileFree(r.stderr)
+        self.setUp()
 
     # ---- D5: disconnect means no client at the next boot either ----------------------------------------------
     def test_disconnect_turns_off_the_boot_join(self):

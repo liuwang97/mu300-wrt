@@ -1,6 +1,0 @@
-#!/bin/sh
-case "$1" in
-  -f) [ -e "$STUBLOG/nftfail" ] && exit 1; { echo "nft -f"; sed "s/^/  | /"; } >> "$STUBLOG/events" ;;
-  list) [ -e "$STUBLOG/mobile" ] ;;
-  *) echo "nft $*" >> "$STUBLOG/events" ;;
-esac
