@@ -101,7 +101,7 @@ esac
         block = re.search(r'# --- usb-net begin\n(.*?)# --- usb-net end', INIT, re.S).group(1)
         root = self.net_file.parents[2]
         for shell in self.each_shell():
-            for mode, functions in (('ncm', 'ncm ecm'), ('ecm', 'ecm ncm'), ('rndis', 'rndis')):
+            for mode, functions in (('ncm', 'ncm ecm'), ('ecm', 'ecm ncm'), ('rndis', 'rndis ncm ecm')):
                 self.reset()
                 self.call_usb(shell, 'set-net', mode, 'permanent', '1')
                 out = self.sh(shell, block + f'\nusb_net_policy "{root}"').stdout

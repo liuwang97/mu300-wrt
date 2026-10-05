@@ -91,7 +91,8 @@ NCM/ECM/RNDIS selection is stored in `/etc/mu300/usb-net` (one line: `ncm`,
 reads that file from the system it has chosen to boot, after picking the root;
 when it asks for other functions than the gadget was bound with, init rebinds
 the gadget once before `switch_root` (`MU300_USBNET` on the kernel command line
-still wins). Other OpenWrt builds can implement the same one-line contract at
+still wins). RNDIS falls back to NCM, then ECM, on a kernel that cannot make
+it, so a saved choice never leaves the system without USB networking. Other OpenWrt builds can implement the same one-line contract at
 their own gadget setup point. The plugin itself owns the policy and UI, not the
 kernel or gadget. `once` is consumed after a successful boot only if init left
 `/run/mu300/usb-net-applied` (the selection was in effect for that boot);

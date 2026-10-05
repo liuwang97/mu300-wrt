@@ -232,8 +232,9 @@ class GadgetHarness(ShellTest):
         assert m, f'boot/init has no {name} block'
         return m.group(1)
 
-    def build(self, shell, usbnet, then=''):
-        """setup_usb_gadget with MU300_USBNET=USBNET (None: unset), then the shell code THEN."""
+    def build(self, shell, usbnet, then='', no_rndis=False):
+        """setup_usb_gadget with MU300_USBNET=USBNET (None: unset), then the shell code THEN; NO_RNDIS: a kernel
+        without f_rndis, whose configfs refuses to make rndis.rn0."""
         body = self.block('usb-gadget') + self.block('usb-net')
         for path, repl in (('/config/usb_gadget', f'{self.tmp}/cfg/usb_gadget'), ('/sys/class/udc', f'{self.tmp}/udc'),
                            ('/sys/class/net/', f'{self.tmp}/net/'), ('/run/', f'{self.tmp}/run/')):
@@ -245,11 +246,12 @@ class GadgetHarness(ShellTest):
                 'udhcpd() { echo "udhcpd $*" >> "$T/log"; }; kill() { echo "kill $*" >> "$T/log"; }\n'
                 'killall() { echo "killall $*" >> "$T/log"; }\n'
                 # configfs makes these itself when their parent is made, and takes them away with it
-                'mkdir() { command mkdir "$@" || return; for d; do case $d in */functions/rndis.rn0) command mkdir -p "$d/os_desc/interface.rndis" ;; esac; done; }\n'
+                'mkdir() { for d; do case $d in */functions/rndis.rn0) [ -z "$NO_RNDIS" ] || return 1 ;; esac; done\n'
+                '    command mkdir "$@" || return; for d; do case $d in */functions/rndis.rn0) command mkdir -p "$d/os_desc/interface.rndis" ;; esac; done; }\n'
                 'rmdir() { for d; do case $d in */functions/*) command rm -rf "$d" ;; *) command rmdir "$d" ;; esac; done; }\n'
                 'mkdir -p "%s/cfg/usb_gadget/linux/os_desc"\n' % self.tmp +
                 'ifconfig() { echo "ifconfig $*" >> "$T/log"; }; ip() { echo "ip $*" >> "$T/log"; }\n'
-                f'MAC=02:00:00:00:00 NET=192.168.77 T={self.tmp}\n' + (f'MU300_USBNET="{usbnet}"\n' if usbnet is not None else '')
+                f'MAC=02:00:00:00:00 NET=192.168.77 T={self.tmp} NO_RNDIS={"1" if no_rndis else ""}\n' + (f'MU300_USBNET="{usbnet}"\n' if usbnet is not None else '')
                 + body + '\nsetup_usb_gadget\n' + then)
         r = self.sh(shell, code)
         self.assertEqual(0, r.returncode, r.stderr)
@@ -314,7 +316,8 @@ class UsbNetPolicy(ShellTest):
 
     def test_each_value(self):
         for shell in self.each_shell():
-            for value, functions in (('ncm', 'ncm ecm'), ('ecm', 'ecm ncm'), ('rndis', 'rndis'), ('ecm\n', 'ecm ncm')):
+            for value, functions in (('ncm', 'ncm ecm'), ('ecm', 'ecm ncm'), ('rndis', 'rndis ncm ecm'),
+                                     ('ecm\n', 'ecm ncm')):
                 self.assertEqual(f'{functions}\nrc=0\n', self.policy(shell, value), value)
 
     def test_garbage_and_missing_say_nothing(self):
@@ -333,13 +336,13 @@ class UsbNetRebind(GadgetHarness):
     """apply_usb_net ROOTDIR after pick_root: the gadget built at boot, rebuilt once when the system asks for other
     functions (D12, K7), and the applied marker (K8)."""
 
-    def apply(self, shell, value, usbnet=None):
+    def apply(self, shell, value, usbnet=None, no_rndis=False):
         (self.tmp / 'udc' / '25100000.dwc3').mkdir(parents=True, exist_ok=True)
         f = self.tmp / 'root' / 'etc' / 'mu300' / 'usb-net'
         f.parent.mkdir(parents=True, exist_ok=True)
         if value is not None:
             f.write_text(value + '\n')
-        return self.build(shell, usbnet, f'apply_usb_net "{self.tmp}/root"')
+        return self.build(shell, usbnet, f'apply_usb_net "{self.tmp}/root"', no_rndis=no_rndis)
 
     def binds(self):
         return (self.tmp / 'log').read_text().count('stage=usb-bind-start')
@@ -360,6 +363,20 @@ class UsbNetRebind(GadgetHarness):
             self.assertEqual('25100000.dwc3', (g / 'UDC').read_text().strip())
             self.assertIn('ifconfig rndis0 up', (self.tmp / 'log').read_text())
             self.assertEqual('rndis', self.marker())
+            self.tearDown(); self.setUp()
+
+    def test_rndis_on_a_kernel_without_it_falls_back_to_ncm(self):
+        # the panel saved rndis, permanently: a kernel without f_rndis must still get a network function, every boot
+        for shell in self.each_shell():
+            g = self.apply(shell, 'rndis', no_rndis=True)
+            self.assertEqual({'f1': 'ncm.usb0', 'f2': 'acm.GS0'}, self.links(g, 'c.1'))
+            self.assertEqual(['acm.GS0', 'ncm.usb0'], sorted(p.name for p in (g / 'functions').iterdir()))
+            self.assertEqual('0x0301', (g / 'bcdDevice').read_text().strip())
+            self.assertFalse((g / 'os_desc' / 'use').exists())
+            self.assertEqual('25100000.dwc3', (g / 'UDC').read_text().strip())
+            self.assertNotIn('usb-no-net-function', (self.tmp / 'log').read_text())
+            self.assertIn('ifconfig usb0', (self.tmp / 'log').read_text())
+            self.assertEqual('ncm', self.marker())   # what was made, not what was asked for
             self.tearDown(); self.setUp()
 
     def test_ecm_rebuilds_with_ecm(self):

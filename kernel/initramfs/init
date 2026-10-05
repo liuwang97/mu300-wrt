@@ -186,7 +186,7 @@ setup_usb_gadget() {  # setup_usb_gadget [FUNCTIONS]: FUNCTIONS, else MU300_USBN
     # configuration, and rndis.sys is bound to it through the MS OS descriptors below. Windows does not make its
     # composite parent for a device with several configurations: the earlier RNDIS + NCM arrangement bound the
     # whole device to usbser and showed no network adapter. macOS has no RNDIS driver, which is why RNDIS is not
-    # the default; when RNDIS is asked for, no other network function is made. (Ported from the kanoqwq fork, K6.)
+    # the default; when RNDIS is made, no other network function is. (Ported from the kanoqwq fork, K6.)
     rndis= netfunc=
     for f in $usbnet_bound; do
         case $f in
@@ -383,7 +383,9 @@ usb_net_policy() {  # usb_net_policy ROOTDIR: the functions ROOTDIR asks for, or
     case $(cat "$1/etc/mu300/usb-net" 2>/dev/null) in
         ncm) echo 'ncm ecm' ;;
         ecm) echo 'ecm ncm' ;;
-        rndis) echo rndis ;;
+        # NCM, then ECM, only when this kernel cannot make RNDIS (setup_usb_gadget lets RNDIS win): a saved choice
+        # must never leave a system with no USB network function at all, boot after boot
+        rndis) echo 'rndis ncm ecm' ;;
     esac
 }
 apply_usb_net() {  # apply_usb_net ROOTDIR: rebind once if ROOTDIR asks for other functions than were bound
@@ -396,8 +398,10 @@ apply_usb_net() {  # apply_usb_net ROOTDIR: rebind once if ROOTDIR asks for othe
         teardown_usb_gadget
         setup_usb_gadget "$usbnet_want"
     fi
-    # the choice is in effect: the system's device-usb consumes a one-boot choice when it finds this (K8)
-    mkdir -p /run/mu300 && echo "${usbnet_want%% *}" > /run/mu300/usb-net-applied
+    # the choice is in effect: the system's device-usb consumes a one-boot choice when it finds this (K8). It names
+    # the function made, which is NCM or ECM when this kernel has no RNDIS.
+    if [ -n "$rndis" ]; then usbnet_made=rndis; else usbnet_made=${netfunc:-none}; fi
+    mkdir -p /run/mu300 && echo "$usbnet_made" > /run/mu300/usb-net-applied
 }
 # --- usb-net end
 # --- pick-root begin
