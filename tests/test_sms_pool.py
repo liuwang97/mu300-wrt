@@ -498,6 +498,24 @@ class Daemon(ShellTest):
                 first.communicate(timeout=10)
             self.assertFalse(self.lock.exists(), 'the lock outlived its daemon')
 
+    def test_a_new_message_syncs_without_cksum(self):
+        # OpenWrt's busybox has md5sum but no cksum: a +CMTI still starts a sync, and nothing says "not found"
+        self.stub('cksum', 'echo "cksum: not found" >&2; exit 127')
+        for shell in self.each_shell():
+            (self.tmp / 'sms.log').unlink(missing_ok=True)
+            (self.atdir / 'urc' / 'stty_nr0.log').unlink(missing_ok=True)
+            d = self.start(shell)
+            try:
+                self.wait_for(lambda: self.syncs() == ['sync'], 'no first sync')
+                time.sleep(1.5)   # a look or two at the URC logs before the message
+                with open(self.atdir / 'urc' / 'stty_nr0.log', 'a') as f:
+                    f.write('+CMTI: "SM",4\n')
+                self.wait_for(lambda: self.syncs() == ['sync', 'sync'], 'no sync after +CMTI', timeout=15)
+            finally:
+                d.send_signal(signal.SIGTERM)
+                out, err = d.communicate(timeout=10)
+            self.assertNotIn('not found', err + out)
+
     def test_a_dead_holder_is_taken_over(self):
         for shell in self.each_shell():
             self.lock.mkdir()

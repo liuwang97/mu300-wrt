@@ -62,8 +62,9 @@ done
 mu300-at -t 4 'AT+CNMI=2,1,0,0,0' >/dev/null 2>&1 || true
 "$SMS" sync || echo "mu300-smsd: the first sync failed, retrying later" >&2
 
+# md5sum first: OpenWrt's busybox has no cksum
 signature() {
-    cat "$URCDIR"/*nr*.log 2>/dev/null | grep -aF '+CMTI' | cksum
+    cat "$URCDIR"/*nr*.log 2>/dev/null | grep -aF '+CMTI' | { md5sum 2>/dev/null || cksum; }
 }
 
 last=$(signature)
