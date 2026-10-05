@@ -49,7 +49,7 @@ LIB=${0%/*}/../../share/unisoc-modem/lib.sh
 umask 077
 
 MODE=${1:-full}
-DIR=${MU300_DASH_DIR:-/tmp/unisoc-modem}
+DIR=${MU300_DASH_DIR:-$RUN_DIR}
 CELL=$DIR/cell.json
 SIGF=$DIR/sig.json
 STATE_DIR=$(safe_state_dir "$(uci_get state_dir)" '')
@@ -59,7 +59,8 @@ IDENT=$IDENT_DIR/sim.json
 AT=${MU300_AT:-/usr/libexec/unisoc-modem/at}
 IDENT_MAXAGE=21600   # seconds; a SIM change goes through a reboot, 6 h is plenty
 
-private_dir "$DIR"
+# a runtime directory someone else made is refused (lib.sh): write nothing
+private_dir "$DIR" || exit 1
 mkdir -p "$IDENT_DIR" 2>/dev/null
 
 # nr3/nr4/nr5 belong to SIM slot 1 and return the wrong state for slot 0.

@@ -42,7 +42,7 @@ AT=${MU300_AT:-/usr/libexec/unisoc-modem/at}
 # /etc/mu300 and an interface name, else the defaults
 STATE_DIR=$(safe_state_dir "$(uci_get state_dir)" /etc/unisoc-modem/lock-state.d)
 DATA_IFACE=$(safe_iface "$(uci_get data_interface)" wan)
-RUNDIR=${MU300_DASH_DIR:-/tmp/unisoc-modem}
+RUNDIR=${MU300_DASH_DIR:-$RUN_DIR}
 APPLY_DIR=${UNISOC_APPLY_DIR:-/run/unisoc-modem-lock-apply}
 REPLAY_MARKER=${UNISOC_REPLAY_MARKER:-/run/unisoc-modem-lock-replay-done}
 LOG=$RUNDIR/lock.log
@@ -50,8 +50,9 @@ LOG=$RUNDIR/lock.log
 # AT round trips (about a second each on this firmware), so normal reads are
 # served from this cache and refreshed in the background. "get fresh" re-reads.
 LOCKCACHE=$RUNDIR/lock.json
+# a runtime directory someone else made is refused (lib.sh): apply and log nothing
+private_dir "$RUNDIR" || exit 1
 mkdir -p "$STATE_DIR" 2>/dev/null
-private_dir "$RUNDIR"
 
 at() { "$AT" -t "${2:-6}" "$1" 2>/dev/null | tr -d '\r'; }
 # Never WRITE bands the module does not support - the n79 lock (from the old

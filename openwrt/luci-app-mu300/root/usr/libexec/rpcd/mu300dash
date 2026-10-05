@@ -45,9 +45,11 @@ SMS=${MU300_SMS_BIN:-$(safe_program "$(uci_get sms_command)" /opt/mu300/bin/mu30
 [ -n "$SMS" ] || SMS=$(command -v mu300-sms 2>/dev/null || true)
 AT=${MU300_AT:-/usr/libexec/unisoc-modem/at}
 # the runtime directory holds the AT history and the method log (SMS text
-# included): root only
-DIR=${MU300_DASH_DIR:-/tmp/unisoc-modem}
-private_dir "$DIR"
+# included): root only. A directory someone else made is refused (lib.sh):
+# every call then answers one fixed error and runs nothing.
+DIR=${MU300_DASH_DIR:-$RUN_DIR}
+DIR_OK=1
+private_dir "$DIR" || DIR_OK=0
 CELL=$DIR/cell.json
 SIGF=$DIR/sig.json
 COLLECT_LCK=$DIR/collect.lck
@@ -247,7 +249,6 @@ m_at() {
         return
         ;;
     esac
-    mkdir -p "$DIR" 2>/dev/null
     printf '%s %s\n' "$(date '+%m-%d %H:%M:%S')" "$cmd" >> "$HIST"
     tail -n 40 "$HIST" > "$HIST.t" 2>/dev/null && mv "$HIST.t" "$HIST"
     printf '{"ok":1,"cmd":%s,"reply":%s}\n' "$(json_str "$cmd")" "$(json_str "$reply")"
@@ -493,6 +494,10 @@ call)
     INPUT=$(cat 2>/dev/null)
     if input_too_large; then
         refuse 'Request too large'
+        exit 0
+    fi
+    if [ "$DIR_OK" != 1 ]; then
+        refuse 'The runtime directory is not safe; nothing was run'
         exit 0
     fi
     case ${2:-} in

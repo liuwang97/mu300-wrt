@@ -1008,6 +1008,9 @@ msgstr "接口名称无效"
 msgid "Request too large"
 msgstr "请求过大"
 
+msgid "The runtime directory is not safe; nothing was run"
+msgstr "运行目录不安全；未执行任何操作"
+
 msgid "No such method"
 msgstr "没有此方法"
 

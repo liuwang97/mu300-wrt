@@ -88,6 +88,29 @@ safe_program() {
 }
 
 # ------------------------------------------------------------------- files
-# private_dir DIR: create DIR readable by root only (it holds SMS text, the
-# AT history and the method log)
-private_dir() { mkdir -p "$1" 2>/dev/null; chmod 700 "$1" 2>/dev/null; }
+# RUN_DIR: the package runtime directory (SMS text, the AT history, the method
+# log). Its parent is root's (/var/run is /tmp/run, 0755 root), so no other
+# user can make it first, as anyone could under /tmp.
+RUN_DIR=/var/run/unisoc-modem
+# private_dir DIR: create DIR readable by its owner only (root on the device);
+# or fail (status 1, the reason on stderr) when DIR is a symlink, not a
+# directory, not owned by the user running this, or writable by group or
+# others: such a directory was made by someone else, who may have planted
+# symlinks in it that root would then write through. Callers stop on failure.
+private_dir() {
+    (umask 077; mkdir -p "$1") 2>/dev/null
+    if [ -L "$1" ] || [ ! -d "$1" ] || [ ! -O "$1" ]; then
+        echo "unisoc-modem: refusing the runtime directory $1: a symlink, not a directory, or not ours" >&2
+        return 1
+    fi
+    case $(ls -ld "$1" 2>/dev/null) in
+        d????w*|d???????w*)
+            echo "unisoc-modem: refusing the runtime directory $1: writable by group or others" >&2
+            return 1 ;;
+        d*) ;;
+        *)
+            echo "unisoc-modem: refusing the runtime directory $1: its mode cannot be read" >&2
+            return 1 ;;
+    esac
+    chmod 700 "$1"
+}

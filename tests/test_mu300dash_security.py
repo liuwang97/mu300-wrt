@@ -9,6 +9,8 @@ an OpenWrt tool not found on the test machine: a stand-in in Python behaves as i
 raw control characters inside strings accepted), except that a NUL inside a string is printed instead of ending it,
 which is the harder case for the backend."""
 import json
+import os
+import shutil
 import subprocess
 import sys
 import time
@@ -751,6 +753,98 @@ esac""")
             info = json.loads(r.stdout)
             self.assertEqual(info['host'], 'h"o\\st\x01')
             self.assertEqual(info['wifi']['ssid'], 'my "wifi" \\ net')
+
+
+class RuntimeDir(Mu300Dash):
+    """The runtime directory (SMS text, AT history, method log) is under a root-owned parent, and a directory someone
+    else made first - a symlink, another owner's, group- or world-writable - is refused, never written through."""
+
+    def private_dir(self, shell, path):
+        return self.sh(shell, f'. "{LIB}"; private_dir "$D"; echo "rc=$?"', D=path)
+
+    def test_the_default_is_under_var_run_not_tmp(self):
+        for path in (DASH, ADAPTERS / 'cell', ADAPTERS / 'lock'):
+            text = path.read_text()
+            self.assertTrue('${MU300_DASH_DIR:-$RUN_DIR}' in text, path.name)
+            self.assertFalse('/tmp/unisoc-modem' in text, path.name)
+        self.assertIn('RUN_DIR=/var/run/unisoc-modem', LIB.read_text())
+        listed = subprocess.run(['git', 'grep', '-l', '/tmp/unisoc-modem', '--', 'openwrt', 'rootfs', 'README.md',
+                                 'docs/BUILD.md'], cwd=TOP, capture_output=True, text=True).stdout
+        self.assertEqual(listed, '')
+
+    def test_a_new_or_own_directory_becomes_owner_only(self):
+        for shell in self.each_shell():
+            new = self.tmp / f'new{self.n}'
+            own = self.tmp / f'own{self.n}'
+            self.n += 1
+            own.mkdir(mode=0o755)
+            for d in (new, own):
+                r = self.private_dir(shell, d)
+                self.assertEqual(r.stdout.strip(), 'rc=0', r.stderr)
+                self.assertEqual(d.stat().st_mode & 0o777, 0o700)
+
+    def test_hostile_directories_are_refused(self):
+        target = self.tmp / 'target'
+        for shell in self.each_shell():
+            target.mkdir(mode=0o755, exist_ok=True)
+            target.chmod(0o755)
+            link = self.tmp / f'link{self.n}'
+            link.symlink_to(target)
+            plain = self.tmp / f'file{self.n}'
+            plain.write_text('')
+            loose = {}
+            for mode in (0o777, 0o770, 0o1777, 0o702):
+                d = self.tmp / f'loose{self.n}-{mode:o}'
+                d.mkdir()
+                d.chmod(mode)
+                loose[d] = mode
+            self.n += 1
+            for d in [link, plain] + list(loose):
+                with self.subTest(path=d.name):
+                    r = self.private_dir(shell, d)
+                    self.assertEqual(r.stdout.strip(), 'rc=1')
+                    self.assertIn('refusing the runtime directory', r.stderr)
+            self.assertEqual(target.stat().st_mode & 0o777, 0o755)   # no chmod through the symlink
+            for d, mode in loose.items():
+                self.assertEqual(d.stat().st_mode & 0o7777, mode)
+
+    @unittest.skipUnless(hasattr(os, 'geteuid') and os.geteuid() == 0, 'needs root to make a directory another '
+                         'user owns (the busybox docker run is root)')
+    def test_another_users_directory_is_refused(self):
+        for shell in self.each_shell():
+            d = self.tmp / f'other{self.n}'
+            self.n += 1
+            d.mkdir(mode=0o700)
+            os.chown(d, 65534, 65534)
+            r = self.private_dir(shell, d)
+            self.assertEqual(r.stdout.strip(), 'rc=1')
+            self.assertIn('not ours', r.stderr)
+
+    def test_the_backend_and_adapters_write_nothing_through_a_planted_symlink(self):
+        victim = self.tmp / 'victim'
+        link = None
+        for shell in self.each_shell():
+            if victim.exists():
+                shutil.rmtree(victim)
+            victim.mkdir(mode=0o755)
+            link = self.tmp / f'planted{self.n}'
+            self.n += 1
+            link.symlink_to(victim)
+            r, recs, _ = self.call(shell, 'at', {'cmd': 'ATI'}, MU300_DASH_DIR=link)
+            self.assertEqual(self.reply(r), {'ok': 0, 'error': 'The runtime directory is not safe; nothing was run'})
+            self.assertEqual(recs, [])
+            for name, args in (('cell', ()), ('lock', ('get',))):
+                r = self.script(shell, ADAPTERS / name, *args, MU300_AT=self.adapters / 'at', MU300_DASH_DIR=link,
+                                STUB_CALLS=self.tmp, STUB_OUT=self.out, MU300_DASH_POOL_DIR=self.tmp / 'pool',
+                                MU300_DASH_IDENT_DIR=self.tmp / 'ident', UNISOC_APPLY_DIR=self.tmp / 'apply')
+                self.assertNotEqual(r.returncode, 0, name)
+                self.assertIn('refusing the runtime directory', r.stderr)
+            self.assertEqual(list(victim.iterdir()), [])
+            self.assertEqual(victim.stat().st_mode & 0o777, 0o755)
+        # the method list still answers: rpcd needs it to register the object
+        r = subprocess.run(self.shells[0] + [str(DASH), 'list'], capture_output=True, text=True, timeout=60,
+                           env=self.env(MU300_DASH_DIR=link))
+        self.assertIn('"status"', r.stdout)
 
 
 if __name__ == '__main__':
