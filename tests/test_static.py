@@ -260,6 +260,20 @@ class Rules(unittest.TestCase):
         # and that its init works with Linux on either slot (mu300-update refuses one without it on slot a)
         self.assertIn('    tar -xzOf "$D/$a.tar.gz" ./features 2>/dev/null | grep -qx linux-slot', mr)
 
+    def test_proc_reads_are_braced(self):
+        # `tr < /proc/$pid/cmdline 2>/dev/null` reports a failed redirection (the process just went) before its own
+        # 2>/dev/null applies, so "can't open /proc/..." reaches the log: the read is braced, `{ tr < ...; } 2>/dev/null`
+        files = [p for p, _ in shell_scripts()]
+        files += [p for p in (TOP / 'openwrt' / 'luci-app-mu300' / 'root').rglob('*')
+                  if p.is_file() and shebang(p).endswith('sh')]
+        bad = re.compile(r'<\s*"?/proc/\$[^\s;|]*\s+2>\s*/dev/null')
+        found = []
+        for p in sorted(set(files)):
+            for n, line in enumerate(p.read_text(errors='replace').splitlines(), 1):
+                if bad.search(line):
+                    found.append(f'{p.relative_to(TOP)}:{n}')
+        self.assertEqual(found, [])
+
     def test_quiet_console_sysctl_on_both_systems(self):
         # K24: both images carry the same drop-in (systemd-sysctl on Ubuntu, procd's /etc/init.d/sysctl on OpenWrt)
         a = (TOP / 'rootfs' / 'overlay' / 'etc' / 'sysctl.d' / '99-mu300-console.conf').read_text()

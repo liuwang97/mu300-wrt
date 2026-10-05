@@ -121,12 +121,12 @@ at_client_busy() { printf '%s\n' "$1" | grep -qxE '(mu300|unisoc)-at: busy'; }
 collecting() {
     _p=$(cat "$COLLECT_LCK/pid" 2>/dev/null)
     [ -n "$_p" ] && [ -d "/proc/$_p" ] &&
-        tr '\0' ' ' < "/proc/$_p/cmdline" 2>/dev/null | grep -q '/unisoc-modem/cell'
+        { tr '\0' ' ' < "/proc/$_p/cmdline"; } 2>/dev/null | grep -q '/unisoc-modem/cell'
 }
 fast_busy() {
     _p=$(cat "$FAST_LCK/pid" 2>/dev/null)
     [ -n "$_p" ] && [ -d "/proc/$_p" ] &&
-        tr '\0' ' ' < "/proc/$_p/cmdline" 2>/dev/null | grep -q '/unisoc-modem/cell'
+        { tr '\0' ' ' < "/proc/$_p/cmdline"; } 2>/dev/null | grep -q '/unisoc-modem/cell'
 }
 age_of() { [ -s "$1" ] && echo $(( $(now) - $(date -r "$1" +%s 2>/dev/null || echo 0) )) || echo -1; }
 

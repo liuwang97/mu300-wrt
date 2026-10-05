@@ -89,7 +89,7 @@ qs() { json_str_or_null "$1"; }
 # --------------------------------------------------------------- one collector
 # the same "one owner, spare waits/takes over" pattern mu300-atd uses, so two
 # kicks (page reload while a refresh runs) cannot interleave AT replies
-alive() { [ -n "$1" ] && [ -d "/proc/$1" ] && tr '\0' ' ' < "/proc/$1/cmdline" 2>/dev/null | grep -q '/unisoc-modem/cell'; }
+alive() { [ -n "$1" ] && [ -d "/proc/$1" ] && { tr '\0' ' ' < "/proc/$1/cmdline"; } 2>/dev/null | grep -q '/unisoc-modem/cell'; }
 take_lock() {  # take_lock DIRVAR - drop overlap, take over a dead holder
     local lock=$1 owner
     while ! mkdir "$lock" 2>/dev/null; do
