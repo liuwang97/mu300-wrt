@@ -32,6 +32,18 @@ if [ "$FLAVOUR" = immortalwrt ]; then OUT=${1:-mu300-immortalwrt-$VER-rootfs.tar
 TOP=$(cd "$(dirname "$0")/.." && pwd)
 # build inputs (out/, firmware/, android-subset/, tools binaries, busybox) may live outside the checkout
 IN=${MU300_INPUTS:-$TOP}
+# Without its cellular protocol netifd has no wan and the image boots without mobile data. openwrt-luci also needs
+# the IPv6 relay monitor once mu300cell.sh runs it (relay mode); plain OpenWrt never selects relay.
+CELL=$TOP/openwrt/overlay/lib/netifd/proto/mu300cell.sh
+[ -s "$CELL" ] || { echo "required cellular protocol helper missing: $CELL" >&2; exit 1; }
+if [ "$SYSTEM" = openwrt-luci ] && grep -q mu300cell-v6 "$CELL"; then
+    [ -s "$TOP/openwrt/luci-overlay/lib/netifd/proto/mu300cell-v6.sh" ] || {
+        echo "required cellular protocol helper missing: openwrt/luci-overlay/lib/netifd/proto/mu300cell-v6.sh" >&2; exit 1;
+    }
+fi
+# sipa_eth0 into fw4's software flowtable (applied below, the build fails when it no longer applies)
+FW4PATCH=$TOP/openwrt/patches/fw4-sipa-offload.patch
+[ -s "$FW4PATCH" ] || { echo "missing $FW4PATCH" >&2; exit 1; }
 LUCI=""
 if [ "$SYSTEM" = openwrt-luci ]; then
     # Keep the upstream Aurora theme reproducible. Its APK is installed while
@@ -96,6 +108,7 @@ done
 # shellcheck disable=SC2046
 docker run --rm --platform linux/arm64 \
   -v "$TOP/rootfs/overlay/opt/mu300":/in/opt-mu300:ro -v "$TOP/rootfs/overlay/etc/mu300/vpn.conf.example":/in/vpn.conf.example:ro -v "$TOP/openwrt/overlay":/in/overlay:ro \
+  -v "$FW4PATCH":/in/fw4-sipa-offload.patch:ro \
   -v "$TOP/boot/module-order.txt":/in/module-order.txt:ro -v "$IN/out/modules":/in/modules:ro \
   $(opt out/modules.builtin modules.builtin) $(opt out/modules.builtin.modinfo modules.builtin.modinfo) \
   $(opt firmware firmware) $(opt android-subset android-subset) $(opt android-gpu-subset android-gpu-subset) \
@@ -133,6 +146,13 @@ printf "127.0.0.1\tlocalhost\n\n::1\tlocalhost ip6-localhost ip6-loopback\nff02:
 printf "mu300\n" > $R/etc/hostname   # the real one comes from uci (etc/uci-defaults/90-mu300)
 cp -a /in/opt-mu300 $R/opt/mu300
 cp -a /in/overlay/. $R/
+# mu300cell reports sipa_eth0 as l3_device only, so fw4 leaves it out of its software flowtable and the cellular
+# downlink takes the slow forwarding path. --fuzz=0: a changed fw4 that no longer matches fails the build.
+# (patch goes into the build container only: the image was copied above)
+apk add patch >/dev/null
+patch --batch --fuzz=0 -d $R -p1 -i /in/fw4-sipa-offload.patch
+grep -q sipa_eth0 $R/usr/share/ucode/fw4.uc || { echo "fw4 patch not applied" >&2; exit 1; }
+apk del patch >/dev/null   # out of packages.txt below, which lists what the image has
 if [ -d /in/luci-plugin ]; then
     [ -d /in/luci-overlay ] && cp -a /in/luci-overlay/. $R/
     cp -a /in/luci-plugin/root/. $R/

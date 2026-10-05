@@ -1,9 +1,12 @@
 """Checks over every script without running it: syntax under each shell that runs it, executable bits, and rules
 that past bugs taught (see each test)."""
+import os
 import re
 import shutil
 import subprocess
+import tempfile
 import unittest
+from pathlib import Path
 
 from helpers import BIN, TOP, shells
 
@@ -187,6 +190,68 @@ class Rules(unittest.TestCase):
         b = (TOP / 'openwrt' / 'overlay' / 'etc' / 'sysctl.d' / '99-mu300-console.conf').read_text()
         self.assertEqual(a, b)
         self.assertRegex(a, r'(?m)^kernel\.printk = 1$')
+
+    def test_cellular_downlink_in_the_software_flowtable(self):
+        # K28, K29: mu300cell reports sipa_eth0 as l3_device only, so fw4 leaves it out of its flowtable and the
+        # downlink takes the slow forwarding path. The patch puts it in; it is applied with --fuzz=0 to every OpenWrt
+        # system (outside the panel block), so a changed fw4 fails the build instead of shipping without it.
+        patch = (TOP / 'openwrt' / 'patches' / 'fw4-sipa-offload.patch').read_text()
+        self.assertIn('+++ b/usr/share/ucode/fw4.uc', patch)
+        self.assertIn("+\t\t\tif (fs.access('/sys/class/net/sipa_eth0'))", patch)
+        self.assertIn("+\t\t\t\tpush(devices, 'sipa_eth0');", patch)
+        text = (TOP / 'openwrt' / 'build-rootfs.sh').read_text()
+        self.assertIn('-v "$FW4PATCH":/in/fw4-sipa-offload.patch:ro', text)
+        apply = 'patch --batch --fuzz=0 -d $R -p1 -i /in/fw4-sipa-offload.patch'
+        self.assertIn(apply, text)
+        self.assertLess(text.index('cp -a /in/overlay/. $R/'), text.index(apply))
+        self.assertLess(text.index(apply), text.index('if [ -d /in/luci-plugin ]; then\n    [ -d /in/luci-overlay ]'))
+        # the patch tool is installed after the copy into $R: the build container has it, the image does not
+        self.assertLess(text.index('for e in /*; do'), text.index('apk add patch'))
+        self.assertLess(text.index(apply), text.index('apk del patch'))
+        self.assertLess(text.index('apk del patch'), text.index('apk list --installed'))
+        # software offloading on, hardware off: the SIPA and SC2355 drivers have no nftables hardware offload
+        uci = (OPENWRT / 'etc' / 'uci-defaults' / '90-mu300').read_text()
+        self.assertIn("uci -q set firewall.@defaults[0].flow_offloading='1'", uci)
+        self.assertIn("uci -q set firewall.@defaults[0].flow_offloading_hw='0'", uci)
+        self.assertIn('uci commit firewall', uci)
+
+    def test_build_stops_without_the_cellular_protocol(self):
+        # K74: without mu300cell.sh netifd has no wan, and the image would boot without mobile data; openwrt-luci's
+        # relay mode runs mu300cell-v6.sh, which must then be in its overlay. Checked before any download.
+        def run(files, system, extra_env=None):
+            with tempfile.TemporaryDirectory() as d:
+                top = Path(d)
+                (top / 'openwrt').mkdir()
+                shutil.copy(TOP / 'openwrt' / 'build-rootfs.sh', top / 'openwrt' / 'build-rootfs.sh')
+                for rel, body in files.items():
+                    (top / rel).parent.mkdir(parents=True, exist_ok=True)
+                    (top / rel).write_text(body)
+                env = dict(os.environ, MU300_SYSTEM=system, MU300_INPUTS=d, PATH='/usr/bin:/bin',
+                           MU300_LUCI_THEME_APK=str(top / 'no-theme.apk'), **(extra_env or {}))
+                return subprocess.run(['sh', str(top / 'openwrt' / 'build-rootfs.sh'), 'x.tar.gz'], env=env,
+                                      capture_output=True, text=True, timeout=30)
+        cell = 'openwrt/overlay/lib/netifd/proto/mu300cell.sh'
+        v6 = 'openwrt/luci-overlay/lib/netifd/proto/mu300cell-v6.sh'
+        patch = {'openwrt/patches/fw4-sipa-offload.patch': 'x\n'}
+        for system in ('openwrt', 'openwrt-luci'):
+            with self.subTest(system=system, missing='mu300cell.sh'):
+                r = run(patch, system)
+                self.assertEqual(r.returncode, 1, r.stderr)
+                self.assertIn('mu300cell.sh', r.stderr)
+            with self.subTest(system=system, missing='the patch'):
+                r = run({cell: 'x\n'}, system)
+                self.assertEqual(r.returncode, 1, r.stderr)
+                self.assertIn('fw4-sipa-offload.patch', r.stderr)
+        # relay mode named in mu300cell.sh: openwrt-luci needs the monitor, plain OpenWrt (never in relay) does not
+        relay = dict(patch, **{cell: 'proto_run_command "$cfg" /lib/netifd/proto/mu300cell-v6.sh\n'})
+        r = run(relay, 'openwrt-luci')
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertIn('mu300cell-v6.sh', r.stderr)
+        # with every file present the build goes on to its next check (the theme package here)
+        for files in (dict(patch, **{cell: 'x\n'}), dict(relay, **{v6: 'x\n'})):
+            r = run(files, 'openwrt-luci')
+            self.assertEqual(r.returncode, 1, r.stderr)
+            self.assertIn('theme package missing', r.stderr)
 
 
 if __name__ == '__main__':
