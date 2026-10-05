@@ -191,6 +191,20 @@ class Rules(unittest.TestCase):
         self.assertEqual(a, b)
         self.assertRegex(a, r'(?m)^kernel\.printk = 1$')
 
+    def test_modem_control_is_released_early_and_without_a_fixed_wait(self):
+        # K22, K23: S09 (leading zero kept, rc.common embeds START verbatim: S9 would sort after S19) and no
+        # unconditional sleep before android-vendor-start, which waits for the modem nodes itself
+        f = (TOP / 'openwrt' / 'overlay' / 'etc' / 'init.d' / 'mu300-vendor').read_text()
+        self.assertRegex(f, r'(?m)^START=09$')
+        self.assertIn('leading zero', f)
+        self.assertIn('procd_set_param command /opt/mu300/bin/android-vendor-start\n', f)
+        self.assertNotRegex(f, r'sleep 5')
+        # nothing else may order itself in front of it
+        for s in (TOP / 'openwrt' / 'overlay' / 'etc' / 'init.d').iterdir():
+            m = re.search(r'(?m)^START=(\d+)', s.read_text())
+            if s.name != 'mu300-vendor' and m:
+                self.assertGreater(int(m.group(1)), 9, s.name)
+
     def test_cellular_downlink_in_the_software_flowtable(self):
         # K28, K29: mu300cell reports sipa_eth0 as l3_device only, so fw4 leaves it out of its flowtable and the
         # downlink takes the slow forwarding path. The patch puts it in; it is applied with --fuzz=0 to every OpenWrt
