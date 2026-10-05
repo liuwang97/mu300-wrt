@@ -30,6 +30,22 @@ class Update(ShellTest):
             r = self.up(shell, 'echo loaded')
             self.assertEqual((r.returncode, r.stdout), (0, 'loaded\n'), r.stderr)
 
+    def test_fetch_retries_a_network_error(self):
+        # right after boot the VPN is up some seconds after mobile data, and a request in between is reset
+        # (curl 35/56): "mu300-update check" then said "could not reach GitHub". Network errors are retried a few
+        # times; an HTTP error (22: 404 and the like) is an answer and is not.
+        for shell in self.each_shell():
+            for rc, fails, want_out, want_calls in ((56, 2, 'body', 3), (35, 1, 'body', 2), (22, 1, '', 1),
+                                                     (7, 9, '', 4)):
+                n = self.tmp / 'n'
+                n.write_text('0')
+                self.stub('curl', f'c=$(($(cat "$STUBLOG/n") + 1)); echo $c > "$STUBLOG/n"; '
+                                  f'[ $c -gt {fails} ] && {{ echo body; exit 0; }}; exit {rc}')
+                r = self.up(shell, 'fetch_stdout https://example.invalid/x; echo "rc=$?"', MU300_FETCH_DELAY=0)
+                self.assertEqual(int(n.read_text()), want_calls, (rc, fails))
+                self.assertEqual(r.stdout.replace('rc=0\n', '').replace('rc=1\n', '').strip(), want_out, (rc, r.stdout))
+                self.assertIn('rc=0' if want_out else 'rc=1', r.stdout)
+
     def test_rootfs_asset(self):
         osr = self.disk / 'ubuntu' / 'etc' / 'os-release'
         cases = [('24.04', {}, 'mu300-ubuntu-rootfs.tar.gz'),
