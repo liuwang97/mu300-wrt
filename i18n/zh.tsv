@@ -312,3 +312,5 @@ password for {1}: "{2}"   (also in {3}; delete that file after the first login)	
 could not write {1}; nothing was installed	无法写入 {1}；未安装任何内容
 used by this installation and removed from {1}:{2}	已在本次安装中使用并从 {1} 中删除：{2}
 could not remove{1} from {2}; remove it by hand	无法从 {2} 中删除：{1}；请手动删除
+password:       kept: the accounts and passwords of the installed system are not changed ({1} in {2} sets a new one)	密码：          保留：已安装系统的账户和密码不变（在 {2} 中写入 {1} 可设置新密码）
+password for {1}: unchanged (the one this system had)	{1} 的密码：未改变（仍为该系统原来的密码）
