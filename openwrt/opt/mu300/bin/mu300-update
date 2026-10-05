@@ -32,9 +32,24 @@ have() { command -v "$1" >/dev/null 2>&1; }
 
 # A transfer that stalls is cut off and retried rather than waited for: with older boot images the IPA's downlink
 # can die in the middle of one (docs/FINDINGS.md 32), and without a timeout the update hung for good.
+# A network error is tried again a few times (MU300_FETCH_DELAY s apart): right after boot the VPN comes up some
+# seconds after mobile data, and a request in between is reset - "check" then said GitHub could not be reached.
+# curl's own --retry leaves resets alone. Only a failed connection is retried here (curl 6 7 35 52 56; wget 4, GNU's
+# network failure - busybox wget says 1 for everything and is not): an HTTP error (22, a 404) is an answer, and a
+# timeout (28) has been retried by curl already (four more rounds would hold "check" for half an hour).
 fetch_stdout() {  # fetch_stdout URL
-    if have curl; then curl -fsSL --connect-timeout 30 --max-time 120 --retry 3 "$1"
-    else wget -T 60 -qO- "$1"; fi
+    _try=1
+    while :; do
+        if have curl; then _out=$(curl -fsSL --connect-timeout 30 --max-time 120 --retry 3 "$1"); _rc=$?
+            case $_rc in 0|6|7|35|52|56) ;; *) return 1 ;; esac
+        else _out=$(wget -T 60 -qO- "$1"); _rc=$?
+            case $_rc in 0|4) ;; *) return 1 ;; esac
+        fi
+        [ "$_rc" = 0 ] && { printf '%s\n' "$_out"; return 0; }
+        [ "$_try" -ge 4 ] && return 1
+        _try=$((_try + 1))
+        sleep "${MU300_FETCH_DELAY:-4}"
+    done
 }
 fetch_file() {  # fetch_file URL OUT (resumes a partial OUT)
     if have curl; then curl -fL --retry 5 --retry-delay 5 --connect-timeout 30 --speed-limit 1024 --speed-time 60 -C - -o "$2" "$1"

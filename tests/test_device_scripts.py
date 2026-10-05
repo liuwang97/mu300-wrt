@@ -696,6 +696,86 @@ class Usb(ShellTest):
             self.assertIn('only the U30 Air', r.stderr)
             self.assertEqual(self.usb(shell, 'boot').returncode, 0)   # boot is quiet on every device
 
+
+@unittest.skipIf(os.name == 'nt' or os.geteuid() == 0, 'needs a user that cannot write the daemon directory')
+class AtClient(ShellTest):
+    """mu300-at as a user who cannot write /run/mu300-at: it says so at once (it used to loop for ever on a stale
+    lock it could not remove, printing "rm: cannot remove .../lock/pid", and `mobile-data status` hung with it)."""
+
+    def setUp(self):
+        super().setUp()
+        self.dir = self.tmp / 'at'
+        self.dir.mkdir()
+        os.mkfifo(self.dir / 'cmd')
+
+    def tearDown(self):
+        for p in (self.dir / 'lock', self.dir):
+            if p.exists():
+                p.chmod(0o755)
+        super().tearDown()
+
+    def at(self, shell):
+        t = time.monotonic()
+        r = self.script(shell, BIN / 'mu300-at', 'AT+CSQ', MU300_AT_DIR=self.dir, MU300_AT_LOCK_WAIT=20)
+        return r, time.monotonic() - t
+
+    def test_a_user_is_told_to_be_root(self):
+        self.dir.chmod(0o555)
+        for shell in self.each_shell():
+            r, took = self.at(shell)
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn('root', r.stderr)
+            self.assertLess(took, 5)
+
+    def test_a_stale_lock_it_cannot_remove(self):
+        (self.dir / 'lock').mkdir()
+        (self.dir / 'lock' / 'pid').write_text('999999\n')   # an owner that is gone
+        (self.dir / 'lock').chmod(0o555)
+        self.dir.chmod(0o555)
+        for shell in self.each_shell():
+            r, took = self.at(shell)
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn('root', r.stderr)
+            self.assertLess(took, 5)
+            self.assertLess(r.stderr.count('\n'), 3, r.stderr)
+
+    def test_a_stale_lock_it_cannot_remove_counts_as_busy(self):
+        # the loop itself: a writable directory, but a lock whose dead owner's files cannot be removed. It used
+        # to "continue" past the wait for ever; now it waits like for a live owner and gives up "busy".
+        (self.dir / 'lock').mkdir()
+        (self.dir / 'lock' / 'pid').write_text('999999\n')
+        (self.dir / 'lock').chmod(0o555)
+        for shell in self.each_shell():
+            t = time.monotonic()
+            r = self.script(shell, BIN / 'mu300-at', 'AT+CSQ', MU300_AT_DIR=self.dir, MU300_AT_LOCK_WAIT=1)
+            took = time.monotonic() - t
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn('busy', r.stderr)
+            self.assertLess(took, 15)
+
+
+class LanStart(ShellTest):
+    """lan-start (bash): the bridge has udev's persistent MAC before any port joins it. Otherwise br-lan took usb0's
+    MAC whenever it was up before udev got to it, its IPv6 link-local was made from that, and the address changed
+    from boot to boot (seen on the U30 Air under 7.2.9)."""
+
+    def test_udev_names_the_bridge_before_ports_join(self):
+        if not shutil.which('bash'):
+            self.skipTest('no bash')
+        self.stub('ip', 'echo "ip $*" >> "$STUBLOG/calls"; case "$*" in "link show br-lan") exit 1;; esac; exit 0')
+        self.stub('udevadm', 'echo "udevadm $*" >> "$STUBLOG/calls"')
+        self.stub('dnsmasq', 'echo "dnsmasq" >> "$STUBLOG/calls"')
+        r = self.script(['bash'], BIN / 'lan-start', MU300_LAN_IP='192.168.78.1')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        calls = (self.tmp / 'calls').read_text().splitlines()
+        add = calls.index('ip link add br-lan type bridge')
+        settle = next(i for i, c in enumerate(calls) if c.startswith('udevadm settle'))
+        join = calls.index('ip link set usb0 master br-lan')
+        up = calls.index('ip link set br-lan up')
+        self.assertLess(add, settle)
+        self.assertLess(settle, join)
+        self.assertLess(join, up)
+
 if __name__ == '__main__':
     unittest.main()
 

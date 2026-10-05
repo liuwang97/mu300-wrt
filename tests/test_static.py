@@ -126,6 +126,26 @@ class Rules(unittest.TestCase):
         for f in ('uninstall.sh', 'uninstall.ps1', 'tools/reset-password.sh', 'tools/android-import-hotspot.sh'):
             self.assertIn('mu300sd', (TOP / f).read_text(), f)
 
+    def test_the_commands_on_path_are_the_same_everywhere(self):
+        # the Ubuntu image, the OpenWrt image and rootfs-fixups (which adds the links on systems installed before a
+        # command had one) link the same commands; the fixups' list lagged behind and mu300-led, mu300-device were
+        # "command not found" on an installed U30 Air
+        def names(path, pattern):
+            m = re.search(pattern, (TOP / path).read_text())
+            self.assertIsNotNone(m, path)
+            return m.group(1).split()
+        lists = {
+            'ubuntu': names('rootfs/assemble.sh', r'for c in ([^;]+); do ln -sfn /opt/mu300/bin/\$c \$R/usr/local/bin'),
+            'openwrt': names('openwrt/build-rootfs.sh', r'for c in ([^;]+); do ln -sf /opt/mu300/bin/\$c \$R/usr/bin'),
+            'fixups': names('rootfs/overlay/opt/mu300/bin/rootfs-fixups', r'for c in ([^;]+); do\n'),
+        }
+        self.assertEqual(lists['ubuntu'], lists['openwrt'])
+        self.assertEqual(lists['ubuntu'], lists['fixups'])
+        for c in ('mu300-device', 'mu300-led', 'mobile-data', 'mu300-update'):
+            self.assertIn(c, lists['ubuntu'])
+        for c in lists['ubuntu']:
+            self.assertTrue((BIN / c).is_file(), c)
+
     def test_init_finds_partitions_after_the_modules(self):
         # the eMMC driver is one of the vendor modules: misc and boot_b cannot be found before they are loaded
         init = (TOP / 'boot' / 'init').read_text()
