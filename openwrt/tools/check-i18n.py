@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 
 TOP = Path(__file__).resolve().parent.parent
-SOURCES = ['install.sh', 'install.ps1', 'tools/linux-mode.sh', 'tools/self-update.sh']
+SOURCES = ['install.sh', 'install.ps1', 'tools/linux-mode.sh', 'tools/self-update.sh', 'tools/storage.sh']
 # single- or double-quoted first argument; the PowerShell side writes '' for a quote inside '...'
 PATTERNS = [re.compile(r"""\b[tT] '((?:[^']|'')*)'"""), re.compile(r'''\b[tT] "([^"$`]*)"''')]
 # shown as defaults of yes/no questions, the answers of the region check, and the error prefix

@@ -195,3 +195,21 @@ Python 3 is not installed; installing it for this user	Python 3 kurulu değil; b
 {1} failed	{1} başarısız oldu
 waiting for Android to finish starting	Android'in açılmasını bitirmesi bekleniyor
 which adb device is the F50 or U30 Air?	hangi adb cihazı F50 ya da U30 Air?
+SD card present but smaller than 700 MiB; not used	SD kart takılı ama 700 MiB'tan küçük; kullanılmıyor
+SD card: {1}, {2}, existing mu300sd filesystem: {3}	SD kart: {1}, {2}, mevcut mu300sd dosya sistemi: {3}
+Linux filesystem: SD card {1}, {2}, existing mu300sd filesystem: {3}	Linux dosya sistemi: SD kart {1}, {2}, mevcut mu300sd dosya sistemi: {3}
+OK: the SD card will be formatted; everything on it is erased	TAMAM: SD kart biçimlendirilecek; üzerindeki her şey silinir
+Everything on the SD card ({1}, {2}) will be erased. Type ERASE to continue	SD karttaki ({1}, {2}) her şey silinecek. Devam etmek için ERASE yazın
+CREATE new ext4 (erases the SD card)	YENİ ext4 OLUŞTUR (SD kartı siler)
+writes:         SD card {1}, boot_b, 32 bytes of misc (the eMMC region, boot_a, GPT and userdata are not touched)	yazılacaklar:   SD kart {1}, boot_b, misc'in 32 baytı (eMMC'deki Linux alanına, boot_a, GPT ve userdata'ya dokunulmaz)
+MU300_STORAGE=sd, but there is no usable SD card in the device	MU300_STORAGE=sd, ama cihazda kullanılabilir bir SD kart yok
+MU300_STORAGE must be internal or sd	MU300_STORAGE internal ya da sd olmalı
+Where should the Linux filesystem go: internal storage or the SD card ({1}, {2})? (internal/sd)	Linux dosya sistemi nereye kurulsun: dahili depolama mı, SD kart mı ({1}, {2})? (internal/sd)
+the SD card ({1}) holds another Linux (ext4) filesystem, and the installer never formats one that is not its own (mu300sd).	SD kartta ({1}) başka bir Linux (ext4) dosya sistemi var ve yükleyici kendisine ait olmayan (mu300sd olmayan) bir dosya sistemini asla biçimlendirmez.
+Copy off what you need and format the card elsewhere, use another card, or install to internal storage (MU300_STORAGE=internal).	Gerekenleri yedekleyip kartı başka bir yerde biçimlendirin, başka bir kart kullanın ya da dahili depolamaya kurun (MU300_STORAGE=internal).
+the SD card holds another Linux (ext4) filesystem; the installer will not format it	SD kartta başka bir Linux (ext4) dosya sistemi var; yükleyici onu biçimlendirmez
+too little free eMMC space for Linux; the installer will offer the SD card instead (no repartitioning needed)	eMMC'de Linux için yeterli boş alan yok; yükleyici bunun yerine SD kartı önerecek (yeniden bölümlendirme gerekmez)
+the {1} kernel of release {2} cannot read the SD card: choose kernel 5.4, a newer release, or internal storage (MU300_STORAGE=internal)	{2} sürümünün {1} çekirdeği SD kartı okuyamıyor: 5.4 çekirdeğini, daha yeni bir sürümü ya da dahili depolamayı (MU300_STORAGE=internal) seçin
+The SD card ({1}) holds a Linux installation (mu300sd), and the device always starts that one first: an installation to internal storage does not start while this card is in the slot.	SD kartta ({1}) bir Linux kurulumu (mu300sd) var ve cihaz her zaman önce onu başlatır: kart yuvadayken dahili depolamaya yapılan kurulum başlamaz.
+Take the card out before the device restarts, or erase its installation first with the uninstaller.	Cihaz yeniden başlamadan önce kartı çıkarın ya da önce karttaki kurulumu kaldırma aracıyla (uninstall) silin.
+Type internal to install to internal storage anyway	Yine de dahili depolamaya kurmak için internal yazın

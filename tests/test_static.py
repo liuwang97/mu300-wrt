@@ -24,7 +24,7 @@ def shell_scripts():
     cands = list(BIN.iterdir()) + list((TOP / 'tools').glob('*.sh')) + [
         TOP / 'install.sh', TOP / 'uninstall.sh', TOP / 'boot' / 'init', TOP / 'rootfs' / 'assemble.sh',
         TOP / 'kernel' / 'build-all.sh', TOP / 'tools' / 'i18n.sh', TOP / 'tools' / 'self-update.sh',
-        TOP / 'tools' / 'linux-mode.sh', TOP / 'android-vendor' / 'ueventd-perms.sh']
+        TOP / 'tools' / 'linux-mode.sh', TOP / 'tools' / 'storage.sh', TOP / 'android-vendor' / 'ueventd-perms.sh']
     cands += [p for p in OPENWRT.rglob('*') if p.is_file()]
     out = []
     for p in sorted(set(cands)):
@@ -99,6 +99,10 @@ class Rules(unittest.TestCase):
                                         f'{name}:{m + 1}: an apostrophe inside the script of line {n + 1}')
                         break
 
+    def test_every_tool_that_mounts_the_filesystem_knows_the_card(self):
+        for f in ('uninstall.sh', 'uninstall.ps1', 'tools/reset-password.sh', 'tools/android-import-hotspot.sh'):
+            self.assertIn('mu300sd', (TOP / f).read_text(), f)
+
     def test_init_finds_partitions_after_the_modules(self):
         # the eMMC driver is one of the vendor modules: misc and boot_b cannot be found before they are loaded
         init = (TOP / 'boot' / 'init').read_text()
@@ -112,6 +116,30 @@ class Rules(unittest.TestCase):
             self.assertTrue((TOP / 'kernel' / f'{dev}.fragment').is_file())
             self.assertIn(dev, (TOP / 'install.sh').read_text())
             self.assertIn(dev, (TOP / 'install.ps1').read_text())
+
+    def test_mainline_keeps_the_sd_host(self):
+        # the SD card can hold the Linux filesystem: the port lets the card slot's host probe next to the eMMC, and
+        # still keeps any other sdhci host (the stock DT's sdio_wifi; Wi-Fi is on PCIe) out
+        port = (TOP / 'upstream' / 'port' / 'install.py').read_text()
+        self.assertIn('MU300: only the eMMC and the card slot', port)
+        self.assertIn('if (!of_property_read_bool(pdev->dev.of_node, "non-removable") &&', port)
+        self.assertIn('of_property_match_string(pdev->dev.of_node, "sprd,name", "sdio_sd") < 0)', port)
+        self.assertIn('MU300: CD GPIO deferred', port)
+        # a deferral that is only masked leaves the rest of mmc_of_parse() undone (UHS modes, no-sdio, no-mmc): the
+        # unresolvable cd-gpios is dropped and the parse run again
+        self.assertIn('of_remove_property(pdev->dev.of_node, cd)', port)
+        self.assertIn("'MU300: only the eMMC and the card slot', 'MU300: CD GPIO deferred', "
+                      "'of_remove_property(pdev->dev.of_node, cd)'", port)
+        self.assertRegex((TOP / 'upstream' / 'make-bundle.sh').read_text(), r"printf 'sdcard\\n' > \"\$W/b/features\"")
+
+    def test_every_release_kernel_bundle_has_the_sd_host(self):
+        # 5.4 reads the card as well (FINDINGS 31j): its bundle says so, and the release audit fails when any of the
+        # three bundles does not (mu300-update refuses such a bundle for a system on the card)
+        mr = (TOP / 'tools' / 'make-release.sh').read_text()
+        self.assertIn("printf 'sdcard\\n' > \"$K/features\"", mr)
+        self.assertLess(mr.index('$K/features'), mr.index('tar -C "$K" -czf "$D/mu300-kernel.tar.gz" .'))
+        self.assertIn('for a in mu300-kernel mu300-kernel-6.18 mu300-kernel-7.2; do\n'
+                      '    tar -xzOf "$D/$a.tar.gz" ./features 2>/dev/null | grep -qx sdcard', mr)
 
 
 if __name__ == '__main__':

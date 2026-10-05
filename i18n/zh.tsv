@@ -195,3 +195,21 @@ Python 3 is not installed; installing it for this user	未安装 Python 3；正�
 {1} failed	{1} 失败
 waiting for Android to finish starting	正在等待 Android 启动完成
 which adb device is the F50 or U30 Air?	哪个 adb 设备是 F50 或 U30 Air？
+SD card present but smaller than 700 MiB; not used	已插入 SD 卡，但容量小于 700 MiB；不使用
+SD card: {1}, {2}, existing mu300sd filesystem: {3}	SD 卡：{1}，{2}，已有 mu300sd 文件系统：{3}
+Linux filesystem: SD card {1}, {2}, existing mu300sd filesystem: {3}	Linux 文件系统：SD 卡 {1}，{2}，已有 mu300sd 文件系统：{3}
+OK: the SD card will be formatted; everything on it is erased	正常：SD 卡将被格式化；卡上的所有内容都会被清除
+Everything on the SD card ({1}, {2}) will be erased. Type ERASE to continue	SD 卡（{1}，{2}）上的所有内容都将被清除。输入 ERASE 继续
+CREATE new ext4 (erases the SD card)	创建新的 ext4（将清除 SD 卡）
+writes:         SD card {1}, boot_b, 32 bytes of misc (the eMMC region, boot_a, GPT and userdata are not touched)	写入：          SD 卡 {1}、boot_b、misc 的 32 字节（不会触碰 eMMC 上的 Linux 区域、boot_a、GPT 和 userdata）
+MU300_STORAGE=sd, but there is no usable SD card in the device	MU300_STORAGE=sd，但设备中没有可用的 SD 卡
+MU300_STORAGE must be internal or sd	MU300_STORAGE 必须是 internal 或 sd
+Where should the Linux filesystem go: internal storage or the SD card ({1}, {2})? (internal/sd)	Linux 文件系统要放在哪里：内部存储还是 SD 卡（{1}，{2}）？(internal/sd)
+the SD card ({1}) holds another Linux (ext4) filesystem, and the installer never formats one that is not its own (mu300sd).	SD 卡（{1}）上有另一个 Linux（ext4）文件系统，安装程序绝不会格式化不属于自己（不是 mu300sd）的文件系统。
+Copy off what you need and format the card elsewhere, use another card, or install to internal storage (MU300_STORAGE=internal).	请先复制出需要的数据并在别处格式化该卡，或换一张卡，或安装到内部存储（MU300_STORAGE=internal）。
+the SD card holds another Linux (ext4) filesystem; the installer will not format it	SD 卡上有另一个 Linux（ext4）文件系统；安装程序不会格式化它
+too little free eMMC space for Linux; the installer will offer the SD card instead (no repartitioning needed)	eMMC 上的空闲空间不足以安装 Linux；安装程序将改为提供 SD 卡选项（无需重新分区）
+the {1} kernel of release {2} cannot read the SD card: choose kernel 5.4, a newer release, or internal storage (MU300_STORAGE=internal)	版本 {2} 的 {1} 内核无法读取 SD 卡：请选择 5.4 内核、更新的版本，或内部存储（MU300_STORAGE=internal）
+The SD card ({1}) holds a Linux installation (mu300sd), and the device always starts that one first: an installation to internal storage does not start while this card is in the slot.	SD 卡（{1}）上已有 Linux 安装（mu300sd），设备总是先启动它：只要这张卡还在卡槽中，安装到内部存储的系统就不会启动。
+Take the card out before the device restarts, or erase its installation first with the uninstaller.	请在设备重启前取出这张卡，或先用卸载程序（uninstall）清除卡上的安装。
+Type internal to install to internal storage anyway	输入 internal 以仍然安装到内部存储

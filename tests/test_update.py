@@ -114,11 +114,12 @@ class Update(ShellTest):
             self.assertEqual(self.up(shell, 'installed_systems').stdout.split(), ['ubuntu', 'openwrt'])
             (self.disk / 'openwrt').rmdir()
 
-    def bundle(self, name, devices):
+    def bundle(self, name, devices, features=None):
         p = self.tmp / name
         with tarfile.open(p, 'w:gz') as t:
             for fn, data in [('./Image', b'kernel'), ('./ramdisk-generic.lz4', b'rd')] + (
-                    [('./devices', devices.encode())] if devices is not None else []):
+                    [('./devices', devices.encode())] if devices is not None else []) + (
+                    [('./features', features.encode())] if features is not None else []):
                 ti = tarfile.TarInfo(fn)
                 ti.size = len(data)
                 t.addfile(ti, io.BytesIO(data))
@@ -138,6 +139,29 @@ class Update(ShellTest):
                 r = self.up(shell, f'tar -tzf "{b}" > "{d}/list"; bundle_runs_here "{b}" "{d}/list" "{d}" && echo YES || echo NO')
                 self.assertEqual(r.stdout.strip(), 'YES' if ok else 'NO', (dev, b.name, r.stderr))
                 (d / 'devices').unlink(missing_ok=True)
+
+    def test_card_installation_needs_an_sd_capable_kernel(self):
+        rootdev = self.tmp / 'root-dev'
+        plain = self.bundle('plain.tar.gz', 'f50\n')
+        empty = self.bundle('empty.tar.gz', 'f50\n', '')
+        sd = self.bundle('sd.tar.gz', 'f50\n', 'other\nsdcard\n')
+        for shell in self.each_shell():
+            def run(dev, b):
+                if dev is None:
+                    rootdev.unlink(missing_ok=True)
+                else:
+                    rootdev.write_text(dev + '\n')
+                d = self.tmp / 'x'
+                d.mkdir(exist_ok=True)
+                code = (f'MU300_ROOT_DEV_FILE="{rootdev}"; tar -tzf "{b}" > "{d}/list"; '
+                        f'if root_on_sd && ! bundle_has_sd "{b}" "{d}/list"; then echo REFUSE; else echo OK; fi')
+                r = self.up(shell, code)
+                return r.stdout.strip()
+            self.assertEqual(run('/dev/mmcblk1p1', plain), 'REFUSE')
+            self.assertEqual(run('/dev/mmcblk1p1', empty), 'REFUSE')
+            self.assertEqual(run('/dev/mmcblk1p1', sd), 'OK')
+            self.assertEqual(run('mmcblk0@27762098176', plain), 'OK')
+            self.assertEqual(run(None, plain), 'OK')
 
 
 if __name__ == '__main__':
