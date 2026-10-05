@@ -276,12 +276,18 @@ class UsbId(ShellTest):
             b = self.ident(shell, 'androidboot.serialno=324950664950 androidboot.emmcid=7f0011aa')
             self.assertNotEqual(a.split()[1], b.split()[1])
 
-    def test_emmc_from_cid_when_bootargs_lack_it(self):
-        # the CID's product serial (hex 21-28) is what the bootloader passes as emmcid; a card is not the eMMC
-        cids = (('SD', '035344534c333247804c4d97b2017800'), ('MMC', 'ea010e325931384347102128e8539c00'))
+    def test_no_emmcid_is_the_serial_alone(self):
+        # not the eMMC's CID from /sys: init runs before the modules that find the eMMC (and on mainline it may or
+        # may not be there yet), so the identity would change from boot to boot
+        cids = (('MMC', 'ea010e325931384347102128e8539c00'),)
         for shell in self.each_shell():
             out = self.ident(shell, 'androidboot.serialno=324950664950', cids)
-            self.assertEqual(out, '324950664950-2128e853 ' + self.mac('324950664950-2128e853'))
+            self.assertEqual(out, '324950664950 ' + self.mac('324950664950'))
+
+    def test_emmcid_without_serial(self):
+        for shell in self.each_shell():
+            out = self.ident(shell, 'androidboot.emmcid=2128e853')
+            self.assertEqual(out, '2128e853 ' + self.mac('2128e853'))
 
     def test_u30air_subnet_byte(self):
         for shell in self.each_shell():

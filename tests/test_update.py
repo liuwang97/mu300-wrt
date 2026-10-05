@@ -33,10 +33,11 @@ class Update(ShellTest):
     def test_fetch_retries_a_network_error(self):
         # right after boot the VPN is up some seconds after mobile data, and a request in between is reset
         # (curl 35/56): "mu300-update check" then said "could not reach GitHub". Network errors are retried a few
-        # times; an HTTP error (22: 404 and the like) is an answer and is not.
+        # times; an HTTP error (22: 404 and the like) is an answer and is not, and neither is a timeout (28: curl's
+        # own --retry has retried it already, and four more rounds of 120 s would hold "check" for half an hour).
         for shell in self.each_shell():
             for rc, fails, want_out, want_calls in ((56, 2, 'body', 3), (35, 1, 'body', 2), (22, 1, '', 1),
-                                                     (7, 9, '', 4)):
+                                                     (7, 9, '', 4), (28, 1, '', 1), (6, 1, 'body', 2)):
                 n = self.tmp / 'n'
                 n.write_text('0')
                 self.stub('curl', f'c=$(($(cat "$STUBLOG/n") + 1)); echo $c > "$STUBLOG/n"; '

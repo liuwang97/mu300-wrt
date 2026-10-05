@@ -736,6 +736,20 @@ class AtClient(ShellTest):
             self.assertLess(took, 5)
             self.assertLess(r.stderr.count('\n'), 3, r.stderr)
 
+    def test_a_stale_lock_it_cannot_remove_counts_as_busy(self):
+        # the loop itself: a writable directory, but a lock whose dead owner's files cannot be removed. It used
+        # to "continue" past the wait for ever; now it waits like for a live owner and gives up "busy".
+        (self.dir / 'lock').mkdir()
+        (self.dir / 'lock' / 'pid').write_text('999999\n')
+        (self.dir / 'lock').chmod(0o555)
+        for shell in self.each_shell():
+            t = time.monotonic()
+            r = self.script(shell, BIN / 'mu300-at', 'AT+CSQ', MU300_AT_DIR=self.dir, MU300_AT_LOCK_WAIT=1)
+            took = time.monotonic() - t
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn('busy', r.stderr)
+            self.assertLess(took, 15)
+
 
 class LanStart(ShellTest):
     """lan-start (bash): the bridge has udev's persistent MAC before any port joins it. Otherwise br-lan took usb0's
