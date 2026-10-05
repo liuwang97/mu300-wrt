@@ -181,6 +181,13 @@ class Rules(unittest.TestCase):
         self.assertIn('for a in mu300-kernel mu300-kernel-6.18 mu300-kernel-7.2; do\n'
                       '    tar -xzOf "$D/$a.tar.gz" ./features 2>/dev/null | grep -qx sdcard', mr)
 
+    def test_quiet_console_sysctl_on_both_systems(self):
+        # K24: both images carry the same drop-in (systemd-sysctl on Ubuntu, procd's /etc/init.d/sysctl on OpenWrt)
+        a = (TOP / 'rootfs' / 'overlay' / 'etc' / 'sysctl.d' / '99-mu300-console.conf').read_text()
+        b = (TOP / 'openwrt' / 'overlay' / 'etc' / 'sysctl.d' / '99-mu300-console.conf').read_text()
+        self.assertEqual(a, b)
+        self.assertRegex(a, r'(?m)^kernel\.printk = 1$')
+
 
 if __name__ == '__main__':
     unittest.main()
