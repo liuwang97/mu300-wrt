@@ -12,26 +12,35 @@
 # address), and serves rndis0 as well as usb0 (RNDIS has no usb0).
 mu300_early_usb() {
 	bb=/opt/mu300/bin/busybox
-	[ -x $bb ] || return 0
+	[ -x $bb ] && [ -r /lib/mu300/usb-host.sh ] || return 0
 	dev=
 	for n in usb0 rndis0; do
 		[ -e /sys/class/net/$n ] && { dev=$n; break; }
 	done
 	[ -n "$dev" ] || return 0
-	lan=$(uci -q get network.lan.ipaddr)
-	lan=${lan%% *}
-	lan=${lan%/*}
+	. /lib/mu300/usb-host.sh
+	# the LAN as netifd will set it: ipaddr (A.B.C.D or A.B.C.D/N) and netmask, the device's /24 without them
+	cidr=$(uci -q get network.lan.ipaddr)
+	cidr=${cidr%% *}
+	lan=${cidr%/*}
+	mask=255.255.255.0
 	case $lan in
-		*.*.*.*) ;;
+		*.*.*.*)
+			case $cidr in
+				*/*) p=${cidr#*/}
+				     case $p in 8|9|[12][0-9]|30) mask=$(mu300_prefix2mask "$p") ;; esac ;;
+				*) m=$(uci -q get network.lan.netmask)
+				   case $m in *.*.*.*) mask=$m ;; esac ;;
+			esac ;;
 		*) lan=$(/opt/mu300/bin/mu300-lan-ip) ;;
 	esac
-	net=${lan%.*}
-	$bb ifconfig $dev "$lan" netmask 255.255.255.0 up
+	host=$(mu300_usb_host_ip "$lan" "$mask")
+	$bb ifconfig $dev "$lan" netmask "$mask" up
 	cat > /run/udhcpd-usb0.conf <<EOF
-start $net.200
-end $net.200
+start $host
+end $host
 interface $dev
-option subnet 255.255.255.0
+option subnet $mask
 option router $lan
 option dns $lan
 option lease 3600

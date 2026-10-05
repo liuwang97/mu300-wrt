@@ -15,8 +15,11 @@ bridge_ip=$(ip -4 -o addr show dev br-lan 2>/dev/null | awk 'NR == 1 { print $4 
 if [ -n "$bridge_ip" ]; then
 	for nic in usb0 rndis0; do
 		ip -o link show dev "$nic" 2>/dev/null | grep -q 'master br-lan' || continue
-		ip -4 -o addr show dev "$nic" 2>/dev/null | grep -Fq "inet $bridge_ip " || continue
-		ip addr del "$bridge_ip" dev "$nic" 2>/dev/null || true
+		# the bridge's address with whatever prefix the port has (preinit's mask can differ from netifd's)
+		nic_ip=$(ip -4 -o addr show dev "$nic" 2>/dev/null |
+			awk -v a="${bridge_ip%/*}" '{ split($4, p, "/"); if (p[1] == a) { print $4; exit } }')
+		[ -n "$nic_ip" ] || continue
+		ip addr del "$nic_ip" dev "$nic" 2>/dev/null || true
 	done
 fi
 if [ -e /sys/class/net/rndis0 ]; then

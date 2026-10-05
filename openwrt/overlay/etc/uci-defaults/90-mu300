@@ -41,12 +41,15 @@ fi
 # K25 (ported from the kanoqwq fork, cd4fb28): the USB host keeps the address it had from the early server
 # (.200), and dnsmasq broadcasts its OFFER/ACK: Windows can keep asking for the early lease after it has already
 # removed that address, and a unicast reply to the removed address is lost in the NCM host stack.
+# the same address as preinit's early server gives (lib/mu300/usb-host.sh: never the router's own)
+. /lib/mu300/usb-host.sh
+usb_host_ip=$(mu300_usb_host_ip "$lan_ip" 255.255.255.0)
 if [ -n "$usb_host_mac" ]; then
 	uci -q batch <<UCI
 set dhcp.mu300_usb=host
 set dhcp.mu300_usb.name='mu300-usb-host'
 set dhcp.mu300_usb.mac='$usb_host_mac'
-set dhcp.mu300_usb.ip='${lan_ip%.*}.200'
+set dhcp.mu300_usb.ip='$usb_host_ip'
 set dhcp.mu300_usb.broadcast='1'
 UCI
 fi

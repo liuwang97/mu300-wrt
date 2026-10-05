@@ -32,14 +32,16 @@ class EarlyUsbOpenWrt(ShellTest):
         return body
 
     # --- preinit 06_mu300_early_usb (K11)
-    def preinit(self, shell, lan):
-        self.stub('uci', f'echo "uci $*" >> "$STUBLOG/uci.log"; [ "$*" = "-q get network.lan.ipaddr" ] && '
-                         f'{"echo " + repr(lan) if lan else "exit 1"}')
+    def preinit(self, shell, lan, netmask=None):
+        self.stub('uci', f'echo "uci $*" >> "$STUBLOG/uci.log"\n'
+                         f'[ "$*" = "-q get network.lan.ipaddr" ] && {"echo " + repr(lan) if lan else "exit 1"}\n'
+                         f'[ "$*" = "-q get network.lan.netmask" ] && {"echo " + repr(netmask) if netmask else "exit 1"}\n'
+                         'exit 1')
         self.stub('mu300-lan-ip', 'echo 192.168.78.1')
         # (not named busybox: that would be the shell under test, first on PATH)
         self.stub('bb', 'echo "busybox $*" >> "$STUBLOG/bb.log"\n'
                              'case $1 in udhcpd) cp "$3" "$STUBLOG/udhcpd.conf" ;; esac')
-        body = self.text('lib/preinit/06_mu300_early_usb', **{
+        body = self.text('lib/preinit/06_mu300_early_usb', **{'/lib/mu300/usb-host.sh': str(OPENWRT / 'lib' / 'mu300' / 'usb-host.sh'), 
             '/opt/mu300/bin/busybox': f'{self.stubs}/bb', '/opt/mu300/bin/': f'{self.stubs}/', '/run/': f'{self.tmp}/run/',
             '/sys/class/net/': f'{self.tmp}/net/'})
         r = self.sh(shell, 'boot_hook_add() { :; }\n' + body + '\nmu300_early_usb\nwait\n')
@@ -70,6 +72,30 @@ class EarlyUsbOpenWrt(ShellTest):
             self.assertIn('option router 192.168.78.1\n', conf)
             self.tearDown(); self.setUp()
 
+    def test_preinit_other_masks(self):
+        # the pool and the mask inside the configured subnet (R37): a /16 from netmask or CIDR, a /25 without .200
+        cases = (('10.1.0.1', '255.255.0.0', '10.1.0.200', '255.255.0.0'),
+                 ('10.1.0.1/16', None, '10.1.0.200', '255.255.0.0'),
+                 ('10.1.2.1/25', None, '10.1.2.126', '255.255.255.128'),
+                 ('10.1.2.129/25', None, '10.1.2.200', '255.255.255.128'))
+        for shell in self.each_shell():
+            for lan, mask, host, subnet in cases:
+                self.netdevs('usb0')
+                conf = self.preinit(shell, lan, mask)
+                self.assertIn(f'start {host}\nend {host}\n', conf, lan)
+                self.assertIn(f'option subnet {subnet}\n', conf, lan)
+                self.assertIn(f'netmask {subnet} up', (self.tmp / 'bb.log').read_text(), lan)
+                self.tearDown(); self.setUp()
+
+    def test_preinit_never_offers_the_router(self):
+        for shell in self.each_shell():
+            for lan, host in (('10.1.2.200', '10.1.2.199'), ('10.1.2.254/25', '10.1.2.200'),
+                              ('10.1.2.126/25', '10.1.2.125')):
+                self.netdevs('usb0')
+                conf = self.preinit(shell, lan)
+                self.assertIn(f'start {host}\n', conf, lan)
+                self.tearDown(); self.setUp()
+
     def test_preinit_serves_rndis0(self):
         for shell in self.each_shell():
             self.netdevs('rndis0')
@@ -85,7 +111,7 @@ class EarlyUsbOpenWrt(ShellTest):
             self.tearDown(); self.setUp()
 
     # --- hotplug iface/10-mu300-usb (K9; K10 rejected: the re-enumeration stays)
-    def hotplug(self, shell, stamp_age=None):
+    def hotplug(self, shell, stamp_age=None, bridge='10.1.2.1/24', port='10.1.2.1/24'):
         (self.tmp / 'run' / 'mu300-early-udhcpd.pid').write_text('4242\n')
         (self.tmp / 'uptime').write_text('100.50 90.00\n')
         (self.tmp / 'mounts').write_text(f'configfs {self.tmp}/cfg configfs rw 0 0\n')
@@ -97,9 +123,9 @@ class EarlyUsbOpenWrt(ShellTest):
         # usb0 kept the bridge's address; rndis0 is in the bridge without it
         self.stub('ip', 'echo "ip $*" >> "$STUBLOG/ip.log"\n'
                         'case "$*" in\n'
-                        '"-4 -o addr show dev br-lan") echo "9: br-lan    inet 10.1.2.1/24 brd 10.1.2.255 scope global br-lan" ;;\n'
+                        f'"-4 -o addr show dev br-lan") echo "9: br-lan    inet {bridge} scope global br-lan" ;;\n'
                         '"-o link show dev usb0"|"-o link show dev rndis0") echo "7: $5: <UP> mtu 1500 master br-lan state UP" ;;\n'
-                        '"-4 -o addr show dev usb0") echo "7: usb0    inet 10.1.2.1/24 scope global usb0" ;;\n'
+                        f'"-4 -o addr show dev usb0") echo "7: usb0    inet {port} scope global usb0" ;;\n'
                         'esac')
         body = self.text('etc/hotplug.d/iface/10-mu300-usb', **{
             '/run/': f'{self.tmp}/run/', '/sys/class/net/': f'{self.tmp}/net/', '/tmp/mu300-usb-rebound': f'{self.tmp}/stamp',
@@ -124,6 +150,23 @@ class EarlyUsbOpenWrt(ShellTest):
             # the macOS re-enumeration still runs (K10 rejected until its gate)
             self.assertEqual('100', (self.tmp / 'stamp').read_text().strip())
             self.assertEqual('25100000.dwc3', (g / 'UDC').read_text().strip())
+            self.tearDown(); self.setUp()
+
+    def test_port_prefix_other_than_the_bridge(self):
+        # I1: br-lan has the LAN as /16, preinit left a /24 on usb0 - its route would beat the bridge's
+        for shell in self.each_shell():
+            self.netdevs('usb0')
+            self.hotplug(shell, bridge='10.1.0.1/16', port='10.1.0.1/24')
+            ip = (self.tmp / 'ip.log').read_text()
+            self.assertIn('ip addr del 10.1.0.1/24 dev usb0\n', ip)
+            self.assertEqual(1, ip.count('ip addr del'))
+            self.tearDown(); self.setUp()
+
+    def test_another_address_on_the_port_stays(self):
+        for shell in self.each_shell():
+            self.netdevs('usb0')
+            self.hotplug(shell, bridge='10.1.0.1/16', port='10.1.0.10/24')
+            self.assertNotIn('ip addr del', (self.tmp / 'ip.log').read_text())
             self.tearDown(); self.setUp()
 
     def test_without_rndis0_nothing_is_reattached(self):
@@ -153,11 +196,11 @@ class EarlyUsbOpenWrt(ShellTest):
                 self.assertFalse((self.tmp / 'kill.log').exists(), env)
 
     # --- uci-defaults 90-mu300 (K25, K26, K27)
-    def defaults(self, shell, runs=1, mac='02:50:aa:bb:77:02'):
+    def defaults(self, shell, runs=1, mac='02:50:aa:bb:77:02', lan='192.168.77.1'):
         (self.tmp / 'inittab').write_text('')
         if mac:
             (self.tmp / 'run' / 'mu300-usb-host-mac').write_text(mac + '\n')
-        self.stub('mu300-lan-ip', 'echo 192.168.77.1')
+        self.stub('mu300-lan-ip', f'echo {lan}')
         # a uci that remembers what was added: `show firewall` lists the earlyusb zone once one was named so
         self.stub('uci', 'echo "uci $*" >> "$STUBLOG/uci.log"\n'
                          '[ "$1" = -q ] && shift\n'
@@ -168,7 +211,7 @@ class EarlyUsbOpenWrt(ShellTest):
                          '"add firewall") echo cfg0e1 ;;\n'
                          '"batch ") sed "s/^/batch: /" >> "$STUBLOG/uci.log" ;;\n'
                          'esac\nexit 0')
-        body = self.text('etc/uci-defaults/90-mu300', **{
+        body = self.text('etc/uci-defaults/90-mu300', **{'/lib/mu300/usb-host.sh': str(OPENWRT / 'lib' / 'mu300' / 'usb-host.sh'), 
             '/opt/mu300/bin/': f'{self.stubs}/', '/run/': f'{self.tmp}/run/', '/sys/': f'{self.tmp}/sys/',
             '/etc/inittab': f'{self.tmp}/inittab'})
         for _ in range(runs):
@@ -185,6 +228,12 @@ class EarlyUsbOpenWrt(ShellTest):
                 self.assertIn(line + '\n', log)
             # Task 30's offloading stays
             self.assertIn("uci -q set firewall.@defaults[0].flow_offloading=1\n", log)
+            self.tearDown(); self.setUp()
+
+    def test_defaults_never_pin_the_router(self):
+        for shell in self.each_shell():
+            log = self.defaults(shell, lan='192.168.77.200')
+            self.assertIn("batch: set dhcp.mu300_usb.ip='192.168.77.199'\n", log)
             self.tearDown(); self.setUp()
 
     def test_defaults_without_a_known_host_mac_pin_nothing(self):
@@ -223,7 +272,7 @@ class EarlyUsbOpenWrt(ShellTest):
 
     def test_overlay_scripts_are_executable(self):
         # the fork's mu300-post and mu300-usb-reset (Task 26) run the LAN hook directly
-        for rel in ('lib/preinit/06_mu300_early_usb', 'etc/hotplug.d/iface/10-mu300-usb', 'etc/uci-defaults/90-mu300'):
+        for rel in ('lib/mu300/usb-host.sh', 'lib/preinit/06_mu300_early_usb', 'etc/hotplug.d/iface/10-mu300-usb', 'etc/uci-defaults/90-mu300'):
             self.assertTrue((OPENWRT / rel).stat().st_mode & 0o111, rel)
 
 
