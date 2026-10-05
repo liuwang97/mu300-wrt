@@ -2,6 +2,7 @@
 mu300-ttl. They run on Ubuntu (dash, bash) and OpenWrt (busybox ash)."""
 import os
 import pty
+import re
 import select
 import shutil
 import subprocess
@@ -155,31 +156,39 @@ class At(ShellTest):
 class Atd(ShellTest):
     """mu300-atd on a pseudo terminal pair: the test is the modem (the pty master), the daemon runs for real."""
 
+    FAST = 0.95   # a round trip without the one second drain wait: read -t 1 alone cannot be faster than this
+
     def setUp(self):
         super().setUp()
         self.dir = self.tmp / 'at'
         self.procs = []
         self.masters = []
+        self.slave_fds = []
 
     def tearDown(self):
         for p in self.procs:
-            p.kill()
-            p.wait()
-        for m in self.masters:
-            os.close(m)
+            p.terminate()                 # the daemon's INT/TERM trap stops its drainers
+            try:
+                p.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                p.kill()
+                p.wait()
+        for fd in self.masters + self.slave_fds:
+            os.close(fd)
         super().tearDown()
 
     def pty(self, name):
         """A character device RUN/NAME (a symlink to a pty slave) and the master fd behind it."""
         master, slave = pty.openpty()
         self.masters.append(master)
-        self.slave_fds = getattr(self, 'slave_fds', []) + [slave]   # keep the slave open: no hangup
+        self.slave_fds.append(slave)      # keep the slave open: no hangup
         link = self.run_dir / name
         link.symlink_to(os.ttyname(slave))
         return link, master
 
     def start(self, shell, nr0=True, **env):
-        """Start the daemon on tty_nr1 (and a tty_nr0 if NR0); wait until it owns the channel."""
+        """Start the daemon on tty_nr1 (and a tty_nr0 if NR0); wait until it owns the channel and every drainer it
+        started has made its log. Returns the URC logs and the nr1 master."""
         self.run_dir = self.tmp / f'run{len(self.procs)}'   # one per daemon: each_shell starts several
         self.run_dir.mkdir()
         self.dir = self.run_dir / 'at'
@@ -190,19 +199,28 @@ class Atd(ShellTest):
         if 'MU300_AT_URC_CHANNELS' not in env:
             e.pop('MU300_AT_URC_CHANNELS', None)
         self.err = self.run_dir / 'atd.err'
-        proc = subprocess.Popen(shell + [str(BIN / 'mu300-atd')], stderr=self.err.open('w'), env=e)
-        self.procs.append(proc)
-        # the daemon makes urc/ once it has the tty (its stderr goes to /dev/null from then on, so no log line to wait for)
-        for _ in range(250):
-            if (self.dir / 'urc').is_dir():
+        with self.err.open('w') as err:
+            self.procs.append(subprocess.Popen(shell + [str(BIN / 'mu300-atd')], stderr=err, env=e))
+        # "... is ours, draining N other channel(s)" comes once every drainer has been started
+        n = None
+        for _ in range(500):
+            m = re.search(r'is ours, draining\s+(\d+) other', self.err.read_text())
+            if m:
+                n = int(m.group(1))
                 break
             time.sleep(0.02)
-        self.assertTrue((self.dir / 'urc').is_dir(), 'the daemon did not come up')
-        time.sleep(0.5)   # the drainers open their channels in the background
-        return sorted(p.name for p in (self.dir / 'urc').iterdir()), master
+        self.assertIsNotNone(n, 'the daemon did not come up: ' + self.err.read_text())
+        urc = self.dir / 'urc'
+        for _ in range(500):              # a drainer makes its log in the background
+            logs = sorted(p.name for p in urc.iterdir())
+            if len(logs) >= n:
+                break
+            time.sleep(0.02)
+        return logs, master
 
     def send(self, master, cmd, reply, t=1):
-        """Hand the daemon CMD (as a client does), answer on the pty when it arrives; seconds until the answer file."""
+        """Hand the daemon CMD (as a client does), answer on the pty when it arrives; seconds until the answer file.
+        The answer itself is left in self.answer."""
         answer = self.tmp / 'answer'
         answer.unlink(missing_ok=True)
         t0 = time.monotonic()
@@ -217,7 +235,13 @@ class Atd(ShellTest):
             os.write(master, reply)
         while not answer.exists() and time.monotonic() - t0 < 40:
             time.sleep(0.02)
-        return time.monotonic() - t0
+        elapsed = time.monotonic() - t0
+        self.answer = answer.read_text() if answer.exists() else None
+        return elapsed
+
+    def whole_seconds(self):
+        """The daemon's shell reads in whole seconds only (bash 3.2): every drain then waits the full second."""
+        return 'takes whole seconds' in self.err.read_text()
 
     def test_log_lines_after_open_reach_stderr(self):
         for shell in self.each_shell():
@@ -232,14 +256,17 @@ class Atd(ShellTest):
     def test_empty_urc_channels_open_none(self):
         for shell in self.each_shell():
             logs, _m = self.start(shell, MU300_AT_URC_CHANNELS='')
+            self.assertRegex(self.err.read_text(), r'draining\s+0 other')
             self.assertEqual(logs, [])
 
     def test_no_drain_wait_after_a_clean_reply(self):
         for shell in self.each_shell():
             _l, m = self.start(shell, nr0=False)
             self.send(m, 'AT', b'\r\nOK\r\n')                 # the first command drains slowly: nothing known yet
-            for reply in (b'\r\nOK\r\n', b'\r\nERROR\r\n'):
-                self.assertLess(self.send(m, 'AT', reply), 0.7)
+            if self.whole_seconds():
+                continue
+            for reply in (b'\r\nOK\r\n', b'\r\nERROR\r\n', b'\r\nOK\r\n'):   # the last one times the drain after ERROR
+                self.assertLess(self.send(m, 'AT', reply), self.FAST)
 
     def test_slow_drain_after_a_timeout(self):
         for shell in self.each_shell():
@@ -247,7 +274,30 @@ class Atd(ShellTest):
             self.send(m, 'AT', b'\r\nOK\r\n')
             self.send(m, 'AT+X', None, t=1)                      # no answer: the timeout path
             self.assertGreater(self.send(m, 'AT', b'\r\nOK\r\n'), 0.9)
-            self.assertLess(self.send(m, 'AT', b'\r\nOK\r\n'), 0.7)   # and a clean one makes it fast again
+            if not self.whole_seconds():
+                self.assertLess(self.send(m, 'AT', b'\r\nOK\r\n'), self.FAST)   # and a clean one makes it fast again
+
+    def test_stray_lines_while_idle_do_not_shift_the_answers(self):
+        # A line that arrives after a clean reply and before the next command - a late final code, a URC, an
+        # unsolicited NO CARRIER - is drained into the nr1 log, never taken as the next command's answer.
+        for shell in self.each_shell():
+            _l, m = self.start(shell, nr0=False)
+            self.send(m, 'AT', b'\r\nOK\r\n')
+            # (a) a late trailing final code, the moment the reply that ended in OK has been handed over
+            self.send(m, 'AT+A', b'\r\n+A: 1\r\nOK\r\n')
+            self.assertEqual(self.answer, '+A: 1\nOK\n')
+            os.write(m, b'\r\nOK\r\n')
+            self.send(m, 'AT+B', b'\r\n+B: 2\r\nOK\r\n')
+            self.assertEqual(self.answer, '+B: 2\nOK\n')
+            # (b) URCs and an unsolicited final code while the channel is idle, before the next command
+            os.write(m, b'\r\n+CMTI: "SM",3\r\n\r\nNO CARRIER\r\n')
+            time.sleep(0.2)
+            self.send(m, 'AT+C', b'\r\n+C: 3\r\nOK\r\n')
+            self.assertEqual(self.answer, '+C: 3\nOK\n')
+            self.send(m, 'AT+D', b'\r\nERROR\r\n')
+            self.assertEqual(self.answer, 'ERROR\n')
+            self.assertEqual((self.dir / 'urc' / 'tty_nr1.log').read_text().split('\n'),
+                             ['OK', '+CMTI: "SM",3', 'NO CARRIER', ''])
 
 
 class Os(ShellTest):
