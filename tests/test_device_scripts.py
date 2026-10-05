@@ -369,6 +369,16 @@ at() {
         text = text.replace('/opt/mu300/bin/sipa-dele-start', 'sipa-dele-start')
         text = text.replace('/proc/modules', f'{self.tmp}/proc-modules')
         text = text.replace('/tmp/mu300-sipa-dele.log', f'{self.tmp}/sipa-dele.log')
+        # R35: /lib/modules is the scratch directory's lib-modules, where this kernel has sipa-dele.ko unless a test
+        # removes it; bootmark is a stub that appends its mark to $STUBLOG/marks
+        text = text.replace('/lib/modules/', f'{self.tmp}/lib-modules/')
+        text = text.replace('/opt/mu300/bin/bootmark', f'{self.tmp}/bootmark')
+        if not (self.tmp / 'bootmark').exists():
+            ko = self.tmp / 'lib-modules' / os.uname().release / 'sipa-dele.ko'
+            ko.parent.mkdir(parents=True, exist_ok=True)
+            ko.write_text('')
+            (self.tmp / 'bootmark').write_text('#!/bin/sh\necho "$*" >> "$STUBLOG/marks"\n')
+            (self.tmp / 'bootmark').chmod(0o755)
         lib = self.tmp / 'mobile-data.lib'
         lib.write_text(text)
         (self.tmp / 'run').mkdir(exist_ok=True)
@@ -478,6 +488,78 @@ at() {
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertFalse([c for c in cmds if c.startswith('sipa-dele-start')], cmds)
         self.assertIn('AT+CGACT=1,1', cmds)
+
+    def test_sipa_dele_only_with_the_module(self):
+        """R35: a kernel without sipa-dele.ko (neither in /lib/modules/<release> nor under extra/) dials without the
+        loader, and the boot timeline has no dial-sipa-dele mark; with the module (either place) the loader runs and
+        the mark is written."""
+        env = dict(MU300_NETIFD=1, MU300_AT_DEV='/dev/null', MU300_URC_LOG=self.tmp / 'none', MU300_CFUN_WAIT=0,
+                   CEREG='+CEREG: 2,1,"1A2B","0123ABCD",7')
+        self.lib(':')                                   # makes lib-modules and the bootmark stub
+        mods = self.tmp / 'lib-modules' / os.uname().release
+        (mods / 'sipa-dele.ko').unlink()
+        r, sent = self.lib('up_locked', **env)
+        cmds = [s.split(' ', 1)[1] for s in sent]
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn('IP=10.1.2.3\n', r.stdout)
+        self.assertFalse([c for c in cmds if c.startswith('sipa-dele-start')], cmds)
+        self.assertIn('AT+CGACT=1,1', cmds)
+        marks = (self.tmp / 'marks').read_text().split()
+        self.assertIn('dial-registered', marks)
+        self.assertNotIn('dial-sipa-dele', marks)
+        self.assertIn('no sipa-dele.ko', self.radio_log())
+        (mods / 'extra').mkdir()
+        (mods / 'extra' / 'sipa-dele.ko').write_text('')
+        (self.tmp / 'marks').unlink()
+        r, sent = self.lib('up_locked', **env)
+        cmds = [s.split(' ', 1)[1] for s in sent]
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn('sipa-dele-start wait=20', cmds)
+        self.assertIn('dial-sipa-dele', (self.tmp / 'marks').read_text().split())
+
+    # R35: up()'s lock, the radio lock's scheme. up_locked is replaced by a round that logs "start" and "end" to
+    # $STUBLOG/rounds around $ROUND s (1) of sleep.
+    ROUND = ('up_locked() { echo start >> "$STUBLOG/rounds"; sleep "${ROUND:-1}"; echo end >> "$STUBLOG/rounds"; }\n')
+
+    def up_lock_files(self):
+        return sorted(p.name for p in (self.tmp / 'run').iterdir() if p.name.startswith('mu300-mobile-data-up'))
+
+    def test_up_lock_holder_is_named_from_the_start(self):
+        """R35: the bring-up lock never exists without its owner's pid, and is gone after the round."""
+        r, _ = self.lib(self.ROUND + 'ROUND=2; ( up ) & h=$!\n'
+                        f'sleep 1; echo "owner=$(readlink "{self.tmp}/run/mu300-mobile-data-up.owner") h=$h"; wait $h')
+        m = re.search(r'owner=(\d+) h=(\d+)', r.stdout)
+        self.assertTrue(m, r.stdout + r.stderr)
+        self.assertEqual(m.group(1), m.group(2))
+        self.assertEqual(self.up_lock_files(), [])
+
+    def test_two_waiters_on_a_dead_up_lock(self):
+        """R35: the bring-up's owner was killed in its round (nothing released). Two callers of up find the lock at
+        the same moment: exactly one takes it over, the other waits for that one's round to end, and nothing of the
+        lock is left afterwards (the old directory lock let the second remove the lock the first had just taken)."""
+        r, _ = self.lib(self.ROUND + self.SLOW_DEAD +
+                        'ROUND=5; ( up ) >/dev/null 2>&1 & h=$!\n'
+                        'sleep 1; kill -9 $h; wait $h 2>/dev/null || true\n'
+                        'ROUND=1\n'
+                        '( DEAD_DELAY=0.2; up ) & a=$!; ( DEAD_DELAY=0.8; up ) & b=$!\n'
+                        'ra=0; wait $a || ra=$?; rb=0; wait $b || rb=$?; echo "ra=$ra rb=$rb"')
+        self.assertIn('ra=0 rb=0', r.stdout, r.stderr)
+        rounds = [line.split()[0] for line in (self.tmp / 'rounds').read_text().splitlines()]
+        # the killed owner's start, then two rounds one after the other, never two at once
+        self.assertEqual(rounds, ['start', 'start', 'end', 'start', 'end'], rounds)
+        self.assertEqual(self.up_lock_files(), [])
+
+    def test_up_lock_wait_gives_up(self):
+        """R35: a bring-up that holds the lock past the wait (MU300_UP_LOCK_WAIT, 150 s by default) makes the
+        second caller give up and say whose it is; down() leaves a running bring-up's AT channel alone."""
+        r, sent = self.lib(self.ROUND + 'ROUND=4; ( up ) & h=$!\n'
+                           'sleep 1; rc=0; up 2>"$STUBLOG/err" || rc=$?; MU300_AT_DEV=/dev/null down\n'
+                           'echo "rc=$rc h=$h"; wait $h', MU300_UP_LOCK_WAIT=1)
+        m = re.search(r'rc=(\d+) h=(\d+)', r.stdout)
+        self.assertTrue(m, r.stdout + r.stderr)
+        self.assertEqual(m.group(1), '1')
+        self.assertIn(f'(pid {m.group(2)})', (self.tmp / 'err').read_text())
+        self.assertFalse([s for s in sent if 'AT+CGACT=0' in s], sent)
 
     def test_led_from_cereg(self):
         """4G or 5G from the AcT field of AT+CEREG? (K56), not from AT+COPS?."""
@@ -599,10 +681,10 @@ at() {
     def radio_lock_files(self):
         return sorted(p.name for p in (self.tmp / 'run').iterdir() if p.name.startswith('mu300-radio-on'))
 
-    # R32: radio_on's lock. A wrapped radio_owner_alive takes $DEAD_DELAY s (0.5) more over every "dead" verdict and
+    # R32: radio_on's lock. A wrapped lock_owner_alive takes $DEAD_DELAY s (0.5) more over every "dead" verdict and
     # $ALIVE_DELAY s (0) over every "alive" one: two waiters can both see the dead owner before either acts on it.
-    SLOW_DEAD = ('eval "orig_$(declare -f radio_owner_alive)"\n'
-                 'radio_owner_alive() { if orig_radio_owner_alive "$@"; then sleep "${ALIVE_DELAY:-0}"; return 0; fi;'
+    SLOW_DEAD = ('eval "orig_$(declare -f lock_owner_alive)"\n'
+                 'lock_owner_alive() { if orig_lock_owner_alive "$@"; then sleep "${ALIVE_DELAY:-0}"; return 0; fi;'
                  ' sleep "${DEAD_DELAY:-0.5}"; return 1; }\n')
 
     def test_two_waiters_on_a_dead_owners_lock(self):
