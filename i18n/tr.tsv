@@ -264,3 +264,28 @@ password:       generated, written to {1}	parola:         üretilecek, {1} dosya
 the zip is incomplete or damaged (its manifest is not valid)	zip eksik ya da bozuk (manifest dosyası geçerli değil)
 The free space behind the partitions is not empty ({1} of 16 samples hold data); it may be used by this firmware. To use it anyway, put MU300_STORAGE=internal and MU300_REGION_OVERWRITE=yes into {2}, a file only root can change.	Bölümlerin arkasındaki boş alan boş değil (16 örnekten {1} tanesinde veri var); bu yazılım tarafından kullanılıyor olabilir. Yine de kullanmak için yalnızca root'un değiştirebildiği {2} dosyasına MU300_STORAGE=internal ve MU300_REGION_OVERWRITE=yes yazın.
 Installing to the SD card ({1}, {2}) erases everything on it. To allow that, put MU300_STORAGE=sd and MU300_SD_ERASE=yes into {3}, a file only root can change.	SD karta ({1}, {2}) kurulum karttaki her şeyi siler. Buna izin vermek için yalnızca root'un değiştirebildiği {3} dosyasına MU300_STORAGE=sd ve MU300_SD_ERASE=yes yazın.
+could not read the Android files the modem needs from this device	modemin ihtiyaç duyduğu Android dosyaları bu cihazdan okunamadı
+the Mali GPU files are incomplete on this device; installing without them	bu cihazdaki Mali GPU dosyaları eksik; onlarsız kuruluyor
+could not pack the vendor files	üretici dosyaları paketlenemedi
+could not build the boot control blocks	açılış denetim blokları oluşturulamadı
+could not copy the Android files into the boot ramdisk	Android dosyaları açılış ramdisk'ine kopyalanamadı
+Android runs from slot b, and the kernel of this zip cannot boot Linux from slot a yet; use a newer zip	Android b yuvasından çalışıyor ve bu zip'in çekirdeği Linux'u henüz a yuvasından başlatamıyor; daha yeni bir zip kullanın
+could not build the boot ramdisk (magiskboot)	açılış ramdisk'i oluşturulamadı (magiskboot)
+could not build the boot image	boot imajı oluşturulamadı
+boot image for slot {1}: kernel {2}, {3} bytes	{1} yuvası için boot imajı: çekirdek {2}, {3} bayt
+could not generate a password	parola üretilemedi
+could not hash the password	parolanın özeti (hash) hesaplanamadı
+could not copy the installer files	kurulum dosyaları kopyalanamadı
+Installing {1} (this takes a few minutes)	{1} kuruluyor (birkaç dakika sürer)
+installation on the device failed; boot_{1} and misc were not changed	cihazdaki kurulum başarısız oldu; boot_{1} ve misc değiştirilmedi
+could not mount the Linux filesystem for the kernel modules	çekirdek modülleri için Linux dosya sistemi bağlanamadı
+could not install the kernel modules	çekirdek modülleri kurulamadı
+Writing and verifying boot_{1}	boot_{1} yazılıyor ve doğrulanıyor
+boot_{1} did not verify after writing; misc was not changed, so Android keeps booting	boot_{1} yazıldıktan sonra doğrulanamadı; misc değiştirilmedi, Android açılmaya devam eder
+misc changed during the installation; Linux was not armed. Install the zip again.	misc kurulum sırasında değişti; Linux etkinleştirilmedi. Zip'i yeniden kurun.
+misc did not verify after writing; reboot normally, Android is not affected	misc yazıldıktan sonra doğrulanamadı; normal şekilde yeniden başlatın, Android etkilenmez
+could not write {1}	{1} yazılamadı
+could not remove MU300_PASSWORD from {1}; remove it by hand	MU300_PASSWORD {1} dosyasından kaldırılamadı; elle kaldırın
+Done. Reboot to start {1}.	Tamamlandı. {1} sistemini başlatmak için yeniden başlatın.
+password for {1}: {2}   (also in {3}; delete that file after the first login)	{1} için parola: {2}   ({3} dosyasında da var; ilk girişten sonra o dosyayı silin)
+If Linux does not start, the device returns to Android by itself.	Linux açılmazsa cihaz kendiliğinden Android'e döner.

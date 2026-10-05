@@ -264,3 +264,28 @@ password:       generated, written to {1}	密码：          自动生成，将�
 the zip is incomplete or damaged (its manifest is not valid)	zip 不完整或已损坏（其 manifest 无效）
 The free space behind the partitions is not empty ({1} of 16 samples hold data); it may be used by this firmware. To use it anyway, put MU300_STORAGE=internal and MU300_REGION_OVERWRITE=yes into {2}, a file only root can change.	分区之后的空闲空间并不为空（16 个采样中有 {1} 个含有数据）；它可能正被此固件使用。如仍要使用，请在只有 root 能修改的 {2} 中写入 MU300_STORAGE=internal 和 MU300_REGION_OVERWRITE=yes。
 Installing to the SD card ({1}, {2}) erases everything on it. To allow that, put MU300_STORAGE=sd and MU300_SD_ERASE=yes into {3}, a file only root can change.	安装到 SD 卡（{1}，{2}）会清除卡上的全部内容。如允许，请在只有 root 能修改的 {3} 中写入 MU300_STORAGE=sd 和 MU300_SD_ERASE=yes。
+could not read the Android files the modem needs from this device	无法从本设备读取调制解调器所需的 Android 文件
+the Mali GPU files are incomplete on this device; installing without them	本设备上的 Mali GPU 文件不完整；将不带这些文件安装
+could not pack the vendor files	无法打包厂商文件
+could not build the boot control blocks	无法构建启动控制块
+could not copy the Android files into the boot ramdisk	无法将 Android 文件复制到启动 ramdisk 中
+Android runs from slot b, and the kernel of this zip cannot boot Linux from slot a yet; use a newer zip	Android 从 b 槽运行，而此 zip 的内核还不能从 a 槽启动 Linux；请使用更新的 zip
+could not build the boot ramdisk (magiskboot)	无法构建启动 ramdisk（magiskboot）
+could not build the boot image	无法构建启动镜像
+boot image for slot {1}: kernel {2}, {3} bytes	槽位 {1} 的启动镜像：内核 {2}，{3} 字节
+could not generate a password	无法生成密码
+could not hash the password	无法计算密码哈希
+could not copy the installer files	无法复制安装文件
+Installing {1} (this takes a few minutes)	正在安装 {1}（需要几分钟）
+installation on the device failed; boot_{1} and misc were not changed	设备上的安装失败；boot_{1} 和 misc 未被更改
+could not mount the Linux filesystem for the kernel modules	无法为内核模块挂载 Linux 文件系统
+could not install the kernel modules	无法安装内核模块
+Writing and verifying boot_{1}	正在写入并校验 boot_{1}
+boot_{1} did not verify after writing; misc was not changed, so Android keeps booting	写入后 boot_{1} 校验失败；misc 未被更改，Android 会照常启动
+misc changed during the installation; Linux was not armed. Install the zip again.	安装期间 misc 发生了变化；Linux 未被启用。请重新安装此 zip。
+misc did not verify after writing; reboot normally, Android is not affected	写入后 misc 校验失败；请正常重启，Android 不受影响
+could not write {1}	无法写入 {1}
+could not remove MU300_PASSWORD from {1}; remove it by hand	无法从 {1} 中删除 MU300_PASSWORD；请手动删除
+Done. Reboot to start {1}.	完成。重启即可启动 {1}。
+password for {1}: {2}   (also in {3}; delete that file after the first login)	{1} 的密码：{2}   （也保存在 {3} 中；首次登录后请删除该文件）
+If Linux does not start, the device returns to Android by itself.	如果 Linux 无法启动，设备会自动回到 Android。

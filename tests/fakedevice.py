@@ -21,18 +21,22 @@ case $1 in
         . "$MU300_DEVICE_WORK/mu300-install.env"
         # what would be installed: the tarballs it is given, by checksum
         for os in $OSES; do sha256sum "$MU300_DEVICE_WORK/mu300-$os.tar.gz" >> "$FAKE/installed.sha256"; mkdir -p "$FAKE/fs/$os/etc"; done
+        # what a test wants to happen while the systems are installed (tests' fake_install_hook)
+        [ ! -f "$FAKE/install-hook" ] || . "$FAKE/install-hook"
         echo MU300-INSTALL-OK ;;
     */android-mount-mu300root.sh)
-        # a mount is a real directory holding a copy of $FAKE/fs, listed in $FAKE/mounts; unmounting empties it
+        # a mount is a real directory holding a copy of $FAKE/fs, listed in $FAKE/mounts; unmounting a read-write
+        # one writes it back to $FAKE/fs, then empties it
         if [ "$2" = -u ]; then
             [ "${FAKE_UMOUNT_FAILS:-0}" = 1 ] && { echo "umount: $3: Device or resource busy" >&2; exit 1; }
+            grep -q " $3 ext4 ro " "$FAKE/mounts" || cp -R "$3/." "$FAKE/fs/"
             rm -rf "$3"/* "$3"/.[!.]*
             grep -v " $3 " "$FAKE/mounts" > "$FAKE/mounts.new"; mv "$FAKE/mounts.new" "$FAKE/mounts"
             echo UNMOUNTED
         else
             [ "${FAKE_MOUNT_FAILS:-0}" = 1 ] && { echo "ALREADY-MOUNTED loop7"; exit 1; }
             mkdir -p "$2" && cp -R "$FAKE/fs/." "$2/"
-            echo "/dev/block/loop7 $2 ext4 ${MU300_RO:+ro} 0 0" >> "$FAKE/mounts"
+            echo "/dev/block/loop7 $2 ext4 $([ -n "${MU300_RO:-}" ] && echo ro || echo rw) 0 0" >> "$FAKE/mounts"
             echo "MOUNTED fake on $2"
         fi ;;
 esac
