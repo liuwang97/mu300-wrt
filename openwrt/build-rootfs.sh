@@ -144,7 +144,9 @@ for c in base $(apk list --installed "luci-app-*" | sed -n "s/^luci-app-\([^ ]*\
     done
 done
 echo "LuCI translations:$i18n"
-case " $i18n " in *" luci-i18n-base-tr "*" luci-i18n-base-zh-cn "*) ;; *) echo "no LuCI base translation tr/zh-cn in the feed" >&2; exit 1 ;; esac
+for l in tr zh-cn; do
+    case " $i18n " in *" luci-i18n-base-$l "*) ;; *) echo "no LuCI base translation $l in the feed" >&2; exit 1 ;; esac
+done
 apk add $i18n >/dev/null
 R=/build/root; mkdir -p $R
 # copy the live filesystem of this container (the OpenWrt rootfs plus packages), without runtime mounts
