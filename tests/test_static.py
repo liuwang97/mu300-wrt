@@ -187,6 +187,16 @@ class Rules(unittest.TestCase):
         for c in lst:
             self.assertTrue((BIN / c).is_file(), c)
 
+    def test_reply_deadlines_are_at_least_t_whole_seconds(self):
+        # date +%s counts whole seconds: "now + T" ends between T - 1 and T seconds away, so a command written late in
+        # a second had almost none of its budget (mu300-atd lost replies with T=1). Every file-clock deadline is now + T + 1.
+        for name, pat in (('mu300-at', r'\$\(date \+%s\) \+ T \+ 1'),
+                          ('mu300-ussd', r'\$\(date \+%s\) \+ T \+ 1'),
+                          ('mu300-atd', r'\$\(now\) \+ \$1 \+ 1')):
+            src = (BIN / name).read_text()
+            self.assertRegex(src, pat, name)
+            self.assertNotRegex(src, r'date \+%s\) \+ T \)', name)
+
     def test_images_carry_no_vpn_engine(self):
         # the engines are the vpn extra (mu300-extra): ~120 MB that a system without a VPN does not carry
         for f in ('rootfs/assemble.sh', 'openwrt/build-rootfs.sh'):
