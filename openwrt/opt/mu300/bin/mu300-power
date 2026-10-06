@@ -1,0 +1,144 @@
+#!/bin/sh
+# What the MU300 does with its battery: profiles, idle radios, the charging boot.
+#   mu300-power status                  state, profile and why, battery, charger, idle timer
+#   mu300-power profile [NAME|auto]     force a profile (plugged|battery|saver), or back to automatic
+#   mu300-power set PROFILE.KNOB VALUE  knobs: WIFI_IDLE (minutes, 0 never), RADIO_IDLE keep|lte|off,
+#                                       LEDS_IDLE on|off, CPU full|eco; also set SAVER_BELOW N, CHARGE_TO 100|80
+#   mu300-power wake                    leave idle (the keys call it); restarts the idle timer
+#   mu300-power idle                    enter idle now
+#   mu300-power log [SECONDS] [FILE]    append time,V,mA,W,%,temp,state,profile every SECONDS (5) to FILE
+#                                       (/var/log/mu300-power.csv)
+#   mu300-power daemon                  the state machine (mu300-power.service, /etc/init.d/mu300-power)
+# Design: docs/superpowers/specs/2026-10-06-power-profiles-design.md. Configuration: /etc/mu300/power.conf,
+# KEY=VALUE, kept across updates with the rest of etc/mu300; a missing key is its default below.
+set -u
+export PATH="$PATH:/opt/mu300/bin:/opt/mu300/busybox-bin:/usr/sbin:/sbin"
+R=${MU300_SYSROOT:-}
+RUN=${MU300_RUN:-/run}/mu300
+CONF=${MU300_POWER_CONF:-/etc/mu300/power.conf}
+ST=$RUN/power
+PROFILES="plugged battery saver"
+KNOBS="WIFI_IDLE RADIO_IDLE LEDS_IDLE CPU"
+
+say() { echo "mu300-power: $*" >&2; logger -t mu300-power -- "$*" 2>/dev/null || true; }
+
+# --- configuration
+default() {  # default KEY: the built-in value of a top-level key or PROFILE_KNOB
+    case $1 in
+        PROFILE) echo auto ;; SAVER_BELOW) echo 20 ;; CHARGE_TO) echo 100 ;;
+        plugged_WIFI_IDLE) echo 0 ;;  plugged_RADIO_IDLE) echo keep ;; plugged_LEDS_IDLE) echo on ;;  plugged_CPU) echo full ;;
+        battery_WIFI_IDLE) echo 10 ;; battery_RADIO_IDLE) echo off ;;  battery_LEDS_IDLE) echo off ;; battery_CPU) echo full ;;
+        saver_WIFI_IDLE) echo 5 ;;    saver_RADIO_IDLE) echo off ;;    saver_LEDS_IDLE) echo off ;;   saver_CPU) echo eco ;;
+        *) return 1 ;;
+    esac
+}
+valid() {  # valid KEY VALUE
+    case $1 in
+        PROFILE) case $2 in auto|plugged|battery|saver) return 0 ;; esac ;;
+        SAVER_BELOW) case $2 in [0-9]|[1-9][0-9]|100) return 0 ;; esac ;;
+        CHARGE_TO) case $2 in 100|80) return 0 ;; esac ;;
+        *_WIFI_IDLE) case $2 in ''|*[!0-9]*) ;; *) [ ${#2} -le 4 ] && return 0 ;; esac ;;
+        *_RADIO_IDLE) case $2 in keep|lte|off) return 0 ;; esac ;;
+        *_LEDS_IDLE) case $2 in on|off) return 0 ;; esac ;;
+        *_CPU) case $2 in full|eco) return 0 ;; esac ;;
+    esac
+    return 1
+}
+conf_raw() { sed -n "s/^$1=\(.*\)\$/\1/p" "$CONF" 2>/dev/null | tail -n1; }
+conf_get() {  # conf_get KEY: the file's value when valid, else the default; an invalid one is noted for status
+    _v=$(conf_raw "$1")
+    if [ -n "$_v" ] && valid "$1" "$_v"; then echo "$_v"; return 0; fi
+    [ -z "$_v" ] || { mkdir -p "$ST" 2>/dev/null; echo "$1" >> "$ST/ignored" 2>/dev/null; }
+    default "$1"
+}
+knob() { conf_get "$1_$2"; }
+conf_set() {  # conf_set KEY VALUE: validate, then replace the line or append it
+    default "$1" >/dev/null || { echo "mu300-power: no such key: $1" >&2; return 2; }
+    valid "$1" "$2" || { echo "mu300-power: bad value for $1: $2" >&2; return 2; }
+    mkdir -p "${CONF%/*}" 2>/dev/null
+    [ -f "$CONF" ] || : > "$CONF"
+    if grep -q "^$1=" "$CONF"; then
+        sed "s/^$1=.*\$/$1=$2/" "$CONF" > "$CONF.tmp" && mv "$CONF.tmp" "$CONF"
+    else
+        echo "$1=$2" >> "$CONF"
+    fi
+}
+
+# --- the device
+psy_of_type() {  # psy_of_type TYPE...: the first power_supply directory whose type is one of them
+    for _d in "$R"/sys/class/power_supply/*; do
+        [ -f "$_d/type" ] || continue
+        _t=$(cat "$_d/type" 2>/dev/null)
+        for _w in "$@"; do [ "$_t" = "$_w" ] && { echo "$_d"; return 0; }; done
+    done
+    return 1
+}
+battery_dir() {
+    _d=$(psy_of_type Battery) || return 1
+    [ ! -f "$_d/present" ] || [ "$(cat "$_d/present" 2>/dev/null)" = 1 ] || return 1
+    echo "$_d"
+}
+rd() { cat "$1" 2>/dev/null; }
+capacity() { _d=$(battery_dir) && rd "$_d/capacity"; }
+battery_temp() { _d=$(battery_dir) && rd "$_d/temp"; }
+charger_dir() { psy_of_type USB Mains; }
+plugged() {
+    if _d=$(charger_dir); then [ "$(rd "$_d/online")" = 1 ]; return $?; fi
+    for _s in "$R"/sys/class/extcon/*/state; do grep -qx 'USB=1' "$_s" 2>/dev/null && return 0; done
+    battery_dir >/dev/null || return 0   # no battery at all (the F50): it runs on the cable
+    return 1
+}
+pick_profile() {  # prints NAME; also sets PICKED and WHY (not visible to a caller that runs it in $( ))
+    _p=$(conf_get PROFILE)
+    if [ "$_p" != auto ]; then PICKED=$_p WHY=forced; echo "$PICKED"; return 0; fi
+    if plugged; then PICKED=plugged WHY=auto; echo "$PICKED"; return 0; fi
+    _below=$(conf_get SAVER_BELOW); _cap=$(capacity)
+    case $_cap in ''|*[!0-9]*) _cap= ;; esac
+    if [ "$_below" != 0 ] && [ -n "$_cap" ] && [ "$_cap" -lt "$_below" ]; then
+        PICKED=saver WHY="auto, battery under $_below %"
+    else
+        PICKED=battery WHY=auto
+    fi
+    echo "$PICKED"
+}
+
+# --- commands
+cmd_status() {
+    rm -f "$ST/ignored" 2>/dev/null
+    pick_profile >/dev/null   # not in $( ): WHY would be lost in a subshell
+    echo "profile: $PICKED ($WHY)"
+    echo "state: $(rd "$ST/state" || echo active)"
+    [ -s "$ST/reason" ] && echo "last change: $(rd "$ST/reason")"
+    if _b=$(battery_dir); then
+        echo "battery: $(rd "$_b/capacity") % $(rd "$_b/status" | tr 'A-Z' 'a-z'), $(( $(rd "$_b/voltage_now" || echo 0) / 1000 )) mV, $(( $(rd "$_b/current_now" || echo 0) / 1000 )) mA, $(( $(rd "$_b/temp" || echo 0) / 10 )) C"
+    else
+        echo "battery: none"
+    fi
+    if _c=$(charger_dir); then echo "charger: $(rd "$_c/status" | tr 'A-Z' 'a-z') online=$(rd "$_c/online") usb_type=$(rd "$_c/usb_type" | sed -n 's/.*\[\([A-Za-z_]*\)\].*/\1/p')"; fi
+    echo "supply: $(plugged && echo plugged || echo battery)"
+    echo "SAVER_BELOW=$(conf_get SAVER_BELOW) CHARGE_TO=$(conf_get CHARGE_TO)"
+    for _p in $PROFILES; do
+        echo "$_p: WIFI_IDLE=$(knob "$_p" WIFI_IDLE) RADIO_IDLE=$(knob "$_p" RADIO_IDLE) LEDS_IDLE=$(knob "$_p" LEDS_IDLE) CPU=$(knob "$_p" CPU)"
+    done
+    [ -s "$ST/idle-since" ] && echo "idle timer: last client $(( $(uptime_s) - $(rd "$ST/idle-since") )) s ago"
+    [ -s "$ST/ignored" ] && echo "ignored in power.conf: $(LC_ALL=C sort -u "$ST/ignored" | tr '\n' ' ' | sed 's/ $//')"
+    return 0
+}
+cmd_set() {
+    [ $# -eq 2 ] || { echo "usage: mu300-power set PROFILE.KNOB VALUE | set KEY VALUE" >&2; return 2; }
+    _k=$1
+    case $_k in *.*) _k="${_k%%.*}_${_k#*.}" ;; esac
+    conf_set "$_k" "$2"
+}
+cmd_profile() {
+    [ $# -eq 0 ] && { pick_profile; return 0; }
+    conf_set PROFILE "$1"
+}
+uptime_s() { cut -d. -f1 "$R/proc/uptime" 2>/dev/null || date +%s; }
+
+case "${1:-}" in
+    status)  cmd_status ;;
+    set)     shift; cmd_set "$@" ;;
+    profile) shift; cmd_profile "$@" ;;
+    *) sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+esac
