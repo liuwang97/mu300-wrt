@@ -147,7 +147,7 @@ class Rules(unittest.TestCase):
         # and Aurora pinned by hash (D3, D5); ImmortalWrt with the panel was never tested by anyone, so refused
         text = (TOP / 'openwrt' / 'build-rootfs.sh').read_text()
         for s in ('MU300_SYSTEM', '05f9015e0a4e2859f6a153f69e472f2984481490d4ce6db19b8a41bba7264f1e', 'po2lmo.py',
-                  'luci-overlay', 'packages.txt', 'luci-i18n-base-zh-cn', 'luci-i18n-firewall-tr'):
+                  'luci-overlay', 'packages.txt', 'luci-i18n-$c-$l', 'for l in tr zh-cn', 'base.$l.lmo'):
             self.assertIn(s, text)
         arm = re.search(r'^\s*openwrt-luci\)(.*?);;', text, re.M | re.S)
         self.assertIsNotNone(arm, 'no openwrt-luci arm in the MU300_SYSTEM case')
@@ -366,7 +366,7 @@ class Rules(unittest.TestCase):
         # the patch tool is installed after the copy into $R: the build container has it, the image does not
         self.assertLess(text.index('for e in /*; do'), text.index('apk add patch'))
         self.assertLess(text.index(apply), text.index('apk del patch'))
-        self.assertLess(text.index('apk del patch'), text.index('apk list --installed'))
+        self.assertLess(text.index('apk del patch'), text.index('apk list --installed | sort'))
         # software offloading on, hardware off: the SIPA and SC2355 drivers have no nftables hardware offload
         uci = (OPENWRT / 'etc' / 'uci-defaults' / '90-mu300').read_text()
         self.assertIn("uci -q set firewall.@defaults[0].flow_offloading='1'", uci)
@@ -440,7 +440,7 @@ class Rules(unittest.TestCase):
         # K37: init.d/mu300-ndp is enabled in openwrt-luci's image (it does nothing unless wan is in relay mode) and
         # is executable there, beside the SMS service
         text = (TOP / 'openwrt' / 'build-rootfs.sh').read_text()
-        block = text[text.index('ln -sf ../init.d/unisoc-modem-ui $R/etc/rc.d/'):text.index('apk list --installed')]
+        block = text[text.index('ln -sf ../init.d/unisoc-modem-ui $R/etc/rc.d/'):text.index('apk list --installed | sort')]
         self.assertIn('$R/etc/init.d/mu300-ndp', block)
         self.assertIn('ln -sf ../init.d/mu300-ndp $R/etc/rc.d/S${n}mu300-ndp', block)
         for f in ('etc/init.d/mu300-ndp', 'opt/mu300/bin/ndp-learn', 'lib/netifd/proto/mu300cell-v6.sh'):
