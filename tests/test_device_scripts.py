@@ -837,6 +837,46 @@ at() {
         self.assertNotIn('hook replay early', cmds)
         self.assertTrue(pending.exists())
 
+    # suspend/resume: mu300-power takes the modem down while nobody uses the device. radio_on is replaced by a line in
+    # the AT log (its own sequence is tested elsewhere); down is the real one, on the scratch directory's run/.
+    SUSPEND_STUBS = 'radio_on() { at RADIO_ON; }\n'
+
+    def test_suspend_off_takes_the_radio_down_and_stops_the_watcher(self):
+        r, sent = self.lib(self.SUSPEND_STUBS + 'suspend off; suspend off', MU300_AT_DEV='/dev/null')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        run = self.tmp / 'run'
+        self.assertEqual((run / 'mu300-mobile-data.suspend').read_text().strip(), 'off')
+        self.assertTrue((run / 'mu300-mobile-data-down').exists())
+        # the second call found the file and did nothing more
+        self.assertEqual(len([c for c in sent if 'AT+SFUN=5' in c]), 1, sent)
+
+    def test_suspend_lte_switches_endc_off_and_resume_restores(self):
+        r, sent = self.lib(self.SUSPEND_STUBS + 'suspend lte\n'
+                           f'cat "{self.tmp}/run/mu300-mobile-data.suspend"; ls "{self.tmp}/run"\n'
+                           'resume; echo resumed',
+                           MU300_AT_DEV='/dev/null')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        out = r.stdout.split('resumed')[0]
+        self.assertTrue(out.startswith('lte\n'), out)
+        self.assertNotIn('mu300-mobile-data-down', out)   # data stays up on LTE
+        self.assertFalse((self.tmp / 'run' / 'mu300-mobile-data.suspend').exists())
+        cmds = [c.split(' ', 1)[1] for c in sent]
+        self.assertEqual(cmds, ['AT+SPENDC=0', 'AT+SFUN=5', 'AT+SFUN=4', 'AT+SPENDC=1', 'AT+SFUN=5', 'AT+SFUN=4'])
+
+    def test_resume_off_turns_the_radio_on_and_lets_the_watcher_reconnect(self):
+        r, sent = self.lib(self.SUSPEND_STUBS + 'suspend off; resume', MU300_AT_DEV='/dev/null')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn('RADIO_ON', ' '.join(sent))
+        self.assertFalse((self.tmp / 'run' / 'mu300-mobile-data.suspend').exists())
+        self.assertFalse((self.tmp / 'run' / 'mu300-mobile-data-down').exists())
+
+    def test_watch_skips_rounds_while_suspended(self):
+        (self.tmp / 'run').mkdir(exist_ok=True)
+        (self.tmp / 'run' / 'mu300-mobile-data.suspend').write_text('off\n')
+        r, sent = self.lib('watch', MU300_AT_DEV='/dev/null', MU300_WATCH_INTERVAL='0', MU300_WATCH_ROUNDS='2')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(sent, [])
+
     def test_radio_on_subcommand(self):
         """K66: `mobile-data radio-on` switches the radio on and asks for the IMS bearer (K58), nothing more."""
         text = (BIN / 'mobile-data').read_text()
