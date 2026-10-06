@@ -1,5 +1,6 @@
 """Checks over every script without running it: syntax under each shell that runs it, executable bits, and rules
 that past bugs taught (see each test)."""
+import json
 import os
 import re
 import shutil
@@ -67,6 +68,19 @@ class Syntax(unittest.TestCase):
 
 
 class Rules(unittest.TestCase):
+    def test_power_page_is_wired(self):
+        menu = json.loads((TOP / 'openwrt/luci-app-mu300/root/usr/share/luci/menu.d/luci-app-mu300.json').read_text())
+        self.assertEqual(menu['admin/system/power']['action']['path'], 'mu300/power')
+        common = (TOP / 'openwrt/luci-app-mu300/htdocs/luci-static/resources/mu300/common.js').read_text()
+        self.assertIn("method: 'power_get'", common)
+        self.assertIn("method: 'power_set', params: [ 'op', 'key', 'value' ]", common)
+        view = (TOP / 'openwrt/luci-app-mu300/htdocs/luci-static/resources/view/mu300/power.js').read_text()
+        for s in ('WIFI_IDLE', 'RADIO_IDLE', 'LEDS_IDLE', 'CPU', 'SAVER_BELOW', 'CHARGE_TO', 'callPowerSet'):
+            self.assertIn(s, view)
+        acl = json.loads((TOP / 'openwrt/luci-app-mu300/root/usr/share/rpcd/acl.d/luci-app-mu300.json').read_text())
+        self.assertIn('power_get', acl['luci-app-mu300']['read']['ubus']['mu300dash'])
+        self.assertIn('power_set', acl['luci-app-mu300']['write']['ubus']['mu300dash'])
+
     def test_power_profiles_are_wired_in(self):
         # the daemon runs on both systems, the keys wake it, the Ubuntu units skip the radios in a charging boot,
         # the command is on PATH, OpenWrt's own power-key handler (a tap = poweroff) is neutralised, and power.conf is kept

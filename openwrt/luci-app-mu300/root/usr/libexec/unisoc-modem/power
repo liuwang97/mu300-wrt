@@ -70,6 +70,7 @@ get() {
 }
 case "${1:-}" in
     get)  get ;;
+    # i18n: Invalid power value
     set)  if _e=$("$P" set "${2:-}" "${3:-}" 2>&1); then echo '{"ok":1}'; else printf '{"ok":0,"error":%s}\n' "$(jstr "$_e")"; fi ;;
     wake) "$P" wake >/dev/null 2>&1; echo '{"ok":1}' ;;
     idle) "$P" idle >/dev/null 2>&1; echo '{"ok":1}' ;;
