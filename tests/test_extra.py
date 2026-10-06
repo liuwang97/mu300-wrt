@@ -434,6 +434,10 @@ class LangExtra(ExtrasBase):
             ('quote in a name', dict(lines="de\tDeutsch' (German)\n")),
             ('bad code', dict(lines='de;rm\tDeutsch (German)\n')),
             ('no list', dict(lines='')),
+            ('absolute', dict(extra=[('/etc/cron.d/x', b'x')])),
+            ('hard link', dict(extra=[('./i18n/base.fr.lmo', b'', tarfile.LNKTYPE, './name')])),
+            ('device', dict(extra=[('./i18n/base.fr.lmo', b'', tarfile.CHRTYPE)])),
+            ('dir link', dict(extra=[('./i18n/x', b'', tarfile.SYMTYPE, '/etc')])),
         ]
         for shell in self.each_shell():
             self.clean(shell)
@@ -445,6 +449,29 @@ class LangExtra(ExtrasBase):
                 r = self.up(shell, f'extra_unpack lang "{f}"; echo "rc=$?"')
                 self.assertIn('rc=1', r.stdout, (shell, what))
                 self.assertEqual((self.lang() / 'release').read_text().strip(), 'v2026.10.10', (shell, what))
+            self.assertEqual(sorted(p.name for p in (self.disk / 'extra').iterdir()), ['lang'])
+
+    def test_the_tarball_is_read_once(self):
+        # checked and unpacked from one private copy: a tarball that can be read only once (a FIFO: what a file
+        # swapped between the check and the unpacking would look like to a second read) still installs
+        import threading
+        for shell in self.each_shell():
+            self.clean(shell)
+            fifo = self.tmp / 'once.tar.gz'
+            fifo.unlink(missing_ok=True)
+            os.mkfifo(fifo)
+            data = self.file.read_bytes()
+
+            def feed():
+                with open(fifo, 'wb') as f:
+                    f.write(data)
+            t = threading.Thread(target=feed, daemon=True)
+            t.start()
+            r = self.up(shell, f'extra_unpack lang "{fifo}"; echo "rc=$?"')
+            t.join(5)
+            self.assertIn('rc=0', r.stdout, (shell, r.stderr))
+            self.assertEqual((self.lang() / 'release').read_text().strip(), 'v2026.10.10')
+            # and nothing of the copy is left
             self.assertEqual(sorted(p.name for p in (self.disk / 'extra').iterdir()), ['lang'])
 
     def test_install_links_and_registers_every_language(self):

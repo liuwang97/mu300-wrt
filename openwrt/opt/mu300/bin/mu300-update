@@ -434,15 +434,24 @@ lang_tar_ok() {
 # backslash, $, backquote or control character: it goes into /etc/config/luci and into JSON)
 LANG_LINE='[a-z]{2,3}(_[a-z]{2})?	[^	"`$\\'"'"'[:cntrl:]]{1,100}'
 
-# extra_unpack NAME TARBALL: install a downloaded (and verified) extra; the old one stays when anything is wrong
+# extra_unpack NAME TARBALL: install a downloaded (and verified) extra; the old one stays when anything is wrong.
+# The tarball is read once, into a directory only root can enter, and checked and unpacked from that copy: a file
+# swapped at TARBALL's path after the copy (a /tmp upload, a link planted there) changes nothing.
 extra_unpack() {
     case $1 in ''|*[!a-z0-9-]*) echo "extra: bad name '$1'" >&2; return 1 ;; esac
-    if [ "$1" = lang ] && ! lang_tar_ok "$2"; then
-        echo "extra $1: $2 is not a lang extra (unexpected files in it)" >&2; return 1
+    _in=$EXTRA/.$1.in
+    rm -rf "$_in"; mkdir -p "$EXTRA" && mkdir -m 700 "$_in" || return 1
+    if ! cat < "$2" > "$_in/x.tar.gz" 2>/dev/null; then
+        rm -rf "$_in"; echo "extra $1: $2 is not readable" >&2; return 1
+    fi
+    if [ "$1" = lang ] && ! lang_tar_ok "$_in/x.tar.gz"; then
+        rm -rf "$_in"; echo "extra $1: $2 is not a lang extra (unexpected files in it)" >&2; return 1
     fi
     _new=$EXTRA/.$1.new
-    rm -rf "$_new"; mkdir -p "$_new" || return 1
-    if ! untar -xzf "$2" -C "$_new" 2>/dev/null; then
+    rm -rf "$_new"; mkdir -p "$_new" || { rm -rf "$_in"; return 1; }
+    _ok=1; untar -xzf "$_in/x.tar.gz" -C "$_new" 2>/dev/null || _ok=
+    rm -rf "$_in"
+    if [ -z "$_ok" ]; then
         rm -rf "$_new"; echo "extra $1: $2 is not a readable tar.gz" >&2; return 1
     fi
     if [ "$(cat "$_new/name" 2>/dev/null)" != "$1" ]; then
