@@ -861,5 +861,135 @@ class UsbNetPlace(unittest.TestCase):
         self.assertNotIn('cdc=', INIT)
 
 
+
+class BootTries(ShellTest):
+    """The backstop count of boots that never reached mu300-boot-ok (.mu300/boot-tries), against a misc file."""
+    def functions(self):
+        m = re.search(r'# --- boot-tries begin\n(.*?)# --- boot-tries end', INIT, re.S)
+        self.assertIsNotNone(m, 'boot/init has no boot-tries block')
+        return 'log() { echo "$*" >&2; }\n' + m.group(1)
+
+    def setUp(self):
+        super().setUp()
+        self.disk = self.tmp / 'disk'
+        (self.disk / '.mu300').mkdir(parents=True)
+        (self.disk / 'ubuntu/etc/mu300').mkdir(parents=True)
+        (self.disk / 'ubuntu/etc/mu300/default-boot').write_text('linux\n')
+        self.misc = self.tmp / 'misc'
+
+    def lk(self, slot, tries, successful=False, magic=b'BCAB'):
+        """misc with LK's bootloader_control: the Linux slot (SLOT) not successful (unless SUCCESSFUL), prio 15,
+        TRIES left"""
+        data = bytearray(4096)
+        data[2048:2052] = b'_a\0\0'
+        data[2052:2056] = magic
+        mine = 15 | tries << 4 | (0x80 if successful else 0)
+        data[2060] = 0x9e if slot == 'b' else mine
+        data[2062] = mine if slot == 'b' else 0x9e
+        self.misc.write_bytes(bytes(data))
+
+    def boot(self, shell, slot='b', misc=True):
+        code = (self.functions() + f'\nmisc={self.misc if misc else ""}; LINUX_SLOT={slot}\n'
+                f'if boot_tries_exceeded "{self.disk}/ubuntu" "{self.disk}"; then echo android; else echo linux; fi')
+        r = self.sh(shell, code)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return r.stdout.strip(), r.stderr
+
+    def count(self):
+        return (self.disk / '.mu300/boot-tries').read_text().strip()
+
+    def test_counts_and_sends_the_boot_after_the_fifth_to_android(self):
+        # LK that does not count (its tries stay where they were): the backstop is what brings Android back
+        for shell in self.each_shell():
+            for slot in ('a', 'b'):
+                (self.disk / '.mu300/boot-tries').write_text('0\n')
+                self.lk(slot, 6)
+                for n in range(1, 6):
+                    self.assertEqual(self.boot(shell, slot)[0], 'linux')
+                    self.assertEqual(self.count(), str(n))
+                self.assertEqual(self.boot(shell, slot)[0], 'android')
+                self.assertEqual(self.count(), '0')
+
+    def test_a_count_lk_already_acted_on_starts_again(self):
+        # five boots that never reached mu300-boot-ok: LK went to Android by itself, the count stayed at 5. The
+        # slot armed again from Android (su -c mu300-linux: tries 2, LK leaves 1) must boot Linux, not bounce
+        # straight back to Android (seen on F50 #1)
+        for shell in self.each_shell():
+            (self.disk / '.mu300/boot-tries').write_text('5\n')
+            self.lk('b', 1)
+            out, err = self.boot(shell)
+            self.assertEqual(out, 'linux')
+            self.assertEqual(self.count(), '1')
+            self.assertIn('stage=boot-tries-restart', err)
+
+    def test_attempts_setting(self):
+        (self.disk / '.mu300/boot-attempts').write_text('2\n')
+        for shell in self.each_shell():
+            (self.disk / '.mu300/boot-tries').write_text('2\n')
+            self.lk('b', 3)
+            self.assertEqual(self.boot(shell)[0], 'android')
+
+    def test_unknown_misc_keeps_the_backstop(self):
+        for shell in self.each_shell():
+            (self.disk / '.mu300/boot-tries').write_text('5\n')
+            self.assertEqual(self.boot(shell, misc=False)[0], 'android')
+
+    def test_one_shot_mode_never_counts(self):
+        (self.disk / 'ubuntu/etc/mu300/default-boot').unlink()
+        for shell in self.each_shell():
+            (self.disk / '.mu300/boot-tries').write_text('9\n')
+            self.lk('b', 6)
+            self.assertEqual(self.boot(shell)[0], 'linux')
+            self.assertEqual(self.count(), '9')
+
+    def test_lk_counting_down_from_n_plus_1(self):
+        # LK armed with N+1 tries counts one down before each boot: it leaves 1 at boot N (a count of N, no restart)
+        # and 0 at boot N+1, where the backstop goes to Android on the same boot LK would have
+        for shell in self.each_shell():
+            for slot in ('a', 'b'):
+                (self.disk / '.mu300/boot-tries').write_text('0\n')
+                for n in range(1, 6):
+                    self.lk(slot, 6 - n)
+                    out, err = self.boot(shell, slot)
+                    self.assertEqual(out, 'linux', n)
+                    self.assertNotIn('boot-tries-restart', err)
+                    self.assertEqual(self.count(), str(n))
+                self.lk(slot, 0)
+                self.assertEqual(self.boot(shell, slot)[0], 'android')
+
+    def test_a_count_lk_already_acted_on_starts_again_on_slot_a(self):
+        for shell in self.each_shell():
+            (self.disk / '.mu300/boot-tries').write_text('5\n')
+            self.lk('a', 1)
+            out, err = self.boot(shell, 'a')
+            self.assertEqual(out, 'linux')
+            self.assertEqual(self.count(), '1')
+            self.assertIn('stage=boot-tries-restart', err)
+
+    def test_lk_leaving_0_keeps_the_backstop(self):
+        for shell in self.each_shell():
+            (self.disk / '.mu300/boot-tries').write_text('5\n')
+            self.lk('b', 0)
+            self.assertEqual(self.boot(shell)[0], 'android')
+
+    def test_no_bootloader_control_keeps_the_backstop(self):
+        # a misc without the BCAB magic: its slot bytes are not LK's tries
+        for shell in self.each_shell():
+            (self.disk / '.mu300/boot-tries').write_text('5\n')
+            self.lk('b', 1, magic=bytes(4))
+            out, err = self.boot(shell)
+            self.assertEqual(out, 'android')
+            self.assertNotIn('boot-tries-restart', err)
+
+    def test_a_successful_slot_keeps_the_backstop(self):
+        # 0x9f: tries 1 but marked successful - LK does not count it down, so it says nothing about a fallback
+        for shell in self.each_shell():
+            (self.disk / '.mu300/boot-tries').write_text('5\n')
+            self.lk('b', 1, successful=True)
+            out, err = self.boot(shell)
+            self.assertEqual(out, 'android')
+            self.assertNotIn('boot-tries-restart', err)
+
+
 if __name__ == '__main__':
     unittest.main()
