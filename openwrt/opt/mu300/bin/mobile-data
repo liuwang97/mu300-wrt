@@ -2,7 +2,8 @@
 # Mobile data on the MU300 modem without Android RIL: AT commands on /dev/stty_nr1, data over sipa_eth<cid-1>.
 # usage: mobile-data up [APN] | radio-on | down | status | signal | at "CMD" | sim-reset | watch
 #        mobile-data radio-locked CMD [ARG...] | radio-busy
-#        mobile-data suspend off|lte | resume   (mu300-power: modem down or LTE only while nobody uses the device)
+#        mobile-data suspend off|lte | resume [nodial]   (mu300-power: modem down or LTE only while nobody uses the
+#        device; nodial: the radio only, the watcher redials)
 # radio-on: only switch the radio on (the OpenWrt boot does it early, beside the other init scripts)
 # MU300_NETIFD=1 mobile-data up [APN]: only attach and print IFACE/IP/PREFIX/DNS1/DNS2 (OpenWrt netifd protocol)
 # MU300_IPV6=relay with it: mu300cell's relay mode (openwrt-luci), see v6_relay_ra
@@ -489,6 +490,11 @@ tty_setup() {
 # just been taken. A new name for the same reason as RADIOLOCK's.
 UPLOCK=/run/mu300-mobile-data-up.owner
 up() {
+    # mu300-power holds the modem down (suspend off): no dial, not even netifd's, until resume (which sets _resuming)
+    if [ "$(cat "$SUSPEND" 2>/dev/null || true)" = off ] && [ -z "${_resuming:-}" ]; then
+        echo "the modem is suspended by mu300-power (mobile-data resume brings it back)" >&2
+        return 1
+    fi
     # Wait for a bring-up that is already running instead of returning: the netifd protocol handler reads the
     # address out of our output, so an early return reads as "attach failed" and netifd tears the interface
     # down and tries again every 20 s, which piles up half-finished bring-ups and teardowns.
@@ -677,10 +683,14 @@ sim_reset() {
 }
 
 # mu300-power takes the modem down while nobody uses the device; watch must not fight it. The mode file says how:
-#   off  radio off (AT+SFUN=5), data down
+#   off  radio off (AT+SFUN=5), data down (under netifd, MU300_NETIFD=1: ifdown of the WAN, so netifd stays the
+#        owner of its address, routes, DNS and firewall); up refuses to dial while it is there, except for resume
 #   lte  EN-DC (5G NSA) off: AT+SPENDC=2, which needs no stack restart, so the data connection is untouched
-# resume undoes it (off: radio_on and up through the existing paths; lte: AT+SPENDC=1, only if EN-DC was on before). Both are idempotent: a second call finds the file
-# and does nothing. The mode file is removed last on resume, so the watcher cannot race the restart.
+# resume undoes it (off: radio_on and the dial the way watch does it; lte: AT+SPENDC=1, only if EN-DC was on
+# before). Both are idempotent: a second call finds the file and does nothing. The mode file is removed last on
+# resume, so the watcher cannot race the restart - except under netifd, where netifd's own dial runs `up` in a process
+# of its own, so the file goes just before the ifup. resume nodial (mu300-power stopping) switches the radio on and
+# clears the files without dialling; the watcher redials.
 # The raw AT sequences run under the radio lock (radio_on takes it itself, so it is released before radio_on).
 SUSPEND=/run/mu300-mobile-data.suspend
 SUSPEND_ENDC=/run/mu300-mobile-data.suspend-endc   # exists when EN-DC was already off before suspend lte
@@ -694,7 +704,7 @@ under_radio_lock() {
 }
 # the dial the way watch does it: on OpenWrt netifd runs the mu300cell protocol
 redial() {
-    if [ "${MU300_NETIFD:-0}" = 1 ]; then ifup "${MU300_WAN:-wan}"; else ( up ); fi
+    if [ "${MU300_NETIFD:-0}" = 1 ]; then ifup "${MU300_WAN:-wan}"; else ( _resuming=1; up ); fi
 }
 suspend_off_raw() { at 'AT+SFUN=5' 10 >/dev/null || true; }
 suspend_lte_raw() {
@@ -707,26 +717,34 @@ suspend_lte_raw() {
     fi
 }
 resume_lte_raw() { [ -e "$SUSPEND_ENDC" ] || at 'AT+SPENDC=1' 5 >/dev/null || true; }
-suspend() {
+# not "suspend": that is a bash builtin
+do_suspend() {
     local mode=${1:-off}
     case $mode in off|lte) ;; *) echo "usage: mobile-data suspend off|lte" >&2; return 2 ;; esac
     [ "$(cat "$SUSPEND" 2>/dev/null)" = "$mode" ] && return 0
     if [ -s "$SUSPEND" ]; then resume || return 1; fi
     echo "$mode" > "$SUSPEND"
     case $mode in
-        off) down || true
+        off) if [ "${MU300_NETIFD:-0}" = 1 ]; then ifdown "${MU300_WAN:-wan}" || true; else down || true; fi
              under_radio_lock suspend_off_raw || { rm -f "$SUSPEND"; return 1; } ;;
         lte) under_radio_lock suspend_lte_raw || { rm -f "$SUSPEND"; return 1; } ;;
     esac
     echo "modem suspended ($mode)" >&2
 }
-resume() {
-    local mode
+resume() {  # resume [nodial]
+    local mode nodial=${1:-}
     mode=$(cat "$SUSPEND" 2>/dev/null) || return 0
     case $mode in
         off) radio_on || true
-             redial || echo "resume: data did not come back, the watcher retries" >&2
-             rm -f /run/mu300-mobile-data-down ;;
+             if [ "$nodial" = nodial ]; then
+                 rm -f /run/mu300-mobile-data-down
+             elif [ "${MU300_NETIFD:-0}" = 1 ]; then
+                 rm -f /run/mu300-mobile-data-down "$SUSPEND"   # netifd's up runs in its own process: no flag there
+                 redial || echo "resume: data did not come back, the watcher retries" >&2
+             else
+                 redial || echo "resume: data did not come back, the watcher retries" >&2
+                 rm -f /run/mu300-mobile-data-down
+             fi ;;
         lte) under_radio_lock resume_lte_raw || return 1
              rm -f "$SUSPEND_ENDC" ;;
     esac
@@ -865,8 +883,8 @@ case "${1:-status}" in
     status) status ;;
     sim-reset) sim_reset ;;
     watch) watch ;;
-    suspend) suspend "${2:-off}" ;;
-    resume) resume ;;
+    suspend) do_suspend "${2:-off}" ;;
+    resume) case ${2:-} in ''|nodial) resume "${2:-}" ;; *) echo "usage: $0 resume [nodial]" >&2; exit 2 ;; esac ;;
     radio-locked)
         # Another program's radio sequence (the LuCI panel's radio on/off, modem reset and lock apply) under the radio
         # lock, so it never runs beside the dial's, the watchdog's or the warm-up's radio_on (K57): this process holds
@@ -891,5 +909,5 @@ case "${1:-status}" in
         lock_owner_alive "$holder" || exit 1
         echo "$holder"
         ;;
-    *) echo "usage: $0 up [APN] | radio-on | down | status | signal | at \"CMD\" | sim-reset | watch | suspend off|lte | resume | radio-locked CMD | radio-busy" >&2; exit 2 ;;
+    *) echo "usage: $0 up [APN] | radio-on | down | status | signal | at \"CMD\" | sim-reset | watch | suspend off|lte | resume [nodial] | radio-locked CMD | radio-busy" >&2; exit 2 ;;
 esac

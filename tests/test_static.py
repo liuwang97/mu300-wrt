@@ -388,6 +388,8 @@ class Rules(unittest.TestCase):
         warm = warm[:warm.index('procd_close_instance')]
         self.assertIn('until [ -p /run/mu300-at/cmd ]', warm)
         self.assertIn('exec /opt/mu300/bin/mobile-data radio-on', warm)
+        # a charging boot (init's marker) keeps the radio off until the Wi-Fi key
+        self.assertLess(warm.index('[ -e /run/mu300/charging-boot ] && exit 0'), warm.index('mobile-data radio-on'))
         self.assertNotIn('stty_nr', warm)
         self.assertNotIn('respawn', warm)   # one round per start; netifd's dial and watch retry
         self.assertIn('wait_and_exec /dev/stty_nr1 /opt/mu300/bin/mu300-atd', f)
