@@ -190,10 +190,10 @@ retry_run() {  # repeat what failed, if the state still wants it; the actions no
     _st=$(rd "$ST/state"); mv "$ST/retry" "$ST/retry.run"
     while read -r _k _v; do
         case "$_st:$_k $_v" in
-            idle:hotspot\ off) hotspot off ;;
-            idle:modem\ lte|idle:modem\ off) modem_idle "$_v" ;;
-            *:hotspot\ on) [ "$_st" = idle ] || hotspot on ;;
-            *:modem\ resume) [ "$_st" = idle ] || modem_idle resume ;;
+            idle:hotspot\ off|charging-boot:hotspot\ off) hotspot off </dev/null ;;
+            idle:modem\ lte|idle:modem\ off|charging-boot:modem\ off) modem_idle "$_v" </dev/null ;;
+            *:hotspot\ on) [ "$_st" = idle ] || [ "$_st" = charging-boot ] || hotspot on </dev/null ;;
+            *:modem\ resume) [ "$_st" = idle ] || [ "$_st" = charging-boot ] || modem_idle resume </dev/null ;;
         esac
     done < "$ST/retry.run"
     rm -f "$ST/retry.run"
@@ -202,13 +202,17 @@ retry_run() {  # repeat what failed, if the state still wants it; the actions no
 CPU=$R/sys/devices/system/cpu
 cpu() {  # cpu eco|full
     if [ "$1" = eco ]; then
-        [ -s "$ST/cpu-max4" ] || rd "$CPU/cpufreq/policy4/scaling_max_freq" > "$ST/cpu-max4" 2>/dev/null
+        if [ ! -e "$ST/cpu-max4" ]; then   # the marker says eco was applied, even when the limit could not be read
+            _m=$(rd "$CPU/cpufreq/policy4/scaling_max_freq"); [ -n "$_m" ] || _m=$(rd "$CPU/cpufreq/policy4/cpuinfo_max_freq")
+            echo "$_m" > "$ST/cpu-max4"
+        fi
         echo 1500000 > "$CPU/cpufreq/policy4/scaling_max_freq" 2>/dev/null
         echo 0 > "$CPU/cpu7/online" 2>/dev/null
     else
-        if [ -s "$ST/cpu-max4" ]; then   # eco was applied: undo exactly that, nothing else
+        if [ -e "$ST/cpu-max4" ]; then   # eco was applied: undo exactly that, nothing else
             echo 1 > "$CPU/cpu7/online" 2>/dev/null
-            echo "$(rd "$ST/cpu-max4")" > "$CPU/cpufreq/policy4/scaling_max_freq" 2>/dev/null
+            _m=$(rd "$ST/cpu-max4"); [ -n "$_m" ] || _m=$(rd "$CPU/cpufreq/policy4/cpuinfo_max_freq")
+            [ -z "$_m" ] || echo "$_m" > "$CPU/cpufreq/policy4/scaling_max_freq" 2>/dev/null
             rm -f "$ST/cpu-max4"
         fi
     fi
@@ -234,6 +238,64 @@ leave_idle() {  # leave_idle REASON [fast]: the reverse order; fast (the exit tr
     uptime_s > "$ST/idle-since"
     set_state active "$1"   # last: a kill in the middle leaves "idle", and the next start-up or key finishes the wake
 }
+# --- the charging boot: LK opened our slot for a flat battery on the charger; stay light until the Wi-Fi key
+boot_mode() { rd "$RUN/boot-mode"; }
+enter_charging_boot() {
+    echo charging-boot > "$ST/state"   # first, as enter_idle does: the retries need to know what the state wants
+    touch "$RUN/charging-boot"         # init made it already; the Ubuntu units check it
+    echo 0 > "$ST/low-loops"
+    hotspot off
+    modem_idle off
+    mu300-led charge on 2>/dev/null || true
+    set_state charging-boot "charging boot (LK boot mode charger)"
+}
+leave_charging_boot() {  # leave_charging_boot REASON
+    mu300-led charge off 2>/dev/null || true
+    rm -f "$RUN/charging-boot" "$ST/low-loops"
+    is_openwrt || systemctl start mu300-mobile-data 2>/dev/null || true   # skipped at boot by the flag
+    leave_idle "$1"
+}
+low_battery_check() {  # unplugged and under 5 % for three loops in a row: a clean poweroff, not a brown-out
+    _lowc=$(capacity)
+    case $_lowc in ''|*[!0-9]*) echo 0 > "$ST/low-loops"; return 0 ;; esac
+    if plugged || [ "$_lowc" -ge 5 ]; then echo 0 > "$ST/low-loops"; return 0; fi
+    _lown=$(( $(num "$(rd "$ST/low-loops")") + 1 )); echo "$_lown" > "$ST/low-loops"
+    [ "$_lown" -ge 3 ] || return 0
+    say "battery at $_lowc % and unplugged for three loops: powering off"
+    if is_openwrt; then poweroff; else systemctl poweroff; fi
+    return 0
+}
+
+# --- charging guard: temperature and the charge limit, through the charger's charge_type (bq256xx: N/A off, Fast on)
+charging_switch() { _gc=$(charger_dir) && [ -f "$_gc/charge_type" ] && echo "$_gc/charge_type"; }
+set_charging() {  # set_charging on|off REASON
+    _sw=$(charging_switch) || return 0
+    if [ "$1" = off ]; then
+        [ -s "$ST/charge-off" ] || { echo 'N/A' > "$_sw" 2>/dev/null; say "charging off: $2"; }
+        echo "$2" > "$ST/charge-off"
+    else
+        if [ -s "$ST/charge-off" ]; then echo Fast > "$_sw" 2>/dev/null; say "charging on: $2"; fi
+        rm -f "$ST/charge-off"
+    fi
+    return 0
+}
+guard() {  # temp in 0.1 C: off above 45.0 or below 0, back on under 40.0 and over 3.0; CHARGE_TO=80: off at 80 %, on under 75
+    charging_switch >/dev/null || return 0
+    _gt=$(battery_temp); _gcap=$(capacity); _goff=$(rd "$ST/charge-off")
+    _gwant=on _gwhy=
+    case ${_gt#-} in ''|*[!0-9]*) ;; *)
+        if [ "$_gt" -gt 450 ] || [ "$_gt" -lt 0 ]; then _gwant=off _gwhy=temp
+        elif [ "$_goff" = temp ] && { [ "$_gt" -ge 400 ] || [ "$_gt" -le 30 ]; }; then _gwant=off _gwhy=temp; fi ;;
+    esac
+    if [ "$_gwant" = on ] && [ "$(conf_get CHARGE_TO)" = 80 ]; then
+        case $_gcap in ''|*[!0-9]*) ;; *)
+            if [ "$_gcap" -ge 80 ]; then _gwant=off _gwhy=limit
+            elif [ "$_goff" = limit ] && [ "$_gcap" -ge 75 ]; then _gwant=off _gwhy=limit; fi ;;
+        esac
+    fi
+    if [ "$_gwant" = off ]; then set_charging off "$_gwhy"; else set_charging on "back in range"; fi
+}
+
 step() {  # one look at the world; sets _acted when it changed the state
     mkdir -p "$ST"
     _prof=$(pick_profile); _state=$(rd "$ST/state")
@@ -249,7 +311,10 @@ step() {  # one look at the world; sets _acted when it changed the state
             if usb_host; then leave_idle "woken by a computer on USB"; return 0; fi
             if [ "$_prof" = plugged ]; then leave_idle "woken: plugged in"; return 0; fi
             if [ -n "$_old" ] && [ "$_old" != "$_prof" ]; then enter_idle "$_prof" "idle: profile now $_prof"; fi ;;
-        *)  # active; anything unknown is treated as active (Task 6 adds charging-boot above)
+        charging-boot)   # only the Wi-Fi key ends it; a computer on USB does not
+            low_battery_check
+            if [ -e "$ST/wake" ]; then leave_charging_boot "woken by the Wi-Fi key"; fi ;;
+        *)  # active; anything unknown is treated as active
             [ "$_state" = active ] || set_state active "unknown state '$_state'"
             if [ -e "$ST/wake" ]; then rm -f "$ST/wake"; echo "$_now" > "$ST/idle-since"; fi
             if [ -e "$ST/idle-now" ]; then rm -f "$ST/idle-now"; enter_idle "$_prof" "idle now (asked)"; return 0; fi
@@ -262,6 +327,7 @@ step() {  # one look at the world; sets _acted when it changed the state
 }
 loop() {  # retries wait for a loop that changed nothing: a transition has just done its own actions
     _acted=
+    guard
     step
     [ -n "$_acted" ] || retry_run
     return 0
@@ -272,7 +338,9 @@ cmd_daemon() {
         # start-up: /run is per boot, so a state found here is from this boot (a restarted daemon); keep it
         rm -f "$ST/idle-now"
         [ -s "$ST/idle-since" ] || uptime_s > "$ST/idle-since"
-        # Task 6: no prior state and the boot mode is "charger" -> set_state charging-boot here
+        # LK booted us for a flat battery on the charger: charging boot, but only when this boot has no state yet
+        # (a daemon restarted after the key press keeps "active"; one restarted inside the charging boot keeps that)
+        if [ ! -s "$ST/state" ] && [ "$(boot_mode)" = charger ]; then enter_charging_boot; fi
     fi
     _sleep=
     trap '[ -z "$_sleep" ] || kill "$_sleep" 2>/dev/null; if [ "$(rd "$ST/state")" = idle ]; then leave_idle "daemon stopping" fast; fi; exit 0' TERM INT
@@ -287,6 +355,25 @@ cmd_daemon() {
         _sleep=
     done
 }
+cmd_log() {  # cmd_log [SECONDS] [FILE]
+    _lge=${1:-5}; _lgf=${2:-/var/log/mu300-power.csv}
+    case $_lgf in */*) _lgd=${_lgf%/*} ;; *) _lgd=. ;; esac
+    [ -d "${_lgd:-/}" ] || { echo "mu300-power: log: no directory $_lgd for $_lgf" >&2; return 1; }
+    [ -s "$_lgf" ] || echo 'epoch,mV,mA,mW,capacity,temp,state,profile' > "$_lgf" || return 1
+    _lgn=0
+    while :; do
+        _lgs=$(rd "$ST/state"); [ -n "$_lgs" ] || _lgs=active
+        _lgp=$(rd "$ST/profile"); [ -n "$_lgp" ] || _lgp=$(pick_profile)
+        if _lgb=$(battery_dir); then
+            _lgv=$(( $(num "$(rd "$_lgb/voltage_now")") / 1000 )); _lga=$(( $(num "$(rd "$_lgb/current_now")") / 1000 ))
+            echo "$(date +%s),$_lgv,$_lga,$(( _lgv * _lga / 1000 )),$(rd "$_lgb/capacity"),$(rd "$_lgb/temp"),$_lgs,$_lgp" >> "$_lgf"
+        else
+            echo "$(date +%s),,,,,,$_lgs,$_lgp" >> "$_lgf"
+        fi
+        _lgn=$((_lgn + 1)); [ -n "${MU300_POWER_LOOPS:-}" ] && [ "$_lgn" -ge "$MU300_POWER_LOOPS" ] && break
+        sleep "$_lge"
+    done
+}
 cmd_wake() { mkdir -p "$ST"; touch "$ST/wake"; }
 cmd_idle() { mkdir -p "$ST"; touch "$ST/idle-now"; }
 
@@ -297,5 +384,6 @@ case "${1:-}" in
     wake)    cmd_wake ;;
     idle)    cmd_idle ;;
     daemon)  cmd_daemon ;;
+    log)     shift; cmd_log "$@" ;;
     *) sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

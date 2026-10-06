@@ -393,3 +393,178 @@ class Daemon(DaemonTest):
             pol.write_text('1800000\n')
             self.power(shell, 'wake'); self.loops(shell)
             self.assertEqual(pol.read_text().strip(), '1800000')
+
+
+class Guards(DaemonTest):
+    def charging_boot(self, shell, capacity=3, online=1):
+        (self.run_dir / 'mu300/boot-mode').write_text('charger\n')
+        self.charger(online=online); self.battery(capacity=capacity)
+        return self.power(shell, 'daemon', MU300_POWER_LOOPS=1, MU300_POWER_FRESH=1)
+
+    def test_charging_boot_exits_only_on_key(self):
+        for shell in self.each_shell():
+            self.setUp()
+            r = self.charging_boot(shell)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(self.state(), 'charging-boot')
+            self.assertTrue((self.run_dir / 'mu300/charging-boot').exists())
+            c = self.calls()
+            self.assertIn('wifi down', c); self.assertIn('mobile-data suspend off', c); self.assertIn('mu300-led charge on', c)
+            self.usb_host(True); self.loops(shell)
+            self.assertEqual(self.state(), 'charging-boot')      # a computer does not end a charging boot
+            self.charger(online=0); self.battery(capacity=50); self.loops(shell); self.loops(shell); self.loops(shell)
+            self.assertEqual(self.state(), 'charging-boot')      # unplugged above 5 %: nothing happens
+            self.assertNotIn('poweroff', self.calls())
+            self.power(shell, 'wake'); self.loops(shell)
+            self.assertEqual(self.state(), 'active')
+            self.assertIn('mu300-led charge off', self.calls())
+            self.assertIn('mobile-data resume', self.calls())
+            self.assertFalse((self.run_dir / 'mu300/charging-boot').exists())
+
+    def test_a_restart_after_the_key_stays_active(self):
+        for shell in self.each_shell():
+            self.setUp()
+            self.charging_boot(shell)
+            self.power(shell, 'wake'); self.loops(shell)
+            self.assertEqual(self.state(), 'active')
+            self.power(shell, 'daemon', MU300_POWER_LOOPS=1, MU300_POWER_FRESH=1)   # boot-mode still says charger
+            self.assertEqual(self.state(), 'active')
+
+    def test_a_restart_inside_the_charging_boot_stays_in_it(self):
+        for shell in self.each_shell():
+            self.setUp()
+            self.charging_boot(shell)
+            self.power(shell, 'daemon', MU300_POWER_LOOPS=1, MU300_POWER_FRESH=1)
+            self.assertEqual(self.state(), 'charging-boot')
+
+    def test_ubuntu_wake_starts_the_modem_unit(self):
+        for shell in self.each_shell():
+            self.setUp()
+            (self.root / 'etc/openwrt_release').unlink()
+            self.charging_boot(shell)
+            self.assertIn('systemctl stop mu300-hotspot', self.calls())
+            self.power(shell, 'wake'); self.loops(shell)
+            self.assertIn('systemctl start mu300-mobile-data', self.calls())
+            self.assertIn('systemctl start mu300-hotspot', self.calls())
+
+    def test_term_in_the_charging_boot_leaves_the_radios_down(self):
+        for shell in self.each_shell():
+            self.setUp()
+            self.charging_boot(shell)
+            (self.tmp / 'calls').unlink()
+            r = self.sh(shell, f'"{POWER}" daemon & p=$!; sleep 1; kill -TERM $p; wait $p; echo rc=$?',
+                        MU300_SYSROOT=self.root, MU300_RUN=self.run_dir, MU300_POWER_CONF=self.conf,
+                        MU300_POWER_INTERVAL=1)
+            self.assertIn('rc=0', r.stdout)
+            self.assertNotIn('wifi up', self.calls())
+            self.assertEqual(self.state(), 'charging-boot')
+
+    def test_low_battery_needs_three_unplugged_loops(self):
+        for shell in self.each_shell():
+            self.setUp()
+            self.charging_boot(shell, capacity=3, online=0)
+            self.loops(shell)
+            self.assertNotIn('poweroff', self.calls())
+            self.charger(online=1); self.loops(shell)          # a plug in between resets the count
+            self.charger(online=0); self.loops(shell); self.loops(shell)
+            self.assertNotIn('poweroff', self.calls())
+            self.loops(shell)
+            self.assertIn('poweroff', self.calls())
+
+    def test_one_low_sample_does_not_power_off(self):
+        for shell in self.each_shell():
+            self.setUp()
+            self.charging_boot(shell, capacity=50, online=0)
+            self.battery(capacity=2); self.loops(shell)
+            self.battery(capacity=50); self.loops(shell)
+            self.battery(capacity=2); self.loops(shell); self.loops(shell)
+            self.assertNotIn('poweroff', self.calls())
+
+    def test_temperature_guard_with_hysteresis(self):
+        for shell in self.each_shell():
+            self.setUp()
+            ch = self.charger(online=1); self.battery(temp=460)
+            self.loops(shell)
+            self.assertEqual((ch / 'charge_type').read_text().strip(), 'N/A')
+            self.assertEqual((self.run_dir / 'mu300/power/charge-off').read_text().strip(), 'temp')
+            self.battery(temp=420); self.loops(shell)
+            self.assertEqual((ch / 'charge_type').read_text().strip(), 'N/A')   # not yet under 40.0
+            self.battery(temp=390); self.loops(shell)
+            self.assertEqual((ch / 'charge_type').read_text().strip(), 'Fast')
+            self.battery(temp=-5); self.loops(shell)
+            self.assertEqual((ch / 'charge_type').read_text().strip(), 'N/A')
+            self.battery(temp=20); self.loops(shell)
+            self.assertEqual((ch / 'charge_type').read_text().strip(), 'N/A')   # not yet over 3.0
+            self.battery(temp=40); self.loops(shell)
+            self.assertEqual((ch / 'charge_type').read_text().strip(), 'Fast')
+
+    def test_charge_limit_80(self):
+        for shell in self.each_shell():
+            self.setUp()
+            self.write_conf('CHARGE_TO=80\n')
+            ch = self.charger(online=1); self.battery(capacity=81)
+            self.loops(shell)
+            self.assertEqual((ch / 'charge_type').read_text().strip(), 'N/A')
+            self.assertEqual((self.run_dir / 'mu300/power/charge-off').read_text().strip(), 'limit')
+            self.battery(capacity=77); self.loops(shell)
+            self.assertEqual((ch / 'charge_type').read_text().strip(), 'N/A')
+            self.battery(capacity=74); self.loops(shell)
+            self.assertEqual((ch / 'charge_type').read_text().strip(), 'Fast')
+
+    def test_guard_without_a_reading_or_a_switch_changes_nothing(self):
+        for shell in self.each_shell():
+            self.setUp()
+            ch = self.charger(online=1)
+            (ch / 'charge_type').unlink()
+            self.battery(temp=460); self.loops(shell)
+            self.assertFalse((ch / 'charge_type').exists())
+            self.setUp()
+            ch = self.charger(online=1); b = self.battery(); (b / 'temp').unlink()
+            self.loops(shell)
+            self.assertEqual((ch / 'charge_type').read_text().strip(), 'Fast')
+
+    def test_log_line(self):
+        for shell in self.each_shell():
+            self.setUp()
+            self.battery(capacity=64, temp=281, current=-470000)
+            out = self.tmp / 'power.csv'
+            r = self.power(shell, f'log 0 {out}', MU300_POWER_LOOPS=2)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            lines = out.read_text().splitlines()
+            self.assertEqual(lines[0], 'epoch,mV,mA,mW,capacity,temp,state,profile')
+            self.assertEqual(len(lines), 3)
+            f = lines[1].split(',')
+            self.assertEqual(f[1:6], ['3850', '-470', '-1809', '64', '281'])   # 3.85 V * -0.47 A = -1.81 W
+            self.assertEqual(f[6:], ['active', 'battery'])
+
+    def test_log_into_a_missing_directory_fails(self):
+        for shell in self.each_shell():
+            self.setUp()
+            r = self.power(shell, f'log 0 {self.tmp}/nodir/power.csv', MU300_POWER_LOOPS=2)
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn('nodir', r.stderr)
+
+    def test_cpu_full_restores_when_eco_could_not_read_the_limit(self):
+        for shell in self.each_shell():
+            self.setUp()
+            cpu = self.root / 'sys/devices/system/cpu'
+            (cpu / 'cpufreq/policy4/scaling_max_freq').unlink()
+            self.write_conf('battery_WIFI_IDLE=1\nbattery_CPU=eco\n')
+            self.stations(0); self.uptime(0); self.loops(shell); self.uptime(61); self.loops(shell)
+            self.assertEqual(self.state(), 'idle')
+            self.assertEqual((cpu / 'cpu7/online').read_text().strip(), '0')
+            self.power(shell, 'wake'); self.loops(shell)
+            self.assertEqual((cpu / 'cpu7/online').read_text().strip(), '1')
+            self.assertEqual((cpu / 'cpufreq/policy4/scaling_max_freq').read_text().strip(), '2301000')
+
+    def test_retried_actions_do_not_eat_the_retry_list(self):
+        for shell in self.each_shell():
+            self.setUp()
+            (self.root / 'etc/openwrt_release').unlink()
+            self.stub('systemctl', 'echo "systemctl $*" >> "$STUBLOG/calls"; cat >/dev/null; exit 1')
+            self.stub('mobile-data', 'echo "mobile-data $*" >> "$STUBLOG/calls"; exit 1')
+            self.write_conf('battery_WIFI_IDLE=1\n')
+            self.stations(0); self.uptime(0); self.loops(shell); self.uptime(61); self.loops(shell)
+            self.assertEqual(self.calls().count('mobile-data suspend off'), 1)
+            self.loops(shell)
+            self.assertEqual(self.calls().count('mobile-data suspend off'), 2)
