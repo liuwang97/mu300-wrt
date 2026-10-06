@@ -537,7 +537,7 @@ wifi_pick_and_join() {
     fi
     if [ -z "$list" ]; then
         printf '\n  Network name (empty = back)\n  > '
-        read -r ssid || return
+        IFS= read -r ssid || return
         [ -n "$ssid" ] || return
         # people paste the whole example line, quotes and all: "NAME" "PASSWORD"
         case $ssid in
@@ -554,15 +554,28 @@ wifi_pick_and_join() {
         case $n in ''|0|*[!0-9]*) return ;; esac
         line=$(printf '%s\n' "$list" | sed -n "${n}p")
         [ -n "$line" ] || return
-        # the scan output is "%4s dBm  %-5s  %s", so the name starts at column 18 and may contain spaces
-        ssid=$(printf '%s' "$line" | cut -c18-)
+        # the scan output is "%4s dBm  %-6s  %s", so the name starts at column 19 and may contain spaces
+        ssid=$(printf '%s' "$line" | cut -c19-)
         [ -n "$ssid" ] || return
+        # a name shown with \xNN escapes (control or invisible characters, a backslash) is not its real name
+        case $ssid in *'\x'*)
+            printf '\n  %sThis name has characters that are shown escaped; join it with\n' "$Y"
+            printf '  sudo wifi-client connect "<its real name>"%s\n' "$N"; pause; return ;;
+        esac
     fi
-    printf '\n  password for %s%s%s (empty for an open network, nothing is shown as you type): ' "$B" "$ssid" "$N"
-    stty -echo 2>/dev/null; read -r pass; stty echo 2>/dev/null; printf '\n\n'
-    /opt/mu300/bin/wifi-client connect "$ssid" "$pass" 2>&1 | sed 's/^/  /'
-    rc=$?
-    if [ "$rc" = 3 ] || grep -q "^SSID=$ssid$" /etc/mu300/wifi-client.conf 2>/dev/null && [ ! -e /run/mu300-wifi-client.active ]; then
+    # wifi-client's own check of a name (the one connect makes), before a password is asked for it; what is shown
+    # of a typed name is what wifi-client shows of it
+    if ! /opt/mu300/bin/wifi-client valid-name "$ssid"; then
+        printf '\n  %sA network name is 1 to 32 bytes, without control characters.%s\n' "$Y" "$N"; pause; return
+    fi
+    printf '\n  password for %s%s%s (empty for an open network, nothing is shown as you type): ' "$B" \
+        "$(/opt/mu300/bin/wifi-client shown-name "$ssid")" "$N"
+    stty -echo 2>/dev/null; IFS= read -r pass; stty echo 2>/dev/null; printf '\n\n'
+    # on stdin: as an argument it would show in ps. The exit status is wifi-client's, not sed's (3: saved, the radio
+    # is the hotspot and a reboot joins it)
+    { rc=$( { { printf '%s\n' "$pass" | /opt/mu300/bin/wifi-client connect "$ssid" - 2>&1 3>&- 4>&-; echo "$?" >&3; } |
+              sed 's/^/  /' >&4; } 3>&1 ); } 4>&1
+    if [ "$rc" = 3 ] || grep -qFx "SSID=$ssid" /etc/mu300/wifi-client.conf 2>/dev/null && [ ! -e /run/mu300-wifi-client.active ]; then
         printf '\n  %sReboot now to join it?%s [y/N] ' "$B" "$N"
         read -r a
         case $a in y|Y|e|E) printf '\n  rebooting...\n'; sync; reboot ;; esac
@@ -574,12 +587,12 @@ menu_wifi() {
     while :; do
         mode=$(/opt/mu300/bin/wifi-client status 2>/dev/null | sed -n 's/^mode  *//p')
         menu "Wi-Fi  [${mode:-unknown}]" "Status" "Join a network (scan and connect)" \
-            "Reconnect the saved network" "Disconnect (hotspot comes back)" "Forget the saved network" \
+            "Reconnect the saved network" "Disconnect (the hotspot comes back, also after a reboot)" "Forget the saved network" \
             "Hotspot: restart" "Hotspot: name and password"
         case $CHOICE in
             1) title "Wi-Fi"; /opt/mu300/bin/wifi-client status 2>&1 | sed 's/^/  /'; pause ;;
             2) wifi_pick_and_join ;;
-            3) title "Wi-Fi"; /opt/mu300/bin/wifi-client up 2>&1 | sed 's/^/  /'; pause ;;
+            3) title "Wi-Fi"; /opt/mu300/bin/wifi-client reconnect 2>&1 | sed 's/^/  /'; pause ;;
             4) title "Wi-Fi"; /opt/mu300/bin/wifi-client disconnect 2>&1 | sed 's/^/  /'; pause ;;
             5) title "Wi-Fi"; /opt/mu300/bin/wifi-client forget 2>&1 | sed 's/^/  /'; pause ;;
             6) if is_openwrt; then wifi reload; else svc restart mu300-hotspot; fi; echo "  restarted"; pause ;;
