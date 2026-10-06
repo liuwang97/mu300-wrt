@@ -312,3 +312,5 @@ password for {1}: "{2}"   (also in {3}; delete that file after the first login)	
 could not write {1}; nothing was installed	{1} yazılamadı; hiçbir şey kurulmadı
 used by this installation and removed from {1}:{2}	bu kurulumda kullanıldı ve {1} dosyasından kaldırıldı:{2}
 could not remove{1} from {2}; remove it by hand	{2} dosyasından kaldırılamadı:{1}; elle kaldırın
+password:       kept: the accounts and passwords of the installed system are not changed ({1} in {2} sets a new one)	parola:         korunuyor: kurulu sistemin hesapları ve parolaları değişmez (yenisi için {2} dosyasına {1})
+password for {1}: unchanged (the one this system had)	{1} için parola: değişmedi (bu sistemin önceki parolası)
