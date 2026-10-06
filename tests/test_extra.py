@@ -329,9 +329,18 @@ LANGS = {'de': 'Deutsch (German)', 'pt_br': 'Português do Brasil (Brazilian Por
 LMOS = ('base.de.lmo', 'firewall.de.lmo', 'mu300.de.lmo', 'base.pt-br.lmo', 'base.ja.lmo', 'mu300.ja.lmo')
 
 
-def lang_tarball(path, release='v2026.10.10', langs=None, lmos=LMOS, extra=(), lines=None):
-    """the lang extra: ./name ./release ./components ./languages ./i18n/*.lmo; EXTRA: (name, data, type) more"""
+def lang_tarball(path, release='v2026.10.10', langs=None, lmos=LMOS, extra=(), lines=None, manifest=True,
+                 tamper=None):
+    """the lang extra: ./name ./release ./components ./languages ./manifest ./i18n/*.lmo; EXTRA: (name, data, type)
+    more; TAMPER: a file whose bytes differ from what the manifest says"""
     langs = LANGS if langs is None else langs
+    text = lines if lines is not None else ''.join(f'{k}\t{v}\n' for k, v in langs.items())
+    files = {'./name': b'lang\n', './release': (release + '\n').encode(), './components': b'luci-i18n-base-de 26.275\n',
+             './languages': text.encode()}
+    files.update({f'./i18n/{n}': f'lmo {n} {release}'.encode() for n in lmos})
+    man = ''.join(f'{hashlib.sha256(d).hexdigest()}  {n}\n' for n, d in sorted(files.items()))
+    if tamper:
+        files[tamper] = b'other bytes'
     with tarfile.open(path, 'w:gz') as t:
         def add(fn, data=b'', typ=tarfile.REGTYPE, link=''):
             ti = tarfile.TarInfo(fn)
@@ -339,14 +348,13 @@ def lang_tarball(path, release='v2026.10.10', langs=None, lmos=LMOS, extra=(), l
             ti.size = len(data) if typ == tarfile.REGTYPE else 0
             ti.mode = 0o755 if typ == tarfile.DIRTYPE else 0o644
             t.addfile(ti, io.BytesIO(data) if typ == tarfile.REGTYPE else None)
-        add('./name', b'lang\n')
-        add('./release', (release + '\n').encode())
-        add('./components', b'luci-i18n-base-de 26.275\n')
-        text = lines if lines is not None else ''.join(f'{k}\t{v}\n' for k, v in langs.items())
-        add('./languages', text.encode())
+        for n in ('./name', './release', './components', './languages'):
+            add(n, files[n])
+        if manifest:
+            add('./manifest', man.encode())
         add('./i18n', typ=tarfile.DIRTYPE)
         for n in lmos:
-            add(f'./i18n/{n}', f'lmo {n} {release}'.encode())
+            add(f'./i18n/{n}', files[f'./i18n/{n}'])
         for e in extra:
             add(*e)
     return path
@@ -448,6 +456,9 @@ class LangExtra(ExtrasBase):
             ('ampersand in a name', dict(lines='de\tA &amp; B\n')),
             ('markup as the release', dict(release='<img src=x onerror=alert(1)>')),
             ('a catalog that is a directory', dict(extra=[('./i18n/base.fr.lmo', b'', tarfile.DIRTYPE)])),
+            ('a catalog the manifest does not list', dict(extra=[('./i18n/base.fr.lmo', b'x')])),
+            ('a catalog with other bytes than the manifest says', dict(tamper='./i18n/mu300.de.lmo')),
+            ('no manifest', dict(manifest=False)),
         ]
         for shell in self.each_shell():
             self.clean(shell)
@@ -489,6 +500,26 @@ class LangExtra(ExtrasBase):
                 self.assertEqual(list(out.iterdir()), [], (shell, name))
                 self.assertFalse((self.disk / 'extra' / name).exists(), (shell, name))
 
+    def test_a_vpn_extra_with_a_manifest_is_held_to_it(self):
+        # the vpn extra's manifest (tools/make-extra.sh writes one) is checked as well; one without (older releases)
+        # is still taken
+        for shell in self.each_shell():
+            self.clean(shell)
+            for manifest, ok in (('good', True), ('bad', False), (None, True)):
+                f = self.tmp / 'vpn.tar.gz'
+                files = {'./name': b'vpn\n', './release': b'v1\n', './bin/xray': b'#!/bin/sh\n'}
+                with tarfile.open(f, 'w:gz') as t:
+                    for n, d in list(files.items()) + ([('./manifest', ''.join(
+                            f'{hashlib.sha256(d if manifest == "good" else b"x").hexdigest()}  {n}\n'
+                            for n, d in sorted(files.items())).encode())] if manifest else []):
+                        ti = tarfile.TarInfo(n)
+                        ti.size, ti.mode = len(d), 0o755
+                        t.addfile(ti, io.BytesIO(d))
+                self.up(shell, f'rm -rf "{self.disk}/extra/vpn"')
+                r = self.up(shell, f'extra_unpack vpn "{f}"; echo "rc=$?"')
+                self.assertIn('rc=0' if ok else 'rc=1', r.stdout, (shell, manifest, r.stderr))
+                self.assertEqual((self.disk / 'extra' / 'vpn').exists(), ok, (shell, manifest))
+
     def test_a_pack_that_unpacks_too_large_is_refused(self):
         # 40 MB of zeros compress to about 40 kB: refused before anything is unpacked
         for shell in self.each_shell():
@@ -507,9 +538,11 @@ class LangExtra(ExtrasBase):
             self.clean(shell)
             f = self.tmp / 'modes.tar.gz'
             with tarfile.open(f, 'w:gz') as t:
-                for fn, data, mode in (('./name', b'lang\n', 0o666), ('./release', b'v1\n', 0o644),
-                                       ('./languages', b'de\tDeutsch (German)\n', 0o666), ('./i18n', None, 0o777),
-                                       ('./i18n/base.de.lmo', b'x', 0o4777)):
+                members = [('./name', b'lang\n', 0o666), ('./release', b'v1\n', 0o644),
+                           ('./languages', b'de\tDeutsch (German)\n', 0o666), ('./i18n', None, 0o777),
+                           ('./i18n/base.de.lmo', b'x', 0o4777)]
+                man = ''.join(f'{hashlib.sha256(d).hexdigest()}  {n}\n' for n, d, _ in members if d is not None)
+                for fn, data, mode in members + [('./manifest', man.encode(), 0o666)]:
                     ti = tarfile.TarInfo(fn)
                     ti.mode = mode
                     if data is None:
@@ -519,7 +552,8 @@ class LangExtra(ExtrasBase):
                     t.addfile(ti, io.BytesIO(data) if data is not None else None)
             r = self.up(shell, f'extra_unpack lang "{f}"; echo "rc=$?"')
             self.assertIn('rc=0', r.stdout, (shell, r.stderr))
-            for rel, want in (('name', 0o644), ('languages', 0o644), ('i18n', 0o755), ('i18n/base.de.lmo', 0o644)):
+            for rel, want in (('name', 0o644), ('languages', 0o644), ('manifest', 0o644), ('i18n', 0o755),
+                              ('i18n/base.de.lmo', 0o644)):
                 self.assertEqual(oct((self.lang() / rel).stat().st_mode & 0o7777), oct(want), (shell, rel))
 
     def test_the_tarball_is_read_once(self):

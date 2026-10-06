@@ -7,7 +7,8 @@
 #         LuCI app of the images, from the luci-i18n-* packages (apk add in the OpenWrt base image that
 #         openwrt/build-rootfs.sh imports, so apk checks every package against the feed's signed index), plus the
 #         MU300 panel's catalogs (openwrt/luci-app-mu300/po, tools/po2lmo.py). Needs docker with arm64 support.
-# Layout (what mu300-update's extra_unpack checks): ./name ./release ./components, then ./bin/<programs>, or for lang
+# Layout (what mu300-update's extra_unpack checks): ./name ./release ./components ./manifest (sha256 of every file),
+# then ./bin/<programs>, or for lang
 # ./languages (uci key, tab, name) and ./i18n/<component>.<code>.lmo; owned by root.
 set -eu
 NAME=${1:?usage: tools/make-extra.sh NAME OUT.tar.gz [TAG]}
@@ -103,8 +104,19 @@ def root(ti):
     ti.uid = ti.gid = 0
     ti.uname = ti.gname = 'root'
     return ti
+# ./manifest: the sha256 of every file, as sha256sum writes it (mu300-update checks the unpacked tree against it)
+import hashlib
+lines = []
+for d, _, fs in os.walk(src):
+    for f in fs:
+        path = os.path.join(d, f)
+        rel = './' + os.path.relpath(path, src)
+        if rel != './manifest':
+            lines.append('%s  %s\n' % (hashlib.sha256(open(path, 'rb').read()).hexdigest(), rel))
+with open(os.path.join(src, 'manifest'), 'w') as m:
+    m.writelines(sorted(lines))
 with tarfile.open(out, 'w:gz', format=tarfile.GNU_FORMAT) as t:
-    for name in ('name', 'release', 'components', 'languages', 'bin', 'i18n'):
+    for name in ('name', 'release', 'components', 'languages', 'manifest', 'bin', 'i18n'):
         if os.path.exists(os.path.join(src, name)):
             t.add(os.path.join(src, name), arcname='./' + name, filter=root)
 PY
