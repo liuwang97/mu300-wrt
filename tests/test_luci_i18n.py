@@ -411,7 +411,7 @@ if (selected !== true) throw Error('the Bootstrap token bridge must survive the 
 
 
 VIEWS = APP / 'htdocs/luci-static/resources/view/mu300'
-VIEW_NAMES = ('home', 'locks', 'sms', 'at', 'settings', 'device')
+VIEW_NAMES = ('home', 'locks', 'sms', 'at', 'settings', 'device', 'languages')
 CJK_RE = re.compile('[\u2e80-\u9fff\uf900-\ufaff\uff00-\uffef]')
 
 
@@ -455,7 +455,8 @@ const setTimeout = (fn) => { timers.push(fn); return timers.length; };
 const clearTimeout = () => {};
 let rpcReply = {};
 const rpc = { declare: () => () => Promise.resolve(rpcReply) };
-const L = { resolveDefault: (p, d) => Promise.resolve(p).catch(() => d), env: {}, bind: (f, self) => f.bind(self) };
+const L = { resolveDefault: (p, d) => Promise.resolve(p).catch(() => d), env: {}, bind: (f, self) => f.bind(self),
+    url: (p) => '/cgi-bin/luci/' + p };
 const M = new Function('rpc', 'baseclass', '_', 'document', 'getComputedStyle', 'window', 'setTimeout', 'clearTimeout',
     fs.readFileSync(process.argv[2], 'utf8'))(rpc, { extend: (o) => o }, _, document, getComputedStyle, window,
     setTimeout, clearTimeout);
@@ -705,6 +706,19 @@ return { html: root.innerHTML, role: text('usb-role-now'), note: text('usb-net-n
 
     SETTINGS = '''
 return V.render();'''
+
+    # the Languages page without the pack (a failed install), with it (one running), and the replies of lang_set
+    LANGUAGES = '''
+V.render({ ok: 1, current: 'en', luci: [ { code: 'tr', name: 'T' } ], extra: { installed: 0 },
+           job: { state: 'failed', log: 'no verified file' } });
+V.paint({ ok: 1, current: 'de', luci: [], job: { state: 'running' }, extra: { installed: 1, release: 'v1',
+          languages: [ { code: 'de', name: 'Deutsch (German)', enabled: 1, panel: 1 },
+                       { code: 'ja', name: 'J', enabled: 0, panel: 0 } ] } });
+rpcReply = { ok: 0, error: 'Invalid language code' }; await V.set(null, 'enable', 'de'); await flush();
+rpcReply = { ok: 1, started: 1 }; await V.set(null, 'install', '', 'release'); await flush();
+rpcReply = { ok: 1, job: { state: 'done' }, extra: {} }; timers.splice(0).forEach((f) => f()); await flush(); await flush();
+rpcReply = { ok: 1 }; await V.set(null, 'disable', 'ja'); await flush();
+return notes();'''
 
     # a backend error on each page: (view, body returning what was shown, [(template, error, detail)]); the
     # page shows the error through the catalog, inside its template if any, and the detail after it as data

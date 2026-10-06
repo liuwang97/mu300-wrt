@@ -24,6 +24,9 @@ msgstr "适配设置"
 msgid "Device management"
 msgstr "设备管理"
 
+msgid "Languages"
+msgstr ""
+
 msgid "MU300 control center: status dashboard, network locks, AT terminal and SMS"
 msgstr "MU300 控制中心：状态看板、网络锁定、AT 终端与短信"
 
@@ -606,6 +609,102 @@ msgstr "在线"
 msgid "AT adapter unavailable"
 msgstr "AT 适配器不可用"
 
+msgid "Saved"
+msgstr ""
+
+msgid "Management connection lost"
+msgstr ""
+
+msgid "Installing the language pack…"
+msgstr ""
+
+msgid "The language pack is installed"
+msgstr ""
+
+msgid "The language pack could not be installed"
+msgstr ""
+
+msgid "Upload failed: %s"
+msgstr ""
+
+msgid "Language of the browser"
+msgstr ""
+
+msgid "Language of the web interface"
+msgstr ""
+
+msgid "English, Turkish and Chinese come with the system; the language pack adds the others."
+msgstr ""
+
+msgid "The same setting is in System > System > Language and Style."
+msgstr ""
+
+msgid "Language pack"
+msgstr ""
+
+msgid "The language pack (mu300-extra-lang.tar.gz, about 2 MB) adds LuCI in about 40 more languages and this panel in 29 of them. Download it from the release of this system, or upload the file from the release page when the device has no internet."
+msgstr ""
+
+msgid "Download from the release"
+msgstr ""
+
+msgid "Upload the file…"
+msgstr ""
+
+msgid "Release"
+msgstr ""
+
+msgid "Enable all"
+msgstr ""
+
+msgid "Disable all"
+msgstr ""
+
+msgid "Remove the language pack"
+msgstr ""
+
+msgid "Remove the language pack?"
+msgstr ""
+
+msgid "Its languages disappear from the list; a page in one of them switches to English."
+msgstr ""
+
+msgid "Remove"
+msgstr ""
+
+msgid "Disable"
+msgstr ""
+
+msgid "Enable"
+msgstr ""
+
+msgid "LuCI and this panel"
+msgstr ""
+
+msgid "LuCI only"
+msgstr ""
+
+msgid "Enabled"
+msgstr ""
+
+msgid "Disabled"
+msgstr ""
+
+msgid "Language"
+msgstr ""
+
+msgid "Code"
+msgstr ""
+
+msgid "Translated"
+msgstr ""
+
+msgid "State"
+msgstr ""
+
+msgid "LuCI's own translations come from OpenWrt. This panel's translations other than Turkish and Chinese are machine (AI) translations; corrections are welcome."
+msgstr ""
+
 msgid "Automatic"
 msgstr "自动"
 
@@ -1032,6 +1131,21 @@ msgstr "未知的 USB 设置"
 msgid "Invalid interface name"
 msgstr "接口名称无效"
 
+msgid "The languages adapter gave no valid reply"
+msgstr ""
+
+msgid "Unknown language operation"
+msgstr ""
+
+msgid "Invalid language code"
+msgstr ""
+
+msgid "Invalid language request"
+msgstr ""
+
+msgid "Unknown source"
+msgstr ""
+
 msgid "Request too large"
 msgstr "请求过大"
 
@@ -1133,6 +1247,27 @@ msgstr "网络重新加载失败"
 
 msgid "Cannot attach USB interface to LAN bridge"
 msgstr "无法把 USB 接口接入 LAN 网桥"
+
+msgid "The language pack is not installed"
+msgstr ""
+
+msgid "No language given"
+msgstr ""
+
+msgid "The language could not be changed"
+msgstr ""
+
+msgid "LuCI does not offer this language"
+msgstr ""
+
+msgid "No uploaded language pack"
+msgstr ""
+
+msgid "An installation is already running"
+msgstr ""
+
+msgid "The language pack could not be removed"
+msgstr ""
 
 msgid "Lock cache unavailable"
 msgstr "锁定缓存不可用"
