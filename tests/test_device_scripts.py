@@ -837,38 +837,67 @@ at() {
         self.assertNotIn('hook replay early', cmds)
         self.assertTrue(pending.exists())
 
-    # suspend/resume: mu300-power takes the modem down while nobody uses the device. radio_on is replaced by a line in
-    # the AT log (its own sequence is tested elsewhere); down is the real one, on the scratch directory's run/.
-    SUSPEND_STUBS = 'radio_on() { at RADIO_ON; }\n'
+    # suspend/resume: mu300-power takes the modem down while nobody uses the device. radio_on and up are replaced by a
+    # line in the AT log (their own sequences are tested elsewhere); down is the real one, on the scratch run/.
+    # radio_on also notes whether the mode file is still there; AT+SPENDC? answers "+ENDC: $ENDC" (1 by default).
+    SUSPEND_STUBS = ('radio_on() { at RADIO_ON; [ ! -e "$SUSPEND" ] || at SUSPEND_FILE_STILL_THERE; }\n'
+                     'up() { at UP; [ ! -e "$SUSPEND" ] || at SUSPEND_FILE_STILL_THERE; }\n')
+
+    def suspend_lib(self, code, **env):
+        modem = self.MODEM.replace("        'AT+COPS?')",
+                                   "        'AT+SPENDC?') printf '+ENDC: %s\\nOK\\n' \"${ENDC:-1}\" ;;\n        'AT+COPS?')")
+        return self.lib(self.SUSPEND_STUBS + code, modem=modem, MU300_AT_DEV='/dev/null', **env)
 
     def test_suspend_off_takes_the_radio_down_and_stops_the_watcher(self):
-        r, sent = self.lib(self.SUSPEND_STUBS + 'suspend off; suspend off', MU300_AT_DEV='/dev/null')
+        r, sent = self.suspend_lib('suspend off; suspend off')
         self.assertEqual(r.returncode, 0, r.stderr)
         run = self.tmp / 'run'
         self.assertEqual((run / 'mu300-mobile-data.suspend').read_text().strip(), 'off')
         self.assertTrue((run / 'mu300-mobile-data-down').exists())
         # the second call found the file and did nothing more
         self.assertEqual(len([c for c in sent if 'AT+SFUN=5' in c]), 1, sent)
+        self.assertFalse((run / 'mu300-radio-on.owner').exists())   # the radio lock is released
 
-    def test_suspend_lte_switches_endc_off_and_resume_restores(self):
-        r, sent = self.lib(self.SUSPEND_STUBS + 'suspend lte\n'
-                           f'cat "{self.tmp}/run/mu300-mobile-data.suspend"; ls "{self.tmp}/run"\n'
-                           'resume; echo resumed',
-                           MU300_AT_DEV='/dev/null')
+    def test_suspend_lte_keeps_data_up_and_resume_restores(self):
+        r, sent = self.suspend_lib('suspend lte\n'
+                                   f'cat "{self.tmp}/run/mu300-mobile-data.suspend"; ls "{self.tmp}/run"\n'
+                                   'echo ---; resume; echo resumed')
         self.assertEqual(r.returncode, 0, r.stderr)
-        out = r.stdout.split('resumed')[0]
-        self.assertTrue(out.startswith('lte\n'), out)
+        out = r.stdout.split('---')[0]
+        self.assertIn('lte\nmu300-mobile-data.suspend', out)
         self.assertNotIn('mu300-mobile-data-down', out)   # data stays up on LTE
         self.assertFalse((self.tmp / 'run' / 'mu300-mobile-data.suspend').exists())
         cmds = [c.split(' ', 1)[1] for c in sent]
-        self.assertEqual(cmds, ['AT+SPENDC=0', 'AT+SFUN=5', 'AT+SFUN=4', 'AT+SPENDC=1', 'AT+SFUN=5', 'AT+SFUN=4'])
+        # the stack restart drops the context: radio_on and up follow it, in both directions
+        # (the mode file is still there while suspend lte dials and while resume lte does: it goes last)
+        still = 'SUSPEND_FILE_STILL_THERE'
+        self.assertEqual(cmds, ['AT+SPENDC?', 'AT+SPENDC=0', 'AT+SFUN=5', 'RADIO_ON', still, 'UP', still,
+                                'AT+SPENDC=1', 'AT+SFUN=5', 'RADIO_ON', still, 'UP', still])
 
-    def test_resume_off_turns_the_radio_on_and_lets_the_watcher_reconnect(self):
-        r, sent = self.lib(self.SUSPEND_STUBS + 'suspend off; resume', MU300_AT_DEV='/dev/null')
+    def test_resume_lte_leaves_endc_off_when_the_user_had_it_off(self):
+        r, sent = self.suspend_lib('suspend lte; ls "$SUSPEND_ENDC" >/dev/null && echo noted; resume; echo resumed', ENDC='0')
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn('RADIO_ON', ' '.join(sent))
+        self.assertIn('noted', r.stdout)
+        cmds = [c.split(' ', 1)[1] for c in sent]
+        self.assertNotIn('AT+SPENDC=1', cmds)
+        self.assertEqual(cmds.count('AT+SFUN=5'), 2, cmds)
+        self.assertFalse((self.tmp / 'run' / 'mu300-mobile-data.suspend-endc').exists())
+
+    def test_resume_off_brings_radio_and_data_back_and_drops_the_mode_file_last(self):
+        r, sent = self.suspend_lib('suspend off; resume')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        cmds = [c.split(' ', 1)[1] for c in sent]
+        self.assertEqual(cmds[-4:], ['RADIO_ON', 'SUSPEND_FILE_STILL_THERE', 'UP', 'SUSPEND_FILE_STILL_THERE'])
         self.assertFalse((self.tmp / 'run' / 'mu300-mobile-data.suspend').exists())
         self.assertFalse((self.tmp / 'run' / 'mu300-mobile-data-down').exists())
+
+    def test_suspend_waits_for_a_radio_dial_in_flight(self):
+        """The raw AT sequence takes the radio lock: with it held (and no wait) nothing is sent and no mode is left."""
+        r, sent = self.suspend_lib(f'ln -s $$ "{self.tmp}/run/mu300-radio-on.owner"; rc=0; suspend lte || rc=$?; echo rc=$rc',
+                                   MU300_RADIO_LOCK_WAIT='0')
+        self.assertIn('rc=1', r.stdout, r.stderr)
+        self.assertEqual(sent, [])
+        self.assertFalse((self.tmp / 'run' / 'mu300-mobile-data.suspend').exists())
 
     def test_watch_skips_rounds_while_suspended(self):
         (self.tmp / 'run').mkdir(exist_ok=True)

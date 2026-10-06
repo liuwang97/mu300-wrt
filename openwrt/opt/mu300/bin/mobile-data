@@ -678,35 +678,64 @@ sim_reset() {
 
 # mu300-power takes the modem down while nobody uses the device; watch must not fight it. The mode file says how:
 #   off  radio off (AT+SFUN=5), data down
-#   lte  5G NSA off (AT+SPENDC=0, the lock adapter's switch) with the stack restarted; data stays up
-# resume undoes it. Both are idempotent: a second call finds the file and does nothing.
+#   lte  5G NSA off (AT+SPENDC=0, the lock adapter's switch) with the stack restarted (AT+SFUN=5), then the radio
+#        and data are brought back on LTE: the restart drops the PDP context, so radio_on and up follow
+# resume undoes it (radio_on and up through the existing paths). Both are idempotent: a second call finds the file
+# and does nothing. The mode file is removed last on resume, so the watcher cannot race the restart.
+# The raw AT sequences run under the radio lock (radio_on takes it itself, so it is released before radio_on).
 SUSPEND=/run/mu300-mobile-data.suspend
+SUSPEND_ENDC=/run/mu300-mobile-data.suspend-endc   # exists when ENDC was already off before suspend lte
+under_radio_lock() {
+    lock_take "$RADIOLOCK" "${MU300_RADIO_LOCK_WAIT:-120}" || { echo "the radio is busy (pid ${LOCK_HOLDER:-?})" >&2; return 1; }
+    local rc=0
+    tty_setup
+    "$@" || rc=$?
+    lock_drop "$RADIOLOCK"
+    return $rc
+}
+# the dial the way watch does it: on OpenWrt netifd runs the mu300cell protocol
+redial() {
+    if [ "${MU300_NETIFD:-0}" = 1 ]; then ifup "${MU300_WAN:-wan}"; else ( up ); fi
+}
+suspend_off_raw() { at 'AT+SFUN=5' 10 >/dev/null || true; }
+suspend_lte_raw() {
+    # the user may have 5G NSA off already: note it, resume must not turn it on
+    if at 'AT+SPENDC?' 5 | grep -q '+ENDC: *0'; then : > "$SUSPEND_ENDC"; else rm -f "$SUSPEND_ENDC"; fi
+    at 'AT+SPENDC=0' 5 >/dev/null || true
+    at 'AT+SFUN=5' 10 >/dev/null || true
+}
+resume_lte_raw() {
+    [ -e "$SUSPEND_ENDC" ] || at 'AT+SPENDC=1' 5 >/dev/null || true
+    at 'AT+SFUN=5' 10 >/dev/null || true
+}
 suspend() {
     local mode=${1:-off}
     case $mode in off|lte) ;; *) echo "usage: mobile-data suspend off|lte" >&2; return 2 ;; esac
     [ "$(cat "$SUSPEND" 2>/dev/null)" = "$mode" ] && return 0
-    if [ -s "$SUSPEND" ]; then resume; fi
+    if [ -s "$SUSPEND" ]; then resume || return 1; fi
     echo "$mode" > "$SUSPEND"
     case $mode in
         off) down || true
-             at 'AT+SFUN=5' 10 >/dev/null || true ;;
-        lte) at 'AT+SPENDC=0' 5 >/dev/null || true
-             at 'AT+SFUN=5' 10 >/dev/null || true
-             at 'AT+SFUN=4' 30 >/dev/null || true ;;
+             under_radio_lock suspend_off_raw || { rm -f "$SUSPEND"; return 1; } ;;
+        lte) under_radio_lock suspend_lte_raw || { rm -f "$SUSPEND"; return 1; }
+             radio_on || true
+             redial || echo "suspend lte: data did not come back" >&2 ;;
     esac
     echo "modem suspended ($mode)" >&2
 }
 resume() {
     local mode
     mode=$(cat "$SUSPEND" 2>/dev/null) || return 0
-    rm -f "$SUSPEND"
     case $mode in
         off) radio_on || true
-             rm -f /run/mu300-mobile-data-down ;;   # the watcher reconnects on its next round
-        lte) at 'AT+SPENDC=1' 5 >/dev/null || true
-             at 'AT+SFUN=5' 10 >/dev/null || true
-             at 'AT+SFUN=4' 30 >/dev/null || true ;;
+             redial || echo "resume: data did not come back, the watcher retries" >&2
+             rm -f /run/mu300-mobile-data-down ;;
+        lte) under_radio_lock resume_lte_raw || return 1
+             radio_on || true
+             redial || echo "resume: data did not come back, the watcher retries" >&2
+             rm -f "$SUSPEND_ENDC" ;;
     esac
+    rm -f "$SUSPEND"   # last: until now the watcher stood aside
     echo "modem resumed (was $mode)" >&2
 }
 
