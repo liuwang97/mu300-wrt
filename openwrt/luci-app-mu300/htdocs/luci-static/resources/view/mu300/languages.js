@@ -4,6 +4,8 @@
 'require dom';
 'require mu300.common as M';
 
+/* Every value from the backend goes into E() inside an array: LuCI's E() takes a lone string as HTML, an array's
+ * strings as text. */
 /* System > Languages: the language of the web interface, and the lang extra (more languages for LuCI and this panel)
  * - installed from the release or from an uploaded mu300-extra-lang.tar.gz, each language enabled or disabled. The
  * backend is mu300dash lang_get/lang_set (unisoc-modem/languages, mu300-extra). */
@@ -78,9 +80,10 @@ return view.extend({
 			E('option', { 'value': 'en' }, 'English'),
 			E('option', { 'value': 'auto' }, _('Language of the browser'))
 		].concat(luci.slice().sort(function(a, b) { return a.name.localeCompare(b.name); }).map(function(l) {
-			return E('option', { 'value': l.code }, l.name);
+			return E('option', { 'value': l.code }, [ l.name ]);
 		})));
-		pick.value = st.current || 'en';
+		/* a language LuCI no longer offers shows as English, not as an empty choice */
+		pick.value = [ 'en', 'auto' ].concat(luci.map(function(l) { return l.code; })).indexOf(st.current) >= 0 ? st.current : 'en';
 		var useBtn = E('button', { 'class': 'mud-btn', 'id': 'mud-lang-apply' }, _('Apply'));
 		useBtn.addEventListener('click', function() {
 			self.set(useBtn, 'use', pick.value, '', function() { window.location.reload(); });
@@ -110,10 +113,10 @@ return view.extend({
 			actions.appendChild(up);
 		} else {
 			pack.appendChild(E('div', { 'class': 'mud-r' }, [
-				E('span', { 'class': 'mud-k' }, _('Release')), E('span', { 'class': 'mud-v' }, ex.release || '--')
+				E('span', { 'class': 'mud-k' }, _('Release')), E('span', { 'class': 'mud-v' }, [ ex.release || '--' ])
 			]));
 			[ [ 'enable', _('Enable all') ], [ 'disable', _('Disable all') ] ].forEach(function(a) {
-				var b = E('button', { 'class': 'mud-btn', 'id': 'mud-lang-' + a[0] + '-all' }, a[1]);
+				var b = E('button', { 'class': 'mud-btn', 'id': 'mud-lang-' + a[0] + '-all' }, [ a[1] ]);
 				b.addEventListener('click', function() { self.set(b, a[0], 'all'); });
 				actions.appendChild(b);
 			});
@@ -127,18 +130,18 @@ return view.extend({
 		pack.appendChild(actions);
 		if (running) pack.appendChild(E('div', { 'class': 'mud-note' }, _('Installing the language pack…')));
 		else if (job.state === 'failed') pack.appendChild(E('div', { 'class': 'mud-note' },
-			_('The language pack could not be installed') + (job.log ? ': ' + job.log : '')));
+			[ _('The language pack could not be installed') + (job.log ? ': ' + job.log : '') ]));
 
 		if (ex.installed) {
 			var rows = langs.slice().sort(function(a, b) { return a.name.localeCompare(b.name); }).map(function(l) {
-				var b = E('button', { 'class': 'mud-btn', 'data-code': l.code }, l.enabled ? _('Disable') : _('Enable'));
+				var b = E('button', { 'class': 'mud-btn', 'data-code': l.code }, [ l.enabled ? _('Disable') : _('Enable') ]);
 				b.addEventListener('click', function() { self.set(b, l.enabled ? 'disable' : 'enable', l.code); });
 				return E('tr', {}, [
-					E('td', {}, l.name),
-					E('td', {}, l.code),
-					E('td', {}, l.panel ? _('LuCI and this panel') : _('LuCI only')),
-					E('td', {}, l.enabled ? _('Enabled') : _('Disabled')),
-					E('td', {}, b)
+					E('td', {}, [ l.name ]),
+					E('td', {}, [ l.code ]),
+					E('td', {}, [ l.panel ? _('LuCI and this panel') : _('LuCI only') ]),
+					E('td', {}, [ l.enabled ? _('Enabled') : _('Disabled') ]),
+					E('td', {}, [ b ])
 				]);
 			});
 			pack.appendChild(E('table', { 'class': 'mud-table', 'id': 'mud-lang-table' }, [

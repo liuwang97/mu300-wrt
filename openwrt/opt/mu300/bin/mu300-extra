@@ -77,10 +77,10 @@ do_link() {
 # ---- lang: LuCI's languages --------------------------------------------------------------------------------------
 is_openwrt() { [ -e "$SYSROOT/etc/openwrt_release" ]; }
 luci_uci() { uci -q ${SYSROOT:+-c "$SYSROOT/etc/config"} "$@"; }
-# the languages of the installed lang extra: KEY<tab>NAME lines (checked when it was installed)
-lang_lines() { cat "$EXTRA/lang/languages" 2>/dev/null; }
+# the languages of the installed lang extra: KEY<tab>NAME lines (checked when it was installed, and again here)
+lang_lines() { LC_ALL=C grep -Ex -- "$LANG_LINE" "$EXTRA/lang/languages" 2>/dev/null; }
 lang_keys() { lang_lines | cut -f1; }
-lang_enabled() { [ ! -f "$LANGS_ON" ] || grep -qx -- "$1" "$LANGS_ON"; }
+lang_enabled() { [ ! -f "$LANGS_ON" ] || grep -qxF -- "$1" "$LANGS_ON"; }
 # luci_languages: the keys of luci.languages
 luci_languages() { luci_uci show luci.languages | sed -n "s/^luci\.languages\.\([a-z_]*\)=.*/\1/p"; }
 # does LuCI have a catalog of language KEY (any component)?

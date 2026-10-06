@@ -497,6 +497,13 @@ const notes = () => toasts.map((t) => t.lastChild.textContent);
                 r = self.run_view(name, None, "return [ typeof V, typeof V.render ];")['result']
                 self.assertEqual(r, ['object', 'function'])
 
+    def test_the_languages_page_puts_backend_text_in_as_text(self):
+        # LuCI's E(tag, attrs, 'string') sets innerHTML; names, the release and the job's log come from the language
+        # pack (perhaps an uploaded one), so every value that is not a literal or a _() message goes in as [ value ]
+        src = (VIEWS / 'languages.js').read_text(encoding='utf-8')
+        self.assertEqual(re.findall(r"E\('\w+', \{[^}]*\}, (?!_\(|\[|')[A-Za-z][^\n]*", src), [])
+        self.assertNotIn('innerHTML', src)
+
     def test_the_translate_shims_are_gone(self):
         # translate/localize/localizeMenu did the fork's partial matching; the pages have only _() now, and
         # common.js no longer has the no-op shims Task 13 left for them

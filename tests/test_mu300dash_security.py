@@ -672,6 +672,11 @@ class LanguagesAdapter(ShellTest):
             self.assertEqual(self.run_ad(shell, 'install', 'release'), {'ok': 1, 'started': 1})
             self.wait_job()
             self.assertEqual(self.log(), 'install|lang|file=\n')
+            # a job that died without saying how it ended (killed, a reboot) is a failed one, not one running forever
+            (self.job / 'lang-job.state').write_text('running\n')
+            (self.job / 'lang-job.pid').write_text('999999\n')
+            self.assertEqual(self.run_ad(shell, 'get')['job']['state'], 'failed')
+            (self.job / 'lang-job.pid').unlink()
 
 
 class Acl(unittest.TestCase):

@@ -444,6 +444,10 @@ class LangExtra(ExtrasBase):
             ('newline name', dict(extra=[('./i18n/base.fr.lmo\n./i18n/base.it.lmo', b'x')])),
             ('dotdot inside', dict(extra=[('./i18n/../../escaped.lmo', b'x')])),
             ('fifo', dict(extra=[('./i18n/base.fr.lmo', b'', tarfile.FIFOTYPE)])),
+            ('markup in a name', dict(lines='de\t<img src=x onerror=alert(1)>\n')),
+            ('ampersand in a name', dict(lines='de\tA &amp; B\n')),
+            ('markup as the release', dict(release='<img src=x onerror=alert(1)>')),
+            ('a catalog that is a directory', dict(extra=[('./i18n/base.fr.lmo', b'', tarfile.DIRTYPE)])),
         ]
         for shell in self.each_shell():
             self.clean(shell)
@@ -452,7 +456,7 @@ class LangExtra(ExtrasBase):
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertEqual(r.stdout.split(), ['v2026.10.10', 'lang'])
             for what, kw in bad:
-                f = lang_tarball(self.tmp / 'bad.tar.gz', release='v9', **kw)
+                f = lang_tarball(self.tmp / 'bad.tar.gz', **dict(dict(release='v9'), **kw))
                 r = self.up(shell, f'extra_unpack lang "{f}"; echo "rc=$?"')
                 self.assertIn('rc=1', r.stdout, (shell, what))
                 self.assertEqual((self.lang() / 'release').read_text().strip(), 'v2026.10.10', (shell, what))
@@ -484,6 +488,39 @@ class LangExtra(ExtrasBase):
                 self.assertIn('rc=1', r.stdout, (shell, name))
                 self.assertEqual(list(out.iterdir()), [], (shell, name))
                 self.assertFalse((self.disk / 'extra' / name).exists(), (shell, name))
+
+    def test_a_pack_that_unpacks_too_large_is_refused(self):
+        # 40 MB of zeros compress to about 40 kB: refused before anything is unpacked
+        for shell in self.each_shell():
+            self.clean(shell)
+            f = lang_tarball(self.tmp / 'bomb.tar.gz', extra=[('./i18n/base.xx.lmo', bytes(40 << 20))])
+            self.assertLess(f.stat().st_size, 1 << 20)
+            r = self.up(shell, f'extra_unpack lang "{f}"; echo "rc=$?"')
+            self.assertIn('rc=1', r.stdout, shell)
+            self.assertIn('too large', r.stderr)
+            self.assertFalse((self.disk / 'extra' / '.lang.new').exists())
+
+    def test_modes_from_the_archive_are_not_kept(self):
+        # a set-id bit or a file anyone may write would be one on a disk Ubuntu's users share: catalogs come out
+        # 644, directories 755, whatever the archive says
+        for shell in self.each_shell():
+            self.clean(shell)
+            f = self.tmp / 'modes.tar.gz'
+            with tarfile.open(f, 'w:gz') as t:
+                for fn, data, mode in (('./name', b'lang\n', 0o666), ('./release', b'v1\n', 0o644),
+                                       ('./languages', b'de\tDeutsch (German)\n', 0o666), ('./i18n', None, 0o777),
+                                       ('./i18n/base.de.lmo', b'x', 0o4777)):
+                    ti = tarfile.TarInfo(fn)
+                    ti.mode = mode
+                    if data is None:
+                        ti.type = tarfile.DIRTYPE
+                    else:
+                        ti.size = len(data)
+                    t.addfile(ti, io.BytesIO(data) if data is not None else None)
+            r = self.up(shell, f'extra_unpack lang "{f}"; echo "rc=$?"')
+            self.assertIn('rc=0', r.stdout, (shell, r.stderr))
+            for rel, want in (('name', 0o644), ('languages', 0o644), ('i18n', 0o755), ('i18n/base.de.lmo', 0o644)):
+                self.assertEqual(oct((self.lang() / rel).stat().st_mode & 0o7777), oct(want), (shell, rel))
 
     def test_the_tarball_is_read_once(self):
         # checked and unpacked from one private copy: a tarball that can be read only once (a FIFO: what a file

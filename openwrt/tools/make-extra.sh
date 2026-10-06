@@ -74,7 +74,7 @@ for d, (code, name) in sorted(table.items()):
     names[code.replace('-', '_')] = name          # our name where LuCI has none (az, kk, id); the same otherwise
 names.pop('tr', None); names.pop('zh_cn', None)
 lmos = os.listdir(os.path.join(x, 'i18n'))
-line_ok = re.compile('^[a-z]{2,3}(_[a-z]{2})?\t[^\t"`$\\\'\x00-\x1f\x7f]{1,100}$')
+line_ok = re.compile('^[a-z]{2,3}(_[a-z]{2})?\t[^\t"`$<>&\\\'\x00-\x1f\x7f]{1,100}$')
 with open(os.path.join(x, 'languages'), 'w', encoding='utf-8') as f:
     for key in sorted(names):
         code = key.replace('_', '-')
