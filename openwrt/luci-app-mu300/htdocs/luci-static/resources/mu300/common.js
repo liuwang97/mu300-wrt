@@ -32,6 +32,8 @@ var callUsbNetList = rpc.declare({ object: 'mu300dash', method: 'usb_net_list', 
 var callUsbNetAdd = rpc.declare({ object: 'mu300dash', method: 'usb_net_add', params: [ 'iface' ], expect: { '': {} } });
 var callLangGet = rpc.declare({ object: 'mu300dash', method: 'lang_get', expect: { '': {} } });
 var callLangSet = rpc.declare({ object: 'mu300dash', method: 'lang_set', params: [ 'op', 'codes', 'source' ], expect: { '': {} } });
+var callTtlGet = rpc.declare({ object: 'mu300dash', method: 'ttl_get', expect: { '': {} } });
+var callTtlSet = rpc.declare({ object: 'mu300dash', method: 'ttl_set', params: [ 'value' ], expect: { '': {} } });
 
 /* Mainland carriers by PLMN, for when COPS gives the numeric format. The names are messages: translated once, when
  * the module loads (a page's language does not change without a reload). */
@@ -605,6 +607,7 @@ return baseclass.extend({
 	callUsbGet: callUsbGet, callUsbSet: callUsbSet,
 	callUsbNetList: callUsbNetList, callUsbNetAdd: callUsbNetAdd,
 	callLangGet: callLangGet, callLangSet: callLangSet,
+	callTtlGet: callTtlGet, callTtlSet: callTtlSet,
 	carrierName: carrierName, qLevel: qLevel, qLevelLabel: qLevelLabel, qLabel: qLabel, qCol: qCol, qScore: qScore,
 	esc: esc, fmtBytes: fmtBytes, fmtRate: fmtRate, fmtUptime: fmtUptime, PLMN_CN: PLMN_CN,
 	injectCss: injectCss, v: v, set: set, spark: spark, neighborRows: neighborRows,
