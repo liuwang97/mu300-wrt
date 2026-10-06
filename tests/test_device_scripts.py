@@ -858,7 +858,8 @@ at() {
         self.assertEqual(len([c for c in sent if 'AT+SFUN=5' in c]), 1, sent)
         self.assertFalse((run / 'mu300-radio-on.owner').exists())   # the radio lock is released
 
-    def test_suspend_lte_keeps_data_up_and_resume_restores(self):
+    def test_suspend_lte_switches_endc_off_and_resume_restores(self):
+        """EN-DC off is AT+SPENDC=2 and on is 1 (the lock adapter's values); no stack restart, radio_on or dial."""
         r, sent = self.suspend_lib('suspend lte\n'
                                    f'cat "{self.tmp}/run/mu300-mobile-data.suspend"; ls "{self.tmp}/run"\n'
                                    'echo ---; resume; echo resumed')
@@ -868,20 +869,17 @@ at() {
         self.assertNotIn('mu300-mobile-data-down', out)   # data stays up on LTE
         self.assertFalse((self.tmp / 'run' / 'mu300-mobile-data.suspend').exists())
         cmds = [c.split(' ', 1)[1] for c in sent]
-        # the stack restart drops the context: radio_on and up follow it, in both directions
-        # (the mode file is still there while suspend lte dials and while resume lte does: it goes last)
-        still = 'SUSPEND_FILE_STILL_THERE'
-        self.assertEqual(cmds, ['AT+SPENDC?', 'AT+SPENDC=0', 'AT+SFUN=5', 'RADIO_ON', still, 'UP', still,
-                                'AT+SPENDC=1', 'AT+SFUN=5', 'RADIO_ON', still, 'UP', still])
+        self.assertEqual(cmds, ['AT+SPENDC?', 'AT+SPENDC=2', 'AT+SPENDC=1'])
+        self.assertFalse((self.tmp / 'run' / 'mu300-radio-on.owner').exists())
 
     def test_resume_lte_leaves_endc_off_when_the_user_had_it_off(self):
-        r, sent = self.suspend_lib('suspend lte; ls "$SUSPEND_ENDC" >/dev/null && echo noted; resume; echo resumed', ENDC='0')
+        r, sent = self.suspend_lib('suspend lte; ls "$SUSPEND_ENDC" >/dev/null && echo noted; resume; echo resumed', ENDC='2')
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn('noted', r.stdout)
         cmds = [c.split(' ', 1)[1] for c in sent]
-        self.assertNotIn('AT+SPENDC=1', cmds)
-        self.assertEqual(cmds.count('AT+SFUN=5'), 2, cmds)
+        self.assertEqual(cmds, ['AT+SPENDC?'])   # already off: nothing written, nothing restored
         self.assertFalse((self.tmp / 'run' / 'mu300-mobile-data.suspend-endc').exists())
+        self.assertFalse((self.tmp / 'run' / 'mu300-mobile-data.suspend').exists())
 
     def test_resume_off_brings_radio_and_data_back_and_drops_the_mode_file_last(self):
         r, sent = self.suspend_lib('suspend off; resume')
