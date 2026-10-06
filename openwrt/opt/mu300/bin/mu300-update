@@ -11,7 +11,7 @@
 #   mu300-update clean            delete the kept <os>.old copies
 #   mu300-update notice           only look: a note for the login message and mu300-toolkit when a newer release is
 #                                 out (at boot and every 6 hours; nothing is installed without apply)
-# Installed extras (mu300-extra: the VPN engines) are updated with the release.
+# Installed extras (mu300-extra: the VPN engines, LuCI's languages) are updated with the release.
 #
 # How it works: the new filesystem is unpacked next to the old one as <os>.new on the Linux partition, your settings
 # and the vendor files are carried over, and only then are the directories swapped (<os> -> <os>.old, <os>.new ->
@@ -382,23 +382,24 @@ apply_one() {  # apply_one OS TAG
 
 # ---- extras -----------------------------------------------------------------------------------------------------
 # Optional parts that are not in the images: release assets mu300-extra-<name>.tar.gz (tools/make-extra.sh: ./name,
-# ./release, ./components, ./bin/...), installed on the Linux partition next to the systems, so both systems use
+# ./release, ./components, then ./bin/<programs>, or for lang ./languages and ./i18n/<catalogs>), installed on the Linux partition next to the systems, so both systems use
 # one copy and nothing that replaces a system touches it. mu300-extra is the command; the functions are here
 # because an update installs and refreshes them too, and the updater of the new release runs before the system
 # that has mu300-extra exists.
 EXTRA=$DISK/extra
-EXTRAS=vpn
+EXTRAS="vpn lang"
 VPN_ENGINES="xray hev-socks5-tunnel sing-box"
 extra_desc() {
     case $1 in
         vpn) echo "the VPN engines for mu300-vpn: Xray-core, hev-socks5-tunnel, sing-box (about 40 MB to download, 120 MB installed)" ;;
+        lang) echo "LuCI (the web interface) in 40 more languages, the MU300 panel in 29 of them; OpenWrt only (about 3 MB to download, 9 MB installed)" ;;
     esac
 }
 extra_asset() { echo "mu300-extra-$1.tar.gz"; }
 extra_known() { case " $EXTRAS " in *" $1 "*) return 0 ;; esac; return 1; }
 extra_installed() {
     for d in "$EXTRA"/*; do
-        [ -d "$d/bin" ] && printf '%s ' "${d##*/}"
+        { [ -d "$d/bin" ] || [ -d "$d/i18n" ]; } && printf '%s ' "${d##*/}"
     done
     return 0
 }
@@ -419,9 +420,26 @@ extra_put() {
     sync
 }
 
+# lang_tar_ok TARBALL: the lang extra holds only its four files and catalogs - no link, no other path (it may come
+# from a file someone uploaded through the web page, not only from a release)
+LANG_ENTRY='\.|\./|\./(name|release|components|languages|i18n/?|i18n/[a-z0-9-]+\.[a-z]{2,3}(-[a-z]{2})?\.lmo)'
+lang_tar_ok() {
+    _l=$(untar -tzf "$1") || return 1
+    [ -n "$_l" ] && ! printf '%s\n' "$_l" | LC_ALL=C grep -Evxq -- "$LANG_ENTRY" || return 1
+    # the type of every entry: regular files and directories only
+    untar -tvzf "$1" | cut -c1 | LC_ALL=C grep -vq '^[-d]$' && return 1
+    return 0
+}
+# a language line of the lang extra: the uci key (LuCI's code, - as _), a tab, the name the list shows (no quote,
+# backslash, $, backquote or control character: it goes into /etc/config/luci and into JSON)
+LANG_LINE='[a-z]{2,3}(_[a-z]{2})?	[^	"`$\\'"'"'[:cntrl:]]{1,100}'
+
 # extra_unpack NAME TARBALL: install a downloaded (and verified) extra; the old one stays when anything is wrong
 extra_unpack() {
     case $1 in ''|*[!a-z0-9-]*) echo "extra: bad name '$1'" >&2; return 1 ;; esac
+    if [ "$1" = lang ] && ! lang_tar_ok "$2"; then
+        echo "extra $1: $2 is not a lang extra (unexpected files in it)" >&2; return 1
+    fi
     _new=$EXTRA/.$1.new
     rm -rf "$_new"; mkdir -p "$_new" || return 1
     if ! untar -xzf "$2" -C "$_new" 2>/dev/null; then
@@ -431,8 +449,15 @@ extra_unpack() {
         rm -rf "$_new"; echo "extra $1: $2 is not the $1 extra" >&2; return 1
     fi
     _n=0
-    for _f in "$_new"/bin/*; do [ -f "$_f" ] && [ -x "$_f" ] && _n=$((_n + 1)); done
-    if [ "$_n" = 0 ]; then rm -rf "$_new"; echo "extra $1: no programs in $2" >&2; return 1; fi
+    if [ "$1" = lang ]; then
+        for _f in "$_new"/i18n/*.lmo; do [ -f "$_f" ] && [ ! -L "$_f" ] && _n=$((_n + 1)); done
+        if [ "$_n" = 0 ] || ! [ -s "$_new/languages" ] || LC_ALL=C grep -Evxq -- "$LANG_LINE" "$_new/languages"; then
+            rm -rf "$_new"; echo "extra $1: no catalogs or no valid language list in $2" >&2; return 1
+        fi
+    else
+        for _f in "$_new"/bin/*; do [ -f "$_f" ] && [ -x "$_f" ] && _n=$((_n + 1)); done
+        if [ "$_n" = 0 ]; then rm -rf "$_new"; echo "extra $1: no programs in $2" >&2; return 1; fi
+    fi
     extra_put "$1" "$_new" || { rm -rf "$_new"; echo "extra $1: could not put it in place" >&2; return 1; }
 }
 
