@@ -48,7 +48,7 @@ conf_raw() { sed -n "s/^$1=\(.*\)\$/\1/p" "$CONF" 2>/dev/null | tail -n1; }
 conf_get() {  # conf_get KEY: the file's value when valid, else the default; an invalid one is noted for status
     _v=$(conf_raw "$1")
     if [ -n "$_v" ] && valid "$1" "$_v"; then echo "$_v"; return 0; fi
-    [ -z "$_v" ] || { mkdir -p "$ST" 2>/dev/null; echo "$1" >> "$ST/ignored" 2>/dev/null; }
+    [ -z "$_v" ] || { mkdir -p "$ST" 2>/dev/null; grep -qx "$1" "$ST/ignored" 2>/dev/null || echo "$1" >> "$ST/ignored" 2>/dev/null; }
     default "$1"
 }
 knob() { conf_get "$1_$2"; }
@@ -60,30 +60,41 @@ conf_set() {  # conf_set KEY VALUE: validate, then replace the line or append it
     if grep -q "^$1=" "$CONF"; then
         sed "s/^$1=.*\$/$1=$2/" "$CONF" > "$CONF.tmp" && mv "$CONF.tmp" "$CONF"
     else
+        [ -z "$(tail -c1 "$CONF")" ] || echo >> "$CONF"   # no trailing newline: add one first
         echo "$1=$2" >> "$CONF"
     fi
 }
 
 # --- the device
-psy_of_type() {  # psy_of_type TYPE...: the first power_supply directory whose type is one of them
+psy_all() {  # psy_all TYPE...: every power_supply directory whose type is one of them
     for _d in "$R"/sys/class/power_supply/*; do
         [ -f "$_d/type" ] || continue
         _t=$(cat "$_d/type" 2>/dev/null)
-        for _w in "$@"; do [ "$_t" = "$_w" ] && { echo "$_d"; return 0; }; done
+        for _w in "$@"; do [ "$_t" = "$_w" ] && { echo "$_d"; break; }; done
+    done
+}
+psy_of_type() {  # the first one, or return 1
+    _f=$(psy_all "$@" | sed -n 1p)
+    [ -n "$_f" ] && echo "$_f"
+}
+battery_dir() {  # the first Battery that is present (present=1 or no present file)
+    for _d in $(psy_all Battery); do
+        [ ! -f "$_d/present" ] || [ "$(cat "$_d/present" 2>/dev/null)" = 1 ] && { echo "$_d"; return 0; }
     done
     return 1
 }
-battery_dir() {
-    _d=$(psy_of_type Battery) || return 1
-    [ ! -f "$_d/present" ] || [ "$(cat "$_d/present" 2>/dev/null)" = 1 ] || return 1
-    echo "$_d"
-}
 rd() { cat "$1" 2>/dev/null; }
+num() { case ${1#-} in ""|*[!0-9]*) echo 0 ;; *) echo "$1" ;; esac; }   # a number for arithmetic: empty or junk is 0
 capacity() { _d=$(battery_dir) && rd "$_d/capacity"; }
 battery_temp() { _d=$(battery_dir) && rd "$_d/temp"; }
 charger_dir() { psy_of_type USB Mains; }
 plugged() {
-    if _d=$(charger_dir); then [ "$(rd "$_d/online")" = 1 ]; return $?; fi
+    _any=
+    for _d in $(psy_all USB Mains); do
+        _any=1
+        [ "$(rd "$_d/online")" = 1 ] && return 0
+    done
+    [ -z "$_any" ] || return 1
     for _s in "$R"/sys/class/extcon/*/state; do grep -qx 'USB=1' "$_s" 2>/dev/null && return 0; done
     battery_dir >/dev/null || return 0   # no battery at all (the F50): it runs on the cable
     return 1
@@ -110,7 +121,7 @@ cmd_status() {
     echo "state: $(rd "$ST/state" || echo active)"
     [ -s "$ST/reason" ] && echo "last change: $(rd "$ST/reason")"
     if _b=$(battery_dir); then
-        echo "battery: $(rd "$_b/capacity") % $(rd "$_b/status" | tr 'A-Z' 'a-z'), $(( $(rd "$_b/voltage_now" || echo 0) / 1000 )) mV, $(( $(rd "$_b/current_now" || echo 0) / 1000 )) mA, $(( $(rd "$_b/temp" || echo 0) / 10 )) C"
+        echo "battery: $(rd "$_b/capacity") % $(rd "$_b/status" | tr 'A-Z' 'a-z'), $(( $(num "$(rd "$_b/voltage_now")") / 1000 )) mV, $(( $(num "$(rd "$_b/current_now")") / 1000 )) mA, $(( $(num "$(rd "$_b/temp")") / 10 )) C"
     else
         echo "battery: none"
     fi
@@ -120,7 +131,7 @@ cmd_status() {
     for _p in $PROFILES; do
         echo "$_p: WIFI_IDLE=$(knob "$_p" WIFI_IDLE) RADIO_IDLE=$(knob "$_p" RADIO_IDLE) LEDS_IDLE=$(knob "$_p" LEDS_IDLE) CPU=$(knob "$_p" CPU)"
     done
-    [ -s "$ST/idle-since" ] && echo "idle timer: last client $(( $(uptime_s) - $(rd "$ST/idle-since") )) s ago"
+    [ -s "$ST/idle-since" ] && echo "idle timer: last client $(( $(num "$(uptime_s)") - $(num "$(rd "$ST/idle-since")") )) s ago"
     [ -s "$ST/ignored" ] && echo "ignored in power.conf: $(LC_ALL=C sort -u "$ST/ignored" | tr '\n' ' ' | sed 's/ $//')"
     return 0
 }

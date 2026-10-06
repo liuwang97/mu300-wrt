@@ -123,3 +123,38 @@ class Config(PowerTest):
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertIn('battery: none', r.stdout)
             self.assertIn('profile: plugged (auto)', r.stdout)
+
+
+class Robustness(PowerTest):
+    def test_empty_sysfs_values_do_not_abort_status(self):
+        for shell in self.each_shell():
+            d = self.battery()
+            for k in ('voltage_now', 'current_now', 'temp'):
+                (d / k).write_text('')
+            r = self.power(shell, 'status')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn('battery: 64 %', r.stdout)
+
+    def test_any_charger_online_counts(self):
+        for shell in self.each_shell():
+            self.battery()
+            self.psy('a-usb', type='USB', online=0)
+            self.psy('b-mains', type='Mains', online=1)
+            self.assertIn('profile: plugged (auto)', self.power(shell, 'status').stdout)
+
+    def test_second_battery_node_is_used_and_ignored_not_repeated(self):
+        for shell in self.each_shell():
+            self.psy('a-gone', type='Battery', present=0, capacity=1)
+            self.battery(capacity=64)
+            self.write_conf('SAVER_BELOW=abc')
+            self.power(shell, 'status')
+            r = self.power(shell, 'status')
+            self.assertIn('battery: 64 %', r.stdout)
+            self.assertEqual((self.run_dir / 'mu300/power/ignored').read_text().count('SAVER_BELOW'), 1)
+            self.assertEqual(self.power(shell, 'status').returncode, 0)
+
+    def test_set_appends_after_a_file_without_a_newline(self):
+        for shell in self.each_shell():
+            self.write_conf('PROFILE=auto')
+            self.power(shell, 'set CHARGE_TO 80')
+            self.assertEqual(self.conf.read_text(), 'PROFILE=auto\nCHARGE_TO=80\n')
