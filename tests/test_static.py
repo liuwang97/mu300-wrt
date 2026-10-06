@@ -307,6 +307,16 @@ class Rules(unittest.TestCase):
         # the fuel gauge asks the charger by the name the driver registers
         p10 = (TOP / 'upstream' / 'patches' / '0010-power-sc27xx-fuel-gauge-status-from-bq256xx.patch').read_text()
         self.assertIn('+\t"bq256xx-charger",', p10)
+        # the PMIC's charger detection reads the UMP9620's own register (0x239c), not the SC2730's (0x1b9c), and a
+        # tree prepared with the old one is corrected
+        self.assertIn(r"#define SPRD_UMP9620_CHG_DET\t\t0x239c", port)
+        self.assertIn(r"'\t.charger_det = SPRD_SC2730_CHG_DET,\n};\n', UMP9620_DATA)", port)
+        self.assertIn("'.charger_det = SPRD_UMP9620_CHG_DET,'", port)
+        # Android's last capacity in the FGU's user area is in 0.1 % (575 read as 575 %), and capacity stays 0-100
+        p11 = (TOP / 'upstream' / 'patches' / '0011-power-sc27xx-fuel-gauge-UMP9620-capacity-in-tenths.patch').read_text()
+        for s in ('+\t\tcap = clamp(cap, 0, 100) * 10;', '+\t\t*cap = min(DIV_ROUND_CLOSEST(*cap, 10), 100);',
+                  '+\t\tval->intval = clamp(value, 0, 100);'):
+            self.assertIn(s, p11)
         # mu300-usb reaches the chip past the driver and leaves its watchdog off then
         usb = (BIN / 'mu300-usb').read_text()
         self.assertIn('[ -e "$R/sys/bus/i2c/devices/$BUS-006b/driver" ] && FORCE=-f', usb)

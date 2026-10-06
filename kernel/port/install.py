@@ -48,8 +48,16 @@ def once(marker, old, new):
     global m
     if marker not in m:
         m = m.replace(old, new, 1)
+# The UMP9620's BC1.2 result (CHARGE_STATUS, Unisoc's sprd-bc1p2.h) is at 0x239c, with the SC27xx bits (DONE 11, SDP 7,
+# DCP 6, CDP 5). The first version of this edit pointed it at the SC2730's 0x1b9c, where detection never finished on
+# the U30 Air: a tree prepared with that is corrected.
+UMP9620_DATA = ('/* UMP9620 BC1.2 status (CHARGE_STATUS) */\n#define SPRD_UMP9620_CHG_DET\t\t0x239c\n\n'
+                'static const struct sprd_pmic_data ump9620_data = {\n\t.irq_base = 0x80,\n\t.num_irqs = 11,\n'
+                '\t.charger_det = SPRD_UMP9620_CHG_DET,\n};\n')
+m = m.replace('static const struct sprd_pmic_data ump9620_data = {\n\t.irq_base = 0x80,\n\t.num_irqs = 11,\n'
+              '\t.charger_det = SPRD_SC2730_CHG_DET,\n};\n', UMP9620_DATA)
 once('ump9620_data = {', 'static const struct sprd_pmic_data sc2731_data = {',
-     'static const struct sprd_pmic_data ump9620_data = {\n\t.irq_base = 0x80,\n\t.num_irqs = 11,\n\t.charger_det = SPRD_SC2730_CHG_DET,\n};\n\nstatic const struct sprd_pmic_data sc2731_data = {')
+     UMP9620_DATA + '\nstatic const struct sprd_pmic_data sc2731_data = {')
 if 'enum sprd_pmic_type' not in m:
     # up to 6.x: the match data is the pmic data, and the DT's sub-nodes are populated as they are
     once('"sprd,ump9620"', '\t{ .compatible = "sprd,sc2731", .data = &sc2731_data },\n',
@@ -283,7 +291,7 @@ open(bp, 'w').write(t)
 # Every edit above is a text substitution, and one whose anchor drifted in a new kernel release changes nothing
 # without saying so. Check the result rather than trusting the substitutions.
 expect = [
-    ('drivers/mfd/sprd-sc27xx-spi.c', ['ump9620_data = {', '"sprd,ump9620"', '.name = "ump9620"']
+    ('drivers/mfd/sprd-sc27xx-spi.c', ['ump9620_data = {', '.charger_det = SPRD_UMP9620_CHG_DET,', '"sprd,ump9620"', '.name = "ump9620"']
      + (['case PMIC_TYPE_UMP9620:', 'if (pmic_type == PMIC_TYPE_UMP9620) {', 'linux/of_platform.h']
         if 'enum sprd_pmic_type' in open(os.path.join(tree, 'drivers/mfd/sprd-sc27xx-spi.c')).read() else [])),
     ('drivers/mmc/host/sdhci-sprd.c', ['MU300: only the eMMC and the card slot', 'MU300: CD GPIO deferred', 'of_remove_property(pdev->dev.of_node, cd)', 'DLL_PHASE_INTERNAL\t0x2 /* MU300 r11p3 */',
