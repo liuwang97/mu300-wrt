@@ -106,6 +106,15 @@ class Power(ShellTest):
         self.assertEqual(p['w'], 2.63)
         self.assertEqual((p['usb'], p['in_volt'], p['in_ua'], p['in_w']), (1, 5.01, 900000, 4.51))
 
+    def test_the_charger_online_after_offline_ones_with_input_current(self):
+        self.device('u30air')
+        self.supply('battery', **BATTERY_54)
+        self.supply('ac', type='Mains', online='0')
+        self.supply('bq2560x', type='USB', online='0', voltage_now='1000000', current_now='1')
+        self.supply('usb', type='USB', online='1', voltage_now='5000000', input_current_now='1000000')
+        p = self.power()
+        self.assertEqual((p['usb'], p['in_volt'], p['in_ua'], p['in_w']), (1, 5.0, 1000000, 5.0))
+
     def test_an_absent_battery_or_odd_values(self):
         self.device('u30air')
         self.supply('battery', type='Battery', present='0', capacity='50')
@@ -172,7 +181,22 @@ process.stdout.write(JSON.stringify({ shown: kpi.style.display !== 'none', value
         t = self.render({'present': 1, 'capacity': None, 'status': 'Unknown', 'volt': 3.99, 'ua': 650000,
                          'w': 2.59})
         self.assertEqual(t['value'], '3.99 V')
-        self.assertEqual(t['label'], 'Battery · charging 2.6 W · 3.99 V')
+        self.assertEqual(t['label'], 'Battery · charging 2.6 W')     # the voltage is the value already
+
+    def test_unknown_when_full_on_usb(self):
+        # the 5.4 SQC charger says Unknown once full (mu300-toolkit); a few mA either way is noise
+        t = self.render({'present': 1, 'capacity': 100, 'status': 'Unknown', 'volt': 4.34, 'ua': 3000,
+                         'w': 0.01, 'usb': 1})
+        self.assertEqual(t['label'], 'Battery · full · 4.34 V · USB')
+
+    def test_not_charging_is_not_charging(self):
+        t = self.render({'present': 1, 'capacity': 80, 'status': 'Not charging', 'volt': 4.0, 'ua': 5000,
+                         'w': 0.02, 'usb': 1})
+        self.assertEqual(t['label'], 'Battery · not charging · 4 V · USB')
+
+    def test_discharging_on_usb_without_a_current(self):
+        t = self.render({'present': 1, 'capacity': 80, 'status': 'Discharging', 'volt': 4.0, 'usb': 1})
+        self.assertEqual(t['label'], 'Battery · not charging · 4 V · USB')
 
 
 if __name__ == '__main__':

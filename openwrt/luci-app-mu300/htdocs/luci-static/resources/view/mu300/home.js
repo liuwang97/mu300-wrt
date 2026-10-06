@@ -552,14 +552,17 @@ return view.extend({
 		var p = i.power || {}, bk = M.v('batt-kpi');
 		if (bk) bk.style.display = p.present ? '' : 'none';
 		if (p.present) {
+			/* direction from status; for Unknown and the like from the sign of the current (positive into the
+			 * battery), with the gauge's own 20 mA dead band. The 5.4 SQC charger says Unknown once full. */
 			var pst = p.status, pcur = p.ua || 0, parts = [ _('Battery') ];
-			var pdir = pst === 'Charging' ? 1 : pst === 'Discharging' ? -1 : pst === 'Full' ? 0 : (pcur > 0 ? 1 : pcur < 0 ? -1 : 0);
+			var pdir = pst === 'Charging' ? 1 : pst === 'Discharging' ? -1 :
+				(pst === 'Full' || pst === 'Not charging') ? 0 : (pcur >= 20000 ? 1 : pcur <= -20000 ? -1 : 0);
 			var pw = p.w != null ? Number(p.w).toFixed(1) : null;
 			if (pdir > 0) parts.push(pw != null ? _('charging %s W').format(pw) : _('charging'));
-			else if (pdir < 0) parts.push(pw != null ? _('drawing %s W').format(pw) : _('on battery'));
-			else if (pst === 'Full') parts.push(_('full'));
+			else if (pdir < 0) parts.push(pw != null ? _('drawing %s W').format(pw) : p.usb ? _('not charging') : _('on battery'));
+			else if (pst === 'Full' || (p.usb && p.capacity >= 100)) parts.push(_('full'));
 			else if (pst === 'Not charging') parts.push(_('not charging'));
-			if (p.volt != null) parts.push(p.volt + ' V');
+			if (p.volt != null && p.capacity != null) parts.push(p.volt + ' V');
 			if (p.usb) parts.push(p.in_w != null ? _('USB in %s W').format(Number(p.in_w).toFixed(1)) +
 				(p.in_volt != null ? ' (' + p.in_volt + ' V)' : '') : 'USB');
 			M.set('batt', p.capacity != null ? p.capacity + '%' : (p.volt != null ? p.volt + ' V' : '--'));
