@@ -260,6 +260,16 @@ class Rules(unittest.TestCase):
         # and that its init works with Linux on either slot (mu300-update refuses one without it on slot a)
         self.assertIn('    tar -xzOf "$D/$a.tar.gz" ./features 2>/dev/null | grep -qx linux-slot', mr)
 
+    def test_release_can_be_a_prerelease(self):
+        # a release is published as a prerelease first and promoted to "latest" only after a board ran it: the
+        # option reaches `gh release create`, and an unknown option stops the script instead of being ignored
+        mr = (TOP / 'tools' / 'make-release.sh').read_text()
+        self.assertIn('--prerelease) PRERELEASE=--prerelease ;;', mr)
+        self.assertIn('--publish) PUBLISH=--publish ;;', mr)
+        self.assertRegex(mr, r'\*\) echo "unknown option \$a')
+        self.assertRegex(mr, r'gh release create "\$TAG" [^\n]*\$PRERELEASE')
+        self.assertNotIn('--latest', mr)
+
     def test_proc_reads_are_braced(self):
         # `tr < /proc/$pid/cmdline 2>/dev/null` reports a failed redirection (the process just went) before its own
         # 2>/dev/null applies, so "can't open /proc/..." reaches the log: the read is braced, `{ tr < ...; } 2>/dev/null`

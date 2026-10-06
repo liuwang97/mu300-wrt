@@ -2,12 +2,22 @@
 # Maintainer: build the generic release assets used by ./install.sh (prebuilt mode) and optionally publish them.
 #   tools/make-release.sh TAG             build into release/TAG and audit the contents
 #   tools/make-release.sh TAG --publish   also create/update the GitHub release (gh)
+#   tools/make-release.sh TAG --publish --prerelease   create it as a prerelease: never "latest", so mu300-update and
+#                                          the installers do not offer it until it is promoted on GitHub
 # Needs docker and the kernel outputs in $MU300_KERNEL_OUT (default: out/, from kernel/build-all.sh).
 # The assets must never contain proprietary files or anything from a particular device: the audit below fails the
 # build if firmware, Android userspace, host keys or local settings end up in an image.
 set -eu
-TAG=${1:?usage: tools/make-release.sh TAG [--publish]}
-PUBLISH=${2:-}
+TAG=${1:?usage: tools/make-release.sh TAG [--publish [--prerelease]]}
+shift
+PUBLISH="" PRERELEASE=""
+for a in "$@"; do
+    case $a in
+        --publish) PUBLISH=--publish ;;
+        --prerelease) PRERELEASE=--prerelease ;;
+        *) echo "unknown option $a (usage: tools/make-release.sh TAG [--publish [--prerelease]])" >&2; exit 1 ;;
+    esac
+done
 TOP=$(cd "$(dirname "$0")/.." && pwd)
 KOUT=${MU300_KERNEL_OUT:-$TOP/out}
 REPO=${MU300_REPO:-dikeckaan/mu300-linux}
@@ -181,7 +191,8 @@ EOF
 if gh release view "$TAG" -R "$REPO" >/dev/null 2>&1; then
     gh release upload "$TAG" -R "$REPO" --clobber "$D"/*.tar.gz "$D/mu300-update" "$D/SHA256SUMS"
 else
-    gh release create "$TAG" -R "$REPO" --target "$commit" --title "MU300 Linux $TAG" --notes-file "$notes" \
+    # shellcheck disable=SC2086
+    gh release create "$TAG" -R "$REPO" --target "$commit" --title "MU300 Linux $TAG" --notes-file "$notes" $PRERELEASE \
       "$D"/*.tar.gz "$D/mu300-update" "$D/SHA256SUMS"
 fi
 rm -f "$notes"
