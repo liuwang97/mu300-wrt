@@ -333,8 +333,29 @@ msgstr "内存"
 msgid "Storage"
 msgstr "存储"
 
-msgid "Power"
-msgstr "电源"
+msgid "Battery"
+msgstr "电池"
+
+msgid "charging %s W"
+msgstr "充电中 %s W"
+
+msgid "charging"
+msgstr "充电中"
+
+msgid "drawing %s W"
+msgstr "耗电 %s W"
+
+msgid "on battery"
+msgstr "电池供电"
+
+msgid "full"
+msgstr "已充满"
+
+msgid "not charging"
+msgstr "未充电"
+
+msgid "USB in %s W"
+msgstr "USB 输入 %s W"
 
 msgid "Channel"
 msgstr "信道"
