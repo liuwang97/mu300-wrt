@@ -266,6 +266,15 @@ int sprd_iface_set_power(struct sprd_hif *hif, int val)
 {
 	int ret = 0;
 
+	/*
+	 * MU300: power_cnt is atomic, the transitions behind it are not.  Probe powers the chip off after it
+	 * registered wlan0, outside RTNL, so userspace (hostapd, netifd) can open the interface meanwhile: the
+	 * open's power-on (1st count) ran start_marlin + post_init while the probe's power-off (last count) was
+	 * still in post_deinit.  post_deinit then cleared the channels and sc2355_hif.hif that post_init had just
+	 * set, stop_marlin powered the chip down, and the next RX interrupt read hif->rx_mgmt from NULL
+	 * (pcie_rx_handle+0x34, "paging request at 00000000000030b8", FINDINGS 31n).  One transition at a time.
+	 */
+	mutex_lock(&hif->power_lock);
 	if (val) {
 		sprd_wlan_power_status_sync(1, 1);
 		ret = sprd_hif_power_on(hif);
@@ -276,12 +285,14 @@ int sprd_iface_set_power(struct sprd_hif *hif, int val)
 			else if (ret == -EIO)
 				pr_err("SYNC cmd error!\n");
 
-			return ret;
+			goto out;
 		}
 		if (atomic_read(&hif->power_cnt) == 1)
 			sprd_get_fw_info(hif->priv);
 	} else
 		sprd_hif_power_off(hif);
+out:
+	mutex_unlock(&hif->power_lock);
 	return ret;
 }
 #ifdef DRV_RESET_SELF
@@ -1770,6 +1781,7 @@ int sprd_iface_probe(struct platform_device *pdev,
 	iface_set_priv(priv);
 	platform_set_drvdata(pdev, priv);
 	hif = &priv->hif;
+	mutex_init(&hif->power_lock);
 	hif->priv = priv;
 	hif->pdev = pdev;
 	hif->ops = hif_ops;
@@ -1792,9 +1804,10 @@ int sprd_iface_probe(struct platform_device *pdev,
 	ret = iface_core_init(&pdev->dev, priv);
 	if (ret) {
 		pr_err("%s core init failed: %d\n", __func__, ret);
+		/* MU300: power off while hif still exists (sprd_core_free frees priv, and hif with it) */
+		sprd_iface_set_power(hif, false);
 		sprd_hif_deinit(hif);
 		sprd_core_free(priv);
-		sprd_iface_set_power(hif, false);
 		return ret;
 	}
 
@@ -1802,9 +1815,9 @@ int sprd_iface_probe(struct platform_device *pdev,
 	if (ret) {
 		pr_err("%s notify init failed: %d\n", __func__, ret);
 		iface_core_deinit(priv);
+		sprd_iface_set_power(hif, false);
 		sprd_hif_deinit(hif);
 		sprd_core_free(priv);
-		sprd_iface_set_power(hif, false);
 		return ret;
 	}
 
@@ -1831,11 +1844,12 @@ int sprd_iface_remove(struct platform_device *pdev)
 
 	iface_notify_deinit(priv);
 	iface_core_deinit(priv);
+	/* MU300: power off while hif still exists (sprd_core_free frees priv, and hif and its lock with it) */
+	pr_info("Power off WCN (%d time)\n", atomic_read(&hif->power_cnt));
+	sprd_iface_set_power(hif, false);
 	sprd_hif_deinit(hif);
 	sprd_core_free(priv);
 	iface_set_priv(NULL);
-	pr_info("Power off WCN (%d time)\n", atomic_read(&hif->power_cnt));
-	sprd_iface_set_power(hif, false);
 
 	return 0;
 }
