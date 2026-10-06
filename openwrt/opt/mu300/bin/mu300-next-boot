@@ -66,8 +66,17 @@ write_bc() {
         || { echo "misc verify failed" >&2; exit 1; }
 }
 
+# The initramfs counts every boot in .mu300/boot-tries; this is where a boot counts as good and clears it.
+clear_boot_tries() {
+    d=$(disk_dir) || return 0
+    echo 0 > "$d/boot-tries" 2>/dev/null && sync
+}
+
 arm_linux() {
     n=$(attempts)
+    # a new arm starts a new count (like --rearm): a count left from before would let the initramfs' backstop send
+    # an early boot of this arm to Android, before the N failed boots it now promises
+    clear_boot_tries
     # Rebuilding the tries=2 block has to reproduce the initramfs' own byte for byte, or the arithmetic
     # above is wrong for this misc and nothing it makes gets written.
     if [ "$(make_bc_b 2 2>/dev/null)" != "$(hex_of "$BC_B")" ]; then
@@ -77,12 +86,6 @@ arm_linux() {
     tmp=$(mktemp); bytes_of "$(make_bc_b $((n + 1)))" > "$tmp"
     write_bc "$tmp"; rm -f "$tmp"
     echo "slot $LINUX_SLOT armed: $n failed boot(s) in a row before Android"
-}
-
-# The initramfs counts every boot in .mu300/boot-tries; this is where a boot counts as good and clears it.
-clear_boot_tries() {
-    d=$(disk_dir) || return 0
-    echo 0 > "$d/boot-tries" 2>/dev/null && sync
 }
 
 slot_state() {

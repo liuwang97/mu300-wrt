@@ -386,13 +386,27 @@ static int pcie_rx_handle(int chn, struct mbuf_t *head,
 			  struct mbuf_t *tail, int num)
 {
 	struct sprd_hif *hif = sc2355_pcie_get_hif();
-	struct rx_mgmt *rx_mgmt = (struct rx_mgmt *)hif->rx_mgmt;
+	struct rx_mgmt *rx_mgmt;
 	struct sprd_msg *msg = NULL;
 	int buf_num = 0, len = 0, ret = 0;
 	struct mbuf_t *pos = head;
 
 	pr_debug("%s: channel:%d head:%p tail:%p num:%d\n",
 	       __func__, chn, head, tail, num);
+
+	/*
+	 * MU300: an RX interrupt outside the channels' lifetime (post_init publishes hif before it registers
+	 * them, post_deinit clears it after it unregistered them, sprd_iface_set_power serialises the two).
+	 * Without hif there is no device to unmap the buffers from and no queue to hand them to, and the
+	 * channel's mbuf pool is already freed (no sprdwcn_bus_list_free): the data buffers of this one list
+	 * leak, and it is said once.  A NULL here was a panic in hard IRQ (FINDINGS 31n).
+	 */
+	rx_mgmt = hif ? (struct rx_mgmt *)READ_ONCE(hif->rx_mgmt) : NULL;
+	if (unlikely(!rx_mgmt)) {
+		pr_err_once("%s: RX on channel %d with no Wi-Fi context, %d buffer(s) dropped\n",
+			    __func__, chn, num);
+		return 0;
+	}
 
 	for (buf_num = num; buf_num > 0; buf_num--, pos = pos->next) {
 		if (unlikely(!pos)) {
@@ -660,7 +674,7 @@ out:
 
 struct sprd_hif *sc2355_pcie_get_hif(void)
 {
-	return (struct sprd_hif *)sc2355_hif.hif;
+	return (struct sprd_hif *)smp_load_acquire(&sc2355_hif.hif);
 }
 
 #define INTF_IS_PCIE \
@@ -2019,7 +2033,8 @@ int pcie_post_init(struct sprd_hif *hif)
 {
 	int ret = -EINVAL, chn = 0;
 
-	sc2355_hif.hif = (void *)hif;
+	/* MU300: published before any channel can interrupt (the RX/TX callbacks read it in hard IRQ) */
+	smp_store_release(&sc2355_hif.hif, (void *)hif);
 	/*
 	 * MU300 (from kanoqwq/mu300-linux): a failed/aborted earlier power cycle clears this pointer in the
 	 * error path below.  The vendor driver only restores it in pcie_init(),
@@ -2065,7 +2080,8 @@ void pcie_post_deinit(struct sprd_hif *hif)
 
 	for (chn = 0; chn < sc2355_hif.max_num; chn++)
 		sprdwcn_bus_chn_deinit(&sc2355_hif.mchn_ops[chn]);
-	sc2355_hif.hif = NULL;
+	/* MU300: cleared only after every channel is unregistered (the callbacks check for NULL) */
+	WRITE_ONCE(sc2355_hif.hif, NULL);
 	sc2355_hif.max_num = 0;
 
 }

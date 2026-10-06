@@ -417,5 +417,38 @@ class Rules(unittest.TestCase):
         for f in ('etc/init.d/mu300-ndp', 'opt/mu300/bin/ndp-learn', 'lib/netifd/proto/mu300cell-v6.sh'):
             self.assertTrue((LUCI_OVERLAY / f).stat().st_mode & 0o111, f)
 
+    def test_wifi_power_transitions_are_serialised(self):
+        # FINDINGS 31n: the probe's power-off (outside RTNL) ran post_deinit while hostapd's open ran post_init;
+        # post_deinit cleared the context post_init had just set, and the next RX interrupt read it as NULL in hard
+        # IRQ. Both kernels' drivers hold a mutex across the power transition and drop RX with no context
+        wlan = TOP / 'upstream' / 'modules' / 'sprd_wlan_combo'
+        patch = (TOP / 'kernel' / 'patches' / 'wlan_combo-wcn-power-serialise.patch').read_text()
+        hif = (wlan / 'common' / 'hif.h').read_text()
+        iface = (wlan / 'common' / 'iface.c').read_text()
+        pcie = (wlan / 'sc2355' / 'pcie.c').read_text()
+        self.assertIn('\tstruct mutex power_lock;', hif)
+        self.assertIn('+\tstruct mutex power_lock;', patch)
+        for text, pre in ((iface, ''), (patch, '+')):
+            self.assertIn(pre + '\tmutex_init(&hif->power_lock);', text)
+            self.assertIn(pre + '\tmutex_lock(&hif->power_lock);', text)
+            self.assertIn(pre + '\tmutex_unlock(&hif->power_lock);', text)
+        body = iface[iface.index('int sprd_iface_set_power('):]
+        body = body[:body.index('\n}\n')]
+        # no return between the lock and the unlock
+        self.assertNotIn('return ret;', body[:body.index('mutex_unlock')])
+        rx = pcie[pcie.index('static int pcie_rx_handle('):]
+        rx = rx[:rx.index('\n}\n')]
+        guard = 'rx_mgmt = hif ? (struct rx_mgmt *)READ_ONCE(hif->rx_mgmt) : NULL;'
+        self.assertLess(rx.index(guard), rx.index('if (unlikely(!rx_mgmt))'))
+        self.assertLess(rx.index('if (unlikely(!rx_mgmt))'), rx.index('rx_mgmt->rx_list'))
+        self.assertIn('+\t' + guard, patch)
+        # remove powers off before sprd_core_free frees priv (and hif, and the lock in it)
+        rm = iface[iface.index('int sprd_iface_remove('):]
+        self.assertLess(rm.index('sprd_iface_set_power(hif, false);'), rm.index('sprd_core_free(priv);'))
+        for text, pre in ((pcie, ''), (patch, '+')):
+            self.assertIn(pre + '\tsmp_store_release(&sc2355_hif.hif, (void *)hif);', text)
+            self.assertIn(pre + '\tWRITE_ONCE(sc2355_hif.hif, NULL);', text)
+
+
 if __name__ == '__main__':
     unittest.main()

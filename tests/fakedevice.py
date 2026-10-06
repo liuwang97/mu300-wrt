@@ -20,7 +20,9 @@ case $1 in
         [ "${FAKE_INSTALL_FAILS:-0}" = 1 ] && { echo "[device] failing as asked"; exit 1; }
         . "$MU300_DEVICE_WORK/mu300-install.env"
         # what would be installed: the tarballs it is given, by checksum
-        for os in $OSES; do sha256sum "$MU300_DEVICE_WORK/mu300-$os.tar.gz" >> "$FAKE/installed.sha256"; mkdir -p "$FAKE/fs/$os/etc"; done
+        for os in $OSES; do sha256sum "$MU300_DEVICE_WORK/mu300-$os.tar.gz" >> "$FAKE/installed.sha256"; mkdir -p "$FAKE/fs/$os/etc"
+            # an installed system has its accounts (android-install.sh: the image's, the hash put in or carried over)
+            [ -f "$FAKE/fs/$os/etc/shadow" ] || echo "root:\$6\$fake:19000::::::" > "$FAKE/fs/$os/etc/shadow"; done
         # what a test wants to happen while the systems are installed (tests' fake_install_hook)
         [ ! -f "$FAKE/install-hook" ] || . "$FAKE/install-hook"
         echo MU300-INSTALL-OK ;;

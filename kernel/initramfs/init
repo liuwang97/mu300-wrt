@@ -588,25 +588,47 @@ else
     sd=$(sd_wait) && mount_sd "$sd" && root_mounted=1
 fi
 # --- root-select end
-if [ "$root_mounted" = 1 ] && rootdir=$(pick_root) && [ -n "$rootdir" ]; then
-    # A way back to Android with no computer and no keyboard: cut the power during boot N times in a row (N is
-    # .mu300/boot-attempts, 5 without it). Every boot counts up here and mu300-next-boot --rearm clears the count
-    # once the system is really up, so only boots that never got that far add up. LK does the same with the
-    # tries it was armed with (N+1) and normally gets there first; this is the backstop, and it goes to Android
-    # on the boot after the Nth failed one, exactly when LK would.
+# --- boot-tries begin
+# A way back to Android with no computer and no keyboard: cut the power during boot N times in a row (N is
+# .mu300/boot-attempts, 5 without it). Every boot counts up here and mu300-next-boot --rearm clears the count
+# once the system is really up, so only boots that never got that far add up. LK does the same with the
+# tries it was armed with (N+1) and normally gets there first; this is the backstop, and it goes to Android
+# on the boot after the Nth failed one, exactly when LK would.
+# lk_tries: the tries LK left the Linux slot with (it counts down before it starts the kernel); empty when unknown
+# (only from a bootloader_control block, magic BCAB, and only while the slot is not marked successful: LK does not
+# count down a successful slot, so its tries field says nothing about a fallback)
+lk_tries() {
+    [ -n "$misc" ] || return 0
+    [ "$(dd if="$misc" bs=1 skip=2052 count=4 2>/dev/null)" = BCAB ] || return 0
+    case $LINUX_SLOT in a) _o=2060 ;; *) _o=2062 ;; esac
+    _v=$(dd if="$misc" bs=1 skip=$_o count=1 2>/dev/null | od -An -tu1 | tr -d ' \n')
+    case $_v in ''|*[!0-9]*) return 0 ;; esac
+    [ $((_v & 128)) = 0 ] || return 0
+    echo $(( (_v >> 4) & 7 ))
+}
+# boot_tries_exceeded ROOTDIR DISK: count this boot; true when the backstop sends it to Android
+boot_tries_exceeded() {
     # only in default-Linux mode: with the one-shot trial every power cut already lands in Android
-    if [ "$(cat "$rootdir/etc/mu300/default-boot" 2>/dev/null)" = linux ]; then
-        tries=$(cat /disk/.mu300/boot-tries 2>/dev/null || echo 0)
-        case $tries in ''|*[!0-9]*) tries=0 ;; esac
-        tries=$((tries + 1))
-        mkdir -p /disk/.mu300 && echo "$tries" > /disk/.mu300/boot-tries && sync
-    else
-        tries=0
+    [ "$(cat "$1/etc/mu300/default-boot" 2>/dev/null)" = linux ] || return 1
+    tries=$(cat "$2/.mu300/boot-tries" 2>/dev/null || echo 0)
+    case $tries in ''|*[!0-9]*) tries=0 ;; esac
+    tries=$((tries + 1))
+    max=$(cat "$2/.mu300/boot-attempts" 2>/dev/null); case $max in [1-6]) ;; *) max=5 ;; esac
+    # LK left this slot one try: it goes to Android by itself at the next failed boot. A count above N then is one
+    # LK has already acted on - it fell back, and the slot was armed again from Android (su -c mu300-linux) - and
+    # sending this boot to Android as well would bounce every such arm straight back. Count from this boot.
+    if [ "$tries" -gt "$max" ] && [ "$(lk_tries)" = 1 ]; then
+        log "stage=boot-tries-restart count=$tries (LK armed this slot again after its own fallback)"
+        tries=1
     fi
-    max=$(cat /disk/.mu300/boot-attempts 2>/dev/null); case $max in [1-6]) ;; *) max=5 ;; esac
-    if [ "$tries" -gt "$max" ]; then
-        log "stage=boot-tries-exceeded count=$tries (booting Android instead)"
-        echo 0 > /disk/.mu300/boot-tries && sync
+    mkdir -p "$2/.mu300" && echo "$tries" > "$2/.mu300/boot-tries" && sync
+    [ "$tries" -gt "$max" ] || return 1
+    echo 0 > "$2/.mu300/boot-tries" && sync
+    log "stage=boot-tries-exceeded count=$tries (booting Android instead)"
+}
+# --- boot-tries end
+if [ "$root_mounted" = 1 ] && rootdir=$(pick_root) && [ -n "$rootdir" ]; then
+    if boot_tries_exceeded "$rootdir" /disk; then
         restore_android
         persist
         sync
