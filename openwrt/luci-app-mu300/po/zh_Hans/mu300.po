@@ -873,6 +873,12 @@ msgstr "自动（支持 %d 个）"
 msgid "%d locked: %s"
 msgstr "已锁 %d 个：%s"
 
+msgid "Enter a whole number from 0 to %d"
+msgstr "请输入 0 到 %d 之间的整数"
+
+msgid "Power status unavailable"
+msgstr "无法获取电源状态"
+
 msgid "Plugged in"
 msgstr "已接通电源"
 
@@ -902,6 +908,9 @@ msgstr "自动"
 
 msgid "Nobody connected for %d s"
 msgstr "已有 %d 秒无人连接"
+
+msgid "Power source"
+msgstr "电源来源"
 
 msgid "Profile"
 msgstr "方案"

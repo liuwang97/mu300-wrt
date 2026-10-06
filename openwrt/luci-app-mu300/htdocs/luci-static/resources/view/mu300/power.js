@@ -76,7 +76,7 @@ return view.extend({
 		inp.addEventListener('change', function() {
 			var v = inp.value.trim();
 			if (!/^[0-9]+$/.test(v) || +v > max) {
-				M.toast(_('Failed: %s').format(v), { type: 'error', timeout: 6000 });
+				M.toast(_('Enter a whole number from 0 to %d').format(max), { type: 'error', timeout: 6000 });
 				return self.reload();
 			}
 			self.save(key, String(+v));
@@ -86,6 +86,14 @@ return view.extend({
 
 	paint: function(st) {
 		var self = this, conf = st.conf || {}, bat = st.battery, chg = st.charger;
+		/* no state in the reply: the backend did not answer; do not paint defaults as if they were real */
+		if (!st.state) {
+			dom.content(this.root, [ E('section', { 'class': 'mud-card', 'id': 'mud-power-unavailable' }, [
+				E('h3', {}, _('Power')),
+				E('div', { 'class': 'mud-note' }, [ _('Power status unavailable') + (st.error ? ': ' + M.errText(st) : '') ])
+			]) ]);
+			return;
+		}
 		var names = { plugged: _('Plugged in'), battery: _('On battery'), saver: _('Saver') };
 		var row = function(k, v) {
 			return E('div', { 'class': 'mud-r' }, [ E('span', { 'class': 'mud-k' }, k), E('span', { 'class': 'mud-v' }, v) ]);
@@ -98,11 +106,13 @@ return view.extend({
 		var why = String(st.why || ''), under = /under ([0-9]+)/.exec(why);
 		var whyText = why === 'forced' ? _('forced')
 			: under ? _('automatic, battery under %d %%').format(+under[1]) : _('automatic');
-		var card = E('section', { 'class': 'mud-card', 'id': 'mud-power-state' }, [ E('h3', {}, _('State')) ]);
+		var card = E('section', { 'class': 'mud-card', 'id': 'mud-power-state' }, [ E('h3', {}, _('Power')) ]);
 		card.appendChild(row(_('State'), [ stateText ]));
 		if (st.reason) card.appendChild(E('div', { 'class': 'mud-note' }, [ String(st.reason) ]));
 		if (st.state === 'active' && num(st.idle_since_s) && st.idle_since_s > 0)
 			card.appendChild(E('div', { 'class': 'mud-note' }, [ _('Nobody connected for %d s').format(st.idle_since_s) ]));
+		if (st.supply === 'plugged' || st.supply === 'battery')
+			card.appendChild(row(_('Power source'), [ st.supply === 'plugged' ? names.plugged : names.battery ]));
 		if (names[st.profile])
 			card.appendChild(row(_('Profile'), [ _('Profile in use: %s (%s)').format(names[st.profile], whyText) ]));
 		if (bat) {
