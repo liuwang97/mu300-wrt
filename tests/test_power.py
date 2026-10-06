@@ -568,3 +568,54 @@ class Guards(DaemonTest):
             self.assertEqual(self.calls().count('mobile-data suspend off'), 1)
             self.loops(shell)
             self.assertEqual(self.calls().count('mobile-data suspend off'), 2)
+
+    def test_no_reading_keeps_charging_off(self):
+        for shell in self.each_shell():
+            self.setUp()
+            ch = self.charger(online=1); b = self.battery(temp=460)
+            self.loops(shell)
+            (b / 'temp').unlink(); self.loops(shell)
+            self.assertEqual((ch / 'charge_type').read_text().strip(), 'N/A')
+            self.setUp()
+            self.write_conf('CHARGE_TO=80\n')
+            ch = self.charger(online=1); b = self.battery(capacity=85)
+            self.loops(shell)
+            (b / 'capacity').unlink(); self.loops(shell)
+            self.assertEqual((ch / 'charge_type').read_text().strip(), 'N/A')
+
+    def test_node_and_marker_disagree_the_node_wins(self):
+        for shell in self.each_shell():
+            self.setUp()
+            ch = self.charger(online=1, charge_type='N/A'); self.battery(temp=250)   # no marker: lost with /run
+            self.loops(shell)
+            self.assertEqual((ch / 'charge_type').read_text().strip(), 'Fast')
+            self.setUp()
+            ch = self.charger(online=1, charge_type='Fast'); self.battery(temp=460)
+            (self.run_dir / 'mu300/power').mkdir(parents=True, exist_ok=True)
+            (self.run_dir / 'mu300/power/charge-off').write_text('temp\n')   # marker says off, node was reset to on
+            self.loops(shell)
+            self.assertEqual((ch / 'charge_type').read_text().strip(), 'N/A')
+
+    def test_no_switch_is_logged_once(self):
+        for shell in self.each_shell():
+            self.setUp()
+            ch = self.charger(online=1); (ch / 'charge_type').unlink()
+            r1 = self.loops(shell); r2 = self.loops(shell)
+            self.assertIn('no charge switch', r1.stderr)
+            self.assertNotIn('no charge switch', r2.stderr)
+
+    def test_idle_request_in_the_charging_boot_is_dropped(self):
+        for shell in self.each_shell():
+            self.setUp()
+            self.charging_boot(shell)
+            self.power(shell, 'idle'); self.loops(shell)
+            self.power(shell, 'wake'); self.loops(shell)
+            self.loops(shell)
+            self.assertEqual(self.state(), 'active')
+
+    def test_log_validates_seconds(self):
+        for shell in self.each_shell():
+            self.setUp()
+            out = self.tmp / 'p.csv'
+            self.assertEqual(self.power(shell, f'log abc {out}').returncode, 2)
+            self.assertEqual(self.power(shell, f'log 0 {out}').returncode, 2)   # 0 only with MU300_POWER_LOOPS

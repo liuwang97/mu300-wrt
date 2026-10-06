@@ -165,7 +165,7 @@ hotspot() {  # hotspot on|off
     if is_openwrt; then
         if [ "$1" = off ]; then wifi down </dev/null >/dev/null 2>&1; else wifi up </dev/null >/dev/null 2>&1; fi
     else
-        if [ "$1" = off ]; then systemctl stop mu300-hotspot; else systemctl start mu300-hotspot; fi 2>/dev/null
+        if [ "$1" = off ]; then systemctl stop mu300-hotspot </dev/null; else systemctl start mu300-hotspot </dev/null; fi 2>/dev/null
     fi
     _rc=$?
     if [ $_rc -ne 0 ]; then retry_note hotspot "$1"; return 0; fi
@@ -180,8 +180,8 @@ leds_idle() { mu300-led idle "$1" 2>/dev/null || true; }
 modem_idle() {  # modem_idle keep|lte|off | modem_idle resume
     case $1 in
         keep) ;;
-        lte|off) if mobile-data suspend "$1" 2>/dev/null; then retry_drop modem; else retry_note modem "$1"; fi ;;
-        resume) if mobile-data resume 2>/dev/null; then retry_drop modem; else retry_note modem resume; fi ;;
+        lte|off) if mobile-data suspend "$1" </dev/null 2>/dev/null; then retry_drop modem; else retry_note modem "$1"; fi ;;
+        resume) if mobile-data resume </dev/null 2>/dev/null; then retry_drop modem; else retry_note modem resume; fi ;;
     esac
     return 0
 }
@@ -252,7 +252,7 @@ enter_charging_boot() {
 leave_charging_boot() {  # leave_charging_boot REASON
     mu300-led charge off 2>/dev/null || true
     rm -f "$RUN/charging-boot" "$ST/low-loops"
-    is_openwrt || systemctl start mu300-mobile-data 2>/dev/null || true   # skipped at boot by the flag
+    is_openwrt || systemctl start mu300-mobile-data </dev/null 2>/dev/null || true   # skipped at boot by the flag
     leave_idle "$1"
 }
 low_battery_check() {  # unplugged and under 5 % for three loops in a row: a clean poweroff, not a brown-out
@@ -262,26 +262,35 @@ low_battery_check() {  # unplugged and under 5 % for three loops in a row: a cle
     _lown=$(( $(num "$(rd "$ST/low-loops")") + 1 )); echo "$_lown" > "$ST/low-loops"
     [ "$_lown" -ge 3 ] || return 0
     say "battery at $_lowc % and unplugged for three loops: powering off"
-    if is_openwrt; then poweroff; else systemctl poweroff; fi
+    if is_openwrt; then poweroff; else systemctl poweroff </dev/null; fi
     return 0
 }
 
 # --- charging guard: temperature and the charge limit, through the charger's charge_type (bq256xx: N/A off, Fast on)
 charging_switch() { _gc=$(charger_dir) && [ -f "$_gc/charge_type" ] && echo "$_gc/charge_type"; }
-set_charging() {  # set_charging on|off REASON
+set_charging() {  # set_charging on|off REASON: compares with the node itself; $ST/charge-off is only the reason marker
     _sw=$(charging_switch) || return 0
+    _cur=$(rd "$_sw")
     if [ "$1" = off ]; then
-        [ -s "$ST/charge-off" ] || { echo 'N/A' > "$_sw" 2>/dev/null; say "charging off: $2"; }
+        if [ "$_cur" != 'N/A' ]; then
+            if echo 'N/A' > "$_sw" 2>/dev/null; then say "charging off: $2"; else say "charging off: $2 - writing $_sw failed"; fi
+        fi
         echo "$2" > "$ST/charge-off"
     else
-        if [ -s "$ST/charge-off" ]; then echo Fast > "$_sw" 2>/dev/null; say "charging on: $2"; fi
+        if [ "$_cur" = 'N/A' ]; then
+            if echo Fast > "$_sw" 2>/dev/null; then say "charging on: $2"; else say "charging on: $2 - writing $_sw failed"; fi
+        fi
         rm -f "$ST/charge-off"
     fi
     return 0
 }
 guard() {  # temp in 0.1 C: off above 45.0 or below 0, back on under 40.0 and over 3.0; CHARGE_TO=80: off at 80 %, on under 75
-    charging_switch >/dev/null || return 0
+    charging_switch >/dev/null || { [ -e "$ST/no-switch-logged" ] || { say "no charge switch: the guard does nothing"; : > "$ST/no-switch-logged"; }; return 0; }
     _gt=$(battery_temp); _gcap=$(capacity); _goff=$(rd "$ST/charge-off")
+    case $_goff in   # off for a reason whose reading is gone: fail safe, keep it off
+        temp) case ${_gt#-} in ''|*[!0-9]*) return 0 ;; esac ;;
+        limit) case $_gcap in ''|*[!0-9]*) return 0 ;; esac ;;
+    esac
     _gwant=on _gwhy=
     case ${_gt#-} in ''|*[!0-9]*) ;; *)
         if [ "$_gt" -gt 450 ] || [ "$_gt" -lt 0 ]; then _gwant=off _gwhy=temp
@@ -312,6 +321,7 @@ step() {  # one look at the world; sets _acted when it changed the state
             if [ "$_prof" = plugged ]; then leave_idle "woken: plugged in"; return 0; fi
             if [ -n "$_old" ] && [ "$_old" != "$_prof" ]; then enter_idle "$_prof" "idle: profile now $_prof"; fi ;;
         charging-boot)   # only the Wi-Fi key ends it; a computer on USB does not
+            rm -f "$ST/idle-now"
             low_battery_check
             if [ -e "$ST/wake" ]; then leave_charging_boot "woken by the Wi-Fi key"; fi ;;
         *)  # active; anything unknown is treated as active
@@ -357,6 +367,10 @@ cmd_daemon() {
 }
 cmd_log() {  # cmd_log [SECONDS] [FILE]
     _lge=${1:-5}; _lgf=${2:-/var/log/mu300-power.csv}
+    case $_lge in
+        ''|*[!0-9]*) echo "usage: mu300-power log [SECONDS] [FILE]" >&2; return 2 ;;
+        0*) [ "$_lge" -gt 0 ] || [ -n "${MU300_POWER_LOOPS:-}" ] || { echo "usage: mu300-power log [SECONDS>0] [FILE]" >&2; return 2; } ;;
+    esac
     case $_lgf in */*) _lgd=${_lgf%/*} ;; *) _lgd=. ;; esac
     [ -d "${_lgd:-/}" ] || { echo "mu300-power: log: no directory $_lgd for $_lgf" >&2; return 1; }
     [ -s "$_lgf" ] || echo 'epoch,mV,mA,mW,capacity,temp,state,profile' > "$_lgf" || return 1
