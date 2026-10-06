@@ -134,9 +134,9 @@ done
 for f in etc/mu300/packages.txt usr/lib/lua/luci/i18n/base.tr.lmo usr/lib/lua/luci/i18n/base.zh-cn.lmo; do
     printf '%s\n' "$plain" | grep -qx "$f" || { echo "mu300-openwrt-rootfs lacks $f"; fail=1; }
 done
-# the lang extra: catalogs only, and the panel's in the languages it was translated to
+# the lang extra: catalogs only (and its manifest), and the panel's in the languages it was translated to
 lx=$(tar -tzf "$D/mu300-extra-lang.tar.gz" | sed 's|^\./||')
-! printf '%s\n' "$lx" | grep . | grep -Evx 'name|release|components|languages|i18n/?|i18n/[a-z0-9-]+\.[a-z]{2,3}(-[a-z]{2})?\.lmo' ||
+! printf '%s\n' "$lx" | grep . | grep -Evx 'name|release|components|languages|manifest|i18n/?|i18n/[a-z0-9-]+\.[a-z]{2,3}(-[a-z]{2})?\.lmo' ||
     { echo "mu300-extra-lang.tar.gz has files that are not catalogs"; fail=1; }
 for f in i18n/base.de.lmo i18n/mu300.de.lmo i18n/mu300.ja.lmo; do
     printf '%s\n' "$lx" | grep -qx "$f" || { echo "mu300-extra-lang.tar.gz lacks $f"; fail=1; }
