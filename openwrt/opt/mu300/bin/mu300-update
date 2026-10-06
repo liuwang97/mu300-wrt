@@ -444,8 +444,12 @@ extra_tree_ok() {
     [ -z "$_t" ] || return 1
     _t=$(find "$2" -type f -exec ls -ld {} +) || return 1
     [ -z "$(printf '%s\n' "$_t" | awk '$2 != 1')" ] || return 1
-    [ "$1" = lang ] || return 0
     _t=$(cd "$2" && find .) || return 1
+    # the other extras: their four files and programs in bin/, nothing else (whatever a tar did to the names)
+    if [ "$1" != lang ]; then
+        ! printf '%s\n' "$_t" | LC_ALL=C grep -Evxq -- '\.|\./(name|release|components|manifest|bin|bin/[A-Za-z0-9._+-]+)'
+        return
+    fi
     ! printf '%s\n' "$_t" | LC_ALL=C grep -Evxq -- "$LANG_ENTRY" || return 1
     # the catalogs are files, never directories under a catalog's name
     _t=$(find "$2/i18n" -mindepth 1 ! -type f) || return 1

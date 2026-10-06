@@ -333,7 +333,7 @@ class EarlyUsbOpenWrt(ShellTest):
         self.uci_standin(config)
         body = self.text('etc/uci-defaults/90-mu300', **{'/lib/mu300/usb-host.sh': str(OPENWRT / 'lib' / 'mu300' / 'usb-host.sh'), 
             '/opt/mu300/bin/': f'{self.stubs}/', '/run/': f'{self.tmp}/run/', '/sys/': f'{self.tmp}/sys/',
-            '/etc/inittab': f'{self.tmp}/inittab'})
+            '/etc/inittab': f'{self.tmp}/inittab', '/usr/lib/lua/luci/i18n/': f'{self.tmp}/i18n/'})
         for _ in range(runs):
             r = self.sh(shell, body)
             self.assertEqual(0, r.returncode, r.stderr)
@@ -491,6 +491,26 @@ class EarlyUsbOpenWrt(ShellTest):
             self.defaults(shell)
             self.assertEqual(self.script(shell, LUCI_DEFAULTS).returncode, 0)
             self.assertEqual(self.uci('get', 'network.lan.ip6assign'), '64', shell)
+            self.tearDown(); self.setUp()
+
+    def test_the_images_languages_are_offered_after_an_update(self):
+        # the kept /etc/config/luci of a plain OpenWrt from before had no languages: the image's catalogs (Turkish,
+        # Chinese) are registered on the first boot after the update; a name the user's configuration has stays
+        for shell in self.each_shell():
+            (self.tmp / 'i18n').mkdir(exist_ok=True)
+            for n in ('base.tr.lmo', 'base.zh-cn.lmo'):
+                (self.tmp / 'i18n' / n).write_text('x')
+            old = fresh_openwrt_config()
+            old['luci'][1]['opts'] = {'zh_cn': 'Mine'}
+            self.defaults(shell, config=old)
+            self.assertEqual(self.uci('get', 'luci.languages.tr'), 'T\u00fcrk\u00e7e (Turkish)', shell)
+            self.assertEqual(self.uci('get', 'luci.languages.zh_cn'), 'Mine', shell)
+            # without the catalogs (no LuCI translations in the image) nothing is offered
+            for n in ('base.tr.lmo', 'base.zh-cn.lmo'):
+                (self.tmp / 'i18n' / n).unlink()
+            old['luci'][1]['opts'] = {}
+            self.defaults(shell, config=old)
+            self.assertIsNone(self.uci('get', 'luci.languages.tr'), shell)
             self.tearDown(); self.setUp()
 
     def test_luci_starts_in_english_and_keeps_a_chosen_language(self):
