@@ -312,11 +312,24 @@ class Rules(unittest.TestCase):
         self.assertIn(r"#define SPRD_UMP9620_CHG_DET\t\t0x239c", port)
         self.assertIn(r"'\t.charger_det = SPRD_SC2730_CHG_DET,\n};\n', UMP9620_DATA)", port)
         self.assertIn("'.charger_det = SPRD_UMP9620_CHG_DET,'", port)
-        # Android's last capacity in the FGU's user area is in 0.1 % (575 read as 575 %), and capacity stays 0-100
-        p11 = (TOP / 'upstream' / 'patches' / '0011-power-sc27xx-fuel-gauge-UMP9620-capacity-in-tenths.patch').read_text()
-        for s in ('+\t\tcap = clamp(cap, 0, 100) * 10;', '+\t\t*cap = min(DIV_ROUND_CLOSEST(*cap, 10), 100);',
+        # Android's last capacity in the FGU's user area is whole percent in bits 7:0 and tenths in bits 11:8 (575 =
+        # 0x23f = 63.2 %), not 0.1 %; mainline writes whole percent; an ambiguous or invalid value goes to the OCV; the
+        # charger's Full (from a charger driver) means 100 %; the capacity is saved as it changes and stays 0-100
+        patches = TOP / 'upstream' / 'patches'
+        self.assertFalse((patches / '0011-power-sc27xx-fuel-gauge-UMP9620-capacity-in-tenths.patch').exists())
+        p11 = (patches / '0011-power-sc27xx-fuel-gauge-UMP9620-saved-capacity-and-full.patch').read_text()
+        for s in ('+#define UMP9620_FGU_CAP_INTEGER_MASK\tGENMASK(7, 0)', '+#define UMP9620_FGU_CAP_DECIMAL_MASK\tGENMASK(11, 8)',
+                  '+\t\tcap = clamp(cap, 0, 100);', '+\tvalid = whole <= 100 && tenths <= 9 && !(whole == 100 && tenths);',
+                  '+\tambiguous = tenths && value <= 1000 && !(value % 10);',
+                  '+\tif (valid && (!ambiguous || abs(cur) >= UMP9620_FGU_RELAXED_MA)) {',
+                  '+\t*cap = power_supply_ocv2cap_simple(data->cap_table, data->table_len, ocv);',
+                  '+\tif (!is_first_poweron && data->var == &ump9620_info)',
+                  '+\tif (data->var == &ump9620_info && chg_sts == POWER_SUPPLY_STATUS_FULL && cap != 100 &&',
+                  '+\t    sc27xx_fgu_has_charger() &&', '+\t\tsc27xx_fgu_adjust_cap(data, 100);',
+                  '+\t\tif (*cap != data->saved_cap && sc27xx_fgu_save_last_cap(data, *cap))',
                   '+\t\tval->intval = clamp(value, 0, 100);'):
             self.assertIn(s, p11)
+        self.assertNotIn('* 10;', p11)
         # mu300-usb reaches the chip past the driver and leaves its watchdog off then
         usb = (BIN / 'mu300-usb').read_text()
         self.assertIn('[ -e "$R/sys/bus/i2c/devices/$BUS-006b/driver" ] && FORCE=-f', usb)
