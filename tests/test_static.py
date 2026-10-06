@@ -67,6 +67,36 @@ class Syntax(unittest.TestCase):
 
 
 class Rules(unittest.TestCase):
+    def test_power_profiles_are_wired_in(self):
+        # the daemon runs on both systems, the keys wake it, the Ubuntu units skip the radios in a charging boot,
+        # the command is on PATH, OpenWrt's own power-key handler (a tap = poweroff) is neutralised, and power.conf is kept
+        self.assertIn('mu300-power', (TOP / 'rootfs/overlay/opt/mu300/lib/path-commands').read_text().split())
+        buttons = (BIN / 'mu300-buttons').read_text()
+        self.assertIn('mu300-power wake', buttons)
+        unit = (TOP / 'rootfs/overlay/etc/systemd/system/mu300-power.service').read_text()
+        self.assertIn('ExecStart=/opt/mu300/bin/mu300-power daemon', unit)
+        self.assertIn('After=mu300-hotspot.service mu300-mobile-data.service', unit)
+        # R10: stopped while idle, the TERM trap runs the whole wake (up to ~120 s for the radio lock)
+        self.assertIn('TimeoutStopSec=150', unit)
+        self.assertIn('mu300-power.service:multi-user.target', (TOP / 'rootfs/assemble.sh').read_text())
+        init = (TOP / 'openwrt/overlay/etc/init.d/mu300-power').read_text()
+        self.assertIn('procd_set_param command /opt/mu300/bin/mu300-power daemon', init)
+        self.assertIn('procd_set_param term_timeout 150', init)
+        self.assertRegex(init, r'START=9[6-9]')
+        for u in ('mu300-hotspot.service', 'mu300-mobile-data.service'):
+            self.assertIn('ConditionPathExists=!/run/mu300/charging-boot', (TOP / 'rootfs/overlay/etc/systemd/system' / u).read_text())
+        build = (TOP / 'openwrt/build-rootfs.sh').read_text()
+        self.assertIn('for b in power wps rfkill', build)
+        self.assertIn('mkdir -p $R/etc/rc.button', build)
+        self.assertIn('rc.button/$b', build)
+        self.assertLess(build.index('cp -a /in/overlay/. $R/'), build.index('for b in power wps rfkill'))
+        self.assertIn('mu300-power', build.split('for s in mu300-accounts')[1].split('; do')[0])
+        # etc/mu300 is kept whole on both systems, and power.conf lives in it
+        update = (TOP / 'rootfs/overlay/opt/mu300/bin/mu300-update').read_text()
+        self.assertRegex(update, r'ubuntu\) echo "etc/mu300 ')
+        self.assertRegex(update, r'openwrt\) echo "etc/config etc/mu300 ')
+        self.assertIn('/etc/mu300/power.conf', (BIN / 'mu300-power').read_text())
+
     def test_customize_leaves_magisks_shell_alone(self):
         # Magisk sources customize.sh: errexit or nounset there would end Magisk's own installer before its cleanup
         c = (TOP / 'android' / 'magisk' / 'installer' / 'customize.sh').read_text()

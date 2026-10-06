@@ -4,6 +4,8 @@
 #   power, held 3 s           shut down cleanly (the battery-powered U30 Air; the F50 starts again on USB power)
 #   Wi-Fi key, short press    hotspot 2.4 <-> 5 GHz (U30 Air; the Wi-Fi LED shows the band: blue 5, white 2.4)
 #   Wi-Fi key, held 3 s       hotspot off / on
+# Every press wakes mu300-power first (idle or a charging boot: the hotspot and the modem come back); the band toggle
+# and the hotspot toggle then act on the awake device, so the first Wi-Fi press on a sleeping device only wakes it.
 # mu300-keys reports the presses; its tick every 5 s lets the LEDs time out. Ubuntu's logind leaves the power key
 # to this script (/etc/systemd/logind.conf.d/mu300-buttons.conf): it used to power the device off at a touch.
 export PATH="$PATH:/opt/mu300/bin:/usr/sbin:/sbin"
@@ -20,14 +22,16 @@ hotspot_toggle() {
 }
 
 mu300-keys -l 3000 -t 5 | while read -r code kind; do
+    was_idle=0; s=$(cat "${MU300_RUN:-/run}/mu300/power/state" 2>/dev/null); [ -z "$s" ] || [ "$s" = active ] || was_idle=1
+    [ "$kind" = tick ] || mu300-power wake </dev/null >/dev/null 2>&1 || true   # the tick every 5 s is no press
     case "$code $kind" in
         "$KEY_POWER short") mu300-led wake ;;
         "$KEY_POWER long")
             logger -t mu300-buttons "power button held: shutting down" 2>/dev/null
             mu300-led wake
             if is_openwrt; then poweroff; else systemctl poweroff; fi ;;
-        "$KEY_WIFI short") mu300-led wake; mu300-wifi-band toggle | logger -t mu300-buttons 2>/dev/null ;;
-        "$KEY_WIFI long") mu300-led wake; hotspot_toggle ;;
+        "$KEY_WIFI short") mu300-led wake; [ "$was_idle" = 1 ] || mu300-wifi-band toggle | logger -t mu300-buttons 2>/dev/null ;;
+        "$KEY_WIFI long") mu300-led wake; [ "$was_idle" = 1 ] || hotspot_toggle ;;
         "0 tick") mu300-led sleep --if-due ;;
     esac
 done

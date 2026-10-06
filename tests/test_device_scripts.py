@@ -1579,22 +1579,40 @@ class WifiBand(ShellTest):
 class Buttons(ShellTest):
     def test_actions(self):
         self.stub('mu300-keys', 'cat "$STUBLOG/keys.in"')
-        for name in ('mu300-led', 'mu300-wifi-band', 'systemctl', 'logger', 'poweroff'):
+        for name in ('mu300-led', 'mu300-wifi-band', 'systemctl', 'logger', 'poweroff', 'mu300-power'):
             self.stub(name, f'echo "{name} $*" >> "$STUBLOG/calls"; [ "{name} $*" != "systemctl is-active --quiet mu300-hotspot" ]')
-        cases = [('116 short', ['mu300-led wake']),
-                 ('138 short', ['mu300-led wake', 'mu300-wifi-band toggle']),
-                 ('138 long', ['mu300-led wake', 'systemctl is-active --quiet mu300-hotspot', 'systemctl start mu300-hotspot']),
-                 ('0 tick', ['mu300-led sleep --if-due']),
-                 ('116 long', ['mu300-led wake', 'systemctl poweroff']),
-                 ('115 short', [])]
+        W = 'mu300-power wake'
+        cases = [('116 short', [W, 'mu300-led wake']),
+                 ('138 short', [W, 'mu300-led wake', 'mu300-wifi-band toggle']),
+                 ('138 long', [W, 'mu300-led wake', 'systemctl is-active --quiet mu300-hotspot', 'systemctl start mu300-hotspot']),
+                 ('0 tick', ['mu300-led sleep --if-due']),   # a tick is no press: it must not wake
+                 ('116 long', [W, 'mu300-led wake', 'systemctl poweroff']),
+                 ('115 short', [W])]
         for shell in self.each_shell():
             for event, want in cases:
                 (self.tmp / 'keys.in').write_text(event + '\n')
                 (self.tmp / 'calls').unlink(missing_ok=True)
-                r = self.script(shell, BIN / 'mu300-buttons')
+                r = self.script(shell, BIN / 'mu300-buttons', MU300_RUN=self.tmp / 'run')
                 self.assertEqual(r.returncode, 0, r.stderr)
                 calls = (self.tmp / 'calls').read_text().splitlines() if (self.tmp / 'calls').exists() else []
                 self.assertEqual([c for c in calls if not c.startswith('logger')], want, event)
+
+    def test_first_wifi_press_while_asleep_only_wakes(self):
+        self.stub('mu300-keys', 'cat "$STUBLOG/keys.in"')
+        for name in ('mu300-led', 'mu300-wifi-band', 'systemctl', 'logger', 'mu300-power'):
+            self.stub(name, f'echo "{name} $*" >> "$STUBLOG/calls"')
+        (self.tmp / 'run/mu300/power').mkdir(parents=True)
+        for state, acts in (('idle', False), ('charging-boot', False), ('active', True)):
+            (self.tmp / 'run/mu300/power/state').write_text(state + '\n')
+            for shell in self.each_shell():
+                for event in ('138 short', '138 long'):
+                    (self.tmp / 'keys.in').write_text(event + '\n')
+                    (self.tmp / 'calls').unlink(missing_ok=True)
+                    r = self.script(shell, BIN / 'mu300-buttons', MU300_RUN=self.tmp / 'run')
+                    self.assertEqual(r.returncode, 0, r.stderr)
+                    calls = (self.tmp / 'calls').read_text()
+                    self.assertIn('mu300-power wake', calls, (state, event))
+                    self.assertEqual(acts, ('mu300-wifi-band toggle' in calls or 'systemctl start' in calls or 'systemctl is-active' in calls), (state, event))
 
 
 class ThermalGuard(ShellTest):
