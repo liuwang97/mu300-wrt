@@ -124,6 +124,12 @@ apk update >/dev/null
 # i2c-tools, gpiod-tools: mu300-usb (the charger of the U30 Air) and mu300-nfc (its NFC tag)
 apk add wpad-basic-mbedtls wifi-scripts iwinfo wireless-regdb iw bash ip-full coreutils-stty openssl-util \
     i2c-tools gpiod-tools >/dev/null
+# the router protocols LuCI offers, with their tools: WireGuard, PPTP/L2TP (PPPoE is in the base), 6in4/6rd/DS-Lite,
+# GRE and VXLAN, ipset, and SQM (cake). Their kmod-* dependencies install the 6.12 modules of the feed, removed below like
+# every other kmod: the mainline kernels have them built in or as modules of their own (mu300-mainline.config), 5.4
+# has some of them only
+apk add wireguard-tools luci-proto-wireguard ppp-mod-pptp xl2tpd 6in4 6rd ds-lite gre luci-proto-gre vxlan \
+    luci-proto-vxlan ipset sqm-scripts luci-app-sqm >/dev/null
 if [ -d /in/luci-plugin ]; then
     # LuCI itself in the languages of the panel, and the pinned Aurora theme
     apk add luci-i18n-base-tr luci-i18n-base-zh-cn luci-i18n-firewall-tr luci-i18n-firewall-zh-cn >/dev/null

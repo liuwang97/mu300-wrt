@@ -149,6 +149,14 @@ for a in mu300-kernel mu300-kernel-6.18 mu300-kernel-7.2; do
     tar -xzOf "$D/$a.tar.gz" ./features 2>/dev/null | grep -qx sdcard || { echo "$a does not list sdcard in ./features"; fail=1; }
     tar -xzOf "$D/$a.tar.gz" ./features 2>/dev/null | grep -qx linux-slot || { echo "$a does not list linux-slot in ./features"; fail=1; }
 done
+# a mainline bundle carries the kernel's own modules next to the vendor ones (upstream/build-modules.sh): one of each
+# kind - qdisc, filesystem, device mapper, USB modem, vhost - and the vendor Wi-Fi
+for a in mu300-kernel-6.18 mu300-kernel-7.2; do
+    l=$(tar -tzf "$D/$a.tar.gz")
+    for m in sch_htb.ko ntfs3.ko dm-crypt.ko cdc_mbim.ko vhost_net.ko sprd_wlan_combo.ko; do
+        printf '%s\n' "$l" | grep -qx "./modules/$m" || { echo "$a lacks modules/$m"; fail=1; }
+    done
+done
 [ $fail = 0 ] || { echo "audit failed, nothing published" >&2; exit 1; }
 rm -rf "$IN"
 # the updater itself: an older mu300-update fetches this one and continues with it
