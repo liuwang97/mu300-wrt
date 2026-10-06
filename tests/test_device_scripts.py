@@ -1870,8 +1870,10 @@ class Usb(ShellTest):
         self.stub('sleep', ':')
         # i2c-tools (which mu300-usb prefers to busybox's): i2cget -y BUS ADDR REG / i2cset -y BUS ADDR REG VALUE,
         # one file per register. (Not a stub called busybox: that would also replace the "busybox sh" under test.)
-        self.stub('i2cget', '[ "$1" = -y ] && shift; cat "$STUBLOG/reg-$3" 2>/dev/null || echo 0x00')
-        self.stub('i2cset', '[ "$1" = -y ] && shift; printf "0x%02x\\n" $(( $4 )) > "$STUBLOG/reg-$3"; '
+        # The options (-y, and -f when a kernel driver owns the address) go to $STUBLOG/flags.
+        opts = 'while case $1 in -*) true ;; *) false ;; esac; do echo "$1" >> "$STUBLOG/flags"; shift; done; '
+        self.stub('i2cget', opts + 'cat "$STUBLOG/reg-$3" 2>/dev/null || echo 0x00')
+        self.stub('i2cset', opts + 'printf "0x%02x\\n" $(( $4 )) > "$STUBLOG/reg-$3"; '
                             'echo "$3=$(( $4 ))" >> "$STUBLOG/writes"')
 
     def regs(self, **values):
@@ -1923,6 +1925,34 @@ class Usb(ShellTest):
             (self.tmp / 'writes').unlink(missing_ok=True)
             self.assertEqual(self.usb(shell, 'boot').stdout, '')
             self.assertFalse((self.tmp / 'writes').exists())
+
+    def test_under_the_kernel_driver(self):
+        # bq256xx owns 6-006b (mainline with the charger patch): i2c-dev needs -f, and the watchdog stays off, or 40 s
+        # later the chip would drop the driver's charge settings (input current, charge current, charging on)
+        drv = self.root / 'sys/bus/i2c/devices/6-006b'
+        drv.mkdir(parents=True)
+        (drv / 'driver').symlink_to(self.root / 'run')
+        for shell in self.each_shell():
+            (self.tmp / 'flags').unlink(missing_ok=True)
+            self.regs(r01='0x1a', r05='0x87', r08='0x00')
+            r = self.usb(shell, 'host')
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertEqual(self.reg('0x01'), 0x1a | 0x20)
+            r = self.usb(shell, 'device')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(self.reg('0x01'), 0x1a)
+            self.assertEqual(self.reg('0x05'), 0x87)          # watchdog still off
+            self.regs(r01='0x3a')
+            r = self.usb(shell, 'boot')
+            self.assertEqual(self.reg('0x01'), 0x1a)
+            self.assertEqual(self.reg('0x05'), 0x87)
+            self.assertIn('-f', (self.tmp / 'flags').read_text().split())
+        # without the driver, no -f
+        (drv / 'driver').unlink()
+        for shell in self.each_shell():
+            (self.tmp / 'flags').unlink(missing_ok=True)
+            self.usb(shell, 'boot')
+            self.assertNotIn('-f', (self.tmp / 'flags').read_text().split())
 
     def test_f50(self):
         for shell in self.each_shell():

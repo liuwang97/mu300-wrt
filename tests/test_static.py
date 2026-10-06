@@ -259,6 +259,54 @@ class Rules(unittest.TestCase):
         # and the build stops when the edit did not apply
         self.assertIn("'MU300: the eMMC is mmc0', 'WRITE_ONCE(sdhci_sprd_emmc_added, true);'", port)
 
+    def test_mainline_drives_the_u30_air_charger(self):
+        # Without a driver the charger kept what Android left in it: charging off (CHG_CONFIG 0), 500 mA input, and
+        # the battery drained while plugged in. bq256xx drives the vendor node "ti,bq2560x_chg" now.
+        cfg = (TOP / 'upstream' / 'mu300-mainline.config').read_text()
+        for k in ('CONFIG_CHARGER_BQ256XX=y', 'CONFIG_REGMAP_I2C=y', 'CONFIG_I2C_SPRD=y', 'CONFIG_EXTCON_USB_GPIO=y'):
+            self.assertRegex(cfg, rf'(?m)^{k}$')
+        port = (TOP / 'upstream' / 'port' / 'install.py').read_text()
+        # the edit itself, on the two forms of the I2C table (6.18 positional, 7.x designated), twice (idempotent)
+        code = port[port.index("bp = os.path.join(tree, 'drivers/power/supply/bq256xx_charger.c')"):
+                    port.index('# Every edit above is a text substitution')]
+        of = ('static const struct of_device_id bq256xx_of_match[] = {\n'
+              '\t{ .compatible = "ti,bq25601", .data = &bq256xx_chip_info_tbl[BQ25601] },\n\t{}\n};\n')
+        acpi = ('static const struct acpi_device_id bq256xx_acpi_match[] = {\n'
+                '\t{ "bq25601", (kernel_ulong_t)&bq256xx_chip_info_tbl[BQ25601] },\n\t{}\n};\n')
+        for entry, want in (('{ "bq25601", (kernel_ulong_t)&bq256xx_chip_info_tbl[BQ25601] }',
+                             '\t{ "bq2560x_chg", (kernel_ulong_t)&bq256xx_chip_info_tbl[BQ25601] },\n'),
+                            ('{ .name = "bq25601", .driver_data = (kernel_ulong_t)&bq256xx_chip_info_tbl[BQ25601] }',
+                             '\t{ .name = "bq2560x_chg", .driver_data = (kernel_ulong_t)&bq256xx_chip_info_tbl[BQ25601] },\n')):
+            with tempfile.TemporaryDirectory() as tree:
+                f = Path(tree, 'drivers/power/supply/bq256xx_charger.c')
+                f.parent.mkdir(parents=True)
+                f.write_text('static const struct i2c_device_id bq256xx_i2c_ids[] = {\n\t' + entry + ',\n\t{}\n};\n'
+                             'MODULE_DEVICE_TABLE(i2c, bq256xx_i2c_ids);\n' + of + acpi)
+                for _ in range(2):
+                    exec(code, {'os': os, 'tree': tree})
+                t = f.read_text()
+                self.assertEqual(t.count(want), 1, t)
+                self.assertEqual(t.count('"ti,bq2560x_chg", .data = &bq256xx_chip_info_tbl[BQ25601]'), 1, t)
+                self.assertNotIn('bq2560x_chg', t[t.index('acpi_device_id'):])   # the ACPI table stays as it was
+        # and the build stops when it did not apply
+        self.assertIn("('drivers/power/supply/bq256xx_charger.c', ['\"ti,bq2560x_chg\"", port)
+        # the driver's handling of that node: no stale cache, Android's 1.98 A and 4.208 V at most, the chip's own
+        # input detection on every VBUS change from the extcon, charging on unless userspace said "N/A"
+        p9 = (TOP / 'upstream' / 'patches' / '0009-power-bq256xx-drive-the-U30-Air-charger.patch').read_text()
+        for s in ('.cache_type = REGCACHE_NONE', 'BQ2560X_CHG_ICHG_MAX_uA\t\t1980000', 'BQ2560X_CHG_VBATREG_MAX_uV\t4208000',
+                  'BQ256XX_IINDET_EN', 'devm_extcon_register_notifier(dev, bq->vbus_edev, EXTCON_USB',
+                  '"linux,extcon-usb-gpio"', 'bq->init_data.iindpm = 500000;', 'WRITE_ONCE(bq->chg_off',
+                  'off ? 0 : BQ256XX_CHG_CONFIG_MASK', 'case BQ256XX_VBUS_STAT_USB_CDP:\n+\t\treturn 1500000;',
+                  'case BQ256XX_VBUS_STAT_USB_DCP:\n+\t\treturn 2000000;', 'case BQ256XX_VBUS_STAT_NONSTD:\n+\t\treturn 1000000;',
+                  'static char *supplied_to[] = { "sc27xx-fgu" };'):
+            self.assertIn(s, p9)
+        # the fuel gauge asks the charger by the name the driver registers
+        p10 = (TOP / 'upstream' / 'patches' / '0010-power-sc27xx-fuel-gauge-status-from-bq256xx.patch').read_text()
+        self.assertIn('+\t"bq256xx-charger",', p10)
+        # mu300-usb reaches the chip past the driver and leaves its watchdog off then
+        usb = (BIN / 'mu300-usb').read_text()
+        self.assertIn('[ -e "$R/sys/bus/i2c/devices/$BUS-006b/driver" ] && FORCE=-f', usb)
+
     def test_mainline_config_has_kvm_and_the_module_set(self):
         # /dev/kvm (the CPUs start at EL2) and the router/container modules; the kernel's own modules reach the bundle
         cfg = (TOP / 'upstream' / 'mu300-mainline.config').read_text()

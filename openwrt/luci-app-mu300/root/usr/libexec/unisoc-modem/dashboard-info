@@ -135,12 +135,13 @@ T_HOT=$(temp_hottest)
 # none, but the same PMIC: under mainline its fuel gauge appears with made-up
 # values, so an F50 reports no battery and the page hides the tile.
 # voltage_now is microvolts, current_now microamps: positive into the battery
-# under mainline (patch 0006 derives "Charging" from current > 20 mA); the
-# page goes by status first, the sign only for Unknown and the like. An install
+# under mainline (the status comes from bq256xx-charger, patch 0010; without
+# it patch 0006 derives "Charging" from current > 20 mA); the page goes by
+# status first, the sign only for Unknown and the like. An install
 # whose ramdisk does not name the device reads as an F50 under mainline (no
 # charger_policy_service in that device tree): no tile, never a wrong one. The
 # charger (5.4: "usb"/"ac") says whether external power is on and, where it
-# exposes them, the input voltage and current; mainline has no charger driver.
+# exposes them, the input voltage and current; mainline: bq256xx-charger (online only).
 PSY=${MU300_POWER_SUPPLY_DIR:-/sys/class/power_supply}
 P_DIR=
 if [ "$(mu300-device 2>/dev/null)" != f50 ]; then

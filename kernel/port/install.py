@@ -262,6 +262,24 @@ t = open(rp).read()
 if 'ump96xx-rtc' not in t:
     t = t.replace('\t{ .compatible = "sprd,sc2731-rtc", },\n', '\t{ .compatible = "sprd,sc2731-rtc", },\n\t{ .compatible = "sprd,ump96xx-rtc", },\n', 1)
     open(rp, 'w').write(t)
+# The ZTE U30 Air's charger (SGM41511, a bq25601): its vendor DT compatible in bq256xx's OF and I2C tables; the
+# driver's handling of that node (no IRQ, no input current in the DT, the chip as Android left it) is patch 0009. The
+# I2C table is an edit rather than part of the patch: 6.18 writes its entries positionally, 7.x with .name/.driver_data.
+bp = os.path.join(tree, 'drivers/power/supply/bq256xx_charger.c')
+t = open(bp).read()
+if '"ti,bq2560x_chg"' not in t:
+    t = t.replace('\t{ .compatible = "ti,bq25601", .data = &bq256xx_chip_info_tbl[BQ25601] },\n',
+                  '\t{ .compatible = "ti,bq25601", .data = &bq256xx_chip_info_tbl[BQ25601] },\n'
+                  '\t{ .compatible = "ti,bq2560x_chg", .data = &bq256xx_chip_info_tbl[BQ25601] },\n', 1)
+if '"bq2560x_chg"' not in t:
+    for line in ('\t{ "bq25601", (kernel_ulong_t)&bq256xx_chip_info_tbl[BQ25601] },\n',
+                 '\t{ .name = "bq25601", .driver_data = (kernel_ulong_t)&bq256xx_chip_info_tbl[BQ25601] },\n'):
+        # the I2C table comes first; the ACPI table has the same positional line further down
+        i = t.find(line, t.index('bq256xx_i2c_ids[]'))
+        if i >= 0 and i < t.index('MODULE_DEVICE_TABLE(i2c'):
+            t = t[:i + len(line)] + line.replace('"bq25601"', '"bq2560x_chg"') + t[i + len(line):]
+            break
+open(bp, 'w').write(t)
 # Every edit above is a text substitution, and one whose anchor drifted in a new kernel release changes nothing
 # without saying so. Check the result rather than trusting the substitutions.
 expect = [
@@ -274,6 +292,8 @@ expect = [
     ('drivers/rtc/rtc-sc27xx.c', ['"sprd,ump96xx-rtc"']),
     ('drivers/usb/dwc3/dwc3-of-simple.c', ['"sprd,qogirn6pro-dwc3"']),
     ('drivers/usb/dwc3/core.c', ['"snps,sprd-dwc3"']),
+    ('drivers/power/supply/bq256xx_charger.c', ['"ti,bq2560x_chg", .data = &bq256xx_chip_info_tbl[BQ25601]',
+                                                '"bq2560x_chg", ']),   # the I2C entry, in either form
 ]
 missing = [(p, w) for p, ws in expect for w in ws if w not in open(os.path.join(tree, p)).read()]
 if missing:
