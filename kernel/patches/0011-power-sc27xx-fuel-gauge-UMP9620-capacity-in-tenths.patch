@@ -1,0 +1,41 @@
+power: supply: sc27xx_fuel_gauge: UMP9620's saved capacity is in 0.1 %, and capacity stays within 0-100
+
+The FGU's always-on user area keeps the last capacity across a reboot, and the boot after Android reads it back.
+Android keeps it there in 0.1 %: on the U30 Air the first mainline boot with a charger driver (patch 0009) read
+575 and reported capacity 575. Until then the status was Full (0006's fallback), and the calibration that runs
+outside charging forced anything above 100 back to 100, so nobody saw it. On UMP9620 the value is now read and
+saved in 0.1 %, and the reported capacity is clamped to 0-100: while charging nothing calibrates the coulomb count.
+
+--- a/drivers/power/supply/sc27xx_fuel_gauge.c
++++ b/drivers/power/supply/sc27xx_fuel_gauge.c
+@@ -275,6 +275,10 @@
+ 	 */
+ 	udelay(200);
+ 
++	/* UMP9620: Android keeps the capacity here in 0.1 % (575 at 57.5 %); so does this driver */
++	if (data->var == &ump9620_info)
++		cap = clamp(cap, 0, 100) * 10;
++
+ 	ret = regmap_update_bits(data->regmap,
+ 				 data->base + SC27XX_FGU_USER_AREA_SET,
+ 				 SC27XX_FGU_CAP_AREA_MASK, cap);
+@@ -309,6 +313,9 @@
+ 		return ret;
+ 
+ 	*cap = value & SC27XX_FGU_CAP_AREA_MASK;
++	/* UMP9620: in 0.1 % (see sc27xx_fgu_save_last_cap()) */
++	if (data->var == &ump9620_info)
++		*cap = min(DIV_ROUND_CLOSEST(*cap, 10), 100);
+ 	return 0;
+ }
+ 
+@@ -702,7 +709,8 @@
+ 		if (ret)
+ 			goto error;
+ 
+-		val->intval = value;
++		/* the coulomb count can run past either end while charging, when nothing calibrates it */
++		val->intval = clamp(value, 0, 100);
+ 		break;
+ 
+ 	case POWER_SUPPLY_PROP_VOLTAGE_AVG:

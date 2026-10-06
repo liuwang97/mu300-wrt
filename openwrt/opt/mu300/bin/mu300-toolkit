@@ -445,11 +445,11 @@ menu_stress() {
 
 # ---------------------------------------------------------------- info
 # charging, full, on battery...: the SQC charger says "Unknown" once the battery is full, so the power source says
-# more than the status alone
+# more than the status alone (5.4: usb/ac; mainline: the U30 Air's bq256xx-charger)
 battery_state() {
     st=$(cat "$BATDIR/status" 2>/dev/null)
     [ "$st" = Unknown ] && st=
-    ext=0; for s in usb ac; do [ "$(cat /sys/class/power_supply/$s/online 2>/dev/null)" = 1 ] && ext=1; done
+    ext=0; for s in usb ac bq256xx-charger; do [ "$(cat /sys/class/power_supply/$s/online 2>/dev/null)" = 1 ] && ext=1; done
     case $st in
         Charging) echo charging ;;
         Full) echo "full, on USB power" ;;
