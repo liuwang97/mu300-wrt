@@ -249,6 +249,25 @@ class Rules(unittest.TestCase):
         # and the build stops when the edit did not apply
         self.assertIn("'MU300: the eMMC is mmc0', 'WRITE_ONCE(sdhci_sprd_emmc_added, true);'", port)
 
+    def test_mainline_config_has_kvm_and_the_module_set(self):
+        # /dev/kvm (the CPUs start at EL2) and the router/container modules; the kernel's own modules reach the bundle
+        cfg = (TOP / 'upstream' / 'mu300-mainline.config').read_text()
+        opts = {}
+        for line in cfg.splitlines():
+            if line.startswith('CONFIG_'):
+                k, v = line.split('=', 1)
+                # an option given twice must say the same thing both times: merge_config takes the last one silently
+                self.assertEqual(opts.setdefault(k, v), v, k)
+        for k in ('CONFIG_VIRTUALIZATION', 'CONFIG_KVM', 'CONFIG_MODULES', 'CONFIG_WIREGUARD', 'CONFIG_NET_SCH_CAKE',
+                  'CONFIG_TUN', 'CONFIG_NF_FLOW_TABLE', 'CONFIG_IKCONFIG_PROC'):
+            self.assertEqual(opts.get(k), 'y', k)
+        for k in ('CONFIG_VHOST_NET', 'CONFIG_NTFS3_FS', 'CONFIG_DM_CRYPT', 'CONFIG_NET_SCH_HTB', 'CONFIG_USB_NET_CDC_MBIM',
+                  'CONFIG_XFRM_USER', 'CONFIG_BRIDGE_NETFILTER', 'CONFIG_BINFMT_MISC', 'CONFIG_SND_USB_AUDIO'):
+            self.assertEqual(opts.get(k), 'm', k)
+        mods = (TOP / 'upstream' / 'build-modules.sh').read_text()
+        self.assertIn('INSTALL_MOD_STRIP=1 DEPMOD=true modules_install', mods)
+        self.assertIn('has the name of an in-tree module', mods)
+
     def test_every_release_kernel_bundle_has_the_sd_host(self):
         # 5.4 reads the card as well (FINDINGS 31j): its bundle says so, and the release audit fails when any of the
         # three bundles does not (mu300-update refuses such a bundle for a system on the card)

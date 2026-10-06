@@ -35,7 +35,8 @@ case $NAME in
         docker run --rm --platform linux/arm64 -v "$tmp/feed":/out "$IMG" /bin/sh -eu -c '
 mkdir -p /var/lock /tmp
 apk update >/dev/null
-# the LuCI apps of the images (build-rootfs.sh removes this one)
+# the LuCI apps of the images: those of the base image, plus SQM that build-rootfs.sh adds
+apk add luci-app-sqm >/dev/null
 apk del luci-app-attendedsysupgrade >/dev/null 2>&1 || true
 apps=$(apk list --installed "luci-app-*" | sed -n "s/^luci-app-\([^ ]*\)-[0-9][^ -]* .*/\1/p")
 apk search "luci-i18n-*" | sed -n "s/^\(luci-i18n-.*\)-[0-9][^-]*$/\1/p" | sort -u > /tmp/all
