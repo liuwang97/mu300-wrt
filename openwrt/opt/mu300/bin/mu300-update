@@ -631,7 +631,10 @@ kernel_modules_into_systems() {  # kernel_modules_into_systems BUNDLE_DIR (unpac
     case $_krel in ''|*/*|.*) echo "boot: bad kernel release '$_krel' in the bundle" >&2; return 1 ;; esac
     for _os in $(installed_systems); do
         case $_os in ubuntu) _d=$DISK/$_os/lib/modules/$_krel/extra ;; *) _d=$DISK/$_os/lib/modules/$_krel ;; esac
-        mkdir -p "$_d" && cp "$1"/modules/*.ko "$_d/" || { echo "boot: installing the modules into $_os failed" >&2; return 1; }
+        # the set of the bundle replaces the one of an earlier bundle of this release: a module it no longer has
+        # would otherwise stay loadable (and the set is some 360 modules, 20 MiB, since FINDINGS 31o)
+        mkdir -p "$_d" && rm -f "$_d"/*.ko && cp "$1"/modules/*.ko "$_d/" ||
+            { echo "boot: installing the modules into $_os failed" >&2; return 1; }
         if [ "$_os" = ubuntu ]; then
             # what the kernel has built in (bundles from v2026.09.29 on): modprobe of a built-in driver then
             # succeeds, and depmod stops warning
