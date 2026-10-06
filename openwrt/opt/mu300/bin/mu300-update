@@ -420,15 +420,34 @@ extra_put() {
     sync
 }
 
-# lang_tar_ok TARBALL: the lang extra holds only its four files and catalogs - no link, no other path (it may come
-# from a file someone uploaded through the web page, not only from a release)
+# An extra holds plain files and directories only, under names of its own. It may come from a file someone uploaded
+# through the web page, not only from a verified release download, and tar implementations (GNU, busybox) list and
+# extract differently, so nothing rests on one check: the listing is checked before anything is unpacked (names,
+# and every entry's type), and the unpacked tree is checked again by what is really on disk (find: no link, device,
+# FIFO or socket, no file with a second name; for lang every path one of its own) before it is put in place.
+# extra_tar_ok TARBALL: the listing - each name relative, without a .. component; each entry a file or directory
+extra_tar_ok() {
+    _l=$(untar -tzf "$1") || return 1
+    [ -n "$_l" ] || return 1
+    ! printf '%s\n' "$_l" | LC_ALL=C grep -Eq -- '^/|(^|/)\.\.(/|$)' || return 1
+    _v=$(untar -tvzf "$1") || return 1
+    # one line per entry (a name with a newline makes a line that is not one), a file or directory each, and no
+    # link targets (GNU: "link to", "->"; busybox: "->")
+    [ "$(printf '%s\n' "$_v" | wc -l)" = "$(printf '%s\n' "$_l" | wc -l)" ] || return 1
+    ! printf '%s\n' "$_v" | cut -c1 | LC_ALL=C grep -vq '^[-d]$' || return 1
+    ! printf '%s\n' "$_v" | LC_ALL=C grep -Eq -- ' -> | link to ' || return 1
+}
+# extra_tree_ok NAME DIR: the unpacked tree, as it is on disk
+extra_tree_ok() {
+    [ -z "$(find "$2" ! -type f ! -type d 2>/dev/null | head -n 1)" ] || return 1
+    [ -z "$(find "$2" -type f -exec ls -ld {} + 2>/dev/null | awk '$2 != 1' | head -n 1)" ] || return 1
+    [ "$1" != lang ] || ! (cd "$2" && find .) | LC_ALL=C grep -Evxq -- "$LANG_ENTRY" || return 1
+}
+# lang_tar_ok TARBALL: the lang extra holds only its four files and catalogs
 LANG_ENTRY='\.|\./|\./(name|release|components|languages|i18n/?|i18n/[a-z0-9-]+\.[a-z]{2,3}(-[a-z]{2})?\.lmo)'
 lang_tar_ok() {
     _l=$(untar -tzf "$1") || return 1
-    [ -n "$_l" ] && ! printf '%s\n' "$_l" | LC_ALL=C grep -Evxq -- "$LANG_ENTRY" || return 1
-    # the type of every entry: regular files and directories only
-    untar -tvzf "$1" | cut -c1 | LC_ALL=C grep -vq '^[-d]$' && return 1
-    return 0
+    [ -n "$_l" ] && ! printf '%s\n' "$_l" | LC_ALL=C grep -Evxq -- "$LANG_ENTRY"
 }
 # a language line of the lang extra: the uci key (LuCI's code, - as _), a tab, the name the list shows (no quote,
 # backslash, $, backquote or control character: it goes into /etc/config/luci and into JSON)
@@ -444,16 +463,21 @@ extra_unpack() {
     if ! cat < "$2" > "$_in/x.tar.gz" 2>/dev/null; then
         rm -rf "$_in"; echo "extra $1: $2 is not readable" >&2; return 1
     fi
-    if [ "$1" = lang ] && ! lang_tar_ok "$_in/x.tar.gz"; then
-        rm -rf "$_in"; echo "extra $1: $2 is not a lang extra (unexpected files in it)" >&2; return 1
+    if ! extra_tar_ok "$_in/x.tar.gz" || { [ "$1" = lang ] && ! lang_tar_ok "$_in/x.tar.gz"; }; then
+        rm -rf "$_in"; echo "extra $1: $2 is not a $1 extra (links, odd names or unexpected files in it)" >&2; return 1
     fi
+    # unpacked into a new, empty directory only root can enter; it becomes the extra only after the checks
     _new=$EXTRA/.$1.new
-    rm -rf "$_new"; mkdir -p "$_new" || { rm -rf "$_in"; return 1; }
+    rm -rf "$_new"; mkdir -m 700 "$_new" || { rm -rf "$_in"; return 1; }
     _ok=1; untar -xzf "$_in/x.tar.gz" -C "$_new" 2>/dev/null || _ok=
     rm -rf "$_in"
     if [ -z "$_ok" ]; then
         rm -rf "$_new"; echo "extra $1: $2 is not a readable tar.gz" >&2; return 1
     fi
+    if ! extra_tree_ok "$1" "$_new"; then
+        rm -rf "$_new"; echo "extra $1: $2 unpacked to links or unexpected files; not installed" >&2; return 1
+    fi
+    chmod 755 "$_new"
     if [ "$(cat "$_new/name" 2>/dev/null)" != "$1" ]; then
         rm -rf "$_new"; echo "extra $1: $2 is not the $1 extra" >&2; return 1
     fi

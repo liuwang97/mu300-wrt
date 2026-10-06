@@ -400,6 +400,8 @@ class LangExtra(ExtrasBase):
         self.stub('uci', f'exec python3 "{self.stubs}/uci.py" "$@"')
         self.reset_uci()
         self.file = lang_tarball(self.tmp / 'mu300-extra-lang.tar.gz')
+        self.secret = self.tmp / 'secret'
+        self.secret.write_text('root:x:0')
 
     def reset_uci(self, lang='en'):
         (self.tmp / 'uci.json').write_text(json.dumps({
@@ -438,9 +440,14 @@ class LangExtra(ExtrasBase):
             ('hard link', dict(extra=[('./i18n/base.fr.lmo', b'', tarfile.LNKTYPE, './name')])),
             ('device', dict(extra=[('./i18n/base.fr.lmo', b'', tarfile.CHRTYPE)])),
             ('dir link', dict(extra=[('./i18n/x', b'', tarfile.SYMTYPE, '/etc')])),
+            ('hard link outside', dict(extra=[('./i18n/base.fr.lmo', b'', tarfile.LNKTYPE, str(self.secret))])),
+            ('newline name', dict(extra=[('./i18n/base.fr.lmo\n./i18n/base.it.lmo', b'x')])),
+            ('dotdot inside', dict(extra=[('./i18n/../../escaped.lmo', b'x')])),
+            ('fifo', dict(extra=[('./i18n/base.fr.lmo', b'', tarfile.FIFOTYPE)])),
         ]
         for shell in self.each_shell():
             self.clean(shell)
+            (self.tmp / 'outside').mkdir(exist_ok=True)
             r = self.up(shell, f'extra_unpack lang "{self.file}" && extra_release lang && extra_installed')
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertEqual(r.stdout.split(), ['v2026.10.10', 'lang'])
@@ -450,6 +457,33 @@ class LangExtra(ExtrasBase):
                 self.assertIn('rc=1', r.stdout, (shell, what))
                 self.assertEqual((self.lang() / 'release').read_text().strip(), 'v2026.10.10', (shell, what))
             self.assertEqual(sorted(p.name for p in (self.disk / 'extra').iterdir()), ['lang'])
+            # nothing was written outside the extra, and the secret has one name
+            self.assertEqual(list((self.tmp / 'outside').iterdir()), [], shell)
+            self.assertEqual(os.stat(self.secret).st_nlink, 1, shell)
+            self.assertFalse((self.disk / 'escaped.lmo').exists())
+
+    def test_a_directory_swapped_for_a_link_writes_nothing_outside(self):
+        # ./i18n as a link to a directory outside, then a catalog written "into" it: refused before unpacking, and
+        # nothing lands outside (a link and a file in the vpn extra, the same)
+        for shell in self.each_shell():
+            self.clean(shell)
+            out = self.tmp / 'outside'
+            out.mkdir(exist_ok=True)
+            for name in ('lang', 'vpn'):
+                f = self.tmp / f'swap-{name}.tar.gz'
+                with tarfile.open(f, 'w:gz') as t:
+                    for fn, data, typ, link in (('./name', name.encode() + b'\n', tarfile.REGTYPE, ''),
+                                                ('./release', b'v9\n', tarfile.REGTYPE, ''),
+                                                ('./i18n' if name == 'lang' else './bin', b'', tarfile.SYMTYPE, str(out)),
+                                                ('./i18n/base.de.lmo' if name == 'lang' else './bin/xray', b'x',
+                                                 tarfile.REGTYPE, '')):
+                        ti = tarfile.TarInfo(fn)
+                        ti.type, ti.linkname, ti.size, ti.mode = typ, link, len(data) if typ == tarfile.REGTYPE else 0, 0o755
+                        t.addfile(ti, io.BytesIO(data) if typ == tarfile.REGTYPE else None)
+                r = self.up(shell, f'extra_unpack {name} "{f}"; echo "rc=$?"')
+                self.assertIn('rc=1', r.stdout, (shell, name))
+                self.assertEqual(list(out.iterdir()), [], (shell, name))
+                self.assertFalse((self.disk / 'extra' / name).exists(), (shell, name))
 
     def test_the_tarball_is_read_once(self):
         # checked and unpacked from one private copy: a tarball that can be read only once (a FIFO: what a file
