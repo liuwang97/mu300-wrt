@@ -170,7 +170,11 @@ drain() {  # drain WAIT: throw away what the modem sent while nobody was asking 
 }
 
 collect() {  # collect TIMEOUT -> the reply lines, up to the final result code; fails if none came in time
-    end=$(( $(now) + $1 ))
+    # At least TIMEOUT whole seconds, never less: now() counts whole seconds, so "now + TIMEOUT" ends at a second
+    # boundary anywhere from TIMEOUT - 1 to TIMEOUT seconds away. With TIMEOUT 1, a command written at .995 had
+    # 5 ms - the reply was cut off before its first line (an empty answer) or after it (no final code, and the
+    # OK that was still coming landed in the log as a stray line).
+    end=$(( $(now) + $1 + 1 ))
     while [ "$(now)" -lt "$end" ]; do
         l=
         IFS= read -r -t 2 l <&3 || continue

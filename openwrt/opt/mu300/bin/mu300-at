@@ -88,13 +88,14 @@ if [ -p "$DIR/cmd" ]; then
     # `sleep 1` (measured: 30 commands in 30.6 s). The static busybox next to us accepts them; use it when present.
     bb=${MU300_BUSYBOX:-/opt/mu300/bin/busybox}
     # Budget. A live mu300-atd (owner/pid) drains first (1-3 s, 25 s after a silent command), then collects for T
-    # plus up to 2 s of overrun: 25 + T + 2, and 3 s of slack make T + 30. Giving up earlier drops the lock
+    # to T + 1 s plus up to 2 s of overrun; a chattering channel can stretch the drain by one 1 s wait, and this
+    # loop's own whole-second clock gives up to 1 s early: 26 + T + 3 + 1, and 1 s of slack make T + 31. Giving up earlier drops the lock
     # while the daemon is still busy and orphans the answer file. With no live daemon nobody will ever answer, so
     # exit within T + 2.
     budget=$((T + 2))
     owner=$(cat "$DIR/owner/pid" 2>/dev/null || true)
     if [ -n "$owner" ] && { tr '\0' ' ' < "/proc/$owner/cmdline"; } 2>/dev/null | grep -q mu300-atd; then
-        budget=$((T + 30))
+        budget=$((T + 31))
     fi
     # MU300_AT_BUDGET (seconds) shortens that for a caller with a hard limit of its own (the LuCI panel: rpcd ends a
     # call at 30 s), which would rather say "no answer" than be killed. The daemon still runs the command then, and
@@ -137,7 +138,7 @@ exec 3<>"$DEV"
 stty raw -echo <&3 2>/dev/null || true
 while :; do j=; IFS= read -r -t 1 j <&3 || break; done
 printf '%s\r' "$cmd" >&3
-end=$(( $(date +%s) + T ))
+end=$(( $(date +%s) + T + 1 ))   # at least T whole seconds (see collect in mu300-atd)
 while [ "$(date +%s)" -lt "$end" ]; do
     l=
     IFS= read -r -t 2 l <&3 || continue
