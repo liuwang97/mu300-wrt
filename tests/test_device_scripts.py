@@ -257,9 +257,9 @@ class Atd(ShellTest):
             time.sleep(0.02)
         return logs, master
 
-    def send(self, master, cmd, reply, t=1):
+    def send(self, master, cmd, reply, t=1, before_reply=None):
         """Hand the daemon CMD (as a client does), answer on the pty when it arrives; seconds until the answer file.
-        The answer itself is left in self.answer."""
+        The answer itself is left in self.answer. BEFORE_REPLY, if given, runs between the two."""
         answer = self.tmp / 'answer'
         answer.unlink(missing_ok=True)
         t0 = time.monotonic()
@@ -270,6 +270,8 @@ class Atd(ShellTest):
             if not select.select([master], [], [], 10)[0]:
                 break
             buf += os.read(master, 256)
+        if before_reply:
+            before_reply()
         if reply is not None:
             os.write(master, reply)
         while not answer.exists() and time.monotonic() - t0 < 40:
@@ -337,6 +339,19 @@ class Atd(ShellTest):
             self.assertEqual(self.answer, 'ERROR\n')
             self.assertEqual((self.dir / 'urc' / 'tty_nr1.log').read_text().split('\n'),
                              ['OK', '+CMTI: "SM",3', 'NO CARRIER', ''])
+
+    def test_a_reply_after_a_second_boundary_is_still_taken(self):
+        # The reply budget counts whole seconds: "now + T" used to end at the next second boundary, so a T=1
+        # command answered just after it came back empty, even though the modem took 0.1 s at most.
+        def past_the_boundary():
+            frac = time.time() % 1
+            if frac > 0.1:       # else a boundary may lie between the daemon's clock read and now: no test this time
+                time.sleep(1 - frac + 0.05)
+        for shell in self.each_shell():
+            _l, m = self.start(shell, nr0=False)
+            for _ in range(3):
+                self.send(m, 'AT+E', b'\r\n+E: 5\r\nOK\r\n', before_reply=past_the_boundary)
+                self.assertEqual(self.answer, '+E: 5\nOK\n')
 
 
 class MobileData(ShellTest):
