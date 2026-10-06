@@ -311,5 +311,85 @@ class Daemon(DaemonTest):
             r = self.sh(shell, f'"{POWER}" daemon & p=$!; sleep 1; kill -TERM $p; wait $p; echo rc=$?',
                         MU300_SYSROOT=self.root, MU300_RUN=self.run_dir, MU300_POWER_CONF=self.conf,
                         MU300_POWER_INTERVAL=1)
+            self.assertIn('rc=0', r.stdout)
             self.assertIn('wifi up', self.calls())
             self.assertEqual(self.state(), 'active')
+
+    def idle_after_a_minute(self, shell, conf):
+        self.write_conf(conf)
+        self.stations(0); self.uptime(0); self.loops(shell); self.uptime(61); self.loops(shell)
+        self.assertEqual(self.state(), 'idle')
+
+    def test_profile_change_while_idle_applies_eco(self):
+        for shell in self.each_shell():
+            self.setUp()
+            self.idle_after_a_minute(shell, 'battery_WIFI_IDLE=1\nsaver_WIFI_IDLE=1\n')
+            cpu = self.root / 'sys/devices/system/cpu'
+            self.assertEqual((cpu / 'cpu7/online').read_text().strip(), '1')
+            self.battery(capacity=10)   # saver: eco
+            self.loops(shell)
+            self.assertEqual(self.state(), 'idle')
+            self.assertEqual((cpu / 'cpu7/online').read_text().strip(), '0')
+            self.assertEqual((cpu / 'cpufreq/policy4/scaling_max_freq').read_text().strip(), '1500000')
+
+    def test_usb_host_wakes_from_idle(self):
+        for shell in self.each_shell():
+            self.setUp()
+            self.idle_after_a_minute(shell, 'battery_WIFI_IDLE=1\n')
+            self.usb_host(True)
+            self.loops(shell)
+            self.assertEqual(self.state(), 'active')
+            self.assertIn('USB', (self.run_dir / 'mu300/power/reason').read_text())
+
+    def test_leds_idle_on_leaves_the_leds(self):
+        for shell in self.each_shell():
+            self.setUp()
+            self.idle_after_a_minute(shell, 'battery_WIFI_IDLE=1\nbattery_LEDS_IDLE=on\n')
+            self.assertNotIn('mu300-led idle', self.calls())
+
+    def test_state_is_idle_before_the_first_action(self):
+        for shell in self.each_shell():
+            self.setUp()
+            self.stub('wifi', 'echo "wifi $* state=$(cat "$MU300_RUN/mu300/power/state")" >> "$STUBLOG/calls"')
+            self.idle_after_a_minute(shell, 'battery_WIFI_IDLE=1\n')
+            self.assertIn('wifi down state=idle', self.calls())
+
+    def test_a_failed_action_is_retried(self):
+        for shell in self.each_shell():
+            self.setUp()
+            self.stub('wifi', 'echo "wifi $*" >> "$STUBLOG/calls"; if [ ! -e "$STUBLOG/once" ]; then touch "$STUBLOG/once"; exit 1; fi')
+            self.idle_after_a_minute(shell, 'battery_WIFI_IDLE=1\n')
+            self.assertEqual(self.calls().count('wifi down'), 1)
+            self.loops(shell)
+            self.assertEqual(self.calls().count('wifi down'), 2)
+            self.loops(shell)
+            self.assertEqual(self.calls().count('wifi down'), 2)
+
+    def test_a_retry_the_state_no_longer_wants_is_dropped(self):
+        for shell in self.each_shell():
+            self.setUp()
+            self.stub('wifi', 'echo "wifi $*" >> "$STUBLOG/calls"; [ "$1" = up ] || exit 1')
+            self.idle_after_a_minute(shell, 'battery_WIFI_IDLE=1\n')
+            self.power(shell, 'wake')
+            self.loops(shell)
+            self.assertEqual(self.state(), 'active')
+            self.loops(shell)
+            self.assertEqual(self.calls().count('wifi down'), 1)
+
+    def test_an_unknown_state_is_treated_as_active(self):
+        for shell in self.each_shell():
+            self.setUp()
+            self.write_conf('battery_WIFI_IDLE=1\n')
+            self.stations(0); self.uptime(0); self.loops(shell)
+            (self.run_dir / 'mu300/power/state').write_text('bogus\n')
+            self.uptime(61); self.loops(shell)
+            self.assertEqual(self.state(), 'idle')
+
+    def test_wake_does_not_touch_cpu_limits_it_did_not_set(self):
+        for shell in self.each_shell():
+            self.setUp()
+            self.idle_after_a_minute(shell, 'battery_WIFI_IDLE=1\n')   # CPU=full
+            pol = self.root / 'sys/devices/system/cpu/cpufreq/policy4/scaling_max_freq'
+            pol.write_text('1800000\n')
+            self.power(shell, 'wake'); self.loops(shell)
+            self.assertEqual(pol.read_text().strip(), '1800000')

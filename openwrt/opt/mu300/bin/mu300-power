@@ -158,20 +158,46 @@ activity() {  # anyone there? a Wi-Fi station, a computer on USB, or a key press
 }
 
 # --- actions (idempotent; a failure is logged and the state still changes - the next loop retries)
+# A failed action is logged and noted in $ST/retry ("hotspot on", "modem resume"...); retry_run repeats it.
+retry_drop() { [ -f "$ST/retry" ] && { grep -v "^$1 " "$ST/retry" > "$ST/retry.tmp"; mv "$ST/retry.tmp" "$ST/retry"; }; return 0; }
+retry_note() { retry_drop "$1"; say "$1 $2 failed, will retry"; echo "$1 $2" >> "$ST/retry"; }
 hotspot() {  # hotspot on|off
     if is_openwrt; then
-        if [ "$1" = off ]; then wifi down; mu300-led wifi off; else wifi up; ( mu300-led wifi sync 120 ) </dev/null >/dev/null 2>&1 & fi
+        if [ "$1" = off ]; then wifi down </dev/null >/dev/null 2>&1; else wifi up </dev/null >/dev/null 2>&1; fi
     else
-        if [ "$1" = off ]; then systemctl stop mu300-hotspot; else systemctl start mu300-hotspot; fi
-    fi 2>/dev/null || say "hotspot $1 failed"
+        if [ "$1" = off ]; then systemctl stop mu300-hotspot; else systemctl start mu300-hotspot; fi 2>/dev/null
+    fi
+    _rc=$?
+    if [ $_rc -ne 0 ]; then retry_note hotspot "$1"; return 0; fi
+    retry_drop hotspot
+    if is_openwrt; then
+        if [ "$1" = off ]; then mu300-led wifi off 2>/dev/null || true
+        else ( mu300-led wifi sync 120 ) </dev/null >/dev/null 2>&1 & fi
+    fi
+    return 0
 }
 leds_idle() { mu300-led idle "$1" 2>/dev/null || true; }
 modem_idle() {  # modem_idle keep|lte|off | modem_idle resume
     case $1 in
         keep) ;;
-        lte|off) mobile-data suspend "$1" 2>/dev/null || say "mobile-data suspend $1 failed" ;;
-        resume) mobile-data resume 2>/dev/null || say "mobile-data resume failed" ;;
+        lte|off) if mobile-data suspend "$1" 2>/dev/null; then retry_drop modem; else retry_note modem "$1"; fi ;;
+        resume) if mobile-data resume 2>/dev/null; then retry_drop modem; else retry_note modem resume; fi ;;
     esac
+    return 0
+}
+retry_run() {  # repeat what failed, if the state still wants it; the actions note themselves again if they fail
+    [ -s "$ST/retry" ] || return 0
+    _st=$(rd "$ST/state"); mv "$ST/retry" "$ST/retry.run"
+    while read -r _k _v; do
+        case "$_st:$_k $_v" in
+            idle:hotspot\ off) hotspot off ;;
+            idle:modem\ lte|idle:modem\ off) modem_idle "$_v" ;;
+            *:hotspot\ on) [ "$_st" = idle ] || hotspot on ;;
+            *:modem\ resume) [ "$_st" = idle ] || modem_idle resume ;;
+        esac
+    done < "$ST/retry.run"
+    rm -f "$ST/retry.run"
+    return 0
 }
 CPU=$R/sys/devices/system/cpu
 cpu() {  # cpu eco|full
@@ -180,10 +206,11 @@ cpu() {  # cpu eco|full
         echo 1500000 > "$CPU/cpufreq/policy4/scaling_max_freq" 2>/dev/null
         echo 0 > "$CPU/cpu7/online" 2>/dev/null
     else
-        echo 1 > "$CPU/cpu7/online" 2>/dev/null
-        _m=$(rd "$ST/cpu-max4"); [ -n "$_m" ] || _m=$(rd "$CPU/cpufreq/policy4/cpuinfo_max_freq")
-        [ -z "$_m" ] || echo "$_m" > "$CPU/cpufreq/policy4/scaling_max_freq" 2>/dev/null
-        rm -f "$ST/cpu-max4"
+        if [ -s "$ST/cpu-max4" ]; then   # eco was applied: undo exactly that, nothing else
+            echo 1 > "$CPU/cpu7/online" 2>/dev/null
+            echo "$(rd "$ST/cpu-max4")" > "$CPU/cpufreq/policy4/scaling_max_freq" 2>/dev/null
+            rm -f "$ST/cpu-max4"
+        fi
     fi
     return 0
 }
@@ -191,22 +218,23 @@ cpu() {  # cpu eco|full
 # --- the state machine
 set_state() { echo "$1" > "$ST/state"; echo "$2" > "$ST/reason"; say "$1: $2"; }
 enter_idle() {  # enter_idle PROFILE REASON: LEDs, hotspot, modem, CPU - in that order
+    _acted=1
+    echo idle > "$ST/state"   # first: a TERM from here on must find "idle" and wake the radios
     [ "$(knob "$1" LEDS_IDLE)" = off ] && leds_idle on
     hotspot off
     modem_idle "$(knob "$1" RADIO_IDLE)"
     cpu "$(knob "$1" CPU)"
     set_state idle "$2"
 }
-leave_idle() {  # the reverse order
-    cpu full
-    modem_idle resume
-    hotspot on
-    leds_idle off
+leave_idle() {  # leave_idle REASON [fast]: the reverse order; fast (the exit trap) brings the hotspot up first
+    _acted=1
+    if [ "${2:-}" = fast ]; then hotspot on; leds_idle off; cpu full; modem_idle resume
+    else cpu full; modem_idle resume; hotspot on; leds_idle off; fi
     rm -f "$ST/wake"
     uptime_s > "$ST/idle-since"
-    set_state active "$1"
+    set_state active "$1"   # last: a kill in the middle leaves "idle", and the next start-up or key finishes the wake
 }
-loop() {
+step() {  # one look at the world; sets _acted when it changed the state
     mkdir -p "$ST"
     _prof=$(pick_profile); _state=$(rd "$ST/state")
     [ -n "$_state" ] || { _state=active; set_state active "started"; }
@@ -215,20 +243,27 @@ loop() {
     if activity; then echo "$_now" > "$ST/idle-since"; fi
     [ -s "$ST/idle-since" ] || echo "$_now" > "$ST/idle-since"
     case $_state in
-        active)
-            rm -f "$ST/wake"
-            if [ -e "$ST/idle-now" ]; then rm -f "$ST/idle-now"; enter_idle "$_prof" "idle now (asked)"; return 0; fi
-            _min=$(knob "$_prof" WIFI_IDLE)
-            [ "$_min" = 0 ] && return 0
-            _since=$(num "$(rd "$ST/idle-since")")
-            if [ $((_now - _since)) -ge $((_min * 60)) ]; then enter_idle "$_prof" "idle: no client for $_min min ($_prof)"; fi ;;
         idle)
             rm -f "$ST/idle-now"
             if [ -e "$ST/wake" ]; then leave_idle "woken by a key"; return 0; fi
             if usb_host; then leave_idle "woken by a computer on USB"; return 0; fi
             if [ "$_prof" = plugged ]; then leave_idle "woken: plugged in"; return 0; fi
             if [ -n "$_old" ] && [ "$_old" != "$_prof" ]; then enter_idle "$_prof" "idle: profile now $_prof"; fi ;;
+        *)  # active; anything unknown is treated as active (Task 6 adds charging-boot above)
+            [ "$_state" = active ] || set_state active "unknown state '$_state'"
+            if [ -e "$ST/wake" ]; then rm -f "$ST/wake"; echo "$_now" > "$ST/idle-since"; fi
+            if [ -e "$ST/idle-now" ]; then rm -f "$ST/idle-now"; enter_idle "$_prof" "idle now (asked)"; return 0; fi
+            _min=$(knob "$_prof" WIFI_IDLE)
+            [ "$_min" = 0 ] && return 0
+            _since=$(num "$(rd "$ST/idle-since")")
+            if [ $((_now - _since)) -ge $((_min * 60)) ]; then enter_idle "$_prof" "idle: no client for $_min min ($_prof)"; fi ;;
     esac
+    return 0
+}
+loop() {  # retries wait for a loop that changed nothing: a transition has just done its own actions
+    _acted=
+    step
+    [ -n "$_acted" ] || retry_run
     return 0
 }
 cmd_daemon() {
@@ -240,7 +275,7 @@ cmd_daemon() {
         # Task 6: no prior state and the boot mode is "charger" -> set_state charging-boot here
     fi
     _sleep=
-    trap '[ -z "$_sleep" ] || kill "$_sleep" 2>/dev/null; if [ "$(rd "$ST/state")" = idle ]; then leave_idle "daemon stopping"; fi; exit 0' TERM INT
+    trap '[ -z "$_sleep" ] || kill "$_sleep" 2>/dev/null; if [ "$(rd "$ST/state")" = idle ]; then leave_idle "daemon stopping" fast; fi; exit 0' TERM INT
     _n=0
     while :; do
         loop
