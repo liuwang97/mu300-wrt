@@ -147,9 +147,120 @@ cmd_profile() {
 }
 uptime_s() { cut -d. -f1 "$R/proc/uptime" 2>/dev/null || date +%s; }
 
+# --- inputs
+is_openwrt() { [ -f "$R/etc/openwrt_release" ]; }
+stations() { _n=$(iw dev wlan0 station dump 2>/dev/null | grep -c '^Station'); num "$_n"; }   # a failed dump is 0 stations
+usb_host() { for _s in "$R"/sys/class/udc/*/state; do [ "$(rd "$_s")" = configured ] && return 0; done; return 1; }
+activity() {  # anyone there? a Wi-Fi station, a computer on USB, or a key press (the wake flag)
+    [ "$(stations)" -gt 0 ] && return 0
+    usb_host && return 0
+    [ -e "$ST/wake" ]
+}
+
+# --- actions (idempotent; a failure is logged and the state still changes - the next loop retries)
+hotspot() {  # hotspot on|off
+    if is_openwrt; then
+        if [ "$1" = off ]; then wifi down; mu300-led wifi off; else wifi up; ( mu300-led wifi sync 120 ) </dev/null >/dev/null 2>&1 & fi
+    else
+        if [ "$1" = off ]; then systemctl stop mu300-hotspot; else systemctl start mu300-hotspot; fi
+    fi 2>/dev/null || say "hotspot $1 failed"
+}
+leds_idle() { mu300-led idle "$1" 2>/dev/null || true; }
+modem_idle() {  # modem_idle keep|lte|off | modem_idle resume
+    case $1 in
+        keep) ;;
+        lte|off) mobile-data suspend "$1" 2>/dev/null || say "mobile-data suspend $1 failed" ;;
+        resume) mobile-data resume 2>/dev/null || say "mobile-data resume failed" ;;
+    esac
+}
+CPU=$R/sys/devices/system/cpu
+cpu() {  # cpu eco|full
+    if [ "$1" = eco ]; then
+        [ -s "$ST/cpu-max4" ] || rd "$CPU/cpufreq/policy4/scaling_max_freq" > "$ST/cpu-max4" 2>/dev/null
+        echo 1500000 > "$CPU/cpufreq/policy4/scaling_max_freq" 2>/dev/null
+        echo 0 > "$CPU/cpu7/online" 2>/dev/null
+    else
+        echo 1 > "$CPU/cpu7/online" 2>/dev/null
+        _m=$(rd "$ST/cpu-max4"); [ -n "$_m" ] || _m=$(rd "$CPU/cpufreq/policy4/cpuinfo_max_freq")
+        [ -z "$_m" ] || echo "$_m" > "$CPU/cpufreq/policy4/scaling_max_freq" 2>/dev/null
+        rm -f "$ST/cpu-max4"
+    fi
+    return 0
+}
+
+# --- the state machine
+set_state() { echo "$1" > "$ST/state"; echo "$2" > "$ST/reason"; say "$1: $2"; }
+enter_idle() {  # enter_idle PROFILE REASON: LEDs, hotspot, modem, CPU - in that order
+    [ "$(knob "$1" LEDS_IDLE)" = off ] && leds_idle on
+    hotspot off
+    modem_idle "$(knob "$1" RADIO_IDLE)"
+    cpu "$(knob "$1" CPU)"
+    set_state idle "$2"
+}
+leave_idle() {  # the reverse order
+    cpu full
+    modem_idle resume
+    hotspot on
+    leds_idle off
+    rm -f "$ST/wake"
+    uptime_s > "$ST/idle-since"
+    set_state active "$1"
+}
+loop() {
+    mkdir -p "$ST"
+    _prof=$(pick_profile); _state=$(rd "$ST/state")
+    [ -n "$_state" ] || { _state=active; set_state active "started"; }
+    _old=$(rd "$ST/profile"); echo "$_prof" > "$ST/profile"
+    _now=$(num "$(uptime_s)")
+    if activity; then echo "$_now" > "$ST/idle-since"; fi
+    [ -s "$ST/idle-since" ] || echo "$_now" > "$ST/idle-since"
+    case $_state in
+        active)
+            rm -f "$ST/wake"
+            if [ -e "$ST/idle-now" ]; then rm -f "$ST/idle-now"; enter_idle "$_prof" "idle now (asked)"; return 0; fi
+            _min=$(knob "$_prof" WIFI_IDLE)
+            [ "$_min" = 0 ] && return 0
+            _since=$(num "$(rd "$ST/idle-since")")
+            if [ $((_now - _since)) -ge $((_min * 60)) ]; then enter_idle "$_prof" "idle: no client for $_min min ($_prof)"; fi ;;
+        idle)
+            rm -f "$ST/idle-now"
+            if [ -e "$ST/wake" ]; then leave_idle "woken by a key"; return 0; fi
+            if usb_host; then leave_idle "woken by a computer on USB"; return 0; fi
+            if [ "$_prof" = plugged ]; then leave_idle "woken: plugged in"; return 0; fi
+            if [ -n "$_old" ] && [ "$_old" != "$_prof" ]; then enter_idle "$_prof" "idle: profile now $_prof"; fi ;;
+    esac
+    return 0
+}
+cmd_daemon() {
+    mkdir -p "$ST"
+    if [ -z "${MU300_POWER_LOOPS:-}" ] || [ "${MU300_POWER_FRESH:-}" = 1 ]; then
+        # start-up: /run is per boot, so a state found here is from this boot (a restarted daemon); keep it
+        rm -f "$ST/idle-now"
+        [ -s "$ST/idle-since" ] || uptime_s > "$ST/idle-since"
+        # Task 6: no prior state and the boot mode is "charger" -> set_state charging-boot here
+    fi
+    _sleep=
+    trap '[ -z "$_sleep" ] || kill "$_sleep" 2>/dev/null; if [ "$(rd "$ST/state")" = idle ]; then leave_idle "daemon stopping"; fi; exit 0' TERM INT
+    _n=0
+    while :; do
+        loop
+        _n=$((_n + 1))
+        [ -n "${MU300_POWER_LOOPS:-}" ] && [ "$_n" -ge "$MU300_POWER_LOOPS" ] && break
+        sleep "${MU300_POWER_INTERVAL:-10}" &
+        _sleep=$!
+        wait "$_sleep"
+        _sleep=
+    done
+}
+cmd_wake() { mkdir -p "$ST"; touch "$ST/wake"; }
+cmd_idle() { mkdir -p "$ST"; touch "$ST/idle-now"; }
+
 case "${1:-}" in
     status)  cmd_status ;;
     set)     shift; cmd_set "$@" ;;
     profile) shift; cmd_profile "$@" ;;
+    wake)    cmd_wake ;;
+    idle)    cmd_idle ;;
+    daemon)  cmd_daemon ;;
     *) sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

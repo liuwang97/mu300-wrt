@@ -158,3 +158,158 @@ class Robustness(PowerTest):
             self.write_conf('PROFILE=auto')
             self.power(shell, 'set CHARGE_TO 80')
             self.assertEqual(self.conf.read_text(), 'PROFILE=auto\nCHARGE_TO=80\n')
+
+
+class DaemonTest(PowerTest):
+    def setUp(self):
+        super().setUp()
+        self.battery()
+        (self.root / 'proc').mkdir(parents=True, exist_ok=True)
+        self.uptime(0)
+        udc = self.root / 'sys/class/udc/25100000.dwc3'
+        udc.mkdir(parents=True)
+        (udc / 'state').write_text('not attached\n')
+        cpu = self.root / 'sys/devices/system/cpu'
+        (cpu / 'cpu7').mkdir(parents=True)
+        (cpu / 'cpu7/online').write_text('1\n')
+        (cpu / 'cpufreq/policy4').mkdir(parents=True)
+        (cpu / 'cpufreq/policy4/scaling_max_freq').write_text('2301000\n')
+        (cpu / 'cpufreq/policy4/cpuinfo_max_freq').write_text('2301000\n')
+        (self.root / 'etc').mkdir(exist_ok=True)
+        (self.root / 'etc/openwrt_release').write_text('DISTRIB_ID=OpenWrt\n')
+
+    def uptime(self, seconds):
+        (self.root / 'proc/uptime').write_text(f'{seconds}.00 0.00\n')
+
+    def stations(self, n):
+        (self.tmp / 'stations').write_text(''.join(f'Station 02:00:00:00:00:0{i} (on wlan0)\n' for i in range(n)))
+
+    def usb_host(self, attached):
+        (self.root / 'sys/class/udc/25100000.dwc3/state').write_text('configured\n' if attached else 'not attached\n')
+
+    def loops(self, shell, n=1, **env):
+        r = self.power(shell, 'daemon', MU300_POWER_LOOPS=n, **env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return r
+
+    def state(self):
+        return (self.run_dir / 'mu300/power/state').read_text().strip()
+
+
+class Daemon(DaemonTest):
+    def test_idle_after_wifi_idle_minutes_without_clients(self):
+        for shell in self.each_shell():
+            self.setUp()
+            self.write_conf('battery_WIFI_IDLE=10\nbattery_RADIO_IDLE=off\nbattery_LEDS_IDLE=off\n')
+            self.stations(0)
+            self.uptime(100); self.loops(shell)
+            self.assertEqual(self.state(), 'active')
+            self.uptime(100 + 9 * 60); self.loops(shell)
+            self.assertEqual(self.state(), 'active')
+            self.uptime(100 + 10 * 60); self.loops(shell)
+            self.assertEqual(self.state(), 'idle')
+            c = self.calls()
+            # the order: LEDs, hotspot, modem, CPU
+            self.assertLess(c.index('mu300-led idle on'), c.index('wifi down'))
+            self.assertLess(c.index('wifi down'), c.index('mobile-data suspend off'))
+            self.assertIn('idle', (self.run_dir / 'mu300/power/reason').read_text())
+
+    def test_a_station_or_a_usb_host_restarts_the_timer(self):
+        for shell in self.each_shell():
+            self.setUp()
+            self.write_conf('battery_WIFI_IDLE=10\n')
+            self.uptime(0); self.stations(1); self.loops(shell)
+            self.uptime(9 * 60); self.stations(1); self.loops(shell)
+            self.uptime(18 * 60); self.stations(0); self.loops(shell)   # 9 min since the last station
+            self.assertEqual(self.state(), 'active')
+            self.uptime(19 * 60 + 1); self.usb_host(True); self.loops(shell)
+            self.assertEqual(self.state(), 'active')
+            self.uptime(29 * 60); self.usb_host(False); self.loops(shell)   # still 10 min since the USB host
+            self.assertEqual(self.state(), 'active')
+            self.uptime(29 * 60 + 2); self.loops(shell)
+            self.assertEqual(self.state(), 'idle')
+
+    def test_wifi_idle_zero_never_idles(self):
+        for shell in self.each_shell():
+            self.setUp()
+            self.charger(online=1)   # plugged: WIFI_IDLE=0
+            self.stations(0)
+            self.uptime(0); self.loops(shell)
+            self.uptime(24 * 3600); self.loops(shell)
+            self.assertEqual(self.state(), 'active')
+            self.assertNotIn('wifi down', self.calls())
+
+    def test_wake_reverses_in_the_opposite_order(self):
+        for shell in self.each_shell():
+            self.setUp()
+            self.write_conf('battery_WIFI_IDLE=1\nbattery_CPU=eco\n')
+            self.stations(0)
+            self.uptime(0); self.loops(shell)
+            self.uptime(61); self.loops(shell)
+            self.assertEqual(self.state(), 'idle')
+            self.assertEqual((self.root / 'sys/devices/system/cpu/cpu7/online').read_text().strip(), '0')
+            self.assertEqual((self.root / 'sys/devices/system/cpu/cpufreq/policy4/scaling_max_freq').read_text().strip(), '1500000')
+            (self.tmp / 'calls').unlink()
+            r = self.power(shell, 'wake')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.loops(shell)
+            self.assertEqual(self.state(), 'active')
+            c = self.calls()
+            self.assertLess(c.index('mobile-data resume'), c.index('wifi up'))
+            self.assertLess(c.index('wifi up'), c.index('mu300-led idle off'))
+            self.assertEqual((self.root / 'sys/devices/system/cpu/cpu7/online').read_text().strip(), '1')
+            self.assertEqual((self.root / 'sys/devices/system/cpu/cpufreq/policy4/scaling_max_freq').read_text().strip(), '2301000')
+
+    def test_idle_command_enters_idle_now_and_ubuntu_uses_systemctl(self):
+        for shell in self.each_shell():
+            self.setUp()
+            (self.root / 'etc/openwrt_release').unlink()
+            self.stations(0)
+            self.power(shell, 'idle')
+            self.loops(shell)
+            self.assertEqual(self.state(), 'idle')
+            self.assertIn('systemctl stop mu300-hotspot', self.calls())
+
+    def test_radio_idle_lte_and_keep(self):
+        for shell in self.each_shell():
+            self.setUp()
+            self.write_conf('battery_WIFI_IDLE=1\nbattery_RADIO_IDLE=lte\n')
+            self.stations(0); self.uptime(0); self.loops(shell); self.uptime(61); self.loops(shell)
+            self.assertIn('mobile-data suspend lte', self.calls())
+            self.setUp()
+            self.write_conf('battery_WIFI_IDLE=1\nbattery_RADIO_IDLE=keep\n')
+            self.stations(0); self.uptime(0); self.loops(shell); self.uptime(61); self.loops(shell)
+            self.assertNotIn('mobile-data suspend', self.calls())
+
+    def test_plugging_in_while_idle_wakes(self):
+        for shell in self.each_shell():
+            self.setUp()
+            self.write_conf('battery_WIFI_IDLE=1\n')
+            self.stations(0); self.uptime(0); self.loops(shell); self.uptime(61); self.loops(shell)
+            self.assertEqual(self.state(), 'idle')
+            self.charger(online=1)
+            self.loops(shell)
+            self.assertEqual(self.state(), 'active')
+            self.assertIn('plugged', (self.run_dir / 'mu300/power/reason').read_text())
+
+    def test_station_dump_failure_is_zero_stations(self):
+        for shell in self.each_shell():
+            self.setUp()
+            self.stub('iw', 'echo "command failed: No such device (-19)" >&2; exit 237')
+            self.write_conf('battery_WIFI_IDLE=1\n')
+            self.uptime(0); self.loops(shell); self.uptime(61); self.loops(shell)
+            self.assertEqual(self.state(), 'idle')
+
+    def test_exit_trap_wakes(self):
+        for shell in self.each_shell():
+            self.setUp()
+            self.write_conf('battery_WIFI_IDLE=1\n')
+            self.stations(0); self.uptime(0); self.loops(shell); self.uptime(61); self.loops(shell)
+            self.assertEqual(self.state(), 'idle')
+            (self.tmp / 'calls').unlink()
+            # the daemon's loop gets TERM: the trap must leave the radios up
+            r = self.sh(shell, f'"{POWER}" daemon & p=$!; sleep 1; kill -TERM $p; wait $p; echo rc=$?',
+                        MU300_SYSROOT=self.root, MU300_RUN=self.run_dir, MU300_POWER_CONF=self.conf,
+                        MU300_POWER_INTERVAL=1)
+            self.assertIn('wifi up', self.calls())
+            self.assertEqual(self.state(), 'active')
