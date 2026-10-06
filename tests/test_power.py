@@ -86,6 +86,22 @@ class Config(PowerTest):
             self.assertIn('battery: WIFI_IDLE=10', r.stdout)
             self.assertIn('ignored in power.conf: SAVER_BELOW battery_WIFI_IDLE', r.stdout)
 
+    def test_numbers_with_a_leading_zero_are_ignored(self):
+        """dash reads 08 as an illegal (octal) number; 00 would idle at once. Both count as the default."""
+        self.battery()
+        for shell in self.each_shell():
+            for bad in ('08', '00', '010', '12345'):
+                self.write_conf(f'battery_WIFI_IDLE={bad}\nSAVER_BELOW=05\n')
+                r = self.power(shell, 'status')
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertIn('battery: WIFI_IDLE=10', r.stdout, bad)
+                self.assertIn('SAVER_BELOW=20', r.stdout)
+                self.assertIn('ignored in power.conf: SAVER_BELOW battery_WIFI_IDLE', r.stdout)
+                self.assertEqual(self.power(shell, f'set battery.WIFI_IDLE {bad}').returncode, 2)
+            for good in ('0', '9', '10', '9999'):
+                self.assertEqual(self.power(shell, f'set battery.WIFI_IDLE {good}').returncode, 0, good)
+            self.assertEqual(self.power(shell, 'set SAVER_BELOW 007').returncode, 2)
+
     def test_profile_selection(self):
         for shell in self.each_shell():
             self.battery(capacity=50)
@@ -177,6 +193,7 @@ class DaemonTest(PowerTest):
         (cpu / 'cpufreq/policy4/cpuinfo_max_freq').write_text('2301000\n')
         (self.root / 'etc').mkdir(exist_ok=True)
         (self.root / 'etc/openwrt_release').write_text('DISTRIB_ID=OpenWrt\n')
+        (self.root / 'sys/class/net/wlan0').mkdir(parents=True)
 
     def uptime(self, seconds):
         (self.root / 'proc/uptime').write_text(f'{seconds}.00 0.00\n')
@@ -239,9 +256,12 @@ class Daemon(DaemonTest):
             self.assertEqual(self.state(), 'active')
             self.assertNotIn('wifi down', self.calls())
 
-    def test_wake_reverses_in_the_opposite_order(self):
+    def test_wake_brings_the_hotspot_up_before_the_modem(self):
+        """R13: hotspot, LEDs, CPU, then the modem resume (its dial can take minutes)."""
         for shell in self.each_shell():
             self.setUp()
+            # the modem stub notes whether the CPU was already back when it ran
+            self.stub('mobile-data', 'echo "mobile-data $* cpu7=$(cat "$MU300_SYSROOT/sys/devices/system/cpu/cpu7/online")" >> "$STUBLOG/calls"')
             self.write_conf('battery_WIFI_IDLE=1\nbattery_CPU=eco\n')
             self.stations(0)
             self.uptime(0); self.loops(shell)
@@ -255,8 +275,9 @@ class Daemon(DaemonTest):
             self.loops(shell)
             self.assertEqual(self.state(), 'active')
             c = self.calls()
-            self.assertLess(c.index('mobile-data resume'), c.index('wifi up'))
             self.assertLess(c.index('wifi up'), c.index('mu300-led idle off'))
+            self.assertLess(c.index('mu300-led idle off'), c.index('mobile-data resume'))
+            self.assertIn('mobile-data resume cpu7=1', c)
             self.assertEqual((self.root / 'sys/devices/system/cpu/cpu7/online').read_text().strip(), '1')
             self.assertEqual((self.root / 'sys/devices/system/cpu/cpufreq/policy4/scaling_max_freq').read_text().strip(), '2301000')
 
@@ -292,13 +313,74 @@ class Daemon(DaemonTest):
             self.assertEqual(self.state(), 'active')
             self.assertIn('plugged', (self.run_dir / 'mu300/power/reason').read_text())
 
+    def test_a_plug_wakes_even_a_forced_battery_profile(self):
+        for shell in self.each_shell():
+            self.setUp()
+            self.write_conf('PROFILE=battery\nbattery_WIFI_IDLE=1\n')
+            self.charger(online=0)
+            self.idle_after_a_minute(shell, 'PROFILE=battery\nbattery_WIFI_IDLE=1\n')
+            self.charger(online=1)
+            self.loops(shell)
+            self.assertEqual(self.state(), 'active')
+            self.assertIn('plugged', (self.run_dir / 'mu300/power/reason').read_text())
+
+    def test_idle_on_the_charger_stays_idle(self):
+        """plugged_WIFI_IDLE=1 with the charger online throughout: idle, and no wake from being plugged."""
+        for shell in self.each_shell():
+            self.setUp()
+            self.charger(online=1)
+            self.idle_after_a_minute(shell, 'plugged_WIFI_IDLE=1\n')
+            self.loops(shell); self.loops(shell)
+            self.assertEqual(self.state(), 'idle')
+            self.assertNotIn('wifi up', self.calls())
+            # a forced plugged profile on battery is the same: no edge, no wake
+            self.setUp()
+            self.idle_after_a_minute(shell, 'PROFILE=plugged\nplugged_WIFI_IDLE=1\n')
+            self.loops(shell)
+            self.assertEqual(self.state(), 'idle')
+
+    def test_f50_sleep_now_stays_idle(self):
+        """The F50 has no battery (always plugged): "Sleep now" must not be undone by the next loop."""
+        for shell in self.each_shell():
+            self.setUp()
+            import shutil
+            shutil.rmtree(self.root / 'sys/class/power_supply')
+            self.stations(0); self.loops(shell)
+            self.power(shell, 'idle'); self.loops(shell)
+            self.assertEqual(self.state(), 'idle')
+            self.loops(shell); self.loops(shell)
+            self.assertEqual(self.state(), 'idle')
+
     def test_station_dump_failure_is_zero_stations(self):
         for shell in self.each_shell():
             self.setUp()
+            (self.root / 'sys/class/net/wlan0').rmdir()   # no wlan0: the hotspot is down
             self.stub('iw', 'echo "command failed: No such device (-19)" >&2; exit 237')
             self.write_conf('battery_WIFI_IDLE=1\n')
             self.uptime(0); self.loops(shell); self.uptime(61); self.loops(shell)
             self.assertEqual(self.state(), 'idle')
+
+    def test_station_dump_failure_with_wlan0_is_activity(self):
+        """With wlan0 there, a failed dump is not proof of nobody: the timer restarts (the safe direction)."""
+        for shell in self.each_shell():
+            self.setUp()
+            self.stub('iw', 'echo "command failed: Operation not supported (-95)" >&2; exit 161')
+            self.write_conf('battery_WIFI_IDLE=1\n')
+            self.uptime(0); self.loops(shell); self.uptime(61); self.loops(shell); self.uptime(200); self.loops(shell)
+            self.assertEqual(self.state(), 'active')
+
+    def test_a_failed_dump_does_not_wake_idle_but_a_station_does(self):
+        for shell in self.each_shell():
+            self.setUp()
+            self.idle_after_a_minute(shell, 'battery_WIFI_IDLE=1\n')
+            self.stub('iw', 'exit 161')   # an AP that is down may refuse the dump
+            self.loops(shell)
+            self.assertEqual(self.state(), 'idle')
+            self.stub('iw', 'cat "$STUBLOG/stations"')
+            self.stations(1)   # the hotspot was brought up by hand and a client came
+            self.loops(shell)
+            self.assertEqual(self.state(), 'active')
+            self.assertIn('station', (self.run_dir / 'mu300/power/reason').read_text())
 
     def test_exit_trap_wakes(self):
         for shell in self.each_shell():
@@ -313,7 +395,33 @@ class Daemon(DaemonTest):
                         MU300_POWER_INTERVAL=1)
             self.assertIn('rc=0', r.stdout)
             self.assertIn('wifi up', self.calls())
+            # no dial on the way out: the radio comes back and the watcher redials
+            self.assertIn('mobile-data resume nodial', self.calls())
             self.assertEqual(self.state(), 'active')
+
+    def term_while_idle(self, shell):
+        self.idle_after_a_minute(shell, 'battery_WIFI_IDLE=1\n')
+        (self.tmp / 'calls').unlink()
+        r = self.sh(shell, f'"{POWER}" daemon & p=$!; sleep 1; kill -TERM $p; wait $p; echo rc=$?',
+                    MU300_SYSROOT=self.root, MU300_RUN=self.run_dir, MU300_POWER_CONF=self.conf,
+                    MU300_POWER_INTERVAL=1)
+        self.assertIn('rc=0', r.stdout)
+
+    def test_exit_trap_does_not_wake_during_a_shutdown(self):
+        for shell in self.each_shell():
+            self.setUp()
+            (self.run_dir / 'mu300/power').mkdir(parents=True, exist_ok=True)
+            (self.run_dir / 'mu300/power/shutdown').touch()   # mu300-buttons' held power key, the low battery
+            self.term_while_idle(shell)
+            self.assertNotIn('wifi up', self.calls()); self.assertNotIn('mobile-data resume', self.calls())
+            self.assertEqual(self.state(), 'idle')
+            # Ubuntu: systemd says it is stopping
+            self.setUp()
+            (self.root / 'etc/openwrt_release').unlink()
+            self.stub('systemctl', 'echo "systemctl $*" >> "$STUBLOG/calls"; [ "$1" != is-system-running ] || echo stopping')
+            self.term_while_idle(shell)
+            self.assertNotIn('systemctl start', self.calls()); self.assertNotIn('mobile-data resume', self.calls())
+            self.assertEqual(self.state(), 'idle')
 
     def idle_after_a_minute(self, shell, conf):
         self.write_conf(conf)
@@ -421,6 +529,17 @@ class Guards(DaemonTest):
             self.assertIn('mobile-data resume', self.calls())
             self.assertFalse((self.run_dir / 'mu300/charging-boot').exists())
 
+    def test_the_power_key_does_not_end_a_charging_boot(self):
+        for shell in self.each_shell():
+            self.setUp()
+            self.charging_boot(shell)
+            self.power(shell, 'wake power'); self.loops(shell)
+            self.assertEqual(self.state(), 'charging-boot')
+            self.assertFalse((self.run_dir / 'mu300/power/wake').exists())
+            self.power(shell, 'wake wifi'); self.loops(shell)
+            self.assertEqual(self.state(), 'active')
+            self.assertEqual(self.power(shell, 'wake volume').returncode, 2)
+
     def test_a_restart_after_the_key_stays_active(self):
         for shell in self.each_shell():
             self.setUp()
@@ -444,7 +563,7 @@ class Guards(DaemonTest):
             self.charging_boot(shell)
             self.assertIn('systemctl stop mu300-hotspot', self.calls())
             self.power(shell, 'wake'); self.loops(shell)
-            self.assertIn('systemctl start mu300-mobile-data', self.calls())
+            self.assertIn('systemctl start --no-block mu300-mobile-data', self.calls())
             self.assertIn('systemctl start mu300-hotspot', self.calls())
 
     def test_term_in_the_charging_boot_leaves_the_radios_down(self):
@@ -470,6 +589,24 @@ class Guards(DaemonTest):
             self.assertNotIn('poweroff', self.calls())
             self.loops(shell)
             self.assertIn('poweroff', self.calls())
+
+    def test_low_battery_no_poweroff_while_usb_or_charging(self):
+        for shell in self.each_shell():
+            self.setUp()
+            self.charging_boot(shell, capacity=3, online=0)
+            e = self.root / 'sys/class/extcon/extcon0'
+            e.mkdir(parents=True, exist_ok=True)
+            (e / 'state').write_text('USB=1\nUSB-HOST=0\n')   # the charger node says offline, extcon a cable
+            for _ in range(4): self.loops(shell)
+            self.assertNotIn('poweroff', self.calls())
+            (e / 'state').write_text('USB=0\nUSB-HOST=0\n')
+            self.battery(capacity=3, status='Charging')
+            for _ in range(4): self.loops(shell)
+            self.assertNotIn('poweroff', self.calls())
+            self.battery(capacity=3, status='Discharging')
+            for _ in range(3): self.loops(shell)
+            self.assertIn('poweroff', self.calls())
+            self.assertTrue((self.run_dir / 'mu300/power/shutdown').exists())
 
     def test_one_low_sample_does_not_power_off(self):
         for shell in self.each_shell():
@@ -583,12 +720,57 @@ class Guards(DaemonTest):
             (b / 'capacity').unlink(); self.loops(shell)
             self.assertEqual((ch / 'charge_type').read_text().strip(), 'N/A')
 
-    def test_node_and_marker_disagree_the_node_wins(self):
+    def test_n_a_without_our_marker_is_not_written(self):
+        """bq256xx reads N/A whenever it is not charging: without $ST/charge-off it is not ours to switch on, and
+        nothing is logged loop after loop."""
         for shell in self.each_shell():
             self.setUp()
-            ch = self.charger(online=1, charge_type='N/A'); self.battery(temp=250)   # no marker: lost with /run
+            ch = self.charger(online=0, charge_type='N/A'); self.battery(temp=250)
+            r1 = self.loops(shell); r2 = self.loops(shell)
+            self.assertEqual((ch / 'charge_type').read_text().strip(), 'N/A')
+            self.assertNotIn('charging', r1.stderr + r2.stderr)
+
+    def test_guard_logs_only_transitions(self):
+        for shell in self.each_shell():
+            self.setUp()
+            self.charger(online=1); self.battery(temp=460)
+            r1 = self.loops(shell); r2 = self.loops(shell)
+            self.assertIn('charging off: temp', r1.stderr); self.assertNotIn('charging', r2.stderr)
+            self.battery(temp=390)
+            r3 = self.loops(shell); r4 = self.loops(shell)
+            self.assertIn('charging on', r3.stderr); self.assertNotIn('charging', r4.stderr)
+
+    def test_a_failed_write_turns_the_guard_off_once(self):
+        if os.geteuid() == 0:
+            self.skipTest('root writes a read-only file')
+        for shell in self.each_shell():
+            self.setUp()
+            ch = self.charger(online=1); self.battery(temp=460)
+            (ch / 'charge_type').chmod(0o444)
+            r1 = self.loops(shell); r2 = self.loops(shell)
+            self.assertIn('failed', r1.stderr)
+            self.assertNotIn('failed', r2.stderr); self.assertNotIn('charging', r2.stderr)
+            self.assertTrue((self.run_dir / 'mu300/power/switch-failed').exists())
+            (ch / 'charge_type').chmod(0o644)
+
+    def test_the_bq256xx_node_is_the_switch(self):
+        for shell in self.each_shell():
+            self.setUp()
+            other = self.psy('a-mains', type='Mains', online=1, charge_type='Fast')
+            ch = self.charger(online=1); self.battery(temp=460)
             self.loops(shell)
-            self.assertEqual((ch / 'charge_type').read_text().strip(), 'Fast')
+            self.assertEqual((ch / 'charge_type').read_text().strip(), 'N/A')
+            self.assertEqual((other / 'charge_type').read_text().strip(), 'Fast')
+            # by the driver named in uevent, when the name says nothing
+            self.setUp()
+            other = self.psy('a-mains', type='Mains', online=1, charge_type='Fast')
+            ch = self.psy('charger', type='USB', online=1, charge_type='Fast', uevent='DRIVER=bq256xx')
+            self.battery(temp=460); self.loops(shell)
+            self.assertEqual((ch / 'charge_type').read_text().strip(), 'N/A')
+            self.assertEqual((other / 'charge_type').read_text().strip(), 'Fast')
+
+    def test_node_reset_while_our_marker_says_off(self):
+        for shell in self.each_shell():
             self.setUp()
             ch = self.charger(online=1, charge_type='Fast'); self.battery(temp=460)
             (self.run_dir / 'mu300/power').mkdir(parents=True, exist_ok=True)
@@ -619,6 +801,12 @@ class Guards(DaemonTest):
             out = self.tmp / 'p.csv'
             self.assertEqual(self.power(shell, f'log abc {out}').returncode, 2)
             self.assertEqual(self.power(shell, f'log 0 {out}').returncode, 2)   # 0 only with MU300_POWER_LOOPS
+
+class Units(unittest.TestCase):
+    def test_openwrt_instance_runs_mobile_data_through_netifd(self):
+        f = (TOP / 'openwrt/overlay/etc/init.d/mu300-power').read_text()
+        self.assertIn('procd_set_param env MU300_NETIFD=1', f)
+
 
 ADAPTER = TOP / 'openwrt/luci-app-mu300/root/usr/libexec/unisoc-modem/power'
 
@@ -656,6 +844,19 @@ class Adapter(DaemonTest):
             shutil.rmtree(self.root / 'sys/class/power_supply')
             d = json.loads(self.adapter(shell, 'get').stdout)
             self.assertIsNone(d['battery']); self.assertIsNone(d['charger']); self.assertEqual(d['ignored'], [])
+
+    def test_leading_zeros_are_not_json_numbers(self):
+        import json
+        for shell in self.each_shell():
+            self.setUp()
+            self.write_conf('battery_WIFI_IDLE=08\n')
+            b = self.battery()
+            (b / 'capacity').write_text('064\n'); (b / 'temp').write_text('0281\n')
+            r = self.adapter(shell, 'get')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            d = json.loads(r.stdout)
+            self.assertEqual(d['conf']['battery']['WIFI_IDLE'], 10)
+            self.assertIsNone(d['battery']['capacity']); self.assertIsNone(d['battery']['temp'])
 
     def test_a_reason_with_quotes_is_still_json(self):
         import json

@@ -4,11 +4,13 @@
 #   mu300-power profile [NAME|auto]     force a profile (plugged|battery|saver), or back to automatic
 #   mu300-power set PROFILE.KNOB VALUE  knobs: WIFI_IDLE (minutes, 0 never), RADIO_IDLE keep|lte|off,
 #                                       LEDS_IDLE on|off, CPU full|eco; also set SAVER_BELOW N, CHARGE_TO 100|80
-#   mu300-power wake                    leave idle (the keys call it); restarts the idle timer
+#   mu300-power wake [wifi|power]       leave idle (the keys call it with their name); restarts the idle timer;
+#                                       a charging boot ends on any wake but "power"
 #   mu300-power idle                    enter idle now
-#   mu300-power log [SECONDS] [FILE]    append time,V,mA,W,%,temp,state,profile every SECONDS (5) to FILE
-#                                       (/var/log/mu300-power.csv)
+#   mu300-power log [SECONDS] [FILE]    append epoch,mV,mA,mW,capacity,temp,state,profile every SECONDS (5) to
+#                                       FILE (/var/log/mu300-power.csv)
 #   mu300-power daemon                  the state machine (mu300-power.service, /etc/init.d/mu300-power)
+# Idle: LEDs, hotspot, modem, CPU. Every wake: hotspot, LEDs, CPU, then the modem (its dial can take minutes).
 # Design: docs/superpowers/specs/2026-10-06-power-profiles-design.md. Configuration: /etc/mu300/power.conf,
 # KEY=VALUE, kept across updates with the rest of etc/mu300; a missing key is its default below.
 set -u
@@ -35,9 +37,10 @@ default() {  # default KEY: the built-in value of a top-level key or PROFILE_KNO
 valid() {  # valid KEY VALUE
     case $1 in
         PROFILE) case $2 in auto|plugged|battery|saver) return 0 ;; esac ;;
+        # numbers without a leading zero: dash reads 08 as a bad octal number, and 00 would be 0
         SAVER_BELOW) case $2 in [0-9]|[1-9][0-9]|100) return 0 ;; esac ;;
         CHARGE_TO) case $2 in 100|80) return 0 ;; esac ;;
-        *_WIFI_IDLE) case $2 in ''|*[!0-9]*) ;; *) [ ${#2} -le 4 ] && return 0 ;; esac ;;
+        *_WIFI_IDLE) case $2 in [0-9]|[1-9][0-9]|[1-9][0-9][0-9]|[1-9][0-9][0-9][0-9]) return 0 ;; esac ;;
         *_RADIO_IDLE) case $2 in keep|lte|off) return 0 ;; esac ;;
         *_LEDS_IDLE) case $2 in on|off) return 0 ;; esac ;;
         *_CPU) case $2 in full|eco) return 0 ;; esac ;;
@@ -84,7 +87,12 @@ battery_dir() {  # the first Battery that is present (present=1 or no present fi
     return 1
 }
 rd() { cat "$1" 2>/dev/null; }
-num() { case ${1#-} in ""|*[!0-9]*) echo 0 ;; *) echo "$1" ;; esac; }   # a number for arithmetic: empty or junk is 0
+num() {  # a number for arithmetic: empty or junk is 0; leading zeros go (dash reads 08 as a bad octal number)
+    case ${1#-} in ""|*[!0-9]*) echo 0; return 0 ;; esac
+    _nd=${1#-}
+    while [ ${#_nd} -gt 1 ] && [ "${_nd#0}" != "$_nd" ]; do _nd=${_nd#0}; done
+    case $1 in -*) echo "-$_nd" ;; *) echo "$_nd" ;; esac
+}
 capacity() { _d=$(battery_dir) && rd "$_d/capacity"; }
 battery_temp() { _d=$(battery_dir) && rd "$_d/temp"; }
 charger_dir() { psy_of_type USB Mains; }
@@ -149,10 +157,16 @@ uptime_s() { cut -d. -f1 "$R/proc/uptime" 2>/dev/null || date +%s; }
 
 # --- inputs
 is_openwrt() { [ -f "$R/etc/openwrt_release" ]; }
-stations() { _n=$(iw dev wlan0 station dump 2>/dev/null | grep -c '^Station'); num "$_n"; }   # a failed dump is 0 stations
+# stations: the number of Wi-Fi stations. No wlan0 is 0. A failed dump while wlan0 exists prints 1 and returns 1:
+# activity, the safe direction (the timer restarts), but idle does not wake on it (a downed AP may refuse the dump).
+stations() {
+    [ -e "$R/sys/class/net/wlan0" ] || { echo 0; return 0; }
+    _so=$(iw dev wlan0 station dump 2>/dev/null) || { echo 1; return 1; }
+    num "$(printf '%s\n' "$_so" | grep -c '^Station')"
+}
 usb_host() { for _s in "$R"/sys/class/udc/*/state; do [ "$(rd "$_s")" = configured ] && return 0; done; return 1; }
 activity() {  # anyone there? a Wi-Fi station, a computer on USB, or a key press (the wake flag)
-    [ "$(stations)" -gt 0 ] && return 0
+    [ "$(stations)" -gt 0 ] && return 0   # a failed dump counts (see stations)
     usb_host && return 0
     [ -e "$ST/wake" ]
 }
@@ -177,11 +191,12 @@ hotspot() {  # hotspot on|off
     return 0
 }
 leds_idle() { mu300-led idle "$1" 2>/dev/null || true; }
-modem_idle() {  # modem_idle keep|lte|off | modem_idle resume
+modem_idle() {  # modem_idle keep|lte|off | modem_idle resume | modem_idle nodial (radio on, the watcher redials)
     case $1 in
         keep) ;;
         lte|off) if mobile-data suspend "$1" </dev/null 2>/dev/null; then retry_drop modem; else retry_note modem "$1"; fi ;;
         resume) if mobile-data resume </dev/null 2>/dev/null; then retry_drop modem; else retry_note modem resume; fi ;;
+        nodial) if mobile-data resume nodial </dev/null 2>/dev/null; then retry_drop modem; else retry_note modem resume; fi ;;
     esac
     return 0
 }
@@ -230,10 +245,10 @@ enter_idle() {  # enter_idle PROFILE REASON: LEDs, hotspot, modem, CPU - in that
     cpu "$(knob "$1" CPU)"
     set_state idle "$2"
 }
-leave_idle() {  # leave_idle REASON [fast]: the reverse order; fast (the exit trap) brings the hotspot up first
-    _acted=1
-    if [ "${2:-}" = fast ]; then hotspot on; leds_idle off; cpu full; modem_idle resume
-    else cpu full; modem_idle resume; hotspot on; leds_idle off; fi
+leave_idle() {  # leave_idle REASON [fast]: hotspot, LEDs, CPU, then the modem, whose dial can take minutes; fast (the
+    _acted=1      # exit trap) does not dial: the radio comes on and mobile-data's watcher redials
+    hotspot on; leds_idle off; cpu full
+    if [ "${2:-}" = fast ]; then modem_idle nodial; else modem_idle resume; fi
     rm -f "$ST/wake"
     uptime_s > "$ST/idle-since"
     set_state active "$1"   # last: a kill in the middle leaves "idle", and the next start-up or key finishes the wake
@@ -252,39 +267,63 @@ enter_charging_boot() {
 leave_charging_boot() {  # leave_charging_boot REASON
     mu300-led charge off 2>/dev/null || true
     rm -f "$RUN/charging-boot" "$ST/low-loops"
-    is_openwrt || systemctl start mu300-mobile-data </dev/null 2>/dev/null || true   # skipped at boot by the flag
+    # skipped at boot by the flag; --no-block: its start waits 15 s, the hotspot must not wait for it
+    is_openwrt || systemctl start --no-block mu300-mobile-data </dev/null 2>/dev/null || true
     leave_idle "$1"
 }
+extcon_usb() { for _s in "$R"/sys/class/extcon/*/state; do grep -qx 'USB=1' "$_s" 2>/dev/null && return 0; done; return 1; }
 low_battery_check() {  # unplugged and under 5 % for three loops in a row: a clean poweroff, not a brown-out
     _lowc=$(capacity)
     case $_lowc in ''|*[!0-9]*) echo 0 > "$ST/low-loops"; return 0 ;; esac
-    if plugged || [ "$_lowc" -ge 5 ]; then echo 0 > "$ST/low-loops"; return 0; fi
+    # unplugged by every account: no charger online, no USB cable on extcon, the battery not charging
+    if plugged || extcon_usb || [ "$(_b=$(battery_dir) && rd "$_b/status")" = Charging ] || [ "$_lowc" -ge 5 ]; then
+        echo 0 > "$ST/low-loops"; return 0
+    fi
     _lown=$(( $(num "$(rd "$ST/low-loops")") + 1 )); echo "$_lown" > "$ST/low-loops"
     [ "$_lown" -ge 3 ] || return 0
     say "battery at $_lowc % and unplugged for three loops: powering off"
+    : > "$ST/shutdown"   # the TERM trap must not wake the radios on the way down
     if is_openwrt; then poweroff; else systemctl poweroff </dev/null; fi
     return 0
 }
 
 # --- charging guard: temperature and the charge limit, through the charger's charge_type (bq256xx: N/A off, Fast on)
-charging_switch() { _gc=$(charger_dir) && [ -f "$_gc/charge_type" ] && echo "$_gc/charge_type"; }
-set_charging() {  # set_charging on|off REASON: compares with the node itself; $ST/charge-off is only the reason marker
+# bq256xx reads N/A whenever it is not charging (on battery, full), so N/A alone does not mean "we turned it off":
+# Fast is written only when $ST/charge-off says the guard did. The driver resets its switch at probe, so a marker
+# lost with /run (a reboot) leaves nothing switched off.
+charging_switch() {  # the bq256xx charger's charge_type (by name or by its uevent), else the first USB/Mains one with it
+    _gfirst=
+    for _gc in $(psy_all USB Mains); do
+        [ -f "$_gc/charge_type" ] || continue
+        case ${_gc##*/} in *bq256*) echo "$_gc/charge_type"; return 0 ;; esac
+        if grep -qs bq256 "$_gc/uevent" "$_gc/device/uevent"; then echo "$_gc/charge_type"; return 0; fi
+        [ -n "$_gfirst" ] || _gfirst=$_gc/charge_type
+    done
+    [ -n "$_gfirst" ] && echo "$_gfirst"
+}
+switch_write() {  # switch_write NODE VALUE: a failed write turns the guard off for this boot, with one log line
+    if { echo "$2" > "$1"; } 2>/dev/null; then return 0; fi
+    say "writing $2 to $1 failed: the charge guard is off until the next boot"
+    : > "$ST/switch-failed"
+    return 1
+}
+set_charging() {  # set_charging on|off REASON: logs only when the marker $ST/charge-off changes
     _sw=$(charging_switch) || return 0
-    _cur=$(rd "$_sw")
+    _cur=$(rd "$_sw"); _was=$(rd "$ST/charge-off")
     if [ "$1" = off ]; then
-        if [ "$_cur" != 'N/A' ]; then
-            if echo 'N/A' > "$_sw" 2>/dev/null; then say "charging off: $2"; else say "charging off: $2 - writing $_sw failed"; fi
-        fi
+        if [ "$_cur" != 'N/A' ]; then switch_write "$_sw" 'N/A' || return 0; fi
+        [ "$_was" = "$2" ] || say "charging off: $2"
         echo "$2" > "$ST/charge-off"
     else
-        if [ "$_cur" = 'N/A' ]; then
-            if echo Fast > "$_sw" 2>/dev/null; then say "charging on: $2"; else say "charging on: $2 - writing $_sw failed"; fi
-        fi
+        [ -e "$ST/charge-off" ] || return 0   # not ours to turn on
+        if [ "$_cur" = 'N/A' ]; then switch_write "$_sw" Fast || return 0; fi
         rm -f "$ST/charge-off"
+        say "charging on: $2"
     fi
     return 0
 }
 guard() {  # temp in 0.1 C: off above 45.0 or below 0, back on under 40.0 and over 3.0; CHARGE_TO=80: off at 80 %, on under 75
+    [ ! -e "$ST/switch-failed" ] || return 0
     charging_switch >/dev/null || { [ -e "$ST/no-switch-logged" ] || { say "no charge switch: the guard does nothing"; : > "$ST/no-switch-logged"; }; return 0; }
     _gt=$(battery_temp); _gcap=$(capacity); _goff=$(rd "$ST/charge-off")
     case $_goff in   # off for a reason whose reading is gone: fail safe, keep it off
@@ -311,6 +350,10 @@ step() {  # one look at the world; sets _acted when it changed the state
     [ -n "$_state" ] || { _state=active; set_state active "started"; }
     _old=$(rd "$ST/profile"); echo "$_prof" > "$ST/profile"
     _now=$(num "$(uptime_s)")
+    # the supply of the last loop: idle wakes on the edge battery -> plugged, not on being plugged (which an idle on
+    # the charger, a forced profile or the F50 always is)
+    _sup=battery; plugged && _sup=plugged
+    _osup=$(rd "$ST/supply"); echo "$_sup" > "$ST/supply"
     if activity; then echo "$_now" > "$ST/idle-since"; fi
     [ -s "$ST/idle-since" ] || echo "$_now" > "$ST/idle-since"
     case $_state in
@@ -318,12 +361,19 @@ step() {  # one look at the world; sets _acted when it changed the state
             rm -f "$ST/idle-now"
             if [ -e "$ST/wake" ]; then leave_idle "woken by a key"; return 0; fi
             if usb_host; then leave_idle "woken by a computer on USB"; return 0; fi
-            if [ "$_prof" = plugged ]; then leave_idle "woken: plugged in"; return 0; fi
+            if [ "$_osup" = battery ] && [ "$_sup" = plugged ]; then leave_idle "woken: plugged in"; return 0; fi
+            if _sn=$(stations) && [ "$_sn" -gt 0 ]; then leave_idle "woken by a Wi-Fi station"; return 0; fi
             if [ -n "$_old" ] && [ "$_old" != "$_prof" ]; then enter_idle "$_prof" "idle: profile now $_prof"; fi ;;
-        charging-boot)   # only the Wi-Fi key ends it; a computer on USB does not
+        charging-boot)   # only the Wi-Fi key ends it; a computer on USB or the power key does not
             rm -f "$ST/idle-now"
             low_battery_check
-            if [ -e "$ST/wake" ]; then leave_charging_boot "woken by the Wi-Fi key"; fi ;;
+            if [ -e "$ST/wake" ]; then
+                case $(rd "$ST/wake") in
+                    power) rm -f "$ST/wake" ;;
+                    wifi) leave_charging_boot "woken by the Wi-Fi key" ;;
+                    *) leave_charging_boot "woken (mu300-power wake)" ;;
+                esac
+            fi ;;
         *)  # active; anything unknown is treated as active
             [ "$_state" = active ] || set_state active "unknown state '$_state'"
             if [ -e "$ST/wake" ]; then rm -f "$ST/wake"; echo "$_now" > "$ST/idle-since"; fi
@@ -353,7 +403,8 @@ cmd_daemon() {
         if [ ! -s "$ST/state" ] && [ "$(boot_mode)" = charger ]; then enter_charging_boot; fi
     fi
     _sleep=
-    trap '[ -z "$_sleep" ] || kill "$_sleep" 2>/dev/null; if [ "$(rd "$ST/state")" = idle ]; then leave_idle "daemon stopping" fast; fi; exit 0' TERM INT
+    # stopped while idle: the radios come back without a dial (the watcher redials); not during a shutdown
+    trap '[ -z "$_sleep" ] || kill "$_sleep" 2>/dev/null; if [ "$(rd "$ST/state")" = idle ] && ! shutting_down; then leave_idle "daemon stopping" fast; fi; exit 0' TERM INT
     _n=0
     while :; do
         loop
@@ -388,16 +439,25 @@ cmd_log() {  # cmd_log [SECONDS] [FILE]
         sleep "$_lge"
     done
 }
-cmd_wake() { mkdir -p "$ST"; touch "$ST/wake"; }
+# shutting_down: mu300-buttons and low_battery_check leave $ST/shutdown before poweroff; Ubuntu also says "stopping"
+shutting_down() {
+    [ -e "$ST/shutdown" ] && return 0
+    is_openwrt && return 1
+    [ "$(systemctl is-system-running </dev/null 2>/dev/null)" = stopping ]
+}
+cmd_wake() {  # cmd_wake [wifi|power]: the flag holds the key's name ("any" without one)
+    case ${1:-} in ''|wifi|power) ;; *) echo "usage: mu300-power wake [wifi|power]" >&2; return 2 ;; esac
+    mkdir -p "$ST"; echo "${1:-any}" > "$ST/wake"
+}
 cmd_idle() { mkdir -p "$ST"; touch "$ST/idle-now"; }
 
 case "${1:-}" in
     status)  cmd_status ;;
     set)     shift; cmd_set "$@" ;;
     profile) shift; cmd_profile "$@" ;;
-    wake)    cmd_wake ;;
+    wake)    shift; cmd_wake "$@" ;;
     idle)    cmd_idle ;;
     daemon)  cmd_daemon ;;
     log)     shift; cmd_log "$@" ;;
-    *) sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+    *) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac
