@@ -252,7 +252,8 @@ apk list --installed | sort > $R/etc/mu300/packages.txt
 for c in $(cat /in/opt-mu300/lib/path-commands); do ln -sf /opt/mu300/bin/$c $R/usr/bin/$c; done
 # no kernel of its own: OpenWrt kmods (6.12) and grub are unused on this device
 rm -rf $R/lib/modules/6.* $R/boot
-# out-of-tree modules for the experimental mainline kernel (upstream/)
+# the modules of the mainline kernel (upstream/out: the vendor ones and those of the kernel itself, about 20 MiB), so that
+# a switch to it needs nothing more; mu300-update installs those of the bundle it boots over them
 if ls /in/mainline-modules/*.ko >/dev/null 2>&1; then
     # the release the modules were built for (their vermagic), not a version written down here
     krel=$(for f in /in/mainline-modules/*.ko; do tr "\0" "\n" < $f | sed -n "s/^vermagic=\([^ ]*\) .*/\1/p"; break; done)
