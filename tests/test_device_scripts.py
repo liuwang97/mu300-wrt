@@ -1336,6 +1336,52 @@ class Led(ShellTest):
             self.led(shell, 'u30air', 'sleep', '--if-due')
             self.assertEqual(self.state()['sc27xx:green'], '0')
 
+    def test_idle_darkens_everything_and_wake_cannot_undo_it(self):
+        for shell in self.each_shell():
+            for timeout in ('', 'LED_TIMEOUT=0\n'):
+                self.reset()
+                if timeout:
+                    self.conf.write_text(timeout)
+                self.led(shell, 'u30air', 'power', 'on')
+                self.led(shell, 'u30air', 'data', 'on')
+                self.assertEqual(self.state()['net_blue'], '255')
+                self.assertEqual(self.led(shell, 'u30air', 'idle', 'on').returncode, 0)
+                self.assertEqual((self.state()['sc27xx:green'], self.state()['net_blue']), ('0', '0'))
+                self.led(shell, 'u30air', 'wake')
+                self.assertEqual(self.state()['net_blue'], '0')            # still idle
+                self.led(shell, 'u30air', 'data', '5g')                    # remembered, not shown
+                self.led(shell, 'u30air', 'power', 'on')
+                self.assertEqual(set(self.state().values()), {'0'})
+                self.led(shell, 'u30air', 'idle', 'off')
+                s = self.state()
+                self.assertEqual((s['sc27xx:green'], s['zte-ldo0'], s['net_blue']), ('255', '255', '0'), timeout)
+
+    def test_idle_off_after_the_timeout_stays_dark(self):
+        for shell in self.each_shell():
+            self.reset()
+            self.uptime(100)
+            self.led(shell, 'u30air', 'power', 'on')
+            self.led(shell, 'u30air', 'idle', 'on')
+            self.uptime(100 + 120)
+            self.led(shell, 'u30air', 'idle', 'off')
+            self.assertEqual(set(self.state().values()), {'0'})
+            self.led(shell, 'u30air', 'wake')
+            self.assertEqual(self.state()['sc27xx:green'], '255')
+
+    def test_charge_blinks_the_power_led(self):
+        for shell in self.each_shell():
+            self.reset()
+            d = self.root / 'sys/class/leds/sc27xx:green'
+            self.assertEqual(self.led(shell, 'u30air', 'charge', 'on').returncode, 0)
+            self.assertEqual((d / 'trigger').read_text().strip(), 'timer')
+            self.assertEqual((d / 'delay_on').read_text().strip(), '1000')
+            self.assertEqual((d / 'delay_off').read_text().strip(), '1000')
+            self.assertEqual(self.led(shell, 'u30air', 'charge', 'off').returncode, 0)
+            self.assertEqual((d / 'trigger').read_text().strip(), 'none')
+            self.assertEqual(self.state()['sc27xx:green'], '0')
+            # a device without a power LED: nothing to blink, no error
+            self.assertEqual(self.led(shell, 'f50', 'charge', 'on').returncode, 0)
+
     def test_no_timeout(self):
         for shell in self.each_shell():
             for device, conf in (('u30air', 'LED_TIMEOUT=0\n'), ('f50', '')):
