@@ -109,7 +109,7 @@ return view.extend({
 		var card = E('section', { 'class': 'mud-card', 'id': 'mud-power-state' }, [ E('h3', {}, _('Power')) ]);
 		card.appendChild(row(_('State'), [ stateText ]));
 		if (st.reason) card.appendChild(E('div', { 'class': 'mud-note' }, [ String(st.reason) ]));
-		if (st.state === 'active' && num(st.idle_since_s) && st.idle_since_s > 0)
+		if (st.state === 'active' && num(st.idle_since_s) && st.idle_since_s > 10)
 			card.appendChild(E('div', { 'class': 'mud-note' }, [ _('Nobody connected for %d s').format(st.idle_since_s) ]));
 		if (st.supply === 'plugged' || st.supply === 'battery')
 			card.appendChild(row(_('Power source'), [ st.supply === 'plugged' ? names.plugged : names.battery ]));

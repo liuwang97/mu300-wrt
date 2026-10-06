@@ -16,9 +16,10 @@ ST=${MU300_RUN:-/run}/mu300/power
 export MU300_POWER_CONF=${MU300_POWER_CONF:-/etc/mu300/power.conf}
 
 rd() { cat "$1" 2>/dev/null || true; }
-# jstr TEXT: one JSON string (quote, backslash and control characters escaped); jnum TEXT: an integer or null
+# jstr TEXT: one JSON string (quote, backslash and control characters escaped); jnum TEXT: a JSON number (no
+# leading zero: a sysfs "08" is not one) or null
 jstr() { json_str "$1"; }
-jnum() { case $1 in ''|-|*[!0-9-]*|?*-*) echo null ;; *) echo "$1" ;; esac; }
+jnum() { json_num "$1"; }
 # milli VALUE: VALUE / 1000 as an integer, empty if VALUE is not one
 milli() { case $1 in ''|-|*[!0-9-]*|?*-*) ;; *) echo $(( $1 / 1000 )) ;; esac; }
 lower() { printf '%s' "$1" | tr 'A-Z' 'a-z'; }
@@ -72,7 +73,7 @@ case "${1:-}" in
     get)  get ;;
     # i18n: Invalid power value
     set)  if _e=$("$P" set "${2:-}" "${3:-}" 2>&1); then echo '{"ok":1}'; else printf '{"ok":0,"error":%s}\n' "$(jstr "$_e")"; fi ;;
-    wake) "$P" wake >/dev/null 2>&1; echo '{"ok":1}' ;;
+    wake) "$P" wake >/dev/null 2>&1; echo '{"ok":1}' ;;   # no key name: it also ends a charging boot
     idle) "$P" idle >/dev/null 2>&1; echo '{"ok":1}' ;;
     *)    echo '{"ok":0,"error":"usage: power get|set KEY VALUE|wake|idle"}'; exit 2 ;;
 esac
