@@ -3,7 +3,7 @@ stub commands. The spec is docs/superpowers/specs/2026-10-06-power-profiles-desi
 import os
 import unittest
 
-from helpers import ShellTest, BIN
+from helpers import ShellTest, BIN, TOP
 
 POWER = BIN / 'mu300-power'
 
@@ -619,3 +619,66 @@ class Guards(DaemonTest):
             out = self.tmp / 'p.csv'
             self.assertEqual(self.power(shell, f'log abc {out}').returncode, 2)
             self.assertEqual(self.power(shell, f'log 0 {out}').returncode, 2)   # 0 only with MU300_POWER_LOOPS
+
+ADAPTER = TOP / 'openwrt/luci-app-mu300/root/usr/libexec/unisoc-modem/power'
+
+
+class Adapter(DaemonTest):
+    def adapter(self, shell, args):
+        return self.sh(shell, f'"{ADAPTER}" {args}', MU300_SYSROOT=self.root, MU300_RUN=self.run_dir,
+                       MU300_POWER_CONF=self.conf, MU300_POWER_BIN=POWER)
+
+    def test_get_is_json_with_the_state_and_the_knobs(self):
+        import json
+        for shell in self.each_shell():
+            self.setUp()
+            self.write_conf('battery_WIFI_IDLE=15\nbattery_CPU=turbo\n')
+            self.charger(online=0, usb_type='Unknown [SDP] CDP DCP')
+            r = self.adapter(shell, 'get')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            d = json.loads(r.stdout)
+            self.assertEqual(d['profile'], 'battery'); self.assertEqual(d['why'], 'auto')
+            self.assertEqual(d['conf']['battery']['WIFI_IDLE'], 15)
+            self.assertEqual(d['conf']['plugged']['RADIO_IDLE'], 'keep')
+            self.assertEqual(d['conf']['PROFILE'], 'auto'); self.assertEqual(d['conf']['SAVER_BELOW'], 20)
+            self.assertEqual(d['battery']['capacity'], 64); self.assertEqual(d['battery']['ma'], -470)
+            self.assertEqual(d['charger']['usb_type'], 'SDP')
+            self.assertEqual(d['state'], 'active')
+            self.assertEqual(d['supply'], 'battery')
+            self.assertEqual(d['ignored'], ['battery_CPU'])
+            self.assertIsNone(d['idle_since_s']); self.assertEqual(d['charge_off'], '')
+
+    def test_get_without_battery_or_charger_is_null(self):
+        import json
+        for shell in self.each_shell():
+            self.setUp()
+            import shutil
+            shutil.rmtree(self.root / 'sys/class/power_supply')
+            d = json.loads(self.adapter(shell, 'get').stdout)
+            self.assertIsNone(d['battery']); self.assertIsNone(d['charger']); self.assertEqual(d['ignored'], [])
+
+    def test_a_reason_with_quotes_is_still_json(self):
+        import json
+        for shell in self.each_shell():
+            self.setUp()
+            st = self.run_dir / 'mu300/power'
+            st.mkdir(parents=True, exist_ok=True)
+            (st / 'reason').write_text('said "hi" \\ back\\slash\ttab\n')
+            (st / 'charge-off').write_text('te"mp\n')
+            d = json.loads(self.adapter(shell, 'get').stdout)
+            self.assertEqual(d['reason'], 'said "hi" \\ back\\slash\ttab')
+            self.assertEqual(d['charge_off'], 'te"mp')
+
+    def test_set_wake_idle(self):
+        import json
+        for shell in self.each_shell():
+            self.setUp()
+            r = self.adapter(shell, 'set battery.WIFI_IDLE 20')
+            self.assertEqual(json.loads(r.stdout), {'ok': 1})
+            self.assertIn('battery_WIFI_IDLE=20', self.conf.read_text())
+            r = self.adapter(shell, 'set battery.WIFI_IDLE never')
+            d = json.loads(r.stdout); self.assertEqual(d['ok'], 0); self.assertIn('WIFI_IDLE', d['error'])
+            self.assertEqual(json.loads(self.adapter(shell, 'idle').stdout), {'ok': 1})
+            self.assertTrue((self.run_dir / 'mu300/power/idle-now').exists())
+            self.assertEqual(json.loads(self.adapter(shell, 'wake').stdout), {'ok': 1})
+            self.assertTrue((self.run_dir / 'mu300/power/wake').exists())
