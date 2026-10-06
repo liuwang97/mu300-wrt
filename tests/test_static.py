@@ -291,14 +291,18 @@ class Rules(unittest.TestCase):
         # and the build stops when it did not apply
         self.assertIn("('drivers/power/supply/bq256xx_charger.c', ['\"ti,bq2560x_chg\"", port)
         # the driver's handling of that node: no stale cache, Android's 1.98 A and 4.208 V at most, the chip's own
-        # input detection on every VBUS change from the extcon, charging on unless userspace said "N/A"
+        # input current from the PMIC's charger detection on every VBUS change from the extcon, the chip's own only as
+        # a fallback, charging on unless userspace said "N/A"
         p9 = (TOP / 'upstream' / 'patches' / '0009-power-bq256xx-drive-the-U30-Air-charger.patch').read_text()
         for s in ('.cache_type = REGCACHE_NONE', 'BQ2560X_CHG_ICHG_MAX_uA\t\t1980000', 'BQ2560X_CHG_VBATREG_MAX_uV\t4208000',
                   'BQ256XX_IINDET_EN', 'devm_extcon_register_notifier(dev, bq->vbus_edev, EXTCON_USB',
                   '"linux,extcon-usb-gpio"', 'bq->init_data.iindpm = 500000;', 'WRITE_ONCE(bq->chg_off',
                   'off ? 0 : BQ256XX_CHG_CONFIG_MASK', 'case BQ256XX_VBUS_STAT_USB_CDP:\n+\t\treturn 1500000;',
                   'case BQ256XX_VBUS_STAT_USB_DCP:\n+\t\treturn 2000000;', 'case BQ256XX_VBUS_STAT_NONSTD:\n+\t\treturn 1000000;',
-                  'static char *supplied_to[] = { "sc27xx-fgu" };'):
+                  'static char *supplied_to[] = { "sc27xx-fgu" };',
+                  # the PMIC's charger detection first: the charger's own (IINDET_EN) drives D+/D-, the gadget's lines
+                  'sprd_pmic_detect_charger_type(bq->pmic)', 'of_find_compatible_node(NULL, NULL, "sprd,ump9620")',
+                  'bus_find_device_by_of_node(&spi_bus_type, np)', 'no charger type from the PMIC'):
             self.assertIn(s, p9)
         # the fuel gauge asks the charger by the name the driver registers
         p10 = (TOP / 'upstream' / 'patches' / '0010-power-sc27xx-fuel-gauge-status-from-bq256xx.patch').read_text()
