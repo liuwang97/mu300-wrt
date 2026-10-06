@@ -99,6 +99,7 @@ class Catalogs(unittest.TestCase):
         # installers' i18n data is not (a copy of the tool, the app and two such files in a scratch repository)
         repo = self.tmp / 'repo'
         shutil.copytree(APP, repo / 'openwrt' / 'luci-app-mu300')
+        shutil.copy(TOP / 'openwrt' / 'luci-languages.tsv', repo / 'openwrt' / 'luci-languages.tsv')
         (repo / 'tools').mkdir()
         for name in ('luci-i18n.py', 'po2lmo.py'):
             shutil.copy(TOP / 'tools' / name, repo / 'tools' / name)
@@ -120,6 +121,42 @@ class Catalogs(unittest.TestCase):
     def test_minimal_app_is_clean(self):
         r = run('check', '--root', str(self.mini()))
         self.assertEqual((r.returncode, r.stdout), (0, ''), r.stderr)
+
+    def test_every_catalog_is_checked(self):
+        # a third language is held to the same rules as tr and zh_Hans; CJK is fine in any catalog; a catalog
+        # directory the language table does not know is an error (the build could not name its .lmo)
+        root = self.mini()
+        (root / 'po' / 'ja').mkdir()
+        (root / 'po' / 'ja' / 'mu300.po').write_text(
+            po('ja', [(po_str(m), po_str(m.replace('messages', 'x') + ' ' + CJK)) for m in MESSAGES[1:]]),
+            encoding='utf-8')
+        (root / 'po' / 'xx').mkdir()
+        (root / 'po' / 'xx' / 'mu300.po').write_text(
+            po('xx', [(po_str(m), po_str(m.replace('messages', 'x') + ' X')) for m in MESSAGES]), encoding='utf-8')
+        r = run('check', '--root', str(root))
+        self.assertEqual(r.returncode, 1)
+        lines = r.stdout.splitlines()
+        self.assertEqual(len(lines), 2, lines)
+        self.assertTrue(lines[0].startswith('missing: po/ja/mu300.po:0: "Dashboard" (used at '), lines)
+        self.assertEqual(lines[1], 'language: po/xx/mu300.po:0: po/xx has no row in openwrt/luci-languages.tsv')
+        # update keeps every catalog, the third one included
+        run('update', '--root', str(root))
+        self.assertIn('msgid "Dashboard"', (root / 'po' / 'ja' / 'mu300.po').read_text(encoding='utf-8'))
+
+    def test_language_table(self):
+        # one row per catalog of the app; codes as LuCI names its .lmo files; no row for English (the source)
+        rows = [l.split('\t') for l in (TOP / 'openwrt' / 'luci-languages.tsv').read_text(encoding='utf-8')
+                .splitlines() if l and not l.startswith('#')]
+        self.assertTrue(all(len(r) == 3 for r in rows), rows)
+        dirs = [r[0] for r in rows]
+        self.assertEqual(len(dirs), len(set(dirs)))
+        self.assertNotIn('en', dirs)
+        for d, code, name in rows:
+            self.assertRegex(code, r'^[a-z]{2,3}(-[a-z]{2})?$', d)
+            self.assertRegex(name, r'^[^\t"\'\\$`]+ \([A-Z][A-Za-z ]+\)$', d)
+        cats = sorted(p.parent.name for p in (APP / 'po').glob('*/mu300.po'))
+        self.assertTrue(set(cats) <= set(dirs), set(cats) - set(dirs))
+        self.assertGreaterEqual(len(cats), 25, 'the panel speaks at least the 23 languages asked for, tr and zh')
 
     def test_update_adds_missing_and_removes_stale_in_order_of_first_use(self):
         root = self.mini()
@@ -366,10 +403,10 @@ if (selected !== true) throw Error('the Bootstrap token bridge must survive the 
         self.assertFalse((APP / 'po' / 'en').exists(), 'English is the source: no po/en catalog')
 
     def test_build_requires_the_chinese_catalog(self):
-        # once po/zh_Hans exists, the build stops when mu300.zh_Hans.lmo (installed as LuCI's mu300.zh-cn.lmo) was
+        # once po/zh_Hans exists, the build stops when mu300.zh-cn.lmo (LuCI's code for zh_Hans) was
         # not compiled from it: without it the panel is in English in a Chinese browser
         self.assertTrue((APP / 'po' / 'zh_Hans' / 'mu300.po').is_file())
-        self.assertTrue('[ -s "$CAT/mu300.zh_Hans.lmo" ] ||' in BUILD.read_text(encoding='utf-8'),
+        self.assertTrue('[ -s "$CAT/mu300.zh-cn.lmo" ] ||' in BUILD.read_text(encoding='utf-8'),
                         'build-rootfs.sh does not stop without the Chinese panel catalog')
 
 

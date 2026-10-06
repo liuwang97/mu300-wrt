@@ -99,6 +99,19 @@ if ! uci -q show firewall | grep -q "^firewall\.@zone\[[0-9]*\]\.name='earlyusb'
 	uci set firewall.$early.output='ACCEPT'
 	uci set firewall.$early.forward='REJECT'
 fi
+# LuCI's language (both systems) is English, not "auto" (which follows the browser): once, with its own marker
+# luci.mu300.lang, so a language the user picks later stays through every update. A system from before the marker
+# that still says "auto" (or nothing) gets English too: auto was nobody's choice there (luci-base's default, and
+# 91-mu300-luci's until it set English), and with the Turkish and Chinese catalogs now in the image it would switch
+# the language under the user. A language set on purpose stays.
+if uci -q get luci.main >/dev/null && [ "$(uci -q get luci.mu300.lang)" != 1 ]; then
+	case $(uci -q get luci.main.lang) in ''|auto) uci -q set luci.main.lang='en' ;; esac
+	uci -q batch <<UCI
+set luci.mu300=mu300
+set luci.mu300.lang='1'
+UCI
+	uci commit luci
+fi
 # network last: a first run cut short before its commit has no wan proto mu300cell yet, and runs again as a first
 # install, in full
 uci commit system
