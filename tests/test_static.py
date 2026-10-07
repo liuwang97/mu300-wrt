@@ -209,6 +209,25 @@ class Rules(unittest.TestCase):
         # the audit refuses an image that still has one
         self.assertRegex(rel, r'opt/mu300/bin/\(xray\|sing-box\|hev-socks5-tunnel\)')
 
+    def test_images_carry_jq(self):
+        # mu300-vpn reads vmess links and raw Xray/sing-box configs with jq, so every image has it; Ubuntu and Arch
+        # also get wireguard-tools (OpenWrt has it already). The CI runner needs jq for the same tests.
+        def words(block):
+            return block.replace('\\\n', ' ').split()
+        docker = (TOP / 'rootfs/Dockerfile').read_text()
+        apt = re.search(r'apt-get install -y --no-install-recommends(.*?)&&', docker, re.S).group(1)
+        self.assertIn('jq', words(apt))
+        self.assertIn('wireguard-tools', words(apt))
+        owrt = (TOP / 'openwrt/build-rootfs.sh').read_text()
+        first = re.search(r'\napk add (.*?)>/dev/null', owrt, re.S).group(1)
+        self.assertIn('jq', words(first))
+        arch = (TOP / 'arch/build-rootfs.sh').read_text()
+        pac = re.search(r'pacman -Syu --noconfirm --needed(.*?)>/dev/null', arch, re.S).group(1)
+        self.assertIn('jq', words(pac))
+        self.assertIn('wireguard-tools', words(pac))
+        ci = (TOP / '.github/workflows/tests.yml').read_text()
+        self.assertIn('jq', re.search(r'sudo apt-get install -y -qq ([^>]*)>', ci).group(1).split())
+
     def test_init_finds_partitions_after_the_modules(self):
         # the eMMC driver is one of the vendor modules: misc and boot_b cannot be found before they are loaded
         init = (TOP / 'boot' / 'init').read_text()
