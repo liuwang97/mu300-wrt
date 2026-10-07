@@ -48,8 +48,16 @@ def once(marker, old, new):
     global m
     if marker not in m:
         m = m.replace(old, new, 1)
+# The UMP9620's BC1.2 result (CHARGE_STATUS, Unisoc's sprd-bc1p2.h) is at 0x239c, with the SC27xx bits (DONE 11, SDP 7,
+# DCP 6, CDP 5). The first version of this edit pointed it at the SC2730's 0x1b9c, where detection never finished on
+# the U30 Air: a tree prepared with that is corrected.
+UMP9620_DATA = ('/* UMP9620 BC1.2 status (CHARGE_STATUS) */\n#define SPRD_UMP9620_CHG_DET\t\t0x239c\n\n'
+                'static const struct sprd_pmic_data ump9620_data = {\n\t.irq_base = 0x80,\n\t.num_irqs = 11,\n'
+                '\t.charger_det = SPRD_UMP9620_CHG_DET,\n};\n')
+m = m.replace('static const struct sprd_pmic_data ump9620_data = {\n\t.irq_base = 0x80,\n\t.num_irqs = 11,\n'
+              '\t.charger_det = SPRD_SC2730_CHG_DET,\n};\n', UMP9620_DATA)
 once('ump9620_data = {', 'static const struct sprd_pmic_data sc2731_data = {',
-     'static const struct sprd_pmic_data ump9620_data = {\n\t.irq_base = 0x80,\n\t.num_irqs = 11,\n\t.charger_det = SPRD_SC2730_CHG_DET,\n};\n\nstatic const struct sprd_pmic_data sc2731_data = {')
+     UMP9620_DATA + '\nstatic const struct sprd_pmic_data sc2731_data = {')
 if 'enum sprd_pmic_type' not in m:
     # up to 6.x: the match data is the pmic data, and the DT's sub-nodes are populated as they are
     once('"sprd,ump9620"', '\t{ .compatible = "sprd,sc2731", .data = &sc2731_data },\n',
@@ -262,10 +270,28 @@ t = open(rp).read()
 if 'ump96xx-rtc' not in t:
     t = t.replace('\t{ .compatible = "sprd,sc2731-rtc", },\n', '\t{ .compatible = "sprd,sc2731-rtc", },\n\t{ .compatible = "sprd,ump96xx-rtc", },\n', 1)
     open(rp, 'w').write(t)
+# The ZTE U30 Air's charger (SGM41511, a bq25601): its vendor DT compatible in bq256xx's OF and I2C tables; the
+# driver's handling of that node (no IRQ, no input current in the DT, the chip as Android left it) is patch 0009. The
+# I2C table is an edit rather than part of the patch: 6.18 writes its entries positionally, 7.x with .name/.driver_data.
+bp = os.path.join(tree, 'drivers/power/supply/bq256xx_charger.c')
+t = open(bp).read()
+if '"ti,bq2560x_chg"' not in t:
+    t = t.replace('\t{ .compatible = "ti,bq25601", .data = &bq256xx_chip_info_tbl[BQ25601] },\n',
+                  '\t{ .compatible = "ti,bq25601", .data = &bq256xx_chip_info_tbl[BQ25601] },\n'
+                  '\t{ .compatible = "ti,bq2560x_chg", .data = &bq256xx_chip_info_tbl[BQ25601] },\n', 1)
+if '"bq2560x_chg"' not in t:
+    for line in ('\t{ "bq25601", (kernel_ulong_t)&bq256xx_chip_info_tbl[BQ25601] },\n',
+                 '\t{ .name = "bq25601", .driver_data = (kernel_ulong_t)&bq256xx_chip_info_tbl[BQ25601] },\n'):
+        # the I2C table comes first; the ACPI table has the same positional line further down
+        i = t.find(line, t.index('bq256xx_i2c_ids[]'))
+        if i >= 0 and i < t.index('MODULE_DEVICE_TABLE(i2c'):
+            t = t[:i + len(line)] + line.replace('"bq25601"', '"bq2560x_chg"') + t[i + len(line):]
+            break
+open(bp, 'w').write(t)
 # Every edit above is a text substitution, and one whose anchor drifted in a new kernel release changes nothing
 # without saying so. Check the result rather than trusting the substitutions.
 expect = [
-    ('drivers/mfd/sprd-sc27xx-spi.c', ['ump9620_data = {', '"sprd,ump9620"', '.name = "ump9620"']
+    ('drivers/mfd/sprd-sc27xx-spi.c', ['ump9620_data = {', '.charger_det = SPRD_UMP9620_CHG_DET,', '"sprd,ump9620"', '.name = "ump9620"']
      + (['case PMIC_TYPE_UMP9620:', 'if (pmic_type == PMIC_TYPE_UMP9620) {', 'linux/of_platform.h']
         if 'enum sprd_pmic_type' in open(os.path.join(tree, 'drivers/mfd/sprd-sc27xx-spi.c')).read() else [])),
     ('drivers/mmc/host/sdhci-sprd.c', ['MU300: only the eMMC and the card slot', 'MU300: CD GPIO deferred', 'of_remove_property(pdev->dev.of_node, cd)', 'DLL_PHASE_INTERNAL\t0x2 /* MU300 r11p3 */',
@@ -274,6 +300,8 @@ expect = [
     ('drivers/rtc/rtc-sc27xx.c', ['"sprd,ump96xx-rtc"']),
     ('drivers/usb/dwc3/dwc3-of-simple.c', ['"sprd,qogirn6pro-dwc3"']),
     ('drivers/usb/dwc3/core.c', ['"snps,sprd-dwc3"']),
+    ('drivers/power/supply/bq256xx_charger.c', ['"ti,bq2560x_chg", .data = &bq256xx_chip_info_tbl[BQ25601]',
+                                                '"bq2560x_chg", ']),   # the I2C entry, in either form
 ]
 missing = [(p, w) for p, ws in expect for w in ws if w not in open(os.path.join(tree, p)).read()]
 if missing:
