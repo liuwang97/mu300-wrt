@@ -984,6 +984,97 @@ at() {
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(sent, [])
 
+    # 2026-10-07: `mobile-data suspend off` after `suspend lte` never returned on the U30 Air, and the device stayed dark
+    # for hours. suspend/resume now end within MU300_SUSPEND_DEADLINE whatever the modem does. Here the real at() talks
+    # to an nr2 daemon whose client never answers (a mu300-at that sleeps): the whole command must come back in time,
+    # non-zero, every process it started gone, and the files must hand the modem back to the watcher.
+    def silent_modem(self):
+        hang = self.tmp / 'hang'
+        hang.mkdir(exist_ok=True)
+        (hang / 'mu300-at').write_text('#!/bin/sh\necho "$* lockwait=$MU300_AT_LOCK_WAIT budget=$MU300_AT_BUDGET" >> "$STUBLOG/hangat"\n'
+                                       'echo $$ >> "$STUBLOG/hung.pids"\nexec sleep 1000\n')
+        (hang / 'mu300-at').chmod(0o755)
+        (self.tmp / 'run' / 'mu300-at2').mkdir(parents=True, exist_ok=True)
+        if not (self.tmp / 'run' / 'mu300-at2' / 'cmd').exists():
+            os.mkfifo(self.tmp / 'run' / 'mu300-at2' / 'cmd')
+        return 'unset -f at; . "$STUBLOG/mobile-data.lib"; PATH="$STUBLOG/hang:$PATH"\n'
+
+    def assert_all_killed(self):
+        import time
+        pids = [int(p) for p in (self.tmp / 'hung.pids').read_text().split()]
+        for pid in pids:
+            for _ in range(50):
+                try:
+                    os.kill(pid, 0)
+                except ProcessLookupError:
+                    break
+                time.sleep(0.1)
+            else:
+                self.fail(f'pid {pid} still runs')
+
+    def test_suspend_and_resume_end_in_time_with_a_modem_that_never_answers(self):
+        cases = [('', 'suspend off', {}),
+                 ('lte', 'suspend off', {}),                 # the incident: suspend lte, then suspend off
+                 ('', 'suspend lte', {}),
+                 ('off', 'resume', {}),
+                 ('lte', 'resume', {}),
+                 ('off', 'resume nodial', {}),
+                 ('', 'suspend off', {'MU300_NETIFD': '1'})]
+        for before, cmd, env in cases:
+            with self.subTest(before=before, cmd=cmd, **env):
+                run = self.tmp / 'run'
+                for f in ('mu300-mobile-data.suspend', 'mu300-mobile-data-down', 'hung.pids', 'hangat'):
+                    (run / f).unlink(missing_ok=True); (self.tmp / f).unlink(missing_ok=True)
+                code = self.silent_modem()
+                if before:
+                    (run / 'mu300-mobile-data.suspend').write_text(before + '\n')
+                if 'netifd' in str(env) or env:
+                    self.stub('ifdown', 'exit 0'); self.stub('ifup', 'exit 0')
+                r, _ = self.lib(code + f'SECONDS=0; rc=0; bounded {cmd} || rc=$?; echo "rc=$rc took=$SECONDS"',
+                                MU300_SUSPEND_DEADLINE='3', MU300_MD_STEP_DEADLINE='2', MU300_CFUN_WAIT='0',
+                                MU300_URC_LOG=str(self.tmp / 'urc.log'), **env)
+                m = re.search(r'rc=(\d+) took=(\d+)', r.stdout)
+                self.assertTrue(m, r.stdout + r.stderr)
+                self.assertNotEqual(m.group(1), '0', r.stderr)
+                self.assertLessEqual(int(m.group(2)), 8, r.stderr)
+                self.assertIn('the modem is left to the watcher', r.stderr)
+                # consistent: no mode file and no "down" flag, so the watcher restores whatever is off
+                self.assertFalse((run / 'mu300-mobile-data.suspend').exists())
+                self.assertFalse((run / 'mu300-mobile-data-down').exists())
+                self.assert_all_killed()
+                # every AT went through mu300-at with a short timeout, client-lock wait and budget
+                for line in (self.tmp / 'hangat').read_text().splitlines():
+                    m = re.match(r'-t (\d+) .* lockwait=(\d+) budget=(\d+)$', line)
+                    self.assertTrue(m, line)
+                    self.assertLessEqual(int(m.group(1)), 20, line)
+                    self.assertLessEqual(int(m.group(2)), 10, line)
+                    self.assertLessEqual(int(m.group(3)), 15, line)
+
+    def test_a_failed_suspend_keeps_a_down_flag_that_was_there_before(self):
+        run = self.tmp / 'run'
+        run.mkdir(exist_ok=True)
+        (run / 'mu300-mobile-data-down').touch()   # `mobile-data down` by hand: the watcher stays aside
+        code = self.silent_modem()
+        r, _ = self.lib(code + 'rc=0; bounded suspend off || rc=$?; echo rc=$rc', MU300_SUSPEND_DEADLINE='3',
+                        MU300_MD_STEP_DEADLINE='1', MU300_URC_LOG=str(self.tmp / 'urc.log'))
+        self.assertNotIn('rc=0', r.stdout)
+        self.assertTrue((run / 'mu300-mobile-data-down').exists())
+        self.assertFalse((run / 'mu300-mobile-data.suspend').exists())
+
+    def test_bounded_suspend_succeeds_and_ignores_a_hangup(self):
+        """The command outlives the terminal that started it (an SSH session over the Wi-Fi it took down)."""
+        r, sent = self.suspend_lib('( sleep 0.3; kill -HUP $$ ) & at() { sleep 1; echo "$SECONDS $1" >> "$STUBLOG/at"; echo OK; }\n'
+                                   'rc=0; bounded suspend off || rc=$?; echo "rc=$rc"')
+        self.assertIn('rc=0', r.stdout, r.stderr)
+        self.assertIn('modem suspended (off)', r.stderr)
+        self.assertEqual((self.tmp / 'run' / 'mu300-mobile-data.suspend').read_text().strip(), 'off')
+
+    def test_the_commands_go_through_the_deadline(self):
+        text = (BIN / 'mobile-data').read_text()
+        case = text[text.index('\ncase "${1:-status}" in'):]
+        self.assertIn('suspend) bounded suspend', case)
+        self.assertIn('bounded resume', case)
+
     def test_radio_on_subcommand(self):
         """K66: `mobile-data radio-on` switches the radio on and asks for the IMS bearer (K58), nothing more."""
         text = (BIN / 'mobile-data').read_text()
