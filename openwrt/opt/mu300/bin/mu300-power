@@ -22,6 +22,7 @@ RUN=$RUNROOT/mu300
 CONF=${MU300_POWER_CONF:-/etc/mu300/power.conf}
 ST=$RUN/power
 MD_SUSPEND=$RUNROOT/mu300-mobile-data.suspend   # mobile-data suspend's mode file: the modem is held down
+MD_ENDC=$RUNROOT/mu300-mobile-data.endc-restore   # EN-DC still to be switched back on (a failed lte resume)
 LED_IDLE=$R/run/mu300/led/.idle                  # mu300-led idle on's flag (mu300-led keeps its state under $R/run)
 # Deadlines in seconds (env for tests): a probe (iw, ubus, uci, systemctl is-*), an LED, a service step (wifi,
 # systemctl, the VPN), the modem (mobile-data bounds itself to ~60 s; this is the second guard), and how long a
@@ -59,18 +60,20 @@ tree_kill() {  # tree_kill PID: the process and everything it started; all stopp
 }
 # bounded SECONDS CMD [ARG...]: CMD in the background; past SECONDS, CMD and all it started are killed and bounded
 # returns 124. The waiting shell is also poked (USR1) a second later, so a child stuck in the kernel, deaf to KILL,
-# cannot hold it either. _bd_p is the job in flight (the daemon's TERM trap lets it finish first). The watchdog has
+# cannot hold it either. _bd_p is the job in flight and _bd_w its watchdog (the daemon's TERM trap lets the job
+# finish first, then kills the watchdog, which must not outlive the call: it would fake a timeout or signal a pid that
+# has been reused). The deadline file names the job's pid, so no other call ever sees it. The watchdog has
 # no TERM trap on purpose: it dies at once, whatever the shell does with a trap during a foreground sleep, and its
 # sleep runs out alone.
-_bd_p=
+_bd_p= _bd_w= _bd_f=
 bounded() {
     _bd_s=$1; shift
     trap : USR1
     _bd_me=$(exec sh -c 'echo $PPID')   # this shell's own pid, also inside $( )
-    _bd_f=$ST/.deadline.$_bd_me
-    mkdir -p "$ST" 2>/dev/null; rm -f "$_bd_f"
+    mkdir -p "$ST" 2>/dev/null
     "$@" &
     _bd_p=$!
+    _bd_f=$ST/.deadline.$_bd_me.$_bd_p
     ( sleep "$_bd_s"; : > "$_bd_f"; tree_kill "$_bd_p"; sleep 1; kill -USR1 "$_bd_me" ) </dev/null >/dev/null 2>&1 &
     _bd_w=$!
     wait "$_bd_p"; _bd_rc=$?
@@ -80,7 +83,7 @@ bounded() {
         echo "mu300-power: $* did not finish in $_bd_s s, killed" >&2
         logger -t mu300-power -- "$* did not finish in $_bd_s s, killed" 2>/dev/null
     fi
-    _bd_p=
+    _bd_p= _bd_w= _bd_f=
     return $_bd_rc
 }
 
@@ -244,6 +247,7 @@ hotspot() {  # hotspot on|off
         bounded "$STEP" systemctl "$_hw" mu300-hotspot </dev/null >/dev/null 2>&1
     fi
     _rc=$?
+    [ "$1" = off ] || uptime_s > "$ST/hotspot-on-at"   # the self-check gives it time to come up (and backs off)
     if [ $_rc -ne 0 ]; then retry_note hotspot "$1"; return 0; fi
     retry_drop hotspot
     if is_openwrt; then
@@ -265,13 +269,21 @@ hotspot_wanted() {
     [ ! -e "$RUNROOT/mu300-wifi-client.active" ] || return 1
     [ ! -e "$RUNROOT/mu300-wifi-scan-mode" ] || return 1
     if is_openwrt; then
-        for _hk in 'wireless.@wifi-iface[0].disabled' wireless.radio0.disabled; do
+        for _hk in 'wireless.@wifi-iface[0].disabled' 'wireless.@wifi-device[0].disabled'; do
             [ "$(bounded "$PROBE" uci -q get "$_hk" </dev/null 2>/dev/null)" != 1 ] || return 1
         done
     else
         [ "$(bounded "$PROBE" systemctl is-enabled mu300-hotspot </dev/null 2>/dev/null)" != disabled ] || return 1
     fi
     return 0
+}
+# seen_up: the hotspot is up. A hold marker older than MU300_POWER_MARKER_GRACE (60 s) is then stale - the hotspot
+# came back some other way (the panel, wifi up by hand) - and goes; a fresh one is a hold whose toggle is still on its
+# way down. mu300-buttons writes the uptime of the hold into it.
+seen_up() {
+    [ -e "$ST/hotspot-off" ] || return 0
+    [ $(( $(num "$(uptime_s)") - $(num "$(rd "$ST/hotspot-off")") )) -ge "${MU300_POWER_MARKER_GRACE:-60}" ] || return 0
+    rm -f "$ST/hotspot-off"; say "the hotspot is up: its hold marker is stale, removed"
 }
 leds_idle() { bounded "$LEDDL" mu300-led idle "$1" </dev/null >/dev/null 2>&1 || true; }
 # The VPN while the modem is off: its engine has nothing to talk to (xray ran out of descriptors once, retrying), so
@@ -291,23 +303,39 @@ vpn_svc() {  # vpn_svc running|start|stop
 }
 vpn_stop() {
     [ ! -e "$ST/vpn-stopped" ] || return 0
+    [ ! -e "$RUNROOT/mu300-wifi-client.active" ] || return 0   # the uplink is the Wi-Fi client: the VPN still has work
     vpn_svc running || return 0
     : > "$ST/vpn-stopped"   # first: a kill in between still restarts it on the wake
     vpn_svc stop || say "stopping mu300-vpn failed"
     say "mu300-vpn stopped while the modem is off"
 }
+# vpn_wanted: the user has not turned it off meanwhile - the service disabled, or ENABLE=0 in its config, which
+# mu300-vpn's own status reports (vpn.conf itself is not read here). A status that cannot be had counts as wanted:
+# starting the VPN is the safe direction.
+vpn_wanted() {
+    if is_openwrt; then
+        bounded "$PROBE" "$R/etc/init.d/mu300-vpn" enabled </dev/null >/dev/null 2>&1 || return 1
+    else
+        [ "$(bounded "$PROBE" systemctl is-enabled mu300-vpn </dev/null 2>/dev/null)" != disabled ] || return 1
+    fi
+    case $(bounded "$PROBE" mu300-vpn status </dev/null 2>/dev/null | sed -n 's/.*enabled: *\([0-9]*\).*/\1/p' | head -n1) in
+        0) return 1 ;;
+    esac
+    return 0
+}
 vpn_start() {
     [ -e "$ST/vpn-stopped" ] || return 0
+    if ! vpn_wanted; then rm -f "$ST/vpn-stopped"; say "mu300-vpn was turned off meanwhile: not started again"; return 0; fi
     if vpn_svc start; then rm -f "$ST/vpn-stopped"; say "mu300-vpn started again"
     else say "starting mu300-vpn failed, will retry"; fi
 }
 modem_idle() {  # modem_idle keep|lte|off | modem_idle resume | modem_idle nodial (radio on, the watcher redials)
     case $1 in
         keep) ;;
-        lte|off)
-            [ "$1" = lte ] || vpn_stop
-            if bounded "$MODEMDL" mobile-data suspend "$1" </dev/null >/dev/null 2>&1; then retry_drop modem
-            else retry_note modem "$1"; [ "$1" = lte ] || vpn_start; fi ;;   # the modem stays on: so does the VPN
+        lte|off)   # the VPN goes only once the modem is off: a failing suspend retried every loop must not flap it
+            if bounded "$MODEMDL" mobile-data suspend "$1" </dev/null >/dev/null 2>&1; then
+                retry_drop modem; [ "$1" = lte ] || vpn_stop
+            else retry_note modem "$1"; fi ;;
         resume) if bounded "$MODEMDL" mobile-data resume </dev/null >/dev/null 2>&1; then retry_drop modem; else retry_note modem resume; fi ;;
         nodial) if bounded "$MODEMDL" mobile-data resume nodial </dev/null >/dev/null 2>&1; then retry_drop modem; else retry_note modem resume; fi ;;
     esac
@@ -315,6 +343,7 @@ modem_idle() {  # modem_idle keep|lte|off | modem_idle resume | modem_idle nodia
 }
 retry_run() {  # repeat what failed, if the state still wants it; the actions note themselves again if they fail
     [ -s "$ST/retry" ] || return 0
+    busy_take 0 retry || return 0   # a wake is restoring: the retries wait for the next loop
     _st=$(rd "$ST/state"); mv "$ST/retry" "$ST/retry.run"
     while read -r _k _v; do
         case "$_st:$_k $_v" in
@@ -325,6 +354,7 @@ retry_run() {  # repeat what failed, if the state still wants it; the actions no
         esac
     done < "$ST/retry.run"
     rm -f "$ST/retry.run"
+    busy_drop
     return 0
 }
 CPU=$R/sys/devices/system/cpu
@@ -374,7 +404,7 @@ busy_take() {  # busy_take WAIT KIND: 1 when not had within WAIT seconds; BUSY_K
         fi
         _bw_pid=${_bw_i%%:*}; _bw_t=${_bw_i#*:}; _bw_t=${_bw_t%%:*}; BUSY_KIND=${_bw_i##*:}
         [ "$_bw_pid" != $$ ] || return 0
-        if ! kill -0 "$_bw_pid" 2>/dev/null ||
+        if ! kill -0 "$_bw_pid" 2>/dev/null || ! is_power_pid "$_bw_pid" ||
            [ $(( $(num "$(uptime_s)") - $(num "$_bw_t") )) -gt "${MU300_POWER_BUSY_STALE:-600}" ]; then
             [ "$(readlink "$ST/busy" 2>/dev/null)" != "$_bw_i" ] || rm -f "$ST/busy"
             continue
@@ -384,6 +414,11 @@ busy_take() {  # busy_take WAIT KIND: 1 when not had within WAIT seconds; BUSY_K
         _bw_n=$((_bw_n + 1)); sleep 1
     done
 }
+# is_power_pid PID: a mu300-power process, by its command line (a reused pid is someone else); without /proc, yes
+is_power_pid() {
+    [ -r /proc/self/cmdline ] || return 0
+    { tr '\0' ' ' < "/proc/$1/cmdline"; } 2>/dev/null | grep -q mu300-power
+}
 busy_drop() { [ "$(readlink "$ST/busy" 2>/dev/null | cut -d: -f1)" != $$ ] || rm -f "$ST/busy"; return 0; }
 enter_idle() {  # enter_idle PROFILE REASON: LEDs, hotspot, modem, CPU - in that order
     _acted=1
@@ -392,6 +427,9 @@ enter_idle() {  # enter_idle PROFILE REASON: LEDs, hotspot, modem, CPU - in that
     if [ "$(rd "$ST/state")" != "${_state:-}" ] || [ -e "$ST/wake" ]; then busy_drop; return 0; fi
     echo idle > "$ST/state"   # first: a TERM from here on must find "idle" and wake the radios
     [ "$(knob "$1" LEDS_IDLE)" = off ] && leds_idle on
+    # the hotspot is taken down only by this idle when it is up: the wake brings back exactly that, whatever a stale
+    # hold marker or a disabled-but-started unit would say (a hotspot the user had off stays off)
+    if hotspot_up; then : > "$ST/hotspot-idled"; fi
     hotspot off
     modem_idle "$(knob "$1" RADIO_IDLE)"
     cpu "$(knob "$1" CPU)"
@@ -400,22 +438,29 @@ enter_idle() {  # enter_idle PROFILE REASON: LEDs, hotspot, modem, CPU - in that
 }
 # restore REASON [fast]: bring back what is down, by looking rather than by the state file (2026-10-07: the raw
 # actions run by hand while the state said "active" left a device dark and deaf for hours, as every wake trusted
-# the file). Hotspot, LEDs, CPU, the modem, whose dial can take minutes, then the VPN; each step only when it is down.
+# the file). Hotspot, LEDs, CPU, the VPN, then the modem, whose dial can take minutes; each only when it is down.
 # fast (the exit trap) does not dial: the radio comes on and mobile-data's watcher redials. Needs no daemon: the keys
 # run it through mu300-power wake, and the daemon's own leave_idle and self-check are this.
 restore() {
     _acted=1
-    if ! busy_take "${MU300_POWER_WAKE_LOCK_WAIT:-200}" restore; then
+    if ! busy_take "${MU300_POWER_WAKE_LOCK_WAIT:-400}" restore; then
         [ "$BUSY_KIND" = restore ] || say "restore ($1): the lock stayed busy (${BUSY_KIND:-?}), not restoring now"
         return 0
     fi
-    if hotspot_wanted && ! hotspot_up; then hotspot on; fi
+    if hotspot_up; then seen_up
+    elif [ -e "$ST/hotspot-idled" ]; then
+        rm -f "$ST/hotspot-off"   # idle took it down: whatever a marker says, it was on
+        hotspot on
+    elif hotspot_wanted; then hotspot on; fi
+    rm -f "$ST/hotspot-idled"
     [ ! -e "$LED_IDLE" ] || leds_idle off
     cpu full
-    if [ -e "$MD_SUSPEND" ]; then
+    # the VPN before the modem: with KILL_SWITCH=0 a dial ahead of it would be a window in clear; the units retry
+    # until the bearer gives them a route
+    vpn_start
+    if [ -e "$MD_SUSPEND" ] || [ -e "$MD_ENDC" ]; then
         if [ "${2:-}" = fast ]; then modem_idle nodial; else modem_idle resume; fi
     fi
-    vpn_start
     rm -f "$ST/wake"
     uptime_s > "$ST/idle-since"
     set_state active "$1"   # last: a kill in the middle leaves "idle", and the next start-up or key finishes the wake
@@ -426,14 +471,30 @@ leave_idle() { restore "$@"; }
 # idle (WIFI_IDLE=0) and nobody turned it off on purpose; prints why. The hotspot is not looked at in the first
 # MU300_POWER_SELFCHECK_GRACE seconds of a boot (it is still coming up) nor within as long of the last self-check's
 # restore (a hotspot that will not start is not restarted every loop).
+# A hotspot that stays down after that is retried at a doubling interval, up to 30 min, logged once per step
+# ($ST/selfcheck-hold); it is reset once the hotspot is seen up.
 selfcheck() {
     if [ -e "$MD_SUSPEND" ]; then echo "the modem is suspended ($(rd "$MD_SUSPEND"))"; return 0; fi
+    if [ -e "$MD_ENDC" ]; then
+        _sc_now=$(num "$(uptime_s)")
+        [ ! -s "$ST/endc-at" ] || [ $((_sc_now - $(num "$(rd "$ST/endc-at")"))) -ge "${MU300_POWER_SELFCHECK_GRACE:-120}" ] || return 1
+        echo "$_sc_now" > "$ST/endc-at"
+        echo "EN-DC is still off after a failed resume"; return 0
+    fi
     [ "$(knob "$1" WIFI_IDLE)" = 0 ] || return 1
     _sc_g=${MU300_POWER_SELFCHECK_GRACE:-120}; _sc_now=$(num "$(uptime_s)")
     [ "$_sc_now" -ge "$_sc_g" ] || return 1
-    [ ! -s "$ST/selfcheck-at" ] || [ $((_sc_now - $(num "$(rd "$ST/selfcheck-at")"))) -ge "$_sc_g" ] || return 1
-    hotspot_wanted && ! hotspot_up || return 1
-    echo "$_sc_now" > "$ST/selfcheck-at"
+    _sc_hold=$(num "$(rd "$ST/selfcheck-hold")"); [ "$_sc_hold" -ge "$_sc_g" ] || _sc_hold=$_sc_g
+    [ ! -s "$ST/hotspot-on-at" ] || [ $((_sc_now - $(num "$(rd "$ST/hotspot-on-at")"))) -ge "$_sc_hold" ] || return 1
+    if hotspot_up; then seen_up; rm -f "$ST/selfcheck-hold" "$ST/hotspot-on-at"; return 1; fi
+    hotspot_wanted || return 1
+    if [ -s "$ST/hotspot-on-at" ]; then   # it was switched on before, and is down again or still: back off
+        _sc_next=$((_sc_hold * 2)); [ "$_sc_next" -le 1800 ] || _sc_next=1800
+        if [ "$_sc_next" != "$(rd "$ST/selfcheck-hold")" ]; then
+            echo "$_sc_next" > "$ST/selfcheck-hold"
+            say "self-check: the hotspot did not stay up; the next try after $_sc_next s"
+        fi
+    fi
     echo "the hotspot is down"
 }
 # --- the charging boot: LK opened our slot for a flat battery on the charger; stay light until the Wi-Fi key
@@ -592,7 +653,9 @@ cmd_daemon() {
     _sleep=
     # stopped while idle: the radios come back without a dial (the watcher redials); not during a shutdown. An action
     # in flight finishes first (its deadline holds).
-    trap '[ -z "$_sleep" ] || kill "$_sleep" 2>/dev/null; [ -z "$_bd_p" ] || wait "$_bd_p" 2>/dev/null; _bd_p=
+    trap '[ -z "$_sleep" ] || kill "$_sleep" 2>/dev/null; [ -z "$_bd_p" ] || wait "$_bd_p" 2>/dev/null
+          [ -z "$_bd_w" ] || { kill "$_bd_w" 2>/dev/null; wait "$_bd_w" 2>/dev/null; }; [ -z "$_bd_f" ] || rm -f "$_bd_f"
+          _bd_p= _bd_w= _bd_f=
           if [ "$(rd "$ST/state")" = idle ] && ! shutting_down; then leave_idle "daemon stopping" fast; fi; busy_drop; exit 0' TERM INT
     _n=0
     while :; do
