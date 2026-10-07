@@ -19,6 +19,30 @@ class PowerTest(ShellTest):
             self.stub(name, 'echo "$(basename "$0") $*" >> "$STUBLOG/calls"')
         self.stub('iw', 'echo "iw $*" >> "$STUBLOG/calls"; cat "$STUBLOG/stations" 2>/dev/null')
         self.stub('mu300-device', 'echo u30air')
+        # The stubs keep the state a wake looks at (mu300-power restores by inspection): the AP ($STUBLOG/ap-up: wifi
+        # and the hotspot unit, read by ubus and systemctl is-active), the VPN unit ($STUBLOG/vpn-up), the modem's
+        # mode file (mobile-data suspend/resume) and mu300-led's idle flag.
+        self.stub('wifi', 'echo "wifi $*" >> "$STUBLOG/calls"\n'
+                          'case $1 in down) rm -f "$STUBLOG/ap-up" ;; up) : > "$STUBLOG/ap-up" ;; esac')
+        self.stub('ubus', '[ -e "$STUBLOG/ap-up" ]')
+        self.stub('systemctl', self.SYSTEMCTL)
+        self.stub('mobile-data', 'echo "mobile-data $*" >> "$STUBLOG/calls"\n'
+                                 'case $1 in suspend) echo "$2" > "$MU300_RUN/mu300-mobile-data.suspend" ;;\n'
+                                 '    resume) rm -f "$MU300_RUN/mu300-mobile-data.suspend" ;; esac')
+        self.stub('mu300-led', 'echo "mu300-led $*" >> "$STUBLOG/calls"\n'
+                               'case "$1 ${2:-}" in "idle on") mkdir -p "$MU300_SYSROOT/run/mu300/led"; : > "$MU300_SYSROOT/run/mu300/led/.idle" ;;\n'
+                               '    "idle off") rm -f "$MU300_SYSROOT/run/mu300/led/.idle" ;; esac')
+        (self.tmp / 'ap-up').touch()
+
+    SYSTEMCTL = ('echo "systemctl $*" >> "$STUBLOG/calls"\n'
+                 'case "$*" in\n'
+                 '    "stop mu300-hotspot") rm -f "$STUBLOG/ap-up" ;;\n'
+                 '    "start mu300-hotspot") : > "$STUBLOG/ap-up" ;;\n'
+                 '    "is-active --quiet mu300-hotspot") [ -e "$STUBLOG/ap-up" ]; exit ;;\n'
+                 '    "is-active --quiet mu300-vpn") [ -e "$STUBLOG/vpn-up" ]; exit ;;\n'
+                 '    "stop mu300-vpn") rm -f "$STUBLOG/vpn-up" ;;\n'
+                 '    "start mu300-vpn") : > "$STUBLOG/vpn-up" ;;\n'
+                 'esac')
 
     # --- the fake device
     def psy(self, name, **files):
@@ -212,6 +236,11 @@ class DaemonTest(PowerTest):
     def state(self):
         return (self.run_dir / 'mu300/power/state').read_text().strip()
 
+    def idle_after_a_minute(self, shell, conf):
+        self.write_conf(conf)
+        self.stations(0); self.uptime(0); self.loops(shell); self.uptime(61); self.loops(shell)
+        self.assertEqual(self.state(), 'idle')
+
 
 class Daemon(DaemonTest):
     def test_idle_after_wifi_idle_minutes_without_clients(self):
@@ -261,7 +290,9 @@ class Daemon(DaemonTest):
         for shell in self.each_shell():
             self.setUp()
             # the modem stub notes whether the CPU was already back when it ran
-            self.stub('mobile-data', 'echo "mobile-data $* cpu7=$(cat "$MU300_SYSROOT/sys/devices/system/cpu/cpu7/online")" >> "$STUBLOG/calls"')
+            self.stub('mobile-data', 'echo "mobile-data $* cpu7=$(cat "$MU300_SYSROOT/sys/devices/system/cpu/cpu7/online")" >> "$STUBLOG/calls"\n'
+                                     'case $1 in suspend) echo "$2" > "$MU300_RUN/mu300-mobile-data.suspend" ;;\n'
+                                     '    resume) rm -f "$MU300_RUN/mu300-mobile-data.suspend" ;; esac')
             self.write_conf('battery_WIFI_IDLE=1\nbattery_CPU=eco\n')
             self.stations(0)
             self.uptime(0); self.loops(shell)
@@ -422,11 +453,6 @@ class Daemon(DaemonTest):
             self.term_while_idle(shell)
             self.assertNotIn('systemctl start', self.calls()); self.assertNotIn('mobile-data resume', self.calls())
             self.assertEqual(self.state(), 'idle')
-
-    def idle_after_a_minute(self, shell, conf):
-        self.write_conf(conf)
-        self.stations(0); self.uptime(0); self.loops(shell); self.uptime(61); self.loops(shell)
-        self.assertEqual(self.state(), 'idle')
 
     def test_profile_change_while_idle_applies_eco(self):
         for shell in self.each_shell():
@@ -802,6 +828,297 @@ class Guards(DaemonTest):
             self.assertEqual(self.power(shell, f'log abc {out}').returncode, 2)
             self.assertEqual(self.power(shell, f'log 0 {out}').returncode, 2)   # 0 only with MU300_POWER_LOOPS
 
+class Incident(DaemonTest):
+    """2026-10-07, the U30 Air: the raw idle actions run by hand (mu300-led idle on, wifi down, mobile-data suspend
+    lte/off) while the state file said "active". Every wake trusted the file and did nothing, the keys' LED wake was a
+    no-op under the idle flag, and the device sat dark and deaf for hours. A wake now restores by looking, with no
+    daemon, and every external step has a deadline."""
+
+    def taken_down_by_hand(self, ubuntu=False):
+        """What the measurement script left: AP down, modem suspended off, LEDs held dark, eco CPU without its marker
+        - and the state file still "active"."""
+        if ubuntu:
+            (self.root / 'etc/openwrt_release').unlink()
+        (self.tmp / 'ap-up').unlink()
+        (self.run_dir / 'mu300-mobile-data.suspend').write_text('off\n')
+        (self.root / 'run/mu300/led').mkdir(parents=True, exist_ok=True)
+        (self.root / 'run/mu300/led/.idle').touch()
+        cpu = self.root / 'sys/devices/system/cpu'
+        (cpu / 'cpu7/online').write_text('0\n')
+        (cpu / 'cpufreq/policy4/scaling_max_freq').write_text('1500000\n')
+        st = self.run_dir / 'mu300/power'
+        st.mkdir(parents=True, exist_ok=True)
+        (st / 'state').write_text('active\n')
+
+    def assert_restored(self):
+        c = self.calls()
+        self.assertTrue((self.tmp / 'ap-up').exists(), c)
+        self.assertFalse((self.run_dir / 'mu300-mobile-data.suspend').exists(), c)
+        self.assertFalse((self.root / 'run/mu300/led/.idle').exists(), c)
+        cpu = self.root / 'sys/devices/system/cpu'
+        self.assertEqual((cpu / 'cpu7/online').read_text().strip(), '1')
+        self.assertEqual((cpu / 'cpufreq/policy4/scaling_max_freq').read_text().strip(), '2301000')
+        self.assertEqual(self.state(), 'active')
+        # the order: hotspot, LEDs, then the modem (whose dial can take minutes)
+        self.assertLess(c.index('mu300-led idle off'), c.index('mobile-data resume'))
+
+    def test_a_key_restores_by_inspection_without_the_daemon(self):
+        for shell in self.each_shell():
+            for ubuntu in (False, True):
+                self.setUp()
+                self.taken_down_by_hand(ubuntu)
+                r = self.power(shell, 'wake power')   # no daemon anywhere: the wake does the work itself
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assert_restored()
+                c = self.calls()
+                self.assertIn('systemctl start mu300-hotspot' if ubuntu else 'wifi up', c)
+                self.assertLess(c.index('systemctl start mu300-hotspot' if ubuntu else 'wifi up'), c.index('mu300-led idle off'))
+                self.assertIn('woken by the power key', (self.run_dir / 'mu300/power/reason').read_text())
+
+    def test_a_wake_with_everything_up_changes_nothing(self):
+        for shell in self.each_shell():
+            self.setUp()
+            r = self.power(shell, 'wake')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            c = self.calls()
+            for not_called in ('wifi', 'mu300-led idle', 'mobile-data', 'vpn'):
+                self.assertNotIn(not_called, c)
+            self.assertEqual(self.state(), 'active')
+
+    def test_a_hotspot_turned_off_on_purpose_stays_off(self):
+        for shell in self.each_shell():
+            # the Wi-Fi key held (mu300-buttons' marker), and OpenWrt's UCI (the panel, wifi-client)
+            for how in ('marker', 'iface', 'radio'):
+                self.setUp()
+                self.taken_down_by_hand()
+                if how == 'marker':
+                    (self.run_dir / 'mu300/power/hotspot-off').touch()
+                else:
+                    key = 'wireless.@wifi-iface[0].disabled' if how == 'iface' else 'wireless.radio0.disabled'
+                    self.stub('uci', f'[ "$*" = "-q get {key}" ] && echo 1')
+                self.power(shell, 'wake')
+                self.assertNotIn('wifi up', self.calls(), how)
+                self.assertFalse((self.run_dir / 'mu300-mobile-data.suspend').exists(), how)   # the rest comes back
+            # Ubuntu: the unit disabled, or the radio a Wi-Fi client
+            for how in ('disabled', 'client'):
+                self.setUp()
+                self.taken_down_by_hand(ubuntu=True)
+                if how == 'disabled':
+                    self.stub('systemctl', self.SYSTEMCTL.replace('case "$*" in', 'case "$*" in\n    "is-enabled mu300-hotspot") echo disabled; exit 1 ;;'))
+                else:
+                    (self.run_dir / 'mu300-wifi-client.active').touch()
+                self.power(shell, 'wake')
+                self.assertNotIn('systemctl start mu300-hotspot', self.calls(), how)
+
+    def test_a_key_while_idle_wakes_without_the_daemon(self):
+        for shell in self.each_shell():
+            self.setUp()
+            self.write_conf('battery_WIFI_IDLE=1\n')
+            self.stations(0); self.uptime(0); self.loops(shell); self.uptime(61); self.loops(shell)
+            self.assertEqual(self.state(), 'idle')
+            self.power(shell, 'wake wifi')   # the daemon is not running (the loops above have ended)
+            self.assertEqual(self.state(), 'active')
+            self.assertTrue((self.tmp / 'ap-up').exists())
+            self.assertFalse((self.run_dir / 'mu300-mobile-data.suspend').exists())
+            self.assertFalse((self.root / 'run/mu300/led/.idle').exists())
+
+    def test_cpu_eco_cap_without_the_marker_is_lifted_but_not_under_a_thermal_alarm(self):
+        for shell in self.each_shell():
+            self.setUp()
+            pol = self.root / 'sys/devices/system/cpu/cpufreq/policy4/scaling_max_freq'
+            pol.write_text('1500000\n')
+            self.power(shell, 'wake')
+            self.assertEqual(pol.read_text().strip(), '2301000')
+            self.setUp()
+            pol = self.root / 'sys/devices/system/cpu/cpufreq/policy4/scaling_max_freq'
+            pol.write_text('1500000\n')
+            (self.run_dir / 'mu300/thermal-alarm').touch()
+            self.power(shell, 'wake')
+            self.assertEqual(pol.read_text().strip(), '1500000')
+
+    # --- deadlines
+    def hung(self, name):
+        """NAME never returns (it notes its pid, to check that it was killed)."""
+        self.stub(name, f'echo "{name} $*" >> "$STUBLOG/calls"; echo $$ >> "$STUBLOG/hung.pids"; exec sleep 1000')
+
+    def assert_killed(self):
+        import time
+        pids = [int(p) for p in (self.tmp / 'hung.pids').read_text().split()]
+        self.assertTrue(pids)
+        for pid in pids:
+            for _ in range(50):   # (the LED sync runs in the background with its own deadline)
+                try:
+                    os.kill(pid, 0)
+                except ProcessLookupError:
+                    break
+                time.sleep(0.1)
+            else:
+                self.fail(f'pid {pid} still runs')
+
+    def test_a_hung_step_cannot_hold_the_wake(self):
+        import time
+        for shell in self.each_shell():
+            for name in ('wifi', 'mobile-data', 'mu300-led', 'ubus'):
+                self.setUp()
+                self.taken_down_by_hand()
+                self.hung(name)
+                t0 = time.time()
+                r = self.power(shell, 'wake', MU300_POWER_STEP_DEADLINE=1, MU300_POWER_MODEM_DEADLINE=1,
+                               MU300_POWER_LED_DEADLINE=1, MU300_POWER_PROBE_DEADLINE=1, MU300_POWER_SYNC_DEADLINE=1)
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertLess(time.time() - t0, 15, name)
+                self.assertIn('did not finish in 1 s', self.calls(), name)   # (logger)
+                self.assertEqual(self.state(), 'active', name)
+                self.assert_killed()
+                # the next steps ran all the same
+                self.assertEqual((self.root / 'sys/devices/system/cpu/cpu7/online').read_text().strip(), '1', name)
+
+    def test_a_hung_station_dump_cannot_hold_the_daemon(self):
+        import time
+        for shell in self.each_shell():
+            self.setUp()
+            self.hung('iw')
+            t0 = time.time()
+            self.loops(shell, MU300_POWER_PROBE_DEADLINE=1)
+            self.assertLess(time.time() - t0, 15)
+            self.assert_killed()
+
+    # --- the actions lock
+    def test_a_dead_holders_lock_is_taken_over_and_a_live_restore_is_not_doubled(self):
+        for shell in self.each_shell():
+            self.setUp()
+            self.taken_down_by_hand()
+            st = self.run_dir / 'mu300/power'
+            os.symlink('999999:0:idle', st / 'busy')   # a holder long gone
+            r = self.power(shell, 'wake')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assert_restored()
+            self.assertFalse(os.path.lexists(st / 'busy'))
+            # a restore in progress (this test process is alive) does the work: the second wake returns at once
+            self.setUp()
+            self.taken_down_by_hand()
+            st = self.run_dir / 'mu300/power'
+            os.symlink(f'{os.getpid()}:0:restore', st / 'busy')
+            r = self.power(shell, 'wake')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertNotIn('wifi up', self.calls())
+            os.unlink(st / 'busy')
+
+    # --- the VPN while the modem is off
+    def vpn_openwrt(self, running=True):
+        d = self.root / 'etc/init.d'
+        d.mkdir(parents=True, exist_ok=True)
+        (d / 'mu300-vpn').write_text('#!/bin/sh\necho "init.d/mu300-vpn $*" >> "$STUBLOG/calls"\n'
+                                     'case $1 in running) [ -e "$STUBLOG/vpn-up" ] ;; stop) rm -f "$STUBLOG/vpn-up" ;;\n'
+                                     '    start) : > "$STUBLOG/vpn-up" ;; esac\n')
+        (d / 'mu300-vpn').chmod(0o755)
+        if running:
+            (self.tmp / 'vpn-up').touch()
+
+    def test_vpn_stops_with_the_modem_off_and_starts_on_the_wake(self):
+        for shell in self.each_shell():
+            for ubuntu in (False, True):
+                self.setUp()
+                if ubuntu:
+                    (self.root / 'etc/openwrt_release').unlink()
+                    (self.tmp / 'vpn-up').touch()
+                    stop, start = 'systemctl stop mu300-vpn', 'systemctl start mu300-vpn'
+                else:
+                    self.vpn_openwrt()
+                    stop, start = 'init.d/mu300-vpn stop', 'init.d/mu300-vpn start'
+                self.idle_after_a_minute(shell, 'battery_WIFI_IDLE=1\nbattery_RADIO_IDLE=off\n')
+                c = self.calls()
+                self.assertLess(c.index(stop), c.index('mobile-data suspend off'))
+                self.assertFalse((self.tmp / 'vpn-up').exists())
+                self.assertTrue((self.run_dir / 'mu300/power/vpn-stopped').exists())
+                self.power(shell, 'wake')
+                c = self.calls()
+                self.assertLess(c.index('mobile-data resume'), c.index(start))
+                self.assertTrue((self.tmp / 'vpn-up').exists())
+                self.assertFalse((self.run_dir / 'mu300/power/vpn-stopped').exists())
+
+    def test_vpn_is_left_alone_on_lte_and_when_it_was_not_running(self):
+        for shell in self.each_shell():
+            self.setUp()
+            self.vpn_openwrt()
+            self.idle_after_a_minute(shell, 'battery_WIFI_IDLE=1\nbattery_RADIO_IDLE=lte\n')
+            self.power(shell, 'wake')
+            self.assertNotIn('mu300-vpn stop', self.calls()); self.assertNotIn('mu300-vpn start', self.calls())
+            self.setUp()
+            self.vpn_openwrt(running=False)
+            self.idle_after_a_minute(shell, 'battery_WIFI_IDLE=1\nbattery_RADIO_IDLE=off\n')
+            self.power(shell, 'wake')
+            self.assertNotIn('mu300-vpn stop', self.calls()); self.assertNotIn('mu300-vpn start', self.calls())
+
+    def test_vpn_comes_back_when_the_modem_could_not_be_suspended(self):
+        for shell in self.each_shell():
+            self.setUp()
+            self.vpn_openwrt()
+            self.stub('mobile-data', 'echo "mobile-data $*" >> "$STUBLOG/calls"; exit 1')
+            self.idle_after_a_minute(shell, 'battery_WIFI_IDLE=1\nbattery_RADIO_IDLE=off\n')
+            self.assertTrue((self.tmp / 'vpn-up').exists())
+            self.assertFalse((self.run_dir / 'mu300/power/vpn-stopped').exists())
+
+    def test_the_exit_trap_starts_the_vpn_again(self):
+        for shell in self.each_shell():
+            self.setUp()
+            self.vpn_openwrt()
+            self.idle_after_a_minute(shell, 'battery_WIFI_IDLE=1\n')
+            r = self.sh(shell, f'"{POWER}" daemon & p=$!; sleep 1; kill -TERM $p; wait $p; echo rc=$?',
+                        MU300_SYSROOT=self.root, MU300_RUN=self.run_dir, MU300_POWER_CONF=self.conf,
+                        MU300_POWER_INTERVAL=1)
+            self.assertIn('rc=0', r.stdout)
+            self.assertIn('mobile-data resume nodial', self.calls())
+            self.assertTrue((self.tmp / 'vpn-up').exists())
+
+    # --- the daemon's self-check
+    def test_self_check_restores_an_active_device_with_its_radios_down(self):
+        for shell in self.each_shell():
+            # plugged (WIFI_IDLE=0): the hotspot down is restored; past the boot's grace only
+            self.setUp()
+            self.charger(online=1)
+            (self.tmp / 'ap-up').unlink()
+            self.uptime(60); self.loops(shell)
+            self.assertNotIn('wifi up', self.calls())
+            self.uptime(600); r = self.loops(shell)
+            self.assertIn('wifi up', self.calls())
+            self.assertIn('self-check', r.stderr)
+            self.assertEqual(self.state(), 'active')
+            # and not again at once, should the hotspot not start
+            self.stub('wifi', 'echo "wifi $*" >> "$STUBLOG/calls"')
+            (self.tmp / 'ap-up').unlink()
+            self.uptime(610); self.loops(shell)
+            self.assertEqual(self.calls().count('wifi up'), 1)
+            self.uptime(800); self.loops(shell)
+            self.assertEqual(self.calls().count('wifi up'), 2)
+            # a modem held down while active is resumed whatever the profile
+            self.setUp()
+            (self.run_dir / 'mu300-mobile-data.suspend').write_text('lte\n')
+            self.uptime(10); r = self.loops(shell)
+            self.assertIn('mobile-data resume', self.calls())
+            self.assertIn('self-check', r.stderr)
+            self.assertFalse((self.run_dir / 'mu300-mobile-data.suspend').exists())
+
+    def test_self_check_respects_a_hotspot_turned_off_on_purpose(self):
+        for shell in self.each_shell():
+            for how in ('marker', 'uci'):
+                self.setUp()
+                self.charger(online=1)
+                (self.tmp / 'ap-up').unlink()
+                if how == 'marker':
+                    (self.run_dir / 'mu300/power').mkdir(parents=True, exist_ok=True)
+                    (self.run_dir / 'mu300/power/hotspot-off').touch()
+                else:
+                    self.stub('uci', '[ "$*" = "-q get wireless.@wifi-iface[0].disabled" ] && echo 1')
+                self.uptime(600); self.loops(shell)
+                self.assertNotIn('wifi up', self.calls(), how)
+            # a battery profile (WIFI_IDLE > 0) leaves a downed hotspot to the idle timer
+            self.setUp()
+            (self.tmp / 'ap-up').unlink()
+            self.uptime(600); self.loops(shell)
+            self.assertNotIn('wifi up', self.calls())
+
+
 class Units(unittest.TestCase):
     def test_openwrt_instance_runs_mobile_data_through_netifd(self):
         f = (TOP / 'openwrt/overlay/etc/init.d/mu300-power').read_text()
@@ -882,4 +1199,11 @@ class Adapter(DaemonTest):
             self.assertEqual(json.loads(self.adapter(shell, 'idle').stdout), {'ok': 1})
             self.assertTrue((self.run_dir / 'mu300/power/idle-now').exists())
             self.assertEqual(json.loads(self.adapter(shell, 'wake').stdout), {'ok': 1})
-            self.assertTrue((self.run_dir / 'mu300/power/wake').exists())
+            # the wake restores without the daemon, in the background (rpcd ends a call at 30 s)
+            import time
+            reason = self.run_dir / 'mu300/power/reason'
+            for _ in range(100):
+                if reason.exists() and 'woken' in reason.read_text():
+                    break
+                time.sleep(0.1)
+            self.assertIn('woken', reason.read_text())

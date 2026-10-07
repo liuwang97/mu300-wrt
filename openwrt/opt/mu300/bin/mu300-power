@@ -4,25 +4,85 @@
 #   mu300-power profile [NAME|auto]     force a profile (plugged|battery|saver), or back to automatic
 #   mu300-power set PROFILE.KNOB VALUE  knobs: WIFI_IDLE (minutes, 0 never), RADIO_IDLE keep|lte|off,
 #                                       LEDS_IDLE on|off, CPU full|eco; also set SAVER_BELOW N, CHARGE_TO 100|80
-#   mu300-power wake [wifi|power]       leave idle (the keys call it with their name); restarts the idle timer;
-#                                       a charging boot ends on any wake but "power"
+#   mu300-power wake [wifi|power]       bring back whatever is down, by looking (the keys call it with their name);
+#                                       restarts the idle timer; a charging boot ends on any wake but "power"
 #   mu300-power idle                    enter idle now
 #   mu300-power log [SECONDS] [FILE]    append epoch,mV,mA,mW,capacity,temp,state,profile every SECONDS (5) to
 #                                       FILE (/var/log/mu300-power.csv)
 #   mu300-power daemon                  the state machine (mu300-power.service, /etc/init.d/mu300-power)
 # Idle: LEDs, hotspot, modem, CPU. Every wake: hotspot, LEDs, CPU, then the modem (its dial can take minutes).
+# A wake restores by inspection, not by the state file, and needs no daemon; every external step has a deadline.
 # Design: docs/superpowers/specs/2026-10-06-power-profiles-design.md. Configuration: /etc/mu300/power.conf,
 # KEY=VALUE, kept across updates with the rest of etc/mu300; a missing key is its default below.
 set -u
 export PATH="$PATH:/opt/mu300/bin:/opt/mu300/busybox-bin:/usr/sbin:/sbin"
 R=${MU300_SYSROOT:-}
-RUN=${MU300_RUN:-/run}/mu300
+RUNROOT=${MU300_RUN:-/run}
+RUN=$RUNROOT/mu300
 CONF=${MU300_POWER_CONF:-/etc/mu300/power.conf}
 ST=$RUN/power
+MD_SUSPEND=$RUNROOT/mu300-mobile-data.suspend   # mobile-data suspend's mode file: the modem is held down
+LED_IDLE=$R/run/mu300/led/.idle                  # mu300-led idle on's flag (mu300-led keeps its state under $R/run)
+# Deadlines in seconds (env for tests): a probe (iw, ubus, uci, systemctl is-*), an LED, a service step (wifi,
+# systemctl, the VPN), the modem (mobile-data bounds itself to ~60 s; this is the second guard), and how long a
+# wake waits for an idle entry in progress.
+PROBE=${MU300_POWER_PROBE_DEADLINE:-5}
+LEDDL=${MU300_POWER_LED_DEADLINE:-10}
+STEP=${MU300_POWER_STEP_DEADLINE:-30}
+MODEMDL=${MU300_POWER_MODEM_DEADLINE:-90}
 PROFILES="plugged battery saver"
 KNOBS="WIFI_IDLE RADIO_IDLE LEDS_IDLE CPU"
 
 say() { echo "mu300-power: $*" >&2; logger -t mu300-power -- "$*" 2>/dev/null || true; }
+
+# --- deadlines. Busybox on OpenWrt has no timeout(1): a background job and a watchdog.
+proc_table() {  # "PID PPID" for every process
+    if [ -r /proc/self/stat ]; then
+        for _pt in /proc/[0-9]*; do
+            { read -r _ptl < "$_pt/stat"; } 2>/dev/null || continue
+            _ptl=${_ptl##*) }; _ptl=${_ptl#* }   # after "pid (comm) state": the parent's pid
+            echo "${_pt#/proc/} ${_ptl%% *}"
+        done
+    else
+        ps -A -o pid= -o ppid= 2>/dev/null
+    fi
+}
+tree_kill() {  # tree_kill PID: the process and everything it started; all stopped first, so nothing new starts
+    for _tk_sig in STOP KILL; do
+        for _tk in $(proc_table | awk -v r="$1" '{ pp[$1] = $2 } END { s[r] = 1
+            do { n = 0; for (p in pp) if (!(p in s) && (pp[p] in s)) { s[p] = 1; n++ } } while (n)
+            for (p in s) print p }'); do
+            kill -"$_tk_sig" "$_tk" 2>/dev/null
+        done
+    done
+    return 0
+}
+# bounded SECONDS CMD [ARG...]: CMD in the background; past SECONDS, CMD and all it started are killed and bounded
+# returns 124. The waiting shell is also poked (USR1) a second later, so a child stuck in the kernel, deaf to KILL,
+# cannot hold it either. _bd_p is the job in flight (the daemon's TERM trap lets it finish first). The watchdog has
+# no TERM trap on purpose: it dies at once, whatever the shell does with a trap during a foreground sleep, and its
+# sleep runs out alone.
+_bd_p=
+bounded() {
+    _bd_s=$1; shift
+    trap : USR1
+    _bd_me=$(exec sh -c 'echo $PPID')   # this shell's own pid, also inside $( )
+    _bd_f=$ST/.deadline.$_bd_me
+    mkdir -p "$ST" 2>/dev/null; rm -f "$_bd_f"
+    "$@" &
+    _bd_p=$!
+    ( sleep "$_bd_s"; : > "$_bd_f"; tree_kill "$_bd_p"; sleep 1; kill -USR1 "$_bd_me" ) </dev/null >/dev/null 2>&1 &
+    _bd_w=$!
+    wait "$_bd_p"; _bd_rc=$?
+    kill "$_bd_w" 2>/dev/null; wait "$_bd_w" 2>/dev/null
+    if [ -e "$_bd_f" ]; then
+        rm -f "$_bd_f"; _bd_rc=124
+        echo "mu300-power: $* did not finish in $_bd_s s, killed" >&2
+        logger -t mu300-power -- "$* did not finish in $_bd_s s, killed" 2>/dev/null
+    fi
+    _bd_p=
+    return $_bd_rc
+}
 
 # --- configuration
 default() {  # default KEY: the built-in value of a top-level key or PROFILE_KNOB
@@ -161,7 +221,7 @@ is_openwrt() { [ -f "$R/etc/openwrt_release" ]; }
 # activity, the safe direction (the timer restarts), but idle does not wake on it (a downed AP may refuse the dump).
 stations() {
     [ -e "$R/sys/class/net/wlan0" ] || { echo 0; return 0; }
-    _so=$(iw dev wlan0 station dump 2>/dev/null) || { echo 1; return 1; }
+    _so=$(bounded "$PROBE" iw dev wlan0 station dump 2>/dev/null) || { echo 1; return 1; }
     num "$(printf '%s\n' "$_so" | grep -c '^Station')"
 }
 usb_host() { for _s in "$R"/sys/class/udc/*/state; do [ "$(rd "$_s")" = configured ] && return 0; done; return 1; }
@@ -177,26 +237,79 @@ retry_drop() { [ -f "$ST/retry" ] && { grep -v "^$1 " "$ST/retry" > "$ST/retry.t
 retry_note() { retry_drop "$1"; say "$1 $2 failed, will retry"; echo "$1 $2" >> "$ST/retry"; }
 hotspot() {  # hotspot on|off
     if is_openwrt; then
-        if [ "$1" = off ]; then wifi down </dev/null >/dev/null 2>&1; else wifi up </dev/null >/dev/null 2>&1; fi
+        if [ "$1" = off ]; then _hw=down; else _hw=up; fi
+        bounded "$STEP" wifi "$_hw" </dev/null >/dev/null 2>&1
     else
-        if [ "$1" = off ]; then systemctl stop mu300-hotspot </dev/null; else systemctl start mu300-hotspot </dev/null; fi 2>/dev/null
+        if [ "$1" = off ]; then _hw=stop; else _hw=start; fi
+        bounded "$STEP" systemctl "$_hw" mu300-hotspot </dev/null >/dev/null 2>&1
     fi
     _rc=$?
     if [ $_rc -ne 0 ]; then retry_note hotspot "$1"; return 0; fi
     retry_drop hotspot
     if is_openwrt; then
-        if [ "$1" = off ]; then mu300-led wifi off 2>/dev/null || true
-        else ( mu300-led wifi sync 120 ) </dev/null >/dev/null 2>&1 & fi
+        if [ "$1" = off ]; then bounded "$LEDDL" mu300-led wifi off </dev/null >/dev/null 2>&1
+        else ( bounded "${MU300_POWER_SYNC_DEADLINE:-150}" mu300-led wifi sync 120 ) </dev/null >/dev/null 2>&1 & fi
     fi
     return 0
 }
-leds_idle() { mu300-led idle "$1" 2>/dev/null || true; }
+# hotspot_up: by looking - hostapd serves wlan0 (OpenWrt), mu300-hotspot is running (Ubuntu)
+hotspot_up() {
+    if is_openwrt; then bounded "$PROBE" ubus -t "$PROBE" call hostapd.wlan0 get_status </dev/null >/dev/null 2>&1
+    else bounded "$PROBE" systemctl is-active --quiet mu300-hotspot </dev/null >/dev/null 2>&1; fi
+}
+# hotspot_wanted: not when somebody turned it off on purpose - the Wi-Fi key held (mu300-buttons leaves
+# $ST/hotspot-off), the panel or UCI (OpenWrt: the interface or the radio disabled), the unit disabled (Ubuntu), the
+# radio a Wi-Fi client, or the scan-mode boot
+hotspot_wanted() {
+    [ ! -e "$ST/hotspot-off" ] || return 1
+    [ ! -e "$RUNROOT/mu300-wifi-client.active" ] || return 1
+    [ ! -e "$RUNROOT/mu300-wifi-scan-mode" ] || return 1
+    if is_openwrt; then
+        for _hk in 'wireless.@wifi-iface[0].disabled' wireless.radio0.disabled; do
+            [ "$(bounded "$PROBE" uci -q get "$_hk" </dev/null 2>/dev/null)" != 1 ] || return 1
+        done
+    else
+        [ "$(bounded "$PROBE" systemctl is-enabled mu300-hotspot </dev/null 2>/dev/null)" != disabled ] || return 1
+    fi
+    return 0
+}
+leds_idle() { bounded "$LEDDL" mu300-led idle "$1" </dev/null >/dev/null 2>&1 || true; }
+# The VPN while the modem is off: its engine has nothing to talk to (xray ran out of descriptors once, retrying), so
+# a modem suspended "off" stops the service and the wake starts it again - only if it was running ($ST/vpn-stopped).
+# The stop leaves mu300-vpn's kill switch (nft table inet mu300_vpn) in place by its design, and the engine's routes
+# go with it, so nothing leaves outside the tunnel meanwhile; the modem's bearer is down in any case.
+vpn_svc() {  # vpn_svc running|start|stop
+    if is_openwrt; then
+        [ -x "$R/etc/init.d/mu300-vpn" ] || return 1
+        if [ "$1" = running ]; then _vd=$PROBE; else _vd=$STEP; fi
+        bounded "$_vd" "$R/etc/init.d/mu300-vpn" "$1" </dev/null >/dev/null 2>&1
+    elif [ "$1" = running ]; then
+        bounded "$PROBE" systemctl is-active --quiet mu300-vpn </dev/null >/dev/null 2>&1
+    else
+        bounded "$STEP" systemctl "$1" mu300-vpn </dev/null >/dev/null 2>&1
+    fi
+}
+vpn_stop() {
+    [ ! -e "$ST/vpn-stopped" ] || return 0
+    vpn_svc running || return 0
+    : > "$ST/vpn-stopped"   # first: a kill in between still restarts it on the wake
+    vpn_svc stop || say "stopping mu300-vpn failed"
+    say "mu300-vpn stopped while the modem is off"
+}
+vpn_start() {
+    [ -e "$ST/vpn-stopped" ] || return 0
+    if vpn_svc start; then rm -f "$ST/vpn-stopped"; say "mu300-vpn started again"
+    else say "starting mu300-vpn failed, will retry"; fi
+}
 modem_idle() {  # modem_idle keep|lte|off | modem_idle resume | modem_idle nodial (radio on, the watcher redials)
     case $1 in
         keep) ;;
-        lte|off) if mobile-data suspend "$1" </dev/null 2>/dev/null; then retry_drop modem; else retry_note modem "$1"; fi ;;
-        resume) if mobile-data resume </dev/null 2>/dev/null; then retry_drop modem; else retry_note modem resume; fi ;;
-        nodial) if mobile-data resume nodial </dev/null 2>/dev/null; then retry_drop modem; else retry_note modem resume; fi ;;
+        lte|off)
+            [ "$1" = lte ] || vpn_stop
+            if bounded "$MODEMDL" mobile-data suspend "$1" </dev/null >/dev/null 2>&1; then retry_drop modem
+            else retry_note modem "$1"; [ "$1" = lte ] || vpn_start; fi ;;   # the modem stays on: so does the VPN
+        resume) if bounded "$MODEMDL" mobile-data resume </dev/null >/dev/null 2>&1; then retry_drop modem; else retry_note modem resume; fi ;;
+        nodial) if bounded "$MODEMDL" mobile-data resume nodial </dev/null >/dev/null 2>&1; then retry_drop modem; else retry_note modem resume; fi ;;
     esac
     return 0
 }
@@ -229,6 +342,16 @@ cpu() {  # cpu eco|full
             _m=$(rd "$ST/cpu-max4"); [ -n "$_m" ] || _m=$(rd "$CPU/cpufreq/policy4/cpuinfo_max_freq")
             [ -z "$_m" ] || echo "$_m" > "$CPU/cpufreq/policy4/scaling_max_freq" 2>/dev/null
             rm -f "$ST/cpu-max4"
+        else
+            # by looking, without the marker (lost, or eco applied by hand): the big core offline comes back, and
+            # eco's own cap (1.5 GHz exactly) goes. Another cap is the toolkit's profile or thermal-guard's step, not
+            # ours; nothing is lifted while thermal-guard's alarm is on.
+            [ "$(rd "$CPU/cpu7/online")" != 0 ] || echo 1 > "$CPU/cpu7/online" 2>/dev/null
+            _m=$(rd "$CPU/cpufreq/policy4/cpuinfo_max_freq")
+            if [ "$(rd "$CPU/cpufreq/policy4/scaling_max_freq")" = 1500000 ] && [ "$(num "$_m")" -gt 1500000 ] &&
+               [ ! -e "$RUN/thermal-alarm" ]; then
+                echo "$_m" > "$CPU/cpufreq/policy4/scaling_max_freq" 2>/dev/null
+            fi
         fi
     fi
     return 0
@@ -236,22 +359,82 @@ cpu() {  # cpu eco|full
 
 # --- the state machine
 set_state() { echo "$1" > "$ST/state"; echo "$2" > "$ST/reason"; say "$1: $2"; }
+# One idle entry or restore at a time (the daemon, a key's wake, the self-check): $ST/busy, a symbolic link made in
+# one step whose target is "PID:UPTIME:KIND". A dead holder's, or one held past MU300_POWER_BUSY_STALE seconds (far
+# beyond every deadline), is taken over. The daemon's TERM trap, inside its own idle entry, already holds it.
+busy_take() {  # busy_take WAIT KIND: 1 when not had within WAIT seconds; BUSY_KIND is then the holder's kind
+    _bw_n=0 _bw_tries=0; BUSY_KIND=
+    mkdir -p "$ST" 2>/dev/null
+    while ! ln -s "$$:$(num "$(uptime_s)"):$2" "$ST/busy" 2>/dev/null; do
+        # every round counts, so that nothing (a file in the way, a read-only /run) makes this spin for ever
+        _bw_tries=$((_bw_tries + 1)); [ "$_bw_tries" -le $(( $1 * 2 + 20 )) ] || return 1
+        if ! _bw_i=$(readlink "$ST/busy" 2>/dev/null); then
+            [ ! -e "$ST/busy" ] || [ -L "$ST/busy" ] || rm -rf "$ST/busy"   # not ours to keep: no link
+            continue   # (or released in between)
+        fi
+        _bw_pid=${_bw_i%%:*}; _bw_t=${_bw_i#*:}; _bw_t=${_bw_t%%:*}; BUSY_KIND=${_bw_i##*:}
+        [ "$_bw_pid" != $$ ] || return 0
+        if ! kill -0 "$_bw_pid" 2>/dev/null ||
+           [ $(( $(num "$(uptime_s)") - $(num "$_bw_t") )) -gt "${MU300_POWER_BUSY_STALE:-600}" ]; then
+            [ "$(readlink "$ST/busy" 2>/dev/null)" != "$_bw_i" ] || rm -f "$ST/busy"
+            continue
+        fi
+        [ "$_bw_n" -lt "$1" ] || return 1
+        [ "$2" != restore ] || [ "$BUSY_KIND" != restore ] || return 1   # a restore is running: it does this one's work
+        _bw_n=$((_bw_n + 1)); sleep 1
+    done
+}
+busy_drop() { [ "$(readlink "$ST/busy" 2>/dev/null | cut -d: -f1)" != $$ ] || rm -f "$ST/busy"; return 0; }
 enter_idle() {  # enter_idle PROFILE REASON: LEDs, hotspot, modem, CPU - in that order
     _acted=1
+    busy_take 0 idle || return 0   # a wake is restoring right now: not now
+    # a wake between the look and the lock: it has just restored, and this idle entry is no longer wanted
+    if [ "$(rd "$ST/state")" != "${_state:-}" ] || [ -e "$ST/wake" ]; then busy_drop; return 0; fi
     echo idle > "$ST/state"   # first: a TERM from here on must find "idle" and wake the radios
     [ "$(knob "$1" LEDS_IDLE)" = off ] && leds_idle on
     hotspot off
     modem_idle "$(knob "$1" RADIO_IDLE)"
     cpu "$(knob "$1" CPU)"
     set_state idle "$2"
+    busy_drop
 }
-leave_idle() {  # leave_idle REASON [fast]: hotspot, LEDs, CPU, then the modem, whose dial can take minutes; fast (the
-    _acted=1      # exit trap) does not dial: the radio comes on and mobile-data's watcher redials
-    hotspot on; leds_idle off; cpu full
-    if [ "${2:-}" = fast ]; then modem_idle nodial; else modem_idle resume; fi
+# restore REASON [fast]: bring back what is down, by looking rather than by the state file (2026-10-07: the raw
+# actions run by hand while the state said "active" left a device dark and deaf for hours, as every wake trusted
+# the file). Hotspot, LEDs, CPU, the modem, whose dial can take minutes, then the VPN; each step only when it is down.
+# fast (the exit trap) does not dial: the radio comes on and mobile-data's watcher redials. Needs no daemon: the keys
+# run it through mu300-power wake, and the daemon's own leave_idle and self-check are this.
+restore() {
+    _acted=1
+    if ! busy_take "${MU300_POWER_WAKE_LOCK_WAIT:-200}" restore; then
+        [ "$BUSY_KIND" = restore ] || say "restore ($1): the lock stayed busy (${BUSY_KIND:-?}), not restoring now"
+        return 0
+    fi
+    if hotspot_wanted && ! hotspot_up; then hotspot on; fi
+    [ ! -e "$LED_IDLE" ] || leds_idle off
+    cpu full
+    if [ -e "$MD_SUSPEND" ]; then
+        if [ "${2:-}" = fast ]; then modem_idle nodial; else modem_idle resume; fi
+    fi
+    vpn_start
     rm -f "$ST/wake"
     uptime_s > "$ST/idle-since"
     set_state active "$1"   # last: a kill in the middle leaves "idle", and the next start-up or key finishes the wake
+    busy_drop
+}
+leave_idle() { restore "$@"; }
+# selfcheck PROFILE: the state says active, yet the modem is held down, or the hotspot is down where it should never
+# idle (WIFI_IDLE=0) and nobody turned it off on purpose; prints why. The hotspot is not looked at in the first
+# MU300_POWER_SELFCHECK_GRACE seconds of a boot (it is still coming up) nor within as long of the last self-check's
+# restore (a hotspot that will not start is not restarted every loop).
+selfcheck() {
+    if [ -e "$MD_SUSPEND" ]; then echo "the modem is suspended ($(rd "$MD_SUSPEND"))"; return 0; fi
+    [ "$(knob "$1" WIFI_IDLE)" = 0 ] || return 1
+    _sc_g=${MU300_POWER_SELFCHECK_GRACE:-120}; _sc_now=$(num "$(uptime_s)")
+    [ "$_sc_now" -ge "$_sc_g" ] || return 1
+    [ ! -s "$ST/selfcheck-at" ] || [ $((_sc_now - $(num "$(rd "$ST/selfcheck-at")"))) -ge "$_sc_g" ] || return 1
+    hotspot_wanted && ! hotspot_up || return 1
+    echo "$_sc_now" > "$ST/selfcheck-at"
+    echo "the hotspot is down"
 }
 # --- the charging boot: LK opened our slot for a flat battery on the charger; stay light until the Wi-Fi key
 boot_mode() { rd "$RUN/boot-mode"; }
@@ -261,14 +444,14 @@ enter_charging_boot() {
     echo 0 > "$ST/low-loops"
     hotspot off
     modem_idle off
-    mu300-led charge on 2>/dev/null || true
+    bounded "$LEDDL" mu300-led charge on </dev/null >/dev/null 2>&1 || true
     set_state charging-boot "charging boot (LK boot mode charger)"
 }
 leave_charging_boot() {  # leave_charging_boot REASON
-    mu300-led charge off 2>/dev/null || true
+    bounded "$LEDDL" mu300-led charge off </dev/null >/dev/null 2>&1 || true
     rm -f "$RUN/charging-boot" "$ST/low-loops"
     # skipped at boot by the flag; --no-block: its start waits 15 s, the hotspot must not wait for it
-    is_openwrt || systemctl start --no-block mu300-mobile-data </dev/null 2>/dev/null || true
+    is_openwrt || bounded "$STEP" systemctl start --no-block mu300-mobile-data </dev/null >/dev/null 2>&1 || true
     leave_idle "$1"
 }
 extcon_usb() { for _s in "$R"/sys/class/extcon/*/state; do grep -qx 'USB=1' "$_s" 2>/dev/null && return 0; done; return 1; }
@@ -375,8 +558,12 @@ step() {  # one look at the world; sets _acted when it changed the state
                 esac
             fi ;;
         *)  # active; anything unknown is treated as active
-            [ "$_state" = active ] || set_state active "unknown state '$_state'"
+            [ "$_state" = active ] || { set_state active "unknown state '$_state'"; _state=active; }
             if [ -e "$ST/wake" ]; then rm -f "$ST/wake"; echo "$_now" > "$ST/idle-since"; fi
+            if _why=$(selfcheck "$_prof"); then
+                say "self-check: active, but $_why: restoring"
+                restore "self-check: $_why"; return 0
+            fi
             if [ -e "$ST/idle-now" ]; then rm -f "$ST/idle-now"; enter_idle "$_prof" "idle now (asked)"; return 0; fi
             _min=$(knob "$_prof" WIFI_IDLE)
             [ "$_min" = 0 ] && return 0
@@ -403,8 +590,10 @@ cmd_daemon() {
         if [ ! -s "$ST/state" ] && [ "$(boot_mode)" = charger ]; then enter_charging_boot; fi
     fi
     _sleep=
-    # stopped while idle: the radios come back without a dial (the watcher redials); not during a shutdown
-    trap '[ -z "$_sleep" ] || kill "$_sleep" 2>/dev/null; if [ "$(rd "$ST/state")" = idle ] && ! shutting_down; then leave_idle "daemon stopping" fast; fi; exit 0' TERM INT
+    # stopped while idle: the radios come back without a dial (the watcher redials); not during a shutdown. An action
+    # in flight finishes first (its deadline holds).
+    trap '[ -z "$_sleep" ] || kill "$_sleep" 2>/dev/null; [ -z "$_bd_p" ] || wait "$_bd_p" 2>/dev/null; _bd_p=
+          if [ "$(rd "$ST/state")" = idle ] && ! shutting_down; then leave_idle "daemon stopping" fast; fi; busy_drop; exit 0' TERM INT
     _n=0
     while :; do
         loop
@@ -445,9 +634,22 @@ shutting_down() {
     is_openwrt && return 1
     [ "$(systemctl is-system-running </dev/null 2>/dev/null)" = stopping ]
 }
-cmd_wake() {  # cmd_wake [wifi|power]: the flag holds the key's name ("any" without one)
-    case ${1:-} in ''|wifi|power) ;; *) echo "usage: mu300-power wake [wifi|power]" >&2; return 2 ;; esac
+cmd_wake() {  # cmd_wake [wifi|power]: the flag holds the key's name ("any" without one) for the daemon, and the restore
+    case ${1:-} in ''|wifi|power) ;; *) echo "usage: mu300-power wake [wifi|power]" >&2; return 2 ;; esac   # runs now
     mkdir -p "$ST"; echo "${1:-any}" > "$ST/wake"
+    trap '' HUP   # a terminal that goes away (an SSH session over the Wi-Fi it brings back) does not stop it half-way
+    case $(rd "$ST/state") in
+        charging-boot)   # only the Wi-Fi key (or a wake without a key name) ends it; the power key only shows the LEDs
+            [ "${1:-any}" != power ] || return 0
+            busy_take "${MU300_POWER_WAKE_LOCK_WAIT:-200}" restore || return 0
+            [ "$(rd "$ST/state")" = charging-boot ] || { busy_drop; return 0; }   # the daemon got there first
+            if [ "${1:-any}" = wifi ]; then leave_charging_boot "woken by the Wi-Fi key"
+            else leave_charging_boot "woken (mu300-power wake)"; fi
+            busy_drop ;;
+        *)
+            if [ -n "${1:-}" ]; then restore "woken by the $1 key"; else restore "woken (mu300-power wake)"; fi ;;
+    esac
+    return 0
 }
 cmd_idle() { mkdir -p "$ST"; touch "$ST/idle-now"; }
 
