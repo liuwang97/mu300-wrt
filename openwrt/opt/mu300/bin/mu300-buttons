@@ -10,8 +10,10 @@
 # take a minute, and the keys must not wait for it. Idle wakes on any key, a charging boot only on the Wi-Fi key. The
 # band toggle and the hotspot toggle act on an awake device, so the first Wi-Fi press on a sleeping device (idle, or
 # the LEDs held dark) only wakes it. Held power does not wake mu300-power: it leaves the shutdown marker, so the
-# daemon's stop on the way down does not bring the radios back. The hotspot toggle leaves $PST/hotspot-off while the
-# user has it off, so neither a wake nor mu300-power's self-check turns it back on.
+# daemon's stop on the way down does not bring the radios back. The hotspot toggle leaves $PST/hotspot-off (with the
+# uptime of the hold) while the user has it off, so neither a wake nor mu300-power's self-check turns it back on; the
+# direction is decided and the marker written before the wake starts, so the wake of the same press cannot undo it.
+# The toggles themselves (hotspot, band) run in the background under a deadline: a later press always shows life.
 # mu300-keys reports the presses; its tick every 5 s lets the LEDs time out. Ubuntu's logind leaves the power key
 # to this script (/etc/systemd/logind.conf.d/mu300-buttons.conf): it used to power the device off at a touch.
 export PATH="$PATH:/opt/mu300/bin:/usr/sbin:/sbin"
@@ -21,13 +23,47 @@ is_openwrt() { [ -e /etc/openwrt_release ]; }
 PST=${MU300_RUN:-/run}/mu300/power
 LEDIDLE=${MU300_SYSROOT:-}/run/mu300/led/.idle   # mu300-led idle on (mu300-led keeps its state there)
 
-hotspot_toggle() {
-    if is_openwrt; then
-        if ubus -t 5 call hostapd.wlan0 get_status >/dev/null 2>&1; then mkdir -p "$PST" 2>/dev/null; : > "$PST/hotspot-off"; wifi down; mu300-led wifi off
-        else rm -f "$PST/hotspot-off"; wifi up; ( mu300-led wifi sync 120 ) </dev/null >/dev/null 2>&1 & fi
-    elif systemctl is-active --quiet mu300-hotspot; then mkdir -p "$PST" 2>/dev/null; : > "$PST/hotspot-off"; systemctl stop mu300-hotspot
-    else rm -f "$PST/hotspot-off"; systemctl start mu300-hotspot; fi
+DEADLINE=${MU300_BUTTONS_DEADLINE:-150}   # a toggle in the background (the LED sync after wifi up runs 120 s)
+
+# --- deadlines (as in mu300-power): "PID PPID" for every process, a process tree killed, a job with a watchdog
+proc_table() {
+    if [ -r /proc/self/stat ]; then
+        for _pt in /proc/[0-9]*; do
+            { read -r _ptl < "$_pt/stat"; } 2>/dev/null || continue
+            _ptl=${_ptl##*) }; _ptl=${_ptl#* }
+            echo "${_pt#/proc/} ${_ptl%% *}"
+        done
+    else
+        ps -A -o pid= -o ppid= 2>/dev/null
+    fi
 }
+tree_kill() {
+    for _tk_sig in STOP KILL; do
+        for _tk in $(proc_table | awk -v r="$1" '{ pp[$1] = $2 } END { s[r] = 1
+            do { n = 0; for (p in pp) if (!(p in s) && (pp[p] in s)) { s[p] = 1; n++ } } while (n)
+            for (p in s) print p }'); do
+            kill -"$_tk_sig" "$_tk" 2>/dev/null
+        done
+    done
+}
+in_background() {  # in_background SECONDS CMD...: CMD in the background; past SECONDS it and all it started are killed
+    _ib_s=$1; shift
+    ( "$@" & _ib_p=$!
+      ( sleep "$_ib_s"; tree_kill "$_ib_p" ) </dev/null >/dev/null 2>&1 & _ib_w=$!
+      wait "$_ib_p"; kill "$_ib_w" 2>/dev/null ) </dev/null >/dev/null 2>&1 &
+}
+
+hotspot_is_up() {
+    if is_openwrt; then ubus -t 5 call hostapd.wlan0 get_status >/dev/null 2>&1
+    else systemctl is-active --quiet mu300-hotspot; fi
+}
+hotspot_set() {  # hotspot_set on|off: the toggle itself
+    if is_openwrt; then
+        if [ "$1" = off ]; then wifi down; mu300-led wifi off; else wifi up; mu300-led wifi sync 120; fi
+    elif [ "$1" = off ]; then systemctl stop mu300-hotspot
+    else systemctl start mu300-hotspot; fi
+}
+band_toggle() { mu300-wifi-band toggle | logger -t mu300-buttons 2>/dev/null; }
 
 mu300-keys -l 3000 -t 5 | { while read -r code kind; do
     # the tick every 5 s is no press: it only lets the LEDs time out
@@ -36,6 +72,13 @@ mu300-keys -l 3000 -t 5 | { while read -r code kind; do
     was_idle=0; s=$(cat "$PST/state" 2>/dev/null); [ -z "$s" ] || [ "$s" = active ] || was_idle=1
     [ ! -e "$LEDIDLE" ] || was_idle=1   # dark on purpose (idle, or someone's mu300-led idle on): this press only wakes
     key=power; [ "$code" = "$KEY_WIFI" ] && key=wifi
+    # a Wi-Fi hold on an awake device: which way, and the user's marker, before the wake can look
+    dir=
+    if [ "$code $kind" = "$KEY_WIFI long" ] && [ "$was_idle" != 1 ]; then
+        mkdir -p "$PST" 2>/dev/null
+        if hotspot_is_up; then dir=off; cut -d. -f1 "${MU300_SYSROOT:-}/proc/uptime" > "$PST/hotspot-off" 2>/dev/null
+        else dir=on; rm -f "$PST/hotspot-off"; fi
+    fi
     # a held power key shuts down instead
     [ "$code $kind" = "$KEY_POWER long" ] || ( mu300-power wake "$key" ) </dev/null >/dev/null 2>&1 &
     case "$code $kind" in
@@ -43,7 +86,7 @@ mu300-keys -l 3000 -t 5 | { while read -r code kind; do
             logger -t mu300-buttons "power button held: shutting down" 2>/dev/null
             mkdir -p "$PST" 2>/dev/null; : > "$PST/shutdown" 2>/dev/null
             if is_openwrt; then poweroff; else systemctl poweroff; fi ;;
-        "$KEY_WIFI short") [ "$was_idle" = 1 ] || mu300-wifi-band toggle | logger -t mu300-buttons 2>/dev/null ;;
-        "$KEY_WIFI long") [ "$was_idle" = 1 ] || hotspot_toggle ;;
+        "$KEY_WIFI short") [ "$was_idle" = 1 ] || in_background "$DEADLINE" band_toggle ;;
+        "$KEY_WIFI long") [ -z "$dir" ] || in_background "$DEADLINE" hotspot_set "$dir" ;;
     esac
 done; wait; }
