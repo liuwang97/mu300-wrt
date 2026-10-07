@@ -4,10 +4,14 @@
 #   power, held 3 s           shut down cleanly (the battery-powered U30 Air; the F50 starts again on USB power)
 #   Wi-Fi key, short press    hotspot 2.4 <-> 5 GHz (U30 Air; the Wi-Fi LED shows the band: blue 5, white 2.4)
 #   Wi-Fi key, held 3 s       hotspot off / on
-# Every press wakes mu300-power first with the key's name (`mu300-power wake wifi|power`; other keys count as power):
-# idle wakes on any key, a charging boot only on the Wi-Fi key. The band toggle and the hotspot toggle then act on the
-# awake device, so the first Wi-Fi press on a sleeping device only wakes it. Held power does not wake: it leaves
-# mu300-power's shutdown marker, so its stop on the way down does not bring the radios back.
+# Every press lights the LEDs first (`mu300-led wake`: also in mu300-power's idle, and without any daemon), so a key
+# always shows life. Then it wakes mu300-power with the key's name (`mu300-power wake wifi|power`; other keys count as
+# power), in the background: the wake restores whatever is down by looking (hotspot, modem, LEDs, CPU), which can
+# take a minute, and the keys must not wait for it. Idle wakes on any key, a charging boot only on the Wi-Fi key. The
+# band toggle and the hotspot toggle act on an awake device, so the first Wi-Fi press on a sleeping device (idle, or
+# the LEDs held dark) only wakes it. Held power does not wake mu300-power: it leaves the shutdown marker, so the
+# daemon's stop on the way down does not bring the radios back. The hotspot toggle leaves $PST/hotspot-off while the
+# user has it off, so neither a wake nor mu300-power's self-check turns it back on.
 # mu300-keys reports the presses; its tick every 5 s lets the LEDs time out. Ubuntu's logind leaves the power key
 # to this script (/etc/systemd/logind.conf.d/mu300-buttons.conf): it used to power the device off at a touch.
 export PATH="$PATH:/opt/mu300/bin:/usr/sbin:/sbin"
@@ -15,29 +19,31 @@ KEY_POWER=116
 KEY_WIFI=138   # "Wifi Switch Key" in the U30 Air's device tree (KEY_HELP's code, as its Android maps it)
 is_openwrt() { [ -e /etc/openwrt_release ]; }
 PST=${MU300_RUN:-/run}/mu300/power
+LEDIDLE=${MU300_SYSROOT:-}/run/mu300/led/.idle   # mu300-led idle on (mu300-led keeps its state there)
 
 hotspot_toggle() {
     if is_openwrt; then
-        if ubus call hostapd.wlan0 get_status >/dev/null 2>&1; then wifi down; mu300-led wifi off
-        else wifi up; ( mu300-led wifi sync 120 ) </dev/null >/dev/null 2>&1 & fi
-    elif systemctl is-active --quiet mu300-hotspot; then systemctl stop mu300-hotspot
-    else systemctl start mu300-hotspot; fi
+        if ubus -t 5 call hostapd.wlan0 get_status >/dev/null 2>&1; then mkdir -p "$PST" 2>/dev/null; : > "$PST/hotspot-off"; wifi down; mu300-led wifi off
+        else rm -f "$PST/hotspot-off"; wifi up; ( mu300-led wifi sync 120 ) </dev/null >/dev/null 2>&1 & fi
+    elif systemctl is-active --quiet mu300-hotspot; then mkdir -p "$PST" 2>/dev/null; : > "$PST/hotspot-off"; systemctl stop mu300-hotspot
+    else rm -f "$PST/hotspot-off"; systemctl start mu300-hotspot; fi
 }
 
-mu300-keys -l 3000 -t 5 | while read -r code kind; do
+mu300-keys -l 3000 -t 5 | { while read -r code kind; do
+    # the tick every 5 s is no press: it only lets the LEDs time out
+    if [ "$kind" = tick ]; then mu300-led sleep --if-due; continue; fi
+    mu300-led wake   # first, whatever else this key does or whatever state anything is in
     was_idle=0; s=$(cat "$PST/state" 2>/dev/null); [ -z "$s" ] || [ "$s" = active ] || was_idle=1
+    [ ! -e "$LEDIDLE" ] || was_idle=1   # dark on purpose (idle, or someone's mu300-led idle on): this press only wakes
     key=power; [ "$code" = "$KEY_WIFI" ] && key=wifi
-    # the tick every 5 s is no press; a held power key shuts down instead
-    [ "$kind" = tick ] || [ "$code $kind" = "$KEY_POWER long" ] || mu300-power wake "$key" </dev/null >/dev/null 2>&1 || true
+    # a held power key shuts down instead
+    [ "$code $kind" = "$KEY_POWER long" ] || ( mu300-power wake "$key" ) </dev/null >/dev/null 2>&1 &
     case "$code $kind" in
-        "$KEY_POWER short") mu300-led wake ;;
         "$KEY_POWER long")
             logger -t mu300-buttons "power button held: shutting down" 2>/dev/null
-            mu300-led wake
             mkdir -p "$PST" 2>/dev/null; : > "$PST/shutdown" 2>/dev/null
             if is_openwrt; then poweroff; else systemctl poweroff; fi ;;
-        "$KEY_WIFI short") mu300-led wake; [ "$was_idle" = 1 ] || mu300-wifi-band toggle | logger -t mu300-buttons 2>/dev/null ;;
-        "$KEY_WIFI long") mu300-led wake; [ "$was_idle" = 1 ] || hotspot_toggle ;;
-        "0 tick") mu300-led sleep --if-due ;;
+        "$KEY_WIFI short") [ "$was_idle" = 1 ] || mu300-wifi-band toggle | logger -t mu300-buttons 2>/dev/null ;;
+        "$KEY_WIFI long") [ "$was_idle" = 1 ] || hotspot_toggle ;;
     esac
-done
+done; wait; }

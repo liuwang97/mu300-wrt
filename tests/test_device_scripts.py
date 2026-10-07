@@ -1416,10 +1416,13 @@ class Led(ShellTest):
             self.led(shell, 'u30air', 'sleep', '--if-due')
             self.assertEqual(self.state()['sc27xx:green'], '0')
 
-    def test_idle_darkens_everything_and_wake_cannot_undo_it(self):
+    def test_idle_darkens_everything_but_a_key_still_shows_them(self):
+        """2026-10-07: under the idle flag a key press lit nothing, and the device looked powered off for hours. A
+        key's wake now shows the LEDs for LED_TIMEOUT (a minute when it is 0) in idle too; then dark again."""
         for shell in self.each_shell():
-            for timeout in ('', 'LED_TIMEOUT=0\n'):
+            for timeout, lit_for in (('', 60), ('LED_TIMEOUT=0\n', 60), ('LED_TIMEOUT=20\n', 20)):
                 self.reset()
+                self.uptime(100)
                 if timeout:
                     self.conf.write_text(timeout)
                 self.led(shell, 'u30air', 'power', 'on')
@@ -1427,14 +1430,31 @@ class Led(ShellTest):
                 self.assertEqual(self.state()['net_blue'], '255')
                 self.assertEqual(self.led(shell, 'u30air', 'idle', 'on').returncode, 0)
                 self.assertEqual((self.state()['sc27xx:green'], self.state()['net_blue']), ('0', '0'))
-                self.led(shell, 'u30air', 'wake')
-                self.assertEqual(self.state()['net_blue'], '0')            # still idle
                 self.led(shell, 'u30air', 'data', '5g')                    # remembered, not shown
                 self.led(shell, 'u30air', 'power', 'on')
-                self.assertEqual(set(self.state().values()), {'0'})
-                self.led(shell, 'u30air', 'idle', 'off')
+                self.assertEqual(set(self.state().values()), {'0'}, timeout)
+                self.led(shell, 'u30air', 'sleep', '--if-due')             # nothing to put out
+                self.assertEqual(set(self.state().values()), {'0'}, timeout)
+                # a key: lit, idle or not
+                self.uptime(200)
+                self.led(shell, 'u30air', 'wake')
                 s = self.state()
                 self.assertEqual((s['sc27xx:green'], s['zte-ldo0'], s['net_blue']), ('255', '255', '0'), timeout)
+                self.led(shell, 'u30air', 'data', 'on')                    # a change meanwhile shows too
+                self.assertEqual(self.state()['net_blue'], '255', timeout)
+                self.uptime(200 + lit_for - 1)
+                self.led(shell, 'u30air', 'sleep', '--if-due')
+                self.assertEqual(self.state()['sc27xx:green'], '255', timeout)
+                self.uptime(200 + lit_for + 1)
+                self.led(shell, 'u30air', 'sleep', '--if-due')
+                self.assertEqual(set(self.state().values()), {'0'}, timeout)   # still idle: dark again
+                self.led(shell, 'u30air', 'data', 'on')
+                self.assertEqual(self.state()['net_blue'], '0', timeout)
+                # idle off: as LED_TIMEOUT says (0: always on; else from the last wake)
+                self.led(shell, 'u30air', 'wake')
+                self.led(shell, 'u30air', 'idle', 'off')
+                s = self.state()
+                self.assertEqual((s['sc27xx:green'], s['net_blue']), ('255', '255'), timeout)
 
     def test_idle_off_after_the_timeout_stays_dark(self):
         for shell in self.each_shell():
@@ -1661,14 +1681,16 @@ class Buttons(ShellTest):
         self.stub('mu300-keys', 'cat "$STUBLOG/keys.in"')
         for name in ('mu300-led', 'mu300-wifi-band', 'systemctl', 'logger', 'poweroff', 'mu300-power'):
             self.stub(name, f'echo "{name} $*" >> "$STUBLOG/calls"; [ "{name} $*" != "systemctl is-active --quiet mu300-hotspot" ]')
-        # the key's name goes with the wake (only wifi ends a charging boot; other keys count as power)
+        # Every press lights the LEDs first (a key always shows life, whatever the state), then wakes mu300-power with
+        # the key's name in the background (only wifi ends a charging boot; other keys count as power), which the
+        # rest does not wait for: its order against the band and hotspot toggles is free.
         WP, WW = 'mu300-power wake power', 'mu300-power wake wifi'
-        cases = [('116 short', [WP, 'mu300-led wake']),
-                 ('138 short', [WW, 'mu300-led wake', 'mu300-wifi-band toggle']),
-                 ('138 long', [WW, 'mu300-led wake', 'systemctl is-active --quiet mu300-hotspot', 'systemctl start mu300-hotspot']),
-                 ('0 tick', ['mu300-led sleep --if-due']),   # a tick is no press: it must not wake
-                 # held power: no wake (the radios would come back on the way down); the shutdown marker instead
-                 ('116 long', ['mu300-led wake', 'systemctl poweroff']),
+        cases = [('116 short', [WP]),
+                 ('138 short', [WW, 'mu300-wifi-band toggle']),
+                 ('138 long', [WW, 'systemctl is-active --quiet mu300-hotspot', 'systemctl start mu300-hotspot']),
+                 ('0 tick', None),   # a tick is no press: it must not wake, only let the LEDs time out
+                 # held power: no mu300-power wake (the radios would come back on the way down); the shutdown marker
+                 ('116 long', ['systemctl poweroff']),
                  ('115 short', [WP])]
         marker = self.tmp / 'run/mu300/power/shutdown'
         for shell in self.each_shell():
@@ -1679,8 +1701,69 @@ class Buttons(ShellTest):
                 r = self.script(shell, BIN / 'mu300-buttons', MU300_RUN=self.tmp / 'run')
                 self.assertEqual(r.returncode, 0, r.stderr)
                 calls = (self.tmp / 'calls').read_text().splitlines() if (self.tmp / 'calls').exists() else []
-                self.assertEqual([c for c in calls if not c.startswith('logger')], want, event)
+                calls = [c for c in calls if not c.startswith('logger')]
+                if want is None:
+                    self.assertEqual(calls, ['mu300-led sleep --if-due'], event)
+                else:
+                    self.assertEqual(calls[0], 'mu300-led wake', event)
+                    self.assertEqual(sorted(calls[1:]), sorted(want), event)
+                    if 'systemctl is-active --quiet mu300-hotspot' in want:
+                        self.assertLess(calls.index('systemctl is-active --quiet mu300-hotspot'),
+                                        calls.index('systemctl start mu300-hotspot'))
                 self.assertEqual(marker.exists(), event == '116 long', event)
+
+    def test_keys_light_the_leds_in_idle_without_any_daemon(self):
+        """2026-10-07: the LEDs held dark by `mu300-led idle on`, the state file "active", and every key lit nothing.
+        With the real mu300-led and a mu300-power that hangs, each press still lights them, at once."""
+        import time
+        root = self.tmp / 'root'
+        for n in ('sc27xx:green', 'net_blue'):
+            d = root / 'sys/class/leds' / n
+            d.mkdir(parents=True, exist_ok=True)
+            (d / 'brightness').write_text('0\n'); (d / 'max_brightness').write_text('255\n'); (d / 'trigger').write_text('none\n')
+        (root / 'proc').mkdir(parents=True, exist_ok=True)
+        (root / 'proc/uptime').write_text('500.00 0.00\n')
+        (root / 'run/mu300/led').mkdir(parents=True, exist_ok=True)
+        (root / 'run/mu300/device').write_text('u30air\n')
+        (root / 'run/mu300/led/sc27xx:green').write_text('1\n'); (root / 'run/mu300/led/net_blue').write_text('1\n')
+        (root / 'run/mu300/led/.idle').touch()
+        (self.tmp / 'run/mu300/power').mkdir(parents=True, exist_ok=True)
+        (self.tmp / 'run/mu300/power/state').write_text('active\n')
+        self.stub('mu300-keys', 'cat "$STUBLOG/keys.in"')
+        self.stub('mu300-power', 'echo "mu300-power $*" >> "$STUBLOG/calls"; sleep 3')   # no daemon, a slow wake
+        for name in ('mu300-wifi-band', 'systemctl', 'logger'):
+            self.stub(name, f'echo "{name} $*" >> "$STUBLOG/calls"')
+        (self.tmp / 'keys.in').write_text('116 short\n138 short\n')
+        for shell in self.each_shell():
+            for n in ('sc27xx:green', 'net_blue'):
+                (root / 'sys/class/leds' / n / 'brightness').write_text('0\n')
+            (self.tmp / 'calls').unlink(missing_ok=True)
+            env = self.env(MU300_RUN=self.tmp / 'run', MU300_SYSROOT=root, MU300_BIN=BIN, MU300_LED_CONF=self.tmp / 'none')
+            env['PATH'] = f'{self.stubs}{os.pathsep}{BIN}{os.pathsep}{env["PATH"]}'
+            p = subprocess.Popen(shell + [str(BIN / 'mu300-buttons')], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            time.sleep(1.5)   # well inside the slow wake
+            lit = {n: (root / 'sys/class/leds' / n / 'brightness').read_text().strip() for n in ('sc27xx:green', 'net_blue')}
+            p.communicate(timeout=30)
+            self.assertEqual(lit, {'sc27xx:green': '255', 'net_blue': '255'})
+            calls = (self.tmp / 'calls').read_text()
+            # the Wi-Fi press on a device held dark only wakes it: no band toggle
+            self.assertNotIn('mu300-wifi-band', calls)
+            self.assertIn('mu300-power wake power', calls); self.assertIn('mu300-power wake wifi', calls)
+
+    def test_the_hotspot_toggle_leaves_a_marker_while_off(self):
+        """mu300-power's wake and self-check leave a hotspot alone that the user turned off with the key."""
+        self.stub('mu300-keys', 'cat "$STUBLOG/keys.in"')
+        for name in ('mu300-led', 'logger', 'mu300-power'):
+            self.stub(name, f'echo "{name} $*" >> "$STUBLOG/calls"')
+        (self.tmp / 'keys.in').write_text('138 long\n')
+        marker = self.tmp / 'run/mu300/power/hotspot-off'
+        for shell in self.each_shell():
+            self.stub('systemctl', 'echo "systemctl $*" >> "$STUBLOG/calls"')   # active: the hold stops it
+            self.script(shell, BIN / 'mu300-buttons', MU300_RUN=self.tmp / 'run')
+            self.assertTrue(marker.exists())
+            self.stub('systemctl', 'echo "systemctl $*" >> "$STUBLOG/calls"; [ "$1" != is-active ]')
+            self.script(shell, BIN / 'mu300-buttons', MU300_RUN=self.tmp / 'run')
+            self.assertFalse(marker.exists())
 
     def test_first_wifi_press_while_asleep_only_wakes(self):
         self.stub('mu300-keys', 'cat "$STUBLOG/keys.in"')
