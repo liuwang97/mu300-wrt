@@ -67,14 +67,18 @@ proc_table() {
 }
 # tree_kill PID: the process and everything it started; all stopped first, so nothing new starts meanwhile
 tree_kill() {
-    local sig k
-    for sig in STOP KILL; do
-        for k in $(proc_table | awk -v r="$1" '{ pp[$1] = $2 } END { s[r] = 1
+    local all prev= k n=0
+    # stop the tree until a look finds nothing new (a child forked during the last look is caught by the next), then
+    # kill it all
+    while :; do
+        all=$(proc_table | awk -v r="$1" '{ pp[$1] = $2 } END { s[r] = 1
             do { n = 0; for (p in pp) if (!(p in s) && (pp[p] in s)) { s[p] = 1; n++ } } while (n)
-            for (p in s) print p }'); do
-            kill -"$sig" "$k" 2>/dev/null || true
-        done
+            for (p in s) print p }' | sort -n | tr '\n' ' ')
+        for k in $all; do kill -STOP "$k" 2>/dev/null || true; done
+        n=$((n + 1)); [ "$all" != "$prev" ] && [ "$n" -lt 10 ] || break
+        prev=$all
     done
+    for k in $all; do kill -KILL "$k" 2>/dev/null || true; done
 }
 # bnd SECONDS CMD [ARG...]: CMD (a function too) in the background; past SECONDS it and all it started are killed and
 # bnd returns 124. The waiting shell is poked (USR1) a second later, so a child stuck in the kernel (D state, deaf to

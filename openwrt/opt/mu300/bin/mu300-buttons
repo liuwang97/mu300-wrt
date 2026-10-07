@@ -37,14 +37,18 @@ proc_table() {
         ps -A -o pid= -o ppid= 2>/dev/null
     fi
 }
-tree_kill() {
-    for _tk_sig in STOP KILL; do
-        for _tk in $(proc_table | awk -v r="$1" '{ pp[$1] = $2 } END { s[r] = 1
+tree_kill() {  # tree_kill PID: the process and everything it started. The tree is stopped until a look finds
+    _tk_prev= _tk_n=0   # nothing new (a child forked during one look is caught by the next), then all of it is killed
+    while :; do
+        _tk_all=$(proc_table | awk -v r="$1" '{ pp[$1] = $2 } END { s[r] = 1
             do { n = 0; for (p in pp) if (!(p in s) && (pp[p] in s)) { s[p] = 1; n++ } } while (n)
-            for (p in s) print p }'); do
-            kill -"$_tk_sig" "$_tk" 2>/dev/null
-        done
+            for (p in s) print p }' | sort -n | tr '\n' ' ')
+        for _tk in $_tk_all; do kill -STOP "$_tk" 2>/dev/null; done
+        _tk_n=$((_tk_n + 1)); [ "$_tk_all" != "$_tk_prev" ] && [ "$_tk_n" -lt 10 ] || break
+        _tk_prev=$_tk_all
     done
+    for _tk in $_tk_all; do kill -KILL "$_tk" 2>/dev/null; done
+    return 0
 }
 in_background() {  # in_background SECONDS CMD...: CMD in the background; past SECONDS it and all it started are killed
     _ib_s=$1; shift
