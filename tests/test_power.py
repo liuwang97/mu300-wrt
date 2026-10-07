@@ -1045,9 +1045,9 @@ class Incident(DaemonTest):
             st = self.run_dir / 'mu300/power'
             st.mkdir(parents=True, exist_ok=True)
             (st / 'hotspot-off').write_text('100\n')
-            self.uptime(130); self.power(shell, 'wake')
-            self.assertTrue((st / 'hotspot-off').exists())    # 30 s old: a hold still on its way down
-            self.uptime(200); self.power(shell, 'wake')
+            self.uptime(270); self.power(shell, 'wake')
+            self.assertTrue((st / 'hotspot-off').exists())    # 170 s old: a hold whose toggle may still run (150 s)
+            self.uptime(290); self.power(shell, 'wake')
             self.assertFalse((st / 'hotspot-off').exists())
 
     def test_endc_still_off_is_resumed_by_the_wake_and_the_self_check(self):
@@ -1062,6 +1062,58 @@ class Incident(DaemonTest):
                     self.uptime(10); self.loops(shell)
                 self.assertIn('mobile-data resume', self.calls(), how)
                 self.assertFalse((self.run_dir / 'mu300-mobile-data.endc-restore').exists(), how)
+
+    def test_a_vpn_probe_that_fails_or_times_out_counts_as_wanted(self):
+        for shell in self.each_shell():
+            for enabled in ('exit 2', 'sleep 30'):   # a failure that is not "disabled" (1), and a timeout
+                self.setUp()
+                self.vpn_openwrt()
+                self.idle_after_a_minute(shell, 'battery_WIFI_IDLE=1\nbattery_RADIO_IDLE=off\n')
+                init = self.root / 'etc/init.d/mu300-vpn'
+                init.write_text(init.read_text().replace('    enabled) [ ! -e "$STUBLOG/vpn-disabled" ] ;;', f'    enabled) {enabled} ;;'))
+                self.power(shell, 'wake', MU300_POWER_PROBE_DEADLINE=1)
+                self.assertIn('mu300-vpn start', self.calls(), enabled)
+                self.assertTrue((self.tmp / 'vpn-up').exists(), enabled)
+
+    def test_the_vpn_is_not_started_again_from_vpn_status(self):
+        """vpn_wanted asks `mu300-vpn enabled`, never `status` (its exit-IP lookup goes on the network)."""
+        for shell in self.each_shell():
+            self.setUp()
+            self.vpn_openwrt()
+            self.stub('mu300-vpn', 'echo "mu300-vpn $*" >> "$STUBLOG/calls"; [ "$1" != enabled ] || echo 1')
+            self.idle_after_a_minute(shell, 'battery_WIFI_IDLE=1\nbattery_RADIO_IDLE=off\n')
+            self.power(shell, 'wake')
+            self.assertIn('mu300-vpn enabled', self.calls())
+            self.assertNotIn('mu300-vpn status', self.calls())
+            self.assertTrue((self.tmp / 'vpn-up').exists())
+
+    def test_a_failed_vpn_start_is_retried_by_the_self_check(self):
+        for shell in self.each_shell():
+            self.setUp()
+            self.vpn_openwrt()
+            self.idle_after_a_minute(shell, 'battery_WIFI_IDLE=1\nbattery_RADIO_IDLE=off\n')
+            init = self.root / 'etc/init.d/mu300-vpn'
+            good = init.read_text()
+            init.write_text(good.replace('    start) : > "$STUBLOG/vpn-up" ;;', '    start) exit 1 ;;'))
+            self.uptime(100); self.power(shell, 'wake')
+            self.assertFalse((self.tmp / 'vpn-up').exists())
+            self.assertTrue((self.run_dir / 'mu300/power/vpn-stopped').exists())
+            init.write_text(good)
+            self.uptime(110); r = self.loops(shell)    # throttled: within the grace period of the failed try
+            self.assertFalse((self.tmp / 'vpn-up').exists(), r.stderr)
+            self.uptime(230); r = self.loops(shell)
+            self.assertIn('self-check', r.stderr)
+            self.assertTrue((self.tmp / 'vpn-up').exists())
+            self.assertFalse((self.run_dir / 'mu300/power/vpn-stopped').exists())
+
+    def test_an_idled_hotspot_stays_down_for_a_wifi_client(self):
+        for shell in self.each_shell():
+            self.setUp()
+            self.idle_after_a_minute(shell, 'battery_WIFI_IDLE=1\n')
+            (self.run_dir / 'mu300-wifi-client.active').touch()   # the radio became a client meanwhile
+            (self.tmp / 'calls').unlink()
+            self.power(shell, 'wake')
+            self.assertNotIn('wifi up', self.calls())
 
     def test_term_during_a_bounded_step_leaves_no_watchdog_behind(self):
         import time
@@ -1161,8 +1213,8 @@ class Incident(DaemonTest):
                 self.idle_after_a_minute(shell, 'battery_WIFI_IDLE=1\nbattery_RADIO_IDLE=off\n')
                 if how == 'disabled':
                     (self.tmp / 'vpn-disabled').touch()
-                else:   # ENABLE=0 in vpn.conf, as mu300-vpn status reports it
-                    self.stub('mu300-vpn', '[ "$1" = status ] && echo "engine: xray  enabled: 0  kill switch: 1 (active)"')
+                else:   # ENABLE=0 in vpn.conf, as `mu300-vpn enabled` prints it
+                    self.stub('mu300-vpn', '[ "$1" = enabled ] && echo 0')
                 self.power(shell, 'wake')
                 self.assertNotIn('mu300-vpn start', self.calls(), how)
                 self.assertFalse((self.run_dir / 'mu300/power/vpn-stopped').exists(), how)

@@ -48,17 +48,20 @@ proc_table() {  # "PID PPID" for every process
         ps -A -o pid= -o ppid= 2>/dev/null
     fi
 }
-tree_kill() {  # tree_kill PID: the process and everything it started. The tree is stopped until a look finds
-    _tk_prev= _tk_n=0   # nothing new (a child forked during one look is caught by the next), then all of it is killed
+# tree_kill PID: the process and everything it started. The tree is stopped until a look finds nothing new (a child
+# forked during one look is caught by the next), then every process any look saw is killed
+tree_kill() {
+    _tk_prev= _tk_seen= _tk_n=0
     while :; do
         _tk_all=$(proc_table | awk -v r="$1" '{ pp[$1] = $2 } END { s[r] = 1
             do { n = 0; for (p in pp) if (!(p in s) && (pp[p] in s)) { s[p] = 1; n++ } } while (n)
             for (p in s) print p }' | sort -n | tr '\n' ' ')
         for _tk in $_tk_all; do kill -STOP "$_tk" 2>/dev/null; done
+        _tk_seen="$_tk_seen $_tk_all"   # every process seen: one reparented between looks is killed too
         _tk_n=$((_tk_n + 1)); [ "$_tk_all" != "$_tk_prev" ] && [ "$_tk_n" -lt 10 ] || break
         _tk_prev=$_tk_all
     done
-    for _tk in $_tk_all; do kill -KILL "$_tk" 2>/dev/null; done
+    for _tk in $_tk_seen; do kill -KILL "$_tk" 2>/dev/null; done
     return 0
 }
 # bounded SECONDS CMD [ARG...]: CMD in the background; past SECONDS, CMD and all it started are killed and bounded
@@ -280,12 +283,12 @@ hotspot_wanted() {
     fi
     return 0
 }
-# seen_up: the hotspot is up. A hold marker older than MU300_POWER_MARKER_GRACE (60 s) is then stale - the hotspot
-# came back some other way (the panel, wifi up by hand) - and goes; a fresh one is a hold whose toggle is still on its
-# way down. mu300-buttons writes the uptime of the hold into it.
+# seen_up: the hotspot is up. A hold marker older than MU300_POWER_MARKER_GRACE (the buttons' toggle deadline + 30 s,
+# 180 s) is then stale - the hotspot came back some other way (the panel, wifi up by hand) - and goes; a fresh one is
+# a hold whose toggle may still be on its way down. mu300-buttons writes the uptime of the hold into it.
 seen_up() {
     [ -e "$ST/hotspot-off" ] || return 0
-    [ $(( $(num "$(uptime_s)") - $(num "$(rd "$ST/hotspot-off")") )) -ge "${MU300_POWER_MARKER_GRACE:-60}" ] || return 0
+    [ $(( $(num "$(uptime_s)") - $(num "$(rd "$ST/hotspot-off")") )) -ge "${MU300_POWER_MARKER_GRACE:-$(( ${MU300_BUTTONS_DEADLINE:-150} + 30 ))}" ] || return 0
     rm -f "$ST/hotspot-off"; say "the hotspot is up: its hold marker is stale, removed"
 }
 leds_idle() { bounded "$LEDDL" mu300-led idle "$1" </dev/null >/dev/null 2>&1 || true; }
@@ -312,25 +315,25 @@ vpn_stop() {
     vpn_svc stop || say "stopping mu300-vpn failed"
     say "mu300-vpn stopped while the modem is off"
 }
-# vpn_wanted: the user has not turned it off meanwhile - the service disabled, or ENABLE=0 in its config, which
-# mu300-vpn's own status reports (vpn.conf itself is not read here). A status that cannot be had counts as wanted:
-# starting the VPN is the safe direction.
+# vpn_wanted: the user has not turned it off meanwhile - the service disabled (init.d `enabled` exits 1, systemd says
+# disabled), or ENABLE=0 in its config, which `mu300-vpn enabled` prints without touching the network (vpn.conf
+# itself is not read here). Anything else - a probe that failed or timed out, an older mu300-vpn without the query -
+# counts as wanted: starting the VPN is the safe direction.
 vpn_wanted() {
     if is_openwrt; then
-        bounded "$PROBE" "$R/etc/init.d/mu300-vpn" enabled </dev/null >/dev/null 2>&1 || return 1
+        bounded "$PROBE" "$R/etc/init.d/mu300-vpn" enabled </dev/null >/dev/null 2>&1
+        [ $? != 1 ] || return 1
     else
         [ "$(bounded "$PROBE" systemctl is-enabled mu300-vpn </dev/null 2>/dev/null)" != disabled ] || return 1
     fi
-    case $(bounded "$PROBE" mu300-vpn status </dev/null 2>/dev/null | sed -n 's/.*enabled: *\([0-9]*\).*/\1/p' | head -n1) in
-        0) return 1 ;;
-    esac
+    [ "$(bounded "$PROBE" mu300-vpn enabled </dev/null 2>/dev/null)" != 0 ] || return 1
     return 0
 }
 vpn_start() {
     [ -e "$ST/vpn-stopped" ] || return 0
     if ! vpn_wanted; then rm -f "$ST/vpn-stopped"; say "mu300-vpn was turned off meanwhile: not started again"; return 0; fi
-    if vpn_svc start; then rm -f "$ST/vpn-stopped"; say "mu300-vpn started again"
-    else say "starting mu300-vpn failed, will retry"; fi
+    if vpn_svc start; then rm -f "$ST/vpn-stopped" "$ST/vpn-retry-at"; say "mu300-vpn started again"
+    else uptime_s > "$ST/vpn-retry-at"; say "starting mu300-vpn failed, the self-check retries"; fi
 }
 modem_idle() {  # modem_idle keep|lte|off | modem_idle resume | modem_idle nodial (radio on, the watcher redials)
     case $1 in
@@ -451,7 +454,7 @@ restore() {
         return 0
     fi
     if hotspot_up; then seen_up
-    elif [ -e "$ST/hotspot-idled" ]; then
+    elif [ -e "$ST/hotspot-idled" ] && [ ! -e "$RUNROOT/mu300-wifi-client.active" ] && [ ! -e "$RUNROOT/mu300-wifi-scan-mode" ]; then
         rm -f "$ST/hotspot-off"   # idle took it down: whatever a marker says, it was on
         hotspot on
     elif hotspot_wanted; then hotspot on; fi
@@ -478,6 +481,15 @@ leave_idle() { restore "$@"; }
 # ($ST/selfcheck-hold); it is reset once the hotspot is seen up.
 selfcheck() {
     if [ -e "$MD_SUSPEND" ]; then echo "the modem is suspended ($(rd "$MD_SUSPEND"))"; return 0; fi
+    # a VPN this left stopped (a start that failed, or a kill in between): again, at most once per grace period
+    # after the last try (vpn_start stamps a failed one)
+    if [ -e "$ST/vpn-stopped" ]; then
+        _sc_now=$(num "$(uptime_s)")
+        if [ ! -s "$ST/vpn-retry-at" ] || [ $((_sc_now - $(num "$(rd "$ST/vpn-retry-at")"))) -ge "${MU300_POWER_SELFCHECK_GRACE:-120}" ]; then
+            echo "$_sc_now" > "$ST/vpn-retry-at"
+            echo "mu300-vpn is still stopped"; return 0
+        fi
+    fi
     if [ -e "$MD_ENDC" ]; then
         _sc_now=$(num "$(uptime_s)")
         [ ! -s "$ST/endc-at" ] || [ $((_sc_now - $(num "$(rd "$ST/endc-at")"))) -ge "${MU300_POWER_SELFCHECK_GRACE:-120}" ] || return 1

@@ -1074,6 +1074,27 @@ at() {
         r, sent = self.lib('watch', MU300_AT_DEV='/dev/null', MU300_WATCH_INTERVAL='0', MU300_WATCH_ROUNDS='1')
         self.assertTrue(sent, r.stderr)
 
+    def test_an_error_to_endc_on_leaves_the_restore_marker(self):
+        """Re-review D4: mu300-at exits 0 on ERROR. A resume lte whose AT+SPENDC=1 is answered ERROR must leave the
+        restore marker (the files go, the watcher keeps working) and fail, so the next resume tries again."""
+        run = self.tmp / 'run'
+        run.mkdir(exist_ok=True)
+        stubdir = self.tmp / 'errat'
+        stubdir.mkdir(exist_ok=True)
+        (stubdir / 'mu300-at').write_text('#!/bin/sh\n[ "$1" = -t ] && shift 2\necho "$1" >> "$STUBLOG/errat.log"\n'
+                                          'case $1 in AT+SPENDC=1) echo ERROR ;; esac\nexit 0\n')
+        (stubdir / 'mu300-at').chmod(0o755)
+        (run / 'mu300-at2').mkdir(parents=True, exist_ok=True)
+        if not (run / 'mu300-at2' / 'cmd').exists():
+            os.mkfifo(run / 'mu300-at2' / 'cmd')
+        (run / 'mu300-mobile-data.suspend').write_text('lte\n')
+        r, _ = self.lib('unset -f at; . "$STUBLOG/mobile-data.lib"; PATH="$STUBLOG/errat:$PATH"\n'
+                        'rc=0; bounded resume || rc=$?; echo rc=$rc', MU300_URC_LOG=str(self.tmp / 'urc.log'))
+        self.assertNotIn('rc=0', r.stdout, r.stderr)
+        self.assertIn('AT+SPENDC=1', (self.tmp / 'errat.log').read_text())
+        self.assertTrue((run / 'mu300-mobile-data.endc-restore').exists())
+        self.assertFalse((run / 'mu300-mobile-data.suspend').exists())
+
     def test_a_failed_suspend_keeps_a_down_flag_that_was_there_before(self):
         run = self.tmp / 'run'
         run.mkdir(exist_ok=True)
@@ -1865,6 +1886,22 @@ class Buttons(ShellTest):
             self.assertNotIn('mu300-wifi-band', calls)
             self.assertIn('mu300-power wake power', calls); self.assertIn('mu300-power wake wifi', calls)
 
+    def test_a_hung_direction_probe_is_bounded(self):
+        """Ubuntu's systemctl is-active can hang: the hold's direction is decided within the probe deadline."""
+        import time
+        self.stub('mu300-keys', 'cat "$STUBLOG/keys.in"')
+        for name in ('mu300-led', 'logger', 'mu300-power'):
+            self.stub(name, f'echo "{name} $*" >> "$STUBLOG/calls"')
+        self.stub('systemctl', 'echo "systemctl $*" >> "$STUBLOG/calls"; [ "$1" != is-active ] || exec sleep 60')
+        (self.tmp / 'keys.in').write_text('138 long\n')
+        for shell in self.each_shell():
+            (self.tmp / 'calls').unlink(missing_ok=True)
+            t0 = time.time()
+            r = self.script(shell, BIN / 'mu300-buttons', MU300_RUN=self.tmp / 'run', MU300_BUTTONS_PROBE_DEADLINE=1)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertLess(time.time() - t0, 10)
+            self.assertIn('systemctl start mu300-hotspot', (self.tmp / 'calls').read_text())   # no answer: not up
+
     def test_the_hold_marker_is_there_before_the_wake_of_the_same_press(self):
         """Review D2: the wake started by a Wi-Fi hold must find the user's marker already, or its restore sees the
         hotspot still up (or deactivating) and starts it again."""
@@ -1930,6 +1967,35 @@ class Buttons(ShellTest):
                     calls = (self.tmp / 'calls').read_text()
                     self.assertIn('mu300-power wake', calls, (state, event))
                     self.assertEqual(acts, ('mu300-wifi-band toggle' in calls or 'systemctl start' in calls or 'systemctl is-active' in calls), (state, event))
+
+
+class TreeKill(ShellTest):
+    """tree_kill (mu300-power, mu300-buttons, mobile-data): a process seen in the tree by one look and gone from it by
+    the next (reparented: its parent exited meanwhile) is killed too - the union of every look, not the last one."""
+
+    @staticmethod
+    def func(path):
+        m = re.search(r'^tree_kill\(\) \{.*?^\}$', path.read_text(), re.S | re.M)
+        assert m, path
+        return m.group(0)
+
+    def test_every_process_seen_is_killed(self):
+        # the first look sees 100 -> 101 -> 102; every later one finds 102 reparented to 1 (out of the tree)
+        fake = ('proc_table() { n=$(cat "$STUBLOG/n" 2>/dev/null || echo 0); echo $((n + 1)) > "$STUBLOG/n"\n'
+                '  if [ "$n" = 0 ]; then printf "100 1\\n101 100\\n102 101\\n"; else printf "100 1\\n101 100\\n102 1\\n"; fi; }\n'
+                'kill() { echo "$*" >> "$STUBLOG/kills"; }\n')
+        bash = shutil.which('bash')
+        for name in ('mu300-power', 'mu300-buttons', 'mobile-data'):
+            if name == 'mobile-data' and not bash:
+                continue
+            for shell in ([[bash]] if name == 'mobile-data' else self.each_shell()):
+                for f in ('n', 'kills'):
+                    (self.tmp / f).unlink(missing_ok=True)
+                r = self.sh(shell, self.func(BIN / name) + '\n' + fake + 'tree_kill 100\n')
+                self.assertEqual(r.returncode, 0, (name, r.stderr))
+                kills = (self.tmp / 'kills').read_text().split('\n')
+                for pid in ('100', '101', '102'):
+                    self.assertIn(f'-KILL {pid}', kills, (name, shell))
 
 
 class ThermalGuard(ShellTest):
