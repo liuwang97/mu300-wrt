@@ -1023,7 +1023,8 @@ at() {
         for before, cmd, env in cases:
             with self.subTest(before=before, cmd=cmd, **env):
                 run = self.tmp / 'run'
-                for f in ('mu300-mobile-data.suspend', 'mu300-mobile-data-down', 'hung.pids', 'hangat'):
+                for f in ('mu300-mobile-data.suspend', 'mu300-mobile-data-down', 'mu300-mobile-data.endc-restore',
+                          'hung.pids', 'hangat'):
                     (run / f).unlink(missing_ok=True); (self.tmp / f).unlink(missing_ok=True)
                 code = self.silent_modem()
                 if before:
@@ -1041,6 +1042,8 @@ at() {
                 # consistent: no mode file and no "down" flag, so the watcher restores whatever is off
                 self.assertFalse((run / 'mu300-mobile-data.suspend').exists())
                 self.assertFalse((run / 'mu300-mobile-data-down').exists())
+                # EN-DC may be off by our hand after a failed lte step: noted, so a later resume switches it back on
+                self.assertEqual((run / 'mu300-mobile-data.endc-restore').exists(), 'lte' in (before, cmd.split()[-1]))
                 self.assert_all_killed()
                 # every AT went through mu300-at with a short timeout, client-lock wait and budget
                 for line in (self.tmp / 'hangat').read_text().splitlines():
@@ -1048,7 +1051,28 @@ at() {
                     self.assertTrue(m, line)
                     self.assertLessEqual(int(m.group(1)), 20, line)
                     self.assertLessEqual(int(m.group(2)), 10, line)
-                    self.assertLessEqual(int(m.group(3)), 15, line)
+                    self.assertLessEqual(int(m.group(3)), 22, line)
+                    self.assertGreaterEqual(int(m.group(3)), int(m.group(1)) + 2, line)   # budget >= T + 2
+
+    def test_endc_left_off_by_a_failed_lte_step_is_restored_by_the_next_resume(self):
+        run = self.tmp / 'run'
+        run.mkdir(exist_ok=True)
+        marker = run / 'mu300-mobile-data.endc-restore'
+        # the modem says ERROR: the marker stays and resume fails, so mu300-power tries again
+        marker.touch()
+        err = self.MODEM.replace("        *) printf 'OK\\n' ;;", "        'AT+SPENDC=1') printf 'ERROR\\n' ;;\n        *) printf 'OK\\n' ;;")
+        r, sent = self.lib(self.SUSPEND_STUBS + 'rc=0; resume || rc=$?; echo rc=$rc', modem=err, MU300_AT_DEV='/dev/null')
+        self.assertIn('rc=1', r.stdout, r.stderr)
+        self.assertTrue(marker.exists())
+        # OK: EN-DC back on, the marker gone; no mode file was needed for it
+        r, sent = self.suspend_lib('rc=0; resume || rc=$?; echo rc=$rc')
+        self.assertIn('rc=0', r.stdout, r.stderr)
+        self.assertEqual([c.split(' ', 1)[1] for c in sent], ['AT+SPENDC=1'])
+        self.assertFalse(marker.exists())
+        # the watcher does not stand aside for it
+        marker.touch()
+        r, sent = self.lib('watch', MU300_AT_DEV='/dev/null', MU300_WATCH_INTERVAL='0', MU300_WATCH_ROUNDS='1')
+        self.assertTrue(sent, r.stderr)
 
     def test_a_failed_suspend_keeps_a_down_flag_that_was_there_before(self):
         run = self.tmp / 'run'
@@ -1840,6 +1864,40 @@ class Buttons(ShellTest):
             # the Wi-Fi press on a device held dark only wakes it: no band toggle
             self.assertNotIn('mu300-wifi-band', calls)
             self.assertIn('mu300-power wake power', calls); self.assertIn('mu300-power wake wifi', calls)
+
+    def test_the_hold_marker_is_there_before_the_wake_of_the_same_press(self):
+        """Review D2: the wake started by a Wi-Fi hold must find the user's marker already, or its restore sees the
+        hotspot still up (or deactivating) and starts it again."""
+        self.stub('mu300-keys', 'cat "$STUBLOG/keys.in"')
+        for name in ('mu300-led', 'logger'):
+            self.stub(name, f'echo "{name} $*" >> "$STUBLOG/calls"')
+        self.stub('mu300-power', 'echo "mu300-power $* marker=$([ -e "$MU300_RUN/mu300/power/hotspot-off" ] && echo yes || echo no)" >> "$STUBLOG/calls"')
+        self.stub('systemctl', 'echo "systemctl $*" >> "$STUBLOG/calls"')   # active: the hold turns it off
+        (self.tmp / 'keys.in').write_text('138 long\n')
+        for shell in self.each_shell():
+            (self.tmp / 'calls').unlink(missing_ok=True)
+            self.script(shell, BIN / 'mu300-buttons', MU300_RUN=self.tmp / 'run')
+            calls = (self.tmp / 'calls').read_text()
+            self.assertIn('mu300-power wake wifi marker=yes', calls)
+            self.assertIn('systemctl stop mu300-hotspot', calls)
+
+    def test_a_hung_toggle_does_not_hold_the_next_press(self):
+        """The hotspot toggle runs in the background under a deadline: the next press shows life at once."""
+        import time
+        self.stub('mu300-keys', 'echo "138 long"; sleep 1; echo "116 short"; sleep 2')
+        for name in ('logger', 'mu300-power'):
+            self.stub(name, f'echo "{name} $*" >> "$STUBLOG/calls"')
+        self.stub('mu300-led', 'echo "mu300-led $* $(date +%s)" >> "$STUBLOG/calls"')
+        self.stub('systemctl', 'echo "systemctl $*" >> "$STUBLOG/calls"; [ "$1" != stop ] || { sleep 30; echo "stop done" >> "$STUBLOG/calls"; }')
+        for shell in self.each_shell():
+            (self.tmp / 'calls').unlink(missing_ok=True)
+            t0 = time.time()
+            r = self.script(shell, BIN / 'mu300-buttons', MU300_RUN=self.tmp / 'run', MU300_BUTTONS_DEADLINE=2)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertLess(time.time() - t0, 15)
+            calls = (self.tmp / 'calls').read_text()
+            self.assertEqual(calls.count('mu300-led wake'), 2, calls)
+            self.assertNotIn('stop done', calls)   # killed at its deadline
 
     def test_the_hotspot_toggle_leaves_a_marker_while_off(self):
         """mu300-power's wake and self-check leave a hotspot alone that the user turned off with the key."""
