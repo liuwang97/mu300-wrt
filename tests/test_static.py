@@ -201,13 +201,34 @@ class Rules(unittest.TestCase):
         # the engines are the vpn extra (mu300-extra): ~120 MB that a system without a VPN does not carry
         for f in ('rootfs/assemble.sh', 'openwrt/build-rootfs.sh'):
             src = (TOP / f).read_text()
-            for e in ('xray', 'sing-box', 'hev-socks5-tunnel'):
+            for e in ('xray', 'sing-box', 'hev-socks5-tunnel', 'mihomo'):
                 self.assertNotRegex(src, rf'opt/mu300/bin/{e}\b', (f, e))
         rel = (TOP / 'tools/make-release.sh').read_text()
         self.assertIn('make-extra.sh', rel)
         self.assertIn('mu300-extra-', rel)
         # the audit refuses an image that still has one
-        self.assertRegex(rel, r'opt/mu300/bin/\(xray\|sing-box\|hev-socks5-tunnel\)')
+        self.assertRegex(rel, r'opt/mu300/bin/\(xray\|sing-box\|hev-socks5-tunnel\|mihomo\)')
+
+    def test_vpn_mihomo_extra_wiring(self):
+        # mihomo (the engine of mu300-vpn's mihomo profiles) is its own extra: pinned by tools/fetch-mihomo.sh, built
+        # by make-extra, built and audited by make-release, known to mu300-update (which mu300-extra lists from)
+        fetch = (TOP / 'tools/fetch-mihomo.sh').read_text()
+        self.assertRegex(fetch, r'(?m)^VER=1\.19\.32$')
+        self.assertRegex(fetch, r'(?m)^SHA256=[0-9a-f]{64}$')
+        self.assertIn('mihomo-linux-arm64-v$VER.gz', fetch)
+        self.assertIn('install -m 755', fetch)
+        extra = (TOP / 'tools/make-extra.sh').read_text()
+        self.assertRegex(extra, r'(?m)^    vpn-mihomo\)')
+        self.assertIn('fetch-mihomo.sh', extra)
+        rel = (TOP / 'tools/make-release.sh').read_text()
+        self.assertRegex(rel, r'make-extra\.sh" vpn-mihomo "\$D/mu300-extra-vpn-mihomo\.tar\.gz" "\$TAG"')
+        self.assertRegex(rel, r'(?m)^for x in vpn lang vpn-mihomo; do')
+        self.assertIn('| mu300-extra-vpn-mihomo.tar.gz |', rel)
+        self.assertIn("sed -n 's/^VER=//p' \"$TOP/tools/fetch-mihomo.sh\"", rel)
+        up = (BIN / 'mu300-update').read_text()
+        self.assertRegex(up, r'(?m)^EXTRAS="vpn lang vpn-mihomo"$')
+        self.assertRegex(up, r"(?m)^        vpn-mihomo\) echo \"mihomo \(Clash\.Meta\), the engine of mu300-vpn's mihomo profiles")
+        self.assertIn('vpn-mihomo', (BIN / 'mu300-extra').read_text().split('BIN=')[0])
 
     def test_images_carry_jq(self):
         # mu300-vpn reads vmess links and raw Xray/sing-box configs with jq, so every image has it; Ubuntu and Arch
