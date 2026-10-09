@@ -559,6 +559,59 @@ class FromStock(UpdateBase):
         for shell in self.each_shell():
             self.assertNotEqual(self.up(shell, f'kernel_modules_into_systems "{b}"', MU300_NO_DEPMOD=1).returncode, 0)
 
+    def test_rollback_boot_brings_the_modules_of_its_image_back(self):
+        # two builds of one kernel release share lib/modules/<release>: the set in place is kept with the image it
+        # runs with, and goes back with it (seen on F50-B: rollback-boot to a 6.18.55 image with the other
+        # release's 6.18.55 modules did not come up)
+        b = self.tmp / 'bundle'
+        (b / 'modules').mkdir(parents=True)
+        (b / 'modules' / 'a.ko').write_bytes(b'new')
+        (b / 'modules' / 'b.ko').write_bytes(b'new')
+        (b / 'kernel.release').write_text('6.18.55\n')
+        (self.disk / 'openwrt').mkdir()
+        dirs = ('ubuntu/lib/modules/6.18.55/extra', 'openwrt/lib/modules/6.18.55')
+        for shell in self.each_shell():
+            shutil.rmtree(self.disk / 'boot', ignore_errors=True)
+            for d in dirs:
+                shutil.rmtree(self.disk / d, ignore_errors=True)
+                (self.disk / d).mkdir(parents=True)
+                (self.disk / d / 'a.ko').write_bytes(b'old')
+            r = self.up(shell, f'BOOTDIR="{self.disk}/boot"; mkdir -p "$BOOTDIR"; prev_modules_save "{b}" && '
+                               f'kernel_modules_into_systems "{b}" >/dev/null', MU300_NO_DEPMOD=1)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            for d in dirs:
+                self.assertEqual(sorted(f.name for f in (self.disk / d).glob('*.ko')), ['a.ko', 'b.ko'])
+            r = self.up(shell, f'BOOTDIR="{self.disk}/boot"; prev_modules_restore', MU300_NO_DEPMOD=1)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn('modules of the previous image (6.18.55) are back', r.stdout)
+            for d in dirs:
+                self.assertEqual({f.name: f.read_bytes() for f in (self.disk / d).glob('*.ko')}, {'a.ko': b'old'})
+            # a system that had no set of this release then has none after the rollback
+            shutil.rmtree(self.disk / dirs[1])
+            r = self.up(shell, f'BOOTDIR="{self.disk}/boot"; prev_modules_save "{b}" && '
+                               f'kernel_modules_into_systems "{b}" >/dev/null && prev_modules_restore >/dev/null',
+                        MU300_NO_DEPMOD=1)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(list((self.disk / dirs[1]).glob('*.ko')), [])
+            # a 5.4 bundle (no kernel.release) leaves the mainline sets alone, and keeps nothing to restore
+            (b / 'kernel.release').rename(b / 'kr')
+            r = self.up(shell, f'BOOTDIR="{self.disk}/boot"; prev_modules_save "{b}"; prev_modules_restore; echo done')
+            (b / 'kr').rename(b / 'kernel.release')
+            self.assertEqual(r.stdout, 'done\n', r.stderr)
+            self.assertFalse((self.disk / 'boot/prev.modules').exists())
+
+    def test_boot_update_keeps_the_modules_before_it_replaces_them(self):
+        src = (BIN / 'mu300-update').read_text()
+        bu = src[src.index('boot_update() {'):src.index('\n}\n', src.index('boot_update() {'))]
+        # the replacing set goes in after the old one is kept, and before the image is written
+        self.assertLess(bu.index('prev_modules_save "$tmp"'), bu.index('! kernel_modules_into_systems "$tmp"'))
+        self.assertLess(bu.index('! kernel_modules_into_systems "$tmp"'), bu.index('write_boot "$dev" "$psize" "$tmp/new"'))
+        # a failed write puts the old modules back with the old image
+        fail = bu[bu.index('failed verification; restoring'):]
+        self.assertIn('prev_modules_restore', fail[:fail.index('return 1')])
+        rb = src[src.index('rollback_boot() {'):src.index('\n}\n', src.index('rollback_boot() {'))]
+        self.assertLess(rb.index('write_boot'), rb.index('prev_modules_restore'))
+
 
 if __name__ == '__main__':
     unittest.main()
