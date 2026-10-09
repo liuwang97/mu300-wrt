@@ -123,6 +123,10 @@ docker run --rm --platform linux/arm64 \
   -e KREL=$KREL -e OUT="$(basename "$OUT")" -e MU300_VERSION="${MU300_VERSION:-dev}" mu300-$FLAVOUR-base:$VER /bin/sh -eu -c '
 mkdir -p /var/lock /var/run /tmp
 apk update >/dev/null
+# the release tarball carries the packages of the day the release was cut; the feed of the release branch moves on
+# (LuCI, mbedtls, the CA bundle, iwinfo ...), and "apk add" below installs only what is missing, so without this
+# an image shipped months later still has the old LuCI and the package manager shows every update on the first look
+apk upgrade >/dev/null
 # openssl-util: mu300-vpn fetches the VPN server certificate with it to pin, for links that ask for allowInsecure;
 # i2c-tools, gpiod-tools: mu300-usb (the charger of the U30 Air) and mu300-nfc (its NFC tag);
 # jq: mu300-vpn reads vmess links and raw Xray/sing-box configs with it, and rewrites those configs at every start
