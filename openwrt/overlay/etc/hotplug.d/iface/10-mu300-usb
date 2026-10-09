@@ -47,16 +47,21 @@ g=$C/usb_gadget/linux
 [ -e $g/UDC ] || exit 0
 udc=$(cat $g/UDC)
 [ -n "$udc" ] || udc=$(ls /sys/class/udc | head -1)
+# The gadget netdevs that are bridge ports now: after the rebind they are made ports again, should the rebind have
+# left one bare (a netdev with no server, the early one being gone, and no LAN for the USB host; netifd puts back a
+# port that is in its configuration, usb0, never one it never had, rndis0 - issue #45). A netdev that is not a port
+# stays out: a user who took usb0 out of br-lan for an interface of its own keeps it that way.
+ports=
+for nic in usb0 rndis0; do
+	ip -o link show dev "$nic" 2>/dev/null | grep -q 'master br-lan' && ports="$ports $nic"
+done
 (
 	sleep 2
 	echo "" > $g/UDC 2>/dev/null
 	sleep 1
 	echo "$udc" > $g/UDC && logger -t mu300 "usb gadget re-enumerated on $udc"
-	# The rebind took the function's netdev away and bound a new one, which has to be a bridge port again, or the
-	# USB host is left on a bare netdev with no server (the early one is gone) and no LAN. netifd puts back a port
-	# that is in its configuration (usb0), never one it never had (rndis0) - issue #45.
 	sleep 1
-	for nic in usb0 rndis0; do
+	for nic in $ports; do
 		[ -e /sys/class/net/$nic ] || continue
 		ip link set "$nic" master br-lan 2>/dev/null
 		ip link set "$nic" up 2>/dev/null

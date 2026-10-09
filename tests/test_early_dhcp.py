@@ -239,7 +239,7 @@ class EarlyUsbOpenWrt(ShellTest):
 
     # --- hotplug iface/10-mu300-usb (K9; K10 rejected: the re-enumeration stays)
     def hotplug(self, shell, stamp_age=None, bridge='10.1.2.1/24', port='10.1.2.1/24', rndis_port='yes',
-                rndis_addr=''):
+                rndis_addr='', usb0_port='yes'):
         (self.tmp / 'run' / 'mu300-early-udhcpd.pid').write_text('4242\n')
         (self.tmp / 'uptime').write_text('100.50 90.00\n')
         (self.tmp / 'mounts').write_text(f'configfs {self.tmp}/cfg configfs rw 0 0\n')
@@ -255,7 +255,8 @@ class EarlyUsbOpenWrt(ShellTest):
                         f'rp={rndis_port}; grep -q "^ip link set rndis0 master br-lan$" "$STUBLOG/ip.log" && rp=yes\n'
                         'case "$*" in\n'
                         f'"-4 -o addr show dev br-lan") echo "9: br-lan    inet {bridge} scope global br-lan" ;;\n'
-                        '"-o link show dev usb0") echo "7: usb0: <UP> mtu 1500 master br-lan state UP" ;;\n'
+                        f'"-o link show dev usb0") [ "{usb0_port}" = yes ] && echo "7: usb0: <UP> mtu 1500 master br-lan state UP" ||'
+                        ' echo "7: usb0: <UP> mtu 1500 state UP" ;;\n'
                         '"-o link show dev rndis0") [ "$rp" = yes ] && echo "8: rndis0: <UP> mtu 1500 master br-lan state UP" ||'
                         ' echo "8: rndis0: <UP> mtu 1500 state UP" ;;\n'
                         f'"-4 -o addr show dev usb0") echo "7: usb0    inet {port} scope global usb0" ;;\n'
@@ -300,6 +301,18 @@ class EarlyUsbOpenWrt(ShellTest):
             self.assertLess(ip.index('ip link set rndis0 master br-lan\n'), ip.index('ip addr del 10.1.2.1/24 dev rndis0\n'))
             self.assertEqual(1, ip.count('ip addr del'))
             # after the re-enumeration the new netdev is a port again (the second half of the issue)
+            self.assertEqual(2, ip.count('ip link set rndis0 master br-lan\n'))
+            self.tearDown(); self.setUp()
+
+    def test_a_netdev_that_is_not_a_port_stays_out_after_the_rebind(self):
+        """Only a gadget netdev that was a bridge port before the re-enumeration is made one again afterwards: a
+        user who took usb0 out of br-lan for an interface of its own keeps it that way, on every LAN ifup."""
+        for shell in self.each_shell():
+            self.netdevs('usb0', 'rndis0')
+            self.hotplug(shell, port='', usb0_port='no', rndis_port='no')
+            ip = (self.tmp / 'ip.log').read_text()
+            self.assertNotIn('ip link set usb0 master br-lan\n', ip)
+            # rndis0 joined before the removal loop, so it is a port and comes back after the rebind
             self.assertEqual(2, ip.count('ip link set rndis0 master br-lan\n'))
             self.tearDown(); self.setUp()
 
