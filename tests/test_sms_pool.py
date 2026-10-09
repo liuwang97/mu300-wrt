@@ -315,6 +315,28 @@ class Pool(ShellTest):
             self.assertEqual(self.cmgd(), ['AT+CMGD=7'])
             self.assertEqual([h['from'] for h, _ in self.msgs().values()], ['+31641600986'])
 
+    def test_a_new_message_runs_the_hook_once(self):
+        hook = self.tmp / 'hook'
+        out = self.tmp / 'hook.out'
+        hook.write_text(f'#!/bin/sh\nprintf "%s|%s|%s|%s\\n" "$SMS_ID" "$SMS_FROM" "$SMS_DATE" "$SMS_TEXT" >> "{out}"\n')
+        hook.chmod(0o755)
+        for shell in self.each_shell():
+            self.fresh()
+            out.unlink(missing_ok=True)
+            r = self.run_sms(shell, 'sync', MU300_SMS_HOOK=hook)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            for _ in range(50):
+                if out.exists() and len(out.read_text().splitlines()) == 2:
+                    break
+                time.sleep(0.1)
+            got = sorted(out.read_text().splitlines())
+            self.assertEqual([g.split('|', 1)[1] for g in got],
+                             ['+31641600986|2002-08-26 19:37:41|How are you?', 'ADANA BLD|2026-09-15 17:18:00|Kargonuz yolda ğüş'])
+            # a sync that finds nothing new runs it no more; a hook that is not executable is not run
+            self.run_sms(shell, 'sync', MU300_SMS_HOOK=hook)
+            time.sleep(0.3)
+            self.assertEqual(len(out.read_text().splitlines()), 2)
+
     def test_a_deleted_message_stays_deleted(self):
         for shell in self.each_shell():
             self.fresh()
