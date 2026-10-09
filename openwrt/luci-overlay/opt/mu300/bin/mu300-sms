@@ -10,6 +10,9 @@
 #   mu300-sms mark ID read|unread
 #   mu300-sms sync                     move every message on the SIM into the pool
 #
+# A received message that lands in the pool runs /etc/mu300/sms-hook (MU300_SMS_HOOK), when that is executable, with
+# SMS_FROM, SMS_DATE, SMS_TEXT and SMS_ID in its environment, in the background (forwarding to a phone, a webhook...).
+#
 # This is not the SMS tool of the system: that is `sms`, on every system, with its own state in /etc/mu300/sms. The
 # pool lives apart from it (/etc/mu300/sms-pool) and is where received messages live: sync moves them off the SIM
 # (the SIM holds a few dozen, and a full one takes no more, so a message left there costs the next one), and only
@@ -33,6 +36,7 @@ MSGDIR=$POOL/msg
 ATDIR=${MU300_AT_DIR:-/run/mu300-at}
 AWK=${MU300_SMS_AWK:-/opt/mu300/lib/sms-pdu.awk}
 PAGE=${MU300_SMS_PAGE:-10}
+HOOK=${MU300_SMS_HOOK:-/etc/mu300/sms-hook}
 case $PAGE in ''|*[!0-9]*|0) PAGE=10 ;; esac
 TAB=$(printf '\t')
 # The pool lock lives in RAM, not in the pool: the pool is on flash (/etc), and smsd syncs every 30 s. One lock per
@@ -276,6 +280,11 @@ cmd_sync() {
         fi
         printf '%s %s\n' "$_fp" "$MSGDIR/$_id" >> "$_fps"
         _new=$((_new + 1))
+        # the hook gets it from the pool's copy, so it never depends on the SIM still holding it; its output and
+        # its exit do not concern the sync
+        if [ -x "$HOOK" ]; then
+            SMS_FROM=$_from SMS_DATE=$_ts SMS_TEXT=$_text SMS_ID=$_id "$HOOK" </dev/null >/dev/null 2>&1 &
+        fi
         echo "new: $_id from ${_from:-?} ${_ts:-}"
     done < "$_tmp"
     # tombstones of messages no longer on the SIM are not needed any more: nothing can bring those back. The list is
