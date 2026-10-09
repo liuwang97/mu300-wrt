@@ -217,9 +217,9 @@ the {1} kernel of release {2} cannot read the SD card: choose kernel 5.4, a newe
 The SD card ({1}) holds a Linux installation (mu300sd), and the device always starts that one first: an installation to internal storage does not start while this card is in the slot.	SD kartta ({1}) bir Linux kurulumu (mu300sd) var ve cihaz her zaman önce onu başlatır: kart yuvadayken dahili depolamaya yapılan kurulum başlamaz.
 Take the card out before the device restarts, or erase its installation first with the uninstaller.	Cihaz yeniden başlamadan önce kartı çıkarın ya da önce karttaki kurulumu kaldırma aracıyla (uninstall) silin.
 Type internal to install to internal storage anyway	Yine de dahili depolamaya kurmak için internal yazın
-The VPN (mu300-vpn) needs the vpn extra: Xray and sing-box. It can also be added later on the device:	VPN (mu300-vpn) için vpn eklentisi gerekir: Xray ve sing-box. Sonradan cihazda da eklenebilir:
-Install the VPN extra (about 40 MB more to download, 120 MB on the device)? (yes/no)	VPN eklentisi kurulsun mu (yaklaşık 40 MB ek indirme, cihazda 120 MB)? (evet/hayır)
-release {1} has no vpn extra: its systems still carry the VPN engines	{1} sürümünde vpn eklentisi yok: sistemleri VPN motorlarını hâlâ kendi içinde taşıyor
+The VPN (mu300-vpn, with Xray and sing-box) is a module of its own: {1}. It can also be added later on the device:	VPN (mu300-vpn; Xray ve sing-box ile) ayrı bir modüldür: {1}. Sonradan cihazda da eklenebilir:
+Install the VPN module (about 40 MB more to download, 120 MB on the device)? (yes/no)	VPN modülü kurulsun mu (yaklaşık 40 MB ek indirme, cihazda 120 MB)? (evet/hayır)
+Downloading the VPN module	VPN modülü indiriliyor
 extras:         {1}	eklentiler:     {1}
 none	yok
 Android runs from slot {1}; Linux goes to slot {2} (boot_{2})	Android {1} yuvasından çalışıyor; Linux {2} yuvasına kurulacak (boot_{2})
