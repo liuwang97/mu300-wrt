@@ -4,7 +4,8 @@ set -euo pipefail
 export PATH="$PATH:/opt/mu300/busybox-bin"
 # Preserve the charging-only boot's promise to leave both radios off.
 [[ ! -e /run/mu300/charging-boot ]] || exit 0
-MU300_EXPECT_CCID=$(cat /etc/mu300/sim2-iccid 2>/dev/null || true)
+SLOT=$(cat /run/mu300/sim-slot 2>/dev/null || echo 1)
+MU300_EXPECT_CCID=$(cat /etc/mu300/sim$((SLOT+1))-iccid 2>/dev/null || true)
 export MU300_EXPECT_CCID
 for ((attempt=0; attempt<120; attempt++)); do
     ready=1

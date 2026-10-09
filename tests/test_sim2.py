@@ -124,6 +124,7 @@ echo OK
         source = TOP / 'openwrt/overlay/etc/init.d/mu300-atd'
         text = source.read_text().replace('/run/', str(self.run) + '/')
         text = text.replace('/etc/mu300-sim-slot', str(self.tmp / 'choice'))
+        text = text.replace('/etc/mu300-sim-hot', str(self.tmp / 'hot-choice'))
         text = text.replace('/dev/sipc_sbuf', '/dev/null')
         harness = '''
 procd_open_instance() { echo "instance $*"; }
@@ -133,6 +134,22 @@ sleep() { :; }
 grep() { [ "${T_READY:-1}" = 1 ]; }
 '''
         return self.sh(['bash'], harness + text + '\n' + tail, **env)
+
+    def test_sim1_cold_path_uses_its_own_data_broker(self):
+        r = self.boot(MU300_SIM_SLOT='0')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn('mu300-at2 AT+SPSWDATA', self.calls())
+        self.assertNotIn('mu300-at5 AT+SFUN=4', self.calls())
+        self.assertTrue((self.run / 'mu300/sim-radio-ready').exists())
+
+    def test_hot_sim1_boot_opens_both_groups_once(self):
+        (self.tmp / 'choice').write_text('0\n')
+        (self.tmp / 'hot-choice').write_text('1\n')
+        r = self.init_service()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.count('MU300_AT_DISABLE_REOPEN=1'), 4)
+        self.assertTrue((self.run / 'mu300/sim-managed').exists())
+        self.assertNotIn('param respawn', r.stdout)
 
     def test_setting_is_pinned_until_reboot(self):
         (self.tmp / 'choice').write_text('0\n')

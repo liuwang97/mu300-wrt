@@ -72,8 +72,13 @@ case "$SIM_SLOT" in
     1) CHANNELS=4; FALLBACKS=/run/mu300-at4; IDENT=$IDENT_DIR/sim-slot1.json ;;
     *) exit 2 ;;
 esac
+if [ "$SIM_SLOT" = 0 ] && [ -e /run/mu300/sim-managed ]; then
+    CHANNELS=1; FALLBACKS=/run/mu300-at
+fi
 ATC=${MU300_DASH_AT_DIR:-}
 at() {
+    [ ! -e /run/mu300/sim-switching ] && [ ! -e /run/mu300/sim-active-unknown ] || return 1
+    [ "$(cat /run/mu300/sim-slot 2>/dev/null || echo "$SIM_SLOT")" = "$SIM_SLOT" ] || return 1
     local cmd=$1 timeout=${2:-5} d out seen=
     # The assigned regular channel is first. A silent channel fails in about
     # timeout+1 seconds; only then touch the two unpolled disaster channels.
@@ -361,6 +366,10 @@ if [ "$MODE" = full ]; then
         elif [ -s "$IDENT" ]; then IDENT_JSON=$(cat "$IDENT"); fi
     fi
 fi
+
+# A collector that began before a switch must not publish the previous card's readings.
+[ ! -e /run/mu300/sim-switching ] && [ ! -e /run/mu300/sim-active-unknown ] || exit 0
+[ "$(cat /run/mu300/sim-slot 2>/dev/null || echo "$SIM_SLOT")" = "$SIM_SLOT" ] || exit 0
 
 # "no answer at all" is a modem/daemon problem, not "no signal".
 if [ -z "$CFUN$CEREG$CESQ$SP_LTE$SP_NR$COPS" ]; then

@@ -52,6 +52,7 @@ led() { bnd "${MU300_LED_DEADLINE:-10}" /opt/mu300/bin/mu300-led data "$1" </dev
 # local status read; AT+COPS? took about two seconds on weak service and held the AT channel on every round.
 # +CEREG: <n>,<stat>[,<tac>,<ci>,<AcT>[,...]]: the AcT is the fifth field (with <n> 4 or 5 more fields follow it).
 led_up() {
+    [ ! -e /run/mu300/sim-switching ] && [ ! -e /run/mu300/sim-active-unknown ] || { echo "SIM control is busy or requires a reboot" >&2; return 1; }
     case $(at 'AT+CEREG?' 4 2>/dev/null | awk -F, '/^\+CEREG:/ { gsub(/[" ]/, "", $5); print $5; exit }' || true) in
         11|12|13|15) led 5g ;;
         *) led on ;;
@@ -350,6 +351,11 @@ v6_relay_ra() {
 PLUGIN_LOCK=${MU300_PLUGIN_LOCK:-/usr/libexec/unisoc-modem/lock}
 [ "$SIM_SLOT" = 1 ] && PLUGIN_LOCK=/nonexistent
 radio_on_locked() {
+    if [ -e /run/mu300/sim-managed ]; then
+        [ -e /run/mu300/sim-radio-ready ] && [ ! -e /run/mu300/sim-active-unknown ] || return 1
+        at 'AT+CFUN?' 4 | tr -d '\r' | grep -E '^\+CFUN: *1$' >/dev/null
+        return $?
+    fi
     if [ "$SIM_SLOT" = 1 ]; then
         # The native boot controller owns SIM2 bring-up. Never let netifd/watchdog run a second SFUN sequence.
         [ -e /run/mu300/sim2-radio-ready ] || return 1
@@ -770,6 +776,7 @@ down() {
 }
 
 sim_reset() {
+    [ ! -e /run/mu300/sim-managed ] || { echo "Use SIM control or reboot for a managed dual-SIM radio" >&2; return 1; }
     [ "$SIM_SLOT" != 1 ] || { echo "SIM2 requires a Linux reboot, not a live modem reset" >&2; return 1; }
     tty_setup
     at 'AT+SFUN=5' 20; at 'AT+SFUN=3' 10; sleep 2; at 'AT+SFUN=2' 10; at 'AT+SFUN=4' 30
@@ -836,6 +843,7 @@ endc_restore() {
 # not "suspend": that is a bash builtin
 do_suspend() {
     # A SIM2 cold-start can only run once. Do not power it down until its resume sequence is validated.
+    [ ! -e /run/mu300/sim-managed ] || { echo "Managed dual-SIM suspend/resume is not supported" >&2; return 1; }
     [ "$SIM_SLOT" != 1 ] || { echo "SIM2 radio suspend/resume is not supported yet" >&2; return 1; }
     local mode=${1:-off}
     case $mode in off|lte) ;; *) echo "usage: mobile-data suspend off|lte" >&2; return 2 ;; esac
@@ -931,6 +939,17 @@ watch() {
         if [ -n "${MU300_WATCH_ROUNDS:-}" ]; then   # tests only: stop after that many rounds
             rounds=$((rounds + 1))
             if [ "$rounds" -gt "$MU300_WATCH_ROUNDS" ]; then rm -rf "$wlock"; trap - EXIT INT TERM; break; fi
+        fi
+        [ -e /run/mu300/sim-switching ] && continue
+        [ -e /run/mu300/sim-active-unknown ] && continue
+        # A live switch publishes the slot only after its RF and routing gates pass.
+        local current_slot
+        current_slot=$(cat /run/mu300/sim-slot 2>/dev/null || echo "$SIM_SLOT")
+        if [ "$current_slot" != "$SIM_SLOT" ]; then
+            rm -rf "$wlock"
+            trap - EXIT INT TERM
+            unset MU300_SIM_SLOT
+            exec "$0" watch
         fi
         [ -e /run/mu300-mobile-data-down ] && continue
         [ -s "$SUSPEND" ] && continue   # mu300-power holds the modem down; nothing to restore

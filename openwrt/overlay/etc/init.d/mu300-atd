@@ -76,6 +76,7 @@ start_sim2() {
     [ ! -x /usr/libexec/unisoc-modem/lock ] || : > /run/unisoc-modem-early-hook-pending
     # Before S20network or any radio-warmup process: inhibit automatic SIM1 bring-up for this entire boot.
     : > /run/mu300-radio-freeze
+    [ "$(cat /etc/mu300-sim-hot 2>/dev/null)" != 1 ] || : > /run/mu300/sim-managed
     # A character node exists before CP initialization. spipe_open returns ENODEV until sbuf_status is READY.
     # Read the driver's diagnostic seqfile instead of probing by repeatedly opening the modem tty.
     local n=0
@@ -109,7 +110,7 @@ start_service() {
     fi
     slot=$(cat /run/mu300/sim-slot) || return 1
     case "$slot" in
-        0) start_sim1 ;;
+        0) if [ "$(cat /etc/mu300-sim-hot 2>/dev/null)" = 1 ]; then start_sim2; else start_sim1; fi ;;
         1) start_sim2 ;;
         *) echo "mu300-atd: invalid SIM slot $slot" >&2; return 1 ;;
     esac
