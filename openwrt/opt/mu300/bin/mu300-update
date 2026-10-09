@@ -387,12 +387,13 @@ apply_one() {  # apply_one OS TAG
 # because an update installs and refreshes them too, and the updater of the new release runs before the system
 # that has mu300-extra exists.
 EXTRA=$DISK/extra
-EXTRAS="vpn lang"
+EXTRAS="vpn lang vpn-mihomo"
 VPN_ENGINES="xray hev-socks5-tunnel sing-box"
 extra_desc() {
     case $1 in
         vpn) echo "the VPN engines for mu300-vpn: Xray-core, hev-socks5-tunnel, sing-box (about 40 MB to download, 120 MB installed)" ;;
         lang) echo "LuCI (the web interface) in 40 more languages, the MU300 panel in 29 of them; OpenWrt only (about 2 MB to download, 6 MB installed)" ;;
+        vpn-mihomo) echo "mihomo (Clash.Meta), the engine of mu300-vpn's mihomo profiles (about 15 MB to download, 40 MB installed)" ;;
     esac
 }
 extra_asset() { echo "mu300-extra-$1.tar.gz"; }
