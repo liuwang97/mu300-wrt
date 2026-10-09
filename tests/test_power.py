@@ -1195,6 +1195,23 @@ class Incident(DaemonTest):
             self.power(shell, 'wake')
             self.assertNotIn('mu300-vpn stop', self.calls()); self.assertNotIn('mu300-vpn start', self.calls())
 
+    def test_without_the_vpn_module_nothing_is_asked_of_it(self):
+        # the VPN is a module of its own (dikeckaan/mu300-linux-vpn): without it there is no init script (OpenWrt)
+        # and no unit (Ubuntu: systemctl says inactive), and the modem goes off and comes back without a VPN step
+        for shell in self.each_shell():
+            for ubuntu in (False, True):
+                self.setUp()
+                if ubuntu:
+                    (self.root / 'etc/openwrt_release').unlink()
+                self.assertFalse((self.root / 'etc/init.d/mu300-vpn').exists())
+                self.idle_after_a_minute(shell, 'battery_WIFI_IDLE=1\nbattery_RADIO_IDLE=off\n')
+                r = self.power(shell, 'wake')
+                c = self.calls()
+                self.assertIn('mobile-data suspend off', c)
+                self.assertNotIn('mu300-vpn stop', c)
+                self.assertNotIn('mu300-vpn start', c)
+                self.assertFalse((self.run_dir / 'mu300/power/vpn-stopped').exists())
+
     def test_no_vpn_flap_while_the_suspend_keeps_failing(self):
         for shell in self.each_shell():
             self.setUp()

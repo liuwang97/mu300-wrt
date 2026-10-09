@@ -607,7 +607,34 @@ menu_wifi() {
 }
 
 vpn_enabled() { [ -r "$VPN_CONF" ] && grep -q '^ENABLE=1' "$VPN_CONF"; }
-VPN=/opt/mu300/bin/mu300-vpn
+# the VPN is a module of its own (github.com/dikeckaan/mu300-linux-vpn): its hooks link mu300-vpn here
+VPN=${MU300_VPN_CMD:-/opt/mu300/bin/mu300-vpn}
+vpn_present() { [ -x "$VPN" ]; }
+# without the module: what it is and how to get it (mu300-extra downloads it, or takes a copy from a USB stick)
+menu_vpn_missing() {
+    title "VPN"
+    printf '  The VPN (mu300-vpn: VLESS, VMess, Trojan, Shadowsocks, WireGuard, OpenVPN, Clash/mihomo profiles,
+'
+    printf '  with a kill switch) is a module of its own: https://github.com/dikeckaan/mu300-linux-vpn
+
+'
+    printf '  It is not installed. To install it (about 40 MB to download):
+
+'
+    printf '    sudo mu300-extra install vpn
+'
+    printf '    sudo mu300-extra install vpn --from /path/to/mu300-linux-vpn.tar.gz   (offline, a copied file)
+
+'
+    printf '  %s1%s  Install it now (downloads the latest release)
+  %s0%s  Back
+
+  > ' "$C" "$N" "$C" "$N"
+    read -r c || return 0
+    [ "$c" = 1 ] || return 0
+    "${MU300_EXTRA_CMD:-/opt/mu300/bin/mu300-extra}" install vpn
+    pause
+}
 # vpn_ask_id PROMPT: the profile list, then one id typed by the user into $id (empty: the user changed their mind).
 # The id is checked here as mu300-vpn checks it, so a stray paste never reaches a command line or an error message.
 vpn_ask_id() {
@@ -623,6 +650,7 @@ vpn_ask_id() {
 # to edit here. Everything below calls mu300-vpn, which prints what it did; it never prints a link or a key, and
 # neither does this menu: a pasted link is read with read -r and handed over as one argument, not echoed or logged.
 menu_vpn() {
+    vpn_present || { menu_vpn_missing; return; }
     while :; do
         title "VPN"
         printf '  service: %s   switch: %s\n\n' "$(state_color "$(svc status mu300-vpn)")" \
@@ -732,7 +760,8 @@ menu_network() {
     while :; do
         menu "Network" "Live traffic (monitor)" "Interfaces and addresses" "Mobile data: status" \
             "Mobile signal (live, for finding a better spot)" "Mobile data: reconnect" "Mobile data: disconnect" \
-            "Wi-Fi (hotspot, or join a network)" "VPN" "TTL of mobile data (hide hotspot use)"
+            "Wi-Fi (hotspot, or join a network)" "$(vpn_present && echo VPN || echo "VPN (not installed: how to add it)")" \
+            "TTL of mobile data (hide hotspot use)"
         case $CHOICE in
             1) monitor ;;
             2) title "Interfaces"; { ip -br addr 2>/dev/null || ip addr; } | grep -vE '^(dummy|tunl|gre|erspan|ip_vti|ip6_vti|sit|ip6tnl|ip6gre|sipa_eth[1-9])' | sed 's/^/  /'
@@ -755,12 +784,12 @@ menu_services() {
     while :; do
         title "Services"
         if command -v systemctl >/dev/null; then
-            i=1; for s in $MU300_SERVICES; do
+            names=$(for s in $MU300_SERVICES; do [ "$s" != mu300-vpn ] || vpn_present && printf '%s ' "$s"; done)
+            i=1; for s in $names; do
                 printf '  %s%2d%s  %-26s %s\n' "$C" "$i" "$N" "$s" "$(state_color "$(systemctl is-active "$s" 2>/dev/null)")"; i=$((i + 1))
             done
             failed=$(systemctl --failed --no-legend --plain 2>/dev/null | awk '{print $1}' | tr '\n' ' ')
             printf '\n  failed units: %s\n' "${failed:-${G}none${N}}"
-            names=$MU300_SERVICES
         else
             names=
             i=1; for s in /etc/init.d/mu300-* /etc/init.d/network /etc/init.d/dnsmasq /etc/init.d/dropbear; do

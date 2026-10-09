@@ -1182,10 +1182,8 @@ class WifiClient(ShellTest):
 
     # ---- the VPN: its kill switch is never bypassed ----------------------------------------------------------
     def test_the_vpn_kill_switch_comes_first_and_is_never_overridden(self):
-        vpn = (BIN / 'mu300-vpn').read_text()
-        # the kill switch's forward chain runs before these (filter - 5 against filter): its drop is final
-        self.assertRegex(vpn, r'chain forward \{\s*type filter hook forward priority filter - 5; policy accept;'
-                              r'\s*oifname "sipa_eth\*" counter drop\s*oifname "\$WIFI_IF" counter drop')
+        # (the kill switch's own forward chain, filter - 5 against these at filter, is the VPN module's: its tests,
+        # in dikeckaan/mu300-linux-vpn, hold it to that)
         for shell in self.each_shell():
             self.fresh()
             (self.root / 'etc/mu300/vpn.conf').write_text('ENABLE=1\nKILL_SWITCH=1\n')
@@ -1202,6 +1200,20 @@ class WifiClient(ShellTest):
                 self.assertFalse([l for l in rs.splitlines() if 'oifname "wlan0"' in l and l.strip().endswith('accept')])
                 self.assertNotIn('mu300_vpn', rs)
             self.assertNotIn('ip rule', ev)
+
+    def test_without_the_vpn_module_the_join_goes_on(self):
+        # the VPN is a module of its own: without it there is no mu300-vpn to ask for a guard, and nothing that
+        # would bring the tunnel up either - the join is not held up by a vpn.conf that outlived it
+        for shell in self.each_shell():
+            for enable in ('0', '1'):
+                self.fresh()
+                (self.root / 'etc/mu300/vpn.conf').write_text(f'ENABLE={enable}\nKILL_SWITCH=1\n')
+                r = self.run_wc(shell, 'connect', 'KEDI 5G', '-', stdin='password1\n',
+                                MU300_VPN_CMD=self.tmp / 'no-such-mu300-vpn')
+                self.assertEqual(r.returncode, 0, (enable, r.stderr))
+                ev = self.events()
+                self.assertNotIn('vpn guard', ev)
+                self.assertIn('\nwpa_supplicant ', ev)
 
     def test_the_kill_switch_setting_comes_from_the_profile_store_first(self):
         # KILL_SWITCH moved to etc/mu300/vpn/settings (single-quoted or bare); vpn.conf's line is the legacy one

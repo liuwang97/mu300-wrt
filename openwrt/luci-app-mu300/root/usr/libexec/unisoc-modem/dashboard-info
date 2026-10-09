@@ -300,7 +300,9 @@ VPN_IF=$(head -c 32 /run/mu300-vpn/iface 2>/dev/null | head -n1)
 case $VPN_IF in *[!A-Za-z0-9_.-]*|'') VPN_IF="" ;; esac
 if { [ -n "$VPN_IF" ] && ip link show "$VPN_IF" >/dev/null 2>&1; } \
     || ip link show xtun >/dev/null 2>&1 || ip link show sbtun >/dev/null 2>&1; then VPN_UP=1; fi
-CAP_VPN=0; [ -x /etc/init.d/mu300-vpn ] && CAP_VPN=1
+# the VPN is a module of its own (github.com/dikeckaan/mu300-linux-vpn): present when its hook linked mu300-vpn and the
+# service into this system (the images have neither)
+CAP_VPN=0; [ -x /opt/mu300/bin/mu300-vpn ] && [ -x /etc/init.d/mu300-vpn ] && CAP_VPN=1
 CAP_DUALBOOT=0; [ -x /opt/mu300/bin/mu300-next-boot ] && CAP_DUALBOOT=1
 # mu300-next-boot lock: the wish on the Linux disk (the panel shows it; the slot itself is in misc)
 BOOT_LOCK=0
