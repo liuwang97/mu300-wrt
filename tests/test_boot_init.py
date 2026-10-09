@@ -927,6 +927,29 @@ class BootTries(ShellTest):
                 self.assertEqual(self.boot(shell, slot)[0], 'android')
                 self.assertEqual(self.count(), '0')
 
+    def test_a_locked_slot_is_never_sent_to_android(self):
+        # mu300-next-boot lock: the Linux slot is successful in LK's block and the wish is on the disk - no count, no
+        # backstop, any number of boots (the bit alone keeps the backstop: test_a_successful_slot_keeps_the_backstop)
+        (self.disk / '.mu300/boot-lock').write_text('')
+        for shell in self.each_shell():
+            for slot in ('a', 'b'):
+                (self.disk / '.mu300/boot-tries').write_text('0\n')
+                self.lk(slot, 6, successful=True)
+                for _ in range(8):
+                    out, err = self.boot(shell, slot)
+                    self.assertEqual(out, 'linux')
+                self.assertIn('stage=boot-locked', err)
+                self.assertEqual(self.count(), '0')
+
+    def test_the_standalone_fallback_stays_when_locked(self):
+        tail = INIT[INIT.index('log "stage=rootfs-unavailable'):]
+        tail = tail[:tail.index('ifconfig usb0')]
+        self.assertLess(tail.index('if lk_locked; then'), tail.index('restore_android'))
+        locked = tail[tail.index('if lk_locked; then'):tail.index('else')]
+        self.assertNotIn('restore_android', locked)
+        self.assertIn('touch /run/stay', locked)
+        self.assertIn('/run/to-android', locked)
+
     def test_a_count_lk_already_acted_on_starts_again(self):
         # five boots that never reached mu300-boot-ok: LK went to Android by itself, the count stayed at 5. The
         # slot armed again from Android (su -c mu300-linux: tries 2, LK leaves 1) must boot Linux, not bounce

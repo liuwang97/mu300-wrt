@@ -194,7 +194,7 @@ m_act() {
         radio|wifi)         allowed "$arg" '(on|off)' ;;
         data)               allowed "$arg" '(up|down)' ;;
         vpn)                allowed "$arg" '(start|stop)' ;;
-        os)                 allowed "$arg" 'android' ;;
+        os)                 allowed "$arg" '(android|lock|unlock)' ;;
         modem-reset|reboot) [ -z "$arg" ] ;;
         *)                  refuse 'Unknown op'; return ;;
     esac || { refuse 'Invalid argument for this op'; return; }

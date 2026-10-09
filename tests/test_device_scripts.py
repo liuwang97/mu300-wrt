@@ -2638,6 +2638,45 @@ class NextBoot(ShellTest):
         self.nb('android')
         self.assertEqual(self.bc(), android_b)
 
+    def test_lock_unlock_and_the_trial_of_a_new_image(self):
+        android_a, linux_b, _, _ = self.blocks
+        (self.run_dir / 'linux-slot').write_text('b\n')
+        (self.run_dir / 'misc-bc-android.bin').write_bytes(android_a)
+        (self.run_dir / 'misc-bc-linux-trial.bin').write_bytes(linux_b)
+        disk = self.tmp / 'disk'
+        (disk / '.mu300').mkdir(parents=True)
+        def nb(*a):
+            if not shutil.which('bash'):
+                self.skipTest('no bash')
+            return subprocess.run(['bash', str(BIN / 'mu300-next-boot'), *a], capture_output=True, text=True,
+                                  env=self.env(MU300_RUN=self.run_dir, MU300_CONF=self.tmp / 'default-boot',
+                                               MU300_CMDLINE_SRC=self.tmp / 'cmdline', MU300_DISK=disk))
+        def want(info):
+            w = bytearray(linux_b); w[14] = info
+            w[28:32] = struct.pack('<I', zlib.crc32(bytes(w[:28])))
+            return bytes(w)
+        r = nb('lock')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        # successful=1, prio 15, tries 6: LK never counts it down, never rolls back
+        self.assertEqual(self.bc(), want(0xef))
+        self.assertTrue((disk / '.mu300/boot-lock').exists())
+        self.assertIn('locked: yes', nb('status').stdout)
+        # a good boot keeps it locked
+        nb('--rearm'); self.assertEqual(self.bc(), want(0xef))
+        # mu300-update before a new boot image: the usual attempts, the lock wish kept for the next good boot
+        r = nb('--trial'); self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.bc(), want(0x6f))
+        self.assertTrue((disk / '.mu300/boot-lock').exists())
+        nb('--rearm'); self.assertEqual(self.bc(), want(0xef))
+        # Android by hand: its block, and the wish stays for when Linux is chosen again
+        nb('android'); self.assertEqual(self.bc(), android_a)
+        self.assertTrue((disk / '.mu300/boot-lock').exists())
+        (self.tmp / 'default-boot').write_text('linux\n')
+        r = nb('unlock'); self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.bc(), want(0x6f))
+        self.assertFalse((disk / '.mu300/boot-lock').exists())
+        self.assertIn('locked: no', nb('status').stdout)
+
     def test_slot_b_as_before(self):
         android_a, linux_b, _, _ = self.blocks
         (self.run_dir / 'misc-bc-slot-a.bin').write_bytes(android_a)          # an older initramfs: old names only

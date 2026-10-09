@@ -559,6 +559,22 @@ class FromStock(UpdateBase):
         for shell in self.each_shell():
             self.assertNotEqual(self.up(shell, f'kernel_modules_into_systems "{b}"', MU300_NO_DEPMOD=1).returncode, 0)
 
+    def test_a_new_boot_image_unlocks_for_its_trial(self):
+        src = (BIN / 'mu300-update').read_text()
+        bu = src[src.index('boot_update() {'):src.index('\n}\n', src.index('boot_update() {'))]
+        self.assertLess(bu.index('unlock_for_trial'), bu.index('write_boot "$dev" "$psize" "$tmp/new"'))
+        rb = src[src.index('rollback_boot() {'):src.index('\n}\n', src.index('rollback_boot() {'))]
+        self.assertLess(rb.index('unlock_for_trial'), rb.index('write_boot'))
+        nb = self.tmp / 'nb'
+        (nb / 'mu300-next-boot').parent.mkdir(parents=True, exist_ok=True)
+        (nb / 'mu300-next-boot').write_text(f'#!/bin/sh\necho "$@" >> "{self.tmp}/nb.log"\n')
+        (nb / 'mu300-next-boot').chmod(0o755)
+        for shell in self.each_shell():
+            r = self.sh(shell, f'. "{BIN}/mu300-update"; unlock_for_trial', MU300_LIB=1, MU300_BIN=nb,
+                        MU300_DISK=self.disk, MU300_SYSROOT=self.root)
+            self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(set((self.tmp / 'nb.log').read_text().split()), {'--trial'})
+
     def test_rollback_boot_brings_the_modules_of_its_image_back(self):
         # two builds of one kernel release share lib/modules/<release>: the set in place is kept with the image it
         # runs with, and goes back with it (seen on F50-B: rollback-boot to a 6.18.55 image with the other

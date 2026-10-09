@@ -302,6 +302,9 @@ if { [ -n "$VPN_IF" ] && ip link show "$VPN_IF" >/dev/null 2>&1; } \
     || ip link show xtun >/dev/null 2>&1 || ip link show sbtun >/dev/null 2>&1; then VPN_UP=1; fi
 CAP_VPN=0; [ -x /etc/init.d/mu300-vpn ] && CAP_VPN=1
 CAP_DUALBOOT=0; [ -x /opt/mu300/bin/mu300-next-boot ] && CAP_DUALBOOT=1
+# mu300-next-boot lock: the wish on the Linux disk (the panel shows it; the slot itself is in misc)
+BOOT_LOCK=0
+for _d in /mnt/mu300-disk ""; do [ -f "$_d/.mu300/boot-lock" ] && { BOOT_LOCK=1; break; }; done
 
 # ------------------------------------------------------------------ output
 printf '{"ts":%d,"uptime":%d,"host":%s,"model":%s,"fw":%s,"kernel":%s,' \
@@ -322,6 +325,6 @@ printf '"wifi":{"up":%d,"ssid":%s,"channel":%s,"band":%s,"width":%s,"country":%s
     "$W_UP" "$(qs "$W_SSID")" "$(qs "$W_CH")" "$(qs "$W_BAND")" "$(qs "$W_WIDTH")" "$(qs "$W_COUNTRY")" "$(qs "$W_ENC")" "$(n_or_null "$W_HIDDEN")" "$W_HOSTAPD" "${W_CLIST:-}" "$W_CN"
 printf '"lan":{"leases":%s,"ip":%s,"list":[%s]},' "$(n_or_null "$LAN_LEASES")" "$(qs "$LAN_IP")" "${LEASES:-}"
 printf '"modem":{"alive":%d,"atd":%d,"data_paused":%d},' "$MODEM_ALIVE" "$ATD_OK" "$DATA_PAUSED"
-printf '"capabilities":{"vpn":%d,"dualboot":%d},' "$CAP_VPN" "$CAP_DUALBOOT"
+printf '"capabilities":{"vpn":%d,"dualboot":%d,"bootlock":%d},' "$CAP_VPN" "$CAP_DUALBOOT" "$BOOT_LOCK"
 printf '"conns":%s,' "$(n_or_null "$CONNS")"
 printf '"vpn":{"enabled":%d,"engine":%s,"up":%d}}\n' "$VPN_ENABLED" "$(qs "$VPN_ENGINE")" "$VPN_UP"

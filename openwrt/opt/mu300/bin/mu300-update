@@ -117,6 +117,13 @@ untar() {
 
 installed_version() { [ -r "$VERSION_FILE" ] && cat "$VERSION_FILE" || echo unknown; }
 this_device() { "${MU300_BIN:-/opt/mu300/bin}/mu300-device"; }
+# A new boot image must never meet a locked slot (mu300-next-boot lock): its first boots are the usual attempts, and
+# the first one that gets to mu300-boot-ok locks again. Quiet when there is nothing to do; a failure only warns.
+unlock_for_trial() {
+    _nb=${MU300_BIN:-/opt/mu300/bin}/mu300-next-boot
+    [ -x "$_nb" ] || return 0
+    "$_nb" --trial >/dev/null 2>&1 || echo "boot: could not arm the Linux slot for a trial (mu300-next-boot --trial)" >&2
+}
 # bundle_runs_here BUNDLE LIST DIR: does this kernel bundle (LIST: its file list) run on this device? Bundles name
 # their devices in ./devices; one without it is from before the U30 Air and runs on the F50 only (see boot_update).
 bundle_runs_here() {
@@ -884,6 +891,7 @@ boot_update() {  # boot_update TAG   (MU300_KERNEL_BUNDLE=FILE uses a local mu30
     fi
     cp "$tmp/body" "$BOOTDIR/prev.body"; cp "$tmp/vbmeta" "$BOOTDIR/prev.vbmeta"; cp "$tmp/footer" "$BOOTDIR/prev.footer"
     linux_slot > "$BOOTDIR/prev.slot"     # rollback-boot puts it back only on the slot it came from
+    unlock_for_trial
     cat "$BOOTDIR/installed.tag" > "$BOOTDIR/prev.tag" 2>/dev/null || echo installer > "$BOOTDIR/prev.tag"
     cat "$BOOTDIR/installed.kernel" > "$BOOTDIR/prev.kernel" 2>/dev/null || echo 5.4 > "$BOOTDIR/prev.kernel"
     sync
@@ -945,6 +953,7 @@ rollback_boot() {
         die "the previous boot image was taken from slot $ps, Linux now runs from $(linux_slot); nothing was written"
     dev=$(part_dev "boot_$(linux_slot)") || die "no boot_$(linux_slot) partition found"
     psize=$(( $(cat "/sys/class/block/${dev##*/}/size") * 512 ))
+    unlock_for_trial
     write_boot "$dev" "$psize" "$BOOTDIR/prev.body" "$BOOTDIR/prev.vbmeta" "$BOOTDIR/prev.footer" ||
         die "writing the previous boot image failed verification"
     prev_modules_restore || die "the previous boot image is back but its modules are not: run mu300-update kernel \"$(cat "$BOOTDIR/prev.kernel" 2>/dev/null)\" before rebooting"
