@@ -21,11 +21,17 @@ msgstr "AT 终端"
 msgid "Adapter settings"
 msgstr "适配设置"
 
+msgid "TTL"
+msgstr "TTL"
+
 msgid "Device management"
 msgstr "设备管理"
 
 msgid "Languages"
 msgstr "语言"
+
+msgid "Power"
+msgstr "电源"
 
 msgid "MU300 control center: status dashboard, network locks, AT terminal and SMS"
 msgstr "MU300 控制中心：状态看板、网络锁定、AT 终端与短信"
@@ -870,6 +876,120 @@ msgstr "自动（支持 %d 个）"
 msgid "%d locked: %s"
 msgstr "已锁 %d 个：%s"
 
+msgid "Enter a whole number from 0 to %d"
+msgstr "请输入 0 到 %d 之间的整数"
+
+msgid "Power status unavailable"
+msgstr "无法获取电源状态"
+
+msgid "Plugged in"
+msgstr "已接通电源"
+
+msgid "On battery"
+msgstr "电池供电"
+
+msgid "Saver"
+msgstr "省电"
+
+msgid "Asleep: hotspot off"
+msgstr "休眠：热点已关闭"
+
+msgid "Charging boot: press the Wi-Fi key to start"
+msgstr "充电开机：按 Wi-Fi 键启动"
+
+msgid "Awake"
+msgstr "已唤醒"
+
+msgid "forced"
+msgstr "强制"
+
+msgid "automatic, battery under %d %%"
+msgstr "自动，电量低于 %d %%"
+
+msgid "automatic"
+msgstr "自动"
+
+msgid "Nobody connected for %d s"
+msgstr "已有 %d 秒无人连接"
+
+msgid "Power source"
+msgstr "电源来源"
+
+msgid "Profile"
+msgstr "方案"
+
+msgid "Profile in use: %s (%s)"
+msgstr "当前方案：%s（%s）"
+
+msgid "%d %%, %s, %d mV, %d mA, %.1f °C"
+msgstr "%d %%, %s, %d mV, %d mA, %.1f °C"
+
+msgid "Charger"
+msgstr "充电器"
+
+msgid "Charger: %s, %s port"
+msgstr "充电器：%s，%s 端口"
+
+msgid "Charging paused: battery temperature"
+msgstr "充电已暂停：电池温度"
+
+msgid "Charging paused: charge limit"
+msgstr "充电已暂停：充电上限"
+
+msgid "Sleep now"
+msgstr "立即休眠"
+
+msgid "Wake"
+msgstr "唤醒"
+
+msgid "Nobody connected means no Wi-Fi client and no computer on USB. The Wi-Fi key, a computer on USB or the charger wake the device."
+msgstr "无人连接是指没有 Wi-Fi 客户端，USB 上也没有电脑。Wi-Fi 键、USB 上的电脑或充电器都会唤醒设备。"
+
+msgid "Automatic: plugged in / on battery"
+msgstr "自动：接通电源 / 电池供电"
+
+msgid "Switch to Saver under %"
+msgstr "电量低于以下值时切换到省电方案 %"
+
+msgid "Stop charging at"
+msgstr "充电上限"
+
+msgid "80 % keeps the battery healthier on a device that stays plugged in."
+msgstr "80 % 可让长期接着电源的设备电池更健康。"
+
+msgid "Keep as is"
+msgstr "保持不变"
+
+msgid "LTE only (5G off)"
+msgstr "仅 LTE（关闭 5G）"
+
+msgid "Off"
+msgstr "关"
+
+msgid "On"
+msgstr "开"
+
+msgid "Full"
+msgstr "全速"
+
+msgid "Eco: big core off"
+msgstr "节能：关闭大核"
+
+msgid "Hotspot off after (min, 0 = never)"
+msgstr "热点在此时间后关闭（分钟，0 = 永不）"
+
+msgid "Modem when idle"
+msgstr "空闲时的调制解调器"
+
+msgid "LEDs when idle"
+msgstr "空闲时的指示灯"
+
+msgid "CPU"
+msgstr "CPU"
+
+msgid "Ignored lines in power.conf: %s"
+msgstr "power.conf 中被忽略的行：%s"
+
 msgid "Configure how this plugin connects to the current Unisoc OpenWrt platform. Changes do not require editing the dashboard, AT, locks or SMS pages."
 msgstr "这里定义插件与当前紫光 OpenWrt 的边界。修改后无需改动看板、AT、锁定或短信页面。"
 
@@ -1023,6 +1143,45 @@ msgstr "我: %s"
 msgid "Delete"
 msgstr "删除"
 
+msgid "Current setting"
+msgstr "当前设置"
+
+msgid "Fixed at %d"
+msgstr "固定为 %d"
+
+msgid "Not changed (default)"
+msgstr "未更改（默认）"
+
+msgid "Rule in force"
+msgstr "生效的规则"
+
+msgid "Flow offloading"
+msgstr "流量分载（flow offloading）"
+
+msgid "TTL of mobile data"
+msgstr "移动数据的 TTL"
+
+msgid "Every packet that leaves through mobile data gets this TTL (IPv6: hop limit). A phone or laptop behind the hotspot sends 64 (Windows: 128) and the device forwards it with one less, which is how an operator can tell tethered traffic apart."
+msgstr "经移动数据发出的每个数据包都会使用此 TTL（IPv6：跳数限制）。热点后面的手机或笔记本电脑发送 64（Windows：128），设备转发时会减一，运营商可以借此识别共享流量。"
+
+msgid "On this kernel the firewall fast-path is off while a TTL is set"
+msgstr "在此内核上，设置 TTL 期间防火墙快速路径处于关闭状态"
+
+msgid "Set %d"
+msgstr "设为 %d"
+
+msgid "Set"
+msgstr "设置"
+
+msgid "Enter a number from 1 to 255"
+msgstr "请输入 1 到 255 之间的数字"
+
+msgid "Turn off"
+msgstr "关闭"
+
+msgid "64 makes every packet leave like the device's own traffic"
+msgstr "64 使每个数据包都像设备自身的流量一样发出"
+
 msgid "Dashboard info failed"
 msgstr "获取仪表盘信息失败"
 
@@ -1131,6 +1290,21 @@ msgstr "未知的 USB 设置"
 msgid "Invalid interface name"
 msgstr "接口名称无效"
 
+msgid "The power adapter gave no valid reply"
+msgstr "电源适配器没有返回有效应答"
+
+msgid "Unknown power operation"
+msgstr "未知的电源操作"
+
+msgid "Unknown power setting"
+msgstr "未知的电源设置"
+
+msgid "Invalid power value"
+msgstr "无效的电源值"
+
+msgid "Invalid power request"
+msgstr "无效的电源请求"
+
 msgid "The languages adapter gave no valid reply"
 msgstr "语言适配程序没有返回有效结果"
 
@@ -1145,6 +1319,12 @@ msgstr "语言请求无效"
 
 msgid "Unknown source"
 msgstr "未知的来源"
+
+msgid "The TTL adapter gave no valid reply"
+msgstr "TTL 适配器未返回有效回复"
+
+msgid "Invalid TTL"
+msgstr "无效的 TTL"
 
 msgid "Request too large"
 msgstr "请求过大"
@@ -1274,3 +1454,15 @@ msgstr "锁定缓存不可用"
 
 msgid "No serving cell to lock to"
 msgstr "没有可锁定的服务小区"
+
+msgid "usage: power get|set KEY VALUE|wake|idle"
+msgstr "usage: power get|set KEY VALUE|wake|idle"
+
+msgid "The TTL setting could not be read"
+msgstr "无法读取 TTL 设置"
+
+msgid "The TTL could not be set"
+msgstr "无法设置 TTL"
+
+msgid "Unknown TTL operation"
+msgstr "未知的 TTL 操作"

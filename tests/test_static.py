@@ -1,5 +1,6 @@
 """Checks over every script without running it: syntax under each shell that runs it, executable bits, and rules
 that past bugs taught (see each test)."""
+import json
 import os
 import re
 import shutil
@@ -67,6 +68,49 @@ class Syntax(unittest.TestCase):
 
 
 class Rules(unittest.TestCase):
+    def test_power_page_is_wired(self):
+        menu = json.loads((TOP / 'openwrt/luci-app-mu300/root/usr/share/luci/menu.d/luci-app-mu300.json').read_text())
+        self.assertEqual(menu['admin/system/power']['action']['path'], 'mu300/power')
+        common = (TOP / 'openwrt/luci-app-mu300/htdocs/luci-static/resources/mu300/common.js').read_text()
+        self.assertIn("method: 'power_get'", common)
+        self.assertIn("method: 'power_set', params: [ 'op', 'key', 'value' ]", common)
+        view = (TOP / 'openwrt/luci-app-mu300/htdocs/luci-static/resources/view/mu300/power.js').read_text()
+        for s in ('WIFI_IDLE', 'RADIO_IDLE', 'LEDS_IDLE', 'CPU', 'SAVER_BELOW', 'CHARGE_TO', 'callPowerSet'):
+            self.assertIn(s, view)
+        acl = json.loads((TOP / 'openwrt/luci-app-mu300/root/usr/share/rpcd/acl.d/luci-app-mu300.json').read_text())
+        self.assertIn('power_get', acl['luci-app-mu300']['read']['ubus']['mu300dash'])
+        self.assertIn('power_set', acl['luci-app-mu300']['write']['ubus']['mu300dash'])
+
+    def test_power_profiles_are_wired_in(self):
+        # the daemon runs on both systems, the keys wake it, the Ubuntu units skip the radios in a charging boot,
+        # the command is on PATH, OpenWrt's own power-key handler (a tap = poweroff) is neutralised, and power.conf is kept
+        self.assertIn('mu300-power', (TOP / 'rootfs/overlay/opt/mu300/lib/path-commands').read_text().split())
+        buttons = (BIN / 'mu300-buttons').read_text()
+        self.assertIn('mu300-power wake', buttons)
+        unit = (TOP / 'rootfs/overlay/etc/systemd/system/mu300-power.service').read_text()
+        self.assertIn('ExecStart=/opt/mu300/bin/mu300-power daemon', unit)
+        self.assertIn('After=mu300-hotspot.service mu300-mobile-data.service', unit)
+        # R10: stopped while idle, the TERM trap runs the whole wake (up to ~120 s for the radio lock)
+        self.assertIn('TimeoutStopSec=150', unit)
+        self.assertIn('mu300-power.service:multi-user.target', (TOP / 'rootfs/assemble.sh').read_text())
+        init = (TOP / 'openwrt/overlay/etc/init.d/mu300-power').read_text()
+        self.assertIn('procd_set_param command /opt/mu300/bin/mu300-power daemon', init)
+        self.assertIn('procd_set_param term_timeout 150', init)
+        self.assertRegex(init, r'START=9[6-9]')
+        for u in ('mu300-hotspot.service', 'mu300-mobile-data.service'):
+            self.assertIn('ConditionPathExists=!/run/mu300/charging-boot', (TOP / 'rootfs/overlay/etc/systemd/system' / u).read_text())
+        build = (TOP / 'openwrt/build-rootfs.sh').read_text()
+        self.assertIn('for b in power wps rfkill', build)
+        self.assertIn('mkdir -p $R/etc/rc.button', build)
+        self.assertIn('rc.button/$b', build)
+        self.assertLess(build.index('cp -a /in/overlay/. $R/'), build.index('for b in power wps rfkill'))
+        self.assertIn('mu300-power', build.split('for s in mu300-accounts')[1].split('; do')[0])
+        # etc/mu300 is kept whole on both systems, and power.conf lives in it
+        update = (TOP / 'rootfs/overlay/opt/mu300/bin/mu300-update').read_text()
+        self.assertRegex(update, r'ubuntu\) echo "etc/mu300 ')
+        self.assertRegex(update, r'openwrt\) echo "etc/config etc/mu300 ')
+        self.assertIn('/etc/mu300/power.conf', (BIN / 'mu300-power').read_text())
+
     def test_customize_leaves_magisks_shell_alone(self):
         # Magisk sources customize.sh: errexit or nounset there would end Magisk's own installer before its cleanup
         c = (TOP / 'android' / 'magisk' / 'installer' / 'customize.sh').read_text()
@@ -352,14 +396,59 @@ class Rules(unittest.TestCase):
         self.assertIn(r"#define SPRD_UMP9620_CHG_DET\t\t0x239c", port)
         self.assertIn(r"'\t.charger_det = SPRD_SC2730_CHG_DET,\n};\n', UMP9620_DATA)", port)
         self.assertIn("'.charger_det = SPRD_UMP9620_CHG_DET,'", port)
-        # Android's last capacity in the FGU's user area is in 0.1 % (575 read as 575 %), and capacity stays 0-100
-        p11 = (TOP / 'upstream' / 'patches' / '0011-power-sc27xx-fuel-gauge-UMP9620-capacity-in-tenths.patch').read_text()
-        for s in ('+\t\tcap = clamp(cap, 0, 100) * 10;', '+\t\t*cap = min(DIV_ROUND_CLOSEST(*cap, 10), 100);',
+        # Android's last capacity in the FGU's user area is whole percent in bits 7:0 and tenths in bits 11:8 (575 =
+        # 0x23f = 63.2 %), not 0.1 %; mainline writes whole percent; an ambiguous or invalid value goes to the OCV; the
+        # charger's Full (from a charger driver) means 100 %; the capacity is saved as it changes and stays 0-100
+        patches = TOP / 'upstream' / 'patches'
+        self.assertFalse((patches / '0011-power-sc27xx-fuel-gauge-UMP9620-capacity-in-tenths.patch').exists())
+        p11 = (patches / '0011-power-sc27xx-fuel-gauge-UMP9620-saved-capacity-and-full.patch').read_text()
+        for s in ('+#define UMP9620_FGU_CAP_INTEGER_MASK\tGENMASK(7, 0)', '+#define UMP9620_FGU_CAP_DECIMAL_MASK\tGENMASK(11, 8)',
+                  '+\t\tcap = clamp(cap, 0, 100);', '+\tvalid = whole <= 100 && tenths <= 9 && !(whole == 100 && tenths);',
+                  '+\tambiguous = tenths && value <= 1000 && !(value % 10);',
+                  '+\tif (valid && (!ambiguous || abs(cur) >= UMP9620_FGU_RELAXED_MA)) {',
+                  '+\t*cap = power_supply_ocv2cap_simple(data->cap_table, data->table_len, ocv);',
+                  '+\tif (!is_first_poweron && data->var == &ump9620_info)',
+                  '+\tif (data->var == &ump9620_info && chg_sts == POWER_SUPPLY_STATUS_FULL && cap != 100 &&',
+                  '+\t    sc27xx_fgu_has_charger() &&', '+\t\tsc27xx_fgu_adjust_cap(data, 100);',
+                  '+\t\tif (*cap != data->saved_cap && sc27xx_fgu_save_last_cap(data, *cap))',
                   '+\t\tval->intval = clamp(value, 0, 100);'):
             self.assertIn(s, p11)
+        self.assertNotIn('* 10;', p11)
         # mu300-usb reaches the chip past the driver and leaves its watchdog off then
         usb = (BIN / 'mu300-usb').read_text()
         self.assertIn('[ -e "$R/sys/bus/i2c/devices/$BUS-006b/driver" ] && FORCE=-f', usb)
+
+    def test_mainline_can_suspend(self):
+        # System suspend (PSCI SYSTEM_SUSPEND) and a tickless idle: under the periodic tick a CPU brought back online
+        # was left out of the timer broadcast and locked up, which every suspend (and `cpu7 offline/online`) hit
+        cfg = (TOP / 'upstream' / 'mu300-mainline.config').read_text()
+        for k in ('CONFIG_SUSPEND', 'CONFIG_PM_SLEEP', 'CONFIG_NO_HZ_IDLE', 'CONFIG_HIGH_RES_TIMERS'):
+            self.assertRegex(cfg, rf'(?m)^{k}=y$')
+        drv = TOP / 'upstream' / 'port' / 'drivers'
+        # the PMIC watchdog keeps counting while the AP sleeps: stopped for the sleep, armed again after it
+        wdt = (drv / 'watchdog' / 'ump9620-pmic-wdt.c').read_text()
+        self.assertIn('NOIRQ_SYSTEM_SLEEP_PM_OPS(ump9620_wdt_suspend_noirq, ump9620_wdt_resume_noirq)', wdt)
+        self.assertIn('.pm = pm_sleep_ptr(&ump9620_wdt_pm_ops)', wdt)
+        self.assertIn('platform_set_drvdata(pdev, w);', wdt)
+        # PCIe WAKE# is a wakeup only when power/wakeup says so, and is masked (unlazily) for the sleep otherwise
+        pcie = (drv / 'pci' / 'controller' / 'dwc' / 'pcie-sprd.c').read_text()
+        self.assertIn('if (device_may_wakeup(pci->dev))\n\t\tpm_wakeup_hard_event(pci->dev);', pcie)
+        self.assertNotIn('IRQF_TRIGGER_FALLING | IRQF_NO_SUSPEND', pcie)
+        self.assertIn('irq_set_status_flags(ctrl->wakeup_irq, IRQ_DISABLE_UNLAZY);', pcie)
+        self.assertNotIn('device_init_wakeup(dev, true)', pcie)
+        self.assertIn('SET_SYSTEM_SLEEP_PM_OPS(sprd_pcie_pm_suspend, sprd_pcie_pm_resume)', pcie)
+        # the firmware's debug log pulled WAKE# right after every L2 entry: off by default, and a resume leaves it be
+        mods = TOP / 'upstream' / 'modules'
+        sysfs = (mods / 'wcn_bsp' / 'platform' / 'sysfs.c').read_text()
+        self.assertRegex(sysfs, r'#endif\n(\t.*\n)*\tsysfs_info\.armlog_status = 0;\n')
+        ep = (mods / 'wcn_bsp' / 'pcie' / 'pcie.c').read_text()
+        resume = ep[ep.index('static int sprd_ep_resume('):ep.index('const struct dev_pm_ops sprd_ep_pm_ops')]
+        self.assertNotIn('wcn_set_armlog(true)', resume)
+        # without a WoWLAN configuration cfg80211 closed the interfaces while the bus was going down, and the
+        # firmware asserted at the next Wi-Fi open: WoWLAN "any" from the wiphy's registration on
+        iface = (mods / 'sprd_wlan_combo' / 'common' / 'iface.c').read_text()
+        self.assertIn('wowlan->any = true;\n\t\t\twiphy->wowlan_config = wowlan;', iface)
+        self.assertLess(iface.index('ret = wiphy_register(wiphy);'), iface.index('wiphy->wowlan_config = wowlan;'))
 
     def test_mainline_config_has_kvm_and_the_module_set(self):
         # /dev/kvm (the CPUs start at EL2) and the router/container modules; the kernel's own modules reach the bundle
@@ -379,6 +468,44 @@ class Rules(unittest.TestCase):
         mods = (TOP / 'upstream' / 'build-modules.sh').read_text()
         self.assertIn('INSTALL_MOD_STRIP=1 DEPMOD=true modules_install', mods)
         self.assertIn('has the name of an in-tree module', mods)
+
+    def test_ttl_page_is_wired(self):
+        # Cellular > TTL: the menu entry right after the AT terminal, its view, the rpc declarations in common.js,
+        # ttl_get readable and ttl_set only with write access, the adapter executable
+        import json
+        app = TOP / 'openwrt' / 'luci-app-mu300'
+        menu = json.loads((app / 'root/usr/share/luci/menu.d/luci-app-mu300.json').read_text())
+        ttl = menu['admin/modem/ttl']
+        self.assertEqual(ttl['title'], 'TTL')
+        self.assertEqual(ttl['action'], {'type': 'view', 'path': 'mu300/ttl'})
+        cellular = sorted((v['order'], k) for k, v in menu.items() if k.startswith('admin/modem/'))
+        keys = [k for _, k in cellular]
+        self.assertEqual(keys[keys.index('admin/modem/at') + 1], 'admin/modem/ttl')
+        self.assertEqual(len({o for o, _ in cellular}), len(cellular), 'two Cellular pages with the same order')
+        self.assertTrue((app / 'htdocs/luci-static/resources/view/mu300/ttl.js').is_file())
+        common = (app / 'htdocs/luci-static/resources/mu300/common.js').read_text()
+        self.assertIn("method: 'ttl_get'", common)
+        self.assertIn("method: 'ttl_set', params: [ 'value' ]", common)
+        self.assertIn('callTtlGet: callTtlGet, callTtlSet: callTtlSet', common)
+        acl = json.loads((app / 'root/usr/share/rpcd/acl.d/luci-app-mu300.json').read_text())['luci-app-mu300']
+        self.assertIn('ttl_get', acl['read']['ubus']['mu300dash'])
+        self.assertNotIn('ttl_set', acl['read']['ubus']['mu300dash'])
+        self.assertIn('ttl_set', acl['write']['ubus']['mu300dash'])
+        self.assertTrue((app / 'root/usr/libexec/unisoc-modem/ttl').stat().st_mode & 0o111)
+        # the fast-path note belongs to the nft backend only
+        view = (app / 'htdocs/luci-static/resources/view/mu300/ttl.js').read_text()
+        self.assertRegex(view, r"if \(st\.backend === 'nft'\)\s*card\.appendChild\([^;]*firewall fast-path is off")
+
+    def test_mainline_rewrites_the_ttl_in_tc(self):
+        # mu300-ttl's tc backend (clsact egress, matchall, pedit, csum): the flowtable transmits through egress, so
+        # flow offloading stays on. The 5.4 kernel has no pedit: mu300-ttl falls back to nftables there.
+        cfg = (TOP / 'upstream' / 'mu300-mainline.config').read_text()
+        for k in ('CONFIG_NET_SCH_INGRESS', 'CONFIG_NET_CLS_ACT'):
+            self.assertRegex(cfg, rf'(?m)^{k}=y$')
+        for k in ('CONFIG_NET_CLS_MATCHALL', 'CONFIG_NET_ACT_PEDIT', 'CONFIG_NET_ACT_CSUM'):
+            self.assertRegex(cfg, rf'(?m)^{k}=[ym]$')
+        # tc itself: tc-tiny comes with sqm-scripts on OpenWrt
+        self.assertIn('sqm-scripts', (TOP / 'openwrt' / 'build-rootfs.sh').read_text())
 
     def test_every_release_kernel_bundle_has_the_sd_host(self):
         # 5.4 reads the card as well (FINDINGS 31j): its bundle says so, and the release audit fails when any of the
@@ -446,6 +573,8 @@ class Rules(unittest.TestCase):
         warm = warm[:warm.index('procd_close_instance')]
         self.assertIn('until [ -p /run/mu300-at/cmd ]', warm)
         self.assertIn('exec /opt/mu300/bin/mobile-data radio-on', warm)
+        # a charging boot (init's marker) keeps the radio off until the Wi-Fi key
+        self.assertLess(warm.index('[ -e /run/mu300/charging-boot ] && exit 0'), warm.index('mobile-data radio-on'))
         self.assertNotIn('stty_nr', warm)
         self.assertNotIn('respawn', warm)   # one round per start; netifd's dial and watch retry
         self.assertIn('wait_and_exec /dev/stty_nr1 /opt/mu300/bin/mu300-atd', f)
