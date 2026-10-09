@@ -646,7 +646,13 @@ menu_vpn() {
                # - would make mu300-vpn read the terminal as the file; the link itself goes here
                case $src in '') continue ;; -) echo "  paste the link itself, or a file path"; pause; continue ;; esac
                printf '  Name (Enter: from the link or file): '; read -r name || name=
-               if [ -n "$name" ]; then "$VPN" profile import "$src" "$name"; else "$VPN" profile import "$src"; fi
+               # a link goes through stdin ("-"), never as an argument every local user could read in the process
+               # list; a file path stays an argument (mu300-vpn reads the file itself)
+               case $src in
+                   *://*) if [ -n "$name" ]; then printf '%s\n' "$src" | "$VPN" profile import - "$name"
+                          else printf '%s\n' "$src" | "$VPN" profile import -; fi ;;
+                   *) if [ -n "$name" ]; then "$VPN" profile import "$src" "$name"; else "$VPN" profile import "$src"; fi ;;
+               esac
                unset src
                echo; echo "  make it active with Profiles (list / use), then Turn on"; pause ;;
             5) vpn_ask_id "Profile to remove (Enter: back)" || continue
