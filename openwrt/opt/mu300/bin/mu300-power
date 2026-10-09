@@ -150,6 +150,9 @@ psy_of_type() {  # the first one, or return 1
     [ -n "$_f" ] && echo "$_f"
 }
 battery_dir() {  # the first Battery that is present (present=1 or no present file)
+    # the F50 has no battery, but its PMIC's fuel gauge still appears under mainline with made-up values (19 %,
+    # 75 C): the device decides, as dashboard-info does, so the F50 never shows a battery nor guards one
+    [ "$(mu300-device 2>/dev/null)" != f50 ] || return 1
     for _d in $(psy_all Battery); do
         [ ! -f "$_d/present" ] || [ "$(cat "$_d/present" 2>/dev/null)" = 1 ] && { echo "$_d"; return 0; }
     done
