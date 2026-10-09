@@ -225,6 +225,37 @@ esac''')
         self.assertFalse((self.tmp / 'calls').exists())
         self.assertFalse((self.sdk / '.config').exists())
 
+    def test_official_sdk_feed_layout_and_revision(self):
+        feed = self.sdk / 'feeds/base/network/services/hostapd'
+        feed.parent.mkdir(parents=True)
+        self.package.rename(feed)
+        recipe = feed / 'Makefile'
+        recipe.write_text(recipe.read_text().replace('PKG_RELEASE:=5', 'PKG_RELEASE:=1'))
+        link = self.sdk / 'package/feeds/base/hostapd'
+        link.parent.mkdir(parents=True)
+        link.symlink_to(feed, target_is_directory=True)
+        r = self.build()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn('PKG_RELEASE:=6', recipe.read_text())
+        self.assertEqual((feed / 'patches' / PATCH.name).read_bytes(), PATCH.read_bytes())
+        self.assertIn('package/feeds/base/hostapd/compile', (self.tmp / 'calls').read_text())
+
+    def test_missing_feed_gives_setup_instructions_without_mutation(self):
+        (self.package / 'Makefile').unlink()
+        r = self.build()
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn('scripts/feeds install -p base hostapd', r.stderr)
+        self.assertFalse((self.sdk / '.config').exists())
+        self.assertFalse((self.tmp / 'calls').exists())
+
+    def test_unrecorded_revision_is_rejected(self):
+        recipe = self.package / 'Makefile'
+        original = recipe.read_text().replace('PKG_RELEASE:=5', 'PKG_RELEASE:=2')
+        recipe.write_text(original)
+        self.assertNotEqual(self.build().returncode, 0)
+        self.assertEqual(recipe.read_text(), original)
+        self.assertFalse((self.sdk / '.config').exists())
+
     def test_conflicting_local_patch_is_not_overwritten(self):
         target = self.package / 'patches' / PATCH.name
         target.parent.mkdir()
