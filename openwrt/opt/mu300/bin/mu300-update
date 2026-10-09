@@ -739,11 +739,46 @@ bootimg_from_stock() {  # bootimg_from_stock STOCK KERNEL RAMDISK DIR
 # on the Linux filesystem, next to the ones of the other kernel, which stay for a switch back. Ubuntu keeps them under
 # extra/ and indexes them (depmod; MU300_NO_DEPMOD=1 leaves that to its next boot, as the Magisk installer must: the
 # depmod Android has is busybox's); OpenWrt keeps them flat and loads by path.
+# modules_dir OS KREL: where the modules of a kernel bundle go in OS
+modules_dir() { case $1 in ubuntu) echo "$DISK/$1/lib/modules/$2/extra" ;; *) echo "$DISK/$1/lib/modules/$2" ;; esac; }
+
+# The set a bundle replaces belongs to the boot image it replaces: two builds of one kernel release (6.18.55 of two
+# releases) share the directory, and a kernel with the other build's modules does not come up (the one-boot fallback
+# takes the device back to Android). So the set in place is kept with the previous image, and goes back with it -
+# in rollback-boot, and when writing the new image fails.
+prev_modules_save() {  # prev_modules_save BUNDLE_DIR (unpacked; a bundle without kernel.release keeps nothing)
+    rm -rf "$BOOTDIR/prev.modules"
+    _krel=$(cat "$1/kernel.release" 2>/dev/null) || return 0
+    case $_krel in ''|*/*|.*) return 0 ;; esac
+    mkdir -p "$BOOTDIR/prev.modules" && echo "$_krel" > "$BOOTDIR/prev.modules/kernel.release" || return 1
+    for _os in $(installed_systems); do
+        _d=$(modules_dir "$_os" "$_krel")
+        ls "$_d"/*.ko >/dev/null 2>&1 || continue
+        mkdir -p "$BOOTDIR/prev.modules/$_os" && cp "$_d"/*.ko "$BOOTDIR/prev.modules/$_os/" || return 1
+    done
+}
+prev_modules_restore() {
+    _krel=$(cat "$BOOTDIR/prev.modules/kernel.release" 2>/dev/null) || return 0
+    case $_krel in ''|*/*|.*) return 0 ;; esac
+    for _os in $(installed_systems); do
+        _d=$(modules_dir "$_os" "$_krel")
+        [ -d "$_d" ] || continue
+        rm -f "$_d"/*.ko
+        # a system that had no set of this release then gets none now (the kernel back is another release)
+        [ -d "$BOOTDIR/prev.modules/$_os" ] || continue
+        cp "$BOOTDIR/prev.modules/$_os"/*.ko "$_d/" || { echo "boot: the previous modules of $_os did not go back" >&2; return 1; }
+        if [ "$_os" = ubuntu ] && [ -z "${MU300_NO_DEPMOD:-}" ] && command -v depmod >/dev/null; then
+            depmod -b "$DISK/$_os" "$_krel" 2>/dev/null || true
+        fi
+    done
+    printf 'boot: the modules of the previous image (%s) are back in: %s\n' "$_krel" "$(installed_systems)"
+}
+
 kernel_modules_into_systems() {  # kernel_modules_into_systems BUNDLE_DIR (unpacked)
     _krel=$(cat "$1/kernel.release" 2>/dev/null)
     case $_krel in ''|*/*|.*) echo "boot: bad kernel release '$_krel' in the bundle" >&2; return 1 ;; esac
     for _os in $(installed_systems); do
-        case $_os in ubuntu) _d=$DISK/$_os/lib/modules/$_krel/extra ;; *) _d=$DISK/$_os/lib/modules/$_krel ;; esac
+        _d=$(modules_dir "$_os" "$_krel")
         # the set of the bundle replaces the one of an earlier bundle of this release: a module it no longer has
         # would otherwise stay loadable (and the set is some 360 modules, 20 MiB, since FINDINGS 31o)
         mkdir -p "$_d" && rm -f "$_d"/*.ko && cp "$1"/modules/*.ko "$_d/" ||
@@ -797,13 +832,15 @@ boot_update() {  # boot_update TAG   (MU300_KERNEL_BUNDLE=FILE uses a local mu30
     fi
     untar -xzf "$bundle" -C "$tmp" ./Image ./ramdisk-generic.lz4 || { echo "boot: unpacking $bundle failed" >&2; return 1; }
     [ -s "$tmp/Image" ] && [ -s "$tmp/ramdisk-generic.lz4" ] || { echo "boot: no kernel in the bundle" >&2; return 1; }
-    # the modules of a kernel the systems were not built with go in before the boot image changes
+    # the modules of a kernel the systems were not built with (mainline): they go in below, before the boot image
+    # changes, and also when the image is up to date (a system the update just replaced has none yet)
+    mods=
     if grep -qx './kernel.release' "$tmp/list"; then
         untar -xzf "$bundle" -C "$tmp" ./kernel.release ./modules || { echo "boot: unpacking the modules failed" >&2; return 1; }
         for f in modules.builtin modules.builtin.modinfo; do
             if grep -qx "./$f" "$tmp/list"; then untar -xzf "$bundle" -C "$tmp" "./$f" || true; fi
         done
-        kernel_modules_into_systems "$tmp" || return 1
+        mods=1
     fi
     id=$(cat "$tmp/Image" "$tmp/ramdisk-generic.lz4" | sha256sum | cut -d' ' -f1)
 
@@ -819,6 +856,7 @@ boot_update() {  # boot_update TAG   (MU300_KERNEL_BUNDLE=FILE uses a local mu30
     dd if="$dev" bs=4096 skip=$((osize / 4096)) count=$(( (vbs + 4095) / 4096 )) 2>/dev/null | head -c "$vbs" > "$tmp/vbmeta"
     cur=$(sha256sum < "$tmp/body" | cut -d' ' -f1)
     if [ "$cur" = "$(cat "$BOOTDIR/written.sha256" 2>/dev/null)" ] && [ "$id" = "$(cat "$BOOTDIR/installed.id" 2>/dev/null)" ]; then
+        [ -z "$mods" ] || kernel_modules_into_systems "$tmp" || return 1
         printf 'boot: already up to date (%s)\n' "$(cat "$BOOTDIR/installed.tag" 2>/dev/null || echo "$tag")"
         rm -rf "$tmp"; return 0
     fi
@@ -839,7 +877,11 @@ boot_update() {  # boot_update TAG   (MU300_KERNEL_BUNDLE=FILE uses a local mu30
     bootimg_assemble "$tmp" "$vbs" "$tmp/Image" "$BOOTDIR/device-ramdisk.lz4" "$tmp/ramdisk-generic.lz4" ||
         { echo "boot: not touching $bp" >&2; return 1; }
 
-    # keep the current image for rollback-boot, then write
+    # keep the current image and the module set it runs with for rollback-boot, then the new modules, then write
+    prev_modules_save "$tmp" || { echo "boot: keeping the modules in place failed; nothing was changed" >&2; return 1; }
+    if [ -n "$mods" ] && ! kernel_modules_into_systems "$tmp"; then
+        prev_modules_restore >/dev/null; echo "boot: the boot image is unchanged" >&2; return 1
+    fi
     cp "$tmp/body" "$BOOTDIR/prev.body"; cp "$tmp/vbmeta" "$BOOTDIR/prev.vbmeta"; cp "$tmp/footer" "$BOOTDIR/prev.footer"
     linux_slot > "$BOOTDIR/prev.slot"     # rollback-boot puts it back only on the slot it came from
     cat "$BOOTDIR/installed.tag" > "$BOOTDIR/prev.tag" 2>/dev/null || echo installer > "$BOOTDIR/prev.tag"
@@ -849,6 +891,7 @@ boot_update() {  # boot_update TAG   (MU300_KERNEL_BUNDLE=FILE uses a local mu30
         echo "boot: writing $bp failed verification; restoring the previous image" >&2
         write_boot "$dev" "$psize" "$BOOTDIR/prev.body" "$BOOTDIR/prev.vbmeta" "$BOOTDIR/prev.footer" ||
             echo "boot: RESTORE FAILED - do not reboot into Linux; reinstall with ./install.sh from a computer" >&2
+        prev_modules_restore >&2
         return 1
     fi
     sha256sum < "$tmp/new" | cut -d' ' -f1 > "$BOOTDIR/written.sha256"
@@ -904,6 +947,7 @@ rollback_boot() {
     psize=$(( $(cat "/sys/class/block/${dev##*/}/size") * 512 ))
     write_boot "$dev" "$psize" "$BOOTDIR/prev.body" "$BOOTDIR/prev.vbmeta" "$BOOTDIR/prev.footer" ||
         die "writing the previous boot image failed verification"
+    prev_modules_restore || die "the previous boot image is back but its modules are not: run mu300-update kernel \"$(cat "$BOOTDIR/prev.kernel" 2>/dev/null)\" before rebooting"
     sha256sum < "$BOOTDIR/prev.body" | cut -d' ' -f1 > "$BOOTDIR/written.sha256"
     rm -f "$BOOTDIR/installed.id"
     cat "$BOOTDIR/prev.tag" > "$BOOTDIR/installed.tag" 2>/dev/null
