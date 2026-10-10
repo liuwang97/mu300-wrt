@@ -42,11 +42,6 @@ docker run --rm -v "$TOP/tools":/src:ro -v "$IN/tools":/o mu300-kbuild sh -c '
 # cltest links against Android's libraries at build time only; use a local build when there is one
 [ -f "$TOP/tools/gpu/cltest" ] && cp "$TOP/tools/gpu/cltest" "$IN/tools/gpu/cltest"
 
-echo "==> extras"
-# not in the images: mu300-extra installs them on the devices that want them (mu300-extra-<name>.tar.gz)
-sh "$TOP/tools/make-extra.sh" vpn "$D/mu300-extra-vpn.tar.gz" "$TAG"
-sh "$TOP/tools/make-extra.sh" vpn-mihomo "$D/mu300-extra-vpn-mihomo.tar.gz" "$TAG"
-
 echo "==> kernel bundle"
 K=$D/kernel && mkdir -p "$K"
 cp -R "$IN/out/modules" "$K/modules"
@@ -113,7 +108,8 @@ for a in mu300-kernel mu300-kernel-6.18 mu300-kernel-7.2 mu300-ubuntu-rootfs mu3
         -e '^opt/mu300/android/.+' -e '__properties__|dev-properties' \
         -e '(^|/)(libmali|libOpenCL|libGLES|libEGL|libvulkan)[^/]*\.so' \
         -e '^etc/ssh/ssh_host_' -e '^etc/mu300/(hotspot|vpn|toolkit)\.conf$' -e '^etc/dropbear/dropbear_.*_host_key' \
-        -e '^opt/mu300/bin/(xray|sing-box|hev-socks5-tunnel|mihomo)$' \
+        -e '^opt/mu300/bin/(xray|sing-box|hev-socks5-tunnel|mihomo|mu300-vpn)$' -e '^opt/mu300/lib/vpn(/|$)' \
+        -e '^etc/systemd/system/mu300-vpn\.service$' -e '^etc/init\.d/mu300-vpn$' -e '^etc/mu300/vpn\.conf\.example$' \
         | grep -vE '^opt/mu300/android/system/?$|^opt/mu300/android/system/bin/?$|^opt/mu300/android/system/bin/cltest$' || true)
     if [ -n "$bad" ]; then echo "$a contains files that must not be published:"; echo "$bad" | head -20; fail=1; fi
     mid=$(tar -xzOf "$D/$a.tar.gz" ./etc/machine-id 2>/dev/null || true)
@@ -153,8 +149,9 @@ if [ -n "${MU300_PREV_RELEASE:-}" ]; then
         rm -f "$D/packages.prev" "$D/packages.new"
     done
 fi
-# an extra holds what its name says, for the release it is published with (mu300-update compares ./release)
-for x in vpn lang vpn-mihomo; do
+# an extra holds what its name says, for the release it is published with (mu300-update compares ./release). The VPN
+# (vpn, vpn-mihomo) is not one of this release's: it is the module of github.com/dikeckaan/mu300-linux-vpn
+for x in lang; do
     [ "$(tar -xzOf "$D/mu300-extra-$x.tar.gz" ./name)" = $x ] && [ "$(tar -xzOf "$D/mu300-extra-$x.tar.gz" ./release)" = "$TAG" ] ||
         { echo "mu300-extra-$x.tar.gz is not the $x extra of $TAG"; fail=1; }
 done
@@ -197,10 +194,9 @@ first with \`./install.sh --check\`.
 | mu300-ubuntu-26.04-rootfs.tar.gz | Ubuntu 26.04 LTS root filesystem |
 | mu300-openwrt-rootfs.tar.gz | OpenWrt 25.12.5 root filesystem |
 | mu300-openwrt-luci-rootfs.tar.gz | OpenWrt 25.12.5 with the MU300 control panel (luci-app-mu300 by kanoqwq, Aurora theme by eamonxg) |
-| mu300-extra-vpn.tar.gz | the VPN engines, not part of the images: \`mu300-extra install vpn\` on the device (or the installer's question) puts them on the Linux partition; Xray-core $(sed -n 's/^XRAY_VER=//p' "$TOP/tools/fetch-xray.sh"), hev-socks5-tunnel $(sed -n 's/^HEV_VER=//p' "$TOP/tools/fetch-xray.sh"), sing-box $(sed -n 's/^VER=//p' "$TOP/tools/fetch-sing-box.sh") |
-| mu300-extra-vpn-mihomo.tar.gz | mihomo (Clash.Meta) $(sed -n 's/^VER=//p' "$TOP/tools/fetch-mihomo.sh"), the engine of mu300-vpn's mihomo profiles (Clash/mihomo YAML subscriptions): \`mu300-extra install vpn-mihomo\` on the device (mu300-vpn fetches it itself when a mihomo profile is turned on) |
 | mu300-extra-lang.tar.gz | LuCI and the MU300 panel in more languages (OpenWrt only; English, Turkish and Chinese are in the images): \`mu300-extra install lang\` on the device, or System > Languages in the panel; LuCI's catalogs from the OpenWrt 25.12.5 feed, the panel's AI-translated |
 | mu300-update | the on-device updater of this release (\`mu300-update apply\` switches to it before it changes anything) |
+| (the VPN) | not part of this release: the VPN toolkit (\`mu300-vpn\` with Xray-core, hev-socks5-tunnel, sing-box; mihomo as \`vpn-mihomo\`) is the module of https://github.com/dikeckaan/mu300-linux-vpn - \`mu300-extra install vpn\` on the device, or the installer's question, takes its latest release |
 
 The images contain **no proprietary files**: the installer pulls the Wi-Fi/Bluetooth firmware and the Android
 modem/GPU userspace from your own device and adds them during installation.
@@ -209,9 +205,6 @@ Built from $REPO@$commit with \`kernel/build-all.sh\` and \`tools/make-release.s
 Corresponding source (GPL): kernel https://github.com/Enceka/android_kernel_zte_ums9620_mifi_u30air/tree/$kernel_rev ,
 Wi-Fi/Bluetooth/Mali modules https://github.com/realme-kernel-opensource/realme_C51_C53_Narzo-N53-AndroidT-kernel-source/tree/$modules_rev ,
 patches in \`kernel/patches\`. Ubuntu, OpenWrt and busybox packages come from their distributions' archives;
-sing-box from https://github.com/SagerNet/sing-box/releases, Xray from https://github.com/XTLS/Xray-core/releases,
-hev-socks5-tunnel from https://github.com/heiher/hev-socks5-tunnel/releases,
-mihomo from https://github.com/MetaCubeX/mihomo/releases,
 Aurora (luci-theme-aurora 1.4.0) from https://github.com/eamonxg/luci-theme-aurora/releases/tag/v1.4.0.
 EOF
 if gh release view "$TAG" -R "$REPO" >/dev/null 2>&1; then

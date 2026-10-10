@@ -2,27 +2,33 @@
 # Optional parts that are not in the images, downloaded when you want them (Ubuntu and OpenWrt).
 #   mu300-extra list              what there is, and what is installed
 #   mu300-extra status            the installed extras: release, size, commands
-#   mu300-extra install NAME      download it from the release of this system, check it against the release's
-#                                 SHA256SUMS, install it and put its commands on the PATH
+#   mu300-extra install NAME      download it, check it against its release's SHA256SUMS, install it and put its
+#                                 commands on the PATH (lang: from the release of this system; vpn, vpn-mihomo: the
+#                                 latest release of the VPN module, github.com/dikeckaan/mu300-linux-vpn)
+#   mu300-extra install vpn|vpn-mihomo --from FILE|DIR   offline: the module's tarball copied onto the device, or a
+#                                 directory with the tarball and its SHA256SUMS (then it is verified)
 #   mu300-extra remove NAME [--force]   (--force: the vpn extra even while the VPN is on)
-#   mu300-extra link              put the system's commands and the extras' on the PATH (run at every boot)
-#   mu300-extra adopt vpn         keep the VPN engines of the system an update replaced (<os>.old) as the vpn extra
+#   mu300-extra link              put the system's commands and the extras' on the PATH, and link the VPN module
+#                                 into this system (its hooks/link; run at every boot)
 #   mu300-extra lang [list]       the languages of the lang extra, and which this system offers in LuCI
 #   mu300-extra lang enable CODE...|all    offer them in LuCI (System > System > Language and Style)
 #   mu300-extra lang disable CODE...|all   take them off that list again (the extra stays)
 #
 # Extras live on the Linux partition (/mnt/mu300-disk/extra/NAME), not in a system: Ubuntu and OpenWrt share one
-# copy, and an update or reinstall of a system keeps it. mu300-update apply brings them to the new release.
+# copy, and an update or reinstall of a system keeps it. mu300-update apply brings them up to date.
 # There are three:
-#   vpn         Xray-core, hev-socks5-tunnel and sing-box, the engines of mu300-vpn
+#   vpn         the VPN toolkit: mu300-vpn and its engines Xray-core, hev-socks5-tunnel and sing-box, the module of
+#               github.com/dikeckaan/mu300-linux-vpn. Installing it links it into every installed system (the
+#               images have no mu300-vpn); removing it takes it out of them again.
 #   lang        LuCI's own catalogs in every language of the OpenWrt feed, and the MU300 panel's (OpenWrt only:
 #               Ubuntu has no LuCI). install enables every language; which ones a system offers is its own
 #               (/etc/mu300/languages, kept by updates; no file: all of them).
-#   vpn-mihomo  mihomo (Clash.Meta), the engine of mu300-vpn's mihomo profiles (Clash/mihomo YAML subscriptions)
+#   vpn-mihomo  mihomo (Clash.Meta), the engine of mu300-vpn's mihomo profiles, from the same module repository
 #
 # MU300_RELEASE=TAG takes another release, MU300_RELEASE_URL=URL another server with the same files and SHA256SUMS,
-# MU300_EXTRA_FILE=FILE a mu300-extra-NAME.tar.gz on this device (not checked: you chose it).
-# The download, the checks and the installation are mu300-update's own (fetch_verified, extra_unpack).
+# MU300_VPN_URL=URL another place for the VPN module (a pinned tag: .../releases/download/v1.0.0), MU300_VPN_MODULE
+# the same as --from, MU300_EXTRA_FILE=FILE a mu300-extra-NAME.tar.gz on this device (not checked: you chose it).
+# The download, the checks and the installation are mu300-update's own (fetch_verified, module_get, extra_unpack).
 BIN=${MU300_BIN:-/opt/mu300/bin}
 _lib=${MU300_LIB:-}
 MU300_LIB=1
@@ -48,7 +54,8 @@ link_dir() {
 
 # link: the system's commands (one list, the same the images are built with) and every installed extra's. A file
 # or a link of somebody else's is never replaced; a link into an extra that is gone is removed.
-do_link() {
+do_link() { do_link_commands; do_link_modules; }
+do_link_commands() {
     L=$(link_dir)
     mkdir -p "$L"
     if [ -r "$OPT/lib/path-commands" ]; then
@@ -73,6 +80,14 @@ do_link() {
         case $(readlink "$l") in "$EXTRA"/*) rm -f "$l" ;; esac
     done
     lang_link
+}
+# the VPN module into this system: a new image has none of it (the boot after an update or a reinstall)
+do_link_modules() {
+    for x in $(extra_installed); do
+        extra_is_module "$x" || continue
+        module_hook_fits "$x" link "$SYSROOT" "$(system_release)" || true
+    done
+    return 0
 }
 
 # ---- lang: LuCI's languages --------------------------------------------------------------------------------------
@@ -180,12 +195,36 @@ system_release() {
     case $v in v[0-9]*) echo "$v" ;; esac
 }
 
+# install vpn|vpn-mihomo [FROM]: the module, from FROM (a file, or a directory with SHA256SUMS) or its latest release
+do_install_module() {
+    name=$1
+    from=${2:-${MU300_VPN_MODULE:-}}
+    [ -n "$from" ] || say "downloading $(module_asset "$name") from $VPN_URL"
+    module_get "$name" "$STAGE" "$from"; r=$?
+    case $r in
+        0) module_install "$name" "$MODULE_FILE" "$MODULE_SHA" "$(system_release)" || { rm -rf "$STAGE"; die "$name was not installed"; } ;;
+        3) echo "$name $(extra_release "$name") is the latest release already" ;;
+        1) rm -rf "$STAGE"; die "$name was not installed: the VPN module could not be downloaded (is the device online? Offline: mu300-extra install $name --from FILE)" ;;
+        *) rm -rf "$STAGE"; die "$name was not installed" ;;
+    esac
+    rm -rf "$STAGE"
+    do_link_commands
+    module_hook_all "$name" link || echo "$name: a system it could not be linked into gets it at its next boot (mu300-extra link)" >&2
+    printf '%s %s installed in %s\n' "$name" "$(extra_release "$name")" "$EXTRA/$name"
+}
+
 do_install() {
     name=$1
     [ "$name" != lang ] || is_openwrt || die "the lang extra is LuCI's languages, for OpenWrt only: install it from an OpenWrt system"
+    if extra_is_module "$name" && [ -z "${MU300_EXTRA_FILE:-}" ]; then
+        do_install_module "$name" "${2:-}"
+        return
+    fi
+    [ -z "${2:-}" ] || die "--from is for the VPN module (vpn, vpn-mihomo); for $name: MU300_EXTRA_FILE=FILE"
     if [ -n "${MU300_EXTRA_FILE:-}" ]; then
         [ -s "$MU300_EXTRA_FILE" ] || die "$MU300_EXTRA_FILE not found"
-        extra_unpack "$name" "$MU300_EXTRA_FILE" || die "$name was not installed"
+        extra_unpack "$name" "$MU300_EXTRA_FILE" "$(system_release)" || die "$name was not installed"
+        rm -f "$EXTRA/.$name.sha256"
     else
         tag=${MU300_RELEASE:-$(system_release)}
         [ -n "$tag" ] || tag=$(latest_release)
@@ -208,7 +247,12 @@ do_install() {
     fi
     # a fresh install of the languages offers all of them
     [ "$name" != lang ] || rm -f "$LANGS_ON"
-    do_link
+    if extra_is_module "$name"; then
+        do_link_commands
+        module_hook_all "$name" link || true
+    else
+        do_link
+    fi
     printf '%s %s installed in %s\n' "$name" "$(extra_release "$name")" "$EXTRA/$name"
 }
 
@@ -219,25 +263,19 @@ do_remove() {
         echo "the VPN is on (ENABLE=1 in /etc/mu300/vpn.conf): turn it off first (mu300-toolkit, or ENABLE=0 and mu300-vpn off), or: mu300-extra remove vpn --force" >&2
         return 1
     fi
-    rm -rf "$EXTRA/$1" "$EXTRA/.$1.new" "$EXTRA/.$1.old"
+    # the module out of every system first (its hooks are part of it): what an older image had comes back
+    extra_is_module "$1" && module_hook_all "$1" unlink
+    rm -rf "$EXTRA/$1" "$EXTRA/.$1.new" "$EXTRA/.$1.old" "$EXTRA/.$1.sha256"
     [ "$1" != lang ] || rm -f "$LANGS_ON"
     sync
     do_link
     echo "$1 removed"
 }
 
-running() { echo "${MU300_RUNNING_OS:-$(running_os)}"; }
-
-# adopt vpn: the engines of the image this system replaced (an update to a release without them in the image)
-do_adopt() {
-    [ -d "$EXTRA/$1/bin" ] && { echo "$1 is installed already"; return 0; }
-    extra_adopt "$1" "$DISK/$(running).old" || return 1
-    do_link
-}
-
 do_list() {
     for x in $EXTRAS; do
         if [ -d "$EXTRA/$x/bin" ] || [ -d "$EXTRA/$x/i18n" ]; then st="installed ($(extra_release "$x"))"; else st="not installed"; fi
+        [ "$x" != vpn ] || [ ! -d "$EXTRA/vpn/bin" ] || vpn_module_in "$EXTRA/vpn" || st="$st - the engines of an older release only, without mu300-vpn: mu300-extra install vpn"
         [ "$x" != lang ] || is_openwrt || st="$st - for OpenWrt only: Ubuntu has no LuCI"
         printf '%-6s %s\n       %s\n' "$x" "$st" "$(extra_desc "$x")"
     done
@@ -267,11 +305,15 @@ do_status() {
 case ${1:-list} in
     list) do_list ;;
     status) do_status ;;
-    install) [ -n "${2:-}" ] || die "usage: mu300-extra install NAME"; known "$2"; need_root install; need_disk; do_install "$2" ;;
+    install) [ -n "${2:-}" ] || die "usage: mu300-extra install NAME [--from FILE|DIR]"; known "$2"; from=
+             case ${3:-} in '') ;; --from) [ -n "${4:-}" ] || die "usage: mu300-extra install $2 --from FILE|DIR"; from=$4 ;;
+                 *) die "usage: mu300-extra install NAME [--from FILE|DIR]" ;; esac
+             need_root install; need_disk; do_install "$2" "$from" ;;
     remove) [ -n "${2:-}" ] || die "usage: mu300-extra remove NAME"; known "$2"; need_root remove; need_disk; do_remove "$2" "${3:-}" ;;
     link) need_root link; do_link ;;
-    adopt) [ -n "${2:-}" ] || die "usage: mu300-extra adopt NAME"; known "$2"; need_root adopt; need_disk; do_adopt "$2" ;;
+    # gone: the VPN module carries its engines (an older mu300-vpn asks for it, then installs the extra)
+    adopt) echo "nothing to adopt: the VPN module carries its own engines (mu300-extra install vpn)" >&2; exit 1 ;;
     lang) shift; do_lang "$@" ;;
-    -h|--help|help) sed -n '2,24s/^# \{0,1\}//p' "$0" ;;
-    *) echo "usage: mu300-extra list|status|install NAME|remove NAME|link|adopt NAME|lang ..." >&2; exit 2 ;;
+    -h|--help|help) sed -n '2,31s/^# \{0,1\}//p' "$0" ;;
+    *) echo "usage: mu300-extra list|status|install NAME [--from FILE|DIR]|remove NAME|link|lang ..." >&2; exit 2 ;;
 esac

@@ -49,6 +49,10 @@ EVENTS_PID=$R/run/mu300-wifi-client.events.pid
 # this script by its full path, for the programs that call it back (udhcpc, wpa_cli -a) from another directory
 case $0 in /*) SELF=$0 ;; *) SELF=$(pwd)/$0 ;; esac
 VPN_CMD=${MU300_VPN_CMD:-/opt/mu300/bin/mu300-vpn}
+# the VPN's kill switch without the VPN module (lib/vpn-orphan.sh): no join and no sharing then - fail closed
+VPN_ORPHAN_LIB=${MU300_VPN_ORPHAN_LIB:-/opt/mu300/lib/vpn-orphan.sh}
+[ ! -r "$VPN_ORPHAN_LIB" ] || . "$VPN_ORPHAN_LIB"
+vpn_orphaned() { command -v vpn_killswitch_orphaned >/dev/null 2>&1 && vpn_killswitch_orphaned "$VPN_CMD" "$R"; }
 # set by "wifi-client scan-mode on": keeps the hotspot from starting at the next boot, so the radio stays a
 # station and can look for networks. It survives the reboot on purpose, and that boot takes it
 # (mu300-wifi-scan-mode.service: "scan-mode boot") into SCANRUN, for that boot alone. It used to stay until a
@@ -283,6 +287,11 @@ fail_closed() {
 
 # shared, with the subnet DHCP gave (for when it is not a private one); forwarding on only once nft confirms it
 share_uplink() {
+    # the VPN's kill switch with no VPN module to enforce it: the uplink is not shared (nor used: connect refuses)
+    if vpn_orphaned; then
+        log "$VPN_ORPHANED_MSG: $IFACE is not shared (mu300-extra install vpn, or turn the kill switch off)"
+        fail_closed; return 1
+    fi
     if is_openwrt; then
         wan_zone || { fail_closed; return 1; }
     fi
@@ -781,6 +790,9 @@ connect() {  # connect SSID [PASS]
     if [ -n "$psk" ]; then
         valid_text 8 63 "$psk" || die "a WPA passphrase is 8 to 63 bytes, without control characters"
     fi
+    # the VPN is a module of its own: its kill switch on with the module gone would leave nothing to keep this
+    # uplink inside the tunnel. Refused before anything is touched (the connection that is up stays as it is).
+    vpn_orphaned && die "$VPN_ORPHANED_MSG: not joining a network (mu300-extra install vpn, or turn the kill switch off)"
     stop_client || die "could not take $IFACE off the network it is on: not joining another"
     if ! prepare_station; then
         save_network "$ssid" "$psk"

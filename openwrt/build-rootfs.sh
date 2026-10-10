@@ -113,7 +113,7 @@ for o in firmware android-subset android-gpu-subset tools/logdw/logdw tools/bt-i
 done
 # shellcheck disable=SC2046
 docker run --rm --platform linux/arm64 \
-  -v "$TOP/rootfs/overlay/opt/mu300":/in/opt-mu300:ro -v "$TOP/rootfs/overlay/etc/mu300/vpn.conf.example":/in/vpn.conf.example:ro -v "$TOP/openwrt/overlay":/in/overlay:ro \
+  -v "$TOP/rootfs/overlay/opt/mu300":/in/opt-mu300:ro -v "$TOP/openwrt/overlay":/in/overlay:ro \
   -v "$FW4PATCH":/in/fw4-sipa-offload.patch:ro \
   -v "$TOP/boot/module-order.txt":/in/module-order.txt:ro -v "$IN/out/modules":/in/modules:ro \
   $(opt out/modules.builtin modules.builtin) $(opt out/modules.builtin.modinfo modules.builtin.modinfo) \
@@ -127,9 +127,10 @@ apk update >/dev/null
 # (LuCI, mbedtls, the CA bundle, iwinfo ...), and "apk add" below installs only what is missing, so without this
 # an image shipped months later still has the old LuCI and the package manager shows every update on the first look
 apk upgrade >/dev/null
-# openssl-util: mu300-vpn fetches the VPN server certificate with it to pin, for links that ask for allowInsecure;
+# openssl-util: the VPN module (mu300-vpn, github.com/dikeckaan/mu300-linux-vpn) fetches the VPN server certificate
+# with it to pin, for links that ask for allowInsecure;
 # i2c-tools, gpiod-tools: mu300-usb (the charger of the U30 Air) and mu300-nfc (its NFC tag);
-# jq: mu300-vpn reads vmess links and raw Xray/sing-box configs with it, and rewrites those configs at every start
+# jq: the VPN module reads vmess links and raw Xray/sing-box configs with it, and rewrites those configs at every start
 apk add wpad-basic-mbedtls wifi-scripts iwinfo wireless-regdb iw bash ip-full coreutils-stty openssl-util \
     i2c-tools gpiod-tools jq >/dev/null
 # the router protocols LuCI offers, with their tools: WireGuard, PPTP/L2TP (PPPoE is in the base), 6in4/6rd/DS-Lite,
@@ -235,8 +236,6 @@ if [ -e /in/busybox ]; then
     done
 fi
 mkdir -p $R/etc/mu300
-# the VPN is configured the same way on both systems, and mu300-toolkit copies this to start a vpn.conf
-cp /in/vpn.conf.example $R/etc/mu300/vpn.conf.example
 printf "%s\n" "${MU300_VERSION:-dev}" > $R/etc/mu300/image-version
 # enable the services (rc.common "enable" needs ubus, which is not running in the build container)
 # accounts still those of the image until an installer or mu300-update puts the device ones in place

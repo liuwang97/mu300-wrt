@@ -11,7 +11,10 @@
 #   mu300-update clean            delete the kept <os>.old copies
 #   mu300-update notice           only look: a note for the login message and mu300-toolkit when a newer release is
 #                                 out (at boot and every 6 hours; nothing is installed without apply)
-# Installed extras (mu300-extra: the VPN engines, LuCI's languages) are updated with the release.
+# Installed extras (mu300-extra: LuCI's languages) are updated with the release, the VPN module (mu300-vpn, from
+# github.com/dikeckaan/mu300-linux-vpn) to its latest release. A device that uses the VPN is never left without it:
+# when the module cannot be downloaded, apply stops before it changes anything (MU300_VPN_MODULE=FILE|DIR, or
+# mu300-linux-vpn.tar.gz and its SHA256SUMS copied to /mnt/mu300-disk/.mu300-update/vpn/, serve it offline).
 #
 # How it works: the new filesystem is unpacked next to the old one as <os>.new on the Linux partition, your settings
 # and the vendor files are carried over, and only then are the directories swapped (<os> -> <os>.old, <os>.new ->
@@ -388,22 +391,35 @@ apply_one() {  # apply_one OS TAG
 }
 
 # ---- extras -----------------------------------------------------------------------------------------------------
-# Optional parts that are not in the images: release assets mu300-extra-<name>.tar.gz (tools/make-extra.sh: ./name,
-# ./release, ./components, then ./bin/<programs>, or for lang ./languages and ./i18n/<catalogs>), installed on the Linux partition next to the systems, so both systems use
+# Optional parts that are not in the images, installed on the Linux partition next to the systems, so both systems use
 # one copy and nothing that replaces a system touches it. mu300-extra is the command; the functions are here
 # because an update installs and refreshes them too, and the updater of the new release runs before the system
-# that has mu300-extra exists.
+# that has mu300-extra exists. Two kinds:
+#   lang         a release asset of mu300-linux, mu300-extra-lang.tar.gz (tools/make-extra.sh: ./name, ./release,
+#                ./components, ./languages, ./manifest, ./i18n/<catalogs>), for the release it was published with
+#   vpn, vpn-mihomo   the VPN module, released on its own by github.com/dikeckaan/mu300-linux-vpn under fixed names
+#                (mu300-linux-vpn.tar.gz, mu300-linux-vpn-mihomo.tar.gz, SHA256SUMS): ./VERSION, ./components,
+#                ./requires ("mu300-linux vYYYY.MM.DD", the oldest system it works with), ./bin/<programs>, and for vpn
+#                ./lib/vpn, ./service, ./etc and ./hooks/link, ./hooks/unlink - which make one system use it
+#                (sh hooks/link SYSROOT, "" for the running system), so the images carry no mu300-vpn at all.
 EXTRA=$DISK/extra
 EXTRAS="vpn lang vpn-mihomo"
-VPN_ENGINES="xray hev-socks5-tunnel sing-box"
+VPN_REPO=dikeckaan/mu300-linux-vpn
+# MU300_VPN_URL: another place with the module's files and SHA256SUMS (a pinned tag: .../releases/download/v1.0.0,
+# or a local server)
+VPN_URL=${MU300_VPN_URL:-https://github.com/$VPN_REPO/releases/latest/download}
+# where an update looks for a module copied onto the device by hand (the tarball and its SHA256SUMS)
+VPN_STAGED=$DISK/.mu300-update/vpn
 extra_desc() {
     case $1 in
-        vpn) echo "the VPN engines for mu300-vpn: Xray-core, hev-socks5-tunnel, sing-box (about 40 MB to download, 120 MB installed)" ;;
+        vpn) echo "the VPN toolkit (mu300-vpn with Xray-core, hev-socks5-tunnel, sing-box), the module of github.com/$VPN_REPO (about 40 MB to download, 120 MB installed)" ;;
         lang) echo "LuCI (the web interface) in 40 more languages, the MU300 panel in 29 of them; OpenWrt only (about 2 MB to download, 6 MB installed)" ;;
-        vpn-mihomo) echo "mihomo (Clash.Meta), the engine of mu300-vpn's mihomo profiles (about 15 MB to download, 40 MB installed)" ;;
+        vpn-mihomo) echo "mihomo (Clash.Meta), the engine of mu300-vpn's mihomo profiles, from the same module repository (about 15 MB to download, 40 MB installed)" ;;
     esac
 }
 extra_asset() { echo "mu300-extra-$1.tar.gz"; }
+extra_is_module() { case $1 in vpn|vpn-mihomo) return 0 ;; esac; return 1; }
+module_asset() { case $1 in vpn) echo mu300-linux-vpn.tar.gz ;; vpn-mihomo) echo mu300-linux-vpn-mihomo.tar.gz ;; esac; }
 extra_known() { case " $EXTRAS " in *" $1 "*) return 0 ;; esac; return 1; }
 extra_installed() {
     for d in "$EXTRA"/*; do
@@ -411,7 +427,13 @@ extra_installed() {
     done
     return 0
 }
-extra_release() { cat "$EXTRA/$1/release" 2>/dev/null || echo unknown; }
+extra_release() {
+    if [ -f "$EXTRA/$1/release" ]; then cat "$EXTRA/$1/release"
+    elif [ -f "$EXTRA/$1/VERSION" ]; then cat "$EXTRA/$1/VERSION"
+    else echo unknown; fi
+}
+# vpn_module_in DIR: DIR is the VPN module (an older vpn extra had the engines only, no mu300-vpn)
+vpn_module_in() { [ -f "$1/bin/mu300-vpn" ] && [ -x "$1/bin/mu300-vpn" ]; }
 
 # extra_put NAME DIR: DIR (on the same filesystem) becomes the extra; the one it replaces is removed afterwards.
 # Running programs keep their files, as with a system that is updated while it runs.
@@ -453,6 +475,11 @@ extra_tree_ok() {
     _t=$(find "$2" -type f -exec ls -ld {} +) || return 1
     [ -z "$(printf '%s\n' "$_t" | awk '$2 != 1')" ] || return 1
     _t=$(cd "$2" && find .) || return 1
+    # the VPN module: plain names, four levels at most (bin/, lib/vpn/, service/systemd/, hooks/, ...)
+    if extra_is_module "$1"; then
+        ! printf '%s\n' "$_t" | LC_ALL=C grep -Evxq -- "$MODULE_ENTRY"
+        return
+    fi
     # the other extras: their four files and programs in bin/, nothing else (whatever a tar did to the names)
     if [ "$1" != lang ]; then
         ! printf '%s\n' "$_t" | LC_ALL=C grep -Evxq -- '\.|\./(name|release|components|manifest|bin|bin/[A-Za-z0-9._+-]+)'
@@ -495,9 +522,11 @@ lang_tar_ok() {
 # backslash, $, backquote, <, >, & or control character: it goes into /etc/config/luci, into JSON and into a page)
 # ./release: a tag
 EXTRA_RELEASE='[A-Za-z0-9._-]{1,40}'
+MODULE_ENTRY='\.|\./[A-Za-z0-9_+-][A-Za-z0-9._+-]*(/[A-Za-z0-9_+-][A-Za-z0-9._+-]*){0,3}'
 LANG_LINE='[a-z]{2,3}(_[a-z]{2})?	[^	"`$<>&\\'"'"'[:cntrl:]]{1,100}'
 
-# extra_unpack NAME TARBALL: install a downloaded (and verified) extra; the old one stays when anything is wrong.
+# extra_unpack NAME TARBALL [FOR]: install a downloaded (and verified) extra; the old one stays when anything is wrong.
+# FOR: the mu300-linux release the systems will run, which a module's ./requires must not be newer than.
 # The tarball is read once, into a directory only root can enter, and checked and unpacked from that copy: a file
 # swapped at TARBALL's path after the copy (a /tmp upload, a link planted there) changes nothing.
 extra_unpack() {
@@ -537,11 +566,28 @@ extra_unpack() {
         chmod -R u-s,g-s,go-w "$_new"
     fi || { rm -rf "$_new"; echo "extra $1: could not set its file modes" >&2; return 1; }
     chmod 755 "$_new"
-    if ! LC_ALL=C grep -Eqx -- "$EXTRA_RELEASE" "$_new/release" 2>/dev/null || [ "$(wc -l < "$_new/release")" -ne 1 ]; then
-        rm -rf "$_new"; echo "extra $1: $2 has no valid release" >&2; return 1
+    if extra_is_module "$1"; then
+        _rel=$_new/VERSION
+    else
+        _rel=$_new/release
+        if [ "$(cat "$_new/name" 2>/dev/null)" != "$1" ]; then
+            rm -rf "$_new"; echo "extra $1: $2 is not the $1 extra" >&2; return 1
+        fi
     fi
-    if [ "$(cat "$_new/name" 2>/dev/null)" != "$1" ]; then
-        rm -rf "$_new"; echo "extra $1: $2 is not the $1 extra" >&2; return 1
+    if ! LC_ALL=C grep -Eqx -- "$EXTRA_RELEASE" "$_rel" 2>/dev/null || [ "$(wc -l < "$_rel")" -ne 1 ]; then
+        rm -rf "$_new"; echo "extra $1: $2 has no valid ${_rel##*/}" >&2; return 1
+    fi
+    if extra_is_module "$1"; then
+        # an older vpn extra (the engines alone) is not the module: the images have no mu300-vpn of their own any more
+        if [ "$1" = vpn ] && { ! vpn_module_in "$_new" || [ ! -f "$_new/hooks/link" ] || [ ! -f "$_new/hooks/unlink" ]; }; then
+            rm -rf "$_new"; echo "extra $1: $2 is not the VPN module (bin/mu300-vpn, hooks/link or hooks/unlink missing)" >&2; return 1
+        fi
+        _need=$(module_needs "$_new")
+        if ! version_ok "$_need" "${3:-}"; then
+            rm -rf "$_new"
+            echo "extra $1: $2 needs mu300-linux $_need or newer, and the system is ${3:-unknown}: update it first (mu300-update apply)" >&2
+            return 1
+        fi
     fi
     _n=0
     if [ "$1" = lang ]; then
@@ -558,48 +604,229 @@ extra_unpack() {
 
 # does the system at ROOT use the VPN? (only the switch is read, never the rest of the file)
 extra_vpn_wanted() { grep -q '^ENABLE=1' "$1/etc/mu300/vpn.conf" 2>/dev/null; }
-# does the image at ROOT carry the engines itself (the images before the vpn extra)?
-vpn_engines_in() { [ -x "$1/opt/mu300/bin/xray" ] || [ -x "$1/opt/mu300/bin/sing-box" ]; }
-
-# extra_adopt vpn ROOT: the engines of an image from before the vpn extra become the extra, without a download.
-# Its release is that system's, so the next update replaces them with the release's.
-extra_adopt() {
-    [ "$1" = vpn ] || { echo "extra $1: nothing to adopt" >&2; return 1; }
-    vpn_engines_in "$2" || return 1
-    _new=$EXTRA/.$1.new
-    rm -rf "$_new"; mkdir -p "$_new/bin" || return 1
-    for _e in $VPN_ENGINES; do
-        [ -x "$2/opt/mu300/bin/$_e" ] || continue
-        cp -p "$2/opt/mu300/bin/$_e" "$_new/bin/$_e" || { rm -rf "$_new"; return 1; }
-    done
-    echo "$1" > "$_new/name"
-    cat "$2/etc/mu300/image-version" > "$_new/release" 2>/dev/null || echo unknown > "$_new/release"
-    echo "taken from the image of $2" > "$_new/components"
-    extra_put "$1" "$_new" || { rm -rf "$_new"; return 1; }
-    echo "extra $1: the engines of $2 are kept as the $1 extra"
+# vpn_killswitch_wanted ROOT: the VPN on with its kill switch in the system at ROOT - a copy of lib/vpn-orphan.sh's
+# (this updater runs before the system that has that file exists; tests/test_vpn_hooks.py holds both to one matrix)
+vpn_conf_value() {
+    [ -r "$1" ] || return 0
+    sed -n "s/^$2=//p" "$1" 2>/dev/null | tail -n1 | sed "s/[[:space:]]#.*//; s/[\"' ]//g"
+}
+vpn_killswitch_wanted() {
+    [ "$(vpn_conf_value "${1:-}/etc/mu300/vpn.conf" ENABLE)" = 1 ] || return 1
+    if [ -d "${1:-}/etc/mu300/vpn/profiles" ] && [ -r "${1:-}/etc/mu300/vpn/settings" ]; then
+        _vks=$(vpn_conf_value "${1:-}/etc/mu300/vpn/settings" KILL_SWITCH)
+    else
+        _vks=$(vpn_conf_value "${1:-}/etc/mu300/vpn.conf" KILL_SWITCH)
+    fi
+    [ "$_vks" != 0 ]
 }
 
-# extras_to_fetch TAG "OS...": the extras an update to TAG downloads - the installed ones that are not TAG's, and
-# the vpn extra for a system being updated that uses the VPN with the engines of its image (they are gone from the
-# images since the vpn extra exists; without them the VPN would not come back after the reboot)
+# ---- the VPN module -----------------------------------------------------------------------------------------------
+# module_needs DIR: the mu300-linux release the module in DIR needs (./requires: "mu300-linux vYYYY.MM.DD"; none: any)
+module_needs() { awk '$1 == "mu300-linux" {print $2; exit}' "$1/requires" 2>/dev/null; }
+# version_ok NEED HAVE: HAVE is NEED or newer. Tags are dates (vYYYY.MM.DD) and sort as text; a system that is no
+# release (a build of one's own, "dev", unknown) is not judged.
+version_ok() {
+    [ -n "$1" ] || return 0
+    case $2 in v[0-9]*) ;; *) return 0 ;; esac
+    [ "$(printf '%s\n%s\n' "$1" "$2" | sort | tail -n1)" = "$2" ]
+}
+sha_of() { sha256sum "$1" | cut -d' ' -f1; }
+sums_want() { awk -v f="$2" '$2 == f || $2 == "*" f {print $1; exit}' "$1" 2>/dev/null; }
+
+# The module's tarball, checked, as MODULE_FILE (its hash: MODULE_SHA). Status 0 with a file, 3 when the installed
+# one is that release's already (nothing downloaded), 1 when it cannot be had (offline, GitHub down), 2 when what
+# there is fails its check.
+# module_from DIR|FILE NAME: a copy brought onto the device. A directory must hold the tarball and its SHA256SUMS and
+# is verified; a file is checked against a SHA256SUMS next to it that lists it (else it is the user's own choice).
+module_from() {
+    if [ -d "$1" ]; then
+        _a=$(module_asset "$2")
+        [ -s "$1/$_a" ] || { echo "no $_a in $1" >&2; return 2; }
+        _w=$(sums_want "$1/SHA256SUMS" "$_a")
+        [ -n "$_w" ] || { echo "$1/SHA256SUMS is missing or does not list $_a: not installed unverified" >&2; return 2; }
+        [ "$(sha_of "$1/$_a")" = "$_w" ] || { echo "$1/$_a does not match its SHA256SUMS" >&2; return 2; }
+        MODULE_FILE=$1/$_a MODULE_SHA=$_w
+        return 0
+    fi
+    [ -s "$1" ] || { echo "$1 not found" >&2; return 2; }
+    _w=$(sums_want "$(dirname "$1")/SHA256SUMS" "${1##*/}")
+    MODULE_SHA=$(sha_of "$1")
+    [ -z "$_w" ] || [ "$MODULE_SHA" = "$_w" ] || { echo "$1 does not match $(dirname "$1")/SHA256SUMS" >&2; return 2; }
+    MODULE_FILE=$1
+}
+# module_download NAME DIR: the module's latest release (VPN_URL) into DIR, checked against that release's SHA256SUMS
+# (fetched every time: under releases/latest the same name is a new file with every release)
+module_download() {
+    _a=$(module_asset "$1")
+    mkdir -p "$2" || return 1
+    _s=$(fetch_stdout "$VPN_URL/SHA256SUMS") && [ -n "$_s" ] ||
+        { echo "cannot download SHA256SUMS of the VPN module ($VPN_URL)" >&2; return 1; }
+    printf '%s\n' "$_s" > "$2/SHA256SUMS"
+    _w=$(sums_want "$2/SHA256SUMS" "$_a")
+    [ -n "$_w" ] || { echo "$_a is not part of the VPN module's release ($VPN_URL)" >&2; return 1; }
+    MODULE_SHA=$_w
+    # the installed one is this release's: nothing to download
+    [ -d "$EXTRA/$1/bin" ] && [ "$(cat "$EXTRA/.$1.sha256" 2>/dev/null)" = "$_w" ] && return 3
+    for _try in 1 2 3; do
+        [ -s "$2/$_a" ] && [ "$(sha_of "$2/$_a")" = "$_w" ] && { MODULE_FILE=$2/$_a; return 0; }
+        fetch_file "$VPN_URL/$_a" "$2/$_a" && [ "$(sha_of "$2/$_a")" = "$_w" ] && { MODULE_FILE=$2/$_a; return 0; }
+        rm -f "$2/$_a"
+    done
+    echo "downloading $_a failed" >&2
+    return 1
+}
+# module_get NAME DIR [FROM]: FROM (a file or a directory) when given, else the download into DIR
+module_get() {
+    MODULE_FILE= MODULE_SHA=
+    if [ -n "${3:-}" ]; then module_from "$3" "$1"; else module_download "$1" "$2"; fi
+}
+# module_install NAME FILE SHA FOR: extra_unpack, and the hash kept, to know the installed release next time
+module_install() {
+    extra_unpack "$1" "$2" "$4" || return 1
+    printf '%s\n' "$3" > "$EXTRA/.$1.sha256"
+}
+
+# module_hook NAME link|unlink SYSROOT: the module's hook for one system (SYSROOT "" is the running one, $DISK/<os>
+# another). Run with sh: the disk may be mounted noexec. MU300_DISK and MU300_EXTRA_DIR tell it where it is.
+module_hook() {
+    [ -f "$EXTRA/$1/hooks/$2" ] || return 0
+    MU300_DISK=$DISK MU300_EXTRA_DIR=$EXTRA/$1 sh "$EXTRA/$1/hooks/$2" "$3" ||
+        { echo "extra $1: hooks/$2 failed for ${3:-this system}" >&2; return 1; }
+}
+# module_hook_fits NAME link|unlink SYSROOT VERSION: link only a system the module works with (./requires); an older
+# one keeps what its image has (its own mu300-vpn finds the engines in the extra)
+module_hook_fits() {
+    if [ "$2" = link ] && ! version_ok "$(module_needs "$EXTRA/$1")" "$4"; then
+        echo "extra $1: ${3:-this system} is $4, the module needs mu300-linux $(module_needs "$EXTRA/$1"): not linked there" >&2
+        return 0
+    fi
+    module_hook "$1" "$2" "$3"
+}
+# module_hook_all NAME link|unlink: every installed system; the running one as MU300_SYSROOT ("" on the device)
+module_hook_all() {
+    _rc=0
+    for _o in $(installed_systems); do
+        if [ "${MU300_ROOT:-/}" -ef "$DISK/$_o" ]; then _r=${MU300_SYSROOT:-}; else _r=$DISK/$_o; fi
+        module_hook_fits "$1" "$2" "$_r" "$(cat "$DISK/$_o$VERSION_FILE" 2>/dev/null || echo unknown)" || _rc=1
+    done
+    return $_rc
+}
+
+# vpn_in_use "OS...": must the device have the VPN module after an update of OS...? A vpn extra is installed (the
+# module, or the engines alone of an older release), mu300-vpn of the running system says it is enabled, or a system
+# being updated has ENABLE=1.
+vpn_in_use() {
+    [ -d "$EXTRA/vpn/bin" ] && return 0
+    _v=${MU300_VPN_CMD:-${MU300_BIN:-/opt/mu300/bin}/mu300-vpn}
+    [ -x "$_v" ] && [ "$("$_v" enabled </dev/null 2>/dev/null)" = 1 ] && return 0
+    for _o in $1; do extra_vpn_wanted "$DISK/$_o" && return 0; done
+    return 1
+}
+vpn_stage_hint() {
+    printf '\nCopy mu300-linux-vpn.tar.gz and SHA256SUMS from https://github.com/%s/releases/latest\n' "$VPN_REPO" >&2
+    printf 'into %s/ on this device (or: MU300_VPN_MODULE=/path/to/mu300-linux-vpn.tar.gz mu300-update apply),\n' "$VPN_STAGED" >&2
+    printf 'or get the device online, and run mu300-update apply again.\n' >&2
+}
+
+# extras_to_fetch TAG: the extras of the mu300-linux release an update to TAG downloads - the installed ones that are
+# not TAG's (the VPN module comes from its own repository: modules_fetch)
 extras_to_fetch() {
     _want=
     for _x in $(extra_installed); do
-        extra_known "$_x" || continue
+        extra_known "$_x" && ! extra_is_module "$_x" || continue
         [ "$(extra_release "$_x")" = "$1" ] || _want="$_want $_x"
     done
-    if [ ! -d "$EXTRA/vpn/bin" ]; then
-        for _o in $2; do
-            extra_vpn_wanted "$DISK/$_o" && { _want="$_want vpn"; break; }
-        done
-    fi
     echo $_want
 }
 
-# extras_install TAG "OS..." "NAMES": after the systems are in place, install the extras downloaded into $STAGE;
-# then make sure every updated system that uses the VPN has engines (the extra, or those of the image it replaced)
+# modules_fetch TAG "OS...": before anything is changed, the VPN module the device will have after the update:
+# MODULES_NEW gets "NAME FILE SHA" lines for modules_install. MU300_VPN_MODULE (a file or a directory), else a copy in
+# VPN_STAGED, else the download. When the VPN is in use, the update replaces a system and there is no module, it
+# stops here: the new systems have no mu300-vpn, and a VPN with its kill switch would leave the device with no
+# connection after the reboot. An installed module that cannot be refreshed stays; so does vpn-mihomo (an engine).
+MODULES_NEW=
+modules_fetch() {
+    MODULES_NEW=
+    _from=${MU300_VPN_MODULE:-}
+    [ -n "$_from" ] || [ ! -s "$VPN_STAGED/$(module_asset vpn)" ] || _from=$VPN_STAGED
+    if vpn_in_use "$2"; then
+        module_get vpn "$STAGE/module" "$_from"; _r=$?
+        case $_r in
+            0) MODULES_NEW="vpn $MODULE_FILE $MODULE_SHA" ;;
+            3) ;;
+            *) if vpn_module_in "$EXTRA/vpn"; then
+                   echo "extra vpn: the VPN module could not be updated; the installed one ($(extra_release vpn)) stays" >&2
+               elif [ -n "$2" ]; then
+                   vpn_stage_hint
+                   die "this device uses the VPN, whose toolkit (mu300-vpn) is a module of its own now that the new systems do not carry, and it could not be had: nothing was changed"
+               else
+                   echo "extra vpn: the VPN module could not be had; once the device is online: mu300-extra install vpn" >&2
+               fi ;;
+        esac
+    fi
+    if [ -d "$EXTRA/vpn-mihomo/bin" ]; then
+        _mf=
+        [ -z "$_from" ] || [ ! -d "$_from" ] || [ ! -s "$_from/$(module_asset vpn-mihomo)" ] || _mf=$_from
+        module_get vpn-mihomo "$STAGE/module" "$_mf"; _r=$?
+        case $_r in
+            0) MODULES_NEW="$MODULES_NEW
+vpn-mihomo $MODULE_FILE $MODULE_SHA" ;;
+            3) ;;
+            *) echo "extra vpn-mihomo: not updated; the installed one ($(extra_release vpn-mihomo)) stays" >&2 ;;
+        esac
+    fi
+    return 0
+}
+# modules_install TAG: install what modules_fetch got, before the systems are switched: a module that fails its
+# checks (./requires newer than TAG, a broken tarball) stops a device that needs it while nothing is changed. The
+# running system keeps working meanwhile: its own mu300-vpn finds the engines in the extra where they were.
+modules_install() {
+    # own names: module_install -> extra_unpack counts files in _n and _f, which named the module here ("extra 4")
+    while read -r _mi_name _mi_file _mi_sha; do
+        [ -n "$_mi_name" ] || continue
+        if module_install "$_mi_name" "$_mi_file" "$_mi_sha" "$1"; then
+            printf 'extra %s: %s\n' "$_mi_name" "$(extra_release "$_mi_name")"
+            EXTRA_CHANGED=1
+        elif [ "$_mi_name" = vpn ] && ! vpn_module_in "$EXTRA/vpn"; then
+            vpn_stage_hint
+            die "the VPN module could not be installed (see above): nothing was changed"
+        else
+            echo "extra $_mi_name: not updated (see above)" >&2
+        fi
+    done <<EOF
+$MODULES_NEW
+EOF
+    rm -rf "$STAGE/module"
+}
+# modules_link "OS...": the updated systems use the module (their images have no mu300-vpn); one the hook could not
+# link gets another try at its first boot (mu300-extra link)
+modules_link() {
+    for _x in vpn vpn-mihomo; do
+        [ -f "$EXTRA/$_x/hooks/link" ] || continue
+        for _o in $1; do
+            module_hook_fits "$_x" link "$DISK/$_o" "$(cat "$DISK/$_o$VERSION_FILE" 2>/dev/null || echo unknown)" ||
+                echo "extra $_x: $_o gets it at its first boot instead (mu300-extra link)" >&2
+        done
+    done
+    for _o in $1; do
+        extra_vpn_wanted "$DISK/$_o" || continue
+        [ ! -e "$DISK/$_o/opt/mu300/bin/mu300-vpn" ] && [ ! -L "$DISK/$_o/opt/mu300/bin/mu300-vpn" ] || continue
+        if vpn_killswitch_wanted "$DISK/$_o"; then
+            # the systems are switched already: the system itself fails closed (mobile-data and wifi-client keep
+            # their uplinks down while its kill switch has no VPN behind it, lib/vpn-orphan.sh) until it is linked
+            printf '\n!!! WARNING: %s has the VPN on with its kill switch and no mu300-vpn: mobile data and the Wi-Fi client\n' "$_o" >&2
+            printf '!!! stay DOWN there until the module is linked (its first boot tries: mu300-extra link; else\n' >&2
+            printf '!!! mu300-extra install vpn on it, or ENABLE=0 in its /etc/mu300/vpn.conf)\n' >&2
+        else
+            echo "WARNING: $_o uses the VPN and has no mu300-vpn yet: its first boot links it (mu300-extra link), else run mu300-extra install vpn there" >&2
+        fi
+    done
+    return 0
+}
+
+# extras_install TAG "NAMES": after the systems are in place, the extras of the release downloaded into $STAGE
 extras_install() {
-    for _x in $3; do
+    for _x in $2; do
         if extra_unpack "$_x" "$STAGE/$(extra_asset "$_x")"; then
             printf 'extra %s: %s\n' "$_x" "$1"
             EXTRA_CHANGED=1
@@ -607,11 +834,6 @@ extras_install() {
             echo "extra $_x: not updated (see above)" >&2
         fi
         rm -f "$STAGE/$(extra_asset "$_x")"
-    done
-    for _o in $2; do
-        extra_vpn_wanted "$DISK/$_o" && [ ! -d "$EXTRA/vpn/bin" ] && ! vpn_engines_in "$DISK/$_o" || continue
-        extra_adopt vpn "$DISK/$_o.old" && EXTRA_CHANGED=1 ||
-            echo "extra vpn: no VPN engines for $_o; after the reboot run: mu300-extra install vpn" >&2
     done
     return 0
 }
@@ -1047,14 +1269,15 @@ apply() {
     for os in $todo; do
         fetch_verified "$tag" "$(rootfs_asset "$os")" || { offline_hint; die "nothing was changed; run mu300-update apply again to continue the download"; }
     done
-    # the extras: an installed one follows the release, and a system that uses the VPN with the engines of its image
-    # gets the vpn extra (a release from before extras has none - its images still carry the engines: r=2)
+    # the extras of the release: an installed one follows it (a release without it: r=2, the installed one stays)
     extras=
-    for x in $(extras_to_fetch "$tag" "$todo"); do
+    for x in $(extras_to_fetch "$tag"); do
         fetch_verified "$tag" "$(extra_asset "$x")"; r=$?
         [ "$r" = 0 ] && { extras="$extras $x"; continue; }
         [ "$r" = 2 ] || { offline_hint; die "nothing was changed; run mu300-update apply again to continue the download"; }
     done
+    # the VPN module, from its own repository: a device that uses the VPN gets it, or the update stops here
+    modules_fetch "$tag" "$todo"
     boot_asset=
     if [ -z "${MU300_KERNEL_BUNDLE:-}" ]; then
         boot_asset=$(kernel_asset)
@@ -1065,12 +1288,14 @@ apply() {
     echo "all files are here and verified; from now on the network is not needed"
 
     pause_data
+    EXTRA_CHANGED=
+    modules_install "$tag"
     for os in $todo; do
         apply_one "$os" "$tag"
         SYSTEM_CHANGED=1
     done
-    EXTRA_CHANGED=
-    extras_install "$tag" "$todo" "$extras"
+    modules_link "$todo"
+    extras_install "$tag" "$extras"
     # the kernel goes with the modules of the systems just installed, so it follows them
     boot_ok=1
     boot_update "$tag" || { boot_ok=; printf '\nThe boot image was not updated (see above)%s.\n' "${SYSTEM_CHANGED:+; the systems were}"; }
@@ -1153,6 +1378,6 @@ case ${1:-check} in
     accounts) accounts ;;
     clean) clean ;;
     notice) notice ;;
-    -h|--help|help) sed -n '2,15s/^# \{0,1\}//p' "$0" ;;
+    -h|--help|help) sed -n '2,17s/^# \{0,1\}//p' "$0" ;;
     *) echo "usage: mu300-update check|apply [ubuntu|openwrt|openwrt-luci ...]|boot|kernel [5.4|6.18|7.2]|rollback [os]|rollback-boot|clean|notice" >&2; exit 2 ;;
 esac

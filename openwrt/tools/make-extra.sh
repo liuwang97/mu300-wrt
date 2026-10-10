@@ -1,15 +1,14 @@
 #!/bin/sh
 # Build an extra: the optional parts that are not in the images and that mu300-extra installs on the device.
 #   tools/make-extra.sh NAME OUT.tar.gz [TAG]     (TAG: the release it belongs to, default dev)
-# Extras:
-#   vpn   Xray-core + hev-socks5-tunnel (tools/fetch-xray.sh) and sing-box (tools/fetch-sing-box.sh), pinned by hash
+# Extras of this repository:
 #   lang  LuCI's catalogs in every language of the OpenWrt feed besides the images' own (tr, zh-cn): luci-base and each
 #         LuCI app of the images, from the luci-i18n-* packages (apk add in the OpenWrt base image that
 #         openwrt/build-rootfs.sh imports, so apk checks every package against the feed's signed index), plus the
 #         MU300 panel's catalogs (openwrt/luci-app-mu300/po, tools/po2lmo.py). Needs docker with arm64 support.
-#   vpn-mihomo  mihomo (tools/fetch-mihomo.sh), pinned by hash: the engine of mu300-vpn's mihomo (Clash YAML) profiles
+# The VPN extras (vpn, vpn-mihomo) are not built here: they are the module of github.com/dikeckaan/mu300-linux-vpn
+# (its tools/make-module.sh), which mu300-extra downloads from that repository's releases.
 # Layout (what mu300-update's extra_unpack checks): ./name ./release ./components ./manifest (sha256 of every file),
-# then ./bin/<programs>, or for lang
 # ./languages (uci key, tab, name) and ./i18n/<component>.<code>.lmo; owned by root.
 set -eu
 NAME=${1:?usage: tools/make-extra.sh NAME OUT.tar.gz [TAG]}
@@ -18,19 +17,6 @@ TAG=${3:-dev}
 TOP=$(cd "$(dirname "$0")/.." && pwd)
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 case $NAME in
-    vpn)
-        mkdir -p "$tmp/x/bin"
-        sh "$TOP/tools/fetch-xray.sh" "$tmp/x/bin" >&2
-        sh "$TOP/tools/fetch-sing-box.sh" "$tmp/x/bin/sing-box" >&2
-        {
-            printf 'xray %s\n' "$(sed -n 's/^XRAY_VER=//p' "$TOP/tools/fetch-xray.sh")"
-            printf 'hev-socks5-tunnel %s\n' "$(sed -n 's/^HEV_VER=//p' "$TOP/tools/fetch-xray.sh")"
-            printf 'sing-box %s\n' "$(sed -n 's/^VER=//p' "$TOP/tools/fetch-sing-box.sh")"
-        } > "$tmp/x/components" ;;
-    vpn-mihomo)
-        mkdir -p "$tmp/x/bin"
-        sh "$TOP/tools/fetch-mihomo.sh" "$tmp/x/bin" >&2
-        printf 'mihomo %s\n' "$(sed -n 's/^VER=//p' "$TOP/tools/fetch-mihomo.sh")" > "$tmp/x/components" ;;
     lang)
         IMG=mu300-openwrt-base:${MU300_WRT_VER:-25.12.5}
         docker image inspect "$IMG" >/dev/null 2>&1 || {
@@ -98,7 +84,8 @@ with open(os.path.join(x, 'components'), 'w', encoding='utf-8') as f:
     f.write('luci-app-mu300 catalogs: ' + ' '.join(ours) + '\n')
 PY
         echo "lang: $(wc -l < "$tmp/x/languages" | tr -d ' ') languages, $(ls "$tmp/x/i18n" | wc -l | tr -d ' ') catalogs" >&2 ;;
-    *) echo "unknown extra '$NAME' (vpn, lang, vpn-mihomo)" >&2; exit 2 ;;
+    vpn|vpn-mihomo) echo "$NAME is the VPN module of github.com/dikeckaan/mu300-linux-vpn (its tools/make-module.sh), not built here" >&2; exit 2 ;;
+    *) echo "unknown extra '$NAME' (lang)" >&2; exit 2 ;;
 esac
 echo "$NAME" > "$tmp/x/name"
 echo "$TAG" > "$tmp/x/release"
@@ -122,7 +109,7 @@ for d, _, fs in os.walk(src):
 with open(os.path.join(src, 'manifest'), 'w') as m:
     m.writelines(sorted(lines))
 with tarfile.open(out, 'w:gz', format=tarfile.GNU_FORMAT) as t:
-    for name in ('name', 'release', 'components', 'languages', 'manifest', 'bin', 'i18n'):
+    for name in ('name', 'release', 'components', 'languages', 'manifest', 'i18n'):
         if os.path.exists(os.path.join(src, name)):
             t.add(os.path.join(src, name), arcname='./' + name, filter=root)
 PY

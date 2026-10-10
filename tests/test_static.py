@@ -241,42 +241,66 @@ class Rules(unittest.TestCase):
             self.assertRegex(src, pat, name)
             self.assertNotRegex(src, r'date \+%s\) \+ T \)', name)
 
-    def test_images_carry_no_vpn_engine(self):
-        # the engines are the vpn extra (mu300-extra): ~120 MB that a system without a VPN does not carry
-        for f in ('rootfs/assemble.sh', 'openwrt/build-rootfs.sh'):
+    def test_images_carry_no_vpn(self):
+        # the VPN is the module of dikeckaan/mu300-linux-vpn: no mu300-vpn, no drivers, no service, no engines in
+        # any image or in this repository, and no release of this repository builds or publishes it
+        for f in ('rootfs/overlay/opt/mu300/bin/mu300-vpn', 'rootfs/overlay/opt/mu300/lib/vpn',
+                  'rootfs/overlay/etc/systemd/system/mu300-vpn.service', 'openwrt/overlay/etc/init.d/mu300-vpn',
+                  'rootfs/overlay/etc/mu300/vpn.conf.example', 'tools/fetch-xray.sh', 'tools/fetch-sing-box.sh',
+                  'tools/fetch-mihomo.sh'):
+            self.assertFalse((TOP / f).exists(), f)
+        self.assertNotIn('mu300-vpn', (TOP / 'rootfs/overlay/opt/mu300/lib/path-commands').read_text().split())
+        for f in ('rootfs/assemble.sh', 'rootfs/Dockerfile', 'openwrt/build-rootfs.sh', 'arch/build-rootfs.sh'):
             src = (TOP / f).read_text()
-            for e in ('xray', 'sing-box', 'hev-socks5-tunnel', 'mihomo'):
+            for e in ('xray', 'sing-box', 'hev-socks5-tunnel', 'mihomo', 'mu300-vpn'):
                 self.assertNotRegex(src, rf'opt/mu300/bin/{e}\b', (f, e))
+            self.assertNotIn('vpn.conf.example', src, f)
+            self.assertNotIn('lib/vpn', src, f)
+        self.assertNotRegex((TOP / 'arch/build-rootfs.sh').read_text(), r'for c in [^;]*\bmu300-vpn\b')
         rel = (TOP / 'tools/make-release.sh').read_text()
-        self.assertIn('make-extra.sh', rel)
-        self.assertIn('mu300-extra-', rel)
-        # the audit refuses an image that still has one
-        self.assertRegex(rel, r'opt/mu300/bin/\(xray\|sing-box\|hev-socks5-tunnel\|mihomo\)')
-
-    def test_vpn_mihomo_extra_wiring(self):
-        # mihomo (the engine of mu300-vpn's mihomo profiles) is its own extra: pinned by tools/fetch-mihomo.sh, built
-        # by make-extra, built and audited by make-release, known to mu300-update (which mu300-extra lists from)
-        fetch = (TOP / 'tools/fetch-mihomo.sh').read_text()
-        self.assertRegex(fetch, r'(?m)^VER=1\.19\.32$')
-        self.assertRegex(fetch, r'(?m)^SHA256=[0-9a-f]{64}$')
-        self.assertIn('mihomo-linux-arm64-v$VER.gz', fetch)
-        self.assertIn('install -m 755', fetch)
+        self.assertNotRegex(rel, r'make-extra\.sh" vpn')
+        self.assertNotIn('mu300-extra-vpn', rel)
+        self.assertNotIn('fetch-', rel)
+        self.assertRegex(rel, r'(?m)^for x in lang; do')
+        self.assertIn('https://github.com/dikeckaan/mu300-linux-vpn', rel)
+        # the audit refuses an image that still has any of it
+        self.assertIn('opt/mu300/bin/(xray|sing-box|hev-socks5-tunnel|mihomo|mu300-vpn)', rel)
+        for pat in ('^opt/mu300/lib/vpn(/|$)', 'etc/systemd/system/mu300-vpn', 'etc/init\\.d/mu300-vpn',
+                    'etc/mu300/vpn\\.conf\\.example'):
+            self.assertIn(pat, rel)
         extra = (TOP / 'tools/make-extra.sh').read_text()
-        self.assertRegex(extra, r'(?m)^    vpn-mihomo\)')
-        self.assertIn('fetch-mihomo.sh', extra)
-        rel = (TOP / 'tools/make-release.sh').read_text()
-        self.assertRegex(rel, r'make-extra\.sh" vpn-mihomo "\$D/mu300-extra-vpn-mihomo\.tar\.gz" "\$TAG"')
-        self.assertRegex(rel, r'(?m)^for x in vpn lang vpn-mihomo; do')
-        self.assertIn('| mu300-extra-vpn-mihomo.tar.gz |', rel)
-        self.assertIn("sed -n 's/^VER=//p' \"$TOP/tools/fetch-mihomo.sh\"", rel)
+        self.assertNotRegex(extra, r'(?m)^    vpn\)')
+        self.assertNotRegex(extra, r'(?m)^    vpn-mihomo\)')
+        self.assertNotIn('fetch-', extra)
+
+    def test_the_vpn_module_wiring(self):
+        # mu300-update knows the module (fixed asset names, the repository's latest release, MU300_VPN_URL), and
+        # mu300-extra lists vpn and vpn-mihomo from it
         up = (BIN / 'mu300-update').read_text()
         self.assertRegex(up, r'(?m)^EXTRAS="vpn lang vpn-mihomo"$')
-        self.assertRegex(up, r"(?m)^        vpn-mihomo\) echo \"mihomo \(Clash\.Meta\), the engine of mu300-vpn's mihomo profiles")
-        self.assertIn('vpn-mihomo', (BIN / 'mu300-extra').read_text().split('BIN=')[0])
+        self.assertRegex(up, r'(?m)^VPN_REPO=dikeckaan/mu300-linux-vpn$')
+        self.assertIn('VPN_URL=${MU300_VPN_URL:-https://github.com/$VPN_REPO/releases/latest/download}', up)
+        self.assertIn('vpn) echo mu300-linux-vpn.tar.gz ;; vpn-mihomo) echo mu300-linux-vpn-mihomo.tar.gz ;;', up)
+        self.assertNotIn('extra_adopt', up)
+        body = up[up.index('\napply() {'):up.index('\nclean_broken() {')]
+        # the module is had before anything changes, and put in place before the systems are switched
+        self.assertLess(body.index('modules_fetch'), body.index('all files are here and verified'))
+        self.assertLess(body.index('modules_install'), body.index('apply_one'))
+        self.assertLess(body.index('apply_one'), body.index('modules_link'))
+        ex = (BIN / 'mu300-extra').read_text()
+        self.assertIn('vpn-mihomo', ex.split('BIN=')[0])
+        self.assertIn('--from FILE|DIR', ex.split('BIN=')[0])
+        # the installers take the module from its repository when the release has no vpn extra of its own
+        for f in ('install.sh', 'install.ps1'):
+            src = (TOP / f).read_text()
+            self.assertIn('https://github.com/dikeckaan/mu300-linux-vpn/releases/latest/download', src, f)
+            self.assertIn('MU300_VPN_URL', src, f)
+            self.assertIn('MU300_VPN_MODULE', src, f)
+            self.assertNotIn('make-extra.sh" vpn', src, f)
 
     def test_images_carry_jq(self):
-        # mu300-vpn reads vmess links and raw Xray/sing-box configs with jq, so every image has it; Ubuntu and Arch
-        # also get wireguard-tools (OpenWrt has it already). The CI runner needs jq for the same tests.
+        # the VPN module's mu300-vpn reads vmess links and raw Xray/sing-box configs with jq, so every image has it; Ubuntu
+        # and Arch also get wireguard-tools (OpenWrt has it already). The CI runner needs jq for the same tests.
         def words(block):
             return block.replace('\\\n', ' ').split()
         docker = (TOP / 'rootfs/Dockerfile').read_text()
