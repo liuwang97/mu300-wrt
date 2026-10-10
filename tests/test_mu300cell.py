@@ -191,6 +191,17 @@ exit 0''')
                 self.assertFalse([c for c in calls if c.startswith('proto_run_command')], calls)
                 self.assertEqual((self.conf / 'accept_ra').read_text().strip(), '-', shell)
 
+    def test_ipv6_bearer_turns_ipv6_back_on_after_a_teardown(self):
+        """The teardown's mobile-data down leaves disable_ipv6 1, and netifd does not reset it for a device that
+        stayed: the IPv6 bearer's setup turns it on itself (a WAN restart lost IPv6 until a reboot on an F50)."""
+        for shell in self.each_shell():
+            self.run_proto(shell, 'proto_mu300cell_setup', out=UP_V6, T_PDPTYPE='IPV4V6')
+            self.assertEqual((self.conf / 'disable_ipv6').read_text().strip(), '0', shell)
+        body = PROTO.read_text()
+        branch = body[body.index('elif [ -n "$iid" ]; then'):]
+        self.assertLess(branch.index('echo 0 > "/proc/sys/net/ipv6/conf/$ifname/disable_ipv6"'),
+                        branch.index('ip -6 addr add "fe80::$iid/64"'))
+
     def test_config_has_the_ipv6_option_and_renew(self):
         """K35: `option ipv6` (relay / extend) is a protocol option, and netifd may ask for a renew."""
         for shell in self.each_shell():
