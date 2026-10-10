@@ -415,7 +415,7 @@ void sc2355_queue_rx_buff_work(struct sprd_priv *priv, unsigned char id)
 
 	misc_work = sprd_alloc_work(0);
 	if (!misc_work) {
-		pr_err("%s out of memory\n", __func__);
+		pr_err_ratelimited("%s out of memory\n", __func__);
 		return;
 	}
 	spin_lock_bh(&priv->list_lock);
@@ -426,6 +426,15 @@ void sc2355_queue_rx_buff_work(struct sprd_priv *priv, unsigned char id)
 		}
 	}
 	spin_unlock_bh(&priv->list_lock);
+	/*
+	 * MU300: sc2355_do_delay_work() dereferences work->vif for both ids, and with no interface open there is no
+	 * RX ring to refill or flush. The vendor queued it anyway; the refill's timed retry can now fire after the
+	 * last interface closed.
+	 */
+	if (!misc_work->vif) {
+		kfree(misc_work);
+		return;
+	}
 	switch (id) {
 	case SPRD_PCIE_RX_ALLOC_BUF:
 	case SPRD_PCIE_RX_FLUSH_BUF:
@@ -452,22 +461,66 @@ void sc2355_rx_process(struct rx_mgmt *rx_mgmt, struct sk_buff *pskb)
 		queue_work(rx_mgmt->rx_net_workq, &rx_mgmt->rx_net_work);
 }
 
+/*
+ * MU300: back-off for an RX refill that got nowhere. The vendor requeued the refill at once whenever buffers were
+ * still owed, so when the chip stopped taking them (issue #94: channel 10's links refused for minutes while the
+ * WCN sat in dump status) the shared sprd_work worker retried back to back, printing on every attempt, until a CPU
+ * soft-locked in printk and softlockup_panic rebooted the device. An attempt that neither allocates a buffer nor
+ * sends the pending address list now retries from a timer, 20 ms doubling to 1 s; one that makes progress
+ * resets it and requeues at once, as before.
+ */
+#define SPRD_REFILL_BACKOFF_MIN_MS	20U
+#define SPRD_REFILL_BACKOFF_MAX_MS	1000U
+
+static void rx_refill_retry(struct work_struct *work)
+{
+	struct rx_mgmt *rx_mgmt =
+	    container_of(to_delayed_work(work), struct rx_mgmt, refill_retry);
+
+	/* back onto the ordered sprd_work queue: a refill must not run beside another one */
+	sc2355_queue_rx_buff_work(rx_mgmt->hif->priv, SPRD_PCIE_RX_ALLOC_BUF);
+}
+
 int sc2355_mm_fill_buffer(struct sprd_hif *hif)
 {
 	struct rx_mgmt *rx_mgmt =
 	    (struct rx_mgmt *)hif->rx_mgmt;
 	struct mem_mgmt *mm_entry = &rx_mgmt->mm_entry;
-	unsigned int num = 0, alloc_num = atomic_xchg(&mm_entry->alloc_num, 0);
+	unsigned int num = 0, alloc_num;
+	bool had_trans, progress;
+
+	/* MU300: a retry is already timed; RX events (mm_buffer_unlink) must not bypass the back-off */
+	if (delayed_work_pending(&rx_mgmt->refill_retry))
+		return atomic_read(&mm_entry->alloc_num);
+
+	alloc_num = atomic_xchg(&mm_entry->alloc_num, 0);
+	had_trans = rx_mgmt->addr_trans_head != NULL;
 
 	num = sc2355_mm_buffer_alloc(&rx_mgmt->mm_entry, alloc_num);
+	progress = num < alloc_num;
 	if (hif->ops->tx_addr_trans)
 		hif->ops->tx_addr_trans(hif, NULL, 0, true);
+	if (had_trans && !rx_mgmt->addr_trans_head)
+		progress = true;
 	if (num)
 		num = atomic_add_return(num, &mm_entry->alloc_num);
 
-	if (num > SPRD_MAX_ADD_MH_BUF_ONCE || rx_mgmt->addr_trans_head)
-		sc2355_queue_rx_buff_work(rx_mgmt->hif->priv,
-					  SPRD_PCIE_RX_ALLOC_BUF);
+	if (progress)
+		rx_mgmt->refill_backoff_ms = 0;
+
+	if (num > SPRD_MAX_ADD_MH_BUF_ONCE || rx_mgmt->addr_trans_head) {
+		if (progress) {
+			sc2355_queue_rx_buff_work(rx_mgmt->hif->priv,
+						  SPRD_PCIE_RX_ALLOC_BUF);
+		} else {
+			rx_mgmt->refill_backoff_ms =
+			    clamp(rx_mgmt->refill_backoff_ms * 2,
+				  SPRD_REFILL_BACKOFF_MIN_MS,
+				  SPRD_REFILL_BACKOFF_MAX_MS);
+			queue_delayed_work(system_wq, &rx_mgmt->refill_retry,
+					   msecs_to_jiffies(rx_mgmt->refill_backoff_ms));
+		}
+	}
 
 	return num;
 }
@@ -502,6 +555,9 @@ void sc2355_rx_flush_buffer(void *hif)
 	}
 
 	sc2355_mm_flush_buffer(mm_entry);
+	/* MU300: the ring is gone, and with it any timed refill (not _sync: this can run in RX context) */
+	cancel_delayed_work(&rx_mgmt->refill_retry);
+	rx_mgmt->refill_backoff_ms = 0;
 }
 
 int sc2355_rx_init(struct sprd_hif *hif)
@@ -565,6 +621,7 @@ int sc2355_rx_init(struct sprd_hif *hif)
 	}
 
 	sc2355_reorder_init(&rx_mgmt->ba_entry);
+	INIT_DELAYED_WORK(&rx_mgmt->refill_retry, rx_refill_retry);
 
 	hif->lp = 0;
 	hif->rx_mgmt = (void *)rx_mgmt;
@@ -590,6 +647,8 @@ int sc2355_rx_deinit(struct sprd_hif *hif)
 {
 	struct rx_mgmt *rx_mgmt = (struct rx_mgmt *)hif->rx_mgmt;
 
+	/* MU300: before rx_mgmt is freed (sprd_work, which the retry queues onto, outlives this) */
+	cancel_delayed_work_sync(&rx_mgmt->refill_retry);
 	flush_workqueue(rx_mgmt->rx_queue);
 	destroy_workqueue(rx_mgmt->rx_queue);
 

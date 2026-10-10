@@ -111,8 +111,9 @@ static int pcie_tx_one(struct sprd_hif *hif, unsigned char *data,
 	ret = sprdwcn_bus_list_alloc(chn, &head, &tail, &num);
 	//ret = 0;
 	if (ret || !head || !tail) {
-		pr_err("%s:%d sprdwcn_bus_list_alloc fail\n",
-		       __func__, __LINE__);
+		/* MU300: rate-limited, it fails on every command while the WCN is in dump status (issue #94) */
+		pr_err_ratelimited("%s:%d sprdwcn_bus_list_alloc fail\n",
+				   __func__, __LINE__);
 		return -1;
 	}
 
@@ -365,8 +366,9 @@ static int pcie_rx_common_push(int chn, struct mbuf_t **head,
 
 	ret = sprdwcn_bus_list_alloc(chn, head, tail, num);
 	if (ret || head == NULL || tail == NULL || *head == NULL || *tail == NULL) {
-		pr_err("%s:%d sprdwcn_bus_list_alloc fail\n", __func__,
-		       __LINE__);
+		/* MU300: rate-limited, as in pcie_tx_one */
+		pr_err_ratelimited("%s:%d sprdwcn_bus_list_alloc fail\n", __func__,
+				   __LINE__);
 		ret = -ENOMEM;
 	} else {
 		ret = pcie_rx_fill_mbuf(*head, *tail, *num, len);
@@ -704,8 +706,12 @@ inline int sc2355_tx_addr_trans_pcie(struct sprd_hif *hif,
 		ret = sprdwcn_bus_list_alloc(hif->tx_data_port,
 					     &head, &tail, &num);
 		if (ret || !head || !tail) {
-			pr_err("%s:%d sprdwcn_bus_list_alloc fail, chn: %d\n",
-			       __func__, __LINE__, hif->tx_data_port);
+			/*
+			 * MU300: rate-limited. The RX refill retries this, and in issue #94 (the WCN in dump status for
+			 * minutes) it and its siblings flooded the console until a CPU soft-locked in printk.
+			 */
+			pr_err_ratelimited("%s:%d sprdwcn_bus_list_alloc fail, chn: %d\n",
+					   __func__, __LINE__, hif->tx_data_port);
 		} else {
 			mbuf = head;
 			mbuf->buf = data;
@@ -1572,8 +1578,9 @@ int sc2355_pcie_push_link(struct sprd_hif *hif, int chn,
 	time = jiffies - time;
 
 	if (ret) {
-		pr_err("%s: push link fail: %d, chn: %d!\n", __func__, ret,
-		       chn);
+		/* MU300: rate-limited, the RX refill and every TX retry it */
+		pr_err_ratelimited("%s: push link fail: %d, chn: %d!\n", __func__, ret,
+				   chn);
 	}
 	return ret;
 }
