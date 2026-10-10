@@ -1,0 +1,10 @@
+#!/bin/sh
+# MU300: the Wi-Fi driver reset the WCN chip after a firmware assert (issue #94: sprd_wlan_combo's recovery watchdog,
+# or wcn_bsp's own reset). The chip is off until Wi-Fi is reopened: the next open powers it on and reloads the
+# firmware, and hostapd has to start the access point again. One "wifi down/up", as mu300-hw does at boot. In the
+# background: procd runs hotplug scripts one at a time. If Wi-Fi does not come back, the watchdog reboots the device
+# about a minute later (sprd_wlan_combo.recovery_reboot).
+[ "$ACTION" = change ] && [ "$SOURCE" = unisocwl ] && [ "$EVENT" = FW_ERROR ] || exit 0
+
+logger -t mu300-wcn "Wi-Fi firmware error, reopening Wi-Fi"
+( sleep 1; wifi down; wifi up ) >/dev/null 2>&1 </dev/null &

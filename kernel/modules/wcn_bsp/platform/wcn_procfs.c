@@ -117,6 +117,26 @@ void wcn_reset_process(void)
 	WCN_INFO("%s reset end\n", __func__);
 }
 
+/*
+ * MU300: the chip reset for sprd_wlan_combo's recovery watchdog (issue #94). Our builds are not
+ * TARGET_BUILD_VARIANT=user, so a firmware assert takes the "dump" path (reset_dump defaults to dump):
+ * wcn_dump_process() sets the card-dump flag and nothing ever clears it, and every mbuf_link_alloc() fails from
+ * then on. This is procfs "rebootwcn" (the non-integrated branch) followed by wcn_reset_process(), which also
+ * clears dump_cnt and the assert notification so that a later assert is handled again: power the chip off,
+ * call wcn_reset_notifier_list (Wi-Fi marks itself asserted and sends its FW_ERROR uevent) and clear the flag.
+ * The chip powers on again at the next start_marlin(), i.e. when Wi-Fi is reopened. Process context; may block.
+ */
+void wcn_mu300_recover(void)
+{
+	WCN_INFO("%s begin\n", __func__);
+	stop_loopcheck();
+	mdbg_proc->fail_count = 0;
+	marlin_set_download_status(0);
+	wcn_reset_process();
+	WCN_INFO("%s end\n", __func__);
+}
+EXPORT_SYMBOL_GPL(wcn_mu300_recover);
+
 void wcn_dump_process(enum wcn_source_type type)
 {
 	struct wcn_match_data *g_match_config = get_wcn_match_config();

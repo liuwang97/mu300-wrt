@@ -335,6 +335,8 @@ extern struct sprdwcn_bus_ops *get_wcn_bus_ops(void);
 extern void wcn_assert_interface(enum wcn_source_type, char *str);
 extern void wcn_assert_interface_async(enum wcn_source_type type, char *str);
 extern bool wcn_is_assert(void);
+/* MU300: chip reset for the Wi-Fi recovery watchdog (wcn_procfs.c) */
+extern void wcn_mu300_recover(void);
 bool wcn_push_list_condition_check(struct mbuf_t *head, struct mbuf_t *tail, int num);
 extern bool wcn_is_power_busy(void);
 int sprd_wlan_power_status_sync(int option, int value);

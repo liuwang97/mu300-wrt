@@ -647,8 +647,12 @@ int sc2355_rx_deinit(struct sprd_hif *hif)
 {
 	struct rx_mgmt *rx_mgmt = (struct rx_mgmt *)hif->rx_mgmt;
 
-	/* MU300: before rx_mgmt is freed (sprd_work, which the retry queues onto, outlives this) */
+	/*
+	 * MU300: before rx_mgmt is freed. sprd_work outlives this (sprd_core_free destroys it later), so stop the
+	 * timed retry first, then drop and drain whatever refill/flush it or an RX event queued there.
+	 */
 	cancel_delayed_work_sync(&rx_mgmt->refill_retry);
+	sprd_clean_work(hif->priv);
 	flush_workqueue(rx_mgmt->rx_queue);
 	destroy_workqueue(rx_mgmt->rx_queue);
 

@@ -514,8 +514,14 @@ static int mm_single_event_process(struct mem_mgmt *mm_entry,
 		/* NOTE: Not need to do anything here */
 		break;
 	case SPRD_FLUSH_BUFFER:
-		/* MU300: it takes the hif, the vendor passed mm_entry (rx_flush_buffer would read garbage as hif) */
-		sc2355_rx_flush_buffer(container_of(mm_entry, struct rx_mgmt, mm_entry)->hif);
+		/*
+		 * MU300: the vendor called sc2355_rx_flush_buffer(mm_entry) here, with mm_entry where it takes the
+		 * hif. Called right, from this RX/event context it would purge buffer_list and free the address buffer
+		 * while the RX refill (sprd_work) may be using them. Queue it on the same ordered sprd_work queue as
+		 * the refill instead, so the two never run together; the flush also cancels a timed refill retry.
+		 */
+		sc2355_queue_rx_buff_work(container_of(mm_entry, struct rx_mgmt, mm_entry)->hif->priv,
+					  SPRD_PCIE_RX_FLUSH_BUF);
 		break;
 	default:
 		pr_err("%s: err type: %d\n", __func__, value->type);
