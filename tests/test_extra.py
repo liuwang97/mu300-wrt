@@ -682,6 +682,39 @@ class UpdateWithTheVpn(ExtrasBase):
             self.assertEqual((self.disk / 'ubuntu/etc/mu300/image-version').read_text(), 'v2026.10.15\n')
             self.assertEqual((self.vpn() / 'release').read_text().strip(), 'v2026.10.15')
 
+    def test_a_module_that_fails_its_checks_stops_a_kill_switch_device_before_any_switch(self):
+        # the module can be had but is refused at install (not the module, or one that needs a newer system): with
+        # the VPN on and its kill switch on, apply dies with nothing switched, the old extra and system in place
+        self.offline()
+        for shell in self.each_shell():
+            for bad in ('notmodule', 'newer'):
+                self.reset(shell, 1, 'old')
+                (self.disk / 'ubuntu/etc/mu300/vpn.conf').write_text('ENABLE=1\nKILL_SWITCH=1\n')
+                f = (extra_tarball(self.tmp / 'bad.tar.gz') if bad == 'notmodule' else
+                     module_tarball(self.tmp / 'bad.tar.gz', requires='mu300-linux v2027.01.01'))
+                r = self.apply(shell, MU300_VPN_MODULE=f)
+                self.assertNotEqual(r.returncode, 0, (bad, r.stdout))
+                self.assertIn('nothing was changed', r.stderr, bad)
+                self.assertEqual((self.disk / 'ubuntu/etc/mu300/image-version').read_text(), 'v2026.10.15\n', bad)
+                self.assertFalse((self.disk / 'ubuntu.old').exists(), bad)
+                self.assertEqual((self.vpn() / 'release').read_text().strip(), 'v2026.10.15', bad)
+                self.assertEqual(self.hooks(), [], bad)
+
+    def test_a_kill_switch_system_left_without_mu300_vpn_is_a_loud_warning(self):
+        # a hook that links nothing (it failed): the systems are switched already, so the warning says the system
+        # keeps its uplinks down (lib/vpn-orphan.sh) until the module is linked
+        self.offline()
+        for shell in self.each_shell():
+            for ks, loud in (('1', True), ('0', False)):
+                self.reset(shell, 1, None)
+                (self.disk / 'ubuntu/etc/mu300/vpn.conf').write_text(f'ENABLE=1\nKILL_SWITCH={ks}\n')
+                f = module_tarball(self.tmp / 'm.tar.gz', hooks=False,
+                                   extra=[('./hooks/link', 'exit 0\n', 0o755), ('./hooks/unlink', 'exit 0\n', 0o755)])
+                r = self.apply(shell, MU300_VPN_MODULE=f)
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertEqual('!!! WARNING: ubuntu has the VPN on with its kill switch' in r.stderr, loud, ks)
+                self.assertIn('WARNING', r.stderr)
+
     def test_without_the_vpn_nothing_is_fetched(self):
         self.offline()
         for shell in self.each_shell():

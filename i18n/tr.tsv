@@ -218,6 +218,8 @@ The SD card ({1}) holds a Linux installation (mu300sd), and the device always st
 Take the card out before the device restarts, or erase its installation first with the uninstaller.	Cihaz yeniden başlamadan önce kartı çıkarın ya da önce karttaki kurulumu kaldırma aracıyla (uninstall) silin.
 Type internal to install to internal storage anyway	Yine de dahili depolamaya kurmak için internal yazın
 The VPN (mu300-vpn, with Xray and sing-box) is a module of its own: {1}. It can also be added later on the device:	VPN (mu300-vpn; Xray ve sing-box ile) ayrı bir modüldür: {1}. Sonradan cihazda da eklenebilir:
+The VPN is on with its kill switch in {1}: an update without the VPN module would leave it to nothing. Answer yes to install the module, or turn the VPN off there first (ENABLE=0 in /etc/mu300/vpn.conf).	{1} sisteminde VPN, kill switch ile açık: VPN modülü olmadan yapılan bir güncelleme onu korumasız bırakır. Modülü kurmak için evet deyin ya da önce oradaki VPN'i kapatın (/etc/mu300/vpn.conf içinde ENABLE=0).
+The VPN is on in the system being replaced ({1}): without the module it stays off after the installation.	Değiştirilen sistemde VPN açık ({1}): modül olmadan kurulumdan sonra kapalı kalır.
 Install the VPN module (about 40 MB more to download, 120 MB on the device)? (yes/no)	VPN modülü kurulsun mu (yaklaşık 40 MB ek indirme, cihazda 120 MB)? (evet/hayır)
 Downloading the VPN module	VPN modülü indiriliyor
 extras:         {1}	eklentiler:     {1}

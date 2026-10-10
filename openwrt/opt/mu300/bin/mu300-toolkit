@@ -610,6 +610,10 @@ vpn_enabled() { [ -r "$VPN_CONF" ] && grep -q '^ENABLE=1' "$VPN_CONF"; }
 # the VPN is a module of its own (github.com/dikeckaan/mu300-linux-vpn): its hooks link mu300-vpn here
 VPN=${MU300_VPN_CMD:-/opt/mu300/bin/mu300-vpn}
 vpn_present() { [ -x "$VPN" ]; }
+# the VPN on with its kill switch and no module: mobile data and the Wi-Fi client stay down (lib/vpn-orphan.sh)
+VPN_ORPHAN_LIB=${MU300_VPN_ORPHAN_LIB:-/opt/mu300/lib/vpn-orphan.sh}
+[ ! -r "$VPN_ORPHAN_LIB" ] || . "$VPN_ORPHAN_LIB"
+vpn_orphaned() { command -v vpn_killswitch_orphaned >/dev/null 2>&1 && vpn_killswitch_orphaned "$VPN" "${MU300_SYSROOT:-}"; }
 # without the module: what it is and how to get it (mu300-extra downloads it, or takes a copy from a USB stick)
 menu_vpn_missing() {
     title "VPN"
@@ -618,6 +622,10 @@ menu_vpn_missing() {
     printf '  with a kill switch) is a module of its own: https://github.com/dikeckaan/mu300-linux-vpn
 
 '
+    if vpn_orphaned; then
+        printf '  %sThe VPN is on with its kill switch, and the module is missing: mobile data and the Wi-Fi client\n' "$B"
+        printf '  stay down until it is installed (or the VPN is turned off: ENABLE=0 in /etc/mu300/vpn.conf).%s\n\n' "$N"
+    fi
     printf '  It is not installed. To install it (about 40 MB to download):
 
 '

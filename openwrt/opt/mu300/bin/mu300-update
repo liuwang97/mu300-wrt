@@ -604,6 +604,21 @@ extra_unpack() {
 
 # does the system at ROOT use the VPN? (only the switch is read, never the rest of the file)
 extra_vpn_wanted() { grep -q '^ENABLE=1' "$1/etc/mu300/vpn.conf" 2>/dev/null; }
+# vpn_killswitch_wanted ROOT: the VPN on with its kill switch in the system at ROOT - a copy of lib/vpn-orphan.sh's
+# (this updater runs before the system that has that file exists; tests/test_vpn_hooks.py holds both to one matrix)
+vpn_conf_value() {
+    [ -r "$1" ] || return 0
+    sed -n "s/^$2=//p" "$1" 2>/dev/null | tail -n1 | sed "s/[[:space:]]#.*//; s/[\"' ]//g"
+}
+vpn_killswitch_wanted() {
+    [ "$(vpn_conf_value "${1:-}/etc/mu300/vpn.conf" ENABLE)" = 1 ] || return 1
+    if [ -d "${1:-}/etc/mu300/vpn/profiles" ] && [ -r "${1:-}/etc/mu300/vpn/settings" ]; then
+        _vks=$(vpn_conf_value "${1:-}/etc/mu300/vpn/settings" KILL_SWITCH)
+    else
+        _vks=$(vpn_conf_value "${1:-}/etc/mu300/vpn.conf" KILL_SWITCH)
+    fi
+    [ "$_vks" != 0 ]
+}
 
 # ---- the VPN module -----------------------------------------------------------------------------------------------
 # module_needs DIR: the mu300-linux release the module in DIR needs (./requires: "mu300-linux vYYYY.MM.DD"; none: any)
@@ -794,8 +809,16 @@ modules_link() {
     done
     for _o in $1; do
         extra_vpn_wanted "$DISK/$_o" || continue
-        [ -e "$DISK/$_o/opt/mu300/bin/mu300-vpn" ] || [ -L "$DISK/$_o/opt/mu300/bin/mu300-vpn" ] ||
+        [ ! -e "$DISK/$_o/opt/mu300/bin/mu300-vpn" ] && [ ! -L "$DISK/$_o/opt/mu300/bin/mu300-vpn" ] || continue
+        if vpn_killswitch_wanted "$DISK/$_o"; then
+            # the systems are switched already: the system itself fails closed (mobile-data and wifi-client keep
+            # their uplinks down while its kill switch has no VPN behind it, lib/vpn-orphan.sh) until it is linked
+            printf '\n!!! WARNING: %s has the VPN on with its kill switch and no mu300-vpn: mobile data and the Wi-Fi client\n' "$_o" >&2
+            printf '!!! stay DOWN there until the module is linked (its first boot tries: mu300-extra link; else\n' >&2
+            printf '!!! mu300-extra install vpn on it, or ENABLE=0 in its /etc/mu300/vpn.conf)\n' >&2
+        else
             echo "WARNING: $_o uses the VPN and has no mu300-vpn yet: its first boot links it (mu300-extra link), else run mu300-extra install vpn there" >&2
+        fi
     done
     return 0
 }

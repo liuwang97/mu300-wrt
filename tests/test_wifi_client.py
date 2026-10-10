@@ -73,6 +73,9 @@ SCAN_RESULTS = '\n'.join([
 ]) + '\n'
 
 
+ORPHAN_LIB = BIN.parent / 'lib' / 'vpn-orphan.sh'
+
+
 class WifiClient(ShellTest):
     def setUp(self):
         super().setUp()
@@ -163,7 +166,7 @@ class WifiClient(ShellTest):
                          'esac')
 
     def run_wc(self, shell, *args, stdin='', **env):
-        e = dict(MU300_SYSROOT=self.root, MU300_VPN_CMD=self.stubs / 'vpn')
+        e = dict(MU300_SYSROOT=self.root, MU300_VPN_CMD=self.stubs / 'vpn', MU300_VPN_ORPHAN_LIB=ORPHAN_LIB)
         e.update(env)
         return self.script(shell, WIFI, *args, stdin=stdin, **e)
 
@@ -616,7 +619,8 @@ class WifiClient(ShellTest):
             for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
                 self.fresh()
                 (self.tmp / 'never').touch()
-                env = self.env(MU300_SYSROOT=self.root, MU300_VPN_CMD=self.stubs / 'vpn', MU300_JOIN_WAIT=60)
+                env = self.env(MU300_SYSROOT=self.root, MU300_VPN_CMD=self.stubs / 'vpn', MU300_VPN_ORPHAN_LIB=ORPHAN_LIB,
+                               MU300_JOIN_WAIT=60)
                 self.stub('sleep', 'echo sleep >> "$STUBLOG/sleeps"; exec /bin/sleep 0.2')
                 p = subprocess.Popen(shell + [str(WIFI), 'connect', 'KEDI 5G', '-'], env=env, stdin=subprocess.PIPE,
                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True,
@@ -976,7 +980,7 @@ class WifiClient(ShellTest):
             self.stub('wpa_cli', (self.stubs / 'wpa_cli').read_text().split('\n', 1)[1].replace(
                 '  -a) echo', '  -a) ' + probe.strip().replace('\n', ' ') + '; echo'))
             r = self.script(shell, wrapper, *shell, WIFI, 'connect', 'KEDI 5G', '-', stdin='password1\n',
-                            MU300_SYSROOT=self.root, MU300_VPN_CMD=self.stubs / 'vpn')
+                            MU300_SYSROOT=self.root, MU300_VPN_CMD=self.stubs / 'vpn', MU300_VPN_ORPHAN_LIB=ORPHAN_LIB)
             self.assertEqual(r.returncode, 0, r.stderr)
             ev = self.events()
             self.assertIn('wpa_cli -a', ev)
@@ -1201,19 +1205,27 @@ class WifiClient(ShellTest):
                 self.assertNotIn('mu300_vpn', rs)
             self.assertNotIn('ip rule', ev)
 
-    def test_without_the_vpn_module_the_join_goes_on(self):
-        # the VPN is a module of its own: without it there is no mu300-vpn to ask for a guard, and nothing that
-        # would bring the tunnel up either - the join is not held up by a vpn.conf that outlived it
+    def test_without_the_vpn_module_the_kill_switch_fails_closed(self):
+        # the VPN is a module of its own: without it there is no mu300-vpn to put the kill switch up. With the VPN
+        # on and its kill switch on, nothing joins or is shared (fail closed); otherwise the join goes on
         for shell in self.each_shell():
-            for enable in ('0', '1'):
+            for conf, joins in (('ENABLE=0\nKILL_SWITCH=1\n', True), ('ENABLE=1\nKILL_SWITCH=0\n', True),
+                                ('ENABLE=1\nKILL_SWITCH=1\n', False), ('ENABLE="1"\n', False)):
                 self.fresh()
-                (self.root / 'etc/mu300/vpn.conf').write_text(f'ENABLE={enable}\nKILL_SWITCH=1\n')
+                (self.root / 'etc/mu300/vpn.conf').write_text(conf)
                 r = self.run_wc(shell, 'connect', 'KEDI 5G', '-', stdin='password1\n',
                                 MU300_VPN_CMD=self.tmp / 'no-such-mu300-vpn')
-                self.assertEqual(r.returncode, 0, (enable, r.stderr))
                 ev = self.events()
                 self.assertNotIn('vpn guard', ev)
-                self.assertIn('\nwpa_supplicant ', ev)
+                if joins:
+                    self.assertEqual(r.returncode, 0, (conf, r.stderr))
+                    self.assertIn('\nwpa_supplicant ', ev)
+                else:
+                    self.assertNotEqual(r.returncode, 0, conf)
+                    self.assertIn("the VPN's kill switch is on but the VPN module is missing", r.stderr)
+                    self.assertIn('mu300-extra install vpn', r.stderr)
+                    self.assertNotIn('wpa_supplicant ', ev, conf)
+                    self.assertNotIn('ip_forward=1', ev, conf)
 
     def test_the_kill_switch_setting_comes_from_the_profile_store_first(self):
         # KILL_SWITCH moved to etc/mu300/vpn/settings (single-quoted or bare); vpn.conf's line is the legacy one

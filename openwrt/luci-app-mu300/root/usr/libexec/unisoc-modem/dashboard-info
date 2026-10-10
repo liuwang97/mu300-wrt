@@ -303,6 +303,13 @@ if { [ -n "$VPN_IF" ] && ip link show "$VPN_IF" >/dev/null 2>&1; } \
 # the VPN is a module of its own (github.com/dikeckaan/mu300-linux-vpn): present when its hook linked mu300-vpn and the
 # service into this system (the images have neither)
 CAP_VPN=0; [ -x /opt/mu300/bin/mu300-vpn ] && [ -x /etc/init.d/mu300-vpn ] && CAP_VPN=1
+# orphaned: the VPN on with its kill switch and no module to enforce it - mobile data and the Wi-Fi client then stay
+# down (lib/vpn-orphan.sh; MU300_SYSROOT, MU300_VPN_CMD, MU300_VPN_ORPHAN_LIB: tests)
+VPN_ORPHANED=0
+_vol=${MU300_VPN_ORPHAN_LIB:-/opt/mu300/lib/vpn-orphan.sh}
+if [ -r "$_vol" ] && . "$_vol" && vpn_killswitch_orphaned "${MU300_VPN_CMD:-/opt/mu300/bin/mu300-vpn}" "${MU300_SYSROOT:-}"; then
+    VPN_ORPHANED=1
+fi
 CAP_DUALBOOT=0; [ -x /opt/mu300/bin/mu300-next-boot ] && CAP_DUALBOOT=1
 # mu300-next-boot lock: the wish on the Linux disk (the panel shows it; the slot itself is in misc)
 BOOT_LOCK=0
@@ -329,4 +336,4 @@ printf '"lan":{"leases":%s,"ip":%s,"list":[%s]},' "$(n_or_null "$LAN_LEASES")" "
 printf '"modem":{"alive":%d,"atd":%d,"data_paused":%d},' "$MODEM_ALIVE" "$ATD_OK" "$DATA_PAUSED"
 printf '"capabilities":{"vpn":%d,"dualboot":%d,"bootlock":%d},' "$CAP_VPN" "$CAP_DUALBOOT" "$BOOT_LOCK"
 printf '"conns":%s,' "$(n_or_null "$CONNS")"
-printf '"vpn":{"enabled":%d,"engine":%s,"up":%d}}\n' "$VPN_ENABLED" "$(qs "$VPN_ENGINE")" "$VPN_UP"
+printf '"vpn":{"enabled":%d,"engine":%s,"up":%d,"orphaned":%d}}\n' "$VPN_ENABLED" "$(qs "$VPN_ENGINE")" "$VPN_UP" "$VPN_ORPHANED"

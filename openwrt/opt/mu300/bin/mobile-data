@@ -566,8 +566,18 @@ up() {
     return $rc
 }
 
+# the VPN's kill switch without the VPN module (lib/vpn-orphan.sh): mobile data then stays down - fail closed
+VPN_ORPHAN_LIB=${MU300_VPN_ORPHAN_LIB:-/opt/mu300/lib/vpn-orphan.sh}
+[ ! -r "$VPN_ORPHAN_LIB" ] || . "$VPN_ORPHAN_LIB"
 up_locked() {
     modem_stack || { echo "no modem stack in this kernel ($(uname -r))" >&2; exit 3; }
+    # The VPN is a module of its own: with its kill switch on and the module gone, nothing would put the kill switch
+    # up, and the bearer would carry everything in the clear. Refused for every attempt, each saying so.
+    if command -v vpn_killswitch_orphaned >/dev/null 2>&1 &&
+        vpn_killswitch_orphaned "${MU300_VPN_CMD:-/opt/mu300/bin/mu300-vpn}" "${MU300_SYSROOT:-}"; then
+        echo "$VPN_ORPHANED_MSG: mobile data stays down (mu300-extra install vpn, or turn the kill switch off)" >&2
+        return 1
+    fi
     # a VPN with the kill switch has it up before there is a bearer to leak through (mu300-vpn run, which puts it
     # up too, only starts after this)
     "${MU300_VPN_CMD:-/opt/mu300/bin/mu300-vpn}" guard >/dev/null 2>&1 || true
