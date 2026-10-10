@@ -235,6 +235,61 @@ esac
                     else:
                         self.assertEqual(sfun[:2], ['-t 10 AT+SFUN=5 locked=1', '-t 30 AT+SFUN=4 locked=1'])
 
+    def test_reset_sends_the_automatic_values_with_one_restart_and_clears_the_saved_state(self):
+        """#96: mode and band locks live in the modem's NV and stay in force in Android. reset puts every lock back
+        to automatic (the values measured on an F50), restarts the stack once, and drops the saved settings so the
+        boot replay does not put them back; the replay switch itself is kept."""
+        _, _, lock, state = self.tree()
+        at = self.tmp / 'at'
+        at.write_text('''#!/bin/sh
+printf "%s\\n" "$*" >> "$STUBLOG/at.commands"
+case "$*" in
+  *'AT+SPTESTMODE?'*) printf '+SPTESTMODE: 3,134,0,0,0,0\\nOK\\n' ;;
+  *'AT+CFUN?'*) printf '+CFUN: 1\\nOK\\n' ;;
+  *) printf 'OK\\n' ;;
+esac
+''')
+        at.chmod(0o755)
+        md = self.tmp / 'mobile-data'
+        md.write_text('#!/bin/sh\n[ "$1" = radio-locked ] || exit 0\nshift; exec "$@"\n')
+        md.chmod(0o755)
+        self.stub('uci', 'exit 0')
+        self.stub('ifup', 'exit 0')
+        self.stub('sleep', 'exit 0')
+        # the background cache refresh (sh "$0" get fresh) is not under test: keep it off the AT log
+        self.stub('sh', 'exit 0')
+        for shell in self.each_shell():
+            state.mkdir(parents=True, exist_ok=True)
+            for k, v in (('auto_apply', 'on'), ('mode', '4g'), ('endc', 'off'), ('lte', '3'), ('nr', '78'),
+                         ('cell', 'lte:1650,211\n')):
+                (state / k).write_text(v)
+            (self.tmp / 'at.commands').unlink(missing_ok=True)
+            run = self.tmp / 'run'
+            run.mkdir(mode=0o700, exist_ok=True)
+            (run / 'lock.json').write_text('{"ts":1,"mode":{"label":"4g"},"cell":"lte:1650,211",'
+                                           '"cells":["lte:1650,211"],"caps":{"nr":"78","lte":"3"}}\n')
+            r = self.script(shell, lock, 'reset', MU300_AT=at, MU300_MOBILE_DATA=md, MU300_DASH_DIR=run,
+                            UNISOC_APPLY_DIR=self.tmp / 'apply')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            sent = [l.split(' ', 2)[2] for l in (self.tmp / 'at.commands').read_text().splitlines()
+                    if l.startswith('-t ')]
+            writes = [c for c in sent if '=' in c and not c.endswith('?') and not c.startswith('AT+SFUN')
+                      and c not in ('AT+SPLBAND=0', 'AT+SPLBAND=3') and not c.endswith(',3')]
+            self.assertEqual(writes, ['AT+SP5GRAN=1', 'AT+SPTESTMODE=134,134,0', 'AT+SPENDC=1',
+                                      'AT+SPLBAND=1,0,0,0,0,0', 'AT+SPLBAND=2,0,0,0,0',
+                                      'AT+SPFORCEFRQ=12,4', 'AT+SPFORCEFRQ=16,4'])
+            # one stack restart, after every write
+            sfun = [i for i, c in enumerate(sent) if c.startswith('AT+SFUN=')]
+            self.assertEqual([sent[i] for i in sfun], ['AT+SFUN=5', 'AT+SFUN=4'])
+            self.assertGreater(sfun[0], sent.index('AT+SPFORCEFRQ=16,4'))
+            self.assertEqual(sorted(p.name for p in state.iterdir()), ['auto_apply'])
+            self.assertEqual((state / 'auto_apply').read_text(), 'on')
+            self.assertFalse((self.tmp / 'apply').exists())
+            # the next cell lock seeds its list from the cache: it must not offer the cells just removed
+            cache = (run / 'lock.json').read_text()
+            self.assertIn('"cells":[]', cache)
+            self.assertIn('"cell":""', cache)
+
     def test_early_replay_readback_failure_keeps_late_fallback(self):
         _, _, lock, state = self.tree()
         state.mkdir(parents=True)

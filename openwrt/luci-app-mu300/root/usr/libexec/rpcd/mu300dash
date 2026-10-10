@@ -308,6 +308,8 @@ lock_val_ok() {  # lock_val_ok KIND VALUE
         endc|auto_apply) allowed "$2" '(on|off)' ;;
         lte|nr)          [ -z "$2" ] || allowed "$2" '[0-9]{1,3}(,[0-9]{1,3}){0,31}' ;;
         cell)            allowed "$2" '(auto|off|off-nr|off-lte|(nr|lte):[0-9]{1,7},[0-9]{1,4})' ;;
+        # every lock back to automatic at once (unisoc-modem/lock reset)
+        reset)           allowed "$2" 'auto' ;;
         *)               return 1 ;;
     esac
 }
@@ -317,7 +319,7 @@ m_lock_set() {
     inp '@.kind'; kind=$V
     inp '@.val'; val=$V
     case "$kind" in
-        mode|endc|lte|nr|cell|auto_apply) ;;
+        mode|endc|lte|nr|cell|auto_apply|reset) ;;
         *) refuse 'Unknown lock kind'; return ;;
     esac
     lock_val_ok "$kind" "$val" || { refuse 'Invalid value for this lock kind'; return; }
@@ -326,7 +328,11 @@ m_lock_set() {
     # queued=1 tells the page another apply is still running (SFUN restart);
     # the new one waits for the modem and the page can say so
     [ -d /run/unisoc-modem-lock-apply ] && q=1
-    setsid "$DASH/lock" apply "$kind" "$val" >/dev/null 2>&1 &
+    if [ "$kind" = reset ]; then
+        setsid "$DASH/lock" reset >/dev/null 2>&1 &
+    else
+        setsid "$DASH/lock" apply "$kind" "$val" >/dev/null 2>&1 &
+    fi
     printf '{"ok":1,"started":1,"queued":%d,"op":%s}\n' "$q" "$(json_str "lock $kind=$val")"
 }
 

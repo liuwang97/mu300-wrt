@@ -23,6 +23,36 @@ function pollSeconds(value) {
 	return Number.isFinite(seconds) && seconds >= 0.5 && seconds <= 60 ? seconds : DEFAULT_POLL_S;
 }
 
+/* NR bands the modem's SPLBAND masks can carry (unisoc-modem/lock NR_A/NR_B/NR_S): n6 is supported but not in the
+ * tables, so an automatic NR read-back can never list it */
+var NR_CODEC = [ 1, 2, 3, 5, 7, 8, 12, 20, 25, 28, 66, 70, 71, 74, 34, 38, 39, 40, 41, 50, 51, 77, 78, 79,
+	75, 76, 80, 81, 82, 83, 84, 86 ];
+var BAND_CAPS = { nr: [ 1, 5, 6, 8, 28, 41, 78 ], lte: [ 1, 3, 5, 8, 34, 38, 39, 40, 41 ] };
+
+/* lockDeviations(lock_get reply) -> the settings that are not automatic, as short labels ([] = all automatic), or
+ * null when the state is unknown. A band lock is automatic when nothing is locked or every supported band (that the
+ * masks can carry) is in it - the modem reads the cleared mask back as the full set. */
+function lockDeviations(l) {
+	if (!l || l.error || !l.mode) return null;
+	var out = [], caps = l.caps || {};
+	var names = { '4g': _('4G only'), sa: '5G SA', nsa: '5G NSA' };
+	if (l.mode.label && l.mode.label !== 'auto')
+		out.push(_('Network mode: %s').format(names[l.mode.label] || l.mode.label));
+	if (l.endc && l.endc !== '1') out.push(_('EN-DC off'));
+	[ 'lte', 'nr' ].forEach(function(rat) {
+		var locked = String((l[rat] && l[rat].locked) || '').split(',').map(Number).filter(function(b) { return b > 0; });
+		if (!locked.length) return;
+		var cap = String(caps[rat] || '').split(',').map(Number).filter(function(b) { return b > 0; });
+		if (!cap.length) cap = BAND_CAPS[rat];
+		if (rat === 'nr') cap = cap.filter(function(b) { return NR_CODEC.indexOf(b) >= 0; });
+		if (cap.every(function(b) { return locked.indexOf(b) >= 0; })) return;
+		var p = rat === 'nr' ? 'n' : 'B';
+		out.push((rat === 'nr' ? _('NR band lock: %s') : _('LTE band lock: %s')).format(p + locked.join(' ' + p)));
+	});
+	if ((l.cells || []).length) out.push(_('Cell lock: %s').format(l.cells.join(' ')));
+	return out;
+}
+
 /* The engineering port gives only MCS/BLER; the modulation is derived here from the common 3GPP MCS table 1,
  * without an extra AT request for a display item. LTE uplink has other MCS boundaries than downlink/NR. */
 function modulation(mcs, rat, uplink) {
@@ -274,14 +304,32 @@ return view.extend({
 			M.confirmBox(_('Restart the entire device'), _('All connections will be interrupted.'), { danger: true })
 				.then(function(go) { if (go) act('reboot', null, null, btn); });
 		};
+		/* The network mode and band locks live in the modem's NV, which Android shares: they stay in force there (#96).
+		 * When the last lock state shows anything not automatic, the dialog says so and offers to reset first; when
+		 * the state cannot be read, it is the plain dialog. The switch itself is never blocked. */
 		q('btn-android').onclick = function() {
 			var btn = this;
-			M.confirmBox(_('Switch to Android'),
-				[ _('The next boot will enter Android and reboot now. This management page and cellular sharing will disconnect.'),
-				  _('To return to OpenWrt, run mu300-next-boot linux in Android and reboot.'),
-				  _('Or do nothing: after five boots that do not finish, it falls back automatically.') ].join('\n'),
-				{ danger: true, okText: _('Switch and reboot') })
-				.then(function(go) { if (go) act('os', 'android', _('Preparing Android boot and rebooting…'), btn); });
+			var msg = [ _('The next boot will enter Android and reboot now. This management page and cellular sharing will disconnect.'),
+				_('To return to OpenWrt, run mu300-next-boot linux in Android and reboot.'),
+				_('Or do nothing: after five boots that do not finish, it falls back automatically.') ].join('\n');
+			var go = function() { act('os', 'android', _('Preparing Android boot and rebooting…'), btn); };
+			L.resolveDefault(M.callLockGet(), null).then(function(l) {
+				if (l && l.mode) self.lastLock = l;
+				var lk = lockDeviations(self.lastLock);
+				if (!lk || !lk.length)
+					return M.confirmBox(_('Switch to Android'), msg, { danger: true, okText: _('Switch and reboot') })
+						.then(function(ok) { if (ok) go(); });
+				return M.choiceBox(_('Switch to Android'),
+					_('Not automatic: %s. The network mode and band locks are stored in the modem and stay in force in Android too; if the network does not match them, Android shows No Service.').format(lk.join(', ')) +
+						'\n\n' + msg,
+					[ { label: _('Cancel'), value: '' },
+					  { label: _('Switch and reboot'), value: 'plain', danger: true },
+					  { label: _('Reset locks and switch'), value: 'reset', danger: true } ])
+					.then(function(choice) {
+						if (choice === 'plain') go();
+						else if (choice === 'reset') self.resetLocksThen(self.lastLock, btn, go);
+					});
+			});
 		};
 		q('btn-bootlock').onclick = function() {
 			var btn = this;
@@ -330,8 +378,39 @@ return view.extend({
 	refreshLock: function() {
 		var self = this;
 		L.resolveDefault(M.callLockGet()).then(function(l) {
+			if (l && l.mode) self.lastLock = l;
 			self.lockedCell = (l || {}).cells || [];
 			self.repaintNeigh();
+		});
+	},
+
+	/* Reset every lock to automatic (lock_set reset: one SFUN restart, the saved settings cleared), wait until the
+	 * lock cache shows a read newer than the one before (or two minutes pass), then run then(). A refused reset stops
+	 * here: the user asked for the reset first. */
+	resetLocksThen: function(before, btn, then) {
+		var base = (before && before.ts) || 0, tries = 0;
+		M.busy(btn, true);
+		M.toast(_('Resetting the network locks to automatic (SFUN restart, about 30 seconds)…'), { type: 'busy' });
+		L.resolveDefault(M.callLockSet('reset', 'auto'), null).then(function(r) {
+			r = r || {};
+			if (!r.ok) {
+				M.busy(btn, false);
+				M.toast(_('Failed: %s').format(M.errText(r)), { type: 'error' });
+				return;
+			}
+			var step = function() {
+				L.resolveDefault(M.callLockGet(), null).then(function(l) {
+					l = l || {};
+					var fresh = l.ts && l.ts > base, auto = fresh && !(lockDeviations(l) || [ 1 ]).length;
+					if (auto || ++tries > 48) {
+						M.busy(btn, false);
+						if (!auto)
+							M.toast(_('The lock reset was not confirmed in time; switching anyway.'), { type: 'error' });
+						then();
+					} else setTimeout(step, 2500);
+				});
+			};
+			setTimeout(step, 2500);
 		});
 	},
 

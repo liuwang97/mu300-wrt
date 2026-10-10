@@ -3,6 +3,8 @@
 #   mu300-dash-lock get                 read everything (5 short AT commands), emit JSON
 #   mu300-dash-lock apply KIND VALUE    write one setting, then restart the protocol stack
 #   mu300-dash-lock replay [early]      boot hook: re-apply every enabled saved setting
+#   mu300-dash-lock reset               everything back to automatic, one stack restart,
+#                                       and the saved settings dropped (boot replay keeps off)
 #
 # KIND / VALUE:
 #   mode  auto | 4g | sa | nsa          network mode lock (SPTESTMODE + SP5GRAN)
@@ -26,6 +28,10 @@
 # same sequence the official web UI and mobile-data's sim-reset use - so the new
 # setting takes effect. Cellular drops for half a minute; the data watchdog or the
 # configured netifd data interface brings the connection back.
+#
+# Mode and band locks live in the modem's NV, which Android shares: they survive a
+# reboot and stay in force after a switch to Android (measured on an F50, #96) -
+# a cell lock does not. "reset" is the way back to the modem's own defaults.
 #
 # The last applied state is saved in the configured state_dir. The package's
 # own procd service replays it when the selected AT adapter becomes ready; no
@@ -75,7 +81,7 @@ nr_sup() {
 # Boot replay only needs to deliver writes; several vendor setters apply the
 # value but omit a final OK. Never spend the interactive six-second timeout on
 # each of them while the radio is deliberately held off.
-at_boot() { "$AT" -t 2 "$1" 2>/dev/null | tr -d '\r'; }
+at_boot() { "$AT" -t "${AT_BOOT_T:-2}" "$1" 2>/dev/null | tr -d '\r'; }
 say() { logger -t mu300-dash "$*" 2>/dev/null; echo "$(date '+%H:%M:%S') $*" >> "$LOG" 2>/dev/null; tail -n 30 "$LOG" > "$LOG.t" 2>/dev/null && mv "$LOG.t" "$LOG"; }
 # digits VALUE [MAX]: VALUE is 1 to MAX (default 7) decimal digits
 digits() {
@@ -476,14 +482,49 @@ do_apply() {  # do_apply KIND VALUE
     [ "$state_saved" = 1 ] || save_state "$kind" "$val"
     sfun_restart_locked
     say "apply $kind=$val done"
-    # the cache must not keep serving the pre-apply state; retry because the
-    # lock reads can lag registration by a few seconds after the restart
-    ( t=$$; n=0
+    refresh_cache_soon
+}
+
+# the cache must not keep serving the pre-apply state; retry because the
+# lock reads can lag registration by a few seconds after the restart
+refresh_cache_soon() {
+    ( n=0
       while [ $n -lt 10 ]; do
         sh "$0" get fresh >/dev/null 2>&1
         grep -q '"cells"' "$LOCKCACHE" 2>/dev/null && grep -qE '"(nr|lte)":\{"locked":"[0-9]' "$LOCKCACHE" 2>/dev/null && break
         n=$((n + 1)); sleep 3
       done ) >/dev/null 2>&1 &
+}
+
+# ------------------------------------------------------------------ reset
+# Everything back to the modem's defaults in one go, with ONE stack restart: the
+# values the single applies send for "automatic" (mode auto keeps the modem's
+# slot1/primary fields, EN-DC on, both band masks cleared, both cell locks
+# removed). Verified read-backs on the device: SPTESTMODE 134,134,0, SP5GRAN 1,
+# SPLBAND=0 -> 0,482,0,149,0 (the full LTE set). The saved settings go too, so
+# the boot replay does not put the locks back; the replay switch itself stays.
+do_reset() {
+    _t0=$(date +%s)
+    apply_lock
+    trap 'rm -rf "$APPLY_DIR" 2>/dev/null' EXIT INT TERM
+    # do_apply_quiet is the replay's writer; interactive here: the normal timeout
+    AT_BOOT_T=6
+    do_apply_quiet mode auto
+    do_apply_quiet endc on
+    do_apply_quiet lte ''
+    do_apply_quiet nr ''
+    at 'AT+SPFORCEFRQ=12,4' 6 >/dev/null
+    at 'AT+SPFORCEFRQ=16,4' 6 >/dev/null
+    rm -f "$STATE_DIR/mode" "$STATE_DIR/endc" "$STATE_DIR/lte" "$STATE_DIR/nr" "$STATE_DIR/cell"
+    # no cell file means "seed from the cache" at the next cell lock: the cache
+    # must not offer the cells just removed (the fresh read below rewrites it all)
+    [ -s "$LOCKCACHE" ] &&
+        sed 's/"cell":"[^"]*"/"cell":""/; s/"cells":\[[^]]*\]/"cells":[]/' "$LOCKCACHE" > "$LOCKCACHE.part" 2>/dev/null &&
+        mv "$LOCKCACHE.part" "$LOCKCACHE"
+    say "all locks -> automatic (mode auto, EN-DC on, bands automatic, cell locks removed); saved settings cleared"
+    sfun_restart_locked
+    say "reset done"
+    refresh_cache_soon
 }
 
 # ----------------------------------------------------------------- replay
@@ -649,8 +690,9 @@ case "${1:-}" in
         emit_state
         ;;
     apply)  do_apply "${2:-}" "${3:-}" ;;
+    reset)  do_reset ;;
     replay) do_replay "${2:-late}" ;;
     # run by sfun_restart_locked, under the radio lock
     sfun-restart) sfun_restart "${2:-late}" ;;
-    *)      echo "usage: $0 get [fresh] | apply KIND VALUE | replay [early]" >&2; exit 2 ;;
+    *)      echo "usage: $0 get [fresh] | apply KIND VALUE | reset | replay [early]" >&2; exit 2 ;;
 esac
