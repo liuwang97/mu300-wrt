@@ -515,13 +515,15 @@ static int mm_single_event_process(struct mem_mgmt *mm_entry,
 		break;
 	case SPRD_FLUSH_BUFFER:
 		/*
-		 * MU300: the vendor called sc2355_rx_flush_buffer(mm_entry) here, with mm_entry where it takes the
-		 * hif. Called right, from this RX/event context it would purge buffer_list and free the address buffer
-		 * while the RX refill (sprd_work) may be using them. Queue it on the same ordered sprd_work queue as
-		 * the refill instead, so the two never run together; the flush also cancels a timed refill retry.
+		 * MU300: ignored. The vendor called sc2355_rx_flush_buffer(mm_entry) here, with mm_entry where it
+		 * takes the hif, so it read a garbage rx_mgmt pointer: this firmware never sends it, or it would have
+		 * crashed. Done right, it is still unsafe: from this RX context it would free buffer_list and the
+		 * address buffer under a running refill (sprd_work), and deferred to sprd_work it would free buffers
+		 * that later RX events in this same batch, and refills after it, still hand to or take from the chip.
+		 * Leaving the buffers alone is safe: the last interface's close flushes them all (sc2355_reset and
+		 * sc2355_handle_tx_status_after_close).
 		 */
-		sc2355_queue_rx_buff_work(container_of(mm_entry, struct rx_mgmt, mm_entry)->hif->priv,
-					  SPRD_PCIE_RX_FLUSH_BUF);
+		pr_warn_ratelimited("%s: firmware asked for an RX buffer flush, ignored\n", __func__);
 		break;
 	default:
 		pr_err("%s: err type: %d\n", __func__, value->type);

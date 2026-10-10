@@ -126,14 +126,32 @@ void wcn_reset_process(void)
  * call wcn_reset_notifier_list (Wi-Fi marks itself asserted and sends its FW_ERROR uevent) and clear the flag.
  * The chip powers on again at the next start_marlin(), i.e. when Wi-Fi is reopened. Process context; may block.
  */
-void wcn_mu300_recover(void)
+bool wcn_mu300_recover(void)
 {
-	WCN_INFO("%s begin\n", __func__);
-	stop_loopcheck();
-	mdbg_proc->fail_count = 0;
-	marlin_set_download_status(0);
-	wcn_reset_process();
-	WCN_INFO("%s end\n", __func__);
+	bool done = false;
+
+	/*
+	 * mdbg_proc->mutex, as the firmware-assert path (__wcn_assert_interface: dump or wcn_reset_process),
+	 * procfs dumpmem and rebootwcn hold it: one dump or reset at a time. Same order as theirs, this mutex and
+	 * then marlin_dev->power_lock (inside wcn_chip_power_off). The watchdog that calls this from a work item of
+	 * its own never takes it, so a reset that hangs here, or an assert path that never lets go, cannot stall it.
+	 */
+	mutex_lock(&mdbg_proc->mutex);
+	/* someone else (an assert's reset, a manual rebootwcn) may have recovered it meanwhile */
+	if (sprdwcn_bus_get_carddump_status()) {
+		WCN_INFO("%s begin\n", __func__);
+		stop_loopcheck();
+		mdbg_proc->fail_count = 0;
+		marlin_set_download_status(0);
+		wcn_reset_process();
+		WCN_INFO("%s end\n", __func__);
+		done = true;
+	} else {
+		WCN_INFO("%s: not in card dump any more, nothing to do\n", __func__);
+	}
+	mutex_unlock(&mdbg_proc->mutex);
+
+	return done;
 }
 EXPORT_SYMBOL_GPL(wcn_mu300_recover);
 
@@ -1000,6 +1018,8 @@ static ssize_t mdbg_proc_write(struct file *filp,
 			return count;
 		}
 		if (strncmp(mdbg_proc->write_buf, "rebootwcn", 9) == 0) {
+			/* MU300: under mdbg_proc->mutex, as the assert path and wcn_mu300_recover() reset the chip */
+			mutex_lock(&mdbg_proc->mutex);
 			flag_reset = 1;
 			WCN_INFO("marlin gnss need reset\n");
 			WCN_INFO("fail_count is value %d\n", mdbg_proc->fail_count);
@@ -1010,6 +1030,7 @@ static ssize_t mdbg_proc_write(struct file *filp,
 			marlin_chip_en(false, true);
 			wcn_reset_cp2();
 			flag_reset = 0;
+			mutex_unlock(&mdbg_proc->mutex);
 			return count;
 		}
 		if (strncmp(mdbg_proc->write_buf, "at+getchipversion", 17) == 0) {

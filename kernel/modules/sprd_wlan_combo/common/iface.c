@@ -116,17 +116,30 @@ static struct miscdevice wlan_misc_device = {
 };
 
 #ifndef DRV_RESET_SELF
-static int iface_host_reset(struct notifier_block *nb,
-			    unsigned long data, void *ptr)
+/*
+ * MU300: the FW_ERROR uevent from a work item. wcn_reset_notifier_list is an atomic notifier chain (RCU read side),
+ * and kobject_uevent_env() allocates with GFP_KERNEL and may sleep; the vendor sent it from the notifier, and also
+ * leaked the path kobject_get_path() allocated for its log line. The uevent is what reopens Wi-Fi after the
+ * recovery watchdog's reset (see iface_wd_tick).
+ */
+static void iface_fw_error_uevent(struct work_struct *work)
 {
-	struct sprd_priv *priv = iface_get_priv();
-	struct sprd_hif *hif;
-
 	char *envp[3] = {
 		[0] = "SOURCE=unisocwl",
 		[1] = "EVENT=FW_ERROR",
 		[2] = NULL,
 	};
+
+	kobject_uevent_env(&wlan_misc_device.this_device->kobj, KOBJ_CHANGE, envp);
+	pr_err("%s: FW_ERROR uevent sent on %s\n", __func__, dev_name(wlan_misc_device.this_device));
+}
+static DECLARE_WORK(iface_fw_error_work, iface_fw_error_uevent);
+
+static int iface_host_reset(struct notifier_block *nb,
+			    unsigned long data, void *ptr)
+{
+	struct sprd_priv *priv = iface_get_priv();
+	struct sprd_hif *hif;
 
 	if (!priv) {
 		pr_err("%s sprd_prv is NULL\n", __func__);
@@ -136,9 +149,7 @@ static int iface_host_reset(struct notifier_block *nb,
 	hif = &priv->hif;
 	hif->cp_asserted = 1;
 
-	kobject_uevent_env(&wlan_misc_device.this_device->kobj, KOBJ_CHANGE, envp);
-	pr_err("%s() dev_path: %s\n", __func__,
-	       kobject_get_path(&wlan_misc_device.this_device->kobj, GFP_KERNEL));
+	schedule_work(&iface_fw_error_work);
 	sprd_chip_force_exit((void *)&priv->chip);
 
 	return NOTIFY_OK;
@@ -210,8 +221,10 @@ static struct {
 
 static void iface_wd_reset(struct work_struct *work)
 {
-	wcn_mu300_recover();
-	pr_err("MU300 recovery: WCN reset done, Wi-Fi comes back when it is reopened\n");
+	if (wcn_mu300_recover())
+		pr_err("MU300 recovery: WCN reset done, Wi-Fi comes back when it is reopened\n");
+	else
+		pr_err("MU300 recovery: the WCN left card dump before the reset\n");
 }
 
 static void iface_wd_give_up(const char *why)
@@ -1591,9 +1604,13 @@ static int iface_notify_init(struct sprd_priv *priv)
 
 static void iface_notify_deinit(struct sprd_priv *priv)
 {
-	misc_deregister(&wlan_misc_device);
+	/* MU300: no notifier call after this, then no uevent work left, before the misc device goes */
 	atomic_notifier_chain_unregister(&wcn_reset_notifier_list,
 					 &iface_host_reset_cb);
+#ifndef DRV_RESET_SELF
+	cancel_work_sync(&iface_fw_error_work);
+#endif
+	misc_deregister(&wlan_misc_device);
 	unregister_inetaddr_notifier(&iface_inetaddr_cb);
 	if (priv->fw_capa & SPRD_CAPA_NS_OFFLOAD)
 		unregister_inet6addr_notifier(&iface_inet6addr_cb);
