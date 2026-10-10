@@ -224,7 +224,7 @@ static void iface_wd_reset(struct work_struct *work)
 	if (wcn_mu300_recover())
 		pr_err("MU300 recovery: WCN reset done, Wi-Fi comes back when it is reopened\n");
 	else
-		pr_err("MU300 recovery: the WCN left card dump before the reset\n");
+		pr_err("MU300 recovery: no WCN reset (see wcn_mu300_recover's line above)\n");
 }
 
 static void iface_wd_give_up(const char *why)
