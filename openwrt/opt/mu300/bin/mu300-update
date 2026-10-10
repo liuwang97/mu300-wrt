@@ -781,16 +781,17 @@ vpn-mihomo $MODULE_FILE $MODULE_SHA" ;;
 # checks (./requires newer than TAG, a broken tarball) stops a device that needs it while nothing is changed. The
 # running system keeps working meanwhile: its own mu300-vpn finds the engines in the extra where they were.
 modules_install() {
-    while read -r _n _f _s; do
-        [ -n "$_n" ] || continue
-        if module_install "$_n" "$_f" "$_s" "$1"; then
-            printf 'extra %s: %s\n' "$_n" "$(extra_release "$_n")"
+    # own names: module_install -> extra_unpack counts files in _n and _f, which named the module here ("extra 4")
+    while read -r _mi_name _mi_file _mi_sha; do
+        [ -n "$_mi_name" ] || continue
+        if module_install "$_mi_name" "$_mi_file" "$_mi_sha" "$1"; then
+            printf 'extra %s: %s\n' "$_mi_name" "$(extra_release "$_mi_name")"
             EXTRA_CHANGED=1
-        elif [ "$_n" = vpn ] && ! vpn_module_in "$EXTRA/vpn"; then
+        elif [ "$_mi_name" = vpn ] && ! vpn_module_in "$EXTRA/vpn"; then
             vpn_stage_hint
             die "the VPN module could not be installed (see above): nothing was changed"
         else
-            echo "extra $_n: not updated (see above)" >&2
+            echo "extra $_mi_name: not updated (see above)" >&2
         fi
     done <<EOF
 $MODULES_NEW

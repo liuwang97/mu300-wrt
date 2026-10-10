@@ -568,11 +568,11 @@ class UpdateWithTheVpn(ExtrasBase):
         subprocess.run(['tar', '-czf', str(self.stage / 'mu300-ubuntu-rootfs.tar.gz'), '-C', str(self.img), '.'],
                        check=True)
 
-    def apply(self, shell, **env):
+    def apply(self, shell, pre='', **env):
         """apply ubuntu to v2026.10.16, with the release's files already downloaded (the rootfs staged; no kernel
         bundle) and the boot image left alone"""
         self.put_image()
-        code = ('latest_release() { echo v2026.10.16; }; '
+        code = (pre + 'latest_release() { echo v2026.10.16; }; '
                 'fetch_verified() { [ -s "$STAGE/$2" ] && return 0; return 2; }; '
                 'boot_update() { return 0; }; is_root() { false; }; '
                 'apply ubuntu')
@@ -638,11 +638,29 @@ class UpdateWithTheVpn(ExtrasBase):
                 self.assertEqual((self.disk / 'ubuntu/etc/mu300/image-version').read_text(), 'v2026.10.16\n')
                 self.assertEqual((self.vpn() / 'VERSION').read_text().strip(), 'v1.0.0', how)
                 self.assertTrue(os.access(self.vpn() / 'bin/mu300-vpn', os.X_OK))
+                self.assertIn('extra vpn: v1.0.0\n', r.stdout, how)         # named, not "extra 4" (_n reused)
                 self.assertEqual(self.hooks(), [f'link [{self.disk}/ubuntu]'], how)
                 self.assertTrue(os.path.islink(self.disk / 'ubuntu/opt/mu300/bin/mu300-vpn'))
                 self.assertNotIn('WARNING', r.stderr)
                 self.assertEqual(self.urls(), '', how)                  # offline all along
                 self.assertFalse(self.stage.exists())                   # the staged copy is used up
+
+    def test_a_module_that_cannot_be_put_in_place_refuses_before_anything_changes(self):
+        # fails late in extra_unpack, after it counted the programs: the loop must still know it is the vpn module
+        self.offline()
+        for shell in self.each_shell():
+            self.reset(shell, 1, 'old')
+            d = self.disk / '.mu300-update/vpn'
+            d.mkdir(parents=True)
+            module_tarball(d / 'mu300-linux-vpn.tar.gz')
+            sums(d, 'mu300-linux-vpn.tar.gz')
+            r = self.apply(shell, pre='extra_put() { return 1; }; ')
+            self.assertNotEqual(r.returncode, 0, (shell, r.stdout))
+            self.assertIn('the VPN module could not be installed', r.stderr)
+            self.assertIn('nothing was changed', r.stderr)
+            self.assertEqual((self.disk / 'ubuntu/etc/mu300/image-version').read_text(), 'v2026.10.15\n')
+            self.assertFalse((self.disk / 'ubuntu.old').exists())
+            self.assertEqual(self.hooks(), [])
 
     def test_online_the_module_comes_from_its_repository(self):
         self.serve_module()
