@@ -309,3 +309,34 @@ esac
 if __name__ == '__main__':
     import unittest
     unittest.main()
+
+
+class NrBand(ShellTest):
+    """The collector names an NR cell's band from its ARFCN. n78 (620000-653333) lies inside n77 (620000-680000):
+    the narrower band must be looked up first, or every n78 cell - the only one of the two this modem has - shows
+    as n77 (reported by a user in China)."""
+
+    def nrband(self, shell, fr):
+        text = (APP / 'usr' / 'libexec' / 'unisoc-modem' / 'cell').read_text()
+        funcs = set()
+        start = 0
+        while True:
+            i = text.find('function nrband(', start)
+            if i < 0:
+                break
+            funcs.add(text[i:text.index('\n        }\n', i) + 10])
+            start = i + 1
+        self.assertTrue(funcs)
+        out = []
+        for f in funcs:
+            r = self.sh(shell, f"awk '{f}\nBEGIN {{ print nrband({fr}) }}'")
+            self.assertEqual(r.returncode, 0, r.stderr)
+            out.append(r.stdout.strip())
+        return out
+
+    def test_n78_is_not_named_n77(self):
+        for shell in self.each_shell():
+            for fr, band in ((627264, '78'), (620000, '78'), (653333, '78'), (653334, '77'), (680000, '77'),
+                             (504990, '41'), (428000, '1'), (155000, '28'), (700000, '79'), (1, '0')):
+                for got in self.nrband(shell, fr):
+                    self.assertEqual(got, band, (shell, fr))
