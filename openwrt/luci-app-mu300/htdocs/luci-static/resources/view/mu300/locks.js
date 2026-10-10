@@ -86,6 +86,14 @@ return view.extend({
   <tbody id="mud-neigh"><tr><td colspan="7" style="color:var(--text-muted,var(--text-light,#777))">--</td></tr></tbody></table>
   </div>
   <div class="mud-note">${_('Applying restarts the radio stack (SFUN) and briefly interrupts cellular service. Settings are saved and replayed by the plugin after AT is ready when Apply at startup is enabled. A platform pre-radio hook can replay without a restart. Apply with no bands selected to restore automatic mode.')}</div>
+</div>
+
+<div class="mud-sec">
+  <h3>${_('Back to automatic')}</h3>
+  <div class="mud-note">${_('The network mode and band locks are stored in the modem and stay in force in Android too. If you are not sure, reset them before switching to Android.')}</div>
+  <div class="mud-ctl" style="margin-top:7px;max-width:340px">
+    <button class="mud-btn warn" id="mud-lock-reset">${_('Reset all to automatic')}</button>
+  </div>
 </div>`;
 		this.wire(root);
 		return root;
@@ -216,6 +224,16 @@ return view.extend({
 			var sel = selBands('lte');
 			if (!sel.length) return apply('lte', '', _('LTE bands: back to automatic'), { btn: this });
 			apply('lte', sel.join(','), _('LTE band lock: %s').format('B' + sel.join(' B')), { btn: this });
+		};
+		/* every lock back to automatic in one go (backend: unisoc-modem/lock reset): one SFUN restart, and the saved
+		 * settings are cleared so the boot replay does not put them back */
+		this.Q('lock-reset').onclick = function() {
+			var btn = this;
+			M.confirmBox(_('Reset all to automatic'),
+				[ _('Network mode automatic, EN-DC on, all LTE and NR bands, no cell lock. The saved lock settings are cleared, so nothing is replayed at startup.'),
+				  _('The radio stack will restart (SFUN); cellular service will stop for about 30 seconds.') ].join('\n'),
+				{ danger: true, okText: _('Reset') })
+				.then(function(go) { if (go) applyNow('reset', 'auto', _('Reset all to automatic'), { btn: btn }); });
 		};
 		this.Q('lock-cell').onclick = function() { apply('cell', 'auto', _('Lock current serving cell'), { btn: this }); };
 		this.Q('lock-cell-off').onclick = function() { apply('cell', 'off', _('Unlock cell'), { btn: this }); };

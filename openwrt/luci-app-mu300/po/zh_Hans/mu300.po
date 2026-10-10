@@ -291,6 +291,24 @@ msgstr "正在添加 USB 网卡…"
 msgid "Add failed: %s"
 msgstr "添加失败：%s"
 
+msgid "4G only"
+msgstr "仅 4G"
+
+msgid "Network mode: %s"
+msgstr "网络模式：%s"
+
+msgid "EN-DC off"
+msgstr "EN-DC 关闭"
+
+msgid "NR band lock: %s"
+msgstr "NR 频段锁定：%s"
+
+msgid "LTE band lock: %s"
+msgstr "LTE 频段锁定：%s"
+
+msgid "Cell lock: %s"
+msgstr "小区锁定：%s"
+
 msgid "Modulation DL/UL"
 msgstr "调制方式 下/上"
 
@@ -417,6 +435,9 @@ msgstr "重启设备"
 msgid "Switch to Android"
 msgstr "切换到 Android"
 
+msgid "Lock Linux"
+msgstr "锁定 Linux"
+
 msgid "Neighbor cells"
 msgstr "邻区"
 
@@ -474,11 +495,35 @@ msgstr "回到 OpenWrt：在 Android 上执行 mu300-next-boot linux 后重启�
 msgid "Or do nothing: after five boots that do not finish, it falls back automatically."
 msgstr "或什么都不做，连续 5 次开机未完成会自动回退。"
 
+msgid "Preparing Android boot and rebooting…"
+msgstr "正在武装 Android 引导并重启…"
+
 msgid "Switch and reboot"
 msgstr "切换并重启"
 
-msgid "Preparing Android boot and rebooting…"
-msgstr "正在武装 Android 引导并重启…"
+msgid "Not automatic: %s. The network mode and band locks are stored in the modem and stay in force in Android too; if the network does not match them, Android shows No Service."
+msgstr "非自动：%s。网络模式和频段锁定保存在调制解调器中，在 Android 中同样生效；如果网络与之不匹配，Android 会显示“无服务”。"
+
+msgid "Reset locks and switch"
+msgstr "重置锁定并切换"
+
+msgid "Unlock Linux"
+msgstr "解除 Linux 锁定"
+
+msgid "After five boots in a row that do not finish, the device falls back to Android again."
+msgstr "连续五次启动未完成后，设备将再次回退到 Android。"
+
+msgid "Unlock"
+msgstr "解除锁定"
+
+msgid "The device will never switch to Android by itself, not even after failed boots: Android only from this page (Switch to Android) or with mu300-next-boot android."
+msgstr "设备永远不会自行切换到 Android，即使启动失败也不会：只能通过本页面（切换到 Android）或 mu300-next-boot android 进入 Android。"
+
+msgid "A new kernel from an update still gets its first boots on trial, and locks again once one of them succeeds."
+msgstr "更新带来的新内核仍会先以试用方式启动，其中一次成功后会再次锁定。"
+
+msgid "If the system itself no longer starts, the device waits on USB (telnet) instead of going to Android."
+msgstr "如果系统本身无法启动，设备会通过 USB（telnet）等待，而不是进入 Android。"
 
 msgid "Hide SIM identifiers"
 msgstr "隐藏卡号信息"
@@ -497,6 +542,12 @@ msgstr "已后台锁定 %s，稍后自动刷新状态"
 
 msgid "Lock failed: %s"
 msgstr "锁定失败：%s"
+
+msgid "Resetting the network locks to automatic (SFUN restart, about 30 seconds)…"
+msgstr "正在将网络锁定重置为自动（SFUN 重启，约 30 秒）…"
+
+msgid "The lock reset was not confirmed in time; switching anyway."
+msgstr "未能及时确认锁定已重置；仍然切换。"
 
 msgid "Uptime %s"
 msgstr "已运行 %s"
@@ -615,6 +666,9 @@ msgstr "在线"
 msgid "AT adapter unavailable"
 msgstr "AT 适配器不可用"
 
+msgid "Linux locked"
+msgstr "Linux 已锁定"
+
 msgid "Saved"
 msgstr "已保存"
 
@@ -714,9 +768,6 @@ msgstr "LuCI 自身的翻译来自 OpenWrt。本面板除土耳其语和中文�
 msgid "Automatic"
 msgstr "自动"
 
-msgid "4G only"
-msgstr "仅 4G"
-
 msgid "Serving network"
 msgstr "当前驻网"
 
@@ -759,6 +810,15 @@ msgstr "解除小区锁定"
 msgid "Applying restarts the radio stack (SFUN) and briefly interrupts cellular service. Settings are saved and replayed by the plugin after AT is ready when Apply at startup is enabled. A platform pre-radio hook can replay without a restart. Apply with no bands selected to restore automatic mode."
 msgstr "应用后协议栈重启（SFUN），蜂窝会短暂断开；设置会持久保存，并在启用“开机自动应用”时由插件于 AT 就绪后回放。接入平台的射频前钩子时可无重启回放。频段全不选再点应用 = 恢复自动。"
 
+msgid "Back to automatic"
+msgstr "恢复自动"
+
+msgid "The network mode and band locks are stored in the modem and stay in force in Android too. If you are not sure, reset them before switching to Android."
+msgstr "网络模式和频段锁定保存在调制解调器中，在 Android 中同样生效。如不确定，请在切换到 Android 前将其重置。"
+
+msgid "Reset all to automatic"
+msgstr "全部重置为自动"
+
 msgid "Apply “%s”?"
 msgstr "应用「%s」？"
 
@@ -779,9 +839,6 @@ msgstr "正在确认开机自动应用…"
 
 msgid "Started in background: %s (SFUN restart, about 30 seconds); reading the status back…"
 msgstr "已后台执行：%s（SFUN 重启约半分钟），自动回读状态…"
-
-msgid "Network mode: %s"
-msgstr "网络模式：%s"
 
 msgid "Disable EN-DC (NSA anchor)"
 msgstr "关闭 EN-DC（NSA 锚点）"
@@ -807,14 +864,14 @@ msgstr "刷新失败"
 msgid "NR bands: back to automatic"
 msgstr "NR 频段：恢复自动"
 
-msgid "NR band lock: %s"
-msgstr "NR 频段锁定：%s"
-
 msgid "LTE bands: back to automatic"
 msgstr "LTE 频段：恢复自动"
 
-msgid "LTE band lock: %s"
-msgstr "LTE 频段锁定：%s"
+msgid "Network mode automatic, EN-DC on, all LTE and NR bands, no cell lock. The saved lock settings are cleared, so nothing is replayed at startup."
+msgstr "网络模式自动、EN-DC 开启、全部 LTE 和 NR 频段、无小区锁定。已保存的锁定设置将被清除，启动时不再重新应用。"
+
+msgid "Reset"
+msgstr "重置"
 
 msgid "Remove the %s cell lock"
 msgstr "解除 %s 的小区锁定"
@@ -1466,27 +1523,3 @@ msgstr "无法设置 TTL"
 
 msgid "Unknown TTL operation"
 msgstr "未知的 TTL 操作"
-
-msgid "Lock Linux"
-msgstr "锁定 Linux"
-
-msgid "Unlock Linux"
-msgstr "解除 Linux 锁定"
-
-msgid "After five boots in a row that do not finish, the device falls back to Android again."
-msgstr "连续五次启动未完成后，设备将再次回退到 Android。"
-
-msgid "Unlock"
-msgstr "解除锁定"
-
-msgid "The device will never switch to Android by itself, not even after failed boots: Android only from this page (Switch to Android) or with mu300-next-boot android."
-msgstr "设备永远不会自行切换到 Android，即使启动失败也不会：只能通过本页面（切换到 Android）或 mu300-next-boot android 进入 Android。"
-
-msgid "A new kernel from an update still gets its first boots on trial, and locks again once one of them succeeds."
-msgstr "更新带来的新内核仍会先以试用方式启动，其中一次成功后会再次锁定。"
-
-msgid "If the system itself no longer starts, the device waits on USB (telnet) instead of going to Android."
-msgstr "如果系统本身无法启动，设备会通过 USB（telnet）等待，而不是进入 Android。"
-
-msgid "Linux locked"
-msgstr "Linux 已锁定"

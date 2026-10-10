@@ -601,6 +601,73 @@ return out;'''
                 if lang != 'zh_Hans':
                     self.assertIsNone(CJK_RE.search(json.dumps(r, ensure_ascii=False)), r)
 
+    def test_locks_page_offers_the_reset_and_says_the_locks_stay_in_android(self):
+        # #96: mode and band locks live in the modem's NV and stay in force in Android
+        for lang in (None, 'tr', 'zh_Hans'):
+            with self.subTest(lang=lang):
+                out = self.run_view('locks', lang, 'const root = V.render(); await flush(); return root.innerHTML;')
+                cat = catalog(lang) if lang else {}
+                for msg in ('Reset all to automatic', 'The network mode and band locks are stored in the modem and '
+                            'stay in force in Android too. If you are not sure, reset them before switching to '
+                            'Android.'):
+                    self.assertIn(cat.get(msg, msg), out['result'])
+                self.assertIn('id="mud-lock-reset"', out['result'])
+                if lang is None:
+                    self.assert_english_and_catalogued(out)
+
+    # the Android button of the home page, for a lock state: which dialog opens (a choice of three, or the plain
+    # confirmation), and what a "Reset locks and switch" runs
+    ANDROID = '''
+const root = V.render();
+await flush();
+const btn = get('mud-btn-android');
+// the DOM stub has no dialog: record which one opens, and answer it with ANSWER
+let opened, ANSWER, AFTER;
+M.confirmBox = (title, msg, opts) => { opened = { kind: 'confirm', msg: msg, ok: opts.okText }; return Promise.resolve(false); };
+M.choiceBox = (title, msg, choices) => { opened = { kind: 'choice', msg: msg, labels: choices.map((c) => c.label) };
+    if (AFTER) rpcReply = AFTER;   // what the backend answers from here on (the lock_set, the lock_get, the act)
+    return Promise.resolve(ANSWER); };
+const dialog = async (reply) => {
+    rpcReply = reply; V.lastLock = undefined; opened = { kind: 'none' };
+    btn.onclick.call(btn); await flush(); await flush(); await flush();
+    return opened.kind;
+};
+const AUTO = { ts: 5, mode: { label: 'auto' }, endc: '1', cells: [],
+               lte: { locked: '1,3,5,8,34,38,39,40,41' }, nr: { locked: '1,5,8,28,41,78' },
+               caps: { nr: '1,5,6,8,28,41,78', lte: '1,3,5,8,34,38,39,40,41' } };
+const out = {
+    unreadable: await dialog({}), error: await dialog({ error: 'Lock read failed' }),
+    auto: await dialog(AUTO), cleared: await dialog(Object.assign({}, AUTO, { lte: { locked: '' }, nr: { locked: '' } })),
+    mode: await dialog(Object.assign({}, AUTO, { mode: { label: '4g' } })),
+    endc: await dialog(Object.assign({}, AUTO, { endc: '2' })),
+    lte: await dialog(Object.assign({}, AUTO, { lte: { locked: '3' } })),
+    nr: await dialog(Object.assign({}, AUTO, { nr: { locked: '78' } })),
+    cell: await dialog(Object.assign({}, AUTO, { cells: [ 'lte:1650,211' ] })),
+};
+out.choice = opened;
+// "Reset locks and switch": the reset, then - once the lock state reads automatic - the switch
+toasts.length = 0;
+ANSWER = 'reset'; AFTER = Object.assign({ ok: 1 }, AUTO, { ts: 9 });
+await dialog(Object.assign({}, AUTO, { mode: { label: 'sa' } }));
+for (let i = 0; i < 6; i++) { await flush(); timers.splice(0).forEach((f) => f()); }
+out.notes = notes();
+return out;'''
+
+    def test_android_switch_warns_about_the_locks_and_offers_the_reset(self):
+        r = self.run_view('home', None, self.ANDROID)
+        res = r['result']
+        self.assertEqual({k: res[k] for k in ('unreadable', 'error', 'auto', 'cleared')},
+                         {'unreadable': 'confirm', 'error': 'confirm', 'auto': 'confirm', 'cleared': 'confirm'})
+        self.assertEqual({k: res[k] for k in ('mode', 'endc', 'lte', 'nr', 'cell')},
+                         dict.fromkeys(('mode', 'endc', 'lte', 'nr', 'cell'), 'choice'))
+        self.assertEqual(res['choice']['labels'], ['Cancel', 'Switch and reboot', 'Reset locks and switch'])
+        self.assertTrue(res['choice']['msg'].startswith('Not automatic: Cell lock: lte:1650,211. '), res['choice'])
+        self.assertEqual(res['notes'][0], 'Resetting the network locks to automatic (SFUN restart, about 30 seconds)…')
+        self.assertIn('Preparing Android boot and rebooting…', res['notes'])
+        for msg in ('Reset locks and switch', 'EN-DC off', 'Cell lock: %s'):
+            self.assertIn(msg, r['used'])
+        self.assert_english_and_catalogued(r)
+
     SMS = '''
 const root = V.render();
 rpcReply = { pages: 1, total: 3, unread: 1, msgs: [ { id: '3', peer: '10086', dir: 'mo', preview: 'hi', time: 't3' },
