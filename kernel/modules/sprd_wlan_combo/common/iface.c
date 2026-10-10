@@ -11,6 +11,8 @@
 
 #include <linux/ctype.h>
 #include <linux/moduleparam.h>
+#include <linux/reboot.h>
+#include <linux/workqueue.h>
 #include <misc/wcn_bus.h>
 #include <linux/miscdevice.h>
 
@@ -114,17 +116,30 @@ static struct miscdevice wlan_misc_device = {
 };
 
 #ifndef DRV_RESET_SELF
-static int iface_host_reset(struct notifier_block *nb,
-			    unsigned long data, void *ptr)
+/*
+ * MU300: the FW_ERROR uevent from a work item. wcn_reset_notifier_list is an atomic notifier chain (RCU read side),
+ * and kobject_uevent_env() allocates with GFP_KERNEL and may sleep; the vendor sent it from the notifier, and also
+ * leaked the path kobject_get_path() allocated for its log line. The uevent is what reopens Wi-Fi after the
+ * recovery watchdog's reset (see iface_wd_tick).
+ */
+static void iface_fw_error_uevent(struct work_struct *work)
 {
-	struct sprd_priv *priv = iface_get_priv();
-	struct sprd_hif *hif;
-
 	char *envp[3] = {
 		[0] = "SOURCE=unisocwl",
 		[1] = "EVENT=FW_ERROR",
 		[2] = NULL,
 	};
+
+	kobject_uevent_env(&wlan_misc_device.this_device->kobj, KOBJ_CHANGE, envp);
+	pr_err("%s: FW_ERROR uevent sent on %s\n", __func__, dev_name(wlan_misc_device.this_device));
+}
+static DECLARE_WORK(iface_fw_error_work, iface_fw_error_uevent);
+
+static int iface_host_reset(struct notifier_block *nb,
+			    unsigned long data, void *ptr)
+{
+	struct sprd_priv *priv = iface_get_priv();
+	struct sprd_hif *hif;
 
 	if (!priv) {
 		pr_err("%s sprd_prv is NULL\n", __func__);
@@ -134,9 +149,7 @@ static int iface_host_reset(struct notifier_block *nb,
 	hif = &priv->hif;
 	hif->cp_asserted = 1;
 
-	kobject_uevent_env(&wlan_misc_device.this_device->kobj, KOBJ_CHANGE, envp);
-	pr_err("%s() dev_path: %s\n", __func__,
-	       kobject_get_path(&wlan_misc_device.this_device->kobj, GFP_KERNEL));
+	schedule_work(&iface_fw_error_work);
 	sprd_chip_force_exit((void *)&priv->chip);
 
 	return NOTIFY_OK;
@@ -170,6 +183,119 @@ static int iface_host_reset(struct notifier_block *nb,
 static struct notifier_block iface_host_reset_cb = {
 	.notifier_call = iface_host_reset,
 };
+
+/*
+ * MU300: recovery watchdog (issue #94). After a firmware assert our builds leave the WCN in card-dump state for
+ * good (wcn_bsp's reset_dump defaults to "dump"): every mbuf_link_alloc() fails, Wi-Fi is dead, and until the RX
+ * refill was given a back-off the printk flood soft-locked a CPU and softlockup_panic rebooted the device - which
+ * is what brought Wi-Fi back. Without that, something else has to:
+ *
+ * - every second, Wi-Fi counts as stuck while the card-dump flag is set, or while the firmware is marked asserted
+ *   (cp_asserted) with an interface open, i.e. the chip was reset but Wi-Fi has not been reopened yet (after our
+ *   reset: until a power-on has succeeded, interface open or not);
+ * - card dump for 10 s: reset the chip once per boot (wcn_mu300_recover(), what procfs "rebootwcn" does), in a work
+ *   item of its own so that a reset that hangs cannot stall this one. The reset's FW_ERROR uevent (iface_host_reset)
+ *   is userspace's cue to reopen Wi-Fi (OpenWrt: /etc/hotplug.d/misc/10-mu300-wcn), which powers the chip on again;
+ * - still stuck 70 s after it began (the reset hung, or Wi-Fi was not reopened), or card dump again after the one
+ *   reset of this boot: orderly_reboot(), unless recovery_reboot=0. Never worse than the panic it replaces.
+ * It runs outside every Wi-Fi lock and only reads two flags.
+ */
+static bool recovery_reboot = true;
+module_param(recovery_reboot, bool, 0644);
+MODULE_PARM_DESC(recovery_reboot, "MU300: reboot when Wi-Fi stays stuck after the WCN reset (default on)");
+
+#define IFACE_WD_PERIOD		HZ
+#define IFACE_WD_RESET_AFTER	(10 * HZ)
+#define IFACE_WD_REBOOT_AFTER	(70 * HZ)
+
+static struct {
+	struct delayed_work tick;
+	struct work_struct reset;
+	struct sprd_hif *hif;
+	unsigned long stuck_since;
+	bool stuck;
+	bool reset_used;	/* the one chip reset of this boot */
+	bool reset_this_time;	/* ... and it was for the current stuck spell */
+	bool gave_up;
+} iface_wd;
+
+static void iface_wd_reset(struct work_struct *work)
+{
+	if (wcn_mu300_recover())
+		pr_err("MU300 recovery: WCN reset done, Wi-Fi comes back when it is reopened\n");
+	else
+		pr_err("MU300 recovery: no WCN reset (see wcn_mu300_recover's line above)\n");
+}
+
+static void iface_wd_give_up(const char *why)
+{
+	iface_wd.gave_up = true;
+	if (recovery_reboot) {
+		pr_emerg("MU300 recovery: Wi-Fi stuck (%s)%s, rebooting\n", why,
+			 work_busy(&iface_wd.reset) ? ", the WCN reset has not returned" : "");
+		orderly_reboot();
+	} else {
+		pr_emerg("MU300 recovery: Wi-Fi stuck (%s); recovery_reboot=0, so it stays down\n", why);
+	}
+}
+
+static void iface_wd_tick(struct work_struct *work)
+{
+	struct sprd_hif *hif = iface_wd.hif;
+	bool dump = sprdwcn_bus_get_carddump_status() != 0;
+	/* after our reset only a successful power-on clears cp_asserted (sc2355_reset): a reopen that fails is stuck too */
+	bool asserted = READ_ONCE(hif->cp_asserted) &&
+			(atomic_read(&hif->power_cnt) > 0 || iface_wd.reset_this_time);
+	const char *why = dump ? "WCN in card dump" : "firmware asserted, Wi-Fi not reopened";
+	unsigned long now = jiffies;
+
+	if (!dump && !asserted) {
+		if (iface_wd.stuck)
+			pr_err("MU300 recovery: Wi-Fi is back after %u s\n",
+			       jiffies_to_msecs(now - iface_wd.stuck_since) / 1000);
+		iface_wd.stuck = false;
+		iface_wd.reset_this_time = false;
+		goto again;
+	}
+	if (!iface_wd.stuck) {
+		iface_wd.stuck = true;
+		iface_wd.stuck_since = now;
+		pr_err("MU300 recovery: %s, watching\n", why);
+	}
+	if (iface_wd.gave_up)
+		goto again;
+
+	if (dump && time_after_eq(now, iface_wd.stuck_since + IFACE_WD_RESET_AFTER)) {
+		if (!iface_wd.reset_used) {
+			iface_wd.reset_used = true;
+			iface_wd.reset_this_time = true;
+			pr_err("MU300 recovery: %s for %u s, resetting the WCN (once per boot)\n", why,
+			       jiffies_to_msecs(now - iface_wd.stuck_since) / 1000);
+			queue_work(system_unbound_wq, &iface_wd.reset);
+		} else if (!iface_wd.reset_this_time) {
+			iface_wd_give_up("card dump again, this boot's one WCN reset is used");
+			goto again;
+		}
+	}
+	if (time_after_eq(now, iface_wd.stuck_since + IFACE_WD_REBOOT_AFTER))
+		iface_wd_give_up(why);
+again:
+	queue_delayed_work(system_wq, &iface_wd.tick, IFACE_WD_PERIOD);
+}
+
+static void iface_wd_start(struct sprd_priv *priv)
+{
+	iface_wd.hif = &priv->hif;
+	INIT_DELAYED_WORK(&iface_wd.tick, iface_wd_tick);
+	INIT_WORK(&iface_wd.reset, iface_wd_reset);
+	queue_delayed_work(system_wq, &iface_wd.tick, IFACE_WD_PERIOD);
+}
+
+static void iface_wd_stop(void)
+{
+	cancel_delayed_work_sync(&iface_wd.tick);
+	cancel_work_sync(&iface_wd.reset);
+}
 
 static void iface_stop_net(struct sprd_vif *vif)
 {
@@ -1478,9 +1604,13 @@ static int iface_notify_init(struct sprd_priv *priv)
 
 static void iface_notify_deinit(struct sprd_priv *priv)
 {
-	misc_deregister(&wlan_misc_device);
+	/* MU300: no notifier call after this, then no uevent work left, before the misc device goes */
 	atomic_notifier_chain_unregister(&wcn_reset_notifier_list,
 					 &iface_host_reset_cb);
+#ifndef DRV_RESET_SELF
+	cancel_work_sync(&iface_fw_error_work);
+#endif
+	misc_deregister(&wlan_misc_device);
 	unregister_inetaddr_notifier(&iface_inetaddr_cb);
 	if (priv->fw_capa & SPRD_CAPA_NS_OFFLOAD)
 		unregister_inet6addr_notifier(&iface_inet6addr_cb);
@@ -1844,6 +1974,9 @@ int sprd_iface_probe(struct platform_device *pdev,
 	pr_info("Power off WCN (%d time)\n", atomic_read(&hif->power_cnt));
 	sprd_iface_set_power(hif, false);
 
+	/* MU300: the recovery watchdog (see iface_wd_tick) */
+	iface_wd_start(priv);
+
 	return ret;
 }
 EXPORT_SYMBOL(sprd_iface_probe);
@@ -1855,6 +1988,7 @@ int sprd_iface_remove(struct platform_device *pdev)
 	int ret;
 
 	pr_info("%s\n wlan driver remove.", __func__);
+	iface_wd_stop();	/* MU300: before hif goes */
 
 	pr_info("Power on WCN (%d time)\n", atomic_read(&hif->power_cnt));
 	ret = sprd_iface_set_power(hif, true);

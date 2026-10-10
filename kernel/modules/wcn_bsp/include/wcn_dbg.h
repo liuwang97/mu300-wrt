@@ -19,6 +19,10 @@ extern u32 wcn_print_level;
 #define WCN_ERR(fmt, args...)\
 	pr_err(" error: " fmt, ## args)
 
+/* MU300: for errors a caller can hit on every attempt (printk's own "callbacks suppressed" line keeps the count) */
+#define WCN_ERR_RATELIMITED(fmt, args...)\
+	pr_err_ratelimited(" error: " fmt, ## args)
+
 #define WCN_DBG(fmt, args...)\
 	pr_debug(" dbg: " fmt, ## args)
 

@@ -138,8 +138,13 @@ static inline int mm_do_addr_buf(struct mem_mgmt *mm_entry)
 	/* NOTE: addr_buf should be allocating after being sent,
 	 *       JUST avoid addr_buf allocating fail after being sent here
 	 */
+	/*
+	 * MU300: every message on this path is rate-limited. The RX refill retries it, and when the chip stops
+	 * taking address buffers (issue #94: the WCN in dump status for minutes) each attempt printed four lines
+	 * to the console until a CPU soft-locked in printk. The first ones still show; printk counts the rest.
+	 */
 	if (!hif->fw_awake) {
-		pr_info("%s, fw power save, need to wake up it!\n", __func__);
+		pr_info_ratelimited("%s, fw power save, need to wake up it!\n", __func__);
 		spin_lock_bh(&priv->list_lock);
 		list_for_each_entry(tmp_vif, &priv->vif_list, vif_node) {
 			if (tmp_vif->state & VIF_STATE_OPEN) {
@@ -155,7 +160,7 @@ static inline int mm_do_addr_buf(struct mem_mgmt *mm_entry)
 		if (!sc2355_cmd_host_wakeup_fw(vif->priv, vif)) {
 			hif->fw_power_down = 0;
 		} else {
-			pr_err("%s, wake up fw failed!!\n", __func__);
+			pr_err_ratelimited("%s, wake up fw failed!!\n", __func__);
 			return -EIO;
 		}
 	}
@@ -164,7 +169,7 @@ static inline int mm_do_addr_buf(struct mem_mgmt *mm_entry)
 		pr_debug("%s: addr buf is NULL, re-alloc here\n", __func__);
 		mm_alloc_addr_buf(mm_entry);
 		if (unlikely(!mm_entry->addr_trans)) {
-			pr_err("%s: alloc addr buf fail!\n", __func__);
+			pr_err_ratelimited("%s: alloc addr buf fail!\n", __func__);
 			ret = -ENOMEM;
 		}
 	} else if (value->num >= SPRD_MAX_ADD_MH_BUF_ONCE) {
@@ -180,11 +185,11 @@ static inline int mm_do_addr_buf(struct mem_mgmt *mm_entry)
 					  addr_trans_len, false) >= 0)) {
 			mm_alloc_addr_buf(mm_entry);
 			if (unlikely(!mm_entry->addr_trans)) {
-				pr_err("%s: alloc addr buf fail!\n", __func__);
+				pr_err_ratelimited("%s: alloc addr buf fail!\n", __func__);
 				ret = -ENOMEM;
 			}
 		} else {
-			pr_err("%s: send addr buf fail!\n", __func__);
+			pr_err_ratelimited("%s: send addr buf fail!\n", __func__);
 			ret = -EIO;
 		}
 	}
@@ -238,8 +243,8 @@ static int mm_single_buffer_alloc(struct mem_mgmt *mm_entry)
 		if (likely(pcie_addr)) {
 			ret = mm_w_addr_buf(mm_entry, pcie_addr);
 			if (ret) {
-				pr_err("%s: write addr buf fail: %d\n",
-				       __func__, ret);
+				pr_err_ratelimited("%s: write addr buf fail: %d\n",
+						   __func__, ret);
 				dev_kfree_skb(skb);
 			} else {
 				/* queue skb */
@@ -247,7 +252,7 @@ static int mm_single_buffer_alloc(struct mem_mgmt *mm_entry)
 			}
 		}
 	} else {
-		pr_err("%s: alloc skb fail\n", __func__);
+		pr_err_ratelimited("%s: alloc skb fail\n", __func__);
 	}
 
 	return ret;
@@ -296,7 +301,7 @@ int mm_buffer_relink(struct mem_mgmt *mm_entry,
 
 		ret = mm_w_addr_buf(mm_entry, pcie_addr);
 		if (ret) {
-			pr_err("%s: write addr buf fail: %d\n", __func__, ret);
+			pr_err_ratelimited("%s: write addr buf fail: %d\n", __func__, ret);
 			skb = mm_single_buffer_unlink(mm_entry, pcie_addr);
 			if (likely(skb))
 				dev_kfree_skb(skb);
@@ -461,7 +466,7 @@ static void mm_normal_data_process(struct mem_mgmt *mm_entry,
 		}
 
 		if (unlikely(!skb)) {
-			pr_err("%s: alloc skb fail\n", __func__);
+			pr_err_ratelimited("%s: alloc skb fail\n", __func__);
 			free_data = true;
 		} else {
 			skb_reserve(skb, mm_entry->hif_offset);
@@ -509,7 +514,16 @@ static int mm_single_event_process(struct mem_mgmt *mm_entry,
 		/* NOTE: Not need to do anything here */
 		break;
 	case SPRD_FLUSH_BUFFER:
-		sc2355_rx_flush_buffer(mm_entry);
+		/*
+		 * MU300: ignored. The vendor called sc2355_rx_flush_buffer(mm_entry) here, with mm_entry where it
+		 * takes the hif, so it read a garbage rx_mgmt pointer: this firmware never sends it, or it would have
+		 * crashed. Done right, it is still unsafe: from this RX context it would free buffer_list and the
+		 * address buffer under a running refill (sprd_work), and deferred to sprd_work it would free buffers
+		 * that later RX events in this same batch, and refills after it, still hand to or take from the chip.
+		 * Leaving the buffers alone is safe: the last interface's close flushes them all (sc2355_reset and
+		 * sc2355_handle_tx_status_after_close).
+		 */
+		pr_warn_ratelimited("%s: firmware asked for an RX buffer flush, ignored\n", __func__);
 		break;
 	default:
 		pr_err("%s: err type: %d\n", __func__, value->type);
@@ -581,8 +595,9 @@ int sc2355_mm_buffer_alloc(struct mem_mgmt *mm_entry, int need_num)
 	for (num = 0; num < need_num; num++) {
 		ret = mm_single_buffer_alloc(mm_entry);
 		if (ret) {
-			pr_err("%s: alloc num: %d, need num: %d, ret: %d\n",
-			       __func__, num, need_num, ret);
+			/* MU300: rate-limited, the refill retries this (see mm_do_addr_buf) */
+			pr_err_ratelimited("%s: alloc num: %d, need num: %d, ret: %d\n",
+					   __func__, num, need_num, ret);
 			break;
 		}
 	}
