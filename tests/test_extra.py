@@ -1363,6 +1363,16 @@ class EngineExtras(EngineExtrasBase):
             self.assertEqual(r.returncode, 1)
             self.assertIn('runs on vpn-dae', r.stderr)
             self.assertTrue((self.disk / 'extra/vpn-dae/bin/dae').exists())
+            # an xray profile may run on sing-box: vpn-singbox is in use too; and the engine the service recorded counts
+            self.assertEqual(self.ex(shell, 'install', 'vpn-singbox', MU300_VPN_URL=VPN_URL).returncode, 0)
+            self.profile('openwrt', 'x', 'xray', active=True, enable=1)
+            self.assertEqual(self.ex(shell, 'remove', 'vpn-singbox').returncode, 1)
+            self.profile('openwrt', 'd', 'dae', active=True, enable=1)
+            (self.root / 'run/mu300-vpn').mkdir(parents=True, exist_ok=True)
+            (self.root / 'run/mu300-vpn/engine').write_text('sing-box\n')
+            self.assertEqual(self.ex(shell, 'remove', 'vpn-singbox').returncode, 1)
+            (self.root / 'run/mu300-vpn/engine').unlink()
+            self.assertEqual(self.ex(shell, 'remove', 'vpn-singbox').returncode, 0)
             # another engine goes; with --force this one too
             self.assertEqual(self.ex(shell, 'remove', 'vpn-xray').returncode, 0)
             self.assertEqual(self.ex(shell, 'remove', 'vpn-dae', '--force').returncode, 0)
