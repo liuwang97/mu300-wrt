@@ -918,9 +918,14 @@ class Acl(unittest.TestCase):
         self.assertEqual(read, self.READ)
         self.assertEqual(write, self.WRITE)
         self.assertEqual(read | write, Inventory.METHODS)
-        # the Languages page uploads to one fixed path, and only with write access
+        # the Languages page and the VPN pages upload to fixed paths (a language pack; a VPN config and a VPN
+        # extra's tarball), and only with write access; mu300vpn has its own read/write split (test_mu300vpn)
         self.assertEqual(acl['write'].get('cgi-io'), ['upload'])
-        self.assertEqual(acl['write'].get('file'), {'/tmp/mu300-extra-lang.tar.gz': ['write']})
+        self.assertEqual(acl['write'].get('file'), {'/tmp/mu300-extra-lang.tar.gz': ['write'],
+                                                    '/tmp/mu300-vpn-upload': ['write'],
+                                                    '/tmp/mu300-vpn-extra.tar.gz': ['write']})
+        self.assertEqual(set(acl['read']['ubus']), {'mu300dash', 'mu300rates', 'mu300vpn'})
+        self.assertEqual(set(acl['write']['ubus']), {'mu300dash', 'mu300vpn'})
         self.assertNotIn('cgi-io', acl['read'])
         # the dashboard's live rates come from one fixed method that takes no argument: no file read access at all
         # (a /proc/<pid> glob would have matched paths far beyond the interface counters)
