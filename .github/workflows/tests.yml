@@ -17,7 +17,9 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
+        shard: [0, 1, 2, 3]       # tests/shard.py: the modules of each quarter, ~7 min instead of ~30
     runs-on: ${{ matrix.os }}
+    name: unix shard (${{ matrix.os }}, ${{ matrix.shard }})
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4     # the control panel's JavaScript tests
@@ -31,7 +33,24 @@ jobs:
         run: |
           cd tests
           python3 -c 'import helpers; print("shells:", helpers.shells())'
-          python3 -m unittest discover -s . -v
+          mods=$(python3 shard.py 4 ${{ matrix.shard }}); echo "shard ${{ matrix.shard }}: $mods"
+          python3 -m unittest -v $mods
+
+  # the names the branch ruleset requires: green only when every shard of the matrix above is
+  unix-ubuntu:
+    name: unix (ubuntu-latest)
+    needs: unix
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - run: test "${{ needs.unix.result }}" = success
+  unix-macos:
+    name: unix (macos-latest)
+    needs: unix
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - run: test "${{ needs.unix.result }}" = success
 
   windows:
     runs-on: windows-latest
