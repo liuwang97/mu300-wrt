@@ -1848,6 +1848,17 @@ static int iface_core_init(struct device *dev, struct sprd_priv *priv)
 	sprd_tcp_ack_init(priv);
 	sprd_setup_wiphy(wiphy, priv);
 	sprd_vendor_init(priv, wiphy);
+	/*
+	 * MU300: the phy's permanent address (/sys/class/ieee80211/phy0/macaddress) was all zeros. OpenWrt's wifi
+	 * scripts derive the AP's address from it, and an address that differs from the one the firmware uses breaks
+	 * the WPA handshake. The factory address from LK is what wlan0 gets as well (iface_set_mac_addr()); without
+	 * one the phy keeps no address, as before, and wlan0 its random one.
+	 * (After a community contribution, the u30air charge2 build.)
+	 */
+	if (!is_valid_ether_addr(priv->default_mac))
+		iface_bootargs_mac(priv->default_mac);
+	if (is_valid_ether_addr(priv->default_mac))
+		ether_addr_copy(wiphy->perm_addr, priv->default_mac);
 	set_wiphy_dev(wiphy, dev);
 	ret = wiphy_register(wiphy);
 	if (ret) {
