@@ -9,6 +9,8 @@
 #                                 along (and, the first time, MU300_VPN_ENGINES, default vpn-xray), all or nothing
 #   mu300-extra install vpn|vpn-ENGINE --from FILE|DIR   offline: the module's tarball copied onto the device, or a
 #                                 directory with the tarballs and their SHA256SUMS (then they are verified)
+#   mu300-extra install panel --from FILE|DIR   offline: mu300-extra-panel-offline.tar.gz of the release (Cockpit's
+#                                 packages for Ubuntu 24.04 and 26.04 in it), or a directory with it and SHA256SUMS
 #   mu300-extra remove NAME [--force]   (--force: the vpn extra, or an engine, even while the VPN is on with it)
 #   mu300-extra link              put the system's commands and the extras' on the PATH, and link the VPN module
 #                                 into this system (its hooks/link; run at every boot)
@@ -26,6 +28,10 @@
 #               (/etc/mu300/languages, kept by updates; no file: all of them).
 #   vpn-xray, vpn-singbox, vpn-mihomo, vpn-dae   the VPN's engines (Xray-core with hev-socks5-tunnel, sing-box,
 #               mihomo, dae), each on its own, from the same module repository (mu300-vpn engine install NAME)
+#   panel       the web panel for Ubuntu: Cockpit (Ubuntu's web console) and the MU300 page in it, on the LAN only
+#               (https://LAN-ADDRESS:9090, the Ubuntu account's password). Its command, mu300-panel, installs Cockpit's
+#               packages into the system (from the extra when it carries them, else from Ubuntu's archive) and, after
+#               an update replaced the system, again in the background at its first boot (mu300-extra link).
 #
 # MU300_RELEASE=TAG takes another release, MU300_RELEASE_URL=URL another server with the same files and SHA256SUMS,
 # MU300_VPN_URL=URL another place for the VPN module (a pinned tag: .../releases/download/v1.0.0), MU300_VPN_MODULE
@@ -56,7 +62,13 @@ link_dir() {
 
 # link: the system's commands (one list, the same the images are built with) and every installed extra's. A file
 # or a link of somebody else's is never replaced; a link into an extra that is gone is removed.
-do_link() { do_link_commands; do_link_modules; }
+do_link() { do_link_commands; do_link_modules; do_link_panel; }
+# the panel into this system (Ubuntu): its page, and Cockpit again in the background after an update (mu300-panel)
+do_link_panel() {
+    [ -f "$EXTRA/panel/bin/mu300-panel" ] || return 0
+    is_openwrt && return 0
+    sh "$EXTRA/panel/bin/mu300-panel" link || true
+}
 do_link_commands() {
     L=$(link_dir)
     mkdir -p "$L"
@@ -249,6 +261,25 @@ EOF
     printf '%s %s installed in %s\n' "$name" "$(extra_release "$name")" "$EXTRA/$name"
 }
 
+# panel_from FILE|DIR: PANEL_FILE, the offline panel extra. A directory must hold mu300-extra-panel-offline.tar.gz and
+# a SHA256SUMS that lists it; a file is checked against a SHA256SUMS next to it when that lists it (else it is the
+# user's own choice).
+panel_from() {
+    PANEL_FILE=
+    if [ -d "$1" ]; then
+        _w=$(sums_want "$1/SHA256SUMS" mu300-extra-panel-offline.tar.gz)
+        [ -s "$1/mu300-extra-panel-offline.tar.gz" ] || { echo "no mu300-extra-panel-offline.tar.gz in $1" >&2; return 1; }
+        [ -n "$_w" ] || { echo "$1/SHA256SUMS is missing or does not list mu300-extra-panel-offline.tar.gz: not installed unverified" >&2; return 1; }
+        [ "$(sha_of "$1/mu300-extra-panel-offline.tar.gz")" = "$_w" ] || { echo "$1/mu300-extra-panel-offline.tar.gz does not match its SHA256SUMS" >&2; return 1; }
+        PANEL_FILE=$1/mu300-extra-panel-offline.tar.gz
+        return 0
+    fi
+    [ -s "$1" ] || { echo "$1 not found" >&2; return 1; }
+    _w=$(sums_want "$(dirname "$1")/SHA256SUMS" "${1##*/}")
+    [ -z "$_w" ] || [ "$(sha_of "$1")" = "$_w" ] || { echo "$1 does not match $(dirname "$1")/SHA256SUMS" >&2; return 1; }
+    PANEL_FILE=$1
+}
+
 do_install() {
     name=$1
     [ "$name" != lang ] || is_openwrt || die "the lang extra is LuCI's languages, for OpenWrt only: install it from an OpenWrt system"
@@ -256,8 +287,14 @@ do_install() {
         do_install_module "$name" "${2:-}"
         return
     fi
-    [ -z "${2:-}" ] || die "--from is for the VPN module (vpn and its engines vpn-*); for $name: MU300_EXTRA_FILE=FILE"
-    if [ -n "${MU300_EXTRA_FILE:-}" ]; then
+    [ "$name" != panel ] || ! is_openwrt || die "the panel extra is Cockpit, for Ubuntu: OpenWrt has its own panel (openwrt-luci)"
+    [ -z "${2:-}" ] || [ "$name" = panel ] || die "--from is for the VPN module (vpn and its engines vpn-*) and the panel; for $name: MU300_EXTRA_FILE=FILE"
+    if [ -n "${2:-}" ]; then
+        # panel offline: the release's offline tarball (Cockpit's packages in it), checked as the module's copies are
+        panel_from "$2" || die "panel was not installed"
+        extra_unpack panel "$PANEL_FILE" "$(system_release)" || die "panel was not installed"
+        rm -f "$EXTRA/.panel.sha256"
+    elif [ -n "${MU300_EXTRA_FILE:-}" ]; then
         [ -s "$MU300_EXTRA_FILE" ] || die "$MU300_EXTRA_FILE not found"
         extra_unpack "$name" "$MU300_EXTRA_FILE" "$(system_release)" || die "$name was not installed"
         rm -f "$EXTRA/.$name.sha256"
@@ -280,6 +317,13 @@ do_install() {
         [ "$r" = 0 ] || { rm -rf "$STAGE"; die "$name was not installed (no verified $asset of $tag)"; }
         extra_unpack "$name" "$STAGE/$asset" || { rm -rf "$STAGE"; die "$name was not installed"; }
         rm -rf "$STAGE"
+    fi
+    # panel: Cockpit into this system (the extra's own command: packages, configuration, the page)
+    if [ "$name" = panel ]; then
+        do_link_commands
+        sh "$EXTRA/panel/bin/mu300-panel" install || die "the panel extra is on the disk, but Cockpit is not installed (see above; again: sudo mu300-panel install)"
+        printf '%s %s installed in %s\n' "$name" "$(extra_release "$name")" "$EXTRA/$name"
+        return
     fi
     # a fresh install of the languages offers all of them
     [ "$name" != lang ] || rm -f "$LANGS_ON"
@@ -305,6 +349,8 @@ do_remove() {
         echo "the VPN is on with a profile that runs on $1: turn it off or use another profile first (mu300-vpn off), or: mu300-extra remove $1 --force" >&2
         return 1
     fi
+    # panel: Cockpit out of this system first (its packages, configuration and page)
+    if [ "$1" = panel ] && [ -f "$EXTRA/panel/bin/mu300-panel" ]; then sh "$EXTRA/panel/bin/mu300-panel" remove || true; fi
     # the module out of every system first (its hooks are part of it): what an older image had comes back
     extra_is_module "$1" && module_hook_all "$1" unlink
     rm -rf "$EXTRA/$1" "$EXTRA/.$1.new" "$EXTRA/.$1.old" "$EXTRA/.$1.sha256"
@@ -322,6 +368,7 @@ do_list() {
             [ ! -d "$EXTRA/$x/bin" ] && vpn_engine_have "$x" && st="carried by the vpn extra (module v1 or the bundle)" ;;
         esac
         [ "$x" != lang ] || is_openwrt || st="$st - for OpenWrt only: Ubuntu has no LuCI"
+        [ "$x" != panel ] || ! is_openwrt || st="$st - for Ubuntu only: OpenWrt has its own panel"
         printf '%-6s %s\n       %s\n' "$x" "$st" "$(extra_desc "$x")"
     done
 }
@@ -359,6 +406,6 @@ case ${1:-list} in
     # gone: the VPN module carries its engines (an older mu300-vpn asks for it, then installs the extra)
     adopt) echo "nothing to adopt: the VPN module carries its own engines (mu300-extra install vpn)" >&2; exit 1 ;;
     lang) shift; do_lang "$@" ;;
-    -h|--help|help) sed -n '2,33s/^# \{0,1\}//p' "$0" ;;
+    -h|--help|help) sed -n '2,39s/^# \{0,1\}//p' "$0" ;;
     *) echo "usage: mu300-extra list|status|install NAME [--from FILE|DIR]|remove NAME|link|lang ..." >&2; exit 2 ;;
 esac

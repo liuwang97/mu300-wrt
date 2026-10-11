@@ -151,6 +151,9 @@ apk add wireguard-tools luci-proto-wireguard ppp-mod-pptp xl2tpd 6in4 6rd ds-lit
 apk del procd-ujail procd-seccomp >/dev/null 2>&1 || true
 # online firmware upgrades flash whole-disk armsr images: that would overwrite the eMMC, so remove them
 apk del luci-app-attendedsysupgrade attendedsysupgrade-common owut >/dev/null 2>&1 || true
+# what those leave in /etc/config, and the .apk-new copies the upgrade above writes beside a changed config: an update
+# adds every config file of the image the device does not have yet (mu300-update), and these belong to no package
+rm -f /etc/config/attendedsysupgrade /etc/config/*.apk-new
 # LuCI in Turkish and Simplified Chinese besides English, in both systems: the translation of luci-base and of
 # every LuCI app the image has that the feed translates (apk checks each package against the signed index). Their
 # own uci-defaults, run by apk here, register the languages in luci.languages; the other languages are the lang
@@ -215,6 +218,15 @@ uci -c $R/etc/config -q get luci.languages.zh_cn >/dev/null ||
     uci -c $R/etc/config set luci.languages.zh_cn="$(printf "\347\256\200\344\275\223\344\270\255\346\226\207 (Simplified Chinese)")"
 uci -c $R/etc/config commit luci
 uci -c $R/etc/config show luci.languages
+# SQM (openwrt-luci): the default queue (disabled) shapes the generic eth1, which the MU300 does not have, so LuCI
+# offered a device that is not there; it names the cellular uplink, sipa_eth0, instead
+if [ -f $R/etc/config/sqm ]; then
+    for q in $(uci -c $R/etc/config -q show sqm | sed -n "s/^sqm\.\([^.]*\)\.interface=.eth1.$/\1/p"); do
+        uci -c $R/etc/config set sqm.$q.interface=sipa_eth0
+    done
+    uci -c $R/etc/config commit sqm
+    uci -c $R/etc/config -q show sqm | grep -q "\.interface=.eth1.$" && { echo "SQM still names eth1" >&2; exit 1; }
+fi
 mv $R/sbin/sysupgrade $R/sbin/sysupgrade.openwrt && mv $R/usr/libexec/mu300-sysupgrade $R/sbin/sysupgrade
 M=$R/lib/modules/$KREL; mkdir -p $M
 cp /in/modules/*.ko $M/          # ubox kmodloader expects the modules flat in /lib/modules/<release>/
@@ -255,6 +267,9 @@ done
 if [ -d /in/luci-plugin ]; then
     n=$(sed -n "s/^START=//p" $R/etc/init.d/unisoc-modem-ui)
     ln -sf ../init.d/unisoc-modem-ui $R/etc/rc.d/S${n}unisoc-modem-ui
+    # stopped at shutdown: the operations log of the panel (mu300dash flush-ops) is kept for the next boot
+    n=$(sed -n "s/^STOP=//p" $R/etc/init.d/unisoc-modem-ui)
+    ln -sf ../init.d/unisoc-modem-ui $R/etc/rc.d/K${n}unisoc-modem-ui
     # the SMS pool behind the panel (K69, D11): openwrt-luci only, the sms command stays the SMS tool of every system
     chmod 0755 $R/opt/mu300/bin/mu300-sms $R/opt/mu300/bin/mu300-smsd $R/opt/mu300/bin/mu300-sms-forward $R/etc/init.d/mu300-smsd
     n=$(sed -n "s/^START=//p" $R/etc/init.d/mu300-smsd)

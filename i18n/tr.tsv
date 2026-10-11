@@ -317,3 +317,7 @@ used by this installation and removed from {1}:{2}	bu kurulumda kullanıldı ve 
 could not remove{1} from {2}; remove it by hand	{2} dosyasından kaldırılamadı:{1}; elle kaldırın
 password:       kept: the accounts and passwords of the installed system are not changed ({1} in {2} sets a new one)	parola:         korunuyor: kurulu sistemin hesapları ve parolaları değişmez (yenisi için {2} dosyasına {1})
 password for {1}: unchanged (the one this system had)	{1} için parola: değişmedi (bu sistemin önceki parolası)
+The web panel for Ubuntu (Cockpit with an MU300 page: signal, SMS, VPN, Wi-Fi, updates, a terminal; on the LAN only) is optional. It can also be added later on the device:	Ubuntu için web paneli (MU300 sayfalı Cockpit: sinyal, SMS, VPN, Wi-Fi, güncellemeler, terminal; yalnızca LAN üzerinden) isteğe bağlıdır. Daha sonra cihazda da eklenebilir:
+Install the web panel for Ubuntu (about 24 MB more to download, 50 MB on the device)? (yes/no)	Ubuntu için web paneli kurulsun mu (yaklaşık 24 MB ek indirme, cihazda 50 MB)? (yes/no)
+release {1} has no web panel for Ubuntu; it can be added on the device later: sudo mu300-extra install panel	{1} sürümünde Ubuntu için web paneli yok; daha sonra cihazda eklenebilir: sudo mu300-extra install panel
+Building the web panel extra	Web paneli eki derleniyor

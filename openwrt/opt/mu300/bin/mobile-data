@@ -11,6 +11,9 @@
 # MU300_IPV6=relay with it: mu300cell's relay mode (openwrt-luci), see v6_relay_ra
 # OpenWrt: od/timeout come from the static busybox in /opt/mu300/busybox-bin
 export PATH="$PATH:/opt/mu300/busybox-bin"
+# nap SECONDS: a fraction of a second where a sleep takes one. OpenWrt's /bin/sleep (and bash has no sleep of its
+# own) refuses "0.2", so "sleep 0.2 || sleep 1" waited a whole second there; the static busybox next to us takes it.
+nap() { "${MU300_BUSYBOX:-/opt/mu300/bin/busybox}" sleep "$1" 2>/dev/null || sleep "$1" 2>/dev/null || sleep 1; }
 set -euo pipefail
 DEV=${MU300_AT_DEV:-/dev/stty_nr1}
 CID=1
@@ -329,7 +332,7 @@ radio_on_locked() {
     # The CP announces itself on nr0. Wait for that before taking any AT lock (bounded; then try anyway). The log
     # is created by nr0's first line and only ever emptied after that, so its existence is the event.
     while [ "$SECONDS" -lt "$ready_deadline" ] && [ ! -f "$URCLOG" ]; do
-        sleep 0.2 2>/dev/null || sleep 1
+        nap 0.2
     done
     # Android's slot 0 RIL opens nr0/nr1/nr2 and sends AT+SMMSWAP=0 as nr1's first command. Do the same, once per
     # boot (/run is emptied by a reboot), before CFUN and before any dial-up command. So it goes to the nr1 daemon,
@@ -451,7 +454,7 @@ lock_take() {
             LOCK_HOLDER=$owner
             return 1
         fi
-        sleep 0.2 2>/dev/null || sleep 1
+        nap 0.2
     done
 }
 lock_drop() {
@@ -506,7 +509,7 @@ wait_registered() {
             at 'AT+CEREG?' 3 2>/dev/null | is_registered && return 0
             next=$((SECONDS + 5))
         fi
-        sleep 0.2 2>/dev/null || sleep 1
+        nap 0.2
     done
     return 1
 }

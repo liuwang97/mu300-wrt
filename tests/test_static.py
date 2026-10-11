@@ -277,7 +277,7 @@ class Rules(unittest.TestCase):
         # mu300-update knows the module (fixed asset names, the repository's latest release, MU300_VPN_URL), and
         # mu300-extra lists vpn and its engine extras from it (module v2: the core, and the bundle as the fallback)
         up = (BIN / 'mu300-update').read_text()
-        self.assertRegex(up, r'(?m)^EXTRAS="vpn lang vpn-mihomo vpn-xray vpn-singbox vpn-dae"$')
+        self.assertRegex(up, r'(?m)^EXTRAS="vpn lang vpn-mihomo panel vpn-xray vpn-singbox vpn-dae"$')
         self.assertRegex(up, r'(?m)^VPN_ENGINE_EXTRAS="vpn-xray vpn-singbox vpn-mihomo vpn-dae"$')
         self.assertRegex(up, r'(?m)^VPN_REPO=dikeckaan/mu300-linux-vpn$')
         self.assertIn('VPN_URL=${MU300_VPN_URL:-https://github.com/$VPN_REPO/releases/latest/download}', up)
@@ -749,6 +749,53 @@ class Rules(unittest.TestCase):
         for f in ('etc/init.d/mu300-ndp', 'opt/mu300/bin/ndp-learn', 'lib/netifd/proto/mu300cell-v6.sh'):
             self.assertTrue((LUCI_OVERLAY / f).stat().st_mode & 0o111, f)
 
+    def test_board_json_names_the_usb_lan_port(self):
+        # panel page audit: armsr's 99-default_network gave board.json a LAN on eth0, which the MU300 does not have;
+        # LuCI's Status > Overview showed an "eth0, no link" port and its ubus status call failed. board.d/05 names
+        # usb0 first (board_detect runs board.d in name order, and 99-default_network leaves a network it finds)
+        d = OPENWRT / 'etc' / 'board.d'
+        self.assertEqual(sorted(p.name for p in d.iterdir()), ['05_mu300_network'])
+        self.assertLess('05_mu300_network', '99-default_network')
+        f = d / '05_mu300_network'
+        self.assertTrue(f.stat().st_mode & 0o111)
+        stub = ('board_config_update() { echo update; }\nboard_config_flush() { echo flush; }\n'
+                'ucidef_set_interface_lan() { echo "lan $*"; }\n')
+        body = f.read_text().replace('. /lib/functions/uci-defaults.sh', stub)
+        self.assertNotEqual(body, f.read_text())
+        for s in shells():
+            r = subprocess.run(s + ['-c', body], capture_output=True, text=True)
+            self.assertEqual((r.returncode, r.stdout), (0, 'update\nlan usb0\nflush\n'), (s, r.stderr))
+
+    def test_sqm_default_queue_names_the_cellular_uplink(self):
+        # panel page audit: the image's /etc/config/sqm (sqm-scripts' default, disabled) named eth1, which the
+        # MU300 does not have; the build names sipa_eth0 instead, and stops when a queue still names eth1
+        text = (TOP / 'openwrt' / 'build-rootfs.sh').read_text()
+        start = text.index('if [ -f $R/etc/config/sqm ]; then')
+        block = text[start:text.index('\nfi\n', start) + 4]
+        # a uci stand-in over one file of "sqm.SECTION.OPTION='VALUE'" lines (what uci show prints)
+        stub = ('uci() { while [ "${1#-}" != "$1" ]; do [ "$1" = -c ] && shift; shift; done\n'
+                '  case $1 in show) cat "$CFG" ;; commit) echo "commit $2" >> "$LOG" ;;\n'
+                '  set) k=${2%%=*}; v=${2#*=}; grep -v "^$k=" "$CFG" > "$CFG.n"; echo "$k=\'$v\'" >> "$CFG.n"; '
+                'mv "$CFG.n" "$CFG" ;; esac; }\n')
+        for s in shells():
+            for queues, want in (
+                    (["sqm.eth1=queue", "sqm.eth1.enabled='0'", "sqm.eth1.interface='eth1'"],
+                     ["sqm.eth1.interface='sipa_eth0'"]),
+                    (["sqm.mine=queue", "sqm.mine.interface='br-lan'"], ["sqm.mine.interface='br-lan'"])):
+                with tempfile.TemporaryDirectory() as d, self.subTest(shell=s, queues=queues):
+                    (Path(d) / 'etc' / 'config').mkdir(parents=True)
+                    (Path(d) / 'etc' / 'config' / 'sqm').write_text('x\n')
+                    cfg = Path(d) / 'show'
+                    cfg.write_text('\n'.join(queues) + '\n')
+                    r = subprocess.run(s + ['-c', f'R={d}\n{stub}{block}echo done'], capture_output=True, text=True,
+                                       env=dict(os.environ, CFG=str(cfg), LOG=str(Path(d) / 'log')))
+                    self.assertEqual((r.returncode, r.stdout), (0, 'done\n'), r.stderr)
+                    lines = cfg.read_text().splitlines()
+                    for w in want:
+                        self.assertIn(w, lines)
+                    self.assertNotIn("sqm.eth1.interface='eth1'", lines)
+                    self.assertEqual((Path(d) / 'log').read_text(), 'commit sqm\n')
+
     def test_wifi_power_transitions_are_serialised(self):
         # FINDINGS 31n: the probe's power-off (outside RTNL) ran post_deinit while hostapd's open ran post_init;
         # post_deinit cleared the context post_init had just set, and the next RX interrupt read it as NULL in hard
@@ -780,6 +827,60 @@ class Rules(unittest.TestCase):
         for text, pre in ((pcie, ''), (patch, '+')):
             self.assertIn(pre + '\tsmp_store_release(&sc2355_hif.hif, (void *)hif);', text)
             self.assertIn(pre + '\tWRITE_ONCE(sc2355_hif.hif, NULL);', text)
+
+    def test_wifi_notify_init_unwinds_and_registers_the_reset_notifier_last(self):
+        # kanoqwq/mu300-linux@23361ce: a failed notify_init left the WCN reset notifier registered on a freed priv
+        iface = (TOP / 'upstream' / 'modules' / 'sprd_wlan_combo' / 'common' / 'iface.c').read_text()
+        body = iface[iface.index('static int iface_notify_init('):]
+        body = body[:body.index('\n}\n')]
+        reg = body.index('atomic_notifier_chain_register(&wcn_reset_notifier_list,')
+        for step in ('misc_register(&wlan_misc_device);', 'register_inetaddr_notifier(&iface_inetaddr_cb);',
+                     'register_inet6addr_notifier(&iface_inet6addr_cb);'):
+            self.assertLess(body.index(step), reg, step)
+        # nothing returns between the first registration and the end without undoing what it registered
+        self.assertEqual(body.count('return ret;'), 2)
+        self.assertIn('\t\treturn ret;\n\t}\n\n\tret = register_inetaddr_notifier', body)
+        for label in ('goto err_misc;', 'goto err_inet;', 'err_inet:\n\tunregister_inetaddr_notifier',
+                      'err_misc:\n\tmisc_deregister(&wlan_misc_device);\n\treturn ret;'):
+            self.assertIn(label, body)
+
+    def test_wifi_rx_teardown_stops_the_refill_producers_first(self):
+        # kanoqwq/mu300-linux@23361ce: the RX work queues refills on sprd_work and a refill arms the timed retry;
+        # rx_deinit drained them in an order that let one re-arm the other over a freed rx_mgmt
+        wlan = TOP / 'upstream' / 'modules' / 'sprd_wlan_combo' / 'sc2355'
+        self.assertIn('\tbool stopping;\n};', (wlan / 'rx.h').read_text())
+        rx = (wlan / 'rx.c').read_text()
+
+        def body(sig):
+            b = rx[rx.index(sig):]
+            return b[:b.index('\n}\n')]
+        q = body('void sc2355_queue_rx_buff_work(')
+        self.assertLess(q.index('READ_ONCE(rx_mgmt->stopping)'), q.index('sprd_alloc_work(0)'))
+        self.assertIn('if (!READ_ONCE(rx_mgmt->stopping))\n\t\tsc2355_queue_rx_buff_work(', body('static void rx_refill_retry('))
+        f = body('int sc2355_mm_fill_buffer(')
+        self.assertLess(f.index('READ_ONCE(rx_mgmt->stopping)'), f.index('atomic_xchg(&mm_entry->alloc_num, 0)'))
+        d = body('int sc2355_rx_deinit(')
+        order = ['WRITE_ONCE(rx_mgmt->stopping, true);', 'cancel_delayed_work_sync(&rx_mgmt->refill_retry);',
+                 'flush_workqueue(rx_mgmt->rx_queue);', 'flush_workqueue(rx_mgmt->rx_net_workq);',
+                 'sprd_clean_work(hif->priv);']
+        pos = [d.index(s) for s in order]
+        self.assertEqual(pos, sorted(pos))
+        self.assertEqual(d.count('cancel_delayed_work_sync(&rx_mgmt->refill_retry);'), 2)
+        self.assertLess(d.index('sprd_clean_work(hif->priv);'), d.rindex('cancel_delayed_work_sync(&rx_mgmt->refill_retry);'))
+        self.assertLess(d.rindex('cancel_delayed_work_sync'), d.index('kfree(rx_mgmt);'))
+
+    def test_wifi_tx_backpressure_is_not_logged_as_an_error(self):
+        # kanoqwq/mu300-linux@3386928: a full TX ring is flow control, hit on every scheduling pass under load;
+        # the vendor printed two pr_err lines for it each time
+        wlan = TOP / 'upstream' / 'modules' / 'sprd_wlan_combo' / 'sc2355'
+        pcie = (wlan / 'pcie.c').read_text()
+        fc = pcie[pcie.index('int sc2355_pcie_fc_test_send_num('):]
+        fc = fc[:fc.index('\n}\n')]
+        self.assertNotIn('pr_err(', fc)
+        self.assertIn('pr_debug_ratelimited("%s,%d free_num=%d, data_num=%d\\n"', fc)
+        tx = (wlan / 'tx.c').read_text()
+        self.assertNotIn('pr_err("%s, %d: _fc_ no credit!\\n"', tx)
+        self.assertIn('pr_debug_ratelimited("%s, %d: _fc_ no credit!\\n"', tx)
 
 
 if __name__ == '__main__':

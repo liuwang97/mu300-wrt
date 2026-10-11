@@ -108,12 +108,17 @@ return view.extend({
 			self.update(st || {});
 		});
 		/* LuCI poll.add() truncates intervals to whole seconds. Use a one-shot
-		 * timer so 1.5 s remains 1.5 s and slow requests never overlap. */
+		 * timer so 1.5 s remains 1.5 s and slow requests never overlap; after a
+		 * failed snapshot the next one waits longer (M.backoff), up to 18 s. */
+		var fails = 0;
 		function refresh() {
 			if (!document.documentElement.contains(root)) return;
-			L.resolveDefault(M.callStatus()).then(function(st) { self.update(st || {}); }).finally(function() {
+			Promise.resolve(M.callStatus()).then(function(st) {
+				fails = st && st.info ? 0 : fails + 1;
+				self.update(st || {});
+			}, function() { fails++; }).finally(function() {
 				if (document.documentElement.contains(root))
-					self._refreshTimer = setTimeout(refresh, intervalMs);
+					self._refreshTimer = setTimeout(refresh, M.backoff(intervalMs, fails));
 			});
 		}
 		Promise.all([first, config]).then(function() {
@@ -195,6 +200,7 @@ return view.extend({
     <div class="mud-rat" id="mud-rat">--<span class="mud-bars" id="mud-bars"><i style="height:25%"></i><i style="height:45%"></i><i style="height:65%"></i><i style="height:85%"></i><i style="height:100%"></i></span></div>
     <div class="mud-op" id="mud-op">--</div>
     <div class="mud-cellline" id="mud-cellline"></div>
+    <div class="mud-note" id="mud-stale" style="display:none;margin:4px 0 0;color:var(--warning,#f59e0b)"></div>
   </div>
   <div class="mud-hero-r">
     <div class="mud-rsrp" id="mud-rsrp">--</div>
@@ -444,6 +450,11 @@ return view.extend({
 		var self = this;
 		L.resolveDefault(M.callLockGet()).then(function(l) {
 			if (l && l.mode) self.lastLock = l;
+			/* no reading yet (a reboot): the backend reads in the background; ask again a little later */
+			if (l && l.busy && (self._lockTries = (self._lockTries || 0) + 1) <= 8) {
+				setTimeout(function() { self.refreshLock(); }, 5000);
+				return;
+			}
 			self.lockedCell = (l || {}).cells || [];
 			self.repaintNeigh();
 		});
@@ -551,6 +562,16 @@ return view.extend({
 		var ratEl = M.v('rat');
 		ratEl.firstChild.nodeValue = rat;
 		ratEl.style.color = col;
+		/* The cellular readings come from a cache the backend refreshes in the background, never inside this call: when
+		 * the modem is busy (a long AT command, a lock apply, a restart) they stay as they were, and say how old they are
+		 * rather than pass for live ones. */
+		var staleEl = M.v('stale');
+		if (staleEl) {
+			var age = Number(st.sig_age);
+			var stale = st.info && !(c && c.error) && age > 15;
+			staleEl.style.display = stale ? '' : 'none';
+			staleEl.textContent = stale ? _('Modem busy: cellular readings from %s ago').format(M.ageText(age)) : '';
+		}
 		var bars = M.v('bars');
 		if (bars) {
 			var n = score == null ? 0 : Math.max(1, Math.round(score / 2));
