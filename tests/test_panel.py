@@ -43,7 +43,7 @@ def panel_tarball(path, release='v2026.10.20', debs=(), extra=(), name='panel'):
 # apt-get: records its arguments; an install "installs" Cockpit (cockpit-ws appears in the fake system)
 APT = ('echo "apt-get $*" >> "$STUBLOG/apt"; '
        'case " $* " in *" install "*) mkdir -p "$MU300_SYSROOT/usr/lib/cockpit" && : > "$MU300_SYSROOT/usr/lib/cockpit/cockpit-ws" '
-       '&& chmod 755 "$MU300_SYSROOT/usr/lib/cockpit/cockpit-ws" ;; *" remove "*) rm -f "$MU300_SYSROOT/usr/lib/cockpit/cockpit-ws" ;; esac; '
+       '&& chmod 755 "$MU300_SYSROOT/usr/lib/cockpit/cockpit-ws" ;; *" purge "*) rm -f "$MU300_SYSROOT/usr/lib/cockpit/cockpit-ws" ;; esac; '
        '[ -z "$APT_FAIL" ]')
 
 
@@ -185,7 +185,7 @@ class PanelExtra(ExtrasBase):
             self.log('apt')
             r = self.ex(shell, 'remove', 'panel')
             self.assertEqual(r.returncode, 0, r.stderr)
-            self.assertIn('remove -y -q cockpit-ws cockpit-system cockpit-bridge', self.log('apt'))
+            self.assertIn('purge -y -q cockpit-ws cockpit-system cockpit-bridge', self.log('apt'))
             self.assertIn('disable --now cockpit.socket', self.log('systemctl'))
             for p in self.installed_files():
                 self.assertFalse(p.exists() or p.is_symlink(), p)
@@ -249,7 +249,8 @@ class Command(ShellTest):
             (b / k).write_text(v + '\n')
         self.stub('id', 'echo 0')
         self.stub('systemctl', 'echo "systemctl $*" >> "$STUBLOG/systemctl"; [ "$1" = is-active ] && echo active; exit 0')
-        self.stub('mu300-device', 'echo f50')
+        self.stub('mu300-device', 'cat "$STUBLOG/device"')
+        (self.tmp / 'device').write_text('u30air\n')
         self.stub('mu300-lan-ip', 'echo 192.168.77.1')
         self.stub('mu300-cpu', 'echo \'{"ok":1,"profile":"saving"}\'')
         self.stub('ip', 'echo "5: sipa_eth0    inet 10.0.0.2/30 scope global sipa_eth0"')
@@ -270,7 +271,7 @@ class Command(ShellTest):
             r = self.script(shell, CMD, 'info')
             self.assertEqual(r.returncode, 0, r.stderr)
             i = json.loads(r.stdout)
-            self.assertEqual(i['device'], 'f50')
+            self.assertEqual(i['device'], 'u30air')
             self.assertEqual(i['mobile_data'], {'service': 'active', 'address': '10.0.0.2/30'})
             self.assertEqual(i['signal']['rat'], 'LTE')
             self.assertEqual(i['signal']['registration'], 'roaming')
@@ -285,6 +286,10 @@ class Command(ShellTest):
             (self.tmp / 'at').unlink()
             self.script(shell, CMD, 'info')
             self.assertFalse((self.tmp / 'at').exists())
+            # the F50 has no battery, whatever its charger driver lists
+            (self.tmp / 'device').write_text('f50\n')
+            self.assertIsNone(json.loads(self.script(shell, CMD, 'info').stdout)['battery'])
+            (self.tmp / 'device').write_text('u30air\n')
 
     def test_hotspot_set(self):
         conf = self.root / 'etc/mu300/hotspot.conf'
