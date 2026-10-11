@@ -633,8 +633,13 @@ do_verify() {
     if [ -n "$_sums" ] && printf '%s\n' "$_sums" | awk -v h="$_sum" -v a=" $_assets " '
             { n = $2; sub(/^\*/, "", n) } tolower($1) == h && index(a, " " n " ") { f = 1 } END { exit !f }'; then
         echo "verified: it is in the SHA256SUMS of the latest release of the VPN module"
+        # mu300-extra checks a file brought onto the device against a SHA256SUMS next to it, and refuses it without
+        # one: the line for the hash just verified, next to the staged file (the stage is this task's, root's only)
+        ( umask 077; printf '%s  %s\n' "$_sum" "${_f##*/}" > "${_f%/*}/SHA256SUMS" ) || exit 1
     elif [ "$_unv" = 1 ]; then
         echo "NOT VERIFIED: $([ -n "$_sums" ] && echo "not in the SHA256SUMS of the latest release" || echo "the release's SHA256SUMS could not be fetched"); installed because you allowed an unverified file"
+        # (mu300-extra installs a file no SHA256SUMS vouches for only when told so)
+        export MU300_VPN_UNVERIFIED=1
     else
         echo "not installed: $([ -n "$_sums" ] && echo "the file is not in the SHA256SUMS of the latest release of the VPN module" || echo "the release's SHA256SUMS could not be fetched to check it") (allow an unverified file to install it anyway)" >&2
         exit 1

@@ -788,10 +788,13 @@ class Hardening(Mu300Vpn):
         (self.tmp / 'sums').write_text(sums)
         self.stub('curl', f'cat "{self.tmp}/sums"; exit {curl_rc}')
         ran = self.tmp / 'ran'
-        if ran.exists():
-            ran.unlink()
+        for old in (ran, self.tmp / 'ran.env', self.tmp / 'SHA256SUMS'):
+            if old.exists():
+                old.unlink()
+        # (the command records what it installs, and whether mu300-extra would be told to take it unverified)
         r = subprocess.run(shell + [str(VPNB), '__verify', str(f), assets, unv, 'sh', '-c',
-                                    f'cat "$1" > "{ran}"', 'x', str(f)],
+                                    f'cat "$1" > "{ran}"; printf %s "${{MU300_VPN_UNVERIFIED:-}}" > "{ran}.env"',
+                                    'x', str(f)],
                            capture_output=True, text=True, env=self.env(MU300_VPN_SUMS_URL=url,
                                                                          MU300_DASH_DIR=self.dash), timeout=60)
         return r, (ran.read_bytes() if ran.exists() else None)
@@ -805,6 +808,9 @@ class Hardening(Mu300Vpn):
             r, ran = self.verify(shell, data, f'{h}  {self.SUMS_NAME}\n')
             self.assertEqual((r.returncode, ran), (0, data), r.stderr)
             self.assertIn('verified', r.stdout)
+            # mu300-extra checks it again: the verified hash in a SHA256SUMS next to the staged file, nothing unverified
+            self.assertEqual((self.tmp / 'SHA256SUMS').read_text(), f'{h}  stagefile\n')
+            self.assertEqual((self.tmp / 'ran.env').read_text(), '')
             r, ran = self.verify(shell, data, f'{h.upper()} *{self.SUMS_NAME}\n')
             self.assertEqual((r.returncode, ran), (0, data), r.stderr)
             # not listed, listed under another asset, sums unreachable, a plain-http source: refused, nothing run
@@ -821,6 +827,9 @@ class Hardening(Mu300Vpn):
             r, ran = self.verify(shell, data, f'{"0" * 64}  {self.SUMS_NAME}\n', unv='1')
             self.assertEqual((r.returncode, ran), (0, data))
             self.assertIn('NOT VERIFIED', r.stdout)
+            # (and mu300-extra, which refuses a file no SHA256SUMS lists, is told the user allowed it)
+            self.assertEqual((self.tmp / 'ran.env').read_text(), '1')
+            self.assertFalse((self.tmp / 'SHA256SUMS').exists())
             # the core accepts the core tarball or the bundle
             r, ran = self.verify(shell, data, f'{h}  mu300-linux-vpn.tar.gz\n',
                                  assets='mu300-linux-vpn-core.tar.gz mu300-linux-vpn.tar.gz')
