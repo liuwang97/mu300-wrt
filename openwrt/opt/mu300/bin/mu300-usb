@@ -1,5 +1,5 @@
 #!/bin/sh
-# The USB-C port's role (U30 Air; Ubuntu and OpenWrt, mainline kernels):
+# The USB-C port: its role (U30 Air; Ubuntu and OpenWrt, mainline kernels), and adb to this Linux (both devices):
 #   mu300-usb             show it
 #   mu300-usb host        host: flash drives, keyboards, modems through an OTG adapter, with 5 V from the charger's
 #                         boost; or, with something powering the port (a hub or splitter with its own charger, e.g.
@@ -8,6 +8,11 @@
 #   mu300-usb device      back to the USB network / serial console to a computer (the default at every boot)
 #   mu300-usb boot        at boot (mu300-fixups, OpenWrt's mu300-hw): boost off. The charger runs on the battery,
 #                         so its registers outlive a reboot, and a boost left on would meet a computer's 5 V.
+#   mu300-usb adb on|off  adb over USB to this Linux (F50 and U30 Air): adbd joins the USB gadget (mu300-adbd), kept
+#                         on across reboots (/etc/mu300/adb); off by default. Only computers whose key is authorised
+#                         get in, and they get a root shell:
+#   mu300-usb adb key FILE   authorise a computer's ~/.android/adbkey.pub (/etc/mu300/adb_keys); "-": from stdin
+#   mu300-usb adb keys|status   the authorised keys; whether adb runs
 # There is no Type-C driver under mainline to see what is plugged in, so the role is chosen here. The 5 V come from
 # the charger IC (SGM41511, bq2560x-compatible, I2C 0x6b): only its OTG_CONFIG bit is switched here. Without a
 # driver its watchdog puts it back to its defaults (boost off) 40 s after an I2C write unless it is kept alive, so host
@@ -50,6 +55,63 @@ setbits() {  # setbits REG MASK VALUE
     i2c set "$BUS" $ADDR "$1" $(( (v & ~$2) | $3 )) || die "cannot write the charger"
 }
 
+ADB_CONF=${MU300_ADB_CONF:-/etc/mu300/adb}
+ADB_KEYS=${MU300_ADB_KEYS:-/etc/mu300/adb_keys}
+adb_service() {  # adb_service start|stop|restart: mu300-adbd, in the background - it rebinds the gadget, and with it
+    # the console or SSH session over USB this may run in (a command that waits for it could be cut off halfway)
+    if [ -n "${MU300_ADB_SERVICE:-}" ]; then "$MU300_ADB_SERVICE" "$1"
+    elif [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then systemctl --no-block "$1" mu300-adbd.service
+    elif [ -x /etc/init.d/mu300-adbd ]; then setsid /etc/init.d/mu300-adbd "$1" </dev/null >/dev/null 2>&1 &
+    else die "no mu300-adbd service in this system"; fi
+}
+adb_key_add() {  # adb_key_add < LINE(s): the adb public keys (adbkey.pub: "BASE64 user@host") among them, once each
+    added=0
+    while read -r k c || [ -n "$k" ]; do
+        # an RSA-2048 key in Android's format is 524 bytes: 700 base64 characters, "QAAAA" (64 words) first
+        { [ ${#k} -eq 700 ] && [ "${k%=}" != "$k" ] && case ${k%=} in QAAAA*[!A-Za-z0-9+/]*) false ;; QAAAA*) true ;; *) false ;; esac; } || {
+            [ -z "$k" ] || echo "not an adb public key, skipped: $(printf '%s' "$k" | cut -c1-16)..." >&2; continue; }
+        c=$(printf '%s' "$c" | tr -cd 'A-Za-z0-9@._:-' | cut -c1-64)
+        mkdir -p "${ADB_KEYS%/*}"
+        [ -e "$ADB_KEYS" ] || { : > "$ADB_KEYS"; chmod 600 "$ADB_KEYS"; }
+        grep -qF "$k" "$ADB_KEYS" 2>/dev/null && { echo "already authorised: ${c:-(no name)}"; continue; }
+        printf '%s %s\n' "$k" "${c:-unnamed}" >> "$ADB_KEYS"
+        added=$((added + 1)); echo "authorised: ${c:-(no name)}"
+    done
+    [ "$added" -gt 0 ] || grep -q . "$ADB_KEYS" 2>/dev/null
+}
+if [ "${1:-}" = adb ]; then
+    shift
+    case ${1:-status} in
+        on)
+            [ "$(id -u)" = 0 ] || die "run as root (sudo mu300-usb adb on)"
+            why=$(mu300-adbd usable) || die "$why"
+            mkdir -p "${ADB_CONF%/*}" && echo on > "$ADB_CONF"
+            adb_service restart
+            echo "adb on: the USB connection drops for a moment and comes back with adb (also after every reboot)"
+            grep -q . "$ADB_KEYS" 2>/dev/null ||
+                echo "no key is authorised yet: sudo mu300-usb adb key FILE (a computer's ~/.android/adbkey.pub)"
+            echo "anyone whose key is authorised gets a root shell (adb shell) on this device" ;;
+        off)
+            [ "$(id -u)" = 0 ] || die "run as root (sudo mu300-usb adb off)"
+            mkdir -p "${ADB_CONF%/*}" && echo off > "$ADB_CONF"
+            adb_service stop
+            echo "adb off: the USB connection drops for a moment and comes back without adb" ;;
+        key)
+            [ "$(id -u)" = 0 ] || die "run as root (sudo mu300-usb adb key FILE)"
+            [ -n "${2:-}" ] || die "usage: mu300-usb adb key FILE|-   (FILE: a computer's ~/.android/adbkey.pub)"
+            if [ "$2" = - ]; then adb_key_add; else [ -r "$2" ] || die "cannot read $2"; adb_key_add < "$2"; fi ||
+                die "no key added" ;;
+        keys)
+            [ "$(id -u)" = 0 ] || die "run as root (sudo mu300-usb adb keys)"
+            for f in "$ADB_KEYS" /root/.android/adb_keys; do
+                [ -r "$f" ] && sed -n 's/^\(QAAAA.\{8\}\)[^ ]* *\(.*\)$/  \2 (\1...)/p' "$f" | sed "s|^|$f:|"
+            done
+            echo "(remove a key: delete its line from the file)" ;;
+        status) mu300-adbd status ;;
+        *) die "usage: mu300-usb adb on|off|status|key FILE|keys" ;;
+    esac
+    exit 0
+fi
 if [ "${1:-}" = boot ]; then
     # quietly, on whatever kernel: the 5.4 one has its own charger driver and no I2C device node for this
     [ "$(mu300-device)" = u30air ] && BUS=$(bus) || exit 0
@@ -107,5 +169,5 @@ case ${1:-status} in
         watchdog_on                       # watchdog back (40 s): the chip returns to its own defaults
         sleep 1   # the role switch works in the background
         echo "USB device: the USB network and serial console are back" ;;
-    *) sed -n '2,8s/^# \{0,1\}//p' "$0" >&2; exit 2 ;;
+    *) sed -n '2,15s/^# \{0,1\}//p' "$0" >&2; exit 2 ;;
 esac

@@ -111,7 +111,7 @@ ls "$IN/out/modules"/*.ko >/dev/null 2>&1 || {
 }
 # The optional ones decide whether the image can use the modem, Wi-Fi or the GPU at all. Missing ones
 # used to be skipped silently, which produces an image that boots and then does nothing useful.
-for o in firmware android-subset android-gpu-subset tools/logdw/logdw tools/bt-init/mu300-bt-init tools/keys/mu300-keys tools/gpu/cltest busybox upstream/out/modules; do
+for o in firmware android-subset android-gpu-subset tools/logdw/logdw tools/bt-init/mu300-bt-init tools/keys/mu300-keys tools/adbd/adbd tools/gpu/cltest busybox upstream/out/modules; do
     [ -e "$IN/$o" ] && echo "  + $o" || echo "  - $o   (missing: the image is built without it)"
 done
 # shellcheck disable=SC2046
@@ -122,7 +122,7 @@ docker run --rm --platform linux/arm64 \
   -v "$TOP/boot/module-order.txt":/in/module-order.txt:ro -v "$IN/out/modules":/in/modules:ro \
   $(opt out/modules.builtin modules.builtin) $(opt out/modules.builtin.modinfo modules.builtin.modinfo) \
   $(opt firmware firmware) $(opt android-subset android-subset) $(opt android-gpu-subset android-gpu-subset) \
-  $(opt tools/logdw/logdw logdw) $(opt tools/bt-init/mu300-bt-init bt-init) $(opt tools/keys/mu300-keys keys) $(opt tools/gpu/cltest cltest) \
+  $(opt tools/logdw/logdw logdw) $(opt tools/bt-init/mu300-bt-init bt-init) $(opt tools/keys/mu300-keys keys) $(opt tools/adbd/adbd adbd) $(opt tools/gpu/cltest cltest) \
   $(opt busybox busybox) $(opt upstream/out/modules mainline-modules) -v "$TOP/openwrt":/out -v "$REGDB":/in/regdb:ro "$@" \
   -e KREL=$KREL -e OUT="$(basename "$OUT")" -e MU300_VERSION="${MU300_VERSION:-dev}" mu300-$FLAVOUR-base:$VER /bin/sh -eu -c '
 mkdir -p /var/lock /var/run /tmp
@@ -245,6 +245,8 @@ fi
 [ -e /in/logdw ] && { cp /in/logdw $R/opt/mu300/bin/logdw; chmod 755 $R/opt/mu300/bin/logdw; }
 [ -e /in/bt-init ] && { cp /in/bt-init $R/opt/mu300/bin/mu300-bt-init; chmod 755 $R/opt/mu300/bin/mu300-bt-init; }
 [ -e /in/keys ] && { cp /in/keys $R/opt/mu300/bin/mu300-keys; chmod 755 $R/opt/mu300/bin/mu300-keys; }
+# adb over USB (tools/adbd, static): off until mu300-usb adb on
+[ -e /in/adbd ] && { cp /in/adbd $R/opt/mu300/bin/adbd; chmod 755 $R/opt/mu300/bin/adbd; }
 # the VPN engines are not part of the image: they are the vpn extra (mu300-extra install vpn)
 # full static busybox for the tools OpenWrt busybox leaves out (od, timeout, mountpoint, losetup, rfkill, telnetd)
 if [ -e /in/busybox ]; then
@@ -260,7 +262,7 @@ printf "%s\n" "${MU300_VERSION:-dev}" > $R/etc/mu300/image-version
 # enable the services (rc.common "enable" needs ubus, which is not running in the build container)
 # accounts still those of the image until an installer or mu300-update puts the device ones in place
 : > $R/etc/.mu300-accounts-from-image
-for s in mu300-accounts mu300-vendor mu300-hw mu300-post mu300-toolkit mu300-cpu mu300-atd mu300-modem-log mu300-wifi-client mu300-buttons mu300-power mu300-traffic; do
+for s in mu300-accounts mu300-vendor mu300-hw mu300-post mu300-toolkit mu300-cpu mu300-atd mu300-modem-log mu300-wifi-client mu300-buttons mu300-power mu300-traffic mu300-adbd; do
     n=$(sed -n "s/^START=//p" $R/etc/init.d/$s)
     ln -sf ../init.d/$s $R/etc/rc.d/S$n$s
 done
