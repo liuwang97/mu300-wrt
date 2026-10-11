@@ -824,7 +824,7 @@ return notes();'''
 window.location.protocol = 'http:'; window.location.hostname = '192.168.77.1';
 const tok = { ok: 1, token: '0123456789abcdef0123456789abcdef', port: 7681, lan: '192.168.77.1', ttl: 60, idle: 900 };
 V.render(tok);
-window.location.protocol = 'https:'; V.paint(tok);
+window.location.protocol = 'https:'; V.paint(tok); V.paint(Object.assign({}, tok, { idle: 60 }));
 [ 'missing', 'off', 'busy', 'internal' ].forEach((c) => V.paint({ ok: 0, code: c }));
 return notes();'''
 
@@ -846,7 +846,8 @@ return [ at('192.168.77.1'), at('mu300.lan'), at('[fd00::1]'), at('fd00::1'),
         for lang in (None, 'tr', 'zh_Hans'):
             with self.subTest(lang=lang):
                 out = self.run_view('terminal', lang, self.TERMINAL)
-                for m in ('Terminal', 'It closes after %d minutes without activity.', 'Reconnect', 'Open in a new tab',
+                for m in ('Terminal', 'It closes after %d minutes without activity.',
+                          'It closes after a minute without activity.', 'Reconnect', 'Open in a new tab',
                           'This page was opened over HTTPS, and the terminal is served over HTTP on the LAN: it opens in a tab of its own.',
                           'ttyd is not installed.', 'The terminal is turned off (/etc/config/ttyd).',
                           'Too many terminals are opening at once. Try again in a minute.',

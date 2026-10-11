@@ -77,9 +77,12 @@ return view.extend({
 		card.appendChild(E('div', { 'class': 'mud-note', 'id': 'mud-term-scope' }, [
 			_('It is reachable from the LAN only (USB and the hotspot), never from mobile data, and only from this logged-in page.')
 		]));
+		/* a minute or less has a message of its own: the panel's catalogs have no plural forms (po2lmo, luci-i18n) */
+		var mins = Math.round(Number(r && r.idle) / 60);
 		if (r && Number(r.idle) > 0)
 			card.appendChild(E('div', { 'class': 'mud-note', 'id': 'mud-term-idle' }, [
-				_('It closes after %d minutes without activity.').format(Math.max(1, Math.round(Number(r.idle) / 60)))
+				mins <= 1 ? _('It closes after a minute without activity.')
+					: _('It closes after %d minutes without activity.').format(mins)
 			]));
 		var url = this.target(r);
 		if (!url) {

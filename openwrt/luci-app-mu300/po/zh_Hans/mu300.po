@@ -1530,6 +1530,9 @@ msgstr "这是设备上的 root shell：每条命令都以完全权限运行，�
 msgid "It is reachable from the LAN only (USB and the hotspot), never from mobile data, and only from this logged-in page."
 msgstr "只能从局域网（USB 和热点）并且只能从这个已登录的页面访问，移动数据一侧永远无法访问。"
 
+msgid "It closes after a minute without activity."
+msgstr "无操作 1 分钟后自动关闭。"
+
 msgid "It closes after %d minutes without activity."
 msgstr "无操作 %d 分钟后自动关闭。"
 

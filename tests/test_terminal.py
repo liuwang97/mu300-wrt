@@ -4,6 +4,7 @@ address only, never a port on the cellular side), the ACL, the menu and the buil
 import json
 import os
 import re
+import subprocess
 import time
 import unittest
 from pathlib import Path
@@ -250,6 +251,18 @@ class Image(unittest.TestCase):
                 self.assertNotRegex(text, r"\$zone\.input='?ACCEPT")
                 for m in re.finditer(r"name='wan'.*?(?:\n\n|$)", text, re.S):
                     self.assertNotIn("input='ACCEPT'", m.group(0))
+
+    def test_idle_notice_reaches_the_browser_before_the_shell_ends(self):
+        # ttyd closes the websocket as soon as the shell ends: the line first, a pause, then the hangup
+        text = LOGIN.read_text()
+        notice = text.index('"Closed after $took without activity."')
+        self.assertLess(notice, text.index('sleep "${MU300_TERM_NOTICE_WAIT:-3}"'))
+        self.assertLess(text.index('sleep "${MU300_TERM_NOTICE_WAIT:-3}"'), text.index('kill -HUP "$pid"'))
+        # one minute is singular, under a minute in seconds
+        case = text[text.index('case $IDLE in [0-9]'):text.index('esac', text.index('case $IDLE in [0-9]')) + 4]
+        for idle, want in ((30, '30 seconds'), (60, '1 minute'), (119, '1 minute'), (120, '2 minutes'), (900, '15 minutes')):
+            r = subprocess.run(['sh', '-c', f'IDLE={idle}; {case}; printf %s "$took"'], capture_output=True, text=True)
+            self.assertEqual(r.stdout, want, idle)
 
     def test_hotplug_restarts_ttyd_when_the_lan_comes_up(self):
         text = HOTPLUG.read_text()

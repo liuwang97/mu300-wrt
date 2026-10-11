@@ -50,7 +50,11 @@ if [ "$IDLE" -gt 0 ] && [ -n "$tty" ]; then
             [ "$(sed 's/^.*) //' /proc/$pid/stat 2>/dev/null | cut -d' ' -f20)" = "$st" ] || exit 0
             last=$(date -r "$tty" +%s 2>/dev/null) || exit 0
             if [ $(( $(date +%s) - last )) -ge "$IDLE" ]; then
-                printf '\r\n%s\r\n' "Closed after $((IDLE / 60)) minutes without activity." >"$tty" 2>/dev/null
+                case $IDLE in [0-9]|[1-5][0-9]) took="$IDLE seconds" ;; 6[0-9]|[7-9][0-9]|1[01][0-9]) took="1 minute" ;;
+                    *) took="$((IDLE / 60)) minutes" ;; esac
+                printf '\r\n%s\r\n' "Closed after $took without activity." >"$tty" 2>/dev/null
+                # time for ttyd to carry the line to the browser: it closes the websocket as soon as the shell ends
+                sleep "${MU300_TERM_NOTICE_WAIT:-3}"
                 kill -HUP "$pid" 2>/dev/null
                 sleep 2
                 [ "$(sed 's/^.*) //' /proc/$pid/stat 2>/dev/null | cut -d' ' -f20)" = "$st" ] && kill -KILL "$pid" 2>/dev/null
