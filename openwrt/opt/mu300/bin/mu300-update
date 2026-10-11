@@ -13,10 +13,10 @@
 #   mu300-update clean            delete the kept <os>.old copies
 #   mu300-update notice           only look: a note for the login message and mu300-toolkit when a newer release is
 #                                 out (at boot and every 6 hours; nothing is installed without apply)
-# Installed extras (mu300-extra: LuCI's languages) are updated with the release, the VPN module (mu300-vpn, from
-# github.com/dikeckaan/mu300-linux-vpn) to its latest release. A device that uses the VPN is never left without it:
-# when the module cannot be downloaded, apply stops before it changes anything (MU300_VPN_MODULE=FILE|DIR, or
-# mu300-linux-vpn.tar.gz and its SHA256SUMS copied to /mnt/mu300-disk/.mu300-update/vpn/, serve it offline).
+# Installed extras (mu300-extra: LuCI's languages) are updated with the release, the VPN module (mu300-vpn and its
+# engines, from github.com/dikeckaan/mu300-linux-vpn) to its latest release. A device that uses the VPN is never left
+# without it or its engines: when they cannot be had, apply stops before it changes anything (MU300_VPN_MODULE=FILE|DIR,
+# or the module's tarballs and SHA256SUMS copied to /mnt/mu300-disk/.mu300-update/vpn/, serve them offline).
 #
 # How it works: the new filesystem is unpacked next to the old one as <os>.new on the Linux partition, your settings
 # and the vendor files are carried over, and only then are the directories swapped (<os> -> <os>.old, <os>.new ->
@@ -36,7 +36,8 @@ SYSTEMS="ubuntu openwrt openwrt-luci"
 os_kind() { case $1 in ubuntu) echo ubuntu ;; openwrt|openwrt-*) echo openwrt ;; *) return 1 ;; esac; }
 
 say() { printf '\n==> %s\n' "$*"; }
-die() { printf '\nERROR: %s\n' "$*" >&2; exit 1; }
+# (the private copies of the VPN module's tarballs go with it: MODULE_VDIR, module_vdir)
+die() { [ -z "${MODULE_VDIR:-}" ] || rm -rf "$MODULE_VDIR"; printf '\nERROR: %s\n' "$*" >&2; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
 
 # A transfer that stalls is cut off and retried rather than waited for: with older boot images the IPA's downlink
@@ -673,13 +674,19 @@ apply_one() {  # apply_one OS TAG
 # that has mu300-extra exists. Two kinds:
 #   lang         a release asset of mu300-linux, mu300-extra-lang.tar.gz (tools/make-extra.sh: ./name, ./release,
 #                ./components, ./languages, ./manifest, ./i18n/<catalogs>), for the release it was published with
-#   vpn, vpn-mihomo   the VPN module, released on its own by github.com/dikeckaan/mu300-linux-vpn under fixed names
-#                (mu300-linux-vpn.tar.gz, mu300-linux-vpn-mihomo.tar.gz, SHA256SUMS): ./VERSION, ./components,
-#                ./requires ("mu300-linux vYYYY.MM.DD", the oldest system it works with), ./bin/<programs>, and for vpn
-#                ./lib/vpn, ./service, ./etc and ./hooks/link, ./hooks/unlink - which make one system use it
-#                (sh hooks/link SYSROOT, "" for the running system), so the images carry no mu300-vpn at all.
+#   vpn, vpn-xray, vpn-singbox, vpn-mihomo, vpn-dae   the VPN module, released on its own by
+#                github.com/dikeckaan/mu300-linux-vpn under fixed names (mu300-linux-vpn-core.tar.gz for vpn - the
+#                core, mu300-vpn without an engine - and mu300-linux-vpn-ENGINE.tar.gz for the engines, SHA256SUMS):
+#                ./VERSION, ./components, ./requires ("mu300-linux vYYYY.MM.DD", the oldest system it works with),
+#                ./bin/<programs>, ./hooks/link, ./hooks/unlink - which make one system use it (sh hooks/link SYSROOT,
+#                "" for the running system), and for vpn ./lib/vpn, ./service, ./etc, so the images carry no mu300-vpn
+#                at all. mu300-linux-vpn.tar.gz is vpn as module v1 was, the core with xray and sing-box in it (the
+#                bundle, which mu300-extra and mu300-update from before the engine extras download): taken when the
+#                core is not to be had (a pinned v1 release, a copy brought by hand), and as the fallback of a set.
 EXTRA=$DISK/extra
-EXTRAS="vpn lang vpn-mihomo panel"
+EXTRAS="vpn lang vpn-mihomo panel vpn-xray vpn-singbox vpn-dae"
+# the engines, each an extra of the VPN module
+VPN_ENGINE_EXTRAS="vpn-xray vpn-singbox vpn-mihomo vpn-dae"
 VPN_REPO=dikeckaan/mu300-linux-vpn
 # MU300_VPN_URL: another place with the module's files and SHA256SUMS (a pinned tag: .../releases/download/v1.0.0,
 # or a local server)
@@ -688,15 +695,24 @@ VPN_URL=${MU300_VPN_URL:-https://github.com/$VPN_REPO/releases/latest/download}
 VPN_STAGED=$DISK/.mu300-update/vpn
 extra_desc() {
     case $1 in
-        vpn) echo "the VPN toolkit (mu300-vpn with Xray-core, hev-socks5-tunnel, sing-box), the module of github.com/$VPN_REPO (about 40 MB to download, 120 MB installed)" ;;
+        vpn) echo "the VPN toolkit (mu300-vpn: profiles, kill switch), the module of github.com/$VPN_REPO; the engines are the vpn-* extras, the ones the profiles need come along (about 0.1 MB, with xray 15 MB)" ;;
         lang) echo "LuCI (the web interface) in 40 more languages, the MU300 panel in 29 of them; OpenWrt only (about 2 MB to download, 6 MB installed)" ;;
+        vpn-xray) echo "Xray-core and hev-socks5-tunnel, the engine of mu300-vpn's VLESS, VMess, Trojan, Shadowsocks and Xray JSON profiles (about 15 MB to download, 40 MB installed)" ;;
+        vpn-singbox) echo "sing-box, the engine of mu300-vpn's sing-box JSON profiles, and of VLESS links behind the kill switch (about 15 MB to download, 40 MB installed)" ;;
         vpn-mihomo) echo "mihomo (Clash.Meta), the engine of mu300-vpn's mihomo profiles, from the same module repository (about 15 MB to download, 40 MB installed)" ;;
+        vpn-dae) echo "dae (eBPF transparent proxy) with its geodata, for mu300-vpn's dae profiles; needs a kernel with BTF (mainline) (about 25 MB to download, 60 MB installed)" ;;
         panel) echo "the web panel for Ubuntu: Cockpit (terminal, logs, services) and the MU300 page, on the LAN only (port 9090); Cockpit from Ubuntu's archive (about 12 MB, 45 MB installed), or offline with --from mu300-extra-panel-offline.tar.gz" ;;
     esac
 }
 extra_asset() { echo "mu300-extra-$1.tar.gz"; }
-extra_is_module() { case $1 in vpn|vpn-mihomo) return 0 ;; esac; return 1; }
-module_asset() { case $1 in vpn) echo mu300-linux-vpn.tar.gz ;; vpn-mihomo) echo mu300-linux-vpn-mihomo.tar.gz ;; esac; }
+extra_is_module() { case $1 in vpn|vpn-mihomo|vpn-xray|vpn-singbox|vpn-dae) return 0 ;; esac; return 1; }
+# module_asset NAME: the release file of a module extra (vpn-bundle: the vpn extra as the bundle)
+module_asset() {
+    case $1 in
+        vpn) echo mu300-linux-vpn-core.tar.gz ;; vpn-bundle) echo mu300-linux-vpn.tar.gz ;;
+        vpn-mihomo|vpn-xray|vpn-singbox|vpn-dae) echo "mu300-linux-$1.tar.gz" ;;
+    esac
+}
 extra_known() { case " $EXTRAS " in *" $1 "*) return 0 ;; esac; return 1; }
 extra_installed() {
     for d in "$EXTRA"/*; do
@@ -914,60 +930,271 @@ version_ok() {
     case $2 in v[0-9]*) ;; *) return 0 ;; esac
     [ "$(printf '%s\n%s\n' "$1" "$2" | sort | tail -n1)" = "$2" ]
 }
-sha_of() { sha256sum "$1" | cut -d' ' -f1; }
-sums_want() { awk -v f="$2" '$2 == f || $2 == "*" f {print $1; exit}' "$1" 2>/dev/null; }
+# sha_ok HASH: a SHA-256 as sha256sum writes it (64 lowercase hex digits); nothing else ever counts as a hash, so an
+# empty or broken value can never compare equal to anything
+sha_ok() { case $1 in ''|*[!0-9a-f]*) return 1 ;; esac; [ ${#1} -eq 64 ]; }
+# sha_of FILE: its SHA-256, or nothing and 1 (no sha256sum, a read error): a failure is never a hash
+sha_of() { _so=$(sha256sum "$1" 2>/dev/null) || return 1; _so=${_so%% *}; sha_ok "$_so" || return 1; printf '%s\n' "$_so"; }
+# sums_want SUMS NAME: the hash SUMS lists for NAME, only when it is a hash
+sums_want() { _sw=$(awk -v f="$2" '$2 == f || $2 == "*" f {print $1; exit}' "$1" 2>/dev/null); ! sha_ok "$_sw" || printf '%s\n' "$_sw"; }
 
 # The module's tarball, checked, as MODULE_FILE (its hash: MODULE_SHA). Status 0 with a file, 3 when the installed
 # one is that release's already (nothing downloaded), 1 when it cannot be had (offline, GitHub down), 2 when what
 # there is fails its check.
-# module_from DIR|FILE NAME: a copy brought onto the device. A directory must hold the tarball and its SHA256SUMS and
-# is verified; a file is checked against a SHA256SUMS next to it that lists it (else it is the user's own choice).
+# What is checked is what is installed: every tarball (and the SHA256SUMS it is checked against) is first copied, as a
+# regular file and not through a link, into a directory of this run's own (MODULE_VDIR, 0700, root's), and the hash is
+# taken of that copy, which is the file extra_unpack reads. A file swapped at the source after the check - in a --from
+# directory, the staging directory or a download directory another process can write - changes nothing.
+# module_asset_ok NAME: a release file name of the module, as module_asset gives them and nothing else
+module_asset_ok() {
+    case $1 in mu300-linux-vpn.tar.gz|mu300-linux-vpn-*.tar.gz) ;; *) return 1 ;; esac
+    case ${1%.tar.gz} in *[!a-z0-9-]*) return 1 ;; esac
+}
+# module_vdir: MODULE_VDIR made (once per run), fresh and private
+MODULE_VDIR=
+module_vdir() {
+    [ -n "$MODULE_VDIR" ] && [ -d "$MODULE_VDIR" ] && [ ! -L "$MODULE_VDIR" ] && return 0
+    mkdir -p "$EXTRA" || return 1
+    # (one left by a run that died: nothing reads it again)
+    rm -rf "$EXTRA"/.verified.*
+    MODULE_VDIR=$EXTRA/.verified.$$
+    ( umask 077; mkdir -m 700 "$MODULE_VDIR" ) || { MODULE_VDIR=; return 1; }
+}
+module_vdir_clean() { [ -z "$MODULE_VDIR" ] || rm -rf "$MODULE_VDIR"; MODULE_VDIR=; }
+# module_copy SRC NAME: SRC - a regular file, not a symbolic link - copied to MODULE_VDIR/NAME (prints that path)
+module_copy() {
+    [ -f "$1" ] && [ ! -L "$1" ] || { echo "$1 is not a regular file (a link or something else): not used" >&2; return 2; }
+    module_asset_ok "$2" || [ "$2" = SHA256SUMS ] || { echo "not a file name of the VPN module: refused" >&2; return 2; }
+    [ -n "$MODULE_VDIR" ] && [ -d "$MODULE_VDIR" ] || { echo "no private directory to check $2 in" >&2; return 1; }
+    rm -f "$MODULE_VDIR/$2"
+    ( umask 077; cat < "$1" > "$MODULE_VDIR/$2" ) 2>/dev/null || { rm -f "$MODULE_VDIR/$2"; echo "cannot read $1" >&2; return 2; }
+    printf '%s\n' "$MODULE_VDIR/$2"
+}
+# module_from DIR|FILE NAME [ASSET]: a copy brought onto the device. A directory must hold the tarball and its
+# SHA256SUMS and is verified; a file is checked against a SHA256SUMS next to it that lists it (else it is the user's
+# own choice).
 module_from() {
+    # (here, not in module_copy: that runs in a command substitution, whose MODULE_VDIR would be lost)
+    module_vdir || { echo "cannot create a private directory under $EXTRA" >&2; return 1; }
     if [ -d "$1" ]; then
-        _a=$(module_asset "$2")
+        _a=${3:-$(module_asset "$2")}
+        module_asset_ok "$_a" || { echo "not a file name of the VPN module: refused" >&2; return 2; }
         [ -s "$1/$_a" ] || { echo "no $_a in $1" >&2; return 2; }
-        _w=$(sums_want "$1/SHA256SUMS" "$_a")
-        [ -n "$_w" ] || { echo "$1/SHA256SUMS is missing or does not list $_a: not installed unverified" >&2; return 2; }
-        [ "$(sha_of "$1/$_a")" = "$_w" ] || { echo "$1/$_a does not match its SHA256SUMS" >&2; return 2; }
-        MODULE_FILE=$1/$_a MODULE_SHA=$_w
+        _sc=$(module_copy "$1/SHA256SUMS" SHA256SUMS) ||
+            { echo "$1/SHA256SUMS is missing or not a regular file: $_a not installed unverified" >&2; return 2; }
+        _w=$(sums_want "$_sc" "$_a")
+        [ -n "$_w" ] || { echo "$1/SHA256SUMS does not list $_a: not installed unverified" >&2; return 2; }
+        _c=$(module_copy "$1/$_a" "$_a") || return 2
+        [ "$(sha_of "$_c")" = "$_w" ] || { rm -f "$_c"; echo "$1/$_a does not match its SHA256SUMS" >&2; return 2; }
+        MODULE_FILE=$_c MODULE_SHA=$_w
         return 0
     fi
     [ -s "$1" ] || { echo "$1 not found" >&2; return 2; }
-    _w=$(sums_want "$(dirname "$1")/SHA256SUMS" "${1##*/}")
-    MODULE_SHA=$(sha_of "$1")
-    [ -z "$_w" ] || [ "$MODULE_SHA" = "$_w" ] || { echo "$1 does not match $(dirname "$1")/SHA256SUMS" >&2; return 2; }
-    MODULE_FILE=$1
+    case $1 in */*) _d=${1%/*}; [ -n "$_d" ] || _d=/ ;; *) _d=. ;; esac
+    _w=
+    if _sc=$(module_copy "$_d/SHA256SUMS" SHA256SUMS 2>/dev/null); then _w=$(sums_want "$_sc" "${1##*/}"); fi
+    # a file that no SHA256SUMS next to it vouches for is refused, unless MU300_VPN_UNVERIFIED=1 says it is wanted
+    # unchecked (a build of one's own)
+    if [ -z "$_w" ] && [ "${MU300_VPN_UNVERIFIED:-}" != 1 ]; then
+        echo "no SHA256SUMS next to $1 lists it: not installed unverified (copy the release's SHA256SUMS next to it, or MU300_VPN_UNVERIFIED=1 for a build of your own)" >&2
+        return 2
+    fi
+    _c=$(module_copy "$1" "$(module_asset "$2")") || return 2
+    MODULE_SHA=$(sha_of "$_c") || { rm -f "$_c"; echo "cannot compute the SHA-256 of $1 (sha256sum): not installed" >&2; return 2; }
+    [ -z "$_w" ] || [ "$MODULE_SHA" = "$_w" ] || { rm -f "$_c"; echo "$1 does not match $_d/SHA256SUMS" >&2; return 2; }
+    [ -n "$_w" ] || echo "note: $1 is installed unverified (MU300_VPN_UNVERIFIED=1)" >&2
+    MODULE_FILE=$_c
 }
-# module_download NAME DIR: the module's latest release (VPN_URL) into DIR, checked against that release's SHA256SUMS
-# (fetched every time: under releases/latest the same name is a new file with every release)
+# module_download NAME DIR [ASSET]: the module's latest release (VPN_URL) into DIR, checked against that release's
+# SHA256SUMS (fetched every time: under releases/latest the same name is a new file with every release)
 module_download() {
-    _a=$(module_asset "$1")
+    _a=${3:-$(module_asset "$1")}
+    module_asset_ok "$_a" || { echo "not a file name of the VPN module: refused" >&2; return 1; }
+    module_vdir || { echo "cannot create a private directory under $EXTRA" >&2; return 1; }
     mkdir -p "$2" || return 1
     _s=$(fetch_stdout "$VPN_URL/SHA256SUMS") && [ -n "$_s" ] ||
         { echo "cannot download SHA256SUMS of the VPN module ($VPN_URL)" >&2; return 1; }
-    printf '%s\n' "$_s" > "$2/SHA256SUMS"
-    _w=$(sums_want "$2/SHA256SUMS" "$_a")
-    [ -n "$_w" ] || { echo "$_a is not part of the VPN module's release ($VPN_URL)" >&2; return 1; }
+    _w=$(printf '%s\n' "$_s" | awk -v f="$_a" '$2 == f || $2 == "*" f {print $1; exit}')
+    sha_ok "$_w" || { echo "$_a is not part of the VPN module's release ($VPN_URL), or its SHA256SUMS line is no hash" >&2; return 1; }
     MODULE_SHA=$_w
     # the installed one is this release's: nothing to download
     [ -d "$EXTRA/$1/bin" ] && [ "$(cat "$EXTRA/.$1.sha256" 2>/dev/null)" = "$_w" ] && return 3
     for _try in 1 2 3; do
-        [ -s "$2/$_a" ] && [ "$(sha_of "$2/$_a")" = "$_w" ] && { MODULE_FILE=$2/$_a; return 0; }
-        fetch_file "$VPN_URL/$_a" "$2/$_a" && [ "$(sha_of "$2/$_a")" = "$_w" ] && { MODULE_FILE=$2/$_a; return 0; }
+        if [ -s "$2/$_a" ] || { rm -f "$2/$_a"; fetch_file "$VPN_URL/$_a" "$2/$_a"; }; then
+            if _c=$(module_copy "$2/$_a" "$_a") && [ "$(sha_of "$_c")" = "$_w" ]; then
+                rm -f "$2/$_a"; MODULE_FILE=$_c; return 0
+            fi
+            [ -z "${_c:-}" ] || rm -f "$_c"
+        fi
         rm -f "$2/$_a"
     done
     echo "downloading $_a failed" >&2
     return 1
 }
-# module_get NAME DIR [FROM]: FROM (a file or a directory) when given, else the download into DIR
+
+# module_get NAME DIR [FROM]: FROM (a file or a directory) when given, else the download into DIR. For vpn, the core
+# (mu300-linux-vpn-core.tar.gz), else the bundle (mu300-linux-vpn.tar.gz: a release or a copy from before the
+# engine extras); MODULE_BUNDLE=1 when what it got (or what is installed, status 3) carries xray and sing-box.
+# module_get vpn-bundle DIR [FROM]: the bundle alone, as the vpn extra (FROM a directory)
 module_get() {
-    MODULE_FILE= MODULE_SHA=
-    if [ -n "${3:-}" ]; then module_from "$3" "$1"; else module_download "$1" "$2"; fi
+    MODULE_FILE= MODULE_SHA= MODULE_BUNDLE=
+    if [ "$1" = vpn-bundle ]; then
+        _mg=0
+        if [ -n "${3:-}" ]; then module_from "$3" vpn "$(module_asset vpn-bundle)" || _mg=$?
+        else module_download vpn "$2" "$(module_asset vpn-bundle)" || _mg=$?; fi
+        case $_mg in 0) MODULE_BUNDLE=1 ;; 3) [ ! -x "$EXTRA/vpn/bin/xray" ] || MODULE_BUNDLE=1 ;; esac
+        return "$_mg"
+    fi
+    if [ "$1" != vpn ] || { [ -n "${3:-}" ] && [ ! -d "$3" ]; }; then
+        if [ -n "${3:-}" ]; then module_from "$3" "$1"; else module_download "$1" "$2"; fi
+        _mg=$?
+    else
+        _mg=0
+        if [ -n "${3:-}" ]; then module_from "$3" vpn 2>/dev/null || _mg=$?; else module_download vpn "$2" 2>/dev/null || _mg=$?; fi
+        if [ "$_mg" != 0 ] && [ "$_mg" != 3 ]; then
+            _mg2=0
+            if [ -n "${3:-}" ]; then module_from "$3" vpn "$(module_asset vpn-bundle)" || _mg2=$?
+            else module_download vpn "$2" "$(module_asset vpn-bundle)" || _mg2=$?; fi
+            # (the core's status when neither is to be had: offline stays offline)
+            case $_mg2 in 0|3) _mg=$_mg2 ;; esac
+        fi
+    fi
+    if [ "$1" = vpn ]; then
+        case $_mg in
+            0) ! untar -tzf "$MODULE_FILE" 2>/dev/null | grep -qx '\./bin/xray' || MODULE_BUNDLE=1 ;;
+            3) [ ! -x "$EXTRA/vpn/bin/xray" ] || MODULE_BUNDLE=1 ;;
+        esac
+    fi
+    return "$_mg"
 }
 # module_install NAME FILE SHA FOR: extra_unpack, and the hash kept, to know the installed release next time
 module_install() {
     extra_unpack "$1" "$2" "$4" || return 1
     printf '%s\n' "$3" > "$EXTRA/.$1.sha256"
+}
+
+# ---- which engines the device needs ------------------------------------------------------------------------------
+# vpn_type_engine TYPE: the engine extra of a profile type (wireguard and openvpn are the system's packages)
+vpn_type_engine() {
+    case $1 in xray) echo vpn-xray ;; sing-box) echo vpn-singbox ;; mihomo) echo vpn-mihomo ;; dae) echo vpn-dae ;; esac
+}
+# vpn_engines_of ROOT: the engine extras the profiles of the system at ROOT run on (every profile, not only the
+# active one: profile use must not find its engine gone); a vpn.conf with a link and no profile store (never
+# migrated) runs on xray, or on sing-box behind the kill switch
+vpn_engines_of() {
+    if [ -d "$1/etc/mu300/vpn/profiles" ]; then
+        for _vm in "$1"/etc/mu300/vpn/profiles/*/meta; do
+            [ -r "$_vm" ] && vpn_type_engine "$(vpn_conf_value "$_vm" TYPE)"
+        done
+    elif grep -q '^VLESS_URI=' "$1/etc/mu300/vpn.conf" 2>/dev/null; then
+        echo vpn-xray; echo vpn-singbox
+    fi
+    return 0
+}
+# vpn_engine_have X: the device runs on engine X now - its extra, or the vpn extra that carries it (module v1, the
+# bundle)
+vpn_engine_have() {
+    [ -d "$EXTRA/$1/bin" ] && return 0
+    case $1 in vpn-xray) [ -x "$EXTRA/vpn/bin/xray" ] ;; vpn-singbox) [ -x "$EXTRA/vpn/bin/sing-box" ] ;; *) return 1 ;; esac
+}
+# vpn_engines_wanted: the engine extras the VPN module comes with - every one the device has now (installed, or in
+# the vpn extra, which v1 and the bundle are: all of v1's engines stay), every one a profile of an installed system
+# needs, and for a first install MU300_VPN_ENGINES (default vpn-xray; none: the core alone)
+vpn_engines_wanted() {
+    {
+        for _x in $VPN_ENGINE_EXTRAS; do vpn_engine_have "$_x" && echo "$_x"; done
+        for _o in $(installed_systems); do vpn_engines_of "$DISK/$_o"; done
+        [ -z "${MU300_SYSROOT:-}" ] || vpn_engines_of "$MU300_SYSROOT"
+        if [ ! -d "$EXTRA/vpn/bin" ]; then
+            for _x in $(printf '%s' "${MU300_VPN_ENGINES-vpn-xray}" | tr ',' ' '); do
+                case $_x in xray|singbox|sing-box|mihomo|dae) _x=vpn-$_x ;; esac
+                [ "$_x" != vpn-sing-box ] || _x=vpn-singbox
+                case " $VPN_ENGINE_EXTRAS " in *" $_x "*) echo "$_x" ;; esac
+            done
+        fi
+    } | sort -u
+}
+# vpn_engine_in_use X [ROOT...]: a system (default: every installed one) has the VPN on with an active profile that
+# runs on engine X
+vpn_engine_in_use() {
+    _x=$1; shift
+    [ $# -gt 0 ] || set -- $(for _o in $(installed_systems); do echo "$DISK/$_o"; done) "${MU300_SYSROOT:-}"
+    for _r; do
+        # the engine the running service recorded (module v2's /run/mu300-vpn/engine: sing-box for a VLESS xray profile
+        # behind the kill switch; the service writes it when it starts the tunnel, mu300-vpn off removes it)
+        case $(head -n1 "$_r/run/mu300-vpn/engine" 2>/dev/null) in
+            xray) [ "$_x" != vpn-xray ] || return 0 ;; sing-box) [ "$_x" != vpn-singbox ] || return 0 ;;
+            mihomo) [ "$_x" != vpn-mihomo ] || return 0 ;; dae) [ "$_x" != vpn-dae ] || return 0 ;;
+        esac
+        extra_vpn_wanted "$_r" || continue
+        _a=$(head -n1 "$_r/etc/mu300/vpn/active" 2>/dev/null | tr -cd 'a-z0-9-')
+        if [ -n "$_a" ] && [ -r "$_r/etc/mu300/vpn/profiles/$_a/meta" ]; then
+            _t=$(vpn_conf_value "$_r/etc/mu300/vpn/profiles/$_a/meta" TYPE)
+            [ "$(vpn_type_engine "$_t")" = "$_x" ] && return 0
+            # an xray profile runs on sing-box only with a VLESS link behind the kill switch (as mu300-vpn's
+            # engine_in_use); without sing-box it runs on xray, so otherwise vpn-singbox is free to go
+            if [ "$_t" = xray ] && [ "$_x" = vpn-singbox ] && vpn_killswitch_wanted "$_r"; then
+                case $(head -c 8 "$_r/etc/mu300/vpn/profiles/$_a/uri" 2>/dev/null) in vless://) return 0 ;; esac
+            fi
+        elif [ ! -d "$_r/etc/mu300/vpn/profiles" ]; then
+            # a vpn.conf never migrated: its link runs on xray or sing-box
+            case $_x in vpn-xray|vpn-singbox) grep -q '^VLESS_URI=' "$_r/etc/mu300/vpn.conf" 2>/dev/null && return 0 ;; esac
+        fi
+    done
+    return 1
+}
+
+# ---- the module as a set -----------------------------------------------------------------------------------------
+# vpn_module_get STAGEDIR [FROM]: before anything is changed, the VPN module the device will have: VPN_SET gets
+# "NAME FILE SHA" lines for modules_install, the engine extras first and the core (vpn) last; every file checked and
+# all from one source - FROM (a directory, or a file whose directory has the engines), or the download. An engine
+# the device runs on now (vpn_engine_have) that is not to be had, while the core would replace the vpn extra that
+# carries it, makes the set the bundle instead (the core with xray and sing-box), and when there is no bundle either,
+# nothing (status 4): an update must never leave a profile without the engine it had. An engine that is installed on
+# its own and is not to be had stays as it is; one a profile wants and that was never there is said and skipped.
+# Status: 0 (VPN_SET may be empty: everything is up to date), 1 the core is not to be had, 2 a file failed its
+# check, 4 an engine is missing (above).
+VPN_SET=
+vpn_module_get() {
+    VPN_SET=
+    _vs=$1; _vf=${2:-}
+    _ef=$_vf; [ -z "$_vf" ] || [ -d "$_vf" ] || _ef=$(dirname "$_vf")
+    module_get vpn "$_vs" "$_vf"; _vr=$?
+    case $_vr in 0|3) ;; *) return "$_vr" ;; esac
+    _core=; [ "$_vr" = 3 ] || _core="vpn $MODULE_FILE $MODULE_SHA"
+    _bundle=$MODULE_BUNDLE
+    _set=; _missing=
+    for _x in $(vpn_engines_wanted); do
+        if [ -n "$_bundle" ]; then case $_x in vpn-xray|vpn-singbox) continue ;; esac; fi
+        _xr=0; module_get "$_x" "$_vs" "$_ef" || _xr=$?
+        case $_xr in
+            0) _set="$_set$_x $MODULE_FILE $MODULE_SHA
+" ;;
+            3) ;;
+            *) if [ -d "$EXTRA/$_x/bin" ]; then
+                   echo "extra $_x: not to be had; the installed one ($(extra_release "$_x")) stays" >&2
+               elif vpn_engine_have "$_x"; then
+                   _missing="$_missing $_x"
+               else
+                   echo "extra $_x: a profile runs on it and it is not to be had; install it later (mu300-extra install $_x)" >&2
+               fi ;;
+        esac
+    done
+    if [ -n "$_missing" ]; then
+        # the bundle carries xray and sing-box: the set it makes needs no engine extra for them
+        _br=0; module_get vpn-bundle "$_vs" "$_ef" 2>/dev/null || _br=$?
+        if { [ "$_br" = 0 ] || [ "$_br" = 3 ]; } && [ -n "$MODULE_BUNDLE" ]; then
+            echo "the VPN module's engines$_missing are not to be had: taking mu300-linux-vpn.tar.gz (the core with xray and sing-box) instead" >&2
+            VPN_SET=$(printf '%s' "$_set" | grep -v -e '^vpn-xray ' -e '^vpn-singbox ' || true)
+            [ "$_br" = 3 ] || VPN_SET="${VPN_SET:+$VPN_SET
+}vpn $MODULE_FILE $MODULE_SHA"
+            return 0
+        fi
+        echo "the VPN module needs its engines$_missing, which the device runs on now, and they are not to be had" >&2
+        return 4
+    fi
+    VPN_SET="$_set$_core"
+    return 0
 }
 
 # module_hook NAME link|unlink SYSROOT: the module's hook for one system (SYSROOT "" is the running one, $DISK/<os>
@@ -1007,9 +1234,12 @@ vpn_in_use() {
     return 1
 }
 vpn_stage_hint() {
-    printf '\nCopy mu300-linux-vpn.tar.gz and SHA256SUMS from https://github.com/%s/releases/latest\n' "$VPN_REPO" >&2
-    printf 'into %s/ on this device (or: MU300_VPN_MODULE=/path/to/mu300-linux-vpn.tar.gz mu300-update apply),\n' "$VPN_STAGED" >&2
-    printf 'or get the device online, and run mu300-update apply again.\n' >&2
+    _eng=$(vpn_engines_wanted | sed 's/^vpn-//' | tr '\n' ' ')
+    printf '\nCopy SHA256SUMS and mu300-linux-vpn-core.tar.gz with the engines this device needs (%s:\n' "${_eng% }" >&2
+    printf 'mu300-linux-vpn-ENGINE.tar.gz each) - or mu300-linux-vpn.tar.gz, the core with xray and sing-box - from\n' >&2
+    printf 'https://github.com/%s/releases/latest into %s/ on this device\n' "$VPN_REPO" "$VPN_STAGED" >&2
+    printf '(or: MU300_VPN_MODULE=/path/to/that/directory mu300-update apply), or get the device online, and run\n' >&2
+    printf 'mu300-update apply again.\n' >&2
 }
 
 # extras_to_fetch TAG: the extras of the mu300-linux release an update to TAG downloads - the installed ones that are
@@ -1023,51 +1253,65 @@ extras_to_fetch() {
     echo $_want
 }
 
-# modules_fetch TAG "OS...": before anything is changed, the VPN module the device will have after the update:
-# MODULES_NEW gets "NAME FILE SHA" lines for modules_install. MU300_VPN_MODULE (a file or a directory), else a copy in
-# VPN_STAGED, else the download. When the VPN is in use, the update replaces a system and there is no module, it
-# stops here: the new systems have no mu300-vpn, and a VPN with its kill switch would leave the device with no
-# connection after the reboot. An installed module that cannot be refreshed stays; so does vpn-mihomo (an engine).
+# modules_fetch TAG "OS...": before anything is changed, the VPN module the device will have after the update (the core
+# and the engines, vpn_module_get): MODULES_NEW gets its "NAME FILE SHA" lines for modules_install. MU300_VPN_MODULE
+# (a file or a directory), else the copies in VPN_STAGED, else the download. When the VPN is in use, the update
+# replaces a system and there is no module, it stops here: the new systems have no mu300-vpn, and a VPN with its kill
+# switch would leave the device with no connection after the reboot. An installed module whose set cannot be had
+# stays as it is, engines and all.
 MODULES_NEW=
 modules_fetch() {
     MODULES_NEW=
     _from=${MU300_VPN_MODULE:-}
-    [ -n "$_from" ] || [ ! -s "$VPN_STAGED/$(module_asset vpn)" ] || _from=$VPN_STAGED
-    if vpn_in_use "$2"; then
-        module_get vpn "$STAGE/module" "$_from"; _r=$?
-        case $_r in
-            0) MODULES_NEW="vpn $MODULE_FILE $MODULE_SHA" ;;
-            3) ;;
-            *) if vpn_module_in "$EXTRA/vpn"; then
-                   echo "extra vpn: the VPN module could not be updated; the installed one ($(extra_release vpn)) stays" >&2
-               elif [ -n "$2" ]; then
-                   vpn_stage_hint
-                   die "this device uses the VPN, whose toolkit (mu300-vpn) is a module of its own now that the new systems do not carry, and it could not be had: nothing was changed"
-               else
-                   echo "extra vpn: the VPN module could not be had; once the device is online: mu300-extra install vpn" >&2
-               fi ;;
-        esac
+    if [ -z "$_from" ] && { [ -s "$VPN_STAGED/$(module_asset vpn)" ] || [ -s "$VPN_STAGED/$(module_asset vpn-bundle)" ]; }; then
+        _from=$VPN_STAGED
     fi
-    if [ -d "$EXTRA/vpn-mihomo/bin" ]; then
-        _mf=
-        [ -z "$_from" ] || [ ! -d "$_from" ] || [ ! -s "$_from/$(module_asset vpn-mihomo)" ] || _mf=$_from
-        module_get vpn-mihomo "$STAGE/module" "$_mf"; _r=$?
-        case $_r in
-            0) MODULES_NEW="$MODULES_NEW
-vpn-mihomo $MODULE_FILE $MODULE_SHA" ;;
-            3) ;;
-            *) echo "extra vpn-mihomo: not updated; the installed one ($(extra_release vpn-mihomo)) stays" >&2 ;;
-        esac
+    if ! vpn_in_use "$2"; then
+        # engines without the core (it was removed): each follows its latest release, never fatal
+        _ef=$_from; [ -z "$_from" ] || [ -d "$_from" ] || _ef=$(dirname "$_from")
+        for _x in $VPN_ENGINE_EXTRAS; do
+            [ -d "$EXTRA/$_x/bin" ] || continue
+            _r=0; module_get "$_x" "$STAGE/module" "$_ef" || _r=$?
+            case $_r in
+                0) MODULES_NEW="$MODULES_NEW$_x $MODULE_FILE $MODULE_SHA
+" ;;
+                3) ;;
+                *) echo "extra $_x: not updated; the installed one ($(extra_release "$_x")) stays" >&2 ;;
+            esac
+        done
+        return 0
     fi
+    _r=0; vpn_module_get "$STAGE/module" "$_from" || _r=$?
+    case $_r in
+        0) MODULES_NEW=$VPN_SET ;;
+        *) if vpn_module_in "$EXTRA/vpn"; then
+               echo "extra vpn: the VPN module could not be updated; the installed one ($(extra_release vpn)) stays, with its engines" >&2
+           elif [ -n "$2" ]; then
+               vpn_stage_hint
+               die "this device uses the VPN, whose toolkit (mu300-vpn) is a module of its own now that the new systems do not carry, and it could not be had: nothing was changed"
+           else
+               echo "extra vpn: the VPN module could not be had; once the device is online: mu300-extra install vpn" >&2
+           fi ;;
+    esac
     return 0
 }
-# modules_install TAG: install what modules_fetch got, before the systems are switched: a module that fails its
-# checks (./requires newer than TAG, a broken tarball) stops a device that needs it while nothing is changed. The
-# running system keeps working meanwhile: its own mu300-vpn finds the engines in the extra where they were.
+# modules_install TAG: install what modules_fetch got, before the systems are switched, the engines first and the core
+# last: a core is never put in place without the engines its set came with. One that fails its checks (./requires newer
+# than TAG, a broken tarball) stops a device that needs it while nothing is changed. The running system keeps working
+# meanwhile: its own mu300-vpn finds the engines where they were (a running engine keeps its open files).
 modules_install() {
     # own names: module_install -> extra_unpack counts files in _n and _f, which named the module here ("extra 4")
+    _mi_bad=
     while read -r _mi_name _mi_file _mi_sha; do
         [ -n "$_mi_name" ] || continue
+        if [ "$_mi_name" = vpn ] && [ -n "$_mi_bad" ]; then
+            if vpn_module_in "$EXTRA/vpn"; then
+                echo "extra vpn: not updated, because its engine$_mi_bad could not be installed; the installed one ($(extra_release vpn)) stays" >&2
+                continue
+            fi
+            vpn_stage_hint
+            die "the VPN module's engine$_mi_bad could not be installed (see above): nothing was changed"
+        fi
         if module_install "$_mi_name" "$_mi_file" "$_mi_sha" "$1"; then
             printf 'extra %s: %s\n' "$_mi_name" "$(extra_release "$_mi_name")"
             EXTRA_CHANGED=1
@@ -1076,16 +1320,19 @@ modules_install() {
             die "the VPN module could not be installed (see above): nothing was changed"
         else
             echo "extra $_mi_name: not updated (see above)" >&2
+            # an engine the core of this set needs, which the device has not got otherwise
+            [ "$_mi_name" = vpn ] || vpn_engine_have "$_mi_name" || _mi_bad="$_mi_bad $_mi_name"
         fi
     done <<EOF
 $MODULES_NEW
 EOF
     rm -rf "$STAGE/module"
+    module_vdir_clean
 }
 # modules_link "OS...": the updated systems use the module (their images have no mu300-vpn); one the hook could not
 # link gets another try at its first boot (mu300-extra link)
 modules_link() {
-    for _x in vpn vpn-mihomo; do
+    for _x in vpn $VPN_ENGINE_EXTRAS; do
         [ -f "$EXTRA/$_x/hooks/link" ] || continue
         for _o in $1; do
             module_hook_fits "$_x" link "$DISK/$_o" "$(cat "$DISK/$_o$VERSION_FILE" 2>/dev/null || echo unknown)" ||

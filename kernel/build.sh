@@ -1,7 +1,7 @@
 #!/bin/bash
 # Build mainline for the MU300 inside mu300-mainline-build: Image + DTB. /work = this directory, /src = kernel tree volume
 set -eo pipefail
-KV=${KV:-6.18.55}
+KV=${KV:-6.18.56}
 # where Image, DTB and modules.builtin go: /work/out for 6.18, OUTDIR=out-7.2 keeps another kernel next to it
 OUT=/work/${OUTDIR:-out}
 # the kernel source, fetched once into the volume and checked against kernel.org's checksum list
@@ -18,11 +18,16 @@ python3 /work/port/install.py .
 [ -n "${MU300_PROBE_STAGE:-}" ] && python3 /work/debug/install-probe.py . "$MU300_PROBE_STAGE"
 # a patch either applies or is applied already; anything else stops the build (it used to be skipped silently).
 # patches/<major.minor>/ holds what only one kernel needs (what a newer one has upstream already)
+# .mu300-patches lists the ones applied to this tree (by checksum): a patch that a later one builds on (0009 under
+# 0012) can neither be applied again nor reversed alone, so a second run would stop at it
 for p in /work/patches/*.patch /work/patches/"$(echo "$KV" | cut -d. -f1,2)"/*.patch; do
     [ -e "$p" ] || continue
+    s=$(sha256sum < "$p" | cut -d' ' -f1)
+    grep -qx "$s" .mu300-patches 2>/dev/null && continue
     if patch -p1 -N -s --dry-run < "$p" >/dev/null 2>&1; then patch -p1 -N -s < "$p"
     elif patch -p1 -R -s -f --dry-run < "$p" >/dev/null 2>&1; then :
     else echo "patch does not apply to $KV: $p" >&2; exit 1; fi
+    echo "$s" >> .mu300-patches
 done
 O=/src/out-$KV
 mkdir -p $O
