@@ -93,6 +93,7 @@ DEFAULTS = {
     'dashboard-info': '{"ok":1,"host":"f50"}', 'cell': '{"ok":1}', 'action': '{"ok":1,"op":"x"}',
     'lock': '{"ok":1,"mode":{"label":"auto"}}', 'device-usb': '{"ok":1}', 'at': 'OK', 'sms': 'sent (12)',
     'languages': '{"ok":1}', 'power': '{"ok":1}', 'ttl': '{"ok":1}', 'traffic': '{"ok":1}', 'forward': '{"ok":1}',
+    'packages': '{"ok":1}',
 }
 
 # The methods that start something with setsid (in the background of mu300dash)
@@ -215,7 +216,7 @@ class Inventory(Mu300Dash):
                'sms_show', 'sms_send', 'sms_delete', 'sms_sync', 'usb_get', 'usb_set', 'usb_net_list', 'usb_net_add',
                'lang_get', 'lang_set', 'power_get', 'power_set',
                'ttl_get', 'ttl_set', 'cpu_get', 'cpu_set', 'forward_get', 'forward_set', 'forward_test',
-               'traffic_get', 'traffic_set'}
+               'traffic_get', 'traffic_set', 'packages_get', 'packages_act'}
 
     def test_list_declares_every_method(self):
         for shell in self.each_shell():
@@ -238,7 +239,7 @@ class Inventory(Mu300Dash):
         for shell in self.each_shell():
             for p in [DASH, LIB] + [ADAPTERS / n for n in ('action', 'at', 'boot-replay', 'cell', 'dashboard-info',
                                                          'device-usb', 'lock', 'languages', 'power', 'ttl',
-                                                         'cpu', 'forward', 'traffic')]:
+                                                         'cpu', 'forward', 'traffic', 'packages')]:
                 with self.subTest(p=p.name):
                     r = subprocess.run(shell + ['-n', str(p)], capture_output=True, text=True)
                     self.assertEqual(r.returncode, 0, r.stderr)
@@ -294,6 +295,9 @@ class Refusals(Mu300Dash):
         ('usb_net_add', {}, 'iface', 'eth1'),
         ('ttl_set', {}, 'value', '64'),
         ('ttl_set', {}, 'value', 'off'),
+        ('packages_act', {}, 'op', 'retry'),
+        ('packages_act', {}, 'op', 'repair_dns'),
+        ('packages_act', {}, 'op', 'dismiss'),
         ('traffic_set', {'op': 'cap', 'value': '1024'}, 'op', 'cap'),
         ('traffic_set', {'op': 'cap', 'value': '1024'}, 'value', '1024'),
         ('traffic_set', {'op': 'reset_day', 'value': '15'}, 'value', '15'),
@@ -377,6 +381,10 @@ class Refusals(Mu300Dash):
             ('cpu unknown profile', 'cpu_set', {'profile': 'turbo'}),
             ('cpu profile chained', 'cpu_set', {'profile': 'saving; reboot'}),
             ('cpu profile empty', 'cpu_set', {'profile': ''}),
+            ('packages unknown op', 'packages_act', {'op': 'skip'}),
+            ('packages dash form', 'packages_act', {'op': 'repair-dns'}),
+            ('packages op chained', 'packages_act', {'op': 'retry; reboot'}),
+            ('packages op empty', 'packages_act', {'op': ''}),
             ('ttl zero', 'ttl_set', {'value': '0'}),
             ('ttl 256', 'ttl_set', {'value': '256'}),
             ('ttl 999', 'ttl_set', {'value': '999'}),
@@ -445,6 +453,10 @@ class Passthrough(Mu300Dash):
         ('power_set', {'op': 'wake'}, [['power', 'wake']]),
         ('power_set', {'op': 'idle'}, [['power', 'idle']]),
         ('ttl_get', {}, [['ttl', 'get']]),
+        ('packages_get', {}, [['packages', 'get']]),
+        ('packages_act', {'op': 'retry'}, [['packages', 'act', 'retry']]),
+        ('packages_act', {'op': 'repair_dns'}, [['packages', 'act', 'repair_dns']]),
+        ('packages_act', {'op': 'dismiss'}, [['packages', 'act', 'dismiss']]),
         ('ttl_set', {'value': '64'}, [['ttl', 'set', '64']]),
         ('ttl_set', {'value': 128}, [['ttl', 'set', '128']]),
         ('ttl_set', {'value': '255'}, [['ttl', 'set', '255']]),
@@ -534,6 +546,7 @@ class Replies(Mu300Dash):
         ('sms_sync', {}), ('usb_get', {}), ('usb_set', {'kind': 'role', 'value': 'device', 'auto': '0'}),
         ('usb_net_list', {}), ('usb_net_add', {'iface': 'eth1'}), ('ttl_get', {}), ('ttl_set', {'value': '64'}),
         ('forward_get', {}), ('forward_set', {'enabled': '0'}), ('forward_test', {}),
+        ('packages_get', {}), ('packages_act', {'op': 'dismiss'}),
     ]
     OUTPUTS = {
         'garbage': NASTY,
@@ -893,10 +906,10 @@ class TrafficAdapter(ShellTest):
 class Acl(unittest.TestCase):
     # SMS bodies (one-time codes) and the AT history (AT+CPIN PINs) are not for read-only users (ruling R14)
     READ = {'sysinfo', 'status', 'signal', 'lock_get', 'usb_get', 'usb_net_list', 'lang_get', 'power_get', 'ttl_get',
-            'cpu_get', 'traffic_get', 'ops_log'}
+            'cpu_get', 'traffic_get', 'ops_log', 'packages_get'}
     WRITE = {'act', 'at', 'at_job', 'at_history', 'lock_set', 'sms_list', 'sms_show', 'sms_send', 'sms_delete', 'sms_sync',
              'usb_set', 'usb_net_add', 'lang_set', 'power_set', 'ttl_set', 'cpu_set', 'forward_get',
-             'forward_set', 'forward_test', 'traffic_set'}
+             'forward_set', 'forward_test', 'traffic_set', 'packages_act'}
 
     def test_actions_need_write_access(self):
         acl = json.loads(ACL.read_text())['luci-app-mu300']
@@ -1407,3 +1420,78 @@ class AtBudget(Mu300Dash):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class PackagesAdapter(ShellTest):
+    """unisoc-modem/packages: the record of mu300-user-packages as JSON for the panel (hostile names and text from the
+    record never break it), retry and repair-dns started in the background, dismiss inline, anything else refused"""
+
+    def setUp(self):
+        super().setUp()
+        self.d = self.tmp / 'rec'
+        self.orph = self.tmp / 'orph'
+        (self.orph / 'etc/config').mkdir(parents=True)
+        (self.orph / 'etc/config/openclash').write_text('x')
+        (self.orph / 'etc/config/bad"name').write_text('x')
+        self.d.mkdir()
+        for f, t in {'wanted': 'luci-app-openclash\nnano\nbad"pkg\nddns-scripts\n', 'done': 'nano\n',
+                     'failed': 'luci-app-openclash ERROR: "quoted" \\ \x01 text\nbad"pkg x\n', 'state': 'failed\n',
+                     'from': 'v2026.10.12\n', 'dns-note': 'DNS goes to 127.0.0.1#7874 "x"\n'}.items():
+            (self.d / f).write_text(t)
+        self.stub('mu300-user-packages', 'echo "$*" >> "$STUBLOG/upk.log"; [ "$1" = brief ] && echo "1 of 3 \\"back\\""; exit 0')
+        self.stub('setsid', 'echo "setsid $*" >> "$STUBLOG/upk.log"')
+
+    def run_ad(self, shell, *args):
+        r = self.script(shell, ADAPTERS / 'packages', *args, MU300_UPK_CMD=self.stubs / 'mu300-user-packages',
+                        MU300_UPK_DIR=self.d, MU300_UPK_ORPH=self.orph, MU300_UPK_LOCK=self.tmp / 'lock')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return json.loads(r.stdout)
+
+    def log(self):
+        p = self.tmp / 'upk.log'
+        t = p.read_text() if p.exists() else ''
+        p.unlink(missing_ok=True)
+        return t
+
+    def test_get(self):
+        for shell in self.each_shell():
+            o = self.run_ad(shell, 'get')
+            self.assertEqual(o['ok'], 1)
+            self.assertEqual(o['recorded'], 1)
+            self.assertEqual(o['state'], 'failed')
+            self.assertEqual(o['from'], 'v2026.10.12')
+            self.assertEqual(o['summary'], '1 of 3 "back"')
+            self.assertEqual(o['wanted'], ['luci-app-openclash', 'nano', 'ddns-scripts'])
+            self.assertEqual(o['done'], ['nano'])
+            self.assertEqual(o['pending'], ['ddns-scripts'])
+            self.assertEqual(o['failed'], [{'name': 'luci-app-openclash', 'why': 'ERROR: "quoted" \\ \x01 text'}])
+            self.assertEqual(o['orphaned'], ['etc/config/openclash'])
+            self.assertEqual(o['dns'], 'DNS goes to 127.0.0.1#7874 "x"')
+            self.assertEqual(o['running'], 0)
+            # nothing recorded
+            for f in self.d.iterdir():
+                f.unlink()
+            o = self.run_ad(shell, 'get')
+            self.assertEqual((o['recorded'], o['state'], o['wanted'], o['dns']), (0, 'none', [], None))
+            self.setUp()
+
+    def test_act(self):
+        for shell in self.each_shell():
+            self.log()
+            self.assertEqual(self.run_ad(shell, 'act', 'retry'), {'ok': 1, 'started': 1})
+            self.assertEqual(self.run_ad(shell, 'act', 'repair_dns'), {'ok': 1, 'started': 1})
+            self.assertEqual(self.run_ad(shell, 'act', 'dismiss'), {'ok': 1})
+            log = self.log()
+            self.assertIn(f'setsid {self.stubs}/mu300-user-packages retry\n', log)
+            self.assertIn(f'setsid {self.stubs}/mu300-user-packages repair-dns\n', log)
+            self.assertIn('dismiss\n', log)
+            for bad in ('repair-dns', 'skip', 'retry;reboot', '', '-h'):
+                with self.subTest(op=bad):
+                    self.assertEqual(self.run_ad(shell, 'act', bad)['ok'], 0)
+                    self.assertEqual(self.log(), '')
+            # one at a time
+            (self.tmp / 'lock').mkdir()
+            self.assertEqual(self.run_ad(shell, 'act', 'retry'), {'ok': 0, 'error': 'Reinstalling is running already'})
+            self.assertEqual(self.run_ad(shell, 'get')['running'], 1)
+            (self.tmp / 'lock').rmdir()
+            self.assertEqual(self.log(), 'brief\n')      # only the status, nothing started

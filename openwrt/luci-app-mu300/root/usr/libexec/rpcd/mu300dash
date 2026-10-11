@@ -34,6 +34,8 @@
 #   forward_get, forward_set ..., forward_test  SMS forwarding (unisoc-modem/forward, mu300-sms-forward); the
 #                     settings go to the adapter on stdin, as sent: they hold secrets, never an argument
 #   cpu_get, cpu_set profile  the CPU performance profile (unisoc-modem/cpu, mu300-cpu); saving|balanced|performance
+#   packages_get, packages_act op  the packages installed before an update, installed again (unisoc-modem/packages,
+#                     mu300-user-packages); op retry|repair_dns|dismiss
 #
 # No call waits for the modem longer than about 17 s, under both the browser's 20 s
 # (LuCI's rpctimeout) and rpcd's 30 s: the AT terminal's wait is capped (AT_LOCK_WAIT
@@ -725,6 +727,17 @@ m_cpu_set() {
     reply_obj "$("$CPUA" set "$profile" 2>/dev/null)" 'The CPU adapter gave no valid reply'
 }
 
+# The Settings page's card of the packages installed before an update: mu300-user-packages through the adapter,
+# which checks the operation again and starts retry and repair-dns in the background itself
+PKGA=${MU300_PKG_ADAPTER:-$DASH/packages}
+m_packages_get() { reply_obj "$("$PKGA" get 2>/dev/null)" 'The packages adapter gave no valid reply'; }
+m_packages_act() {
+    local op
+    inp '@.op'; op=$V
+    allowed "$op" '(retry|repair_dns|dismiss)' || { refuse 'Invalid packages operation'; return; }
+    reply_obj "$("$PKGA" act "$op" 2>/dev/null)" 'The packages adapter gave no valid reply'
+}
+
 do_list() {
     cat <<EOF
 {
@@ -764,7 +777,9 @@ do_list() {
 		"email_to": "String", "sms": "String", "sms_number": "String" },
 	"forward_test": { },
 	"cpu_get": { },
-	"cpu_set": { "profile": "String" }
+	"cpu_set": { "profile": "String" },
+	"packages_get": { },
+	"packages_act": { "op": "String" }
 }
 EOF
 }
@@ -948,7 +963,9 @@ call)
         forward_test) run_m forward_test m_forward_test ;;
         cpu_get)      run_m cpu_get      m_cpu_get ;;
         cpu_set)      run_m cpu_set      m_cpu_set ;;
-        *)            refuse 'No such method' ;;
+        packages_get) run_m packages_get m_packages_get ;;
+        packages_act) run_m packages_act m_packages_act ;;
+        *)           refuse 'No such method' ;;
     esac
     ;;
 # not methods (rpcd runs only list and call): the detached scan m_at starts, and the service's stop
