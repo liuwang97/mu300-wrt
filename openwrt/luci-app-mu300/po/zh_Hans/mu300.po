@@ -48,6 +48,9 @@ msgstr "终端"
 msgid "Terminal settings"
 msgstr "终端设置"
 
+msgid "Packages after an update"
+msgstr "更新后的软件包"
+
 msgid "MU300 control center: status dashboard, network locks, AT terminal and SMS"
 msgstr "MU300 控制中心：状态看板、网络锁定、AT 终端与短信"
 
@@ -1245,6 +1248,60 @@ msgstr "自动（支持 %d 个）"
 msgid "%d locked: %s"
 msgstr "已锁 %d 个：%s"
 
+msgid "Repair DNS?"
+msgstr "修复 DNS？"
+
+msgid "This removes the DNS forwarder of a package that is no longer installed. If no other DNS server is left, the device then uses the DNS servers of the mobile connection: the carrier sees the names you look up, outside any proxy or VPN."
+msgstr "这会删除一个已不再安装的软件包的 DNS 转发。如果没有其他 DNS 服务器，设备将使用移动连接的 DNS 服务器：运营商会看到你查询的域名，不经过任何代理或 VPN。"
+
+msgid "Repair DNS"
+msgstr "修复 DNS"
+
+msgid "Packages installed on the device are not part of a release image. An update writes them down, and the new system installs them again at its first boot, once it is online. Until a package is back its settings are set aside."
+msgstr "设备上自行安装的软件包不属于发布镜像。更新会记录它们，新系统在首次启动并联网后会重新安装。软件包恢复之前，其设置会被暂存。"
+
+msgid "No packages to install again."
+msgstr "没有需要重新安装的软件包。"
+
+msgid "All back"
+msgstr "全部已恢复"
+
+msgid "Not installed yet"
+msgstr "尚未安装"
+
+msgid "Could not be installed again"
+msgstr "无法重新安装"
+
+msgid "Waiting for the internet"
+msgstr "正在等待网络"
+
+msgid "Given up: no internet at five boots"
+msgstr "已放弃：连续五次启动都没有网络"
+
+msgid "Skipped"
+msgstr "已跳过"
+
+msgid "Written down by the update from %s"
+msgstr "由来自 %s 的更新记录"
+
+msgid "Installed again"
+msgstr "已重新安装"
+
+msgid "Install them yourself from where you got them (a package file: apk add --allow-untrusted FILE.apk)."
+msgstr "请从原来的来源自行安装（软件包文件：apk add --allow-untrusted FILE.apk）。"
+
+msgid "Settings set aside in /etc/mu300/orphaned-config"
+msgstr "暂存在 /etc/mu300/orphaned-config 中的设置"
+
+msgid "DNS still goes to a package that is not installed: the device has no DNS through it."
+msgstr "DNS 仍指向一个未安装的软件包：设备无法通过它解析 DNS。"
+
+msgid "Try again"
+msgstr "重试"
+
+msgid "Dismiss the note"
+msgstr "关闭提示"
+
 msgid "started"
 msgstr "已启动"
 
@@ -1908,6 +1965,12 @@ msgstr "CPU 适配器未返回有效响应"
 msgid "Invalid CPU profile"
 msgstr "无效的 CPU 配置"
 
+msgid "The packages adapter gave no valid reply"
+msgstr "软件包适配器没有返回有效回复"
+
+msgid "Invalid packages operation"
+msgstr "无效的软件包操作"
+
 msgid "Request too large"
 msgstr "请求过大"
 
@@ -2090,6 +2153,21 @@ msgstr "锁定缓存不可用"
 
 msgid "No serving cell to lock to"
 msgstr "没有可锁定的服务小区"
+
+msgid "Reinstalling packages is not available on this system"
+msgstr "此系统不支持重新安装软件包"
+
+msgid "No packages were written down by an update"
+msgstr "没有更新记录的软件包"
+
+msgid "Reinstalling is running already"
+msgstr "重新安装已在运行"
+
+msgid "The note could not be dropped"
+msgstr "无法删除提示"
+
+msgid "Unknown packages operation"
+msgstr "未知的软件包操作"
 
 msgid "usage: power get|set KEY VALUE|wake|idle"
 msgstr "usage: power get|set KEY VALUE|wake|idle"
