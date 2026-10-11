@@ -46,6 +46,8 @@ var callCpuGet = rpc.declare({ object: 'mu300dash', method: 'cpu_get', expect: {
 var callCpuSet = rpc.declare({ object: 'mu300dash', method: 'cpu_set', params: [ 'profile' ], expect: { '': {} } });
 var callTrafficGet = rpc.declare({ object: 'mu300dash', method: 'traffic_get', expect: { '': {} } });
 var callTrafficSet = rpc.declare({ object: 'mu300dash', method: 'traffic_set', params: [ 'op', 'value' ], expect: { '': {} } });
+/* System > Terminal: a one-time token for ttyd (rpcd mu300term, ACL luci-app-mu300-terminal) */
+var callTermToken = rpc.declare({ object: 'mu300term', method: 'token', expect: { '': {} } });
 /* The live rates' one read: the mu300rates object (rpcd's ucode plugin) returns /proc/net/dev, in rpcd itself (no
  * process started, no AT), every second. Sent on its own (nobatch): a declared call is batched with whatever else is
  * pending, and then waits for the status snapshot, which takes a few hundred milliseconds and made the rates come
@@ -653,6 +655,7 @@ return baseclass.extend({
 	callFwdGet: callFwdGet, callFwdSet: callFwdSet, callFwdTest: callFwdTest,
 	callCpuGet: callCpuGet, callCpuSet: callCpuSet,
 	callTrafficGet: callTrafficGet, callTrafficSet: callTrafficSet, callNetDev: callNetDev, netDev: netDev,
+	callTermToken: callTermToken,
 	carrierName: carrierName, qLevel: qLevel, qLevelLabel: qLevelLabel, qLabel: qLabel, qCol: qCol, qScore: qScore,
 	esc: esc, fmtBytes: fmtBytes, fmtRate: fmtRate, fmtUptime: fmtUptime, PLMN_CN: PLMN_CN,
 	injectCss: injectCss, v: v, set: set, spark: spark, neighborRows: neighborRows,
