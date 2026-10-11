@@ -411,7 +411,7 @@ if (selected !== true) throw Error('the Bootstrap token bridge must survive the 
 
 
 VIEWS = APP / 'htdocs/luci-static/resources/view/mu300'
-VIEW_NAMES = ('home', 'locks', 'sms', 'at', 'settings', 'device', 'languages', 'ttl', 'traffic', 'packages')
+VIEW_NAMES = ('home', 'locks', 'sms', 'at', 'settings', 'device', 'languages', 'ttl', 'traffic', 'packages', 'terminal')
 CJK_RE = re.compile('[\u2e80-\u9fff\uf900-\ufaff\uff00-\uffef]')
 
 
@@ -818,6 +818,43 @@ V.paint({ ok: 0, error: 'Data usage is not available on this system' });
 rpcReply = { ok: 0, error: 'Invalid value for this setting' }; await V.set(null, 'warn', '0'); await flush();
 rpcReply = { ok: 1 }; await V.set(null, 'warn', '80'); await flush();
 return notes();'''
+
+    # System > Terminal: a token framed over HTTP, a tab of its own over HTTPS, and each refusal code
+    TERMINAL = '''
+window.location.protocol = 'http:'; window.location.hostname = '192.168.77.1';
+const tok = { ok: 1, token: '0123456789abcdef0123456789abcdef', port: 7681, lan: '192.168.77.1', ttl: 60, idle: 900 };
+V.render(tok);
+window.location.protocol = 'https:'; V.paint(tok); V.paint(Object.assign({}, tok, { idle: 60 }));
+[ 'missing', 'off', 'busy', 'internal' ].forEach((c) => V.paint({ ok: 0, code: c }));
+return notes();'''
+
+    def test_terminal_url_comes_from_the_token_only(self):
+        body = '''
+const tok = { ok: 1, token: '0123456789abcdef0123456789abcdef', port: 7681, lan: '192.168.77.1' };
+const at = (host) => { window.location.hostname = host; return V.target(tok); };
+return [ at('192.168.77.1'), at('mu300.lan'), at('[fd00::1]'), at('fd00::1'),
+         V.target(Object.assign({}, tok, { token: '../x' })), V.target(Object.assign({}, tok, { port: 'x' })),
+         V.target({ ok: 0, code: 'off' }), V.target(Object.assign({}, tok, { lan: '' })) && at('[fd00::1]') ];'''
+        r = self.run_view('terminal', None, body)['result']
+        self.assertEqual(r[:4], ['http://192.168.77.1:7681/?arg=0123456789abcdef0123456789abcdef',
+                                 'http://mu300.lan:7681/?arg=0123456789abcdef0123456789abcdef',
+                                 'http://192.168.77.1:7681/?arg=0123456789abcdef0123456789abcdef',
+                                 'http://192.168.77.1:7681/?arg=0123456789abcdef0123456789abcdef'])
+        self.assertEqual(r[4:7], [None, None, None])
+
+    def test_terminal_page_messages(self):
+        for lang in (None, 'tr', 'zh_Hans'):
+            with self.subTest(lang=lang):
+                out = self.run_view('terminal', lang, self.TERMINAL)
+                for m in ('Terminal', 'It closes after %d minutes without activity.',
+                          'It closes after a minute without activity.', 'Reconnect', 'Open in a new tab',
+                          'This page was opened over HTTPS, and the terminal is served over HTTP on the LAN: it opens in a tab of its own.',
+                          'ttyd is not installed.', 'The terminal is turned off (/etc/config/ttyd).',
+                          'Too many terminals are opening at once. Try again in a minute.',
+                          'The terminal is not available.'):
+                    self.assertIn(m, out['used'])
+                if lang:
+                    self.assertLessEqual(set(out['used']), set(catalog(lang)))
 
     # the Packages after an update page in every state, Repair DNS refused and then confirmed, a refusal, dismiss
     PACKAGES = '''

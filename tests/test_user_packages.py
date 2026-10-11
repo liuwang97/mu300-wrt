@@ -359,6 +359,38 @@ class ApplyOne(ShellTest):
             self.assertIn('packages installed on the device', r.stdout)
             self.assertIn('luci-app-openclash luci-theme-argon', r.stdout)
 
+    def test_stray_config_of_v2026_10_18_goes(self):
+        # the old system (a device updated to v2026.10.18) and the image both carry etc/config/attendedsysupgrade
+        # and uhttpd.apk-new; neither stays, except attendedsysupgrade with its package installed in the new image
+        disk = self.tmp / 'disk'
+        stage = disk / '.mu300-update'
+        for shell in self.each_shell():
+            for extra_db, keeps in ((None, False), ({'attendedsysupgrade-common': ['etc/config/attendedsysupgrade']}, True)):
+                shutil.rmtree(disk, ignore_errors=True)
+                img = self.tmp / 'img'
+                shutil.rmtree(img, ignore_errors=True)
+                openwrt_new(img, extra_db)
+                write(img, {'sbin/init': '#!/bin/sh\n', 'etc/config/attendedsysupgrade': 'image\n',
+                            'etc/config/uhttpd.apk-new': 'image\n'})
+                (img / 'sbin/init').chmod(0o755)
+                (img / 'etc/rc.d').mkdir()
+                openwrt_old(disk / 'openwrt')
+                write(disk / 'openwrt', {'sbin/init': '#!/bin/sh\n', 'etc/config/attendedsysupgrade': 'stray\n',
+                                         'etc/config/uhttpd.apk-new': 'stray\n', 'etc/config/uhttpd': 'mine\n'})
+                stage.mkdir(parents=True)
+                subprocess.run(['tar', '-czf', str(stage / 'mu300-openwrt-rootfs.tar.gz'), '-C', str(img), '.'], check=True)
+                r = self.sh(shell, f'. "{UPD}"; is_root() {{ false; }}; apply_one openwrt v2', MU300_LIB=1, MU300_DISK=disk,
+                            MU300_BIN=BIN)
+                self.assertEqual(r.returncode, 0, r.stderr)
+                new = disk / 'openwrt'
+                self.assertFalse((new / 'etc/config/uhttpd.apk-new').exists(), keeps)
+                self.assertEqual((new / 'etc/config/attendedsysupgrade').exists(), keeps)
+                self.assertEqual((new / 'etc/config/uhttpd').read_text(), 'mine\n')   # the device's own stays
+                # deleted, not set aside (the fixture's OpenClash config is, as always)
+                orph = new / 'etc/mu300/orphaned-config/etc/config'
+                self.assertFalse((orph / 'attendedsysupgrade').exists())
+                self.assertFalse((orph / 'uhttpd.apk-new').exists())
+
     def test_with_the_image_config_files_added(self):
         # (#121) the update adds the config files of the image's packages the old system did not have, then sets the
         # orphaned ones aside: sqm-scripts, a package of the image the user had removed, gets the image's

@@ -42,11 +42,20 @@ msgstr "电源"
 msgid "CPU"
 msgstr "CPU"
 
+msgid "Terminal"
+msgstr "终端"
+
+msgid "Terminal settings"
+msgstr "终端设置"
+
 msgid "Packages after an update"
 msgstr "更新后的软件包"
 
 msgid "MU300 control center: status dashboard, network locks, AT terminal and SMS"
 msgstr "MU300 控制中心：状态看板、网络锁定、AT 终端与短信"
+
+msgid "Terminal: a root shell on the device in the browser"
+msgstr "终端：在浏览器中使用设备的 root shell"
 
 msgid "China Mobile"
 msgstr "中国移动"
@@ -1559,6 +1568,39 @@ msgstr "不完整：收到 %d / %d 个分段"
 
 msgid "Delete"
 msgstr "删除"
+
+msgid "ttyd is not installed."
+msgstr "未安装 ttyd。"
+
+msgid "The terminal is turned off (/etc/config/ttyd)."
+msgstr "终端已关闭（/etc/config/ttyd）。"
+
+msgid "Too many terminals are opening at once. Try again in a minute."
+msgstr "同时打开的终端过多，请一分钟后重试。"
+
+msgid "The terminal is not available."
+msgstr "终端不可用。"
+
+msgid "This is a root shell on the device: every command runs with full rights, and a mistake can make the device unbootable."
+msgstr "这是设备上的 root shell：每条命令都以完全权限运行，一个错误就可能导致设备无法启动。"
+
+msgid "It is reachable from the LAN only (USB and the hotspot), never from mobile data, and only from this logged-in page."
+msgstr "只能从局域网（USB 和热点）并且只能从这个已登录的页面访问，移动数据一侧永远无法访问。"
+
+msgid "It closes after a minute without activity."
+msgstr "无操作 1 分钟后自动关闭。"
+
+msgid "It closes after %d minutes without activity."
+msgstr "无操作 %d 分钟后自动关闭。"
+
+msgid "Reconnect"
+msgstr "重新连接"
+
+msgid "Open in a new tab"
+msgstr "在新标签页中打开"
+
+msgid "This page was opened over HTTPS, and the terminal is served over HTTP on the LAN: it opens in a tab of its own."
+msgstr "此页面通过 HTTPS 打开，而终端在局域网上通过 HTTP 提供，因此会在单独的标签页中打开。"
 
 msgid "The data usage could not be read"
 msgstr "无法读取流量统计"

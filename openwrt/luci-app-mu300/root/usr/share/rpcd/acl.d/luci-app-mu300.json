@@ -22,5 +22,16 @@
     "/tmp/mu300-extra-lang.tar.gz": [ "write" ]
    }
   }
+ },
+ "luci-app-mu300-terminal": {
+  "description": "Terminal: a root shell on the device in the browser",
+  "read": {
+   "uci": [ "ttyd" ]
+  },
+  "write": {
+   "ubus": {
+    "mu300term": [ "token" ]
+   }
+  }
  }
 }

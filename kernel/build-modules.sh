@@ -47,6 +47,9 @@ for m in $mods; do
     for ko in $(find /src/mod-build/$m -name '*.ko'); do
         ! echo "${ko##*/}" | tr - _ | grep -Fqx -f - $O/modules.in-tree.names || { echo "$m: ${ko##*/} has the name of an in-tree module" >&2; exit 1; }
         cp "$ko" $OUT/modules/
+        # the kernel's own modules are stripped by modules_install; these carry the DWARF of CONFIG_DEBUG_INFO
+        # (several MiB each) - --strip-debug keeps their .BTF
+        strip --strip-debug "$OUT/modules/${ko##*/}"
     done
 done
 ls -la $OUT/modules/*.ko

@@ -112,9 +112,27 @@
 		"action": { "type": "view", "path": "mu300/cpu" },
 		"depends": { "acl": [ "luci-app-mu300" ] }
 	},
+	"admin/system/terminal": {
+		"title": "Terminal",
+		"order": 18,
+		"action": { "type": "firstchild" },
+		"depends": { "acl": [ "luci-app-mu300-terminal" ] }
+	},
+	"admin/system/terminal/shell": {
+		"title": "Terminal",
+		"order": 1,
+		"action": { "type": "view", "path": "mu300/terminal" },
+		"depends": { "acl": [ "luci-app-mu300-terminal" ] }
+	},
+	"admin/system/terminal/config": {
+		"title": "Terminal settings",
+		"order": 2,
+		"action": { "type": "view", "path": "ttyd/config" },
+		"depends": { "acl": [ "luci-app-ttyd" ], "uci": { "ttyd": true } }
+	},
 	"admin/system/mu300-packages": {
 		"title": "Packages after an update",
-		"order": 18,
+		"order": 19,
 		"action": { "type": "view", "path": "mu300/packages" },
 		"depends": { "acl": [ "luci-app-mu300" ] }
 	}
