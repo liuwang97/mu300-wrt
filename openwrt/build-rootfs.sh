@@ -267,6 +267,9 @@ done
 if [ -d /in/luci-plugin ]; then
     n=$(sed -n "s/^START=//p" $R/etc/init.d/unisoc-modem-ui)
     ln -sf ../init.d/unisoc-modem-ui $R/etc/rc.d/S${n}unisoc-modem-ui
+    # stopped at shutdown: the operations log of the panel (mu300dash flush-ops) is kept for the next boot
+    n=$(sed -n "s/^STOP=//p" $R/etc/init.d/unisoc-modem-ui)
+    ln -sf ../init.d/unisoc-modem-ui $R/etc/rc.d/K${n}unisoc-modem-ui
     # the SMS pool behind the panel (K69, D11): openwrt-luci only, the sms command stays the SMS tool of every system
     chmod 0755 $R/opt/mu300/bin/mu300-sms $R/opt/mu300/bin/mu300-smsd $R/opt/mu300/bin/mu300-sms-forward $R/etc/init.d/mu300-smsd
     n=$(sed -n "s/^START=//p" $R/etc/init.d/mu300-smsd)

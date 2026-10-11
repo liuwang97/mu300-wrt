@@ -67,19 +67,36 @@ mkdir -p "$IDENT_DIR" 2>/dev/null
 # The dashboard therefore uses the two verified slot-0-capable optional
 # channels nr6/nr7; nr1 is only the final fallback for a failed pool channel.
 ATC=${MU300_DASH_AT_DIR:-}
+# A whole round has a deadline (MU300_DASH_DEADLINE seconds from now; 25 for a full round, 12 for a fast one).
+# Without one, a modem that stopped answering held a collector for many minutes - every command waited out mu300-at's
+# whole budget (T + 31 s) on each of four channels - and the collectors the panel started kept piling up behind it.
+# Past the deadline every further command fails at once; each one gets at most what is left.
+case ${MU300_DASH_DEADLINE:-} in
+    ''|*[!0-9]*) [ "$MODE" = fast ] && MU300_DASH_DEADLINE=12 || MU300_DASH_DEADLINE=25 ;;
+esac
+DEADLINE=$(( $(date +%s) + MU300_DASH_DEADLINE ))
 at() {
-    local cmd=$1 timeout=${2:-5} d out seen=
+    local cmd=$1 timeout=${2:-5} d out seen= left
     # The assigned regular channel is first. A silent channel fails in about
     # timeout+1 seconds; only then touch the two unpolled disaster channels.
     for d in "$ATC" /run/mu300-at6 /run/mu300-at7 /run/mu300-at; do
         [ -n "$d" ] && [ -p "$d/cmd" ] || continue
         case " $seen " in *" $d "*) continue ;; esac
         seen="$seen $d"
-        out=$(MU300_AT_LOCK_WAIT=0 MU300_AT_DIR=$d "$AT" -t "$timeout" "$cmd" 2>/dev/null) || continue
+        left=$(( DEADLINE - $(date +%s) ))
+        [ "$left" -ge 1 ] || return 1
+        # the daemon's drain and collect: T + 4 s is plenty for an answer that comes at all
+        [ "$left" -gt $((timeout + 4)) ] && left=$((timeout + 4))
+        out=$(MU300_AT_LOCK_WAIT=0 MU300_AT_BUDGET=$left MU300_AT_DIR=$d "$AT" -t "$timeout" "$cmd" 2>/dev/null) ||
+            continue
         printf '%s\n' "$out" | tr -d '\r'
         return 0
     done
-    out=$("$AT" -t "$timeout" "$cmd" 2>/dev/null) || return 1
+    # no daemon directory at all: the adapter's own backend, without waiting for anybody's lock
+    [ -z "$seen" ] || return 1
+    left=$(( DEADLINE - $(date +%s) ))
+    [ "$left" -ge 1 ] || return 1
+    out=$(MU300_AT_LOCK_WAIT=0 MU300_AT_BUDGET=$left "$AT" -t "$timeout" "$cmd" 2>/dev/null) || return 1
     printf '%s\n' "$out" | tr -d '\r'
 }
 now() { date +%s; }

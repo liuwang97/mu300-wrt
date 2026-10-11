@@ -1,6 +1,7 @@
 #!/bin/sh
 # Update the installed systems from a published release, on the device itself.
 #   mu300-update check            what is installed, what is the newest release
+#   mu300-update version          what is installed (no network needed)
 #   mu300-update apply [OS...]    download, unpack and switch (default: every installed system), then the kernel and
 #                                 the boot image (MU300_UBUNTU=24.04|26.04: move Ubuntu to that release). Packages
 #                                 installed on the device are installed again at the first boot (--no-reinstall: not)
@@ -217,6 +218,22 @@ notice() {
     if [ -s "$NOTICE" ]; then cp "$NOTICE" "$MOTD_DIR/60-mu300-update"; else rm -f "$MOTD_DIR/60-mu300-update"; fi
 }
 
+# version: what is installed, without the network (mu300-toolkit's summary shows it)
+version() {
+    mounted_disk
+    printf 'installed image   %s\n' "$(installed_version)"
+    printf 'systems on disk   %s\n' "$(installed_systems_versions)"
+    printf 'running now       %s\n' "$(running_os)"
+    _xs=; for x in $(extra_installed); do _xs="$_xs $x ($(extra_release "$x"))"; done
+    printf 'extras           %s\n' "${_xs:- none (mu300-extra list)}"
+    printf 'kernel            %s (boot image: %s; kernel choice %s)\n' "$(uname -r)" "$(cat "$BOOTDIR/installed.tag" 2>/dev/null || echo "from the installer")" "$(kernel_choice)"
+}
+# "openwrt v2026.10.18 ubuntu v2026.10.17": each system with the release its image came from
+installed_systems_versions() {
+    for os in $(installed_systems); do
+        printf '%s %s ' "$os" "$(cat "$DISK/$os/etc/mu300/image-version" 2>/dev/null || echo unknown)"
+    done
+}
 check() {
     mounted_disk
     latest=$(latest_release)
@@ -1620,6 +1637,7 @@ clean() {
 case ${1:-check} in apply|boot|kernel) keepalive_start; trap 'keepalive_stop; resume_data' EXIT; trap 'exit 130' INT TERM HUP ;; esac
 case ${1:-check} in
     check) check ;;
+    version) version ;;
     apply) shift; apply "$@" ;;
     boot) mounted_disk; t=${MU300_RELEASE:-$(latest_release)}; [ -n "$t" ] || die "could not reach GitHub (is the device online?)"
           boot_update "$t" || exit 1; rm -rf "$STAGE"; [ -n "${BOOT_CHANGED:-}" ] && printf '\nReboot to start the new kernel.\n' ;;
@@ -1629,6 +1647,6 @@ case ${1:-check} in
     accounts) accounts ;;
     clean) clean ;;
     notice) notice ;;
-    -h|--help|help) sed -n '2,18s/^# \{0,1\}//p' "$0" ;;
-    *) echo "usage: mu300-update check|apply [--no-reinstall] [ubuntu|openwrt|openwrt-luci ...]|boot|kernel [5.4|6.18|7.2]|rollback [os]|rollback-boot|clean|notice" >&2; exit 2 ;;
+    -h|--help|help) sed -n '2,19s/^# \{0,1\}//p' "$0" ;;
+    *) echo "usage: mu300-update check|version|apply [--no-reinstall] [ubuntu|openwrt|openwrt-luci ...]|boot|kernel [5.4|6.18|7.2]|rollback [os]|rollback-boot|clean|notice" >&2; exit 2 ;;
 esac
