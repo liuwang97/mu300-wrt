@@ -239,6 +239,7 @@ do_install_module() {
 $set_
 EOF
     rm -rf "$STAGE"
+    module_vdir_clean
     do_link_commands
     # the engines first: their hook starts a VPN that waits for them, which the core's link would otherwise start
     # without them

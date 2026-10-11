@@ -34,7 +34,8 @@ SYSTEMS="ubuntu openwrt openwrt-luci"
 os_kind() { case $1 in ubuntu) echo ubuntu ;; openwrt|openwrt-*) echo openwrt ;; *) return 1 ;; esac; }
 
 say() { printf '\n==> %s\n' "$*"; }
-die() { printf '\nERROR: %s\n' "$*" >&2; exit 1; }
+# (the private copies of the VPN module's tarballs go with it: MODULE_VDIR, module_vdir)
+die() { [ -z "${MODULE_VDIR:-}" ] || rm -rf "$MODULE_VDIR"; printf '\nERROR: %s\n' "$*" >&2; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
 
 # A transfer that stalls is cut off and retried rather than waited for: with older boot images the IPA's downlink
@@ -651,46 +652,91 @@ sums_want() { awk -v f="$2" '$2 == f || $2 == "*" f {print $1; exit}' "$1" 2>/de
 # The module's tarball, checked, as MODULE_FILE (its hash: MODULE_SHA). Status 0 with a file, 3 when the installed
 # one is that release's already (nothing downloaded), 1 when it cannot be had (offline, GitHub down), 2 when what
 # there is fails its check.
+# What is checked is what is installed: every tarball (and the SHA256SUMS it is checked against) is first copied, as a
+# regular file and not through a link, into a directory of this run's own (MODULE_VDIR, 0700, root's), and the hash is
+# taken of that copy, which is the file extra_unpack reads. A file swapped at the source after the check - in a --from
+# directory, the staging directory or a download directory another process can write - changes nothing.
+# module_asset_ok NAME: a release file name of the module, as module_asset gives them and nothing else
+module_asset_ok() {
+    case $1 in mu300-linux-vpn.tar.gz|mu300-linux-vpn-*.tar.gz) ;; *) return 1 ;; esac
+    case ${1%.tar.gz} in *[!a-z0-9-]*) return 1 ;; esac
+}
+# module_vdir: MODULE_VDIR made (once per run), fresh and private
+MODULE_VDIR=
+module_vdir() {
+    [ -n "$MODULE_VDIR" ] && [ -d "$MODULE_VDIR" ] && [ ! -L "$MODULE_VDIR" ] && return 0
+    mkdir -p "$EXTRA" || return 1
+    # (one left by a run that died: nothing reads it again)
+    rm -rf "$EXTRA"/.verified.*
+    MODULE_VDIR=$EXTRA/.verified.$$
+    ( umask 077; mkdir -m 700 "$MODULE_VDIR" ) || { MODULE_VDIR=; return 1; }
+}
+module_vdir_clean() { [ -z "$MODULE_VDIR" ] || rm -rf "$MODULE_VDIR"; MODULE_VDIR=; }
+# module_copy SRC NAME: SRC - a regular file, not a symbolic link - copied to MODULE_VDIR/NAME (prints that path)
+module_copy() {
+    [ -f "$1" ] && [ ! -L "$1" ] || { echo "$1 is not a regular file (a link or something else): not used" >&2; return 2; }
+    module_asset_ok "$2" || [ "$2" = SHA256SUMS ] || { echo "not a file name of the VPN module: refused" >&2; return 2; }
+    [ -n "$MODULE_VDIR" ] && [ -d "$MODULE_VDIR" ] || { echo "no private directory to check $2 in" >&2; return 1; }
+    rm -f "$MODULE_VDIR/$2"
+    ( umask 077; cat < "$1" > "$MODULE_VDIR/$2" ) 2>/dev/null || { rm -f "$MODULE_VDIR/$2"; echo "cannot read $1" >&2; return 2; }
+    printf '%s\n' "$MODULE_VDIR/$2"
+}
 # module_from DIR|FILE NAME [ASSET]: a copy brought onto the device. A directory must hold the tarball and its
 # SHA256SUMS and is verified; a file is checked against a SHA256SUMS next to it that lists it (else it is the user's
 # own choice).
 module_from() {
+    # (here, not in module_copy: that runs in a command substitution, whose MODULE_VDIR would be lost)
+    module_vdir || { echo "cannot create a private directory under $EXTRA" >&2; return 1; }
     if [ -d "$1" ]; then
         _a=${3:-$(module_asset "$2")}
+        module_asset_ok "$_a" || { echo "not a file name of the VPN module: refused" >&2; return 2; }
         [ -s "$1/$_a" ] || { echo "no $_a in $1" >&2; return 2; }
-        _w=$(sums_want "$1/SHA256SUMS" "$_a")
-        [ -n "$_w" ] || { echo "$1/SHA256SUMS is missing or does not list $_a: not installed unverified" >&2; return 2; }
-        [ "$(sha_of "$1/$_a")" = "$_w" ] || { echo "$1/$_a does not match its SHA256SUMS" >&2; return 2; }
-        MODULE_FILE=$1/$_a MODULE_SHA=$_w
+        _sc=$(module_copy "$1/SHA256SUMS" SHA256SUMS) ||
+            { echo "$1/SHA256SUMS is missing or not a regular file: $_a not installed unverified" >&2; return 2; }
+        _w=$(sums_want "$_sc" "$_a")
+        [ -n "$_w" ] || { echo "$1/SHA256SUMS does not list $_a: not installed unverified" >&2; return 2; }
+        _c=$(module_copy "$1/$_a" "$_a") || return 2
+        [ "$(sha_of "$_c")" = "$_w" ] || { rm -f "$_c"; echo "$1/$_a does not match its SHA256SUMS" >&2; return 2; }
+        MODULE_FILE=$_c MODULE_SHA=$_w
         return 0
     fi
     [ -s "$1" ] || { echo "$1 not found" >&2; return 2; }
-    _w=$(sums_want "$(dirname "$1")/SHA256SUMS" "${1##*/}")
-    MODULE_SHA=$(sha_of "$1")
-    [ -z "$_w" ] || [ "$MODULE_SHA" = "$_w" ] || { echo "$1 does not match $(dirname "$1")/SHA256SUMS" >&2; return 2; }
-    MODULE_FILE=$1
+    case $1 in */*) _d=${1%/*}; [ -n "$_d" ] || _d=/ ;; *) _d=. ;; esac
+    _w=
+    if _sc=$(module_copy "$_d/SHA256SUMS" SHA256SUMS 2>/dev/null); then _w=$(sums_want "$_sc" "${1##*/}"); fi
+    _c=$(module_copy "$1" "$(module_asset "$2")") || return 2
+    MODULE_SHA=$(sha_of "$_c")
+    [ -z "$_w" ] || [ "$MODULE_SHA" = "$_w" ] || { rm -f "$_c"; echo "$1 does not match $_d/SHA256SUMS" >&2; return 2; }
+    MODULE_FILE=$_c
 }
 # module_download NAME DIR [ASSET]: the module's latest release (VPN_URL) into DIR, checked against that release's
 # SHA256SUMS (fetched every time: under releases/latest the same name is a new file with every release)
 module_download() {
     _a=${3:-$(module_asset "$1")}
+    module_asset_ok "$_a" || { echo "not a file name of the VPN module: refused" >&2; return 1; }
+    module_vdir || { echo "cannot create a private directory under $EXTRA" >&2; return 1; }
     mkdir -p "$2" || return 1
     _s=$(fetch_stdout "$VPN_URL/SHA256SUMS") && [ -n "$_s" ] ||
         { echo "cannot download SHA256SUMS of the VPN module ($VPN_URL)" >&2; return 1; }
-    printf '%s\n' "$_s" > "$2/SHA256SUMS"
-    _w=$(sums_want "$2/SHA256SUMS" "$_a")
-    [ -n "$_w" ] || { echo "$_a is not part of the VPN module's release ($VPN_URL)" >&2; return 1; }
+    _w=$(printf '%s\n' "$_s" | awk -v f="$_a" '$2 == f || $2 == "*" f {print $1; exit}')
+    case $_w in [0-9a-f]*) ;; *) _w= ;; esac
+    [ ${#_w} -eq 64 ] || { echo "$_a is not part of the VPN module's release ($VPN_URL)" >&2; return 1; }
     MODULE_SHA=$_w
     # the installed one is this release's: nothing to download
     [ -d "$EXTRA/$1/bin" ] && [ "$(cat "$EXTRA/.$1.sha256" 2>/dev/null)" = "$_w" ] && return 3
     for _try in 1 2 3; do
-        [ -s "$2/$_a" ] && [ "$(sha_of "$2/$_a")" = "$_w" ] && { MODULE_FILE=$2/$_a; return 0; }
-        fetch_file "$VPN_URL/$_a" "$2/$_a" && [ "$(sha_of "$2/$_a")" = "$_w" ] && { MODULE_FILE=$2/$_a; return 0; }
+        if [ -s "$2/$_a" ] || { rm -f "$2/$_a"; fetch_file "$VPN_URL/$_a" "$2/$_a"; }; then
+            if _c=$(module_copy "$2/$_a" "$_a") && [ "$(sha_of "$_c")" = "$_w" ]; then
+                rm -f "$2/$_a"; MODULE_FILE=$_c; return 0
+            fi
+            [ -z "${_c:-}" ] || rm -f "$_c"
+        fi
         rm -f "$2/$_a"
     done
     echo "downloading $_a failed" >&2
     return 1
 }
+
 # module_get NAME DIR [FROM]: FROM (a file or a directory) when given, else the download into DIR. For vpn, the core
 # (mu300-linux-vpn-core.tar.gz), else the bundle (mu300-linux-vpn.tar.gz: a release or a copy from before the
 # engine extras); MODULE_BUNDLE=1 when what it got (or what is installed, status 3) carries xray and sing-box.
@@ -974,6 +1020,7 @@ modules_install() {
 $MODULES_NEW
 EOF
     rm -rf "$STAGE/module"
+    module_vdir_clean
 }
 # modules_link "OS...": the updated systems use the module (their images have no mu300-vpn); one the hook could not
 # link gets another try at its first boot (mu300-extra link)

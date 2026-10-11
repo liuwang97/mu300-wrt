@@ -1155,7 +1155,7 @@ ENGINE_BINS = {'vpn-xray': ('xray', 'hev-socks5-tunnel'), 'vpn-singbox': ('sing-
                'vpn-dae': ('dae',)}
 
 
-class EngineExtras(ExtrasBase):
+class EngineExtrasBase(ExtrasBase):
     """Module v2: the VPN's engines as extras of their own (vpn-xray, vpn-singbox, vpn-mihomo, vpn-dae) next to the
     core (vpn). Installing or updating the core brings the engines the device has and its profiles need, all from
     one source, engines first; a v1 device (the engines in the vpn extra) keeps every engine it had; when an engine is
@@ -1211,6 +1211,11 @@ class EngineExtras(ExtrasBase):
             if (d / 'bin').is_dir():
                 out[d.name] = (d / 'VERSION').read_text().strip()
         return out
+
+
+
+class EngineExtras(EngineExtrasBase):
+    """the engine extras: names, the set an install or an update takes, refusals"""
 
     def test_the_names(self):
         for shell in self.each_shell():
@@ -1388,3 +1393,100 @@ class EngineExtras(ExtrasBase):
             self.assertIn('nothing was changed', r.stderr)
             self.assertIn('mu300-linux-vpn-core.tar.gz', r.stderr)
             self.assertEqual(self.have(), {})
+
+
+class ModuleIntegrity(EngineExtrasBase):
+    """What is checked is what is installed: the tarball is copied into a private directory and the copy is hashed
+    and unpacked; links and names that are not the module's are refused."""
+
+    def usb(self, engines=('vpn-xray',)):
+        d = self.tmp / 'usb'
+        shutil.rmtree(d, ignore_errors=True)
+        d.mkdir()
+        for name, src in self.release(engines=engines, bundle=False).items():
+            (d / name).write_bytes(src.read_bytes())
+        sums(d, *[p.name for p in d.iterdir()])
+        return d
+
+    def test_a_tarball_swapped_after_the_check_is_not_what_is_installed(self):
+        for shell in self.each_shell():
+            self.reset()
+            d = self.usb()
+            evil = engine_tarball(self.tmp / 'evil.tar.gz', 'vpn-xray', ('xray', 'hev-socks5-tunnel'), version='v6.6.6')
+            # verified, then the source is replaced before the install (another process writing the directory)
+            r = self.up(shell, f'module_get vpn-xray "$STAGE" "{d}" && cp "{evil}" "{d}/mu300-linux-vpn-xray.tar.gz" && '
+                               'case $MODULE_FILE in "$EXTRA"/.verified.*) ;; *) echo "NOT A PRIVATE COPY"; exit 1 ;; esac && '
+                               'module_install vpn-xray "$MODULE_FILE" "$MODULE_SHA" v2026.10.20 && module_vdir_clean')
+            self.assertEqual(r.returncode, 0, (r.stdout, r.stderr))
+            self.assertEqual(self.have(), {'vpn-xray': 'v2.0.0'})
+            self.assertEqual([p.name for p in (self.disk / 'extra').glob('.verified.*')], [])
+
+    def test_the_private_copy_is_roots_alone(self):
+        for shell in self.each_shell():
+            self.reset()
+            d = self.usb()
+            r = self.up(shell, f'module_get vpn-xray "$STAGE" "{d}" && ls -ld "$MODULE_VDIR" && ls -l "$MODULE_FILE"')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            dirmode, filemode = r.stdout.split('\n')[0][:10], r.stdout.split('\n')[1][:10]
+            self.assertEqual(dirmode, 'drwx------')
+            self.assertEqual(filemode, '-rw-------')
+
+    def test_a_symlinked_tarball_or_sums_is_refused(self):
+        for shell in self.each_shell():
+            self.reset()
+            d = self.usb()
+            real = self.tmp / 'real.tar.gz'
+            shutil.move(d / 'mu300-linux-vpn-xray.tar.gz', real)
+            (d / 'mu300-linux-vpn-xray.tar.gz').symlink_to(real)
+            r = self.ex(shell, 'install', 'vpn-xray', '--from', d)
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn('not a regular file', r.stderr)
+            self.assertEqual(self.have(), {})
+            d = self.usb()
+            shutil.move(d / 'SHA256SUMS', self.tmp / 'sums')
+            (d / 'SHA256SUMS').symlink_to(self.tmp / 'sums')
+            r = self.ex(shell, 'install', 'vpn-xray', '--from', d)
+            self.assertNotEqual(r.returncode, 0)
+            self.assertEqual(self.have(), {})
+
+    def test_names_that_are_not_the_modules(self):
+        for shell in self.each_shell():
+            r = self.up(shell, 'for n in mu300-linux-vpn.tar.gz mu300-linux-vpn-xray.tar.gz ../mu300-linux-vpn.tar.gz '
+                               'mu300-linux-vpn-../x.tar.gz -x.tar.gz mu300-linux-vpn-X.tar.gz "mu300-linux-vpn- a.tar.gz" '
+                               'mu300-linux-vpn.tar.gz.sh; do module_asset_ok "$n" && echo "ok $n" || echo "no $n"; done')
+            self.assertEqual(r.stdout.splitlines(), [
+                'ok mu300-linux-vpn.tar.gz', 'ok mu300-linux-vpn-xray.tar.gz', 'no ../mu300-linux-vpn.tar.gz',
+                'no mu300-linux-vpn-../x.tar.gz', 'no -x.tar.gz', 'no mu300-linux-vpn-X.tar.gz',
+                'no mu300-linux-vpn- a.tar.gz', 'no mu300-linux-vpn.tar.gz.sh'])
+            # an asset name from elsewhere never becomes a path
+            self.reset()
+            d = self.usb()
+            (self.tmp / 'x.tar.gz').write_bytes((d / 'mu300-linux-vpn-xray.tar.gz').read_bytes())
+            r = self.up(shell, f'module_from "{d}" vpn-xray ../x.tar.gz')
+            self.assertEqual(r.returncode, 2)
+            self.assertIn('not a file name of the VPN module', r.stderr)
+
+    def test_traversal_names_in_sha256sums_are_never_looked_up(self):
+        for shell in self.each_shell():
+            self.reset()
+            d = self.usb()
+            # SHA256SUMS lists a traversal name with the hash of the real file and no line for the asset itself
+            h = hashlib.sha256((d / 'mu300-linux-vpn-xray.tar.gz').read_bytes()).hexdigest()
+            (d / 'SHA256SUMS').write_text(f'{h}  ../mu300-linux-vpn-xray.tar.gz\n{h}  -mu300-linux-vpn-xray.tar.gz\n')
+            r = self.ex(shell, 'install', 'vpn-xray', '--from', d)
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn('does not list mu300-linux-vpn-xray.tar.gz', r.stderr)
+            self.assertEqual(self.have(), {})
+
+    def test_an_engine_not_in_the_allow_list(self):
+        for shell in self.each_shell():
+            self.reset()
+            for name in ('vpn-evil', '../vpn-xray', 'vpn-xray/..', '-vpn-xray', 'vpn-xray;id'):
+                r = self.ex(shell, 'install', name)
+                self.assertNotEqual(r.returncode, 0, name)
+            r = self.up(shell, 'vpn_engines_wanted | tr "\\n" " "', MU300_VPN_ENGINES='../x,vpn-evil,-y,xray')
+            self.assertEqual(r.stdout.split(), ['vpn-xray'])
+            # a profile type that is no engine's adds nothing
+            self.profile('ubuntu', 'p', '../../evil')
+            r = self.up(shell, 'vpn_engines_wanted | tr "\\n" " "', MU300_VPN_ENGINES='none')
+            self.assertEqual(r.stdout.split(), [])
