@@ -1,6 +1,6 @@
 # The 5 GHz channels the hotspot may use (sourced by hotspot-start, openwrt-wifi-config and mu300-wifi-band; POSIX sh).
 # The SC2355 firmware runs a 5 GHz access point on 36-48 and 149-165 only (FINDINGS 23), and the driver has no radar
-# detection (no start_radar_detection, FINDINGS 40): hostapd cannot start an AP on a DFS channel (52-64, 100-144 and,
+# detection (no start_radar_detection, FINDINGS 42): hostapd cannot start an AP on a DFS channel (52-64, 100-144 and,
 # in a few countries, also 36-48 or 149-165) - start_dfs_cac() fails and the AP stays down. So the hotspot never goes
 # onto a DFS channel: what these functions offer is the firmware's channels a country allows without DFS and without
 # NO-IR, from wireless-regdb (db.txt of 2026; the countries whose list differs from the full one are named below).
