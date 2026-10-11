@@ -411,7 +411,7 @@ if (selected !== true) throw Error('the Bootstrap token bridge must survive the 
 
 
 VIEWS = APP / 'htdocs/luci-static/resources/view/mu300'
-VIEW_NAMES = ('home', 'locks', 'sms', 'at', 'settings', 'device', 'languages', 'ttl')
+VIEW_NAMES = ('home', 'locks', 'sms', 'at', 'settings', 'device', 'languages', 'ttl', 'traffic', 'packages', 'terminal')
 CJK_RE = re.compile('[\u2e80-\u9fff\uf900-\ufaff\uff00-\uffef]')
 
 
@@ -601,6 +601,73 @@ return out;'''
                 if lang != 'zh_Hans':
                     self.assertIsNone(CJK_RE.search(json.dumps(r, ensure_ascii=False)), r)
 
+    def test_locks_page_offers_the_reset_and_says_the_locks_stay_in_android(self):
+        # #96: mode and band locks live in the modem's NV and stay in force in Android
+        for lang in (None, 'tr', 'zh_Hans'):
+            with self.subTest(lang=lang):
+                out = self.run_view('locks', lang, 'const root = V.render(); await flush(); return root.innerHTML;')
+                cat = catalog(lang) if lang else {}
+                for msg in ('Reset all to automatic', 'The network mode and band locks are stored in the modem and '
+                            'stay in force in Android too. If you are not sure, reset them before switching to '
+                            'Android.'):
+                    self.assertIn(cat.get(msg, msg), out['result'])
+                self.assertIn('id="mud-lock-reset"', out['result'])
+                if lang is None:
+                    self.assert_english_and_catalogued(out)
+
+    # the Android button of the home page, for a lock state: which dialog opens (a choice of three, or the plain
+    # confirmation), and what a "Reset locks and switch" runs
+    ANDROID = '''
+const root = V.render();
+await flush();
+const btn = get('mud-btn-android');
+// the DOM stub has no dialog: record which one opens, and answer it with ANSWER
+let opened, ANSWER, AFTER;
+M.confirmBox = (title, msg, opts) => { opened = { kind: 'confirm', msg: msg, ok: opts.okText }; return Promise.resolve(false); };
+M.choiceBox = (title, msg, choices) => { opened = { kind: 'choice', msg: msg, labels: choices.map((c) => c.label) };
+    if (AFTER) rpcReply = AFTER;   // what the backend answers from here on (the lock_set, the lock_get, the act)
+    return Promise.resolve(ANSWER); };
+const dialog = async (reply) => {
+    rpcReply = reply; V.lastLock = undefined; opened = { kind: 'none' };
+    btn.onclick.call(btn); await flush(); await flush(); await flush();
+    return opened.kind;
+};
+const AUTO = { ts: 5, mode: { label: 'auto' }, endc: '1', cells: [],
+               lte: { locked: '1,3,5,8,34,38,39,40,41' }, nr: { locked: '1,5,8,28,41,78' },
+               caps: { nr: '1,5,6,8,28,41,78', lte: '1,3,5,8,34,38,39,40,41' } };
+const out = {
+    unreadable: await dialog({}), error: await dialog({ error: 'Lock read failed' }),
+    auto: await dialog(AUTO), cleared: await dialog(Object.assign({}, AUTO, { lte: { locked: '' }, nr: { locked: '' } })),
+    mode: await dialog(Object.assign({}, AUTO, { mode: { label: '4g' } })),
+    endc: await dialog(Object.assign({}, AUTO, { endc: '2' })),
+    lte: await dialog(Object.assign({}, AUTO, { lte: { locked: '3' } })),
+    nr: await dialog(Object.assign({}, AUTO, { nr: { locked: '78' } })),
+    cell: await dialog(Object.assign({}, AUTO, { cells: [ 'lte:1650,211' ] })),
+};
+out.choice = opened;
+// "Reset locks and switch": the reset, then - once the lock state reads automatic - the switch
+toasts.length = 0;
+ANSWER = 'reset'; AFTER = Object.assign({ ok: 1 }, AUTO, { ts: 9 });
+await dialog(Object.assign({}, AUTO, { mode: { label: 'sa' } }));
+for (let i = 0; i < 6; i++) { await flush(); timers.splice(0).forEach((f) => f()); }
+out.notes = notes();
+return out;'''
+
+    def test_android_switch_warns_about_the_locks_and_offers_the_reset(self):
+        r = self.run_view('home', None, self.ANDROID)
+        res = r['result']
+        self.assertEqual({k: res[k] for k in ('unreadable', 'error', 'auto', 'cleared')},
+                         {'unreadable': 'confirm', 'error': 'confirm', 'auto': 'confirm', 'cleared': 'confirm'})
+        self.assertEqual({k: res[k] for k in ('mode', 'endc', 'lte', 'nr', 'cell')},
+                         dict.fromkeys(('mode', 'endc', 'lte', 'nr', 'cell'), 'choice'))
+        self.assertEqual(res['choice']['labels'], ['Cancel', 'Switch and reboot', 'Reset locks and switch'])
+        self.assertTrue(res['choice']['msg'].startswith('Not automatic: Cell lock: lte:1650,211. '), res['choice'])
+        self.assertEqual(res['notes'][0], 'Resetting the network locks to automatic (SFUN restart, about 30 seconds)…')
+        self.assertIn('Preparing Android boot and rebooting…', res['notes'])
+        for msg in ('Reset locks and switch', 'EN-DC off', 'Cell lock: %s'):
+            self.assertIn(msg, r['used'])
+        self.assert_english_and_catalogued(r)
+
     SMS = '''
 const root = V.render();
 rpcReply = { pages: 1, total: 3, unread: 1, msgs: [ { id: '3', peer: '10086', dir: 'mo', preview: 'hi', time: 't3' },
@@ -734,6 +801,124 @@ rpcReply = { ok: 0, error: 'Invalid TTL' }; await V.set(null, 64); await flush()
 rpcReply = { ok: 1, enabled: 1, value: 65, backend: 'tc', offload: 1, iface: [ 'sipa_eth0' ] };
 await V.set(null, 65); await flush(); await flush();
 return notes();'''
+
+    # the Data usage page over its cap with bytes waiting for the clock, under it with a correction, without an
+    # interface, and the replies of traffic_set
+    TRAFFIC = '''
+const st = { device: 'sipa_eth0', available: 1, clock: 0, since: 1791622800, reset_day: 15,
+             today: { date: '2026-10-10', rx: 1000, tx: 10 }, pending: { rx: 5, tx: 5 },
+             cycle: { start: '2026-09-15', last: '2026-10-14', days_left: 5, rx: 2000, tx: 20, adj: 0, used: 2030 },
+             cap: { bytes: 2000, warn: 90, cut: 1, level: 'over', cut_active: 1 },
+             days: [ { date: '2026-10-10', rx: 1000, tx: 10 }, { date: '2026-10-08', rx: 1000, tx: 10 } ],
+             cycles: [ { start: '2026-09-15', last: '2026-10-14', rx: 2000, tx: 20, adj: 0 } ] };
+V.render(st);
+V.paint(Object.assign({}, st, { available: 0, cap: { bytes: 4000, warn: 50, cut: 0, level: 'warn', cut_active: 0 },
+                                cycle: Object.assign({}, st.cycle, { adj: -100 }) }));
+V.paint({ ok: 0, error: 'Data usage is not available on this system' });
+rpcReply = { ok: 0, error: 'Invalid value for this setting' }; await V.set(null, 'warn', '0'); await flush();
+rpcReply = { ok: 1 }; await V.set(null, 'warn', '80'); await flush();
+return notes();'''
+
+    # System > Terminal: a token framed over HTTP, a tab of its own over HTTPS, and each refusal code
+    TERMINAL = '''
+window.location.protocol = 'http:'; window.location.hostname = '192.168.77.1';
+const tok = { ok: 1, token: '0123456789abcdef0123456789abcdef', port: 7681, lan: '192.168.77.1', ttl: 60, idle: 900 };
+V.render(tok);
+window.location.protocol = 'https:'; V.paint(tok); V.paint(Object.assign({}, tok, { idle: 60 }));
+[ 'missing', 'off', 'busy', 'internal' ].forEach((c) => V.paint({ ok: 0, code: c }));
+return notes();'''
+
+    def test_terminal_url_comes_from_the_token_only(self):
+        body = '''
+const tok = { ok: 1, token: '0123456789abcdef0123456789abcdef', port: 7681, lan: '192.168.77.1' };
+const at = (host) => { window.location.hostname = host; return V.target(tok); };
+return [ at('192.168.77.1'), at('mu300.lan'), at('[fd00::1]'), at('fd00::1'),
+         V.target(Object.assign({}, tok, { token: '../x' })), V.target(Object.assign({}, tok, { port: 'x' })),
+         V.target({ ok: 0, code: 'off' }), V.target(Object.assign({}, tok, { lan: '' })) && at('[fd00::1]') ];'''
+        r = self.run_view('terminal', None, body)['result']
+        self.assertEqual(r[:4], ['http://192.168.77.1:7681/?arg=0123456789abcdef0123456789abcdef',
+                                 'http://mu300.lan:7681/?arg=0123456789abcdef0123456789abcdef',
+                                 'http://192.168.77.1:7681/?arg=0123456789abcdef0123456789abcdef',
+                                 'http://192.168.77.1:7681/?arg=0123456789abcdef0123456789abcdef'])
+        self.assertEqual(r[4:7], [None, None, None])
+
+    def test_terminal_page_messages(self):
+        for lang in (None, 'tr', 'zh_Hans'):
+            with self.subTest(lang=lang):
+                out = self.run_view('terminal', lang, self.TERMINAL)
+                for m in ('Terminal', 'It closes after %d minutes without activity.',
+                          'It closes after a minute without activity.', 'Reconnect', 'Open in a new tab',
+                          'This page was opened over HTTPS, and the terminal is served over HTTP on the LAN: it opens in a tab of its own.',
+                          'ttyd is not installed.', 'The terminal is turned off (/etc/config/ttyd).',
+                          'Too many terminals are opening at once. Try again in a minute.',
+                          'The terminal is not available.'):
+                    self.assertIn(m, out['used'])
+                if lang:
+                    self.assertLessEqual(set(out['used']), set(catalog(lang)))
+
+    # the Packages after an update page in every state, Repair DNS refused and then confirmed, a refusal, dismiss
+    PACKAGES = '''
+const st = { ok: 1, recorded: 1, state: 'failed', from: 'v2026.10.12', summary: 's', wanted: [ 'a', 'b', 'c' ],
+             done: [ 'a' ], pending: [ 'c' ], failed: [ { name: 'b', why: 'ERROR: no such package' } ],
+             orphaned: [ 'etc/config/b' ], dns: 'DNS goes to 127.0.0.1#7874 of b', running: 0 };
+V.render(st);
+[ 'done', 'pending', 'running', 'offline', 'gave-up', 'skipped' ].forEach((s) => V.paint(Object.assign({}, st, { state: s })));
+V.paint({ ok: 1, recorded: 0 });
+V.paint({ ok: 0, error: 'Reinstalling packages is not available on this system' });
+let asked;
+M.confirmBox = (t, m, o) => { asked = { title: t, msg: m, ok: o.okText, danger: !!o.danger }; return Promise.resolve(false); };
+rpcReply = { ok: 1, started: 1 };
+await V.repairDns(null); await flush();
+const before = notes().length;
+M.confirmBox = () => Promise.resolve(true);
+await V.repairDns(null); await flush(); await flush();
+rpcReply = { ok: 0, error: 'Reinstalling is running already' }; await V.act(null, 'retry', 'x'); await flush();
+rpcReply = { ok: 1 }; await V.act(null, 'dismiss'); await flush();
+return { asked: asked, before: before, notes: notes() };'''
+
+    def test_packages_page(self):
+        for lang, want in ((None, ['Started in background: Repair DNS', 'Failed: Reinstalling is running already', 'Saved']),
+                           ('tr', ["Arka planda başlatıldı: DNS'i onar", 'Başarısız: Yeniden kurma zaten çalışıyor',
+                                   'Kaydedildi'])):
+            with self.subTest(lang=lang):
+                out = self.run_view('packages', lang, self.PACKAGES)
+                res = out['result']
+                # nothing runs before the user confirms, and the confirmation says DNS goes to the carrier
+                self.assertEqual(res['before'], 0)
+                self.assertTrue(res['asked']['danger'])
+                if lang is None:
+                    self.assertIn('the carrier sees the names you look up', res['asked']['msg'])
+                self.assertEqual(res['notes'], want)
+                for m in ('All back', 'Not installed yet', 'Waiting for the internet', 'Given up: no internet at five boots',
+                          'Skipped', 'Could not be installed again', 'Settings set aside in /etc/mu300/orphaned-config',
+                          'No packages to install again.', 'Try again', 'Dismiss the note', 'Repair DNS'):
+                    self.assertIn(m, out['used'])
+
+    def test_traffic_page_messages(self):
+        for lang, want in ((None, ['Failed: Invalid value for this setting', 'Saved']),
+                           ('tr', ['Başarısız: Bu ayar için geçersiz değer', 'Kaydedildi'])):
+            with self.subTest(lang=lang):
+                out = self.run_view('traffic', lang, self.TRAFFIC)
+                self.assertEqual(out['result'], want)
+                for m in ('Data usage', 'The monthly cap is reached: mobile data was turned off. It comes back on when the next cycle starts.',
+                          '%d%% of the monthly cap is used', 'Corrected by', 'Turn mobile data off at the cap'):
+                    self.assertIn(m, out['used'])
+
+    def test_home_rates_come_from_proc_net_dev(self):
+        # the fast lane: two readings of /proc/net/dev one second apart give the rates; a counter that went down
+        # (the interface made again) starts over instead of a negative rate
+        body = r'''
+V.render(); await flush();
+V.update({ info: { ts: 1, data_device: 'sipa_eth0', traffic: { level: 'warn', today: 2048, used: 950, cap: 1000, warn: 90 } } });
+const dev = (rx, tx) => 'Inter-| Receive\n face |bytes\n    lo: 5 1 0 0 0 0 0 0 5 1 0 0 0 0 0 0\n' +
+    ' sipa_eth0: ' + rx + ' 10 0 0 0 0 0 0 ' + tx + ' 5 0 0 0 0 0 0\n';
+V.rate(dev(1000, 100), 1000); V.rate(dev(1000 + 2048 * 1024, 100 + 1024), 3000);
+const a = [ text('dl'), text('ul'), text('rx') ];
+V.rate(dev(10, 1), 4000);
+return a.concat([ text('dl'), text('rx'), text('usage-today'), text('usage-cycle'), text('usage-note') ]);'''
+        r = self.run_view('home', None, body)['result']
+        self.assertEqual(r, ['1.0 MB/s', '512 B/s', '2.0 MB', '1.0 MB/s', '10.0 B', '2.0 KB', '950 B of 1000 B',
+                             '95% of the monthly cap is used'])
 
     # a backend error on each page: (view, body returning what was shown, [(template, error, detail)]); the
     # page shows the error through the catalog, inside its template if any, and the detail after it as data

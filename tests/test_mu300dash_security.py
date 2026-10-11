@@ -82,6 +82,7 @@ RECORDER = r'''#!/bin/sh
 f=$(mktemp "$STUB_CALLS/call.XXXXXX")
 printf '%s\0' "{name}" "$@" > "$f"
 [ "{name}" = sms ] && [ "${{1:-}}" = send ] && cat > "$f.stdin"
+[ "{name}" = forward ] && [ "${{1:-}}" = set ] && cat > "$f.stdin"
 if [ "{name}" = cell ] && [ -f "$STUB_OUT/sig.json" ]; then cp "$STUB_OUT/sig.json" "$MU300_DASH_DIR/sig.json"; fi
 if [ -f "$STUB_OUT/{name}" ]; then cat "$STUB_OUT/{name}"; else printf '%s\n' '{default}'; fi
 [ -f "$STUB_OUT/{name}.rc" ] && exit "$(cat "$STUB_OUT/{name}.rc")"
@@ -91,11 +92,12 @@ exit 0
 DEFAULTS = {
     'dashboard-info': '{"ok":1,"host":"f50"}', 'cell': '{"ok":1}', 'action': '{"ok":1,"op":"x"}',
     'lock': '{"ok":1,"mode":{"label":"auto"}}', 'device-usb': '{"ok":1}', 'at': 'OK', 'sms': 'sent (12)',
-    'languages': '{"ok":1}', 'power': '{"ok":1}', 'ttl': '{"ok":1}', 'sim': '{"ok":1,"hot":1,"available":1,"busy":0}',
+    'languages': '{"ok":1}', 'power': '{"ok":1}', 'ttl': '{"ok":1}', 'traffic': '{"ok":1}', 'forward': '{"ok":1}',
+    'packages': '{"ok":1}', 'sim': '{"ok":1,"hot":1,"available":1,"busy":0}',
 }
 
 # The methods that start something with setsid (in the background of mu300dash)
-DETACHED = {'act', 'lock_set', 'sms_sync', 'status', 'sim_set'}
+DETACHED = {'act', 'at', 'lock_get', 'lock_set', 'sms_sync', 'status', 'sim_set'}
 
 # Hostile values: each is refused by every field that takes a fixed set, a number or a name. The NUL cases: the
 # stand-in jsonfilter passes the NUL on (the backend maps it to \001 and refuses); the real jsonfilter prints strings
@@ -210,10 +212,11 @@ class Mu300Dash(ShellTest):
 
 
 class Inventory(Mu300Dash):
-    METHODS = {'sysinfo', 'status', 'signal', 'act', 'at', 'at_history', 'lock_get', 'lock_set', 'sms_list',
+    METHODS = {'sysinfo', 'status', 'signal', 'act', 'at', 'at_job', 'at_history', 'ops_log', 'lock_get', 'lock_set', 'sms_list',
                'sms_show', 'sms_send', 'sms_delete', 'sms_sync', 'usb_get', 'usb_set', 'usb_net_list', 'usb_net_add',
                'lang_get', 'lang_set', 'power_get', 'power_set',
-               'ttl_get', 'ttl_set', 'sim_get', 'sim_set'}
+               'ttl_get', 'ttl_set', 'cpu_get', 'cpu_set', 'forward_get', 'forward_set', 'forward_test',
+               'traffic_get', 'traffic_set', 'packages_get', 'packages_act', 'sim_get', 'sim_set'}
 
     def test_list_declares_every_method(self):
         for shell in self.each_shell():
@@ -235,7 +238,8 @@ class Inventory(Mu300Dash):
     def test_the_changed_scripts_parse(self):
         for shell in self.each_shell():
             for p in [DASH, LIB] + [ADAPTERS / n for n in ('action', 'at', 'boot-replay', 'cell', 'dashboard-info',
-                                                         'device-usb', 'lock', 'languages', 'power', 'ttl')]:
+                                                         'device-usb', 'lock', 'languages', 'power', 'ttl',
+                                                         'cpu', 'forward', 'traffic', 'packages')]:
                 with self.subTest(p=p.name):
                     r = subprocess.run(shell + ['-n', str(p)], capture_output=True, text=True)
                     self.assertEqual(r.returncode, 0, r.stderr)
@@ -252,6 +256,7 @@ class Refusals(Mu300Dash):
         ('act', {'op': 'wifi', 'arg': 'off'}, 'arg', 'off'),
         ('act', {'op': 'vpn', 'arg': 'start'}, 'arg', 'start'),
         ('act', {'op': 'os', 'arg': 'android'}, 'arg', 'android'),
+        ('act', {'op': 'os', 'arg': 'lock'}, 'arg', 'lock'),
         ('act', {'op': 'reboot'}, 'arg', ''),
         ('act', {'op': 'modem-reset'}, 'arg', ''),
         ('lock_get', {}, 'fresh', '1'),
@@ -263,6 +268,8 @@ class Refusals(Mu300Dash):
         ('lock_set', {'kind': 'nr', 'val': '78'}, 'val', '78'),
         ('lock_set', {'kind': 'cell', 'val': 'nr:627264,393'}, 'val', 'nr:627264,393'),
         ('lock_set', {'kind': 'cell', 'val': 'off-lte'}, 'val', 'off-lte'),
+        ('lock_set', {'kind': 'reset', 'val': 'auto'}, 'kind', 'reset'),
+        ('lock_set', {'kind': 'reset', 'val': 'auto'}, 'val', 'auto'),
         ('sms_list', {}, 'page', '2'),
         ('sms_show', {}, 'id', '12'),
         ('sms_send', {'num': '+905551112233', 'text': 'hi'}, 'num', '+905551112233'),
@@ -290,6 +297,14 @@ class Refusals(Mu300Dash):
         ('usb_net_add', {}, 'iface', 'eth1'),
         ('ttl_set', {}, 'value', '64'),
         ('ttl_set', {}, 'value', 'off'),
+        ('packages_act', {}, 'op', 'retry'),
+        ('packages_act', {}, 'op', 'repair_dns'),
+        ('packages_act', {}, 'op', 'dismiss'),
+        ('traffic_set', {'op': 'cap', 'value': '1024'}, 'op', 'cap'),
+        ('traffic_set', {'op': 'cap', 'value': '1024'}, 'value', '1024'),
+        ('traffic_set', {'op': 'reset_day', 'value': '15'}, 'value', '15'),
+        ('traffic_set', {'op': 'cut', 'value': 'on'}, 'value', 'on'),
+        ('traffic_set', {'op': 'clear', 'value': 'yes'}, 'value', 'yes'),
     ]
 
     def test_hostile_values_are_refused(self):
@@ -315,6 +330,10 @@ class Refusals(Mu300Dash):
             ('lock cell pci', 'lock_set', {'kind': 'cell', 'val': 'lte:1650,12345'}),
             ('lock cell two pairs', 'lock_set', {'kind': 'cell', 'val': 'nr:1,2,3'}),
             ('lock cell rat', 'lock_set', {'kind': 'cell', 'val': 'gsm:1,2'}),
+            ('lock reset empty', 'lock_set', {'kind': 'reset', 'val': ''}),
+            ('lock reset other', 'lock_set', {'kind': 'reset', 'val': 'on'}),
+            ('lock reset with bands', 'lock_set', {'kind': 'reset', 'val': 'auto,1'}),
+            ('lock kind resets', 'lock_set', {'kind': 'resets', 'val': 'auto'}),
             ('sms id seven digits', 'sms_show', {'id': '1234567'}),
             ('sms id empty', 'sms_show', {'id': ''}),
             ('sms delete id', 'sms_delete', {'id': 'all2'}),
@@ -323,6 +342,16 @@ class Refusals(Mu300Dash):
             ('sms num inner plus', 'sms_send', {'num': '12+3', 'text': 'hi'}),
             ('sms page', 'sms_list', {'page': '1234567'}),
             ('usb role mode', 'usb_set', {'kind': 'role', 'value': 'ncm', 'scope': '', 'auto': '0'}),
+            ('traffic op unknown', 'traffic_set', {'op': 'device', 'value': 'wwan0'}),
+            ('traffic reset day 0', 'traffic_set', {'op': 'reset_day', 'value': '0'}),
+            ('traffic reset day 32', 'traffic_set', {'op': 'reset_day', 'value': '32'}),
+            ('traffic cap leading zero', 'traffic_set', {'op': 'cap', 'value': '01'}),
+            ('traffic cap 17 digits', 'traffic_set', {'op': 'cap', 'value': '1' * 17}),
+            ('traffic cap decimal', 'traffic_set', {'op': 'cap', 'value': '1.5'}),
+            ('traffic warn 0', 'traffic_set', {'op': 'warn', 'value': '0'}),
+            ('traffic warn 101', 'traffic_set', {'op': 'warn', 'value': '101'}),
+            ('traffic cut yes', 'traffic_set', {'op': 'cut', 'value': 'yes'}),
+            ('traffic clear without yes', 'traffic_set', {'op': 'clear', 'value': ''}),
             ('usb net role', 'usb_set', {'kind': 'net', 'value': 'host', 'scope': 'once', 'auto': '0'}),
             ('usb iface dots', 'usb_net_add', {'iface': '..'}),
             ('usb iface slash', 'usb_net_add', {'iface': 'eth1/../x'}),
@@ -351,6 +380,13 @@ class Refusals(Mu300Dash):
             ('power op format', 'power_set', {'op': 'format'}),
             ('power wake with key', 'power_set', {'op': 'wake', 'key': 'PROFILE', 'value': 'saver'}),
             ('power set no value', 'power_set', {'op': 'set', 'key': 'PROFILE', 'value': ''}),
+            ('cpu unknown profile', 'cpu_set', {'profile': 'turbo'}),
+            ('cpu profile chained', 'cpu_set', {'profile': 'saving; reboot'}),
+            ('cpu profile empty', 'cpu_set', {'profile': ''}),
+            ('packages unknown op', 'packages_act', {'op': 'skip'}),
+            ('packages dash form', 'packages_act', {'op': 'repair-dns'}),
+            ('packages op chained', 'packages_act', {'op': 'retry; reboot'}),
+            ('packages op empty', 'packages_act', {'op': ''}),
             ('ttl zero', 'ttl_set', {'value': '0'}),
             ('ttl 256', 'ttl_set', {'value': '256'}),
             ('ttl 999', 'ttl_set', {'value': '999'}),
@@ -379,13 +415,17 @@ class Passthrough(Mu300Dash):
         ('act', {'op': 'vpn', 'arg': 'stop'}, [['setsid', 'action', 'vpn', 'stop']]),
         ('act', {'op': 'wifi', 'arg': 'off'}, [['action', 'wifi', 'off']]),
         ('act', {'op': 'os', 'arg': 'android'}, [['action', 'os', 'android']]),
-        ('lock_get', {}, [['lock', 'get']]),
-        ('lock_get', {'fresh': '1'}, [['lock', 'get', 'fresh']]),
+        ('act', {'op': 'os', 'arg': 'lock'}, [['action', 'os', 'lock']]),
+        ('act', {'op': 'os', 'arg': 'unlock'}, [['action', 'os', 'unlock']]),
+        # no cache yet: a reading in the background, then the cache (never the modem inside the request)
+        ('lock_get', {}, [['setsid', 'lock', 'refresh'], ['lock', 'get', 'cached']]),
+        ('lock_get', {'fresh': '1'}, [['setsid', 'lock', 'refresh'], ['lock', 'get', 'cached']]),
         ('lock_set', {'kind': 'lte', 'val': '1,3,41'}, [['setsid', 'lock', 'apply', 'lte', '1,3,41']]),
         ('lock_set', {'kind': 'nr', 'val': ''}, [['setsid', 'lock', 'apply', 'nr', '']]),
         ('lock_set', {'kind': 'cell', 'val': 'lte:1650,211'}, [['setsid', 'lock', 'apply', 'cell', 'lte:1650,211']]),
         ('lock_set', {'kind': 'cell', 'val': 'auto'}, [['setsid', 'lock', 'apply', 'cell', 'auto']]),
         ('lock_set', {'kind': 'mode', 'val': '4g'}, [['setsid', 'lock', 'apply', 'mode', '4g']]),
+        ('lock_set', {'kind': 'reset', 'val': 'auto'}, [['setsid', 'lock', 'reset']]),
         ('sms_list', {'page': 2}, [['sms', 'list', '2']]),
         ('sms_list', {}, [['sms', 'list', '1']]),
         ('sms_show', {'id': '12'}, [['sms', 'show', '12']]),
@@ -415,6 +455,10 @@ class Passthrough(Mu300Dash):
         ('power_set', {'op': 'wake'}, [['power', 'wake']]),
         ('power_set', {'op': 'idle'}, [['power', 'idle']]),
         ('ttl_get', {}, [['ttl', 'get']]),
+        ('packages_get', {}, [['packages', 'get']]),
+        ('packages_act', {'op': 'retry'}, [['packages', 'act', 'retry']]),
+        ('packages_act', {'op': 'repair_dns'}, [['packages', 'act', 'repair_dns']]),
+        ('packages_act', {'op': 'dismiss'}, [['packages', 'act', 'dismiss']]),
         ('sim_get', {}, [['sim', 'status']]),
         ('sim_set', {'op':'default','value':'2'}, [['sim','default','2']]),
         ('sim_set', {'op':'hot','value':'1'}, [['sim','hot','1']]),
@@ -423,6 +467,17 @@ class Passthrough(Mu300Dash):
         ('ttl_set', {'value': '255'}, [['ttl', 'set', '255']]),
         ('ttl_set', {'value': '1'}, [['ttl', 'set', '1']]),
         ('ttl_set', {'value': 'off'}, [['ttl', 'set', 'off']]),
+        ('traffic_get', {}, [['traffic', 'get']]),
+        ('traffic_set', {'op': 'reset_day', 'value': '31'}, [['traffic', 'set', 'reset_day', '31']]),
+        ('traffic_set', {'op': 'cap', 'value': '0'}, [['traffic', 'set', 'cap', '0']]),
+        ('traffic_set', {'op': 'cap', 'value': '53687091200'}, [['traffic', 'set', 'cap', '53687091200']]),
+        ('traffic_set', {'op': 'warn', 'value': '100'}, [['traffic', 'set', 'warn', '100']]),
+        ('traffic_set', {'op': 'cut', 'value': 'off'}, [['traffic', 'set', 'cut', 'off']]),
+        ('traffic_set', {'op': 'used', 'value': '1'}, [['traffic', 'set', 'used', '1']]),
+        ('traffic_set', {'op': 'clear', 'value': 'yes'}, [['traffic', 'set', 'clear', 'yes']]),
+        ('forward_get', {}, [['forward', 'get']]),
+        ('forward_set', {'enabled': '1', 'telegram_token': 'x'}, [['forward', 'set']]),
+        ('forward_test', {}, [['forward', 'test']]),
     ]
 
     def test_valid_values_reach_the_adapter(self):
@@ -431,7 +486,7 @@ class Passthrough(Mu300Dash):
             for (label, r, recs, _), (_, _, want) in zip(self.calls_parallel(shell, jobs), self.CASES):
                 with self.subTest(case=label):
                     self.reply(r)
-                    self.assertEqual(recs, want, r.stdout)
+                    self.assertEqual(sorted(recs), sorted(want), r.stdout)
 
     def test_at_commands_pass_as_one_exact_argument(self):
         ok = ['AT', 'at+cgsn', 'AT+SP5GCMDS="get nr support_band"', "AT+X='a'", 'AT$(reboot)', 'AT`reboot`',
@@ -470,6 +525,16 @@ class Passthrough(Mu300Dash):
             self.assertEqual(recs, [['sms', 'send', '--stdin', '123']])
             self.assertEqual(json.loads(stdins[0]), {'a': '$(id)'})
 
+    def test_forwarding_secrets_go_on_stdin(self):
+        # the settings carry a bot token and a password: the adapter gets the request on stdin, never in an argument
+        req = {'enabled': '1', 'telegram_token': '123456789:AAHsecretTokenValue_0123456789',
+               'email_password': "pa$(reboot)'ss", 'template': '{text}\n-- {sender}'}
+        for shell in self.each_shell():
+            r, recs, stdins = self.call(shell, 'forward_set', req)
+            self.assertEqual(self.reply(r)['ok'], 1, r.stdout)
+            self.assertEqual(recs, [['forward', 'set']])
+            self.assertEqual(json.loads(stdins[0]), req)
+
 
 NASTY = 'he said "hi" \\ back\\slash\nnew line\ttab\rcr \x01 \x1f end'
 NASTY_JSON = json.dumps({'ok': 1, 'op': NASTY, 'name': NASTY, 'nested': {'k': [NASTY]}}, ensure_ascii=False)
@@ -485,6 +550,8 @@ class Replies(Mu300Dash):
         ('sms_show', {'id': '1'}), ('sms_send', {'num': '123', 'text': 'x'}), ('sms_delete', {'id': '1'}),
         ('sms_sync', {}), ('usb_get', {}), ('usb_set', {'kind': 'role', 'value': 'device', 'auto': '0'}),
         ('usb_net_list', {}), ('usb_net_add', {'iface': 'eth1'}), ('ttl_get', {}), ('ttl_set', {'value': '64'}),
+        ('forward_get', {}), ('forward_set', {'enabled': '0'}), ('forward_test', {}),
+        ('packages_get', {}), ('packages_act', {'op': 'dismiss'}),
     ]
     OUTPUTS = {
         'garbage': NASTY,
@@ -791,11 +858,63 @@ class TtlAdapter(ShellTest):
                                  'detail': 'the rule could not be set "x" \\ (tc and nftables)'})
 
 
+class TrafficAdapter(ShellTest):
+    """unisoc-modem/traffic: the Data usage page's adapter over mu300-traffic (a stub that records its arguments)."""
+
+    def setUp(self):
+        super().setUp()
+        self.cmd = self.stubs / 'mu300-traffic'
+        self.cmd.write_text('#!/bin/sh\necho "$*" >> "$STUBLOG/traffic.log"\n'
+                            '[ "$1" = json ] && { echo \'{"device":"sipa_eth0","cycle":{"used":5}}\'; exit 0; }\n'
+                            '[ -e "$STUBLOG/fail" ] && { cat "$STUBLOG/fail" >&2; exit 1; }\necho saved\n')
+        self.cmd.chmod(0o755)
+
+    def run_ad(self, shell, *args, **env):
+        r = self.script(shell, ADAPTERS / 'traffic', *args, MU300_TRAFFIC_CMD=env.get('cmd', self.cmd))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return json.loads(r.stdout)
+
+    def log(self):
+        p = self.tmp / 'traffic.log'
+        t = p.read_text() if p.exists() else ''
+        p.unlink(missing_ok=True)
+        return t
+
+    def test_get_and_set(self):
+        for shell in self.each_shell():
+            self.log()
+            self.assertEqual(self.run_ad(shell, 'get'), {'device': 'sipa_eth0', 'cycle': {'used': 5}})
+            for args, want in ((('reset_day', '31'), 'set reset-day 31'), (('cap', '0'), 'set cap off'),
+                               (('cap', '1073741824'), 'set cap 1073741824'), (('warn', '80'), 'set warn 80'),
+                               (('cut', 'on'), 'set cut on'), (('used', '5'), 'used 5'), (('clear', 'yes'), 'clear --yes')):
+                self.assertEqual(self.run_ad(shell, 'get') and self.run_ad(shell, 'set', *args), {'ok': 1}, args)
+                self.assertEqual(self.log().splitlines()[-1], want)
+
+    def test_bad_values_run_nothing(self):
+        for shell in self.each_shell():
+            self.log()
+            for op, v in (('reset_day', '0'), ('cap', '-1'), ('cap', '1.5'), ('warn', '101'), ('cut', 'yes'),
+                          ('used', '$(id)'), ('clear', ''), ('cap', '5\n6'), ('device', 'wwan0')):
+                with self.subTest(op=op, v=v):
+                    self.assertEqual(self.run_ad(shell, 'set', op, v)['ok'], 0)
+                    self.assertEqual(self.log(), '')
+
+    def test_a_failure_says_why_and_a_missing_tool_is_said(self):
+        (self.tmp / 'fail').write_text('mu300-traffic: cannot write "/x"\n')
+        for shell in self.each_shell():
+            self.assertEqual(self.run_ad(shell, 'set', 'warn', '50'),
+                             {'ok': 0, 'error': 'The setting could not be saved', 'detail': 'mu300-traffic: cannot write "/x"'})
+            self.assertEqual(self.run_ad(shell, 'get', cmd=self.tmp / 'none'),
+                             {'ok': 0, 'error': 'Data usage is not available on this system'})
+
+
 class Acl(unittest.TestCase):
     # SMS bodies (one-time codes) and the AT history (AT+CPIN PINs) are not for read-only users (ruling R14)
-    READ = {'sysinfo', 'status', 'signal', 'lock_get', 'usb_get', 'usb_net_list', 'lang_get', 'power_get', 'ttl_get', 'sim_get'}
-    WRITE = {'act', 'at', 'at_history', 'lock_set', 'sms_list', 'sms_show', 'sms_send', 'sms_delete', 'sms_sync',
-             'usb_set', 'usb_net_add', 'lang_set', 'power_set', 'ttl_set', 'sim_set'}
+    READ = {'sysinfo', 'status', 'signal', 'lock_get', 'usb_get', 'usb_net_list', 'lang_get', 'power_get', 'ttl_get',
+            'cpu_get', 'traffic_get', 'ops_log', 'packages_get', 'sim_get'}
+    WRITE = {'act', 'at', 'at_job', 'at_history', 'lock_set', 'sms_list', 'sms_show', 'sms_send', 'sms_delete', 'sms_sync',
+             'usb_set', 'usb_net_add', 'lang_set', 'power_set', 'ttl_set', 'cpu_set', 'forward_get',
+             'forward_set', 'forward_test', 'traffic_set', 'packages_act', 'sim_set'}
 
     def test_actions_need_write_access(self):
         acl = json.loads(ACL.read_text())['luci-app-mu300']
@@ -804,11 +923,23 @@ class Acl(unittest.TestCase):
         self.assertEqual(read, self.READ)
         self.assertEqual(write, self.WRITE)
         self.assertEqual(read | write, Inventory.METHODS)
-        # the Languages page uploads to one fixed path, and only with write access
+        # the Languages page and the VPN pages upload to fixed paths (a language pack; a VPN config and a VPN
+        # extra's tarball), and only with write access; mu300vpn has its own read/write split (test_mu300vpn)
         self.assertEqual(acl['write'].get('cgi-io'), ['upload'])
-        self.assertEqual(acl['write'].get('file'), {'/tmp/mu300-extra-lang.tar.gz': ['write']})
+        self.assertEqual(acl['write'].get('file'), {'/tmp/mu300-extra-lang.tar.gz': ['write'],
+                                                    '/tmp/mu300-vpn-upload': ['write'],
+                                                    '/tmp/mu300-vpn-extra.tar.gz': ['write']})
+        self.assertEqual(set(acl['read']['ubus']), {'mu300dash', 'mu300rates', 'mu300vpn'})
+        self.assertEqual(set(acl['write']['ubus']), {'mu300dash', 'mu300vpn'})
         self.assertNotIn('cgi-io', acl['read'])
+        # the dashboard's live rates come from one fixed method that takes no argument: no file read access at all
+        # (a /proc/<pid> glob would have matched paths far beyond the interface counters)
+        self.assertEqual(acl['read']['ubus'].get('mu300rates'), ['netdev'])
         self.assertNotIn('file', acl['read'])
+        self.assertNotIn('file', acl['read']['ubus'])
+        plugin = (APP / 'usr' / 'share' / 'rpcd' / 'ucode' / 'mu300rates.uc').read_text()
+        self.assertIn("readfile('/proc/net/dev')", plugin)
+        self.assertNotIn('args', plugin)
 
 
 LIB = APP / 'usr' / 'share' / 'unisoc-modem' / 'lib.sh'
@@ -1009,6 +1140,56 @@ esac
             self.assertIsNone(cell['qos'])
             json.loads((run / 'sig.json').read_text())
             self.assertEqual((run / 'cell.json').stat().st_mode & 0o777, 0o600)
+
+    def test_cell_names_the_operator(self):
+        # COPS's <format> decides what the quoted text is: 2 a PLMN (the F50's modem keeps that format), whose long
+        # name comes from one line that puts format 2 back, once per PLMN; 0/1 a name, UCS2 hex decoded only when the
+        # modem's character set is UCS2, and never a PLMN however many digits it has
+        at = self.tmp / 'modem'
+        at.write_text(r"""#!/bin/sh
+echo "$3" >> "$STUBLOG/at.log"
+case $3 in
+    'AT+CFUN?') echo '+CFUN: 1' ;;
+    'AT+COPS?') cat "$STUBLOG/cops" ;;
+    'AT+CSCS?') printf '+CSCS: "%s"\nOK\n' "$(cat "$STUBLOG/cscs")" ;;
+    'AT+CSCS?;+COPS=3,0;+COPS?;+COPS=3,2') printf '+CSCS: "%s"\n%s\nOK\n' "$(cat "$STUBLOG/cscs")" "$(cat "$STUBLOG/named")" ;;
+esac
+""")
+        at.chmod(0o755)
+        cases = [
+            # (COPS?, the long-name answer, CSCS, name, plmn, act)
+            ('+COPS: 0,2,"28602",13', '+COPS: 0,0,"vodafone TR",13', 'HEX', 'vodafone TR', '28602', 13),
+            ('+COPS: 0,2,"310260",7', '+COPS: 0,0,"0054002D004D006F00620069006C0065",7', 'UCS2', 'T-Mobile', '310260', 7),
+            ('+COPS: 0,2,"46001",7', 'ERROR', 'IRA', None, '46001', 7),
+            ('+COPS: 0,0,"00540054",7', '', 'UCS2', 'TT', None, 7),
+            ('+COPS: 0,0,"00540054",7', '', 'IRA', '00540054', None, 7),
+            ('+COPS: 0,0,"D800",7', '', 'UCS2', 'D800', None, 7),            # a lone surrogate: not UCS2 text
+            ('+COPS: 0,0,"000A0041",7', '', 'UCS2', '000A0041', None, 7),    # a control character: not decoded
+            ('+COPS: 0,1,"12345",7', '', 'IRA', '12345', None, 7),           # a short name of digits stays a name
+            ('+COPS: 0,0,"4E2D56FD79FB52A8",7', '', 'UCS2', '中国移动', None, 7),
+            ('+COPS: 0', '', 'IRA', None, None, None),
+        ]
+        for shell in self.each_shell():
+            for cops, named, cscs, name, plmn, act in cases:
+                with self.subTest(cops=cops, cscs=cscs):
+                    (self.tmp / 'cops').write_text(cops + '\nOK\n')
+                    (self.tmp / 'named').write_text(named)
+                    (self.tmp / 'cscs').write_text(cscs)
+                    (self.tmp / 'at.log').unlink(missing_ok=True)
+                    run = self.tmp / f'cell{self.n}'
+                    self.n += 1
+                    for _ in range(2):
+                        self.script(shell, ADAPTERS / 'cell', MU300_AT=at, MU300_DASH_DIR=run,
+                                    MU300_DASH_POOL_DIR=run / 'pool', MU300_DASH_IDENT_DIR=run / 'ident')
+                        op = json.loads((run / 'cell.json').read_text())['operator']
+                        if act is None:
+                            self.assertIsNone(op)
+                            continue
+                        self.assertEqual((op['name'], op['plmn'], op['act']), (name, plmn, act))
+                    log = (self.tmp / 'at.log').read_text().splitlines()
+                    # the long name is asked once per PLMN (two rounds here), and only for the numeric format
+                    want = 1 if named.startswith('+COPS') else 2 if ',2,' in cops else 0
+                    self.assertEqual(log.count('AT+CSCS?;+COPS=3,0;+COPS?;+COPS=3,2'), want)
 
     def test_dashboard_info_escapes_names(self):
         self.stub('busybox', 'shift 4; exec "$@"')   # busybox timeout -s KILL N CMD...
@@ -1244,3 +1425,78 @@ class AtBudget(Mu300Dash):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class PackagesAdapter(ShellTest):
+    """unisoc-modem/packages: the record of mu300-user-packages as JSON for the panel (hostile names and text from the
+    record never break it), retry and repair-dns started in the background, dismiss inline, anything else refused"""
+
+    def setUp(self):
+        super().setUp()
+        self.d = self.tmp / 'rec'
+        self.orph = self.tmp / 'orph'
+        (self.orph / 'etc/config').mkdir(parents=True)
+        (self.orph / 'etc/config/openclash').write_text('x')
+        (self.orph / 'etc/config/bad"name').write_text('x')
+        self.d.mkdir()
+        for f, t in {'wanted': 'luci-app-openclash\nnano\nbad"pkg\nddns-scripts\n', 'done': 'nano\n',
+                     'failed': 'luci-app-openclash ERROR: "quoted" \\ \x01 text\nbad"pkg x\n', 'state': 'failed\n',
+                     'from': 'v2026.10.12\n', 'dns-note': 'DNS goes to 127.0.0.1#7874 "x"\n'}.items():
+            (self.d / f).write_text(t)
+        self.stub('mu300-user-packages', 'echo "$*" >> "$STUBLOG/upk.log"; [ "$1" = brief ] && echo "1 of 3 \\"back\\""; exit 0')
+        self.stub('setsid', 'echo "setsid $*" >> "$STUBLOG/upk.log"')
+
+    def run_ad(self, shell, *args):
+        r = self.script(shell, ADAPTERS / 'packages', *args, MU300_UPK_CMD=self.stubs / 'mu300-user-packages',
+                        MU300_UPK_DIR=self.d, MU300_UPK_ORPH=self.orph, MU300_UPK_LOCK=self.tmp / 'lock')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return json.loads(r.stdout)
+
+    def log(self):
+        p = self.tmp / 'upk.log'
+        t = p.read_text() if p.exists() else ''
+        p.unlink(missing_ok=True)
+        return t
+
+    def test_get(self):
+        for shell in self.each_shell():
+            o = self.run_ad(shell, 'get')
+            self.assertEqual(o['ok'], 1)
+            self.assertEqual(o['recorded'], 1)
+            self.assertEqual(o['state'], 'failed')
+            self.assertEqual(o['from'], 'v2026.10.12')
+            self.assertEqual(o['summary'], '1 of 3 "back"')
+            self.assertEqual(o['wanted'], ['luci-app-openclash', 'nano', 'ddns-scripts'])
+            self.assertEqual(o['done'], ['nano'])
+            self.assertEqual(o['pending'], ['ddns-scripts'])
+            self.assertEqual(o['failed'], [{'name': 'luci-app-openclash', 'why': 'ERROR: "quoted" \\ \x01 text'}])
+            self.assertEqual(o['orphaned'], ['etc/config/openclash'])
+            self.assertEqual(o['dns'], 'DNS goes to 127.0.0.1#7874 "x"')
+            self.assertEqual(o['running'], 0)
+            # nothing recorded
+            for f in self.d.iterdir():
+                f.unlink()
+            o = self.run_ad(shell, 'get')
+            self.assertEqual((o['recorded'], o['state'], o['wanted'], o['dns']), (0, 'none', [], None))
+            self.setUp()
+
+    def test_act(self):
+        for shell in self.each_shell():
+            self.log()
+            self.assertEqual(self.run_ad(shell, 'act', 'retry'), {'ok': 1, 'started': 1})
+            self.assertEqual(self.run_ad(shell, 'act', 'repair_dns'), {'ok': 1, 'started': 1})
+            self.assertEqual(self.run_ad(shell, 'act', 'dismiss'), {'ok': 1})
+            log = self.log()
+            self.assertIn(f'setsid {self.stubs}/mu300-user-packages retry\n', log)
+            self.assertIn(f'setsid {self.stubs}/mu300-user-packages repair-dns\n', log)
+            self.assertIn('dismiss\n', log)
+            for bad in ('repair-dns', 'skip', 'retry;reboot', '', '-h'):
+                with self.subTest(op=bad):
+                    self.assertEqual(self.run_ad(shell, 'act', bad)['ok'], 0)
+                    self.assertEqual(self.log(), '')
+            # one at a time
+            (self.tmp / 'lock').mkdir()
+            self.assertEqual(self.run_ad(shell, 'act', 'retry'), {'ok': 0, 'error': 'Reinstalling is running already'})
+            self.assertEqual(self.run_ad(shell, 'get')['running'], 1)
+            (self.tmp / 'lock').rmdir()
+            self.assertEqual(self.log(), 'brief\n')      # only the status, nothing started

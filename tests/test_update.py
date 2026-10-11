@@ -45,6 +45,28 @@ class UpdateBase(ShellTest):
 
 
 class Update(UpdateBase):
+    def test_version_lists_what_is_installed_without_the_network(self):
+        # mu300-toolkit's summary and its update screen when offline: each system with its release, the boot image,
+        # the extras; no download is tried
+        (self.disk / 'ubuntu/etc/mu300').mkdir(parents=True, exist_ok=True)
+        (self.disk / 'ubuntu/etc/mu300/image-version').write_text('v2026.10.18\n')
+        (self.disk / 'openwrt/etc/mu300').mkdir(parents=True)
+        (self.disk / 'openwrt/etc/mu300/image-version').write_text('v2026.10.17\n')
+        (self.disk / 'boot').mkdir()
+        (self.disk / 'boot/installed.tag').write_text('v2026.10.18\n')
+        (self.disk / 'extra/vpn/bin').mkdir(parents=True)
+        (self.disk / 'extra/vpn/release').write_text('v1.0.0\n')
+        self.stub('curl', 'echo "network used" >&2; exit 7')
+        self.stub('wget', 'echo "network used" >&2; exit 7')
+        for shell in self.each_shell():
+            r = self.up(shell, 'mounted_disk() { :; }; version')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertNotIn('network used', r.stderr)
+            self.assertRegex(r.stdout, r'systems on disk +.*ubuntu v2026\.10\.18')
+            self.assertRegex(r.stdout, r'openwrt v2026\.10\.17')
+            self.assertIn('boot image: v2026.10.18', r.stdout)
+            self.assertIn('vpn (v1.0.0)', r.stdout)
+
     def test_sourcing_does_nothing(self):
         for shell in self.each_shell():
             r = self.up(shell, 'echo loaded')
@@ -483,6 +505,33 @@ class FromStock(UpdateBase):
             self.assertEqual((new / 'etc/mu300/vpn.conf').read_bytes(), b'mine')
             # the next shell updates from this one (disk/openwrt again)
 
+    def test_apply_keeps_the_settings_and_adds_the_images_new_config_files(self):
+        # the old etc/config is kept, but a package the new image brings has its own file there: copied whole, the
+        # old directory dropped /etc/config/sqm and LuCI's SQM page failed ("uci/get: Resource not found")
+        img = self.tmp / 'img-cfg'
+        for f, data in [('sbin/init', b'#!/bin/sh\n'), ('etc/config/network', b'image'), ('etc/config/sqm', b'image sqm'),
+                        ('etc/mu300/image-version', b'v2\n')]:
+            (img / f).parent.mkdir(parents=True, exist_ok=True)
+            (img / f).write_bytes(data)
+        (img / 'sbin/init').chmod(0o755)
+        old = self.disk / 'openwrt'
+        for f, data in [('sbin/init', b'#!/bin/sh\n'), ('etc/config/network', b'mine'), ('etc/config/tailscale', b'mine too')]:
+            (old / f).parent.mkdir(parents=True, exist_ok=True)
+            (old / f).write_bytes(data)
+        stage = self.disk / '.mu300-update'
+        for shell in self.each_shell():
+            for d in ('openwrt.old', 'openwrt.new'):
+                shutil.rmtree(self.disk / d, ignore_errors=True)
+            stage.mkdir(exist_ok=True)
+            subprocess.run(['tar', '-czf', str(stage / 'mu300-openwrt-rootfs.tar.gz'), '-C', str(img), '.'], check=True)
+            r = self.up(shell, 'is_root() { false; }; apply_one openwrt v2', **self.busybox_applets(shell))
+            self.assertEqual(r.returncode, 0, r.stderr)
+            cfg = self.disk / 'openwrt/etc/config'
+            self.assertEqual((cfg / 'network').read_bytes(), b'mine')          # the device's settings win
+            self.assertEqual((cfg / 'tailscale').read_bytes(), b'mine too')    # and stay
+            self.assertEqual((cfg / 'sqm').read_bytes(), b'image sqm')         # the new package's file is added
+            self.assertFalse((self.disk / 'openwrt/etc/config.image').exists())
+
     def test_copy_missing_never_writes_through_a_link_of_the_target(self):
         a, b, outside = self.tmp / 'a', self.tmp / 'b', self.tmp / 'outside'
         (a / 'd/x').mkdir(parents=True)
@@ -558,6 +607,75 @@ class FromStock(UpdateBase):
         (b / 'kernel.release').write_text('../evil\n')
         for shell in self.each_shell():
             self.assertNotEqual(self.up(shell, f'kernel_modules_into_systems "{b}"', MU300_NO_DEPMOD=1).returncode, 0)
+
+    def test_a_new_boot_image_unlocks_for_its_trial(self):
+        src = (BIN / 'mu300-update').read_text()
+        bu = src[src.index('boot_update() {'):src.index('\n}\n', src.index('boot_update() {'))]
+        self.assertLess(bu.index('unlock_for_trial'), bu.index('write_boot "$dev" "$psize" "$tmp/new"'))
+        rb = src[src.index('rollback_boot() {'):src.index('\n}\n', src.index('rollback_boot() {'))]
+        self.assertLess(rb.index('unlock_for_trial'), rb.index('write_boot'))
+        nb = self.tmp / 'nb'
+        (nb / 'mu300-next-boot').parent.mkdir(parents=True, exist_ok=True)
+        (nb / 'mu300-next-boot').write_text(f'#!/bin/sh\necho "$@" >> "{self.tmp}/nb.log"\n')
+        (nb / 'mu300-next-boot').chmod(0o755)
+        for shell in self.each_shell():
+            r = self.sh(shell, f'. "{BIN}/mu300-update"; unlock_for_trial', MU300_LIB=1, MU300_BIN=nb,
+                        MU300_DISK=self.disk, MU300_SYSROOT=self.root)
+            self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(set((self.tmp / 'nb.log').read_text().split()), {'--trial'})
+
+    def test_rollback_boot_brings_the_modules_of_its_image_back(self):
+        # two builds of one kernel release share lib/modules/<release>: the set in place is kept with the image it
+        # runs with, and goes back with it (seen on F50-B: rollback-boot to a 6.18.55 image with the other
+        # release's 6.18.55 modules did not come up)
+        b = self.tmp / 'bundle'
+        (b / 'modules').mkdir(parents=True)
+        (b / 'modules' / 'a.ko').write_bytes(b'new')
+        (b / 'modules' / 'b.ko').write_bytes(b'new')
+        (b / 'kernel.release').write_text('6.18.55\n')
+        (self.disk / 'openwrt').mkdir()
+        dirs = ('ubuntu/lib/modules/6.18.55/extra', 'openwrt/lib/modules/6.18.55')
+        for shell in self.each_shell():
+            shutil.rmtree(self.disk / 'boot', ignore_errors=True)
+            for d in dirs:
+                shutil.rmtree(self.disk / d, ignore_errors=True)
+                (self.disk / d).mkdir(parents=True)
+                (self.disk / d / 'a.ko').write_bytes(b'old')
+            r = self.up(shell, f'BOOTDIR="{self.disk}/boot"; mkdir -p "$BOOTDIR"; prev_modules_save "{b}" && '
+                               f'kernel_modules_into_systems "{b}" >/dev/null', MU300_NO_DEPMOD=1)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            for d in dirs:
+                self.assertEqual(sorted(f.name for f in (self.disk / d).glob('*.ko')), ['a.ko', 'b.ko'])
+            r = self.up(shell, f'BOOTDIR="{self.disk}/boot"; prev_modules_restore', MU300_NO_DEPMOD=1)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn('modules of the previous image (6.18.55) are back', r.stdout)
+            for d in dirs:
+                self.assertEqual({f.name: f.read_bytes() for f in (self.disk / d).glob('*.ko')}, {'a.ko': b'old'})
+            # a system that had no set of this release then has none after the rollback
+            shutil.rmtree(self.disk / dirs[1])
+            r = self.up(shell, f'BOOTDIR="{self.disk}/boot"; prev_modules_save "{b}" && '
+                               f'kernel_modules_into_systems "{b}" >/dev/null && prev_modules_restore >/dev/null',
+                        MU300_NO_DEPMOD=1)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(list((self.disk / dirs[1]).glob('*.ko')), [])
+            # a 5.4 bundle (no kernel.release) leaves the mainline sets alone, and keeps nothing to restore
+            (b / 'kernel.release').rename(b / 'kr')
+            r = self.up(shell, f'BOOTDIR="{self.disk}/boot"; prev_modules_save "{b}"; prev_modules_restore; echo done')
+            (b / 'kr').rename(b / 'kernel.release')
+            self.assertEqual(r.stdout, 'done\n', r.stderr)
+            self.assertFalse((self.disk / 'boot/prev.modules').exists())
+
+    def test_boot_update_keeps_the_modules_before_it_replaces_them(self):
+        src = (BIN / 'mu300-update').read_text()
+        bu = src[src.index('boot_update() {'):src.index('\n}\n', src.index('boot_update() {'))]
+        # the replacing set goes in after the old one is kept, and before the image is written
+        self.assertLess(bu.index('prev_modules_save "$tmp"'), bu.index('! kernel_modules_into_systems "$tmp"'))
+        self.assertLess(bu.index('! kernel_modules_into_systems "$tmp"'), bu.index('write_boot "$dev" "$psize" "$tmp/new"'))
+        # a failed write puts the old modules back with the old image
+        fail = bu[bu.index('failed verification; restoring'):]
+        self.assertIn('prev_modules_restore', fail[:fail.index('return 1')])
+        rb = src[src.index('rollback_boot() {'):src.index('\n}\n', src.index('rollback_boot() {'))]
+        self.assertLess(rb.index('write_boot'), rb.index('prev_modules_restore'))
 
 
 if __name__ == '__main__':

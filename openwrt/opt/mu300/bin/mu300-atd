@@ -29,10 +29,37 @@ if [ -n "$(read -t 1 _probe </dev/null 2>&1)" ]; then
     done
     echo "mu300-atd: need bash or busybox ash (this shell has no 'read -t')" >&2; exit 1
 fi
+# ...and with a fraction of a second: every command first drains the channel until it has been quiet for a tenth of
+# a second (QUICK below). OpenWrt's /bin/sh (its busybox ash) takes whole seconds only ("read: invalid timeout"), and
+# there each drain waited a full second, so every AT command took a second and the panel's collector round seven
+# (measured on the U30 Air). The static busybox next to us and bash both take fractions: run under one of them. Once
+# only (MU300_ATD_SHELL), and the pid stays the same, so the owner lock and the cmdline checks still see mu300-atd.
+if [ -z "${MU300_ATD_SHELL:-}" ] && [ -n "$(read -t 0.1 _probe </dev/null 2>&1)" ]; then
+    export MU300_ATD_SHELL=1
+    for sh in "${MU300_BUSYBOX:-/opt/mu300/bin/busybox}" /bin/bash /usr/bin/bash; do
+        [ -x "$sh" ] || continue
+        case $sh in
+            *busybox) [ -z "$("$sh" ash -c 'read -t 0.1 _p </dev/null' 2>&1)" ] && exec "$sh" ash "$0" "$@" ;;
+            *) [ -z "$("$sh" -c 'read -t 0.1 _p </dev/null' 2>&1)" ] && exec "$sh" "$0" "$@" ;;
+        esac
+    done
+fi
 DEV=${MU300_AT_DEV:-/dev/stty_nr1}
 DIR=${MU300_AT_DIR:-/run/mu300-at}
 CMD=$DIR/cmd
 CR=$(printf '\r')
+LF='
+'
+SUB=$(printf '\032')
+# one_request CMD: true when CMD is exactly one modem command - no line feed, and a CR only in the PDU send
+# "AT+CMGS=<length><CR><hex PDU><Ctrl-Z>" (or CMGW). Keep it identical to the copy in mu300-at.
+one_request() {
+    case $1 in *"$LF"*) return 1 ;; *"$CR"*) ;; *) return 0 ;; esac
+    _h=${1%%"$CR"*}; _b=${1#*"$CR"}; _p=${_b%"$SUB"}
+    case $_h in AT+CMG[SW]=[0-9]|AT+CMG[SW]=[0-9][0-9]|AT+CMG[SW]=[0-9][0-9][0-9]) ;; *) return 1 ;; esac
+    [ "$_p" != "$_b" ] || return 1
+    case $_p in ''|*[!0-9A-Fa-f]*) return 1 ;; esac
+}
 
 [ -c "$DEV" ] || { echo "mu300-atd: $DEV is not a character device" >&2; exit 1; }
 mkdir -p "$DIR"
@@ -196,16 +223,23 @@ while :; do
     # "SECONDS /path/to/answer AT+COMMAND": the answer goes into a file of the client's choosing. A fifo needs
     # both ends at once, and a client that gave up (or was killed) left the daemon or a leftover writer blocked
     # on it for ever, which wedged every later command.
-    t=${line%% *}
-    case $t in
-        [0-9]|[0-9][0-9]) rest=${line#* } ;;
-        *) t=6; rest=$line ;;
+    # Parsed strictly, the way mu300-at writes it, and nothing else: a line that does not fit used to fall back to
+    # "the whole line is the command", so a timeout the client accepted and this case did not ("120 /run/... AT")
+    # reached the modem as one long command, with no answer for the waiting client.
+    t=${line%% *}; rest=${line#* }
+    answer=${rest%% *}; cmd=${rest#* }
+    case $t in [1-9]|[1-9][0-9]) ;; *) echo "mu300-atd: malformed request (timeout), dropped" >&2; continue ;; esac
+    # the answer file is one of the clients' own, $DIR/answer.<pid>: never a path of the writer's choosing
+    case ${answer#"$DIR"/answer.} in
+        "$answer"|''|*[!0-9]*) echo "mu300-atd: malformed request (answer file), dropped" >&2; continue ;;
     esac
-    answer=
-    case $rest in
-        /*) answer=${rest%% *}; cmd=${rest#* } ;;
-        *) cmd=$rest ;;
-    esac
+    [ "$cmd" != "$rest" ] && [ -n "$cmd" ] || { echo "mu300-atd: malformed request (no command), dropped" >&2; continue; }
+    # the same one-command test as mu300-at's, so both paths put exactly the same bytes on the channel
+    one_request "$cmd" || {
+        echo "mu300-atd: a request with more than one command, refused" >&2
+        printf '%s\n' "mu300-atd: refused" > "$answer.part" 2>/dev/null && mv "$answer.part" "$answer" 2>/dev/null
+        continue
+    }
     # after a timeout, give the late reply time to show up and throw it away before asking anything new
     DRAIN_MAX=$([ "$silent" -gt 0 ] && echo 25 || echo 3)
     export DRAIN_MAX

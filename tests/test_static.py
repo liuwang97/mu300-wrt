@@ -241,17 +241,83 @@ class Rules(unittest.TestCase):
             self.assertRegex(src, pat, name)
             self.assertNotRegex(src, r'date \+%s\) \+ T \)', name)
 
-    def test_images_carry_no_vpn_engine(self):
-        # the engines are the vpn extra (mu300-extra): ~120 MB that a system without a VPN does not carry
-        for f in ('rootfs/assemble.sh', 'openwrt/build-rootfs.sh'):
+    def test_images_carry_no_vpn(self):
+        # the VPN is the module of dikeckaan/mu300-linux-vpn: no mu300-vpn, no drivers, no service, no engines in
+        # any image or in this repository, and no release of this repository builds or publishes it
+        for f in ('rootfs/overlay/opt/mu300/bin/mu300-vpn', 'rootfs/overlay/opt/mu300/lib/vpn',
+                  'rootfs/overlay/etc/systemd/system/mu300-vpn.service', 'openwrt/overlay/etc/init.d/mu300-vpn',
+                  'rootfs/overlay/etc/mu300/vpn.conf.example', 'tools/fetch-xray.sh', 'tools/fetch-sing-box.sh',
+                  'tools/fetch-mihomo.sh'):
+            self.assertFalse((TOP / f).exists(), f)
+        self.assertNotIn('mu300-vpn', (TOP / 'rootfs/overlay/opt/mu300/lib/path-commands').read_text().split())
+        for f in ('rootfs/assemble.sh', 'rootfs/Dockerfile', 'openwrt/build-rootfs.sh', 'arch/build-rootfs.sh'):
             src = (TOP / f).read_text()
-            for e in ('xray', 'sing-box', 'hev-socks5-tunnel'):
+            for e in ('xray', 'sing-box', 'hev-socks5-tunnel', 'mihomo', 'mu300-vpn'):
                 self.assertNotRegex(src, rf'opt/mu300/bin/{e}\b', (f, e))
+            self.assertNotIn('vpn.conf.example', src, f)
+            self.assertNotIn('lib/vpn', src, f)
+        self.assertNotRegex((TOP / 'arch/build-rootfs.sh').read_text(), r'for c in [^;]*\bmu300-vpn\b')
         rel = (TOP / 'tools/make-release.sh').read_text()
-        self.assertIn('make-extra.sh', rel)
-        self.assertIn('mu300-extra-', rel)
-        # the audit refuses an image that still has one
-        self.assertRegex(rel, r'opt/mu300/bin/\(xray\|sing-box\|hev-socks5-tunnel\)')
+        self.assertNotRegex(rel, r'make-extra\.sh" vpn')
+        self.assertNotIn('mu300-extra-vpn', rel)
+        self.assertNotIn('fetch-', rel)
+        self.assertRegex(rel, r'(?m)^for x in lang; do')
+        self.assertIn('https://github.com/dikeckaan/mu300-linux-vpn', rel)
+        # the audit refuses an image that still has any of it
+        self.assertIn('opt/mu300/bin/(xray|sing-box|hev-socks5-tunnel|mihomo|mu300-vpn)', rel)
+        for pat in ('^opt/mu300/lib/vpn(/|$)', 'etc/systemd/system/mu300-vpn', 'etc/init\\.d/mu300-vpn',
+                    'etc/mu300/vpn\\.conf\\.example'):
+            self.assertIn(pat, rel)
+        extra = (TOP / 'tools/make-extra.sh').read_text()
+        self.assertNotRegex(extra, r'(?m)^    vpn\)')
+        self.assertNotRegex(extra, r'(?m)^    vpn-mihomo\)')
+        self.assertNotIn('fetch-', extra)
+
+    def test_the_vpn_module_wiring(self):
+        # mu300-update knows the module (fixed asset names, the repository's latest release, MU300_VPN_URL), and
+        # mu300-extra lists vpn and its engine extras from it (module v2: the core, and the bundle as the fallback)
+        up = (BIN / 'mu300-update').read_text()
+        self.assertRegex(up, r'(?m)^EXTRAS="vpn lang vpn-mihomo panel vpn-xray vpn-singbox vpn-dae"$')
+        self.assertRegex(up, r'(?m)^VPN_ENGINE_EXTRAS="vpn-xray vpn-singbox vpn-mihomo vpn-dae"$')
+        self.assertRegex(up, r'(?m)^VPN_REPO=dikeckaan/mu300-linux-vpn$')
+        self.assertIn('VPN_URL=${MU300_VPN_URL:-https://github.com/$VPN_REPO/releases/latest/download}', up)
+        self.assertIn('vpn) echo mu300-linux-vpn-core.tar.gz ;; vpn-bundle) echo mu300-linux-vpn.tar.gz ;;', up)
+        self.assertIn('vpn-mihomo|vpn-xray|vpn-singbox|vpn-dae) echo "mu300-linux-$1.tar.gz" ;;', up)
+        self.assertNotIn('extra_adopt', up)
+        body = up[up.index('\napply() {'):up.index('\nclean_broken() {')]
+        # the module is had before anything changes, and put in place before the systems are switched
+        self.assertLess(body.index('modules_fetch'), body.index('all files are here and verified'))
+        self.assertLess(body.index('modules_install'), body.index('apply_one'))
+        self.assertLess(body.index('apply_one'), body.index('modules_link'))
+        ex = (BIN / 'mu300-extra').read_text()
+        self.assertIn('vpn-mihomo', ex.split('BIN=')[0])
+        self.assertIn('--from FILE|DIR', ex.split('BIN=')[0])
+        # the installers take the module from its repository when the release has no vpn extra of its own
+        for f in ('install.sh', 'install.ps1'):
+            src = (TOP / f).read_text()
+            self.assertIn('https://github.com/dikeckaan/mu300-linux-vpn/releases/latest/download', src, f)
+            self.assertIn('MU300_VPN_URL', src, f)
+            self.assertIn('MU300_VPN_MODULE', src, f)
+            self.assertNotIn('make-extra.sh" vpn', src, f)
+
+    def test_images_carry_jq(self):
+        # the VPN module's mu300-vpn reads vmess links and raw Xray/sing-box configs with jq, so every image has it; Ubuntu
+        # and Arch also get wireguard-tools (OpenWrt has it already). The CI runner needs jq for the same tests.
+        def words(block):
+            return block.replace('\\\n', ' ').split()
+        docker = (TOP / 'rootfs/Dockerfile').read_text()
+        apt = re.search(r'apt-get install -y --no-install-recommends(.*?)&&', docker, re.S).group(1)
+        self.assertIn('jq', words(apt))
+        self.assertIn('wireguard-tools', words(apt))
+        owrt = (TOP / 'openwrt/build-rootfs.sh').read_text()
+        first = re.search(r'\napk add (.*?)>/dev/null', owrt, re.S).group(1)
+        self.assertIn('jq', words(first))
+        arch = (TOP / 'arch/build-rootfs.sh').read_text()
+        pac = re.search(r'pacman -Syu --noconfirm --needed(.*?)>/dev/null', arch, re.S).group(1)
+        self.assertIn('jq', words(pac))
+        self.assertIn('wireguard-tools', words(pac))
+        ci = (TOP / '.github/workflows/tests.yml').read_text()
+        self.assertIn('jq', re.search(r'sudo apt-get install -y -qq ([^>]*)>', ci).group(1).split())
 
     def test_init_finds_partitions_after_the_modules(self):
         # the eMMC driver is one of the vendor modules: misc and boot_b cannot be found before they are loaded
@@ -570,6 +636,41 @@ class Rules(unittest.TestCase):
         self.assertLess(text.index('for e in /*; do'), text.index('apk add patch'))
         self.assertLess(text.index(apply), text.index('apk del patch'))
         self.assertLess(text.index('apk del patch'), text.index('apk list --installed | sort'))
+        # #95: fw4 reload/restart on 5.4 drops the old flowtable first; applied the same way, after the first patch
+        ft = (TOP / 'openwrt' / 'patches' / 'fw4-old-kernel-flowtable.patch').read_text()
+        self.assertIn('+++ b/sbin/fw4', ft)
+        self.assertIn('-v "$FW4FTPATCH":/in/fw4-old-kernel-flowtable.patch:ro', text)
+        apply_ft = 'patch --batch --fuzz=0 -d $R -p1 -i /in/fw4-old-kernel-flowtable.patch'
+        self.assertLess(text.index(apply), text.index(apply_ft))
+        self.assertLess(text.index(apply_ft), text.index('apk del patch'))
+        self.assertIn('grep -q drop_old_flowtable $R/sbin/fw4', text)
+        # the function as patched in: only a kernel before 5.13 deletes - the rules that use the flowtable first (it
+        # cannot be deleted while in use), then the flowtable - and it never fails the reload
+        added = [l[1:] for l in ft.splitlines() if l.startswith('+') and not l.startswith('+++')]
+        func = '\n'.join(added[added.index('drop_old_flowtable() {'):added.index('}') + 1])
+        nft = r'''nft() {
+    echo "nft $*" >> "$LOG"
+    case "$*" in
+        "list flowtables") printf 'table inet fw4 {\n\tflowtable ft {\n' ;;
+        "-a list table inet fw4") printf 'table inet fw4 { # handle 1\n\tchain forward { # handle 2\n\t\tmeta l4proto { tcp, udp } flow add @ft # handle 56\n\t}\n\tchain other { # handle 3\n\t\tct state established accept # handle 7\n\t\tflow offload @ft # handle 9\n\t}\n}\n' ;;
+    esac
+    return 0
+}'''
+        for rel, deletes in (('5.4.254', True), ('5.12.19-x', True), ('4.19.1', True), ('5.13.0', False),
+                             ('6.18.56', False), ('7.2.10', False)):
+            with tempfile.TemporaryDirectory() as d:
+                log = Path(d) / 'log'
+                log.write_text('')
+                r = subprocess.run(['sh', '-c', f'uname() {{ echo {rel}; }}\n{nft}\n{func}\ndrop_old_flowtable; echo rc=$?'],
+                                   capture_output=True, text=True, env=dict(os.environ, LOG=str(log)))
+                self.assertIn('rc=0', r.stdout, (rel, r.stderr))
+                calls = log.read_text().splitlines()
+                if not deletes:
+                    self.assertEqual(calls, [], rel)
+                    continue
+                self.assertEqual(calls[-3:], ['nft delete rule inet fw4 forward handle 56',
+                                              'nft delete rule inet fw4 other handle 9',
+                                              'nft delete flowtable inet fw4 ft'], (rel, calls))
         # software offloading on, hardware off: the SIPA and SC2355 drivers have no nftables hardware offload
         uci = (OPENWRT / 'etc' / 'uci-defaults' / '90-mu300').read_text()
         self.assertIn("uci -q set firewall.@defaults[0].flow_offloading='1'", uci)
@@ -595,7 +696,9 @@ class Rules(unittest.TestCase):
                                       capture_output=True, text=True, timeout=30)
         cell = 'openwrt/overlay/lib/netifd/proto/mu300cell.sh'
         v6 = 'openwrt/luci-overlay/lib/netifd/proto/mu300cell-v6.sh'
-        patch = {'openwrt/patches/fw4-sipa-offload.patch': 'x\n'}
+        patch = {'openwrt/patches/fw4-sipa-offload.patch': 'x\n',
+                 'openwrt/patches/fw4-old-kernel-flowtable.patch': 'x\n',
+                 'openwrt/patches/wifi-scripts-no-dfs.patch': 'x\n'}
         for system in ('openwrt', 'openwrt-luci'):
             with self.subTest(system=system, missing='mu300cell.sh'):
                 r = run(patch, system)
@@ -605,6 +708,10 @@ class Rules(unittest.TestCase):
                 r = run({cell: 'x\n', v6: 'x\n'}, system)
                 self.assertEqual(r.returncode, 1, r.stderr)
                 self.assertIn('fw4-sipa-offload.patch', r.stderr)
+            with self.subTest(system=system, missing='the wifi-scripts patch'):
+                r = run({cell: 'x\n', v6: 'x\n', **{k: v for k, v in patch.items() if 'wifi-scripts' not in k}}, system)
+                self.assertEqual(r.returncode, 1, r.stderr)
+                self.assertIn('wifi-scripts-no-dfs.patch', r.stderr)
         # openwrt-luci needs the monitor even when mu300cell.sh does not name it; plain OpenWrt (never relay) does not
         r = run(dict(patch, **{cell: 'x\n'}), 'openwrt-luci')
         self.assertEqual(r.returncode, 1, r.stderr)
@@ -649,6 +756,53 @@ class Rules(unittest.TestCase):
         for f in ('etc/init.d/mu300-ndp', 'opt/mu300/bin/ndp-learn', 'lib/netifd/proto/mu300cell-v6.sh'):
             self.assertTrue((LUCI_OVERLAY / f).stat().st_mode & 0o111, f)
 
+    def test_board_json_names_the_usb_lan_port(self):
+        # panel page audit: armsr's 99-default_network gave board.json a LAN on eth0, which the MU300 does not have;
+        # LuCI's Status > Overview showed an "eth0, no link" port and its ubus status call failed. board.d/05 names
+        # usb0 first (board_detect runs board.d in name order, and 99-default_network leaves a network it finds)
+        d = OPENWRT / 'etc' / 'board.d'
+        self.assertEqual(sorted(p.name for p in d.iterdir()), ['05_mu300_network'])
+        self.assertLess('05_mu300_network', '99-default_network')
+        f = d / '05_mu300_network'
+        self.assertTrue(f.stat().st_mode & 0o111)
+        stub = ('board_config_update() { echo update; }\nboard_config_flush() { echo flush; }\n'
+                'ucidef_set_interface_lan() { echo "lan $*"; }\n')
+        body = f.read_text().replace('. /lib/functions/uci-defaults.sh', stub)
+        self.assertNotEqual(body, f.read_text())
+        for s in shells():
+            r = subprocess.run(s + ['-c', body], capture_output=True, text=True)
+            self.assertEqual((r.returncode, r.stdout), (0, 'update\nlan usb0\nflush\n'), (s, r.stderr))
+
+    def test_sqm_default_queue_names_the_cellular_uplink(self):
+        # panel page audit: the image's /etc/config/sqm (sqm-scripts' default, disabled) named eth1, which the
+        # MU300 does not have; the build names sipa_eth0 instead, and stops when a queue still names eth1
+        text = (TOP / 'openwrt' / 'build-rootfs.sh').read_text()
+        start = text.index('if [ -f $R/etc/config/sqm ]; then')
+        block = text[start:text.index('\nfi\n', start) + 4]
+        # a uci stand-in over one file of "sqm.SECTION.OPTION='VALUE'" lines (what uci show prints)
+        stub = ('uci() { while [ "${1#-}" != "$1" ]; do [ "$1" = -c ] && shift; shift; done\n'
+                '  case $1 in show) cat "$CFG" ;; commit) echo "commit $2" >> "$LOG" ;;\n'
+                '  set) k=${2%%=*}; v=${2#*=}; grep -v "^$k=" "$CFG" > "$CFG.n"; echo "$k=\'$v\'" >> "$CFG.n"; '
+                'mv "$CFG.n" "$CFG" ;; esac; }\n')
+        for s in shells():
+            for queues, want in (
+                    (["sqm.eth1=queue", "sqm.eth1.enabled='0'", "sqm.eth1.interface='eth1'"],
+                     ["sqm.eth1.interface='sipa_eth0'"]),
+                    (["sqm.mine=queue", "sqm.mine.interface='br-lan'"], ["sqm.mine.interface='br-lan'"])):
+                with tempfile.TemporaryDirectory() as d, self.subTest(shell=s, queues=queues):
+                    (Path(d) / 'etc' / 'config').mkdir(parents=True)
+                    (Path(d) / 'etc' / 'config' / 'sqm').write_text('x\n')
+                    cfg = Path(d) / 'show'
+                    cfg.write_text('\n'.join(queues) + '\n')
+                    r = subprocess.run(s + ['-c', f'R={d}\n{stub}{block}echo done'], capture_output=True, text=True,
+                                       env=dict(os.environ, CFG=str(cfg), LOG=str(Path(d) / 'log')))
+                    self.assertEqual((r.returncode, r.stdout), (0, 'done\n'), r.stderr)
+                    lines = cfg.read_text().splitlines()
+                    for w in want:
+                        self.assertIn(w, lines)
+                    self.assertNotIn("sqm.eth1.interface='eth1'", lines)
+                    self.assertEqual((Path(d) / 'log').read_text(), 'commit sqm\n')
+
     def test_wifi_power_transitions_are_serialised(self):
         # FINDINGS 31n: the probe's power-off (outside RTNL) ran post_deinit while hostapd's open ran post_init;
         # post_deinit cleared the context post_init had just set, and the next RX interrupt read it as NULL in hard
@@ -680,6 +834,60 @@ class Rules(unittest.TestCase):
         for text, pre in ((pcie, ''), (patch, '+')):
             self.assertIn(pre + '\tsmp_store_release(&sc2355_hif.hif, (void *)hif);', text)
             self.assertIn(pre + '\tWRITE_ONCE(sc2355_hif.hif, NULL);', text)
+
+    def test_wifi_notify_init_unwinds_and_registers_the_reset_notifier_last(self):
+        # kanoqwq/mu300-linux@23361ce: a failed notify_init left the WCN reset notifier registered on a freed priv
+        iface = (TOP / 'upstream' / 'modules' / 'sprd_wlan_combo' / 'common' / 'iface.c').read_text()
+        body = iface[iface.index('static int iface_notify_init('):]
+        body = body[:body.index('\n}\n')]
+        reg = body.index('atomic_notifier_chain_register(&wcn_reset_notifier_list,')
+        for step in ('misc_register(&wlan_misc_device);', 'register_inetaddr_notifier(&iface_inetaddr_cb);',
+                     'register_inet6addr_notifier(&iface_inet6addr_cb);'):
+            self.assertLess(body.index(step), reg, step)
+        # nothing returns between the first registration and the end without undoing what it registered
+        self.assertEqual(body.count('return ret;'), 2)
+        self.assertIn('\t\treturn ret;\n\t}\n\n\tret = register_inetaddr_notifier', body)
+        for label in ('goto err_misc;', 'goto err_inet;', 'err_inet:\n\tunregister_inetaddr_notifier',
+                      'err_misc:\n\tmisc_deregister(&wlan_misc_device);\n\treturn ret;'):
+            self.assertIn(label, body)
+
+    def test_wifi_rx_teardown_stops_the_refill_producers_first(self):
+        # kanoqwq/mu300-linux@23361ce: the RX work queues refills on sprd_work and a refill arms the timed retry;
+        # rx_deinit drained them in an order that let one re-arm the other over a freed rx_mgmt
+        wlan = TOP / 'upstream' / 'modules' / 'sprd_wlan_combo' / 'sc2355'
+        self.assertIn('\tbool stopping;\n};', (wlan / 'rx.h').read_text())
+        rx = (wlan / 'rx.c').read_text()
+
+        def body(sig):
+            b = rx[rx.index(sig):]
+            return b[:b.index('\n}\n')]
+        q = body('void sc2355_queue_rx_buff_work(')
+        self.assertLess(q.index('READ_ONCE(rx_mgmt->stopping)'), q.index('sprd_alloc_work(0)'))
+        self.assertIn('if (!READ_ONCE(rx_mgmt->stopping))\n\t\tsc2355_queue_rx_buff_work(', body('static void rx_refill_retry('))
+        f = body('int sc2355_mm_fill_buffer(')
+        self.assertLess(f.index('READ_ONCE(rx_mgmt->stopping)'), f.index('atomic_xchg(&mm_entry->alloc_num, 0)'))
+        d = body('int sc2355_rx_deinit(')
+        order = ['WRITE_ONCE(rx_mgmt->stopping, true);', 'cancel_delayed_work_sync(&rx_mgmt->refill_retry);',
+                 'flush_workqueue(rx_mgmt->rx_queue);', 'flush_workqueue(rx_mgmt->rx_net_workq);',
+                 'sprd_clean_work(hif->priv);']
+        pos = [d.index(s) for s in order]
+        self.assertEqual(pos, sorted(pos))
+        self.assertEqual(d.count('cancel_delayed_work_sync(&rx_mgmt->refill_retry);'), 2)
+        self.assertLess(d.index('sprd_clean_work(hif->priv);'), d.rindex('cancel_delayed_work_sync(&rx_mgmt->refill_retry);'))
+        self.assertLess(d.rindex('cancel_delayed_work_sync'), d.index('kfree(rx_mgmt);'))
+
+    def test_wifi_tx_backpressure_is_not_logged_as_an_error(self):
+        # kanoqwq/mu300-linux@3386928: a full TX ring is flow control, hit on every scheduling pass under load;
+        # the vendor printed two pr_err lines for it each time
+        wlan = TOP / 'upstream' / 'modules' / 'sprd_wlan_combo' / 'sc2355'
+        pcie = (wlan / 'pcie.c').read_text()
+        fc = pcie[pcie.index('int sc2355_pcie_fc_test_send_num('):]
+        fc = fc[:fc.index('\n}\n')]
+        self.assertNotIn('pr_err(', fc)
+        self.assertIn('pr_debug_ratelimited("%s,%d free_num=%d, data_num=%d\\n"', fc)
+        tx = (wlan / 'tx.c').read_text()
+        self.assertNotIn('pr_err("%s, %d: _fc_ no credit!\\n"', tx)
+        self.assertIn('pr_debug_ratelimited("%s, %d: _fc_ no credit!\\n"', tx)
 
 
 if __name__ == '__main__':

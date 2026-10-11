@@ -8,6 +8,33 @@
 /* System > Power: the state of the power daemon (mu300-power), the profile in use, the charge limit and the knobs of
  * the three profiles. The backend is mu300dash power_get/power_set (unisoc-modem/power); the values are validated
  * there, a refused one comes back as ok != 1 and the page reloads to show what is really set. */
+/* mu300-power's reason for the last state change (set_state's second argument, English in the daemon's log) in the
+ * page's language; a reason this list does not know is shown as it is */
+function reasonText(r) {
+	var m, fixed = {
+		'started': _('started'),
+		'idle now (asked)': _('asleep now (asked)'),
+		'daemon stopping': _('woken: power daemon stopping'),
+		'woken by a key': _('woken by a key'),
+		'woken by the Wi-Fi key': _('woken by the Wi-Fi key'),
+		'woken (mu300-power wake)': _('woken (mu300-power wake)'),
+		'woken by a computer on USB': _('woken by a computer on USB'),
+		'woken: plugged in': _('woken: plugged in'),
+		'woken by a Wi-Fi station': _('woken by a Wi-Fi client'),
+		'charging boot (LK boot mode charger)': _('charging boot (powered on by the charger)'),
+		'the hotspot is down': _('the hotspot is down'),
+		'mu300-vpn is still stopped': _('the VPN is still stopped'),
+		'EN-DC is still off after a failed resume': _('5G (EN-DC) is still off after a failed resume')
+	};
+	if (fixed[r]) return fixed[r];
+	if ((m = /^self-check: (.*)$/.exec(r))) return _('self-check: %s').format(reasonText(m[1]));
+	if ((m = /^idle: no client for ([0-9]+) min \((.*)\)$/.exec(r))) return _('asleep: no client for %d min (%s)').format(+m[1], m[2]);
+	if ((m = /^idle: profile now (.*)$/.exec(r))) return _('asleep: profile now %s').format(m[1]);
+	if ((m = /^woken by the (.*) key$/.exec(r))) return _('woken by the %s key').format(m[1]);
+	if ((m = /^the modem is suspended \((.*)\)$/.exec(r))) return _('the modem is suspended (%s)').format(m[1]);
+	return r;
+}
+
 return view.extend({
 	load: function() { return L.resolveDefault(M.callPowerGet(), {}); },
 
@@ -108,7 +135,7 @@ return view.extend({
 			: under ? _('automatic, battery under %d %%').format(+under[1]) : _('automatic');
 		var card = E('section', { 'class': 'mud-card', 'id': 'mud-power-state' }, [ E('h3', {}, _('Power')) ]);
 		card.appendChild(row(_('State'), [ stateText ]));
-		if (st.reason) card.appendChild(E('div', { 'class': 'mud-note' }, [ String(st.reason) ]));
+		if (st.reason) card.appendChild(E('div', { 'class': 'mud-note' }, [ reasonText(String(st.reason)) ]));
 		if (st.state === 'active' && num(st.idle_since_s) && st.idle_since_s > 10)
 			card.appendChild(E('div', { 'class': 'mud-note' }, [ _('Nobody connected for %d s').format(st.idle_since_s) ]));
 		if (st.supply === 'plugged' || st.supply === 'battery')
@@ -122,7 +149,8 @@ return view.extend({
 				: '--' ]));
 		}
 		if (chg)
-			card.appendChild(row(_('Charger'), [ _('Charger: %s, %s port').format(String(chg.status || '--'), String(chg.usb_type || '--')) ]));
+			card.appendChild(row(_('Charger'), [ _('Charger: %s, %s port').format(String(chg.status || '--'), String(chg.usb_type || '--'))
+				+ (num(chg.input_ma) && chg.online === 1 ? ', ' + chg.input_ma + ' mA' : '') ]));
 		if (st.charge_off === 'temp') card.appendChild(E('div', { 'class': 'mud-note' }, _('Charging paused: battery temperature')));
 		else if (st.charge_off === 'limit') card.appendChild(E('div', { 'class': 'mud-note' }, _('Charging paused: charge limit')));
 		var sleep = E('button', { 'class': 'mud-btn', 'id': 'mud-power-sleep' }, _('Sleep now'));
@@ -145,13 +173,17 @@ return view.extend({
 			E('div', { 'style': 'display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:10px 0' }, [
 				E('label', { 'for': 'mud-power-saver' }, _('Switch to Saver under %')),
 				self.number('SAVER_BELOW', conf.SAVER_BELOW, 100, 'mud-power-saver')
-			]),
-			E('div', { 'style': 'display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:10px 0' }, [
-				E('label', { 'for': 'mud-power-chargeto' }, _('Stop charging at')),
-				self.choice('CHARGE_TO', conf.CHARGE_TO === 80 ? 80 : 100, [ [ '100', '100 %' ], [ '80', '80 %' ] ], 'mud-power-chargeto')
-			]),
-			E('div', { 'class': 'mud-note' }, _('80 % keeps the battery healthier on a device that stays plugged in.'))
+			])
 		]);
+		/* the charge limit (CHARGE_TO 0-100), only where there is a battery (not the F50) */
+		if (bat) {
+			prof.appendChild(E('div', { 'style': 'display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:10px 0' }, [
+				E('label', { 'for': 'mud-power-chargeto' }, _('Stop charging at')),
+				self.number('CHARGE_TO', num(conf.CHARGE_TO) ? conf.CHARGE_TO : 100, 100, 'mud-power-chargeto'), '%'
+			]));
+			prof.appendChild(E('div', { 'class': 'mud-note' }, _('0 % never charges the battery (the device runs on the charger), 100 % charges it full; in between, charging stops at that level and starts again 5 points lower. Under 5 % the battery always charges.')));
+			prof.appendChild(E('div', { 'class': 'mud-note' }, _('80 % keeps the battery healthier on a device that stays plugged in.')));
+		}
 
 		/* 3. the knobs of the three profiles */
 		var knobs = E('section', { 'class': 'mud-card', 'style': 'margin-top:14px', 'id': 'mud-power-knobs' });

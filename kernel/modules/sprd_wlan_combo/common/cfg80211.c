@@ -181,6 +181,11 @@ static void cfg80211_do_work(struct work_struct *work)
 		}
 
 		kfree(sprd_work);
+		/*
+		 * MU300: this loop drains every queued item in one run, and items requeue themselves (the RX
+		 * refill did, back to back, in issue #94). Yield between them so a long run cannot hold the CPU.
+		 */
+		cond_resched();
 	}
 }
 

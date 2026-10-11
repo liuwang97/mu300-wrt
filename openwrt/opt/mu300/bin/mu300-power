@@ -3,7 +3,10 @@
 #   mu300-power status                  state, profile and why, battery, charger, idle timer
 #   mu300-power profile [NAME|auto]     force a profile (plugged|battery|saver), or back to automatic
 #   mu300-power set PROFILE.KNOB VALUE  knobs: WIFI_IDLE (minutes, 0 never), RADIO_IDLE keep|lte|off,
-#                                       LEDS_IDLE on|off, CPU full|eco; also set SAVER_BELOW N, CHARGE_TO 100|80
+#                                       LEDS_IDLE on|off, CPU full|eco; also set SAVER_BELOW N, CHARGE_TO 0..100
+#   mu300-power charge-limit [N]        the charge limit (CHARGE_TO): 100 charges full, 1-99 stops at N % and starts
+#                                       again under N-5, 0 never charges (the device runs on the charger); whatever
+#                                       the limit, the battery charges while under 5 % (U30 Air; the F50 has none)
 #   mu300-power wake [wifi|power]       bring back whatever is down, by looking (the keys call it with their name);
 #                                       restarts the idle timer; a charging boot ends on any wake but "power"
 #   mu300-power idle                    enter idle now
@@ -108,7 +111,7 @@ valid() {  # valid KEY VALUE
         PROFILE) case $2 in auto|plugged|battery|saver) return 0 ;; esac ;;
         # numbers without a leading zero: dash reads 08 as a bad octal number, and 00 would be 0
         SAVER_BELOW) case $2 in [0-9]|[1-9][0-9]|100) return 0 ;; esac ;;
-        CHARGE_TO) case $2 in 100|80) return 0 ;; esac ;;
+        CHARGE_TO) case $2 in [0-9]|[1-9][0-9]|100) return 0 ;; esac ;;
         *_WIFI_IDLE) case $2 in [0-9]|[1-9][0-9]|[1-9][0-9][0-9]|[1-9][0-9][0-9][0-9]) return 0 ;; esac ;;
         *_RADIO_IDLE) case $2 in keep|lte|off) return 0 ;; esac ;;
         *_LEDS_IDLE) case $2 in on|off) return 0 ;; esac ;;
@@ -150,6 +153,9 @@ psy_of_type() {  # the first one, or return 1
     [ -n "$_f" ] && echo "$_f"
 }
 battery_dir() {  # the first Battery that is present (present=1 or no present file)
+    # the F50 has no battery, but its PMIC's fuel gauge still appears under mainline with made-up values (19 %,
+    # 75 C): the device decides, as dashboard-info does, so the F50 never shows a battery nor guards one
+    [ "$(mu300-device 2>/dev/null)" != f50 ] || return 1
     for _d in $(psy_all Battery); do
         [ ! -f "$_d/present" ] || [ "$(cat "$_d/present" 2>/dev/null)" = 1 ] && { echo "$_d"; return 0; }
     done
@@ -202,7 +208,7 @@ cmd_status() {
     else
         echo "battery: none"
     fi
-    if _c=$(charger_dir); then echo "charger: $(rd "$_c/status" | tr 'A-Z' 'a-z') online=$(rd "$_c/online") usb_type=$(rd "$_c/usb_type" | sed -n 's/.*\[\([A-Za-z_]*\)\].*/\1/p')"; fi
+    if _c=$(charger_dir); then echo "charger: $(rd "$_c/status" | tr 'A-Z' 'a-z') online=$(rd "$_c/online") usb_type=$(rd "$_c/usb_type" | sed -n 's/.*\[\([A-Za-z_]*\)\].*/\1/p') input=$(( $(num "$(rd "$_c/input_current_limit")") / 1000 )) mA"; fi
     echo "supply: $(plugged && echo plugged || echo battery)"
     echo "SAVER_BELOW=$(conf_get SAVER_BELOW) CHARGE_TO=$(conf_get CHARGE_TO)"
     for _p in $PROFILES; do
@@ -581,26 +587,41 @@ set_charging() {  # set_charging on|off REASON: logs only when the marker $ST/ch
     fi
     return 0
 }
-guard() {  # temp in 0.1 C: off above 45.0 or below 0, back on under 40.0 and over 3.0; CHARGE_TO=80: off at 80 %, on under 75
+guard() {  # temp in 0.1 C: off above 45.0 or below 0, back on under 40.0 and over 3.0; the charge limit (CHARGE_TO)
+    # N of 1-99: off at N %, on under N-5 (or at once when the limit changed); 0: off whatever the capacity; and
+    # never held under 5 %: a load the charger's input does not cover still drains the battery with charging off
     [ ! -e "$ST/switch-failed" ] || return 0
+    battery_dir >/dev/null || return 0   # no battery (the F50): nothing to guard, whatever the limit says
     charging_switch >/dev/null || { [ -e "$ST/no-switch-logged" ] || { say "no charge switch: the guard does nothing"; : > "$ST/no-switch-logged"; }; return 0; }
-    _gt=$(battery_temp); _gcap=$(capacity); _goff=$(rd "$ST/charge-off")
-    case $_goff in   # off for a reason whose reading is gone: fail safe, keep it off
+    _gt=$(battery_temp); _gcap=$(capacity); _goff=$(rd "$ST/charge-off"); _glim=$(conf_get CHARGE_TO)
+    case $_gcap in ''|*[!0-9]*) _gcap= ;; esac
+    case $_goff in   # off for a reason whose reading is gone: fail safe, keep it off (unless the limit is gone)
         temp) case ${_gt#-} in ''|*[!0-9]*) return 0 ;; esac ;;
-        limit) case $_gcap in ''|*[!0-9]*) return 0 ;; esac ;;
+        limit) [ -n "$_gcap" ] || [ "$_glim" = 100 ] || return 0 ;;
     esac
-    _gwant=on _gwhy=
+    _gwant=on _gwhy= _gon="back in range"
     case ${_gt#-} in ''|*[!0-9]*) ;; *)
         if [ "$_gt" -gt 450 ] || [ "$_gt" -lt 0 ]; then _gwant=off _gwhy=temp
         elif [ "$_goff" = temp ] && { [ "$_gt" -ge 400 ] || [ "$_gt" -le 30 ]; }; then _gwant=off _gwhy=temp; fi ;;
     esac
-    if [ "$_gwant" = on ] && [ "$(conf_get CHARGE_TO)" = 80 ]; then
-        case $_gcap in ''|*[!0-9]*) ;; *)
-            if [ "$_gcap" -ge 80 ]; then _gwant=off _gwhy=limit
-            elif [ "$_goff" = limit ] && [ "$_gcap" -ge 75 ]; then _gwant=off _gwhy=limit; fi ;;
-        esac
+    if [ "$_gwant" = on ] && [ "$_glim" != 100 ]; then
+        _gfrom=$(rd "$ST/charge-limit")   # the limit that switched it off (none, from before this file: the same)
+        if [ "$_glim" = 0 ]; then _gwant=off
+        elif [ -n "$_gcap" ]; then
+            if [ "$_gcap" -ge "$_glim" ]; then _gwant=off
+            elif [ "$_goff" = limit ] && { [ -z "$_gfrom" ] || [ "$_gfrom" = "$_glim" ]; } &&
+                [ "$_gcap" -ge $((_glim - 5)) ]; then _gwant=off; fi
+        fi
+        if [ "$_gwant" = off ] && [ -n "$_gcap" ] && [ "$_gcap" -lt 5 ]; then _gwant=on _gon="battery under 5 %"; fi
+        [ "$_gwant" = on ] || _gwhy=limit
     fi
-    if [ "$_gwant" = off ]; then set_charging off "$_gwhy"; else set_charging on "back in range"; fi
+    if [ "$_gwant" = off ]; then
+        set_charging off "$_gwhy"
+        if [ "$_gwhy" = limit ]; then echo "$_glim" > "$ST/charge-limit"; else rm -f "$ST/charge-limit"; fi
+    else
+        set_charging on "$_gon"
+        [ -e "$ST/charge-off" ] || rm -f "$ST/charge-limit"
+    fi
 }
 
 step() {  # one look at the world; sets _acted when it changed the state
@@ -730,6 +751,26 @@ cmd_wake() {  # cmd_wake [wifi|power]: the flag holds the key's name ("any" with
     return 0
 }
 cmd_idle() { mkdir -p "$ST"; touch "$ST/idle-now"; }
+cmd_charge_limit() {  # charge-limit [N]: show the limit and what the guard does with it, or set it (0-100)
+    if [ $# -gt 0 ]; then
+        [ $# -eq 1 ] || { echo "usage: mu300-power charge-limit [0-100]" >&2; return 2; }
+        conf_set CHARGE_TO "$1" || return $?
+    fi
+    _cl=$(conf_get CHARGE_TO)
+    battery_dir >/dev/null || { echo "charge limit: $_cl % (no battery here: nothing to limit)"; return 0; }
+    case $_cl in
+        100) echo "charge limit: none (100 %)" ;;
+        0) echo "charge limit: 0 % (the battery is not charged, except under 5 %)" ;;
+        *) echo "charge limit: $_cl % (charging stops at $((_cl < 5 ? 5 : _cl)) %, starts again under $((_cl > 10 ? _cl - 5 : 5)) %)" ;;
+    esac
+    case $(rd "$ST/charge-off") in
+        limit) echo "charging: paused by the limit" ;;
+        temp) echo "charging: paused, battery temperature" ;;
+        *) echo "charging: $(_b=$(battery_dir) && rd "$_b/status" | tr 'A-Z' 'a-z')" ;;
+    esac
+    [ $# -eq 0 ] || echo "(the power daemon applies it within ${MU300_POWER_INTERVAL:-10} s)"
+    return 0
+}
 
 case "${1:-}" in
     status)  cmd_status ;;
@@ -739,5 +780,6 @@ case "${1:-}" in
     idle)    cmd_idle ;;
     daemon)  cmd_daemon ;;
     log)     shift; cmd_log "$@" ;;
-    *) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+    charge-limit) shift; cmd_charge_limit "$@" ;;
+    *) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

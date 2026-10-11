@@ -17,10 +17,41 @@
 
 var DEFAULT_POLL_S = 1.5;
 var RATE_WIN = 40;
+var RATE_MS = 1000;
 
 function pollSeconds(value) {
 	var seconds = Number(value);
 	return Number.isFinite(seconds) && seconds >= 0.5 && seconds <= 60 ? seconds : DEFAULT_POLL_S;
+}
+
+/* NR bands the modem's SPLBAND masks can carry (unisoc-modem/lock NR_A/NR_B/NR_S): n6 is supported but not in the
+ * tables, so an automatic NR read-back can never list it */
+var NR_CODEC = [ 1, 2, 3, 5, 7, 8, 12, 20, 25, 28, 66, 70, 71, 74, 34, 38, 39, 40, 41, 50, 51, 77, 78, 79,
+	75, 76, 80, 81, 82, 83, 84, 86 ];
+var BAND_CAPS = { nr: [ 1, 5, 6, 8, 28, 41, 78 ], lte: [ 1, 3, 5, 8, 34, 38, 39, 40, 41 ] };
+
+/* lockDeviations(lock_get reply) -> the settings that are not automatic, as short labels ([] = all automatic), or
+ * null when the state is unknown. A band lock is automatic when nothing is locked or every supported band (that the
+ * masks can carry) is in it - the modem reads the cleared mask back as the full set. */
+function lockDeviations(l) {
+	if (!l || l.error || !l.mode) return null;
+	var out = [], caps = l.caps || {};
+	var names = { '4g': _('4G only'), sa: '5G SA', nsa: '5G NSA' };
+	if (l.mode.label && l.mode.label !== 'auto')
+		out.push(_('Network mode: %s').format(names[l.mode.label] || l.mode.label));
+	if (l.endc && l.endc !== '1') out.push(_('EN-DC off'));
+	[ 'lte', 'nr' ].forEach(function(rat) {
+		var locked = String((l[rat] && l[rat].locked) || '').split(',').map(Number).filter(function(b) { return b > 0; });
+		if (!locked.length) return;
+		var cap = String(caps[rat] || '').split(',').map(Number).filter(function(b) { return b > 0; });
+		if (!cap.length) cap = BAND_CAPS[rat];
+		if (rat === 'nr') cap = cap.filter(function(b) { return NR_CODEC.indexOf(b) >= 0; });
+		if (cap.every(function(b) { return locked.indexOf(b) >= 0; })) return;
+		var p = rat === 'nr' ? 'n' : 'B';
+		out.push((rat === 'nr' ? _('NR band lock: %s') : _('LTE band lock: %s')).format(p + locked.join(' ' + p)));
+	});
+	if ((l.cells || []).length) out.push(_('Cell lock: %s').format(l.cells.join(' ')));
+	return out;
 }
 
 /* The engineering port gives only MCS/BLER; the modulation is derived here from the common 3GPP MCS table 1,
@@ -77,22 +108,86 @@ return view.extend({
 			self.update(st || {});
 		});
 		/* LuCI poll.add() truncates intervals to whole seconds. Use a one-shot
-		 * timer so 1.5 s remains 1.5 s and slow requests never overlap. */
+		 * timer so 1.5 s remains 1.5 s and slow requests never overlap; after a
+		 * failed snapshot the next one waits longer (M.backoff), up to 18 s. */
+		var fails = 0;
 		function refresh() {
 			if (!document.documentElement.contains(root)) return;
-			L.resolveDefault(M.callStatus()).then(function(st) { self.update(st || {}); }).finally(function() {
+			Promise.resolve(M.callStatus()).then(function(st) {
+				fails = st && st.info ? 0 : fails + 1;
+				self.update(st || {});
+			}, function() { fails++; }).finally(function() {
 				if (document.documentElement.contains(root))
-					self._refreshTimer = setTimeout(refresh, intervalMs);
+					self._refreshTimer = setTimeout(refresh, M.backoff(intervalMs, fails));
 			});
 		}
 		Promise.all([first, config]).then(function() {
 			self._refreshTimer = setTimeout(refresh, intervalMs);
 		});
+		/* The live rates have a lane of their own, every second: one read of /proc/net/dev in rpcd, no process and
+		 * no AT. The time is the browser's, taken halfway through the request (the status snapshot's whole seconds made
+		 * the rates jump by half at a 1.5 s poll). */
+		var clock = function() { return (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now(); };
+		function rates() {
+			if (!document.documentElement.contains(root)) return;
+			var t0 = clock();
+			L.resolveDefault(M.callNetDev(), null).then(function(text) {
+				self.rate(text, (t0 + clock()) / 2);
+			}).finally(function() {
+				if (document.documentElement.contains(root))
+					self._rateTimer = setTimeout(rates, RATE_MS);
+			});
+		}
+		/* (render() runs before the page is in the document: the lane starts once the first snapshot is in) */
+		first.then(function() { self._rateTimer = setTimeout(rates, 0); });
 		return root;
 	},
 
 	unload: function() {
 		clearTimeout(this._refreshTimer);
+		clearTimeout(this._rateTimer);
+	},
+
+	/* One reading of the fast lane: rates over the time since the last one (a counter that went down - the interface
+	 * was made again - starts over), the sparklines and the totals since the interface came up. */
+	rate: function(text, t) {
+		var dev = this.dataDev || 'sipa_eth0', c = text ? M.netDev(text, dev) : null;
+		if (!c || !isFinite(c.rx) || !isFinite(c.tx)) return;
+		this.fastNet = true;
+		var last = this.lastRate;
+		this.lastRate = { dev: dev, t: t, rx: c.rx, tx: c.tx };
+		M.set('rx', M.fmtBytes(c.rx)); M.set('tx', M.fmtBytes(c.tx));
+		if (!last || last.dev !== dev || t - last.t < 200 || c.rx < last.rx || c.tx < last.tx) return;
+		var dt = (t - last.t) / 1000;
+		this.pushRate((c.rx - last.rx) / dt, (c.tx - last.tx) / dt);
+	},
+
+	pushRate: function(dl, ul) {
+		M.set('dl', M.fmtRate(dl)); M.set('ul', M.fmtRate(ul));
+		this.dlHist.push(dl); this.ulHist.push(ul);
+		if (this.dlHist.length > RATE_WIN) { this.dlHist.shift(); this.ulHist.shift(); }
+		var peak = Math.max(1, Math.max.apply(null, this.dlHist.concat(this.ulHist)));
+		M.spark(M.v('spark-dl'), this.dlHist, 0, peak, RATE_WIN);
+		M.spark(M.v('spark-ul'), this.ulHist, 0, peak, RATE_WIN);
+	},
+
+	/* Today's and this billing cycle's mobile data (mu300-traffic's summary in the status snapshot), against the cap */
+	paintUsage: function(u) {
+		var box = M.v('usage');
+		if (!box) return;
+		box.style.display = u ? '' : 'none';
+		if (!u) return;
+		M.set('usage-today', M.fmtBytes(u.today));
+		var cap = u.cap > 0 ? u.cap : 0, pct = cap ? Math.min(100, Math.round(u.used * 100 / cap)) : null;
+		M.set('usage-cycle', cap ? _('%s of %s').format(M.fmtBytes(u.used), M.fmtBytes(cap)) : M.fmtBytes(u.used));
+		var col = u.level === 'over' ? 'var(--danger,#E25555)' : u.level === 'warn' ? 'var(--warning,#f59e0b)' : '';
+		M.v('usage-cycle').style.color = col;
+		var bar = M.v('usage-bar');
+		M.v('usage-meter').style.display = cap ? '' : 'none';
+		bar.style.width = (pct || 0) + '%';
+		bar.style.background = col || 'var(--brand,var(--primary,#3b82f6))';
+		M.set('usage-note', u.level === 'over' ? _('The monthly cap is reached') :
+			u.level === 'warn' ? _('%d%% of the monthly cap is used').format(pct) : _('This billing cycle'));
 	},
 
 	html: function() {
@@ -105,6 +200,7 @@ return view.extend({
     <div class="mud-rat" id="mud-rat">--<span class="mud-bars" id="mud-bars"><i style="height:25%"></i><i style="height:45%"></i><i style="height:65%"></i><i style="height:85%"></i><i style="height:100%"></i></span></div>
     <div class="mud-op" id="mud-op">--</div>
     <div class="mud-cellline" id="mud-cellline"></div>
+    <div class="mud-note" id="mud-stale" style="display:none;margin:4px 0 0;color:var(--warning,#f59e0b)"></div>
   </div>
   <div class="mud-hero-r">
     <div class="mud-rsrp" id="mud-rsrp">--</div>
@@ -130,6 +226,10 @@ return view.extend({
     <div class="mud-kpi"><b id="mud-rx">--</b><span>${_('Total received')}</span></div>
     <div class="mud-kpi"><b id="mud-tx">--</b><span>${_('Total sent')}</span></div>
   </div>
+  <a class="mud-kpis" id="mud-usage" href="${L.url('admin/modem/traffic')}" style="display:none;color:inherit;text-decoration:none">
+    <div class="mud-kpi"><b id="mud-usage-today">--</b><span>${_('Used today')}</span></div>
+    <div class="mud-kpi"><b id="mud-usage-cycle">--</b><span id="mud-usage-note">${_('This billing cycle')}</span><div class="mud-meter" id="mud-usage-meter"><i id="mud-usage-bar"></i></div></div>
+  </a>
   <div class="mud-cols">
     <div>
       <div class="mud-rows">
@@ -213,6 +313,7 @@ return view.extend({
     <button class="mud-btn warn" id="mud-btn-modem">${_('Restart modem')}</button>
     <button class="mud-btn warn" id="mud-btn-reboot">${_('Restart device')}</button>
     <button class="mud-btn warn" id="mud-btn-android">${_('Switch to Android')}</button>
+    <button class="mud-btn" id="mud-btn-bootlock">${_('Lock Linux')}</button>
   </div>
 </div>
 <div class="mud-sec">
@@ -231,6 +332,7 @@ return view.extend({
 		this.identShown = false;
 		this.dlHist = []; this.ulHist = [];
 		this.lastNet = null; this.lastCpu = null; this.lastFullTs = 0;
+		this.lastRate = null; this.fastNet = false;
 		this.lockedCell = '';
 		/* render() runs before the node is in the document, so look up relative to root (update, once mounted, looks in the whole document) */
 		var q = function(id) { return root.querySelector('#mud-' + id); };
@@ -273,14 +375,46 @@ return view.extend({
 			M.confirmBox(_('Restart the entire device'), _('All connections will be interrupted.'), { danger: true })
 				.then(function(go) { if (go) act('reboot', null, null, btn); });
 		};
+		/* The network mode and band locks live in the modem's NV, which Android shares: they stay in force there (#96).
+		 * When the last lock state shows anything not automatic, the dialog says so and offers to reset first; when
+		 * the state cannot be read, it is the plain dialog. The switch itself is never blocked. */
 		q('btn-android').onclick = function() {
 			var btn = this;
-			M.confirmBox(_('Switch to Android'),
-				[ _('The next boot will enter Android and reboot now. This management page and cellular sharing will disconnect.'),
-				  _('To return to OpenWrt, run mu300-next-boot linux in Android and reboot.'),
-				  _('Or do nothing: after five boots that do not finish, it falls back automatically.') ].join('\n'),
-				{ danger: true, okText: _('Switch and reboot') })
-				.then(function(go) { if (go) act('os', 'android', _('Preparing Android boot and rebooting…'), btn); });
+			var msg = [ _('The next boot will enter Android and reboot now. This management page and cellular sharing will disconnect.'),
+				_('To return to OpenWrt, run mu300-next-boot linux in Android and reboot.'),
+				_('Or do nothing: after five boots that do not finish, it falls back automatically.') ].join('\n');
+			var go = function() { act('os', 'android', _('Preparing Android boot and rebooting…'), btn); };
+			L.resolveDefault(M.callLockGet(), null).then(function(l) {
+				if (l && l.mode) self.lastLock = l;
+				var lk = lockDeviations(self.lastLock);
+				if (!lk || !lk.length)
+					return M.confirmBox(_('Switch to Android'), msg, { danger: true, okText: _('Switch and reboot') })
+						.then(function(ok) { if (ok) go(); });
+				return M.choiceBox(_('Switch to Android'),
+					_('Not automatic: %s. The network mode and band locks are stored in the modem and stay in force in Android too; if the network does not match them, Android shows No Service.').format(lk.join(', ')) +
+						'\n\n' + msg,
+					[ { label: _('Cancel'), value: '' },
+					  { label: _('Switch and reboot'), value: 'plain', danger: true },
+					  { label: _('Reset locks and switch'), value: 'reset', danger: true } ])
+					.then(function(choice) {
+						if (choice === 'plain') go();
+						else if (choice === 'reset') self.resetLocksThen(self.lastLock, btn, go);
+					});
+			});
+		};
+		q('btn-bootlock').onclick = function() {
+			var btn = this;
+			var locked = !!(self.lastInfo && self.lastInfo.capabilities && self.lastInfo.capabilities.bootlock);
+			(locked
+				? M.confirmBox(_('Unlock Linux'),
+					_('After five boots in a row that do not finish, the device falls back to Android again.'),
+					{ okText: _('Unlock') })
+				: M.confirmBox(_('Lock Linux'),
+					[ _('The device will never switch to Android by itself, not even after failed boots: Android only from this page (Switch to Android) or with mu300-next-boot android.'),
+					  _('A new kernel from an update still gets its first boots on trial, and locks again once one of them succeeds.'),
+					  _('If the system itself no longer starts, the device waits on USB (telnet) instead of going to Android.') ].join('\n'),
+					{ danger: true, okText: _('Lock') })
+			).then(function(go) { if (go) act('os', locked ? 'unlock' : 'lock', null, btn); });
 		};
 		q('reveal').onclick = function() {
 			self.identShown = !self.identShown;
@@ -315,8 +449,44 @@ return view.extend({
 	refreshLock: function() {
 		var self = this;
 		L.resolveDefault(M.callLockGet()).then(function(l) {
+			if (l && l.mode) self.lastLock = l;
+			/* no reading yet (a reboot): the backend reads in the background; ask again a little later */
+			if (l && l.busy && (self._lockTries = (self._lockTries || 0) + 1) <= 8) {
+				setTimeout(function() { self.refreshLock(); }, 5000);
+				return;
+			}
 			self.lockedCell = (l || {}).cells || [];
 			self.repaintNeigh();
+		});
+	},
+
+	/* Reset every lock to automatic (lock_set reset: one SFUN restart, the saved settings cleared), wait until the
+	 * lock cache shows a read newer than the one before (or two minutes pass), then run then(). A refused reset stops
+	 * here: the user asked for the reset first. */
+	resetLocksThen: function(before, btn, then) {
+		var base = (before && before.ts) || 0, tries = 0;
+		M.busy(btn, true);
+		M.toast(_('Resetting the network locks to automatic (SFUN restart, about 30 seconds)…'), { type: 'busy' });
+		L.resolveDefault(M.callLockSet('reset', 'auto'), null).then(function(r) {
+			r = r || {};
+			if (!r.ok) {
+				M.busy(btn, false);
+				M.toast(_('Failed: %s').format(M.errText(r)), { type: 'error' });
+				return;
+			}
+			var step = function() {
+				L.resolveDefault(M.callLockGet(), null).then(function(l) {
+					l = l || {};
+					var fresh = l.ts && l.ts > base, auto = fresh && !(lockDeviations(l) || [ 1 ]).length;
+					if (auto || ++tries > 48) {
+						M.busy(btn, false);
+						if (!auto)
+							M.toast(_('The lock reset was not confirmed in time; switching anyway.'), { type: 'error' });
+						then();
+					} else setTimeout(step, 2500);
+				});
+			};
+			setTimeout(step, 2500);
 		});
 	},
 
@@ -392,6 +562,16 @@ return view.extend({
 		var ratEl = M.v('rat');
 		ratEl.firstChild.nodeValue = rat;
 		ratEl.style.color = col;
+		/* The cellular readings come from a cache the backend refreshes in the background, never inside this call: when
+		 * the modem is busy (a long AT command, a lock apply, a restart) they stay as they were, and say how old they are
+		 * rather than pass for live ones. */
+		var staleEl = M.v('stale');
+		if (staleEl) {
+			var age = Number(st.sig_age);
+			var stale = st.info && !(c && c.error) && age > 15;
+			staleEl.style.display = stale ? '' : 'none';
+			staleEl.textContent = stale ? _('Modem busy: cellular readings from %s ago').format(M.ageText(age)) : '';
+		}
 		var bars = M.v('bars');
 		if (bars) {
 			var n = score == null ? 0 : Math.max(1, Math.round(score / 2));
@@ -432,23 +612,17 @@ return view.extend({
 		M.set('qci', qos && qos.qci != null ? qos.qci : '--');
 		M.set('ambr', qos && qos.dl != null ? qos.dl + ' / ' + qos.ul + ' Mbps' : '--');
 
+		/* the rates and totals are the fast lane's (rate); only while it has nothing (a panel whose ACL predates it),
+		 * the snapshot's counters stand in, over its whole seconds */
+		if (i.data_device) this.dataDev = i.data_device;
 		var net = (i.net && (i.net.mobile || i.net.sipa_eth0)) || null;
-		if (net && this.lastNet && i.ts && this.lastNet.ts) {
-			var dt = i.ts - this.lastNet.ts;
-			if (dt > 0) {
-				var dl = (net.rx - this.lastNet.rx) / dt, ul = (net.tx - this.lastNet.tx) / dt;
-				M.set('dl', M.fmtRate(dl)); M.set('ul', M.fmtRate(ul));
-				this.dlHist.push(dl); this.ulHist.push(ul);
-				if (this.dlHist.length > RATE_WIN) { this.dlHist.shift(); this.ulHist.shift(); }
-				var peak = Math.max(1, Math.max.apply(null, this.dlHist.concat(this.ulHist)));
-				M.spark(M.v('spark-dl'), this.dlHist, 0, peak, RATE_WIN);
-				M.spark(M.v('spark-ul'), this.ulHist, 0, peak, RATE_WIN);
-			}
-		}
-		if (net) {
+		if (net && !this.fastNet) {
+			if (this.lastNet && i.ts && this.lastNet.ts && i.ts > this.lastNet.ts && net.rx >= this.lastNet.rx && net.tx >= this.lastNet.tx)
+				this.pushRate((net.rx - this.lastNet.rx) / (i.ts - this.lastNet.ts), (net.tx - this.lastNet.tx) / (i.ts - this.lastNet.ts));
 			M.set('rx', M.fmtBytes(net.rx)); M.set('tx', M.fmtBytes(net.tx));
 			this.lastNet = { ts: i.ts, rx: net.rx, tx: net.tx };
 		}
+		this.paintUsage(i.traffic || null);
 		var w = i.wan || {};
 		M.v('ip').innerHTML = M.esc(w.ip4 || '--') + (w.ip6 ? '<br>' + M.esc(w.ip6) : '');
 		M.set('dns', w.dns || '--');
@@ -573,6 +747,13 @@ return view.extend({
 		M.set('modem', (i.modem && i.modem.alive ? _('Online') : _('No response')) + (i.modem && i.modem.atd ? '' : ' · ' + _('AT adapter unavailable')));
 		var androidBtn = M.v('btn-android');
 		if (androidBtn) androidBtn.style.display = i.capabilities && i.capabilities.dualboot ? '' : 'none';
+		var lockBtn = M.v('btn-bootlock');
+		if (lockBtn) {
+			lockBtn.style.display = i.capabilities && i.capabilities.dualboot ? '' : 'none';
+			var lk = !!(i.capabilities && i.capabilities.bootlock);
+			lockBtn.className = 'mud-btn' + (lk ? ' on' : '');
+			lockBtn.textContent = lk ? _('Linux locked') : _('Lock Linux');
+		}
 
 		var b;
 		b = M.v('btn-data'); b.className = 'mud-btn' + (w.up ? ' on' : ''); b.textContent = _('Data connection');

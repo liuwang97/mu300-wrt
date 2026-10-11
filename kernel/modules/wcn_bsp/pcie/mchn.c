@@ -42,13 +42,18 @@ int mbuf_link_alloc(int chn, struct mbuf_t **head, struct mbuf_t **tail,
 	struct buffer_pool *pool = &(mchn->chn_public[chn].pool);
 
 	WCN_DBG("pool=%p, chn=%d, free=%d\n", pool, chn, pool->free);
+	/*
+	 * MU300: both failures below are hit once per attempt, and Wi-Fi retries its RX refill and every TX: in
+	 * issue #94 the card sat in dump status for minutes and this line, with Wi-Fi's own, flooded the console
+	 * until a CPU soft-locked in printk. Rate-limited; the first ones still show.
+	 */
 	if (sprdwcn_bus_get_carddump_status()) {
-	WCN_ERR("%s err in dump status,chn=%d\n", __func__, chn);
-	return -1;
+		WCN_ERR_RATELIMITED("%s err in dump status,chn=%d\n", __func__, chn);
+		return -1;
 	}
 	spin_lock_irqsave(&(pool->lock), pool->irq_flags);
 	if ((*num <= 0) || (pool->free <= 0)) {
-		WCN_ERR("[+]%s err, num %d, free %d)\n",
+		WCN_ERR_RATELIMITED("[+]%s err, num %d, free %d)\n",
 			__func__, *num, pool->free);
 		*num = 0;
 		*head = *tail = NULL;

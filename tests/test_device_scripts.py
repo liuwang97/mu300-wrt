@@ -191,6 +191,109 @@ class At(ShellTest):
                 self.assertEqual(self.at(shell, 'AT').returncode, 0)
             self.assertLess(time.monotonic() - t0, 3)
 
+    def test_timeout_is_whole_seconds(self):
+        """kanoqwq 25f8d0c: -t goes into arithmetic and into the request line. Only what mu300-atd parses (1-99) is
+        accepted: a wider range made "120 /run/... AT" a malformed line the daemon sent to the modem whole."""
+        for shell in self.each_shell():
+            for bad in (['-t'], ['-t', '0', 'AT'], ['-t', 'x', 'AT'], ['-t', '1.5', 'AT'], ['-t', '1 2', 'AT'],
+                        ['-t', '100', 'AT'], ['-t', '07', 'AT']):
+                with self.subTest(args=bad):
+                    r = self.at(shell, *bad)
+                    self.assertEqual(r.returncode, 2, r.stderr)
+                    self.assertFalse((self.dir / 'lock').exists())
+
+    REFUSED = ('AT\n1 {tmp}/owned AT+CFUN=0',      # a second fifo request with an answer file of its own
+               'AT+CSQ\rAT+CFUN=0',                # a second modem command
+               'AT+CFUN=0\r',
+               'AT+CMGS=12\r0011',                 # a PDU send without its Ctrl-Z
+               'AT+CMGS=12\r00\rAT+CFUN=0\x1a',
+               'AT+CMGS=12\r00 11\x1a',
+               'AT+CMGS=12\r\x1a',
+               'AT+CMGS=1x\r0011\x1a',
+               'AT+CMGS=12\r0011\x1a\n')
+    ACCEPTED = ('AT', 'AT+CSQ', 'AT+CMGS=12\r0011AbCd\x1a', 'AT+CMGW=7\r00\x1a', '0011\x1a', 'AT+X="a b"')
+
+    def test_one_request_per_call(self):
+        """kanoqwq 25f8d0c, tightened: a line feed anywhere and a CR anywhere but in AT+CMGS=N<CR>PDU<Ctrl-Z> are
+        refused before anything is written, on the daemon path and the direct path alike."""
+        for shell in self.each_shell():
+            for cmd in self.REFUSED:
+                cmd = cmd.format(tmp=self.tmp)
+                with self.subTest(shell=shell, cmd=cmd):
+                    r = self.at(shell, '-t', 1, cmd)
+                    self.assertEqual(r.returncode, 2, r.stderr)
+                    self.assertIn('one command per call', r.stderr)
+                    self.assertFalse((self.dir / 'lock').exists())
+                    self.assertFalse((self.tmp / 'owned').exists())
+            self.daemon('> \r\n+CMGS: 7\r\nOK\r\n')
+            r = self.at(shell, '-t', 2, 'AT+CMGS=12\r0011\x1a')
+            self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_client_and_daemon_share_one_framing_rule(self):
+        """The one_request test is the same function in mu300-at and mu300-atd, and it gives the expected verdicts."""
+        def body(path):
+            m = re.search(r'^one_request\(\) \{.*?\n\}\n', path.read_text(), re.S | re.M)
+            self.assertIsNotNone(m, path)
+            return re.sub(r'  #.*', '', m.group(0))      # the comment on the first line differs
+        client, daemon = body(BIN / 'mu300-at'), body(BIN / 'mu300-atd')
+        self.assertEqual(client, daemon)
+        prelude = "CR=$(printf '\\r'); LF='\n'\nSUB=$(printf '\\032')\n" + client
+        for shell in self.each_shell():
+            for cmd, want in [(c, 1) for c in self.REFUSED] + [(c, 0) for c in self.ACCEPTED]:
+                cmd = cmd.format(tmp=self.tmp)
+                with self.subTest(shell=shell, cmd=cmd):
+                    r = subprocess.run(shell + ['-c', prelude + 'one_request "$1"', 'sh', cmd])
+                    self.assertEqual(r.returncode, want)
+
+    def test_lock_wait_is_in_seconds(self):
+        """kanoqwq 25f8d0c: the lock wait counted rounds of 0.1 s; with no sleep that takes a fraction each round was
+        a whole second, and MU300_AT_LOCK_WAIT=2 waited 20 s. Now it is 2 s of the clock."""
+        holder = subprocess.Popen(['sleep', '60'])
+        try:
+            self.stub('sleep', 'case $1 in *.*) exit 1 ;; esac\nexec /bin/sleep "$@"')
+            for shell in self.each_shell():
+                (self.dir / 'lock').mkdir(exist_ok=True)
+                (self.dir / 'lock' / 'pid').write_text(f'{holder.pid}\n')
+                t0 = time.monotonic()
+                r = self.script(shell, BIN / 'mu300-at', '-t', 1, 'AT', MU300_AT_DIR=self.dir,
+                                MU300_BUSYBOX=self.tmp / 'none', MU300_AT_LOCK_WAIT=2)
+                self.assertLess(time.monotonic() - t0, 5)
+                self.assertEqual(r.returncode, 1)
+                self.assertIn('busy', r.stderr)
+        finally:
+            holder.kill()
+            holder.wait()
+
+    def test_direct_path_needs_a_final_result_code(self):
+        """kanoqwq 25f8d0c: with no daemon the client opens the tty itself; silence there ended with status 0."""
+        master, slave = pty.openpty()
+        try:
+            (self.dir / 'cmd').unlink()
+            dev = os.ttyname(slave)
+            for shell in self.each_shell():
+                r = self.script(shell, BIN / 'mu300-at', '-t', 1, 'AT', MU300_AT_DIR=self.dir, MU300_AT_DEV=dev)
+                self.assertEqual(r.returncode, 1, r.stderr)
+                self.assertIn('no final response', r.stderr)
+                while select.select([master], [], [], 0.2)[0]:   # what the silent run sent, before the next one
+                    os.read(master, 256)
+
+                def modem():
+                    buf = b''
+                    while b'AT\r' not in buf:
+                        if not select.select([master], [], [], 10)[0]:
+                            return
+                        buf += os.read(master, 256)
+                    os.write(master, b'\r\nOK\r\n')
+                th = threading.Thread(target=modem, daemon=True)
+                th.start()
+                r = self.script(shell, BIN / 'mu300-at', '-t', 2, 'AT', MU300_AT_DIR=self.dir, MU300_AT_DEV=dev)
+                th.join(timeout=10)
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertIn('OK', r.stdout)
+        finally:
+            os.close(master)
+            os.close(slave)
+
 
 class Atd(ShellTest):
     """mu300-atd on a pseudo terminal pair: the test is the modem (the pty master), the daemon runs for real."""
@@ -260,7 +363,7 @@ class Atd(ShellTest):
     def send(self, master, cmd, reply, t=1, before_reply=None):
         """Hand the daemon CMD (as a client does), answer on the pty when it arrives; seconds until the answer file.
         The answer itself is left in self.answer. BEFORE_REPLY, if given, runs between the two."""
-        answer = self.tmp / 'answer'
+        answer = self.dir / 'answer.4242'      # the daemon writes only $DIR/answer.<pid>
         answer.unlink(missing_ok=True)
         t0 = time.monotonic()
         with open(self.dir / 'cmd', 'w') as f:
@@ -279,6 +382,48 @@ class Atd(ShellTest):
         elapsed = time.monotonic() - t0
         self.answer = answer.read_text() if answer.exists() else None
         return elapsed
+
+    def test_requests_are_parsed_strictly(self):
+        """A malformed request line is dropped, never sent to the modem whole (it used to be: "120 /run/... AT" with
+        a timeout the daemon did not take), and an answer file outside $DIR is never written."""
+        for shell in self.each_shell():
+            _l, m = self.start(shell, nr0=False)
+            outside = self.tmp / 'outside'
+            for line in (f'120 {self.dir}/answer.1 AT+BAD', f'6 {outside} AT+BAD', f'6 {self.dir}/answer.1x AT+BAD',
+                         f'6 {self.dir}/../answer.1 AT+BAD', 'AT+BAD', f'6 {self.dir}/answer.1'):
+                # read-write like mu300-at: the lines stay in the fifo while the daemon reopens it once per line
+                fd = os.open(self.dir / 'cmd', os.O_RDWR)
+                os.write(fd, (line + '\n').encode())
+                for _ in range(250):              # wait until the daemon has taken it (and dropped it)
+                    if not select.select([fd], [], [], 0)[0]:
+                        break
+                    time.sleep(0.02)
+                time.sleep(0.2)
+                os.close(fd)
+            self.assertFalse(select.select([m], [], [], 0.3)[0])     # none of it reached the channel
+            self.send(m, 'AT', b'\r\nOK\r\n')      # served after the dropped ones: the daemon is still reading
+            self.assertEqual(self.answer, 'OK\n')
+            self.assertFalse(outside.exists())
+            self.assertFalse((self.dir / 'answer.1').exists())
+            self.assertIn('malformed request', self.err.read_text())
+
+    def test_a_second_command_never_reaches_the_modem(self):
+        """The daemon repeats mu300-at's one_request test: a CR outside AT+CMGS=N<CR>PDU<Ctrl-Z> is refused with an
+        answer that has no final result code (so the client fails), and the modem never sees it."""
+        for shell in self.each_shell():
+            _l, m = self.start(shell, nr0=False)
+            answer = self.dir / 'answer.7'
+            fd = os.open(self.dir / 'cmd', os.O_RDWR)
+            os.write(fd, f'1 {answer} AT+CSQ\rAT+CFUN=0\n'.encode())
+            for _ in range(250):
+                if answer.exists():
+                    break
+                time.sleep(0.02)
+            os.close(fd)
+            self.assertEqual(answer.read_text(), 'mu300-atd: refused\n')
+            self.assertFalse(select.select([m], [], [], 0.3)[0])     # nothing was written to the channel
+            self.send(m, 'AT+CMGS=3\r0011\x1a', b'\r\n> \r\n+CMGS: 9\r\nOK\r\n', t=2)
+            self.assertIn('+CMGS: 9', self.answer)
 
     def whole_seconds(self):
         """The daemon's shell reads in whole seconds only (bash 3.2): every drain then waits the full second."""
@@ -488,8 +633,10 @@ at() {
     def test_fetch_addr_bounded(self):
         """+CGCONTRDP keeps answering 0.0.0.0: fetch_addr gives up within its budget (in seconds, not rounds), and
         does not sleep past it (queries at 0 and 2 s; a third would start after the budget, so none is waited for)."""
+        # (the budget is counted on whole seconds of the clock, $SECONDS on whole seconds since the shell started: a
+        # start late in a second shows a run of the same length as 1 on a fast machine - 1 to 3 is within the budget)
         r, _ = self.lib('rc=0; fetch_addr 3 || rc=$?; echo "rc=$rc t=$SECONDS rdp=$rdp"', ADDR_AFTER=99)
-        self.assertRegex(r.stdout, r'rc=1 t=[23] rdp=$', r.stderr)
+        self.assertRegex(r.stdout, r'rc=1 t=[123] rdp=$', r.stderr)
         r, _ = self.lib('rc=0; fetch_addr 3 || rc=$?; echo "rc=$rc rdp=$rdp"', ADDR_AFTER=0)
         self.assertIn('rc=0 rdp=+CGCONTRDP: 1,5,"apn","10.1.2.3.255.255.255.0"', r.stdout, r.stderr)
 
@@ -1004,10 +1151,15 @@ at() {
         import time
         pids = [int(p) for p in (self.tmp / 'hung.pids').read_text().split()]
         for pid in pids:
-            for _ in range(50):
+            # a killed process the system has not reaped yet is a zombie: os.kill(pid, 0) still finds it (the macOS
+            # runner was slow to reap it, and this failed with "still runs" while nothing ran)
+            for _ in range(100):
                 try:
                     os.kill(pid, 0)
                 except ProcessLookupError:
+                    break
+                st = subprocess.run(['ps', '-o', 'stat=', '-p', str(pid)], capture_output=True, text=True).stdout.strip()
+                if not st or st.startswith('Z'):
                     break
                 time.sleep(0.1)
             else:
@@ -1694,6 +1846,47 @@ class Led(ShellTest):
                     self.led(shell, device, 'wifi', 'sync')
                     self.assertEqual(self.state()[lit], '0', (device, iw))
 
+    def test_events_follow_hostapd_on_ubus(self):
+        # OpenWrt: "events" lights the Wi-Fi LED from hostapd's ubus object as it comes and goes, whoever stopped or
+        # started the access point. The fake ubusd: "listen" plays STUBLOG/events, one line each 0.3 s, and before
+        # each line sets what "call hostapd.wlan0 get_status" answers (STUBLOG/status, empty: no such object).
+        self.stub('ubus', r'''case $1 in
+listen) while IFS='|' read -r st ev; do printf '%s' "$st" > "$STUBLOG/status"; echo "$ev"; sleep 0.3; done \
+            < "$STUBLOG/events"; sleep 0.5 ;;
+call) echo "call $2" >> "$STUBLOG/ubus.calls"
+      st=$(cat "$STUBLOG/status"); [ -n "$st" ] || exit 4
+      printf '{\n\t"status": "%s",\n\t"bss": [ "wlan0" ]\n}\n' "$st" ;;
+esac''')
+        rm = '{ "ubus.object.remove": {"id":2011872946,"path":"hostapd.wlan0"} }'
+        add = '{ "ubus.object.add": {"id":-1383968478,"path":"hostapd.wlan0"} }'
+        other = '{ "ubus.object.add": {"id":77,"path":"network.interface.wan"} }'
+        (self.tmp / 'iw.out').write_text('Interface wlan0\n\tssid F50\n\ttype AP\n')
+        for shell in self.each_shell():
+            for events, lit in (
+                    # wifi down: the object goes (iw still shows the SSID at that moment)
+                    ([('', rm)], '0'),
+                    # wifi up after a down: remove, add, remove, add (netifd's two passes); it ends on
+                    ([('', rm), ('ENABLED', add), ('', rm), ('ENABLED', add)], '48'),
+                    # an access point that hostapd set up but disabled is off; one still on its way (DFS) is on
+                    ([('DISABLED', add)], '0'), ([('DFS', add)], '48')):
+                with self.subTest(events=events):
+                    self.reset()
+                    self.conf.write_text('LED_TIMEOUT=0\n')
+                    (self.tmp / 'status').write_text('ENABLED' if events[0][1] == rm else '')
+                    (self.tmp / 'ubus.calls').unlink(missing_ok=True)
+                    (self.tmp / 'events').write_text(''.join(f'{s}|{e}\n' for s, e in events + [(events[-1][0], other)]))
+                    self.assertEqual(self.led(shell, 'f50', 'events').returncode, 0)
+                    self.assertEqual(self.state()['keyboard-backlight'], lit)
+                    # one status read at the start and one per hostapd event, none for the other object
+                    self.assertEqual(len((self.tmp / 'ubus.calls').read_text().splitlines()), 1 + len(events))
+        # Ubuntu has no ubus: systemd's hotspot unit lights it (ExecStartPost, ExecStopPost)
+        (self.stubs / 'ubus').unlink()
+        r = self.script(self.shells[0], BIN / 'mu300-led', 'events', MU300_SYSROOT=self.root, MU300_BIN=BIN,
+                        PATH='%s:/usr/bin:/bin' % self.stubs)
+        self.assertNotEqual(r.returncode, 0)
+        unit = (BIN.parents[2] / 'etc/systemd/system/mu300-hotspot.service').read_text()
+        self.assertIn('ExecStopPost=-/opt/mu300/bin/mu300-led wifi off', unit)
+
     def test_stale_siren_stops(self):
         # a siren the pid file does not name (left behind by a restart) stops by itself: two of them flashed
         # together, white lit throughout
@@ -1999,6 +2192,108 @@ class TreeKill(ShellTest):
                     self.assertIn(f'-KILL {pid}', kills, (name, shell))
 
 
+class WcnReopen(ShellTest):
+    """wcn-reopen (the WCN chip was reset, #94): Wi-Fi reopened in whichever mode it was in."""
+    def setUp(self):
+        super().setUp()
+        self.root = self.tmp / 'root'
+        (self.root / 'sys/class/net/wlan0').mkdir(parents=True)
+        (self.root / 'run').mkdir()
+        # systemctl: is-active answers from $STUBLOG/active-UNIT; every other call is recorded
+        self.stub('systemctl', 'if [ "$1" = -q ] && [ "$2" = is-active ]; then [ -e "$STUBLOG/active-$3" ]; exit; fi\n'
+                               'echo "systemctl $*" >> "$STUBLOG/calls"')
+        self.stub('ip', 'case "$*" in "link show wlan0") cat "$STUBLOG/link" ;; *) echo "ip $*" >> "$STUBLOG/calls" ;; esac')
+
+    def run_reopen(self, shell, hotspot=False, client=False, up=True):
+        for f in ('calls', 'active-mu300-hotspot.service'):
+            (self.tmp / f).unlink(missing_ok=True)
+        (self.root / 'run/mu300-wifi-client.active').unlink(missing_ok=True)
+        if hotspot:
+            (self.tmp / 'active-mu300-hotspot.service').write_text('')
+        if client:
+            (self.root / 'run/mu300-wifi-client.active').write_text('')
+        flags = 'BROADCAST,MULTICAST,UP,LOWER_UP' if up else 'BROADCAST,MULTICAST'
+        (self.tmp / 'link').write_text(f'5: wlan0: <{flags}> mtu 1500 qdisc mq state UP\n')
+        r = self.script(shell, BIN / 'wcn-reopen', MU300_SYSROOT=self.root)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        calls = self.tmp / 'calls'
+        return calls.read_text().splitlines() if calls.exists() else []
+
+    def test_hotspot_is_restarted(self):
+        for shell in self.each_shell():
+            self.assertEqual(self.run_reopen(shell, hotspot=True), ['systemctl restart mu300-hotspot.service'])
+
+    def test_a_client_gets_wlan0_down_and_up_and_joins_again(self):
+        # restarting the client alone left the chip off (wifi-client never takes wlan0 down): the watchdog rebooted
+        for shell in self.each_shell():
+            self.assertEqual(self.run_reopen(shell, client=True),
+                             ['systemctl stop mu300-wifi-client.service', 'ip link set wlan0 down',
+                              'ip link set wlan0 up', 'systemctl start mu300-wifi-client.service'])
+
+    def test_neither_up_powers_the_chip_on_and_starts_nothing(self):
+        for shell in self.each_shell():
+            with self.subTest(wlan0='up'):
+                self.assertEqual(self.run_reopen(shell), ['ip link set wlan0 down', 'ip link set wlan0 up'])
+            with self.subTest(wlan0='down'):
+                self.assertEqual(self.run_reopen(shell, up=False),
+                                 ['ip link set wlan0 down', 'ip link set wlan0 up', 'ip link set wlan0 down'])
+
+    def test_the_udev_rule_starts_the_service(self):
+        rule = (TOP / 'rootfs/overlay/etc/udev/rules.d/70-mu300-wcn.rules').read_text()
+        self.assertIn('ENV{EVENT}=="FW_ERROR", RUN+="/bin/systemctl --no-block start mu300-wcn-reopen.service"', rule)
+        unit = (TOP / 'rootfs/overlay/etc/systemd/system/mu300-wcn-reopen.service').read_text()
+        self.assertIn('ExecStart=/opt/mu300/bin/wcn-reopen\n', unit)
+
+
+class OpenwrtWcnHotplug(ShellTest):
+    """OpenWrt's hotplug.d/misc/10-mu300-wcn: one "wifi down; wifi up" per WCN reset, however many FW_ERROR events
+    (kanoqwq/mu300-linux@23361ce: a single recovery owner)."""
+    HOOK = TOP / 'openwrt/overlay/etc/hotplug.d/misc/10-mu300-wcn'
+
+    def setUp(self):
+        super().setUp()
+        self.stub('logger', ':')
+        self.stub('wifi', 'echo "wifi $1" >> "$STUBLOG/calls"; sleep 1')
+
+    def fire(self, shell, **env):
+        return self.script(shell, self.HOOK, ACTION='change', SOURCE='unisocwl', EVENT='FW_ERROR',
+                           MU300_WCN_LOCK=self.tmp / 'lock', **env)
+
+    def wait_calls(self, n):
+        import time
+        calls = self.tmp / 'calls'
+        for _ in range(300):
+            if calls.exists() and len(calls.read_text().split()) >= 2 * n and not (self.tmp / 'lock').exists():
+                break
+            time.sleep(0.05)
+        time.sleep(2.5)       # a second reopen that got in would have written by now
+        return calls.read_text().splitlines() if calls.exists() else []
+
+    def test_other_events_do_nothing(self):
+        for shell in self.each_shell():
+            r = self.script(shell, self.HOOK, ACTION='change', SOURCE='unisocwl', EVENT='OTHER')
+            self.assertEqual(r.returncode, 0)
+        import time
+        time.sleep(1.5)
+        self.assertFalse((self.tmp / 'calls').exists())
+
+    def test_overlapping_events_reopen_once(self):
+        for shell in self.each_shell():
+            (self.tmp / 'calls').unlink(missing_ok=True)
+            for _ in range(3):
+                self.fire(shell)
+            self.assertEqual(self.wait_calls(1), ['wifi down', 'wifi up'])
+
+    def test_a_dead_holder_does_not_block_the_next_reset(self):
+        for shell in self.each_shell():
+            (self.tmp / 'calls').unlink(missing_ok=True)
+            (self.tmp / 'lock').mkdir(exist_ok=True)
+            (self.tmp / 'lock' / 'pid').write_text('999999\n')
+            self.fire(shell)
+            self.assertEqual(self.wait_calls(1), ['wifi down', 'wifi up'])
+            self.assertFalse((self.tmp / 'lock').exists())
+
+
 class ThermalGuard(ShellTest):
     """thermal-guard's LED alarm (one round against a fake /: MU300_SYSROOT)."""
     def setUp(self):
@@ -2066,6 +2361,38 @@ class ThermalGuard(ShellTest):
             shutil.rmtree(self.root, ignore_errors=True)
             self.device('u30air')
             self.assertEqual(self.round(shell, 110000), ['poweroff', 'mu300-led alarm on'])   # mainline: critical
+
+    def policy(self, name, freqs, cur_max):
+        p = self.root / 'sys/devices/system/cpu/cpufreq' / name
+        p.mkdir(parents=True, exist_ok=True)
+        (p / 'scaling_available_frequencies').write_text(' '.join(str(f) for f in freqs) + ' \n')
+        (p / 'cpuinfo_max_freq').write_text(f'{max(freqs)}\n')
+        (p / 'scaling_max_freq').write_text(f'{cur_max}\n')
+        return p
+
+    def test_cooldown_does_not_raise_a_policy_above_the_mu300_cpu_ceiling(self):
+        # mu300-cpu's "saving" profile caps a cluster and records the cap in /run/mu300/cpu-ceiling; on cool-down
+        # thermal-guard steps scaling_max up a notch at a time but never past that ceiling, so the profile stays.
+        freqs = [614400, 768000, 936000, 1105000, 1228800, 1404000, 2002000]
+        for shell in self.each_shell():
+            shutil.rmtree(self.root, ignore_errors=True)
+            self.device('u30air')
+            p = self.policy('policy0', freqs, 936000)   # capped below hw max (2002000)
+            (self.root / 'run/mu300/cpu-ceiling').write_text('policy0=1105000\n')
+            self.round(shell, 60000)                     # cool: one step up, but clamped to the ceiling
+            self.assertEqual((p / 'scaling_max_freq').read_text().strip(), '1105000')
+            self.round(shell, 60000)                     # at the ceiling now: no further rise
+            self.assertEqual((p / 'scaling_max_freq').read_text().strip(), '1105000')
+
+    def test_cooldown_without_a_ceiling_rises_to_the_hardware_maximum(self):
+        freqs = [614400, 936000, 1105000, 2002000]
+        for shell in self.each_shell():
+            shutil.rmtree(self.root, ignore_errors=True)
+            self.device('u30air')
+            p = self.policy('policy0', freqs, 936000)
+            for _ in range(5):
+                self.round(shell, 60000)
+            self.assertEqual((p / 'scaling_max_freq').read_text().strip(), '2002000')
 
 
 class Nfc(ShellTest):
@@ -2420,15 +2747,18 @@ class Usb(ShellTest):
             self.assertEqual(self.reg('0x01'), 0x1a)
             self.assertEqual(self.reg('0x05'), (0x9f & ~0x30) | 0x10)
 
-    def test_refuses_while_powered(self):
+    def test_host_on_outside_power_leaves_the_boost_off(self):
+        # power good (a hub or splitter with a charger drives VBUS): host, and not a single register written
         for shell in self.each_shell():
-            self.regs(r01='0x1a', r05='0x9f', r08='0x24')   # power good, a USB host drives VBUS
+            (self.root / 'sys/class/usb_role/25100000.dwc3-role-switch/role').write_text('device\n')
+            self.regs(r01='0x1a', r05='0x9f', r08='0x24')
             (self.tmp / 'writes').unlink(missing_ok=True)
             r = self.usb(shell, 'host')
-            self.assertEqual(r.returncode, 1)
-            self.assertIn('unplug it first', r.stderr)
-            self.assertFalse((self.tmp / 'writes').exists())   # not a single register written
-            self.assertEqual(self.role(), 'device')
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn('outside power', r.stdout)
+            self.assertFalse((self.tmp / 'writes').exists())
+            self.assertEqual(self.role(), 'host')
+            self.assertEqual(self.reg('0x01'), 0x1a)
 
     def test_boot_switches_a_leftover_boost_off(self):
         for shell in self.each_shell():
@@ -2638,6 +2968,45 @@ class NextBoot(ShellTest):
         self.assertEqual(self.bc(), bytes(want))
         self.nb('android')
         self.assertEqual(self.bc(), android_b)
+
+    def test_lock_unlock_and_the_trial_of_a_new_image(self):
+        android_a, linux_b, _, _ = self.blocks
+        (self.run_dir / 'linux-slot').write_text('b\n')
+        (self.run_dir / 'misc-bc-android.bin').write_bytes(android_a)
+        (self.run_dir / 'misc-bc-linux-trial.bin').write_bytes(linux_b)
+        disk = self.tmp / 'disk'
+        (disk / '.mu300').mkdir(parents=True)
+        def nb(*a):
+            if not shutil.which('bash'):
+                self.skipTest('no bash')
+            return subprocess.run(['bash', str(BIN / 'mu300-next-boot'), *a], capture_output=True, text=True,
+                                  env=self.env(MU300_RUN=self.run_dir, MU300_CONF=self.tmp / 'default-boot',
+                                               MU300_CMDLINE_SRC=self.tmp / 'cmdline', MU300_DISK=disk))
+        def want(info):
+            w = bytearray(linux_b); w[14] = info
+            w[28:32] = struct.pack('<I', zlib.crc32(bytes(w[:28])))
+            return bytes(w)
+        r = nb('lock')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        # successful=1, prio 15, tries 6: LK never counts it down, never rolls back
+        self.assertEqual(self.bc(), want(0xef))
+        self.assertTrue((disk / '.mu300/boot-lock').exists())
+        self.assertIn('locked: yes', nb('status').stdout)
+        # a good boot keeps it locked
+        nb('--rearm'); self.assertEqual(self.bc(), want(0xef))
+        # mu300-update before a new boot image: the usual attempts, the lock wish kept for the next good boot
+        r = nb('--trial'); self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.bc(), want(0x6f))
+        self.assertTrue((disk / '.mu300/boot-lock').exists())
+        nb('--rearm'); self.assertEqual(self.bc(), want(0xef))
+        # Android by hand: its block, and the wish stays for when Linux is chosen again
+        nb('android'); self.assertEqual(self.bc(), android_a)
+        self.assertTrue((disk / '.mu300/boot-lock').exists())
+        (self.tmp / 'default-boot').write_text('linux\n')
+        r = nb('unlock'); self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.bc(), want(0x6f))
+        self.assertFalse((disk / '.mu300/boot-lock').exists())
+        self.assertIn('locked: no', nb('status').stdout)
 
     def test_slot_b_as_before(self):
         android_a, linux_b, _, _ = self.blocks

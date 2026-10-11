@@ -203,6 +203,17 @@ exit 0''')
                 self.assertFalse([c for c in calls if c.startswith('proto_run_command')], calls)
                 self.assertEqual((self.conf / 'accept_ra').read_text().strip(), '-', shell)
 
+    def test_ipv6_bearer_turns_ipv6_back_on_after_a_teardown(self):
+        """The teardown's mobile-data down leaves disable_ipv6 1, and netifd does not reset it for a device that
+        stayed: the IPv6 bearer's setup turns it on itself (a WAN restart lost IPv6 until a reboot on an F50)."""
+        for shell in self.each_shell():
+            self.run_proto(shell, 'proto_mu300cell_setup', out=UP_V6, T_PDPTYPE='IPV4V6')
+            self.assertEqual((self.conf / 'disable_ipv6').read_text().strip(), '0', shell)
+        body = PROTO.read_text()
+        branch = body[body.index('elif [ -n "$iid" ]; then'):]
+        self.assertLess(branch.index('echo 0 > "/proc/sys/net/ipv6/conf/$ifname/disable_ipv6"'),
+                        branch.index('ip -6 addr add "fe80::$iid/64"'))
+
     def test_config_has_the_ipv6_option_and_renew(self):
         """K35: `option ipv6` (relay / extend) is a protocol option, and netifd may ask for a renew."""
         for shell in self.each_shell():
@@ -412,6 +423,146 @@ exit 0''')
             dels = [c for c in calls if ' del ' in c and 'sipa_eth0' in c]
             self.assertEqual(dels, ['ip -6 route del 240e:388:a:1234::5/128 dev sipa_eth0'], calls)
             self.assertFalse([c for c in calls if 'reboot' in c or ' -x' in c], calls)
+
+    # #87: the old SLAAC address stays on sipa_eth0 beside the new one after a PDP re-activation without ifdown.
+    TWO_PREFIXES = ('240e0388000a12340000000000000001 05 40 00 00 sipa_eth0\n'
+                    '240e0388000a99990000000000000002 05 40 00 00 sipa_eth0\n'
+                    '240e0388000a12340000000000000abc 05 40 00 00 sipa_eth0\n')    # same /64 again: listed once
+
+    def test_ndp_learn_prefix_lists_every_bearer_prefix(self):
+        """#87: --prefix prints each /64 the bearer holds, once and sorted, not only the first if_inet6 lists."""
+        fake = self.tmp / 'if_inet6'
+        fake.write_text('2a0200000db800010000000000000001 03 40 00 80    br-lan\n' + self.TWO_PREFIXES)
+        for shell in self.each_shell():
+            r = self.script(shell, NDP_LEARN, '--prefix', MU300_IF_INET6=fake)
+            self.assertEqual((r.returncode, r.stdout), (0, '240e:388:a:1234::/64\n240e:388:a:9999::/64\n'),
+                             (shell, r.stderr))
+
+    def test_ndp_learn_routes_every_bearer_prefix(self):
+        """#87: with two /64s on sipa_eth0, both go to br-lan (LAN clients may hold addresses in either: odhcpd
+        relayed the RA of each), and stray host routes inside either are removed from sipa_eth0."""
+        fake = self.tmp / 'if_inet6'
+        fake.write_text(self.TWO_PREFIXES)
+        (self.tmp / 'wan').write_text('240e:388:a:1234::5 proto static metric 1024\n'
+                                      '240e:388:a:9999::6 proto static metric 1024\n'
+                                      '2001:4860:4860::8888 proto static metric 1024\n')
+        self.stub('ip', '''echo "ip $*" >> "$STUBLOG/ipcalls"
+case "$*" in "-6 route show dev sipa_eth0") cat "$STUBLOG/wan" ;; esac
+exit 0''')
+        self.stub('logger', 'exit 0')
+        for shell in self.each_shell():
+            (self.tmp / 'ipcalls').write_text('')
+            r = self.script(shell, NDP_LEARN, '--once', MU300_IF_INET6=fake)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            calls = (self.tmp / 'ipcalls').read_text().splitlines()
+            self.assertEqual([c for c in calls if 'replace' in c], [
+                'ip -6 route replace 240e:388:a:1234::/64 dev br-lan metric 128',
+                'ip -6 route replace 240e:388:a:9999::/64 dev br-lan metric 128'], (shell, calls))
+            self.assertEqual([c for c in calls if ' del ' in c and 'sipa_eth0' in c], [
+                'ip -6 route del 240e:388:a:1234::5/128 dev sipa_eth0',
+                'ip -6 route del 240e:388:a:9999::6/128 dev sipa_eth0'], (shell, calls))
+
+    def test_ndp_learn_drops_only_the_prefix_that_left(self):
+        """#87: across rounds of one ndp-learn, a /64 that left the bearer loses its br-lan route (both metrics),
+        the one that stays keeps it, and a new one is logged once; with none left, the last one is dropped too."""
+        text = NDP_LEARN.read_text()
+        funcs = text[:text.index('\ncase ${1:-} in')]
+        fake = self.tmp / 'if_inet6'
+        one = '240e0388000a99990000000000000002 05 40 00 00 sipa_eth0\n'
+        self.stub('ip', 'echo "ip $*" >> "$STUBLOG/ipcalls"; exit 0')
+        self.stub('logger', 'echo "logger $*" >> "$STUBLOG/ipcalls"; exit 0')
+        code = (funcs + '\nround() { cp "$1" "$IF_INET6"; echo "-- round" >> "$STUBLOG/ipcalls"; learn_once; }\n'
+                f'round "$STUBLOG/two"; round "$STUBLOG/one"; round "$STUBLOG/one"; round "$STUBLOG/none"\n')
+        (self.tmp / 'two').write_text(self.TWO_PREFIXES)
+        (self.tmp / 'one').write_text(one)
+        (self.tmp / 'none').write_text('')
+        for shell in self.each_shell():
+            (self.tmp / 'ipcalls').write_text('')
+            r = self.sh(shell, code, MU300_IF_INET6=fake, MU300_RA_DEPRECATE='true')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            rounds = (self.tmp / 'ipcalls').read_text().split('-- round\n')[1:]
+            # (the withdrawal from the LAN has tests of its own)
+            changes = [[c for c in rnd.splitlines() if (c.startswith('logger') and 'withdraw' not in c)
+                        or (' del ' in c and 'br-lan' in c
+                        and 'metric 1024' not in c)] for rnd in rounds]
+            self.assertEqual(changes, [
+                ['logger -t ndp-learn LAN prefix route: 240e:388:a:1234::/64 dev br-lan metric 128',
+                 'logger -t ndp-learn LAN prefix route: 240e:388:a:9999::/64 dev br-lan metric 128'],
+                ['ip -6 route del 240e:388:a:1234::/64 dev br-lan metric 128'],
+                [],
+                ['ip -6 route del 240e:388:a:9999::/64 dev br-lan metric 128']], (shell, rounds))
+            self.assertIn('ip -6 route del 240e:388:a:1234::/64 dev br-lan metric 1024', rounds[1], shell)
+            self.assertIn('ip -6 route replace 240e:388:a:9999::/64 dev br-lan metric 128', rounds[2], shell)
+            self.assertNotIn('replace', rounds[3], shell)
+
+    def withdraw_rounds(self, shell, *states):
+        """Rounds of one ndp-learn over bearer STATES ('a', 'b', 'ab', ''), returning per round the ra-deprecate
+        calls (a stub) and the ndp-learn log lines."""
+        text = NDP_LEARN.read_text()
+        funcs = text[:text.index('\ncase ${1:-} in')]
+        lines = {'a': '240e0388000a12340000000000000001 05 40 00 00 sipa_eth0\n',
+                 'b': '240e0388000a99990000000000000002 05 40 00 00 sipa_eth0\n'}
+        for st in set(states):
+            (self.tmp / f'st-{st or "none"}').write_text(''.join(lines[c] for c in st))
+        self.stub('ip', 'case "$*" in "-6 route show default dev sipa_eth0") cat "$STUBLOG/defroute" ;; esac\nexit 0')
+        self.stub('logger', 'echo "logger $*" >> "$STUBLOG/calls"; exit 0')
+        self.stub('ra-deprecate', 'echo "ra-deprecate $*" >> "$STUBLOG/calls"; exit 0')
+        (self.tmp / 'defroute').write_text('default via fe80::1 proto ra metric 1024 expires 1734sec pref medium\n')
+        code = (funcs + '\nround() { cp "$STUBLOG/st-$1" "$IF_INET6"; echo "-- round" >> "$STUBLOG/calls"; '
+                'learn_once; }\n')
+        code += ''.join(f'round {st or "none"}\n' for st in states)
+        (self.tmp / 'calls').write_text('')
+        r = self.sh(shell, code, MU300_IF_INET6=self.tmp / 'if_inet6', MU300_RA_DEPRECATE=self.stubs / 'ra-deprecate')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        rounds = (self.tmp / 'calls').read_text().split('-- round\n')[1:]
+        return [[c for c in rnd.splitlines() if 'ra-deprecate' in c or 'withdraw' in c] for rnd in rounds]
+
+    def test_ndp_learn_withdraws_a_renumbered_prefix_from_the_lan(self):
+        """#87: when the carrier moves the bearer to another /64, the old one is withdrawn from the LAN (preferred
+        lifetime 0) in three rounds, with the carrier router's remaining lifetime; then nothing more."""
+        ra = 'ra-deprecate'
+        for shell in self.each_shell():
+            # a PDP re-activation without ifdown: the new /64 next to the old, then the old one gone
+            got = self.withdraw_rounds(shell, 'a', 'ab', 'b', 'b', 'b', 'b')
+            send = f'{ra} br-lan 1734 240e:388:a:1234::/64'
+            self.assertEqual(got, [[], [], ['logger -t ndp-learn withdrawing from the LAN: 240e:388:a:1234::/64', send],
+                                   [send], [send], []], shell)
+
+    def test_ndp_learn_withdraws_after_a_wan_restart_only_on_a_new_prefix(self):
+        """#87: a WAN restart flushes the bearer (no /64 for a while). The same /64 coming back is never withdrawn
+        (that would take the live prefix from every client); a different one makes the old one withdrawn."""
+        ra = 'ra-deprecate'
+        for shell in self.each_shell():
+            with self.subTest(back='same'):
+                self.assertEqual(self.withdraw_rounds(shell, 'a', '', '', 'a', 'a', 'a'), [[]] * 6)
+            with self.subTest(back='another'):
+                got = self.withdraw_rounds(shell, 'a', '', 'b', 'b', 'b', 'b')
+                self.assertEqual(got[:2], [[], []])
+                self.assertEqual(got[2][1:] + got[3] + got[4], [f'{ra} br-lan 1734 240e:388:a:1234::/64'] * 3)
+                self.assertEqual(got[5], [])
+
+    def test_ndp_learn_router_lifetime(self):
+        """The withdrawing RA refreshes the clients' default router: never 0, at most 9000, 1800 without an expiry."""
+        text = NDP_LEARN.read_text()
+        funcs = text[:text.index('\ncase ${1:-} in')]
+        for route, want in (('default via fe80::1 proto ra metric 1024 expires 1734sec pref medium', '1734'),
+                            ('default via fe80::1 proto ra metric 1024 pref medium', '1800'),
+                            ('', '1800'),
+                            ('default via fe80::1 proto ra expires 0sec', '1800'),
+                            ('default via fe80::1 proto ra expires 65535sec', '9000')):
+            (self.tmp / 'defroute').write_text(route + '\n')
+            self.stub('ip', 'cat "$STUBLOG/defroute"')
+            for shell in self.each_shell():
+                r = self.sh(shell, funcs + '\nrouter_lifetime\n')
+                self.assertEqual((r.returncode, r.stdout), (0, want + '\n'), (shell, route, r.stderr))
+
+    def test_ra_deprecate_is_in_the_panel_image(self):
+        """ra-deprecate needs ucode's socket module, which the panel system's build installs."""
+        build = (TOP / 'openwrt' / 'build-rootfs.sh').read_text()
+        self.assertIn('[ -d /in/luci-plugin ] && apk add ucode-mod-socket', build)
+        ra = (LUCI / 'opt' / 'mu300' / 'bin' / 'ra-deprecate').read_text()
+        self.assertTrue(ra.startswith('#!/usr/bin/ucode\n'))
+        self.assertIn("import * as socket from 'socket';", ra)
 
     def test_ndp_learn_never_routes_a_bad_prefix(self):
         """A bearer address that is not global unicast (multicast, link-local) gives no prefix, so no route."""
