@@ -2,9 +2,26 @@
 # Run an Android vendor daemon inside the chroot prepared by android-vendor-start (mu300-vendor.service).
 # The binary is exec'd directly so its task name (comm) matches what vendor drivers expect.
 set -e
-A=/opt/mu300/android
+A=${MU300_ANDROID:-/opt/mu300/android}
 for n in $(seq 1 60); do mountpoint -q $A/dev && break; sleep 1; done
 # OpenWrt's procd preloads /lib/libsetlbf.so into services; the bionic linker in the chroot cannot load it
 unset LD_PRELOAD
 export LD_LIBRARY_PATH=/apex/com.android.runtime/lib64/bionic:/system/lib64:/vendor/lib64
+# modem_control and refnotify switch to Android's system user themselves, right at the start: setgroups, then
+# setuid(1000) - the number is in the binaries - then capset down to what they keep. On a distribution uid 1000 is
+# the first human account (ubuntu; alarm on Arch), which then owned the daemons and every node they use, the modem's
+# calibration partitions among them (FINDINGS: "The vendor daemons' own account"). Where the system has the vendor
+# account (mu300vnd, see android-vendor-start) they start as it instead, with no other groups and only the
+# capabilities they keep on Android (plus chroot's, which their capset drops): their setgroups and setuid(1000)
+# then fail - they log it and carry on, as mu300vnd. cp_diskserver never switches: it stays root.
+case $1 in
+    modem_control) caps=chown,block_suspend ;;
+    refnotify) caps=sys_time ;;
+    *) caps= ;;
+esac
+if [ -n "$caps" ] && grep -q '^mu300vnd:' "${MU300_ETC:-/etc}/passwd" 2>/dev/null && command -v setpriv >/dev/null 2>&1; then
+    c=-all,+sys_chroot,+$(echo "$caps" | sed 's/,/,+/g')
+    exec setpriv --reuid=mu300vnd --regid=mu300vnd --clear-groups --no-new-privs \
+        --inh-caps="$c" --ambient-caps="$c" --bounding-set="$c" chroot $A /vendor/bin/"$1"
+fi
 exec chroot $A /vendor/bin/"$1"

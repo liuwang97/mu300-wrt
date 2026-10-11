@@ -45,6 +45,28 @@ class UpdateBase(ShellTest):
 
 
 class Update(UpdateBase):
+    def test_version_lists_what_is_installed_without_the_network(self):
+        # mu300-toolkit's summary and its update screen when offline: each system with its release, the boot image,
+        # the extras; no download is tried
+        (self.disk / 'ubuntu/etc/mu300').mkdir(parents=True, exist_ok=True)
+        (self.disk / 'ubuntu/etc/mu300/image-version').write_text('v2026.10.18\n')
+        (self.disk / 'openwrt/etc/mu300').mkdir(parents=True)
+        (self.disk / 'openwrt/etc/mu300/image-version').write_text('v2026.10.17\n')
+        (self.disk / 'boot').mkdir()
+        (self.disk / 'boot/installed.tag').write_text('v2026.10.18\n')
+        (self.disk / 'extra/vpn/bin').mkdir(parents=True)
+        (self.disk / 'extra/vpn/release').write_text('v1.0.0\n')
+        self.stub('curl', 'echo "network used" >&2; exit 7')
+        self.stub('wget', 'echo "network used" >&2; exit 7')
+        for shell in self.each_shell():
+            r = self.up(shell, 'mounted_disk() { :; }; version')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertNotIn('network used', r.stderr)
+            self.assertRegex(r.stdout, r'systems on disk +.*ubuntu v2026\.10\.18')
+            self.assertRegex(r.stdout, r'openwrt v2026\.10\.17')
+            self.assertIn('boot image: v2026.10.18', r.stdout)
+            self.assertIn('vpn (v1.0.0)', r.stdout)
+
     def test_sourcing_does_nothing(self):
         for shell in self.each_shell():
             r = self.up(shell, 'echo loaded')

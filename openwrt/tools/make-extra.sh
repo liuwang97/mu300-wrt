@@ -6,6 +6,14 @@
 #         LuCI app of the images, from the luci-i18n-* packages (apk add in the OpenWrt base image that
 #         openwrt/build-rootfs.sh imports, so apk checks every package against the feed's signed index), plus the
 #         MU300 panel's catalogs (openwrt/luci-app-mu300/po, tools/po2lmo.py). Needs docker with arm64 support.
+#   panel  the web panel for Ubuntu (rootfs/panel): bin/mu300-panel and the MU300 page of Cockpit (cockpit/mu300, with
+#         po.<lang>.js from rootfs/panel/po, tools/cockpit-i18n.py). Cockpit itself comes from Ubuntu's archive when
+#         the extra is installed.
+#   panel-offline  the same, plus Cockpit's packages for each Ubuntu release of the images (debs/24.04, debs/26.04):
+#         what "apt-get install --no-install-recommends cockpit-ws cockpit-system cockpit-bridge" adds to the
+#         release's Ubuntu image (mu300-ubuntu:<release>, the image the rootfs is built from), downloaded with apt in
+#         that image, so apt checks each package against the archive's signed index. Needs docker with arm64 support.
+#         Its ./name is panel: mu300-extra install panel --from FILE installs it.
 # The VPN extras (vpn, vpn-mihomo) are not built here: they are the module of github.com/dikeckaan/mu300-linux-vpn
 # (its tools/make-module.sh), which mu300-extra downloads from that repository's releases.
 # Layout (what mu300-update's extra_unpack checks): ./name ./release ./components ./manifest (sha256 of every file),
@@ -84,8 +92,37 @@ with open(os.path.join(x, 'components'), 'w', encoding='utf-8') as f:
     f.write('luci-app-mu300 catalogs: ' + ' '.join(ours) + '\n')
 PY
         echo "lang: $(wc -l < "$tmp/x/languages" | tr -d ' ') languages, $(ls "$tmp/x/i18n" | wc -l | tr -d ' ') catalogs" >&2 ;;
+    panel|panel-offline)
+        x=$tmp/x
+        mkdir -p "$x/bin" "$x/cockpit/mu300"
+        cp "$TOP/rootfs/panel/bin/mu300-panel" "$x/bin/mu300-panel"
+        chmod 755 "$x/bin/mu300-panel"
+        for f in manifest.json index.html mu300.js mu300.css; do cp "$TOP/rootfs/panel/cockpit/mu300/$f" "$x/cockpit/mu300/"; done
+        python3 "$TOP/tools/cockpit-i18n.py" check >&2 || { echo "the MU300 page's translations are incomplete" >&2; exit 1; }
+        python3 "$TOP/tools/cockpit-i18n.py" build "$x/cockpit/mu300"
+        printf 'mu300-panel %s\ncockpit page mu300 (en tr zh_CN)\n' "$TAG" > "$x/components"
+        if [ "$NAME" = panel-offline ]; then
+            for u in ${MU300_PANEL_UBUNTU:-24.04 26.04}; do
+                img=mu300-ubuntu:$u
+                docker image inspect "$img" >/dev/null 2>&1 || {
+                    echo "$img missing: docker build -t $img --build-arg BASE=ubuntu:$u rootfs (as make-release.sh does)" >&2; exit 1; }
+                mkdir -p "$x/debs/$u"
+                # (no apostrophes in here: one single-quoted argument to sh -c)
+                docker run --rm --platform linux/arm64 -v "$x/debs/$u":/out "$img" /bin/sh -eu -c '
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -qq >/dev/null
+pk=$(apt-get install -s --no-install-recommends cockpit-ws cockpit-system cockpit-bridge | sed -n "s/^Inst \([^ ]*\) .*/\1/p")
+[ -n "$pk" ]
+cd /out && apt-get download $pk >/dev/null
+chown -R 0:0 /out'
+                ls "$x/debs/$u"/cockpit-ws_*.deb >/dev/null 2>&1 || { echo "no cockpit-ws package for Ubuntu $u" >&2; exit 1; }
+                printf 'ubuntu %s: %s\n' "$u" "$(cd "$x/debs/$u" && ls | sed 's/_[^_]*$//' | tr '\n' ' ')" >> "$x/components"
+            done
+            NAME=panel
+        fi
+        echo "panel: $(find "$x" -type f | wc -l | tr -d ' ') files" >&2 ;;
     vpn|vpn-mihomo) echo "$NAME is the VPN module of github.com/dikeckaan/mu300-linux-vpn (its tools/make-module.sh), not built here" >&2; exit 2 ;;
-    *) echo "unknown extra '$NAME' (lang)" >&2; exit 2 ;;
+    *) echo "unknown extra '$NAME' (lang, panel, panel-offline)" >&2; exit 2 ;;
 esac
 echo "$NAME" > "$tmp/x/name"
 echo "$TAG" > "$tmp/x/release"
@@ -109,7 +146,7 @@ for d, _, fs in os.walk(src):
 with open(os.path.join(src, 'manifest'), 'w') as m:
     m.writelines(sorted(lines))
 with tarfile.open(out, 'w:gz', format=tarfile.GNU_FORMAT) as t:
-    for name in ('name', 'release', 'components', 'languages', 'manifest', 'i18n'):
+    for name in ('name', 'release', 'components', 'languages', 'manifest', 'i18n', 'bin', 'cockpit', 'debs'):
         if os.path.exists(os.path.join(src, name)):
             t.add(os.path.join(src, name), arcname='./' + name, filter=root)
 PY
