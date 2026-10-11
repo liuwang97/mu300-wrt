@@ -253,6 +253,9 @@ class Record(ShellTest):
             'etc/apt/keyrings/htop.gpg': 'k1', 'usr/share/keyrings/vendor.gpg': 'k2',
             'usr/share/keyrings/unrelated.gpg': 'k3', 'usr/share/keyrings/ubuntu-archive-keyring.gpg': 'old key',
             'etc/apt/trusted.gpg.d/legacy.gpg': 'k4',
+            # pinning: the user's own, and one the new image ships itself (never replaced)
+            'etc/apt/preferences.d/htop-ppa': 'Package: *\nPin: release o=LP-PPA-htop\nPin-Priority: 600\n',
+            'etc/apt/preferences.d/image-pin': 'old pin\n',
             # htop's units: one enabled, one masked, one disabled, a template (skipped)
             'var/lib/dpkg/info/htop:arm64.list': '/.\n/usr/lib/systemd/system/htopd.service\n'
                                                  '/lib/systemd/system/htop.timer\n/usr/lib/systemd/system/htop-x.socket\n'
@@ -268,6 +271,7 @@ class Record(ShellTest):
         write(self.new, {'usr/lib/os-release': f'NAME="Ubuntu"\nVERSION_CODENAME={new_codename}\n',
                          'etc/mu300/image-packages': 'bash\n', 'etc/mu300/image-version': 'v2\n',
                          'etc/apt/sources.list.d/ubuntu.sources': 'image\n',
+                         'etc/apt/preferences.d/image-pin': 'image pin\n',
                          'usr/share/keyrings/ubuntu-archive-keyring.gpg': 'image key'})
 
     def test_ubuntu_apt_sources_and_units(self):
@@ -290,6 +294,10 @@ class Record(ShellTest):
             self.assertEqual(self.rec('units'), 'htop htop-x.socket disabled\nhtop htop.timer masked\n'
                                                 'htop htopd.service enabled\n')
             self.assertIn('apt: /etc/apt/sources.list.d/ppa-htop.list kept', r.stdout)
+            pref = self.new / 'etc/apt/preferences.d'
+            self.assertIn('LP-PPA-htop', (pref / 'htop-ppa').read_text())
+            self.assertEqual((pref / 'image-pin').read_text(), 'image pin\n')
+            self.assertEqual(self.rec('apt-prefs'), 'etc/apt/preferences.d/htop-ppa\n')
 
     def test_ubuntu_sources_of_another_release_with_nothing_to_install_stay_off(self):
         # 24.04 -> 26.04 and no package to bring back: no first-boot check, so they are kept disabled
@@ -350,6 +358,36 @@ class ApplyOne(ShellTest):
             self.assertTrue(os.path.islink(new / 'etc/rc.d/S19dnsmasq'))
             self.assertIn('packages installed on the device', r.stdout)
             self.assertIn('luci-app-openclash luci-theme-argon', r.stdout)
+
+    def test_with_the_image_config_files_added(self):
+        # (#121) the update adds the config files of the image's packages the old system did not have, then sets the
+        # orphaned ones aside: sqm-scripts, a package of the image the user had removed, gets the image's
+        # /etc/config/sqm back, never set aside; OpenClash's (the user's own package) still goes aside
+        disk = self.tmp / 'disk'
+        img = self.tmp / 'img'
+        openwrt_new(img, {'sqm-scripts': ['etc/config/sqm']})
+        write(img, {'sbin/init': '#!/bin/sh\n', 'etc/config/sqm': 'image sqm\n',
+                    'etc/mu300/image-packages': 'base-files\nbusybox\ndnsmasq\nluci\nluci-theme-aurora\nsqm-scripts\n'})
+        (img / 'sbin/init').chmod(0o755)
+        (img / 'etc/rc.d').mkdir()
+        stage = disk / '.mu300-update'
+        for shell in self.each_shell():
+            shutil.rmtree(disk, ignore_errors=True)
+            openwrt_old(disk / 'openwrt')
+            old = disk / 'openwrt'
+            write(old, {'sbin/init': '#!/bin/sh\n',
+                        'etc/mu300/image-packages': 'base-files\nbusybox\ndnsmasq\nluci\nluci-theme-aurora\nsqm-scripts\n'})
+            stage.mkdir(parents=True)
+            subprocess.run(['tar', '-czf', str(stage / 'mu300-openwrt-rootfs.tar.gz'), '-C', str(img), '.'], check=True)
+            r = self.sh(shell, f'. "{UPD}"; is_root() {{ false; }}; apply_one openwrt v2', MU300_LIB=1, MU300_DISK=disk,
+                        MU300_BIN=BIN)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            new = disk / 'openwrt'
+            self.assertEqual((new / 'etc/config/sqm').read_text(), 'image sqm\n')
+            self.assertFalse((new / 'etc/mu300/orphaned-config/etc/config/sqm').exists())
+            self.assertNotIn('sqm-scripts', (new / 'etc/mu300/user-packages/wanted').read_text())
+            self.assertTrue((new / 'etc/mu300/orphaned-config/etc/config/openclash').exists())
+            self.assertEqual((new / 'etc/config/dhcp').read_text(), 'old dhcp\n')     # the device's, not the image's
 
     def test_no_reinstall_flag(self):
         src = UPD.read_text()
@@ -719,7 +757,9 @@ class Service(ShellTest):
     def test_ubuntu_kept_source_that_fails_is_disabled(self):
         for shell in self.each_shell():
             self.ubuntu_record(sources='etc/apt/sources.list.d/gone.list\netc/apt/sources.list.d/ok.list\n')
-            write(self.R, {'etc/apt/sources.list.d/gone.list': 'deb x noble main\n',
+            write(self.R, {'etc/mu300/user-packages/apt-prefs': 'etc/apt/preferences.d/gone-pin\n',
+                           'etc/apt/preferences.d/gone-pin': 'Package: *\n',
+                           'etc/apt/sources.list.d/gone.list': 'deb x noble main\n',
                            'etc/apt/sources.list.d/ok.list': 'deb y resolute main\n'})
             (self.tmp / 'online').write_text('')
             r = self.run_upk(shell, 'run')
@@ -730,7 +770,12 @@ class Service(ShellTest):
             self.assertTrue((src / 'ok.list').exists())
             self.assertEqual(self.rec('state'), 'done\n')
             self.assertIn('/etc/apt/sources.list.d/gone.list was disabled', self.rec('note'))
-            self.assertIn('gone.list was disabled', self.run_upk(shell, 'status').stdout)
+            st = self.run_upk(shell, 'status').stdout
+            self.assertIn('gone.list was disabled', st)
+            # its pin stays (harmless without the source), and status says so
+            self.assertTrue((self.R / 'etc/apt/preferences.d/gone-pin').exists())
+            self.assertIn('/etc/apt/preferences.d/gone-pin', st)
+            self.assertIn('a pin of a source that was turned off does nothing', st)
             # offline: nothing is disabled, they all stay as they were
             self.ubuntu_record(sources='etc/apt/sources.list.d/gone.list\n')
             write(self.R, {'etc/apt/sources.list.d/gone.list': 'deb x noble main\n'})

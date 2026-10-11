@@ -401,6 +401,11 @@ status() {
     [ ! -s "$DNS_NOTE" ] || { printf '\nDNS:\n'; sed 's/^/  /' "$DNS_NOTE"; }
     [ ! -s "$APT_NOTE" ] || { printf '\napt sources:\n'; sed 's/^/  /' "$APT_NOTE"; }
     [ ! -s "$D/apt-sources" ] || printf '\napt sources kept from before the update:\n%s\n' "$(sed 's|^|  /|' "$D/apt-sources")"
+    if [ -s "$D/apt-prefs" ]; then
+        printf '\napt pinning kept from before the update:\n%s\n' "$(sed 's|^|  /|' "$D/apt-prefs")"
+        [ ! -s "$APT_NOTE" ] ||
+            echo "  (a pin of a source that was turned off does nothing until the source is on again; delete it if it is not)"
+    fi
     if [ -s "$LOG" ]; then printf '\nlog (%s):\n' "$LOG"; tail -n 15 "$LOG" | sed 's/^/  /'; fi
 }
 

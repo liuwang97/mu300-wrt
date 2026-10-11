@@ -424,6 +424,17 @@ upk_apt_keep() {
         _ul="$_ul $_uf"
     done
     [ -n "$_ul" ] || return 0
+    # their pinning (etc/apt/preferences.d), where the new image has no file of that name; a pin whose source is
+    # turned off later does nothing on its own (mu300-user-packages status names it). NEW/.mu300-image/apt-prefs.
+    : > "$2/.mu300-image/apt-prefs" || return 1
+    for _uf in "$1"/etc/apt/preferences.d/*; do
+        [ -f "$_uf" ] || continue
+        _ur=etc/apt/preferences.d/${_uf##*/}
+        { [ ! -e "$2/$_ur" ] && [ ! -L "$2/$_ur" ]; } || continue
+        mkdir -p "$2/etc/apt/preferences.d" && cp -p "$_uf" "$2/$_ur" || return 1
+        echo "$_ur" >> "$2/.mu300-image/apt-prefs"
+        echo "  apt: /$_ur kept"
+    done
     # shellcheck disable=SC2086
     _us=$(cat $_ul 2>/dev/null)
     for _uf in "$1"/etc/apt/keyrings/* "$1"/usr/share/keyrings/* "$1"/etc/apt/trusted.gpg.d/*; do
@@ -494,6 +505,7 @@ upk_record() {
     mkdir -p "$_ud" || return 1
     mv "$_ut/wanted" "$_ud/wanted"
     [ ! -s "$_ut/apt-kept" ] || mv "$_ut/apt-kept" "$_ud/apt-sources"
+    [ ! -s "$_ut/apt-prefs" ] || mv "$_ut/apt-prefs" "$_ud/apt-prefs"
     : > "$_ud/done"; : > "$_ud/failed"
     cat "$_uo/etc/mu300/image-version" > "$_ud/from" 2>/dev/null || echo unknown > "$_ud/from"
     # their files in etc/, from the package database of OLD (and of the record a pending one came from)
