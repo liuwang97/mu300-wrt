@@ -157,6 +157,43 @@ class AtLock(ShellTest):
             self.assertLessEqual(abs(due - (int(time.time()) + 15)), 3)
 
 
+@unittest.skipUnless(shutil.which('bash'), 'needs bash')
+class AtdShell(ShellTest):
+    """mu300-atd under a shell whose read -t takes whole seconds only (OpenWrt's /bin/sh: "read: invalid timeout")
+    runs itself again under the static busybox's ash, which takes fractions: every drain waited a whole second, so
+    every AT command took one. Stood in for by bash with an exported read that refuses a fraction."""
+
+    def setUp(self):
+        super().setUp()
+        self.bb = self.tmp / 'busybox'
+        self.bb.write_text('#!/bin/sh\n[ "$1" = ash ] && [ "$2" = -c ] && exit 0\n'
+                           'printf "%s\\n" "$*" > "$STUBLOG/exec"\n')
+        self.bb.chmod(0o755)
+
+    def run_atd(self, whole_seconds, **env):
+        code = ('read() { case "$2" in *.*) echo "read: invalid timeout" >&2; return 1 ;; esac; builtin read "$@"; }\n'
+                'export -f read\n' if whole_seconds else '')
+        return subprocess.run(['bash', '-c', code + f'exec bash "{BIN / "mu300-atd"}"'], capture_output=True,
+                              text=True, timeout=30, env=self.env(MU300_BUSYBOX=self.bb, MU300_AT_DEV=self.tmp / 'none',
+                                                                   MU300_AT_DIR=self.tmp / 'run', **env))
+
+    def test_whole_seconds_only_runs_it_again_under_the_static_busybox(self):
+        self.run_atd(True)
+        self.assertEqual((self.tmp / 'exec').read_text().strip(), f'ash {BIN / "mu300-atd"}')
+
+    def test_a_shell_that_takes_fractions_stays(self):
+        if subprocess.run(['bash', '-c', 'read -t 0.1 x </dev/null'], capture_output=True, text=True).stderr:
+            self.skipTest('this bash takes whole seconds only (3.2)')
+        r = self.run_atd(False)
+        self.assertFalse((self.tmp / 'exec').exists())
+        self.assertIn('is not a character device', r.stderr)
+
+    def test_once_only(self):
+        r = self.run_atd(True, MU300_ATD_SHELL='1')
+        self.assertFalse((self.tmp / 'exec').exists())
+        self.assertIn('is not a character device', r.stderr)
+
+
 CELL = sec.ADAPTERS / 'cell'
 
 
@@ -197,8 +234,8 @@ class CellDeadline(ShellTest):
                             self.assertLessEqual(budget, 3)
 
     def test_the_default_deadlines(self):
-        # the page's live signal read has 14 s (mu300dash; a normal round is about 7 s, as mu300-atd drains a whole
-        # second per command under OpenWrt's ash), a background fast round 12, a full one 25
+        # the page's live signal read has 14 s (mu300dash; a normal round is about 1 s, and about 7 s where mu300-atd
+        # drains a whole second per command), a background fast round 12, a full one 25
         src = CELL.read_text()
         self.assertIn('[ "$MODE" = fast ] && MU300_DASH_DEADLINE=12 || MU300_DASH_DEADLINE=25', src)
         dash = sec.DASH.read_text()

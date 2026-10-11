@@ -29,6 +29,21 @@ if [ -n "$(read -t 1 _probe </dev/null 2>&1)" ]; then
     done
     echo "mu300-atd: need bash or busybox ash (this shell has no 'read -t')" >&2; exit 1
 fi
+# ...and with a fraction of a second: every command first drains the channel until it has been quiet for a tenth of
+# a second (QUICK below). OpenWrt's /bin/sh (its busybox ash) takes whole seconds only ("read: invalid timeout"), and
+# there each drain waited a full second, so every AT command took a second and the panel's collector round seven
+# (measured on the U30 Air). The static busybox next to us and bash both take fractions: run under one of them. Once
+# only (MU300_ATD_SHELL), and the pid stays the same, so the owner lock and the cmdline checks still see mu300-atd.
+if [ -z "${MU300_ATD_SHELL:-}" ] && [ -n "$(read -t 0.1 _probe </dev/null 2>&1)" ]; then
+    export MU300_ATD_SHELL=1
+    for sh in "${MU300_BUSYBOX:-/opt/mu300/bin/busybox}" /bin/bash /usr/bin/bash; do
+        [ -x "$sh" ] || continue
+        case $sh in
+            *busybox) [ -z "$("$sh" ash -c 'read -t 0.1 _p </dev/null' 2>&1)" ] && exec "$sh" ash "$0" "$@" ;;
+            *) [ -z "$("$sh" -c 'read -t 0.1 _p </dev/null' 2>&1)" ] && exec "$sh" "$0" "$@" ;;
+        esac
+    done
+fi
 DEV=${MU300_AT_DEV:-/dev/stty_nr1}
 DIR=${MU300_AT_DIR:-/run/mu300-at}
 CMD=$DIR/cmd
