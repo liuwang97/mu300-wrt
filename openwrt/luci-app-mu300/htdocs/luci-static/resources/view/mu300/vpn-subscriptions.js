@@ -17,7 +17,14 @@ return view.extend({
 		this.root = V.frame('subscriptions');
 		this.paint(data[0], data[1], data[2]);
 		var self = this;
-		V.resume(null, function() { self.reload(); });
+		V.resume(null, function() { self.reload(); }).then(function(job) {
+			/* The CLI installs no timer: subscriptions with an interval are refreshed when it has passed and this page
+			 * is opened (subscription refresh --due), unless a task runs already */
+			var subs = (data[1] && data[1].subscriptions) || [], now = Date.now() / 1000;
+			var due = subs.some(function(s) { return s.interval > 0 && (s.updated || 0) + s.interval * 3600 <= now; });
+			if (due && job.state !== 'running')
+				V.start(null, function() { return V.call.subRefresh('due'); }, null, function() { self.reload(); });
+		});
 		return this.root;
 	},
 
@@ -54,6 +61,11 @@ return view.extend({
 			'spellcheck': 'false', 'placeholder': 'https://…' });
 		var showUrl = E('button', { 'class': 'mud-btn', 'type': 'button', 'id': 'mvp-sub-url-show', 'title': _('Show') }, [ _('Show') ]);
 		showUrl.addEventListener('click', function() { url.type = url.type === 'password' ? 'text' : 'password'; });
+		var every = E('select', { 'class': 'cbi-input-select', 'id': 'mvp-sub-interval' }, [
+			E('option', { 'value': '' }, [ _('Only by hand') ]) ].concat([ 6, 12, 24, 48, 168 ].map(function(h) {
+				return E('option', { 'value': String(h) }, [ _('Every %d h').format(h) ]);
+			})));
+		every.value = '24';
 		var type = E('select', { 'class': 'cbi-input-select', 'id': 'mvp-sub-type' }, [
 			E('option', { 'value': 'auto' }, [ _('Detect') ]),
 			E('option', { 'value': 'links' }, [ _('Share links: one profile per link') ]),
@@ -67,17 +79,18 @@ return view.extend({
 				M.toast(_('Invalid name: 1-64 characters, no control characters'), { type: 'error', timeout: 6000 });
 				return;
 			}
-			if (!/^https?:\/\/[A-Za-z0-9.-]+(:[0-9]+)?(\/\S*)?$/.test(u)) {
-				M.toast(_('Not an http or https URL'), { type: 'error', timeout: 6000 });
+			if (!/^https:\/\/[A-Za-z0-9.-]+(:[0-9]+)?(\/\S*)?$/.test(u)) {
+				M.toast(_('Not an https URL'), { type: 'error', timeout: 6000 });
 				return;
 			}
-			V.start(addBtn, function() { return V.call.subAdd(n, u, type.value); }, null, function() { self.reload(); })
+			V.start(addBtn, function() { return V.call.subAdd(n, u, type.value, every.value); }, null, function() { self.reload(); })
 				.then(function(r) { if (r) { url.value = ''; name.value = ''; } });
 		});
 		var addCard = V.card(_('Add a subscription'), [
 			E('div', { 'class': 'mvp-row' }, [ E('label', { 'for': 'mvp-sub-name' }, [ _('Name') ]), name ]),
 			E('div', { 'class': 'mvp-row' }, [ E('label', { 'for': 'mvp-sub-url' }, [ _('URL') ]), url, showUrl ]),
 			E('div', { 'class': 'mvp-row' }, [ E('label', { 'for': 'mvp-sub-type' }, [ _('Format') ]), type ]),
+			E('div', { 'class': 'mvp-row' }, [ E('label', { 'for': 'mvp-sub-interval' }, [ _('Refresh') ]), every ]),
 			E('div', { 'class': 'mvp-row' }, [ addBtn ]),
 			V.note(_('The URL usually holds your account token: it is stored on the device readable by root only, and never shown again. The subscription is fetched over the device\'s own connection: through the tunnel when the VPN is up; with the kill switch up and the tunnel down it cannot be fetched.'))
 		], 'mvp-sub-addcard');
@@ -92,7 +105,7 @@ return view.extend({
 		else if (!subs.length) body = V.note(_('No subscriptions yet.'), 'mvp-subs-empty');
 		else body = E('table', { 'class': 'mvp-tbl', 'id': 'mvp-subs-table' }, [
 			E('thead', {}, [ E('tr', {}, [ E('th', {}, [ _('Name') ]), E('th', {}, [ _('Format') ]), E('th', {}, [ _('Host') ]),
-				E('th', {}, [ _('Updated') ]), E('th', {}, [ _('Profiles') ]), E('th', {}, '') ]) ]),
+				E('th', {}, [ _('Updated') ]), E('th', {}, [ _('Refresh') ]), E('th', {}, [ _('Profiles') ]), E('th', {}, '') ]) ]),
 			E('tbody', {}, subs.map(function(s) {
 				var ref = E('button', { 'class': 'mud-btn', 'data-refresh': s.id }, [ _('Refresh') ]);
 				ref.addEventListener('click', function() {
@@ -113,6 +126,7 @@ return view.extend({
 					})(s.format || s.type) ]),
 					E('td', { 'data-k': _('Host'), 'class': 'mvp-mono' }, [ String(s.host || '--') ]),
 					E('td', { 'data-k': _('Updated') }, [ V.ago(s.updated) ]),
+					E('td', { 'data-k': _('Refresh') }, [ s.interval > 0 ? _('Every %d h').format(s.interval) : _('Only by hand') ]),
 					E('td', { 'data-k': _('Profiles'), 'title': pn.join(', ') }, [ String(s.count != null ? s.count : pn.length) ]),
 					E('td', {}, [ E('div', { 'class': 'mvp-acts' }, [ ref, del ]) ])
 				]);

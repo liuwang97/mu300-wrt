@@ -90,7 +90,8 @@ status)
     jq -cn --argjson en "$(enabled && echo true || echo false)" --argjson run "$run" --argjson up "$up" \
         --argjson ks "$([ "$ks" = 1 ] && echo true || echo false)" --arg v6 "${v6:-auto}" --argjson prof "$prof" \
         --argjson eng "$eng" --argjson miss "$miss" --argjson exit_ip "$exit_ip" \
-        '{version:"v2.0.0-fake", enabled:$en, running:$run,
+        --argjson since "$( [ -s /run/mu300-vpn/iface ] && date -r /run/mu300-vpn/iface +%s || echo null)" \
+        '{version:"v2.0.0-fake", enabled:$en, running:$run, since:(if $run then $since else null end),
           kill_switch:{setting:$ks, active:($ks and $en)},
           ipv6:{setting:$v6, tunnel:($up and $prof.type == "wireguard" and $v6 != "0"), guard:($up and ($prof.type != "wireguard" or $v6 == "0"))},
           profile:$prof, engine:$eng,
@@ -173,7 +174,9 @@ engine)
 subscription)
     sub=${1:-list}; [ $# -eq 0 ] || shift
     case $sub in
-    add) name=$1; read -r url || true; type=${4:-auto}; id=$(slug "$name"); sleep 2
+    add) name=$1; read -r url || true; type=auto; iv=; shift 2
+        while [ $# -gt 0 ]; do case $1 in --type) type=$2; shift 2 ;; --interval) iv=$2; shift 2 ;; *) shift ;; esac; done
+        id=$(slug "$name"); sleep 2
         case $url in *fail*) die "the subscription could not be fetched: HTTP 403" ;; esac
         mkdir -p "$S/$id"; (umask 077; echo "$url" > "$S/$id/url")
         host=${url#*://}; host=${host%%/*}
@@ -181,8 +184,10 @@ subscription)
         for i in 1 2 3; do echo "vless://00000000-0000-0000-0000-00000000000$i@node$i.$host:443?security=tls#$name $i" > "$f"
             ids="$ids $(new_profile xray "$name $i" "$f" subscription "$id")"; done; rm -f "$f"
         jq -cn --arg id "$id" --arg name "$name" --arg type "$type" --arg host "$host" --arg ids "$ids" --argjson now "$(date +%s)" \
+            --arg iv "$iv" \
             '{id:$id, name:$name, type:$type, format:(if $type == "auto" then "links" else $type end), host:("http://" + $host), updated:$now,
-              count:($ids | split(" ") | map(select(. != "")) | length), profiles:($ids | split(" ") | map(select(. != "")))}' > "$S/$id/meta.json"
+              count:($ids | split(" ") | map(select(. != "")) | length), interval:($iv | tonumber? // null), insecure:false,
+              profiles:($ids | split(" ") | map(select(. != "")))}' > "$S/$id/meta.json"
         echo "subscription $id: 3 profiles" ;;
     list) printf '['; first=1; for d in "$S"/*/; do [ -f "$d/meta.json" ] || continue; [ $first = 1 ] || printf ','; first=0; cat "$d/meta.json" | tr -d '\n'; done; echo ']' ;;
     refresh) sleep 2; for d in "$S"/*/; do [ -f "$d/meta.json" ] || continue
@@ -204,7 +209,8 @@ latency)
             else {id, host:.server.host, port:.server.port, ms:((.id | explode | add) % 300 + 20), via:$via, error:null} end' "$P/$1/meta.json"
     }
     if [ "${1:-}" = --all ]; then sleep 2; for d in "$P"/*/; do [ -f "$d/meta.json" ] && one "$(basename "$d")"; done | jq -s 'if length == 1 then .[0] else . end'
-    else need "${1:-}"; one "$1"; fi ;;
+    else need "${1:-}"; r=$(one "$1"); if printf '%s' "$r" | jq -e '.ms == null' >/dev/null; then
+        printf '%s' "$r" | jq -c '{error}'; printf '%s' "$r" | jq -r .error >&2; exit 1; fi; printf '%s\n' "$r"; fi ;;
 settings)
     case ${1:-get} in
     get) cat "$D/settings"; echo "XRAY="; echo "DAE=" ;;

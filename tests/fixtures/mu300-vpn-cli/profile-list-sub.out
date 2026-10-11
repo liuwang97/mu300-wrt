@@ -9,7 +9,7 @@
     "source": "manual",
     "subscription": null,
     "stale": false,
-    "created": 1791713430,
+    "created": 1791730552,
     "server": {
       "host": "wg.example.org",
       "port": 51820
@@ -30,7 +30,7 @@
     "source": "subscription",
     "subscription": "my-provider",
     "stale": false,
-    "created": 1791713467,
+    "created": 1791730564,
     "server": {
       "host": "n1.example.com",
       "port": 443
@@ -54,7 +54,7 @@
     "source": "subscription",
     "subscription": "my-provider",
     "stale": false,
-    "created": 1791713467,
+    "created": 1791730564,
     "server": {
       "host": "n2.example.com",
       "port": 443
@@ -78,7 +78,7 @@
     "source": "manual",
     "subscription": null,
     "stale": false,
-    "created": 1791713430,
+    "created": 1791730552,
     "server": {
       "host": "vpn.example.com",
       "port": 443
@@ -102,7 +102,7 @@
     "source": "manual",
     "subscription": null,
     "stale": false,
-    "created": 1791713430,
+    "created": 1791730552,
     "server": {
       "host": "tr.example.net",
       "port": 443

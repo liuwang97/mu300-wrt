@@ -381,6 +381,12 @@ class Refusals(Mu300Vpn):
             ('sub no name', 'sub_add', {'name': '', 'url': URL}),
             ('sub url ftp', 'sub_add', {'name': 'x', 'url': 'ftp://x/y'}),
             ('sub type', 'sub_add', {'name': 'x', 'url': URL, 'type': 'clash'}),
+            ('sub plain http', 'sub_add', {'name': 'x', 'url': 'http://sub.example.com/x'}),
+            ('url plain http', 'profile_add', {'source': 'url', 'data': 'http://sub.example.com/x'}),
+            ('sub interval 0', 'sub_add', {'name': 'x', 'url': URL, 'interval': '0'}),
+            ('sub interval 1000', 'sub_add', {'name': 'x', 'url': URL, 'interval': '1000'}),
+            ('sub interval word', 'sub_add', {'name': 'x', 'url': URL, 'interval': 'daily'}),
+            ('sub interval option', 'sub_add', {'name': 'x', 'url': URL, 'interval': '--insecure'}),
             ('sub keep 2', 'sub_remove', {'id': 'mine', 'keep': '2'}),
             ('engine alias', 'engine_install', {'name': 'singbox'}),
             ('engine hev', 'engine_install', {'name': 'hev-socks5-tunnel'}),
@@ -515,12 +521,18 @@ class Passthrough(Mu300Vpn):
             self.assertEqual(cmd, [str(self.vpn), 'profile', 'import', '--url', '-', 'Dl'])
             self.assertEqual((Path(stage2) / 'in').read_text(), URL + '\n')
             self.clean_job()
+            # with a refresh interval
+            obj, recs, _ = self.run1(shell, 'sub_add', {'name': 'Mine', 'url': URL, 'interval': '24'})
+            (stage, flag), cmd = self.job_cmd(recs[0])
+            self.assertEqual(cmd, [str(self.vpn), 'subscription', 'add', 'Mine', '-', '--type', 'auto', '--interval', '24'])
+            self.clean_job()
 
     def test_long_work_runs_as_the_one_task(self):
         cases = [
             ('latency', {'id': 'all'}, 'latency-all', '1', [str(self.vpn), 'latency', '--all', '--json']),
             ('sub_refresh', {'id': 'all'}, 'sub-refresh', '0', [str(self.vpn), 'subscription', 'refresh', '--all']),
             ('sub_refresh', {'id': 'mine'}, 'sub-refresh', '0', [str(self.vpn), 'subscription', 'refresh', 'mine']),
+            ('sub_refresh', {'id': 'due'}, 'sub-refresh', '0', [str(self.vpn), 'subscription', 'refresh', '--due']),
             ('engine_install', {'name': 'dae'}, 'engine-install', '0', [str(self.vpn), 'engine', 'install', 'dae']),
             ('engine_install', {'name': 'openvpn', 'source': 'release'}, 'engine-install', '0',
              [str(self.vpn), 'engine', 'install', 'openvpn']),
@@ -944,7 +956,9 @@ class Contract(Mu300Vpn):
             ('vpn.subscription.list', 'sub-list', 'subscriptions', {},
              lambda o: self.assertEqual((o['subscriptions'][0]['format'], o['subscriptions'][0]['count']), ('links', 2))),
             ('vpn.latency', 'latency-one', 'latency', {'id': 'trojan'},
-             lambda o: self.assertEqual(o['result']['ms'], 40)),
+             lambda o: self.assertEqual(o['result'], json.loads(cli_out('latency-one')))),
+            ('vpn.status', 'status-running', 'status', {},
+             lambda o: self.assertIn('since', o['status'])),
             ('vpn.latency', 'latency-udp', 'latency', {'id': 'home-wg'},
              lambda o: self.assertEqual((o['ok'], o['result']['error']), (1, 'udp'))),
             ('vpn.use', 'use-missing', 'use', {'id': 'nosuch'},

@@ -32,7 +32,7 @@ var call = {
 	profileReveal: decl('profile_reveal', [ 'id' ]),
 	profileEdit: decl('profile_edit', [ 'id', 'config' ]),
 	latency: decl('latency', [ 'id' ]),
-	subAdd: decl('sub_add', [ 'name', 'url', 'type' ]),
+	subAdd: decl('sub_add', [ 'name', 'url', 'type', 'interval' ]),
 	subRefresh: decl('sub_refresh', [ 'id' ]),
 	subRemove: decl('sub_remove', [ 'id', 'keep' ]),
 	engineInstall: decl('engine_install', [ 'name', 'source', 'unverified' ]),

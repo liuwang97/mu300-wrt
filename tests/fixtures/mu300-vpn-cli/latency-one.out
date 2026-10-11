@@ -2,7 +2,7 @@
   "id": "trojan",
   "host": "tr.example.net",
   "port": 443,
-  "ms": 40,
+  "ms": 50,
   "via": "direct",
   "error": null
 }

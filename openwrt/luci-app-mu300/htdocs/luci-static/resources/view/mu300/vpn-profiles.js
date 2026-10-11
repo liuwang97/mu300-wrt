@@ -121,8 +121,8 @@ return view.extend({
 				if (!r.data.trim()) { M.toast(_('The config is empty'), { type: 'error' }); return null; }
 			} else if (mode === 'url') {
 				r.data = url.value.trim();
-				if (!/^https?:\/\/[A-Za-z0-9.-]+(:[0-9]+)?(\/\S*)?$/.test(r.data)) {
-					M.toast(_('Not an http or https URL'), { type: 'error', timeout: 6000 });
+				if (!/^https:\/\/[A-Za-z0-9.-]+(:[0-9]+)?(\/\S*)?$/.test(r.data)) {
+					M.toast(_('Not an https URL'), { type: 'error', timeout: 6000 });
 					return null;
 				}
 			}

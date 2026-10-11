@@ -5,8 +5,10 @@
     "type": "auto",
     "format": "links",
     "host": "http://127.0.0.1",
-    "updated": 1791713467,
+    "updated": 1791730564,
     "count": 2,
+    "interval": null,
+    "insecure": true,
     "profiles": [
       "node-1",
       "node-2"

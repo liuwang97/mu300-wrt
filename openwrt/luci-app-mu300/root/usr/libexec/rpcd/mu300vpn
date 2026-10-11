@@ -32,7 +32,7 @@
 #   profile_reveal id   profile show --json --reveal: the raw config (credentials included), for the editor
 #   profile_edit id config   profile edit ID - (checked by the CLI before it replaces anything)
 #   latency id          one profile inline, all as a task
-#   sub_add name url type, sub_refresh id|all (a task), sub_remove id keep
+#   sub_add name url type interval, sub_refresh id|all|due (a task), sub_remove id keep
 #   engine_install name source unverified (a task), engine_remove name
 #   core_install source unverified   the vpn extra itself (mu300-extra install vpn, a task); an uploaded tarball is
 #                       installed only when it is in the official SHA256SUMS, or with unverified=1 (see engines below)
@@ -110,7 +110,8 @@ ID='[a-z0-9][a-z0-9-]{0,31}'
 ENGINE='(xray|sing-box|mihomo|dae|wireguard|openvpn)'
 # (POSIX regular expressions count to 255 at most: the lengths of a link and a URL are checked by long_ok)
 LINK='(vless|vmess|trojan|ss|hysteria2|hy2|tuic|wireguard|wg)://[!-~]+'
-URL='https?://[A-Za-z0-9.-]{1,253}(:[0-9]{1,5})?(/[!-~]*)?'
+# https only: the CLI checks the certificate and takes plain http only with --insecure, which the panel never sets
+URL='https://[A-Za-z0-9.-]{1,253}(:[0-9]{1,5})?(/[!-~]*)?'
 long_ok() { [ ${#1} -le "$2" ]; }
 IP4='((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])'
 IP6='[0-9A-Fa-f]{0,4}(:[0-9A-Fa-f]{0,4}){2,7}'
@@ -399,7 +400,7 @@ m_profile_add() {
         text) text_ok "$data" || { refuse 'The config is empty, too large or holds control characters'; return; } ;;
         file) [ -z "$data" ] || { refuse 'Invalid profile request'; return; } ;;
         url)
-            { long_ok "$data" 2048 && allowed "$data" "$URL"; } || { refuse 'Not an http or https URL'; return; }
+            { long_ok "$data" 2048 && allowed "$data" "$URL"; } || { refuse 'Not an https URL'; return; }
             [ "$type" = auto ] || { refuse 'A config from a URL takes the type it says'; return; } ;;
     esac
     need_vpn || return
@@ -540,29 +541,40 @@ m_latency() {
 
 # ----------------------------------------------------------- subscriptions
 m_sub_add() {
-    local name url type
+    local name url type interval
     inp '@.name'; name=$V
     inp '@.url'; url=$V
     inp '@.type'; type=$V
+    inp '@.interval'; interval=$V
+    # hours between automatic refreshes (subscription refresh --due), none when empty
+    allowed "$interval" '([1-9][0-9]{0,2})?' || { refuse 'The refresh interval is 1 to 999 hours'; return; }
     name_ok "$name" || { refuse 'Invalid name: 1-64 characters, no control characters'; return; }
     url=$(printf '%s' "$url" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
-    { long_ok "$url" 2048 && allowed "$url" "$URL"; } || { refuse 'Not an http or https URL'; return; }
+    { long_ok "$url" 2048 && allowed "$url" "$URL"; } || { refuse 'Not an https URL'; return; }
     allowed "${type:-auto}" '(auto|links|mihomo|dae)' || { refuse 'Unknown subscription type'; return; }
     need_vpn || return
     # the URL holds the subscription's token: on stdin, from a 0600 file the task removes once it is open
     busy_or_lock || return
     secret_file "$url" || { lock_drop; refuse 'The runtime directory is not safe; nothing was run'; return; }
-    job_start sub-add 180 0 "$VPN" subscription add "$name" - --type "${type:-auto}"
+    if [ -n "$interval" ]; then
+        job_start sub-add 180 0 "$VPN" subscription add "$name" - --type "${type:-auto}" --interval "$interval"
+    else
+        job_start sub-add 180 0 "$VPN" subscription add "$name" - --type "${type:-auto}"
+    fi
 }
 
 m_sub_refresh() {
     local id
     inp '@.id'; id=$V
-    allowed "$id" "(all|$ID)" || { refuse 'Invalid subscription id'; return; }
+    # all, due (the ones whose interval has passed: the CLI installs no timer) or one id
+    allowed "$id" "(all|due|$ID)" || { refuse 'Invalid subscription id'; return; }
     need_vpn || return
     busy_or_lock || return
-    if [ "$id" = all ]; then job_start sub-refresh 300 0 "$VPN" subscription refresh --all
-    else job_start sub-refresh 180 0 "$VPN" subscription refresh "$id"; fi
+    case $id in
+        all) job_start sub-refresh 300 0 "$VPN" subscription refresh --all ;;
+        due) job_start sub-refresh 300 0 "$VPN" subscription refresh --due ;;
+        *)   job_start sub-refresh 180 0 "$VPN" subscription refresh "$id" ;;
+    esac
 }
 
 m_sub_remove() {
@@ -740,7 +752,7 @@ do_list() {
 	"profile_reveal": { "id": "String" },
 	"profile_edit": { "id": "String", "config": "String" },
 	"latency": { "id": "String" },
-	"sub_add": { "name": "String", "url": "String", "type": "String" },
+	"sub_add": { "name": "String", "url": "String", "type": "String", "interval": "String" },
 	"sub_refresh": { "id": "String" },
 	"sub_remove": { "id": "String", "keep": "String" },
 	"engine_install": { "name": "String", "source": "String", "unverified": "String" },
