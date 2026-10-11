@@ -19,8 +19,9 @@
 #   engines [check]    engines --json [--check] (check: the release's VERSIONS, a few hundred bytes)
 #   subscriptions      subscription list --json (the URL's host only)
 #   settings           settings get, as an object of the keys this page shows
-#   job                the background task: kind, state, the last lines of its output, a JSON result
+#   (every read returns masked data only: no credential, no URL path or query)
 # Write methods (the ACL's write grant):
+#   job                 the background task: kind, state, the last lines of its output (URLs redacted), a JSON result
 #   service op          on|off|restart
 #   killswitch value    on|off
 #   use id              the active profile
@@ -32,13 +33,15 @@
 #   profile_edit id config   profile edit ID - (checked by the CLI before it replaces anything)
 #   latency id          one profile inline, all as a task
 #   sub_add name url type, sub_refresh id|all (a task), sub_remove id keep
-#   engine_install name source (a task), engine_remove name
-#   core_install source the vpn extra itself (mu300-extra install vpn, a task)
+#   engine_install name source unverified (a task), engine_remove name
+#   core_install source unverified   the vpn extra itself (mu300-extra install vpn, a task); an uploaded tarball is
+#                       installed only when it is in the official SHA256SUMS, or with unverified=1 (see engines below)
 #   setting_set key value
 #   logs engine lines   the service's log (it may name the hosts the device talked to: write, as the AT history)
 #
 # Long work (downloads, a refresh, a latency round over every profile) runs detached as the one background task,
-# bounded in time; the page polls `job`. Only one task at a time.
+# bounded in time; the page polls `job`. Only one task at a time, started under a lock; each request's files (a
+# secret for stdin, an upload) live in a fresh 0700 directory of its own under the root-only runtime directory.
 
 export PATH="$PATH:/opt/mu300/bin:/opt/mu300/busybox-bin:/usr/sbin:/sbin"
 
@@ -47,6 +50,7 @@ LIB=${0%/*}/../../share/unisoc-modem/lib.sh
 . "$LIB"
 
 VPN=${MU300_VPN_CMD:-/opt/mu300/bin/mu300-vpn}
+SELF=$(cd "${0%/*}" 2>/dev/null && pwd)/${0##*/}
 EXTRA=${MU300_EXTRA_CMD:-/opt/mu300/bin/mu300-extra}
 VPN_RUN=${MU300_VPN_RUN:-/run/mu300-vpn}
 # The two paths the panel may upload to (the ACL grants exactly these): a profile's config, and an extra's tarball
@@ -142,7 +146,7 @@ cli() {
     OUT=$(head -c "$OUT_MAX" "$_o" 2>/dev/null)
     ERR=$(printf '%s' "$OUT" | jsonfilter -e '@.error' 2>/dev/null | head -n 1)
     [ -n "$ERR" ] || ERR=$(tr -d '\r' < "$_e" 2>/dev/null | sed '/^[[:space:]]*$/d' | tail -n 1)
-    ERR=$(printf '%s' "$ERR" | LC_ALL=C tr -d '\000-\037\177' | head -c "$ERR_MAX")
+    ERR=$(printf '%s' "$ERR" | LC_ALL=C tr -d '\000-\037\177' | redact | head -c "$ERR_MAX")
     rm -f "$_o" "$_e"
     case $RC in 124|143) ERR='timed out' ;; esac
     return "$RC"
@@ -164,50 +168,93 @@ arg_ok() { case $1 in -*) return 1 ;; esac; }
 
 # ------------------------------------------------------------------- tasks
 job_running() { [ -s "$JOB/pid" ] && kill -0 "$(cat "$JOB/pid" 2>/dev/null)" 2>/dev/null; }
-# job_start KIND SECS IN JSON CMD ARG...: CMD detached in a new session, the one background task. IN: a file in the
-# job directory that becomes CMD's stdin and is removed as soon as it is open (a secret), or empty. JSON=1: CMD's
-# stdout is the task's JSON result, its stderr the log; 0: both are the log. At most SECS seconds (timeout, where
-# the system has it). Every file of the job directory named upload.* is removed when it ends.
+
+# The panel's lock (a directory: mkdir is atomic): held by a request from its check that no task runs, through the
+# staging of its upload, until the task's pid is written - so two requests can never both start a task, nor can one
+# stage a file while another task runs. A lock whose holder is gone is taken over. Released when the request ends.
+LOCK=$JOB/lock
+LOCKED=
+lock_take() {
+    _n=0
+    while ! mkdir "$LOCK" 2>/dev/null; do
+        _h=$(cat "$LOCK/pid" 2>/dev/null)
+        if [ -n "$_h" ] && ! kill -0 "$_h" 2>/dev/null; then rm -rf "$LOCK"; continue; fi
+        _n=$((_n + 1)); [ "$_n" -le 20 ] || return 1
+        sleep 1
+    done
+    echo $$ > "$LOCK/pid"
+    LOCKED=1
+}
+lock_drop() { [ -z "$LOCKED" ] || rm -rf "$LOCK"; LOCKED=; }
+# busy_or_lock: the lock taken and no task running, or the refusal (and 1)
+busy_or_lock() {
+    lock_take || { refuse 'The VPN panel is busy, try again'; return 1; }
+    if job_running; then lock_drop; refuse 'Another VPN task is still running'; return 1; fi
+}
+
+# stage_new: a new private directory for one request's files (mktemp -d: a fresh unpredictable name, mode 0700,
+# under the root-only job directory), in STAGE. A task removes its own when it ends; an inline request at its end.
+stage_new() { STAGE=$(mktemp -d "$JOB/stage.XXXXXX" 2>/dev/null) && [ -d "$STAGE" ] && [ ! -L "$STAGE" ] && chmod 700 "$STAGE"; }
+stage_drop() { [ -z "${STAGE:-}" ] || rm -rf "$STAGE"; STAGE=; }
+
+# job_start KIND SECS JSON CMD ARG...: CMD detached in a new session, the one background task; the caller holds the
+# lock (busy_or_lock) and its stage directory, if any, is STAGE. STAGE/in, if there, becomes CMD's stdin and is
+# removed as soon as it is open (a secret); the whole stage directory goes when the task ends. JSON=1: CMD's stdout is
+# the task's JSON result, its stderr the log; 0: both are the log. At most SECS seconds (timeout, where the system
+# has it). The pid is written before the lock is released ($! is the task's shell: setsid execs it).
 job_start() {
-    _kind=$1 _secs=$2 _in=$3 _json=$4; shift 4
-    if job_running; then
-        [ -z "$_in" ] || rm -f "$_in"
-        refuse 'Another VPN task is still running'; return 1
-    fi
+    _kind=$1 _secs=$2 _json=$3; shift 3
     rm -f "$JOB/pid" "$JOB/result" "$JOB/out"
-    printf '%s\n' "$_kind" > "$JOB/kind"
-    echo running > "$JOB/state"
-    : > "$JOB/log"
-    date +%s > "$JOB/started"
+    (umask 077
+     printf '%s\n' "$_kind" > "$JOB/kind"
+     echo running > "$JOB/state"
+     : > "$JOB/log"
+     date +%s > "$JOB/started")
     setsid sh -c '
-        echo $$ > "$1/pid"; j=$1; secs=$2; in=$3; json=$4; shift 4
-        if [ -n "$in" ]; then exec 3<"$in"; rm -f "$in"; else exec 3</dev/null; fi
+        echo $$ > "$1/pid"; j=$1; secs=$2; st=$3; json=$4; shift 4
+        umask 077
+        if [ -n "$st" ] && [ -f "$st/in" ]; then exec 3<"$st/in"; rm -f "$st/in"; else exec 3</dev/null; fi
         if command -v timeout >/dev/null 2>&1; then set -- timeout "$secs" "$@"; fi
         if [ "$json" = 1 ]; then "$@" <&3 >"$j/out" 2>"$j/log"; else "$@" <&3 >"$j/log" 2>&1; fi
         rc=$?
         exec 3<&-
         if [ "$json" = 1 ]; then head -c 262144 "$j/out" > "$j/result"; fi
-        rm -f "$j/out" "$j"/upload.*
+        rm -f "$j/out"
+        [ -z "$st" ] || rm -rf "$st"
         tail -c 16384 "$j/log" > "$j/log.t" && mv "$j/log.t" "$j/log"
         if [ "$rc" = 0 ]; then echo done > "$j/state"; else echo failed > "$j/state"; fi
-        rm -f "$j/pid"' mu300vpn-job "$JOB" "$_secs" "$_in" "$_json" "$@" </dev/null >/dev/null 2>&1 &
+        rm -f "$j/pid"' mu300vpn-job "$JOB" "$_secs" "${STAGE:-}" "$_json" "$@" </dev/null >/dev/null 2>&1 &
+    echo "$!" > "$JOB/pid"
+    STAGE=
+    lock_drop
     printf '{"ok":1,"started":1,"kind":%s}\n' "$(json_str "$_kind")"
 }
-# take_upload SRC DEST: the file the page uploaded to SRC (/tmp: anyone may write there) renamed into the root-only
-# job directory first, and only that copy checked and used - nothing at the /tmp path can be swapped in between
+# links FILE: its hard link count
+links() { ls -ld "$1" 2>/dev/null | awk '{ print $2 }'; }
+# take_upload SRC NAME MAX: the file the page uploaded to SRC (/tmp: anyone may write there) renamed into STAGE as
+# NAME first; only that copy, which no one but root can reach, is checked (a regular file of ours, not a link, one
+# hard link, not empty, at most MAX bytes) and then used - nothing at the /tmp path can be swapped in between. UP: its
+# path. 1: no usable upload, 2: too large.
 take_upload() {
-    rm -f "$2"
+    UP=$STAGE/$2
     [ -f "$1" ] && [ ! -L "$1" ] || return 1
-    mv -f -- "$1" "$2" 2>/dev/null || return 1
-    [ -f "$2" ] && [ ! -L "$2" ] && [ -s "$2" ] || { rm -f "$2"; return 1; }
+    mv -f -- "$1" "$UP" 2>/dev/null || return 1
+    if [ ! -f "$UP" ] || [ -L "$UP" ] || [ ! -O "$UP" ] || [ "$(links "$UP")" != 1 ] || [ ! -s "$UP" ]; then
+        rm -f "$UP"; return 1
+    fi
+    chmod 600 "$UP"
+    [ "$(wc -c < "$UP")" -le "$3" ] || { rm -f "$UP"; return 2; }
 }
-# secret_file TEXT: TEXT in a new 0600 file of the job directory (its path in SECRET), for the CLI's stdin: never a
+# secret_file TEXT: TEXT in STAGE/in (a new stage directory, 0600), its path in SECRET, for the CLI's stdin: never a
 # pipe into cli, which would run it in a subshell (OUT, ERR and RC lost), never an argument
 secret_file() {
-    SECRET=$JOB/in.$$
-    rm -f "$SECRET"
+    stage_new || return 1
+    SECRET=$STAGE/in
     (umask 077; printf '%s\n' "$1" > "$SECRET")
 }
+# redact: every URL or share link in the text reduced to its scheme (a log or a message must never carry a token,
+# a password or a UUID, whatever the program that wrote it)
+redact() { sed -E 's#([A-Za-z][A-Za-z0-9+.-]{1,15}://)[^[:space:]"'"'"'<>]+#\1[hidden]#g'; }
 
 m_job() {
     local kind state started log result
@@ -222,7 +269,7 @@ m_job() {
     fi
     case $state in running|done|failed) ;; *) state= ;; esac
     case $kind in core-install|engine-install|sub-add|sub-refresh|latency-all|import-url) ;; *) kind= ;; esac
-    log=$(tail -n 30 "$JOB/log" 2>/dev/null | tr -d '\r' | head -c 8192)
+    log=$(tail -n 30 "$JOB/log" 2>/dev/null | tr -d '\r' | redact | head -c 8192)
     result=$(json_val "$(cat "$JOB/result" 2>/dev/null)") || result=null
     printf '{"ok":1,"job":{"kind":%s,"state":%s,"started":%s,"log":%s,"result":%s}}\n' \
         "$(json_str_or_null "$kind")" "$(json_str_or_null "$state")" "${started:-null}" \
@@ -355,20 +402,24 @@ m_profile_add() {
     [ "$type" = auto ] || [ -n "$name" ] || name=$type
     case $source in
         url)
-            secret_file "$data" || { refuse 'The runtime directory is not safe; nothing was run'; return; }
-            if [ -n "$name" ]; then job_start import-url 120 "$SECRET" 0 "$VPN" profile import --url - "$name"
-            else job_start import-url 120 "$SECRET" 0 "$VPN" profile import --url -; fi
+            busy_or_lock || return
+            secret_file "$data" || { lock_drop; refuse 'The runtime directory is not safe; nothing was run'; return; }
+            if [ -n "$name" ]; then job_start import-url 120 0 "$VPN" profile import --url - "$name"
+            else job_start import-url 120 0 "$VPN" profile import --url -; fi
             return ;;
         file)
-            file=$JOB/upload.profile.$$
-            take_upload "$UPLOAD_CFG" "$file" || { refuse 'No uploaded file'; return; }
-            [ "$(wc -c < "$file")" -le 1048576 ] || { rm -f "$file"; refuse 'The file is larger than 1 MiB'; return; }
+            stage_new || { refuse 'The runtime directory is not safe; nothing was run'; return; }
+            take_upload "$UPLOAD_CFG" profile 1048576; _r=$?
+            case $_r in
+                1) stage_drop; refuse 'No uploaded file'; return ;;
+                2) stage_drop; refuse 'The file is larger than 1 MiB'; return ;;
+            esac
             if [ "$type" = auto ]; then
-                if [ -n "$name" ]; then cli profile import - "$name" < "$file"; else cli profile import - < "$file"; fi
+                if [ -n "$name" ]; then cli profile import - "$name" < "$UP"; else cli profile import - < "$UP"; fi
             else
-                cli profile add "$type" "$name" - < "$file"
+                cli profile add "$type" "$name" - < "$UP"
             fi
-            RC=$?; rm -f "$file" ;;
+            RC=$?; stage_drop ;;
         *)
             secret_file "$data" || { refuse 'The runtime directory is not safe; nothing was run'; return; }
             if [ "$type" = auto ]; then
@@ -376,7 +427,7 @@ m_profile_add() {
             else
                 cli profile add "$type" "$name" - < "$SECRET"
             fi
-            RC=$?; rm -f "$SECRET" ;;
+            RC=$?; stage_drop ;;
     esac
     [ "$RC" = 0 ] || { cli_fail 'The profile could not be added'; return; }
     # the CLI prints the new profile's id
@@ -433,7 +484,7 @@ m_profile_option() {
     case $key in
         OVPN_*)
             secret_file "$value" || { refuse 'The runtime directory is not safe; nothing was run'; return; }
-            cli profile set "$id" "$key" - < "$SECRET"; RC=$?; rm -f "$SECRET" ;;
+            cli profile set "$id" "$key" - < "$SECRET"; RC=$?; stage_drop ;;
         *) cli profile set "$id" "$key" "$value" </dev/null ;;
     esac
     [ "$RC" = 0 ] || { cli_fail 'The option could not be set'; return; }
@@ -461,7 +512,7 @@ m_profile_edit() {
     text_ok "$config" || { refuse 'The config is empty, too large or holds control characters'; return; }
     need_vpn || return
     secret_file "$config" || { refuse 'The runtime directory is not safe; nothing was run'; return; }
-    cli profile edit "$id" - < "$SECRET"; RC=$?; rm -f "$SECRET"
+    cli profile edit "$id" - < "$SECRET"; RC=$?; stage_drop
     [ "$RC" = 0 ] || { cli_fail 'The config was not saved'; return; }
     printf '{"ok":1}\n'
 }
@@ -472,7 +523,8 @@ m_latency() {
     allowed "$id" "(all|$ID)" || { refuse 'Invalid profile id'; return; }
     need_vpn || return
     if [ "$id" = all ]; then
-        job_start latency-all 300 '' 1 "$VPN" latency --all --json
+        busy_or_lock || return
+        job_start latency-all 300 1 "$VPN" latency --all --json
         return
     fi
     cli latency "$id" --json </dev/null
@@ -493,8 +545,9 @@ m_sub_add() {
     allowed "${type:-auto}" '(auto|links|mihomo|dae)' || { refuse 'Unknown subscription type'; return; }
     need_vpn || return
     # the URL holds the subscription's token: on stdin, from a 0600 file the task removes once it is open
-    secret_file "$url" || { refuse 'The runtime directory is not safe; nothing was run'; return; }
-    job_start sub-add 180 "$SECRET" 0 "$VPN" subscription add "$name" - --type "${type:-auto}"
+    busy_or_lock || return
+    secret_file "$url" || { lock_drop; refuse 'The runtime directory is not safe; nothing was run'; return; }
+    job_start sub-add 180 0 "$VPN" subscription add "$name" - --type "${type:-auto}"
 }
 
 m_sub_refresh() {
@@ -502,8 +555,9 @@ m_sub_refresh() {
     inp '@.id'; id=$V
     allowed "$id" "(all|$ID)" || { refuse 'Invalid subscription id'; return; }
     need_vpn || return
-    if [ "$id" = all ]; then job_start sub-refresh 300 '' 0 "$VPN" subscription refresh --all
-    else job_start sub-refresh 180 '' 0 "$VPN" subscription refresh "$id"; fi
+    busy_or_lock || return
+    if [ "$id" = all ]; then job_start sub-refresh 300 0 "$VPN" subscription refresh --all
+    else job_start sub-refresh 180 0 "$VPN" subscription refresh "$id"; fi
 }
 
 m_sub_remove() {
@@ -519,25 +573,82 @@ m_sub_remove() {
 }
 
 # ----------------------------------------------------------------- engines
-# the release file of an engine's extra, which an offline install names
+# An install from the release is mu300-extra's own: it downloads from the release hosts and checks every file against
+# the release's SHA256SUMS. An uploaded tarball is the user's file and runs as root (its hooks): it is installed only
+# when its SHA-256 is in the SHA256SUMS of the VPN module's latest release, fetched over HTTPS by the task itself
+# (MU300_VPN_SUMS_URL: the tests), under the name of the asset it claims to be - or, when that is impossible
+# (offline, an older release), when the page sent unverified=1 after the user confirmed a clearly labelled step.
+# An uploaded SHA256SUMS would prove nothing, so none is taken. The file checked is the very file installed: staged
+# in the task's own 0700 directory, which only root can reach, under the lock.
+SUMS_URL=${MU300_VPN_SUMS_URL:-https://github.com/dikeckaan/mu300-linux-vpn/releases/latest/download/SHA256SUMS}
+PKG_MAX=268435456
+# the release files an upload for an engine (or the module) may be
 engine_asset() {
     case $1 in xray) echo mu300-linux-vpn-xray.tar.gz ;; sing-box) echo mu300-linux-vpn-singbox.tar.gz ;;
-        mihomo) echo mu300-linux-vpn-mihomo.tar.gz ;; dae) echo mu300-linux-vpn-dae.tar.gz ;; esac
+        mihomo) echo mu300-linux-vpn-mihomo.tar.gz ;; dae) echo mu300-linux-vpn-dae.tar.gz ;;
+        core) echo 'mu300-linux-vpn-core.tar.gz mu300-linux-vpn.tar.gz' ;; esac
+}
+sha256_of() {
+    if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | awk '{ print $1 }'
+    elif command -v openssl >/dev/null 2>&1; then openssl dgst -sha256 "$1" | awk '{ print $NF }'
+    else return 1; fi
+}
+# fetch_sums: the official SHA256SUMS on stdout (HTTPS only, 30 s, 64 KiB at most), or 1
+fetch_sums() {
+    case $SUMS_URL in https://*) ;; *) return 1 ;; esac
+    if command -v curl >/dev/null 2>&1; then curl -fsSL --proto '=https' --max-time 30 "$SUMS_URL"
+    elif command -v uclient-fetch >/dev/null 2>&1; then uclient-fetch -q -T 30 -O - "$SUMS_URL"
+    elif command -v wget >/dev/null 2>&1; then wget -q -T 30 -O - "$SUMS_URL"
+    else return 1; fi
+}
+# do_verify FILE ASSETS UNVERIFIED CMD...: (the task, as "mu300vpn __verify ...") FILE's SHA-256 looked up in the
+# official SHA256SUMS under one of ASSETS; then CMD, which installs FILE. Not found: only with UNVERIFIED=1.
+do_verify() {
+    _f=$1 _assets=$2 _unv=$3; shift 3
+    if [ ! -f "$_f" ] || [ -L "$_f" ]; then echo "the uploaded file is gone" >&2; exit 1; fi
+    _sum=$(sha256_of "$_f") || { echo "no sha256sum on this system" >&2; exit 1; }
+    echo "SHA-256 of the uploaded file: $_sum"
+    _sums=$(fetch_sums 2>/dev/null | head -c 65536) || _sums=
+    if [ -n "$_sums" ] && printf '%s\n' "$_sums" | awk -v h="$_sum" -v a=" $_assets " '
+            { n = $2; sub(/^\*/, "", n) } tolower($1) == h && index(a, " " n " ") { f = 1 } END { exit !f }'; then
+        echo "verified: it is in the SHA256SUMS of the latest release of the VPN module"
+    elif [ "$_unv" = 1 ]; then
+        echo "NOT VERIFIED: $([ -n "$_sums" ] && echo "not in the SHA256SUMS of the latest release" || echo "the release's SHA256SUMS could not be fetched"); installed because you allowed an unverified file"
+    else
+        echo "not installed: $([ -n "$_sums" ] && echo "the file is not in the SHA256SUMS of the latest release of the VPN module" || echo "the release's SHA256SUMS could not be fetched to check it") (allow an unverified file to install it anyway)" >&2
+        exit 1
+    fi
+    exec "$@"
+}
+# stage_pkg ASSET: the uploaded tarball staged (STAGE, UP) under the lock, or the refusal and 1 (lock released)
+stage_pkg() {
+    stage_new || { lock_drop; refuse 'The runtime directory is not safe; nothing was run'; return 1; }
+    take_upload "$UPLOAD_PKG" "$1" "$PKG_MAX"
+    case $? in
+        0) return 0 ;;
+        2) stage_drop; lock_drop; refuse 'The file is too large'; return 1 ;;
+        *) stage_drop; lock_drop; refuse 'No uploaded file'; return 1 ;;
+    esac
 }
 m_engine_install() {
-    local name source file
+    local name source unv assets
     inp '@.name'; name=$V
     inp '@.source'; source=$V
+    inp '@.unverified'; unv=$V
     allowed "$name" "$ENGINE" || { refuse 'Unknown engine'; return; }
     allowed "${source:-release}" '(release|file)' || { refuse 'Unknown source'; return; }
+    allowed "$unv" '(0|1)?' || { refuse 'The unverified parameter must be 0 or 1'; return; }
     need_vpn || return
     if [ "$source" = file ]; then
         case $name in wireguard|openvpn) refuse 'This engine is a system package: it has no file to upload'; return ;; esac
-        file=$JOB/upload.$(engine_asset "$name")
-        take_upload "$UPLOAD_PKG" "$file" || { refuse 'No uploaded file'; return; }
-        job_start engine-install 1200 '' 0 "$VPN" engine install "$name" --from "$file"
+        assets=$(engine_asset "$name")
+        busy_or_lock || return
+        stage_pkg "$assets" || return
+        job_start engine-install 1200 0 sh "$SELF" __verify "$UP" "$assets" "${unv:-0}" \
+            "$VPN" engine install "$name" --from "$UP"
     else
-        job_start engine-install 1200 '' 0 "$VPN" engine install "$name"
+        busy_or_lock || return
+        job_start engine-install 1200 0 "$VPN" engine install "$name"
     fi
 }
 
@@ -546,23 +657,29 @@ m_engine_remove() {
     inp '@.name'; name=$V
     allowed "$name" "$ENGINE" || { refuse 'Unknown engine'; return; }
     need_vpn || return
-    job_running && { refuse 'Another VPN task is still running'; return; }
-    cli engine remove "$name" </dev/null || { cli_fail 'The engine could not be removed'; return; }
+    busy_or_lock || return
+    cli engine remove "$name" </dev/null; RC=$?
+    lock_drop
+    [ "$RC" = 0 ] || { cli_fail 'The engine could not be removed'; return; }
     printf '{"ok":1}\n'
 }
 
 # the module itself, when it is not there (or too old for this panel): mu300-extra install vpn
 m_core_install() {
-    local source file
+    local source unv
     inp '@.source'; source=$V
+    inp '@.unverified'; unv=$V
     allowed "${source:-release}" '(release|file)' || { refuse 'Unknown source'; return; }
+    allowed "$unv" '(0|1)?' || { refuse 'The unverified parameter must be 0 or 1'; return; }
     [ -x "$EXTRA" ] || { refuse 'mu300-extra is not on this system'; return; }
     if [ "$source" = file ]; then
-        file=$JOB/upload.mu300-linux-vpn-core.tar.gz
-        take_upload "$UPLOAD_PKG" "$file" || { refuse 'No uploaded file'; return; }
-        job_start core-install 1200 '' 0 "$EXTRA" install vpn --from "$file"
+        busy_or_lock || return
+        stage_pkg mu300-linux-vpn-core.tar.gz || return
+        job_start core-install 1200 0 sh "$SELF" __verify "$UP" "$(engine_asset core)" "${unv:-0}" \
+            "$EXTRA" install vpn --from "$UP"
     else
-        job_start core-install 1200 '' 0 "$EXTRA" install vpn
+        busy_or_lock || return
+        job_start core-install 1200 0 "$EXTRA" install vpn
     fi
 }
 
@@ -621,9 +738,9 @@ do_list() {
 	"sub_add": { "name": "String", "url": "String", "type": "String" },
 	"sub_refresh": { "id": "String" },
 	"sub_remove": { "id": "String", "keep": "String" },
-	"engine_install": { "name": "String", "source": "String" },
+	"engine_install": { "name": "String", "source": "String", "unverified": "String" },
 	"engine_remove": { "name": "String" },
-	"core_install": { "source": "String" },
+	"core_install": { "source": "String", "unverified": "String" },
 	"setting_set": { "key": "String", "value": "String" },
 	"logs": { "engine": "String", "lines": "String" }
 }
@@ -633,6 +750,11 @@ EOF
 case "${1:-}" in
 list)
     do_list
+    ;;
+__verify)
+    # the install task's first step (job_start runs it; rpcd only ever calls list and call)
+    shift
+    do_verify "$@"
     ;;
 call)
     INPUT=$(cat 2>/dev/null)
@@ -644,7 +766,9 @@ call)
         refuse 'The runtime directory is not safe; nothing was run'
         exit 0
     fi
-    # nothing of a reply is logged: replies can hold a config (profile_reveal)
+    # nothing of a reply is logged: replies can hold a config (profile_reveal). The lock and a stage directory go
+    # with the request, however it ends.
+    trap 'lock_drop; stage_drop' EXIT
     case ${2:-} in
         status)         m_status ;;
         profiles)       m_profiles ;;

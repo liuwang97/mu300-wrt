@@ -48,15 +48,12 @@ return view.extend({
 	install: function(btn, e, source) {
 		var self = this;
 		var size = e.size ? ' ' + _('(about %s)').format(M.fmtBytes(e.size)) : '';
+		var tick = function(job) { self.showLog(job); }, done = function(job) { self.showLog(job); self.reload(); };
 		var go = function() {
-			return V.start(btn, function() { return V.call.engineInstall(e.name, source); },
-				function(job) { self.showLog(job); }, function(job) { self.showLog(job); self.reload(); });
+			return V.start(btn, function() { return V.call.engineInstall(e.name, source, ''); }, tick, done);
 		};
-		if (source === 'file') {
-			return ui.uploadFile(V.UPLOAD_PKG).then(go, function(err) {
-				if (err && err.message && !/cancel/i.test(err.message)) M.toast(_('Upload failed: %s').format(err.message), { type: 'error' });
-			});
-		}
+		if (source === 'file')
+			return V.uploadPkg(btn, function(unv) { return V.call.engineInstall(e.name, 'file', unv); }, tick, done);
 		return M.confirmBox(_('Install %s?').format(V.engineName(e.name)),
 			(e.kind === 'package'
 				? _('It is installed from this system\'s package feed.')

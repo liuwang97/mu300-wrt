@@ -35,9 +35,9 @@ var call = {
 	subAdd: decl('sub_add', [ 'name', 'url', 'type' ]),
 	subRefresh: decl('sub_refresh', [ 'id' ]),
 	subRemove: decl('sub_remove', [ 'id', 'keep' ]),
-	engineInstall: decl('engine_install', [ 'name', 'source' ]),
+	engineInstall: decl('engine_install', [ 'name', 'source', 'unverified' ]),
 	engineRemove: decl('engine_remove', [ 'name' ]),
-	coreInstall: decl('core_install', [ 'source' ]),
+	coreInstall: decl('core_install', [ 'source', 'unverified' ]),
 	settingSet: decl('setting_set', [ 'key', 'value' ]),
 	logs: decl('logs', [ 'engine', 'lines' ])
 };
@@ -211,6 +211,25 @@ function start(btn, fn, onTick, onDone) {
 	});
 }
 
+/* An uploaded tarball runs as root (its install hooks): the backend installs it only when its SHA-256 is in the
+ * SHA256SUMS of the VPN module's latest release (fetched over HTTPS), unless the user allows an unverified file here,
+ * in a step of its own. uploadPkg(btn, fn(unverified), onTick, onDone): that choice, the upload, then the task. */
+function uploadPkg(btn, fn, onTick, onDone) {
+	return M.choiceBox(_('Verify the uploaded file'),
+		_('The uploaded file is checked against the SHA256SUMS of the VPN module\'s latest release, downloaded over HTTPS. When that is not possible (offline, an older release), it is installed only if you allow an unverified file: it then runs as root with no check.'), [
+			{ label: _('Cancel'), value: null },
+			{ label: _('Install it even if it cannot be verified'), value: '1', danger: true },
+			{ label: _('Install only a verified file'), value: '0' }
+		]).then(function(unv) {
+		if (unv == null) return;
+		return ui.uploadFile(UPLOAD_PKG).then(function() {
+			return start(btn, function() { return fn(unv); }, onTick, onDone);
+		}, function(e) {
+			if (e && e.message && !/cancel/i.test(e.message)) M.toast(_('Upload failed: %s').format(e.message), { type: 'error' });
+		});
+	});
+}
+
 /* The card a page shows instead of itself when the VPN module is not installed (or is a v1 module without the
  * machine-readable CLI): what it is, and the button that runs mu300-extra install vpn as a task. */
 function installCard(st, onDone) {
@@ -226,15 +245,11 @@ function installCard(st, onDone) {
 	if (st && st.extra) {
 		var dl = E('button', { 'class': 'mud-btn on', 'id': 'mvp-install-release' }, [ legacy ? _('Update the VPN module') : _('Install the VPN module') ]);
 		dl.addEventListener('click', function() {
-			start(dl, function() { return call.coreInstall('release'); }, null, onDone);
+			start(dl, function() { return call.coreInstall('release', ''); }, null, onDone);
 		});
 		var up = E('button', { 'class': 'mud-btn', 'id': 'mvp-install-file' }, [ _('Upload the file…') ]);
 		up.addEventListener('click', function() {
-			ui.uploadFile(UPLOAD_PKG).then(function() {
-				return start(up, function() { return call.coreInstall('file'); }, null, onDone);
-			}, function(e) {
-				if (e && e.message && !/cancel/i.test(e.message)) M.toast(_('Upload failed: %s').format(e.message), { type: 'error' });
-			});
+			uploadPkg(up, function(unv) { return call.coreInstall('file', unv); }, null, onDone);
 		});
 		acts.appendChild(dl);
 		acts.appendChild(up);
@@ -337,7 +352,7 @@ function paintFrame(root, active, st, body, onInstalled) {
 return baseclass.extend({
 	call: call, UPLOAD_CFG: UPLOAD_CFG, UPLOAD_PKG: UPLOAD_PKG, ENGINES: ENGINES,
 	engineName: engineName, typeName: typeName, injectCss: injectCss, tabs: tabs, row: row, pill: pill, card: card,
-	note: note, ago: ago, run: run, watch: watch, resume: resume, start: start, jobLabel: jobLabel,
+	note: note, ago: ago, run: run, watch: watch, resume: resume, start: start, jobLabel: jobLabel, uploadPkg: uploadPkg,
 	installCard: installCard, modal: modal, names: names, server: server, status: status, frame: frame,
 	paintFrame: paintFrame
 });

@@ -112,7 +112,7 @@ return view.extend({
 			var inst = E('button', { 'class': 'mud-btn on', 'id': 'mvp-missing-install' }, [ _('Install it') ]);
 			var engN = String(s.missing_engine).replace(/^vpn-/, '').replace(/^singbox$/, 'sing-box');
 			inst.addEventListener('click', function() {
-				V.start(inst, function() { return V.call.engineInstall(engN, 'release'); }, null, function() { self.reload(); });
+				V.start(inst, function() { return V.call.engineInstall(engN, 'release', ''); }, null, function() { self.reload(); });
 			});
 			alerts.push(E('div', { 'class': 'mvp-alert bad', 'id': 'mvp-missing' }, [
 				E('b', {}, [ _('The engine of the active profile is not installed: %s').format(String(s.missing_engine)) ]),

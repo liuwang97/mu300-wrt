@@ -174,6 +174,21 @@ msgstr "完成"
 msgid "failed"
 msgstr "失败"
 
+msgid "Verify the uploaded file"
+msgstr "校验上传的文件"
+
+msgid "The uploaded file is checked against the SHA256SUMS of the VPN module's latest release, downloaded over HTTPS. When that is not possible (offline, an older release), it is installed only if you allow an unverified file: it then runs as root with no check."
+msgstr "上传的文件会与通过 HTTPS 下载的 VPN 模块最新发布的 SHA256SUMS 进行校验。如果无法校验（离线、较旧的版本），只有在您允许未校验文件时才会安装：届时它将以 root 身份运行且不经任何检查。"
+
+msgid "Install it even if it cannot be verified"
+msgstr "即使无法校验也安装"
+
+msgid "Install only a verified file"
+msgstr "仅安装已校验的文件"
+
+msgid "Upload failed: %s"
+msgstr "上传失败：%s"
+
 msgid "The VPN module is too old for this panel"
 msgstr "VPN 模块版本过旧，此面板无法使用"
 
@@ -197,9 +212,6 @@ msgstr "安装 VPN 模块"
 
 msgid "Upload the file…"
 msgstr "上传文件…"
-
-msgid "Upload failed: %s"
-msgstr "上传失败：%s"
 
 msgid "Offline: upload mu300-linux-vpn-core.tar.gz (or the bundle mu300-linux-vpn.tar.gz) from the release page of the VPN module."
 msgstr "离线：从 VPN 模块的发布页面上传 mu300-linux-vpn-core.tar.gz（或合集包 mu300-linux-vpn.tar.gz）。"
@@ -2406,6 +2418,9 @@ msgstr "没有此方法"
 msgid "The VPN module refused the request"
 msgstr "VPN 模块拒绝了请求"
 
+msgid "The VPN panel is busy, try again"
+msgstr "VPN 面板忙，请重试"
+
 msgid "Another VPN task is still running"
 msgstr "另一个 VPN 任务仍在运行"
 
@@ -2511,8 +2526,14 @@ msgstr "keep 参数必须为 0 或 1"
 msgid "The subscription could not be removed"
 msgstr "无法删除订阅"
 
+msgid "The file is too large"
+msgstr "文件过大"
+
 msgid "Unknown engine"
 msgstr "未知的引擎"
+
+msgid "The unverified parameter must be 0 or 1"
+msgstr "unverified 参数必须为 0 或 1"
 
 msgid "This engine is a system package: it has no file to upload"
 msgstr "此引擎是系统软件包：没有可上传的文件"

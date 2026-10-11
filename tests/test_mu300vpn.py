@@ -64,7 +64,8 @@ METHODS = {'status', 'profiles', 'engines', 'subscriptions', 'settings', 'job', 
            'core_install', 'setting_set', 'logs'}
 # reads: the state and the lists (the CLI masks every secret in them); the log names hosts the device talked to and
 # the reveal prints credentials: write only, as mu300dash's AT history and SMS bodies
-READ = {'status', 'profiles', 'engines', 'subscriptions', 'settings', 'job'}
+# the task's log too: whatever a program wrote there is not for the read grant (it is redacted besides)
+READ = {'status', 'profiles', 'engines', 'subscriptions', 'settings'}
 WRITE = METHODS - READ
 # the methods whose work runs detached (setsid)
 DETACHED = {'latency', 'sub_add', 'sub_refresh', 'engine_install', 'core_install', 'profile_add'}
@@ -147,6 +148,16 @@ class Mu300Vpn(ShellTest):
             self.fail(f'not JSON ({e}): {r.stdout!r} stderr={r.stderr!r}')
         self.assertIsInstance(obj, dict, r.stdout)
         return obj
+
+    def staged(self):
+        job = self.dash / 'vpn-job'
+        return sorted(p.name for p in job.iterdir() if p.name.startswith('stage.')) if job.exists() else []
+
+    def clean_job(self):
+        import shutil
+        job = self.dash / 'vpn-job'
+        for p in job.iterdir():
+            shutil.rmtree(p) if p.is_dir() else p.unlink()
 
     @staticmethod
     def job_cmd(rec):
@@ -444,22 +455,26 @@ class Passthrough(Mu300Vpn):
             self.assertEqual(obj, {'ok': 1, 'started': 1, 'kind': 'sub-add'})
             self.assertEqual(len(recs), 1)
             self.assertEqual(recs[0][0], 'setsid')
-            (secret, flag), cmd = self.job_cmd(recs[0])
+            (stage, flag), cmd = self.job_cmd(recs[0])
             self.assertEqual(cmd, [str(self.vpn), 'subscription', 'add', 'Mine', '-', '--type', 'mihomo'])
             self.assertNotIn(URL, '\0'.join(recs[0]))
-            p = Path(secret)
-            self.assertEqual(p.parent, self.dash / 'vpn-job')
+            # a fresh 0700 directory of its own (mktemp), under the 0700 job directory; the URL in it, 0600
+            st = Path(stage)
+            self.assertEqual(st.parent, self.dash / 'vpn-job')
+            self.assertRegex(st.name, r'^stage\.[A-Za-z0-9]{6}$')
+            self.assertEqual(stat.S_IMODE(st.stat().st_mode), 0o700)
+            p = st / 'in'
             self.assertEqual(p.read_text(), URL + '\n')
             self.assertEqual(stat.S_IMODE(p.stat().st_mode), 0o600)
             self.assertEqual(stat.S_IMODE((self.dash / 'vpn-job').stat().st_mode), 0o700)
-            p.unlink()
-            # a config from a URL: the same
+            # a config from a URL: the same, in another directory
             obj, recs, _ = self.run1(shell, 'profile_add', {'source': 'url', 'data': URL, 'name': 'Dl'})
             self.assertEqual(obj['kind'], 'import-url')
-            (secret, flag), cmd = self.job_cmd(recs[0])
+            (stage2, flag), cmd = self.job_cmd(recs[0])
+            self.assertNotEqual(stage2, stage)
             self.assertEqual(cmd, [str(self.vpn), 'profile', 'import', '--url', '-', 'Dl'])
-            self.assertEqual(Path(secret).read_text(), URL + '\n')
-            Path(secret).unlink()
+            self.assertEqual((Path(stage2) / 'in').read_text(), URL + '\n')
+            self.clean_job()
 
     def test_long_work_runs_as_the_one_task(self):
         cases = [
@@ -478,6 +493,7 @@ class Passthrough(Mu300Vpn):
                     self.assertEqual(obj, {'ok': 1, 'started': 1, 'kind': kind})
                     (sin, fl), c = self.job_cmd(recs[0])
                     self.assertEqual((sin, fl, c), ('', flag, cmd))
+                    self.assertFalse((self.dash / 'vpn-job' / 'lock').exists(), 'the lock is released')
                     self.assertEqual((self.dash / 'vpn-job' / 'state').read_text(), 'running\n')
 
     def test_a_running_task_refuses_another(self):
@@ -494,8 +510,15 @@ class Passthrough(Mu300Vpn):
                     obj, recs, _ = self.run1(shell, method, params)
                     self.assertEqual(obj, {'ok': 0, 'error': 'Another VPN task is still running'})
                     self.assertEqual(recs, [])
-                # the URL's file went again
-                self.assertEqual(sorted(p.name for p in job.iterdir() if p.name.startswith('in.')), [])
+                # nothing was staged, and the lock is free again
+                self.assertEqual(sorted(p.name for p in job.iterdir() if p.name.startswith('stage.')), [])
+                self.assertFalse((job / 'lock').exists())
+                # an upload is not even taken while a task runs: the running one's file cannot be replaced
+                self.upload_pkg.write_bytes(b'NEW')
+                obj, recs, _ = self.run1(shell, 'engine_install', {'name': 'xray', 'source': 'file'})
+                self.assertEqual(obj, {'ok': 0, 'error': 'Another VPN task is still running'})
+                self.assertEqual(self.upload_pkg.read_bytes(), b'NEW')
+                self.upload_pkg.unlink()
             finally:
                 sleeper.kill()
                 sleeper.wait()
@@ -510,7 +533,7 @@ class Passthrough(Mu300Vpn):
             self.assertEqual(recs, [['mu300-vpn', 'profile', 'import', '-', 'wg0']])
             self.assertEqual(stdins[0], '[Interface]\nPrivateKey = x\n')
             self.assertFalse(self.upload.exists())
-            self.assertEqual([p.name for p in (self.dash / 'vpn-job').iterdir() if p.name.startswith(('in.', 'upload.'))], [])
+            self.assertEqual(self.staged(), [])
             # nothing uploaded, or a link planted at the path: refused, nothing read
             obj, recs, _ = self.run1(shell, 'profile_add', {'source': 'file'})
             self.assertEqual(obj, {'ok': 0, 'error': 'No uploaded file'})
@@ -526,25 +549,28 @@ class Passthrough(Mu300Vpn):
             obj, recs, _ = self.run1(shell, 'profile_add', {'source': 'file'})
             self.assertEqual(obj, {'ok': 0, 'error': 'The file is larger than 1 MiB'})
             self.assertEqual(recs, [])
-            # an engine's tarball: into the job directory under its release name, handed to --from
+            # an engine's tarball: into a stage directory of its own under its release name; the task verifies that
+            # very file, then hands it to --from
             self.upload_pkg.write_bytes(b'TAR')
             obj, recs, _ = self.run1(shell, 'engine_install', {'name': 'sing-box', 'source': 'file'})
             self.assertEqual(obj['ok'], 1)
-            _, cmd = self.job_cmd(recs[0])
-            dest = self.dash / 'vpn-job' / 'upload.mu300-linux-vpn-singbox.tar.gz'
-            self.assertEqual(cmd, [str(self.vpn), 'engine', 'install', 'sing-box', '--from', str(dest)])
+            (stage, _), cmd = self.job_cmd(recs[0])
+            dest = Path(stage) / 'mu300-linux-vpn-singbox.tar.gz'
+            self.assertEqual(cmd, ['sh', str(VPNB), '__verify', str(dest), 'mu300-linux-vpn-singbox.tar.gz', '0',
+                                   str(self.vpn), 'engine', 'install', 'sing-box', '--from', str(dest)])
             self.assertEqual(dest.read_bytes(), b'TAR')
+            self.assertEqual(stat.S_IMODE(dest.stat().st_mode), 0o600)
             self.assertFalse(self.upload_pkg.exists())
-            dest.unlink()
             obj, recs, _ = self.run1(shell, 'engine_install', {'name': 'wireguard', 'source': 'file'})
             self.assertEqual(obj['ok'], 0)
             self.upload_pkg.write_bytes(b'CORE')
-            obj, recs, _ = self.run1(shell, 'core_install', {'source': 'file'})
-            _, cmd = self.job_cmd(recs[0])
-            dest = self.dash / 'vpn-job' / 'upload.mu300-linux-vpn-core.tar.gz'
-            self.assertEqual(cmd, [str(self.extra), 'install', 'vpn', '--from', str(dest)])
-            for p in (self.dash / 'vpn-job').iterdir():
-                p.unlink()
+            obj, recs, _ = self.run1(shell, 'core_install', {'source': 'file', 'unverified': '1'})
+            (stage, _), cmd = self.job_cmd(recs[0])
+            dest = Path(stage) / 'mu300-linux-vpn-core.tar.gz'
+            self.assertEqual(cmd, ['sh', str(VPNB), '__verify', str(dest),
+                                   'mu300-linux-vpn-core.tar.gz mu300-linux-vpn.tar.gz', '1',
+                                   str(self.extra), 'install', 'vpn', '--from', str(dest)])
+            self.clean_job()
 
 
 class Replies(Mu300Vpn):
@@ -681,13 +707,157 @@ class Replies(Mu300Vpn):
                 time.sleep(0.1)
             got = self.reply(self.call(shell, 'job')[0])['job']
             self.assertEqual((got['kind'], got['state'], got['log']), ('sub-add', 'done', 'imported 3 profiles'))
-            self.assertEqual([p.name for p in job.iterdir() if p.name.startswith(('in.', 'upload.'))], [])
+            self.assertEqual(self.staged(), [])
             self.reply(self.call(shell, 'latency', {'id': 'all'})[0])
             deadline = time.monotonic() + 10
             while (job / 'state').read_text() == 'running\n' and time.monotonic() < deadline:
                 time.sleep(0.1)
             got = self.reply(self.call(shell, 'job')[0])['job']
             self.assertEqual((got['state'], got['result']), ('done', [{'id': 'office', 'ms': 48}]))
+
+
+class Hardening(Mu300Vpn):
+    """The second review: what is checked is what is used (no swap between the check and the use), one task at a time
+    under a lock, an uploaded tarball installed only when the official SHA256SUMS lists it (or the user allowed an
+    unverified file), and no URL or link in a message or a log."""
+
+    SUMS_NAME = 'mu300-linux-vpn-xray.tar.gz'
+
+    def verify(self, shell, data, sums, unv='0', curl_rc=0, url='https://example.invalid/SHA256SUMS',
+               assets='mu300-linux-vpn-xray.tar.gz'):
+        """run the task's __verify step on a file holding DATA, the official SHA256SUMS being SUMS"""
+        f = self.tmp / 'stagefile'
+        f.write_bytes(data)
+        (self.tmp / 'sums').write_text(sums)
+        self.stub('curl', f'cat "{self.tmp}/sums"; exit {curl_rc}')
+        ran = self.tmp / 'ran'
+        if ran.exists():
+            ran.unlink()
+        r = subprocess.run(shell + [str(VPNB), '__verify', str(f), assets, unv, 'sh', '-c',
+                                    f'cat "$1" > "{ran}"', 'x', str(f)],
+                           capture_output=True, text=True, env=self.env(MU300_VPN_SUMS_URL=url,
+                                                                         MU300_DASH_DIR=self.dash), timeout=60)
+        return r, (ran.read_bytes() if ran.exists() else None)
+
+    def test_an_upload_is_installed_only_when_the_official_sums_list_it(self):
+        import hashlib
+        data = b'tarball'
+        h = hashlib.sha256(data).hexdigest()
+        for shell in self.each_shell():
+            # listed under its own name: installed (the very file checked)
+            r, ran = self.verify(shell, data, f'{h}  {self.SUMS_NAME}\n')
+            self.assertEqual((r.returncode, ran), (0, data), r.stderr)
+            self.assertIn('verified', r.stdout)
+            r, ran = self.verify(shell, data, f'{h.upper()} *{self.SUMS_NAME}\n')
+            self.assertEqual((r.returncode, ran), (0, data), r.stderr)
+            # not listed, listed under another asset, sums unreachable, a plain-http source: refused, nothing run
+            for label, kw in (('other hash', {'sums': f'{"0" * 64}  {self.SUMS_NAME}\n'}),
+                              ('other asset', {'sums': f'{h}  mu300-linux-vpn-dae.tar.gz\n'}),
+                              ('fetch failed', {'sums': '', 'curl_rc': 22}),
+                              ('http', {'sums': f'{h}  {self.SUMS_NAME}\n', 'url': 'http://example.invalid/S'})):
+                with self.subTest(case=label):
+                    r, ran = self.verify(shell, data, **kw)
+                    self.assertEqual(r.returncode, 1)
+                    self.assertIsNone(ran)
+                    self.assertIn('not installed', r.stderr)
+            # the user allowed an unverified file: installed, and the log says so
+            r, ran = self.verify(shell, data, f'{"0" * 64}  {self.SUMS_NAME}\n', unv='1')
+            self.assertEqual((r.returncode, ran), (0, data))
+            self.assertIn('NOT VERIFIED', r.stdout)
+            # the core accepts the core tarball or the bundle
+            r, ran = self.verify(shell, data, f'{h}  mu300-linux-vpn.tar.gz\n',
+                                 assets='mu300-linux-vpn-core.tar.gz mu300-linux-vpn.tar.gz')
+            self.assertEqual(r.returncode, 0)
+
+    def test_the_unverified_flag_is_checked(self):
+        for shell in self.each_shell():
+            for method, params in (('engine_install', {'name': 'xray', 'source': 'file', 'unverified': 'yes'}),
+                                   ('core_install', {'source': 'file', 'unverified': '1; reboot'})):
+                r, recs, _ = self.call(shell, method, params)
+                self.assertEqual(self.reply(r), {'ok': 0, 'error': 'The unverified parameter must be 0 or 1'})
+                self.assertEqual(recs, [])
+
+    def test_a_swap_after_the_check_changes_nothing(self):
+        """the task gets the staged copy: replacing the /tmp path afterwards (the attacker's swap) does not reach it"""
+        for shell in self.each_shell():
+            self.upload_pkg.write_bytes(b'GOOD')
+            r, recs, _ = self.call(shell, 'engine_install', {'name': 'xray', 'source': 'file'})
+            self.assertEqual(self.reply(r)['ok'], 1)
+            (stage, _), cmd = self.job_cmd(recs[0])
+            staged = Path(stage) / 'mu300-linux-vpn-xray.tar.gz'
+            self.upload_pkg.write_bytes(b'EVIL')          # swapped in after the request took the file
+            self.assertEqual(staged.read_bytes(), b'GOOD')
+            self.assertEqual(cmd[3], str(staged))         # verified ...
+            self.assertEqual(cmd[-1], str(staged))        # ... and installed: the same file
+            self.assertNotIn(str(self.upload_pkg), cmd)
+            self.clean_job()
+            self.upload_pkg.unlink()
+
+    def test_links_at_the_upload_path_are_refused(self):
+        for shell in self.each_shell():
+            target = self.tmp / 'target'
+            target.write_bytes(b'root:x:0:0')
+            for kind in ('symlink', 'hardlink'):
+                with self.subTest(kind=kind):
+                    (os.symlink if kind == 'symlink' else os.link)(target, self.upload_pkg)
+                    r, recs, _ = self.call(shell, 'engine_install', {'name': 'xray', 'source': 'file'})
+                    self.assertEqual(self.reply(r), {'ok': 0, 'error': 'No uploaded file'})
+                    self.assertEqual(recs, [])
+                    self.assertEqual(target.read_bytes(), b'root:x:0:0')
+                    self.assertEqual(self.staged(), [])
+                    if self.upload_pkg.exists() or self.upload_pkg.is_symlink():
+                        self.upload_pkg.unlink()
+            # a directory is not a file either
+            self.upload_pkg.mkdir()
+            r, recs, _ = self.call(shell, 'core_install', {'source': 'file'})
+            self.assertEqual(self.reply(r), {'ok': 0, 'error': 'No uploaded file'})
+            self.upload_pkg.rmdir()
+            self.assertFalse((self.dash / 'vpn-job' / 'lock').exists())
+
+    def test_concurrent_requests_start_one_task(self):
+        # setsid that takes a while: the task "runs" for 4 s
+        self.stub('setsid', 't=$(mktemp "$STUB_CALLS/.tmp.XXXXXX"); printf "%s\\0" setsid "$@" > "$t"; '
+                            'mv "$t" "$STUB_CALLS/call.${t##*.}"; sleep 4')
+        for shell in self.each_shell():
+            with ThreadPoolExecutor(max_workers=6) as ex:
+                res = list(ex.map(lambda i: self.call(shell, 'engine_install', {'name': 'xray'}), range(6)))
+            replies = [self.reply(r) for r, _, _ in res]
+            started = [x for x in replies if x.get('ok') == 1]
+            self.assertEqual(len(started), 1, replies)
+            for x in replies:
+                if x.get('ok') != 1:
+                    self.assertIn(x['error'], ('Another VPN task is still running', 'The VPN panel is busy, try again'))
+            self.assertEqual(sum(len(recs) for _, recs, _ in res), 1)
+            time.sleep(4.5)
+            self.clean_job()
+
+    def test_a_stale_lock_is_taken_over(self):
+        for shell in self.each_shell():
+            lock = self.dash / 'vpn-job' / 'lock'
+            lock.mkdir(parents=True)
+            os.chmod(self.dash, 0o700)
+            os.chmod(self.dash / 'vpn-job', 0o700)
+            (lock / 'pid').write_text('999999\n')
+            r, recs, _ = self.call(shell, 'latency', {'id': 'all'})
+            self.assertEqual(self.reply(r)['ok'], 1)
+            self.assertFalse(lock.exists())
+            self.clean_job()
+
+    def test_links_and_urls_are_redacted_in_messages_and_logs(self):
+        link = 'vless://11111111-2222-3333-4444-555555555555@vpn.example.com:443#x'
+        self.output('vpn.use', '', rc=1, err=f'bad link {link} and https://sub.example.com/x?token=SECRET\n')
+        job = self.dash / 'vpn-job'
+        for shell in self.each_shell():
+            obj = self.reply(self.call(shell, 'use', {'id': 'x'})[0])
+            self.assertEqual(obj['detail'], 'bad link vless://[hidden] and https://[hidden]')
+            job.mkdir(parents=True, exist_ok=True)
+            (job / 'kind').write_text('sub-add\n')
+            (job / 'state').write_text('failed\n')
+            (job / 'log').write_text(f'fetching https://sub.example.com/api?token=SECRET\nnode {link}\n')
+            got = self.reply(self.call(shell, 'job')[0])['job']['log']
+            self.assertNotIn('SECRET', got)
+            self.assertNotIn('11111111', got)
+            self.clean_job()
 
 
 class Views(unittest.TestCase):
