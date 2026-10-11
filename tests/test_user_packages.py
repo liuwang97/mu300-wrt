@@ -628,13 +628,14 @@ class Service(ShellTest):
             self.setup_openwrt(server='127.0.0.1#7874 8.8.8.8')
             (self.tmp / 'online').write_text('')
             (self.tmp / 'missing').write_text('luci-app-openclash\n')
-            # the proxy binds its port while the service looks again
-            self.stub('sleep', f'printf "   1: 0100007F:1EC2 00000000:0000 07\\n" >> "{self.R}/proc/net/udp"')
+            # the proxy binds its port while the service looks again (a wait of its own: busybox sh's sleep is a
+            # builtin, a stub named sleep never runs there)
+            self.stub('dnswait', f'printf "   1: 0100007F:1EC2 00000000:0000 07\\n" >> "{self.R}/proc/net/udp"')
             before = self.dhcp()
-            r = self.run_upk(shell, 'run', MU300_DNS_CHECKS=3)
+            r = self.run_upk(shell, 'run', MU300_DNS_CHECKS=3, MU300_DNS_WAIT=self.stubs / 'dnswait')
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertEqual(self.dhcp(), before)
-            (self.stubs / 'sleep').unlink()
+            self.assertIn('0100007F:1EC2', (self.R / 'proc/net/udp').read_text())   # the wait did run
 
     def test_offline_tries_again_at_the_next_boots_then_gives_up(self):
         for shell in self.each_shell():

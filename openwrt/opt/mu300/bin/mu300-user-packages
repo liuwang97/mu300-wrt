@@ -137,7 +137,8 @@ dns_check() {
     # seen again over the window: one that comes up meanwhile was starting, not gone
     _i=1
     while [ "$_i" -lt "$DNS_CHECKS" ] && [ -n "$_c" ]; do
-        sleep "$DNS_INTERVAL"
+        # MU300_DNS_WAIT: a program that waits instead (tests: busybox sh runs its own sleep, never one on PATH)
+        ${MU300_DNS_WAIT:-sleep} "$DNS_INTERVAL"
         _c=$(printf '%s\n' "$_c" | while read -r _s _v _o _f _x; do port_bound "${_v##*#}" || echo "$_s $_v $_o $_f $_x"; done)
         _i=$((_i + 1))
     done
