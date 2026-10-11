@@ -47,7 +47,7 @@ FW4PATCH=$TOP/openwrt/patches/fw4-sipa-offload.patch
 # fw4 reload/restart on the 5.4 kernel: its old flowtable goes first, in a transaction of its own (#95, FINDINGS 38)
 FW4FTPATCH=$TOP/openwrt/patches/fw4-old-kernel-flowtable.patch
 [ -s "$FW4FTPATCH" ] || { echo "missing $FW4FTPATCH" >&2; exit 1; }
-# never an access point on a DFS channel: the SC2355 driver has no radar detection (FINDINGS 40)
+# never an access point on a DFS channel: the SC2355 driver has no radar detection (FINDINGS 42)
 NODFSPATCH=$TOP/openwrt/patches/wifi-scripts-no-dfs.patch
 [ -s "$NODFSPATCH" ] || { echo "missing $NODFSPATCH" >&2; exit 1; }
 # the docker mounts of the panel system, as the positional parameters (OUT is read above): each path stays one
@@ -201,7 +201,7 @@ grep -q sipa_eth0 $R/usr/share/ucode/fw4.uc || { echo "fw4 patch not applied" >&
 patch --batch --fuzz=0 -d $R -p1 -i /in/fw4-old-kernel-flowtable.patch
 grep -q drop_old_flowtable $R/sbin/fw4 || { echo "fw4 flowtable patch not applied" >&2; exit 1; }
 # wifi-scripts: a driver without radar detection (no radar_detect_widths, the SC2355) never gets an access point on a
-# DFS channel - hostapd fails start_dfs_cac and the hotspot stays down otherwise (FINDINGS 40)
+# DFS channel - hostapd fails start_dfs_cac and the hotspot stays down otherwise (FINDINGS 42)
 patch --batch --fuzz=0 -d $R -p1 -i /in/wifi-scripts-no-dfs.patch
 grep -q "device_no_dfs(config);" $R/usr/share/ucode/wifi/hostapd.uc || { echo "wifi-scripts DFS patch not applied" >&2; exit 1; }
 apk del patch >/dev/null   # out of packages.txt below, which lists what the image has
