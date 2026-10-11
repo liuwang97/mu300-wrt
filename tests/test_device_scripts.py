@@ -191,6 +191,109 @@ class At(ShellTest):
                 self.assertEqual(self.at(shell, 'AT').returncode, 0)
             self.assertLess(time.monotonic() - t0, 3)
 
+    def test_timeout_is_whole_seconds(self):
+        """kanoqwq 25f8d0c: -t goes into arithmetic and into the request line. Only what mu300-atd parses (1-99) is
+        accepted: a wider range made "120 /run/... AT" a malformed line the daemon sent to the modem whole."""
+        for shell in self.each_shell():
+            for bad in (['-t'], ['-t', '0', 'AT'], ['-t', 'x', 'AT'], ['-t', '1.5', 'AT'], ['-t', '1 2', 'AT'],
+                        ['-t', '100', 'AT'], ['-t', '07', 'AT']):
+                with self.subTest(args=bad):
+                    r = self.at(shell, *bad)
+                    self.assertEqual(r.returncode, 2, r.stderr)
+                    self.assertFalse((self.dir / 'lock').exists())
+
+    REFUSED = ('AT\n1 {tmp}/owned AT+CFUN=0',      # a second fifo request with an answer file of its own
+               'AT+CSQ\rAT+CFUN=0',                # a second modem command
+               'AT+CFUN=0\r',
+               'AT+CMGS=12\r0011',                 # a PDU send without its Ctrl-Z
+               'AT+CMGS=12\r00\rAT+CFUN=0\x1a',
+               'AT+CMGS=12\r00 11\x1a',
+               'AT+CMGS=12\r\x1a',
+               'AT+CMGS=1x\r0011\x1a',
+               'AT+CMGS=12\r0011\x1a\n')
+    ACCEPTED = ('AT', 'AT+CSQ', 'AT+CMGS=12\r0011AbCd\x1a', 'AT+CMGW=7\r00\x1a', '0011\x1a', 'AT+X="a b"')
+
+    def test_one_request_per_call(self):
+        """kanoqwq 25f8d0c, tightened: a line feed anywhere and a CR anywhere but in AT+CMGS=N<CR>PDU<Ctrl-Z> are
+        refused before anything is written, on the daemon path and the direct path alike."""
+        for shell in self.each_shell():
+            for cmd in self.REFUSED:
+                cmd = cmd.format(tmp=self.tmp)
+                with self.subTest(shell=shell, cmd=cmd):
+                    r = self.at(shell, '-t', 1, cmd)
+                    self.assertEqual(r.returncode, 2, r.stderr)
+                    self.assertIn('one command per call', r.stderr)
+                    self.assertFalse((self.dir / 'lock').exists())
+                    self.assertFalse((self.tmp / 'owned').exists())
+            self.daemon('> \r\n+CMGS: 7\r\nOK\r\n')
+            r = self.at(shell, '-t', 2, 'AT+CMGS=12\r0011\x1a')
+            self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_client_and_daemon_share_one_framing_rule(self):
+        """The one_request test is the same function in mu300-at and mu300-atd, and it gives the expected verdicts."""
+        def body(path):
+            m = re.search(r'^one_request\(\) \{.*?\n\}\n', path.read_text(), re.S | re.M)
+            self.assertIsNotNone(m, path)
+            return re.sub(r'  #.*', '', m.group(0))      # the comment on the first line differs
+        client, daemon = body(BIN / 'mu300-at'), body(BIN / 'mu300-atd')
+        self.assertEqual(client, daemon)
+        prelude = "CR=$(printf '\\r'); LF='\n'\nSUB=$(printf '\\032')\n" + client
+        for shell in self.each_shell():
+            for cmd, want in [(c, 1) for c in self.REFUSED] + [(c, 0) for c in self.ACCEPTED]:
+                cmd = cmd.format(tmp=self.tmp)
+                with self.subTest(shell=shell, cmd=cmd):
+                    r = subprocess.run(shell + ['-c', prelude + 'one_request "$1"', 'sh', cmd])
+                    self.assertEqual(r.returncode, want)
+
+    def test_lock_wait_is_in_seconds(self):
+        """kanoqwq 25f8d0c: the lock wait counted rounds of 0.1 s; with no sleep that takes a fraction each round was
+        a whole second, and MU300_AT_LOCK_WAIT=2 waited 20 s. Now it is 2 s of the clock."""
+        holder = subprocess.Popen(['sleep', '60'])
+        try:
+            self.stub('sleep', 'case $1 in *.*) exit 1 ;; esac\nexec /bin/sleep "$@"')
+            for shell in self.each_shell():
+                (self.dir / 'lock').mkdir(exist_ok=True)
+                (self.dir / 'lock' / 'pid').write_text(f'{holder.pid}\n')
+                t0 = time.monotonic()
+                r = self.script(shell, BIN / 'mu300-at', '-t', 1, 'AT', MU300_AT_DIR=self.dir,
+                                MU300_BUSYBOX=self.tmp / 'none', MU300_AT_LOCK_WAIT=2)
+                self.assertLess(time.monotonic() - t0, 5)
+                self.assertEqual(r.returncode, 1)
+                self.assertIn('busy', r.stderr)
+        finally:
+            holder.kill()
+            holder.wait()
+
+    def test_direct_path_needs_a_final_result_code(self):
+        """kanoqwq 25f8d0c: with no daemon the client opens the tty itself; silence there ended with status 0."""
+        master, slave = pty.openpty()
+        try:
+            (self.dir / 'cmd').unlink()
+            dev = os.ttyname(slave)
+            for shell in self.each_shell():
+                r = self.script(shell, BIN / 'mu300-at', '-t', 1, 'AT', MU300_AT_DIR=self.dir, MU300_AT_DEV=dev)
+                self.assertEqual(r.returncode, 1, r.stderr)
+                self.assertIn('no final response', r.stderr)
+                while select.select([master], [], [], 0.2)[0]:   # what the silent run sent, before the next one
+                    os.read(master, 256)
+
+                def modem():
+                    buf = b''
+                    while b'AT\r' not in buf:
+                        if not select.select([master], [], [], 10)[0]:
+                            return
+                        buf += os.read(master, 256)
+                    os.write(master, b'\r\nOK\r\n')
+                th = threading.Thread(target=modem, daemon=True)
+                th.start()
+                r = self.script(shell, BIN / 'mu300-at', '-t', 2, 'AT', MU300_AT_DIR=self.dir, MU300_AT_DEV=dev)
+                th.join(timeout=10)
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertIn('OK', r.stdout)
+        finally:
+            os.close(master)
+            os.close(slave)
+
 
 class Atd(ShellTest):
     """mu300-atd on a pseudo terminal pair: the test is the modem (the pty master), the daemon runs for real."""
@@ -260,7 +363,7 @@ class Atd(ShellTest):
     def send(self, master, cmd, reply, t=1, before_reply=None):
         """Hand the daemon CMD (as a client does), answer on the pty when it arrives; seconds until the answer file.
         The answer itself is left in self.answer. BEFORE_REPLY, if given, runs between the two."""
-        answer = self.tmp / 'answer'
+        answer = self.dir / 'answer.4242'      # the daemon writes only $DIR/answer.<pid>
         answer.unlink(missing_ok=True)
         t0 = time.monotonic()
         with open(self.dir / 'cmd', 'w') as f:
@@ -279,6 +382,48 @@ class Atd(ShellTest):
         elapsed = time.monotonic() - t0
         self.answer = answer.read_text() if answer.exists() else None
         return elapsed
+
+    def test_requests_are_parsed_strictly(self):
+        """A malformed request line is dropped, never sent to the modem whole (it used to be: "120 /run/... AT" with
+        a timeout the daemon did not take), and an answer file outside $DIR is never written."""
+        for shell in self.each_shell():
+            _l, m = self.start(shell, nr0=False)
+            outside = self.tmp / 'outside'
+            for line in (f'120 {self.dir}/answer.1 AT+BAD', f'6 {outside} AT+BAD', f'6 {self.dir}/answer.1x AT+BAD',
+                         f'6 {self.dir}/../answer.1 AT+BAD', 'AT+BAD', f'6 {self.dir}/answer.1'):
+                # read-write like mu300-at: the lines stay in the fifo while the daemon reopens it once per line
+                fd = os.open(self.dir / 'cmd', os.O_RDWR)
+                os.write(fd, (line + '\n').encode())
+                for _ in range(250):              # wait until the daemon has taken it (and dropped it)
+                    if not select.select([fd], [], [], 0)[0]:
+                        break
+                    time.sleep(0.02)
+                time.sleep(0.2)
+                os.close(fd)
+            self.assertFalse(select.select([m], [], [], 0.3)[0])     # none of it reached the channel
+            self.send(m, 'AT', b'\r\nOK\r\n')      # served after the dropped ones: the daemon is still reading
+            self.assertEqual(self.answer, 'OK\n')
+            self.assertFalse(outside.exists())
+            self.assertFalse((self.dir / 'answer.1').exists())
+            self.assertIn('malformed request', self.err.read_text())
+
+    def test_a_second_command_never_reaches_the_modem(self):
+        """The daemon repeats mu300-at's one_request test: a CR outside AT+CMGS=N<CR>PDU<Ctrl-Z> is refused with an
+        answer that has no final result code (so the client fails), and the modem never sees it."""
+        for shell in self.each_shell():
+            _l, m = self.start(shell, nr0=False)
+            answer = self.dir / 'answer.7'
+            fd = os.open(self.dir / 'cmd', os.O_RDWR)
+            os.write(fd, f'1 {answer} AT+CSQ\rAT+CFUN=0\n'.encode())
+            for _ in range(250):
+                if answer.exists():
+                    break
+                time.sleep(0.02)
+            os.close(fd)
+            self.assertEqual(answer.read_text(), 'mu300-atd: refused\n')
+            self.assertFalse(select.select([m], [], [], 0.3)[0])     # nothing was written to the channel
+            self.send(m, 'AT+CMGS=3\r0011\x1a', b'\r\n> \r\n+CMGS: 9\r\nOK\r\n', t=2)
+            self.assertIn('+CMGS: 9', self.answer)
 
     def whole_seconds(self):
         """The daemon's shell reads in whole seconds only (bash 3.2): every drain then waits the full second."""
@@ -2097,6 +2242,55 @@ class WcnReopen(ShellTest):
         self.assertIn('ENV{EVENT}=="FW_ERROR", RUN+="/bin/systemctl --no-block start mu300-wcn-reopen.service"', rule)
         unit = (TOP / 'rootfs/overlay/etc/systemd/system/mu300-wcn-reopen.service').read_text()
         self.assertIn('ExecStart=/opt/mu300/bin/wcn-reopen\n', unit)
+
+
+class OpenwrtWcnHotplug(ShellTest):
+    """OpenWrt's hotplug.d/misc/10-mu300-wcn: one "wifi down; wifi up" per WCN reset, however many FW_ERROR events
+    (kanoqwq/mu300-linux@23361ce: a single recovery owner)."""
+    HOOK = TOP / 'openwrt/overlay/etc/hotplug.d/misc/10-mu300-wcn'
+
+    def setUp(self):
+        super().setUp()
+        self.stub('logger', ':')
+        self.stub('wifi', 'echo "wifi $1" >> "$STUBLOG/calls"; sleep 1')
+
+    def fire(self, shell, **env):
+        return self.script(shell, self.HOOK, ACTION='change', SOURCE='unisocwl', EVENT='FW_ERROR',
+                           MU300_WCN_LOCK=self.tmp / 'lock', **env)
+
+    def wait_calls(self, n):
+        import time
+        calls = self.tmp / 'calls'
+        for _ in range(300):
+            if calls.exists() and len(calls.read_text().split()) >= 2 * n and not (self.tmp / 'lock').exists():
+                break
+            time.sleep(0.05)
+        time.sleep(2.5)       # a second reopen that got in would have written by now
+        return calls.read_text().splitlines() if calls.exists() else []
+
+    def test_other_events_do_nothing(self):
+        for shell in self.each_shell():
+            r = self.script(shell, self.HOOK, ACTION='change', SOURCE='unisocwl', EVENT='OTHER')
+            self.assertEqual(r.returncode, 0)
+        import time
+        time.sleep(1.5)
+        self.assertFalse((self.tmp / 'calls').exists())
+
+    def test_overlapping_events_reopen_once(self):
+        for shell in self.each_shell():
+            (self.tmp / 'calls').unlink(missing_ok=True)
+            for _ in range(3):
+                self.fire(shell)
+            self.assertEqual(self.wait_calls(1), ['wifi down', 'wifi up'])
+
+    def test_a_dead_holder_does_not_block_the_next_reset(self):
+        for shell in self.each_shell():
+            (self.tmp / 'calls').unlink(missing_ok=True)
+            (self.tmp / 'lock').mkdir(exist_ok=True)
+            (self.tmp / 'lock' / 'pid').write_text('999999\n')
+            self.fire(shell)
+            self.assertEqual(self.wait_calls(1), ['wifi down', 'wifi up'])
+            self.assertFalse((self.tmp / 'lock').exists())
 
 
 class ThermalGuard(ShellTest):

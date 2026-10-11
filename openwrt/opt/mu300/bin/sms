@@ -165,6 +165,8 @@ delete)
     case $what in
         all)  at 'AT+CMGD=1,4' 30 >/dev/null; echo "deleted every message in $store" ;;
         read) at 'AT+CMGD=1,1' 30 >/dev/null; echo "deleted the messages already read in $store" ;;
+        # only a message index reaches the AT command (anything else would be sent to the modem as it is)
+        *[!0-9]*) echo "sms: not a message index: $what (sms delete INDEX | read | all)" >&2; exit 2 ;;
         *)    at "AT+CMGD=$what" 20 >/dev/null; echo "deleted #$what" ;;
     esac
     ;;

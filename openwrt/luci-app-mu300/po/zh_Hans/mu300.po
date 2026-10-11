@@ -105,6 +105,12 @@ msgstr "确定"
 msgid "Cancel"
 msgstr "取消"
 
+msgid "%d s"
+msgstr "%d 秒"
+
+msgid "%d h"
+msgstr "%d 小时"
+
 msgid "New SMS · %s"
 msgstr "新短信 · %s"
 
@@ -113,6 +119,21 @@ msgstr "未知号码"
 
 msgid "Select"
 msgstr "选择"
+
+msgid "This is a network or frequency scan: it takes one to three minutes, holds the modem's AT channel all that time, and mobile data may pause meanwhile. It runs in the background; the reply appears here when it is done."
+msgstr "这是网络或频点扫描：需要一到三分钟，期间一直占用调制解调器的 AT 通道，移动数据可能暂停。它在后台运行，完成后回复会显示在这里。"
+
+msgid "This changes a network mode, band or cell setting the modem stores: it stays in force after a reboot, and in Android too, where a network that does not match it shows as No Service. The Locks page shows these settings and resets them."
+msgstr "这会更改调制解调器保存的网络模式、频段或小区设置：重启后仍然生效，在 Android 中也生效，与之不符的网络会显示为无服务。锁定页面可以查看并重置这些设置。"
+
+msgid "This switches the radio, the data connection or the modem itself: mobile data drops until it is restored, and this page may lose its connection for a while."
+msgstr "这会切换射频、数据连接或调制解调器本身：移动数据会中断直到恢复，本页面也可能暂时失去连接。"
+
+msgid "This changes the data profiles (APNs) stored in the modem, which mobile data and Android use."
+msgstr "这会更改调制解调器中保存的数据配置（APN），移动数据和 Android 都会使用它们。"
+
+msgid "This changes the SIM's PIN lock or enters a PIN: wrong PINs block the SIM until its PUK is entered."
+msgstr "这会更改 SIM 卡的 PIN 锁或输入 PIN：PIN 错误次数过多会锁住 SIM 卡，直到输入 PUK。"
 
 msgid "Basic"
 msgstr "基础"
@@ -141,14 +162,50 @@ msgstr "就绪。"
 msgid "Session history (click to reuse)"
 msgstr "会话历史（点击复用）"
 
+msgid "Running in the background (at most %d s); the reply appears here when it is done…"
+msgstr "正在后台运行（最多 %d 秒）；完成后回复会显示在这里…"
+
+msgid "The modem gave no final answer in time"
+msgstr "调制解调器未在规定时间内给出最终回复"
+
+msgid "%d s in the background"
+msgstr "后台运行 %d 秒"
+
 msgid "(no output)"
 msgstr "(无输出)"
+
+msgid "This command changes the modem's state."
+msgstr "此命令会更改调制解调器的状态。"
+
+msgid "Not sent yet: waiting for confirmation"
+msgstr "尚未发送：等待确认"
+
+msgid "Send this AT command?"
+msgstr "发送此 AT 命令？"
+
+msgid "Send anyway"
+msgstr "仍然发送"
+
+msgid "Not sent"
+msgstr "未发送"
 
 msgid "Request failed"
 msgstr "调用失败"
 
 msgid "(empty)"
 msgstr "（空）"
+
+msgid "Loading…"
+msgstr "加载中…"
+
+msgid "Channel Analysis"
+msgstr "信道分析"
+
+msgid "A scan takes the Wi-Fi hotspot off its channel for a moment: connected devices drop, and some (macOS in particular) may not reconnect by themselves. This page scans as soon as it opens and again every few seconds. Reach the panel over USB or another way first if you depend on the hotspot."
+msgstr "扫描会让 Wi-Fi 热点短暂离开其信道：已连接的设备会断开，部分设备（尤其是 macOS）可能不会自动重新连接。本页面一打开就会扫描，之后每隔几秒再次扫描。如果您依赖该热点，请先通过 USB 或其他方式访问面板。"
+
+msgid "Scan anyway"
+msgstr "仍然扫描"
 
 msgid "Failed: %s"
 msgstr "失败：%s"
@@ -273,6 +330,15 @@ msgstr "刷新"
 msgid "Available only in host mode. Refresh brings discovered USB adapters up; adding to LAN saves the bridge and reloads networking."
 msgstr "仅主机模式可用。刷新时会尝试启用发现的 USB 网卡；添加到 LAN 后将保存到网桥并重新加载网络。"
 
+msgid "Recent modem operations"
+msgstr "最近的调制解调器操作"
+
+msgid "Show"
+msgstr "显示"
+
+msgid "The control panel's recent calls, of this boot and the one before: when, which page call or AT command, how long it took and how it ended (ok, error, busy, killed). No values, replies or messages are kept. Useful when the panel was stuck."
+msgstr "控制面板在本次及上一次启动中的最近调用：时间、哪个页面调用或 AT 命令、耗时以及结果（成功、错误、忙、被终止）。不保存任何数值、回复或短信。面板卡住时可用于排查。"
+
 msgid "Unavailable"
 msgstr "不可用"
 
@@ -326,6 +392,12 @@ msgstr "设置已保存"
 
 msgid "Save failed: %s"
 msgstr "保存失败：%s"
+
+msgid "This boot"
+msgstr "本次启动"
+
+msgid "Previous boot"
+msgstr "上一次启动"
 
 msgid "Unable to confirm the role yet; reconnect and refresh the page."
 msgstr "暂时无法确认角色；请重新连接后刷新页面。"
@@ -798,6 +870,9 @@ msgstr "无线电已关"
 msgid "No response"
 msgstr "无应答"
 
+msgid "Modem busy: cellular readings from %s ago"
+msgstr "调制解调器忙：蜂窝数据读取于 %s 前"
+
 msgid "%s · Signal %s %s/10"
 msgstr "%s · 信号 %s %s 分"
 
@@ -863,9 +938,6 @@ msgstr "%s 台"
 
 msgid "Recent DHCP leases"
 msgstr "近期 DHCP 租约"
-
-msgid "%d h"
-msgstr "%d 小时"
 
 msgid "Board"
 msgstr "主板"
@@ -1086,11 +1158,11 @@ msgstr "开启开机自动应用"
 msgid "Reading the modem directly (a few seconds at most)…"
 msgstr "正在直读调制解调器（最多几秒）…"
 
-msgid "Refreshed"
-msgstr "已刷新"
-
 msgid "Refresh failed"
 msgstr "刷新失败"
+
+msgid "Refreshed"
+msgstr "已刷新"
 
 msgid "NR bands: back to automatic"
 msgstr "NR 频段：恢复自动"
@@ -1356,9 +1428,6 @@ msgstr "从 SIM 同步"
 msgid "Clear local pool"
 msgstr "清空本地池"
 
-msgid "Loading…"
-msgstr "加载中…"
-
 msgid "Select a conversation on the left, or enter a number below to send."
 msgstr "选择左侧会话，或直接在下方输入号码发送。"
 
@@ -1590,6 +1659,9 @@ msgstr "射频正忙：拨号或看门狗正在切换它，请稍后再试"
 msgid "The action gave no valid reply"
 msgstr "操作没有返回有效结果"
 
+msgid "The confirm parameter must be 0 or 1"
+msgstr "confirm 参数必须为 0 或 1"
+
 msgid "An AT command is one line of printable ASCII, at most 512 characters"
 msgstr "AT 命令须为一行可打印 ASCII 字符，最多 512 个字符"
 
@@ -1605,6 +1677,12 @@ msgstr "已拒绝：此命令会让 AT 端口卡死，直到重启"
 msgid "Applying network locks: the modem is restarting (about half a minute), try again shortly"
 msgstr "正在应用网络锁定，调制解调器重启中（约半分钟），请稍后再试"
 
+msgid "A long AT command is still running in the background; try again when it has finished"
+msgstr "一条耗时较长的 AT 命令仍在后台运行；请在其完成后重试"
+
+msgid "This command needs confirmation"
+msgstr "此命令需要确认"
+
 msgid "The AT channel is busy; the command was not sent, try again"
 msgstr "AT 通道正忙，命令未发出，请重试"
 
@@ -1613,6 +1691,9 @@ msgstr "调制解调器未及时应答；命令可能仍在执行，再次发送
 
 msgid "The fresh parameter must be 0 or 1"
 msgstr "fresh 参数必须是 0 或 1"
+
+msgid "Reading the locks from the modem; try again in a few seconds"
+msgstr "正在从调制解调器读取锁定状态；请几秒后重试"
 
 msgid "Lock read failed"
 msgstr "读取锁定状态失败"
