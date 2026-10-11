@@ -277,7 +277,7 @@ class Rules(unittest.TestCase):
         # mu300-update knows the module (fixed asset names, the repository's latest release, MU300_VPN_URL), and
         # mu300-extra lists vpn and vpn-mihomo from it
         up = (BIN / 'mu300-update').read_text()
-        self.assertRegex(up, r'(?m)^EXTRAS="vpn lang vpn-mihomo"$')
+        self.assertRegex(up, r'(?m)^EXTRAS="vpn lang vpn-mihomo panel"$')
         self.assertRegex(up, r'(?m)^VPN_REPO=dikeckaan/mu300-linux-vpn$')
         self.assertIn('VPN_URL=${MU300_VPN_URL:-https://github.com/$VPN_REPO/releases/latest/download}', up)
         self.assertIn('vpn) echo mu300-linux-vpn.tar.gz ;; vpn-mihomo) echo mu300-linux-vpn-mihomo.tar.gz ;;', up)
