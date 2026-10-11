@@ -45,6 +45,28 @@ class UpdateBase(ShellTest):
 
 
 class Update(UpdateBase):
+    def test_version_lists_what_is_installed_without_the_network(self):
+        # mu300-toolkit's summary and its update screen when offline: each system with its release, the boot image,
+        # the extras; no download is tried
+        (self.disk / 'ubuntu/etc/mu300').mkdir(parents=True, exist_ok=True)
+        (self.disk / 'ubuntu/etc/mu300/image-version').write_text('v2026.10.18\n')
+        (self.disk / 'openwrt/etc/mu300').mkdir(parents=True)
+        (self.disk / 'openwrt/etc/mu300/image-version').write_text('v2026.10.17\n')
+        (self.disk / 'boot').mkdir()
+        (self.disk / 'boot/installed.tag').write_text('v2026.10.18\n')
+        (self.disk / 'extra/vpn/bin').mkdir(parents=True)
+        (self.disk / 'extra/vpn/release').write_text('v1.0.0\n')
+        self.stub('curl', 'echo "network used" >&2; exit 7')
+        self.stub('wget', 'echo "network used" >&2; exit 7')
+        for shell in self.each_shell():
+            r = self.up(shell, 'mounted_disk() { :; }; version')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertNotIn('network used', r.stderr)
+            self.assertRegex(r.stdout, r'systems on disk +.*ubuntu v2026\.10\.18')
+            self.assertRegex(r.stdout, r'openwrt v2026\.10\.17')
+            self.assertIn('boot image: v2026.10.18', r.stdout)
+            self.assertIn('vpn (v1.0.0)', r.stdout)
+
     def test_sourcing_does_nothing(self):
         for shell in self.each_shell():
             r = self.up(shell, 'echo loaded')
@@ -482,6 +504,33 @@ class FromStock(UpdateBase):
             self.assertEqual((new / 'lib/firmware/regulatory.db').read_bytes(), b'image')
             self.assertEqual((new / 'etc/mu300/vpn.conf').read_bytes(), b'mine')
             # the next shell updates from this one (disk/openwrt again)
+
+    def test_apply_keeps_the_settings_and_adds_the_images_new_config_files(self):
+        # the old etc/config is kept, but a package the new image brings has its own file there: copied whole, the
+        # old directory dropped /etc/config/sqm and LuCI's SQM page failed ("uci/get: Resource not found")
+        img = self.tmp / 'img-cfg'
+        for f, data in [('sbin/init', b'#!/bin/sh\n'), ('etc/config/network', b'image'), ('etc/config/sqm', b'image sqm'),
+                        ('etc/mu300/image-version', b'v2\n')]:
+            (img / f).parent.mkdir(parents=True, exist_ok=True)
+            (img / f).write_bytes(data)
+        (img / 'sbin/init').chmod(0o755)
+        old = self.disk / 'openwrt'
+        for f, data in [('sbin/init', b'#!/bin/sh\n'), ('etc/config/network', b'mine'), ('etc/config/tailscale', b'mine too')]:
+            (old / f).parent.mkdir(parents=True, exist_ok=True)
+            (old / f).write_bytes(data)
+        stage = self.disk / '.mu300-update'
+        for shell in self.each_shell():
+            for d in ('openwrt.old', 'openwrt.new'):
+                shutil.rmtree(self.disk / d, ignore_errors=True)
+            stage.mkdir(exist_ok=True)
+            subprocess.run(['tar', '-czf', str(stage / 'mu300-openwrt-rootfs.tar.gz'), '-C', str(img), '.'], check=True)
+            r = self.up(shell, 'is_root() { false; }; apply_one openwrt v2', **self.busybox_applets(shell))
+            self.assertEqual(r.returncode, 0, r.stderr)
+            cfg = self.disk / 'openwrt/etc/config'
+            self.assertEqual((cfg / 'network').read_bytes(), b'mine')          # the device's settings win
+            self.assertEqual((cfg / 'tailscale').read_bytes(), b'mine too')    # and stay
+            self.assertEqual((cfg / 'sqm').read_bytes(), b'image sqm')         # the new package's file is added
+            self.assertFalse((self.disk / 'openwrt/etc/config.image').exists())
 
     def test_copy_missing_never_writes_through_a_link_of_the_target(self):
         a, b, outside = self.tmp / 'a', self.tmp / 'b', self.tmp / 'outside'
