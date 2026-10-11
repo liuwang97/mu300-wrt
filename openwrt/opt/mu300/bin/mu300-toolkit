@@ -600,7 +600,9 @@ menu_wifi() {
                printf '  name and password live in %s/etc/mu300/hotspot.conf%s:\n\n' "$B" "$N"
                sed -n 's/^\(SSID\|BAND\|CHANNEL\|COUNTRY\)=/  &/p' /etc/mu300/hotspot.conf 2>/dev/null
                printf '  PSK=%s\n' "$(sed -n 's/^PSK=//p' /etc/mu300/hotspot.conf 2>/dev/null | head -1)"
-               printf '\n  %sEdit that file and restart the hotspot to change them.%s\n' "$D" "$N"; pause ;;
+               printf '\n  %sEdit that file and restart the hotspot to change them.%s\n' "$D" "$N"
+               printf '  %sCHANNEL on 5 GHz: auto, 36-48 or 149-165. The driver cannot detect radar, so a DFS channel\n' "$D"
+               printf '  (52-144) is replaced by the default one.%s\n' "$N"; pause ;;
             *) return ;;
         esac
     done
