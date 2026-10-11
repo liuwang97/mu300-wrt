@@ -713,6 +713,32 @@ class Pool(ShellTest):
             self.assertEqual((self.tmp / 'fwd.log').read_text().splitlines(), ['enqueue 000001 000002', 'kick'])
 
 
+class Delete(ShellTest):
+    """`sms delete` (every system): only a message index, read or all reach the modem."""
+
+    def setUp(self):
+        super().setUp()
+        self.stub('mu300-at', AT_STUB)
+        (self.tmp / 'at').mkdir()
+        (self.tmp / 'at' / 'CPMS').write_text('+CPMS: 2,50,2,50,2,50\nOK\n')
+
+    def test_anything_but_an_index_is_refused_before_the_modem(self):
+        for shell in self.each_shell():
+            for bad in ('1;AT+CFUN=0', '1,4', '-1', '1 2', 'x', '1\rAT'):
+                (self.tmp / 'at.log').unlink(missing_ok=True)
+                r = subprocess.run(shell + [str(TOP / 'rootfs/overlay/opt/mu300/bin/sms'), 'delete', bad],
+                                   capture_output=True, text=True, timeout=30,
+                                   env=self.env(MU300_SMS_AWK=AWK, MU300_SMS_STATE=self.tmp / 'state'))
+                self.assertEqual(r.returncode, 2, (bad, r.stderr))
+                log = (self.tmp / 'at.log').read_text() if (self.tmp / 'at.log').exists() else ''
+                self.assertNotIn('CMGD', log, bad)
+            r = subprocess.run(shell + [str(TOP / 'rootfs/overlay/opt/mu300/bin/sms'), 'delete', '7'],
+                               capture_output=True, text=True, timeout=30,
+                               env=self.env(MU300_SMS_AWK=AWK, MU300_SMS_STATE=self.tmp / 'state'))
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn('AT+CMGD=7', (self.tmp / 'at.log').read_text())
+
+
 class Watch(ShellTest):
     """`sms watch` (every system): a long message waits for its other parts, MU300_SMS_PARTIAL_WAIT at most."""
 
