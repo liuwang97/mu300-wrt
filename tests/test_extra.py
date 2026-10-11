@@ -97,13 +97,15 @@ class ExtrasBase(ShellTest):
         self.stub('id', 'echo 0')
 
     def up(self, shell, code, **env):
-        e = dict(MU300_LIB=1, MU300_DISK=self.disk, MU300_BIN=BIN, MU300_SYSROOT=self.root, MU300_FETCH_DELAY=0)
+        # (MU300_VPN_UNVERIFIED: the tests' lone module files have no SHA256SUMS; the refusal is tested with it empty)
+        e = dict(MU300_LIB=1, MU300_DISK=self.disk, MU300_BIN=BIN, MU300_SYSROOT=self.root, MU300_FETCH_DELAY=0,
+                 MU300_VPN_UNVERIFIED=1)
         e.update(env)
         return self.sh(shell, f'. "{BIN}/mu300-update"; {code}', **e)
 
     def ex(self, shell, *args, **env):
         e = dict(MU300_DISK=self.disk, MU300_BIN=BIN, MU300_SYSROOT=self.root, MU300_LINKDIR=self.links,
-                 MU300_OPT=BIN.parent, MU300_FETCH_DELAY=0)
+                 MU300_OPT=BIN.parent, MU300_FETCH_DELAY=0, MU300_VPN_UNVERIFIED=1)
         e.update(env)
         return self.script(shell, BIN / 'mu300-extra', *args, **e)
 
@@ -391,8 +393,12 @@ class Extras(ExtrasBase):
             r = self.ex(shell, 'install', 'vpn', '--from', d / 'mu300-linux-vpn.tar.gz')
             self.assertNotEqual(r.returncode, 0)
             self.assertIn('does not match', r.stderr)
-            # a file alone: the user's choice
-            r = self.ex(shell, 'install', 'vpn', '--from', lone)
+            # a file alone, no SHA256SUMS vouching for it: refused, unless asked for unverified
+            r = self.ex(shell, 'install', 'vpn', '--from', lone, MU300_VPN_UNVERIFIED='')
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn('not installed unverified', r.stderr)
+            self.assertEqual((self.vpn() / 'VERSION').read_text().strip(), 'v1.0.0')
+            r = self.ex(shell, 'install', 'vpn', '--from', lone, MU300_VPN_UNVERIFIED='1')
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
             self.assertEqual((self.vpn() / 'VERSION').read_text().strip(), 'v1.0.1')
             # nothing went to the network
@@ -1490,3 +1496,51 @@ class ModuleIntegrity(EngineExtrasBase):
             self.profile('ubuntu', 'p', '../../evil')
             r = self.up(shell, 'vpn_engines_wanted | tr "\\n" " "', MU300_VPN_ENGINES='none')
             self.assertEqual(r.stdout.split(), [])
+
+    def test_verification_that_cannot_be_done_refuses(self):
+        """fail closed: no SHA256SUMS, no line for the asset, an empty or broken hash, a hash tool that fails or lies,
+        a file that does not match - none of them installs anything, from a directory, a download or the update's
+        staging directory"""
+        for shell in self.each_shell():
+            for case in ('no-sums', 'no-entry', 'empty-hash', 'short-hash', 'mismatch', 'tool-fails', 'tool-empty'):
+                self.reset()
+                self.stubs.joinpath('sha256sum').unlink(missing_ok=True)
+                d = self.usb()
+                h = hashlib.sha256((d / 'mu300-linux-vpn-xray.tar.gz').read_bytes()).hexdigest()
+                lines = {'no-sums': None, 'no-entry': f'{h}  mu300-linux-vpn-dae.tar.gz\n',
+                         'empty-hash': '  mu300-linux-vpn-xray.tar.gz\n',
+                         'short-hash': f'{h[:63]}  mu300-linux-vpn-xray.tar.gz\n',
+                         'mismatch': f'{"0" * 64}  mu300-linux-vpn-xray.tar.gz\n'}.get(
+                    case, f'{h}  mu300-linux-vpn-xray.tar.gz\n')
+                if lines is None:
+                    (d / 'SHA256SUMS').unlink()
+                else:
+                    (d / 'SHA256SUMS').write_text(lines)
+                if case == 'tool-fails':
+                    self.stub('sha256sum', 'exit 1')
+                elif case == 'tool-empty':
+                    self.stub('sha256sum', 'echo "  $1"')
+                r = self.ex(shell, 'install', 'vpn-xray', '--from', d)
+                self.assertNotEqual(r.returncode, 0, case)
+                self.assertEqual(self.have(), {}, case)
+                # the same served as a release: the download refuses too
+                assets = {'mu300-linux-vpn-xray.tar.gz': d / 'mu300-linux-vpn-xray.tar.gz'}
+                srv = self.serve('vpn-module', assets=assets)
+                if lines is None:
+                    (srv / 'SHA256SUMS').unlink()
+                else:
+                    (srv / 'SHA256SUMS').write_text(lines)
+                r = self.ex(shell, 'install', 'vpn-xray', MU300_VPN_URL=VPN_URL)
+                self.assertNotEqual(r.returncode, 0, case)
+                self.assertEqual(self.have(), {}, case)
+                # an update's staged copy, for an installed engine: it stays as it is
+                self.offline()
+                staged = self.disk / '.mu300-update/vpn'
+                staged.mkdir(parents=True, exist_ok=True)
+                for p in d.iterdir():
+                    shutil.copy(p, staged / p.name)
+                (self.disk / 'extra/vpn-xray/bin').mkdir(parents=True, exist_ok=True)
+                (self.disk / 'extra/vpn-xray/VERSION').write_text('v1.0.0\n')
+                self.up(shell, 'modules_fetch v2026.10.21 ""; modules_install v2026.10.21', MU300_VPN_URL=VPN_URL)
+                self.assertEqual((self.disk / 'extra/vpn-xray/VERSION').read_text().strip(), 'v1.0.0', case)
+            self.stubs.joinpath('sha256sum').unlink(missing_ok=True)

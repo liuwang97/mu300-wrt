@@ -646,8 +646,13 @@ version_ok() {
     case $2 in v[0-9]*) ;; *) return 0 ;; esac
     [ "$(printf '%s\n%s\n' "$1" "$2" | sort | tail -n1)" = "$2" ]
 }
-sha_of() { sha256sum "$1" | cut -d' ' -f1; }
-sums_want() { awk -v f="$2" '$2 == f || $2 == "*" f {print $1; exit}' "$1" 2>/dev/null; }
+# sha_ok HASH: a SHA-256 as sha256sum writes it (64 lowercase hex digits); nothing else ever counts as a hash, so an
+# empty or broken value can never compare equal to anything
+sha_ok() { case $1 in ''|*[!0-9a-f]*) return 1 ;; esac; [ ${#1} -eq 64 ]; }
+# sha_of FILE: its SHA-256, or nothing and 1 (no sha256sum, a read error): a failure is never a hash
+sha_of() { _so=$(sha256sum "$1" 2>/dev/null) || return 1; _so=${_so%% *}; sha_ok "$_so" || return 1; printf '%s\n' "$_so"; }
+# sums_want SUMS NAME: the hash SUMS lists for NAME, only when it is a hash
+sums_want() { _sw=$(awk -v f="$2" '$2 == f || $2 == "*" f {print $1; exit}' "$1" 2>/dev/null); ! sha_ok "$_sw" || printf '%s\n' "$_sw"; }
 
 # The module's tarball, checked, as MODULE_FILE (its hash: MODULE_SHA). Status 0 with a file, 3 when the installed
 # one is that release's already (nothing downloaded), 1 when it cannot be had (offline, GitHub down), 2 when what
@@ -704,9 +709,16 @@ module_from() {
     case $1 in */*) _d=${1%/*}; [ -n "$_d" ] || _d=/ ;; *) _d=. ;; esac
     _w=
     if _sc=$(module_copy "$_d/SHA256SUMS" SHA256SUMS 2>/dev/null); then _w=$(sums_want "$_sc" "${1##*/}"); fi
+    # a file that no SHA256SUMS next to it vouches for is refused, unless MU300_VPN_UNVERIFIED=1 says it is wanted
+    # unchecked (a build of one's own)
+    if [ -z "$_w" ] && [ "${MU300_VPN_UNVERIFIED:-}" != 1 ]; then
+        echo "no SHA256SUMS next to $1 lists it: not installed unverified (copy the release's SHA256SUMS next to it, or MU300_VPN_UNVERIFIED=1 for a build of your own)" >&2
+        return 2
+    fi
     _c=$(module_copy "$1" "$(module_asset "$2")") || return 2
-    MODULE_SHA=$(sha_of "$_c")
+    MODULE_SHA=$(sha_of "$_c") || { rm -f "$_c"; echo "cannot compute the SHA-256 of $1 (sha256sum): not installed" >&2; return 2; }
     [ -z "$_w" ] || [ "$MODULE_SHA" = "$_w" ] || { rm -f "$_c"; echo "$1 does not match $_d/SHA256SUMS" >&2; return 2; }
+    [ -n "$_w" ] || echo "note: $1 is installed unverified (MU300_VPN_UNVERIFIED=1)" >&2
     MODULE_FILE=$_c
 }
 # module_download NAME DIR [ASSET]: the module's latest release (VPN_URL) into DIR, checked against that release's
@@ -719,8 +731,7 @@ module_download() {
     _s=$(fetch_stdout "$VPN_URL/SHA256SUMS") && [ -n "$_s" ] ||
         { echo "cannot download SHA256SUMS of the VPN module ($VPN_URL)" >&2; return 1; }
     _w=$(printf '%s\n' "$_s" | awk -v f="$_a" '$2 == f || $2 == "*" f {print $1; exit}')
-    case $_w in [0-9a-f]*) ;; *) _w= ;; esac
-    [ ${#_w} -eq 64 ] || { echo "$_a is not part of the VPN module's release ($VPN_URL)" >&2; return 1; }
+    sha_ok "$_w" || { echo "$_a is not part of the VPN module's release ($VPN_URL), or its SHA256SUMS line is no hash" >&2; return 1; }
     MODULE_SHA=$_w
     # the installed one is this release's: nothing to download
     [ -d "$EXTRA/$1/bin" ] && [ "$(cat "$EXTRA/.$1.sha256" 2>/dev/null)" = "$_w" ] && return 3
