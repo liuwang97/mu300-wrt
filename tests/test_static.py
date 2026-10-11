@@ -653,7 +653,7 @@ class Rules(unittest.TestCase):
     return 0
 }'''
         for rel, deletes in (('5.4.254', True), ('5.12.19-x', True), ('4.19.1', True), ('5.13.0', False),
-                             ('6.18.55', False), ('7.2.9', False)):
+                             ('6.18.56', False), ('7.2.10', False)):
             with tempfile.TemporaryDirectory() as d:
                 log = Path(d) / 'log'
                 log.write_text('')
