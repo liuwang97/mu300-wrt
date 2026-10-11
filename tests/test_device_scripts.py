@@ -1005,10 +1005,15 @@ at() {
         import time
         pids = [int(p) for p in (self.tmp / 'hung.pids').read_text().split()]
         for pid in pids:
-            for _ in range(50):
+            # a killed process the system has not reaped yet is a zombie: os.kill(pid, 0) still finds it (the macOS
+            # runner was slow to reap it, and this failed with "still runs" while nothing ran)
+            for _ in range(100):
                 try:
                     os.kill(pid, 0)
                 except ProcessLookupError:
+                    break
+                st = subprocess.run(['ps', '-o', 'stat=', '-p', str(pid)], capture_output=True, text=True).stdout.strip()
+                if not st or st.startswith('Z'):
                     break
                 time.sleep(0.1)
             else:
