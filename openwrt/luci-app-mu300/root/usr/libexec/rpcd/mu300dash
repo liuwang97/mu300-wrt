@@ -82,9 +82,9 @@ export MU300_AT_LOCK_WAIT
 # browser's 20 s and rpcd's 30
 AT_LOCK_WAIT=3
 AT_BUDGET=13
-# a confirmed scan (at_class scan) runs detached: up to 3 minutes for the answer
+# a confirmed scan (at_class scan) runs detached: 99 s for the answer, the most mu300-at and mu300-atd take (-t 1-99)
 AT_JOB=$DIR/at-job
-AT_JOB_T=180
+AT_JOB_T=99
 # the live signal read (m_signal) and the lock state read the page waits for
 SIGNAL_DEADLINE=14
 LOCK_GET_WAIT=${MU300_DASH_LOCK_GET_WAIT:-12}
@@ -296,7 +296,7 @@ at_job_running() {
 }
 
 # run_at_job: the detached half of a confirmed scan ("mu300dash at-job", started by m_at). mu300-at bounds it: the
-# lock wait, then AT_JOB_T and the daemon's drain - under four minutes in all.
+# lock wait, then AT_JOB_T and the daemon's drain - under two and a half minutes in all.
 run_at_job() {
     local cmd out rc=0
     cmd=$(cat "$AT_JOB/cmd" 2>/dev/null) || exit 1

@@ -241,7 +241,7 @@ class Backend(sec.Mu300Dash):
             self.assertEqual(self.reply(r).get('ok'), 1)
             self.assertEqual(recs, [['at', '-t', '8', 'AT+CFUN=0']])
             r, recs, _ = self.call(shell, 'at', {'cmd': 'AT+COPS=?', 'confirm': '1'})
-            self.assertEqual(self.reply(r), {'ok': 1, 'started': 1, 'job': 1, 'cmd': 'AT+COPS=?', 'limit': 180})
+            self.assertEqual(self.reply(r), {'ok': 1, 'started': 1, 'job': 1, 'cmd': 'AT+COPS=?', 'limit': 99})
             self.assertEqual(recs, [['setsid', 'mu300dash', 'at-job']])
             r, recs, _ = self.call(shell, 'at', {'cmd': 'AT', 'confirm': 'yes'})
             self.assertEqual(self.reply(r)['error'], 'The confirm parameter must be 0 or 1')
@@ -256,7 +256,7 @@ class Backend(sec.Mu300Dash):
             self.reply(self.call(shell, 'at', {'cmd': 'AT+COPS=?', 'confirm': '1'}, MU300_DASH_DIR=d)[0])
             # started a moment ago and not yet running: it counts as running, and the terminal says why it waits
             obj = self.reply(self.call(shell, 'at_job', {}, MU300_DASH_DIR=d)[0])
-            self.assertEqual((obj['running'], obj['cmd'], obj['limit']), (1, 'AT+COPS=?', 180))
+            self.assertEqual((obj['running'], obj['cmd'], obj['limit']), (1, 'AT+COPS=?', 99))
             r, recs, _ = self.call(shell, 'at', {'cmd': 'AT'}, MU300_DASH_DIR=d)
             obj = self.reply(r)
             self.assertEqual((obj['busy'], obj['job'], recs), (1, 1, []))
@@ -270,7 +270,7 @@ class Backend(sec.Mu300Dash):
                 MU300_AT=self.adapters / 'at'))
             self.assertEqual(j.returncode, 0, j.stderr)
             rec = [a.decode() for a in next(calls.glob('call.*')).read_bytes().split(b'\0')[:-1]]
-            self.assertEqual(rec, ['at', '-t', '180', 'AT+COPS=?'])
+            self.assertEqual(rec, ['at', '-t', '99', 'AT+COPS=?'])
             obj = self.reply(self.call(shell, 'at_job', {}, MU300_DASH_DIR=d)[0])
             self.assertEqual((obj['done'], obj['ok'], obj['running']), (1, 1, 0))
             self.assertIn('+COPS: (2,"A"', obj['reply'])
