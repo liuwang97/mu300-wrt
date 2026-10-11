@@ -1,13 +1,39 @@
 #!/bin/bash
-# One SIM2 native bring-up per Linux boot; all modem I/O stays in persistent brokers.
+# One native bring-up of the selected card per Linux boot; all modem I/O stays in persistent brokers.
+# procd instance of init.d/mu300-atd's dual-SIM path. It confirms the boot (removes /etc/mu300-sim-pending) when the
+# radio is up, and when the cold start cannot be done it puts the settings back to SIM1 without live switching, so
+# that the next boot at the latest is a plain SIM1 boot (the reason stays in /etc/mu300-sim-fallback for the Dual
+# SIM page); in this boot the radio goes to the SIM1 path too, when nothing was sent to it yet. Never a boot after
+# boot without WAN.
 set -euo pipefail
 export PATH="$PATH:/opt/mu300/busybox-bin"
-# Preserve the charging-only boot's promise to leave both radios off.
+PENDING=/etc/mu300-sim-pending
+FALLBACK=/etc/mu300-sim-fallback
+MD=/opt/mu300/bin/mobile-data
+# Preserve the charging-only boot's promise to leave both radios off (the pending marker stays for the real boot).
 [[ ! -e /run/mu300/charging-boot ]] || exit 0
 SLOT=$(cat /run/mu300/sim-slot 2>/dev/null || echo 1)
 MU300_EXPECT_CCID=$(cat /etc/mu300/sim$((SLOT+1))-iccid 2>/dev/null || true)
 export MU300_EXPECT_CCID
-for ((attempt=0; attempt<120; attempt++)); do
+atomic() { local t; t=$(mktemp "$1.XXXXXX"); printf '%s\n' "$2" > "$t"; mv -f "$t" "$1"; }
+fallback() {  # fallback REASON: SIM1 without live switching from the next boot on; this boot too when possible
+    atomic "$FALLBACK" "$1"
+    atomic /etc/mu300-sim-slot 0
+    atomic /etc/mu300-sim-hot 0
+    rm -f "$PENDING"
+    logger -t mu300-sim "SIM$((SLOT+1)) cold start failed ($1): SIM1 without live switching from the next boot" 2>/dev/null || true
+    if [[ -e /run/mu300/sim2-cold-start.sent ]]; then
+        logger -t mu300-sim "the radio was already told to start SIM$((SLOT+1)); reboot for SIM1" 2>/dev/null || true
+        exit 1
+    fi
+    # Nothing reached the radio: this boot can still be an ordinary SIM1 boot through the nr1/nr2 brokers.
+    # The pinned slot becomes 0, the freeze and the managed marker go, and the usual warm-up runs.
+    printf '0\n' > /run/mu300/sim-slot 2>/dev/null || true
+    rm -f /run/mu300/sim-managed /run/mu300-radio-freeze /run/mu300/sim2-radio-ready
+    logger -t mu300-sim "nothing was sent to the radio: starting SIM1 in this boot" 2>/dev/null || true
+    exec "$MD" radio-on
+}
+for ((attempt=0; attempt<180; attempt++)); do
     ready=1
     for directory in /run/mu300-at /run/mu300-at2 /run/mu300-at4 /run/mu300-at5; do
         [[ -p "$directory/cmd" ]] || ready=0
@@ -15,5 +41,9 @@ for ((attempt=0; attempt<120; attempt++)); do
     [[ $ready == 1 ]] && break
     sleep 1
 done
-[[ $ready == 1 ]] || { echo 'SIM2 persistent AT brokers did not start' >&2; exit 1; }
-exec /opt/mu300/bin/mobile-data radio-locked /bin/bash /opt/mu300/bin/mu300-sim2-start --cold-start
+[[ $ready == 1 ]] || fallback brokers-missing
+if "$MD" radio-locked /bin/bash /opt/mu300/bin/mu300-sim2-start --cold-start; then
+    rm -f "$PENDING"
+    exit 0
+fi
+fallback cold-start-failed

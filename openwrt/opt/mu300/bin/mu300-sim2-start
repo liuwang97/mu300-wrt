@@ -11,7 +11,7 @@ SLOT=${MU300_SIM_SLOT:-$(cat /run/mu300/sim-slot 2>/dev/null || echo 1)}
 case "$SLOT" in 0|1) ;; *) exit 2;; esac
 LOG=/run/mu300/sim2-cold-start.log
 mkdir -p /run/mu300
-say() { printf '%s %s\n' "$(cut -d' ' -f1 /proc/uptime)" "$*" >> "$LOG"; }
+say() { printf '%s %s\n' "$(cut -d' ' -f1 /proc/uptime 2>/dev/null || date +%s)" "$*" >> "$LOG"; }
 trap 'result=$?; say "EXIT rc=$result; no further radio commands will be sent"' EXIT
 at() {
     local slot=$1 command=$2 seconds=${3:-6} directory
@@ -20,7 +20,7 @@ at() {
     [[ -p "$directory/cmd" && -s "$directory/owner/pid" ]] || return 2
     local owner
     owner=$(cat "$directory/owner/pid")
-    [[ "$owner" =~ ^[0-9]+$ && -d /proc/$owner ]] || return 2
+    [[ "$owner" =~ ^[0-9]+$ ]] && kill -0 "$owner" 2>/dev/null || return 2
     say "TX $slot $command"
     MU300_AT_DIR="$directory" /opt/mu300/bin/mu300-at -t "$seconds" "$command"
 }
@@ -55,6 +55,9 @@ identity=$(printf '%s\n' "$response" | sed -n 's/^+CCID: *//p' | tr -d '\r" ')
 [[ -n "$identity" && ( -z ${MU300_EXPECT_CCID:-} || "$identity" == "$MU300_EXPECT_CCID" ) ]] || { say "SIM$((SLOT+1)) identity did not match the recorded card"; exit 1; }
 # Native-RIL-derived sequence validated by cold-start registration and data traffic on this device.
 # In this firmware s_modemConfig=7: buildWorkModeCmd does NOT append the primary SIM argument used by mode 6.
+# From here on the radio has been told something: a failure past this marker is not undone within this boot
+# (mu300-sim2-warmup falls back to SIM1 in this boot only when nothing was sent).
+: > /run/mu300/sim2-cold-start.sent
 expect_ok data$SLOT 'AT+SPTESTMODEM=134,134'
 expect_ok data$SLOT 'AT+SPSWDATA'
 expect_ok data$SLOT 'AT+SFUN=4' 20
@@ -65,22 +68,14 @@ for ((attempt=0; attempt<15; attempt++)); do
     sleep 1
 done
 [[ "$response" == *'+CFUN: 1'* ]] || { say "SIM$((SLOT+1)) did not reach CFUN=1"; exit 1; }
+# CFUN=1 is the radio ready, for either card, exactly as the SIM1 path marks it: no service on a card does not
+# invalidate its RF bring-up, and registration is netifd's to wait for and retry (a slow registration used to
+# fail this gate and leave the whole boot without WAN).
+: > /run/mu300/sim-radio-ready
 if [[ "$SLOT" == 0 ]]; then
-    # No service on a card does not invalidate its RF bring-up; netifd owns registration/dial retries.
-    : > /run/mu300/sim-radio-ready
     say 'SIM1 native RF ready; data registration belongs to netifd'
     exit 0
 fi
-say 'SIM2 CFUN=1; waiting for registration (OK alone is insufficient)'
-for ((attempt=0; attempt<30; attempt++)); do
-    response=$(at main$SLOT 'AT+CEREG?') || exit 1
-    if printf '%s\n' "$response" | grep -Eq '^\+CEREG: [0-9]+,(1|5)(,|\r?$)'; then
-        say 'SIM2 registered; native radio ready; data attachment belongs to netifd on sipa_eth8'
-        : > /run/mu300/sim-radio-ready
-        : > /run/mu300/sim2-radio-ready
-        exit 0
-    fi
-    sleep 2
-done
-say 'SIM2 failed registration gate'
-exit 1
+: > /run/mu300/sim2-radio-ready
+say 'SIM2 native RF ready (CFUN=1); registration and data attachment belong to netifd on sipa_eth8'
+exit 0

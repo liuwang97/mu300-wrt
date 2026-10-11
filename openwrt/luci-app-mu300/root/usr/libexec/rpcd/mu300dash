@@ -196,7 +196,7 @@ m_signal() {
     # read's output. Serve the last snapshot until the apply finishes.
     if { [ -d /run/unisoc-modem-lock-apply ] || [ -e /run/mu300/sim-switching ] || [ -e /run/mu300/sim-active-unknown ]; }; then
         json_obj "$(cat "$SIGF" 2>/dev/null)" ||
-            printf '{"error":"Applying network locks: no live signal right now"}\n'
+            printf '{"error":"The modem is restarting (network locks or a SIM switch): no live signal right now"}\n'
         return
     fi
     local live="$DIR/live.$$"
@@ -351,7 +351,7 @@ m_at() {
     # a lock apply in flight means the modem is restarting (SFUN) - say so instead
     # of a generic busy, so it does not look like the console died
     if { [ -d /run/unisoc-modem-lock-apply ] || [ -e /run/mu300/sim-switching ] || [ -e /run/mu300/sim-active-unknown ]; }; then
-        printf '{"ok":0,"busy":1,"error":"Applying network locks: the modem is restarting (about half a minute), try again shortly"}\n'
+        printf '{"ok":0,"busy":1,"error":"The modem is restarting (network locks or a SIM switch, about half a minute), try again shortly"}\n'
         return
     fi
     # a scan in the background holds the channel for minutes: say so, not just "busy"
@@ -803,8 +803,7 @@ m_sim_set() {
                 refuse 'Enable hot switching; reboot if channels are unavailable or wait until idle'; return;
             }
         setsid "$SIMCTL" switch "$value" </dev/null >/dev/null 2>&1 &
-        printf '{"ok":1,"started":1}
-'
+        printf '{"ok":1,"started":1}\n'
     else
         reply_obj "$("$SIMCTL" "$op" "$value" 2>/dev/null)" 'SIM control failed'
     fi

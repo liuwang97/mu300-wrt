@@ -56,7 +56,7 @@ grep -q '^sipa_dele ' /proc/modules && { log "already loaded"; exit 0; }
 # kernel's ring buffer and refuse for the rest of the boot.
 modem_up() {
     local slot directory device
-    slot=${MU300_SIM_SLOT:-$(cat /run/mu300/sim-slot 2>/dev/null || cat /etc/mu300-sim-slot 2>/dev/null || echo 0)}
+    slot=${MU300_SIM_SLOT:-$(cat /run/mu300/sim-slot 2>/dev/null || echo 0)}
     case "$slot" in
         0) directory=/run/mu300-at; device=/dev/stty_nr1 ;;
         1) directory=/run/mu300-at4; device=/dev/stty_nr4 ;;

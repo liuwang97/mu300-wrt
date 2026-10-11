@@ -29,15 +29,33 @@ return view.extend({
 			failed: _('SIM switch failed; check SIM readiness and hot switching.'),
 			idle: _('Ready'), switching: _('Switching SIM'), switched: _('SIM switched; saved as boot default'),
 			rolled_back: _('Switch failed; previous SIM restored'),
+			no_data: _('The other SIM got no mobile data within a minute; the previous SIM is back and stays the default'),
 			reboot_required: _('Radio state unknown; reboot required')
+		};
+		/* mu300-sim answers ok:0 everywhere but on the U30 Air with OpenWrt: the page says so and offers nothing */
+		if (!st || st.supported === 0 || (st.ok !== 1 && !st.result)) {
+			dom.content(this.root, E('section', { 'class': 'mud-card' }, [
+				E('h3', {}, [ _('Dual SIM') ]),
+				E('p', {}, [ _('Dual SIM control is only for the U30 Air on OpenWrt.') ])
+			]));
+			return;
+		}
+		/* the last boot's cold start of the chosen SIM failed: the device is on SIM1 without live switching */
+		var fallbacks = {
+			'cold-start-failed': _('The chosen SIM could not be started at the last boot (no card, PIN, or the modem refused it).'),
+			'brokers-missing': _('The second SIM\'s modem channels did not come up at the last boot.'),
+			'unconfirmed': _('The last dual-SIM boot never confirmed itself.')
 		};
 		var card = E('section', { 'class': 'mud-card' }, [
 			E('h3', {}, [ _('Dual SIM') ]),
-			E('p', {}, [ _('A successful switch also saves that SIM as the next cold-boot default. A SIM without service can switch successfully but cannot provide internet.') ]),
+			E('p', {}, [ _('A switch saves that SIM as the next cold-boot default only once it has mobile data; without data within a minute the previous SIM comes back and stays the default. Both SIMs share the one APN of the WAN interface.') ]),
 			E('p', {}, [ _('Active SIM') + ': ' + (st.active ? 'SIM' + st.active : _('Unknown')) ]),
 			E('p', {}, [ _('Cold-boot default') + ': ' + (st.default ? 'SIM' + st.default : _('Unknown')) ]),
 			E('p', {}, [ results[st.result] || _('SIM control unavailable') ])
 		]);
+		if (st.fallback)
+			card.appendChild(E('p', { 'style': 'color:#b45309;font-weight:600' }, [
+				(fallbacks[st.fallback] || st.fallback) + ' ' + _('The device is back on SIM1 without live switching; choose again below to try once more.') ]));
 		var hot = E('input', { 'type': 'checkbox', 'checked': st.hot ? '' : null, 'disabled': st.busy ? '' : null });
 		hot.addEventListener('change', function() { self.set('hot', hot.checked ? 1 : 0); });
 		card.appendChild(E('label', {}, [ hot, ' ', _('Enable hot switching') ]));

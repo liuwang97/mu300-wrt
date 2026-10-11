@@ -156,7 +156,7 @@ proto_mu300cell_teardown() {
 	local config="$1" ifname
 	ifname=$(ubus call "network.interface.$config" status 2>/dev/null | jsonfilter -e "@.l3_device")
 	case "$ifname" in sipa_eth[0-9]|sipa_eth[0-9][0-9]) ;;
-		*) case "$(cat /run/mu300/sim-slot 2>/dev/null || cat /etc/mu300-sim-slot 2>/dev/null)" in 1) ifname=sipa_eth8 ;; *) ifname=sipa_eth0 ;; esac ;;
+		*) case "$(cat /run/mu300/sim-slot 2>/dev/null)" in 1) ifname=sipa_eth8 ;; *) ifname=sipa_eth0 ;; esac ;;
 	esac
 	proto_kill_command "$config"
 	/opt/mu300/bin/mobile-data down >/dev/null 2>&1

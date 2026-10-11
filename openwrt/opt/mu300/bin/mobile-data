@@ -19,7 +19,9 @@ set -euo pipefail
 # Physical SIM/RIL group selection
 # 0 = slot0: nr0/nr1/nr2
 # 1 = slot1: nr3/nr4/nr5
-SIM_SLOT=${MU300_SIM_SLOT:-$(cat /run/mu300/sim-slot 2>/dev/null || cat /etc/mu300-sim-slot 2>/dev/null || echo 0)}
+# /run/mu300/sim-slot is this boot's pin, written by init.d/mu300-atd on the U30 Air (OpenWrt) alone: the saved
+# choice (/etc/mu300-sim-slot) is never read here, so a stray file on another device or system changes nothing.
+SIM_SLOT=${MU300_SIM_SLOT:-$(cat /run/mu300/sim-slot 2>/dev/null || echo 0)}
 
 case "$SIM_SLOT" in
     0)
