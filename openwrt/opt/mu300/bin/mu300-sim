@@ -42,7 +42,12 @@ configured() {
 active() {
     local slot tmp
     if [ ! -e "$state" ]; then
-        slot=$(configured) || return 1
+        # A value that is not 0 or 1 (hand-edited, a half-written config) pins the external card: every AT owner
+        # asks this at start, and failing here would leave the device without AT, data or SMS for the whole boot.
+        slot=$(configured 2>/dev/null) || {
+            echo 'mu300-sim: the configured SIM slot is not 0 or 1; using external slot 0 for this boot' >&2
+            slot=0
+        }
         mkdir -p "${state%/*}"
         # Publish once, atomically. Concurrent daemon starts keep the same boot slot.
         tmp=$(mktemp "${state}.XXXXXX") || return 1
@@ -73,10 +78,11 @@ case ${1:-status} in
         fi
         ;;
     select|default)
+        # "|| exit 2": under set -e a failing "valid" would end the script with its own status 1
         if [ "$1" = default ]; then
-            case ${2:-} in 1) next=0 ;; 2) next=1 ;; *) valid invalid; exit 2 ;; esac
+            case ${2:-} in 1) next=0 ;; 2) next=1 ;; *) valid invalid || exit 2 ;; esac
         else
-            case ${2:-} in external|0) next=0 ;; internal|1) next=1 ;; *) valid invalid; exit 2 ;; esac
+            case ${2:-} in external|0) next=0 ;; internal|1) next=1 ;; *) valid invalid || exit 2 ;; esac
         fi
         ensure_slot_supported "$next" || exit 1
         # Pin the current slot before changing the next-boot setting.

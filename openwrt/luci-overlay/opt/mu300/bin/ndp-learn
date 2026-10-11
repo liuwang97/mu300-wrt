@@ -112,7 +112,7 @@ has() {
 # router_lifetime: what is left of the carrier's default router on the bearer, in seconds (1-9000), for the
 # withdrawing RA; 1800 when the route shows no expiry
 router_lifetime() {
-    ip -6 route show default dev sipa_eth0 2>/dev/null | awk '{
+    ip -6 route show default dev "$IFACE" 2>/dev/null | awk '{
         for (i = 1; i < NF; i++) if ($i == "expires") { v = $(i + 1); sub(/sec$/, "", v) }
     } END {
         if (v !~ /^[0-9]+$/ || v + 0 < 1) v = 1800; else if (v + 0 > 9000) v = 9000

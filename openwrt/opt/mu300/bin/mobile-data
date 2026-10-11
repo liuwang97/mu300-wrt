@@ -635,6 +635,12 @@ up_locked() {
     # /etc/mu300/mobile-data.conf is an EnvironmentFile for the service. The argument still wins, which is what
     # the OpenWrt protocol handler uses.
     set -- "${1:-${MU300_APN:-}}"
+    # The APN is pasted into a quoted AT argument: a quote, a CR or a LF in it (a free-text field in LuCI, a
+    # hand-edited mobile-data.conf) would end the argument or the command early and define something else.
+    case ${1:-} in
+        *[\"\\]*|*"$(printf '\r')"*|*'
+'*) echo "the APN contains a quote, a backslash or a line break; not defining the context with it" >&2; exit 1 ;;
+    esac
     if [ -n "${1:-}" ]; then
         # Keep the external card's established definition; internal F50 stock RIL uses
         # dual stack with the extended context, PCO and QoS fields below.
@@ -644,7 +650,7 @@ up_locked() {
             at 'AT+CGPCO=0,"","",1,0' >/dev/null
             at 'AT+CGEQREQ=1,2,0,0,0,0,2,0,"1e4","0e0",3,0,0' >/dev/null
         else
-        at "AT+CGDCONT=$CID,\"${MU300_PDP_TYPE:-IP}\",\"$1\"" >/dev/null
+            at "AT+CGDCONT=$CID,\"${MU300_PDP_TYPE:-IP}\",\"$1\"" >/dev/null
         fi
     fi
     # No AT+CGACT? first: at boot the context is always off, the question costs a whole AT round trip, and

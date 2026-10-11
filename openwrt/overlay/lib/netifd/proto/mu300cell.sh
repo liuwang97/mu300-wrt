@@ -24,8 +24,8 @@
 }
 
 mu300cell_slot() {
-    if [ -x /opt/mu300/bin/mu300-sim ]; then /opt/mu300/bin/mu300-sim active
-    else echo 0; fi
+	if [ -x /opt/mu300/bin/mu300-sim ]; then /opt/mu300/bin/mu300-sim active
+	else echo 0; fi
 }
 
 proto_mu300cell_init_config() {
@@ -46,14 +46,14 @@ proto_mu300cell_init_config() {
 proto_mu300cell_setup() {
 	local config="$1"
 	local apn pdptype peerdns ipv6 out ifname ip prefix dns1 dns2 iid zone a relay=0
-    local slot apn_internal pdptype_internal
-    json_get_vars apn pdptype peerdns ipv6 apn_internal pdptype_internal
-    slot=$(mu300cell_slot) || { proto_notify_error "$config" INVALID_SIM_SLOT; return 1; }
-    # Selection is frozen for the boot, so Apply never mixes old AT channels with new IP settings.
-    if [ "$slot" = 1 ]; then
-        apn=$apn_internal
-        pdptype=${pdptype_internal:-IPV4V6}
-    fi
+	local slot apn_internal pdptype_internal
+	json_get_vars apn pdptype peerdns ipv6 apn_internal pdptype_internal
+	slot=$(mu300cell_slot) || { proto_notify_error "$config" INVALID_SIM_SLOT; return 1; }
+	# Selection is frozen for the boot, so Apply never mixes old AT channels with new IP settings.
+	if [ "$slot" = 1 ]; then
+		apn=$apn_internal
+		pdptype=${pdptype_internal:-IPV4V6}
+	fi
 	[ "$ipv6" = relay ] && [ "${pdptype:-IP}" != IP ] && relay=1
 
 	out=$(MU300_NETIFD=1 MU300_PDP_TYPE="${pdptype:-IP}" MU300_IPV6="$ipv6" \

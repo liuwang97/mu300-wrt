@@ -411,8 +411,8 @@ function spark(el, arr, min, max, win) {
  * Pages bind the clicks by event delegation ([data-lock] attribute: "<rat>:<arfcn>,<pci>"). */
 function neighborRows(c, lockedCell) {
 	var nb = (c && Array.isArray(c.neigh) ? c.neigh : []).filter(function(n) {
-        return n && typeof n === 'object' && (n.rat === 'nr' || n.rat === 'lte');
-    });
+		return n && typeof n === 'object' && (n.rat === 'nr' || n.rat === 'lte');
+	});
 	nb.sort(function(a, b) {
 		if ((a.rat == 'nr') != (b.rat == 'nr')) return a.rat == 'nr' ? -1 : 1;
 		return (b.rsrp || -999) - (a.rsrp || -999);

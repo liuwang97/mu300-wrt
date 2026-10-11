@@ -82,12 +82,31 @@ esac''')
             for bad in ['2', '-1', '1;touch injected', '$(touch injected)', '1\n0']:
                 self.choice.write_text('0\n')
                 r = self.sim(shell, 'select', bad)
-                self.assertNotEqual(r.returncode, 0)
+                self.assertEqual(r.returncode, 2, r.stderr)
                 self.assertEqual(self.choice.read_text().strip(), '0')
+                self.assertFalse((self.tmp / 'injected').exists())
+                # a bad stored value (hand-edited) never fails the AT owners that ask at start: it pins the
+                # external card for this boot, with a warning, and the stored value stays as it is
                 self.state.unlink(missing_ok=True)
                 self.choice.write_text(bad)
-                self.assertNotEqual(self.sim(shell, 'active').returncode, 0)
-                self.assertFalse(self.state.exists())
+                self.assertNotEqual(self.sim(shell, 'configured').returncode, 0)
+                active = self.sim(shell, 'active')
+                self.assertEqual(active.returncode, 0, active.stderr)
+                self.assertEqual(active.stdout.strip(), '0')
+                self.assertIn('not 0 or 1', active.stderr)
+                self.assertEqual(self.state.read_text().strip(), '0')
+                self.assertEqual(self.choice.read_text(), bad)
+
+    def test_apn_with_a_quote_or_line_break_never_reaches_the_modem(self):
+        s = (BIN / 'mobile-data').read_text()
+        start = s.index('    set -- "${1:-${MU300_APN:-}}"')
+        block = s[start:s.index('    if [ -n "${1:-}" ]; then', start)]
+        for shell in self.each_shell():
+            for apn, rc in [('internet', 0), ('cmnet', 0), ('a-b.c_d', 0), ('x"y', 1), ('x\\y', 1), ('x\ry', 1), ('x\ny', 1), ('', 0)]:
+                code = 'at() { echo "$1" >> "$STUBLOG/calls"; }; up() {\n' + block + '\necho defined; }; up "$APN"'
+                r = self.sh(shell, code, APN=apn, SIM_SLOT='0')
+                self.assertEqual(r.returncode, rc, (apn, r.stderr))
+                self.assertEqual('defined' in r.stdout, rc == 0, apn)
 
     def test_concurrent_first_readers_publish_one_complete_slot(self):
         for shell in self.each_shell():

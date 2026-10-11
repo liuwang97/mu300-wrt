@@ -38,26 +38,26 @@ return network.registerProtocol('mu300cell', {
 	},
 
 	renderFormOptions: function(s) {
-        var o;
+		var o;
 
-        o = s.taboption('general', form.ListValue, 'sim_slot', _('SIM source'),
-            _('Applies after reboot. The internal SIM is available only on devices fitted with one.'));
-        o.value('0', _('External SIM (slot 0)'));
-        o.value('1', _('Internal SIM (slot 1)'));
-        o.default = '0';
+		o = s.taboption('general', form.ListValue, 'sim_slot', _('SIM source'),
+			_('Applies after reboot. The internal SIM is available only on devices fitted with one.'));
+		o.value('0', _('External SIM (slot 0)'));
+		o.value('1', _('Internal SIM (slot 1)'));
+		o.default = '0';
 
-        o = s.taboption('general', form.Value, 'apn_internal', _('Internal SIM APN'),
-            _('Use the APN supplied by the internal SIM provider. China Mobile was tested with cmnet.'));
-        o.depends('sim_slot', '1');
-        o.retain = true;
-        o.placeholder = 'cmnet';
+		o = s.taboption('general', form.Value, 'apn_internal', _('Internal SIM APN'),
+			_('Use the APN supplied by the internal SIM provider. China Mobile was tested with cmnet.'));
+		o.depends('sim_slot', '1');
+		o.retain = true;
+		o.placeholder = 'cmnet';
 
-        o = s.taboption('general', form.ListValue, 'pdptype_internal', _('Internal SIM PDP type'));
-        o.value('IPV4V6', _('IPv4 and IPv6'));
-        o.value('IP', _('IPv4 only'));
-        o.default = 'IPV4V6';
-        o.depends('sim_slot', '1');
-        o.retain = true;
+		o = s.taboption('general', form.ListValue, 'pdptype_internal', _('Internal SIM PDP type'));
+		o.value('IPV4V6', _('IPv4 and IPv6'));
+		o.value('IP', _('IPv4 only'));
+		o.default = 'IPV4V6';
+		o.depends('sim_slot', '1');
+		o.retain = true;
 
 		o = s.taboption('general', form.Value, 'apn', _('APN'),
 			_('Leave empty unless the carrier needs a specific one. Empty means the modem keeps the context the SIM already defines, which is what most SIMs expect and what this device has been using.'));
