@@ -10,42 +10,49 @@
  * The styles use theme tokens only: luci-theme-aurora's (--surface/--hairline/--brand/--text-muted/--success...,
  * html[data-darkmode] flips light and dark), falling back step by step to LuCI's standard variables
  * (--background-alt/--border/--primary...) under other themes. Quality colours are not fixed values: they use
- * --success/--warning/--danger and color-mix, so both modes follow the theme. */
+ * --success/--warning/--danger and color-mix, so both modes follow the theme.
+ *
+ * Every call goes on its own (nobatch). LuCI otherwise sends the calls a page makes in the same moment as one HTTP
+ * request, which uhttpd answers one call after the other: the battery and CPU of the status snapshot then waited for
+ * a lock reading behind it, and when the browser gave up on the request (20 s) every call in it failed together - the
+ * whole page went blank while one AT command was stuck. */
 
-var callStatus = rpc.declare({ object: 'mu300dash', method: 'status', expect: { '': {} } });
-var callSignal = rpc.declare({ object: 'mu300dash', method: 'signal', expect: { '': {} } });
-var callSysinfo = rpc.declare({ object: 'mu300dash', method: 'sysinfo', expect: { '': {} } });
-var callAct    = rpc.declare({ object: 'mu300dash', method: 'act', params: [ 'op', 'arg' ], expect: { '': {} } });
-var callAt     = rpc.declare({ object: 'mu300dash', method: 'at', params: [ 'cmd' ], expect: { '': {} } });
-var callAtHist = rpc.declare({ object: 'mu300dash', method: 'at_history', expect: { '': {} } });
-var callLockGet = rpc.declare({ object: 'mu300dash', method: 'lock_get', expect: { '': {} } });
-var callLockFresh = rpc.declare({ object: 'mu300dash', method: 'lock_get', params: [ 'fresh' ], expect: { '': {} } });
-var callLockSet = rpc.declare({ object: 'mu300dash', method: 'lock_set', params: [ 'kind', 'val' ], expect: { '': {} } });
-var callSmsList = rpc.declare({ object: 'mu300dash', method: 'sms_list', params: [ 'page' ], expect: { '': {} } });
-var callSmsShow = rpc.declare({ object: 'mu300dash', method: 'sms_show', params: [ 'id' ], expect: { '': {} } });
-var callSmsSend = rpc.declare({ object: 'mu300dash', method: 'sms_send', params: [ 'num', 'text' ], expect: { '': {} } });
-var callSmsDel  = rpc.declare({ object: 'mu300dash', method: 'sms_delete', params: [ 'id', 'sim' ], expect: { '': {} } });
-var callSmsSync = rpc.declare({ object: 'mu300dash', method: 'sms_sync', expect: { '': {} } });
-var callUsbGet = rpc.declare({ object: 'mu300dash', method: 'usb_get', expect: { '': {} } });
-var callUsbSet = rpc.declare({ object: 'mu300dash', method: 'usb_set', params: [ 'kind', 'value', 'scope', 'auto' ], expect: { '': {} } });
-var callUsbNetList = rpc.declare({ object: 'mu300dash', method: 'usb_net_list', expect: { '': {} } });
-var callUsbNetAdd = rpc.declare({ object: 'mu300dash', method: 'usb_net_add', params: [ 'iface' ], expect: { '': {} } });
-var callLangGet = rpc.declare({ object: 'mu300dash', method: 'lang_get', expect: { '': {} } });
-var callLangSet = rpc.declare({ object: 'mu300dash', method: 'lang_set', params: [ 'op', 'codes', 'source' ], expect: { '': {} } });
-var callPowerGet = rpc.declare({ object: 'mu300dash', method: 'power_get', expect: { '': {} } });
-var callPowerSet = rpc.declare({ object: 'mu300dash', method: 'power_set', params: [ 'op', 'key', 'value' ], expect: { '': {} } });
-var callTtlGet = rpc.declare({ object: 'mu300dash', method: 'ttl_get', expect: { '': {} } });
-var callTtlSet = rpc.declare({ object: 'mu300dash', method: 'ttl_set', params: [ 'value' ], expect: { '': {} } });
-var callFwdGet = rpc.declare({ object: 'mu300dash', method: 'forward_get', expect: { '': {} } });
+var callStatus = rpc.declare({ object: 'mu300dash', method: 'status', expect: { '': {} }, nobatch: true });
+var callSignal = rpc.declare({ object: 'mu300dash', method: 'signal', expect: { '': {} }, nobatch: true });
+var callSysinfo = rpc.declare({ object: 'mu300dash', method: 'sysinfo', expect: { '': {} }, nobatch: true });
+var callAct    = rpc.declare({ object: 'mu300dash', method: 'act', params: [ 'op', 'arg' ], expect: { '': {} }, nobatch: true });
+var callAt     = rpc.declare({ object: 'mu300dash', method: 'at', params: [ 'cmd', 'confirm' ], expect: { '': {} }, nobatch: true });
+var callAtJob  = rpc.declare({ object: 'mu300dash', method: 'at_job', expect: { '': {} }, nobatch: true });
+var callOpsLog = rpc.declare({ object: 'mu300dash', method: 'ops_log', expect: { '': {} }, nobatch: true });
+var callAtHist = rpc.declare({ object: 'mu300dash', method: 'at_history', expect: { '': {} }, nobatch: true });
+var callLockGet = rpc.declare({ object: 'mu300dash', method: 'lock_get', expect: { '': {} }, nobatch: true });
+var callLockFresh = rpc.declare({ object: 'mu300dash', method: 'lock_get', params: [ 'fresh' ], expect: { '': {} }, nobatch: true });
+var callLockSet = rpc.declare({ object: 'mu300dash', method: 'lock_set', params: [ 'kind', 'val' ], expect: { '': {} }, nobatch: true });
+var callSmsList = rpc.declare({ object: 'mu300dash', method: 'sms_list', params: [ 'page' ], expect: { '': {} }, nobatch: true });
+var callSmsShow = rpc.declare({ object: 'mu300dash', method: 'sms_show', params: [ 'id' ], expect: { '': {} }, nobatch: true });
+var callSmsSend = rpc.declare({ object: 'mu300dash', method: 'sms_send', params: [ 'num', 'text' ], expect: { '': {} }, nobatch: true });
+var callSmsDel  = rpc.declare({ object: 'mu300dash', method: 'sms_delete', params: [ 'id', 'sim' ], expect: { '': {} }, nobatch: true });
+var callSmsSync = rpc.declare({ object: 'mu300dash', method: 'sms_sync', expect: { '': {} }, nobatch: true });
+var callUsbGet = rpc.declare({ object: 'mu300dash', method: 'usb_get', expect: { '': {} }, nobatch: true });
+var callUsbSet = rpc.declare({ object: 'mu300dash', method: 'usb_set', params: [ 'kind', 'value', 'scope', 'auto' ], expect: { '': {} }, nobatch: true });
+var callUsbNetList = rpc.declare({ object: 'mu300dash', method: 'usb_net_list', expect: { '': {} }, nobatch: true });
+var callUsbNetAdd = rpc.declare({ object: 'mu300dash', method: 'usb_net_add', params: [ 'iface' ], expect: { '': {} }, nobatch: true });
+var callLangGet = rpc.declare({ object: 'mu300dash', method: 'lang_get', expect: { '': {} }, nobatch: true });
+var callLangSet = rpc.declare({ object: 'mu300dash', method: 'lang_set', params: [ 'op', 'codes', 'source' ], expect: { '': {} }, nobatch: true });
+var callPowerGet = rpc.declare({ object: 'mu300dash', method: 'power_get', expect: { '': {} }, nobatch: true });
+var callPowerSet = rpc.declare({ object: 'mu300dash', method: 'power_set', params: [ 'op', 'key', 'value' ], expect: { '': {} }, nobatch: true });
+var callTtlGet = rpc.declare({ object: 'mu300dash', method: 'ttl_get', expect: { '': {} }, nobatch: true });
+var callTtlSet = rpc.declare({ object: 'mu300dash', method: 'ttl_set', params: [ 'value' ], expect: { '': {} }, nobatch: true });
+var callFwdGet = rpc.declare({ object: 'mu300dash', method: 'forward_get', expect: { '': {} }, nobatch: true });
 var callFwdSet = rpc.declare({ object: 'mu300dash', method: 'forward_set', params: [ 'enabled', 'template', 'allow',
 	'deny', 'keywords', 'clear', 'webhook', 'webhook_url', 'webhook_format', 'webhook_headers', 'telegram',
 	'telegram_token', 'telegram_chat', 'email', 'email_host', 'email_port', 'email_tls', 'email_user', 'email_password',
-	'email_from', 'email_to', 'sms', 'sms_number' ], expect: { '': {} } });
-var callFwdTest = rpc.declare({ object: 'mu300dash', method: 'forward_test', expect: { '': {} } });
-var callCpuGet = rpc.declare({ object: 'mu300dash', method: 'cpu_get', expect: { '': {} } });
-var callCpuSet = rpc.declare({ object: 'mu300dash', method: 'cpu_set', params: [ 'profile' ], expect: { '': {} } });
-var callTrafficGet = rpc.declare({ object: 'mu300dash', method: 'traffic_get', expect: { '': {} } });
-var callTrafficSet = rpc.declare({ object: 'mu300dash', method: 'traffic_set', params: [ 'op', 'value' ], expect: { '': {} } });
+	'email_from', 'email_to', 'sms', 'sms_number' ], expect: { '': {} }, nobatch: true });
+var callFwdTest = rpc.declare({ object: 'mu300dash', method: 'forward_test', expect: { '': {} }, nobatch: true });
+var callCpuGet = rpc.declare({ object: 'mu300dash', method: 'cpu_get', expect: { '': {} }, nobatch: true });
+var callCpuSet = rpc.declare({ object: 'mu300dash', method: 'cpu_set', params: [ 'profile' ], expect: { '': {} }, nobatch: true });
+var callTrafficGet = rpc.declare({ object: 'mu300dash', method: 'traffic_get', expect: { '': {} }, nobatch: true });
+var callTrafficSet = rpc.declare({ object: 'mu300dash', method: 'traffic_set', params: [ 'op', 'value' ], expect: { '': {} }, nobatch: true });
 /* The live rates' one read: the mu300rates object (rpcd's ucode plugin) returns /proc/net/dev, in rpcd itself (no
  * process started, no AT), every second. Sent on its own (nobatch): a declared call is batched with whatever else is
  * pending, and then waits for the status snapshot, which takes a few hundred milliseconds and made the rates come
@@ -555,6 +562,22 @@ function notify(title, message, opts) {
 	return t;
 }
 
+/* M.backoff(base, fails) -> the wait before the next poll: base while calls succeed, doubled after each failure in a
+ * row, at most twelve times base (30 s for the home page's 2.5 s and less). A page that keeps polling a backend that
+ * cannot answer only adds to what it waits for. */
+function backoff(base, fails) {
+	var n = Math.max(0, Math.min(Number(fails) || 0, 4));
+	return Math.min(base * Math.pow(2, n), base * 12);
+}
+
+/* M.ageText(seconds) -> "42 s" / "3 min" / "2 h": how old a reading is */
+function ageText(s) {
+	s = Math.max(0, Math.round(Number(s) || 0));
+	if (s < 120) return _('%d s').format(s);
+	if (s < 7200) return _('%d min').format(Math.round(s / 60));
+	return _('%d h').format(Math.round(s / 3600));
+}
+
 /* New-SMS watcher (each page's render calls it; one instance): every 5 s it reads page 1 of the local pool (a file
  * read, no AT), the first time only to set the baseline. A higher message id that is incoming (mt) then shows a
  * notification with the sender and a preview. When the pool is cleared (the id drops) the baseline is reset
@@ -562,9 +585,22 @@ function notify(title, message, opts) {
 var smsWatch = null;
 function watchSms() {
 	if (smsWatch) return;
-	smsWatch = { seen: null };
+	smsWatch = { seen: null, busy: false, fails: 0, skip: 0 };
 	window.setInterval(function() {
-		Promise.resolve(callSmsList(1)).catch(function() { return {}; }).then(function(r) {
+		/* never a second read while one is out (a slow backend would otherwise collect a request every 5 s), and
+		 * fewer reads after failures (backoff) */
+		if (smsWatch.busy) return;
+		if (smsWatch.skip > 0) { smsWatch.skip--; return; }
+		smsWatch.busy = true;
+		Promise.resolve(callSmsList(1)).then(function(r) {
+			smsWatch.fails = r && !r.error ? 0 : smsWatch.fails + 1;
+			return r;
+		}, function() {
+			smsWatch.fails++;
+			return {};
+		}).then(function(r) {
+			smsWatch.busy = false;
+			smsWatch.skip = Math.round(backoff(1, smsWatch.fails)) - 1;
 			r = r || {};
 			var msgs = r.msgs || [], max = 0;
 			msgs.forEach(function(m) {
@@ -642,6 +678,7 @@ function choiceBox(title, message, choices, opts) {
  * an instance of it */
 return baseclass.extend({
 	callStatus: callStatus, callSignal: callSignal, callSysinfo: callSysinfo, callAct: callAct, callAt: callAt, callAtHist: callAtHist,
+	callAtJob: callAtJob, callOpsLog: callOpsLog, backoff: backoff, ageText: ageText,
 	callLockGet: callLockGet, callLockFresh: callLockFresh, callLockSet: callLockSet,
 	callSmsList: callSmsList, callSmsShow: callSmsShow, callSmsSend: callSmsSend,
 	callSmsDel: callSmsDel, callSmsSync: callSmsSync,

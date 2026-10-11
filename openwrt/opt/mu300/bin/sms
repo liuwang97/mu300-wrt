@@ -3,6 +3,8 @@
 # received messages off the SIM within seconds: use its hook, /etc/mu300/sms-hook, rather than "sms watch" there.)
 #
 #   sms list                       every message, long ones joined back together
+#   sms json                       the same as one JSON object (the web panel): {"store", "messages": [{"index": [N...],
+#                                  "sender", "time", "parts", "have", "text"}]}
 #   sms read INDEX                 one message in full
 #   sms send NUMBER TEXT...        send one (Turkish and emoji included; it picks the encoding)
 #   sms delete INDEX | read | all  remove messages from the SIM
@@ -51,7 +53,9 @@ fetch_all() {
     '
 }
 
-decode() { awk -v mode=decode -F'\t' -f "$AWK"; }
+# byte-wise (LC_ALL=C): the decoder writes UTF-8 a byte at a time with printf "%c", which gawk in a UTF-8 locale
+# turns into a character of its own (ü came out as Ã¼); mawk and busybox awk were never affected
+decode() { LC_ALL=C awk -v mode=decode -F'\t' -f "$AWK"; }
 
 # Join the parts of a concatenated message. Parts share a reference number; they arrive in any order and may be
 # stored under indices that are not adjacent, so sort on reference and part before gluing the text together.
@@ -84,6 +88,29 @@ show() {   # indices, sender, timestamp, parts, text
     }'
 }
 
+# the reassembled lines as JSON: strings escaped byte by byte (backslash, quote; control characters dropped), so the
+# UTF-8 of a message passes through untouched
+tojson() {
+    LC_ALL=C awk -F'\t' -v store="$1" '
+        function js(s,    o, i, c) {
+            o = ""
+            for (i = 1; i <= length(s); i++) {
+                c = substr(s, i, 1)
+                if (c == "\\" || c == "\"") o = o "\\" c
+                else if (c >= " " && c != "\177") o = o c
+            }
+            return "\"" o "\""
+        }
+        BEGIN { printf "{\"store\":%s,\"messages\":[", js(store) }
+        NF >= 6 {
+            n = split($1, ix, ",")
+            printf "%s{\"index\":[", (c++ ? "," : "")
+            for (i = 1; i <= n; i++) printf "%s%d", (i > 1 ? "," : ""), ix[i]
+            printf "],\"sender\":%s,\"time\":%s,\"parts\":%d,\"have\":%d,\"text\":%s}", js($2), js($3), $4, $6, js($5)
+        }
+        END { print "]}" }'
+}
+
 cmd=${1:-list}
 [ $# -gt 0 ] && shift
 
@@ -94,6 +121,13 @@ list)
     all=$(fetch_all)
     [ -n "$all" ] || { echo "no messages in $store storage"; exit 0; }
     printf '%s\n' "$all" | decode | reassemble | show
+    ;;
+
+json)
+    pick_store || exit 1
+    pdu_mode
+    all=$(fetch_all)
+    if [ -n "$all" ]; then printf '%s\n' "$all" | decode | reassemble | tojson "$store"; else tojson "$store" </dev/null; fi
     ;;
 
 read)
@@ -112,7 +146,7 @@ send)
     text=$*
     [ -n "$num" ] && [ -n "$text" ] || { echo "usage: sms send NUMBER TEXT..." >&2; exit 2; }
     pdu_mode
-    out=$(awk -v mode=encode -v number="$num" -v text="$text" -f "$AWK" </dev/null)
+    out=$(LC_ALL=C awk -v mode=encode -v number="$num" -v text="$text" -f "$AWK" </dev/null)
     len=${out%% *}; pdu=${out#* }
     [ -n "$len" ] && [ -n "$pdu" ] || { echo "sms: could not build the message" >&2; exit 1; }
     # AT+CMGS in PDU mode is two steps: the length, then the PDU followed by Ctrl-Z. The modem answers ">"
@@ -133,6 +167,8 @@ delete)
     case $what in
         all)  at 'AT+CMGD=1,4' 30 >/dev/null; echo "deleted every message in $store" ;;
         read) at 'AT+CMGD=1,1' 30 >/dev/null; echo "deleted the messages already read in $store" ;;
+        # only a message index reaches the AT command (anything else would be sent to the modem as it is)
+        *[!0-9]*) echo "sms: not a message index: $what (sms delete INDEX | read | all)" >&2; exit 2 ;;
         *)    at "AT+CMGD=$what" 20 >/dev/null; echo "deleted #$what" ;;
     esac
     ;;
@@ -182,6 +218,6 @@ watch)
     ;;
 
 *)
-    sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'
     exit 2 ;;
 esac

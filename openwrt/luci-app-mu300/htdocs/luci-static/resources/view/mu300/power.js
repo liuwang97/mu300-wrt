@@ -122,7 +122,8 @@ return view.extend({
 				: '--' ]));
 		}
 		if (chg)
-			card.appendChild(row(_('Charger'), [ _('Charger: %s, %s port').format(String(chg.status || '--'), String(chg.usb_type || '--')) ]));
+			card.appendChild(row(_('Charger'), [ _('Charger: %s, %s port').format(String(chg.status || '--'), String(chg.usb_type || '--'))
+				+ (num(chg.input_ma) && chg.online === 1 ? ', ' + chg.input_ma + ' mA' : '') ]));
 		if (st.charge_off === 'temp') card.appendChild(E('div', { 'class': 'mud-note' }, _('Charging paused: battery temperature')));
 		else if (st.charge_off === 'limit') card.appendChild(E('div', { 'class': 'mud-note' }, _('Charging paused: charge limit')));
 		var sleep = E('button', { 'class': 'mud-btn', 'id': 'mud-power-sleep' }, _('Sleep now'));
@@ -145,13 +146,17 @@ return view.extend({
 			E('div', { 'style': 'display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:10px 0' }, [
 				E('label', { 'for': 'mud-power-saver' }, _('Switch to Saver under %')),
 				self.number('SAVER_BELOW', conf.SAVER_BELOW, 100, 'mud-power-saver')
-			]),
-			E('div', { 'style': 'display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:10px 0' }, [
-				E('label', { 'for': 'mud-power-chargeto' }, _('Stop charging at')),
-				self.choice('CHARGE_TO', conf.CHARGE_TO === 80 ? 80 : 100, [ [ '100', '100 %' ], [ '80', '80 %' ] ], 'mud-power-chargeto')
-			]),
-			E('div', { 'class': 'mud-note' }, _('80 % keeps the battery healthier on a device that stays plugged in.'))
+			])
 		]);
+		/* the charge limit (CHARGE_TO 0-100), only where there is a battery (not the F50) */
+		if (bat) {
+			prof.appendChild(E('div', { 'style': 'display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:10px 0' }, [
+				E('label', { 'for': 'mud-power-chargeto' }, _('Stop charging at')),
+				self.number('CHARGE_TO', num(conf.CHARGE_TO) ? conf.CHARGE_TO : 100, 100, 'mud-power-chargeto'), '%'
+			]));
+			prof.appendChild(E('div', { 'class': 'mud-note' }, _('0 % never charges the battery (the device runs on the charger), 100 % charges it full; in between, charging stops at that level and starts again 5 points lower. Under 5 % the battery always charges.')));
+			prof.appendChild(E('div', { 'class': 'mud-note' }, _('80 % keeps the battery healthier on a device that stays plugged in.')));
+		}
 
 		/* 3. the knobs of the three profiles */
 		var knobs = E('section', { 'class': 'mud-card', 'style': 'margin-top:14px', 'id': 'mud-power-knobs' });

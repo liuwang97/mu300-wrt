@@ -2,7 +2,9 @@
 # The USB-C port's role (U30 Air; Ubuntu and OpenWrt, mainline kernels):
 #   mu300-usb             show it
 #   mu300-usb host        host: flash drives, keyboards, modems through an OTG adapter, with 5 V from the charger's
-#                         boost. The USB network to a computer is gone until "device" (it is the same port).
+#                         boost; or, with something powering the port (a hub or splitter with its own charger, e.g.
+#                         a USB network adapter and the charger together), host with the boost off, still charging.
+#                         The USB network to a computer is gone until "device" (it is the same port).
 #   mu300-usb device      back to the USB network / serial console to a computer (the default at every boot)
 #   mu300-usb boot        at boot (mu300-fixups, OpenWrt's mu300-hw): boost off. The charger runs on the battery,
 #                         so its registers outlive a reboot, and a boost left on would meet a computer's 5 V.
@@ -84,13 +86,20 @@ case ${1:-status} in
         fi ;;
     host)
         [ "$(id -u)" = 0 ] || die "run as root (sudo mu300-usb host)"
-        # the boost drives VBUS: never against a computer or a charger that drives it already
-        powered && die "something powers the USB port (a computer or a charger): unplug it first, then run this again"
-        setbits $REG_TIMER 0x30 0x00      # watchdog off, or the boost goes off by itself after 40 s
-        setbits $REG_CTRL1 0x20 0x20      # OTG boost on
-        echo host > "$ROLE" || die "could not switch the role"
-        sleep 1
-        echo "USB host: 5 V on, plug in the OTG adapter (the USB network is off until: sudo mu300-usb device)" ;;
+        # the boost drives VBUS: never against a computer or a charger that drives it already. Something on VBUS
+        # (a hub or splitter with its own charger: a USB network adapter and the charger on one port) is a host
+        # with the boost left off; the battery keeps charging from that supply.
+        if powered; then   # (the boost is off: the chip reports no outside supply while it boosts)
+            echo host > "$ROLE" || die "could not switch the role"
+            sleep 1
+            echo "USB host on outside power (a hub or splitter with a charger): 5 V out stays off; a computer on this port loses the USB network until: sudo mu300-usb device"
+        else
+            setbits $REG_TIMER 0x30 0x00  # watchdog off, or the boost goes off by itself after 40 s
+            setbits $REG_CTRL1 0x20 0x20  # OTG boost on
+            echo host > "$ROLE" || die "could not switch the role"
+            sleep 1
+            echo "USB host: 5 V on, plug in the OTG adapter (the USB network is off until: sudo mu300-usb device)"
+        fi ;;
     device)
         [ "$(id -u)" = 0 ] || die "run as root (sudo mu300-usb device)"
         echo device > "$ROLE" || die "could not switch the role"
@@ -98,5 +107,5 @@ case ${1:-status} in
         watchdog_on                       # watchdog back (40 s): the chip returns to its own defaults
         sleep 1   # the role switch works in the background
         echo "USB device: the USB network and serial console are back" ;;
-    *) sed -n '2,6s/^# \{0,1\}//p' "$0" >&2; exit 2 ;;
+    *) sed -n '2,8s/^# \{0,1\}//p' "$0" >&2; exit 2 ;;
 esac

@@ -1,6 +1,7 @@
 #!/bin/sh
 # Update the installed systems from a published release, on the device itself.
 #   mu300-update check            what is installed, what is the newest release
+#   mu300-update version          what is installed (no network needed)
 #   mu300-update apply [OS...]    download, unpack and switch (default: every installed system), then the kernel and
 #                                 the boot image (MU300_UBUNTU=24.04|26.04: move Ubuntu to that release)
 #   mu300-update boot             only the kernel and the boot image
@@ -216,6 +217,22 @@ notice() {
     if [ -s "$NOTICE" ]; then cp "$NOTICE" "$MOTD_DIR/60-mu300-update"; else rm -f "$MOTD_DIR/60-mu300-update"; fi
 }
 
+# version: what is installed, without the network (mu300-toolkit's summary shows it)
+version() {
+    mounted_disk
+    printf 'installed image   %s\n' "$(installed_version)"
+    printf 'systems on disk   %s\n' "$(installed_systems_versions)"
+    printf 'running now       %s\n' "$(running_os)"
+    _xs=; for x in $(extra_installed); do _xs="$_xs $x ($(extra_release "$x"))"; done
+    printf 'extras           %s\n' "${_xs:- none (mu300-extra list)}"
+    printf 'kernel            %s (boot image: %s; kernel choice %s)\n' "$(uname -r)" "$(cat "$BOOTDIR/installed.tag" 2>/dev/null || echo "from the installer")" "$(kernel_choice)"
+}
+# "openwrt v2026.10.18 ubuntu v2026.10.17": each system with the release its image came from
+installed_systems_versions() {
+    for os in $(installed_systems); do
+        printf '%s %s ' "$os" "$(cat "$DISK/$os/etc/mu300/image-version" 2>/dev/null || echo unknown)"
+    done
+}
 check() {
     mounted_disk
     latest=$(latest_release)
@@ -412,7 +429,7 @@ apply_one() {  # apply_one OS TAG
 #                ./lib/vpn, ./service, ./etc and ./hooks/link, ./hooks/unlink - which make one system use it
 #                (sh hooks/link SYSROOT, "" for the running system), so the images carry no mu300-vpn at all.
 EXTRA=$DISK/extra
-EXTRAS="vpn lang vpn-mihomo"
+EXTRAS="vpn lang vpn-mihomo panel"
 VPN_REPO=dikeckaan/mu300-linux-vpn
 # MU300_VPN_URL: another place with the module's files and SHA256SUMS (a pinned tag: .../releases/download/v1.0.0,
 # or a local server)
@@ -424,6 +441,7 @@ extra_desc() {
         vpn) echo "the VPN toolkit (mu300-vpn with Xray-core, hev-socks5-tunnel, sing-box), the module of github.com/$VPN_REPO (about 40 MB to download, 120 MB installed)" ;;
         lang) echo "LuCI (the web interface) in 40 more languages, the MU300 panel in 29 of them; OpenWrt only (about 2 MB to download, 6 MB installed)" ;;
         vpn-mihomo) echo "mihomo (Clash.Meta), the engine of mu300-vpn's mihomo profiles, from the same module repository (about 15 MB to download, 40 MB installed)" ;;
+        panel) echo "the web panel for Ubuntu: Cockpit (terminal, logs, services) and the MU300 page, on the LAN only (port 9090); Cockpit from Ubuntu's archive (about 12 MB, 45 MB installed), or offline with --from mu300-extra-panel-offline.tar.gz" ;;
     esac
 }
 extra_asset() { echo "mu300-extra-$1.tar.gz"; }
@@ -489,6 +507,12 @@ extra_tree_ok() {
         ! printf '%s\n' "$_t" | LC_ALL=C grep -Evxq -- "$MODULE_ENTRY"
         return
     fi
+    # panel: its four files, bin/, the Cockpit page (cockpit/mu300/<files>) and, offline, Cockpit's packages for each
+    # Ubuntu release (debs/<release>/<name>.deb)
+    if [ "$1" = panel ]; then
+        ! printf '%s\n' "$_t" | LC_ALL=C grep -Evxq -- "$PANEL_ENTRY"
+        return
+    fi
     # the other extras: their four files and programs in bin/, nothing else (whatever a tar did to the names)
     if [ "$1" != lang ]; then
         ! printf '%s\n' "$_t" | LC_ALL=C grep -Evxq -- '\.|\./(name|release|components|manifest|bin|bin/[A-Za-z0-9._+-]+)'
@@ -531,6 +555,7 @@ lang_tar_ok() {
 # backslash, $, backquote, <, >, & or control character: it goes into /etc/config/luci, into JSON and into a page)
 # ./release: a tag
 EXTRA_RELEASE='[A-Za-z0-9._-]{1,40}'
+PANEL_ENTRY='\.|\./(name|release|components|manifest|bin|bin/mu300-panel|cockpit|cockpit/mu300|cockpit/mu300/[A-Za-z0-9_-][A-Za-z0-9._-]*|debs|debs/[0-9]{2}\.[0-9]{2}|debs/[0-9]{2}\.[0-9]{2}/[A-Za-z0-9][A-Za-z0-9._+~-]*\.deb)'
 MODULE_ENTRY='\.|\./[A-Za-z0-9_+-][A-Za-z0-9._+-]*(/[A-Za-z0-9_+-][A-Za-z0-9._+-]*){0,3}'
 LANG_LINE='[a-z]{2,3}(_[a-z]{2})?	[^	"`$<>&\\'"'"'[:cntrl:]]{1,100}'
 
@@ -1378,6 +1403,7 @@ clean() {
 case ${1:-check} in apply|boot|kernel) keepalive_start; trap 'keepalive_stop; resume_data' EXIT; trap 'exit 130' INT TERM HUP ;; esac
 case ${1:-check} in
     check) check ;;
+    version) version ;;
     apply) shift; apply "$@" ;;
     boot) mounted_disk; t=${MU300_RELEASE:-$(latest_release)}; [ -n "$t" ] || die "could not reach GitHub (is the device online?)"
           boot_update "$t" || exit 1; rm -rf "$STAGE"; [ -n "${BOOT_CHANGED:-}" ] && printf '\nReboot to start the new kernel.\n' ;;
@@ -1388,5 +1414,5 @@ case ${1:-check} in
     clean) clean ;;
     notice) notice ;;
     -h|--help|help) sed -n '2,17s/^# \{0,1\}//p' "$0" ;;
-    *) echo "usage: mu300-update check|apply [ubuntu|openwrt|openwrt-luci ...]|boot|kernel [5.4|6.18|7.2]|rollback [os]|rollback-boot|clean|notice" >&2; exit 2 ;;
+    *) echo "usage: mu300-update check|version|apply [ubuntu|openwrt|openwrt-luci ...]|boot|kernel [5.4|6.18|7.2]|rollback [os]|rollback-boot|clean|notice" >&2; exit 2 ;;
 esac
