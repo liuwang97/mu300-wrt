@@ -37,7 +37,7 @@ int sc2355_dump_survey(struct wiphy *wiphy, struct net_device *ndev,
 	}
 	if (fw_ver == 1) {
 		if (vif->mode != SPRD_MODE_AP) {
-			netdev_err(vif->ndev, "Not AP mode, exit %s!\n",
+			netdev_dbg(vif->ndev, "Not AP mode, exit %s!\n",
 				   __func__);
 			err = -ENOENT;
 			goto out;
@@ -81,7 +81,12 @@ out:
 		return err;
 	}
 
-	netdev_err(vif->ndev, "%s, idx %d\n", __func__, idx);
+	/*
+	 * MU300 (#140): cfg80211 polls dump_survey until it returns -ENOENT, so every line below is per-poll trace of
+	 * the survey data (or of an empty list), not an error. The vendor printed them all with netdev_err, which
+	 * put two lines in the log every few seconds while anything read the survey; netdev_dbg like the 5.4 build.
+	 */
+	netdev_dbg(vif->ndev, "%s, idx %d\n", __func__, idx);
 	if (!list_empty(&vif->survey_info_list)) {
 		info_new = list_first_entry(&vif->survey_info_list,
 					    struct survey_info_new_node,
@@ -100,7 +105,7 @@ out:
 					    (SURVEY_INFO_NOISE_DBM |
 					     SURVEY_INFO_TIME |
 					     SURVEY_INFO_TIME_BUSY);
-					netdev_err(vif->ndev,
+					netdev_dbg(vif->ndev,
 						   "%s, noise:%d, time:%llu, time_busy:%llu, center_freq:%d\n",
 						   __func__,
 						   s_info->noise,
@@ -110,7 +115,7 @@ out:
 				} else {
 					s_info->filled =
 					    SURVEY_INFO_NOISE_DBM;
-					netdev_err(vif->ndev,
+					netdev_dbg(vif->ndev,
 						   "%s, noise:%d,center_freq:%d\n",
 						   __func__,
 						   s_info->noise,
@@ -127,13 +132,13 @@ out:
 				     SURVEY_INFO_TIME_EXT_BUSY);
 			}
 		}
-		netdev_err(vif->ndev, "%s, time %llu\n", __func__,
+		netdev_dbg(vif->ndev, "%s, time %llu\n", __func__,
 			   s_info->time);
 		survey_cnt++;
 		kfree(info_new);
 
 	} else {
-		netdev_err(vif->ndev, "%s, survey_cnt %d\n", __func__,
+		netdev_dbg(vif->ndev, "%s, survey_cnt %d\n", __func__,
 			   survey_cnt);
 		ret = -ENOENT;
 	}
