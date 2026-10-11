@@ -3,11 +3,14 @@ release it takes, the kernel choice, the byte helpers it edits boot image header
 may go onto this device."""
 import io
 import os
+import re
 import shutil
+import signal
 import struct
 import subprocess
 import sys
 import tarfile
+import time
 import unittest
 
 from helpers import BIN, TOP, ShellTest
@@ -463,6 +466,23 @@ class FromStock(UpdateBase):
             r = self.up(shell, f'PERSIST_LOG=8192; bootimg_from_stock "{stock}" "{self.tmp}/k" "{self.tmp}/r" "{self.tmp}"')
             self.assertNotEqual(r.returncode, 0)
             self.assertIn('persistent log area', r.stderr)
+            # the sizes it is made of, so a doubled file (two updaters in one directory) shows as one
+            self.assertIn('(12288 bytes: kernel 4096, ramdisks 1, with vbmeta', r.stderr)
+
+    def test_refuses_a_file_another_run_appended_to(self):
+        # two mu300-updates in the same $STAGE/boot each appended their kernel to new (a 56 MB "image" refused by the
+        # persistent log check); a new file that is not what was just assembled is refused as that, and never written
+        stock = self.tmp / 'stock.img'
+        fake_stock(stock)
+        (self.tmp / 'k').write_bytes(b'k' * 4096); (self.tmp / 'r').write_bytes(b'r')
+        grow = 'pad_page() { p=$(( (4096 - $(fsize "$1") % 4096) % 4096 )); [ "$p" = 0 ] || head -c "$p" /dev/zero >> "$1"; ' \
+               'head -c 4096 /dev/zero >> "$1"; }'
+        for shell in self.each_shell():
+            r = self.up(shell, f'{grow}; bootimg_from_stock "{stock}" "{self.tmp}/k" "{self.tmp}/r" "{self.tmp}"')
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn('not the image just assembled', r.stderr)
+            self.assertIn('another mu300-update', r.stderr)
+            self.assertFalse((self.tmp / 'newfooter').exists())
 
     def test_apply_keeps_the_vendor_files_the_image_has_a_directory_for(self):
         # the images ship opt/mu300/android/system/bin/cltest and a few firmware files, so the vendor directories
@@ -676,6 +696,106 @@ class FromStock(UpdateBase):
         self.assertIn('prev_modules_restore', fail[:fail.index('return 1')])
         rb = src[src.index('rollback_boot() {'):src.index('\n}\n', src.index('rollback_boot() {'))]
         self.assertLess(rb.index('write_boot'), rb.index('prev_modules_restore'))
+
+
+class Lock(UpdateBase):
+    """One mu300-update at a time: the second says who holds the lock and exits 1 before it touches anything.
+    With flock where the machine has it (busybox's applet on OpenWrt, util-linux on Ubuntu), with a pid directory
+    without; NO_FLOCK forces the directory on a machine that has flock."""
+    NO_FLOCK = 'have() { [ "$1" != flock ] && command -v "$1" >/dev/null 2>&1; }'
+
+    def setUp(self):
+        super().setUp()
+        self.lock = self.tmp / 'locks' / 'mu300-update'
+        self.holders = []
+
+    def tearDown(self):
+        self.end_holders()
+        super().tearDown()
+
+    def lock_env(self):
+        return self.env(MU300_LIB=1, MU300_DISK=self.disk, MU300_BIN=BIN, MU300_SYSROOT=self.root, MU300_LOCK=self.lock)
+
+    def hold(self, shell, prelude=':'):
+        """A separate process that takes the lock and keeps it; its pid, once it has the lock."""
+        mark = self.tmp / 'held'
+        mark.unlink(missing_ok=True)
+        # its own process group: the lock is the shell's and its children's (sleep inherits the flock descriptor), as
+        # a run's is while its unpacking or download still runs - ending the holder means the whole group
+        h = subprocess.Popen(shell + ['-c', f'. "{BIN}/mu300-update"; {prelude}; lock_take || exit 9; echo $$ > "{mark}"; sleep 30'],
+                             env=self.lock_env(), stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
+                             start_new_session=True)
+        self.holders.append(h)
+        for _ in range(100):
+            if mark.exists() and mark.read_text().strip():
+                return int(mark.read_text())
+            if h.poll() is not None:
+                self.fail(f'the holder ended: {h.stderr.read()}')
+            time.sleep(0.05)
+        self.fail('the holder never took the lock')
+
+    def take(self, shell, prelude=':'):
+        """lock_take in a fresh process, dropped at its end as the dispatch does: (exit status, stderr, stdout)."""
+        r = self.sh(shell, f'. "{BIN}/mu300-update"; {prelude}; lock_take; trap lock_drop EXIT; echo taken', MU300_LIB=1,
+                    MU300_DISK=self.disk, MU300_BIN=BIN, MU300_SYSROOT=self.root, MU300_LOCK=self.lock)
+        return r.returncode, r.stderr, r.stdout
+
+    def end_holders(self):
+        for h in self.holders:
+            if h.poll() is None:
+                os.killpg(h.pid, signal.SIGKILL)
+            h.wait(); h.stderr.close()
+        self.holders = []
+
+    def check_second_run(self, shell, prelude):
+        pid = self.hold(shell, prelude)
+        rc, err, out = self.take(shell, prelude)
+        self.assertEqual(rc, 1, err)
+        self.assertEqual(err.strip(), f'another mu300-update is running (pid {pid})')
+        self.assertEqual(out, '')
+        # free again once the holder is gone - killed, so without its own cleanup
+        self.end_holders()
+        rc, err, out = self.take(shell, prelude)
+        self.assertEqual((rc, out), (0, 'taken\n'), err)
+
+    def test_second_run_is_refused_with_the_holders_pid(self):
+        for shell in self.each_shell():
+            self.check_second_run(shell, ':')
+
+    def test_without_flock_a_pid_directory(self):
+        for shell in self.each_shell():
+            self.check_second_run(shell, self.NO_FLOCK)
+            self.assertFalse((self.lock.parent / 'mu300-update.d').exists())    # lock_drop ran at the end of take
+            # a directory left by a holder that is gone (a pid nothing has) is taken over
+            d = self.lock.parent / 'mu300-update.d'
+            d.mkdir(); (d / 'pid').write_text('999999\n')
+            rc, err, out = self.take(shell, self.NO_FLOCK)
+            self.assertEqual((rc, out), (0, 'taken\n'), err)
+            self.assertFalse(d.exists())
+            # one being made (no pid written yet) is a holder, not stale
+            d.mkdir()
+            rc, err, out = self.take(shell, self.NO_FLOCK)
+            self.assertEqual((rc, err.strip(), out), (1, 'another mu300-update is running', ''))
+            shutil.rmtree(d)
+
+    def test_the_pid_file_names_the_holder_with_flock(self):
+        if not shutil.which('flock'):
+            self.skipTest('no flock here')
+        for shell in self.each_shell():
+            pid = self.hold(shell)
+            self.assertEqual(self.lock.read_text().strip(), str(pid))
+            self.end_holders()
+
+    def test_what_changes_the_disk_locks_and_what_only_looks_does_not(self):
+        src = (BIN / 'mu300-update').read_text()
+        main = src[src.index('[ "$(id -u)" = 0 ]'):]
+        m = re.search(r'^\s*([a-z|-]+)\)\n\s*lock_take;', main, re.M)
+        self.assertIsNotNone(m, 'no command locks')
+        self.assertEqual(set(m.group(1).split('|')), {'apply', 'boot', 'kernel', 'rollback', 'rollback-boot', 'clean', 'accounts'})
+        self.assertLess(main.index('lock_take'), main.index('keepalive_start'))
+        self.assertIn("lock_drop' EXIT", main)
+        # a lock file in $STAGE would go with "clean"
+        self.assertIn('LOCK=${MU300_LOCK:-/var/lock/mu300-update}', src)
 
 
 if __name__ == '__main__':

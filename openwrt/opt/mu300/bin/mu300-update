@@ -1462,11 +1462,16 @@ bootimg_assemble() {  # bootimg_assemble DIR VBMETA_SIZE KERNEL RAMDISK...
     for _r in "$@"; do _rsz=$((_rsz + $(fsize "$_r"))); done
     bytes "$(fsize "$_kernel")" 4 le | poke "$_dir/new" 8
     bytes "$_rsz" 4 le | poke "$_dir/new" 12
+    _hs=$(fsize "$_dir/new") _ksz=$(fsize "$_kernel")
     cat "$_kernel" >> "$_dir/new"; pad_page "$_dir/new"
     cat "$@" >> "$_dir/new"; pad_page "$_dir/new"
     _os=$(fsize "$_dir/new")
+    # the file must be what was just put together: two updaters in the same directory once both appended their
+    # kernel to it, and the size check below then refused a 56 MB "image" (lock_take keeps them apart now)
+    [ "$_os" = $(( (_hs + _ksz + 4095) / 4096 * 4096 + (_rsz + 4095) / 4096 * 4096 )) ] ||
+        { echo "boot: $_dir/new is not the image just assembled ($_os bytes; another mu300-update in the same directory?)" >&2; return 1; }
     [ $((_os + _vs)) -le "$PERSIST_LOG" ] ||
-        { echo "boot: the new image ($_os bytes) would reach the persistent log area" >&2; return 1; }
+        { echo "boot: the new image ($_os bytes: kernel $_ksz, ramdisks $_rsz, with vbmeta $_vs) would reach the persistent log area at $PERSIST_LOG bytes" >&2; return 1; }
     cp "$_dir/footer" "$_dir/newfooter"
     { bytes "$_os" 8 be; bytes "$_os" 8 be; bytes "$_vs" 8 be; } | poke "$_dir/newfooter" 12
 }
@@ -1723,6 +1728,47 @@ rollback_boot() {
     printf 'boot: previous boot image (%s) restored. Reboot to start it.\n' "$(cat "$BOOTDIR/prev.tag" 2>/dev/null || echo unknown)"
 }
 
+# One mu300-update at a time. apply, boot, kernel, rollback, rollback-boot and clean all work in $STAGE: two runs
+# started together once both appended their kernel to the same $STAGE/boot/new, and both stopped at the size check
+# (a 56 MB "image" that "would reach the persistent log area" - harmless, but puzzling). The second run now says who
+# holds the lock and exits 1 before it touches anything. flock(1) where it is (busybox's applet on OpenWrt,
+# util-linux on Ubuntu; the kernel releases the lock however the run ends), else a directory with the holder's pid
+# (one whose holder is gone is taken over). Under /var/lock, not in $STAGE: clean deletes that. A run that continues
+# with the release's own updater (exec in apply) keeps its pid and fd 9, so it simply locks again. check, version
+# and notice (at boot and every 6 hours) only read and do not lock.
+LOCK=${MU300_LOCK:-/var/lock/mu300-update}
+lock_take() {
+    mkdir -p "${LOCK%/*}" 2>/dev/null
+    if have flock; then
+        ( : >> "$LOCK" ) 2>/dev/null || { echo "warning: cannot lock $LOCK; going on without" >&2; return 0; }
+        exec 9>>"$LOCK"
+        flock -n 9 || lock_busy "$(cat "$LOCK" 2>/dev/null)"
+        echo $$ > "$LOCK"
+        return 0
+    fi
+    _try=0
+    until mkdir "$LOCK.d" 2>/dev/null; do
+        [ -d "$LOCK.d" ] || { echo "warning: cannot lock $LOCK.d; going on without" >&2; return 0; }
+        _pid=$(cat "$LOCK.d/pid" 2>/dev/null)
+        [ "$_pid" = "$$" ] && { LOCK_DIR=1; return 0; }     # this run, continued with the release's updater
+        # no pid yet: a holder that has just made the directory, not a stale one
+        [ -n "$_pid" ] && ! kill -0 "$_pid" 2>/dev/null && [ "$_try" = 0 ] || lock_busy "$_pid"
+        rm -rf "$LOCK.d"; _try=1
+    done
+    echo $$ > "$LOCK.d/pid"
+    LOCK_DIR=1
+}
+lock_busy() {  # lock_busy [PID]: the refusal, and the end
+    _p=$1
+    [ -n "$_p" ] && kill -0 "$_p" 2>/dev/null || _p=
+    echo "another mu300-update is running${_p:+ (pid $_p)}" >&2
+    exit 1
+}
+lock_drop() {
+    [ -n "${LOCK_DIR:-}" ] && [ "$(cat "$LOCK.d/pid" 2>/dev/null)" = "$$" ] && rm -rf "$LOCK.d"
+    LOCK_DIR=
+}
+
 # Older boot images lose the mobile downlink for good when the IPA goes idle and fails to power off
 # (docs/FINDINGS.md 32) - after about two quiet minutes, which the unpacking alone takes. A packet every few seconds
 # keeps it from going idle while the update runs (two targets, one of them reachable from mainland China).
@@ -1901,7 +1947,11 @@ clean() {
 [ -z "${MU300_LIB:-}" ] || return 0
 
 [ "$(id -u)" = 0 ] || { echo "run as root" >&2; exit 1; }
-case ${1:-check} in apply|boot|kernel) keepalive_start; trap 'keepalive_stop; resume_data' EXIT; trap 'exit 130' INT TERM HUP ;; esac
+case ${1:-check} in
+    apply|boot|kernel|rollback|rollback-boot|clean|accounts)
+        lock_take; trap 'keepalive_stop; resume_data; lock_drop' EXIT; trap 'exit 130' INT TERM HUP ;;
+esac
+case ${1:-check} in apply|boot|kernel) keepalive_start ;; esac
 case ${1:-check} in
     check) check ;;
     version) version ;;
