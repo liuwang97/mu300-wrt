@@ -29,6 +29,19 @@ Station not-a-mac (on wlan0)
 \tsignal:  \t-40 dBm
 '''
 
+# U30 Air (SC2355), `iw dev wlan0 station dump` and `iw dev wlan0 station get 3c:22:fb:00:00:01`
+SC2355_DUMP = '''Station 3c:22:fb:00:00:01 (on wlan0)
+\tcurrent time:\t1760178000123 ms
+Station a4:83:e7:00:00:02 (on wlan0)
+\tcurrent time:\t1760178000123 ms
+'''
+SC2355_GET = '''Station 3c:22:fb:00:00:01 (on wlan0)
+\tsignal:  \t0 dBm
+\ttx bitrate:\t(unknown)
+\trx bitrate:\t144.4 MBit/s
+\tcurrent time:\t1760178000125 ms
+'''
+
 LEASES = '''1999999999 3c:22:fb:00:00:01 192.168.0.10 laptop 01:3c:22:fb:00:00:01
 1999999999 a4:83:e7:00:00:02 192.168.0.11 * *
 '''
@@ -78,7 +91,9 @@ class Info(ShellTest):
         for name in ('ip', 'uci'):
             self.stub(name, 'exit 1')
         (self.tmp / 'stations').write_text(STATIONS)
-        self.stub('iw', 'cat "$STUBLOG/stations"')
+        # iw dev IF station dump | iw dev IF station get MAC (a file per MAC; none: the station is unknown)
+        self.stub('iw', 'case "$4" in dump) cat "$STUBLOG/stations" ;; '
+                        'get) echo "$5" >> "$STUBLOG/gets"; cat "$STUBLOG/get.$5" 2>/dev/null || exit 237 ;; esac')
         (self.tmp / 'wan.json').write_text(WAN)
         (self.tmp / 'wan6.json').write_text(WAN6)
         self.stub('ubus', 'case "$*" in *interface.wan6*) cat "$STUBLOG/wan6.json" ;; '
@@ -106,6 +121,30 @@ class Info(ShellTest):
                                      'signal': -48, 'tx': '866.7 Mbit/s', 'rx': '390.0 Mbit/s', 'conn': '12 min'})
             self.assertEqual(second, {'mac': 'a4:83:e7:00:00:02', 'host': None, 'ip': '192.168.0.11',
                                       'signal': None, 'tx': None, 'rx': None, 'conn': None})
+
+    def test_sc2355_metrics_come_from_station_get(self):
+        """Captured on the U30 Air (SC2355): the dump has only the MAC and the time, station get has the rx rate and a
+        signal of 0 (unknown), tx is "(unknown)" and there is no connected time: those are null, never 0 dBm."""
+        (self.tmp / 'stations').write_text(SC2355_DUMP)
+        (self.tmp / 'get.3c:22:fb:00:00:01').write_text(SC2355_GET)
+        for shell in self.each_shell():
+            (self.tmp / 'gets').unlink(missing_ok=True)
+            wifi = self.info(shell)['wifi']
+            self.assertEqual(wifi['clients_n'], 2)
+            first, second = wifi['clients']
+            self.assertEqual(first, {'mac': '3c:22:fb:00:00:01', 'host': 'laptop', 'ip': '192.168.0.10',
+                                     'signal': None, 'tx': None, 'rx': '144.4 Mbit/s', 'conn': None})
+            self.assertEqual(second['mac'], 'a4:83:e7:00:00:02')
+            self.assertEqual((second['signal'], second['rx']), (None, None))
+            self.assertEqual((self.tmp / 'gets').read_text().split(), ['3c:22:fb:00:00:01', 'a4:83:e7:00:00:02'])
+
+    def test_station_get_is_bounded(self):
+        """At most 16 station get calls per round, however many clients the dump lists."""
+        (self.tmp / 'stations').write_text(''.join(f'Station 02:00:00:00:00:{i:02x} (on wlan0)\n' for i in range(40)))
+        for shell in self.each_shell():
+            (self.tmp / 'gets').unlink(missing_ok=True)
+            self.assertEqual(self.info(shell)['wifi']['clients_n'], 40)
+            self.assertEqual(len((self.tmp / 'gets').read_text().split()), 16)
 
     def test_dns_from_multiline_status(self):
         for shell in self.each_shell():
