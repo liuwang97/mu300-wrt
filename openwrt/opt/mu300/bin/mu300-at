@@ -37,8 +37,37 @@ if [ -p "$DIR/cmd" ]; then
         echo "mu300-at: needs root (cannot write $DIR); try: sudo ${0##*/} ..." >&2
         exit 1
     fi
+    # The fast poll below and the lock wait share the sleeper: see "Fast poll" further down.
+    bb=${MU300_BUSYBOX:-/opt/mu300/bin/busybox}
+    nap() {
+        if [ -x "$bb" ]; then "$bb" sleep "$1" 2>/dev/null || sleep 1
+        else sleep "$1" 2>/dev/null || sleep 1; fi
+    }
+    # Budget for the answer, worked out before the lock is taken so that the holder can say when it will be done.
+    # A live mu300-atd (owner/pid) drains first (1-3 s, 25 s after a silent command), then collects for T
+    # to T + 1 s plus up to 2 s of overrun; a chattering channel can stretch the drain by one 1 s wait, and this
+    # loop's own whole-second clock gives up to 1 s early: 26 + T + 3 + 1, and 1 s of slack make T + 31. Giving up earlier drops the lock
+    # while the daemon is still busy and orphans the answer file. With no live daemon nobody will ever answer, so
+    # exit within T + 2.
+    budget=$((T + 2))
+    owner=$(cat "$DIR/owner/pid" 2>/dev/null || true)
+    if [ -n "$owner" ] && { tr '\0' ' ' < "/proc/$owner/cmdline"; } 2>/dev/null | grep -q mu300-atd; then
+        budget=$((T + 31))
+    fi
+    # MU300_AT_BUDGET (seconds) shortens that for a caller with a hard limit of its own (the LuCI panel: rpcd ends a
+    # call at 30 s), which would rather say "no answer" than be killed. The daemon still runs the command then, and
+    # its late answer file is left behind; nobody else sets it.
+    case ${MU300_AT_BUDGET:-} in
+        ''|*[!0-9]*) ;;
+        *) [ "$MU300_AT_BUDGET" -lt "$budget" ] && budget=$MU300_AT_BUDGET ;;
+    esac
+    # MU300_AT_LOCK_WAIT is seconds on the clock. It used to count 0.1 s naps, and on OpenWrt /bin/sleep refuses a
+    # fraction, so every nap became "sleep 1": the panel's 5 s wait was 50 s, mobile-data's 90 s a quarter of an
+    # hour, and a page waiting on a busy channel ran into rpcd's 30 s limit and was killed - while this client went
+    # on waiting, took the lock long after nobody wanted the answer, and sent the command anyway. 0: one try.
     wait=${MU300_AT_LOCK_WAIT:-90}
-    n=0
+    case $wait in ''|*[!0-9]*) wait=90 ;; esac
+    give_up=$(( $(date +%s) + wait ))
     while ! mkdir "$lock" 2>/dev/null; do
         # a client killed with SIGKILL cannot clean up after itself; take the lock over when its owner is gone.
         # Only "continue" (which skips the wait below) once the lock is really gone.
@@ -49,10 +78,24 @@ if [ -p "$DIR/cmd" ]; then
         elif [ -n "$owner" ] && { tr '\0' ' ' < "/proc/$owner/cmdline"; } 2>/dev/null | grep -q mu300-atd; then
             rm -rf "$lock" 2>/dev/null && continue
         fi
-        n=$((n + 1)); [ "$n" -gt $((wait * 10)) ] && { echo "mu300-at: busy" >&2; exit 1; }
-        sleep 0.1 2>/dev/null || sleep 1
+        # A live holder past the time it gave itself ($lock/until: its whole budget and 10 s more) is stuck - a
+        # client stopped (SIGSTOP), or blocked where no timer of its own reaches it. Every client ends by its
+        # budget, so nothing legitimate is still running then: end it and take the lock, rather than have every
+        # later command say "busy" until a reboot. Only a mu300-at is ended this way, never anything else.
+        due=$(cat "$lock/until" 2>/dev/null || true)
+        case $due in ''|*[!0-9]*) ;; *)
+            if [ -n "$owner" ] && [ "$(date +%s)" -gt "$due" ] &&
+               { tr '\0' ' ' < "/proc/$owner/cmdline"; } 2>/dev/null | grep -q mu300-at; then
+                echo "mu300-at: pid $owner held the AT lock past its own deadline; ending it" >&2
+                kill -9 "$owner" 2>/dev/null
+                rm -rf "$lock" 2>/dev/null && continue
+            fi ;;
+        esac
+        [ "$(date +%s)" -lt "$give_up" ] || { echo "mu300-at: busy" >&2; exit 1; }
+        nap 0.1
     done
     echo $$ > "$lock/pid" 2>/dev/null || true
+    echo $(( $(date +%s) + budget + 10 )) > "$lock/until" 2>/dev/null || true
     trap 'rm -rf "$lock" 2>/dev/null' EXIT
     trap 'exit 130' INT
     trap 'exit 143' TERM
@@ -86,29 +129,11 @@ if [ -p "$DIR/cmd" ]; then
     # Fast poll: the daemon typically answers in ~20 ms, so a 1 s sleep adds a full second to every AT round trip.
     # The image's busybox sleep rejects fractions when called as /bin/sleep, which used to sink the chain into
     # `sleep 1` (measured: 30 commands in 30.6 s). The static busybox next to us accepts them; use it when present.
-    bb=${MU300_BUSYBOX:-/opt/mu300/bin/busybox}
-    # Budget. A live mu300-atd (owner/pid) drains first (1-3 s, 25 s after a silent command), then collects for T
-    # to T + 1 s plus up to 2 s of overrun; a chattering channel can stretch the drain by one 1 s wait, and this
-    # loop's own whole-second clock gives up to 1 s early: 26 + T + 3 + 1, and 1 s of slack make T + 31. Giving up earlier drops the lock
-    # while the daemon is still busy and orphans the answer file. With no live daemon nobody will ever answer, so
-    # exit within T + 2.
-    budget=$((T + 2))
-    owner=$(cat "$DIR/owner/pid" 2>/dev/null || true)
-    if [ -n "$owner" ] && { tr '\0' ' ' < "/proc/$owner/cmdline"; } 2>/dev/null | grep -q mu300-atd; then
-        budget=$((T + 31))
-    fi
-    # MU300_AT_BUDGET (seconds) shortens that for a caller with a hard limit of its own (the LuCI panel: rpcd ends a
-    # call at 30 s), which would rather say "no answer" than be killed. The daemon still runs the command then, and
-    # its late answer file is left behind; nobody else sets it.
-    case ${MU300_AT_BUDGET:-} in
-        ''|*[!0-9]*) ;;
-        *) [ "$MU300_AT_BUDGET" -lt "$budget" ] && budget=$MU300_AT_BUDGET ;;
-    esac
+    # (the sleeper, nap, is defined above with the lock wait; the budget too)
     end=$(( $(date +%s) + budget ))
     while [ ! -e "$answer" ]; do
         [ "$(date +%s)" -ge "$end" ] && { echo "mu300-at: no answer from the daemon" >&2; exit 1; }
-        if [ -x "$bb" ]; then "$bb" sleep 0.01 2>/dev/null || sleep 1
-        else sleep 0.1 2>/dev/null || sleep 1; fi
+        if [ -x "$bb" ]; then nap 0.01; else nap 0.1; fi
     done
     # atd always creates the answer file, even for a timeout, so an empty or partial file is not success: callers
     # such as atwatch use the exit code to tell a responding channel from a silent one. Require a final result code.

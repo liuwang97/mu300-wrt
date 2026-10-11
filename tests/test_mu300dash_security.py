@@ -96,7 +96,7 @@ DEFAULTS = {
 }
 
 # The methods that start something with setsid (in the background of mu300dash)
-DETACHED = {'act', 'lock_set', 'sms_sync', 'status'}
+DETACHED = {'act', 'at', 'lock_get', 'lock_set', 'sms_sync', 'status'}
 
 # Hostile values: each is refused by every field that takes a fixed set, a number or a name. The NUL cases: the
 # stand-in jsonfilter passes the NUL on (the backend maps it to \001 and refuses); the real jsonfilter prints strings
@@ -211,7 +211,7 @@ class Mu300Dash(ShellTest):
 
 
 class Inventory(Mu300Dash):
-    METHODS = {'sysinfo', 'status', 'signal', 'act', 'at', 'at_history', 'lock_get', 'lock_set', 'sms_list',
+    METHODS = {'sysinfo', 'status', 'signal', 'act', 'at', 'at_job', 'at_history', 'ops_log', 'lock_get', 'lock_set', 'sms_list',
                'sms_show', 'sms_send', 'sms_delete', 'sms_sync', 'usb_get', 'usb_set', 'usb_net_list', 'usb_net_add',
                'lang_get', 'lang_set', 'power_get', 'power_set',
                'ttl_get', 'ttl_set', 'cpu_get', 'cpu_set', 'forward_get', 'forward_set', 'forward_test',
@@ -407,8 +407,9 @@ class Passthrough(Mu300Dash):
         ('act', {'op': 'os', 'arg': 'android'}, [['action', 'os', 'android']]),
         ('act', {'op': 'os', 'arg': 'lock'}, [['action', 'os', 'lock']]),
         ('act', {'op': 'os', 'arg': 'unlock'}, [['action', 'os', 'unlock']]),
-        ('lock_get', {}, [['lock', 'get']]),
-        ('lock_get', {'fresh': '1'}, [['lock', 'get', 'fresh']]),
+        # no cache yet: a reading in the background, then the cache (never the modem inside the request)
+        ('lock_get', {}, [['setsid', 'lock', 'refresh'], ['lock', 'get', 'cached']]),
+        ('lock_get', {'fresh': '1'}, [['setsid', 'lock', 'refresh'], ['lock', 'get', 'cached']]),
         ('lock_set', {'kind': 'lte', 'val': '1,3,41'}, [['setsid', 'lock', 'apply', 'lte', '1,3,41']]),
         ('lock_set', {'kind': 'nr', 'val': ''}, [['setsid', 'lock', 'apply', 'nr', '']]),
         ('lock_set', {'kind': 'cell', 'val': 'lte:1650,211'}, [['setsid', 'lock', 'apply', 'cell', 'lte:1650,211']]),
@@ -468,7 +469,7 @@ class Passthrough(Mu300Dash):
             for (label, r, recs, _), (_, _, want) in zip(self.calls_parallel(shell, jobs), self.CASES):
                 with self.subTest(case=label):
                     self.reply(r)
-                    self.assertEqual(recs, want, r.stdout)
+                    self.assertEqual(sorted(recs), sorted(want), r.stdout)
 
     def test_at_commands_pass_as_one_exact_argument(self):
         ok = ['AT', 'at+cgsn', 'AT+SP5GCMDS="get nr support_band"', "AT+X='a'", 'AT$(reboot)', 'AT`reboot`',
@@ -892,8 +893,8 @@ class TrafficAdapter(ShellTest):
 class Acl(unittest.TestCase):
     # SMS bodies (one-time codes) and the AT history (AT+CPIN PINs) are not for read-only users (ruling R14)
     READ = {'sysinfo', 'status', 'signal', 'lock_get', 'usb_get', 'usb_net_list', 'lang_get', 'power_get', 'ttl_get',
-            'cpu_get', 'traffic_get'}
-    WRITE = {'act', 'at', 'at_history', 'lock_set', 'sms_list', 'sms_show', 'sms_send', 'sms_delete', 'sms_sync',
+            'cpu_get', 'traffic_get', 'ops_log'}
+    WRITE = {'act', 'at', 'at_job', 'at_history', 'lock_set', 'sms_list', 'sms_show', 'sms_send', 'sms_delete', 'sms_sync',
              'usb_set', 'usb_net_add', 'lang_set', 'power_set', 'ttl_set', 'cpu_set', 'forward_get',
              'forward_set', 'forward_test', 'traffic_set'}
 
