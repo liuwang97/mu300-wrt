@@ -881,8 +881,11 @@ vpn_engine_in_use() {
         if [ -n "$_a" ] && [ -r "$_r/etc/mu300/vpn/profiles/$_a/meta" ]; then
             _t=$(vpn_conf_value "$_r/etc/mu300/vpn/profiles/$_a/meta" TYPE)
             [ "$(vpn_type_engine "$_t")" = "$_x" ] && return 0
-            # an xray profile may run on sing-box (a VLESS link behind the kill switch, when sing-box is there)
-            [ "$_t" = xray ] && [ "$_x" = vpn-singbox ] && return 0
+            # an xray profile runs on sing-box only with a VLESS link behind the kill switch (as mu300-vpn's
+            # engine_in_use); without sing-box it runs on xray, so otherwise vpn-singbox is free to go
+            if [ "$_t" = xray ] && [ "$_x" = vpn-singbox ] && vpn_killswitch_wanted "$_r"; then
+                case $(head -c 8 "$_r/etc/mu300/vpn/profiles/$_a/uri" 2>/dev/null) in vless://) return 0 ;; esac
+            fi
         elif [ ! -d "$_r/etc/mu300/vpn/profiles" ]; then
             # a vpn.conf never migrated: its link runs on xray or sing-box
             case $_x in vpn-xray|vpn-singbox) grep -q '^VLESS_URI=' "$_r/etc/mu300/vpn.conf" 2>/dev/null && return 0 ;; esac

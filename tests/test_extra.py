@@ -1366,6 +1366,18 @@ class EngineExtras(EngineExtrasBase):
             # an xray profile may run on sing-box: vpn-singbox is in use too; and the engine the service recorded counts
             self.assertEqual(self.ex(shell, 'install', 'vpn-singbox', MU300_VPN_URL=VPN_URL).returncode, 0)
             self.profile('openwrt', 'x', 'xray', active=True, enable=1)
+            xdir = self.disk / 'openwrt/etc/mu300/vpn'
+            # (only a VLESS link behind the kill switch runs on sing-box, as mu300-vpn's engine_in_use has it)
+            (xdir / 'profiles/x/uri').write_text('vmess://e30=\n')
+            r = self.ex(shell, 'remove', 'vpn-singbox')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(self.ex(shell, 'install', 'vpn-singbox', MU300_VPN_URL=VPN_URL).returncode, 0)
+            (xdir / 'profiles/x/uri').write_text('vless://id@example.net:443\n')
+            (xdir / 'settings').write_text('KILL_SWITCH=0\n')
+            r = self.ex(shell, 'remove', 'vpn-singbox')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(self.ex(shell, 'install', 'vpn-singbox', MU300_VPN_URL=VPN_URL).returncode, 0)
+            (xdir / 'settings').write_text('KILL_SWITCH=1\n')
             self.assertEqual(self.ex(shell, 'remove', 'vpn-singbox').returncode, 1)
             self.profile('openwrt', 'd', 'dae', active=True, enable=1)
             (self.root / 'run/mu300-vpn').mkdir(parents=True, exist_ok=True)
