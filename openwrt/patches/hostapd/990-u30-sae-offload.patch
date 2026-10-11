@@ -195,9 +195,11 @@ Applies after OpenWrt 25.12 hostapd patches on ca266cc24d8705eb1a2a0857ad326e48b
  };
 --- /dev/null
 +++ b/src/ap/u30_sae_offload.h
-@@ -0,0 +1,31 @@
+@@ -0,0 +1,33 @@
 +/* SPDX-License-Identifier: BSD-3-Clause
 + * Shared association IE/trailer parser; this does not prove PMK provenance.
++ * Any element carrying the private OUI/type counts, whatever its length, so a
++ * client copy of the marker next to the firmware trailer is always rejected.
 + */
 +#ifndef U30_SAE_OFFLOAD_H
 +#define U30_SAE_OFFLOAD_H
@@ -215,10 +217,10 @@ Applies after OpenWrt 25.12 hostapd patches on ca266cc24d8705eb1a2a0857ad326e48b
 +
 +		if (element_len > len - offset)
 +			return NULL;
-+		if (ies[offset] == WLAN_EID_VENDOR_SPECIFIC && element_len == 54 &&
++		if (ies[offset] == WLAN_EID_VENDOR_SPECIFIC && element_len >= 6 &&
 +		    os_memcmp(ies + offset + 2, "\x40\x45\xda\x04", 4) == 0) {
 +			matches++;
-+			if (element_len == len - offset)
++			if (element_len == 54 && element_len == len - offset)
 +				key = ies + offset + 6;
 +		}
 +		offset += element_len;

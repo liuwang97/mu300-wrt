@@ -86,6 +86,17 @@ int main(void) {
                    b'\x00\xff' + key, prefix]
         self.assertEqual(self.parse(records), [-1, -1, 6, 11, -1, -1, -1, -1, -1, -1, -1])
 
+    def test_client_marker_of_any_length_blocks_the_trailer(self):
+        # A client copy of the private OUI/type must not hide beside the firmware trailer
+        # by using a length the key check would skip.
+        key = bytes([221, 52]) + bytes.fromhex('4045da04') + bytes(range(48))
+        short = bytes([221, 4]) + bytes.fromhex('4045da04')
+        other_type = bytes([221, 4]) + bytes.fromhex('4045da05')
+        records = [short + key, key + short, bytes([221, 10]) + bytes.fromhex('4045da04') + bytes(6) + key,
+                   bytes([221, 60]) + bytes.fromhex('4045da04') + bytes(56) + key, other_type + key,
+                   bytes([221, 3]) + bytes.fromhex('4045da') + key]
+        self.assertEqual(self.parse(records), [-1, -1, -1, -1, 12, 11])
+
     def test_every_truncation_and_random_malformed_inputs(self):
         key = bytes([221, 52]) + bytes.fromhex('4045da04') + bytes(range(48))
         rng = random.Random(2355)
