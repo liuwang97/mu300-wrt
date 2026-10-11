@@ -779,6 +779,19 @@ class Rules(unittest.TestCase):
             self.assertIn(pre + '\tsmp_store_release(&sc2355_hif.hif, (void *)hif);', text)
             self.assertIn(pre + '\tWRITE_ONCE(sc2355_hif.hif, NULL);', text)
 
+    def test_wifi_tx_backpressure_is_not_logged_as_an_error(self):
+        # kanoqwq/mu300-linux@3386928: a full TX ring is flow control, hit on every scheduling pass under load;
+        # the vendor printed two pr_err lines for it each time
+        wlan = TOP / 'upstream' / 'modules' / 'sprd_wlan_combo' / 'sc2355'
+        pcie = (wlan / 'pcie.c').read_text()
+        fc = pcie[pcie.index('int sc2355_pcie_fc_test_send_num('):]
+        fc = fc[:fc.index('\n}\n')]
+        self.assertNotIn('pr_err(', fc)
+        self.assertIn('pr_debug_ratelimited("%s,%d free_num=%d, data_num=%d\\n"', fc)
+        tx = (wlan / 'tx.c').read_text()
+        self.assertNotIn('pr_err("%s, %d: _fc_ no credit!\\n"', tx)
+        self.assertIn('pr_debug_ratelimited("%s, %d: _fc_ no credit!\\n"', tx)
+
 
 if __name__ == '__main__':
     unittest.main()
