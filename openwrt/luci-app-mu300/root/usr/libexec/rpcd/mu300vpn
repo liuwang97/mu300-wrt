@@ -257,8 +257,12 @@ secret_file() {
     (umask 077; printf '%s\n' "$1" > "$SECRET")
 }
 # redact: every URL or share link in the text reduced to its scheme (a log or a message must never carry a token,
-# a password or a UUID, whatever the program that wrote it)
-redact() { sed -E 's#([A-Za-z][A-Za-z0-9+.-]{1,15}://)[^[:space:]"'"'"'<>]+#\1[hidden]#g'; }
+# a password or a UUID, whatever the program that wrote it), and the target of a redirect, which uclient-fetch and wget
+# name without a scheme ("Redirected to /path?signature on host")
+redact() {
+    sed -E -e 's#([A-Za-z][A-Za-z0-9+.-]{1,15}://)[^[:space:]"'"'"'<>]+#\1[hidden]#g' \
+        -e 's#([Rr]edirected to )[^[:space:]"'"'"'<>]+#\1[hidden]#g'
+}
 
 m_job() {
     local kind state started log result

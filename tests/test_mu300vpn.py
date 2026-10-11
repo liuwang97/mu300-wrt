@@ -924,10 +924,14 @@ class Hardening(Mu300Vpn):
             job.mkdir(parents=True, exist_ok=True)
             (job / 'kind').write_text('sub-add\n')
             (job / 'state').write_text('failed\n')
-            (job / 'log').write_text(f'fetching https://sub.example.com/api?token=SECRET\nnode {link}\n')
+            # (uclient-fetch and wget name a redirect's target without its scheme: a signed download URL)
+            (job / 'log').write_text(f'fetching https://sub.example.com/api?token=SECRET\nnode {link}\n'
+                                     'Redirected to /asset/1?sig=SIGNED&jwt=SIGNED on release-assets.example.com\n')
             got = self.reply(self.call(shell, 'job')[0])['job']['log']
             self.assertNotIn('SECRET', got)
             self.assertNotIn('11111111', got)
+            self.assertNotIn('SIGNED', got)
+            self.assertIn('Redirected to [hidden] on release-assets.example.com', got)
             self.clean_job()
 
 
