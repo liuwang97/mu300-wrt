@@ -317,3 +317,15 @@ used by this installation and removed from {1}:{2}	bu kurulumda kullanıldı ve 
 could not remove{1} from {2}; remove it by hand	{2} dosyasından kaldırılamadı:{1}; elle kaldırın
 password:       kept: the accounts and passwords of the installed system are not changed ({1} in {2} sets a new one)	parola:         korunuyor: kurulu sistemin hesapları ve parolaları değişmez (yenisi için {2} dosyasına {1})
 password for {1}: unchanged (the one this system had)	{1} için parola: değişmedi (bu sistemin önceki parolası)
+boot chain:     identical on both slots	boot zinciri:   iki slotta da aynı
+boot chain:     {1} differ between the slots; Android's slot {2} is copied to slot {3} (backed up first)	boot zinciri:   {1} slotlar arasında farklı; Android'in {2} slotundakiler {3} slotuna kopyalanır (önce yedeklenir)
+boot chain:     not synced (MU300_SYNC_BOOTCHAIN=0)	boot zinciri:   eşitlenmiyor (MU300_SYNC_BOOTCHAIN=0)
+boot chain:     not synced (-NoBootchainSync)	boot zinciri:   eşitlenmiyor (-NoBootchainSync)
+boot chain:     cannot be synced: {1}	boot zinciri:   eşitlenemez: {1}
+the boot chain cannot be copied to the Linux slot: {1}	boot zinciri Linux slotuna kopyalanamıyor: {1}
+Nothing was changed. Experts can skip this step with MU300_SYNC_BOOTCHAIN=0.	Hiçbir şey değiştirilmedi. Deneyimli kullanıcılar bu adımı MU300_SYNC_BOOTCHAIN=0 ile atlayabilir.
+Nothing was changed. Experts can skip this step with -NoBootchainSync.	Hiçbir şey değiştirilmedi. Deneyimli kullanıcılar bu adımı -NoBootchainSync ile atlayabilir.
+no answer from the device	cihazdan yanıt gelmedi
+boot chain backup: {1}	boot zinciri yedeği: {1}
+the boot chain backup could not be copied to this computer; it is on the Linux filesystem (.mu300/bootchain)	boot zinciri yedeği bu bilgisayara kopyalanamadı; Linux dosya sisteminde duruyor (.mu300/bootchain)
+boot chain:     not synced (the model is not recognised)	boot zinciri:   eşitlenmiyor (model tanınmadı)

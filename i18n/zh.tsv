@@ -317,3 +317,15 @@ used by this installation and removed from {1}:{2}	已在本次安装中使用�
 could not remove{1} from {2}; remove it by hand	无法从 {2} 中删除：{1}；请手动删除
 password:       kept: the accounts and passwords of the installed system are not changed ({1} in {2} sets a new one)	密码：          保留：已安装系统的账户和密码不变（在 {2} 中写入 {1} 可设置新密码）
 password for {1}: unchanged (the one this system had)	{1} 的密码：未改变（仍为该系统原来的密码）
+boot chain:     identical on both slots	启动链：        两个槽位相同
+boot chain:     {1} differ between the slots; Android's slot {2} is copied to slot {3} (backed up first)	启动链：        {1} 在两个槽位之间不同；将 Android 的槽位 {2} 复制到槽位 {3}（先备份）
+boot chain:     not synced (MU300_SYNC_BOOTCHAIN=0)	启动链：        不同步（MU300_SYNC_BOOTCHAIN=0）
+boot chain:     not synced (-NoBootchainSync)	启动链：        不同步（-NoBootchainSync）
+boot chain:     cannot be synced: {1}	启动链：        无法同步：{1}
+the boot chain cannot be copied to the Linux slot: {1}	无法将启动链复制到 Linux 槽位：{1}
+Nothing was changed. Experts can skip this step with MU300_SYNC_BOOTCHAIN=0.	未做任何更改。高级用户可以用 MU300_SYNC_BOOTCHAIN=0 跳过此步骤。
+Nothing was changed. Experts can skip this step with -NoBootchainSync.	未做任何更改。高级用户可以用 -NoBootchainSync 跳过此步骤。
+no answer from the device	设备没有响应
+boot chain backup: {1}	启动链备份：{1}
+the boot chain backup could not be copied to this computer; it is on the Linux filesystem (.mu300/bootchain)	无法将启动链备份复制到这台电脑；它保存在 Linux 文件系统中（.mu300/bootchain）
+boot chain:     not synced (the model is not recognised)	启动链：        不同步（无法识别设备型号）
