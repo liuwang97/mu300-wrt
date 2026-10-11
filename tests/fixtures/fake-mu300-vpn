@@ -1,6 +1,7 @@
 #!/bin/sh
 # A stand-in for the VPN module's mu300-vpn with the machine-readable CLI of its spec (2026-10-11-engine-extras,
-# section 4), for trying the panel's VPN pages without the module or a device: an OpenWrt LuCI rootfs in a container,
+# section 4), its JSON shaped as the real CLI's (tests/fixtures/mu300-vpn-cli has what the real one printed), for
+# trying the panel's VPN pages without the module or a device: an OpenWrt LuCI rootfs in a container,
 # this file as /opt/mu300/bin/mu300-vpn. It keeps a pretend store under FAKE_VPN_DIR (default /tmp/fake-vpn) and runs
 # nothing: no tunnel, no kill switch, no download. Needs jq.
 set -u
@@ -49,7 +50,7 @@ new_profile() {
         --arg host "${host%:*}" --arg port "${host##*:}" --arg proto "$proto" --arg src "$4" --arg sub "${5:-}" \
         --argjson opts "$opts" --argjson now "$(date +%s)" \
         '{id:$id, name:$name, type:$type, engine:$eng, extra:(if $extra == "null" then null else $extra end),
-          source:$src, subscription:(if $sub == "" then null else $sub end), created:$now,
+          source:$src, subscription:(if $sub == "" then null else $sub end), stale:false, created:$now,
           server:(if $host == "" then null else {host:$host, port:($port|tonumber? // null)} end),
           protocol:(if $proto == "" then null else $proto end), transport:(if $proto == "" then null else "tcp" end),
           security:(if $proto == "" then null else "tls" end), options:$opts}' > "$P/$id/meta.json"
@@ -157,7 +158,7 @@ engines)
           needed_by:[$prof[] | select(.engine == $n) | .id],
           usable:(if $n == "dae" and $inst[$n] == 1 then false else ($inst[$n] == 1) end),
           reason:(if $n == "dae" and $inst[$n] == 1 then "the kernel has no BTF (/sys/kernel/btf/vmlinux): dae needs kernel 5.17 or newer with BTF, e.g. mu300-update kernel 6.18" else null end),
-          install:"mu300-vpn engine install \($n)"})' --argjson inst "$(cat "$D/engines")" -n ;;
+          install:(if extra[$n] then "mu300-vpn engines install \($n) (mu300-extra install \(extra[$n]))" else "mu300-vpn engines install \($n)" end)})' --argjson inst "$(cat "$D/engines")" -n ;;
 engine)
     case ${1:-} in
     install) n=${2:-}; echo "mu300-extra: downloading mu300-linux-vpn-$n.tar.gz"; i=0
@@ -180,7 +181,7 @@ subscription)
         for i in 1 2 3; do echo "vless://00000000-0000-0000-0000-00000000000$i@node$i.$host:443?security=tls#$name $i" > "$f"
             ids="$ids $(new_profile xray "$name $i" "$f" subscription "$id")"; done; rm -f "$f"
         jq -cn --arg id "$id" --arg name "$name" --arg type "$type" --arg host "$host" --arg ids "$ids" --argjson now "$(date +%s)" \
-            '{id:$id, name:$name, type:(if $type == "auto" then "links" else $type end), host:$host, updated:$now,
+            '{id:$id, name:$name, type:$type, format:(if $type == "auto" then "links" else $type end), host:("http://" + $host), updated:$now,
               count:($ids | split(" ") | map(select(. != "")) | length), profiles:($ids | split(" ") | map(select(. != "")))}' > "$S/$id/meta.json"
         echo "subscription $id: 3 profiles" ;;
     list) printf '['; first=1; for d in "$S"/*/; do [ -f "$d/meta.json" ] || continue; [ $first = 1 ] || printf ','; first=0; cat "$d/meta.json" | tr -d '\n'; done; echo ']' ;;
@@ -196,12 +197,13 @@ subscription)
 latency)
     one() {
         jq -c --arg ks "$(setting KILL_SWITCH)" --arg a "$(active)" --argjson en "$(enabled && echo true || echo false)" '
-            if .server == null then {id, host:null, port:null, ms:null, error:"no server"}
-            elif .type == "wireguard" or .type == "openvpn" then {id, host:.server.host, port:.server.port, ms:null, error:"udp"}
-            elif .id == $a and $ks == "1" and ($en | not) then {id, host:.server.host, port:.server.port, ms:null, error:"kill switch"}
-            else {id, host:.server.host, port:.server.port, ms:((.id | explode | add) % 300 + 20), via:(if $en then "tunnel" else "direct" end)} end' "$P/$1/meta.json"
+            (if $en then "tunnel" else "direct" end) as $via
+            | if .server == null then {id, host:null, port:null, ms:null, via:$via, error:"no server"}
+            elif .type == "wireguard" or .type == "openvpn" then {id, host:.server.host, port:.server.port, ms:null, via:$via, error:"udp"}
+            elif .id == $a and $ks == "1" and $en then {id, host:.server.host, port:.server.port, ms:null, via:$via, error:"kill switch"}
+            else {id, host:.server.host, port:.server.port, ms:((.id | explode | add) % 300 + 20), via:$via, error:null} end' "$P/$1/meta.json"
     }
-    if [ "${1:-}" = --all ]; then sleep 2; printf '['; first=1; for d in "$P"/*/; do [ -f "$d/meta.json" ] || continue; [ $first = 1 ] || printf ','; first=0; one "$(basename "$d")"; done; echo ']'
+    if [ "${1:-}" = --all ]; then sleep 2; for d in "$P"/*/; do [ -f "$d/meta.json" ] && one "$(basename "$d")"; done | jq -s 'if length == 1 then .[0] else . end'
     else need "${1:-}"; one "$1"; fi ;;
 settings)
     case ${1:-get} in

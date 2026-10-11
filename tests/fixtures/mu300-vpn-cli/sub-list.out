@@ -1,0 +1,15 @@
+[
+  {
+    "id": "my-provider",
+    "name": "My provider",
+    "type": "auto",
+    "format": "links",
+    "host": "http://127.0.0.1",
+    "updated": 1791713467,
+    "count": 2,
+    "profiles": [
+      "node-1",
+      "node-2"
+    ]
+  }
+]

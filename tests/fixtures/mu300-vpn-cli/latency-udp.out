@@ -1,0 +1,8 @@
+{
+  "id": "home-wg",
+  "host": "wg.example.org",
+  "port": 51820,
+  "ms": null,
+  "via": "direct",
+  "error": "udp"
+}

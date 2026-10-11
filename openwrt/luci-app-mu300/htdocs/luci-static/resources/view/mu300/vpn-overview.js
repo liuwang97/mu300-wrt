@@ -153,7 +153,9 @@ return view.extend({
 			])
 		]);
 
-		var uptime = up && st.since && st.now ? M.fmtUptime(Math.max(0, st.now - st.since)) : '--';
+		/* the CLI's own "since" when it gives one, else the backend's (when the tunnel's interface file was written) */
+		var since = typeof s.since === 'number' ? s.since : st.since;
+		var uptime = up && since && st.now ? M.fmtUptime(Math.max(0, st.now - since)) : '--';
 		var kpi = function(id, label, val) {
 			return E('div', { 'class': 'mud-kpi' }, [ E('b', { 'id': 'mud-' + id }, [ val ]), E('span', {}, [ label ]) ]);
 		};

@@ -47,8 +47,10 @@ return view.extend({
 	/* a finished task: a latency round fills the column, an import shows the new profile */
 	jobDone: function(job) {
 		var self = this;
-		if (job && job.kind === 'latency-all' && Array.isArray(job.result))
-			job.result.forEach(function(r) { if (r && r.id) self.lat[r.id] = r; });
+		/* (the CLI gives one object rather than an array when there is a single profile) */
+		var res = job && job.kind === 'latency-all' ? job.result : null;
+		if (res && !Array.isArray(res)) res = [ res ];
+		(res || []).forEach(function(r) { if (r && r.id) self.lat[r.id] = r; });
 		return this.reload();
 	},
 

@@ -139,9 +139,9 @@ installed() { [ -x "$VPN" ]; }
 cli() {
     _o=$JOB/cli.$$.out; _e=$JOB/cli.$$.err
     if command -v timeout >/dev/null 2>&1; then
-        (umask 077; timeout "$INLINE_SECS" "$VPN" "$@" >"$_o" 2>"$_e"); RC=$?
+        (umask 077; timeout "$INLINE_SECS" "$VPN" "$@" >"$_o" 2>"$_e" 9>&-); RC=$?
     else
-        (umask 077; "$VPN" "$@" >"$_o" 2>"$_e"); RC=$?
+        (umask 077; "$VPN" "$@" >"$_o" 2>"$_e" 9>&-); RC=$?
     fi
     OUT=$(head -c "$OUT_MAX" "$_o" 2>/dev/null)
     ERR=$(printf '%s' "$OUT" | jsonfilter -e '@.error' 2>/dev/null | head -n 1)
@@ -169,23 +169,26 @@ arg_ok() { case $1 in -*) return 1 ;; esac; }
 # ------------------------------------------------------------------- tasks
 job_running() { [ -s "$JOB/pid" ] && kill -0 "$(cat "$JOB/pid" 2>/dev/null)" 2>/dev/null; }
 
-# The panel's lock (a directory: mkdir is atomic): held by a request from its check that no task runs, through the
-# staging of its upload, until the task's pid is written - so two requests can never both start a task, nor can one
-# stage a file while another task runs. A lock whose holder is gone is taken over. Released when the request ends.
+# The panel's lock: flock(1) on a file of the root-only job directory, through fd 9 (busybox has the applet on
+# OpenWrt, util-linux on Ubuntu). Held by a request from its check that no task runs, through the staging of its
+# upload, until the task's pid is written - so two requests can never both start a task, nor can one stage a file
+# while another task runs. The kernel releases it when the request ends, however it ends (a request killed by rpcd
+# leaves no stale lock behind). Nothing the request starts keeps fd 9: the task and the CLI get it closed.
 LOCK=$JOB/lock
 LOCKED=
 lock_take() {
+    command -v flock >/dev/null 2>&1 || return 1
+    (umask 077; : >> "$LOCK") 2>/dev/null || return 1
+    exec 9>>"$LOCK" || return 1
+    # (busybox's flock has no -w: -n, 20 times a second apart)
     _n=0
-    while ! mkdir "$LOCK" 2>/dev/null; do
-        _h=$(cat "$LOCK/pid" 2>/dev/null)
-        if [ -n "$_h" ] && ! kill -0 "$_h" 2>/dev/null; then rm -rf "$LOCK"; continue; fi
-        _n=$((_n + 1)); [ "$_n" -le 20 ] || return 1
+    until flock -n 9; do
+        _n=$((_n + 1)); [ "$_n" -le 20 ] || { exec 9>&-; return 1; }
         sleep 1
     done
-    echo $$ > "$LOCK/pid"
     LOCKED=1
 }
-lock_drop() { [ -z "$LOCKED" ] || rm -rf "$LOCK"; LOCKED=; }
+lock_drop() { if [ -n "$LOCKED" ]; then exec 9>&-; fi; LOCKED=; }
 # busy_or_lock: the lock taken and no task running, or the refusal (and 1)
 busy_or_lock() {
     lock_take || { refuse 'The VPN panel is busy, try again'; return 1; }
@@ -223,7 +226,7 @@ job_start() {
         [ -z "$st" ] || rm -rf "$st"
         tail -c 16384 "$j/log" > "$j/log.t" && mv "$j/log.t" "$j/log"
         if [ "$rc" = 0 ]; then echo done > "$j/state"; else echo failed > "$j/state"; fi
-        rm -f "$j/pid"' mu300vpn-job "$JOB" "$_secs" "${STAGE:-}" "$_json" "$@" </dev/null >/dev/null 2>&1 &
+        rm -f "$j/pid"' mu300vpn-job "$JOB" "$_secs" "${STAGE:-}" "$_json" "$@" </dev/null >/dev/null 2>&1 9>&- &
     echo "$!" > "$JOB/pid"
     STAGE=
     lock_drop
@@ -333,10 +336,12 @@ SETTINGS_SHOWN='KILL_SWITCH TAILSCALE IPV6 REMOTE_DNS BOOTSTRAP_DNS LAN_CIDRS'
 m_settings() {
     local k v first=1
     need_vpn || return
-    cli settings get </dev/null || { cli_fail 'The VPN settings could not be read'; return; }
+    # settings --json: one object of every key (the binaries' paths too); only the shown keys are passed on
+    cli settings --json </dev/null || { cli_fail 'The VPN settings could not be read'; return; }
+    json_val "$OUT" >/dev/null || { refuse 'The VPN settings could not be read'; return; }
     printf '{"ok":1,"settings":{'
     for k in $SETTINGS_SHOWN; do
-        v=$(printf '%s\n' "$OUT" | sed -n "s/^$k=//p" | head -n 1)
+        v=$(printf '%s' "$OUT" | jsonfilter -e "@.$k" 2>/dev/null | head -n 1)
         [ "$first" = 1 ] || printf ','
         first=0
         printf '"%s":%s' "$k" "$(json_str_n "$v" 512)"

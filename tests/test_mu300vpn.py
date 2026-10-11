@@ -7,10 +7,12 @@ JSON object, and nothing of a reply is logged.
 mu300-vpn is a stub that records its arguments and its stdin and prints what the test chose; setsid records what
 would have been started detached and starts nothing (the task's own shell is run by one test on purpose)."""
 import json
+import shutil
 import os
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
@@ -42,21 +44,20 @@ done
 echo '{}'
 '''
 
-STATUS = {"version": "v2.0.0", "enabled": True, "running": True,
-          "kill_switch": {"setting": True, "active": True},
-          "ipv6": {"setting": "auto", "tunnel": False, "guard": True},
-          "profile": {"id": "office", "name": "Office", "type": "xray", "engine": "sing-box"},
-          "engine": {"name": "sing-box", "extra": "vpn-singbox", "installed": True, "usable": True, "reason": None},
-          "tunnel": {"iface": "sbtun", "up": True, "addresses": ["172.19.0.1/30"]},
-          "exit_ip": None, "missing_engine": None}
-PROFILES = [{"id": "office", "name": "Office", "type": "xray", "engine": "xray", "extra": "vpn-xray", "active": True,
-             "source": "manual", "subscription": None, "created": 1760000000,
-             "server": {"host": "vpn.example.com", "port": 443}, "protocol": "vless", "transport": "ws",
-             "security": "tls", "options": {"UPSTREAM_HTTP_PROXY": ""}, "engine_installed": True}]
-ENGINES = [{"name": "xray", "extra": "vpn-xray", "kind": "extra", "installed": True,
-            "path": "/mnt/mu300-disk/extra/vpn-xray/bin/xray", "version": "26.3.27", "available": "26.3.27",
-            "size": 31457280, "needed_by": ["office"], "usable": True, "reason": None,
-            "install": "mu300-vpn engine install xray"}]
+# What the real mu300-vpn (mu300-linux-vpn, branch engine-extras, module v2) printed, run on the OpenWrt rootfs with a
+# scratch store (tests/fixtures/mu300-vpn-cli: NAME.out, NAME.err, NAME.rc). capture.sh there makes them again: in a
+# container of the openwrt-luci rootfs, with the module's bin/ and lib/ at /v. The stub serves these, so the backend is
+# tested against the CLI's real output, not a copy of the spec.
+CLI = TOP / 'tests' / 'fixtures' / 'mu300-vpn-cli'
+
+
+def cli_out(name):
+    return (CLI / f'{name}.out').read_text()
+
+
+STATUS = json.loads(cli_out('status-running'))
+PROFILES = json.loads(cli_out('profile-list'))
+ENGINES = json.loads(cli_out('engines'))
 
 METHODS = {'status', 'profiles', 'engines', 'subscriptions', 'settings', 'job', 'service', 'killswitch', 'use',
            'profile_add', 'profile_rename', 'profile_remove', 'profile_check', 'profile_option', 'profile_reveal',
@@ -74,6 +75,30 @@ LINK = 'vless://11111111-2222-3333-4444-555555555555@vpn.example.com:443?securit
 URL = 'https://sub.example.com/api/v1/client/subscribe?token=SECRETTOKEN0123'
 
 
+# flock(1) for a test machine without it (macOS): flock [-w SECS] FD, on the descriptor the shell holds open
+FLOCK_STUB = r'''
+import fcntl, sys, time
+args = sys.argv[1:]
+wait = None
+if args[0] == '-w':
+    wait = float(args[1]); args = args[2:]
+elif args[0] == '-n':
+    args = args[1:]
+fd = int(args[0]); end = time.monotonic() + (wait or 0)
+while True:
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB); sys.exit(0)
+    except OSError:
+        if wait is None or time.monotonic() > end: sys.exit(1)
+        time.sleep(0.05)
+'''
+# a process that holds the lock FILE for SECS seconds
+FLOCK_HOLD = '''
+import fcntl, sys, time
+f = open(sys.argv[1], 'a'); fcntl.flock(f, fcntl.LOCK_EX); time.sleep(float(sys.argv[2]))
+'''
+
+
 class Mu300Vpn(ShellTest):
     def setUp(self):
         super().setUp()
@@ -81,6 +106,9 @@ class Mu300Vpn(ShellTest):
         self.stub('jsonfilter', f'exec python3 "{self.stubs}/jsonfilter.py" "$@"')
         self.stub('setsid', 't=$(mktemp "$STUB_CALLS/.tmp.XXXXXX"); printf "%s\\0" setsid "$@" > "$t"; '
                             'mv "$t" "$STUB_CALLS/call.${t##*.}"')
+        if not shutil.which('flock'):
+            (self.stubs / 'flock.py').write_text(FLOCK_STUB)
+            self.stub('flock', f'exec python3 "{self.stubs}/flock.py" "$@"')
         self.bin = self.tmp / 'bin'
         self.bin.mkdir()
         self.vpn = self.bin / 'mu300-vpn'
@@ -111,9 +139,8 @@ class Mu300Vpn(ShellTest):
 
     def call(self, shell, method, params=None, raw=None, **extra):
         """`mu300vpn call METHOD` with PARAMS on stdin: (CompletedProcess, [[name, arg...]], {index: stdin})"""
-        self.n += 1
-        calls = self.tmp / f'calls{self.n}'
-        calls.mkdir()
+        # (a fresh directory per call, made atomically: calls run in parallel threads)
+        calls = Path(tempfile.mkdtemp(prefix='calls', dir=self.tmp))
         stdin = raw if raw is not None else json.dumps(params or {}, ensure_ascii=False)
         env = self.env(STUB_CALLS=calls, STUB_OUT=self.out, MU300_VPN_CMD=self.vpn, MU300_EXTRA_CMD=self.extra,
                        MU300_DASH_DIR=self.dash, MU300_VPN_UPLOAD=self.upload, MU300_VPN_UPLOAD_PKG=self.upload_pkg,
@@ -148,6 +175,19 @@ class Mu300Vpn(ShellTest):
             self.fail(f'not JSON ({e}): {r.stdout!r} stderr={r.stderr!r}')
         self.assertIsInstance(obj, dict, r.stdout)
         return obj
+
+    def lock_free(self):
+        import fcntl
+        p = self.dash / 'vpn-job' / 'lock'
+        if not p.exists():
+            return True
+        with open(p, 'a') as f:
+            try:
+                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                return False
+            fcntl.flock(f, fcntl.LOCK_UN)
+        return True
 
     def staged(self):
         job = self.dash / 'vpn-job'
@@ -493,7 +533,7 @@ class Passthrough(Mu300Vpn):
                     self.assertEqual(obj, {'ok': 1, 'started': 1, 'kind': kind})
                     (sin, fl), c = self.job_cmd(recs[0])
                     self.assertEqual((sin, fl, c), ('', flag, cmd))
-                    self.assertFalse((self.dash / 'vpn-job' / 'lock').exists(), 'the lock is released')
+                    self.assertTrue(self.lock_free(), 'the lock is released')
                     self.assertEqual((self.dash / 'vpn-job' / 'state').read_text(), 'running\n')
 
     def test_a_running_task_refuses_another(self):
@@ -512,7 +552,7 @@ class Passthrough(Mu300Vpn):
                     self.assertEqual(recs, [])
                 # nothing was staged, and the lock is free again
                 self.assertEqual(sorted(p.name for p in job.iterdir() if p.name.startswith('stage.')), [])
-                self.assertFalse((job / 'lock').exists())
+                self.assertTrue(self.lock_free())
                 # an upload is not even taken while a task runs: the running one's file cannot be replaced
                 self.upload_pkg.write_bytes(b'NEW')
                 obj, recs, _ = self.run1(shell, 'engine_install', {'name': 'xray', 'source': 'file'})
@@ -587,13 +627,18 @@ class Replies(Mu300Vpn):
             self.assertIsInstance(obj['now'], int)
 
     def test_settings_are_an_object_of_the_shown_keys(self):
-        self.output('vpn.settings.get', 'KILL_SWITCH=1\nTAILSCALE=1\nIPV6=auto\nREMOTE_DNS=1.1.1.1\n'
-                                        'BOOTSTRAP_DNS=9.9.9.9\nLAN_CIDRS=\nXRAY=/x"y\nSING_BOX=\n')
         for shell in self.each_shell():
+            self.output('vpn.settings.--json', cli_out('settings-json'))
             obj = self.reply(self.call(shell, 'settings')[0])
             self.assertEqual(obj, {'ok': 1, 'settings': {'KILL_SWITCH': '1', 'TAILSCALE': '1', 'IPV6': 'auto',
-                                                         'REMOTE_DNS': '1.1.1.1', 'BOOTSTRAP_DNS': '9.9.9.9',
+                                                         'REMOTE_DNS': '1.1.1.1', 'BOOTSTRAP_DNS': '1.1.1.1',
                                                          'LAN_CIDRS': ''}})
+            # the binaries' paths are not passed on, whatever they hold
+            self.output('vpn.settings.--json', json.dumps(dict(json.loads(cli_out('settings-json')), XRAY='/x"y')))
+            self.assertNotIn('XRAY', self.reply(self.call(shell, 'settings')[0])['settings'])
+            self.output('vpn.settings.--json', 'KILL_SWITCH=1\n')
+            self.assertEqual(self.reply(self.call(shell, 'settings')[0]),
+                             {'ok': 0, 'error': 'The VPN settings could not be read'})
 
     def test_the_module_missing_or_too_old(self):
         for shell in self.each_shell():
@@ -812,7 +857,7 @@ class Hardening(Mu300Vpn):
             r, recs, _ = self.call(shell, 'core_install', {'source': 'file'})
             self.assertEqual(self.reply(r), {'ok': 0, 'error': 'No uploaded file'})
             self.upload_pkg.rmdir()
-            self.assertFalse((self.dash / 'vpn-job' / 'lock').exists())
+            self.assertTrue(self.lock_free())
 
     def test_concurrent_requests_start_one_task(self):
         # setsid that takes a while: the task "runs" for 4 s
@@ -831,16 +876,30 @@ class Hardening(Mu300Vpn):
             time.sleep(4.5)
             self.clean_job()
 
-    def test_a_stale_lock_is_taken_over(self):
+    def test_the_lock_waits_for_its_holder_and_goes_with_it(self):
+        """a request holding the lock (here: another process) makes the next one wait; it ends (even killed), the
+        kernel releases the lock and the next one goes through. Nothing the request started keeps it."""
+        job = self.dash / 'vpn-job'
         for shell in self.each_shell():
-            lock = self.dash / 'vpn-job' / 'lock'
-            lock.mkdir(parents=True)
+            job.mkdir(parents=True, exist_ok=True)
             os.chmod(self.dash, 0o700)
-            os.chmod(self.dash / 'vpn-job', 0o700)
-            (lock / 'pid').write_text('999999\n')
+            os.chmod(job, 0o700)
+            holder = subprocess.Popen([sys.executable, '-c', FLOCK_HOLD, str(job / 'lock'), '3'])
+            time.sleep(0.5)
+            t0 = time.monotonic()
+            r, recs, _ = self.call(shell, 'latency', {'id': 'all'})
+            waited = time.monotonic() - t0
+            holder.wait()
+            self.assertEqual(self.reply(r)['ok'], 1)
+            self.assertGreater(waited, 1.5)
+            # a holder killed outright releases it too
+            holder = subprocess.Popen([sys.executable, '-c', FLOCK_HOLD, str(job / 'lock'), '30'])
+            time.sleep(0.5)
+            holder.kill()
+            holder.wait()
+            self.clean_job()
             r, recs, _ = self.call(shell, 'latency', {'id': 'all'})
             self.assertEqual(self.reply(r)['ok'], 1)
-            self.assertFalse(lock.exists())
             self.clean_job()
 
     def test_links_and_urls_are_redacted_in_messages_and_logs(self):
@@ -858,6 +917,61 @@ class Hardening(Mu300Vpn):
             self.assertNotIn('SECRET', got)
             self.assertNotIn('11111111', got)
             self.clean_job()
+
+
+class Contract(Mu300Vpn):
+    """Every output the real CLI gave (tests/fixtures/mu300-vpn-cli) through the backend: what the pages get"""
+
+    def serve(self, stub, name):
+        self.output(stub, cli_out(name), rc=int((CLI / f'{name}.rc').read_text()),
+                    err=(CLI / f'{name}.err').read_text())
+
+    def test_the_real_outputs_reach_the_pages(self):
+        cases = [
+            # (stub file, fixture, method, params, check(reply))
+            ('vpn.status', 'status', 'status', {}, lambda o: self.assertEqual(o['status'], json.loads(cli_out('status')))),
+            ('vpn.status', 'status-exit-ip', 'status', {'exit_ip': '1'},
+             lambda o: self.assertEqual(o['status']['exit_ip'], '203.0.113.77')),
+            ('vpn.profile.list', 'profile-list-sub', 'profiles', {},
+             lambda o: self.assertEqual([p['source'] for p in o['profiles']],
+                                        [p['source'] for p in json.loads(cli_out('profile-list-sub'))])),
+            ('vpn.profile.show', 'profile-show-reveal', 'profile_reveal', {'id': 'home-wg'},
+             lambda o: self.assertTrue(o['config'].startswith('[Interface]\n'))),
+            ('vpn.profile.show', 'profile-show-missing', 'profile_reveal', {'id': 'nosuch'},
+             lambda o: self.assertEqual(o, {'ok': 0, 'error': 'The config could not be read',
+                                            'detail': 'no such profile: nosuch'})),
+            ('vpn.engines', 'engines', 'engines', {}, lambda o: self.assertEqual(len(o['engines']), 6)),
+            ('vpn.subscription.list', 'sub-list', 'subscriptions', {},
+             lambda o: self.assertEqual((o['subscriptions'][0]['format'], o['subscriptions'][0]['count']), ('links', 2))),
+            ('vpn.latency', 'latency-one', 'latency', {'id': 'trojan'},
+             lambda o: self.assertEqual(o['result']['ms'], 40)),
+            ('vpn.latency', 'latency-udp', 'latency', {'id': 'home-wg'},
+             lambda o: self.assertEqual((o['ok'], o['result']['error']), (1, 'udp'))),
+            ('vpn.use', 'use-missing', 'use', {'id': 'nosuch'},
+             lambda o: self.assertEqual(o, {'ok': 0, 'error': 'The profile could not be made the active one',
+                                            'detail': 'no such profile: nosuch'})),
+            ('vpn.restart', 'restart-off', 'service', {'op': 'restart'},
+             lambda o: self.assertEqual(o['detail'], 'the VPN is off: mu300-vpn on')),
+            ('vpn.profile', 'remove-active', 'profile_remove', {'id': 'office'},
+             lambda o: self.assertEqual(o['error'], 'The profile could not be removed')),
+        ]
+        for shell in self.each_shell():
+            for stub, name, method, params, check in cases:
+                with self.subTest(case=name):
+                    for f in self.out.iterdir():
+                        f.unlink()
+                    self.serve(stub, name)
+                    check(self.reply(self.call(shell, method, params)[0]))
+
+    def test_no_output_but_the_reveal_carries_a_secret(self):
+        # the fixtures' credentials: a UUID, a trojan password, a WireGuard private key, a subscription token
+        secrets = ['11111111-2222-3333-4444-555555555555', 'SECRETPASS', 'PASSWORD2', 'cHJpdmF0ZWtleXByaXZh',
+                   '22222222-2222', 'sub-test.txt']
+        for f in sorted(CLI.glob('*.out')):
+            if f.stem == 'profile-show-reveal':
+                continue
+            for x in secrets:
+                self.assertNotIn(x, f.read_text(), f.name)
 
 
 class Views(unittest.TestCase):

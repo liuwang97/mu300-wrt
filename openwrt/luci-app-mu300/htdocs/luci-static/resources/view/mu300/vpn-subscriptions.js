@@ -106,8 +106,11 @@ return view.extend({
 					E('td', { 'class': 'mvp-first' }, [ E('div', {}, [ String(s.name || s.id) ]),
 						E('div', { 'class': 'mvp-sub' }, [ String(s.id) ]),
 						problem ? E('div', {}, [ V.pill(String(problem), 'bad') ]) : '' ]),
-					E('td', { 'data-k': _('Format') }, [ s.type === 'links' ? _('Share links') : s.type === 'mihomo' ? 'mihomo' :
-						s.type === 'dae' ? 'dae' : String(s.type || '--') ]),
+					E('td', { 'data-k': _('Format') }, [ (function(f) {
+						/* format: what the last fetch found; type: what was asked for (auto) */
+						return f === 'links' ? _('Share links') : f === 'mihomo' ? 'mihomo' : f === 'dae' ? 'dae' :
+							f === 'auto' ? _('Detect') : String(f || '--');
+					})(s.format || s.type) ]),
 					E('td', { 'data-k': _('Host'), 'class': 'mvp-mono' }, [ String(s.host || '--') ]),
 					E('td', { 'data-k': _('Updated') }, [ V.ago(s.updated) ]),
 					E('td', { 'data-k': _('Profiles'), 'title': pn.join(', ') }, [ String(s.count != null ? s.count : pn.length) ]),
