@@ -2018,16 +2018,23 @@ int sprd_iface_remove(struct platform_device *pdev)
 	pr_info("%s\n wlan driver remove.", __func__);
 	iface_wd_stop();	/* MU300: before hif goes */
 
+	/*
+	 * MU300 (issue #146): the vendor returned here when the power-on failed, with everything still registered;
+	 * a platform remove cannot refuse (the device is unbound and the module freed either way), so the
+	 * teardown goes on without the chip. The power-on only fails from a count of 0, i.e. with no interface
+	 * open, so the close commands it would have carried are not needed and there is no power-off to balance.
+	 */
 	pr_info("Power on WCN (%d time)\n", atomic_read(&hif->power_cnt));
 	ret = sprd_iface_set_power(hif, true);
 	if (ret)
-		return ret;
+		pr_err("%s: WCN power-on failed (%d), removing without the chip\n", __func__, ret);
 
 	iface_notify_deinit(priv);
 	iface_core_deinit(priv);
 	/* MU300: power off while hif still exists (sprd_core_free frees priv, and hif and its lock with it) */
 	pr_info("Power off WCN (%d time)\n", atomic_read(&hif->power_cnt));
-	sprd_iface_set_power(hif, false);
+	if (!ret)
+		sprd_iface_set_power(hif, false);
 	sprd_hif_deinit(hif);
 	sprd_core_free(priv);
 	iface_set_priv(NULL);

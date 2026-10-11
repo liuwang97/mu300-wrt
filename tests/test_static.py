@@ -874,6 +874,34 @@ class Rules(unittest.TestCase):
         self.assertLess(d.index('sprd_clean_work(hif->priv);'), d.rindex('cancel_delayed_work_sync(&rx_mgmt->refill_retry);'))
         self.assertLess(d.rindex('cancel_delayed_work_sync'), d.index('kfree(rx_mgmt);'))
 
+    def test_wifi_remove_tears_the_driver_down(self):
+        # issue #146: the port's platform remove only logged (the vendor's calls sprd_iface_remove), so rmmod freed
+        # the module with the recovery watchdog's delayed work still armed: __run_timers panicked within a second
+        wlan = TOP / 'upstream' / 'modules' / 'sprd_wlan_combo'
+        drv = (wlan / 'common' / 'sprd_wlan.c').read_text()
+        rm = drv[drv.index('static void sprd_wlan_remove('):]
+        rm = rm[:rm.index('\n}\n')]
+        self.assertIn('\tif (p_match_data->hw_type == SPRD_HW_SC2355_PCIE)\n\t\tsprd_iface_remove(pdev);', rm)
+        iface = (wlan / 'common' / 'iface.c').read_text()
+        body = iface[iface.index('int sprd_iface_remove('):]
+        body = body[:body.index('\n}\n')]
+        # the watchdog stops first, and a failed power-on does not leave the teardown undone
+        self.assertLess(body.index('iface_wd_stop();'), body.index('sprd_iface_set_power(hif, true);'))
+        self.assertEqual(body.count('\n\treturn '), 1)
+        self.assertIn('\tif (!ret)\n\t\tsprd_iface_set_power(hif, false);', body)
+        wd = iface[iface.index('static void iface_wd_stop(void)'):]
+        wd = wd[:wd.index('\n}\n')]
+        self.assertIn('cancel_delayed_work_sync(&iface_wd.tick);', wd)
+        # the timers that live in priv are shut down where priv is freed
+        core_free = (wlan / 'common' / 'cfg80211.c').read_text()
+        core_free = core_free[core_free.index('void sprd_core_free('):]
+        core_free = core_free[:core_free.index('\n}\n')]
+        self.assertLess(core_free.index('timer_shutdown_sync(&priv->scan_timer);'), core_free.index('wiphy_free(wiphy);'))
+        ack = (wlan / 'sc2355' / 'tcp_ack.c').read_text()
+        ack = ack[ack.index('void sc2355_tcp_ack_deinit('):]
+        ack = ack[:ack.index('\n}\n')]
+        self.assertLess(ack.index('sprd_chip_drop_tcp_msg('), ack.index('timer_shutdown_sync(&ack_m->ack_info[i].timer);'))
+
     def test_wifi_tx_backpressure_is_not_logged_as_an_error(self):
         # kanoqwq/mu300-linux@3386928: a full TX ring is flow control, hit on every scheduling pass under load;
         # the vendor printed two pr_err lines for it each time
