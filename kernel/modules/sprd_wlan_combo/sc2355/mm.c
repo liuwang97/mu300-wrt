@@ -457,9 +457,13 @@ static void mm_normal_data_process(struct mem_mgmt *mm_entry,
 		if (likely(skb_len <= len))
 			skb = mm_build_skb(data, skb_len, buffer_type);
 		else {
-			/* Should not happen */
-			pr_err_ratelimited("%s: data len is %d, skb need %d\n",
-			       __func__, len, skb_len);
+			/*
+			 * MU300 (#140): the vendor's "should not happen" happens on every short frame (an ACK-sized
+			 * buffer is smaller than skb_shared_info plus the aligned payload); the copy below handles it,
+			 * so it is a trace of the slow path, not an error
+			 */
+			pr_debug_ratelimited("%s: data len is %d, skb need %d\n",
+					     __func__, len, skb_len);
 			skb = mm_data2skb_process(mm_entry, data,
 						  SKB_WITH_OVERHEAD(skb_len));
 			free_data = true;
