@@ -456,7 +456,7 @@ class EarlyUsbOpenWrt(ShellTest):
 
     def test_fw4_hook_leaves_the_flowtable_alone_when_no_reload_follows_or_the_kernel_updates_it(self):
         for shell in self.each_shell():
-            for kw in ({'kernel': '6.18.55'}, {'kernel': '7.2.9'}, {'action': 'ifdown'}, {'in_zone': False},
+            for kw in ({'kernel': '6.18.56'}, {'kernel': '7.2.10'}, {'action': 'ifdown'}, {'in_zone': False},
                        {'flowtable': False}):
                 with self.subTest(shell=' '.join(shell), **kw):
                     self.assertNotIn('delete', self.fw4_hook(shell, **kw))

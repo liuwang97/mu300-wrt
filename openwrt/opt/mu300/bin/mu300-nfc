@@ -18,6 +18,9 @@
 # changes that one byte and nothing else there (the same block holds the tag's I2C address).
 # (MU300_SYSROOT, MU300_BIN, MU300_HOTSPOT_CONF are for tests/)
 export PATH="$PATH:/opt/mu300/bin:/usr/sbin:/sbin"
+# nap SECONDS: a fraction of a second where a sleep takes one. OpenWrt's /bin/sleep refuses "0.2": a bare "sleep 0.2" did
+# not wait at all there, and "sleep 0.02 || sleep 1" waited a whole second; the static busybox next to us takes it.
+nap() { "${MU300_BUSYBOX:-/opt/mu300/bin/busybox}" sleep "$1" 2>/dev/null || sleep "$1" 2>/dev/null || sleep 1; }
 R=${MU300_SYSROOT:-}
 CONF=${MU300_HOTSPOT_CONF:-/etc/mu300/hotspot.conf}
 BUS=2 ADDR=0x57 LINE=190 START=16 CFG=0x3bf RF_OFF=0x20
@@ -34,7 +37,7 @@ HOLD=
 enable() {
     # 5.4: ZTE's fm11tag driver owns the line and offers it in /proc
     for f in "$R"/proc/ntag_gpios/*reset*; do
-        [ -e "$f" ] && { echo 0 > "$f" && HOLD=proc:$f; trap disable EXIT INT TERM; sleep 0.2; return; }
+        [ -e "$f" ] && { echo 0 > "$f" && HOLD=proc:$f; trap disable EXIT INT TERM; nap 0.2; return; }
     done
     chip=
     for c in "$R"/sys/bus/gpio/devices/gpiochip*; do
@@ -47,7 +50,7 @@ enable() {
     else gpioset --mode=signal "$chip" "$LINE=0" </dev/null >/dev/null 2>&1 & fi
     HOLD=$!
     trap disable EXIT INT TERM
-    sleep 0.3
+    nap 0.3
 }
 disable() {
     case $HOLD in
@@ -94,7 +97,7 @@ write_ndef() {  # write_ndef HEX...: from START, 16 bytes per write, each page o
         if [ "$have" != "$page" ]; then
             i2ct "$BUS" "w$((n + 2))@$ADDR" $(printf '0x%02x 0x%02x' $((o >> 8)) $((o & 255))) \
                 $(for x in $page; do printf ' 0x%s' "$x"; done) || die "cannot write the tag"
-            sleep 0.02 2>/dev/null || sleep 1   # the EEPROM's write cycle
+            nap 0.02   # the EEPROM's write cycle
             [ "$(read16 $o | awk -v n=$n '{ for (i = 1; i <= n; i++) printf " %s", $i }')" = "$page" ] \
                 || die "the tag did not keep what was written (write-protected?)"
         fi
@@ -112,7 +115,7 @@ rf() {  # rf [on|off]: the RF side's switch, shown or set
     esac
     [ "$n" = "$v" ] && return
     i2ct "$BUS" "w3@$ADDR" 0x03 0xbf "$(printf 0x%02x "$n")" || die "cannot write the tag's configuration"
-    sleep 0.02 2>/dev/null || sleep 1
+    nap 0.02
     [ $(( $(i2ct "$BUS" "w2@$ADDR" 0x03 0xbf r1) )) = "$n" ] || die "the tag did not keep its new configuration"
 }
 

@@ -12,12 +12,13 @@ permissions:
   contents: read
 
 jobs:
-  unix:
+  ubuntu:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+        shard: [0, 1, 2, 3]       # tests/shard.py: the modules of each quarter, ~7 min instead of ~30
+    runs-on: ubuntu-latest
+    name: ubuntu shard ${{ matrix.shard }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4     # the control panel's JavaScript tests
@@ -25,14 +26,28 @@ jobs:
           node-version: 22
       - name: shells and lz4
         run: |
-          if [ "$RUNNER_OS" = Linux ]; then sudo apt-get install -y -qq dash busybox lz4 zip unzip cpio jq >/dev/null; fi
+          sudo apt-get install -y -qq dash busybox lz4 zip unzip cpio jq >/dev/null
           python3 -m pip install -q lz4 || python3 -m pip install -q --break-system-packages lz4
       - name: tests
+        # quick mode on pull requests: the device scripts under busybox sh only (what OpenWrt runs; dash and bash
+        # are Ubuntu's) - a third of the time. A push to main runs every shell.
+        env:
+          MU300_TEST_SHELLS: ${{ github.event_name == 'pull_request' && 'busybox sh' || 'dash,bash,busybox sh,sh' }}
         run: |
           cd tests
           python3 -c 'import helpers; print("shells:", helpers.shells())'
-          python3 -m unittest discover -s . -v
+          mods=$(python3 shard.py 4 ${{ matrix.shard }}); echo "shard ${{ matrix.shard }}: $mods"
+          python3 -m unittest $mods
 
+  # the name the branch ruleset requires: green only when every shard is. (macOS: dropped 2026-10-12, GitHub's
+  # macOS runners queued for hours; the suite is POSIX-shell work that Ubuntu covers.)
+  unix-ubuntu:
+    name: unix (ubuntu-latest)
+    needs: ubuntu
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - run: test "${{ needs.ubuntu.result }}" = success
   windows:
     runs-on: windows-latest
     steps:
