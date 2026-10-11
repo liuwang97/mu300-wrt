@@ -300,8 +300,9 @@ static int tcp_ack_handle(struct sprd_msg *new_msg,
 			ack_info->in_send_msg = NULL;
 			ack_info->drop_cnt = atomic_read(&ack_m->max_drop_cnt);
 		} else {
-			pr_err("%s before abnormal ack: %d, %d\n",
-			       __func__, ack->seq, ack_msg->seq);
+			/* MU300 (#140): a duplicate or reordered ACK (every TCP fast-retransmit sends three), skipped by design */
+			pr_debug_ratelimited("%s before abnormal ack: %d, %d\n",
+					     __func__, ack->seq, ack_msg->seq);
 			drop_msg = new_msg;
 			ret = 1;
 		}

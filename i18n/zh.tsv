@@ -326,3 +326,15 @@ The web panel for Ubuntu (Cockpit with an MU300 page: signal, SMS, VPN, Wi-Fi, u
 Install the web panel for Ubuntu (about 24 MB more to download, 50 MB on the device)? (yes/no)	安装 Ubuntu 的网页面板（额外下载约 24 MB，设备上占用 50 MB）？(yes/no)
 release {1} has no web panel for Ubuntu; it can be added on the device later: sudo mu300-extra install panel	版本 {1} 没有 Ubuntu 网页面板；之后可以在设备上添加：sudo mu300-extra install panel
 Building the web panel extra	正在构建网页面板扩展
+boot chain:     identical on both slots	启动链：        两个槽位相同
+boot chain:     {1} differ between the slots; Android's slot {2} is copied to slot {3} (backed up first)	启动链：        {1} 在两个槽位之间不同；将 Android 的槽位 {2} 复制到槽位 {3}（先备份）
+boot chain:     not synced (MU300_SYNC_BOOTCHAIN=0)	启动链：        不同步（MU300_SYNC_BOOTCHAIN=0）
+boot chain:     not synced (-NoBootchainSync)	启动链：        不同步（-NoBootchainSync）
+boot chain:     cannot be synced: {1}	启动链：        无法同步：{1}
+the boot chain cannot be copied to the Linux slot: {1}	无法将启动链复制到 Linux 槽位：{1}
+Nothing was changed. Experts can skip this step with MU300_SYNC_BOOTCHAIN=0.	未做任何更改。高级用户可以用 MU300_SYNC_BOOTCHAIN=0 跳过此步骤。
+Nothing was changed. Experts can skip this step with -NoBootchainSync.	未做任何更改。高级用户可以用 -NoBootchainSync 跳过此步骤。
+no answer from the device	设备没有响应
+boot chain backup: {1}	启动链备份：{1}
+the boot chain backup could not be copied to this computer; it is on the Linux filesystem (.mu300/bootchain)	无法将启动链备份复制到这台电脑；它保存在 Linux 文件系统中（.mu300/bootchain）
+boot chain:     not synced (the model is not recognised)	启动链：        不同步（无法识别设备型号）

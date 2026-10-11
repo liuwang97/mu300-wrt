@@ -751,21 +751,22 @@ unsigned char sc2355_find_lut_index(struct sprd_hif *hif, struct sprd_vif *vif)
 	}
 
 out:
+	/* MU300 (#140): a multicast/broadcast frame has no peer entry by design; the per-mode default is the answer, not an error */
 	if (vif->mode == SPRD_MODE_STATION ||
 		vif->mode == SPRD_MODE_STATION_SECOND ||
 		vif->mode == SPRD_MODE_P2P_CLIENT) {
-		pr_err("%s,%d,bssid not found, multicast?\n"
-		       "default of STA/GC = 0,\n", __func__, vif->ctx_id);
+		pr_debug("%s,%d,bssid not found, multicast?\n"
+			 "default of STA/GC = 0,\n", __func__, vif->ctx_id);
 		return 0;
 	}
 	if (vif->mode == SPRD_MODE_AP) {
-		pr_err("%s,%d,bssid not found, multicast?\n"
-		       "default of AP = 4\n", __func__, vif->ctx_id);
+		pr_debug("%s,%d,bssid not found, multicast?\n"
+			 "default of AP = 4\n", __func__, vif->ctx_id);
 		return 4;
 	}
 	if (vif->mode == SPRD_MODE_P2P_GO) {
-		pr_err("%s,%d,bssid not found, multicast?\n"
-		       "default of GO = 5\n", __func__, vif->ctx_id);
+		pr_debug("%s,%d,bssid not found, multicast?\n"
+			 "default of GO = 5\n", __func__, vif->ctx_id);
 		return 5;
 	}
 	return 0;

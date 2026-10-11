@@ -2320,7 +2320,8 @@ int sprd_tx_special_data(struct sk_buff *skb, struct net_device *ndev)
 
 	if (skb->protocol == cpu_to_be16(ETH_P_PAE) ||
 		skb->protocol == cpu_to_be16(WAPI_TYPE)) {
-		pr_err("send %s frame by CMD_TX_DATA\n",
+		/* MU300 (#140): every EAPOL frame of a (re)association takes this path, by design */
+		pr_debug("send %s frame by CMD_TX_DATA\n",
 		skb->protocol == cpu_to_be16(ETH_P_PAE) ? "802.1X" : "WAI");
 		if (sprd_xmit_data2cmd_wq(skb, ndev) == -EAGAIN)
 			return NETDEV_TX_BUSY;
