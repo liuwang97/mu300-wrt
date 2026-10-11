@@ -33,7 +33,7 @@ A=/lib/modules/$(uname -r)/audio
 BOOT=/sys/devices/platform/audiocp_boot
 FW=${MU300_AGDSP_FW:-/lib/firmware/agdsp.bin}
 # the sha256 of the image "install" put there, kept on the device only
-FW_SUM=/etc/mu300/agdsp.sha256
+FW_SUM=${MU300_AGDSP_SUM:-/etc/mu300/agdsp.sha256}
 # The one image measured on an F50 so far: a ZTE Voyage 41S (same T760/UMS9620) AGDSP, the image the community
 # Android module boots media audio and Bluetooth calls with (docs/FINDINGS.md 24). Only the ends of its sha256
 # were ever written down; a different image is not refused, only reported.
