@@ -2239,6 +2239,55 @@ class WcnReopen(ShellTest):
         self.assertIn('ExecStart=/opt/mu300/bin/wcn-reopen\n', unit)
 
 
+class OpenwrtWcnHotplug(ShellTest):
+    """OpenWrt's hotplug.d/misc/10-mu300-wcn: one "wifi down; wifi up" per WCN reset, however many FW_ERROR events
+    (kanoqwq/mu300-linux@23361ce: a single recovery owner)."""
+    HOOK = TOP / 'openwrt/overlay/etc/hotplug.d/misc/10-mu300-wcn'
+
+    def setUp(self):
+        super().setUp()
+        self.stub('logger', ':')
+        self.stub('wifi', 'echo "wifi $1" >> "$STUBLOG/calls"; sleep 1')
+
+    def fire(self, shell, **env):
+        return self.script(shell, self.HOOK, ACTION='change', SOURCE='unisocwl', EVENT='FW_ERROR',
+                           MU300_WCN_LOCK=self.tmp / 'lock', **env)
+
+    def wait_calls(self, n):
+        import time
+        calls = self.tmp / 'calls'
+        for _ in range(300):
+            if calls.exists() and len(calls.read_text().split()) >= 2 * n and not (self.tmp / 'lock').exists():
+                break
+            time.sleep(0.05)
+        time.sleep(2.5)       # a second reopen that got in would have written by now
+        return calls.read_text().splitlines() if calls.exists() else []
+
+    def test_other_events_do_nothing(self):
+        for shell in self.each_shell():
+            r = self.script(shell, self.HOOK, ACTION='change', SOURCE='unisocwl', EVENT='OTHER')
+            self.assertEqual(r.returncode, 0)
+        import time
+        time.sleep(1.5)
+        self.assertFalse((self.tmp / 'calls').exists())
+
+    def test_overlapping_events_reopen_once(self):
+        for shell in self.each_shell():
+            (self.tmp / 'calls').unlink(missing_ok=True)
+            for _ in range(3):
+                self.fire(shell)
+            self.assertEqual(self.wait_calls(1), ['wifi down', 'wifi up'])
+
+    def test_a_dead_holder_does_not_block_the_next_reset(self):
+        for shell in self.each_shell():
+            (self.tmp / 'calls').unlink(missing_ok=True)
+            (self.tmp / 'lock').mkdir(exist_ok=True)
+            (self.tmp / 'lock' / 'pid').write_text('999999\n')
+            self.fire(shell)
+            self.assertEqual(self.wait_calls(1), ['wifi down', 'wifi up'])
+            self.assertFalse((self.tmp / 'lock').exists())
+
+
 class ThermalGuard(ShellTest):
     """thermal-guard's LED alarm (one round against a fake /: MU300_SYSROOT)."""
     def setUp(self):
