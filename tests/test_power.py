@@ -100,7 +100,12 @@ class Config(PowerTest):
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertIn('CHARGE_TO=80\n', self.conf.read_text())
             r = self.power(shell, 'set CHARGE_TO 90')
-            self.assertEqual(r.returncode, 2)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn('CHARGE_TO=90\n', self.conf.read_text())
+            for bad in ('101', '080', '-1', '8a', '1e2', ' 5', '$(id)', ''):
+                r = self.power(shell, f"set CHARGE_TO '{bad}'")
+                self.assertEqual(r.returncode, 2, bad)
+                self.assertIn('CHARGE_TO=90\n', self.conf.read_text())
 
     def test_bad_value_is_default_and_reported(self):
         self.battery()
@@ -684,6 +689,88 @@ class Guards(DaemonTest):
             self.battery(capacity=74); self.loops(shell)
             self.assertEqual((ch / 'charge_type').read_text().strip(), 'Fast')
 
+    def test_charge_limit_any_value(self):
+        """1-99: off at the limit, on under limit-5; a changed limit is judged afresh; 100 lets go at once."""
+        for shell in self.each_shell():
+            self.setUp()
+            self.write_conf('CHARGE_TO=60\n')
+            ch = self.charger(online=1); self.battery(capacity=60)
+            self.loops(shell)
+            self.assertEqual((ch / 'charge_type').read_text().strip(), 'N/A')
+            self.assertEqual((self.run_dir / 'mu300/power/charge-limit').read_text().strip(), '60')
+            self.battery(capacity=55); self.loops(shell)
+            self.assertEqual((ch / 'charge_type').read_text().strip(), 'N/A')   # not yet under 55
+            self.battery(capacity=54); self.loops(shell)
+            self.assertEqual((ch / 'charge_type').read_text().strip(), 'Fast')
+            self.assertFalse((self.run_dir / 'mu300/power/charge-limit').exists())
+            # held at 58 by a limit of 60, then the limit goes up to 70: charging again at once
+            self.battery(capacity=60); self.loops(shell)
+            self.battery(capacity=58); self.loops(shell)
+            self.assertEqual((ch / 'charge_type').read_text().strip(), 'N/A')
+            self.write_conf('CHARGE_TO=70\n'); self.loops(shell)
+            self.assertEqual((ch / 'charge_type').read_text().strip(), 'Fast')
+            # held again, then 100: on, also without a capacity reading
+            self.battery(capacity=70); self.loops(shell)
+            self.assertEqual((ch / 'charge_type').read_text().strip(), 'N/A')
+            (self.root / 'sys/class/power_supply/sc27xx-fgu/capacity').unlink()
+            self.loops(shell)
+            self.assertEqual((ch / 'charge_type').read_text().strip(), 'N/A')   # no reading: kept off
+            self.write_conf('CHARGE_TO=100\n'); self.loops(shell)
+            self.assertEqual((ch / 'charge_type').read_text().strip(), 'Fast')
+            self.assertFalse((self.run_dir / 'mu300/power/charge-off').exists())
+
+    def test_charge_limit_0_and_the_5_percent_floor(self):
+        for shell in self.each_shell():
+            self.setUp()
+            self.write_conf('CHARGE_TO=0\n')
+            ch = self.charger(online=1); self.battery(capacity=50)
+            r = self.loops(shell)
+            self.assertEqual((ch / 'charge_type').read_text().strip(), 'N/A')
+            self.assertIn('charging off: limit', r.stderr)
+            self.battery(capacity=6); self.loops(shell)
+            self.assertEqual((ch / 'charge_type').read_text().strip(), 'N/A')
+            self.battery(capacity=4); r = self.loops(shell)
+            self.assertEqual((ch / 'charge_type').read_text().strip(), 'Fast')   # never held under 5 %
+            self.assertIn('charging on: battery under 5 %', r.stderr)
+            self.battery(capacity=5); self.loops(shell)
+            self.assertEqual((ch / 'charge_type').read_text().strip(), 'N/A')
+            # the temperature guard still has the last word: too hot under 5 % stays off
+            self.battery(capacity=3, temp=470); self.loops(shell)
+            self.assertEqual((ch / 'charge_type').read_text().strip(), 'N/A')
+            self.assertEqual((self.run_dir / 'mu300/power/charge-off').read_text().strip(), 'temp')
+
+    def test_charge_limit_command(self):
+        for shell in self.each_shell():
+            self.setUp()
+            self.charger(online=1); self.battery(capacity=50)
+            r = self.power(shell, 'charge-limit')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn('charge limit: none (100 %)', r.stdout)
+            r = self.power(shell, 'charge-limit 80')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn('charge limit: 80 % (charging stops at 80 %, starts again under 75 %)', r.stdout)
+            self.assertIn('CHARGE_TO=80\n', self.conf.read_text())
+            r = self.power(shell, 'charge-limit 0')
+            self.assertIn('charge limit: 0 %', r.stdout)
+            r = self.power(shell, 'charge-limit 3')
+            self.assertIn('stops at 5 %, starts again under 5 %', r.stdout)
+            r = self.power(shell, 'charge-limit 101')
+            self.assertEqual(r.returncode, 2)
+            r = self.power(shell, 'charge-limit 1 2')
+            self.assertEqual(r.returncode, 2)
+            self.assertIn('CHARGE_TO=3\n', self.conf.read_text())
+
+    def test_charge_limit_on_the_f50_does_nothing(self):
+        for shell in self.each_shell():
+            self.setUp()
+            self.stub('mu300-device', 'echo f50')
+            self.write_conf('CHARGE_TO=0\n')
+            ch = self.charger(online=1); self.battery(capacity=50)
+            self.loops(shell)
+            self.assertEqual((ch / 'charge_type').read_text().strip(), 'Fast')
+            r = self.power(shell, 'charge-limit')
+            self.assertIn('no battery here', r.stdout)
+
     def test_guard_without_a_reading_or_a_switch_changes_nothing(self):
         for shell in self.each_shell():
             self.setUp()
@@ -1195,6 +1282,23 @@ class Incident(DaemonTest):
             self.power(shell, 'wake')
             self.assertNotIn('mu300-vpn stop', self.calls()); self.assertNotIn('mu300-vpn start', self.calls())
 
+    def test_without_the_vpn_module_nothing_is_asked_of_it(self):
+        # the VPN is a module of its own (dikeckaan/mu300-linux-vpn): without it there is no init script (OpenWrt)
+        # and no unit (Ubuntu: systemctl says inactive), and the modem goes off and comes back without a VPN step
+        for shell in self.each_shell():
+            for ubuntu in (False, True):
+                self.setUp()
+                if ubuntu:
+                    (self.root / 'etc/openwrt_release').unlink()
+                self.assertFalse((self.root / 'etc/init.d/mu300-vpn').exists())
+                self.idle_after_a_minute(shell, 'battery_WIFI_IDLE=1\nbattery_RADIO_IDLE=off\n')
+                r = self.power(shell, 'wake')
+                c = self.calls()
+                self.assertIn('mobile-data suspend off', c)
+                self.assertNotIn('mu300-vpn stop', c)
+                self.assertNotIn('mu300-vpn start', c)
+                self.assertFalse((self.run_dir / 'mu300/power/vpn-stopped').exists())
+
     def test_no_vpn_flap_while_the_suspend_keeps_failing(self):
         for shell in self.each_shell():
             self.setUp()
@@ -1322,6 +1426,29 @@ class Adapter(DaemonTest):
             self.assertEqual(d['supply'], 'battery')
             self.assertEqual(d['ignored'], ['battery_CPU'])
             self.assertIsNone(d['idle_since_s']); self.assertEqual(d['charge_off'], '')
+
+    def test_get_has_the_input_current_and_any_charge_limit(self):
+        import json
+        for shell in self.each_shell():
+            self.setUp()
+            self.write_conf('CHARGE_TO=37\n')
+            ch = self.charger(online=1, usb_type='Unknown [SDP] CDP DCP')
+            (ch / 'input_current_limit').write_text('1500000\n')
+            d = json.loads(self.adapter(shell, 'get').stdout)
+            self.assertEqual(d['charger']['input_ma'], 1500)
+            self.assertEqual(d['conf']['CHARGE_TO'], 37)
+            r = self.adapter(shell, 'set CHARGE_TO 0')
+            self.assertEqual(json.loads(r.stdout), {'ok': 1})
+            r = self.adapter(shell, 'set CHARGE_TO 101')
+            self.assertEqual(json.loads(r.stdout)['ok'], 0)
+
+    def test_get_on_the_f50_has_no_battery(self):
+        import json
+        for shell in self.each_shell():
+            self.setUp()
+            self.stub('mu300-device', 'echo f50')
+            d = json.loads(self.adapter(shell, 'get').stdout)
+            self.assertIsNone(d['battery'])
 
     def test_get_without_battery_or_charger_is_null(self):
         import json

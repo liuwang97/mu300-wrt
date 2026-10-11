@@ -44,6 +44,12 @@ fi
 # sipa_eth0 into fw4's software flowtable (applied below, the build fails when it no longer applies)
 FW4PATCH=$TOP/openwrt/patches/fw4-sipa-offload.patch
 [ -s "$FW4PATCH" ] || { echo "missing $FW4PATCH" >&2; exit 1; }
+# fw4 reload/restart on the 5.4 kernel: its old flowtable goes first, in a transaction of its own (#95, FINDINGS 38)
+FW4FTPATCH=$TOP/openwrt/patches/fw4-old-kernel-flowtable.patch
+[ -s "$FW4FTPATCH" ] || { echo "missing $FW4FTPATCH" >&2; exit 1; }
+# never an access point on a DFS channel: the SC2355 driver has no radar detection (FINDINGS 42)
+NODFSPATCH=$TOP/openwrt/patches/wifi-scripts-no-dfs.patch
+[ -s "$NODFSPATCH" ] || { echo "missing $NODFSPATCH" >&2; exit 1; }
 # the docker mounts of the panel system, as the positional parameters (OUT is read above): each path stays one
 # argument, spaces and all
 set --
@@ -108,17 +114,19 @@ ls "$IN/out/modules"/*.ko >/dev/null 2>&1 || {
 }
 # The optional ones decide whether the image can use the modem, Wi-Fi or the GPU at all. Missing ones
 # used to be skipped silently, which produces an image that boots and then does nothing useful.
-for o in firmware android-subset android-gpu-subset tools/logdw/logdw tools/bt-init/mu300-bt-init tools/keys/mu300-keys tools/gpu/cltest busybox upstream/out/modules; do
+for o in firmware android-subset android-gpu-subset tools/logdw/logdw tools/bt-init/mu300-bt-init tools/keys/mu300-keys tools/adbd/adbd tools/gpu/cltest busybox upstream/out/modules; do
     [ -e "$IN/$o" ] && echo "  + $o" || echo "  - $o   (missing: the image is built without it)"
 done
 # shellcheck disable=SC2046
 docker run --rm --platform linux/arm64 \
-  -v "$TOP/rootfs/overlay/opt/mu300":/in/opt-mu300:ro -v "$TOP/rootfs/overlay/etc/mu300/vpn.conf.example":/in/vpn.conf.example:ro -v "$TOP/openwrt/overlay":/in/overlay:ro \
+  -v "$TOP/rootfs/overlay/opt/mu300":/in/opt-mu300:ro -v "$TOP/openwrt/overlay":/in/overlay:ro \
   -v "$FW4PATCH":/in/fw4-sipa-offload.patch:ro \
+  -v "$FW4FTPATCH":/in/fw4-old-kernel-flowtable.patch:ro \
+  -v "$NODFSPATCH":/in/wifi-scripts-no-dfs.patch:ro \
   -v "$TOP/boot/module-order.txt":/in/module-order.txt:ro -v "$IN/out/modules":/in/modules:ro \
   $(opt out/modules.builtin modules.builtin) $(opt out/modules.builtin.modinfo modules.builtin.modinfo) \
   $(opt firmware firmware) $(opt android-subset android-subset) $(opt android-gpu-subset android-gpu-subset) \
-  $(opt tools/logdw/logdw logdw) $(opt tools/bt-init/mu300-bt-init bt-init) $(opt tools/keys/mu300-keys keys) $(opt tools/gpu/cltest cltest) \
+  $(opt tools/logdw/logdw logdw) $(opt tools/bt-init/mu300-bt-init bt-init) $(opt tools/keys/mu300-keys keys) $(opt tools/adbd/adbd adbd) $(opt tools/gpu/cltest cltest) \
   $(opt busybox busybox) $(opt upstream/out/modules mainline-modules) -v "$TOP/openwrt":/out -v "$REGDB":/in/regdb:ro "$@" \
   -e KREL=$KREL -e OUT="$(basename "$OUT")" -e MU300_VERSION="${MU300_VERSION:-dev}" mu300-$FLAVOUR-base:$VER /bin/sh -eu -c '
 mkdir -p /var/lock /var/run /tmp
@@ -127,9 +135,10 @@ apk update >/dev/null
 # (LuCI, mbedtls, the CA bundle, iwinfo ...), and "apk add" below installs only what is missing, so without this
 # an image shipped months later still has the old LuCI and the package manager shows every update on the first look
 apk upgrade >/dev/null
-# openssl-util: mu300-vpn fetches the VPN server certificate with it to pin, for links that ask for allowInsecure;
+# openssl-util: the VPN module (mu300-vpn, github.com/dikeckaan/mu300-linux-vpn) fetches the VPN server certificate
+# with it to pin, for links that ask for allowInsecure;
 # i2c-tools, gpiod-tools: mu300-usb (the charger of the U30 Air) and mu300-nfc (its NFC tag);
-# jq: mu300-vpn reads vmess links and raw Xray/sing-box configs with it, and rewrites those configs at every start
+# jq: the VPN module reads vmess links and raw Xray/sing-box configs with it, and rewrites those configs at every start
 apk add wpad-basic-mbedtls wifi-scripts iwinfo wireless-regdb iw bash ip-full coreutils-stty openssl-util \
     i2c-tools gpiod-tools jq >/dev/null
 # the router protocols LuCI offers, with their tools: WireGuard, PPTP/L2TP (PPPoE is in the base), 6in4/6rd/DS-Lite,
@@ -140,10 +149,18 @@ apk add wireguard-tools luci-proto-wireguard ppp-mod-pptp xl2tpd 6in4 6rd ds-lit
     luci-proto-vxlan ipset sqm-scripts luci-app-sqm >/dev/null
 # the pinned Aurora theme
 [ -d /in/luci-plugin ] && apk add --allow-untrusted /in/luci-theme-aurora.apk >/dev/null
+# relay mode (panel system only): ra-deprecate sends its router advertisement through a raw ICMPv6 socket (#87)
+[ -d /in/luci-plugin ] && apk add ucode-mod-socket >/dev/null
+# System > Terminal (panel system only): ttyd, and luci-app-ttyd for its settings page and translations; the image
+# configures it (luci-overlay/etc/config/ttyd: LAN address only, a root shell only for a token of a LuCI session)
+[ -d /in/luci-plugin ] && apk add ttyd luci-app-ttyd >/dev/null
 # ujail drops CAP_PERFMON (38), which this 5.4 kernel does not know: jailed services (dnsmasq, ntpd) crash-loop
 apk del procd-ujail procd-seccomp >/dev/null 2>&1 || true
 # online firmware upgrades flash whole-disk armsr images: that would overwrite the eMMC, so remove them
 apk del luci-app-attendedsysupgrade attendedsysupgrade-common owut >/dev/null 2>&1 || true
+# what those leave in /etc/config, and the .apk-new copies the upgrade above writes beside a changed config: an update
+# adds every config file of the image the device does not have yet (mu300-update), and these belong to no package
+rm -f /etc/config/attendedsysupgrade /etc/config/*.apk-new
 # LuCI in Turkish and Simplified Chinese besides English, in both systems: the translation of luci-base and of
 # every LuCI app the image has that the feed translates (apk checks each package against the signed index). Their
 # own uci-defaults, run by apk here, register the languages in luci.languages; the other languages are the lang
@@ -181,12 +198,25 @@ cp -a /in/overlay/. $R/
 apk add patch >/dev/null
 patch --batch --fuzz=0 -d $R -p1 -i /in/fw4-sipa-offload.patch
 grep -q sipa_eth0 $R/usr/share/ucode/fw4.uc || { echo "fw4 patch not applied" >&2; exit 1; }
+patch --batch --fuzz=0 -d $R -p1 -i /in/fw4-old-kernel-flowtable.patch
+grep -q drop_old_flowtable $R/sbin/fw4 || { echo "fw4 flowtable patch not applied" >&2; exit 1; }
+# wifi-scripts: a driver without radar detection (no radar_detect_widths, the SC2355) never gets an access point on a
+# DFS channel - hostapd fails start_dfs_cac and the hotspot stays down otherwise (FINDINGS 42)
+patch --batch --fuzz=0 -d $R -p1 -i /in/wifi-scripts-no-dfs.patch
+grep -q "device_no_dfs(config);" $R/usr/share/ucode/wifi/hostapd.uc || { echo "wifi-scripts DFS patch not applied" >&2; exit 1; }
 apk del patch >/dev/null   # out of packages.txt below, which lists what the image has
 if [ -d /in/luci-plugin ]; then
     [ -d /in/luci-overlay ] && cp -a /in/luci-overlay/. $R/
     cp -a /in/luci-plugin/root/. $R/
     cp -a /in/luci-plugin/htdocs/. $R/www/
-    chmod 0755 $R/etc/init.d/unisoc-modem-ui $R/etc/hotplug.d/net/90-unisoc-usb-host $R/etc/hotplug.d/iface/90-unisoc-usb-host $R/usr/libexec/rpcd/mu300dash $R/usr/libexec/unisoc-modem/*
+    chmod 0755 $R/etc/init.d/unisoc-modem-ui $R/etc/hotplug.d/net/90-unisoc-usb-host $R/etc/hotplug.d/iface/90-unisoc-usb-host $R/usr/libexec/rpcd/mu300dash $R/usr/libexec/rpcd/mu300vpn $R/usr/libexec/unisoc-modem/*
+    chmod 0755 $R/usr/libexec/rpcd/mu300term $R/usr/libexec/mu300-terminal-login $R/etc/hotplug.d/iface/95-mu300-terminal
+    # the terminal is System > Terminal (the panel menu: the page, and the settings page of luci-app-ttyd); its own Services >
+    # Terminal frames ttyd without a token, which mu300-terminal-login refuses
+    rm -f $R/usr/share/luci/menu.d/luci-app-ttyd.json
+    # ttyd as luci-overlay configures it, never the package default (/bin/login on every LAN instance, no origin check)
+    grep -q "^	option command ./usr/libexec/mu300-terminal-login.$" $R/etc/config/ttyd &&
+        ! grep -q "/bin/login" $R/etc/config/ttyd || { echo "ttyd is not configured for the panel" >&2; exit 1; }
     # the panel catalogs, named as LuCI names the language (base.zh-cn.lmo: mu300.zh-cn.lmo)
     for f in /in/catalogs/mu300.*.lmo; do cp "$f" $R/usr/lib/lua/luci/i18n/; done
     [ -s $R/www/luci-static/aurora/main.css ] || { echo "Aurora theme assets missing" >&2; exit 1; }
@@ -206,6 +236,15 @@ uci -c $R/etc/config -q get luci.languages.zh_cn >/dev/null ||
     uci -c $R/etc/config set luci.languages.zh_cn="$(printf "\347\256\200\344\275\223\344\270\255\346\226\207 (Simplified Chinese)")"
 uci -c $R/etc/config commit luci
 uci -c $R/etc/config show luci.languages
+# SQM (openwrt-luci): the default queue (disabled) shapes the generic eth1, which the MU300 does not have, so LuCI
+# offered a device that is not there; it names the cellular uplink, sipa_eth0, instead
+if [ -f $R/etc/config/sqm ]; then
+    for q in $(uci -c $R/etc/config -q show sqm | sed -n "s/^sqm\.\([^.]*\)\.interface=.eth1.$/\1/p"); do
+        uci -c $R/etc/config set sqm.$q.interface=sipa_eth0
+    done
+    uci -c $R/etc/config commit sqm
+    uci -c $R/etc/config -q show sqm | grep -q "\.interface=.eth1.$" && { echo "SQM still names eth1" >&2; exit 1; }
+fi
 mv $R/sbin/sysupgrade $R/sbin/sysupgrade.openwrt && mv $R/usr/libexec/mu300-sysupgrade $R/sbin/sysupgrade
 M=$R/lib/modules/$KREL; mkdir -p $M
 cp /in/modules/*.ko $M/          # ubox kmodloader expects the modules flat in /lib/modules/<release>/
@@ -224,6 +263,8 @@ fi
 [ -e /in/logdw ] && { cp /in/logdw $R/opt/mu300/bin/logdw; chmod 755 $R/opt/mu300/bin/logdw; }
 [ -e /in/bt-init ] && { cp /in/bt-init $R/opt/mu300/bin/mu300-bt-init; chmod 755 $R/opt/mu300/bin/mu300-bt-init; }
 [ -e /in/keys ] && { cp /in/keys $R/opt/mu300/bin/mu300-keys; chmod 755 $R/opt/mu300/bin/mu300-keys; }
+# adb over USB (tools/adbd, static): off until mu300-usb adb on
+[ -e /in/adbd ] && { cp /in/adbd $R/opt/mu300/bin/adbd; chmod 755 $R/opt/mu300/bin/adbd; }
 # the VPN engines are not part of the image: they are the vpn extra (mu300-extra install vpn)
 # full static busybox for the tools OpenWrt busybox leaves out (od, timeout, mountpoint, losetup, rfkill, telnetd)
 if [ -e /in/busybox ]; then
@@ -235,21 +276,22 @@ if [ -e /in/busybox ]; then
     done
 fi
 mkdir -p $R/etc/mu300
-# the VPN is configured the same way on both systems, and mu300-toolkit copies this to start a vpn.conf
-cp /in/vpn.conf.example $R/etc/mu300/vpn.conf.example
 printf "%s\n" "${MU300_VERSION:-dev}" > $R/etc/mu300/image-version
 # enable the services (rc.common "enable" needs ubus, which is not running in the build container)
 # accounts still those of the image until an installer or mu300-update puts the device ones in place
 : > $R/etc/.mu300-accounts-from-image
-for s in mu300-accounts mu300-vendor mu300-hw mu300-post mu300-toolkit mu300-atd mu300-modem-log mu300-wifi-client mu300-buttons mu300-power; do
+for s in mu300-accounts mu300-vendor mu300-hw mu300-post mu300-toolkit mu300-cpu mu300-atd mu300-modem-log mu300-wifi-client mu300-buttons mu300-power mu300-traffic mu300-user-packages mu300-adbd; do
     n=$(sed -n "s/^START=//p" $R/etc/init.d/$s)
     ln -sf ../init.d/$s $R/etc/rc.d/S$n$s
 done
 if [ -d /in/luci-plugin ]; then
     n=$(sed -n "s/^START=//p" $R/etc/init.d/unisoc-modem-ui)
     ln -sf ../init.d/unisoc-modem-ui $R/etc/rc.d/S${n}unisoc-modem-ui
+    # stopped at shutdown: the operations log of the panel (mu300dash flush-ops) is kept for the next boot
+    n=$(sed -n "s/^STOP=//p" $R/etc/init.d/unisoc-modem-ui)
+    ln -sf ../init.d/unisoc-modem-ui $R/etc/rc.d/K${n}unisoc-modem-ui
     # the SMS pool behind the panel (K69, D11): openwrt-luci only, the sms command stays the SMS tool of every system
-    chmod 0755 $R/opt/mu300/bin/mu300-sms $R/opt/mu300/bin/mu300-smsd $R/etc/init.d/mu300-smsd
+    chmod 0755 $R/opt/mu300/bin/mu300-sms $R/opt/mu300/bin/mu300-smsd $R/opt/mu300/bin/mu300-sms-forward $R/etc/init.d/mu300-smsd
     n=$(sed -n "s/^START=//p" $R/etc/init.d/mu300-smsd)
     ln -sf ../init.d/mu300-smsd $R/etc/rc.d/S${n}mu300-smsd
     # the dashboard AT channels, nr6 and nr7 (K19): the collector of the panel prefers them over nr1
@@ -261,6 +303,8 @@ if [ -d /in/luci-plugin ]; then
     n=$(sed -n "s/^START=//p" $R/etc/init.d/mu300-ndp)
     ln -sf ../init.d/mu300-ndp $R/etc/rc.d/S${n}mu300-ndp
     ln -sf /opt/mu300/bin/mu300-sms $R/usr/bin/mu300-sms
+    # System > Terminal: apk enabled ttyd itself
+    [ -e $R/etc/rc.d/S99ttyd ] || { echo "ttyd is not enabled" >&2; exit 1; }
 fi
 # the OpenWrt button handlers (power: a tap is poweroff; wps, rfkill) are replaced: mu300-buttons owns the keys
 mkdir -p $R/etc/rc.button
@@ -268,8 +312,19 @@ for b in power wps rfkill; do
     printf "#!/bin/sh\n# mu300-buttons owns the keys (see /opt/mu300/bin/mu300-buttons)\nexit 0\n" > "$R/etc/rc.button/$b"
     chmod 0755 "$R/etc/rc.button/$b"
 done
+# no config file of a removed package and no .apk-new copy in the image: an update adds every etc/config file of the
+# image the device lacks (mu300-update), so these would land on every device (v2026.10.18, built before the cleanup
+# above, had both). Removed again here, in the image itself, and checked.
+rm -f $R/etc/config/attendedsysupgrade $R/etc/config/*.apk-new
+for f in $R/etc/config/attendedsysupgrade $R/etc/config/*.apk-new; do
+    [ ! -e "$f" ] || { echo "stray config file in the image: $f" >&2; exit 1; }
+done
 # what apk installed, for comparing two builds (packages on the release feed are not pinned)
 apk list --installed | sort > $R/etc/mu300/packages.txt
+# the packages the image asks for (its world file): an update installs the others again, the ones added on the
+# device (mu300-update, upk_record; read with its own function)
+(MU300_LIB=1; . /in/opt-mu300/bin/mu300-update; upk_manual $R openwrt) > $R/etc/mu300/image-packages
+[ -s $R/etc/mu300/image-packages ] || { echo "no package list for etc/mu300/image-packages" >&2; exit 1; }
 # busybox PATH is /usr/sbin:/usr/bin:/sbin:/bin, so the commands go into /usr/bin (the same list as Ubuntu)
 for c in $(cat /in/opt-mu300/lib/path-commands); do ln -sf /opt/mu300/bin/$c $R/usr/bin/$c; done
 # no kernel of its own: OpenWrt kmods (6.12) and grub are unused on this device

@@ -117,6 +117,66 @@ void wcn_reset_process(void)
 	WCN_INFO("%s reset end\n", __func__);
 }
 
+/*
+ * MU300: the chip reset for sprd_wlan_combo's recovery watchdog (issue #94). Our builds are not
+ * TARGET_BUILD_VARIANT=user, so a firmware assert takes the "dump" path (reset_dump defaults to dump):
+ * wcn_dump_process() sets the card-dump flag and nothing ever clears it, and every mbuf_link_alloc() fails from
+ * then on. This is procfs "rebootwcn" (the non-integrated branch) followed by wcn_reset_process(), which also
+ * clears dump_cnt and the assert notification so that a later assert is handled again: power the chip off,
+ * call wcn_reset_notifier_list (Wi-Fi marks itself asserted and sends its FW_ERROR uevent) and clear the flag.
+ * The chip powers on again at the next start_marlin(), i.e. when Wi-Fi is reopened. Process context; may block.
+ */
+/*
+ * MU300: mdbg_proc->mutex with a deadline. A dump holds it for seconds (several MB over PCIe), and a path that
+ * never lets go must not leave rebootwcn's writer or the recovery work in D state for good.
+ */
+#define MDBG_LOCK_WAIT_MS	30000U
+
+static bool mdbg_lock_bounded(unsigned int ms)
+{
+	unsigned long end = jiffies + msecs_to_jiffies(ms);
+
+	while (!mutex_trylock(&mdbg_proc->mutex)) {
+		if (time_after(jiffies, end))
+			return false;
+		msleep(100);
+	}
+	return true;
+}
+
+bool wcn_mu300_recover(void)
+{
+	bool done = false;
+
+	/*
+	 * mdbg_proc->mutex, as the firmware-assert path (__wcn_assert_interface: dump or wcn_reset_process),
+	 * procfs dumpmem and rebootwcn hold it: one dump or reset at a time. Same order as theirs, this mutex and
+	 * then marlin_dev->power_lock (inside wcn_chip_power_off). The watchdog that calls this from a work item of
+	 * its own never takes it, and this gives up after 30 s: the watchdog's reboot fallback (70 s) takes over.
+	 */
+	if (!mdbg_lock_bounded(MDBG_LOCK_WAIT_MS)) {
+		WCN_ERR("%s: a dump or reset has held the WCN for %u s, no reset (the reboot fallback follows)\n",
+			__func__, MDBG_LOCK_WAIT_MS / 1000);
+		return false;
+	}
+	/* someone else (an assert's reset, a manual rebootwcn) may have recovered it meanwhile */
+	if (sprdwcn_bus_get_carddump_status()) {
+		WCN_INFO("%s begin\n", __func__);
+		stop_loopcheck();
+		mdbg_proc->fail_count = 0;
+		marlin_set_download_status(0);
+		wcn_reset_process();
+		WCN_INFO("%s end\n", __func__);
+		done = true;
+	} else {
+		WCN_INFO("%s: not in card dump any more, nothing to do\n", __func__);
+	}
+	mutex_unlock(&mdbg_proc->mutex);
+
+	return done;
+}
+EXPORT_SYMBOL_GPL(wcn_mu300_recover);
+
 void wcn_dump_process(enum wcn_source_type type)
 {
 	struct wcn_match_data *g_match_config = get_wcn_match_config();
@@ -186,7 +246,8 @@ void __wcn_assert_interface(enum wcn_source_type type, char *str)
 	if (!(g_match_config && g_match_config->unisoc_wcn_integrated)) {
 		if (mdbg_proc->marlin_powerdown_flag) {
 			WCN_ERR("fw assert hanppend in WCN Powerdown!!\n");
-			return;
+			/* MU300: the vendor returned here with mdbg_proc->mutex held, for good */
+			goto out;
 		}
 	}
 
@@ -948,9 +1009,13 @@ static ssize_t mdbg_proc_write(struct file *filp,
 		}
 	} else {
 		if (strncmp(mdbg_proc->write_buf, "dumpmem", 7) == 0) {
+			/* MU300: the lock first and with a deadline (see mdbg_lock_bounded), then the dump flag */
+			if (!mdbg_lock_bounded(MDBG_LOCK_WAIT_MS)) {
+				WCN_ERR("dumpmem: a dump or reset holds the WCN for %u s, try again\n",
+					MDBG_LOCK_WAIT_MS / 1000);
+				return -EBUSY;
+			}
 			sprdwcn_bus_set_carddump_status(true);
-
-			mutex_lock(&mdbg_proc->mutex);
 			marlin_set_sleep(MARLIN_MDBG, FALSE);
 			marlin_set_wakeup(MARLIN_MDBG);
 			mdbg_dump_mem(WCN_SOURCE_BTWF);
@@ -980,6 +1045,15 @@ static ssize_t mdbg_proc_write(struct file *filp,
 			return count;
 		}
 		if (strncmp(mdbg_proc->write_buf, "rebootwcn", 9) == 0) {
+			/*
+			 * MU300: under mdbg_proc->mutex, as the assert path and wcn_mu300_recover() reset the chip,
+			 * but never stuck in D state behind it: -EBUSY if a dump or reset holds it for 30 s.
+			 */
+			if (!mdbg_lock_bounded(MDBG_LOCK_WAIT_MS)) {
+				WCN_ERR("rebootwcn: a dump or reset holds the WCN for %u s, try again\n",
+					MDBG_LOCK_WAIT_MS / 1000);
+				return -EBUSY;
+			}
 			flag_reset = 1;
 			WCN_INFO("marlin gnss need reset\n");
 			WCN_INFO("fail_count is value %d\n", mdbg_proc->fail_count);
@@ -990,6 +1064,7 @@ static ssize_t mdbg_proc_write(struct file *filp,
 			marlin_chip_en(false, true);
 			wcn_reset_cp2();
 			flag_reset = 0;
+			mutex_unlock(&mdbg_proc->mutex);
 			return count;
 		}
 		if (strncmp(mdbg_proc->write_buf, "at+getchipversion", 17) == 0) {

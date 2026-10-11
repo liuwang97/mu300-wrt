@@ -55,6 +55,18 @@ for b in "$SYS"/block/mmcblk*; do
 done
 # --- emmc end
 [ -z "$E" ] || link_partitions /sys/class/block /dev "$E"
+# The vendor daemons' own account, before the nodes are handed to it (ueventd-perms.sh) and the daemons start as it
+# (android-run): Android's system user is uid 1000, and that is the first human account on a distribution. The image
+# has it; this makes it on a system that does not (an image from before it, or useradd's run in the build failed).
+# Only where useradd is (not OpenWrt, which has no account at 1000); a failure leaves the daemons at uid 1000.
+# --- account begin
+if ! grep -q '^mu300vnd:' "${MU300_ETC:-/etc}/passwd" 2>/dev/null && command -v useradd >/dev/null 2>&1; then
+    nologin=/usr/sbin/nologin; [ -x $nologin ] || nologin=/usr/bin/nologin
+    useradd --system --user-group --no-create-home --home-dir /nonexistent --shell $nologin \
+        --comment 'MU300 Android vendor daemons' mu300vnd ||
+        echo "android-vendor-start: could not create the mu300vnd account; the vendor daemons run as uid 1000" >&2
+fi
+# --- account end
 sh /opt/mu300/bin/ueventd-perms.sh
 mark vendor-perms
 for m in dev proc sys; do mkdir -p $A/$m; done
@@ -78,9 +90,7 @@ case $L in a) AS=b ;; *) L=b; AS=a ;; esac
 # --- slot end
 tr -d '\000' < $src | sed "s/androidboot.slot_suffix=_$L/androidboot.slot_suffix=_$AS/" > /run/mu300-cmdline.android
 mount --bind /run/mu300-cmdline.android $A/proc/cmdline
-# sprd_modem_loader only accepts a task whose comm is exactly "modem_control": exec it directly
-# OpenWrt's procd preloads /lib/libsetlbf.so into services; the bionic linker in the chroot cannot load it
-unset LD_PRELOAD
-export LD_LIBRARY_PATH=/apex/com.android.runtime/lib64/bionic:/system/lib64:/vendor/lib64
 mark vendor-chroot-ready
-exec chroot $A /vendor/bin/modem_control
+# sprd_modem_loader only accepts a task whose comm is exactly "modem_control": android-run execs it directly, as the
+# vendor account where there is one
+exec /opt/mu300/bin/android-run modem_control

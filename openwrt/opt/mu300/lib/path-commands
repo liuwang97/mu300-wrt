@@ -8,7 +8,6 @@ mu300-at
 mu300-ussd
 sms
 mu300-voice
-mu300-vpn
 wifi-client
 mu300-ttl
 mu300-wifi-band
@@ -18,3 +17,6 @@ mu300-nfc
 mu300-device
 mu300-sim
 mu300-power
+mu300-cpu
+mu300-traffic
+mu300-user-packages

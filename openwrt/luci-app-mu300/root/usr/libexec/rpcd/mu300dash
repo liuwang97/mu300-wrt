@@ -14,21 +14,36 @@
 #                     round inside a page request starves the dial watchdog (V50 lesson).
 #   act op [arg]      mu300-dash-act; slow ops run detached via setsid and return
 #                     immediately ("started":1), fast ones run inline.
-#   at cmd            one raw AT command through mu300-at, with the same guards the
+#   at cmd [confirm]  one raw AT command through mu300-at, with the same guards the
 #                     V50 panel used: must start with AT, no ";" command chaining, and
 #                     AT+SPENGMD=0,1,... is hard-denied in any spelling (it switches the port into
 #                     streaming mode and kills the AT channel until a reboot).
 #                     Reply includes the raw modem output; last 40 commands are kept
-#                     in the package runtime directory.
+#                     in the package runtime directory. Commands that take minutes (scans)
+#                     or change the radio, the SIM or settings the modem keeps (at_class)
+#                     answer "confirm" first; a confirmed scan runs as a background job.
+#   at_job            that background job: running, or its reply.
 #   at_history        that history, raw text.
+#   ops_log           the panel's recent calls (method, time taken, outcome) of this boot and
+#                     the one before: no values, no replies (see run_m).
 #   lang_get, lang_set  LuCI's languages and the lang extra (unisoc-modem/languages, mu300-extra)
 #   power_get, power_set  the power profiles (unisoc-modem/power, mu300-power)
 #   ttl_get, ttl_set value  the TTL of mobile data (unisoc-modem/ttl, mu300-ttl); value off or 1-255
+#   traffic_get, traffic_set op value  the mobile data count, its billing cycle and cap (unisoc-modem/traffic,
+#                     mu300-traffic)
+#   forward_get, forward_set ..., forward_test  SMS forwarding (unisoc-modem/forward, mu300-sms-forward); the
+#                     settings go to the adapter on stdin, as sent: they hold secrets, never an argument
+#   cpu_get, cpu_set profile  the CPU performance profile (unisoc-modem/cpu, mu300-cpu); saving|balanced|performance
+#   packages_get, packages_act op  the packages installed before an update, installed again (unisoc-modem/packages,
+#                     mu300-user-packages); op retry|repair_dns|dismiss
 #
-# The AT terminal's whole wait is capped below the 30 s endpoint limit (AT_LOCK_WAIT
+# No call waits for the modem longer than about 17 s, under both the browser's 20 s
+# (LuCI's rpctimeout) and rpcd's 30 s: the AT terminal's wait is capped (AT_LOCK_WAIT
 # for the channel lock plus AT_BUDGET for the answer, mu300-at's MU300_AT_BUDGET),
-# so a busy or slow channel answers "busy" instead of the call being killed; the
-# frontend simply retries those.
+# the live signal read has a deadline, and the lock state is read in the background.
+# A busy or slow channel answers "busy" instead of the call being killed: a killed
+# call used to leave its AT client and collector running on, and the page kept
+# starting new ones (the stuck-panel report of v2026.10.18).
 
 export PATH="$PATH:/opt/mu300/bin:/opt/mu300/busybox-bin:/usr/libexec/unisoc-modem:/usr/sbin:/sbin"
 
@@ -64,10 +79,21 @@ TTL=${MU300_DASH_TTL:-5}          # full tier: neighbours/QoS/operator
 TTL_FAST=${MU300_DASH_TTL_FAST:-1} # serving tier: kick whenever older than 1 s (a fast round is ~300 ms)
 MU300_AT_LOCK_WAIT=12
 export MU300_AT_LOCK_WAIT
-# the AT terminal's own limits: 5 s for the lock, 20 s for the answer (a command
-# of 8 s after the daemon's usual 1-3 s drain fits); 25 s in all, under rpcd's 30
-AT_LOCK_WAIT=5
-AT_BUDGET=20
+# the AT terminal's own limits: 3 s for the lock, 13 s for the answer (a command
+# of 8 s after the daemon's usual 1-3 s drain fits); 16 s in all, under the
+# browser's 20 s and rpcd's 30
+AT_LOCK_WAIT=3
+AT_BUDGET=13
+# a confirmed scan (at_class scan) runs detached: 99 s for the answer, the most mu300-at and mu300-atd take (-t 1-99)
+AT_JOB=$DIR/at-job
+AT_JOB_T=99
+# the live signal read (m_signal) and the lock state read the page waits for
+SIGNAL_DEADLINE=14
+LOCK_GET_WAIT=${MU300_DASH_LOCK_GET_WAIT:-12}
+BB=${MU300_BUSYBOX:-/opt/mu300/bin/busybox}
+# nap SECONDS: a fraction where the static busybox is there (OpenWrt's /bin/sleep
+# takes whole seconds only)
+nap() { "$BB" sleep "$1" 2>/dev/null || sleep "$1" 2>/dev/null || sleep 1; }
 
 # ------------------------------------------------------------- input, JSON
 # This script runs as root on what a browser sent. Every parameter is checked
@@ -177,8 +203,9 @@ m_signal() {
     mkdir -p "$live" 2>/dev/null
     # The output is deliberately uncached, but the modem channel is not
     # unbounded parallel work. The collector claims one of the verified
-    # slot-0 nr6/nr7 channels and drops excess overlap immediately.
-    MU300_DASH_DIR="$live" MU300_DASH_LOCK_DIR="$DIR" \
+    # slot-0 nr6/nr7 channels and drops excess overlap immediately, and it
+    # stops asking at its deadline: a silent modem answers within it.
+    MU300_DASH_DIR="$live" MU300_DASH_LOCK_DIR="$DIR" MU300_DASH_DEADLINE=$SIGNAL_DEADLINE \
         "$DASH/cell" fast >/dev/null 2>&1
     json_obj "$(cat "$live/sig.json" 2>/dev/null)" ||
         printf '{"error":"Live signal read failed"}\n'
@@ -234,9 +261,75 @@ at_wedges() {
         }
     } END { exit !found }'
 }
+# at_class CMD: what sending CMD would do beyond answering, by its commands anywhere on the line (spaces and quotes
+# dropped, case ignored; "=?" is a test command and changes nothing):
+#   scan   takes minutes and holds the channel: AT+COPS=? (the network list), any *SCAN* command (AT+SPFREQSCAN)
+#   nv     a setting the modem keeps in its NV: network mode, NR mode, EN-DC, band and cell locks (AT+SPTESTMODE=,
+#          AT+SP5GRAN=, AT+SPENDC=, AT+SPLBAND=1/2, AT+SPFORCEFRQ= other than the =x,3 read). They survive a
+#          reboot and stay in force in Android (#96); the Locks page sets and undoes them.
+#   radio  the radio, the data connection or the modem itself: AT+CFUN=, AT+SFUN=, AT+CGATT=, AT+CGACT=, AT+CGDATA,
+#          AT+COPS=0/1/2/4 (operator selection, deregistration), ATD (a call), AT+SPATASSERT= (crashes the modem)
+#   apn    the stored data profiles: AT+CGDCONT=, AT+CGAUTH=
+#   sim    the SIM's PIN: AT+CLCK= (not the ,2 query), AT+CPWD=, AT+CPIN= (wrong PINs block the SIM)
+# Prints the class, or nothing for a command that only reads.
+at_class() {
+    printf '%s\n' "$1" | tr -d ' "' | tr 'a-z' 'A-Z' | awk '{
+        s = $0
+        if (s ~ /\+COPS=\?/ || s ~ /SCAN/) c = "scan"
+        else if (s ~ /\+(SPTESTMODE|SP5GRAN|SPENDC)=([^?]|$)/ || s ~ /\+SPLBAND=0*[12]([^0-9]|$)/ ||
+                 (s ~ /\+SPFORCEFRQ=[0-9]*,/ && s !~ /\+SPFORCEFRQ=[0-9]*,0*3([^0-9]|$)/)) c = "nv"
+        else if (s ~ /\+(CFUN|SFUN|CGATT|CGACT|SPATASSERT)=([^?]|$)/ || s ~ /\+CGDATA/ ||
+                 s ~ /\+COPS=0*[0124]([^0-9]|$)/ || s ~ /^ATD/) c = "radio"
+        else if (s ~ /\+(CGDCONT|CGAUTH)=([^?]|$)/) c = "apn"
+        else if ((s ~ /\+CLCK=([^?]|$)/ && s !~ /\+CLCK=[A-Z0-9]*,0*2([^0-9]|$)/) || s ~ /\+(CPWD|CPIN)=([^?]|$)/) c = "sim"
+    } END { if (c != "") print c }'
+}
+
+# the background AT job (a confirmed scan): running while it has a start and no end, and its process lives - or it
+# was started a moment ago and has not written its pid yet
+at_job_running() {
+    [ -f "$AT_JOB/start" ] && [ ! -f "$AT_JOB/end" ] || return 1
+    _p=$(cat "$AT_JOB/pid" 2>/dev/null)
+    if [ -n "$_p" ]; then
+        [ -d "/proc/$_p" ] && { tr '\0' ' ' < "/proc/$_p/cmdline"; } 2>/dev/null | grep -q mu300dash
+    else
+        [ $(( $(now) - $(cat "$AT_JOB/start" 2>/dev/null || echo 0) )) -lt 10 ]
+    fi
+}
+
+# run_at_job: the detached half of a confirmed scan ("mu300dash at-job", started by m_at). mu300-at bounds it: the
+# lock wait, then AT_JOB_T and the daemon's drain - under two and a half minutes in all.
+run_at_job() {
+    local cmd out rc=0
+    cmd=$(cat "$AT_JOB/cmd" 2>/dev/null) || exit 1
+    echo $$ > "$AT_JOB/pid"
+    out=$(MU300_AT_LOCK_WAIT=10 "$AT" -t "$AT_JOB_T" "$cmd" 2>&1) || rc=$?
+    printf '%s\n' "$out" > "$AT_JOB/reply.part" && mv "$AT_JOB/reply.part" "$AT_JOB/reply"
+    echo "$rc" > "$AT_JOB/rc"
+    now > "$AT_JOB/end"
+}
+
+m_at_job() {
+    local start end elapsed rc
+    [ -f "$AT_JOB/start" ] || { printf '{"none":1}\n'; return; }
+    start=$(cat "$AT_JOB/start" 2>/dev/null); case $start in ''|*[!0-9]*) start=$(now) ;; esac
+    if at_job_running; then
+        printf '{"running":1,"cmd":%s,"elapsed":%d,"limit":%d}\n' "$(json_str "$(cat "$AT_JOB/cmd" 2>/dev/null)")" \
+            $(( $(now) - start )) "$AT_JOB_T"
+        return
+    fi
+    end=$(cat "$AT_JOB/end" 2>/dev/null); case $end in ''|*[!0-9]*) end=$(now) ;; esac
+    rc=$(cat "$AT_JOB/rc" 2>/dev/null); case $rc in ''|*[!0-9]*) rc=1 ;; esac
+    elapsed=$((end - start))
+    printf '{"running":0,"done":1,"ok":%d,"cmd":%s,"elapsed":%d,"ended":%d,"reply":%s}\n' "$([ "$rc" = 0 ] && echo 1 || echo 0)" \
+        "$(json_str "$(cat "$AT_JOB/cmd" 2>/dev/null)")" "$elapsed" "$end" "$(json_str "$(cat "$AT_JOB/reply" 2>/dev/null)")"
+}
+
 m_at() {
-    local cmd reply
+    local cmd reply confirm class
     inp '@.cmd'; cmd=$V
+    inp '@.confirm'; confirm=$V
+    allowed "$confirm" '(0|1)?' || { refuse 'The confirm parameter must be 0 or 1'; return; }
     # one line of printable ASCII (a CR or LF would send a second command)
     if ! is_ascii_line "$cmd" || [ ${#cmd} -gt "$AT_MAX" ]; then
         refuse 'An AT command is one line of printable ASCII, at most 512 characters'
@@ -259,6 +352,29 @@ m_at() {
     # of a generic busy, so it does not look like the console died
     if [ -d /run/unisoc-modem-lock-apply ]; then
         printf '{"ok":0,"busy":1,"error":"Applying network locks: the modem is restarting (about half a minute), try again shortly"}\n'
+        return
+    fi
+    # a scan in the background holds the channel for minutes: say so, not just "busy"
+    if at_job_running; then
+        printf '{"ok":0,"busy":1,"job":1,"error":"A long AT command is still running in the background; try again when it has finished"}\n'
+        return
+    fi
+    # what the command would do beyond answering: nothing is sent before the page has asked
+    class=$(at_class "$cmd")
+    if [ -n "$class" ] && [ "$confirm" != 1 ]; then
+        printf '{"ok":0,"confirm":1,"kind":%s,"error":"This command needs confirmation"}\n' "$(json_str "$class")"
+        return
+    fi
+    if [ "$class" = scan ]; then
+        # minutes, never inside a request: a job of its own, which the page asks after (at_job)
+        rm -rf "$AT_JOB"
+        (umask 077; mkdir -p "$AT_JOB") 2>/dev/null
+        printf '%s\n' "$cmd" > "$AT_JOB/cmd"
+        now > "$AT_JOB/start"
+        setsid "$0" at-job >/dev/null 2>&1 &
+        printf '%s %s\n' "$(date '+%m-%d %H:%M:%S')" "$cmd" >> "$HIST"
+        tail -n 40 "$HIST" > "$HIST.t" 2>/dev/null && mv "$HIST.t" "$HIST"
+        printf '{"ok":1,"started":1,"job":1,"cmd":%s,"limit":%d}\n' "$(json_str "$cmd")" "$AT_JOB_T"
         return
     fi
     # mu300-at itself gives up waiting for the lock and says so; turn that into a
@@ -284,17 +400,36 @@ m_at_history() {
     printf '{"history":%s}\n' "$(json_str "$(cat "$HIST" 2>/dev/null)")"
 }
 
+LOCKF=$DIR/lock.json
+lock_reading() {
+    _p=$(cat "$DIR/lock-read.lck/pid" 2>/dev/null)
+    [ -n "$_p" ] && [ -d "/proc/$_p" ] &&
+        { tr '\0' ' ' < "/proc/$_p/cmdline"; } 2>/dev/null | grep -q '/unisoc-modem/lock'
+}
 m_lock_get() {
-    local fresh out
+    local fresh out before end
     inp '@.fresh'; fresh=$V
     allowed "$fresh" '(0|1)?' || { refuse 'The fresh parameter must be 0 or 1'; return; }
-    # default serves the lock cache instantly (a real read is seven AT
-    # round trips, about a second each); fresh=1 does the real read -
-    # the page uses it only behind the manual refresh button
-    if [ "$fresh" = 1 ]; then
-        out=$("$DASH/lock" get fresh 2>/dev/null)
-    else
-        out=$("$DASH/lock" get 2>/dev/null)
+    # The modem is never read inside the request: a real read is eight AT round
+    # trips, about a second each, and on a busy or silent channel each one used
+    # to wait out its whole budget - minutes, long after rpcd had killed the call
+    # (after a reboot there is no cache yet, and the home page asks at once).
+    # The cache is served; a missing one, or fresh=1 (the page's refresh button),
+    # starts a reading in the background and waits up to LOCK_GET_WAIT for it.
+    if [ "$fresh" = 1 ] || [ ! -s "$LOCKF" ]; then
+        before=$(date -r "$LOCKF" +%s 2>/dev/null || echo 0)
+        setsid "$DASH/lock" refresh >/dev/null 2>&1 &
+        end=$(( $(now) + LOCK_GET_WAIT ))
+        nap 0.3
+        while [ "$(now)" -lt "$end" ] && lock_reading; do
+            [ "$(date -r "$LOCKF" +%s 2>/dev/null || echo 0)" -gt "$before" ] && break
+            nap 0.3
+        done
+    fi
+    out=$("$DASH/lock" get cached 2>/dev/null)
+    if [ ! -s "$LOCKF" ] && lock_reading; then
+        printf '{"busy":1,"error":"Reading the locks from the modem; try again in a few seconds"}\n'
+        return
     fi
     json_obj "$out" || printf '{"error":"Lock read failed"}\n'
 }
@@ -308,6 +443,8 @@ lock_val_ok() {  # lock_val_ok KIND VALUE
         endc|auto_apply) allowed "$2" '(on|off)' ;;
         lte|nr)          [ -z "$2" ] || allowed "$2" '[0-9]{1,3}(,[0-9]{1,3}){0,31}' ;;
         cell)            allowed "$2" '(auto|off|off-nr|off-lte|(nr|lte):[0-9]{1,7},[0-9]{1,4})' ;;
+        # every lock back to automatic at once (unisoc-modem/lock reset)
+        reset)           allowed "$2" 'auto' ;;
         *)               return 1 ;;
     esac
 }
@@ -317,7 +454,7 @@ m_lock_set() {
     inp '@.kind'; kind=$V
     inp '@.val'; val=$V
     case "$kind" in
-        mode|endc|lte|nr|cell|auto_apply) ;;
+        mode|endc|lte|nr|cell|auto_apply|reset) ;;
         *) refuse 'Unknown lock kind'; return ;;
     esac
     lock_val_ok "$kind" "$val" || { refuse 'Invalid value for this lock kind'; return; }
@@ -326,7 +463,11 @@ m_lock_set() {
     # queued=1 tells the page another apply is still running (SFUN restart);
     # the new one waits for the modem and the page can say so
     [ -d /run/unisoc-modem-lock-apply ] && q=1
-    setsid "$DASH/lock" apply "$kind" "$val" >/dev/null 2>&1 &
+    if [ "$kind" = reset ]; then
+        setsid "$DASH/lock" reset >/dev/null 2>&1 &
+    else
+        setsid "$DASH/lock" apply "$kind" "$val" >/dev/null 2>&1 &
+    fi
     printf '{"ok":1,"started":1,"queued":%d,"op":%s}\n' "$q" "$(json_str "lock $kind=$val")"
 }
 
@@ -397,7 +538,9 @@ m_sms_send() {
     sms_text_ok "$text" || { refuse 'The message contains a control character'; return; }
     # the text travels on stdin (adapter contract: send --stdin NUMBER), never
     # as an argument where it could read as an option
-    out=$(printf '%s' "$text" | "$SMS" send --stdin "$num" 2>&1)
+    # a busy channel is "busy" within seconds, before anything is sent (not after the call was killed, with the
+    # message still going out behind the page's back)
+    out=$(printf '%s' "$text" | MU300_AT_LOCK_WAIT=$AT_LOCK_WAIT "$SMS" send --stdin "$num" 2>&1)
     # success is the adapter's last line saying so ("sent ..." from mu300-sms, or a bare OK), not those words
     # anywhere in a refusal
     if at_client_busy "$out"; then
@@ -545,6 +688,56 @@ m_ttl_set() {
     reply_obj "$("$TTLA" set "$value" 2>/dev/null)" 'The TTL adapter gave no valid reply'
 }
 
+# --------------------------------------------------------------- data usage
+# The Data usage page: mu300-traffic through the adapter, which checks every value again. Sizes are whole bytes.
+TRAFA=${MU300_TRAFFIC_ADAPTER:-$DASH/traffic}
+m_traffic_get() { reply_obj "$("$TRAFA" get 2>/dev/null)" 'The data usage adapter gave no valid reply'; }
+m_traffic_set() {
+    local op value
+    inp '@.op'; op=$V
+    inp '@.value'; value=$V
+    case $op in
+        reset_day) allowed "$value" '([1-9]|[12][0-9]|3[01])' ;;
+        cap|used)  allowed "$value" '(0|[1-9][0-9]{0,15})' ;;
+        warn)      allowed "$value" '([1-9]|[1-9][0-9]|100)' ;;
+        cut)       allowed "$value" '(on|off)' ;;
+        clear)     allowed "$value" 'yes' ;;
+        *)         refuse 'Unknown data usage setting'; return ;;
+    esac || { refuse 'Invalid value for this setting'; return; }
+    reply_obj "$("$TRAFA" set "$op" "$value" 2>/dev/null)" 'The data usage adapter gave no valid reply'
+}
+
+# ---------------------------------------------------------- SMS forwarding
+# The adapter checks every field itself (it writes a root-only file from them); the request reaches it on stdin only,
+# since it carries the secrets (a bot token, a password), and nothing of it is logged: the method log keeps replies,
+# and the adapter's replies never hold a secret.
+FWDA=${MU300_FWD_ADAPTER:-$DASH/forward}
+m_forward_get() { reply_obj "$("$FWDA" get 2>/dev/null)" 'The forwarding adapter gave no valid reply'; }
+m_forward_set() {
+    reply_obj "$(printf '%s' "$INPUT" | "$FWDA" set 2>/dev/null)" 'The forwarding adapter gave no valid reply'
+}
+m_forward_test() { reply_obj "$("$FWDA" test 2>/dev/null)" 'The forwarding adapter gave no valid reply'; }
+# The CPU page: mu300-cpu through the adapter, which checks the profile name again
+CPUA=${MU300_CPU_ADAPTER:-$DASH/cpu}
+m_cpu_get() { reply_obj "$("$CPUA" get 2>/dev/null)" 'The CPU adapter gave no valid reply'; }
+m_cpu_set() {
+    local profile
+    inp '@.profile'; profile=$V
+    allowed "$profile" '(saving|balanced|performance)' || { refuse 'Invalid CPU profile'; return; }
+    reply_obj "$("$CPUA" set "$profile" 2>/dev/null)" 'The CPU adapter gave no valid reply'
+}
+
+# The Settings page's card of the packages installed before an update: mu300-user-packages through the adapter,
+# which checks the operation again and starts retry and repair-dns in the background itself
+PKGA=${MU300_PKG_ADAPTER:-$DASH/packages}
+m_packages_get() { reply_obj "$("$PKGA" get 2>/dev/null)" 'The packages adapter gave no valid reply'; }
+m_packages_act() {
+    local op
+    inp '@.op'; op=$V
+    allowed "$op" '(retry|repair_dns|dismiss)' || { refuse 'Invalid packages operation'; return; }
+    reply_obj "$("$PKGA" act "$op" 2>/dev/null)" 'The packages adapter gave no valid reply'
+}
+
 do_list() {
     cat <<EOF
 {
@@ -552,8 +745,10 @@ do_list() {
 	"status": { },
 	"signal": { },
 	"act": { "op": "String", "arg": "String" },
-	"at": { "cmd": "String" },
+	"at": { "cmd": "String", "confirm": "String" },
+	"at_job": { },
 	"at_history": { },
+	"ops_log": { },
 	"lock_get": { "fresh": "String" },
 	"lock_set": { "kind": "String", "val": "String" },
 	"sms_list": { "page": "String" },
@@ -570,7 +765,21 @@ do_list() {
 	"power_get": { },
 	"power_set": { "op": "String", "key": "String", "value": "String" },
 	"ttl_get": { },
-	"ttl_set": { "value": "String" }
+	"ttl_set": { "value": "String" },
+	"traffic_get": { },
+	"traffic_set": { "op": "String", "value": "String" },
+	"forward_get": { },
+	"forward_set": { "enabled": "String", "template": "String", "allow": "String", "deny": "String",
+		"keywords": "String", "clear": "String", "webhook": "String", "webhook_url": "String",
+		"webhook_format": "String", "webhook_headers": "String", "telegram": "String", "telegram_token": "String",
+		"telegram_chat": "String", "email": "String", "email_host": "String", "email_port": "String",
+		"email_tls": "String", "email_user": "String", "email_password": "String", "email_from": "String",
+		"email_to": "String", "sms": "String", "sms_number": "String" },
+	"forward_test": { },
+	"cpu_get": { },
+	"cpu_set": { "profile": "String" },
+	"packages_get": { },
+	"packages_act": { "op": "String" }
 }
 EOF
 }
@@ -580,12 +789,131 @@ EOF
 # login page). Every method's raw stdout is appended here, so the last entry
 # at the moment of a crash is the input that killed the parser.
 LASTLOG=$DIR/last-outputs.log
+
+# ------------------------------------------------------------- operations log
+# "Recent modem operations": one line per call - when, the method (for "at" the command's name only, for act and
+# lock_set the op or kind), how long it took and how it ended (ok, error, busy, confirm, or killed: rpcd ended the
+# call at its 30 s limit, found afterwards by its marker) - and nothing else: no parameter values, no replies, no
+# SMS text, no IMSI or numbers. In RAM for this boot (OPS, the last OPS_MAX lines); copied to flash at most every
+# OPS_FLUSH seconds and when the service stops, and the previous boot's copy is kept beside it, so that a report
+# after a reboot still has the calls that led up to it. The panel shows both (ops_log).
+OPS=$DIR/ops.log
+OPS_DIR=${MU300_DASH_OPS_DIR:-/etc/unisoc-modem}
+OPS_MAX=200
+OPS_FLUSH=300
+
+# ticks: hundredths of a second since boot (whole seconds where /proc/uptime is missing)
+ticks() {
+    local u
+    { read -r u _ < /proc/uptime; } 2>/dev/null || { echo $(( $(date +%s) * 100 )); return; }
+    u=${u%%.*}${u#*.}; u=${u#"${u%%[!0]*}"}
+    echo "${u:-0}"
+}
+
+# at_verb CMD: an AT command's name for the log: up to its first "=" or "?" ("AT+COPS=?", "AT+CPIN=", "AT+CSQ"),
+# a dial without its number, at most 24 characters of [A-Z0-9+&^$%#*_.:=?-]
+at_verb() {
+    printf '%s\n' "$1" | tr -d ' "' | tr 'a-z' 'A-Z' | awk '{
+        s = $0
+        if (s ~ /^ATD/) { print "ATD"; exit }
+        i = match(s, /[=?]/)
+        v = i ? substr(s, 1, i) : s
+        if (i && substr(s, i, 2) == "=?") v = v "?"
+        gsub(/[^A-Z0-9+&^$%#*_.:=?-]/, "", v)
+        print substr(v, 1, 24)
+    }'
+}
+
+# ops_detail LABEL: the one thing about this call worth logging besides its name (never a value someone typed)
+ops_detail() {
+    case $1 in
+        at)       inp '@.cmd'; is_ascii_line "$V" && at_verb "$V" ;;
+        act)      inp '@.op'; allowed "$V" '[a-z-]{1,16}' && printf '%s\n' "$V" ;;
+        lock_set) inp '@.kind'; allowed "$V" '[a-z_]{1,16}' && printf '%s\n' "$V" ;;
+        lock_get) inp '@.fresh'; [ "$V" = 1 ] && echo fresh ;;
+    esac
+}
+
+# ops_reap: the markers of calls that never finished (rpcd killed them) become "killed" lines
+ops_reap() {
+    local f pid line
+    for f in "$DIR"/ops.run.*; do
+        [ -f "$f" ] || continue
+        pid=${f##*.}
+        case $pid in ''|*[!0-9]*) rm -f "$f"; continue ;; esac
+        [ "$pid" != $$ ] && ! kill -0 "$pid" 2>/dev/null || continue
+        line=$(cat "$f" 2>/dev/null)
+        rm -f "$f"
+        [ -n "$line" ] && printf '%s - killed\n' "$line" >> "$OPS"
+    done
+}
+
+# ops_flush [now]: the RAM log to flash, when the copy there is older than OPS_FLUSH seconds (or "now"). The first
+# flush of a boot keeps the previous boot's copy as panel-ops.prev.log (a rename).
+ops_flush() {
+    local f=$OPS_DIR/panel-ops.log
+    [ -s "$OPS" ] || return 0
+    if [ "${1:-}" != now ] && [ -f "$DIR/ops.boot" ] && [ -f "$f" ] &&
+       [ $(( $(now) - $(date -r "$f" +%s 2>/dev/null || echo 0) )) -lt "$OPS_FLUSH" ]; then
+        return 0
+    fi
+    (umask 077; mkdir -p "$OPS_DIR") 2>/dev/null
+    if [ ! -f "$DIR/ops.boot" ]; then
+        [ -f "$f" ] && mv -f "$f" "$OPS_DIR/panel-ops.prev.log" 2>/dev/null
+        : > "$DIR/ops.boot"
+    fi
+    (umask 077; tail -n "$OPS_MAX" "$OPS" > "$f.part") 2>/dev/null && mv -f "$f.part" "$f"
+}
+
+# ops_add LINE: one finished call
+ops_add() {
+    ops_reap
+    printf '%s\n' "$1" >> "$OPS"
+    # trimmed now and then, not on every call: the file is in RAM, a little over the limit costs nothing
+    [ "$(wc -l < "$OPS" 2>/dev/null || echo 0)" -gt $((OPS_MAX + 50)) ] &&
+        tail -n "$OPS_MAX" "$OPS" > "$OPS.t" 2>/dev/null && mv "$OPS.t" "$OPS"
+    ops_flush
+}
+
+m_ops_log() {
+    ops_reap
+    printf '{"ok":1,"now":%s,"prev":%s}\n' "$(json_str "$(tail -n "$OPS_MAX" "$OPS" 2>/dev/null)")" \
+        "$(json_str "$(cat "$OPS_DIR/panel-ops.prev.log" 2>/dev/null)")"
+}
+
 run_m() {  # run_m LABEL FUNCTION: the method's reply, logged
-    local out
+    local out t0 dt how stamp detail head
+    t0=$(ticks)
+    stamp="$(date '+%m-%d %H:%M:%S') $1"
+    detail=$(ops_detail "$1")
+    [ -n "$detail" ] && stamp="$stamp $detail"
+    # the marker a killed call leaves behind (ops_reap)
+    printf '%s\n' "$stamp" > "$DIR/ops.run.$$" 2>/dev/null
     out=$("$2" 2>/dev/null)
     printf '=== %s %s len=%s\n%s\n' "$(date '+%m-%d %H:%M:%S')" "$1" "${#out}" "$out" >> "$LASTLOG" 2>/dev/null
     tail -n 400 "$LASTLOG" > "$LASTLOG.t" 2>/dev/null && mv "$LASTLOG.t" "$LASTLOG"
     printf '%s\n' "$out"
+    dt=$(( $(ticks) - t0 ))
+    # the reply's own top-level verdict (a status snapshot carries the modem's errors inside, which are not the call's);
+    # its start without blanks: what jsonfilter re-serialises reads '{ "ok": 0, ...'
+    head=$(printf '%s' "$out" | head -c 80 | tr -d ' \t')
+    case $head in
+        '{"ok":0'*'"confirm":1'*) how=confirm ;;
+        '{"ok":0'*'"busy":1'*|'{"busy":1'*) how=busy ;;
+        # (a collector's "no answer" snapshot is {"ts":N,"error...)
+        '{"ok":0'*|'{"error'*|'{"ts":'[0-9]*',"err'*|'') how=error ;;
+        *) how=ok ;;
+    esac
+    rm -f "$DIR/ops.run.$$"
+    # The pages poll the reads every few seconds: a quick, successful read is not worth a line (two hundred of them
+    # would push out everything else within minutes). Every change, every AT command, and every read that was slow
+    # or failed is.
+    case $1 in
+        ops_log) return ;;
+        sysinfo|status|signal|at_job|at_history|sms_list|sms_show|*_get|usb_net_list)
+            [ "$how" != ok ] || [ "$dt" -ge 200 ] || [ -n "$detail" ] || return ;;
+    esac
+    ops_add "$(printf '%s %d.%02ds %s' "$stamp" $((dt / 100)) $((dt % 100)) "$how")"
 }
 
 case "${1:-}" in
@@ -608,7 +936,9 @@ call)
         signal)       run_m signal       m_signal ;;
         act)          run_m act          m_act ;;
         at)           run_m at           m_at ;;
+        at_job)       run_m at_job       m_at_job ;;
         at_history)   run_m at_history   m_at_history ;;
+        ops_log)      run_m ops_log      m_ops_log ;;
         lock_get)     run_m lock_get     m_lock_get ;;
         lock_set)     run_m lock_set     m_lock_set ;;
         sms_list)     run_m sms_list     m_sms_list ;;
@@ -626,8 +956,24 @@ call)
         power_set)    run_m power_set    m_power_set ;;
         ttl_get)      run_m ttl_get      m_ttl_get ;;
         ttl_set)      run_m ttl_set      m_ttl_set ;;
-        *)            refuse 'No such method' ;;
+        traffic_get)  run_m traffic_get  m_traffic_get ;;
+        traffic_set)  run_m traffic_set  m_traffic_set ;;
+        forward_get)  run_m forward_get  m_forward_get ;;
+        forward_set)  run_m forward_set  m_forward_set ;;
+        forward_test) run_m forward_test m_forward_test ;;
+        cpu_get)      run_m cpu_get      m_cpu_get ;;
+        cpu_set)      run_m cpu_set      m_cpu_set ;;
+        packages_get) run_m packages_get m_packages_get ;;
+        packages_act) run_m packages_act m_packages_act ;;
+        *)           refuse 'No such method' ;;
     esac
+    ;;
+# not methods (rpcd runs only list and call): the detached scan m_at starts, and the service's stop
+at-job)
+    [ "$DIR_OK" = 1 ] && run_at_job
+    ;;
+flush-ops)
+    [ "$DIR_OK" = 1 ] && { ops_reap; ops_flush now; }
     ;;
 *)
     echo "usage: $0 {list|call <method>}" >&2

@@ -4,10 +4,14 @@
 #   mu300-wifi-band 2.4|5      switch to that band and restart the hotspot (kept across reboots)
 #   mu300-wifi-band toggle     the other one (the U30 Air's Wi-Fi key, see mu300-buttons)
 # The channel goes back to automatic: 5 GHz channels mean nothing on 2.4 GHz and the other way round.
-# Ubuntu: BAND and CHANNEL in /etc/mu300/hotspot.conf (hotspot-start). OpenWrt: wireless.radio0 in UCI.
-# (MU300_HOTSPOT_CONF is for tests/)
+# Ubuntu: BAND and CHANNEL in /etc/mu300/hotspot.conf (hotspot-start). OpenWrt: wireless.radio0 in UCI, on 5 GHz the
+# country's default channel without DFS and its channel list for auto (lib/wifi-channels.sh: no radar detection).
+# (MU300_HOTSPOT_CONF, MU300_SYSROOT and MU300_WIFI_CHANNELS are for tests/)
 CONF=${MU300_HOTSPOT_CONF:-/etc/mu300/hotspot.conf}
-is_openwrt() { [ -e /etc/openwrt_release ] && [ -z "${MU300_HOTSPOT_CONF:-}" ]; }
+WIFI_CHANNELS=${MU300_WIFI_CHANNELS:-/opt/mu300/lib/wifi-channels.sh}
+[ -r "$WIFI_CHANNELS" ] || WIFI_CHANNELS=$(dirname "$0")/../lib/wifi-channels.sh
+. "$WIFI_CHANNELS"
+is_openwrt() { [ -e "${MU300_SYSROOT:-}/etc/openwrt_release" ] && [ -z "${MU300_HOTSPOT_CONF:-}" ]; }
 
 current() {
     if is_openwrt; then
@@ -22,11 +26,23 @@ current() {
 
 set_band() {  # set_band 2.4|5
     if is_openwrt; then
-        if [ "$1" = 2.4 ]; then b=2g ch=6 ht=HT20; else b=5g ch=36 ht=VHT80; fi
+        if [ "$1" = 2.4 ]; then
+            b=2g ch=6 ht=HT20
+            chl='delete wireless.radio0.channels
+delete wireless.radio0.acs_exclude_dfs'
+        else
+            cc=$(uci -q get wireless.radio0.country); cc=${cc:-TR}
+            ch=$(wifi_ap5_default "$cc")
+            [ -n "$ch" ] || { echo "no 5 GHz channel without DFS in country $cc: the hotspot stays on 2.4 GHz" >&2; exit 1; }
+            b=5g ht=VHT$(wifi_ap5_width "$cc" "$ch")
+            chl="set wireless.radio0.channels='$(wifi_ap5_channels "$cc")'
+set wireless.radio0.acs_exclude_dfs='1'"
+        fi
         uci -q batch <<UCI
 set wireless.radio0.band='$b'
 set wireless.radio0.channel='$ch'
 set wireless.radio0.htmode='$ht'
+$chl
 commit wireless
 UCI
         wifi reload >/dev/null 2>&1 &

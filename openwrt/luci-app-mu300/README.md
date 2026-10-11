@@ -9,6 +9,18 @@ The Device Management page controls USB role and gadget network policy, and
 lists host-side USB network adapters for optional attachment to the LAN bridge.
 The TTL page (Cellular) sets the TTL of everything that leaves through mobile data
 (`mu300-ttl`, through the `unisoc-modem/ttl` adapter).
+The CPU page (System) picks a performance profile - power saving, balanced or
+performance - which sets the CPU governor and the per-cluster frequency limits
+(`mu300-cpu`, through the `unisoc-modem/cpu` adapter). It stays inside the hardware
+frequency table and never changes voltage, so the kernel keeps throttling at its
+thermal limit in every profile.
+The Terminal page (System) frames ttyd: `rpcd/mu300term` hands a LuCI session with
+the `luci-app-mu300-terminal` ACL a one-time token (one connection, 60 s), and ttyd's
+command, `/usr/libexec/mu300-terminal-login`, opens a root login for that token and
+nothing else, closing it after `ttyd.mu300.idle` seconds without activity. The image
+configures ttyd for it (`openwrt/luci-overlay/etc/config/ttyd`: the LAN address only,
+origin check, `url_arg`); the package alone does not install ttyd, and the page then
+says so.
 
 The dashboard follows LuCI's selected language. Its colors follow Aurora's existing
 tokens when present, or the official Bootstrap theme's light/dark tokens.
@@ -25,6 +37,36 @@ unrelated LuCI pages where the dashboard JavaScript is not loaded.
 The package does not start or own the modem. Platform-specific access is behind
 small command adapters, so the LuCI and RPC code does not need to change for a
 different Unisoc OpenWrt firmware.
+
+## Data usage and live rates
+
+Cellular > Data usage shows mobile data per day and per billing cycle (a configurable reset day), with an optional
+monthly cap: a warning at a set percentage, and, only when turned on, mobile data off at the cap until the next
+cycle. The page talks to `unisoc-modem/traffic` (mu300dash `traffic_get`/`traffic_set`), which runs the platform's
+`mu300-traffic` (`MU300_TRAFFIC_CMD`); without it the page says data usage is not available. The count is that
+command's, so the panel and its CLI always agree; on MU300 it samples the interface counters once a minute into
+RAM and writes the disk rarely (see `mu300-traffic`).
+
+The dashboard's download/upload rates come from a lane of their own: one rpcd `file` read of `/proc/net/dev` every
+second (no process, no AT), timed in the browser. That is the only file the read grant names, with
+`/proc/[0-9]*/net/dev` beside it because rpcd checks the path it resolved (`/proc/net` is `/proc/self/net`). The
+status snapshot names the interface (`data_device`) and carries mu300-traffic's summary for the dashboard's usage
+tiles.
+
+## VPN
+
+The top-level VPN menu has six pages (Overview, Profiles, Subscriptions, Engines, Settings, Logs) over the VPN
+module's machine-readable CLI, `mu300-vpn ... --json` (github.com/dikeckaan/mu300-linux-vpn, spec
+`2026-10-11-engine-extras`, section 4). Their backend is a second rpcd object, `mu300vpn`
+(`/usr/libexec/rpcd/mu300vpn`), separate from mu300dash because what passes through it holds secrets: share links,
+configs, subscription URLs and OpenVPN passwords reach the CLI on its stdin (from a 0600 file in the root-only runtime
+directory), never in its argv, and nothing of a reply is logged. Reads (status, the lists, settings, the task) are in
+the ACL's read grant; every change, the log and the config reveal are in the write grant. Downloads (an engine, the
+module, a subscription, a config from a URL) and a latency round over every profile run as the one background task,
+bounded in time, which the pages poll. Uploads go to `/tmp/mu300-vpn-upload` (a config) and
+`/tmp/mu300-vpn-extra.tar.gz` (an extra's tarball), the only paths the ACL lets the panel write, and are moved out of
+`/tmp` before anything reads them. Without the module the pages show a card that installs it
+(`mu300-extra install vpn`). `tests/fixtures/fake-mu300-vpn` stands in for the CLI to try the pages without a device.
 
 ## AT adapters
 
