@@ -795,6 +795,31 @@ class Rules(unittest.TestCase):
                       'err_misc:\n\tmisc_deregister(&wlan_misc_device);\n\treturn ret;'):
             self.assertIn(label, body)
 
+    def test_wifi_rx_teardown_stops_the_refill_producers_first(self):
+        # kanoqwq/mu300-linux@23361ce: the RX work queues refills on sprd_work and a refill arms the timed retry;
+        # rx_deinit drained them in an order that let one re-arm the other over a freed rx_mgmt
+        wlan = TOP / 'upstream' / 'modules' / 'sprd_wlan_combo' / 'sc2355'
+        self.assertIn('\tbool stopping;\n};', (wlan / 'rx.h').read_text())
+        rx = (wlan / 'rx.c').read_text()
+
+        def body(sig):
+            b = rx[rx.index(sig):]
+            return b[:b.index('\n}\n')]
+        q = body('void sc2355_queue_rx_buff_work(')
+        self.assertLess(q.index('READ_ONCE(rx_mgmt->stopping)'), q.index('sprd_alloc_work(0)'))
+        self.assertIn('if (!READ_ONCE(rx_mgmt->stopping))\n\t\tsc2355_queue_rx_buff_work(', body('static void rx_refill_retry('))
+        f = body('int sc2355_mm_fill_buffer(')
+        self.assertLess(f.index('READ_ONCE(rx_mgmt->stopping)'), f.index('atomic_xchg(&mm_entry->alloc_num, 0)'))
+        d = body('int sc2355_rx_deinit(')
+        order = ['WRITE_ONCE(rx_mgmt->stopping, true);', 'cancel_delayed_work_sync(&rx_mgmt->refill_retry);',
+                 'flush_workqueue(rx_mgmt->rx_queue);', 'flush_workqueue(rx_mgmt->rx_net_workq);',
+                 'sprd_clean_work(hif->priv);']
+        pos = [d.index(s) for s in order]
+        self.assertEqual(pos, sorted(pos))
+        self.assertEqual(d.count('cancel_delayed_work_sync(&rx_mgmt->refill_retry);'), 2)
+        self.assertLess(d.index('sprd_clean_work(hif->priv);'), d.rindex('cancel_delayed_work_sync(&rx_mgmt->refill_retry);'))
+        self.assertLess(d.rindex('cancel_delayed_work_sync'), d.index('kfree(rx_mgmt);'))
+
     def test_wifi_tx_backpressure_is_not_logged_as_an_error(self):
         # kanoqwq/mu300-linux@3386928: a full TX ring is flow control, hit on every scheduling pass under load;
         # the vendor printed two pr_err lines for it each time
