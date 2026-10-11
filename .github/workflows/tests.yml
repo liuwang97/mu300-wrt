@@ -12,14 +12,13 @@ permissions:
   contents: read
 
 jobs:
-  unix:
+  ubuntu:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
         shard: [0, 1, 2, 3]       # tests/shard.py: the modules of each quarter, ~7 min instead of ~30
-    runs-on: ${{ matrix.os }}
-    name: unix shard (${{ matrix.os }}, ${{ matrix.shard }})
+    runs-on: ubuntu-latest
+    name: ubuntu shard ${{ matrix.shard }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4     # the control panel's JavaScript tests
@@ -27,7 +26,7 @@ jobs:
           node-version: 22
       - name: shells and lz4
         run: |
-          if [ "$RUNNER_OS" = Linux ]; then sudo apt-get install -y -qq dash busybox lz4 zip unzip cpio jq >/dev/null; fi
+          sudo apt-get install -y -qq dash busybox lz4 zip unzip cpio jq >/dev/null
           python3 -m pip install -q lz4 || python3 -m pip install -q --break-system-packages lz4
       - name: tests
         run: |
@@ -36,21 +35,42 @@ jobs:
           mods=$(python3 shard.py 4 ${{ matrix.shard }}); echo "shard ${{ matrix.shard }}: $mods"
           python3 -m unittest -v $mods
 
-  # the names the branch ruleset requires: green only when every shard of the matrix above is
+  macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    runs-on: macos-latest
+    name: macos shard ${{ matrix.shard }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: lz4
+        run: python3 -m pip install -q lz4 || python3 -m pip install -q --break-system-packages lz4
+      - name: tests
+        run: |
+          cd tests
+          python3 -c 'import helpers; print("shells:", helpers.shells())'
+          mods=$(python3 shard.py 4 ${{ matrix.shard }}); echo "shard ${{ matrix.shard }}: $mods"
+          python3 -m unittest -v $mods
+
+  # the names the branch ruleset requires: each green only when every shard of its own OS is
   unix-ubuntu:
     name: unix (ubuntu-latest)
-    needs: unix
+    needs: ubuntu
     if: always()
     runs-on: ubuntu-latest
     steps:
-      - run: test "${{ needs.unix.result }}" = success
+      - run: test "${{ needs.ubuntu.result }}" = success
   unix-macos:
     name: unix (macos-latest)
-    needs: unix
+    needs: macos
     if: always()
     runs-on: ubuntu-latest
     steps:
-      - run: test "${{ needs.unix.result }}" = success
+      - run: test "${{ needs.macos.result }}" = success
 
   windows:
     runs-on: windows-latest
