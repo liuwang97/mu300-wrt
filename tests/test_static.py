@@ -826,6 +826,60 @@ class Rules(unittest.TestCase):
             self.assertIn(pre + '\tsmp_store_release(&sc2355_hif.hif, (void *)hif);', text)
             self.assertIn(pre + '\tWRITE_ONCE(sc2355_hif.hif, NULL);', text)
 
+    def test_wifi_notify_init_unwinds_and_registers_the_reset_notifier_last(self):
+        # kanoqwq/mu300-linux@23361ce: a failed notify_init left the WCN reset notifier registered on a freed priv
+        iface = (TOP / 'upstream' / 'modules' / 'sprd_wlan_combo' / 'common' / 'iface.c').read_text()
+        body = iface[iface.index('static int iface_notify_init('):]
+        body = body[:body.index('\n}\n')]
+        reg = body.index('atomic_notifier_chain_register(&wcn_reset_notifier_list,')
+        for step in ('misc_register(&wlan_misc_device);', 'register_inetaddr_notifier(&iface_inetaddr_cb);',
+                     'register_inet6addr_notifier(&iface_inet6addr_cb);'):
+            self.assertLess(body.index(step), reg, step)
+        # nothing returns between the first registration and the end without undoing what it registered
+        self.assertEqual(body.count('return ret;'), 2)
+        self.assertIn('\t\treturn ret;\n\t}\n\n\tret = register_inetaddr_notifier', body)
+        for label in ('goto err_misc;', 'goto err_inet;', 'err_inet:\n\tunregister_inetaddr_notifier',
+                      'err_misc:\n\tmisc_deregister(&wlan_misc_device);\n\treturn ret;'):
+            self.assertIn(label, body)
+
+    def test_wifi_rx_teardown_stops_the_refill_producers_first(self):
+        # kanoqwq/mu300-linux@23361ce: the RX work queues refills on sprd_work and a refill arms the timed retry;
+        # rx_deinit drained them in an order that let one re-arm the other over a freed rx_mgmt
+        wlan = TOP / 'upstream' / 'modules' / 'sprd_wlan_combo' / 'sc2355'
+        self.assertIn('\tbool stopping;\n};', (wlan / 'rx.h').read_text())
+        rx = (wlan / 'rx.c').read_text()
+
+        def body(sig):
+            b = rx[rx.index(sig):]
+            return b[:b.index('\n}\n')]
+        q = body('void sc2355_queue_rx_buff_work(')
+        self.assertLess(q.index('READ_ONCE(rx_mgmt->stopping)'), q.index('sprd_alloc_work(0)'))
+        self.assertIn('if (!READ_ONCE(rx_mgmt->stopping))\n\t\tsc2355_queue_rx_buff_work(', body('static void rx_refill_retry('))
+        f = body('int sc2355_mm_fill_buffer(')
+        self.assertLess(f.index('READ_ONCE(rx_mgmt->stopping)'), f.index('atomic_xchg(&mm_entry->alloc_num, 0)'))
+        d = body('int sc2355_rx_deinit(')
+        order = ['WRITE_ONCE(rx_mgmt->stopping, true);', 'cancel_delayed_work_sync(&rx_mgmt->refill_retry);',
+                 'flush_workqueue(rx_mgmt->rx_queue);', 'flush_workqueue(rx_mgmt->rx_net_workq);',
+                 'sprd_clean_work(hif->priv);']
+        pos = [d.index(s) for s in order]
+        self.assertEqual(pos, sorted(pos))
+        self.assertEqual(d.count('cancel_delayed_work_sync(&rx_mgmt->refill_retry);'), 2)
+        self.assertLess(d.index('sprd_clean_work(hif->priv);'), d.rindex('cancel_delayed_work_sync(&rx_mgmt->refill_retry);'))
+        self.assertLess(d.rindex('cancel_delayed_work_sync'), d.index('kfree(rx_mgmt);'))
+
+    def test_wifi_tx_backpressure_is_not_logged_as_an_error(self):
+        # kanoqwq/mu300-linux@3386928: a full TX ring is flow control, hit on every scheduling pass under load;
+        # the vendor printed two pr_err lines for it each time
+        wlan = TOP / 'upstream' / 'modules' / 'sprd_wlan_combo' / 'sc2355'
+        pcie = (wlan / 'pcie.c').read_text()
+        fc = pcie[pcie.index('int sc2355_pcie_fc_test_send_num('):]
+        fc = fc[:fc.index('\n}\n')]
+        self.assertNotIn('pr_err(', fc)
+        self.assertIn('pr_debug_ratelimited("%s,%d free_num=%d, data_num=%d\\n"', fc)
+        tx = (wlan / 'tx.c').read_text()
+        self.assertNotIn('pr_err("%s, %d: _fc_ no credit!\\n"', tx)
+        self.assertIn('pr_debug_ratelimited("%s, %d: _fc_ no credit!\\n"', tx)
+
 
 if __name__ == '__main__':
     unittest.main()
