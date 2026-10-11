@@ -3,7 +3,7 @@
 ```sh
 python3 -m unittest discover -s tests            # everything this machine can run
 MU300_TEST_SHELLS="busybox sh" python3 -m unittest discover -s tests   # one shell only
-python3 -m unittest -v $(cd tests && python3 shard.py 4 0)    # what CI shard 0 of 4 runs (tests/shard.py)
+python3 -m unittest $(cd tests && python3 shard.py 4 0)      # what CI shard 0 of 4 runs; PRs add MU300_TEST_SHELLS="busybox sh" (quick mode)
 powershell -File tests\installer.Tests.ps1        # Windows: install.ps1's functions
 ```
 
