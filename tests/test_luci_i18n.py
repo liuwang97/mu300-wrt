@@ -411,7 +411,7 @@ if (selected !== true) throw Error('the Bootstrap token bridge must survive the 
 
 
 VIEWS = APP / 'htdocs/luci-static/resources/view/mu300'
-VIEW_NAMES = ('home', 'locks', 'sms', 'at', 'settings', 'device', 'languages', 'ttl', 'traffic')
+VIEW_NAMES = ('home', 'locks', 'sms', 'at', 'settings', 'device', 'languages', 'ttl', 'traffic', 'packages')
 CJK_RE = re.compile('[\u2e80-\u9fff\uf900-\ufaff\uff00-\uffef]')
 
 
@@ -818,6 +818,44 @@ V.paint({ ok: 0, error: 'Data usage is not available on this system' });
 rpcReply = { ok: 0, error: 'Invalid value for this setting' }; await V.set(null, 'warn', '0'); await flush();
 rpcReply = { ok: 1 }; await V.set(null, 'warn', '80'); await flush();
 return notes();'''
+
+    # the Packages after an update page in every state, Repair DNS refused and then confirmed, a refusal, dismiss
+    PACKAGES = '''
+const st = { ok: 1, recorded: 1, state: 'failed', from: 'v2026.10.12', summary: 's', wanted: [ 'a', 'b', 'c' ],
+             done: [ 'a' ], pending: [ 'c' ], failed: [ { name: 'b', why: 'ERROR: no such package' } ],
+             orphaned: [ 'etc/config/b' ], dns: 'DNS goes to 127.0.0.1#7874 of b', running: 0 };
+V.render(st);
+[ 'done', 'pending', 'running', 'offline', 'gave-up', 'skipped' ].forEach((s) => V.paint(Object.assign({}, st, { state: s })));
+V.paint({ ok: 1, recorded: 0 });
+V.paint({ ok: 0, error: 'Reinstalling packages is not available on this system' });
+let asked;
+M.confirmBox = (t, m, o) => { asked = { title: t, msg: m, ok: o.okText, danger: !!o.danger }; return Promise.resolve(false); };
+rpcReply = { ok: 1, started: 1 };
+await V.repairDns(null); await flush();
+const before = notes().length;
+M.confirmBox = () => Promise.resolve(true);
+await V.repairDns(null); await flush(); await flush();
+rpcReply = { ok: 0, error: 'Reinstalling is running already' }; await V.act(null, 'retry', 'x'); await flush();
+rpcReply = { ok: 1 }; await V.act(null, 'dismiss'); await flush();
+return { asked: asked, before: before, notes: notes() };'''
+
+    def test_packages_page(self):
+        for lang, want in ((None, ['Started in background: Repair DNS', 'Failed: Reinstalling is running already', 'Saved']),
+                           ('tr', ["Arka planda başlatıldı: DNS'i onar", 'Başarısız: Yeniden kurma zaten çalışıyor',
+                                   'Kaydedildi'])):
+            with self.subTest(lang=lang):
+                out = self.run_view('packages', lang, self.PACKAGES)
+                res = out['result']
+                # nothing runs before the user confirms, and the confirmation says DNS goes to the carrier
+                self.assertEqual(res['before'], 0)
+                self.assertTrue(res['asked']['danger'])
+                if lang is None:
+                    self.assertIn('the carrier sees the names you look up', res['asked']['msg'])
+                self.assertEqual(res['notes'], want)
+                for m in ('All back', 'Not installed yet', 'Waiting for the internet', 'Given up: no internet at five boots',
+                          'Skipped', 'Could not be installed again', 'Settings set aside in /etc/mu300/orphaned-config',
+                          'No packages to install again.', 'Try again', 'Dismiss the note', 'Repair DNS'):
+                    self.assertIn(m, out['used'])
 
     def test_traffic_page_messages(self):
         for lang, want in ((None, ['Failed: Invalid value for this setting', 'Saved']),

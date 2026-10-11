@@ -393,6 +393,72 @@ image_own_restore() {
         elif [ "$_uf" != image-version ]; then rm -f "$1/etc/mu300/$_uf"; fi
     done
 }
+# upk_os_codename ROOT: Ubuntu's release name (noble, ...)
+upk_os_codename() {
+    sed -n 's/^VERSION_CODENAME=//p' "$1/usr/lib/os-release" 2>/dev/null | tr -d '"' | head -n 1
+}
+# upk_apt_keep OLD NEW [checked]: Ubuntu keeps only parts of /etc, and apt's sources were not among them: a PPA's
+# packages could not come back. The source files added in etc/apt/sources.list.d are copied where the new image
+# has no file of that name (the image's own are never replaced), with the keys they need: one in etc/apt/keyrings
+# or usr/share/keyrings that a kept source names, and etc/apt/trusted.gpg.d's - each only where the new image has
+# no file of that name. checked: the first boot tries apt-get update and disables a kept source that makes it fail
+# (mu300-user-packages); without it (nothing to install again) a source of another Ubuntu release (24.04 -> 26.04)
+# is copied disabled (NAME.disabled, which apt skips) and said so. NEW/.mu300-image/apt-kept: the sources kept on.
+upk_apt_keep() {
+    _ua=$2/.mu300-image/apt-kept _ul=
+    : > "$_ua" || return 1
+    _uoc=$(upk_os_codename "$1") _unc=$(upk_os_codename "$2")
+    for _uf in "$1"/etc/apt/sources.list.d/*.list "$1"/etc/apt/sources.list.d/*.sources; do
+        [ -f "$_uf" ] || continue
+        _ur=etc/apt/sources.list.d/${_uf##*/}
+        { [ ! -e "$2/$_ur" ] && [ ! -L "$2/$_ur" ]; } || continue
+        mkdir -p "$2/etc/apt/sources.list.d" || return 1
+        if [ -z "${3:-}" ] && [ "$_uoc" != "$_unc" ]; then
+            cp -p "$_uf" "$2/$_ur.disabled" || return 1
+            echo "  apt: /$_ur is for Ubuntu $_uoc, this is $_unc: kept disabled (/$_ur.disabled)"
+        else
+            cp -p "$_uf" "$2/$_ur" || return 1
+            echo "$_ur" >> "$_ua"
+            echo "  apt: /$_ur kept"
+        fi
+        _ul="$_ul $_uf"
+    done
+    [ -n "$_ul" ] || return 0
+    # shellcheck disable=SC2086
+    _us=$(cat $_ul 2>/dev/null)
+    for _uf in "$1"/etc/apt/keyrings/* "$1"/usr/share/keyrings/* "$1"/etc/apt/trusted.gpg.d/*; do
+        [ -f "$_uf" ] || continue
+        _ur=${_uf#"$1"/}
+        { [ ! -e "$2/$_ur" ] && [ ! -L "$2/$_ur" ]; } || continue
+        case $_ur in
+            etc/apt/trusted.gpg.d/*) ;;
+            *) printf '%s\n' "$_us" | grep -qF "/$_ur" || continue ;;
+        esac
+        mkdir -p "$2/${_ur%/*}" && cp -p "$_uf" "$2/$_ur" || return 1
+    done
+}
+# upk_units OLD: "PACKAGE UNIT enabled|disabled|masked" for the systemd units the packages named on stdin have in
+# OLD (dpkg's file lists), as OLD had them - mu300-user-packages puts that back after it installs them again
+upk_units() {
+    while read -r _up; do
+        for _ul in "$1/var/lib/dpkg/info/$_up.list" "$1/var/lib/dpkg/info/$_up":*.list; do
+            [ -f "$_ul" ] || continue
+            grep -E '^/(usr/)?lib/systemd/system/[A-Za-z0-9_.:-]+\.(service|socket|timer|path)$' "$_ul" |
+                while read -r _uu; do
+                    # an alias (a link to the unit, smartd.service) follows its unit
+                    [ ! -L "$1$_uu" ] || continue
+                    _uu=${_uu##*/}
+                    case $_uu in *@*) continue ;; esac
+                    _us=disabled
+                    for _uw in "$1"/etc/systemd/system/*.wants/"$_uu" "$1"/etc/systemd/system/*.requires/"$_uu"; do
+                        [ ! -L "$_uw" ] || _us=enabled
+                    done
+                    [ "$(readlink "$1/etc/systemd/system/$_uu" 2>/dev/null)" != /dev/null ] || _us=masked
+                    echo "$_up $_uu $_us"
+                done
+        done
+    done | sort -u
+}
 # upk_record OLD NEW OS: after the settings are in NEW, before the switch. Writes NEW/etc/mu300/user-packages/
 # (wanted: the names; files: "package path" of their files in etc/; rc.d: the services enabled in OLD; from; state)
 # and moves their etc/config files out of the way. MU300_KEEP_PACKAGES=0: they are not installed again (state
@@ -416,6 +482,10 @@ upk_record() {
     rm -rf "$_ud"
     : > "$_ut/wanted"
     while read -r _up; do upk_skip "$_up" || echo "$_up" >> "$_ut/wanted"; done < "$_ut/added"
+    # Ubuntu: the apt sources added on the device (a PPA's packages cannot come back without it), see upk_apt_keep
+    if [ "$_uk" = ubuntu ]; then
+        upk_apt_keep "$_uo" "$_un" "$([ -s "$_ut/wanted" ] && echo checked)" || return 1
+    fi
     if [ ! -s "$_ut/wanted" ]; then
         echo "  none: everything installed is part of the new image"
         rm -rf "$_ut"
@@ -423,6 +493,7 @@ upk_record() {
     fi
     mkdir -p "$_ud" || return 1
     mv "$_ut/wanted" "$_ud/wanted"
+    [ ! -s "$_ut/apt-kept" ] || mv "$_ut/apt-kept" "$_ud/apt-sources"
     : > "$_ud/done"; : > "$_ud/failed"
     cat "$_uo/etc/mu300/image-version" > "$_ud/from" 2>/dev/null || echo unknown > "$_ud/from"
     # their files in etc/, from the package database of OLD (and of the record a pending one came from)
@@ -437,6 +508,7 @@ upk_record() {
         for _uf in "$_uo"/etc/rc.d/*; do { [ -L "$_uf" ] || [ -e "$_uf" ]; } && echo "${_uf##*/}"; done > "$_ud/rc.d" || :
     else
         : > "$_ud/files"; : > "$_ud/rc.d"
+        upk_units "$_uo" < "$_ud/wanted" > "$_ud/units"
     fi
     if [ "${MU300_KEEP_PACKAGES:-1}" = 0 ]; then echo skipped > "$_ud/state"; else echo pending > "$_ud/state"; fi
     echo "  $(tr '\n' ' ' < "$_ud/wanted")"

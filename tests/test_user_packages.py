@@ -236,6 +236,77 @@ class Record(ShellTest):
             r = self.record(shell, 'ubuntu')
             self.assertEqual(self.rec('wanted'), 'htop\n', r.stderr)
 
+    def ubuntu_roots(self, old_codename='noble', new_codename='noble', manual=('bash', 'htop')):
+        def dpkg(names):
+            return {'var/lib/dpkg/status': ''.join(f'Package: {n}\nStatus: install ok installed\n\n' for n in names),
+                    'var/lib/apt/extended_states': ''}
+        for d in (self.old, self.new):
+            shutil.rmtree(d, ignore_errors=True)
+        write(self.old, dpkg(manual))
+        write(self.old, {
+            'usr/lib/os-release': f'NAME="Ubuntu"\nVERSION_CODENAME={old_codename}\n',
+            'etc/mu300/image-packages': 'bash\n', 'etc/mu300/image-version': 'v1\n',
+            # the image's own source (the new image has it too) and two the user added, one deb822 with a key
+            'etc/apt/sources.list.d/ubuntu.sources': 'old\n',
+            'etc/apt/sources.list.d/ppa-htop.list': 'deb [signed-by=/etc/apt/keyrings/htop.gpg] http://ppa noble main\n',
+            'etc/apt/sources.list.d/vendor.sources': 'Types: deb\nSigned-By: /usr/share/keyrings/vendor.gpg\n',
+            'etc/apt/keyrings/htop.gpg': 'k1', 'usr/share/keyrings/vendor.gpg': 'k2',
+            'usr/share/keyrings/unrelated.gpg': 'k3', 'usr/share/keyrings/ubuntu-archive-keyring.gpg': 'old key',
+            'etc/apt/trusted.gpg.d/legacy.gpg': 'k4',
+            # htop's units: one enabled, one masked, one disabled, a template (skipped)
+            'var/lib/dpkg/info/htop:arm64.list': '/.\n/usr/lib/systemd/system/htopd.service\n'
+                                                 '/lib/systemd/system/htop.timer\n/usr/lib/systemd/system/htop-x.socket\n'
+                                                 '/usr/lib/systemd/system/htop@.service\n/usr/bin/htop\n'
+                                                 '/usr/lib/systemd/system/htop-alias.service\n'})
+        os.makedirs(self.old / 'etc/systemd/system/multi-user.target.wants')
+        os.symlink('/usr/lib/systemd/system/htopd.service', self.old / 'etc/systemd/system/multi-user.target.wants/htopd.service')
+        os.symlink('/dev/null', self.old / 'etc/systemd/system/htop.timer')
+        # an alias of htopd.service (smartd.service of smartmontools): it follows its unit, never recorded itself
+        os.makedirs(self.old / 'usr/lib/systemd/system', exist_ok=True)
+        os.symlink('htopd.service', self.old / 'usr/lib/systemd/system/htop-alias.service')
+        write(self.new, dpkg(['bash']))
+        write(self.new, {'usr/lib/os-release': f'NAME="Ubuntu"\nVERSION_CODENAME={new_codename}\n',
+                         'etc/mu300/image-packages': 'bash\n', 'etc/mu300/image-version': 'v2\n',
+                         'etc/apt/sources.list.d/ubuntu.sources': 'image\n',
+                         'usr/share/keyrings/ubuntu-archive-keyring.gpg': 'image key'})
+
+    def test_ubuntu_apt_sources_and_units(self):
+        for shell in self.each_shell():
+            self.ubuntu_roots()
+            r = self.record(shell, 'ubuntu')
+            self.assertIn('rc=0', r.stdout, r.stderr)
+            src = self.new / 'etc/apt/sources.list.d'
+            # the image's own never replaced; the user's kept, with the keys they name and trusted.gpg.d's
+            self.assertEqual((src / 'ubuntu.sources').read_text(), 'image\n')
+            self.assertTrue((src / 'ppa-htop.list').exists())
+            self.assertTrue((src / 'vendor.sources').exists())
+            self.assertEqual((self.new / 'etc/apt/keyrings/htop.gpg').read_text(), 'k1')
+            self.assertEqual((self.new / 'usr/share/keyrings/vendor.gpg').read_text(), 'k2')
+            self.assertEqual((self.new / 'etc/apt/trusted.gpg.d/legacy.gpg').read_text(), 'k4')
+            self.assertFalse((self.new / 'usr/share/keyrings/unrelated.gpg').exists())
+            self.assertEqual((self.new / 'usr/share/keyrings/ubuntu-archive-keyring.gpg').read_text(), 'image key')
+            self.assertEqual(self.rec('apt-sources'),
+                             'etc/apt/sources.list.d/ppa-htop.list\netc/apt/sources.list.d/vendor.sources\n')
+            self.assertEqual(self.rec('units'), 'htop htop-x.socket disabled\nhtop htop.timer masked\n'
+                                                'htop htopd.service enabled\n')
+            self.assertIn('apt: /etc/apt/sources.list.d/ppa-htop.list kept', r.stdout)
+
+    def test_ubuntu_sources_of_another_release_with_nothing_to_install_stay_off(self):
+        # 24.04 -> 26.04 and no package to bring back: no first-boot check, so they are kept disabled
+        for shell in self.each_shell():
+            self.ubuntu_roots('noble', 'resolute', manual=('bash',))
+            r = self.record(shell, 'ubuntu')
+            self.assertIn('rc=0', r.stdout, r.stderr)
+            src = self.new / 'etc/apt/sources.list.d'
+            self.assertFalse((src / 'ppa-htop.list').exists())
+            self.assertTrue((src / 'ppa-htop.list.disabled').exists())
+            self.assertIn('is for Ubuntu noble, this is resolute: kept disabled', r.stdout)
+            self.assertFalse((self.new / 'etc/mu300/user-packages').exists())
+            # with a package to bring back they stay on: the first boot tries them (mu300-user-packages)
+            self.ubuntu_roots('noble', 'resolute')
+            self.record(shell, 'ubuntu')
+            self.assertTrue((src / 'ppa-htop.list').exists())
+
     def test_android_install_has_the_same_block(self):
         upd = UPD.read_text()
         ai = (TOP / 'tools/android-install.sh').read_text()
@@ -347,7 +418,9 @@ class Service(ShellTest):
                          '  info) grep -qx "$3" "$STUBLOG/installed" 2>/dev/null ;;\n'
                          'esac')
         self.stub('apt-get', 'echo "apt-get $*" >> "$STUBLOG/pm.log"\n'
-                             'case $1 in update) [ -e "$STUBLOG/online" ] || exit 100 ;;\n'
+                             # a source whose suite is gone (another Ubuntu release) fails the update while it is on
+                             'case $1 in update) [ -e "$STUBLOG/online" ] || exit 100\n'
+                             '    [ ! -e "$MU300_SYSROOT/etc/apt/sources.list.d/gone.list" ] || exit 100 ;;\n'
                              '  *) for p; do case $p in -*|install) continue ;; esac; grep -qx "$p" "$STUBLOG/missing" 2>/dev/null && { echo "E: Unable to locate package $p"; exit 100; }; done ;;\n'
                              'esac\nexit 0')
         self.stub('dpkg-query', 'exit 1')
@@ -617,6 +690,54 @@ class Service(ShellTest):
             self.assertIn('could not be installed again', (self.tmp / 'motd/61-mu300-packages').read_text())
             self.run_upk(shell, 'dismiss')
             self.assertFalse((self.tmp / 'motd/61-mu300-packages').exists())
+
+    def ubuntu_record(self, wanted='htop\n', units='', sources=''):
+        shutil.rmtree(self.R, ignore_errors=True)
+        for f in ('online', 'missing', 'pm.log', 'systemctl.log'):
+            (self.tmp / f).unlink(missing_ok=True)
+        d = 'etc/mu300/user-packages'
+        write(self.R, {f'{d}/wanted': wanted, f'{d}/done': '', f'{d}/failed': '', f'{d}/files': '', f'{d}/rc.d': '',
+                       f'{d}/state': 'pending\n', f'{d}/units': units, f'{d}/apt-sources': sources})
+
+    def test_ubuntu_units_as_they_were(self):
+        # systemctl: logs; is-enabled says enabled (apt enabled every unit it installed)
+        self.stub('systemctl', 'echo "$*" >> "$STUBLOG/systemctl.log"; [ "$1" = is-enabled ] && echo enabled; exit 0')
+        for shell in self.each_shell():
+            self.ubuntu_record('htop\nsmartmontools\n', 'smartmontools smartd.service disabled\n'
+                               'smartmontools smartd-check.timer masked\nhtop htopd.service enabled\n'
+                               'other x.service disabled\n')
+            (self.tmp / 'online').write_text('')
+            r = self.run_upk(shell, 'run')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            log = (self.tmp / 'systemctl.log').read_text()
+            self.assertIn('enable htopd.service\n', log)
+            self.assertIn('disable smartd.service\nstop smartd.service\n', log)
+            self.assertIn('mask smartd-check.timer\nstop smartd-check.timer\n', log)
+            self.assertNotIn('x.service', log)
+            self.assertIn('smartd.service left disabled, as it was', self.rec('log'))
+
+    def test_ubuntu_kept_source_that_fails_is_disabled(self):
+        for shell in self.each_shell():
+            self.ubuntu_record(sources='etc/apt/sources.list.d/gone.list\netc/apt/sources.list.d/ok.list\n')
+            write(self.R, {'etc/apt/sources.list.d/gone.list': 'deb x noble main\n',
+                           'etc/apt/sources.list.d/ok.list': 'deb y resolute main\n'})
+            (self.tmp / 'online').write_text('')
+            r = self.run_upk(shell, 'run')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            src = self.R / 'etc/apt/sources.list.d'
+            self.assertFalse((src / 'gone.list').exists())
+            self.assertTrue((src / 'gone.list.disabled').exists())
+            self.assertTrue((src / 'ok.list').exists())
+            self.assertEqual(self.rec('state'), 'done\n')
+            self.assertIn('/etc/apt/sources.list.d/gone.list was disabled', self.rec('note'))
+            self.assertIn('gone.list was disabled', self.run_upk(shell, 'status').stdout)
+            # offline: nothing is disabled, they all stay as they were
+            self.ubuntu_record(sources='etc/apt/sources.list.d/gone.list\n')
+            write(self.R, {'etc/apt/sources.list.d/gone.list': 'deb x noble main\n'})
+            self.run_upk(shell, 'run')
+            self.assertEqual(self.rec('state'), 'offline\n')
+            self.assertTrue((src / 'gone.list').exists())
+            self.assertFalse((src / 'gone.list.disabled').exists())
 
 
 class Wiring(ShellTest):

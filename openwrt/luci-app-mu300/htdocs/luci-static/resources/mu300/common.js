@@ -44,6 +44,8 @@ var callFwdSet = rpc.declare({ object: 'mu300dash', method: 'forward_set', param
 var callFwdTest = rpc.declare({ object: 'mu300dash', method: 'forward_test', expect: { '': {} } });
 var callCpuGet = rpc.declare({ object: 'mu300dash', method: 'cpu_get', expect: { '': {} } });
 var callCpuSet = rpc.declare({ object: 'mu300dash', method: 'cpu_set', params: [ 'profile' ], expect: { '': {} } });
+var callPackagesGet = rpc.declare({ object: 'mu300dash', method: 'packages_get', expect: { '': {} } });
+var callPackagesAct = rpc.declare({ object: 'mu300dash', method: 'packages_act', params: [ 'op' ], expect: { '': {} } });
 var callTrafficGet = rpc.declare({ object: 'mu300dash', method: 'traffic_get', expect: { '': {} } });
 var callTrafficSet = rpc.declare({ object: 'mu300dash', method: 'traffic_set', params: [ 'op', 'value' ], expect: { '': {} } });
 /* The live rates' one read: the mu300rates object (rpcd's ucode plugin) returns /proc/net/dev, in rpcd itself (no
@@ -652,6 +654,7 @@ return baseclass.extend({
 	callTtlGet: callTtlGet, callTtlSet: callTtlSet,
 	callFwdGet: callFwdGet, callFwdSet: callFwdSet, callFwdTest: callFwdTest,
 	callCpuGet: callCpuGet, callCpuSet: callCpuSet,
+	callPackagesGet: callPackagesGet, callPackagesAct: callPackagesAct,
 	callTrafficGet: callTrafficGet, callTrafficSet: callTrafficSet, callNetDev: callNetDev, netDev: netDev,
 	carrierName: carrierName, qLevel: qLevel, qLevelLabel: qLevelLabel, qLabel: qLabel, qCol: qCol, qScore: qScore,
 	esc: esc, fmtBytes: fmtBytes, fmtRate: fmtRate, fmtUptime: fmtUptime, PLMN_CN: PLMN_CN,
