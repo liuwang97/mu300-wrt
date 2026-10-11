@@ -76,7 +76,16 @@ LAN_DEVICE=$(safe_iface "$(cfg lan_device)" br-lan)
 WIFI_DEVICE=$(safe_iface "$(cfg wifi_device)" wlan0)
 USB_DEVICE=$(safe_iface "$(cfg usb_device)" usb0)
 jaddr4() { printf '%s' "$1" | sed -n 's/.*"address": *"\([^"]*\)".*/\1/p' | head -n1; }
-jarr_dns() { printf '%s' "$1" | sed -n 's/.*"dns-server": *\[\([^]]*\)\].*/\1/p' | tr -d '"' ; }
+# The active DNS servers of the data interfaces. ubus pretty-prints the array over several lines, so it is read with
+# jsonfilter: the top-level "dns-server" only (never inactive.dns-server), IPv4 and IPv6 status alike, each server
+# once. Based on kanoqwq/mu300-linux@5c8c2f9.
+wan_dns_servers() {
+    local snapshot
+    for snapshot in "$@"; do
+        [ -n "$snapshot" ] || continue
+        jsonfilter -s "$snapshot" -e '@["dns-server"][*]' 2>/dev/null || :
+    done | awk 'NF && !seen[$0]++ { printf "%s%s", sep, $0; sep = ", " }'
+}
 
 wan_up=$(jval "$WANJSON" up)
 [ "$wan_up" = "true" ] && wan_up=1 || wan_up=0
@@ -86,7 +95,7 @@ wan_ip4=$(jaddr4 "$WANJSON")
 wan6_up=$(jval "$WAN6JSON" up)
 [ "$wan6_up" = "true" ] && wan6_up=1 || wan6_up=0
 wan6_ip=$(t2 ip -6 addr show "$DATA_DEVICE" 2>/dev/null | awk '/inet6 [23]/{split($2,s,"/"); print s[1]; exit}')
-wan_dns=$(jarr_dns "$WANJSON")
+wan_dns=$(wan_dns_servers "$WANJSON" "$WAN6JSON")
 apn=$(t3 uci -q get "network.$DATA_IFACE.apn")
 [ -n "$apn" ] || apn="(SIM default)"
 
@@ -225,30 +234,42 @@ W_DIS=$(wu 'radio0.disabled')
 [ "$W_DIS" = "1" ] && W_UP=0 || W_UP=1
 [ -d "/sys/class/net/$WIFI_DEVICE" ] || W_UP=0
 [ "$W_HOSTAPD" = 1 ] || W_UP=0
-# station table: one block per client - mac, signal, tx/rx bitrate, connected time
-W_CLIENTS=$(t3 iw dev "$WIFI_DEVICE" station dump 2>/dev/null | awk -F':\t*' '
-    /^Station / { mac = $2; sub(/ .*/, "", mac); sig = tx = rx = ct = "" }
-    /^	signal:/ { sig = $2 + 0 }
-    /^	tx bitrate:/ { tx = $2; sub(/ .*/, "", tx); sub(/$/, " Mbit/s", tx) }
-    /^	rx bitrate:/ { rx = $2; sub(/ .*/, "", rx); sub(/$/, " Mbit/s", rx) }
-    /^	connected time:/ { ct = $2 + 0; ct = int(ct / 60) + " min" }
-    mac != "" && sig != "" && !seen[mac]++ {
-        printf "%s|%s|%s|%s|%s\n", mac, sig, tx, rx, ct; sig = ""
-    }')
+# station table: one block per client - mac, signal, tx/rx bitrate, connected time. A row is written when its block
+# ends (the signal line comes before the bitrates and the connected time), and a client the SC2355 driver reports
+# without metrics still counts. dnsmasq's leases file holds the MAC in lower case and "*" for a client that sent no
+# name. Based on kanoqwq/mu300-linux@373e191.
+LEASES_FILE=${MU300_DHCP_LEASES:-/tmp/dhcp.leases}
+station_rows() {
+    awk '
+    function emit(   a, n, i) {
+        n = split(mac, a, ":")
+        if (n != 6) return
+        for (i = 1; i <= n; i++)
+            if (a[i] !~ /^[0-9a-f][0-9a-f]$/) return
+        if (seen[mac]++) return
+        printf "%s|%s|%s|%s|%s\n", mac, sig, tx, rx, ct
+    }
+    /^Station[ \t]+/ { emit(); mac = tolower($2); sig = tx = rx = ct = ""; next }
+    /^[ \t]+signal:/ && $2 ~ /^-?[0-9]+([.][0-9]+)?$/ { sig = $2 + 0 }
+    /^[ \t]+tx bitrate:/ && $3 ~ /^[0-9]+([.][0-9]+)?$/ { tx = $3 " Mbit/s" }
+    /^[ \t]+rx bitrate:/ && $3 ~ /^[0-9]+([.][0-9]+)?$/ { rx = $3 " Mbit/s" }
+    /^[ \t]+connected time:/ && $3 ~ /^[0-9]+$/ { ct = sprintf("%d min", int($3 / 60)) }
+    END { emit() }'
+}
+W_CLIENTS=$(t3 iw dev "$WIFI_DEVICE" station dump 2>/dev/null | station_rows)
 W_CN=0; W_CLIST=
 while IFS='|' read -r mac sig txr rxr ct; do
     [ -n "$mac" ] || continue
-    umac=$(echo "$mac" | tr 'a-f' 'A-F')
-    line=$(awk -v m="$umac" '$2 == m { print $3 "|" $4; exit }' /tmp/dhcp.leases 2>/dev/null)
+    line=$(awk -v m="$mac" 'tolower($2) == m { print $3 "|" $4; exit }' "$LEASES_FILE" 2>/dev/null)
     ip=${line%%|*}; host=${line#*|}
-    [ "$host" = "$line" ] && host=
+    { [ "$host" = "$line" ] || [ "$host" = '*' ]; } && host=
     W_CLIST="$W_CLIST{\"mac\":$(qs "$mac"),\"host\":$(qs "$host"),\"ip\":$(qs "$ip"),\"signal\":$(n_or_null "$sig"),\"tx\":$(qs "$txr"),\"rx\":$(qs "$rxr"),\"conn\":$(qs "$ct")},"
     W_CN=$((W_CN + 1))
 done <<EOF2
 $(printf '%s\n' "$W_CLIENTS")
 EOF2
 W_CLIST=${W_CLIST%,}
-LAN_LEASES=$(cat /tmp/dhcp.leases 2>/dev/null | wc -l)
+LAN_LEASES=$(cat "$LEASES_FILE" 2>/dev/null | wc -l)
 # recent DHCP leases (host/ip/mac + remaining time) - shows devices that were
 # here even when nobody is associated right now
 NOWS=$NOW
@@ -260,7 +281,7 @@ while read -r exp mac ip host _cid; do
     left=$(( exp - NOWS ))
     [ "$left" -lt 0 ] && left=0
     LEASES="$LEASES{\"host\":$(qs "$host"),\"ip\":$(qs "$ip"),\"mac\":$(qs "$mac"),\"left\":$left},"
-done < /tmp/dhcp.leases 2>/dev/null
+done < "$LEASES_FILE" 2>/dev/null
 LEASES=${LEASES%,}
 LAN_IP=$(t2 ip -4 addr show "$LAN_DEVICE" 2>/dev/null | awk '/inet /{split($2,a,"/"); print a[1]; exit}')
 
@@ -277,7 +298,22 @@ fi
 ATD_OK=0; /usr/libexec/unisoc-modem/at --available >/dev/null 2>&1 && ATD_OK=1
 [ "$MODEM_ALIVE" = 1 ] || MODEM_ALIVE=$ATD_OK
 DATA_PAUSED=0; [ -e /run/mu300-mobile-data-down ] && DATA_PAUSED=1
-CONNS=$(cat /proc/net/nf_conntrack 2>/dev/null | wc -l)
+# Tracked connections: the kernel's counter needs no CONFIG_NF_CONNTRACK_PROCFS (the mainline kernel has no
+# /proc/net/nf_conntrack); the table is the fallback; neither readable is unknown (null), never a made-up 0. The
+# counter is read with cat in one go: a sysctl file may answer a second short read with EOF. Based on
+# kanoqwq/mu300-linux@373e191.
+conntrack_count() {
+    local count counter=${MU300_CONNTRACK_COUNT:-/proc/sys/net/netfilter/nf_conntrack_count}
+    local table=${MU300_CONNTRACK_TABLE:-/proc/net/nf_conntrack}
+    if [ -r "$counter" ] && count=$(cat "$counter" 2>/dev/null); then
+        case $count in ''|*[!0-9]*) ;; *) echo "$count"; return ;; esac
+    fi
+    if [ -r "$table" ] && count=$(wc -l < "$table" 2>/dev/null); then
+        echo $((count + 0)); return
+    fi
+    echo null
+}
+CONNS=$(conntrack_count)
 
 # --------------------------------------------------------------------- VPN
 VPN_ENABLED=0; VPN_ENGINE=""; VPN_UP=0
