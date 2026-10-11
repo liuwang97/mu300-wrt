@@ -216,7 +216,7 @@ if [ -d /in/luci-plugin ]; then
     rm -f $R/usr/share/luci/menu.d/luci-app-ttyd.json
     # ttyd as luci-overlay configures it, never the package default (/bin/login on every LAN instance, no origin check)
     grep -q "^	option command ./usr/libexec/mu300-terminal-login.$" $R/etc/config/ttyd &&
-        ! grep -q "/bin/login" $R/etc/config/ttyd || { echo "ttyd is not configured for the panel" >&2; exit 1; }
+        ! grep -v "^#" $R/etc/config/ttyd | grep -q "/bin/login" || { echo "ttyd is not configured for the panel" >&2; exit 1; }
     # the panel catalogs, named as LuCI names the language (base.zh-cn.lmo: mu300.zh-cn.lmo)
     for f in /in/catalogs/mu300.*.lmo; do cp "$f" $R/usr/lib/lua/luci/i18n/; done
     [ -s $R/www/luci-static/aurora/main.css ] || { echo "Aurora theme assets missing" >&2; exit 1; }
