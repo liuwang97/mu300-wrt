@@ -463,11 +463,7 @@ static int cmdevt_send_cmd(struct sprd_priv *priv, struct sprd_msg *msg)
 		le32_to_cpu(hdr->mstime),
 		hdr->common.mode, cmdevt_cmd2str(hdr->cmd_id));
 
-	if (sprd_get_debug_level() >= L_DBG &&
-	    hdr->cmd_id != CMD_SET_SAE_PARAM && hdr->cmd_id != CMD_KEY &&
-	    hdr->cmd_id != CMD_SET_PMKSA)
-		print_hex_dump_debug("CMD: ", DUMP_PREFIX_OFFSET, 16, 1,
-				     (u8 *)hdr, hdr->plen, 0);
+	/* Keep command identifiers above, never dump credential-bearing payloads. */
 
 	ret = sprd_chip_tx(&priv->chip, msg);
 	if (ret)
@@ -4107,10 +4103,7 @@ unsigned short sc2355_rx_rsp_process(struct sprd_priv *priv, u8 *msg)
 	hdr = (struct sprd_cmd_hdr *)msg;
 	plen = SPRD_GET_LE16(hdr->plen);
 
-	if (hdr->cmd_id != CMD_SET_SAE_PARAM && hdr->cmd_id != CMD_KEY &&
-	    hdr->cmd_id != CMD_SET_PMKSA)
-		print_hex_dump_debug("CMD RSP: ", DUMP_PREFIX_OFFSET, 16, 1,
-				     (u8 *)hdr, hdr->plen, 0);
+	/* Command replies may echo credential-bearing payloads. */
 
 	/* 2048 use mac */
 	/*TODO here ctx_id range*/

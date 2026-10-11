@@ -116,8 +116,7 @@ static int sdio_tx_one(struct sprd_hif *hif, unsigned char *data,
 	mbuf->buf = data;
 	mbuf->len = len;
 	mbuf->next = NULL;
-	if (sprd_get_debug_level() >= L_DBG)
-		sc2355_hex_dump("tx to cp2 cmd data dump", data + 4, len);
+	/* Command payloads may contain passphrases, PSKs or PMKs. */
 
 	ret = sprdwcn_bus_push_list(chn, head, tail, num);
 
@@ -1325,13 +1324,7 @@ void sc2355_rx_work_queue(struct work_struct *work)
 			/* len in mbuf_t just means buffer len in ADMA,
 			 * so need to get data len in sc2355_sdiohal_puh
 			 */
-			if (sprd_get_debug_level() >= L_DBG) {
-				int print_len = 100;
-
-				sc2355_hex_dump("rx data 100B",
-						(unsigned char *)data,
-						print_len);
-			}
+			/* RX control messages can include firmware key material. */
 
 			/* to check is the rsp_cnt from CP2
 			 * eqaul to rsp_cnt count on driver side.

@@ -1,4 +1,4 @@
-U30 Air SC2355 firmware SAE offload (explicit opt-in, pure SAE, mandatory PMF).
+U30 Air SC2355 firmware SAE offload (review hold: PMK provenance is unresolved).
 
 Applies after OpenWrt 25.12 hostapd patches on ca266cc24d8705eb1a2a0857ad326e48b1408b20.
 
@@ -35,7 +35,7 @@ Applies after OpenWrt 25.12 hostapd patches on ca266cc24d8705eb1a2a0857ad326e48b
  #include "common/ieee802_11_defs.h"
  #include "common/ieee802_11_common.h"
  #include "common/hw_features_common.h"
-@@ -2678,6 +2679,59 @@
+@@ -2678,6 +2679,60 @@
  }
  
  
@@ -54,8 +54,9 @@ Applies after OpenWrt 25.12 hostapd patches on ca266cc24d8705eb1a2a0857ad326e48b
 +	if (hapd->conf->wpa_key_mgmt != WPA_KEY_MGMT_SAE ||
 +	    hapd->conf->ieee80211w != MGMT_FRAME_PROTECTION_REQUIRED ||
 +	    hapd->conf->sae_pwe != 0 || hapd->conf->sae_passwords ||
++	    hapd->conf->disable_pmksa_caching ||
 +	    (hapd->iface->drv_flags2 & WPA_DRIVER_FLAGS2_AP_SME)) {
-+		wpa_printf(MSG_ERROR, "U30 SAE: requires pure SAE, mandatory PMF, sae_pwe=0 and firmware AP SME");
++		wpa_printf(MSG_ERROR, "U30 SAE: requires pure SAE, mandatory PMF, sae_pwe=0, PMKSA caching and firmware AP SME");
 +		return -1;
 +	}
 +	if (!password || (len = os_strlen(password)) < 8 || len > 63)
@@ -95,7 +96,7 @@ Applies after OpenWrt 25.12 hostapd patches on ca266cc24d8705eb1a2a0857ad326e48b
  static int __ieee802_11_set_beacon(struct hostapd_data *hapd)
  {
  	struct wpa_driver_ap_params params;
-@@ -2794,6 +2848,8 @@
+@@ -2794,6 +2849,8 @@
  	}
  
  	res = hostapd_drv_set_ap(hapd, &params);
@@ -126,9 +127,9 @@ Applies after OpenWrt 25.12 hostapd patches on ca266cc24d8705eb1a2a0857ad326e48b
  		return 0;
  	}
  
-+	/* SC2355 firmware appends its SAE PMK(32)/PMKID(16) only to
-+	 * the kernel NEW_STATION association notification. Pure SAE/firmware AP SME
-+	 * and one exact trailing element are required. No WPA checks bypassed. */
++	/* REVIEW BLOCKER: this buffer also contains client-controlled IEs.
++	 * One trailing marker cannot authenticate the PMK origin. This path
++	 * requires a trusted firmware handoff before deployment/merge. */
 +	if (hapd->conf->u30_sae_offload && hapd->u30_sae_configured &&
 +	    hapd->conf->wpa_key_mgmt == WPA_KEY_MGMT_SAE &&
 +	    !(hapd->iface->drv_flags2 & WPA_DRIVER_FLAGS2_AP_SME) &&
@@ -184,20 +185,19 @@ Applies after OpenWrt 25.12 hostapd patches on ca266cc24d8705eb1a2a0857ad326e48b
  			   "MLD: %s: Setting non-first BSS", __func__);
 --- a/src/ap/hostapd.h
 +++ b/src/ap/hostapd.h
-@@ -209,6 +209,8 @@
-  * struct hostapd_data - hostapd per-BSS data structure
-  */
- struct hostapd_data {
+@@ -540,4 +540,7 @@
+ 
+ 	u64 scan_cookie; /* Scan instance identifier for the ongoing HT40 scan
+ 			  */
++
 +	int u30_sae_configured;
 +	u8 u30_sae_key_fingerprint[32];
- 	struct hostapd_iface *iface;
- 	struct hostapd_config *iconf;
- 	struct hostapd_bss_config *conf;
+ };
 --- /dev/null
 +++ b/src/ap/u30_sae_offload.h
 @@ -0,0 +1,31 @@
 +/* SPDX-License-Identifier: BSD-3-Clause
-+ * SC2355 kernel NEW_STATION metadata; never parse this from an over-the-air frame.
++ * Shared association IE/trailer parser; this does not prove PMK provenance.
 + */
 +#ifndef U30_SAE_OFFLOAD_H
 +#define U30_SAE_OFFLOAD_H

@@ -119,7 +119,7 @@ typedef uint8_t u8;
 #define wpa_printf(...) ((void) 0)
 struct conf {
     struct { const char *wpa_passphrase; } ssid;
-    int u30_sae_offload, wpa_key_mgmt, ieee80211w, sae_pwe;
+    int u30_sae_offload, wpa_key_mgmt, ieee80211w, sae_pwe, disable_pmksa_caching;
     void *sae_passwords;
 };
 struct iface { unsigned long drv_flags2; };
@@ -167,6 +167,7 @@ int main(void) {
     assert(saved[group+8] == 8 && saved[group+10] == 7);
     assert(memcmp(saved+group+12, "\xff\xff\xff\xff", 4) == 0 && saved_len == group+16);
     assert(u30_sae_configure_fw(&h) == 0 && calls == 1);
+    c.disable_pmksa_caching=1; assert(u30_sae_configure_fw(&h) < 0 && calls == 1); c.disable_pmksa_caching=0;
     c.sae_pwe=2; assert(u30_sae_configure_fw(&h) < 0 && calls == 1); c.sae_pwe=0;
     c.ieee80211w=1; assert(u30_sae_configure_fw(&h) < 0 && calls == 1); c.ieee80211w=2;
     c.wpa_key_mgmt |= 1; assert(u30_sae_configure_fw(&h) < 0 && calls == 1); c.wpa_key_mgmt=WPA_KEY_MGMT_SAE;
@@ -186,6 +187,38 @@ int main(void) {
         self.assertEqual(r.returncode, 0, r.stderr)
 
 
+class DriverPrivacy(unittest.TestCase):
+    def body(self, path, name):
+        source = (TOP / 'upstream/modules/sprd_wlan_combo' / path).read_text()
+        start = source.index('{', source.index(name + '('))
+        depth = 1
+        end = start + 1
+        while depth:
+            if source[end] == '{': depth += 1
+            if source[end] == '}': depth -= 1
+            end += 1
+        return source[start:end]
+
+    def test_transport_command_payloads_never_reach_hex_dump(self):
+        for path, name in [('sc2355/pcie.c', 'pcie_tx_one'),
+                           ('sc2355/sdio.c', 'sdio_tx_one'),
+                           ('sc2355/cmdevt.c', 'cmdevt_send_cmd'),
+                           ('sc2355/cmdevt.c', 'sc2355_rx_rsp_process')]:
+            with self.subTest(path=path, name=name):
+                self.assertNotIn('hex_dump', self.body(path, name))
+
+    def test_transport_rx_cannot_dump_a_new_station_pmk(self):
+        for path, name in [('sc2355/pcie.c', 'sc2355_pcie_rx_work_queue'),
+                           ('sc2355/sdio.c', 'sc2355_rx_work_queue')]:
+            with self.subTest(path=path):
+                self.assertNotIn('hex_dump', self.body(path, name))
+
+    def test_station_key_is_not_logged_as_an_unbounded_string(self):
+        source = (TOP / 'upstream/modules/sprd_wlan_combo/common/cfg80211.c').read_text()
+        self.assertNotIn('"PSK %s', source)
+        self.assertIn('memcpy(con.psk, sme->key, sme->key_len)', source)
+
+
 class SaeSdkBuild(ShellTest):
     def setUp(self):
         super().setUp()
@@ -198,7 +231,7 @@ class SaeSdkBuild(ShellTest):
 case "$*" in *hostapd/compile*)
     mkdir -p bin/packages/aarch64_generic/base
     for name in hostapd-common wpad-basic-openssl; do
-        echo fixture > "bin/packages/aarch64_generic/base/$name-fixture-r6.apk"
+        echo fixture > "bin/packages/aarch64_generic/base/$name-fixture-r7.apk"
     done ;;
 esac''')
 
@@ -208,10 +241,10 @@ esac''')
     def test_recipe_revision_and_matching_package_pair(self):
         r = self.build()
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn('PKG_RELEASE:=6', (self.package / 'Makefile').read_text())
+        self.assertIn('PKG_RELEASE:=7', (self.package / 'Makefile').read_text())
         self.assertEqual((self.package / 'patches' / PATCH.name).read_bytes(), PATCH.read_bytes())
         self.assertEqual(sorted(p.name for p in (self.tmp / 'out').glob('*.apk')),
-                         ['hostapd-common-fixture-r6.apk', 'wpad-basic-openssl-fixture-r6.apk'])
+                         ['hostapd-common-fixture-r7.apk', 'wpad-basic-openssl-fixture-r7.apk'])
         self.assertEqual((self.tmp / 'calls').read_text().splitlines(),
                          ['defconfig', 'package/network/services/hostapd/clean',
                           '-j4 package/network/services/hostapd/compile V=s'])
@@ -236,7 +269,7 @@ esac''')
         link.symlink_to(feed, target_is_directory=True)
         r = self.build()
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn('PKG_RELEASE:=6', recipe.read_text())
+        self.assertIn('PKG_RELEASE:=7', recipe.read_text())
         self.assertEqual((feed / 'patches' / PATCH.name).read_bytes(), PATCH.read_bytes())
         self.assertIn('package/feeds/base/hostapd/compile', (self.tmp / 'calls').read_text())
 

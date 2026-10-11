@@ -32,11 +32,11 @@ target = p / 'patches' / source.name
 if target.exists() and target.read_bytes() != source.read_bytes():
     raise SystemExit('Conflicting local SAE patch; use a dedicated clean SDK')
 release = re.search(r'^PKG_RELEASE:=(\d+)$', text, re.M)
-if not release or (release[1] not in ('1', '5') and not (release[1] == '6' and target.exists())):
-    raise SystemExit('Unsupported package revision; expected SDK r1, recorded r5, or this patched r6')
+if not release or (release[1] not in ('1', '5') and not (release[1] == '7' and target.exists())):
+    raise SystemExit('Unsupported package revision; expected SDK r1, recorded r5, or this patched r7')
 target.parent.mkdir(parents=True, exist_ok=True)
 shutil.copyfile(source, target)
-recipe.write_text(re.sub(r'^PKG_RELEASE:=[15]$', 'PKG_RELEASE:=6', text, flags=re.M))
+recipe.write_text(re.sub(r'^PKG_RELEASE:=[15]$', 'PKG_RELEASE:=7', text, flags=re.M))
 PY
 
 cd "$SDK"

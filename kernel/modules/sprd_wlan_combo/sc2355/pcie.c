@@ -122,8 +122,7 @@ static int pcie_tx_one(struct sprd_hif *hif, unsigned char *data,
 	mbuf->buf = data;
 	mbuf->len = len;
 	mbuf->next = NULL;
-	if (sprd_get_debug_level() >= L_DBG)
-		sc2355_hex_dump("tx to cp2 cmd data dump", data + 4, len);
+	/* Command payloads may contain passphrases, PSKs or PMKs. */
 	if (hif->hw_type == SPRD_HW_SC2355_PCIE) {
 		mbuf->phy = sc2355_mm_virt_to_phys(&hif->pdev->dev, mbuf->buf,
 						   mbuf->len, DMA_TO_DEVICE);
@@ -1847,7 +1846,6 @@ void sc2355_pcie_rx_work_queue(struct work_struct *work)
 	struct sprd_priv *priv;
 	struct rx_mgmt *rx_mgmt;
 	struct sprd_hif *hif;
-	int print_len;
 
 	rx_mgmt = container_of(work, struct rx_mgmt, rx_work);
 	hif = rx_mgmt->hif;
@@ -1861,13 +1859,7 @@ void sc2355_pcie_rx_work_queue(struct work_struct *work)
 			goto next;
 		pr_debug("%s: rx type:%d\n",  __func__, SPRD_HEAD_GET_TYPE(msg->data));
 
-		if (msg->len > 400)
-			print_len = 400;
-		else
-			print_len = msg->len;
-
-		if (sprd_get_debug_level() >= L_DBG)
-			sc2355_hex_dump("rx data", (unsigned char *)msg->data, print_len);
+		/* RX control messages can include firmware key material. */
 
 		switch (SPRD_HEAD_GET_TYPE(msg->data)) {
 		case SPRD_TYPE_DATA:

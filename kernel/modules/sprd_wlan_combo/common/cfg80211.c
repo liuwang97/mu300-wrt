@@ -988,7 +988,6 @@ int sprd_cfg80211_connect(struct wiphy *wiphy, struct net_device *ndev,
 			if (ret)
 				goto err;
 		} else {
-			netdev_info(ndev, "PSK %s\n", sme->key);
 			con.psk_len = sme->key_len;
 			memcpy(con.psk, sme->key, sme->key_len);
 		}
