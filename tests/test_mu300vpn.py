@@ -1,0 +1,707 @@
+"""The VPN pages' rpcd backend (luci-app-mu300's mu300vpn) runs as root on input from the web UI and drives mu300-vpn,
+the VPN module's CLI (its spec 2026-10-11-engine-extras, section 4). Every parameter is checked against an allow-list
+before anything runs; a value that can hold a secret (a share link, a config, a subscription URL, an OpenVPN password)
+reaches the CLI on its stdin, never in its argv; long work runs detached as the one background task; every reply is one
+JSON object, and nothing of a reply is logged.
+
+mu300-vpn is a stub that records its arguments and its stdin and prints what the test chose; setsid records what
+would have been started detached and starts nothing (the task's own shell is run by one test on purpose)."""
+import json
+import os
+import stat
+import subprocess
+import sys
+import time
+import unittest
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+
+from helpers import TOP, ShellTest
+from test_mu300dash_security import JSONFILTER, HOSTILE, hostile_variants
+
+APP = TOP / 'openwrt' / 'luci-app-mu300' / 'root'
+VPNB = APP / 'usr' / 'libexec' / 'rpcd' / 'mu300vpn'
+ACL = APP / 'usr' / 'share' / 'rpcd' / 'acl.d' / 'luci-app-mu300.json'
+MENU = APP / 'usr' / 'share' / 'luci' / 'menu.d' / 'luci-app-mu300.json'
+VIEWS = TOP / 'openwrt' / 'luci-app-mu300' / 'htdocs' / 'luci-static' / 'resources' / 'view' / 'mu300'
+
+# mu300-vpn: one record per call (argv NUL-separated, then stdin in .stdin), the output the test put in
+# $STUB_OUT/vpn.<arg1>.<arg2> or $STUB_OUT/vpn.<arg1> (else {}), the status in the same name + .rc
+VPN_STUB = r'''#!/bin/sh
+f=$(mktemp "$STUB_CALLS/call.XXXXXX")
+printf '%s\0' mu300-vpn "$@" > "$f"
+cat > "$f.stdin"
+for n in "vpn.${1:-}.${2:-}" "vpn.${1:-}"; do
+    if [ -f "$STUB_OUT/$n" ]; then
+        cat "$STUB_OUT/$n"
+        [ -f "$STUB_OUT/$n.err" ] && cat "$STUB_OUT/$n.err" >&2
+        [ -f "$STUB_OUT/$n.rc" ] && exit "$(cat "$STUB_OUT/$n.rc")"
+        exit 0
+    fi
+done
+echo '{}'
+'''
+
+STATUS = {"version": "v2.0.0", "enabled": True, "running": True,
+          "kill_switch": {"setting": True, "active": True},
+          "ipv6": {"setting": "auto", "tunnel": False, "guard": True},
+          "profile": {"id": "office", "name": "Office", "type": "xray", "engine": "sing-box"},
+          "engine": {"name": "sing-box", "extra": "vpn-singbox", "installed": True, "usable": True, "reason": None},
+          "tunnel": {"iface": "sbtun", "up": True, "addresses": ["172.19.0.1/30"]},
+          "exit_ip": None, "missing_engine": None}
+PROFILES = [{"id": "office", "name": "Office", "type": "xray", "engine": "xray", "extra": "vpn-xray", "active": True,
+             "source": "manual", "subscription": None, "created": 1760000000,
+             "server": {"host": "vpn.example.com", "port": 443}, "protocol": "vless", "transport": "ws",
+             "security": "tls", "options": {"UPSTREAM_HTTP_PROXY": ""}, "engine_installed": True}]
+ENGINES = [{"name": "xray", "extra": "vpn-xray", "kind": "extra", "installed": True,
+            "path": "/mnt/mu300-disk/extra/vpn-xray/bin/xray", "version": "26.3.27", "available": "26.3.27",
+            "size": 31457280, "needed_by": ["office"], "usable": True, "reason": None,
+            "install": "mu300-vpn engine install xray"}]
+
+METHODS = {'status', 'profiles', 'engines', 'subscriptions', 'settings', 'job', 'service', 'killswitch', 'use',
+           'profile_add', 'profile_rename', 'profile_remove', 'profile_check', 'profile_option', 'profile_reveal',
+           'profile_edit', 'latency', 'sub_add', 'sub_refresh', 'sub_remove', 'engine_install', 'engine_remove',
+           'core_install', 'setting_set', 'logs'}
+# reads: the state and the lists (the CLI masks every secret in them); the log names hosts the device talked to and
+# the reveal prints credentials: write only, as mu300dash's AT history and SMS bodies
+READ = {'status', 'profiles', 'engines', 'subscriptions', 'settings', 'job'}
+WRITE = METHODS - READ
+# the methods whose work runs detached (setsid)
+DETACHED = {'latency', 'sub_add', 'sub_refresh', 'engine_install', 'core_install', 'profile_add'}
+
+LINK = 'vless://11111111-2222-3333-4444-555555555555@vpn.example.com:443?security=tls&type=ws#Office'
+URL = 'https://sub.example.com/api/v1/client/subscribe?token=SECRETTOKEN0123'
+
+
+class Mu300Vpn(ShellTest):
+    def setUp(self):
+        super().setUp()
+        (self.stubs / 'jsonfilter.py').write_text(JSONFILTER)
+        self.stub('jsonfilter', f'exec python3 "{self.stubs}/jsonfilter.py" "$@"')
+        self.stub('setsid', 't=$(mktemp "$STUB_CALLS/.tmp.XXXXXX"); printf "%s\\0" setsid "$@" > "$t"; '
+                            'mv "$t" "$STUB_CALLS/call.${t##*.}"')
+        self.bin = self.tmp / 'bin'
+        self.bin.mkdir()
+        self.vpn = self.bin / 'mu300-vpn'
+        self.vpn.write_text(VPN_STUB)
+        self.vpn.chmod(0o755)
+        self.extra = self.bin / 'mu300-extra'
+        self.extra.write_text('#!/bin/sh\nf=$(mktemp "$STUB_CALLS/call.XXXXXX")\nprintf "%s\\0" mu300-extra "$@" > "$f"\n')
+        self.extra.chmod(0o755)
+        self.out = self.tmp / 'out'
+        self.out.mkdir()
+        self.dash = self.tmp / 'dash'
+        self.upload = self.tmp / 'upload'
+        self.upload_pkg = self.tmp / 'upload.tar.gz'
+        self.vpnrun = self.tmp / 'vpnrun'
+        self.vpnrun.mkdir()
+        self.n = 0
+        self.output('vpn.status', json.dumps(STATUS))
+        self.output('vpn.profile.list', json.dumps(PROFILES))
+        self.output('vpn.engines', json.dumps(ENGINES))
+        self.output('vpn.subscription.list', '[]')
+
+    def output(self, name, text, rc=None, err=None):
+        (self.out / name).write_text(text)
+        if rc is not None:
+            (self.out / (name + '.rc')).write_text(str(rc))
+        if err is not None:
+            (self.out / (name + '.err')).write_text(err)
+
+    def call(self, shell, method, params=None, raw=None, **extra):
+        """`mu300vpn call METHOD` with PARAMS on stdin: (CompletedProcess, [[name, arg...]], {index: stdin})"""
+        self.n += 1
+        calls = self.tmp / f'calls{self.n}'
+        calls.mkdir()
+        stdin = raw if raw is not None else json.dumps(params or {}, ensure_ascii=False)
+        env = self.env(STUB_CALLS=calls, STUB_OUT=self.out, MU300_VPN_CMD=self.vpn, MU300_EXTRA_CMD=self.extra,
+                       MU300_DASH_DIR=self.dash, MU300_VPN_UPLOAD=self.upload, MU300_VPN_UPLOAD_PKG=self.upload_pkg,
+                       MU300_VPN_RUN=self.vpnrun)
+        env.update({k: str(v) for k, v in extra.items()})
+        r = subprocess.run(shell + [str(VPNB), 'call', method], input=stdin.encode(), capture_output=True, env=env,
+                           timeout=60)
+        r.stdout, r.stderr = r.stdout.decode('utf-8', 'replace'), r.stderr.decode('utf-8', 'replace')
+        if method in DETACHED:
+            seen, deadline = None, time.monotonic() + 3
+            while time.monotonic() < deadline:
+                now = sorted(calls.glob('call.*'))
+                if now == seen:
+                    break
+                seen = now
+                time.sleep(0.1)
+        recs, stdins = [], {}
+        for f in sorted(calls.glob('call.*')):
+            if f.suffix == '.stdin':
+                continue
+            rec = [a.decode('utf-8', 'surrogateescape') for a in f.read_bytes().split(b'\0')[:-1]]
+            sin = f.with_name(f.name + '.stdin')
+            if sin.exists():
+                stdins[len(recs)] = sin.read_text()
+            recs.append(rec)
+        return r, recs, stdins
+
+    def reply(self, r):
+        try:
+            obj = json.loads(r.stdout)
+        except ValueError as e:
+            self.fail(f'not JSON ({e}): {r.stdout!r} stderr={r.stderr!r}')
+        self.assertIsInstance(obj, dict, r.stdout)
+        return obj
+
+    @staticmethod
+    def job_cmd(rec):
+        """what a setsid record starts: [kind-of-stdin file, json flag, command...]"""
+        i = rec.index('mu300vpn-job')
+        return rec[i + 3:i + 5], rec[i + 5:]
+
+
+class Inventory(Mu300Vpn):
+    def test_list_declares_every_method(self):
+        for shell in self.each_shell():
+            r = self.script(shell, VPNB, 'list')
+            self.assertEqual(set(json.loads(r.stdout)), METHODS)
+
+    def test_acl_reads_and_writes(self):
+        acl = json.loads(ACL.read_text())['luci-app-mu300']
+        self.assertEqual(set(acl['read']['ubus']['mu300vpn']), READ)
+        self.assertEqual(set(acl['write']['ubus']['mu300vpn']), WRITE)
+        # the two upload paths, write only, and nothing else of the file system
+        self.assertEqual(acl['write']['file'], {'/tmp/mu300-extra-lang.tar.gz': ['write'],
+                                                '/tmp/mu300-vpn-upload': ['write'],
+                                                '/tmp/mu300-vpn-extra.tar.gz': ['write']})
+        self.assertNotIn('file', acl['read'])
+
+    def test_the_menu_has_the_six_pages_and_their_views_exist(self):
+        menu = json.loads(MENU.read_text())
+        pages = {k: v for k, v in menu.items() if k.startswith('admin/vpn/')}
+        self.assertEqual(sorted(pages), sorted('admin/vpn/mu300-' + p for p in
+                                               ('overview', 'profiles', 'subscriptions', 'engines', 'settings', 'logs')))
+        for k, v in pages.items():
+            self.assertEqual(v['depends'], {'acl': ['luci-app-mu300']})
+            self.assertTrue((VIEWS / (v['action']['path'].split('/')[1] + '.js')).is_file(), k)
+
+    def test_an_unknown_method_runs_nothing(self):
+        for shell in self.each_shell():
+            r, recs, _ = self.call(shell, 'rm -rf /', {})
+            self.assertEqual(self.reply(r), {'ok': 0, 'error': 'No such method'})
+            self.assertEqual(recs, [])
+
+    def test_a_request_too_large_is_refused(self):
+        for shell in self.each_shell():
+            r, recs, _ = self.call(shell, 'profile_edit', {'id': 'office', 'config': 'x' * 140000})
+            self.assertEqual(self.reply(r), {'ok': 0, 'error': 'Request too large'})
+            self.assertEqual(recs, [])
+
+    def test_the_script_parses(self):
+        for shell in self.each_shell():
+            r = subprocess.run(shell + ['-n', str(VPNB)], capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_installed_executable(self):
+        self.assertTrue(os.stat(VPNB).st_mode & stat.S_IXUSR)
+        for f in (TOP / 'openwrt' / 'luci-app-mu300' / 'Makefile', TOP / 'openwrt' / 'build-rootfs.sh'):
+            self.assertIn('usr/libexec/rpcd/mu300vpn', f.read_text(), f)
+
+
+class Refusals(Mu300Vpn):
+    FIELDS = [
+        ('status', {}, 'exit_ip', '1'),
+        ('engines', {}, 'check', '1'),
+        ('service', {}, 'op', 'restart'),
+        ('killswitch', {}, 'value', 'on'),
+        ('use', {}, 'id', 'office'),
+        ('profile_add', {'source': 'link', 'data': LINK}, 'source', 'link'),
+        ('profile_add', {'source': 'link', 'data': LINK}, 'type', 'xray'),
+        ('profile_add', {'source': 'link', 'data': LINK}, 'name', 'Office'),
+        ('profile_add', {'source': 'url', 'data': URL}, 'data', URL),
+        ('profile_rename', {'id': 'office', 'name': 'Home'}, 'id', 'office'),
+        ('profile_remove', {}, 'id', 'office'),
+        ('profile_check', {}, 'id', 'office'),
+        ('profile_option', {'id': 'office', 'key': 'MIHOMO_STACK', 'value': 'gvisor'}, 'id', 'office'),
+        ('profile_option', {'id': 'office', 'key': 'MIHOMO_STACK', 'value': 'gvisor'}, 'key', 'MIHOMO_STACK'),
+        ('profile_option', {'id': 'office', 'key': 'MIHOMO_STACK', 'value': 'gvisor'}, 'value', 'gvisor'),
+        ('profile_option', {'id': 'office', 'key': 'UPSTREAM_HTTP_PROXY', 'value': 'proxy.lan:3128'}, 'value',
+         'proxy.lan:3128'),
+        ('profile_option', {'id': 'office', 'key': 'TLS_PIN_SHA256', 'value': 'ab:cd'}, 'value', 'ab:cd'),
+        ('profile_reveal', {}, 'id', 'office'),
+        ('profile_edit', {'id': 'office', 'config': '{}'}, 'id', 'office'),
+        ('latency', {}, 'id', 'office'),
+        ('sub_add', {'name': 'Mine', 'url': URL, 'type': 'auto'}, 'url', URL),
+        ('sub_add', {'name': 'Mine', 'url': URL, 'type': 'auto'}, 'type', 'auto'),
+        ('sub_refresh', {}, 'id', 'all'),
+        ('sub_remove', {'id': 'mine'}, 'id', 'mine'),
+        ('sub_remove', {'id': 'mine'}, 'keep', '1'),
+        ('engine_install', {'name': 'xray'}, 'name', 'xray'),
+        ('engine_install', {'name': 'xray'}, 'source', 'release'),
+        ('engine_remove', {}, 'name', 'mihomo'),
+        ('core_install', {}, 'source', 'release'),
+        ('setting_set', {'key': 'IPV6', 'value': 'auto'}, 'key', 'IPV6'),
+        ('setting_set', {'key': 'IPV6', 'value': 'auto'}, 'value', 'auto'),
+        ('setting_set', {'key': 'REMOTE_DNS', 'value': '1.1.1.1'}, 'value', '1.1.1.1'),
+        ('setting_set', {'key': 'LAN_CIDRS', 'value': '10.0.0.0/8'}, 'value', '10.0.0.0/8'),
+        ('logs', {}, 'engine', 'xray'),
+        ('logs', {}, 'lines', '100'),
+    ]
+
+    def assert_refused(self, shell, jobs):
+        with ThreadPoolExecutor(max_workers=8) as ex:
+            res = list(ex.map(lambda j: (j[0],) + self.call(shell, j[1], j[2]), jobs))
+        for label, r, recs, _ in res:
+            with self.subTest(case=label):
+                obj = self.reply(r)
+                self.assertEqual(obj.get('ok'), 0, (label, r.stdout))
+                self.assertTrue(obj.get('error'), r.stdout)
+                self.assertEqual(recs, [], f'{label}: something ran')
+
+    def test_hostile_values_are_refused(self):
+        jobs = []
+        for method, base, field, valid in self.FIELDS:
+            for name, bad in hostile_variants(valid).items():
+                # a URL ends in a path: these characters after one are part of a valid URL, which reaches the CLI
+                # on stdin only (the CLI parses it); a name is free text but never control characters or a dash first
+                if field == 'data' and name.split(' after ')[0] in ('single quote', 'double quote', 'semicolon',
+                                                                     'subst', 'backtick', 'pipe', 'ampersand',
+                                                                     'leading dash') and ' after ' in name:
+                    continue
+                if field == 'url' and ' after ' in name and name.split(' after ')[0] != 'newline' \
+                        and name.split(' after ')[0] not in ('nul', 'non-ascii', 'long'):
+                    continue
+                if field == 'name' and name in ('single quote', 'double quote', 'semicolon', 'subst', 'backtick',
+                                                'pipe', 'ampersand', 'non-ascii') or \
+                        field == 'name' and ' after ' in name and name.split(' after ')[0] not in ('newline', 'nul', 'long'):
+                    continue
+                if field == 'url' and name in ('trailing newline', 'leading space'):
+                    continue   # the white space a copy and paste adds is trimmed
+                if field == 'name' and name in ('object', 'array'):
+                    continue   # arrives as its JSON text: free text, a valid name
+                if field == 'id' and name.startswith('leading dash after '):
+                    continue   # office-rf is a valid id, and not an option
+                if field == 'name' and name == 'trailing newline':
+                    continue   # the page trims names; one trailing newline is dropped by the JSON reader too
+                jobs.append((f'{method}.{field}={name}', method, dict(base, **{field: bad})))
+        for shell in self.each_shell():
+            self.assert_refused(shell, jobs)
+
+    def test_values_out_of_range_are_refused(self):
+        jobs = [
+            ('service start', 'service', {'op': 'start'}),
+            ('service empty', 'service', {}),
+            ('killswitch 1', 'killswitch', {'value': '1'}),
+            ('id upper', 'use', {'id': 'Office'}),
+            ('id dash first', 'use', {'id': '-office'}),
+            ('id 33', 'use', {'id': 'a' * 33}),
+            ('id slash', 'use', {'id': '../etc'}),
+            ('id dot', 'use', {'id': '.'}),
+            ('id empty', 'profile_remove', {'id': ''}),
+            ('latency id All', 'latency', {'id': 'All'}),
+            ('source path', 'profile_add', {'source': '/etc/shadow'}),
+            ('source unknown', 'profile_add', {'source': 'stdin', 'data': LINK}),
+            ('link http', 'profile_add', {'source': 'link', 'data': 'http://example.com/'}),
+            ('link space', 'profile_add', {'source': 'link', 'data': 'vless://a b@c:1'}),
+            ('link two lines', 'profile_add', {'source': 'link', 'data': LINK + '\n' + LINK}),
+            ('link file scheme', 'profile_add', {'source': 'link', 'data': 'file:///etc/shadow'}),
+            ('text empty', 'profile_add', {'source': 'text', 'data': ''}),
+            ('text control', 'profile_add', {'source': 'text', 'data': '[Interface]\n\x1b[2J'}),
+            ('text too large', 'profile_add', {'source': 'text', 'data': 'x' * 70000}),
+            ('file with data', 'profile_add', {'source': 'file', 'data': '/etc/shadow'}),
+            ('url ftp', 'profile_add', {'source': 'url', 'data': 'ftp://example.com/x'}),
+            ('url file', 'profile_add', {'source': 'url', 'data': 'file:///etc/shadow'}),
+            ('url no host', 'profile_add', {'source': 'url', 'data': 'https:///x'}),
+            ('url userinfo', 'profile_add', {'source': 'url', 'data': 'https://a@b/x'}),
+            ('url with a type', 'profile_add', {'source': 'url', 'data': URL, 'type': 'xray'}),
+            ('type unknown', 'profile_add', {'source': 'link', 'data': LINK, 'type': 'l2tp'}),
+            ('name 65', 'profile_add', {'source': 'link', 'data': LINK, 'name': 'n' * 65}),
+            ('name dash', 'profile_rename', {'id': 'office', 'name': '-rf'}),
+            ('name empty', 'profile_rename', {'id': 'office', 'name': ''}),
+            ('name space first', 'profile_rename', {'id': 'office', 'name': ' x'}),
+            ('name tab', 'profile_rename', {'id': 'office', 'name': 'a\tb'}),
+            ('option key', 'profile_option', {'id': 'office', 'key': 'NAME', 'value': 'x'}),
+            ('option key type', 'profile_option', {'id': 'office', 'key': 'TYPE', 'value': 'dae'}),
+            ('option key lower', 'profile_option', {'id': 'office', 'key': 'mihomo_stack', 'value': 'gvisor'}),
+            ('option stack', 'profile_option', {'id': 'office', 'key': 'MIHOMO_STACK', 'value': 'lwip'}),
+            ('option proxy no port', 'profile_option', {'id': 'office', 'key': 'UPSTREAM_HTTP_PROXY', 'value': 'proxy'}),
+            ('option proxy url', 'profile_option', {'id': 'office', 'key': 'UPSTREAM_HTTP_PROXY',
+                                                   'value': 'http://proxy:3128'}),
+            ('option pin', 'profile_option', {'id': 'office', 'key': 'TLS_PIN_SHA256', 'value': 'xyz'}),
+            ('ovpn pass newline', 'profile_option', {'id': 'office', 'key': 'OVPN_PASS', 'value': 'a\nb'}),
+            ('ovpn user long', 'profile_option', {'id': 'office', 'key': 'OVPN_USER', 'value': 'u' * 129}),
+            ('edit empty', 'profile_edit', {'id': 'office', 'config': ''}),
+            ('edit control', 'profile_edit', {'id': 'office', 'config': 'a\x00b'}),
+            ('sub no name', 'sub_add', {'name': '', 'url': URL}),
+            ('sub url ftp', 'sub_add', {'name': 'x', 'url': 'ftp://x/y'}),
+            ('sub type', 'sub_add', {'name': 'x', 'url': URL, 'type': 'clash'}),
+            ('sub keep 2', 'sub_remove', {'id': 'mine', 'keep': '2'}),
+            ('engine alias', 'engine_install', {'name': 'singbox'}),
+            ('engine hev', 'engine_install', {'name': 'hev-socks5-tunnel'}),
+            ('engine path', 'engine_install', {'name': '../../bin/sh'}),
+            ('engine source url', 'engine_install', {'name': 'xray', 'source': 'http://x/y.tar.gz'}),
+            ('engine source path', 'engine_install', {'name': 'xray', 'source': '/tmp/x'}),
+            ('core source', 'core_install', {'source': '/tmp/x'}),
+            ('setting kill switch', 'setting_set', {'key': 'KILL_SWITCH', 'value': '0'}),
+            ('setting binary', 'setting_set', {'key': 'XRAY', 'value': '/tmp/evil'}),
+            ('setting dae binary', 'setting_set', {'key': 'DAE', 'value': '/tmp/evil'}),
+            ('setting ipv6 2', 'setting_set', {'key': 'IPV6', 'value': '2'}),
+            ('setting dns name', 'setting_set', {'key': 'REMOTE_DNS', 'value': 'dns.google'}),
+            ('setting dns 256', 'setting_set', {'key': 'REMOTE_DNS', 'value': '1.1.1.256'}),
+            ('setting cidr no mask', 'setting_set', {'key': 'LAN_CIDRS', 'value': '10.0.0.0'}),
+            ('setting cidr 33', 'setting_set', {'key': 'LAN_CIDRS', 'value': '10.0.0.0/33'}),
+            ('setting cidr space', 'setting_set', {'key': 'LAN_CIDRS', 'value': '10.0.0.0/8, 192.168.0.0/16'}),
+            ('setting cidr trailing comma', 'setting_set', {'key': 'LAN_CIDRS', 'value': '10.0.0.0/8,'}),
+            ('logs engine', 'logs', {'engine': 'kernel'}),
+            ('logs 0', 'logs', {'lines': '0'}),
+            ('logs 1001', 'logs', {'lines': '1001'}),
+            ('logs negative', 'logs', {'lines': '-5'}),
+        ]
+        for shell in self.each_shell():
+            self.assert_refused(shell, jobs)
+
+
+class Passthrough(Mu300Vpn):
+    def run1(self, shell, method, params):
+        r, recs, stdins = self.call(shell, method, params)
+        return self.reply(r), recs, stdins
+
+    def test_valid_values_reach_the_cli_as_exact_arguments(self):
+        cases = [
+            ('status', {}, ['status', '--json']),
+            ('status', {'exit_ip': '1'}, ['status', '--json', '--exit-ip']),
+            ('profiles', {}, ['profile', 'list', '--json']),
+            ('engines', {'check': '1'}, ['engines', '--json', '--check']),
+            ('subscriptions', {}, ['subscription', 'list', '--json']),
+            ('service', {'op': 'on'}, ['on']),
+            ('service', {'op': 'off'}, ['off']),
+            ('service', {'op': 'restart'}, ['restart']),
+            ('killswitch', {'value': 'off'}, ['killswitch', 'off']),
+            ('use', {'id': 'office-2'}, ['use', 'office-2']),
+            ('profile_rename', {'id': 'office', 'name': 'Ofis — İstanbul 東京'},
+             ['profile', 'set', 'office', 'NAME', 'Ofis — İstanbul 東京']),
+            ('profile_rename', {'id': 'office', 'name': 'Ali\'s "VPN"; $(x)'},
+             ['profile', 'set', 'office', 'NAME', 'Ali\'s "VPN"; $(x)']),
+            ('profile_remove', {'id': 'office'}, ['profile', 'remove', 'office']),
+            ('profile_check', {'id': 'office'}, ['profile', 'check', 'office']),
+            ('profile_option', {'id': 'm', 'key': 'MIHOMO_STACK', 'value': 'system'},
+             ['profile', 'set', 'm', 'MIHOMO_STACK', 'system']),
+            ('profile_option', {'id': 'm', 'key': 'MIHOMO_STACK', 'value': ''}, ['profile', 'set', 'm', 'MIHOMO_STACK', '']),
+            ('profile_option', {'id': 'o', 'key': 'UPSTREAM_HTTP_PROXY', 'value': '[fd00::1]:3128'},
+             ['profile', 'set', 'o', 'UPSTREAM_HTTP_PROXY', '[fd00::1]:3128']),
+            ('profile_reveal', {'id': 'office'}, ['profile', 'show', 'office', '--json', '--reveal']),
+            ('latency', {'id': 'office'}, ['latency', 'office', '--json']),
+            ('sub_remove', {'id': 'mine'}, ['subscription', 'remove', 'mine']),
+            ('sub_remove', {'id': 'mine', 'keep': '1'}, ['subscription', 'remove', 'mine', '--keep-profiles']),
+            ('engine_remove', {'name': 'sing-box'}, ['engine', 'remove', 'sing-box']),
+            ('setting_set', {'key': 'IPV6', 'value': 'auto'}, ['settings', 'set', 'IPV6', 'auto']),
+            ('setting_set', {'key': 'TAILSCALE', 'value': '0'}, ['settings', 'set', 'TAILSCALE', '0']),
+            ('setting_set', {'key': 'REMOTE_DNS', 'value': '2606:4700:4700::1111'},
+             ['settings', 'set', 'REMOTE_DNS', '2606:4700:4700::1111']),
+            ('setting_set', {'key': 'BOOTSTRAP_DNS', 'value': ''}, ['settings', 'set', 'BOOTSTRAP_DNS', '']),
+            ('setting_set', {'key': 'LAN_CIDRS', 'value': '10.0.0.0/8,192.168.0.0/16,fd00::/8'},
+             ['settings', 'set', 'LAN_CIDRS', '10.0.0.0/8,192.168.0.0/16,fd00::/8']),
+            ('logs', {}, ['logs', '-n', '100']),
+            ('logs', {'engine': 'mihomo', 'lines': '1000'}, ['logs', 'mihomo', '-n', '1000']),
+        ]
+        self.output('vpn.profile.show', json.dumps(dict(PROFILES[0], config='[Interface]\n')))
+        self.output('vpn.latency', json.dumps({"id": "office", "host": "vpn.example.com", "port": 443, "ms": 48,
+                                               "via": "direct"}))
+        for shell in self.each_shell():
+            for method, params, argv in cases:
+                with self.subTest(case=(method, params)):
+                    obj, recs, _ = self.run1(shell, method, params)
+                    self.assertEqual(obj.get('ok'), 1, obj)
+                    self.assertEqual(recs, [['mu300-vpn'] + argv])
+
+    def test_secrets_go_on_stdin_never_in_argv(self):
+        cfg = '[Interface]\nPrivateKey = cHJpdmF0ZWtleXByaXZhdGVrZXlwcml2YXRla2V5eHg=\n'
+        cases = [
+            ('profile_add', {'source': 'link', 'data': '  ' + LINK + '\r\n'}, ['profile', 'import', '-'], LINK),
+            ('profile_add', {'source': 'link', 'data': LINK, 'name': 'Work'}, ['profile', 'import', '-', 'Work'], LINK),
+            ('profile_add', {'source': 'link', 'data': 'hysteria2://pw@h.example.com:443#H', 'type': 'dae',
+                             'name': 'H'}, ['profile', 'add', 'dae', 'H', '-'], 'hysteria2://pw@h.example.com:443#H'),
+            ('profile_add', {'source': 'text', 'data': cfg}, ['profile', 'import', '-'], cfg),
+            ('profile_add', {'source': 'text', 'data': cfg, 'type': 'wireguard'},
+             ['profile', 'add', 'wireguard', 'wireguard', '-'], cfg),
+            ('profile_edit', {'id': 'office', 'config': cfg}, ['profile', 'edit', 'office', '-'], cfg),
+            ('profile_option', {'id': 'vpn', 'key': 'OVPN_PASS', 'value': 'p@ss w0rd;$(x)'},
+             ['profile', 'set', 'vpn', 'OVPN_PASS', '-'], 'p@ss w0rd;$(x)'),
+            ('profile_option', {'id': 'vpn', 'key': 'OVPN_USER', 'value': 'kaan'},
+             ['profile', 'set', 'vpn', 'OVPN_USER', '-'], 'kaan'),
+        ]
+        self.output('vpn.profile', 'office-2\n')
+        for shell in self.each_shell():
+            for method, params, argv, secret in cases:
+                with self.subTest(case=(method, argv)):
+                    obj, recs, stdins = self.run1(shell, method, params)
+                    self.assertEqual(obj.get('ok'), 1, obj)
+                    self.assertEqual(recs, [['mu300-vpn'] + argv])
+                    self.assertEqual(stdins[0].rstrip('\n'), secret.rstrip('\n'))
+                    if method == 'profile_add':
+                        self.assertEqual(obj['id'], 'office-2')
+            # nothing of them stays in the runtime directory
+            self.assertEqual([p.name for p in (self.dash / 'vpn-job').iterdir()], [])
+
+    def test_a_subscription_url_reaches_the_task_in_a_private_file(self):
+        for shell in self.each_shell():
+            obj, recs, _ = self.run1(shell, 'sub_add', {'name': 'Mine', 'url': URL, 'type': 'mihomo'})
+            self.assertEqual(obj, {'ok': 1, 'started': 1, 'kind': 'sub-add'})
+            self.assertEqual(len(recs), 1)
+            self.assertEqual(recs[0][0], 'setsid')
+            (secret, flag), cmd = self.job_cmd(recs[0])
+            self.assertEqual(cmd, [str(self.vpn), 'subscription', 'add', 'Mine', '-', '--type', 'mihomo'])
+            self.assertNotIn(URL, '\0'.join(recs[0]))
+            p = Path(secret)
+            self.assertEqual(p.parent, self.dash / 'vpn-job')
+            self.assertEqual(p.read_text(), URL + '\n')
+            self.assertEqual(stat.S_IMODE(p.stat().st_mode), 0o600)
+            self.assertEqual(stat.S_IMODE((self.dash / 'vpn-job').stat().st_mode), 0o700)
+            p.unlink()
+            # a config from a URL: the same
+            obj, recs, _ = self.run1(shell, 'profile_add', {'source': 'url', 'data': URL, 'name': 'Dl'})
+            self.assertEqual(obj['kind'], 'import-url')
+            (secret, flag), cmd = self.job_cmd(recs[0])
+            self.assertEqual(cmd, [str(self.vpn), 'profile', 'import', '--url', '-', 'Dl'])
+            self.assertEqual(Path(secret).read_text(), URL + '\n')
+            Path(secret).unlink()
+
+    def test_long_work_runs_as_the_one_task(self):
+        cases = [
+            ('latency', {'id': 'all'}, 'latency-all', '1', [str(self.vpn), 'latency', '--all', '--json']),
+            ('sub_refresh', {'id': 'all'}, 'sub-refresh', '0', [str(self.vpn), 'subscription', 'refresh', '--all']),
+            ('sub_refresh', {'id': 'mine'}, 'sub-refresh', '0', [str(self.vpn), 'subscription', 'refresh', 'mine']),
+            ('engine_install', {'name': 'dae'}, 'engine-install', '0', [str(self.vpn), 'engine', 'install', 'dae']),
+            ('engine_install', {'name': 'openvpn', 'source': 'release'}, 'engine-install', '0',
+             [str(self.vpn), 'engine', 'install', 'openvpn']),
+            ('core_install', {}, 'core-install', '0', [str(self.extra), 'install', 'vpn']),
+        ]
+        for shell in self.each_shell():
+            for method, params, kind, flag, cmd in cases:
+                with self.subTest(case=(method, params)):
+                    obj, recs, _ = self.run1(shell, method, params)
+                    self.assertEqual(obj, {'ok': 1, 'started': 1, 'kind': kind})
+                    (sin, fl), c = self.job_cmd(recs[0])
+                    self.assertEqual((sin, fl, c), ('', flag, cmd))
+                    self.assertEqual((self.dash / 'vpn-job' / 'state').read_text(), 'running\n')
+
+    def test_a_running_task_refuses_another(self):
+        for shell in self.each_shell():
+            job = self.dash / 'vpn-job'
+            job.mkdir(parents=True, exist_ok=True)
+            os.chmod(self.dash, 0o700)
+            os.chmod(job, 0o700)
+            sleeper = subprocess.Popen(['sleep', '30'])
+            try:
+                (job / 'pid').write_text(f'{sleeper.pid}\n')
+                for method, params in (('latency', {'id': 'all'}), ('sub_add', {'name': 'x', 'url': URL}),
+                                       ('engine_remove', {'name': 'xray'})):
+                    obj, recs, _ = self.run1(shell, method, params)
+                    self.assertEqual(obj, {'ok': 0, 'error': 'Another VPN task is still running'})
+                    self.assertEqual(recs, [])
+                # the URL's file went again
+                self.assertEqual(sorted(p.name for p in job.iterdir() if p.name.startswith('in.')), [])
+            finally:
+                sleeper.kill()
+                sleeper.wait()
+                (job / 'pid').unlink()
+
+    def test_uploads_are_moved_out_of_tmp_before_anything_reads_them(self):
+        for shell in self.each_shell():
+            self.upload.write_text('[Interface]\nPrivateKey = x\n')
+            self.output('vpn.profile', 'wg\n')
+            obj, recs, stdins = self.run1(shell, 'profile_add', {'source': 'file', 'name': 'wg0'})
+            self.assertEqual(obj, {'ok': 1, 'id': 'wg'})
+            self.assertEqual(recs, [['mu300-vpn', 'profile', 'import', '-', 'wg0']])
+            self.assertEqual(stdins[0], '[Interface]\nPrivateKey = x\n')
+            self.assertFalse(self.upload.exists())
+            self.assertEqual([p.name for p in (self.dash / 'vpn-job').iterdir() if p.name.startswith(('in.', 'upload.'))], [])
+            # nothing uploaded, or a link planted at the path: refused, nothing read
+            obj, recs, _ = self.run1(shell, 'profile_add', {'source': 'file'})
+            self.assertEqual(obj, {'ok': 0, 'error': 'No uploaded file'})
+            secret = self.tmp / 'shadow'
+            secret.write_text('root:x')
+            os.symlink(secret, self.upload)
+            obj, recs, _ = self.run1(shell, 'profile_add', {'source': 'file'})
+            self.assertEqual(obj, {'ok': 0, 'error': 'No uploaded file'})
+            self.assertEqual(recs, [])
+            self.upload.unlink()
+            # too large
+            self.upload.write_bytes(b'x' * (1048576 + 1))
+            obj, recs, _ = self.run1(shell, 'profile_add', {'source': 'file'})
+            self.assertEqual(obj, {'ok': 0, 'error': 'The file is larger than 1 MiB'})
+            self.assertEqual(recs, [])
+            # an engine's tarball: into the job directory under its release name, handed to --from
+            self.upload_pkg.write_bytes(b'TAR')
+            obj, recs, _ = self.run1(shell, 'engine_install', {'name': 'sing-box', 'source': 'file'})
+            self.assertEqual(obj['ok'], 1)
+            _, cmd = self.job_cmd(recs[0])
+            dest = self.dash / 'vpn-job' / 'upload.mu300-linux-vpn-singbox.tar.gz'
+            self.assertEqual(cmd, [str(self.vpn), 'engine', 'install', 'sing-box', '--from', str(dest)])
+            self.assertEqual(dest.read_bytes(), b'TAR')
+            self.assertFalse(self.upload_pkg.exists())
+            dest.unlink()
+            obj, recs, _ = self.run1(shell, 'engine_install', {'name': 'wireguard', 'source': 'file'})
+            self.assertEqual(obj['ok'], 0)
+            self.upload_pkg.write_bytes(b'CORE')
+            obj, recs, _ = self.run1(shell, 'core_install', {'source': 'file'})
+            _, cmd = self.job_cmd(recs[0])
+            dest = self.dash / 'vpn-job' / 'upload.mu300-linux-vpn-core.tar.gz'
+            self.assertEqual(cmd, [str(self.extra), 'install', 'vpn', '--from', str(dest)])
+            for p in (self.dash / 'vpn-job').iterdir():
+                p.unlink()
+
+
+class Replies(Mu300Vpn):
+    def test_reads_wrap_the_cli_json(self):
+        for shell in self.each_shell():
+            r, _, _ = self.call(shell, 'profiles')
+            self.assertEqual(self.reply(r), {'ok': 1, 'profiles': PROFILES})
+            r, _, _ = self.call(shell, 'engines')
+            self.assertEqual(self.reply(r), {'ok': 1, 'engines': ENGINES})
+            (self.vpnrun / 'iface').write_text('sbtun\n')
+            obj = self.reply(self.call(shell, 'status')[0])
+            self.assertEqual((obj['ok'], obj['installed'], obj['status']), (1, 1, STATUS))
+            self.assertIsInstance(obj['since'], int)
+            self.assertIsInstance(obj['now'], int)
+
+    def test_settings_are_an_object_of_the_shown_keys(self):
+        self.output('vpn.settings.get', 'KILL_SWITCH=1\nTAILSCALE=1\nIPV6=auto\nREMOTE_DNS=1.1.1.1\n'
+                                        'BOOTSTRAP_DNS=9.9.9.9\nLAN_CIDRS=\nXRAY=/x"y\nSING_BOX=\n')
+        for shell in self.each_shell():
+            obj = self.reply(self.call(shell, 'settings')[0])
+            self.assertEqual(obj, {'ok': 1, 'settings': {'KILL_SWITCH': '1', 'TAILSCALE': '1', 'IPV6': 'auto',
+                                                         'REMOTE_DNS': '1.1.1.1', 'BOOTSTRAP_DNS': '9.9.9.9',
+                                                         'LAN_CIDRS': ''}})
+
+    def test_the_module_missing_or_too_old(self):
+        for shell in self.each_shell():
+            obj = self.reply(self.call(shell, 'status', MU300_VPN_CMD=self.tmp / 'nope')[0])
+            self.assertEqual(obj, {'ok': 1, 'installed': 0, 'extra': 1})
+            obj = self.reply(self.call(shell, 'status', MU300_VPN_CMD=self.tmp / 'nope',
+                                       MU300_EXTRA_CMD=self.tmp / 'nope')[0])
+            self.assertEqual(obj, {'ok': 1, 'installed': 0, 'extra': 0})
+            for method, params in (('profiles', {}), ('service', {'op': 'on'}), ('logs', {})):
+                obj = self.reply(self.call(shell, method, params, MU300_VPN_CMD=self.tmp / 'nope')[0])
+                self.assertEqual(obj, {'ok': 0, 'error': 'The VPN module is not installed'})
+            # v1: status is text, --json unknown
+            self.output('vpn.status', 'VPN: on\nprofile: office\n')
+            obj = self.reply(self.call(shell, 'status')[0])
+            self.assertEqual(obj, {'ok': 1, 'installed': 1, 'legacy': 1, 'extra': 1})
+            self.output('vpn.status', json.dumps(STATUS))
+
+    def test_cli_failures_carry_a_fixed_error_and_the_cli_message(self):
+        cases = [
+            ('vpn.use', '', 1, 'no such profile: x\n', 'use', {'id': 'x'},
+             {'ok': 0, 'error': 'The profile could not be made the active one', 'detail': 'no such profile: x'}),
+            ('vpn.profile.list', '{"error": "the profile store cannot be read here"}', 1, '', 'profiles', {},
+             {'ok': 0, 'error': 'The profiles could not be read', 'detail': 'the profile store cannot be read here'}),
+            ('vpn.service', '', 2, 'usage: mu300-vpn ...\n', 'service', {'op': 'on'}, None),
+            ('vpn.on', '', 2, 'usage: mu300-vpn on\n', 'service', {'op': 'on'},
+             {'ok': 0, 'error': 'The VPN module refused the request', 'detail': 'usage: mu300-vpn on'}),
+            ('vpn.profile.list', 'not json', 0, '', 'profiles', {},
+             {'ok': 0, 'error': 'The profiles could not be read'}),
+            ('vpn.status', '{"error": "cannot read \\u001b[31m"}', 1, '', 'status', {},
+             {'ok': 0, 'error': 'The VPN status could not be read', 'detail': 'cannot read [31m'}),
+            ('vpn.latency', '{"id":"o","host":"h","port":443,"ms":null,"error":"timeout"}', 1, '', 'latency',
+             {'id': 'o'}, {'ok': 1, 'result': {'id': 'o', 'host': 'h', 'port': 443, 'ms': None, 'error': 'timeout'}}),
+        ]
+        for shell in self.each_shell():
+            for name, out, rc, err, method, params, want in cases:
+                if want is None:
+                    continue
+                with self.subTest(case=(name, method)):
+                    for p in self.out.iterdir():
+                        p.unlink()
+                    self.output(name, out, rc=rc, err=err)
+                    obj = self.reply(self.call(shell, method, params)[0])
+                    self.assertEqual(obj, want)
+
+    def test_errors_are_english_sentences_in_the_catalogs(self):
+        known = set(subprocess.run([sys.executable, str(TOP / 'tools' / 'luci-i18n.py'), 'extract'], check=True,
+                                   capture_output=True, text=True, encoding='utf-8').stdout.splitlines())
+        src = VPNB.read_text()
+        import re
+        msgs = set(re.findall(r"(?:refuse|cli_fail) '([^']+)'", src)) | set(re.findall(r"reply_val \w+ '([^']+)'", src))
+        self.assertGreater(len(msgs), 30)
+        self.assertEqual(msgs - known, set())
+
+    def test_nothing_is_logged_and_a_revealed_config_stays_nowhere(self):
+        self.output('vpn.profile.show', json.dumps(dict(PROFILES[0], config='PrivateKey = SECRETKEY\n')))
+        for shell in self.each_shell():
+            obj = self.reply(self.call(shell, 'profile_reveal', {'id': 'office'})[0])
+            self.assertEqual(obj, {'ok': 1, 'config': 'PrivateKey = SECRETKEY\n'})
+            for root, _, files in os.walk(self.dash):
+                for f in files:
+                    self.assertNotIn(b'SECRETKEY', (Path(root) / f).read_bytes(), f)
+            self.assertFalse((self.dash / 'last-outputs.log').exists())
+
+    def test_the_log_is_escaped_and_capped(self):
+        self.output('vpn.logs', 'line "1"\t\x1b[0m\n' + 'y' * 70000 + '\nlast\n')
+        for shell in self.each_shell():
+            obj = self.reply(self.call(shell, 'logs')[0])
+            self.assertEqual(obj['ok'], 1)
+            self.assertLessEqual(len(obj['log']), 65536)
+            self.assertTrue(obj['log'].endswith('last'))
+
+    def test_the_job_reports_its_state(self):
+        job = self.dash / 'vpn-job'
+        for shell in self.each_shell():
+            obj = self.reply(self.call(shell, 'job')[0])
+            self.assertEqual(obj['ok'], 1)
+            job.mkdir(parents=True, exist_ok=True)
+            (job / 'kind').write_text('latency-all\n')
+            (job / 'state').write_text('done\n')
+            (job / 'started').write_text('1760000000\n')
+            (job / 'log').write_text('a "quoted" line\n\x1b[1mbold\n')
+            (job / 'result').write_text('[{"id":"office","ms":48}]')
+            obj = self.reply(self.call(shell, 'job')[0])
+            self.assertEqual(obj['job'], {'kind': 'latency-all', 'state': 'done', 'started': 1760000000,
+                                          'log': 'a "quoted" line\n\x1b[1mbold', 'result': [{'id': 'office', 'ms': 48}]})
+            # running without a live process, long ago: failed
+            (job / 'state').write_text('running\n')
+            (job / 'pid').write_text('999999\n')
+            self.assertEqual(self.reply(self.call(shell, 'job')[0])['job']['state'], 'failed')
+            # a kind or state it does not know is not repeated
+            (job / 'kind').write_text('$(reboot)\n')
+            (job / 'state').write_text('exploded\n')
+            (job / 'result').write_text('not json')
+            got = self.reply(self.call(shell, 'job')[0])['job']
+            self.assertEqual((got['kind'], got['state'], got['result']), (None, None, None))
+            for p in job.iterdir():
+                p.unlink()
+
+    def test_the_task_runs_its_command_and_says_how_it_ended(self):
+        """the detached shell itself (setsid is a pass-through here): stdin from the secret file, which is gone once
+        open; the result and the log; upload.* removed"""
+        self.stub('setsid', 'exec "$@"')
+        self.output('vpn.subscription', 'imported 3 profiles\n')
+        self.output('vpn.latency', '[{"id":"office","ms":48}]')
+        job = self.dash / 'vpn-job'
+        for shell in self.each_shell():
+            obj = self.reply(self.call(shell, 'sub_add', {'name': 'Mine', 'url': URL})[0])
+            self.assertEqual(obj['ok'], 1)
+            deadline = time.monotonic() + 10
+            while (job / 'state').read_text() == 'running\n' and time.monotonic() < deadline:
+                time.sleep(0.1)
+            got = self.reply(self.call(shell, 'job')[0])['job']
+            self.assertEqual((got['kind'], got['state'], got['log']), ('sub-add', 'done', 'imported 3 profiles'))
+            self.assertEqual([p.name for p in job.iterdir() if p.name.startswith(('in.', 'upload.'))], [])
+            self.reply(self.call(shell, 'latency', {'id': 'all'})[0])
+            deadline = time.monotonic() + 10
+            while (job / 'state').read_text() == 'running\n' and time.monotonic() < deadline:
+                time.sleep(0.1)
+            got = self.reply(self.call(shell, 'job')[0])['job']
+            self.assertEqual((got['state'], got['result']), ('done', [{'id': 'office', 'ms': 48}]))
+
+
+class Views(unittest.TestCase):
+    """the pages put what the backend sends into E() as text (inside an array), never as a lone string (HTML)"""
+
+    def test_no_backend_value_as_html(self):
+        import re
+        for p in sorted(VIEWS.glob('vpn-*.js')) + [VIEWS.parent.parent / 'mu300' / 'vpn.js']:
+            src = p.read_text()
+            # E('tag', {...}, String(x)) or E('tag', {...}, p.name): a lone non-literal third argument
+            for m in re.finditer(r"E\('\w+', \{[^{}]*\}, (?!\[|'|_\(|E\(|\w+\)|null|\w+\.map\(|Array\.isArray)([^,\n)]+)\)", src):
+                self.fail(f'{p.name}: E() with a non-array content {m.group(1)!r}')
+            self.assertNotIn('innerHTML', src, p.name)
+
+
+if __name__ == '__main__':
+    unittest.main()

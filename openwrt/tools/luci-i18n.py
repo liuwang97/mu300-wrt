@@ -12,13 +12,14 @@ Messages are English and come from:
   * htdocs/**/*.js: _('...') / _("...") with one string literal argument (JS escapes decoded). Any other argument
     is an error, except the sites in DYNAMIC_OK, whose values are messages extracted from elsewhere.
   * root/usr/share/luci/menu.d/*.json: every "title"; root/usr/share/rpcd/acl.d/*.json: every "description".
-  * the backend, root/usr/libexec/rpcd/mu300dash and root/usr/libexec/unisoc-modem/*, in three forms:
+  * the backend, root/usr/libexec/rpcd/mu300dash, mu300vpn and root/usr/libexec/unisoc-modem/*, in three forms:
       - a literal JSON value in the code, "error" or "message", plain or escaped inside a "..." string:
         printf '{"ok":0,"error":"Text"}\\n'   print "{\\"error\\":\\"Text\\"}"
         Any other value of such a key (%s, a variable) outside the body of a reply helper is an error, unless the
         code line is right after '# i18n: Text' line(s) naming the message(s) it can carry.
       - a literal argument of a reply helper: refuse 'Text' [DETAIL], reply_obj JSON 'Text' (mu300dash),
-        fail OP 'Text' [DETAIL] (action), error 'Text' (device-usb); single or double quotes, no $ or `
+        fail OP 'Text' [DETAIL] (action), error 'Text' (device-usb), cli_fail 'Text', reply_val KEY 'Text'
+        (mu300vpn); single or double quotes, no $ or `
         inside double quotes. A helper called with a non-literal message is an error, except in BACKEND_DYNAMIC_OK.
       - a comment line '# i18n: Text', for a message the code builds or passes through a variable.
   * N_() is an error: the app has no plural messages (tools/po2lmo.py refuses msgid_plural).
@@ -70,9 +71,11 @@ DOMAIN = 'mu300'
 # _() arguments that are not literals: backend replies and carrier names, extracted from the backend and common.js
 DYNAMIC_OK = {'res.error', 'res.message', 'carrier.name'}
 # reply helpers of the backend: name -> position of the message among its arguments (1 = first)
-HELPERS = {'refuse': 1, 'reply_obj': 2, 'fail': 2, 'error': 1}
+HELPERS = {'refuse': 1, 'reply_obj': 2, 'fail': 2, 'error': 1, 'cli_fail': 1, 'reply_val': 2}
 # helper calls whose message is a variable on purpose: (file name, helper, argument)
-BACKEND_DYNAMIC_OK = {('mu300dash', 'refuse', '"$2"')}   # reply_obj passing its MESSAGE on
+BACKEND_DYNAMIC_OK = {('mu300dash', 'refuse', '"$2"'),   # reply_obj passing its MESSAGE on
+                      ('mu300vpn', 'refuse', '"$1"'),    # cli_fail and reply_val passing theirs on
+                      ('mu300vpn', 'refuse', '"$2"')}
 
 # CJK: only these files may contain it (repository paths; with --root, only po/ of that copy)
 CJK = re.compile('[\u2e80-\u9fff\uf900-\ufaff\uff00-\uffef]')
@@ -376,7 +379,8 @@ def extract(root, base=None):
                 m.add(msg, rel(p), _line(src, off))
             elif arg not in DYNAMIC_OK:
                 m.problem('dynamic', rel(p), _line(src, off), f'_({arg}) is not one string literal')
-    backend = [root / 'root/usr/libexec/rpcd/mu300dash'] + sorted(root.glob('root/usr/libexec/unisoc-modem/*'))
+    backend = [root / 'root/usr/libexec/rpcd/mu300dash', root / 'root/usr/libexec/rpcd/mu300vpn'] + \
+        sorted(root.glob('root/usr/libexec/unisoc-modem/*'))
     for p in backend:
         if p.is_file():
             _backend(m, p, rel(p), p.name)

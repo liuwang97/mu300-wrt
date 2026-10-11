@@ -46,6 +46,21 @@ second (no process, no AT), timed in the browser. That is the only file the read
 status snapshot names the interface (`data_device`) and carries mu300-traffic's summary for the dashboard's usage
 tiles.
 
+## VPN
+
+The top-level VPN menu has six pages (Overview, Profiles, Subscriptions, Engines, Settings, Logs) over the VPN
+module's machine-readable CLI, `mu300-vpn ... --json` (github.com/dikeckaan/mu300-linux-vpn, spec
+`2026-10-11-engine-extras`, section 4). Their backend is a second rpcd object, `mu300vpn`
+(`/usr/libexec/rpcd/mu300vpn`), separate from mu300dash because what passes through it holds secrets: share links,
+configs, subscription URLs and OpenVPN passwords reach the CLI on its stdin (from a 0600 file in the root-only runtime
+directory), never in its argv, and nothing of a reply is logged. Reads (status, the lists, settings, the task) are in
+the ACL's read grant; every change, the log and the config reveal are in the write grant. Downloads (an engine, the
+module, a subscription, a config from a URL) and a latency round over every profile run as the one background task,
+bounded in time, which the pages poll. Uploads go to `/tmp/mu300-vpn-upload` (a config) and
+`/tmp/mu300-vpn-extra.tar.gz` (an extra's tarball), the only paths the ACL lets the panel write, and are moved out of
+`/tmp` before anything reads them. Without the module the pages show a card that installs it
+(`mu300-extra install vpn`). `tests/fixtures/fake-mu300-vpn` stands in for the CLI to try the pages without a device.
+
 ## AT adapters
 
 Configure `/etc/config/unisoc_modem`:
