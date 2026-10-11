@@ -838,7 +838,7 @@ class Service(ShellTest):
 class Wiring(ShellTest):
     def test_the_images_list_their_packages_and_run_the_service(self):
         b = (TOP / 'openwrt/build-rootfs.sh').read_text()
-        self.assertIn('mu300-traffic mu300-user-packages; do', b)
+        self.assertRegex(b, r'for s in [^\n]*\bmu300-user-packages\b[^\n]*; do')   # in the service loop, whatever else is there
         self.assertIn('upk_manual $R openwrt) > $R/etc/mu300/image-packages', b)
         # no stray config file in the image itself (an update would add it to every device): removed from $R, checked
         self.assertIn('rm -f $R/etc/config/attendedsysupgrade $R/etc/config/*.apk-new', b)

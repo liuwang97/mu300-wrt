@@ -225,6 +225,11 @@ Install the VPN module (about 40 MB more to download, 120 MB on the device)? (ye
 Downloading the VPN module	VPN modülü indiriliyor
 extras:         {1}	eklentiler:     {1}
 none	yok
+Allow adb (adb shell, push, pull) to Linux over USB from this computer? Its adb key (~/.android/adbkey.pub) gets a root shell (yes/no)	Bu bilgisayardan USB üzerinden Linux'a adb (adb shell, push, pull) açılsın mı? Bu bilgisayarın adb anahtarı (~/.android/adbkey.pub) root kabuğu alır (evet/hayır)
+no adb key of this computer to authorise ({1})	bu bilgisayarın yetkilendirilecek bir adb anahtarı yok ({1})
+adb to Linux:   {1}	Linux'a adb:    {1}
+on, for this computer	açık, bu bilgisayar için
+off	kapalı
 Android runs from slot {1}; Linux goes to slot {2} (boot_{2})	Android {1} yuvasından çalışıyor; Linux {2} yuvasına kurulacak (boot_{2})
 CREATE new ext4 (erases what is there)	yeni ext4 OLUŞTURULACAK (oradakiler silinir)
 Dry run: nothing was written.	Deneme çalıştırması: hiçbir şey yazılmadı.
