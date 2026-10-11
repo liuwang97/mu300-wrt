@@ -180,7 +180,9 @@ return view.extend({
 			self.note(_('Reading the modem directly (a few seconds at most)…'), 'busy');
 			L.resolveDefault(M.callLockFresh('1')).then(function(l) {
 				M.busy(btn, false);
-				self.lastLock = l || {};
+				/* a busy modem: the reading goes on in the background, the last state stays on the page */
+				if (!l || !l.mode) { self.note(l && l.error ? M.errText(l) : _('Refresh failed'), 'error'); return; }
+				self.lastLock = l;
 				self.paint();
 				self.note(_('Refreshed'), 'success');
 				var nb = self.Q('neigh');
@@ -302,9 +304,15 @@ return view.extend({
 	},
 
 	/* The backend takes a new AT snapshot every time; the last signal/cell cache is never accepted. */
+	/* Polled every 2 s: after a failed read (the modem busy or silent: the backend gives up within 14 s) the next ones
+	 * are skipped, more of them after each failure in a row (M.backoff), so a stuck modem is not asked twice as often. */
 	loadServing: function() {
 		var self = this;
-		return L.resolveDefault(M.callSignal()).then(function(live) {
+		if (this._skip > 0) { this._skip--; return Promise.resolve(); }
+		return Promise.resolve(M.callSignal()).catch(function() { return null; }).then(function(live) {
+			self._fails = live && !live.error ? 0 : (self._fails || 0) + 1;
+			self._skip = Math.round(M.backoff(1, self._fails)) - 1;
+			if (!live && self.lastCell && !self.lastCell.error) return;   // a lost request: keep what is shown
 			live = live || {};
 			var c = {}, meta = self.servingMeta || {};
 			Object.keys(meta).forEach(function(k) { c[k] = meta[k]; });
@@ -400,9 +408,10 @@ return view.extend({
 		var self = this;
 		L.resolveDefault(M.callLockGet()).then(function(l) {
 			l = l || {};
-			/* An empty result is mostly a transient rpcd failure under load (measured: the same request again works): retry lightly */
-			if (!l.mode && !l.error && (self._retry = (self._retry || 0) + 1) <= 3)
-				return setTimeout(function() { self.refresh(); }, 1800);
+			/* An empty result is mostly a transient rpcd failure under load (measured: the same request again works): retry
+			 * lightly. "busy": no reading yet (after a reboot), one runs in the background - ask again a little later. */
+			if (!l.mode && (!l.error || l.busy) && (self._retry = (self._retry || 0) + 1) <= (l.busy ? 8 : 3))
+				return setTimeout(function() { self.refresh(); }, l.busy ? 4000 : 1800);
 			self._retry = 0;
 			self.lastLock = l;
 			self.paint();
