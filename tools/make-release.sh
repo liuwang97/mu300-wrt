@@ -101,6 +101,11 @@ echo "==> lang extra"
 # after the OpenWrt builds: it is built in the OpenWrt base image they import, from the same feed
 sh "$TOP/tools/make-extra.sh" lang "$D/mu300-extra-lang.tar.gz" "$TAG"
 
+echo "==> panel extra (Ubuntu's web panel: Cockpit and the MU300 page), online and offline"
+# the offline one carries Cockpit's packages for both Ubuntu releases, from the mu300-ubuntu images built above
+sh "$TOP/tools/make-extra.sh" panel "$D/mu300-extra-panel.tar.gz" "$TAG"
+sh "$TOP/tools/make-extra.sh" panel-offline "$D/mu300-extra-panel-offline.tar.gz" "$TAG"
+
 echo "==> audit"
 fail=0
 for a in mu300-kernel mu300-kernel-6.18 mu300-kernel-7.2 mu300-ubuntu-rootfs mu300-ubuntu-26.04-rootfs mu300-openwrt-rootfs \
@@ -153,6 +158,20 @@ if [ -n "${MU300_PREV_RELEASE:-}" ]; then
 fi
 # an extra holds what its name says, for the release it is published with (mu300-update compares ./release). The VPN
 # (vpn, vpn-mihomo) is not one of this release's: it is the module of github.com/dikeckaan/mu300-linux-vpn
+# the panel: its page and command; the offline one the same with Cockpit's packages for both Ubuntu releases
+for a in mu300-extra-panel mu300-extra-panel-offline; do
+    px=$(tar -tzf "$D/$a.tar.gz" | sed 's|^\./||')
+    ! printf '%s\n' "$px" | grep . | grep -Evx 'name|release|components|manifest|bin/?|bin/mu300-panel|cockpit/?|cockpit/mu300/?|cockpit/mu300/[A-Za-z0-9_.-]+|debs/?|debs/[0-9.]+/?|debs/[0-9.]+/[A-Za-z0-9._+~-]+\.deb' ||
+        { echo "$a.tar.gz has unexpected files"; fail=1; }
+    for f in bin/mu300-panel cockpit/mu300/manifest.json cockpit/mu300/mu300.js cockpit/mu300/po.tr.js cockpit/mu300/po.zh_CN.js; do
+        printf '%s\n' "$px" | grep -qx "$f" || { echo "$a.tar.gz lacks $f"; fail=1; }
+    done
+    [ "$(tar -xzOf "$D/$a.tar.gz" ./name)" = panel ] && [ "$(tar -xzOf "$D/$a.tar.gz" ./release)" = "$TAG" ] ||
+        { echo "$a.tar.gz is not the panel extra of $TAG"; fail=1; }
+done
+for u in 24.04 26.04; do
+    tar -tzf "$D/mu300-extra-panel-offline.tar.gz" | grep -q "^\./debs/$u/cockpit-ws_" || { echo "mu300-extra-panel-offline.tar.gz has no Cockpit for Ubuntu $u"; fail=1; }
+done
 for x in lang; do
     [ "$(tar -xzOf "$D/mu300-extra-$x.tar.gz" ./name)" = $x ] && [ "$(tar -xzOf "$D/mu300-extra-$x.tar.gz" ./release)" = "$TAG" ] ||
         { echo "mu300-extra-$x.tar.gz is not the $x extra of $TAG"; fail=1; }
@@ -197,6 +216,8 @@ first with \`./install.sh --check\`.
 | mu300-openwrt-rootfs.tar.gz | OpenWrt 25.12.5 root filesystem |
 | mu300-openwrt-luci-rootfs.tar.gz | OpenWrt 25.12.5 with the MU300 control panel (luci-app-mu300 by kanoqwq, Aurora theme by eamonxg) |
 | mu300-extra-lang.tar.gz | LuCI and the MU300 panel in more languages (OpenWrt only; English, Turkish and Chinese are in the images): \`mu300-extra install lang\` on the device, or System > Languages in the panel; LuCI's catalogs from the OpenWrt 25.12.5 feed, the panel's AI-translated |
+| mu300-extra-panel.tar.gz | the web panel for Ubuntu: Cockpit (Ubuntu's web console: terminal, logs, services, networking, storage) and the MU300 page (signal, mobile data, data usage, SMS, VPN, power and CPU, Wi-Fi, updates), on the LAN only: \`sudo mu300-extra install panel\` on the device (Cockpit from Ubuntu's archive), or the installer's question |
+| mu300-extra-panel-offline.tar.gz | the same with Cockpit's packages for Ubuntu 24.04 and 26.04, for a device that is not online: \`sudo mu300-extra install panel --from mu300-extra-panel-offline.tar.gz\` |
 | mu300-update | the on-device updater of this release (\`mu300-update apply\` switches to it before it changes anything) |
 | (the VPN) | not part of this release: the VPN toolkit (\`mu300-vpn\` with Xray-core, hev-socks5-tunnel, sing-box; mihomo as \`vpn-mihomo\`) is the module of https://github.com/dikeckaan/mu300-linux-vpn - \`mu300-extra install vpn\` on the device, or the installer's question, takes its latest release |
 

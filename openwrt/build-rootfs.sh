@@ -47,6 +47,9 @@ FW4PATCH=$TOP/openwrt/patches/fw4-sipa-offload.patch
 # fw4 reload/restart on the 5.4 kernel: its old flowtable goes first, in a transaction of its own (#95, FINDINGS 38)
 FW4FTPATCH=$TOP/openwrt/patches/fw4-old-kernel-flowtable.patch
 [ -s "$FW4FTPATCH" ] || { echo "missing $FW4FTPATCH" >&2; exit 1; }
+# never an access point on a DFS channel: the SC2355 driver has no radar detection (FINDINGS 40)
+NODFSPATCH=$TOP/openwrt/patches/wifi-scripts-no-dfs.patch
+[ -s "$NODFSPATCH" ] || { echo "missing $NODFSPATCH" >&2; exit 1; }
 # the docker mounts of the panel system, as the positional parameters (OUT is read above): each path stays one
 # argument, spaces and all
 set --
@@ -119,6 +122,7 @@ docker run --rm --platform linux/arm64 \
   -v "$TOP/rootfs/overlay/opt/mu300":/in/opt-mu300:ro -v "$TOP/openwrt/overlay":/in/overlay:ro \
   -v "$FW4PATCH":/in/fw4-sipa-offload.patch:ro \
   -v "$FW4FTPATCH":/in/fw4-old-kernel-flowtable.patch:ro \
+  -v "$NODFSPATCH":/in/wifi-scripts-no-dfs.patch:ro \
   -v "$TOP/boot/module-order.txt":/in/module-order.txt:ro -v "$IN/out/modules":/in/modules:ro \
   $(opt out/modules.builtin modules.builtin) $(opt out/modules.builtin.modinfo modules.builtin.modinfo) \
   $(opt firmware firmware) $(opt android-subset android-subset) $(opt android-gpu-subset android-gpu-subset) \
@@ -147,6 +151,9 @@ apk add wireguard-tools luci-proto-wireguard ppp-mod-pptp xl2tpd 6in4 6rd ds-lit
 [ -d /in/luci-plugin ] && apk add --allow-untrusted /in/luci-theme-aurora.apk >/dev/null
 # relay mode (panel system only): ra-deprecate sends its router advertisement through a raw ICMPv6 socket (#87)
 [ -d /in/luci-plugin ] && apk add ucode-mod-socket >/dev/null
+# System > Terminal (panel system only): ttyd, and luci-app-ttyd for its settings page and translations; the image
+# configures it (luci-overlay/etc/config/ttyd: LAN address only, a root shell only for a token of a LuCI session)
+[ -d /in/luci-plugin ] && apk add ttyd luci-app-ttyd >/dev/null
 # ujail drops CAP_PERFMON (38), which this 5.4 kernel does not know: jailed services (dnsmasq, ntpd) crash-loop
 apk del procd-ujail procd-seccomp >/dev/null 2>&1 || true
 # online firmware upgrades flash whole-disk armsr images: that would overwrite the eMMC, so remove them
@@ -193,12 +200,23 @@ patch --batch --fuzz=0 -d $R -p1 -i /in/fw4-sipa-offload.patch
 grep -q sipa_eth0 $R/usr/share/ucode/fw4.uc || { echo "fw4 patch not applied" >&2; exit 1; }
 patch --batch --fuzz=0 -d $R -p1 -i /in/fw4-old-kernel-flowtable.patch
 grep -q drop_old_flowtable $R/sbin/fw4 || { echo "fw4 flowtable patch not applied" >&2; exit 1; }
+# wifi-scripts: a driver without radar detection (no radar_detect_widths, the SC2355) never gets an access point on a
+# DFS channel - hostapd fails start_dfs_cac and the hotspot stays down otherwise (FINDINGS 40)
+patch --batch --fuzz=0 -d $R -p1 -i /in/wifi-scripts-no-dfs.patch
+grep -q "device_no_dfs(config);" $R/usr/share/ucode/wifi/hostapd.uc || { echo "wifi-scripts DFS patch not applied" >&2; exit 1; }
 apk del patch >/dev/null   # out of packages.txt below, which lists what the image has
 if [ -d /in/luci-plugin ]; then
     [ -d /in/luci-overlay ] && cp -a /in/luci-overlay/. $R/
     cp -a /in/luci-plugin/root/. $R/
     cp -a /in/luci-plugin/htdocs/. $R/www/
     chmod 0755 $R/etc/init.d/unisoc-modem-ui $R/etc/hotplug.d/net/90-unisoc-usb-host $R/etc/hotplug.d/iface/90-unisoc-usb-host $R/usr/libexec/rpcd/mu300dash $R/usr/libexec/unisoc-modem/*
+    chmod 0755 $R/usr/libexec/rpcd/mu300term $R/usr/libexec/mu300-terminal-login $R/etc/hotplug.d/iface/95-mu300-terminal
+    # the terminal is System > Terminal (the panel menu: the page, and the settings page of luci-app-ttyd); its own Services >
+    # Terminal frames ttyd without a token, which mu300-terminal-login refuses
+    rm -f $R/usr/share/luci/menu.d/luci-app-ttyd.json
+    # ttyd as luci-overlay configures it, never the package default (/bin/login on every LAN instance, no origin check)
+    grep -q "^	option command ./usr/libexec/mu300-terminal-login.$" $R/etc/config/ttyd &&
+        ! grep -q "/bin/login" $R/etc/config/ttyd || { echo "ttyd is not configured for the panel" >&2; exit 1; }
     # the panel catalogs, named as LuCI names the language (base.zh-cn.lmo: mu300.zh-cn.lmo)
     for f in /in/catalogs/mu300.*.lmo; do cp "$f" $R/usr/lib/lua/luci/i18n/; done
     [ -s $R/www/luci-static/aurora/main.css ] || { echo "Aurora theme assets missing" >&2; exit 1; }
@@ -285,6 +303,8 @@ if [ -d /in/luci-plugin ]; then
     n=$(sed -n "s/^START=//p" $R/etc/init.d/mu300-ndp)
     ln -sf ../init.d/mu300-ndp $R/etc/rc.d/S${n}mu300-ndp
     ln -sf /opt/mu300/bin/mu300-sms $R/usr/bin/mu300-sms
+    # System > Terminal: apk enabled ttyd itself
+    [ -e $R/etc/rc.d/S99ttyd ] || { echo "ttyd is not enabled" >&2; exit 1; }
 fi
 # the OpenWrt button handlers (power: a tap is poweroff; wps, rfkill) are replaced: mu300-buttons owns the keys
 mkdir -p $R/etc/rc.button
