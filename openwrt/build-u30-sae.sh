@@ -32,11 +32,11 @@ target = p / 'patches' / source.name
 if target.exists() and target.read_bytes() != source.read_bytes():
     raise SystemExit('Conflicting local SAE patch; use a dedicated clean SDK')
 release = re.search(r'^PKG_RELEASE:=(\d+)$', text, re.M)
-if not release or (release[1] not in ('1', '5') and not (release[1] == '7' and target.exists())):
-    raise SystemExit('Unsupported package revision; expected SDK r1, recorded r5, or this patched r7')
+if not release or (release[1] not in ('1', '5') and not (release[1] == '8' and target.exists())):
+    raise SystemExit('Unsupported package revision; expected SDK r1, recorded r5, or this patched r8')
 target.parent.mkdir(parents=True, exist_ok=True)
 shutil.copyfile(source, target)
-recipe.write_text(re.sub(r'^PKG_RELEASE:=[15]$', 'PKG_RELEASE:=7', text, flags=re.M))
+recipe.write_text(re.sub(r'^PKG_RELEASE:=[15]$', 'PKG_RELEASE:=8', text, flags=re.M))
 PY
 
 cd "$SDK"
@@ -60,7 +60,7 @@ make -j"${MU300_JOBS:-4}" "$TARGET/compile" V=s
 # Keep hostapd-common and wpad from the same recipe revision. apk resolves normal library dependencies.
 for name in hostapd-common wpad-basic-openssl; do
     count=0
-    for package in "$SDK"/bin/packages/aarch64_generic/base/"$name"-*.apk; do
+    for package in "$SDK"/bin/packages/aarch64_generic/base/"$name"-*-r8.apk; do
         [ -s "$package" ] || continue
         cp "$package" "$OUT/"
         count=$((count + 1))

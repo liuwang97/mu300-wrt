@@ -242,7 +242,7 @@ class SaeSdkBuild(ShellTest):
 case "$*" in *hostapd/compile*)
     mkdir -p bin/packages/aarch64_generic/base
     for name in hostapd-common wpad-basic-openssl; do
-        echo fixture > "bin/packages/aarch64_generic/base/$name-fixture-r7.apk"
+        echo fixture > "bin/packages/aarch64_generic/base/$name-fixture-r8.apk"
     done ;;
 esac''')
 
@@ -252,10 +252,10 @@ esac''')
     def test_recipe_revision_and_matching_package_pair(self):
         r = self.build()
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn('PKG_RELEASE:=7', (self.package / 'Makefile').read_text())
+        self.assertIn('PKG_RELEASE:=8', (self.package / 'Makefile').read_text())
         self.assertEqual((self.package / 'patches' / PATCH.name).read_bytes(), PATCH.read_bytes())
         self.assertEqual(sorted(p.name for p in (self.tmp / 'out').glob('*.apk')),
-                         ['hostapd-common-fixture-r7.apk', 'wpad-basic-openssl-fixture-r7.apk'])
+                         ['hostapd-common-fixture-r8.apk', 'wpad-basic-openssl-fixture-r8.apk'])
         self.assertEqual((self.tmp / 'calls').read_text().splitlines(),
                          ['defconfig', 'package/network/services/hostapd/clean',
                           '-j4 package/network/services/hostapd/compile V=s'])
@@ -280,7 +280,7 @@ esac''')
         link.symlink_to(feed, target_is_directory=True)
         r = self.build()
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn('PKG_RELEASE:=7', recipe.read_text())
+        self.assertIn('PKG_RELEASE:=8', recipe.read_text())
         self.assertEqual((feed / 'patches' / PATCH.name).read_bytes(), PATCH.read_bytes())
         self.assertIn('package/feeds/base/hostapd/compile', (self.tmp / 'calls').read_text())
 
@@ -307,6 +307,29 @@ esac''')
         self.assertNotEqual(self.build().returncode, 0)
         self.assertEqual(target.read_text(), 'existing private changes')
         self.assertFalse((self.sdk / '.config').exists())
+
+    def test_old_package_artifacts_are_not_delivered_as_r8(self):
+        packages = self.sdk / 'bin/packages/aarch64_generic/base'
+        packages.mkdir(parents=True)
+        for name in ('hostapd-common', 'wpad-basic-openssl'):
+            (packages / (name + '-fixture-r7.apk')).write_text('old build')
+        result = self.build()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(sorted(p.name for p in (self.tmp / 'out').glob('*.apk')),
+                         ['hostapd-common-fixture-r8.apk', 'wpad-basic-openssl-fixture-r8.apk'])
+
+    def test_previous_local_revision_requires_a_clean_sdk(self):
+        recipe = self.package / 'Makefile'
+        recipe.write_text(recipe.read_text().replace('PKG_RELEASE:=5', 'PKG_RELEASE:=7'))
+        target = self.package / 'patches' / PATCH.name
+        target.parent.mkdir()
+        target.write_bytes(PATCH.read_bytes())
+        original = recipe.read_bytes()
+        result = self.build()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(recipe.read_bytes(), original)
+        self.assertFalse((self.sdk / '.config').exists())
+        self.assertFalse((self.tmp / 'calls').exists())
 
 
 if __name__ == '__main__':
