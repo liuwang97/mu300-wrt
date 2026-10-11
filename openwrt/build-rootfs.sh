@@ -215,6 +215,15 @@ uci -c $R/etc/config -q get luci.languages.zh_cn >/dev/null ||
     uci -c $R/etc/config set luci.languages.zh_cn="$(printf "\347\256\200\344\275\223\344\270\255\346\226\207 (Simplified Chinese)")"
 uci -c $R/etc/config commit luci
 uci -c $R/etc/config show luci.languages
+# SQM (openwrt-luci): the default queue (disabled) shapes the generic eth1, which the MU300 does not have, so LuCI
+# offered a device that is not there; it names the cellular uplink, sipa_eth0, instead
+if [ -f $R/etc/config/sqm ]; then
+    for q in $(uci -c $R/etc/config -q show sqm | sed -n "s/^sqm\.\([^.]*\)\.interface=.eth1.$/\1/p"); do
+        uci -c $R/etc/config set sqm.$q.interface=sipa_eth0
+    done
+    uci -c $R/etc/config commit sqm
+    uci -c $R/etc/config -q show sqm | grep -q "\.interface=.eth1.$" && { echo "SQM still names eth1" >&2; exit 1; }
+fi
 mv $R/sbin/sysupgrade $R/sbin/sysupgrade.openwrt && mv $R/usr/libexec/mu300-sysupgrade $R/sbin/sysupgrade
 M=$R/lib/modules/$KREL; mkdir -p $M
 cp /in/modules/*.ko $M/          # ubox kmodloader expects the modules flat in /lib/modules/<release>/

@@ -747,6 +747,53 @@ class Rules(unittest.TestCase):
         for f in ('etc/init.d/mu300-ndp', 'opt/mu300/bin/ndp-learn', 'lib/netifd/proto/mu300cell-v6.sh'):
             self.assertTrue((LUCI_OVERLAY / f).stat().st_mode & 0o111, f)
 
+    def test_board_json_names_the_usb_lan_port(self):
+        # panel page audit: armsr's 99-default_network gave board.json a LAN on eth0, which the MU300 does not have;
+        # LuCI's Status > Overview showed an "eth0, no link" port and its ubus status call failed. board.d/05 names
+        # usb0 first (board_detect runs board.d in name order, and 99-default_network leaves a network it finds)
+        d = OPENWRT / 'etc' / 'board.d'
+        self.assertEqual(sorted(p.name for p in d.iterdir()), ['05_mu300_network'])
+        self.assertLess('05_mu300_network', '99-default_network')
+        f = d / '05_mu300_network'
+        self.assertTrue(f.stat().st_mode & 0o111)
+        stub = ('board_config_update() { echo update; }\nboard_config_flush() { echo flush; }\n'
+                'ucidef_set_interface_lan() { echo "lan $*"; }\n')
+        body = f.read_text().replace('. /lib/functions/uci-defaults.sh', stub)
+        self.assertNotEqual(body, f.read_text())
+        for s in shells():
+            r = subprocess.run(s + ['-c', body], capture_output=True, text=True)
+            self.assertEqual((r.returncode, r.stdout), (0, 'update\nlan usb0\nflush\n'), (s, r.stderr))
+
+    def test_sqm_default_queue_names_the_cellular_uplink(self):
+        # panel page audit: the image's /etc/config/sqm (sqm-scripts' default, disabled) named eth1, which the
+        # MU300 does not have; the build names sipa_eth0 instead, and stops when a queue still names eth1
+        text = (TOP / 'openwrt' / 'build-rootfs.sh').read_text()
+        start = text.index('if [ -f $R/etc/config/sqm ]; then')
+        block = text[start:text.index('\nfi\n', start) + 4]
+        # a uci stand-in over one file of "sqm.SECTION.OPTION='VALUE'" lines (what uci show prints)
+        stub = ('uci() { while [ "${1#-}" != "$1" ]; do [ "$1" = -c ] && shift; shift; done\n'
+                '  case $1 in show) cat "$CFG" ;; commit) echo "commit $2" >> "$LOG" ;;\n'
+                '  set) k=${2%%=*}; v=${2#*=}; grep -v "^$k=" "$CFG" > "$CFG.n"; echo "$k=\'$v\'" >> "$CFG.n"; '
+                'mv "$CFG.n" "$CFG" ;; esac; }\n')
+        for s in shells():
+            for queues, want in (
+                    (["sqm.eth1=queue", "sqm.eth1.enabled='0'", "sqm.eth1.interface='eth1'"],
+                     ["sqm.eth1.interface='sipa_eth0'"]),
+                    (["sqm.mine=queue", "sqm.mine.interface='br-lan'"], ["sqm.mine.interface='br-lan'"])):
+                with tempfile.TemporaryDirectory() as d, self.subTest(shell=s, queues=queues):
+                    (Path(d) / 'etc' / 'config').mkdir(parents=True)
+                    (Path(d) / 'etc' / 'config' / 'sqm').write_text('x\n')
+                    cfg = Path(d) / 'show'
+                    cfg.write_text('\n'.join(queues) + '\n')
+                    r = subprocess.run(s + ['-c', f'R={d}\n{stub}{block}echo done'], capture_output=True, text=True,
+                                       env=dict(os.environ, CFG=str(cfg), LOG=str(Path(d) / 'log')))
+                    self.assertEqual((r.returncode, r.stdout), (0, 'done\n'), r.stderr)
+                    lines = cfg.read_text().splitlines()
+                    for w in want:
+                        self.assertIn(w, lines)
+                    self.assertNotIn("sqm.eth1.interface='eth1'", lines)
+                    self.assertEqual((Path(d) / 'log').read_text(), 'commit sqm\n')
+
     def test_wifi_power_transitions_are_serialised(self):
         # FINDINGS 31n: the probe's power-off (outside RTNL) ran post_deinit while hostapd's open ran post_init;
         # post_deinit cleared the context post_init had just set, and the next RX interrupt read it as NULL in hard
