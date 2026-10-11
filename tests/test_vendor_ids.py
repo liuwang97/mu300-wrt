@@ -5,6 +5,7 @@ modem's calibration partitions, and modem_control/refnotify ran as it. Now: the 
 mu300vnd (uid 1000 only where there is no account at all), nothing is writable by everyone, the GPU is the video
 group's, the daemons start as mu300vnd, and the images (and updated systems) have the account.
 """
+import fnmatch
 import re
 import subprocess
 import sys
@@ -14,6 +15,17 @@ from helpers import BIN, TOP, ShellTest
 GEN = TOP / 'android-vendor' / 'gen-ueventd-perms.py'
 INPUTS = [TOP / 'android-vendor' / 'ueventd' / 'ueventd.rc', TOP / 'android-vendor' / 'ueventd' / 'init-perms.rc']
 OUTPUTS = [TOP / 'android-vendor' / 'ueventd-perms.sh', BIN / 'ueventd-perms.sh']
+# the script as it was until v2026.10.18: Android's numbers taken over
+BEFORE = TOP / 'tests' / 'fixtures' / 'ueventd-perms-v2026.10.18.sh'
+# Ubuntu's accounts as on an F50 (v2026.10.18 with the vendor account made at boot)
+IDS = {'$V': 999, '$VG': 991, '$GPU': 44}
+# who must not gain anything: the login user (uid 1000, its groups on the image), a second login user in the usual
+# groups and everyone else; the vendor account itself is new and is not compared
+PEOPLE = {'ubuntu': (1000, {1000, 4, 20, 24, 25, 27, 29, 30, 44, 46}),
+          'a second user': (1001, {1001, 100, 44, 20, 29, 46, 993, 996}),
+          'others': (65534, {65534})}
+# what Linux starts a node with that neither script names (the RTC: root:root 0660, as udev leaves it here)
+LINUX = (0, 0, 0o660)
 LINE = re.compile(r'for n in (.+?); do \[ -e "\$n" \] && (?:chown (\S+):(\S+) "\$n"(?: && chmod ([0-7]+) "\$n")?'
                   r'|chmod ([0-7]+) "\$n"); done')
 
@@ -33,7 +45,52 @@ def rules(text):
     return out
 
 
+def final_states(text):
+    """{node: (owner, group, mode)}: every node a line of TEXT names (a glob as one concrete name), after all lines"""
+    lines = rules(text)
+    names = set()
+    for paths, _, _, _ in lines:
+        for p in paths.split():
+            names.add(p.replace('*', 'X0'))
+    out = {}
+    for n in names:
+        o, g, m = LINUX
+        for paths, owner, group, mode in lines:
+            if any(fnmatch.fnmatchcase(n, p) for p in paths.split()):
+                if owner is not None:
+                    o, g = int(IDS.get(owner, owner)), int(IDS.get(group, group))
+                if mode is not None:
+                    m = int(mode, 8)
+        out[n] = (o, g, m)
+    return out
+
+
+def access(state, uid, groups):
+    """the rwx bits STATE gives a process of UID in GROUPS"""
+    o, g, m = state
+    if uid == o:
+        return (m >> 6) & 7
+    if g in groups:
+        return (m >> 3) & 7
+    return m & 7
+
+
 class Generated(ShellTest):
+    def test_nobody_gains_anything(self):
+        before, after = final_states(BEFORE.read_text()), final_states(OUTPUTS[0].read_text())
+        for n in sorted(set(before) | set(after)):
+            for who, (uid, groups) in PEOPLE.items():
+                was = access(before.get(n, LINUX), uid, groups)
+                now = access(after.get(n, LINUX), uid, groups)
+                self.assertEqual(now & ~was, 0, f'{n}: {who} gains {now & ~was:o} ({before.get(n)} -> {after.get(n)})')
+
+    def test_the_modem_calibration_was_the_login_users_and_is_not(self):
+        before, after = final_states(BEFORE.read_text()), final_states(OUTPUTS[0].read_text())
+        for n in ('/dev/block/by-name/nr_X0', '/dev/block/by-name/persist'):
+            self.assertEqual(access(before[n], *PEOPLE['ubuntu']), 6)
+            self.assertEqual(access(after[n], *PEOPLE['ubuntu']), 0)
+
+
     def test_the_committed_script_is_the_generators(self):
         want = generate(*INPUTS)
         for f in OUTPUTS:
@@ -76,18 +133,20 @@ class Generated(ShellTest):
         for p in ('/dev/mali0', '/dev/ion', '/dev/sprd_dmabuf', '/dev/dma_heap/carveout_fd'):
             self.assertEqual(r[p], ('0', '$GPU', '0660'), p)
 
-    def test_kept_as_linux_has_them(self):
-        text = OUTPUTS[0].read_text()
-        for p in ('/sys/module/firmware_class/', '/dev/input/', '/dev/ttyGS'):
-            self.assertNotIn(f'for n in {p}', text)
+    def test_root_only(self):
+        # keys pressed, the serial console and the firmware search path were the first human's: root's alone now
+        r = {p: (o, g, m) for p, o, g, m in rules(OUTPUTS[0].read_text()) if o is not None}
+        for p in ('/sys/module/firmware_class/parameters/path', '/dev/input/event*', '/dev/ttyGS*'):
+            self.assertEqual(r[p], ('0', '0', '0600'), p)
+        self.assertNotIn('chmod 660 /sys/module/firmware_class', OUTPUTS[0].read_text())
         # the RTC stays root's (systemd-timedated has no CAP_DAC_OVERRIDE); refnotify reaches it through the group
-        r = {p: (o, g, m) for p, o, g, m in rules(text) if o is not None}
+        r = {p: (o, g, m) for p, o, g, m in rules(OUTPUTS[0].read_text()) if o is not None}
         self.assertEqual(r['/dev/rtc*'], ('0', '$VG', '0660'))
 
     def test_mapping(self):
         rc = self.tmp / 'ueventd.rc'
         rc.write_text('/dev/modem 0660 system radio\n/dev/spipe_pm* 0666 system system\n'
-                      '/dev/mali0 0666 system graphics\n/dev/audio_dsp* 666 audioserver audio\n'
+                      '/dev/mali0 0666 system graphics\n/dev/gsp 0660 system graphics\n/dev/audio_dsp* 666 audioserver audio\n'
                       '/dev/stty_nr* 0660 radio system\n/dev/block/by-name/miscdata 0660 root system\n'
                       '/dev/ttyM0 0660 bluetooth net_bt_admin\n/dev/input/event* 0660 system input\n'
                       '/dev/x 0646 system system   # a comment\n/dev/unknown 0660 nosuch system\n')
@@ -100,12 +159,13 @@ class Generated(ShellTest):
         self.assertEqual(r['/dev/modem'], ('$V', '$VG', '0660'))
         self.assertEqual(r['/dev/spipe_pm*'], ('$V', '$VG', '0660'))
         self.assertEqual(r['/dev/mali0'], ('0', '$GPU', '0660'))
+        self.assertEqual(r['/dev/gsp'], ('$V', '0', '0660'))     # only everyone's GPU nodes go to video
         self.assertEqual(r['/dev/audio_dsp*'], ('0', '0', '0600'))       # root's alone: no group bits
         self.assertEqual(r['/dev/stty_nr*'], ('$V', '$VG', '0660'))
         self.assertEqual(r['/dev/block/by-name/miscdata'], ('0', '$VG', '0660'))
         self.assertEqual(r['/dev/ttyM0'], ('0', '0', '0600'))
         self.assertEqual(r['/dev/x'], ('$V', '$VG', '0640'))
-        self.assertNotIn('/dev/input/event*', r)
+        self.assertEqual(r['/dev/input/event*'], ('0', '0', '0600'))
         self.assertNotIn('/dev/unknown', r)
         out = generate(rc, init)
         self.assertIn('chown $V:$VG "$n"; done', out.splitlines()[[i for i, x in enumerate(out.splitlines())
@@ -116,7 +176,8 @@ class Generated(ShellTest):
         r2 = {p: (o, g) for p, o, g, m in rules(out) if o is not None}
         self.assertEqual(r2['/sys/d'], ('0', '$VG'))
         self.assertEqual(r2['/sys/e'], ('$V', '$VG'))
-        self.assertNotIn('firmware_class', out)
+        self.assertIn('for n in /sys/module/firmware_class/parameters/path; do [ -e "$n" ] && chown 0:0 "$n" && chmod 0600', out)
+        self.assertEqual(out.count('firmware_class'), 1)     # its chmod 660 is not taken over
         self.assertNotIn('/dev/f', out)
 
     def ids(self, shell, passwd, group):

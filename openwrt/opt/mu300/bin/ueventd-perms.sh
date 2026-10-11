@@ -85,13 +85,14 @@ for n in /dev/spipe_nr9; do [ -e "$n" ] && chown $V:$VG "$n" && chmod 0660 "$n";
 for n in /dev/spipe_nr14; do [ -e "$n" ] && chown 0:0 "$n" && chmod 0600 "$n"; done
 for n in /dev/snv_nr; do [ -e "$n" ] && chown $V:$VG "$n" && chmod 0660 "$n"; done
 for n in /dev/vser; do [ -e "$n" ] && chown $V:$VG "$n" && chmod 0660 "$n"; done
+for n in /dev/ttyGS*; do [ -e "$n" ] && chown 0:0 "$n" && chmod 0600 "$n"; done
 for n in /dev/ion; do [ -e "$n" ] && chown 0:$GPU "$n" && chmod 0660 "$n"; done
 for n in /dev/sprd_ion; do [ -e "$n" ] && chown 0:$GPU "$n" && chmod 0660 "$n"; done
 for n in /dev/sprd_dmabuf; do [ -e "$n" ] && chown 0:$GPU "$n" && chmod 0660 "$n"; done
 for n in /dev/dma_heap/uncached_carveout_mm; do [ -e "$n" ] && chown 0:$GPU "$n" && chmod 0660 "$n"; done
 for n in /dev/dma_heap/uncached_carveout_oem; do [ -e "$n" ] && chown 0:$GPU "$n" && chmod 0660 "$n"; done
 for n in /dev/dma_heap/carveout_fd; do [ -e "$n" ] && chown 0:$GPU "$n" && chmod 0660 "$n"; done
-for n in /dev/gsp; do [ -e "$n" ] && chown 0:$GPU "$n" && chmod 0660 "$n"; done
+for n in /dev/gsp; do [ -e "$n" ] && chown $V:0 "$n" && chmod 0660 "$n"; done
 for n in /dev/mali0; do [ -e "$n" ] && chown 0:$GPU "$n" && chmod 0660 "$n"; done
 for n in /dev/pvr_sync; do [ -e "$n" ] && chown 0:$GPU "$n" && chmod 0660 "$n"; done
 for n in /dev/sprd_jpg; do [ -e "$n" ] && chown $V:0 "$n" && chmod 0660 "$n"; done
@@ -106,6 +107,7 @@ for n in /dev/sprd_image; do [ -e "$n" ] && chown $V:0 "$n" && chmod 0660 "$n"; 
 for n in /dev/sprd_isp; do [ -e "$n" ] && chown $V:0 "$n" && chmod 0660 "$n"; done
 for n in /dev/sprd_sensor; do [ -e "$n" ] && chown $V:0 "$n" && chmod 0660 "$n"; done
 for n in /dev/sprd_cpp; do [ -e "$n" ] && chown $V:0 "$n" && chmod 0660 "$n"; done
+for n in /dev/input/event*; do [ -e "$n" ] && chown 0:0 "$n" && chmod 0600 "$n"; done
 for n in /dev/map_user; do [ -e "$n" ] && chown $V:$VG "$n" && chmod 0660 "$n"; done
 for n in /dev/iio:device*; do [ -e "$n" ] && chown $V:$VG "$n" && chmod 0660 "$n"; done
 for n in /dev/rtc*; do [ -e "$n" ] && chown 0:$VG "$n" && chmod 0660 "$n"; done
@@ -428,6 +430,7 @@ for n in /sys/module/sensorhub/parameters/pressure_firms; do [ -e "$n" ] && chow
 for n in /sys/module/sensorhub/parameters/light_firms; do [ -e "$n" ] && chown $V:0 "$n"; done
 for n in /sys/module/sensorhub/parameters/prox_firms; do [ -e "$n" ] && chown $V:0 "$n"; done
 for n in /sys/module/sensorhub/parameters/color_temp_firms; do [ -e "$n" ] && chown $V:0 "$n"; done
+for n in /sys/module/firmware_class/parameters/path; do [ -e "$n" ] && chown 0:0 "$n" && chmod 0600 "$n"; done
 for n in /sys/module/sensorhub/parameters/gryo_firms; do [ -e "$n" ] && chmod 0660 "$n"; done
 for n in /sys/module/sensorhub/parameters/acc_firms; do [ -e "$n" ] && chmod 0660 "$n"; done
 for n in /sys/module/sensorhub/parameters/mag_firms; do [ -e "$n" ] && chmod 0660 "$n"; done
@@ -453,6 +456,7 @@ for n in /sys/module/sensorhub/parameters/pressure_firms; do [ -e "$n" ] && chow
 for n in /sys/module/sensorhub/parameters/light_firms; do [ -e "$n" ] && chown $V:0 "$n"; done
 for n in /sys/module/sensorhub/parameters/prox_firms; do [ -e "$n" ] && chown $V:0 "$n"; done
 for n in /sys/module/sensorhub/parameters/color_temp_firms; do [ -e "$n" ] && chown $V:0 "$n"; done
+for n in /sys/module/firmware_class/parameters/path; do [ -e "$n" ] && chown 0:0 "$n" && chmod 0600 "$n"; done
 for n in /sys/module/sensorhub/parameters/gryo_firms; do [ -e "$n" ] && chmod 0660 "$n"; done
 for n in /sys/module/sensorhub/parameters/acc_firms; do [ -e "$n" ] && chmod 0660 "$n"; done
 for n in /sys/module/sensorhub/parameters/mag_firms; do [ -e "$n" ] && chmod 0660 "$n"; done
