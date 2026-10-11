@@ -706,6 +706,8 @@ class Lock(UpdateBase):
 
     def setUp(self):
         super().setUp()
+        # the updater makes its own directory under /run (there on both systems), never /run itself
+        (self.tmp / 'locks').mkdir(mode=0o700)
         self.lock = self.tmp / 'locks' / 'mu300-update'
         self.holders = []
 
@@ -765,26 +767,91 @@ class Lock(UpdateBase):
     def test_without_flock_a_pid_directory(self):
         for shell in self.each_shell():
             self.check_second_run(shell, self.NO_FLOCK)
-            self.assertFalse((self.lock.parent / 'mu300-update.d').exists())    # lock_drop ran at the end of take
-            # a directory left by a holder that is gone (a pid nothing has) is taken over
-            d = self.lock.parent / 'mu300-update.d'
+            d = self.lock / 'held'
+            self.assertFalse(d.exists())    # lock_drop ran at the end of take
+            # a directory left by a holder that is gone (a pid nothing has) is taken over, and says so
             d.mkdir(); (d / 'pid').write_text('999999\n')
             rc, err, out = self.take(shell, self.NO_FLOCK)
             self.assertEqual((rc, out), (0, 'taken\n'), err)
+            self.assertIn('taking over the lock of a mu300-update that is gone (pid 999999)', err)
             self.assertFalse(d.exists())
-            # one being made (no pid written yet) is a holder, not stale
-            d.mkdir()
+            # what is not a pid (never run, never echoed) is a run that is gone too
+            d.mkdir(); (d / 'pid').write_text('12; rm -rf / # $(reboot)\n')
             rc, err, out = self.take(shell, self.NO_FLOCK)
-            self.assertEqual((rc, err.strip(), out), (1, 'another mu300-update is running', ''))
-            shutil.rmtree(d)
+            self.assertEqual((rc, out), (0, 'taken\n'), err)
+            self.assertIn('taking over the lock of a mu300-update that is gone\n', err)
+            self.assertNotIn('rm -rf', err)
+            # one with no pid at all (its holder went between making it and writing its pid) is given a second
+            # to write it, then taken over too: never a denial for good
+            d.mkdir()
+            t = time.monotonic()
+            rc, err, out = self.take(shell, self.NO_FLOCK)
+            self.assertEqual((rc, err.strip(), out), (0, 'taking over the lock of a mu300-update that is gone', 'taken\n'))
+            self.assertGreater(time.monotonic() - t, 0.9)
+            self.assertFalse(d.exists())
+            # a live process that is not a mu300-update (this test run) is a reused pid, not a holder - where
+            # /proc can tell; without it (macOS) only "alive" is known, and it counts as a holder
+            d.mkdir(); (d / 'pid').write_text(f'{os.getpid()}\n')
+            rc, err, out = self.take(shell, self.NO_FLOCK)
+            if os.path.exists('/proc/self/cmdline'):
+                self.assertEqual((rc, out), (0, 'taken\n'), err)
+                self.assertFalse(d.exists())
+            else:
+                self.assertEqual((rc, err.strip(), out), (1, f'another mu300-update is running (pid {os.getpid()})', ''))
+                shutil.rmtree(d)
 
     def test_the_pid_file_names_the_holder_with_flock(self):
         if not shutil.which('flock'):
             self.skipTest('no flock here')
         for shell in self.each_shell():
             pid = self.hold(shell)
-            self.assertEqual(self.lock.read_text().strip(), str(pid))
+            self.assertEqual((self.lock / 'lock').read_text().strip(), str(pid))
             self.end_holders()
+            # the file is only informative once the holder is gone: the kernel released the lock
+            rc, err, out = self.take(shell)
+            self.assertEqual((rc, out), (0, 'taken\n'), err)
+            # a lock file that is not a regular file is refused, the run does not go on unlocked
+            (self.lock / 'lock').unlink(); (self.lock / 'lock').symlink_to(self.tmp / 'elsewhere')
+            rc, err, out = self.take(shell)
+            self.assertEqual((rc, out), (1, ''))
+            self.assertIn('is not a regular file; not running', err)
+            (self.lock / 'lock').unlink()
+
+    def test_refuses_a_lock_path_that_is_not_its_own_directory(self):
+        # nothing runs unlocked: a link at the path (to anywhere), a directory anyone else can write, or one that
+        # cannot be made stop the run with exit 1 before it touches anything
+        elsewhere = self.tmp / 'elsewhere'
+        elsewhere.mkdir(mode=0o700)
+        for shell in self.each_shell():
+            for prelude in (':', self.NO_FLOCK):
+                shutil.rmtree(self.lock, ignore_errors=True)
+                self.lock.symlink_to(elsewhere)
+                rc, err, out = self.take(shell, prelude)
+                self.assertEqual((rc, out), (1, ''), err)
+                self.assertIn(f'cannot lock: {self.lock} is a symbolic link; not running', err)
+                self.assertEqual(list(elsewhere.iterdir()), [])
+                self.lock.unlink()
+                self.lock.mkdir(mode=0o777)
+                rc, err, out = self.take(shell, prelude)
+                self.assertEqual((rc, out), (1, ''), err)
+                self.assertIn('is not a directory of mode 700; not running', err)
+                self.assertEqual(list(self.lock.iterdir()), [])
+                self.lock.rmdir()
+                self.lock.write_text('')
+                rc, err, out = self.take(shell, prelude)
+                self.assertEqual((rc, out), (1, ''), err)
+                self.assertIn('is not a directory of mode 700; not running', err)
+                self.lock.unlink()
+                if os.geteuid() != 0:
+                    self.lock.parent.chmod(0o500)
+                    rc, err, out = self.take(shell, prelude)
+                    self.lock.parent.chmod(0o700)
+                    self.assertEqual((rc, out), (1, ''), err)
+                    self.assertIn(f'cannot lock: cannot make {self.lock}; not running', err)
+            # made by the run itself: mode 700
+            rc, err, out = self.take(shell)
+            self.assertEqual((rc, out), (0, 'taken\n'), err)
+            self.assertEqual(self.lock.stat().st_mode & 0o777, 0o700)
 
     def test_what_changes_the_disk_locks_and_what_only_looks_does_not(self):
         src = (BIN / 'mu300-update').read_text()
@@ -794,8 +861,11 @@ class Lock(UpdateBase):
         self.assertEqual(set(m.group(1).split('|')), {'apply', 'boot', 'kernel', 'rollback', 'rollback-boot', 'clean', 'accounts'})
         self.assertLess(main.index('lock_take'), main.index('keepalive_start'))
         self.assertIn("lock_drop' EXIT", main)
-        # a lock file in $STAGE would go with "clean"
-        self.assertIn('LOCK=${MU300_LOCK:-/var/lock/mu300-update}', src)
+        # under /run (root's own, so no login user can plant a link or a lock there), not in $STAGE (clean deletes
+        # it) nor /tmp or /var/lock (anyone's)
+        self.assertIn('LOCK=${MU300_LOCK:-/run/mu300-update}', src)
+        self.assertNotIn('/var/lock/mu300-update', src)
+        self.assertNotIn('going on without', src)
 
 
 if __name__ == '__main__':
