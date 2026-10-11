@@ -331,7 +331,11 @@ run() {  # run [now]: now (retry) does not wait for the system to settle and doe
     trap 'rmdir "$RUNDIR/mu300-user-packages.lock" 2>/dev/null' EXIT
     trap 'exit 130' INT TERM HUP
     _left=$(upk_pending "$D")
-    if [ -z "$_left" ]; then finish; return 0; fi
+    if [ -z "$_left" ]; then
+        # nothing left: a state that still waits (an older retry left pending) is over
+        case $(state) in pending|running|offline|gave-up) set_state done ;; esac
+        finish; return 0
+    fi
     [ -n "${1:-}" ] || sleep "$SETTLE"
     case $(state) in
         skipped) finish; return 0 ;;
@@ -421,7 +425,9 @@ case ${1:-status} in
     retry)
         [ -s "$D/wanted" ] || { echo "nothing to install again"; exit 0; }
         # a failure is tried again too: the feed may have it now
-        : > "$D/failed"; rm -f "$D/boots"; set_state pending
+        : > "$D/failed"; rm -f "$D/boots"
+        # pending only with something to install: with everything back already it is done (was: pending for good)
+        if [ -n "$(upk_pending "$D")" ]; then set_state pending; else set_state done; fi
         run now; status ;;
     skip)
         [ -s "$D/wanted" ] || { echo "nothing to skip"; exit 0; }

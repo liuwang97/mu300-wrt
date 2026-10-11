@@ -680,6 +680,23 @@ class Service(ShellTest):
             self.assertEqual(self.rec('state'), 'done\n')
             self.assertEqual(self.run_upk(shell, 'dismiss').returncode, 0)
 
+    def test_retry_with_everything_back_is_done(self):
+        # (device test, U30) retry after all were back left "pending" for good: "0 packages are installed again at the
+        # next boot", the panel "Not installed yet"
+        for shell in self.each_shell():
+            self.setup_openwrt(listening=True)
+            write(self.R, {'etc/mu300/user-packages/done': 'luci-app-openclash\nluci-theme-argon\n',
+                           'etc/mu300/user-packages/state': 'done\n'})
+            r = self.run_upk(shell, 'retry')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(self.rec('state'), 'done\n')
+            self.assertIn('2 of 2 packages', self.run_upk(shell, 'brief').stdout)
+            self.assertFalse((self.tmp / 'pm.log').exists())
+            # a record an older retry left pending: the next run ends it
+            write(self.R, {'etc/mu300/user-packages/state': 'pending\n'})
+            self.run_upk(shell, 'run')
+            self.assertEqual(self.rec('state'), 'done\n')
+
     def test_installed_by_hand_meanwhile(self):
         for shell in self.each_shell():
             self.setup_openwrt(listening=True)
@@ -791,6 +808,9 @@ class Wiring(ShellTest):
         b = (TOP / 'openwrt/build-rootfs.sh').read_text()
         self.assertIn('mu300-traffic mu300-user-packages; do', b)
         self.assertIn('upk_manual $R openwrt) > $R/etc/mu300/image-packages', b)
+        # no stray config file in the image itself (an update would add it to every device): removed from $R, checked
+        self.assertIn('rm -f $R/etc/config/attendedsysupgrade $R/etc/config/*.apk-new', b)
+        self.assertLess(b.index('rm -f $R/etc/config/attendedsysupgrade'), b.index('cd $R && tar -czf'))
         a = (TOP / 'rootfs/assemble.sh').read_text()
         self.assertIn('mu300-user-packages.service:multi-user.target', a)
         self.assertIn('upk_manual $R ubuntu) > $R/etc/mu300/image-packages', a)

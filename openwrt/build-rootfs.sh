@@ -290,6 +290,13 @@ for b in power wps rfkill; do
     printf "#!/bin/sh\n# mu300-buttons owns the keys (see /opt/mu300/bin/mu300-buttons)\nexit 0\n" > "$R/etc/rc.button/$b"
     chmod 0755 "$R/etc/rc.button/$b"
 done
+# no config file of a removed package and no .apk-new copy in the image: an update adds every etc/config file of the
+# image the device lacks (mu300-update), so these would land on every device (v2026.10.18, built before the cleanup
+# above, had both). Removed again here, in the image itself, and checked.
+rm -f $R/etc/config/attendedsysupgrade $R/etc/config/*.apk-new
+for f in $R/etc/config/attendedsysupgrade $R/etc/config/*.apk-new; do
+    [ ! -e "$f" ] || { echo "stray config file in the image: $f" >&2; exit 1; }
+done
 # what apk installed, for comparing two builds (packages on the release feed are not pinned)
 apk list --installed | sort > $R/etc/mu300/packages.txt
 # the packages the image asks for (its world file): an update installs the others again, the ones added on the

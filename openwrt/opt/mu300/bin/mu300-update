@@ -667,7 +667,7 @@ apply_one() {  # apply_one OS TAG
 #                ./lib/vpn, ./service, ./etc and ./hooks/link, ./hooks/unlink - which make one system use it
 #                (sh hooks/link SYSROOT, "" for the running system), so the images carry no mu300-vpn at all.
 EXTRA=$DISK/extra
-EXTRAS="vpn lang vpn-mihomo"
+EXTRAS="vpn lang vpn-mihomo panel"
 VPN_REPO=dikeckaan/mu300-linux-vpn
 # MU300_VPN_URL: another place with the module's files and SHA256SUMS (a pinned tag: .../releases/download/v1.0.0,
 # or a local server)
@@ -679,6 +679,7 @@ extra_desc() {
         vpn) echo "the VPN toolkit (mu300-vpn with Xray-core, hev-socks5-tunnel, sing-box), the module of github.com/$VPN_REPO (about 40 MB to download, 120 MB installed)" ;;
         lang) echo "LuCI (the web interface) in 40 more languages, the MU300 panel in 29 of them; OpenWrt only (about 2 MB to download, 6 MB installed)" ;;
         vpn-mihomo) echo "mihomo (Clash.Meta), the engine of mu300-vpn's mihomo profiles, from the same module repository (about 15 MB to download, 40 MB installed)" ;;
+        panel) echo "the web panel for Ubuntu: Cockpit (terminal, logs, services) and the MU300 page, on the LAN only (port 9090); Cockpit from Ubuntu's archive (about 12 MB, 45 MB installed), or offline with --from mu300-extra-panel-offline.tar.gz" ;;
     esac
 }
 extra_asset() { echo "mu300-extra-$1.tar.gz"; }
@@ -744,6 +745,12 @@ extra_tree_ok() {
         ! printf '%s\n' "$_t" | LC_ALL=C grep -Evxq -- "$MODULE_ENTRY"
         return
     fi
+    # panel: its four files, bin/, the Cockpit page (cockpit/mu300/<files>) and, offline, Cockpit's packages for each
+    # Ubuntu release (debs/<release>/<name>.deb)
+    if [ "$1" = panel ]; then
+        ! printf '%s\n' "$_t" | LC_ALL=C grep -Evxq -- "$PANEL_ENTRY"
+        return
+    fi
     # the other extras: their four files and programs in bin/, nothing else (whatever a tar did to the names)
     if [ "$1" != lang ]; then
         ! printf '%s\n' "$_t" | LC_ALL=C grep -Evxq -- '\.|\./(name|release|components|manifest|bin|bin/[A-Za-z0-9._+-]+)'
@@ -786,6 +793,7 @@ lang_tar_ok() {
 # backslash, $, backquote, <, >, & or control character: it goes into /etc/config/luci, into JSON and into a page)
 # ./release: a tag
 EXTRA_RELEASE='[A-Za-z0-9._-]{1,40}'
+PANEL_ENTRY='\.|\./(name|release|components|manifest|bin|bin/mu300-panel|cockpit|cockpit/mu300|cockpit/mu300/[A-Za-z0-9_-][A-Za-z0-9._-]*|debs|debs/[0-9]{2}\.[0-9]{2}|debs/[0-9]{2}\.[0-9]{2}/[A-Za-z0-9][A-Za-z0-9._+~-]*\.deb)'
 MODULE_ENTRY='\.|\./[A-Za-z0-9_+-][A-Za-z0-9._+-]*(/[A-Za-z0-9_+-][A-Za-z0-9._+-]*){0,3}'
 LANG_LINE='[a-z]{2,3}(_[a-z]{2})?	[^	"`$<>&\\'"'"'[:cntrl:]]{1,100}'
 
