@@ -51,6 +51,8 @@ var callFwdSet = rpc.declare({ object: 'mu300dash', method: 'forward_set', param
 var callFwdTest = rpc.declare({ object: 'mu300dash', method: 'forward_test', expect: { '': {} }, nobatch: true });
 var callCpuGet = rpc.declare({ object: 'mu300dash', method: 'cpu_get', expect: { '': {} }, nobatch: true });
 var callCpuSet = rpc.declare({ object: 'mu300dash', method: 'cpu_set', params: [ 'profile' ], expect: { '': {} }, nobatch: true });
+var callPackagesGet = rpc.declare({ object: 'mu300dash', method: 'packages_get', expect: { '': {} }, nobatch: true });
+var callPackagesAct = rpc.declare({ object: 'mu300dash', method: 'packages_act', params: [ 'op' ], expect: { '': {} }, nobatch: true });
 var callTrafficGet = rpc.declare({ object: 'mu300dash', method: 'traffic_get', expect: { '': {} }, nobatch: true });
 var callTrafficSet = rpc.declare({ object: 'mu300dash', method: 'traffic_set', params: [ 'op', 'value' ], expect: { '': {} }, nobatch: true });
 /* System > Terminal: a one-time token for ttyd (rpcd mu300term, ACL luci-app-mu300-terminal) */
@@ -691,6 +693,7 @@ return baseclass.extend({
 	callTtlGet: callTtlGet, callTtlSet: callTtlSet,
 	callFwdGet: callFwdGet, callFwdSet: callFwdSet, callFwdTest: callFwdTest,
 	callCpuGet: callCpuGet, callCpuSet: callCpuSet,
+	callPackagesGet: callPackagesGet, callPackagesAct: callPackagesAct,
 	callTrafficGet: callTrafficGet, callTrafficSet: callTrafficSet, callNetDev: callNetDev, netDev: netDev,
 	callTermToken: callTermToken,
 	carrierName: carrierName, qLevel: qLevel, qLevelLabel: qLevelLabel, qLabel: qLabel, qCol: qCol, qScore: qScore,

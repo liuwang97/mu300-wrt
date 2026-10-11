@@ -47,7 +47,7 @@ FW4PATCH=$TOP/openwrt/patches/fw4-sipa-offload.patch
 # fw4 reload/restart on the 5.4 kernel: its old flowtable goes first, in a transaction of its own (#95, FINDINGS 38)
 FW4FTPATCH=$TOP/openwrt/patches/fw4-old-kernel-flowtable.patch
 [ -s "$FW4FTPATCH" ] || { echo "missing $FW4FTPATCH" >&2; exit 1; }
-# never an access point on a DFS channel: the SC2355 driver has no radar detection (FINDINGS 40)
+# never an access point on a DFS channel: the SC2355 driver has no radar detection (FINDINGS 42)
 NODFSPATCH=$TOP/openwrt/patches/wifi-scripts-no-dfs.patch
 [ -s "$NODFSPATCH" ] || { echo "missing $NODFSPATCH" >&2; exit 1; }
 # the docker mounts of the panel system, as the positional parameters (OUT is read above): each path stays one
@@ -201,7 +201,7 @@ grep -q sipa_eth0 $R/usr/share/ucode/fw4.uc || { echo "fw4 patch not applied" >&
 patch --batch --fuzz=0 -d $R -p1 -i /in/fw4-old-kernel-flowtable.patch
 grep -q drop_old_flowtable $R/sbin/fw4 || { echo "fw4 flowtable patch not applied" >&2; exit 1; }
 # wifi-scripts: a driver without radar detection (no radar_detect_widths, the SC2355) never gets an access point on a
-# DFS channel - hostapd fails start_dfs_cac and the hotspot stays down otherwise (FINDINGS 40)
+# DFS channel - hostapd fails start_dfs_cac and the hotspot stays down otherwise (FINDINGS 42)
 patch --batch --fuzz=0 -d $R -p1 -i /in/wifi-scripts-no-dfs.patch
 grep -q "device_no_dfs(config);" $R/usr/share/ucode/wifi/hostapd.uc || { echo "wifi-scripts DFS patch not applied" >&2; exit 1; }
 apk del patch >/dev/null   # out of packages.txt below, which lists what the image has
@@ -280,7 +280,7 @@ printf "%s\n" "${MU300_VERSION:-dev}" > $R/etc/mu300/image-version
 # enable the services (rc.common "enable" needs ubus, which is not running in the build container)
 # accounts still those of the image until an installer or mu300-update puts the device ones in place
 : > $R/etc/.mu300-accounts-from-image
-for s in mu300-accounts mu300-vendor mu300-hw mu300-post mu300-toolkit mu300-cpu mu300-atd mu300-modem-log mu300-wifi-client mu300-buttons mu300-power mu300-traffic mu300-adbd; do
+for s in mu300-accounts mu300-vendor mu300-hw mu300-post mu300-toolkit mu300-cpu mu300-atd mu300-modem-log mu300-wifi-client mu300-buttons mu300-power mu300-traffic mu300-user-packages mu300-adbd; do
     n=$(sed -n "s/^START=//p" $R/etc/init.d/$s)
     ln -sf ../init.d/$s $R/etc/rc.d/S$n$s
 done
@@ -312,8 +312,19 @@ for b in power wps rfkill; do
     printf "#!/bin/sh\n# mu300-buttons owns the keys (see /opt/mu300/bin/mu300-buttons)\nexit 0\n" > "$R/etc/rc.button/$b"
     chmod 0755 "$R/etc/rc.button/$b"
 done
+# no config file of a removed package and no .apk-new copy in the image: an update adds every etc/config file of the
+# image the device lacks (mu300-update), so these would land on every device (v2026.10.18, built before the cleanup
+# above, had both). Removed again here, in the image itself, and checked.
+rm -f $R/etc/config/attendedsysupgrade $R/etc/config/*.apk-new
+for f in $R/etc/config/attendedsysupgrade $R/etc/config/*.apk-new; do
+    [ ! -e "$f" ] || { echo "stray config file in the image: $f" >&2; exit 1; }
+done
 # what apk installed, for comparing two builds (packages on the release feed are not pinned)
 apk list --installed | sort > $R/etc/mu300/packages.txt
+# the packages the image asks for (its world file): an update installs the others again, the ones added on the
+# device (mu300-update, upk_record; read with its own function)
+(MU300_LIB=1; . /in/opt-mu300/bin/mu300-update; upk_manual $R openwrt) > $R/etc/mu300/image-packages
+[ -s $R/etc/mu300/image-packages ] || { echo "no package list for etc/mu300/image-packages" >&2; exit 1; }
 # busybox PATH is /usr/sbin:/usr/bin:/sbin:/bin, so the commands go into /usr/bin (the same list as Ubuntu)
 for c in $(cat /in/opt-mu300/lib/path-commands); do ln -sf /opt/mu300/bin/$c $R/usr/bin/$c; done
 # no kernel of its own: OpenWrt kmods (6.12) and grub are unused on this device

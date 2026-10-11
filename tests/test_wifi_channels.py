@@ -1,4 +1,4 @@
-"""The hotspot never goes onto a DFS channel (FINDINGS 40: the SC2355 driver has no radar detection, hostapd's
+"""The hotspot never goes onto a DFS channel (FINDINGS 42: the SC2355 driver has no radar detection, hostapd's
 start_dfs_cac() fails and the AP stays down).
 
 * `lib/wifi-channels.sh`: the country table, a DFS or disallowed channel replaced with one line why, "auto", widths;

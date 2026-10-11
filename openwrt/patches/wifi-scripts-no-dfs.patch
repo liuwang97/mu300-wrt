@@ -19,7 +19,7 @@
  }
 +
 +/* mu300: an AP on a DFS channel needs radar detection; without it hostapd's start_dfs_cac() fails and the AP never
-+ * comes up (the SC2355 driver: mu300-linux docs/FINDINGS.md 40). For such a driver an explicit DFS channel becomes
++ * comes up (the SC2355 driver: mu300-linux docs/FINDINGS.md 42). For such a driver an explicit DFS channel becomes
 + * 36, else 149, else the first channel the regulatory domain allows without DFS (the width shrinks to what fits),
 + * and "auto" leaves the DFS channels out. */
 +function device_no_dfs(config) {
