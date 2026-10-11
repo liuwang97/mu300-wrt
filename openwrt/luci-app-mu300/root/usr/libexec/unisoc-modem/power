@@ -41,7 +41,9 @@ get() {
     _ign=$(echo "$_st" | sed -n 's/^ignored in power.conf: //p')
     _since=$(echo "$_st" | sed -n 's/^idle timer: last client \([0-9]*\) s ago$/\1/p')
     _bat=null
+    # mu300-power decides whether there is a battery (the F50's fuel gauge reports one that is not there)
     for _d in "$R"/sys/class/power_supply/*; do
+        echo "$_st" | grep -qx 'battery: none' && break
         [ "$(rd "$_d/type")" = Battery ] || continue
         [ ! -f "$_d/present" ] || [ "$(rd "$_d/present")" = 1 ] || continue
         _bat=$(printf '{"capacity":%s,"status":%s,"mv":%s,"ma":%s,"temp":%s}' "$(jnum "$(rd "$_d/capacity")")" \
@@ -53,8 +55,8 @@ get() {
     for _d in "$R"/sys/class/power_supply/*; do
         case $(rd "$_d/type") in USB|Mains) ;; *) continue ;; esac
         _ut=$(rd "$_d/usb_type" | sed -n 's/.*\[\([A-Za-z_]*\)\].*/\1/p')
-        _chg=$(printf '{"status":%s,"online":%s,"usb_type":%s}' "$(jstr "$(lower "$(rd "$_d/status")")")" \
-            "$(jnum "$(rd "$_d/online")")" "$(jstr "$_ut")")
+        _chg=$(printf '{"status":%s,"online":%s,"usb_type":%s,"input_ma":%s}' "$(jstr "$(lower "$(rd "$_d/status")")")" \
+            "$(jnum "$(rd "$_d/online")")" "$(jstr "$_ut")" "$(jnum "$(milli "$(rd "$_d/input_current_limit")")")")
         break
     done
     _ignj=; _sep=

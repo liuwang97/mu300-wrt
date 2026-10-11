@@ -1,6 +1,8 @@
 #!/bin/sh
 # mu300-dash-lock -- read and apply the modem's lock settings for the dashboard:
 #   mu300-dash-lock get                 read everything (5 short AT commands), emit JSON
+#   mu300-dash-lock get cached          the last reading only, no AT (the panel's request path)
+#   mu300-dash-lock refresh             a fresh reading into the cache, one at a time (started detached)
 #   mu300-dash-lock apply KIND VALUE    write one setting, then restart the protocol stack
 #   mu300-dash-lock replay [early]      boot hook: re-apply every enabled saved setting
 #   mu300-dash-lock reset               everything back to automatic, one stack restart,
@@ -676,16 +678,38 @@ do_apply_quiet() {
     esac
 }
 
+# refresh: "get fresh" for the background, one at a time. The panel never reads the locks inside a request any more
+# (eight AT round trips, and on a busy or silent channel each waited out its whole budget, far past rpcd's 30 s); it
+# starts this and serves the cache. A second refresh while one runs has nothing to add, so it leaves at once.
+READ_LCK=$RUNDIR/lock-read.lck
+do_refresh() {
+    local owner
+    while ! mkdir "$READ_LCK" 2>/dev/null; do
+        owner=$(cat "$READ_LCK/pid" 2>/dev/null)
+        # an empty pid is the moment between a live peer's mkdir and its write
+        [ -n "$owner" ] || exit 0
+        { tr '\0' ' ' < "/proc/$owner/cmdline"; } 2>/dev/null | grep -q '/unisoc-modem/lock' && exit 0
+        rm -rf "$READ_LCK"
+    done
+    echo $$ > "$READ_LCK/pid"
+    trap 'rm -rf "$READ_LCK" 2>/dev/null' EXIT INT TERM
+    do_get >/dev/null
+}
+
 case "${1:-}" in
     verify) verify_replay ;;
+    refresh) do_refresh ;;
     get)
         # default: serve the cache (instant); refresh it in the background when
-        # it is missing or stale. "get fresh" does the real seven-AT read.
-        if [ "${2:-}" = fresh ] || [ ! -s "$LOCKCACHE" ]; then
+        # it is missing or stale. "get fresh" does the real seven-AT read; "get
+        # cached" never touches the modem (the panel's request path).
+        if [ "${2:-}" = cached ]; then
+            :
+        elif [ "${2:-}" = fresh ] || [ ! -s "$LOCKCACHE" ]; then
             do_get >/dev/null
         else
             age=$(( $(date +%s) - $(date -r "$LOCKCACHE" +%s 2>/dev/null || echo 0) ))
-            [ "$age" -gt 600 ] && setsid "$0" get fresh >/dev/null 2>&1 &
+            [ "$age" -gt 600 ] && setsid "$0" refresh >/dev/null 2>&1 &
         fi
         emit_state
         ;;
@@ -694,5 +718,5 @@ case "${1:-}" in
     replay) do_replay "${2:-late}" ;;
     # run by sfun_restart_locked, under the radio lock
     sfun-restart) sfun_restart "${2:-late}" ;;
-    *)      echo "usage: $0 get [fresh] | apply KIND VALUE | reset | replay [early]" >&2; exit 2 ;;
+    *)      echo "usage: $0 get [fresh|cached] | refresh | apply KIND VALUE | reset | replay [early]" >&2; exit 2 ;;
 esac
