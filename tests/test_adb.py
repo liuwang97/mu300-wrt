@@ -251,14 +251,17 @@ class Gadget(ShellTest):
 
     def test_binds_again_when_functionfs_unbound_the_gadget(self):
         for shell in self.each_shell():
-            p = self.start(shell)
+            p = self.start(shell, MU300_ADBD_GRACE='20')   # 20 ticks of 0.1 s: a 2 s grace, a margin under load
             try:
+                # in the gadget and bound (linked comes first, inside the rebind: its bind must be over)
                 self.assertTrue(self.until(self.linked))
+                self.assertTrue(self.until(lambda: self.read('UDC') == self.UDC))
+                time.sleep(0.3)
                 # an adb connection ended: FunctionFS takes the gadget off the controller
                 (self.g / 'UDC').write_text('\n')
-                time.sleep(0.15)
+                time.sleep(0.5)
                 self.assertEqual('', self.read('UDC'))   # not at once (the grace for mu300-usb-reset)
-                self.assertTrue(self.until(lambda: self.read('UDC') == self.UDC), 'never bound again')
+                self.assertTrue(self.until(lambda: self.read('UDC') == self.UDC, timeout=15), 'never bound again')
                 self.assertTrue(self.linked())
             finally:
                 self.stop(p)
