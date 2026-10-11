@@ -137,4 +137,4 @@ class UeventdPerms(ShellTest):
         self.assertNotIn('mmcblk1p', out)
         self.assertIn('for n in /dev/block/mmcblk*rpmb; do', out)
         self.assertIn('for n in /dev/mmcblk*rpmb; do', out)
-        self.assertIn('for n in /dev/modem; do [ -e "$n" ] && chown 1000:1001', out)
+        self.assertIn('for n in /dev/modem; do [ -e "$n" ] && chown $V:$VG', out)

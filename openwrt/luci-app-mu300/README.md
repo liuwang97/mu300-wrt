@@ -14,6 +14,13 @@ performance - which sets the CPU governor and the per-cluster frequency limits
 (`mu300-cpu`, through the `unisoc-modem/cpu` adapter). It stays inside the hardware
 frequency table and never changes voltage, so the kernel keeps throttling at its
 thermal limit in every profile.
+The Terminal page (System) frames ttyd: `rpcd/mu300term` hands a LuCI session with
+the `luci-app-mu300-terminal` ACL a one-time token (one connection, 60 s), and ttyd's
+command, `/usr/libexec/mu300-terminal-login`, opens a root login for that token and
+nothing else, closing it after `ttyd.mu300.idle` seconds without activity. The image
+configures ttyd for it (`openwrt/luci-overlay/etc/config/ttyd`: the LAN address only,
+origin check, `url_arg`); the package alone does not install ttyd, and the page then
+says so.
 
 The dashboard follows LuCI's selected language. Its colors follow Aurora's existing
 tokens when present, or the official Bootstrap theme's light/dark tokens.

@@ -147,10 +147,16 @@ apk add wireguard-tools luci-proto-wireguard ppp-mod-pptp xl2tpd 6in4 6rd ds-lit
 [ -d /in/luci-plugin ] && apk add --allow-untrusted /in/luci-theme-aurora.apk >/dev/null
 # relay mode (panel system only): ra-deprecate sends its router advertisement through a raw ICMPv6 socket (#87)
 [ -d /in/luci-plugin ] && apk add ucode-mod-socket >/dev/null
+# System > Terminal (panel system only): ttyd, and luci-app-ttyd for its settings page and translations; the image
+# configures it (luci-overlay/etc/config/ttyd: LAN address only, a root shell only for a token of a LuCI session)
+[ -d /in/luci-plugin ] && apk add ttyd luci-app-ttyd >/dev/null
 # ujail drops CAP_PERFMON (38), which this 5.4 kernel does not know: jailed services (dnsmasq, ntpd) crash-loop
 apk del procd-ujail procd-seccomp >/dev/null 2>&1 || true
 # online firmware upgrades flash whole-disk armsr images: that would overwrite the eMMC, so remove them
 apk del luci-app-attendedsysupgrade attendedsysupgrade-common owut >/dev/null 2>&1 || true
+# what those leave in /etc/config, and the .apk-new copies the upgrade above writes beside a changed config: an update
+# adds every config file of the image the device does not have yet (mu300-update), and these belong to no package
+rm -f /etc/config/attendedsysupgrade /etc/config/*.apk-new
 # LuCI in Turkish and Simplified Chinese besides English, in both systems: the translation of luci-base and of
 # every LuCI app the image has that the feed translates (apk checks each package against the signed index). Their
 # own uci-defaults, run by apk here, register the languages in luci.languages; the other languages are the lang
@@ -196,6 +202,13 @@ if [ -d /in/luci-plugin ]; then
     cp -a /in/luci-plugin/root/. $R/
     cp -a /in/luci-plugin/htdocs/. $R/www/
     chmod 0755 $R/etc/init.d/unisoc-modem-ui $R/etc/hotplug.d/net/90-unisoc-usb-host $R/etc/hotplug.d/iface/90-unisoc-usb-host $R/usr/libexec/rpcd/mu300dash $R/usr/libexec/rpcd/mu300vpn $R/usr/libexec/unisoc-modem/*
+    chmod 0755 $R/usr/libexec/rpcd/mu300term $R/usr/libexec/mu300-terminal-login $R/etc/hotplug.d/iface/95-mu300-terminal
+    # the terminal is System > Terminal (the panel menu: the page, and the settings page of luci-app-ttyd); its own Services >
+    # Terminal frames ttyd without a token, which mu300-terminal-login refuses
+    rm -f $R/usr/share/luci/menu.d/luci-app-ttyd.json
+    # ttyd as luci-overlay configures it, never the package default (/bin/login on every LAN instance, no origin check)
+    grep -q "^	option command ./usr/libexec/mu300-terminal-login.$" $R/etc/config/ttyd &&
+        ! grep -q "/bin/login" $R/etc/config/ttyd || { echo "ttyd is not configured for the panel" >&2; exit 1; }
     # the panel catalogs, named as LuCI names the language (base.zh-cn.lmo: mu300.zh-cn.lmo)
     for f in /in/catalogs/mu300.*.lmo; do cp "$f" $R/usr/lib/lua/luci/i18n/; done
     [ -s $R/www/luci-static/aurora/main.css ] || { echo "Aurora theme assets missing" >&2; exit 1; }
@@ -215,6 +228,15 @@ uci -c $R/etc/config -q get luci.languages.zh_cn >/dev/null ||
     uci -c $R/etc/config set luci.languages.zh_cn="$(printf "\347\256\200\344\275\223\344\270\255\346\226\207 (Simplified Chinese)")"
 uci -c $R/etc/config commit luci
 uci -c $R/etc/config show luci.languages
+# SQM (openwrt-luci): the default queue (disabled) shapes the generic eth1, which the MU300 does not have, so LuCI
+# offered a device that is not there; it names the cellular uplink, sipa_eth0, instead
+if [ -f $R/etc/config/sqm ]; then
+    for q in $(uci -c $R/etc/config -q show sqm | sed -n "s/^sqm\.\([^.]*\)\.interface=.eth1.$/\1/p"); do
+        uci -c $R/etc/config set sqm.$q.interface=sipa_eth0
+    done
+    uci -c $R/etc/config commit sqm
+    uci -c $R/etc/config -q show sqm | grep -q "\.interface=.eth1.$" && { echo "SQM still names eth1" >&2; exit 1; }
+fi
 mv $R/sbin/sysupgrade $R/sbin/sysupgrade.openwrt && mv $R/usr/libexec/mu300-sysupgrade $R/sbin/sysupgrade
 M=$R/lib/modules/$KREL; mkdir -p $M
 cp /in/modules/*.ko $M/          # ubox kmodloader expects the modules flat in /lib/modules/<release>/
@@ -255,6 +277,9 @@ done
 if [ -d /in/luci-plugin ]; then
     n=$(sed -n "s/^START=//p" $R/etc/init.d/unisoc-modem-ui)
     ln -sf ../init.d/unisoc-modem-ui $R/etc/rc.d/S${n}unisoc-modem-ui
+    # stopped at shutdown: the operations log of the panel (mu300dash flush-ops) is kept for the next boot
+    n=$(sed -n "s/^STOP=//p" $R/etc/init.d/unisoc-modem-ui)
+    ln -sf ../init.d/unisoc-modem-ui $R/etc/rc.d/K${n}unisoc-modem-ui
     # the SMS pool behind the panel (K69, D11): openwrt-luci only, the sms command stays the SMS tool of every system
     chmod 0755 $R/opt/mu300/bin/mu300-sms $R/opt/mu300/bin/mu300-smsd $R/opt/mu300/bin/mu300-sms-forward $R/etc/init.d/mu300-smsd
     n=$(sed -n "s/^START=//p" $R/etc/init.d/mu300-smsd)
@@ -268,6 +293,8 @@ if [ -d /in/luci-plugin ]; then
     n=$(sed -n "s/^START=//p" $R/etc/init.d/mu300-ndp)
     ln -sf ../init.d/mu300-ndp $R/etc/rc.d/S${n}mu300-ndp
     ln -sf /opt/mu300/bin/mu300-sms $R/usr/bin/mu300-sms
+    # System > Terminal: apk enabled ttyd itself
+    [ -e $R/etc/rc.d/S99ttyd ] || { echo "ttyd is not enabled" >&2; exit 1; }
 fi
 # the OpenWrt button handlers (power: a tap is poweroff; wps, rfkill) are replaced: mu300-buttons owns the keys
 mkdir -p $R/etc/rc.button
