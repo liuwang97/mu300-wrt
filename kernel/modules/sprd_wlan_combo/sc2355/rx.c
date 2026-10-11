@@ -412,6 +412,11 @@ void sc2355_queue_rx_buff_work(struct sprd_priv *priv, unsigned char id)
 {
 	struct sprd_work *misc_work;
 	struct sprd_vif *tmp_vif;
+	struct rx_mgmt *rx_mgmt = priv->hif.rx_mgmt;
+
+	/* MU300: no refill or flush for an RX ring that is being torn down (see sc2355_rx_deinit) */
+	if (!rx_mgmt || READ_ONCE(rx_mgmt->stopping))
+		return;
 
 	misc_work = sprd_alloc_work(0);
 	if (!misc_work) {
@@ -478,7 +483,8 @@ static void rx_refill_retry(struct work_struct *work)
 	    container_of(to_delayed_work(work), struct rx_mgmt, refill_retry);
 
 	/* back onto the ordered sprd_work queue: a refill must not run beside another one */
-	sc2355_queue_rx_buff_work(rx_mgmt->hif->priv, SPRD_PCIE_RX_ALLOC_BUF);
+	if (!READ_ONCE(rx_mgmt->stopping))
+		sc2355_queue_rx_buff_work(rx_mgmt->hif->priv, SPRD_PCIE_RX_ALLOC_BUF);
 }
 
 int sc2355_mm_fill_buffer(struct sprd_hif *hif)
@@ -488,6 +494,10 @@ int sc2355_mm_fill_buffer(struct sprd_hif *hif)
 	struct mem_mgmt *mm_entry = &rx_mgmt->mm_entry;
 	unsigned int num = 0, alloc_num;
 	bool had_trans, progress;
+
+	/* MU300: the ring is being torn down; a refill now would re-arm the timed retry */
+	if (READ_ONCE(rx_mgmt->stopping))
+		return 0;
 
 	/* MU300: a retry is already timed; RX events (mm_buffer_unlink) must not bypass the back-off */
 	if (delayed_work_pending(&rx_mgmt->refill_retry))
@@ -648,16 +658,21 @@ int sc2355_rx_deinit(struct sprd_hif *hif)
 	struct rx_mgmt *rx_mgmt = (struct rx_mgmt *)hif->rx_mgmt;
 
 	/*
-	 * MU300: before rx_mgmt is freed. sprd_work outlives this (sprd_core_free destroys it later), so stop the
-	 * timed retry first, then drop and drain whatever refill/flush it or an RX event queued there.
+	 * MU300: before rx_mgmt is freed. sprd_work outlives this (sprd_core_free destroys it later). The RX work
+	 * (mm_buffer_unlink) queues refills there and a refill arms the timed retry, so draining them in any one
+	 * order leaves a window for the others: stopping first (from kanoqwq/mu300-linux) makes every producer a
+	 * no-op, then the timer, the RX producers and sprd_work are drained, and the timer once more for a refill
+	 * that had passed its stopping check before it was set.
 	 */
+	WRITE_ONCE(rx_mgmt->stopping, true);
 	cancel_delayed_work_sync(&rx_mgmt->refill_retry);
-	sprd_clean_work(hif->priv);
 	flush_workqueue(rx_mgmt->rx_queue);
 	destroy_workqueue(rx_mgmt->rx_queue);
 
 	flush_workqueue(rx_mgmt->rx_net_workq);
 	destroy_workqueue(rx_mgmt->rx_net_workq);
+	sprd_clean_work(hif->priv);
+	cancel_delayed_work_sync(&rx_mgmt->refill_retry);
 
 	sprd_deinit_msg(&rx_mgmt->rx_list);
 

@@ -1574,18 +1574,24 @@ static int iface_notify_init(struct sprd_priv *priv)
 {
 	int ret = 0;
 
-	atomic_notifier_chain_register(&wcn_reset_notifier_list,
-				       &iface_host_reset_cb);
-
+	/*
+	 * MU300 (from kanoqwq/mu300-linux): the WCN reset notifier last, and every step undone when a later one
+	 * fails. The vendor registered the notifier first and returned on a failure with it (and the misc device,
+	 * and the inetaddr notifier) still registered: the probe then freed priv, and the next WCN reset called
+	 * iface_host_reset() on it. A reset before misc_register() also queued the FW_ERROR uevent for a misc
+	 * device that had no this_device yet, and a failed misc_register() went on as if it had worked.
+	 */
 	ret = misc_register(&wlan_misc_device);
-	if (ret)
+	if (ret) {
 		pr_err("wlan misc dev register fail\n");
+		return ret;
+	}
 
 	ret = register_inetaddr_notifier(&iface_inetaddr_cb);
 	if (ret) {
 		pr_err("%s failed to register inetaddr notifier(%d)!\n",
 		       __func__, ret);
-		return ret;
+		goto err_misc;
 	}
 
 	if (priv->fw_capa & SPRD_CAPA_NS_OFFLOAD) {
@@ -1595,10 +1601,21 @@ static int iface_notify_init(struct sprd_priv *priv)
 			pr_err
 			    ("%s failed to register inet6addr notifier(%d)!\n",
 			     __func__, ret);
-			return ret;
+			goto err_inet;
 		}
 	}
 
+	ret = atomic_notifier_chain_register(&wcn_reset_notifier_list,
+					     &iface_host_reset_cb);
+	if (!ret)
+		return 0;
+
+	if (priv->fw_capa & SPRD_CAPA_NS_OFFLOAD)
+		unregister_inet6addr_notifier(&iface_inet6addr_cb);
+err_inet:
+	unregister_inetaddr_notifier(&iface_inetaddr_cb);
+err_misc:
+	misc_deregister(&wlan_misc_device);
 	return ret;
 }
 
@@ -1848,6 +1865,17 @@ static int iface_core_init(struct device *dev, struct sprd_priv *priv)
 	sprd_tcp_ack_init(priv);
 	sprd_setup_wiphy(wiphy, priv);
 	sprd_vendor_init(priv, wiphy);
+	/*
+	 * MU300: the phy's permanent address (/sys/class/ieee80211/phy0/macaddress) was all zeros. OpenWrt's wifi
+	 * scripts derive the AP's address from it, and an address that differs from the one the firmware uses breaks
+	 * the WPA handshake. The factory address from LK is what wlan0 gets as well (iface_set_mac_addr()); without
+	 * one the phy keeps no address, as before, and wlan0 its random one.
+	 * (After a community contribution, the u30air charge2 build.)
+	 */
+	if (!is_valid_ether_addr(priv->default_mac))
+		iface_bootargs_mac(priv->default_mac);
+	if (is_valid_ether_addr(priv->default_mac))
+		ether_addr_copy(wiphy->perm_addr, priv->default_mac);
 	set_wiphy_dev(wiphy, dev);
 	ret = wiphy_register(wiphy);
 	if (ret) {

@@ -225,6 +225,11 @@ Install the VPN module (about 40 MB more to download, 120 MB on the device)? (ye
 Downloading the VPN module	正在下载 VPN 模块
 extras:         {1}	扩展组件：      {1}
 none	无
+Allow adb (adb shell, push, pull) to Linux over USB from this computer? Its adb key (~/.android/adbkey.pub) gets a root shell (yes/no)	允许这台电脑通过 USB 对 Linux 使用 adb（adb shell、push、pull）吗？它的 adb 密钥（~/.android/adbkey.pub）将获得 root shell (是/否)
+no adb key of this computer to authorise ({1})	这台电脑没有可授权的 adb 密钥（{1}）
+adb to Linux:   {1}	Linux adb：     {1}
+on, for this computer	开启，仅限这台电脑
+off	关闭
 Android runs from slot {1}; Linux goes to slot {2} (boot_{2})	Android 从槽位 {1} 运行；Linux 将安装到槽位 {2}（boot_{2}）
 CREATE new ext4 (erases what is there)	新建 ext4（会清除上面的内容）
 Dry run: nothing was written.	试运行：未写入任何内容。
@@ -317,3 +322,7 @@ used by this installation and removed from {1}:{2}	已在本次安装中使用�
 could not remove{1} from {2}; remove it by hand	无法从 {2} 中删除：{1}；请手动删除
 password:       kept: the accounts and passwords of the installed system are not changed ({1} in {2} sets a new one)	密码：          保留：已安装系统的账户和密码不变（在 {2} 中写入 {1} 可设置新密码）
 password for {1}: unchanged (the one this system had)	{1} 的密码：未改变（仍为该系统原来的密码）
+The web panel for Ubuntu (Cockpit with an MU300 page: signal, SMS, VPN, Wi-Fi, updates, a terminal; on the LAN only) is optional. It can also be added later on the device:	Ubuntu 的网页面板（带 MU300 页面的 Cockpit：信号、短信、VPN、Wi-Fi、更新、终端；仅限局域网）是可选的。之后也可以在设备上添加：
+Install the web panel for Ubuntu (about 24 MB more to download, 50 MB on the device)? (yes/no)	安装 Ubuntu 的网页面板（额外下载约 24 MB，设备上占用 50 MB）？(yes/no)
+release {1} has no web panel for Ubuntu; it can be added on the device later: sudo mu300-extra install panel	版本 {1} 没有 Ubuntu 网页面板；之后可以在设备上添加：sudo mu300-extra install panel
+Building the web panel extra	正在构建网页面板扩展

@@ -73,6 +73,36 @@ class Orphaned(ShellTest):
         for f in (BIN / 'mu300-update', TOP / 'tools/android-install.sh'):
             self.assertEqual(fns(f.read_text()), fns(lib), f)
 
+    def test_the_engine_missing(self):
+        """vpn_engine_missing: the VPN on, and its active profile's engine extra not installed (module v2: each
+        engine is an extra; module v1 and the bundle carry xray and sing-box in the vpn extra)"""
+        root = self.tmp / 'root'
+        disk = self.tmp / 'disk'
+
+        def case(shell, typ, enable='1', have=()):
+            shutil.rmtree(root, ignore_errors=True)
+            shutil.rmtree(disk, ignore_errors=True)
+            (root / 'etc/mu300/vpn/profiles/p').mkdir(parents=True)
+            (root / 'etc/mu300/vpn.conf').write_text(f'ENABLE={enable}\n')
+            (root / 'etc/mu300/vpn/active').write_text('p\n')
+            (root / 'etc/mu300/vpn/profiles/p/meta').write_text(f"NAME='p'\nTYPE='{typ}'\n")
+            for path in have:
+                (disk / 'extra' / path).parent.mkdir(parents=True, exist_ok=True)
+                (disk / 'extra' / path).write_text('#!/bin/sh\n')
+                (disk / 'extra' / path).chmod(0o755)
+            r = self.sh(shell, f'. "{ORPHAN_LIB}"; vpn_engine_missing "{root}" || echo none', MU300_DISK=disk)
+            return r.stdout.strip()
+
+        for shell in self.each_shell():
+            self.assertEqual(case(shell, 'xray'), 'vpn-xray')
+            self.assertEqual(case(shell, 'xray', enable='0'), 'none')
+            self.assertEqual(case(shell, 'xray', have=('vpn-xray/bin/xray',)), 'none')
+            self.assertEqual(case(shell, 'xray', have=('vpn/bin/xray',)), 'none')          # v1, the bundle
+            self.assertEqual(case(shell, 'sing-box', have=('vpn/bin/sing-box',)), 'none')
+            self.assertEqual(case(shell, 'dae', have=('vpn/bin/xray',)), 'vpn-dae')
+            self.assertEqual(case(shell, 'mihomo', have=('vpn-mihomo/bin/mihomo',)), 'none')
+            self.assertEqual(case(shell, 'wireguard'), 'none')                           # a package, not an extra
+
     def test_nothing_is_sourced(self):
         for shell in self.each_shell():
             self.check(shell, 'ENABLE=1\nKILL_SWITCH=$(touch "$STUBLOG/ran")\n',

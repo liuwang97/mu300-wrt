@@ -460,6 +460,11 @@ battery_state() {
 info() {
     . /etc/os-release 2>/dev/null
     printf '%sSystem%s   %s, kernel %s, up %s\n' "$B" "$N" "${PRETTY_NAME:-unknown}" "$(uname -r)" "$(awk '{printf "%dd %dh %dm", $1/86400, $1%86400/3600, $1%3600/60}' /proc/uptime)"
+    # the mu300-linux release of this system, its boot image and the extras (no network: mu300-update version)
+    printf '%sRelease%s  %s (boot image %s)\n' "$B" "$N" "$(cat /etc/mu300/image-version 2>/dev/null || echo unknown)" \
+        "$(cat /mnt/mu300-disk/boot/installed.tag 2>/dev/null || echo "from the installer")"
+    xs=$(/opt/mu300/bin/mu300-update version 2>/dev/null | sed -n 's/^extras *//p')
+    [ -n "$xs" ] && printf '%sExtras%s  %s\n' "$B" "$N" "$xs"
     printf '%sLoad%s     %s\n' "$B" "$N" "$(cut -d' ' -f1-3 /proc/loadavg)"
     awk -v b="$B" -v n="$N" '/^MemTotal/{t=$2} /^MemAvailable/{a=$2} END{printf "%sRAM%s      %d MB used of %d MB (%d MB available)\n", b, n, (t-a)/1024, t/1024, a/1024}' /proc/meminfo
     printf '%sStorage%s  %s\n' "$B" "$N" "$(df -h / | awk 'NR==2 {print $3 " used of " $2 " (" $5 ")"}')"
@@ -600,7 +605,9 @@ menu_wifi() {
                printf '  name and password live in %s/etc/mu300/hotspot.conf%s:\n\n' "$B" "$N"
                sed -n 's/^\(SSID\|BAND\|CHANNEL\|COUNTRY\)=/  &/p' /etc/mu300/hotspot.conf 2>/dev/null
                printf '  PSK=%s\n' "$(sed -n 's/^PSK=//p' /etc/mu300/hotspot.conf 2>/dev/null | head -1)"
-               printf '\n  %sEdit that file and restart the hotspot to change them.%s\n' "$D" "$N"; pause ;;
+               printf '\n  %sEdit that file and restart the hotspot to change them.%s\n' "$D" "$N"
+               printf '  %sCHANNEL on 5 GHz: auto, 36-48 or 149-165. The driver cannot detect radar, so a DFS channel\n' "$D"
+               printf '  (52-144) is replaced by the default one.%s\n' "$N"; pause ;;
             *) return ;;
         esac
     done
@@ -664,7 +671,11 @@ menu_vpn() {
         printf '  service: %s   switch: %s\n\n' "$(state_color "$(svc status mu300-vpn)")" \
             "$( [ -r "$VPN_CONF" ] && (vpn_enabled && echo "on" || echo "off") || echo "off (no vpn.conf yet)")"
         "$VPN" status 2>/dev/null | sed 's/^/  /'
-        menu_items="Turn on|Turn off|Profiles (list / use)|Import a profile (link or file path)|Remove a profile|Kill switch on/off|Engines (install missing)|Restart"
+        if command -v vpn_engine_missing >/dev/null 2>&1 && miss=$(vpn_engine_missing "${MU300_SYSROOT:-}"); then
+            printf '\n  %sThe VPN is on and the engine of its profile (%s) is not installed: nothing gets out until it is.%s\n' "$B" "$miss" "$N"
+            printf '  The service fetches it by itself when the device is online; or Engines below.\n'
+        fi
+        menu_items="Turn on|Turn off|Profiles (list / use)|Import a profile (link or file path)|Remove a profile|Kill switch on/off|Engines (install / remove)|Restart"
         printf '\n'
         i=1; IFS='|'; for l in $menu_items; do printf '  %s%d%s  %s\n' "$C" "$i" "$N" "$l"; i=$((i + 1)); done; unset IFS
         printf '\n  %s0%s  Back\n\n  > ' "$C" "$N"
@@ -704,13 +715,19 @@ menu_vpn() {
                # the setting is read at start: a VPN that is on restarts (off, it is used from the next start)
                vpn_enabled && { "$VPN" restart; sleep 3; } ;;
             7) printf '\n'; "$VPN" engines 2>/dev/null | sed 's/^/  /'
-               printf '\n  Engine to install (xray, sing-box, mihomo, wireguard, openvpn; Enter: back): '
+               printf '\n  Each engine is an extra of its own (xray also runs VLESS/VMess/Trojan/Shadowsocks links; dae needs a\n'
+               printf '  kernel with BTF, i.e. mainline). Engine to install (xray, sing-box, mihomo, dae, wireguard, openvpn),\n'
+               printf '  or "remove NAME" to take one off (Enter: back): '
                read -r eng || eng=
+               op=install
+               case $eng in remove\ *) op=remove; eng=${eng#remove } ;; esac
                case $eng in
                    '') continue ;;
                    *[!a-z0-9-]*) echo "  not an engine name"; pause; continue ;;
                esac
-               "$VPN" engines install "$eng"; pause ;;
+               # (engines install is the spelling every mu300-vpn knows; remove is the module's v2 engine command)
+               if [ "$op" = install ]; then "$VPN" engines install "$eng"; else "$VPN" engine remove "$eng"; fi
+               pause ;;
             8) "$VPN" restart; sleep 3 ;;
             *) return ;;
         esac
@@ -817,12 +834,13 @@ menu_services() {
 menu_update() {
     while :; do
         title "Software update"
-        /opt/mu300/bin/mu300-update check 2>&1 | sed 's/^/  /'
+        # offline, check cannot reach GitHub: then at least what is installed
+        { /opt/mu300/bin/mu300-update check 2>&1 || /opt/mu300/bin/mu300-update version 2>&1; } | sed 's/^/  /'
         printf '\n  %s1%s  Update the installed systems (settings, users and vendor files are kept)\n' "$C" "$N"
         printf '  %s2%s  Roll back to the previous version\n' "$C" "$N"
         printf '  %s3%s  Delete the kept previous version (frees space)\n' "$C" "$N"
-        printf '\n  %sThe kernel and boot image are not updated here: they must be built with this device'"'"'s own\n' "$D"
-        printf '  Android files, which only ./install.sh on a computer can do.%s\n' "$N"
+        printf '\n  %sUpdating takes the systems, the kernel and the boot image to the newest release (the boot image\n' "$D"
+        printf '  keeps this device'"'"'s own Android parts); the previous version stays for a rollback.%s\n' "$N"
         printf '\n  %s0%s  Back\n\n  > ' "$C" "$N"
         read -r c || return
         case $c in
