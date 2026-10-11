@@ -779,6 +779,22 @@ class Rules(unittest.TestCase):
             self.assertIn(pre + '\tsmp_store_release(&sc2355_hif.hif, (void *)hif);', text)
             self.assertIn(pre + '\tWRITE_ONCE(sc2355_hif.hif, NULL);', text)
 
+    def test_wifi_notify_init_unwinds_and_registers_the_reset_notifier_last(self):
+        # kanoqwq/mu300-linux@23361ce: a failed notify_init left the WCN reset notifier registered on a freed priv
+        iface = (TOP / 'upstream' / 'modules' / 'sprd_wlan_combo' / 'common' / 'iface.c').read_text()
+        body = iface[iface.index('static int iface_notify_init('):]
+        body = body[:body.index('\n}\n')]
+        reg = body.index('atomic_notifier_chain_register(&wcn_reset_notifier_list,')
+        for step in ('misc_register(&wlan_misc_device);', 'register_inetaddr_notifier(&iface_inetaddr_cb);',
+                     'register_inet6addr_notifier(&iface_inet6addr_cb);'):
+            self.assertLess(body.index(step), reg, step)
+        # nothing returns between the first registration and the end without undoing what it registered
+        self.assertEqual(body.count('return ret;'), 2)
+        self.assertIn('\t\treturn ret;\n\t}\n\n\tret = register_inetaddr_notifier', body)
+        for label in ('goto err_misc;', 'goto err_inet;', 'err_inet:\n\tunregister_inetaddr_notifier',
+                      'err_misc:\n\tmisc_deregister(&wlan_misc_device);\n\treturn ret;'):
+            self.assertIn(label, body)
+
     def test_wifi_tx_backpressure_is_not_logged_as_an_error(self):
         # kanoqwq/mu300-linux@3386928: a full TX ring is flow control, hit on every scheduling pass under load;
         # the vendor printed two pr_err lines for it each time
