@@ -275,12 +275,14 @@ class Rules(unittest.TestCase):
 
     def test_the_vpn_module_wiring(self):
         # mu300-update knows the module (fixed asset names, the repository's latest release, MU300_VPN_URL), and
-        # mu300-extra lists vpn and vpn-mihomo from it
+        # mu300-extra lists vpn and its engine extras from it (module v2: the core, and the bundle as the fallback)
         up = (BIN / 'mu300-update').read_text()
-        self.assertRegex(up, r'(?m)^EXTRAS="vpn lang vpn-mihomo"$')
+        self.assertRegex(up, r'(?m)^EXTRAS="vpn lang vpn-mihomo vpn-xray vpn-singbox vpn-dae"$')
+        self.assertRegex(up, r'(?m)^VPN_ENGINE_EXTRAS="vpn-xray vpn-singbox vpn-mihomo vpn-dae"$')
         self.assertRegex(up, r'(?m)^VPN_REPO=dikeckaan/mu300-linux-vpn$')
         self.assertIn('VPN_URL=${MU300_VPN_URL:-https://github.com/$VPN_REPO/releases/latest/download}', up)
-        self.assertIn('vpn) echo mu300-linux-vpn.tar.gz ;; vpn-mihomo) echo mu300-linux-vpn-mihomo.tar.gz ;;', up)
+        self.assertIn('vpn) echo mu300-linux-vpn-core.tar.gz ;; vpn-bundle) echo mu300-linux-vpn.tar.gz ;;', up)
+        self.assertIn('vpn-mihomo|vpn-xray|vpn-singbox|vpn-dae) echo "mu300-linux-$1.tar.gz" ;;', up)
         self.assertNotIn('extra_adopt', up)
         body = up[up.index('\napply() {'):up.index('\nclean_broken() {')]
         # the module is had before anything changes, and put in place before the systems are switched

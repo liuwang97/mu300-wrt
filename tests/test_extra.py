@@ -1129,3 +1129,262 @@ class LangExtra(ExtrasBase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+def core_tarball(path, version='v2.0.0'):
+    """mu300-linux-vpn-core.tar.gz of module v2: the vpn extra without an engine"""
+    return module_tarball(path, version=version, bins=())
+
+
+def engine_tarball(path, name, bins, version='v2.0.0'):
+    """mu300-linux-vpn-ENGINE.tar.gz of module v2: an engine extra, with its hooks"""
+    with tarfile.open(path, 'w:gz') as t:
+        for fn, data, mode in ([('./VERSION', f'{version}\n', 0o644), ('./name', f'{name}\n', 0o644),
+                                ('./components', ''.join(f'{b} 1.0\n' for b in bins), 0o644),
+                                ('./requires', 'mu300-linux v2026.10.16\n', 0o644),
+                                ('./hooks/link', f'echo "{name} link [$1]" >> "$STUBLOG/hooks"\n', 0o755),
+                                ('./hooks/unlink', f'echo "{name} unlink [$1]" >> "$STUBLOG/hooks"\n', 0o755)]
+                               + [(f'./bin/{b}', f'#!/bin/sh\necho {b} {version}\n', 0o755) for b in bins]):
+            ti = tarfile.TarInfo(fn)
+            ti.size, ti.mode = len(data), mode
+            t.addfile(ti, io.BytesIO(data.encode()))
+    return path
+
+
+ENGINE_BINS = {'vpn-xray': ('xray', 'hev-socks5-tunnel'), 'vpn-singbox': ('sing-box',), 'vpn-mihomo': ('mihomo',),
+               'vpn-dae': ('dae',)}
+
+
+class EngineExtras(ExtrasBase):
+    """Module v2: the VPN's engines as extras of their own (vpn-xray, vpn-singbox, vpn-mihomo, vpn-dae) next to the
+    core (vpn). Installing or updating the core brings the engines the device has and its profiles need, all from
+    one source, engines first; a v1 device (the engines in the vpn extra) keeps every engine it had; when an engine is
+    not to be had the bundle (mu300-linux-vpn.tar.gz, the core with xray and sing-box) is the fallback, and without it
+    nothing changes."""
+
+    def setUp(self):
+        super().setUp()
+        self.versions('v2026.10.20')
+
+    def release(self, engines=('vpn-xray', 'vpn-singbox', 'vpn-mihomo', 'vpn-dae'), bundle=True, core=True):
+        assets = {}
+        if core:
+            assets['mu300-linux-vpn-core.tar.gz'] = core_tarball(self.tmp / 'core.tar.gz')
+        if bundle:
+            assets['mu300-linux-vpn.tar.gz'] = module_tarball(self.tmp / 'bundle.tar.gz', version='v2.0.0')
+        for e in engines:
+            assets[f'mu300-linux-{e}.tar.gz'] = engine_tarball(self.tmp / f'{e}.tar.gz', e, ENGINE_BINS[e])
+        return assets
+
+    def serve_release(self, **kw):
+        return self.serve('vpn-module', assets=self.release(**kw))
+
+    def v1(self):
+        """module v1.0.0 installed: the core with xray, hev-socks5-tunnel and sing-box in the vpn extra"""
+        f = module_tarball(self.tmp / 'v1.tar.gz', version='v1.0.0')
+        r = self.up(self.shells[0], f'module_install vpn "{f}" "{"1" * 64}" v2026.10.20')
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def profile(self, os_, pid, typ, active=False, enable=None):
+        d = self.disk / os_ / 'etc/mu300/vpn'
+        (d / 'profiles' / pid).mkdir(parents=True, exist_ok=True)
+        (d / 'profiles' / pid / 'meta').write_text(f"NAME='{pid}'\nTYPE='{typ}'\n")
+        (d / 'settings').write_text('')
+        if active:
+            (d / 'active').write_text(pid + '\n')
+        if enable is not None:
+            (self.disk / os_ / 'etc/mu300/vpn.conf').write_text(f'ENABLE={enable}\n')
+
+    def reset(self):
+        for p in ('extra', '.mu300-extra', '.mu300-update'):
+            shutil.rmtree(self.disk / p, ignore_errors=True)
+        for os_ in ('ubuntu', 'openwrt'):
+            shutil.rmtree(self.disk / os_ / 'etc/mu300/vpn', ignore_errors=True)
+            (self.disk / os_ / 'etc/mu300/vpn.conf').unlink(missing_ok=True)
+        self.hooks()
+        self.urls()
+
+    def have(self):
+        """{extra: VERSION} of what is installed"""
+        out = {}
+        for d in sorted((self.disk / 'extra').glob('*')):
+            if (d / 'bin').is_dir():
+                out[d.name] = (d / 'VERSION').read_text().strip()
+        return out
+
+    def test_the_names(self):
+        for shell in self.each_shell():
+            r = self.up(shell, 'for x in vpn vpn-bundle vpn-xray vpn-singbox vpn-mihomo vpn-dae; do module_asset $x; done; '
+                               'for x in vpn-xray vpn-singbox vpn-dae vpn-mihomo vpn lang vpn-foo; do '
+                               'extra_known $x && echo "known $x"; extra_is_module $x && echo "module $x"; done; true')
+            self.assertEqual(r.stdout.splitlines(), [
+                'mu300-linux-vpn-core.tar.gz', 'mu300-linux-vpn.tar.gz', 'mu300-linux-vpn-xray.tar.gz',
+                'mu300-linux-vpn-singbox.tar.gz', 'mu300-linux-vpn-mihomo.tar.gz', 'mu300-linux-vpn-dae.tar.gz',
+                'known vpn-xray', 'module vpn-xray', 'known vpn-singbox', 'module vpn-singbox', 'known vpn-dae',
+                'module vpn-dae', 'known vpn-mihomo', 'module vpn-mihomo', 'known vpn', 'module vpn', 'known lang'])
+            r = self.ex(shell, 'install', 'vpn-foo')
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn("no extra called 'vpn-foo'", r.stderr)
+
+    def test_engines_wanted(self):
+        for shell in self.each_shell():
+            self.reset()
+            r = self.up(shell, 'vpn_engines_wanted | tr "\\n" " "')
+            self.assertEqual(r.stdout.split(), ['vpn-xray'])          # a first install: the default
+            r = self.up(shell, 'vpn_engines_wanted | tr "\\n" " "', MU300_VPN_ENGINES='dae,sing-box')
+            self.assertEqual(r.stdout.split(), ['vpn-dae', 'vpn-singbox'])
+            r = self.up(shell, 'vpn_engines_wanted | wc -l', MU300_VPN_ENGINES='none')
+            self.assertEqual(r.stdout.strip(), '0')
+            # v1: both its engines, and every profile's (in any system)
+            self.v1()
+            self.profile('ubuntu', 'clash', 'mihomo')
+            self.profile('openwrt', 'wg', 'wireguard')
+            self.profile('openwrt', 'd', 'dae')
+            r = self.up(shell, 'vpn_engines_wanted | tr "\\n" " "')
+            self.assertEqual(r.stdout.split(), ['vpn-dae', 'vpn-mihomo', 'vpn-singbox', 'vpn-xray'])
+            # a vpn.conf never migrated, on a core without engines
+            self.reset()
+            (self.disk / 'extra/vpn/bin').mkdir(parents=True)
+            (self.disk / 'ubuntu/etc/mu300/vpn.conf').write_text("ENABLE=1\nVLESS_URI='vless://x@h:1'\n")
+            r = self.up(shell, 'vpn_engines_wanted | tr "\\n" " "')
+            self.assertEqual(r.stdout.split(), ['vpn-singbox', 'vpn-xray'])
+
+    def test_v1_upgrades_to_the_core_and_keeps_its_engines(self):
+        for shell in self.each_shell():
+            self.reset()
+            self.v1()
+            self.profile('ubuntu', 'home', 'xray', active=True, enable=1)
+            self.profile('ubuntu', 'clash', 'mihomo')
+            self.serve_release()
+            r = self.ex(shell, 'install', 'vpn', MU300_VPN_URL=VPN_URL)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(self.have(), {'vpn': 'v2.0.0', 'vpn-mihomo': 'v2.0.0', 'vpn-singbox': 'v2.0.0',
+                                           'vpn-xray': 'v2.0.0'})
+            # the core is the core now: no engine in it
+            self.assertFalse((self.vpn() / 'bin/xray').exists())
+            self.assertTrue((self.disk / 'extra/vpn-xray/bin/xray').exists())
+            # the engines were linked before the core
+            h = self.hooks()
+            self.assertLess(max(i for i, l in enumerate(h) if l.startswith('vpn-')),
+                            min(i for i, l in enumerate(h) if l.startswith('link [')), h)
+            self.urls()
+            # again: everything is up to date, nothing downloaded but SHA256SUMS
+            r = self.ex(shell, 'install', 'vpn', MU300_VPN_URL=VPN_URL)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertNotIn('.tar.gz', self.urls())
+
+    def test_an_engine_not_to_be_had_takes_the_bundle_or_changes_nothing(self):
+        for shell in self.each_shell():
+            # the release has the core but not vpn-singbox: v1's sing-box must not be lost - the bundle instead
+            self.reset()
+            self.v1()
+            self.serve_release(engines=('vpn-xray',))
+            r = self.ex(shell, 'install', 'vpn', MU300_VPN_URL=VPN_URL)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn('taking mu300-linux-vpn.tar.gz', r.stderr)
+            self.assertEqual(self.have(), {'vpn': 'v2.0.0'})
+            self.assertTrue((self.vpn() / 'bin/sing-box').exists())
+            # without the bundle either: refused, v1 untouched
+            self.reset()
+            self.v1()
+            self.serve_release(engines=('vpn-xray',), bundle=False)
+            r = self.ex(shell, 'install', 'vpn', MU300_VPN_URL=VPN_URL)
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn('nothing was changed', r.stderr)
+            self.assertEqual(self.have(), {'vpn': 'v1.0.0'})
+            self.assertTrue((self.vpn() / 'bin/sing-box').exists())
+            # a profile's engine that was never there is no reason to refuse: it is said and skipped
+            self.reset()
+            self.profile('ubuntu', 'd', 'dae')
+            self.serve_release(engines=('vpn-xray',), bundle=False)
+            r = self.ex(shell, 'install', 'vpn', MU300_VPN_URL=VPN_URL)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn('extra vpn-dae: a profile runs on it and it is not to be had', r.stderr)
+            self.assertEqual(self.have(), {'vpn': 'v2.0.0', 'vpn-xray': 'v2.0.0'})
+
+    def test_a_pinned_v1_release_is_the_bundle(self):
+        for shell in self.each_shell():
+            self.reset()
+            self.serve('vpn-module', assets={'mu300-linux-vpn.tar.gz': module_tarball(self.tmp / 'b.tar.gz')})
+            r = self.ex(shell, 'install', 'vpn', MU300_VPN_URL=VPN_URL)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(self.have(), {'vpn': 'v1.0.0'})
+            self.assertTrue((self.vpn() / 'bin/xray').exists())
+
+    def test_offline_from_a_directory(self):
+        for shell in self.each_shell():
+            self.reset()
+            self.v1()
+            self.offline()
+            d = self.tmp / 'usb'
+            shutil.rmtree(d, ignore_errors=True)
+            d.mkdir()
+            for name, src in self.release(engines=('vpn-xray',), bundle=False).items():
+                (d / name).write_bytes(src.read_bytes())
+            sums(d, *[p.name for p in d.iterdir()])
+            # vpn-singbox is not there, v1 has sing-box: refused, nothing changed
+            r = self.ex(shell, 'install', 'vpn', '--from', d)
+            self.assertNotEqual(r.returncode, 0)
+            self.assertEqual(self.have(), {'vpn': 'v1.0.0'})
+            (d / 'mu300-linux-vpn-singbox.tar.gz').write_bytes(
+                engine_tarball(self.tmp / 's.tar.gz', 'vpn-singbox', ('sing-box',)).read_bytes())
+            sums(d, *[p.name for p in d.iterdir() if p.name != 'SHA256SUMS'])
+            r = self.ex(shell, 'install', 'vpn', '--from', d)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(self.have(), {'vpn': 'v2.0.0', 'vpn-singbox': 'v2.0.0', 'vpn-xray': 'v2.0.0'})
+            # one engine on its own, from the same directory
+            r = self.ex(shell, 'install', 'vpn-xray', '--from', d)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            # a tampered engine is refused
+            (d / 'mu300-linux-vpn-xray.tar.gz').write_bytes(b'x')
+            r = self.ex(shell, 'install', 'vpn-xray', '--from', d)
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn('does not match its SHA256SUMS', r.stderr)
+
+    def test_remove_an_engine_the_vpn_runs_on(self):
+        for shell in self.each_shell():
+            self.reset()
+            self.serve_release()
+            self.assertEqual(self.ex(shell, 'install', 'vpn-dae', MU300_VPN_URL=VPN_URL).returncode, 0)
+            self.assertEqual(self.ex(shell, 'install', 'vpn-xray', MU300_VPN_URL=VPN_URL).returncode, 0)
+            self.profile('openwrt', 'd', 'dae', active=True, enable=1)
+            r = self.ex(shell, 'remove', 'vpn-dae')
+            self.assertEqual(r.returncode, 1)
+            self.assertIn('runs on vpn-dae', r.stderr)
+            self.assertTrue((self.disk / 'extra/vpn-dae/bin/dae').exists())
+            # another engine goes; with --force this one too
+            self.assertEqual(self.ex(shell, 'remove', 'vpn-xray').returncode, 0)
+            self.assertEqual(self.ex(shell, 'remove', 'vpn-dae', '--force').returncode, 0)
+            self.assertEqual(self.have(), {})
+
+    def test_an_update_brings_the_engines_along(self):
+        """mu300-update's module step on a v1 device whose VPN is on: the core and its engines, from the staging
+        directory, the engines first"""
+        for shell in self.each_shell():
+            self.reset()
+            self.v1()
+            self.profile('ubuntu', 'home', 'xray', active=True, enable=1)
+            self.offline()
+            staged = self.disk / '.mu300-update/vpn'
+            staged.mkdir(parents=True)
+            for name, src in self.release(engines=('vpn-xray', 'vpn-singbox'), bundle=False).items():
+                (staged / name).write_bytes(src.read_bytes())
+            sums(staged, *[p.name for p in staged.iterdir()])
+            r = self.up(shell, 'modules_fetch v2026.10.21 ubuntu; printf "%s\\n" "$MODULES_NEW" | cut -d" " -f1')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(r.stdout.split(), ['vpn-singbox', 'vpn-xray', 'vpn'])
+            r = self.up(shell, 'modules_fetch v2026.10.21 ubuntu && modules_install v2026.10.21')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(self.have(), {'vpn': 'v2.0.0', 'vpn-singbox': 'v2.0.0', 'vpn-xray': 'v2.0.0'})
+
+    def test_an_update_offline_without_the_engines_stops(self):
+        for shell in self.each_shell():
+            self.reset()
+            # no module installed, the VPN on in the system being replaced: the same refusal as for the core
+            self.profile('ubuntu', 'home', 'xray', active=True, enable=1)
+            self.offline()
+            r = self.up(shell, 'modules_fetch v2026.10.21 ubuntu')
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn('nothing was changed', r.stderr)
+            self.assertIn('mu300-linux-vpn-core.tar.gz', r.stderr)
+            self.assertEqual(self.have(), {})
