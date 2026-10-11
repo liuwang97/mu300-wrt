@@ -1729,7 +1729,7 @@ msgid "installed"
 msgstr "已安装"
 
 msgid "Kind"
-msgstr "类别"
+msgstr "包类型"
 
 msgid "Version"
 msgstr "版本"
@@ -1852,7 +1852,7 @@ msgid "IPv6 blocked"
 msgstr "IPv6 已阻断"
 
 msgid "IPv6 untouched"
-msgstr "IPv6 未处理"
+msgstr "IPv6 未改动"
 
 msgid "Module %s"
 msgstr "模块 %s"
@@ -2236,7 +2236,7 @@ msgid "Host"
 msgstr "主机"
 
 msgid "Updated"
-msgstr "更新时间"
+msgstr "更新于"
 
 msgid "Share links"
 msgstr "分享链接"
