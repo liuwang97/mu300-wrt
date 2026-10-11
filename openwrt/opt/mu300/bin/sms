@@ -3,6 +3,8 @@
 # received messages off the SIM within seconds: use its hook, /etc/mu300/sms-hook, rather than "sms watch" there.)
 #
 #   sms list                       every message, long ones joined back together
+#   sms json                       the same as one JSON object (the web panel): {"store", "messages": [{"index": [N...],
+#                                  "sender", "time", "parts", "have", "text"}]}
 #   sms read INDEX                 one message in full
 #   sms send NUMBER TEXT...        send one (Turkish and emoji included; it picks the encoding)
 #   sms delete INDEX | read | all  remove messages from the SIM
@@ -84,6 +86,29 @@ show() {   # indices, sender, timestamp, parts, text
     }'
 }
 
+# the reassembled lines as JSON: strings escaped byte by byte (backslash, quote; control characters dropped), so the
+# UTF-8 of a message passes through untouched
+tojson() {
+    LC_ALL=C awk -F'\t' -v store="$1" '
+        function js(s,    o, i, c) {
+            o = ""
+            for (i = 1; i <= length(s); i++) {
+                c = substr(s, i, 1)
+                if (c == "\\" || c == "\"") o = o "\\" c
+                else if (c >= " " && c != "\177") o = o c
+            }
+            return "\"" o "\""
+        }
+        BEGIN { printf "{\"store\":%s,\"messages\":[", js(store) }
+        NF >= 6 {
+            n = split($1, ix, ",")
+            printf "%s{\"index\":[", (c++ ? "," : "")
+            for (i = 1; i <= n; i++) printf "%s%d", (i > 1 ? "," : ""), ix[i]
+            printf "],\"sender\":%s,\"time\":%s,\"parts\":%d,\"have\":%d,\"text\":%s}", js($2), js($3), $4, $6, js($5)
+        }
+        END { print "]}" }'
+}
+
 cmd=${1:-list}
 [ $# -gt 0 ] && shift
 
@@ -94,6 +119,13 @@ list)
     all=$(fetch_all)
     [ -n "$all" ] || { echo "no messages in $store storage"; exit 0; }
     printf '%s\n' "$all" | decode | reassemble | show
+    ;;
+
+json)
+    pick_store || exit 1
+    pdu_mode
+    all=$(fetch_all)
+    if [ -n "$all" ]; then printf '%s\n' "$all" | decode | reassemble | tojson "$store"; else tojson "$store" </dev/null; fi
     ;;
 
 read)
@@ -182,6 +214,6 @@ watch)
     ;;
 
 *)
-    sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'
     exit 2 ;;
 esac
