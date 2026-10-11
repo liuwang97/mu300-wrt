@@ -2,8 +2,14 @@
 # Wi-Fi hotspot on wlan0: hostapd (WPA2) + DHCP/DNS; clients are NATed out through the modem by mobile-data.
 # Settings: /etc/mu300/hotspot.conf (SSID, PSK, CHANNEL, COUNTRY). Imported from Android's SoftAP config by the
 # installer when available; otherwise generated once with a random passphrase.
+# (MU300_HOTSPOT_CONF, MU300_WIFI_CHANNELS, MU300_HOSTAPD_CONF and MU300_HOTSPOT_DRYRUN=1, which stops once the hostapd
+# configuration is written, are for tests/)
 set -euo pipefail
-CONF=/etc/mu300/hotspot.conf
+CONF=${MU300_HOTSPOT_CONF:-/etc/mu300/hotspot.conf}
+HOSTAPD_CONF=${MU300_HOSTAPD_CONF:-/run/mu300-hostapd.conf}
+WIFI_CHANNELS=${MU300_WIFI_CHANNELS:-/opt/mu300/lib/wifi-channels.sh}
+[ -r "$WIFI_CHANNELS" ] || WIFI_CHANNELS=$(dirname "$0")/../lib/wifi-channels.sh
+. "$WIFI_CHANNELS"
 if [ ! -s "$CONF" ]; then
     mac=$(cat /sys/class/net/wlan0/address 2>/dev/null | tr -d : | tail -c 5)
     psk=$(tr -dc 'A-HJ-NP-Za-km-z2-9' </dev/urandom | head -c 12)
@@ -15,48 +21,66 @@ fi
 # read values literally (never source the file: the passphrase may contain shell metacharacters)
 conf() { sed -n "s/^$1=//p" "$CONF" | head -1; }
 SSID=$(conf SSID); PSK=$(conf PSK); CHANNEL=$(conf CHANNEL); COUNTRY=$(conf COUNTRY); BAND=$(conf BAND)
+COUNTRY=${COUNTRY:-TR}
 # BAND=5 uses 802.11a/n/ac; this chip supports only one AP at a time, so 2.4 and 5 GHz cannot run together.
-# The firmware offers 5 GHz AP only on the non-DFS channels 36-48 and 149-165.
+# The firmware offers 5 GHz AP only on the non-DFS channels 36-48 and 149-165, and the driver has no radar detection:
+# a DFS channel, or one the country does not allow, is replaced by the country's default (one line says so), and
+# "auto" is that default (lib/wifi-channels.sh).
 [ -e /run/mu300-hotspot-force-2g ] && BAND=2.4
+EXTRA_2G='ht_capab=[SHORT-GI-20]'
+# ht5: EXTRA for the 5 GHz channel $CHANNEL, as wide as the country allows (80 MHz in 36-48 and 149-161; 165 is 20)
+ht5() {
+    case $CHANNEL in
+        36|44|149|157) HT='[HT40+][SHORT-GI-20][SHORT-GI-40]' ;;
+        *) HT='[HT40-][SHORT-GI-20][SHORT-GI-40]' ;;
+    esac
+    case $CHANNEL in 36|40|44|48) SEG0=42 ;; *) SEG0=155 ;; esac
+    case $(wifi_ap5_width "$COUNTRY" "$CHANNEL") in
+        80) EXTRA=$(printf 'ht_capab=%s\nieee80211ac=1\nvht_capab=[SHORT-GI-80]\nvht_oper_chwidth=1\nvht_oper_centr_freq_seg0_idx=%s' "$HT" "$SEG0") ;;
+        40) EXTRA=$(printf 'ht_capab=%s\nieee80211ac=1\nvht_oper_chwidth=0' "$HT") ;;
+        *) EXTRA=$(printf 'ht_capab=[SHORT-GI-20]\nieee80211ac=1\nvht_oper_chwidth=0') ;;
+    esac
+}
 case "${BAND:-5}" in
     5)
-        HWMODE=a; case "$CHANNEL" in ""|auto|[0-9]|1[0-4]) CHANNEL=36 ;; esac
-        case "$CHANNEL" in
-            36|44) HT='[HT40+][SHORT-GI-20][SHORT-GI-40]'; SEG0=42 ;;
-            40|48) HT='[HT40-][SHORT-GI-20][SHORT-GI-40]'; SEG0=42 ;;
-            149|157) HT='[HT40+][SHORT-GI-20][SHORT-GI-40]'; SEG0=155 ;;
-            153|161) HT='[HT40-][SHORT-GI-20][SHORT-GI-40]'; SEG0=155 ;;
-            *) HT='[SHORT-GI-20]'; SEG0= ;;
-        esac
-        if [ -n "$SEG0" ]; then
-            EXTRA=$(printf 'ht_capab=%s\nieee80211ac=1\nvht_capab=[SHORT-GI-80]\nvht_oper_chwidth=1\nvht_oper_centr_freq_seg0_idx=%s' "$HT" "$SEG0")
+        HWMODE=a; CHANNEL=$(wifi_ap5_resolve "$COUNTRY" "$CHANNEL")
+        if [ -n "$CHANNEL" ]; then
+            ht5
         else
-            EXTRA=$(printf 'ht_capab=%s\nieee80211ac=1\nvht_oper_chwidth=0' "$HT")
+            echo "no 5 GHz channel without DFS in country $COUNTRY: using 2.4 GHz channel 6" >&2
+            HWMODE=g; CHANNEL=6; EXTRA=$EXTRA_2G
         fi ;;
-    *) HWMODE=g; case "$CHANNEL" in [1-9]|1[0-3]) ;; *) CHANNEL=6 ;; esac; EXTRA='ht_capab=[SHORT-GI-20]' ;;
+    *) HWMODE=g; case "$CHANNEL" in [1-9]|1[0-3]) ;; *) CHANNEL=6 ;; esac; EXTRA=$EXTRA_2G ;;
 esac
 # cfg80211 tried to load regulatory.db before the rootfs was mounted; reload it, then apply the country
 /opt/mu300/bin/regdb-load >/dev/null 2>&1 || true
-iw reg set "${COUNTRY:-TR}" 2>/dev/null || true
-for n in $(seq 1 15); do iw reg get 2>/dev/null | grep -q "country ${COUNTRY:-TR}:" && break; sleep 1; done
+iw reg set "$COUNTRY" 2>/dev/null || true
+for n in $(seq 1 15); do iw reg get 2>/dev/null | grep -q "country $COUNTRY:" && break; sleep 1; done
 sleep 1
-# fall back to 2.4 GHz if the requested 5 GHz channel is still not usable for AP (NO-IR/disabled/radar)
+# the channel as the kernel has it now: an AP may use it unless it is NO-IR, disabled or radar (DFS)
 # newer kernels report a frequency offset, so iw prints "5180.0 MHz"
-ch_ok() { iw list 2>/dev/null | grep -E "\* [0-9.]+ MHz \[$CHANNEL\]" | grep -vqE "no IR|disabled|radar"; }
+ch_ok() { iw list 2>/dev/null | grep -E "\* [0-9.]+ MHz \[${1:-$CHANNEL}\]" | grep -vqE "no IR|disabled|radar"; }
 # the channel flags follow the country change with a delay (seconds on the mainline kernel)
 if [ "$HWMODE" = a ]; then for n in $(seq 1 10); do ch_ok && break; sleep 1; done; fi
 if [ "$HWMODE" = a ] && ! ch_ok; then
-    echo "5 GHz channel $CHANNEL not allowed for AP here, falling back to 2.4 GHz channel 6" >&2
-    HWMODE=g; CHANNEL=6; EXTRA='ht_capab=[SHORT-GI-20]'
+    # another channel of the country that the kernel allows, else 2.4 GHz
+    want=$CHANNEL; CHANNEL=
+    for c in $(wifi_ap5_channels "$COUNTRY"); do ch_ok "$c" && { CHANNEL=$c; break; }; done
+    if [ -n "$CHANNEL" ]; then
+        echo "5 GHz channel $want not allowed for AP here, using channel $CHANNEL" >&2
+        ht5
+    else
+        echo "5 GHz channel $want not allowed for AP here, falling back to 2.4 GHz channel 6" >&2
+        HWMODE=g; CHANNEL=6; EXTRA=$EXTRA_2G
+    fi
 fi
 [ ${#PSK} -ge 8 ] || { echo "PSK must be at least 8 characters" >&2; exit 1; }
-for n in $(seq 1 60); do [ -e /sys/class/net/wlan0 ] && break; sleep 1; done
 umask 077
-cat > /run/mu300-hostapd.conf <<C
+cat > "$HOSTAPD_CONF" <<C
 interface=wlan0
 driver=nl80211
 ssid=${SSID}
-country_code=${COUNTRY:-TR}
+country_code=${COUNTRY}
 bridge=br-lan
 hw_mode=${HWMODE}
 channel=${CHANNEL}
@@ -70,6 +94,8 @@ wpa_key_mgmt=WPA-PSK
 rsn_pairwise=CCMP
 wpa_passphrase=${PSK}
 C
+[ -z "${MU300_HOTSPOT_DRYRUN:-}" ] || exit 0
+for n in $(seq 1 60); do [ -e /sys/class/net/wlan0 ] && break; sleep 1; done
 for n in $(seq 1 30); do ip link show br-lan >/dev/null 2>&1 && break; sleep 1; done
 ip addr flush dev wlan0 2>/dev/null || true
 # cfg80211 refuses to bridge a station-mode interface (EOPNOTSUPP); switch to AP first so hostapd can add it
@@ -85,4 +111,4 @@ printf 'MU300 hotspot: SSID "%s"  password "%s"  (edit /etc/mu300/hotspot.conf)\
 chmod 640 /run/motd.d/50-mu300-hotspot
 # the U30 Air's NFC tag: the name and password again if that is what it holds (a slow I2C write, in the background)
 [ "$(/opt/mu300/bin/mu300-device)" = u30air ] && { /opt/mu300/bin/mu300-nfc sync 2>&1 | logger -t mu300-nfc & }
-exec hostapd /run/mu300-hostapd.conf
+exec hostapd "$HOSTAPD_CONF"

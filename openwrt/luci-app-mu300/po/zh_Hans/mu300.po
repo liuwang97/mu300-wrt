@@ -1245,6 +1245,60 @@ msgstr "自动（支持 %d 个）"
 msgid "%d locked: %s"
 msgstr "已锁 %d 个：%s"
 
+msgid "started"
+msgstr "已启动"
+
+msgid "asleep now (asked)"
+msgstr "立即休眠（已请求）"
+
+msgid "woken: power daemon stopping"
+msgstr "已唤醒：电源守护进程停止"
+
+msgid "woken by a key"
+msgstr "按键唤醒"
+
+msgid "woken by the Wi-Fi key"
+msgstr "Wi-Fi 键唤醒"
+
+msgid "woken (mu300-power wake)"
+msgstr "已唤醒（mu300-power wake）"
+
+msgid "woken by a computer on USB"
+msgstr "USB 上的电脑唤醒"
+
+msgid "woken: plugged in"
+msgstr "已唤醒：已接通电源"
+
+msgid "woken by a Wi-Fi client"
+msgstr "Wi-Fi 客户端唤醒"
+
+msgid "charging boot (powered on by the charger)"
+msgstr "充电开机（由充电器开机）"
+
+msgid "the hotspot is down"
+msgstr "热点已关闭"
+
+msgid "the VPN is still stopped"
+msgstr "VPN 仍处于停止状态"
+
+msgid "5G (EN-DC) is still off after a failed resume"
+msgstr "恢复失败后 5G（EN-DC）仍关闭"
+
+msgid "self-check: %s"
+msgstr "自检：%s"
+
+msgid "asleep: no client for %d min (%s)"
+msgstr "休眠：%d 分钟无客户端（%s）"
+
+msgid "asleep: profile now %s"
+msgstr "休眠：配置文件现为 %s"
+
+msgid "woken by the %s key"
+msgstr "%s 键唤醒"
+
+msgid "the modem is suspended (%s)"
+msgstr "调制解调器已挂起（%s）"
+
 msgid "Enter a whole number from 0 to %d"
 msgstr "请输入 0 到 %d 之间的整数"
 

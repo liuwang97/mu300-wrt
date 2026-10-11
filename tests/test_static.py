@@ -695,7 +695,8 @@ class Rules(unittest.TestCase):
         cell = 'openwrt/overlay/lib/netifd/proto/mu300cell.sh'
         v6 = 'openwrt/luci-overlay/lib/netifd/proto/mu300cell-v6.sh'
         patch = {'openwrt/patches/fw4-sipa-offload.patch': 'x\n',
-                 'openwrt/patches/fw4-old-kernel-flowtable.patch': 'x\n'}
+                 'openwrt/patches/fw4-old-kernel-flowtable.patch': 'x\n',
+                 'openwrt/patches/wifi-scripts-no-dfs.patch': 'x\n'}
         for system in ('openwrt', 'openwrt-luci'):
             with self.subTest(system=system, missing='mu300cell.sh'):
                 r = run(patch, system)
@@ -705,6 +706,10 @@ class Rules(unittest.TestCase):
                 r = run({cell: 'x\n', v6: 'x\n'}, system)
                 self.assertEqual(r.returncode, 1, r.stderr)
                 self.assertIn('fw4-sipa-offload.patch', r.stderr)
+            with self.subTest(system=system, missing='the wifi-scripts patch'):
+                r = run({cell: 'x\n', v6: 'x\n', **{k: v for k, v in patch.items() if 'wifi-scripts' not in k}}, system)
+                self.assertEqual(r.returncode, 1, r.stderr)
+                self.assertIn('wifi-scripts-no-dfs.patch', r.stderr)
         # openwrt-luci needs the monitor even when mu300cell.sh does not name it; plain OpenWrt (never relay) does not
         r = run(dict(patch, **{cell: 'x\n'}), 'openwrt-luci')
         self.assertEqual(r.returncode, 1, r.stderr)
