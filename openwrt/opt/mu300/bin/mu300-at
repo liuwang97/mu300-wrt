@@ -20,9 +20,39 @@ DIR=${MU300_AT_DIR:-/run/mu300-at}
 DEV=${MU300_AT_DEV:-/dev/stty_nr1}
 CR=$(printf '\r')
 T=6
-[ "${1:-}" = -t ] && { T=$2; shift 2; }
+if [ "${1:-}" = -t ]; then
+    [ "$#" -ge 2 ] || { echo "mu300-at: -t needs a number of seconds" >&2; exit 2; }
+    T=$2; shift 2
+fi
+# T goes into shell arithmetic and into the daemon's request line: whole seconds, and exactly the range mu300-atd
+# accepts (1-99). A wider range here would be a parser differential: the daemon used to read "120 /run/... AT" as a
+# request without a timeout and send all of it to the modem (kanoqwq/mu300-linux@25f8d0c).
+case $T in [1-9]|[1-9][0-9]) ;; *) echo "mu300-at: the timeout is 1 to 99 seconds, not '$T'" >&2; exit 2 ;; esac
 cmd=${1:-}
 [ -n "$cmd" ] || { echo "usage: mu300-at [-t SECONDS] \"AT+COMMAND\"" >&2; exit 2; }
+# One request, the same bytes on both paths. The daemon's fifo carries one "T ANSWER-FILE COMMAND" line per request,
+# and the modem ends a command at a CR, so a line feed would make the rest a request of its own (answer file
+# included) and a CR a second modem command. Both are refused, here and again in mu300-atd (one_request there is the
+# same test). The one exception is the PDU send: "AT+CMGS=<length>" (or CMGW), one CR, then hexadecimal PDU and
+# Ctrl-Z - one request, so no other client gets in between the "> " prompt and the PDU (mu300-sms). A NUL cannot
+# be in an argument at all.
+LF='
+'
+SUB=$(printf '\032')
+one_request() {  # one_request CMD: true when CMD is exactly one modem command
+    case $1 in *"$LF"*) return 1 ;; *"$CR"*) ;; *) return 0 ;; esac
+    _h=${1%%"$CR"*}; _b=${1#*"$CR"}; _p=${_b%"$SUB"}
+    case $_h in AT+CMG[SW]=[0-9]|AT+CMG[SW]=[0-9][0-9]|AT+CMG[SW]=[0-9][0-9][0-9]) ;; *) return 1 ;; esac
+    [ "$_p" != "$_b" ] || return 1
+    case $_p in ''|*[!0-9A-Fa-f]*) return 1 ;; esac
+}
+one_request "$cmd" || { echo "mu300-at: one command per call (no line feed, and a CR only in AT+CMGS=N<CR>PDU<Ctrl-Z>)" >&2; exit 2; }
+# the static busybox next to us sleeps fractions of a second; the image's /bin/sleep does not (see below)
+bb=${MU300_BUSYBOX:-/opt/mu300/bin/busybox}
+nap() {  # nap SECONDS: a fraction where some sleep can do it, else a whole second
+    if [ -x "$bb" ]; then "$bb" sleep "$1" 2>/dev/null || sleep 1
+    else sleep "$1" 2>/dev/null || sleep 1; fi
+}
 
 if [ -p "$DIR/cmd" ]; then
     # one client at a time: the daemon serves a single command per round. The wait has to cover the slowest
@@ -38,7 +68,10 @@ if [ -p "$DIR/cmd" ]; then
         exit 1
     fi
     wait=${MU300_AT_LOCK_WAIT:-90}
-    n=0
+    case $wait in ''|*[!0-9]*) wait=90 ;; esac
+    # The wait is in seconds of the clock, not in rounds: a round is meant to be 0.1 s, but where no sleep takes a
+    # fraction each one is a whole second, and the 90 s wait became 900 s (kanoqwq/mu300-linux@25f8d0c)
+    lock_end=$(( $(date +%s) + wait ))
     while ! mkdir "$lock" 2>/dev/null; do
         # a client killed with SIGKILL cannot clean up after itself; take the lock over when its owner is gone.
         # Only "continue" (which skips the wait below) once the lock is really gone.
@@ -49,8 +82,8 @@ if [ -p "$DIR/cmd" ]; then
         elif [ -n "$owner" ] && { tr '\0' ' ' < "/proc/$owner/cmdline"; } 2>/dev/null | grep -q mu300-atd; then
             rm -rf "$lock" 2>/dev/null && continue
         fi
-        n=$((n + 1)); [ "$n" -gt $((wait * 10)) ] && { echo "mu300-at: busy" >&2; exit 1; }
-        sleep 0.1 2>/dev/null || sleep 1
+        [ "$(date +%s)" -ge "$lock_end" ] && { echo "mu300-at: busy" >&2; exit 1; }
+        nap 0.1
     done
     echo $$ > "$lock/pid" 2>/dev/null || true
     trap 'rm -rf "$lock" 2>/dev/null' EXIT
@@ -85,8 +118,7 @@ if [ -p "$DIR/cmd" ]; then
         echo "mu300-at: the daemon is not reading commands" >&2; exit 1; }
     # Fast poll: the daemon typically answers in ~20 ms, so a 1 s sleep adds a full second to every AT round trip.
     # The image's busybox sleep rejects fractions when called as /bin/sleep, which used to sink the chain into
-    # `sleep 1` (measured: 30 commands in 30.6 s). The static busybox next to us accepts them; use it when present.
-    bb=${MU300_BUSYBOX:-/opt/mu300/bin/busybox}
+    # `sleep 1` (measured: 30 commands in 30.6 s). The static busybox next to us accepts them ($bb, nap).
     # Budget. A live mu300-atd (owner/pid) drains first (1-3 s, 25 s after a silent command), then collects for T
     # to T + 1 s plus up to 2 s of overrun; a chattering channel can stretch the drain by one 1 s wait, and this
     # loop's own whole-second clock gives up to 1 s early: 26 + T + 3 + 1, and 1 s of slack make T + 31. Giving up earlier drops the lock
@@ -107,8 +139,7 @@ if [ -p "$DIR/cmd" ]; then
     end=$(( $(date +%s) + budget ))
     while [ ! -e "$answer" ]; do
         [ "$(date +%s)" -ge "$end" ] && { echo "mu300-at: no answer from the daemon" >&2; exit 1; }
-        if [ -x "$bb" ]; then "$bb" sleep 0.01 2>/dev/null || sleep 1
-        else sleep 0.1 2>/dev/null || sleep 1; fi
+        if [ -x "$bb" ]; then nap 0.01; else nap 0.1; fi
     done
     # atd always creates the answer file, even for a timeout, so an empty or partial file is not success: callers
     # such as atwatch use the exit code to tell a responding channel from a silent one. Require a final result code.
@@ -139,11 +170,16 @@ stty raw -echo <&3 2>/dev/null || true
 while :; do j=; IFS= read -r -t 1 j <&3 || break; done
 printf '%s\r' "$cmd" >&3
 end=$(( $(date +%s) + T + 1 ))   # at least T whole seconds (see collect in mu300-atd)
+# the same contract as through the daemon: success only with a final result code (kanoqwq/mu300-linux@25f8d0c;
+# this path used to end with status 0 after a timeout, and callers took the silence for an answer)
+rc=1
 while [ "$(date +%s)" -lt "$end" ]; do
     l=
     IFS= read -r -t 2 l <&3 || continue
     l=${l%"$CR"}; [ -n "$l" ] || continue
     echo "$l"
-    case $l in OK|ERROR|+CME\ ERROR*|+CMS\ ERROR*|CONNECT*|NO\ CARRIER) break ;; esac
+    case $l in OK|ERROR|+CME\ ERROR*|+CMS\ ERROR*|CONNECT*|NO\ CARRIER) rc=0; break ;; esac
 done
 exec 3>&-
+[ $rc = 0 ] || echo "mu300-at: modem returned no final response" >&2
+exit $rc
