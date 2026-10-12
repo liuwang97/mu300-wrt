@@ -63,6 +63,7 @@ int main(void) {
         if os.environ.get('MU300_TEST_UBSAN') == '1' and probe.returncode:
             raise AssertionError('UBSan was required but its compiler/runtime is unavailable: ' + probe.stderr)
         flags = ['-fsanitize=undefined', '-fno-sanitize-recover=all'] if not probe.returncode else []
+        cls.sanitizer_flags = flags
         r = subprocess.run([cc, '-std=c99', '-Wall', '-Wextra', '-Werror'] + flags + [
                             str(work / 'check.c'), '-o', str(cls.exe)], capture_output=True, text=True)
         if r.returncode:
@@ -103,6 +104,63 @@ int main(void) {
         records = [key[:n] for n in range(54)]
         records += [rng.randbytes(rng.randrange(0, 2048)) for _ in range(500)]
         self.assertEqual(self.parse(records), [-1] * len(records))
+
+    def test_configuration_rejects_multiple_bss_before_driver_setup(self):
+        added = '\n'.join(line[1:] for line in PATCH.read_text().splitlines()
+                          if line.startswith('+') and not line.startswith('+++'))
+        start = added.index('static int hostapd_config_check_u30_sae(')
+        helper = added[start:added.index('\n}\n', start) + 3]
+        source = Path(self.work.name) / 'config.c'
+        source.write_text(r"""
+#include <stddef.h>
+#include <assert.h>
+#define WPA_KEY_MGMT_SAE 1024
+#define MGMT_FRAME_PROTECTION_REQUIRED 2
+#define MSG_ERROR 4
+#define wpa_printf(...) ((void) 0)
+struct hostapd_bss_config {
+    int u30_sae_offload, wpa_key_mgmt, ieee80211w, sae_pwe, disable_pmksa_caching;
+    void *sae_passwords;
+};
+struct hostapd_config { size_t num_bss; struct hostapd_bss_config **bss; };
+""" + helper + r"""
+int main(void) {
+    struct hostapd_bss_config first = {0}, second = {0};
+    struct hostapd_bss_config *bss[] = { &first, &second };
+    struct hostapd_config conf = { 2, bss };
+    /* The untouched option-off path permits the existing configuration. */
+    assert(hostapd_config_check_u30_sae(&conf, 1) == 0);
+    /* Either BSS opting in rejects the whole unsupported configuration. */
+    first.u30_sae_offload = 1;
+    assert(hostapd_config_check_u30_sae(&conf, 1) < 0);
+    assert(hostapd_config_check_u30_sae(&conf, 0) < 0);
+    first.u30_sae_offload = 0; second.u30_sae_offload = 1;
+    assert(hostapd_config_check_u30_sae(&conf, 1) < 0);
+    assert(hostapd_config_check_u30_sae(&conf, 0) < 0);
+    conf.num_bss = 1; first.u30_sae_offload = 1;
+    first.wpa_key_mgmt = WPA_KEY_MGMT_SAE; first.ieee80211w = 2;
+    assert(hostapd_config_check_u30_sae(&conf, 1) == 0);
+    first.wpa_key_mgmt |= 1; assert(hostapd_config_check_u30_sae(&conf, 1) < 0);
+    first.wpa_key_mgmt = WPA_KEY_MGMT_SAE;
+    first.ieee80211w = 1; assert(hostapd_config_check_u30_sae(&conf, 1) < 0);
+    first.ieee80211w = 2;
+    first.sae_pwe = 2; assert(hostapd_config_check_u30_sae(&conf, 1) < 0);
+    first.sae_pwe = 0;
+    first.disable_pmksa_caching = 1;
+    assert(hostapd_config_check_u30_sae(&conf, 1) < 0);
+    first.disable_pmksa_caching = 0;
+    first.sae_passwords = &first;
+    assert(hostapd_config_check_u30_sae(&conf, 1) < 0);
+    return 0;
+}
+""")
+        exe = source.with_suffix('')
+        result = subprocess.run([shutil.which('cc'), '-std=c99', '-Wall', '-Wextra',
+                                 '-Werror'] + self.sanitizer_flags + [
+                                 str(source), '-o', str(exe)], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        result = subprocess.run([str(exe)], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_firmware_request_gates_and_vendor_contract(self):
         # Run the actual firmware helper with fake driver/crypto calls; all credentials are synthetic.
@@ -242,7 +300,7 @@ class SaeSdkBuild(ShellTest):
 case "$*" in *hostapd/compile*)
     mkdir -p bin/packages/aarch64_generic/base
     for name in hostapd-common wpad-basic-openssl; do
-        echo fixture > "bin/packages/aarch64_generic/base/$name-fixture-r8.apk"
+        echo fixture > "bin/packages/aarch64_generic/base/$name-fixture-r9.apk"
     done ;;
 esac''')
 
@@ -252,10 +310,10 @@ esac''')
     def test_recipe_revision_and_matching_package_pair(self):
         r = self.build()
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn('PKG_RELEASE:=8', (self.package / 'Makefile').read_text())
+        self.assertIn('PKG_RELEASE:=9', (self.package / 'Makefile').read_text())
         self.assertEqual((self.package / 'patches' / PATCH.name).read_bytes(), PATCH.read_bytes())
         self.assertEqual(sorted(p.name for p in (self.tmp / 'out').glob('*.apk')),
-                         ['hostapd-common-fixture-r8.apk', 'wpad-basic-openssl-fixture-r8.apk'])
+                         ['hostapd-common-fixture-r9.apk', 'wpad-basic-openssl-fixture-r9.apk'])
         self.assertEqual((self.tmp / 'calls').read_text().splitlines(),
                          ['defconfig', 'package/network/services/hostapd/clean',
                           '-j4 package/network/services/hostapd/compile V=s'])
@@ -280,7 +338,7 @@ esac''')
         link.symlink_to(feed, target_is_directory=True)
         r = self.build()
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn('PKG_RELEASE:=8', recipe.read_text())
+        self.assertIn('PKG_RELEASE:=9', recipe.read_text())
         self.assertEqual((feed / 'patches' / PATCH.name).read_bytes(), PATCH.read_bytes())
         self.assertIn('package/feeds/base/hostapd/compile', (self.tmp / 'calls').read_text())
 
@@ -308,28 +366,32 @@ esac''')
         self.assertEqual(target.read_text(), 'existing private changes')
         self.assertFalse((self.sdk / '.config').exists())
 
-    def test_old_package_artifacts_are_not_delivered_as_r8(self):
+    def test_old_package_artifacts_are_not_delivered_as_r9(self):
         packages = self.sdk / 'bin/packages/aarch64_generic/base'
         packages.mkdir(parents=True)
         for name in ('hostapd-common', 'wpad-basic-openssl'):
-            (packages / (name + '-fixture-r7.apk')).write_text('old build')
+            for revision in (6, 7, 8):
+                (packages / (name + '-fixture-r' + str(revision) + '.apk')).write_text('old build')
         result = self.build()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(sorted(p.name for p in (self.tmp / 'out').glob('*.apk')),
-                         ['hostapd-common-fixture-r8.apk', 'wpad-basic-openssl-fixture-r8.apk'])
+                         ['hostapd-common-fixture-r9.apk', 'wpad-basic-openssl-fixture-r9.apk'])
 
     def test_previous_local_revision_requires_a_clean_sdk(self):
         recipe = self.package / 'Makefile'
-        recipe.write_text(recipe.read_text().replace('PKG_RELEASE:=5', 'PKG_RELEASE:=7'))
+        base = recipe.read_text()
         target = self.package / 'patches' / PATCH.name
         target.parent.mkdir()
         target.write_bytes(PATCH.read_bytes())
-        original = recipe.read_bytes()
-        result = self.build()
-        self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(recipe.read_bytes(), original)
-        self.assertFalse((self.sdk / '.config').exists())
-        self.assertFalse((self.tmp / 'calls').exists())
+        for revision in (6, 7, 8):
+            with self.subTest(revision=revision):
+                recipe.write_text(base.replace('PKG_RELEASE:=5', 'PKG_RELEASE:=' + str(revision)))
+                original = recipe.read_bytes()
+                result = self.build()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(recipe.read_bytes(), original)
+                self.assertFalse((self.sdk / '.config').exists())
+                self.assertFalse((self.tmp / 'calls').exists())
 
 
 if __name__ == '__main__':
