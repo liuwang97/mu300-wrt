@@ -724,7 +724,8 @@ class Lock(UpdateBase):
         mark.unlink(missing_ok=True)
         # its own process group: the lock is the shell's and its children's (sleep inherits the flock descriptor), as
         # a run's is while its unpacking or download still runs - ending the holder means the whole group
-        h = subprocess.Popen(shell + ['-c', f'. "{BIN}/mu300-update"; {prelude}; lock_take || exit 9; echo $$ > "{mark}"; sleep 30'],
+        # Keep the shell alive: a final external sleep can replace it and erase the updater cmdline.
+        h = subprocess.Popen(shell + ['-c', f'. "{BIN}/mu300-update"; {prelude}; lock_take || exit 9; echo $$ > "{mark}"; sleep 30 & wait'],
                              env=self.lock_env(), stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
                              start_new_session=True)
         self.holders.append(h)
