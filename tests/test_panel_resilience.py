@@ -393,6 +393,22 @@ class Backend(sec.Mu300Dash):
             self.assertEqual(recs, [['lock', 'get', 'cached']])
             self.assertLess(time.monotonic() - t0, 3)
 
+    def test_lock_get_carries_the_reset_result(self):
+        # the verified reset (unisoc-modem/lock reset) runs detached and leaves its result in the lock state; the
+        # page polls lock_get for it, so the result object comes through as the adapter wrote it
+        d = self.tmp / 'shared'
+        d.mkdir()
+        (d / 'lock.json').write_text('{"ts":1,"mode":{"label":"4g"}}\n')
+        reset = {'state': 'failed', 'ts': 5, 'end': 9, 'error': 'The modem refused a write', 'cmd': 'AT+SPLBAND=2,0,0,0,0'}
+        self.output('lock', json.dumps({'ts': 1, 'mode': {'label': '4g'}, 'auto_apply': 1, 'reset': reset}))
+        for shell in self.each_shell():
+            r, recs, _ = self.call(shell, 'lock_get', {}, MU300_DASH_DIR=d)
+            self.assertEqual(recs, [['lock', 'get', 'cached']])
+            self.assertEqual(self.reply(r)['reset'], reset)
+            r, recs, _ = self.call(shell, 'lock_set', {'kind': 'reset', 'val': 'auto'}, MU300_DASH_DIR=d)
+            self.assertEqual(self.reply(r).get('started'), 1)
+            self.assertEqual(recs, [['setsid', 'lock', 'reset']])
+
     @unittest.skipUnless(HAVE_PROC, 'needs /proc')
     def test_without_a_reading_yet_lock_get_says_busy_in_time(self):
         d = self.tmp / 'shared'
