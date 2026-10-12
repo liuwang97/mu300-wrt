@@ -12,6 +12,7 @@
  * is deleted with the bin icon on its bubble. */
 
 var MAX_PAGES = 5;   /* pool pages gathered at once (10 messages a page); plain file reads, cheap */
+var JOB_POLL_MS = 1000;   /* how often a send in the backend's background is asked after (sms_job) */
 
 return view.extend({
 	load: function() { return Promise.resolve(); },
@@ -48,7 +49,48 @@ return view.extend({
 		this.convs = {};          /* peer -> {msgs:[], unread:n} */
 		this.wire(root);
 		this.reload();
+		/* a send started before this page was opened (or before a reload) is still followed */
+		this.watchJob(true);
 		return root;
+	},
+
+	/* The send runs in the backend's background (sms_send starts it, sms_job tells how it went): a send can take
+	 * longer than one request may (rpcd ends a call at 30 s), and its result was lost with the call. Ask every
+	 * second until it is done, then show the verdict once. quiet: say nothing when there is none (the page just
+	 * opened). */
+	watchJob: function(quiet) {
+		var self = this;
+		if (this._jobWatch) return;
+		this._jobWatch = true;
+		var announced = !quiet;
+		var btn = this.Q('sms-send');
+		var tick = function() {
+			L.resolveDefault(M.callSmsJob(), null).then(function(j) {
+				j = j || {};
+				if (j.running) {
+					if (!announced) { M.busy(btn, true); self.note(_('Sending…'), 'busy'); announced = true; }
+					return setTimeout(tick, JOB_POLL_MS);
+				}
+				self._jobWatch = false;
+				M.busy(btn, false);
+				if (!j.done || !announced) return;
+				self.sent(j);
+			}, function() { self._jobWatch = false; M.busy(btn, false); self.note(_('Request failed'), 'error'); });
+		};
+		tick();
+	},
+
+	/* the verdict of a send */
+	sent: function(r) {
+		if (r.ok) {
+			this.note(_('Sent; the list refreshes shortly.'), 'success');
+			this.Q('sms-text').value = '';
+			setTimeout(L.bind(this.reload, this), 2500);
+		} else {
+			/* the backend's error is a whole sentence (the busy channel, a refused number, "Sending failed" with
+			 * the modem's last line in detail): shown alone, so nothing is said twice */
+			this.note(r.error ? M.errText(r) : _('Sending failed'), 'error');
+		}
 	},
 
 	wire: function(root) {
@@ -117,16 +159,10 @@ return view.extend({
 		this.note(_('Sending…'), 'busy');
 		L.resolveDefault(M.callSmsSend(num, text)).then(function(r) {
 			r = r || {};
+			/* accepted: the send runs in the background, and the verdict comes through sms_job (watchJob) */
+			if (r.ok && r.job) { self.watchJob(); return; }
 			M.busy(btn, false);
-			if (r.ok) {
-				self.note(_('Sent; the list refreshes shortly.'), 'success');
-				self.Q('sms-text').value = '';
-				setTimeout(function() { self.reload(); }, 2500);
-			} else {
-				/* the backend's error is a whole sentence (the busy channel, a refused number, "Sending failed" with
-				 * the modem's last line in detail): shown alone, so nothing is said twice */
-				self.note(r.error ? M.errText(r) : _('Sending failed'), 'error');
-			}
+			self.sent(r);
 		}, function() { M.busy(btn, false); self.note(_('Request failed'), 'error'); });
 	},
 
