@@ -132,11 +132,16 @@ if marker not in t:
 \t    of_property_match_string(pdev->dev.of_node, "sprd,name", "sdio_sd") < 0)
 \t\treturn -ENODEV;
 ''' + t[j:]
-# The stock device tree gives the slot a card-detect GPIO on line 35 of the EIC's sync bank; mainline's sprd-eic
-# gives that bank 24 lines, the lookup never succeeds and the host would stay deferred for ever (FINDINGS 31j). For
-# the card slot alone the property is dropped and the parse run again: mmc_of_parse() requests the CD GPIO before
-# it reads the write protect, the bus modes (sd-uhs-sdr104, no-sdio, no-mmc) and the power sequence, so a parse that
-# stopped at the CD GPIO would leave all of those out. The host then polls for the card.
+# The stock device tree gives the slot a card-detect GPIO on line 35 of the EIC's sync controller. Mainline's
+# sprd-eic used to give that controller 24 lines (three banks of its six), the lookup never succeeded and the host
+# would have stayed deferred for ever (FINDINGS 31j); patches/0014 maps all of its banks, so the parse now finds the
+# line and the core takes its interrupt instead of polling (issue #181: a polled empty slot was initialised once a
+# second, and the host's late command interrupts filled the log). What follows is the fallback for a parse that still
+# defers on the CD GPIO (a kernel without 0014, or an EIC that never binds - built in, it binds before any sdhci
+# host probes): for the card slot alone the property is dropped and the parse run again, because mmc_of_parse()
+# requests the CD GPIO before it reads the write protect, the bus modes (sd-uhs-sdr104, no-sdio, no-mmc) and the
+# power sequence, so a parse that stopped at the CD GPIO would leave all of those out. The host then polls for the
+# card, and says so ("MU300: CD GPIO deferred, polling the card slot" in the log means the card detect is not in use).
 parse_old = '\tret = mmc_of_parse(host->mmc);\n\tif (ret)\n\t\treturn ret;\n'
 parse_new = '''\tret = mmc_of_parse(host->mmc);
 \tif (ret == -EPROBE_DEFER &&
