@@ -439,6 +439,95 @@ class Atd(ShellTest):
             logs, _m = self.start(shell)
             self.assertEqual(logs, ['tty_nr0.log'])
 
+    # ------------------------------------------------------------------ +CMT frames (direct SMS delivery)
+    PDU = '07911326040000F0040B911346610089F60000208062917314480CC8F71D14969741F977FD07'
+    SPOOLER = BIN / 'mu300-cmt-spool'
+
+    def start_spooling(self, shell, nr0=True):
+        """The daemon with the real spooler and a pool of its own; returns (nr1 master, nr0 master or None)."""
+        self.pool = self.tmp / f'pool{len(self.procs)}'
+        _logs, m = self.start(shell, nr0=nr0, MU300_SMS_POOL=self.pool, MU300_CMT_SPOOL_BIN=self.SPOOLER)
+        return m, (self.masters[-1] if nr0 else None)
+
+    def spooled(self, timeout=10):
+        """[the PDUs in the pool's spool], once one is there (or the time is up)."""
+        end = time.monotonic() + timeout
+        while time.monotonic() < end:
+            d = self.pool / 'incoming'
+            files = sorted(d.glob('*.ready')) if d.exists() else []
+            if files:
+                return [f.read_text().rstrip('\n') for f in files]
+            time.sleep(0.05)
+        return []
+
+    def test_a_cmt_frame_on_the_urc_channel_is_spooled_and_kept_out_of_the_log(self):
+        """The modem's unsolicited channel (nr0, where +CMTI comes) carries the +CMT frame when mu300-smsd asked for
+        direct delivery: the PDU goes to the spooler on its stdin, the log gets the header and not the message."""
+        for shell in self.each_shell():
+            _m, nr0 = self.start_spooling(shell)
+            os.write(nr0, f'\r\n+CSQ: 20,99\r\n\r\n+CMT: ,27\r\n{self.PDU}\r\n\r\n+CEREG: 1\r\n'.encode())
+            self.assertEqual(self.spooled(), [self.PDU])
+            log = self.dir / 'urc' / 'tty_nr0.log'
+            for _ in range(100):
+                if '+CEREG: 1' in log.read_text():
+                    break
+                time.sleep(0.05)
+            self.assertEqual([l for l in log.read_text().splitlines() if l], ['+CSQ: 20,99', '+CMT: ,27 (PDU spooled)', '+CEREG: 1'])
+            self.assertNotIn(self.PDU, log.read_text())
+            self.assertNotIn(self.PDU, self.err.read_text())
+
+    def test_a_cmt_frame_inside_a_reply_is_spooled_and_never_in_the_answer(self):
+        for shell in self.each_shell():
+            m, _nr0 = self.start_spooling(shell, nr0=False)
+            self.send(m, 'AT+CSQ', f'\r\n+CMT: ,27\r\n{self.PDU}\r\n\r\n+CSQ: 20,99\r\n\r\nOK\r\n'.encode(), t=3)
+            self.assertEqual(self.answer, '+CSQ: 20,99\nOK\n')
+            self.assertEqual(self.spooled(), [self.PDU])
+            self.assertIn('+CMT: ,27 (PDU spooled)\n', (self.dir / 'urc' / 'tty_nr1.log').read_text())
+            self.assertNotIn(self.PDU, (self.dir / 'urc' / 'tty_nr1.log').read_text())
+
+    def test_a_cmt_frame_while_idle_is_spooled_before_the_next_command(self):
+        for shell in self.each_shell():
+            m, _nr0 = self.start_spooling(shell, nr0=False)
+            os.write(m, f'\r\n+CMT: "ADANA BLD",27\r\n{self.PDU}\r\n'.encode())
+            time.sleep(0.3)
+            self.assertEqual(self.spooled(timeout=0.1), [])        # nobody reads an idle command channel
+            self.send(m, 'AT', b'\r\nOK\r\n', t=3)                 # the drain before the command takes it
+            self.assertEqual(self.answer, 'OK\n')
+            self.assertEqual(self.spooled(), [self.PDU])
+            self.assertIn('+CMT: "ADANA BLD",27 (PDU spooled)\n', (self.dir / 'urc' / 'tty_nr1.log').read_text())
+
+    def test_a_frame_that_is_no_message_is_not_spooled_and_the_daemon_goes_on(self):
+        for shell in self.each_shell():
+            _m, nr0 = self.start_spooling(shell)
+            os.write(nr0, b'\r\n+CMT: ,27\r\nnot a pdu\r\n+CSQ: 1,2\r\n')
+            log = self.dir / 'urc' / 'tty_nr0.log'
+            for _ in range(100):
+                if '+CSQ: 1,2' in log.read_text():
+                    break
+                time.sleep(0.05)
+            self.assertEqual([l for l in log.read_text().splitlines() if l], ['+CMT: ,27 (PDU not spooled)', '+CSQ: 1,2'])
+            self.assertEqual(self.spooled(timeout=0.2), [])
+            self.assertIn('could not be spooled', self.err.read_text())
+            # a header with no PDU after it (two seconds): the same, and the lines after it are logged as usual
+            os.write(nr0, b'+CMT: ,27\r\n')
+            time.sleep(2.5)
+            os.write(nr0, b'+CSQ: 3,4\r\n')
+            for _ in range(100):
+                if '+CSQ: 3,4' in log.read_text():
+                    break
+                time.sleep(0.05)
+            self.assertEqual([l for l in log.read_text().splitlines() if l][-2:], ['+CMT: ,27 (PDU not spooled)', '+CSQ: 3,4'])
+            self.assertEqual(self.spooled(timeout=0.2), [])
+
+    def test_without_the_spooler_nothing_is_spooled_and_nothing_breaks(self):
+        for shell in self.each_shell():
+            self.pool = self.tmp / f'pool{len(self.procs)}'
+            _logs, m = self.start(shell, nr0=False, MU300_SMS_POOL=self.pool, MU300_CMT_SPOOL_BIN=self.tmp / 'nowhere')
+            self.send(m, 'AT+CSQ', f'\r\n+CMT: ,27\r\n{self.PDU}\r\n\r\n+CSQ: 20,99\r\n\r\nOK\r\n'.encode(), t=3)
+            self.assertEqual(self.answer, '+CSQ: 20,99\nOK\n')
+            self.assertFalse((self.pool / 'incoming').exists())
+            self.assertIn('+CMT: ,27 (PDU not spooled)\n', (self.dir / 'urc' / 'tty_nr1.log').read_text())
+
     def test_empty_urc_channels_open_none(self):
         for shell in self.each_shell():
             logs, _m = self.start(shell, MU300_AT_URC_CHANNELS='')
