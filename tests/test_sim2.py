@@ -13,6 +13,7 @@ class Sim2ColdStart(ShellTest):
         self.run = self.tmp / 'run'
         self.etc = self.tmp / 'etc'
         self.etc.mkdir()
+        (self.etc / 'openwrt_release').touch()
         (self.run / 'mu300').mkdir(parents=True)
         (self.run / 'mu300-radio-freeze').touch()
         for name in ('mu300-at', 'mu300-at2', 'mu300-at4', 'mu300-at5'):
@@ -23,7 +24,7 @@ class Sim2ColdStart(ShellTest):
         urc = self.run / 'mu300-at/urc'
         urc.mkdir()
         (urc / 'stty_nr0.log').write_text('CP ready\n')
-        self.stub('mu300-device', 'echo "${T_DEVICE:-u30air}"')
+        self.stub('mu300-device', 'echo "${T_DEVICE-u30air}"')
         self.stub('uci', r'''case "$*" in
  '-q get network.wan.sim_slot') cat "$STUBLOG/etc/uci-slot";;
  '-q get network.wan.sim_hot') cat "$STUBLOG/etc/uci-hot";;
@@ -55,6 +56,7 @@ echo OK
 
     def env(self, **extra):
         extra.setdefault('MU300_SIM_ROOT', self.tmp)
+        extra.setdefault('MU300_DEVICE_CMD', self.stubs / 'mu300-device')
         extra.setdefault('MU300_SIM_CONFIG_LIB', TOP / 'rootfs/overlay/opt/mu300/lib/sim-config.sh')
         return super().env(**extra)
 
@@ -71,6 +73,15 @@ echo OK
     def calls(self):
         p = self.tmp / 'at'
         return p.read_text().splitlines() if p.exists() else []
+
+    def test_cold_helpers_refuse_unverified_devices_and_other_systems(self):
+        for device in ('f50', 'u30pro', 'm3', ''):
+            with self.subTest(device=device):
+                self.assertNotEqual(self.boot(T_DEVICE=device).returncode, 0)
+                self.assertFalse(self.calls())
+        (self.etc / 'openwrt_release').unlink()
+        self.assertNotEqual(self.boot().returncode, 0)
+        self.assertFalse(self.calls())
 
     def test_success_and_zero_byte_marker(self):
         r = self.boot()
@@ -305,6 +316,17 @@ sleep() {{ :; }}
                 self.assertFalse((self.run / 'mu300-radio-freeze').exists())
         self.assertEqual((self.etc / 'uci-slot').read_text(), '1\n', 'left alone, for a U30 Air that reads it')
 
+    def test_early_runtime_reader_cannot_hide_an_unconfirmed_previous_boot(self):
+        (self.etc / 'uci-slot').write_text('1\n')
+        (self.etc / 'uci-hot').write_text('1\n')
+        (self.run / 'mu300/sim-slot').write_text('1\n')
+        (self.tmp / 'pending').touch()
+        result = self.init_service()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.instances(result), ['atd', 'atd2', 'radio-warmup'])
+        self.assertEqual((self.run / 'mu300/sim-slot').read_text(), '0\n')
+        self.assertEqual((self.etc / 'uci-slot').read_text(), '0\n')
+
     def test_unconfirmed_boot_falls_back_to_sim1(self):
         # the last boot's dual-SIM path never confirmed (a broker that never came up, a warm-up that died)
         (self.etc / 'uci-slot').write_text('1\n')
@@ -323,7 +345,8 @@ sleep() {{ :; }}
     def test_pending_marker_survives_a_restart_within_the_boot(self):
         (self.etc / 'uci-slot').write_text('1\n')
         (self.tmp / 'pending').write_text('')
-        (self.run / 'mu300/sim-slot').write_text('1\n')   # this boot's pin: the service is being restarted
+        (self.run / 'mu300/sim-slot').write_text('1\n')
+        (self.run / 'mu300/sim-boot-policy').touch()   # this boot's pin: the service is being restarted
         r = self.init_service()
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn('atd4', self.instances(r))

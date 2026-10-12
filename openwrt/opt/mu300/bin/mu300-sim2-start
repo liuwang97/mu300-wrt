@@ -4,6 +4,11 @@
 # Existing nr0/nr1/nr2 and nr3/nr4/nr5 owners must already be running; this opens no modem device.
 set -euo pipefail
 export PATH="$PATH:/opt/mu300/busybox-bin"
+DEVICE=${MU300_DEVICE_CMD:-/opt/mu300/bin/mu300-device}
+[ -e /etc/openwrt_release ] && [ "$("$DEVICE" 2>/dev/null)" = u30air ] || {
+    echo 'Native SIM startup requires U30 Air on OpenWrt' >&2
+    exit 1
+}
 [[ ${1:-} == --cold-start ]] || { echo 'Requires an explicitly prepared cold-start boot.' >&2; exit 2; }
 [[ -e /run/mu300-radio-freeze ]] || { echo 'Automatic radio bring-up must be inhibited before cold-start.' >&2; exit 2; }
 [[ ! -e /run/mu300/charging-boot ]] || exit 0

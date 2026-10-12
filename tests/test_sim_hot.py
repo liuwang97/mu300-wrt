@@ -18,7 +18,7 @@ except OSError: sys.exit(1)' "$1" "$nb"
 # netifd's wan: up with an address unless the test says T_WAN=0
 UBUS = r'''
 case "$*" in *network.interface.wan*)
-    if [ "${T_WAN:-1}" = 1 ]; then printf '{ "up": true, "l3_device": "sipa_eth%s", "ipv4-address": [ { "address": "10.0.0.2" } ] }\n' "$(( $(cat "$STUBLOG/run/mu300/sim-slot") * 8 ))"
+    if [ "${T_WAN:-1}" = 1 ]; then printf '{ "up": true, "l3_device": "%s", "ipv4-address": [ { "address": "10.0.0.2" } ] }\n' "${T_BEARER:-sipa_eth$(( $(cat "$STUBLOG/run/mu300/sim-slot") * 8 ))}"
     else printf '{ "up": false, "ipv4-address": [ ] }\n'; fi ;;
 esac
 '''
@@ -48,7 +48,7 @@ class HotSim(ShellTest):
  *) exit 1;;
 esac""")
         self.stub('ifdown' , 'echo down >> "$STUBLOG/net"')
-        self.stub('ifup', 'echo up >> "$STUBLOG/net"')
+        self.stub('ifup', 'echo up >> \"$STUBLOG/net\"; if [ \"${T_IFUP_FAIL_ONCE:-0}\" = 1 ] && [ ! -e \"$STUBLOG/ifup-failed\" ]; then touch \"$STUBLOG/ifup-failed\"; exit 1; fi')
         self.stub('mu300-device', 'echo "${T_DEVICE:-u30air}"')
         self.stub('setsid', "exec python3 -c 'import os, sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])' \"$@\"")   # macOS has none; the process group is only for the interrupt
         self.stub('flock', FLOCK)
@@ -99,6 +99,27 @@ echo OK
         self.assertIn('1 AT+SPACTCARD=1;+SFUN=5',calls)
         self.assertNotIn('SPTESTMODEM',calls)
         self.assertEqual((self.tmp/'net').read_text(),'down\nup\ndown\nup\n')
+
+    def test_wrong_bearer_is_not_saved_as_success(self):
+        result = self.ctl('switch', '1', T_BEARER='sipa_eth8')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.status()['result'], 'no_data')
+        self.assertEqual((self.etc / 'uci-slot').read_text(), '1\n')
+        self.assertEqual((self.run / 'mu300/sim-slot').read_text(), '1\n')
+
+    def test_failed_ifup_rolls_back_and_keeps_preference(self):
+        result = self.ctl('switch', '1', T_IFUP_FAIL_ONCE=1)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.status()['result'], 'no_data')
+        self.assertEqual((self.etc / 'uci-slot').read_text(), '1\n')
+        self.assertEqual((self.run / 'mu300/sim-slot').read_text(), '1\n')
+
+    def test_same_active_card_without_data_does_not_replace_manual_default(self):
+        (self.etc / 'uci-slot').write_text('0\n')
+        result = self.ctl('switch', '2', T_WAN=0)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual((self.etc / 'uci-slot').read_text(), '0\n')
+        self.assertFalse((self.tmp / 'at').exists())
 
     def test_no_bearer_on_the_target_rolls_back_without_saving(self):
         # the one APN is shared: a card of another carrier switches "successfully" and then never gets a bearer

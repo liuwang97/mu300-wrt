@@ -189,7 +189,7 @@ if [ -n "$owner" ] && [ -d "/proc/$owner" ] &&
 fi
 
 echo "mu300-at: daemon not running, using $DEV directly (this can wedge the channel)" >&2
-[ "$SLOT" = 1 ] && { echo "mu300-at: SIM2 broker unavailable" >&2; exit 1; }
+[ "$SIM_NATIVE" = 1 ] && { echo "mu300-at: Persistent dual-SIM broker unavailable" >&2; exit 1; }
 [ -c "$DEV" ] || { echo "mu300-at: no $DEV" >&2; exit 1; }
 exec 3<>"$DEV"
 stty raw -echo <&3 2>/dev/null || true

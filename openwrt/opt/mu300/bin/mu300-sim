@@ -3,6 +3,7 @@
 # OpenWrt: network.wan.sim_slot; other systems: /etc/mu300/sim-slot.
 # Shared boot preferences are saved here; live modem operations dispatch only to the gated U30 backend.
 set -eu
+umask 077
 root=${MU300_SIM_ROOT:-}
 state=$root/run/mu300/sim-slot
 conf=$root/etc/mu300/sim-slot

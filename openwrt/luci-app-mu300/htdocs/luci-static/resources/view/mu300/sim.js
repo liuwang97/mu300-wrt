@@ -25,15 +25,16 @@ return view.extend({
 	},
 	paint: function(st) {
 		var self = this;
+		var live = st && st.capabilities ? st.capabilities.live_switch === true : !!(st && st.supported);
 		var results = {
 			failed: _('SIM switch failed; check SIM readiness and hot switching.'),
 			idle: _('Ready'), switching: _('Switching SIM'), switched: _('SIM switched; saved as boot default'),
 			rolled_back: _('Switch failed; previous SIM restored'),
-			no_data: _('The other SIM got no mobile data within a minute; the previous SIM is back and stays the default'),
+			no_data: _('The target SIM got no mobile data; the previous SIM is restored and the saved boot preference is unchanged.'),
 			reboot_required: _('Radio state unknown; reboot required')
 		};
-		/* mu300-sim answers ok:0 everywhere but on the U30 Air with OpenWrt: the page says so and offers nothing */
-		if (!st || st.supported === 0 || (st.ok !== 1 && !st.result)) {
+		/* The shared controller exposes boot selection on F50 and live switching only on verified U30 Air/OpenWrt. */
+		if (!st || (st.capabilities && !st.capabilities.boot_selection) || (st.ok !== 1 && !st.result)) {
 			dom.content(this.root, E('section', { 'class': 'mud-card' }, [
 				E('h3', {}, [ _('Dual SIM') ]),
 				E('p', {}, [ _('Dual SIM control is only for the U30 Air on OpenWrt.') ])
@@ -48,7 +49,7 @@ return view.extend({
 		};
 		var card = E('section', { 'class': 'mud-card' }, [
 			E('h3', {}, [ _('Dual SIM') ]),
-			E('p', {}, [ _('A switch saves that SIM as the next cold-boot default only once it has mobile data; without data within a minute the previous SIM comes back and stays the default. Both SIMs share the one APN of the WAN interface.') ]),
+			E('p', {}, [ _('A live switch saves the target as the next boot default only after it gets mobile data. Without data, the previous SIM is restored and the saved boot preference is unchanged. Each SIM uses its own APN/PDP profile from the WAN settings.') ]),
 			E('p', {}, [ _('Active SIM') + ': ' + (st.active ? 'SIM' + st.active : _('Unknown')) ]),
 			E('p', {}, [ _('Cold-boot default') + ': ' + (st.default ? 'SIM' + st.default : _('Unknown')) ]),
 			E('p', {}, [ results[st.result] || _('SIM control unavailable') ])
@@ -56,15 +57,17 @@ return view.extend({
 		if (st.fallback)
 			card.appendChild(E('p', { 'style': 'color:#b45309;font-weight:600' }, [
 				(fallbacks[st.fallback] || st.fallback) + ' ' + _('The device is back on SIM1 without live switching; choose again below to try once more.') ]));
-		var hot = E('input', { 'type': 'checkbox', 'checked': st.hot ? '' : null, 'disabled': st.busy ? '' : null });
+		var hot = E('input', { 'type': 'checkbox', 'checked': st.hot ? '' : null, 'disabled': (!live || st.busy) ? '' : null });
 		hot.addEventListener('change', function() { self.set('hot', hot.checked ? 1 : 0); });
 		card.appendChild(E('label', {}, [ hot, ' ', _('Enable hot switching') ]));
-		if (!st.available)
+		if (!live)
+			card.appendChild(E('p', {}, [ _('This device supports next-boot SIM selection only; live switching is unavailable.') ]));
+		else if (!st.available)
 			card.appendChild(E('p', {}, [ _('Reboot after enabling hot switching to prepare both SIM channels.') ]));
 		[ 1, 2 ].forEach(function(n) {
 			var row = E('div', { 'style': 'display:flex;gap:8px;margin:12px 0' });
 			var b = E('button', { 'class': 'mud-btn',
-				'disabled': (!st.hot || !st.available || st.busy || !st.active || st.active === n) ? '' : null },
+				'disabled': (!live || !st.hot || !st.available || st.busy || !st.active || st.active === n) ? '' : null },
 				[ _('Switch to SIM%d').format(n) ]);
 			b.addEventListener('click', function() { self.set('switch', n); });
 			var d = E('button', { 'class': 'mud-btn', 'disabled': st.busy || st.default === n ? '' : null },

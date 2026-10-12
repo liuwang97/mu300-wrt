@@ -459,7 +459,7 @@ class Passthrough(Mu300Dash):
         ('packages_act', {'op': 'retry'}, [['packages', 'act', 'retry']]),
         ('packages_act', {'op': 'repair_dns'}, [['packages', 'act', 'repair_dns']]),
         ('packages_act', {'op': 'dismiss'}, [['packages', 'act', 'dismiss']]),
-        ('sim_get', {}, [['sim', 'status']]),
+        ('sim_get', {}, [['sim', 'status', '--json']]),
         ('sim_set', {'op':'default','value':'2'}, [['sim','default','2']]),
         ('sim_set', {'op':'hot','value':'1'}, [['sim','hot','1']]),
         ('ttl_set', {'value': '64'}, [['ttl', 'set', '64']]),

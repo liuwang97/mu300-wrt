@@ -7,6 +7,11 @@
 # boot without WAN.
 set -euo pipefail
 export PATH="$PATH:/opt/mu300/busybox-bin"
+DEVICE=${MU300_DEVICE_CMD:-/opt/mu300/bin/mu300-device}
+[ -e /etc/openwrt_release ] && [ "$("$DEVICE" 2>/dev/null)" = u30air ] || {
+    echo 'Native SIM startup requires U30 Air on OpenWrt' >&2
+    exit 1
+}
 PENDING=/etc/mu300-sim-pending
 FALLBACK=/etc/mu300-sim-fallback
 MD=/opt/mu300/bin/mobile-data

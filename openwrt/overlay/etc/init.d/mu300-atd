@@ -129,9 +129,13 @@ start_service() {
     # One boot at a time: the dual-SIM path leaves a pending marker that mu300-sim2-warmup removes once the radio
     # is up (or it falls back itself). A marker still there at the next boot means that boot never confirmed
     # (a broker that never came up, a warm-up that died): this boot is a plain SIM1 boot, and the page says why.
-    if [ ! -e /run/mu300/sim-slot ] && [ -e /etc/mu300-sim-pending ]; then
+    if [ ! -e /run/mu300/sim-boot-policy ] && [ -e /etc/mu300-sim-pending ]; then
         sim_fallback unconfirmed; slot=0; hot=0
+        mkdir -p /run/mu300
+        printf '0\n' > /run/mu300/sim-slot
     fi
+    mkdir -p /run/mu300
+    : > /run/mu300/sim-boot-policy
     # Pin the active slot for this boot; changing network.wan.sim_slot only affects the next boot.
     mkdir -p /run/mu300
     if [ ! -e /run/mu300/sim-slot ]; then

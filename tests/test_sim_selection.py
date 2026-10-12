@@ -17,14 +17,26 @@ class SimSelection(ShellTest):
         self.config_lib = TOP / 'rootfs/overlay/opt/mu300/lib/sim-config.sh'
         self.choice = self.tmp / 'choice'
         self.choice.write_text('0\n')
-        self.stub('uci', '''case "$*" in
-  '-q get network.wan.sim_slot') cat "$STUBLOG/choice" ;;
-  '-q get network.wan.sim_hot') cat "$STUBLOG/hot-choice" ;;
-  'set network.wan.sim_hot='*) printf '%s\\n' "${2#*=}" > "$STUBLOG/hot-choice" ;;
-  'set network.wan.sim_slot='*) printf '%s\\n' "${2#*=}" > "$STUBLOG/choice" ;;
-  'commit network') : ;;
-  *) exit 1 ;;
-esac''')
+        self.stub('uci', r"""
+[ "$1" != -q ] || shift
+verb=$1; key=${2:-}
+case $key in
+ network.wan.sim_slot|network.wan.sim_slot=*) file="$STUBLOG/choice" ;;
+ network.wan.sim_hot|network.wan.sim_hot=*) file="$STUBLOG/hot-choice" ;;
+ network.wan.apn|network.wan.apn=*) file="$STUBLOG/apn" ;;
+ network.wan.pdptype|network.wan.pdptype=*) file="$STUBLOG/pdptype" ;;
+ network.wan.apn_internal|network.wan.apn_internal=*) file="$STUBLOG/apn_internal" ;;
+ network.wan.pdptype_internal|network.wan.pdptype_internal=*) file="$STUBLOG/pdptype_internal" ;;
+ *) file= ;;
+esac
+case $verb in
+ get) [ -n "$file" ] && cat "$file" ;;
+ set) [ -n "$file" ] && printf '%s\n' "${key#*=}" > "$file" ;;
+ delete) [ -n "$file" ] && rm -f "$file" ;;
+ commit) [ "${T_COMMIT_FAIL:-0}" != 1 ] ;;
+ *) exit 1;;
+esac
+""")
 
     def env(self, **extra):
         extra.setdefault('MU300_DEVICE_CMD', self.stubs / 'mu300-device')
@@ -33,6 +45,75 @@ esac''')
 
     def sim(self, shell, *args):
         return self.script(shell, BIN / 'mu300-sim', *args, MU300_SIM_ROOT=self.tmp)
+
+    def native(self):
+        (self.tmp / 'etc').mkdir(exist_ok=True)
+        (self.tmp / 'etc/openwrt_release').touch()
+        self.stub('mu300-device', 'echo u30air')
+        self.backend = self.tmp / 'mu300-sim-u30'
+        self.backend.write_text((BIN / 'mu300-sim-u30').read_text()
+                                .replace('/run/', str(self.tmp / 'run') + '/')
+                                .replace('/etc/', str(self.tmp / 'etc') + '/')
+                                .replace('/opt/mu300/bin/mu300-device', str(self.stubs / 'mu300-device')))
+        self.backend.chmod(0o755)
+
+    def test_u30_manual_default_needs_no_hot_mode_modem_or_wan(self):
+        self.native()
+        for shell in self.each_shell():
+            self.state.unlink(missing_ok=True)
+            self.choice.write_text('0\n')
+            result = self.script(shell, BIN / 'mu300-sim', 'default', '2',
+                                 MU300_SIM_ROOT=self.tmp, MU300_SIM_U30_BACKEND=self.backend)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            status = json.loads(result.stdout)
+            self.assertEqual((status['version'], status['active'], status['default'], status['hot']), (1, 1, 2, 0))
+            self.assertFalse(status['available'])
+            self.assertEqual(self.state.read_text(), '0\n')
+            self.assertEqual(self.choice.read_text(), '1\n')
+            self.assertFalse((self.tmp / 'run/mu300-radio-freeze').exists())
+            self.assertFalse((self.tmp / 'run/mu300/sim-switch.log').exists())
+
+    def test_u30_migration_copies_legacy_preference_and_profile_once(self):
+        self.native()
+        self.choice.unlink()
+        (self.tmp / 'etc/mu300-sim-slot').write_text('1\n')
+        (self.tmp / 'etc/mu300-sim-hot').write_text('1\n')
+        (self.tmp / 'apn').write_text('carrier.example\n')
+        (self.tmp / 'pdptype').write_text('IP\n')
+        result = self.sim(['sh'], 'migrate')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.choice.read_text(), '1\n')
+        self.assertEqual((self.tmp / 'hot-choice').read_text(), '1\n')
+        self.assertEqual((self.tmp / 'apn_internal').read_text(), 'carrier.example\n')
+        self.assertEqual((self.tmp / 'pdptype_internal').read_text(), 'IP\n')
+        self.assertTrue((self.tmp / 'etc/mu300/sim-migration/mu300-sim-slot.migrated').exists())
+        self.assertEqual(self.sim(['sh'], 'migrate').returncode, 0)
+
+    def test_u30_migration_preserves_existing_choice_and_explicit_empty_apn(self):
+        self.native()
+        (self.tmp / 'hot-choice').write_text('0\n')
+        (self.tmp / 'apn_internal').write_text('')
+        (self.tmp / 'apn').write_text('old-carrier\n')
+        (self.tmp / 'etc/mu300-sim-slot').write_text('1\n')
+        (self.tmp / 'etc/mu300-sim-hot').write_text('1\n')
+        self.assertEqual(self.sim(['sh'], 'migrate').returncode, 0)
+        self.assertEqual(self.choice.read_text(), '0\n')
+        self.assertEqual((self.tmp / 'hot-choice').read_text(), '0\n')
+        self.assertEqual((self.tmp / 'apn_internal').read_text(), '')
+
+    def test_u30_commit_failure_restores_visible_preference_and_keeps_legacy(self):
+        self.native()
+        result = self.script(['sh'], BIN / 'mu300-sim', 'default', '2', MU300_SIM_ROOT=self.tmp,
+                             MU300_SIM_U30_BACKEND=self.backend, T_COMMIT_FAIL=1)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.choice.read_text(), '0\n')
+        self.choice.unlink()
+        (self.tmp / 'etc/mu300-sim-slot').write_text('1\n')
+        result = self.script(['sh'], BIN / 'mu300-sim', 'migrate', MU300_SIM_ROOT=self.tmp, T_COMMIT_FAIL=1)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(self.choice.exists())
+        self.assertTrue((self.tmp / 'etc/mu300-sim-slot').exists())
+        self.assertFalse((self.tmp / 'etc/mu300/sim-migration/mu300-sim-slot.migrated').exists())
 
     def test_selection_refuses_other_devices(self):
         device = self.tmp / 'mu300-device'
