@@ -621,8 +621,21 @@ m_sms_send() {
         printf '{"ok":0,"busy":1,"job":1,"error":"The AT channel is busy; the command was not sent, try again"}\n'
         return
     fi
-    rm -rf "$SMS_JOB"
-    (umask 077; mkdir -p "$SMS_JOB") 2>/dev/null
+    # The job directory is the claim, and taking it is atomic: the last job's directory (not running, as just seen:
+    # finished, or died under the send) is moved aside by whichever caller gets there first and removed, and then
+    # `mkdir` without -p succeeds for exactly one caller; the other finds it and says busy. Two calls at once can
+    # therefore never write their number and text into the same directory, where one caller's text could have
+    # gone to the other's number. A directory that has no start yet is a caller's that is still writing it: it is
+    # left alone while it is young (the same ten seconds sms_job_running allows a job to write its pid).
+    if [ -d "$SMS_JOB" ]; then
+        if [ -f "$SMS_JOB/start" ] || [ $(( $(now) - $(stat -c %Y "$SMS_JOB" 2>/dev/null || echo 0) )) -ge 10 ]; then
+            mv "$SMS_JOB" "$SMS_JOB.old.$$" 2>/dev/null && rm -rf "$SMS_JOB.old.$$"
+        fi
+    fi
+    (umask 077; mkdir "$SMS_JOB") 2>/dev/null || {
+        printf '{"ok":0,"busy":1,"job":1,"error":"The AT channel is busy; the command was not sent, try again"}\n'
+        return
+    }
     # the number and the text go to the job through root-only files (the runtime directory is private_dir), the
     # text from there on stdin
     printf '%s\n' "$num" > "$SMS_JOB/num"
