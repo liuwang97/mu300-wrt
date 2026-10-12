@@ -841,6 +841,279 @@ class Pool(ShellTest):
             self.run_sms(shell, 'sync', MU300_SMS_FORWARD=fwd)
             self.assertEqual((self.tmp / 'fwd.log').read_text().splitlines(), ['enqueue 000001 000002', 'kick'])
 
+    # ------------------------------------------------------------------ delivered directly (import-pdu)
+    def spooled(self, pdu, name='cmt-1.abcdef.ready'):
+        """A PDU in the pool's spool, as mu300-cmt-spool writes it."""
+        d = self.pool / 'incoming'
+        d.mkdir(parents=True, exist_ok=True)
+        (d / name).write_text(pdu + '\n')
+        return d / name
+
+    def parts(self):
+        d = self.pool / 'parts'
+        return sorted(p.name for p in d.iterdir()) if d.exists() else []
+
+    def test_import_pdu_pools_a_direct_message_without_the_modem(self):
+        hook = self.tmp / 'hook'
+        out = self.tmp / 'hook.out'
+        hook.write_text(f'#!/bin/sh\nprintf "%s|%s|%s\\n" "$SMS_FROM" "$SMS_DATE" "$SMS_TEXT" >> "{out}"\n')
+        hook.chmod(0o755)
+        fwd = self.tmp / 'fwd'
+        fwd.write_text('#!/bin/sh\necho "$*" >> "$STUBLOG/fwd.log"\n')
+        fwd.chmod(0o755)
+        for shell in self.each_shell():
+            self.fresh()
+            out.unlink(missing_ok=True)
+            (self.tmp / 'fwd.log').unlink(missing_ok=True)
+            f = self.spooled(PDU_GSM)
+            r = self.run_sms(shell, 'import-pdu', f, MU300_SMS_HOOK=hook, MU300_SMS_FORWARD=fwd)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn('import: 1 new, 1 in the pool', r.stdout)
+            self.assertEqual(self.at_log(), [])                     # no AT command at all
+            [(h, body)] = self.msgs().values()
+            self.assertEqual((h['dir'], h['status'], h['from'], h['scts'], h['sim_index'], h['coding'], body),
+                             ('mt', 'unread', '+31641600986', '2002-08-26 19:37:41', '', 'gsm', 'How are you?\n'))
+            self.assertTrue(f.exists(), 'the spool file is the daemon\'s to remove, after the acknowledgement')
+            self.assertEqual(self.parts(), [])                      # parked, taken, gone
+            for _ in range(50):
+                if out.exists():
+                    break
+                time.sleep(0.1)
+            self.assertEqual(out.read_text(), '+31641600986|2002-08-26 19:37:41|How are you?\n')
+            self.assertEqual((self.tmp / 'fwd.log').read_text().splitlines(), ['enqueue 000001'])
+            # the same PDU again (an acknowledgement that failed, and the file imported once more): nothing new
+            r = self.run_sms(shell, 'import-pdu', f, MU300_SMS_HOOK=hook, MU300_SMS_FORWARD=fwd)
+            self.assertEqual((r.returncode, r.stdout.strip()), (0, 'import: 0 new, 1 in the pool'), r.stderr)
+            self.assertEqual(len(self.msgs()), 1)
+            self.assertEqual(self.parts(), [])
+            # a message deleted from the pool stays deleted, however often the modem delivers it again
+            self.run_sms(shell, 'delete', '1')
+            r = self.run_sms(shell, 'import-pdu', f)
+            self.assertEqual((r.returncode, len(self.msgs()), self.parts()), (0, 0, []), r.stderr)
+            # the panel shows it as not on the SIM
+            self.spooled(PDU_UCS2, 'cmt-2.abcdef.ready')
+            self.run_sms(shell, 'import-pdu', self.pool / 'incoming' / 'cmt-2.abcdef.ready')
+            show = self.run_sms(shell, 'show', '2').stdout
+            self.assertIn('\nsim index:   not on the SIM\n', show)
+            self.assertIn('\nfrom:        ADANA BLD\n', show)
+
+    def test_import_pdu_joins_the_parts_of_a_long_message(self):
+        p1, p2 = self.part(0x42, 2, 1, 'hello'), self.part(0x42, 2, 2, ' world')
+        for shell in self.each_shell():
+            self.fresh()
+            r = self.run_sms(shell, 'import-pdu', self.spooled(p1, 'cmt-1.a.ready'))
+            self.assertEqual(r.returncode, 0, r.stderr)          # safe on the disk: the modem may be acknowledged
+            self.assertIn('import: 0 new, 0 in the pool, 1 waiting for its other parts', r.stdout)
+            self.assertEqual(self.msgs(), {})
+            self.assertEqual(len(self.parts()), 1)
+            key, _first, unread = (self.pool / 'partial').read_text().rstrip('\n').split('\t')
+            self.assertEqual((key, unread), ('multi:+31641600986:66:2', '1'))
+            r = self.run_sms(shell, 'import-pdu', self.spooled(p2, 'cmt-2.a.ready'))
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn('import: 1 new, 1 in the pool', r.stdout)
+            [(h, body)] = self.msgs().values()
+            self.assertEqual((h['from'], h['sim_index'], h['status'], body), ('+31641600986', '', 'unread', 'hello world\n'))
+            self.assertEqual(self.parts(), [])
+            self.assertFalse((self.pool / 'partial').exists())
+            self.assertEqual(self.at_log(), [])
+
+    def test_a_direct_part_whose_siblings_never_come_is_pooled_by_a_sync(self):
+        half = self.part(0x44, 2, 2, 'only the end')
+        for shell in self.each_shell():
+            self.fresh()
+            self.answer('CMGL4', 'OK\n')                         # nothing on the SIM
+            self.run_sms(shell, 'import-pdu', self.spooled(half))
+            self.assertEqual(len(self.parts()), 1)
+            # a sync in between keeps it waiting (and its first-seen time)
+            r = self.run_sms(shell, 'sync')
+            self.assertIn('sync: 0 new, 0 on the SIM, 0 in the pool, 1 waiting for its other parts, 0 moved', r.stdout)
+            key, first, unread = (self.pool / 'partial').read_text().rstrip('\n').split('\t')
+            self.assertEqual(len(self.parts()), 1)
+            # an hour later: pooled as it is by the periodic sync, the parked part gone
+            (self.pool / 'partial').write_text(f'{key}\t{int(first) - 3600}\t{unread}\n')
+            r = self.run_sms(shell, 'sync')
+            self.assertIn('sync: 1 new, 0 on the SIM, 1 in the pool, 0 moved off the SIM', r.stdout)
+            [(h, body)] = self.msgs().values()
+            self.assertEqual((h['incomplete'], h['sim_index'], body), ('1/2', '', '[...]only the end\n'))
+            self.assertEqual(self.parts(), [])
+            self.assertFalse([c for c in self.at_log() if c.startswith('AT+CMGD') or c.startswith('AT+CMGR')])
+            # with no wait at all, import-pdu pools it at once
+            self.fresh()
+            r = self.run_sms(shell, 'import-pdu', self.spooled(half), MU300_SMS_PARTIAL_WAIT=0)
+            self.assertIn('import: 1 new, 1 in the pool', r.stdout)
+            self.assertEqual(self.parts(), [])
+
+    def test_the_parts_of_one_message_join_across_the_sim_and_the_air(self):
+        # a class 2 part on the SIM and its sibling delivered directly are one message
+        p1, p2 = self.part(0x45, 2, 1, 'sim'), self.part(0x45, 2, 2, ' and air')
+        for shell in self.each_shell():
+            self.fresh()
+            self.answer('CMGL4', f'+CMGL: 3,0,,30\n{p1}\nOK\n')
+            self.cmgr(3, p1)
+            self.run_sms(shell, 'import-pdu', self.spooled(p2))
+            r = self.run_sms(shell, 'sync')
+            self.assertIn('sync: 1 new, 1 on the SIM, 1 in the pool, 1 moved off the SIM', r.stdout)
+            [(h, body)] = self.msgs().values()
+            self.assertEqual((h['sim_index'], body), ('3', 'sim and air\n'))
+            self.assertEqual(self.cmgd(), ['AT+CMGD=3'])
+            self.assertEqual(self.parts(), [])
+
+    def test_import_pdu_refuses_what_is_not_a_message(self):
+        for shell in self.each_shell():
+            for bad in ('', 'zz', 'ABC', '00', 'ABCD', '07911326040000F0', 'F' * 1026):
+                with self.subTest(pdu=bad[:16]):
+                    self.fresh()
+                    f = self.spooled(bad)
+                    r = self.run_sms(shell, 'import-pdu', f)
+                    self.assertEqual(r.returncode, 1, r.stdout)
+                    self.assertIn('mu300-sms:', r.stderr)
+                    self.assertFalse((self.pool / 'msg').exists(), 'the pool was touched')
+                    self.assertFalse((self.pool / 'parts').exists(), 'the PDU was parked')
+                    self.assertTrue(f.exists(), 'the spool file is not this command\'s to remove')
+            r = self.run_sms(shell, 'import-pdu', self.tmp / 'nowhere')
+            self.assertEqual(r.returncode, 1)
+            r = self.run_sms(shell, 'import-pdu')
+            self.assertEqual(r.returncode, 1)
+            self.assertEqual(self.at_log(), [])
+
+    def test_a_parked_part_is_on_the_disk_before_the_pool_is_touched(self):
+        self.stub('fsync', 'echo "FSYNC $*" >> "$STUBLOG/at.log"')
+        self.stub('sync', 'echo "GLOBAL SYNC $*" >> "$STUBLOG/at.log"')
+        for shell in self.each_shell():
+            self.fresh()
+            r = self.run_sms(shell, 'import-pdu', self.spooled(PDU_GSM))
+            self.assertEqual(r.returncode, 0, r.stderr)
+            log = self.at_log()
+            self.assertFalse([l for l in log if l.startswith('GLOBAL SYNC')], log)
+            parts, msg = self.pool / 'parts', self.pool / 'msg'
+            self.assertRegex(log[0], rf'^FSYNC {re.escape(str(parts))}/\.part\.[A-Za-z0-9]+$')   # mktemp's name, then the final one
+            self.assertEqual(log[1], f'FSYNC {parts}')
+            self.assertEqual(log[2], f'FSYNC {msg}/000001.part')
+            self.assertEqual(log[3], f'FSYNC {msg} {self.pool}/next_id {self.pool}')
+
+    def test_import_pdu_follows_no_link(self):
+        """import-pdu runs as root: a spool entry that is a link, a parts directory or a pool that is one, are refused
+        and nothing is written through them."""
+        for shell in self.each_shell():
+            # the spool entry
+            self.fresh()
+            target = self.tmp / 'elsewhere.pdu'
+            target.write_text(PDU_GSM + '\n')
+            (self.pool / 'incoming').mkdir(parents=True)
+            link = self.pool / 'incoming' / 'cmt-1.link.ready'
+            link.symlink_to(target)
+            r = self.run_sms(shell, 'import-pdu', link)
+            self.assertEqual(r.returncode, 1, r.stdout)
+            self.assertIn('symbolic link', r.stderr)
+            self.assertFalse((self.pool / 'msg').exists())
+            # the parts directory, pointing somewhere else
+            self.fresh()
+            elsewhere = self.tmp / 'elsewhere'
+            elsewhere.mkdir(exist_ok=True)
+            self.pool.mkdir()
+            (self.pool / 'parts').symlink_to(elsewhere)
+            r = self.run_sms(shell, 'import-pdu', self.spooled(PDU_GSM))
+            self.assertEqual(r.returncode, 1, r.stdout)
+            self.assertIn('symbolic link', r.stderr)
+            self.assertEqual(sorted(x.name for x in elsewhere.iterdir()), [])
+            self.assertFalse((self.pool / 'msg').exists())
+            # the pool itself
+            self.fresh()
+            shutil.rmtree(elsewhere, ignore_errors=True); elsewhere.mkdir()
+            self.pool.symlink_to(elsewhere)
+            f = self.tmp / 'spooled.ready'
+            f.write_text(PDU_GSM + '\n')
+            r = self.run_sms(shell, 'import-pdu', f)
+            self.assertEqual(r.returncode, 1, r.stdout)
+            self.assertEqual(sorted(x.name for x in elsewhere.iterdir()), [])
+            self.pool.unlink()
+            # a link among the parked parts is never read; a parts directory that is not mode 700 is made so
+            self.fresh()
+            (self.pool / 'parts').mkdir(parents=True, mode=0o755)
+            (self.pool / 'parts' / 'plink').symlink_to(target)
+            r = self.run_sms(shell, 'import-pdu', self.spooled(PDU_UCS2))
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual([h['from'] for h, _ in self.msgs().values()], ['ADANA BLD'])
+            self.assertEqual((self.pool / 'parts').stat().st_mode & 0o777, 0o700)
+            self.assertTrue((self.pool / 'parts' / 'plink').is_symlink())
+
+
+class Spool(ShellTest):
+    """mu300-cmt-spool (every system): the two lines of a +CMT frame on stdin, the PDU into the pool's spool."""
+
+    SPOOLER = TOP / 'rootfs' / 'overlay' / 'opt' / 'mu300' / 'bin' / 'mu300-cmt-spool'
+
+    def setUp(self):
+        super().setUp()
+        self.pool = self.tmp / 'pool'
+        self.stub('fsync', 'echo "FSYNC $*" >> "$STUBLOG/fs.log"')
+        self.stub('sync', 'echo "GLOBAL SYNC $*" >> "$STUBLOG/fs.log"')
+
+    def spool(self, shell, frame):
+        shutil.rmtree(self.pool, ignore_errors=True)
+        (self.tmp / 'fs.log').unlink(missing_ok=True)
+        return self.script(shell, self.SPOOLER, stdin=frame, MU300_SMS_POOL=self.pool)
+
+    def files(self):
+        d = self.pool / 'incoming'
+        return sorted(p.name for p in d.iterdir()) if d.exists() else []
+
+    def test_a_frame_is_written_whole_fsynced_and_root_only(self):
+        for shell in self.each_shell():
+            for header in ('+CMT: ,40', '+CMT: "ADANA BLD",56', '+CMT: ,40\r'):
+                with self.subTest(header=header):
+                    r = self.spool(shell, f'{header}\n{PDU_GSM}\r\n')
+                    self.assertEqual(r.returncode, 0, r.stderr)
+                    [name] = self.files()
+                    self.assertRegex(name, r'^cmt-[0-9]+\.[A-Za-z0-9]+\.ready$')
+                    f = self.pool / 'incoming' / name
+                    self.assertEqual(f.read_text(), PDU_GSM + '\n')
+                    self.assertEqual(f.stat().st_mode & 0o777, 0o600)
+                    self.assertEqual((self.pool / 'incoming').stat().st_mode & 0o777, 0o700)
+                    fs = (self.tmp / 'fs.log').read_text().splitlines()
+                    # the file (under its name before the rename), then the directory entry; never everything
+                    self.assertEqual(fs, [f'FSYNC {str(f)[:-len(".ready")]}', f'FSYNC {self.pool}/incoming'])
+
+    def test_anything_but_a_message_is_refused_and_nothing_written(self):
+        for shell in self.each_shell():
+            for frame in (f'+CMTI: "SM",4\n{PDU_GSM}\n', f'+CMT: ,40\n{PDU_GSM[:-1]}\n', '+CMT: ,40\nnot hex\n',
+                          '+CMT: ,40\n\n', '+CMT: ,40\n', '', f'{PDU_GSM}\n+CMT: ,40\n', '+CMT: ,40\n' + 'A' * 1026 + '\n'):
+                with self.subTest(frame=frame[:24]):
+                    r = self.spool(shell, frame)
+                    self.assertEqual(r.returncode, 1)
+                    self.assertEqual(self.files(), [])
+                    self.assertFalse((self.tmp / 'fs.log').exists())
+
+    def test_a_spool_or_pool_that_is_a_link_is_refused(self):
+        for shell in self.each_shell():
+            elsewhere = self.tmp / 'elsewhere'
+            shutil.rmtree(elsewhere, ignore_errors=True); elsewhere.mkdir()
+            shutil.rmtree(self.pool, ignore_errors=True)
+            self.pool.mkdir(mode=0o700)
+            (self.pool / 'incoming').symlink_to(elsewhere)
+            r = self.script(shell, self.SPOOLER, stdin=f'+CMT: ,40\n{PDU_GSM}\n', MU300_SMS_POOL=self.pool)
+            self.assertEqual(r.returncode, 1)
+            self.assertIn('symbolic link', r.stderr)
+            self.assertEqual(sorted(x.name for x in elsewhere.iterdir()), [])
+            shutil.rmtree(self.pool)
+            self.pool.symlink_to(elsewhere)
+            r = self.script(shell, self.SPOOLER, stdin=f'+CMT: ,40\n{PDU_GSM}\n', MU300_SMS_POOL=self.pool)
+            self.assertEqual(r.returncode, 1)
+            self.assertEqual(sorted(x.name for x in elsewhere.iterdir()), [])
+            self.pool.unlink()
+            # a pool somebody left mode 755 is made 700, and the spool is written
+            self.pool.mkdir(mode=0o755)
+            r = self.script(shell, self.SPOOLER, stdin=f'+CMT: ,40\n{PDU_GSM}\n', MU300_SMS_POOL=self.pool)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(self.pool.stat().st_mode & 0o777, 0o700)
+            self.assertEqual(len(self.files()), 1)
+
+    def test_two_frames_in_one_second_are_two_files(self):
+        for shell in self.each_shell():
+            self.spool(shell, f'+CMT: ,40\n{PDU_GSM}\n')
+            self.script(shell, self.SPOOLER, stdin=f'+CMT: ,56\n{PDU_UCS2}\n', MU300_SMS_POOL=self.pool)
+            self.assertEqual(len(self.files()), 2)
+
 
 class Delete(ShellTest):
     """`sms delete` (every system): only a message index, read or all reach the modem."""
@@ -1057,20 +1330,187 @@ class Daemon(ShellTest):
         self.atdir = self.tmp / 'run-at'
         (self.atdir / 'urc').mkdir(parents=True)
         os.mkfifo(self.atdir / 'cmd')
-        self.stub('mu300-at', 'printf "%s\\n" "$*" >> "$STUBLOG/at.log"; '
-                              'case $* in *CPIN*) printf "+CPIN: READY\\nOK\\n" ;; *) echo OK ;; esac')
-        self.stub('fake-sms', 'echo "$*" >> "$STUBLOG/sms.log"')
+        # The stub modem: every command into at.log (and the stub mu300-sms's calls too, as "SMS ...", so the order
+        # between the two is one list); OK to everything but the commands $STUBLOG/refuse names (ERROR), +CPIN: READY,
+        # and +CNMI? answered from $STUBLOG/cnmi (what the daemon asked for, by default).
+        self.stub('mu300-at', 'printf "%s\\n" "$*" >> "$STUBLOG/at.log"; cmd=$3\n'
+                              'for r in $(cat "$STUBLOG/refuse" 2>/dev/null); do case $cmd in "$r"*) echo ERROR; exit 0 ;; esac; done\n'
+                              'case $cmd in\n'
+                              '    *CPIN*) printf "+CPIN: READY\\nOK\\n" ;;\n'
+                              '    "AT+CNMI?") cat "$STUBLOG/cnmi" 2>/dev/null || echo "+CNMI: 3,2,2,0,1"; echo OK ;;\n'
+                              '    *) echo OK ;;\n'
+                              'esac')
+        self.stub('fake-sms', 'echo "$*" >> "$STUBLOG/sms.log"; echo "SMS $*" >> "$STUBLOG/at.log"; '
+                              'echo "${MU300_AT_LOCK_WAIT:-unset}" > "$STUBLOG/lockwait"; '
+                              '[ -f "$STUBLOG/sms-fail" ] && [ "$1" = import-pdu ] && exit 1; exit 0')
         self.lock = self.tmp / 'smsd.lock'
+        self.flag = self.tmp / 'direct'
+        self.pool = self.tmp / 'pool'
+        self.spool = self.pool / 'incoming'
 
-    def start(self, shell):
-        e = self.env(MU300_AT_DIR=self.atdir, MU300_SMS_BIN=self.stubs / 'fake-sms', MU300_SMS_LOCK=self.lock,
-                     MU300_SMS_POLL=1, MU300_SMS_SYNC_INTERVAL=600, MU300_SMS_POOL=self.tmp / 'pool')
+    def start(self, shell, **env):
+        e = dict(MU300_AT_DIR=self.atdir, MU300_SMS_BIN=self.stubs / 'fake-sms', MU300_SMS_LOCK=self.lock,
+                 MU300_SMS_POLL=1, MU300_SMS_SYNC_INTERVAL=600, MU300_SMS_POOL=self.pool,
+                 MU300_SMS_DIRECT_FLAG=self.flag)
+        e.update(env)
         return subprocess.Popen(shell + [str(SMSD)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                                env=e)
+                                env=self.env(**e))
 
     def syncs(self):
         p = self.tmp / 'sms.log'
         return p.read_text().splitlines() if p.exists() else []
+
+    def at_log(self):
+        p = self.tmp / 'at.log'
+        return p.read_text().splitlines() if p.exists() else []
+
+    def commands(self):
+        """The AT commands asked so far (the stub mu300-sms's lines left out)."""
+        return [l.split(' ', 2)[2] for l in self.at_log() if l.startswith('-t ')]
+
+    def fresh(self):
+        for f in ('sms.log', 'at.log', 'refuse', 'cnmi', 'sms-fail', 'lockwait'):
+            (self.tmp / f).unlink(missing_ok=True)
+        shutil.rmtree(self.pool, ignore_errors=True)
+        self.flag.unlink(missing_ok=True)
+
+    def spooled(self, name='cmt-1.abcdef.ready', pdu=PDU_GSM):
+        self.spool.mkdir(parents=True, exist_ok=True)
+        (self.spool / name).write_text(pdu + '\n')
+        return self.spool / name
+
+    def stop(self, d):
+        d.send_signal(signal.SIGTERM)
+        return d.communicate(timeout=10)
+
+    def test_direct_delivery_is_asked_after_the_first_sync_and_a_message_is_acknowledged_after_its_import(self):
+        for shell in self.each_shell():
+            self.fresh()
+            d = self.start(shell)
+            try:
+                self.wait_for(lambda: 'AT+CNMI=3,2,2,0,1' in self.commands(), 'direct delivery was not asked for')
+                c = self.commands()
+                # the SIM first, in the mode it is announced in, then PDU mode, the service that acknowledges, routing
+                self.assertEqual(c[c.index('AT+CNMI=2,1,0,0,0'):], ['AT+CNMI=2,1,0,0,0', 'AT+CMGF=0', 'AT+CSMS=1', 'AT+CNMI=3,2,2,0,1'])
+                log = self.at_log()
+                self.assertLess(log.index('SMS sync'), log.index('-t 5 AT+CMGF=0'))
+                self.wait_for(lambda: self.flag.exists(), 'no flag for direct delivery')
+                self.assertEqual((self.tmp / 'lockwait').read_text().strip(), '8')   # never behind a stuck client for 90 s
+                # a spooled message: pooled, and only then acknowledged; the file goes once the modem took the ack
+                f = self.spooled()
+                self.wait_for(lambda: 'AT+CNMA=1' in self.commands(), 'no acknowledgement', timeout=15)
+                log = self.at_log()
+                self.assertLess(log.index(f'SMS import-pdu {f}'), log.index('-t 5 AT+CNMA=1'))
+                self.assertEqual(log.count('-t 5 AT+CNMA=1'), 1)
+                self.wait_for(lambda: not f.exists(), 'the acknowledged file stayed')
+                self.assertEqual(sorted(p.name for p in self.spool.iterdir()), [])
+                # two at once: oldest first, one acknowledgement each
+                self.spooled('cmt-200.b.ready'); self.spooled('cmt-100.a.ready', PDU_UCS2)
+                self.wait_for(lambda: self.at_log().count('-t 5 AT+CNMA=1') == 3, 'two more acknowledgements', timeout=15)
+                imports = [l for l in self.at_log() if l.startswith('SMS import-pdu')]
+                self.assertEqual([i.rsplit('/', 1)[1] for i in imports[1:]], ['cmt-100.a.ready', 'cmt-200.b.ready'])
+            finally:
+                out, err = self.stop(d)
+            self.assertIn('direct delivery is on', err)
+            self.assertFalse(self.flag.exists(), 'the flag outlived its daemon')
+
+    def test_a_refusal_leaves_the_sim_path_as_it_was(self):
+        for shell in self.each_shell():
+            for refuse, told in (('AT+CNMI=3', True), ('AT+CSMS=1', True), ('AT+CMGF=0', True), (None, False)):
+                with self.subTest(refuse=refuse):
+                    self.fresh()
+                    if refuse:
+                        (self.tmp / 'refuse').write_text(refuse + '\n')
+                    d = self.start(shell, **({} if refuse else {'MU300_SMS_DIRECT': '0'}))
+                    try:
+                        self.wait_for(lambda: self.commands().count('AT+CNMI=2,1,0,0,0') == 2, 'storage indications not asked again')
+                        c = self.commands()
+                        second = c.index('AT+CNMI=2,1,0,0,0', c.index('AT+CNMI=2,1,0,0,0') + 1)
+                        self.assertEqual(c[second:], ['AT+CNMI=2,1,0,0,0'])    # the last word
+                        if not told:
+                            self.assertNotIn('AT+CSMS=1', c)
+                            self.assertNotIn('AT+CNMI=3,2,2,0,1', c)
+                        time.sleep(1.2)
+                        self.assertFalse(self.flag.exists())
+                        # a +CMTI still starts a sync, as before
+                        with open(self.atdir / 'urc' / 'stty_nr0.log', 'a') as f:
+                            f.write('+CMTI: "SM",4\n')
+                        self.wait_for(lambda: self.syncs() == ['sync', 'sync'], 'no sync after +CMTI', timeout=15)
+                        # a frame that comes anyway is still pooled and acknowledged
+                        self.spooled()
+                        self.wait_for(lambda: 'AT+CNMA=1' in self.commands(), 'no acknowledgement', timeout=15)
+                    finally:
+                        out, err = self.stop(d)
+                    self.assertIn('did not take direct delivery', err)
+                    self.assertIn('announced (+CMTI)', err)
+
+    def test_a_failed_import_is_never_acknowledged_and_three_rounds_give_direct_delivery_up(self):
+        for shell in self.each_shell():
+            self.fresh()
+            (self.tmp / 'sms-fail').write_text('')
+            d = self.start(shell)
+            try:
+                self.wait_for(lambda: self.flag.exists(), 'direct delivery was not asked for')
+                f = self.spooled()
+                self.wait_for(lambda: len([l for l in self.at_log() if l.startswith('SMS import-pdu')]) >= 3,
+                              'three rounds of importing', timeout=15)
+                self.assertNotIn('AT+CNMA=1', self.commands())
+                self.wait_for(lambda: not self.flag.exists(), 'direct delivery was not given up')
+                self.assertTrue((self.spool / 'cmt-1.abcdef.failed').exists())
+                self.assertFalse(f.exists())
+                c = self.commands()
+                self.assertEqual(c[-1], 'AT+CNMI=2,1,0,0,0')
+                self.assertNotIn('AT+CNMA=1', c)
+            finally:
+                out, err = self.stop(d)
+            self.assertIn('could not pool', err)
+            self.assertIn('three rounds of pooling or acknowledging failed', err)
+
+    def test_a_link_in_the_spool_is_set_aside_and_never_imported(self):
+        for shell in self.each_shell():
+            self.fresh()
+            d = self.start(shell)
+            try:
+                self.wait_for(lambda: self.flag.exists(), 'direct delivery was not asked for')
+                self.spool.mkdir(parents=True, exist_ok=True)
+                target = self.tmp / 'target.pdu'
+                target.write_text(PDU_GSM + '\n')
+                (self.spool / 'cmt-1.link.ready').symlink_to(target)
+                self.wait_for(lambda: (self.spool / 'cmt-1.link.failed').is_symlink(), 'the link was not set aside')
+                self.assertFalse([l for l in self.at_log() if l.startswith('SMS import-pdu')])
+                self.assertNotIn('AT+CNMA=1', self.commands())
+                self.assertTrue(self.flag.exists())              # one link is no failure of direct delivery
+            finally:
+                out, err = self.stop(d)
+            self.assertIn('not a regular file; set aside', err)
+
+    def test_an_acknowledgement_the_modem_refuses_keeps_the_file(self):
+        for shell in self.each_shell():
+            self.fresh()
+            (self.tmp / 'refuse').write_text('AT+CNMA\n')
+            d = self.start(shell)
+            try:
+                self.wait_for(lambda: self.flag.exists(), 'direct delivery was not asked for')
+                f = self.spooled()
+                self.wait_for(lambda: self.commands().count('AT+CNMA=1') == 2, 'a second try', timeout=15)
+                self.assertTrue(f.exists())                       # imported (twice, idempotent), never removed
+                self.assertEqual(len([l for l in self.at_log() if l.startswith('SMS import-pdu')]), 2)
+            finally:
+                out, err = self.stop(d)
+            self.assertIn('did not take the acknowledgement', err)
+
+    def test_routing_the_modem_dropped_is_put_back_at_the_periodic_sync(self):
+        for shell in self.each_shell():
+            self.fresh()
+            (self.tmp / 'cnmi').write_text('+CNMI: 0,0,0,0,0\n')   # what a modem answers after an acknowledgement never came
+            d = self.start(shell, MU300_SMS_SYNC_INTERVAL=2)
+            try:
+                self.wait_for(lambda: self.commands().count('AT+CNMI=3,2,2,0,1') >= 2, 'routing not put back', timeout=15)
+                c = self.commands()
+                self.assertLess(c.index('AT+CNMI?'), len(c) - c[::-1].index('AT+CNMI=3,2,2,0,1') - 1)
+                self.assertTrue(self.flag.exists())
+            finally:
+                self.stop(d)
 
     def wait_for(self, cond, what, timeout=10):
         end = time.monotonic() + timeout
@@ -1135,6 +1575,22 @@ class Daemon(ShellTest):
 
 
 class Wiring(unittest.TestCase):
+    def test_the_spooler_is_on_every_system_and_the_at_daemon_knows_it(self):
+        # mu300-atd runs on Ubuntu too, and a +CMT frame must never end in its log or be lost: the spooler is in the
+        # shared tree, the pool and spool paths are the pool's everywhere
+        spooler = TOP / 'rootfs' / 'overlay' / 'opt' / 'mu300' / 'bin' / 'mu300-cmt-spool'
+        self.assertTrue(spooler.stat().st_mode & 0o111, 'not executable')
+        self.assertIn('POOL=${MU300_SMS_POOL:-/etc/mu300/sms-pool}\n', spooler.read_text())
+        self.assertIn('SPOOL=$POOL/incoming\n', spooler.read_text())
+        atd = (TOP / 'rootfs' / 'overlay' / 'opt' / 'mu300' / 'bin' / 'mu300-atd').read_text()
+        self.assertIn('CMT_SPOOL=${MU300_CMT_SPOOL_BIN:-/opt/mu300/bin/mu300-cmt-spool}\n', atd)
+        self.assertIn('SPOOL=$POOL/incoming\n', SMSD.read_text())
+        self.assertIn('PARTS=$POOL/parts', SMS.read_text())
+        # the message is never an argument: the daemon pipes the frame, the daemon of the pool reads a file
+        self.assertNotRegex(atd, r'"\$CMT_SPOOL" +"\$')
+        self.assertIn('"$SMS" import-pdu "$f"', SMSD.read_text())
+        self.assertIn('export MU300_AT_LOCK_WAIT=${MU300_AT_LOCK_WAIT:-8}', SMSD.read_text())
+
     def test_init_script(self):
         src = INITD.read_text()
         self.assertTrue(src.startswith('#!/bin/sh /etc/rc.common\n'))
