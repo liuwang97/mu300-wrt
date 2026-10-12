@@ -124,12 +124,35 @@ untar() {
 installed_version() { [ -r "$VERSION_FILE" ] && cat "$VERSION_FILE" || echo unknown; }
 this_device() { "${MU300_BIN:-/opt/mu300/bin}/mu300-device"; }
 # A new boot image must never meet a locked slot (mu300-next-boot lock): its first boots are the usual attempts, and
-# the first one that gets to mu300-boot-ok locks again. Quiet when there is nothing to do; a failure only warns.
+# the first one that gets to mu300-boot-ok locks again. Two states leave it without them, and saying nothing about
+# either is how an update on such a device ended with the operator rebooting into Android while the screen said
+# "Reboot to start the updated openwrt-luci" (2026-10-12, a U30 Air): the default boot is Android, so the image is
+# not tried at all and a reboot goes there (exit 3), or this slot's block cannot be rebuilt, so the image gets one
+# boot instead of N (any other failure, and mu300-next-boot's own line is passed on). Quiet when it was armed.
+# Never fails the update: the boot image is written either way, and a warning is no reason to roll it back.
 unlock_for_trial() {
     _nb=${MU300_BIN:-/opt/mu300/bin}/mu300-next-boot
     [ -x "$_nb" ] || return 0
-    "$_nb" --trial >/dev/null 2>&1 || echo "boot: could not arm the Linux slot for a trial (mu300-next-boot --trial)" >&2
+    _rc=0; _out=$("$_nb" --trial 2>&1) || _rc=$?
+    case $_rc in
+        0) ;;
+        3) echo "boot: the default boot is Android, so this boot image gets no trial: only a boot from Android" >&2
+           echo "      tries it (mu300-linux, or the panel)" >&2 ;;
+        *) echo "boot: could not arm the Linux slot for a trial (mu300-next-boot --trial)${_out:+: $_out}" >&2 ;;
+    esac
 }
+
+# Where the next boot goes: mu300-next-boot's file (MU300_DEFAULT_BOOT, /etc/mu300/default-boot - the knob is for
+# tests). With Android as the default boot every Linux boot is a one-shot trial armed from Android (mu300-linux, the
+# panel's switch), so a plain reboot does not start what was just written or switched. Says what to do instead and
+# returns true then; false when Linux is the default, and the caller's own "Reboot to start it" is what happens.
+reboot_goes_to_android() {
+    [ "$(cat "${MU300_DEFAULT_BOOT:-/etc/mu300/default-boot}" 2>/dev/null)" = linux ] && return 1
+    echo 'The default boot is Android, so a reboot goes to Android by itself. Start Linux by hand (mu300-linux, or'
+    echo '"Switch to Linux" on the panel), and keep it: mu300-next-boot linux'
+    return 0
+}
+
 # bundle_runs_here BUNDLE LIST DIR: does this kernel bundle (LIST: its file list) run on this device? Bundles name
 # their devices in ./devices; one without it is from before the U30 Air and runs on the F50 only (see boot_update).
 bundle_runs_here() {
@@ -1698,7 +1721,8 @@ kernel_cmd() {  # kernel [5.4|6.18|7.2]: show or change the kernel, and install 
     fi
     rm -rf "$STAGE"
     sync
-    printf '\nkernel %s selected. Reboot to start it (mu300-update rollback-boot goes back).\n' "$1"
+    printf '\nkernel %s selected. ' "$1"
+    reboot_goes_to_android || printf 'Reboot to start it (mu300-update rollback-boot goes back).\n'
 }
 
 rollback_boot() {
@@ -1725,7 +1749,8 @@ rollback_boot() {
         cat "$BOOTDIR/prev.kernel" > "$BOOTDIR/installed.kernel"
     fi
     sync
-    printf 'boot: previous boot image (%s) restored. Reboot to start it.\n' "$(cat "$BOOTDIR/prev.tag" 2>/dev/null || echo unknown)"
+    printf 'boot: previous boot image (%s) restored. ' "$(cat "$BOOTDIR/prev.tag" 2>/dev/null || echo unknown)"
+    reboot_goes_to_android || printf 'Reboot to start it.\n'
 }
 
 # One mu300-update at a time. apply, boot, kernel, rollback, rollback-boot and clean all work in $STAGE: two runs
@@ -1918,12 +1943,15 @@ apply() {
         return 0
     fi
     if [ -z "$SYSTEM_CHANGED" ]; then
-        printf '\nReboot to start the new kernel. The previous boot image is kept: mu300-update rollback-boot\n'
+        if reboot_goes_to_android; then printf 'The previous boot image is kept: mu300-update rollback-boot\n'
+        else printf '\nReboot to start the new kernel. The previous boot image is kept: mu300-update rollback-boot\n'; fi
         return 0
     fi
     case " $list " in
-        *" $(running_os) "*) printf '\nReboot to start the updated %s. The previous version is kept: mu300-update rollback\n' "$(running_os)" ;;
-        *) printf '\nDone. The updated system is used the next time you switch to it.\n' ;;
+        *" $(running_os) "*)
+            if reboot_goes_to_android; then printf 'The previous version is kept: mu300-update rollback\n'
+            else printf '\nReboot to start the updated %s. The previous version is kept: mu300-update rollback\n' "$(running_os)"; fi ;;
+        *) reboot_goes_to_android || printf '\nDone. The updated system is used the next time you switch to it.\n' ;;
     esac
 }
 
@@ -1958,7 +1986,7 @@ rollback() {
         printf '%s: rolled back to %s\n' "$os" "$(cat "$DISK/$os$VERSION_FILE" 2>/dev/null || echo unknown)"
         done_any=1
     done
-    [ -n "$done_any" ] && printf '\nReboot to start it.\n'
+    [ -n "$done_any" ] && { printf '\n'; reboot_goes_to_android || printf 'Reboot to start it.\n'; }
 }
 
 clean() {
@@ -1987,7 +2015,7 @@ case ${1:-check} in
     version) version ;;
     apply) shift; apply "$@" ;;
     boot) mounted_disk; t=${MU300_RELEASE:-$(latest_release)}; [ -n "$t" ] || die "could not reach GitHub (is the device online?)"
-          boot_update "$t" || exit 1; rm -rf "$STAGE"; [ -n "${BOOT_CHANGED:-}" ] && printf '\nReboot to start the new kernel.\n' ;;
+          boot_update "$t" || exit 1; rm -rf "$STAGE"; [ -n "${BOOT_CHANGED:-}" ] && { printf '\n'; reboot_goes_to_android || printf 'Reboot to start the new kernel.\n'; } ;;
     rollback) shift; rollback "$@" ;;
     rollback-boot) rollback_boot ;;
     kernel) shift; kernel_cmd "$@" ;;

@@ -18,6 +18,10 @@
 # every boot and rolls back to Android's slot when it finds tries=1, so N boots that never reach mu300-boot-ok land
 # in Android on the next one. A boot that does reach it arms N+1 again. N lives in .mu300/boot-attempts on the Linux
 # disk, shared by every system there and by the initramfs; without the file it is 5.
+# What a caller of --trial has to know (mu300-update, which has just written a boot image): nothing is armed, and the
+# exit status says which nothing. 3: the default boot is not linux, so there is no default-Linux boot to protect -
+# every Linux boot is a one-shot trial armed from Android and a reboot goes there. 1: this slot's block cannot be
+# rebuilt here, so the initramfs' own one-shot block went in instead (one boot, not N; FINDINGS 32). 0: armed.
 # OpenWrt: od/timeout come from the static busybox in /opt/mu300/busybox-bin
 export PATH="$PATH:/opt/mu300/busybox-bin"
 set -eu
@@ -93,9 +97,13 @@ arm_linux() {  # arm_linux [trial]: locked when that is wanted, unless this is t
     # Rebuilding the tries=2 block has to reproduce the initramfs' own byte for byte, or the arithmetic
     # above is wrong for this misc and nothing it makes gets written.
     if [ "$(make_bc_b 2 2>/dev/null)" != "$(hex_of "$BC_B")" ]; then
-        echo "cannot rebuild the slot $LINUX_SLOT block on this system; arming with 1 attempt" >&2
-        write_bc "$BC_B"; [ "$succ" = 0 ] || { echo "not locked: the slot block cannot be built here" >&2; exit 1; }
-        return
+        # The arithmetic above is wrong for this misc, so the initramfs' own one-shot block goes in instead: this
+        # image gets one boot to prove itself, not N (FINDINGS 32). A degraded arm, and it fails: a caller that was
+        # promised N attempts would otherwise be promising one and saying nothing.
+        echo "cannot rebuild the slot $LINUX_SLOT block on this system; arming with 1 attempt, not $(attempts)" >&2
+        write_bc "$BC_B"
+        [ "$succ" = 0 ] || { echo "not locked: the slot block cannot be built here" >&2; exit 1; }
+        exit 1
     fi
     tmp=$(mktemp); bytes_of "$(make_bc_b $((n + 1)) "$succ")" > "$tmp"
     write_bc "$tmp"; rm -f "$tmp"
@@ -128,7 +136,13 @@ case "${1:-status}" in
     unlock)  d=$(disk_dir) && rm -f "$d/boot-lock" && sync
              if [ "$(cat "$CONF" 2>/dev/null)" = linux ]; then arm_linux; fi
              echo "unlocked: $(attempts) failed boot(s) in a row before Android" ;;
-    --trial) [ "$(cat "$CONF" 2>/dev/null)" = linux ] && arm_linux trial || echo "default boot is not linux, nothing to do" ;;
+    --trial) # mu300-update, before it writes a boot image. With Android as the default boot there is nothing to
+             # arm - and a reboot then goes to Android by itself - so say that and exit 3 (nothing was done).
+             # --rearm above stays quiet: there, "nothing to do" is the normal state of such a device.
+             if [ "$(cat "$CONF" 2>/dev/null)" = linux ]; then arm_linux trial
+             else echo "default boot is not linux: nothing armed, and a reboot goes to Android by itself" >&2
+                  exit 3
+             fi ;;
     --rearm) clear_boot_tries
              [ "$(cat "$CONF" 2>/dev/null)" = linux ] && arm_linux || echo "default boot is not linux, nothing to do" ;;
     status)  echo "default boot: $(cat "$CONF" 2>/dev/null || echo android)"

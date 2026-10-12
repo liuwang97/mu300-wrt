@@ -3043,6 +3043,37 @@ class NextBoot(ShellTest):
         self.assertNotEqual(r.returncode, 0)
         self.assertEqual(self.misc.read_bytes(), before)
 
+    def test_trial_with_android_as_the_default_boot_arms_nothing_and_says_so(self):
+        # mu300-update calls this before it writes a boot image. With Android as the default boot there is nothing to
+        # arm - every Linux boot is a one-shot trial armed from Android - and a reboot goes to Android by itself, so
+        # the caller has to be able to tell (exit 3): an update that promised a reboot left a device in Android on
+        # 2026-10-12, and nothing on the screen had said it would
+        (self.tmp / 'default-boot').write_text('android\n')
+        before = self.misc.read_bytes()
+        r = self.nb('--trial')
+        self.assertEqual(r.returncode, 3, r.stderr)
+        self.assertIn('default boot is not linux', r.stderr)
+        self.assertEqual(r.stdout, '')
+        self.assertEqual(self.misc.read_bytes(), before)
+        # --rearm is the periodic best effort (mu300-boot-ok, mu300-post): nothing to do is not a failure there
+        self.assertEqual(self.nb('--rearm').returncode, 0)
+        self.assertEqual(self.misc.read_bytes(), before)
+
+    def test_an_arm_that_cannot_rebuild_the_block_is_one_boot_and_a_failure(self):
+        # the initramfs' block is not the one this misc's arithmetic needs: mu300-next-boot writes that block back -
+        # one boot to prove itself, not N (FINDINGS 32) - and exits 1, so mu300-update does not report the usual
+        # attempts for an image that gets only the one
+        linux_b = bytearray(self.blocks[1])
+        linux_b[14] = 0x3f                      # tries 3: make_bc_b 2 2 cannot reproduce this block
+        linux_b[28:32] = struct.pack('<I', zlib.crc32(bytes(linux_b[:28])))
+        (self.run_dir / 'linux-slot').write_text('b\n')
+        (self.run_dir / 'misc-bc-android.bin').write_bytes(self.blocks[0])
+        (self.run_dir / 'misc-bc-linux-trial.bin').write_bytes(bytes(linux_b))
+        r = self.nb('--trial')
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn('arming with 1 attempt, not 5', r.stderr)
+        self.assertEqual(self.bc(), bytes(linux_b))
+
 
 class EarlyRecorder(ShellTest):
     """early-recorder's choice of boot partition: the Linux slot's, never Android's."""
