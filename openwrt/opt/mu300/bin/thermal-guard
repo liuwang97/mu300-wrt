@@ -77,6 +77,7 @@ native_cpu_cooling() {
             read -r kind < "$d/type" 2>/dev/null || continue
             case $kind in cpufreq-*|thermal-cpufreq-*) ;; *) continue ;; esac
             for l in "$z"/cdev[0-9]*; do
+                [ -d "$l" ] || continue   # cdevK is the link; cdevK_trip_point and cdevK_weight are files
                 [ "$l" -ef "$d" ] && { found=$((found + 1)); break; }
             done
         done
