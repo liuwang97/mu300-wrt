@@ -208,6 +208,123 @@ class Forwarder(ShellTest):
             self.assertEqual(q['message'], '+905551112233: ' + q['text'])
             self.assertEqual(set(q), {'sender', 'time', 'text', 'device', 'message'})
 
+    # ------------------------------------------------------------------ a body of the user's own (issue #171)
+    # a text and a sender that would break a body, or run something, if either were pasted in or evaluated
+    HOSTILE_TEXT = ('Merhaba "dünya" \\ {x} {sender} {message}\nikinci satır\tsekme \x01\x7f € '
+                    '$(touch "$STUBLOG/pwned") `touch "$STUBLOG/pwned"` %s \\n ","admin":true,"x":"')
+    HOSTILE_SENDER = 'A"B\\C&d=e {text}'
+
+    def deliver_one(self, shell, mid=8, **conf):
+        self.fresh()
+        self.write_conf(enabled=1, webhook=1, webhook_url=HOOK_URL, template='{sender}: {text}', **conf)
+        self.fwd(shell, 'enqueue', str(mid))
+        r = self.fwd(shell, 'run')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout + r.stderr, '')
+        self.assertFalse((self.tmp / 'pwned').exists())
+        return self.requests()
+
+    def test_custom_json_body_values_are_json_escaped(self):
+        pool_msg(self.pool, 8, self.HOSTILE_SENDER, self.HOSTILE_TEXT)
+        # as stored: \n a newline, \\ a backslash - so the body below has a line break and the JSON text "a\\b"
+        stored = ('{"msg_type":"text",\\n "content":{"text":"{message}"},"from":"{sender}","at":"{time}",'
+                  '"dev":"{device}","raw":"{text}","twice":"{sender}{sender}","keep":"{other} {text",'
+                  '"esc":"a\\\\\\\\b","sh":"$(touch \\\\"$STUBLOG/pwned\\\\")"}')
+        for shell in self.each_shell():
+            [(url, headers, body)] = self.deliver_one(shell, webhook_body=stored)
+            self.assertEqual(url, HOOK_URL)
+            self.assertEqual(headers['Content-Type'], 'application/json; charset=utf-8')
+            self.assertIn('{"msg_type":"text",\n "content"', body)
+            doc = json.loads(body)          # still one valid document, whatever the message held
+            self.assertEqual(set(doc), {'msg_type', 'content', 'from', 'at', 'dev', 'raw', 'twice', 'keep', 'esc', 'sh'})
+            self.assertEqual(doc['raw'], self.HOSTILE_TEXT)
+            self.assertEqual(doc['from'], self.HOSTILE_SENDER)
+            self.assertEqual(doc['twice'], self.HOSTILE_SENDER * 2)
+            # one pass: the {sender} and {message} inside the text, and the {text} inside the sender, stay as they are
+            self.assertEqual(doc['content']['text'], f'{self.HOSTILE_SENDER}: {self.HOSTILE_TEXT}')
+            self.assertEqual(doc['at'], '2026-10-10 12:00:00')
+            self.assertTrue(doc['dev'])
+            self.assertEqual(doc['keep'], '{other} {text')
+            self.assertEqual(doc['esc'], 'a\\b')
+            self.assertEqual(doc['sh'], '$(touch "$STUBLOG/pwned")')
+            self.assertEqual([l[1:4] for l in self.log()], [['8', 'webhook', 'sent']])
+            # nothing of the message or the body in the log or a command line
+            for f in ('argv.log',):
+                self.assertNotIn('Merhaba', (self.tmp / f).read_text())
+            self.assertNotIn('Merhaba', (self.run_dir / 'log').read_text())
+
+    def test_custom_form_and_text_bodies(self):
+        from urllib.parse import parse_qs
+        pool_msg(self.pool, 8, self.HOSTILE_SENDER, self.HOSTILE_TEXT)
+        for shell in self.each_shell():
+            # form: every value percent-encoded, so a & or = in a value cannot add a field
+            [(_, headers, body)] = self.deliver_one(shell, webhook_format='form',
+                                                     webhook_body='title={sender}&body={message}&device_key=abc&t={time}')
+            self.assertEqual(headers['Content-Type'], 'application/x-www-form-urlencoded')
+            q = parse_qs(body, keep_blank_values=True, strict_parsing=True)
+            self.assertEqual(q, {'title': [self.HOSTILE_SENDER], 'device_key': ['abc'], 't': ['2026-10-10 12:00:00'],
+                                 'body': [f'{self.HOSTILE_SENDER}: {self.HOSTILE_TEXT}']})
+            # text: the values as they are
+            [(_, headers, body)] = self.deliver_one(shell, webhook_format='text', webhook_body='[{device}] {sender}\\n{text}')
+            self.assertEqual(headers['Content-Type'], 'text/plain; charset=utf-8')
+            dev = body[1:body.index(']')]
+            self.assertEqual(body, f'[{dev}] {self.HOSTILE_SENDER}\n{self.HOSTILE_TEXT}')
+            # text with no body of its own: the message (the template filled in)
+            [(_, headers, body)] = self.deliver_one(shell, webhook_format='text')
+            self.assertEqual(headers['Content-Type'], 'text/plain; charset=utf-8')
+            self.assertEqual(body, f'{self.HOSTILE_SENDER}: {self.HOSTILE_TEXT}')
+
+    def test_an_empty_custom_body_is_the_standard_body(self):
+        pool_msg(self.pool, 8, '+905551112233', 'hello')
+        for shell in self.each_shell():
+            [(_, _, plain)] = self.deliver_one(shell)
+            [(_, _, empty)] = self.deliver_one(shell, webhook_body='')
+            self.assertEqual(plain, empty)
+            doc = json.loads(empty)
+            self.assertEqual(set(doc), {'sender', 'time', 'text', 'device', 'message'})
+            self.assertEqual((doc['sender'], doc['text'], doc['message']), ('+905551112233', 'hello', '+905551112233: hello'))
+            [(_, _, form)] = self.deliver_one(shell, webhook_format='form', webhook_body='')
+            self.assertTrue(form.startswith('sender=%2B905551112233&time='), form)
+
+    def test_send_test_uses_the_custom_body(self):
+        for shell in self.each_shell():
+            self.fresh()
+            self.write_conf(enabled=0, webhook=1, webhook_url=HOOK_URL, webhook_body='{"text":"{message}","who":"{sender}"}')
+            r = self.fwd(shell, 'test')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            [(_, _, body)] = self.requests()
+            doc = json.loads(body)
+            self.assertEqual(doc['who'], 'MU300')
+            self.assertIn('Test message from the control panel', doc['text'])
+            self.assertEqual([l[1:4] for l in self.log()], [['test', 'webhook', 'sent']])
+
+    def test_a_body_too_large_is_not_sent_and_not_retried(self):
+        pool_msg(self.pool, 8, '+905551112233', 'x' * 400)
+        for shell in self.each_shell():
+            self.fresh()
+            self.write_conf(enabled=1, webhook=1, webhook_url=HOOK_URL, webhook_body='{"a":"{text}{text}{text}"}')
+            self.fwd(shell, 'enqueue', '8')
+            self.fwd(shell, 'run', MU300_FWD_BODY_MAX=1000)
+            self.assertEqual(self.requests(), [])
+            self.assertEqual(self.queue(), [])
+            self.assertEqual(self.log()[-1][1:], ['8', 'webhook', 'failed', 'the webhook body is too large'])
+            # under the limit it goes
+            self.fwd(shell, 'enqueue', '8')
+            self.fwd(shell, 'run', MU300_FWD_BODY_MAX=2000)
+            [(_, _, body)] = self.requests()
+            self.assertEqual(json.loads(body), {'a': 'x' * 1200})
+
+    def test_the_body_template_is_never_evaluated(self):
+        fwd = FWD.read_text()
+        self.assertNotIn('eval', fwd.replace('never passes through a shell, eval or awk -v', '')
+                         .replace('passes through a shell, eval or awk -v', ''))
+        # the template and the values reach awk in its environment, never as program text or -v
+        start = fwd.index('\nfill() {')
+        body = fwd[start:fwd.index('\n}\n', start)]
+        self.assertIn('T=$1 M=$2 F=$3 D=$4 X=$5 V=$6 G=${7:-} N=$# awk', body)
+        self.assertNotIn('awk -v', body)
+        self.assertNotIn('"$1"', body)
+
     def test_telegram_token_never_in_argv_or_log(self):
         pool_msg(self.pool, 3, 'ADANA BLD', 'Kargonuz yolda ğüş & co')
         for shell in self.each_shell():
@@ -500,6 +617,74 @@ class Adapter(ShellTest):
             for secret in ('urlsecret', 'hdrsecret', TOKEN, PASSWORD):
                 self.assertNotIn(secret, text)
 
+    BODY = '{"msg_type": "text",\n "content": {"text": "{message}"},\n "path": "C:\\\\x", "q": "\\"{sender}\\""}'
+
+    def test_the_custom_body_is_saved_shown_again_and_sent(self):
+        """The page's text -> the file's one line -> the page again, and through mu300-sms-forward to the request."""
+        (self.stubs / 'ucode.py').write_text(UCODE)
+        self.stub('ucode', f'exec python3 "{self.stubs}/ucode.py" "$@"')
+        pool = self.tmp / 'pool'
+        pool_msg(pool, 3, 'BANK "A"', 'kod: 123\\456\nsatır')
+        for shell in self.each_shell():
+            self.conf.parent.mkdir(exist_ok=True)
+            self.conf.unlink(missing_ok=True)
+            for f in self.tmp.glob('http.*'):
+                f.unlink()
+            self.assertEqual(self.set(shell, **dict(self.FULL, allow='', deny='', keywords='', telegram='0', sms='0',
+                                                    webhook_body=self.BODY)), {'ok': 1})
+            lines = self.conf.read_text().splitlines()
+            [stored] = [l for l in lines if l.startswith('webhook_body=')]
+            self.assertEqual(stored, 'webhook_body=' + self.BODY.replace('\\', '\\\\').replace('\n', '\\n'))
+            raw, st = self.get(shell)
+            self.assertEqual(st['webhook_body'], self.BODY)
+            for secret in ('urlsecret', 'hdrsecret', '/hook'):      # the body comes back, the secrets still do not
+                self.assertNotIn(secret, raw)
+            env = self.env(MU300_FWD_CONF=self.conf, MU300_FWD_STATE=self.tmp / 'state', MU300_FWD_RUN=self.tmp / 'run',
+                           MU300_SMS_POOL=pool, MU300_FWD_HTTP=HTTP_UC, MU300_FWD_NO_WORKER=1)
+            for cmd in ('enqueue 3', 'run'):
+                r = subprocess.run(shell + [str(FWD)] + cmd.split(), capture_output=True, text=True, env=env, timeout=60)
+                self.assertEqual((r.returncode, r.stdout + r.stderr), (0, ''))
+            [req] = sorted(self.tmp.glob('http.*'))
+            head, _, body = req.read_bytes().decode('utf-8').partition('\n\n')
+            self.assertEqual(json.loads(body), {'msg_type': 'text', 'path': 'C:\\x', 'q': '"BANK "A""',
+                                                'content': {'text': 'kod: 123\\456\nsatır\n-- BANK "A"'}})
+            # saved again with the field empty: the standard body is back (a body is not a secret that is kept)
+            self.assertEqual(self.set(shell, **dict(self.FULL, webhook_url='', webhook_body='')), {'ok': 1})
+            self.assertIn('webhook_body=', self.conf.read_text().splitlines())
+            self.assertEqual(self.get(shell)[1]['webhook_body'], '')
+            # a page from before the field (it does not send it): the same as empty
+            self.set(shell, **dict(self.FULL, webhook_body=self.BODY))
+            self.assertEqual(self.set(shell, **self.FULL), {'ok': 1})
+            self.assertEqual(self.get(shell)[1]['webhook_body'], '')
+
+    def test_a_backslash_in_a_template_is_stored_doubled(self):
+        # busybox awk (the device's) wrote one backslash where gsub's replacement asked for two: a template's \n
+        # (two characters) then came back as a line break. The old code fails this only where awk is busybox
+        tpl = '{text} \\n C:\\x \\\\ "q"'
+        for shell in self.each_shell():
+            self.conf.parent.mkdir(exist_ok=True)
+            self.conf.unlink(missing_ok=True)
+            self.assertEqual(self.set(shell, **dict(self.FULL, template=tpl, webhook_body=tpl)), {'ok': 1})
+            lines = self.conf.read_text().splitlines()
+            self.assertIn('template={text} \\\\n C:\\\\x \\\\\\\\ "q"', lines)
+            self.assertIn('webhook_body={text} \\\\n C:\\\\x \\\\\\\\ "q"', lines)
+            st = self.get(shell)[1]
+            self.assertEqual((st['template'], st['webhook_body']), (tpl, tpl))
+
+    def test_the_text_format_and_the_body_limit(self):
+        for shell in self.each_shell():
+            self.conf.parent.mkdir(exist_ok=True)
+            self.conf.unlink(missing_ok=True)
+            self.assertEqual(self.set(shell, **dict(self.FULL, webhook_format='text', webhook_body='é' * 1000)), {'ok': 1})
+            self.assertIn('webhook_format=text', self.conf.read_text().splitlines())
+            self.assertEqual(self.get(shell)[1]['webhook_format'], 'text')
+            before = self.conf.read_text()
+            err = 'The webhook body is too long or contains a control character'
+            for body in ('x' * 2001, 'é' * 1001, 'a\x01b', 'a\rb', 'a\x7fb'):      # the limit is bytes
+                r = self.set(shell, **dict(self.FULL, webhook_body=body))
+                self.assertEqual((r['ok'], r['error']), (0, err), body[:10])
+                self.assertEqual(self.conf.read_text(), before)
+
     def test_turning_off_empties_the_queue(self):
         for shell in self.each_shell():
             self.conf.parent.mkdir(exist_ok=True)
@@ -580,6 +765,13 @@ class Wiring(unittest.TestCase):
             self.assertNotIn(m, acl['read']['ubus']['mu300dash'])
         common = (app / 'htdocs/luci-static/resources/mu300/common.js').read_text()
         self.assertIn('callFwdGet: callFwdGet, callFwdSet: callFwdSet, callFwdTest: callFwdTest', common)
+        # the custom body (issue #171): declared to rpcd, sent by the page as the last parameter, edited in a textarea
+        self.assertIn("'sms_number', 'webhook_body' ]", common)
+        self.assertIn('"webhook_body": "String"', DASH.read_text())
+        view = (app / 'htdocs/luci-static/resources/view/mu300/forward.js').read_text()
+        self.assertIn("this.area('webhook_body', st.webhook_body,", view)
+        self.assertIn("this.val('sms_number').trim(), this.val('webhook_body'))", view)
+        self.assertIn("'value': 'text'", view)
         self.assertTrue(os.access(ADAPTER, os.X_OK))
         self.assertTrue(os.access(FWD, os.X_OK))
         build = (TOP / 'openwrt' / 'build-rootfs.sh').read_text()

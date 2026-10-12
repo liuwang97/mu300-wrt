@@ -867,7 +867,7 @@ do_list() {
 		"webhook_format": "String", "webhook_headers": "String", "telegram": "String", "telegram_token": "String",
 		"telegram_chat": "String", "email": "String", "email_host": "String", "email_port": "String",
 		"email_tls": "String", "email_user": "String", "email_password": "String", "email_from": "String",
-		"email_to": "String", "sms": "String", "sms_number": "String" },
+		"email_to": "String", "sms": "String", "sms_number": "String", "webhook_body": "String" },
 	"forward_test": { },
 	"cpu_get": { },
 	"cpu_set": { "profile": "String" },
