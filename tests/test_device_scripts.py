@@ -2456,6 +2456,39 @@ class ThermalGuard(ShellTest):
             self.assertEqual(self.round(shell, 105000), ['poweroff'])             # our 105 C power-off stays
             self.assertEqual(self.maxes(), ['2002000'] * 3)
 
+    def test_mainline_without_the_zone_caps_and_powers_off(self):
+        for shell in self.each_shell():
+            self.mainline(90000)
+            shutil.rmtree(self.root / 'sys/class/thermal/thermal_zone3')
+            self.assertEqual(self.round(shell, 90000), ['mu300-led alarm on'])
+            self.assertEqual(self.maxes(), ['1404000'] * 3)
+            self.assertEqual(self.round(shell, 105000), ['poweroff'])
+
+    def test_a_zone_whose_reading_cannot_be_trusted_keeps_this_guard_capping(self):
+        for shell in self.each_shell():
+            self.mainline(90000)                                                  # bound, but the zone does not read
+            (self.root / 'sys/class/thermal/thermal_zone3/temp').unlink()
+            self.round(shell, 90000)
+            self.assertEqual(self.maxes(), ['1404000'] * 3)
+            self.mainline(90000)                                                  # reads, but not a number
+            (self.root / 'sys/class/thermal/thermal_zone3/temp').write_text('\n')
+            self.round(shell, 90000)
+            self.assertEqual(self.maxes(), ['1404000'] * 3)
+            self.mainline(90000)                                                  # stale: far below the die sensors
+            (self.root / 'sys/class/thermal/thermal_zone3/temp').write_text('40000\n')
+            self.round(shell, 90000)
+            self.assertEqual(self.maxes(), ['1404000'] * 3)
+            self.mainline(90000)                                                  # within 15 C of the hottest: trusted
+            (self.root / 'sys/class/thermal/thermal_zone3/temp').write_text('80000\n')
+            self.round(shell, 90000)
+            self.assertEqual(self.maxes(), ['2002000'] * 3)
+            self.mainline(90000)                                                  # passive trips above HOT: not ours
+            z = self.root / 'sys/class/thermal/thermal_zone3'
+            (z / 'trip_point_0_temp').write_text('95000\n')
+            (z / 'trip_point_1_temp').write_text('100000\n')
+            self.round(shell, 90000)
+            self.assertEqual(self.maxes(), ['1404000'] * 3)
+
     def test_a_cluster_left_out_of_the_zone_keeps_this_guard_capping(self):
         for shell in self.each_shell():
             self.mainline(90000, cdevs=(0, 1))                                    # cpufreq-cpu7 not bound

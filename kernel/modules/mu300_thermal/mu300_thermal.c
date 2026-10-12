@@ -4,7 +4,7 @@
  *
  * The vendor device tree (used unchanged under mainline) has 19 physical on-die zones without a single trip point,
  * and one zone with trips, "soc-thmzone": 70 and 85 C passive, 110 C critical, with cooling maps from the 85 C trip
- * to the three CPU clusters (cpu@0, cpu@400, cpu@700) and to vendor cluster/GPU cooling devices that mainline does
+ * to the three CPU clusters (cpu@0, cpu@400, cpu@700) and to vendor cluster, GPU and NPU cooling devices that mainline does
  * not have. Its sensor is "/virtual-sensor@0" (compatible "virtual-thermal"), whose "thmzone-cells" name the eleven
  * physical zones it aggregates (lit0-3, mid4-6, big7, gpu, ai0, ai1). The vendor kernel's driver for it is not in
  * mainline, and there is no in-tree aggregating sensor, so the zone did not exist and nothing in the kernel
@@ -18,10 +18,12 @@
  *
  * After kanoqwq's mu300_thermal (github.com/kanoqwq/mu300-linux, branch clean-tf-7.2, commit 5c8c2f9), GPL-2.0.
  *
- * Nothing here is invented: no temperatures, no trips, no device tree rewrite, no polling thread of its own. An
- * unreadable physical zone makes this zone unreadable for that round (the core keeps the last state), it is never
- * reported as cold. The physical zones' drivers are built in and never unregister, so plain pointers to them are
- * kept. Only the UMS9620 is accepted.
+ * Nothing here is invented: no temperatures, no trips, no device tree rewrite, no polling thread of its own. A
+ * physical zone that fails to read is left out of that round and the hottest of the others is reported; only when
+ * none reads does get_temp fail, and then the core logs it once, skips the update (no trip is evaluated, the cooling
+ * devices keep their state) and the zone's sysfs temp read fails too, which thermal-guard takes as "cap it myself".
+ * An unreadable sensor is never reported as cold. The physical zones' drivers are built in and never unregister, so
+ * plain pointers to them are kept. Only the UMS9620 is accepted.
  */
 #include <linux/err.h>
 #include <linux/module.h>
@@ -38,16 +40,21 @@ struct mu300_virtual {
 static int mu300_virtual_get_temp(struct thermal_zone_device *tz, int *temp)
 {
 	struct mu300_virtual *v = thermal_zone_device_priv(tz);
-	int hottest = INT_MIN, value, ret;
-	unsigned int i;
+	int hottest = INT_MIN, value, ret, err = 0;
+	unsigned int i, read = 0;
 
 	for (i = 0; i < v->count; i++) {
 		ret = thermal_zone_get_temp(v->zone[i], &value);
-		if (ret)
-			return ret;
+		if (ret) {
+			err = ret;	/* one flaky sensor must not silence the zone: the others still throttle */
+			continue;
+		}
+		read++;
 		if (value > hottest)
 			hottest = value;
 	}
+	if (!read)
+		return err;
 	*temp = hottest;
 	return 0;
 }
