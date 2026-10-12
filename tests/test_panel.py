@@ -435,10 +435,13 @@ const flush = () => new Promise((r) => setTimeout(r, 5));
         'mu300-vpn profile list --json': json.dumps([{'id': 'ok-1', 'name': 'A', 'type': 'xray'},
                                                      {'id': '../x', 'name': 'B', 'type': 'xray'}]),
         'mu300-vpn profile use': 'used', 'mu300-panel hotspot-set': 'hotspot', 'wifi-client': 'status',
+        # the VPN module is installed (mu300-extra's test, the page runs it as test -x); a stub table without this
+        # key is a device without the module
+        'test -x /mnt/mu300-disk/extra/vpn/bin/mu300-vpn': '',
     }
 
-    def run_page(self, body):
-        h = self.HARNESS.replace('__OUT__', json.dumps(self.OUT)).replace('__BODY__', body)
+    def run_page(self, body, out=None):
+        h = self.HARNESS.replace('__OUT__', json.dumps(self.OUT if out is None else out)).replace('__BODY__', body)
         r = subprocess.run(['node', '-', str(PAGE / 'mu300.js')], input=h, capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stderr)
         return json.loads(r.stdout)
@@ -480,12 +483,34 @@ return null;''')
         self.assertFalse(any('secret123' in k or 'cafepass' in k for k in calls))
 
     def test_vpn_profile_ids_are_checked(self):
-        out = self.run_page(r'''
+        out = self.run_page(r'''await flush();
 window.MU300.show('vpn'); await flush(); await flush(); await flush();
 all(ids['mu-vpn-profiles'], (n) => n.tag === 'button').forEach((b) => b.click()); await flush();
 return null;''')
         uses = [c['argv'] for c in out['calls'] if c['argv'][:3] == ['mu300-vpn', 'profile', 'use']]
         self.assertEqual(uses, [['mu300-vpn', 'profile', 'use', 'ok-1']])
+
+    def test_the_vpn_tab_only_with_the_module(self):
+        body = r'''await flush(); await flush();
+const tabs = all(ids.app, (n) => n.tag === 'button' && n.attrs['data-tab']).map((n) => n.attrs['data-tab']);
+window.MU300.show('vpn'); await flush(); await flush();
+return { tabs: tabs, shown: cockpit.location.path[0], main: document.getElementById('mu-main').textContent };'''
+        check = ['test', '-x', '/mnt/mu300-disk/extra/vpn/bin/mu300-vpn']
+        # with the module (its mu300-vpn in the vpn extra, mu300-extra's test): the tab, and the VPN page opens
+        out = self.run_page(body)
+        self.assertIn('vpn', out['result']['tabs'])
+        self.assertEqual(out['result']['shown'], 'vpn')
+        self.assertIn(check, [c['argv'] for c in out['calls']])
+        # without it: no tab, no word of a VPN, and the VPN page is not to be had - the overview opens instead
+        without = {k: v for k, v in self.OUT.items() if k[:7] != 'test -x'}
+        out = self.run_page(body, without)
+        self.assertNotIn('vpn', out['result']['tabs'])
+        self.assertEqual(sorted(out['result']['tabs']), ['overview', 'power', 'sms', 'updates', 'wifi'])
+        self.assertEqual(out['result']['shown'], 'overview')
+        self.assertNotIn('VPN', out['result']['main'])
+        self.assertNotIn('VPN', ''.join(t for t in self.run_page(
+            "await flush(); return document.getElementById('app').textContent;", without)['result']))
+        self.assertFalse([c['argv'] for c in out['calls'] if c['argv'][0] == 'mu300-vpn'])
 
     def test_helpers(self):
         out = self.run_page(r'''const M = window.MU300;

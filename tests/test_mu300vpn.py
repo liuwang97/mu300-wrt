@@ -228,8 +228,20 @@ class Inventory(Mu300Vpn):
         self.assertEqual(sorted(pages), sorted('admin/vpn/mu300-' + p for p in
                                                ('overview', 'profiles', 'subscriptions', 'engines', 'settings', 'logs')))
         for k, v in pages.items():
-            self.assertEqual(v['depends'], {'acl': ['luci-app-mu300']})
+            # the pages only with the VPN module: LuCI's "fs" dependency on the module's mu300-vpn in the vpn extra
+            # (mu300-extra's own test, vpn_module_in: EXTRA/vpn/bin/mu300-vpn executable); without it the VPN menu
+            # is not there at all. LuCI checks it when it builds its index cache, so mu300-extra drops the cache
+            # when the module comes or goes (luci_menu_refresh)
+            self.assertEqual(v['depends'], {'acl': ['luci-app-mu300'],
+                                            'fs': {'/mnt/mu300-disk/extra/vpn/bin/mu300-vpn': 'executable'}})
             self.assertTrue((VIEWS / (v['action']['path'].split('/')[1] + '.js')).is_file(), k)
+        for k, v in menu.items():
+            if not k.startswith('admin/vpn/'):
+                self.assertNotIn('fs', v['depends'], k)
+        extra = (TOP / 'rootfs' / 'overlay' / 'opt' / 'mu300' / 'bin' / 'mu300-extra').read_text()
+        self.assertIn('[ "$name" != vpn ] || luci_menu_refresh', extra)
+        self.assertIn('[ "$1" != vpn ] || luci_menu_refresh', extra)
+        self.assertIn('rm -f "$SYSROOT"/tmp/luci-indexcache "$SYSROOT"/tmp/luci-indexcache.*', extra)
 
     def test_an_unknown_method_runs_nothing(self):
         for shell in self.each_shell():
