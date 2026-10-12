@@ -1697,6 +1697,9 @@ class VendorStart(ShellTest):
             f.write_text(rel)
             f.chmod(mode)
         os.symlink('/apex/com.android.runtime/bin/linker64', a / 'system/bin/linker64')
+        for d in a.rglob('*'):
+            if d.is_dir() and not d.is_symlink():
+                d.chmod(0o755)                          # whatever umask the tests run under
         (a / 'dev-properties').chmod(0o711)             # as Android has it
         return a, files
 
