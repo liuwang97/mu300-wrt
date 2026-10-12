@@ -618,8 +618,17 @@ msgstr "正文"
 msgid "Form (URL-encoded)"
 msgstr "表单（URL 编码）"
 
+msgid "Plain text"
+msgstr "纯文本"
+
 msgid "Fields: sender, time, text, device, message (the template filled in)"
 msgstr "字段：sender、time、text、device、message（填好的模板）"
+
+msgid "Custom body"
+msgstr "自定义请求体"
+
+msgid "Empty: the standard fields (plain text: the message). Placeholders: {sender}, {time}, {text}, {device}, {message}. Each value is escaped for the chosen type. This body is shown again here: keep secrets in the address or a header."
+msgstr "留空：使用标准字段（纯文本：消息本身）。占位符：{sender}、{time}、{text}、{device}、{message}。每个值都会按所选类型转义。此请求体会在这里再次显示：请把密钥放在地址或请求头里。"
 
 msgid "Extra headers (one \"Name: value\" per line)"
 msgstr "附加请求头（每行一个 \"Name: value\"）"
@@ -2954,6 +2963,9 @@ msgstr "无效的过滤列表（最多 50 行）"
 
 msgid "The webhook address must be an http:// or https:// URL"
 msgstr "webhook 地址必须是 http:// 或 https:// 开头的 URL"
+
+msgid "The webhook body is too long or contains a control character"
+msgstr "Webhook 请求体过长或包含控制字符"
 
 msgid "Invalid header (one \"Name: value\" per line; Host, Content-Type, Content-Length, Transfer-Encoding and Connection are set by the device)"
 msgstr "无效的请求头（每行一个 \"Name: value\"；Host、Content-Type、Content-Length、Transfer-Encoding 和 Connection 由设备设置）"
