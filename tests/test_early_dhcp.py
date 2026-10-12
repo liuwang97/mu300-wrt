@@ -430,7 +430,7 @@ class EarlyUsbOpenWrt(ShellTest):
             self.assertEqual(1, log.count('uci add_list firewall.@zone[0].device=br-lan\n'))
             self.assertEqual(1, log.count('uci add_list firewall.@zone[1].device=sipa_eth0\n'))
             self.assertEqual(self.uci('get', 'firewall.@zone[0].device'), 'br-lan')
-            self.assertEqual(self.uci('get', 'firewall.@zone[1].device'), 'sipa_eth0')
+            self.assertEqual(self.uci('get', 'firewall.@zone[1].device'), 'sipa_eth0 sipa_eth8')   # #67 + #72: both bearers
             self.tearDown(); self.setUp()
 
     # --- hotplug.d/iface/19-mu300-fw4 (issue #67): the 5.4 kernel's stale flowtable before 20-firewall's reload

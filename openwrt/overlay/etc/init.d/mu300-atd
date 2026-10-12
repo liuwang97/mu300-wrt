@@ -24,6 +24,9 @@ wait_and_exec() {
 }
 
 start_sim1() {
+	local slot=0 cmddev datadev
+	[ ! -x /opt/mu300/bin/mu300-sim ] || slot=$(/opt/mu300/bin/mu300-sim active) || return 1
+	cmddev=/dev/stty_nr$((slot * 3 + 1)); datadev=/dev/stty_nr$((slot * 3 + 2))
 	# boot timeline mark; harmless without bootmark
 	[ -x /opt/mu300/bin/bootmark ] && /opt/mu300/bin/bootmark S19-atd-init || true
 	# Optional plugin handshake: it does nothing without the unisoc-modem panel (the file it tests for is the
@@ -31,7 +34,7 @@ start_sim1() {
 	[ ! -x /usr/libexec/unisoc-modem/lock ] || : > /run/unisoc-modem-early-hook-pending
 
 	procd_open_instance atd
-	procd_set_param command /bin/sh -c "$(wait_and_exec /dev/stty_nr1 /opt/mu300/bin/mu300-atd)"
+	procd_set_param command /bin/sh -c "$(wait_and_exec "$cmddev" /opt/mu300/bin/mu300-atd)"
 	procd_set_param respawn 3600 10 0
 	procd_set_param stdout 1
 	procd_set_param stderr 1
@@ -39,8 +42,8 @@ start_sim1() {
 
 	# second instance on nr2 (mobile-data's channel); no URC channel, nr1's daemon reads the URCs
 	procd_open_instance atd2
-	procd_set_param command /bin/sh -c "$(wait_and_exec /dev/stty_nr2 /opt/mu300/bin/mu300-atd)"
-	procd_set_param env MU300_AT_DEV=/dev/stty_nr2 MU300_AT_DIR=/run/mu300-at2 MU300_AT_URC_CHANNELS=
+	procd_set_param command /bin/sh -c "$(wait_and_exec "$datadev" /opt/mu300/bin/mu300-atd)"
+	procd_set_param env MU300_AT_DEV="$datadev" MU300_AT_DIR=/run/mu300-at2 MU300_AT_URC_CHANNELS=
 	procd_set_param respawn 3600 10 0
 	procd_set_param stdout 1
 	procd_set_param stderr 1
@@ -87,7 +90,8 @@ start_sim2() {
     [ ! -x /usr/libexec/unisoc-modem/lock ] || : > /run/unisoc-modem-early-hook-pending
     # Before S20network or any radio-warmup process: inhibit automatic SIM1 bring-up for this entire boot.
     : > /run/mu300-radio-freeze
-    [ "$(cat /etc/mu300-sim-hot 2>/dev/null)" != 1 ] || : > /run/mu300/sim-managed
+    : > /run/mu300/sim-active-unknown
+    [ "$hot" != 1 ] || : > /run/mu300/sim-managed
     broker atd 1 /run/mu300-at 0 /run/mu300-at/urc/stty_nr0.log
     broker atd2 2 /run/mu300-at2 '' /run/mu300-at/urc/stty_nr0.log
     broker atd4 4 /run/mu300-at4 3 /run/mu300-at4/urc/stty_nr3.log "$SBUF_READY"
@@ -103,7 +107,8 @@ start_sim2() {
 # sim_fallback REASON: back to SIM1 without live switching, the reason kept for the Dual SIM page (mu300-sim status)
 sim_fallback() {
     echo "mu300-atd: dual SIM: $1; SIM1 without live switching from now on" >&2
-    printf '0\n' > /etc/mu300-sim-slot; printf '0\n' > /etc/mu300-sim-hot
+    sim_cfg_save_default 0 || return 1
+    sim_cfg_save_hot 0 || return 1
     printf '%s\n' "$1" > /etc/mu300-sim-fallback
     rm -f /etc/mu300-sim-pending
 }
@@ -112,8 +117,14 @@ start_service() {
     local slot hot temporary
     # Only the U30 Air has the second group and the validated sequences; everywhere else the files are ignored.
     [ "$(/opt/mu300/bin/mu300-device 2>/dev/null)" = u30air ] || { start_sim1; return; }
-    slot=$(cat /run/mu300/sim-slot 2>/dev/null || cat /etc/mu300-sim-slot 2>/dev/null || echo 0)
-    hot=$(cat /etc/mu300-sim-hot 2>/dev/null || echo 0)
+    SIM_CONFIG_U30=1
+    . "${MU300_SIM_CONFIG_LIB:-/opt/mu300/lib/sim-config.sh}"
+    if ! sim_cfg_migrate; then
+        sim_fallback invalid-settings || return 1
+    fi
+    slot=$(cat /run/mu300/sim-slot 2>/dev/null || sim_cfg_default) || slot=invalid
+    hot=$(sim_cfg_hot) || hot=invalid
+    case "$hot" in 0|1) ;; *) sim_fallback invalid-hot; slot=0; hot=0;; esac
     case "$slot" in 0|1) ;; *) sim_fallback invalid-slot; slot=0; hot=0 ;; esac
     # One boot at a time: the dual-SIM path leaves a pending marker that mu300-sim2-warmup removes once the radio
     # is up (or it falls back itself). A marker still there at the next boot means that boot never confirmed
@@ -121,7 +132,7 @@ start_service() {
     if [ ! -e /run/mu300/sim-slot ] && [ -e /etc/mu300-sim-pending ]; then
         sim_fallback unconfirmed; slot=0; hot=0
     fi
-    # Pin the active slot for this boot; changing /etc only affects the next boot.
+    # Pin the active slot for this boot; changing network.wan.sim_slot only affects the next boot.
     mkdir -p /run/mu300
     if [ ! -e /run/mu300/sim-slot ]; then
         temporary=$(mktemp /run/mu300/sim-slot.XXXXXX) || return 1

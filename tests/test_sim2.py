@@ -23,6 +23,15 @@ class Sim2ColdStart(ShellTest):
         urc = self.run / 'mu300-at/urc'
         urc.mkdir()
         (urc / 'stty_nr0.log').write_text('CP ready\n')
+        self.stub('mu300-device', 'echo "${T_DEVICE:-u30air}"')
+        self.stub('uci', r'''case "$*" in
+ '-q get network.wan.sim_slot') cat "$STUBLOG/etc/uci-slot";;
+ '-q get network.wan.sim_hot') cat "$STUBLOG/etc/uci-hot";;
+ 'set network.wan.sim_slot='*) printf '%s\n' "${2#*=}" > "$STUBLOG/etc/uci-slot";;
+ 'set network.wan.sim_hot='*) printf '%s\n' "${2#*=}" > "$STUBLOG/etc/uci-hot";;
+ 'commit network') :;;
+ *) exit 1;;
+esac''')
         self.stub('sleep', ':')
         self.stub('logger', 'echo "$*" >> "$STUBLOG/logger"')
         self.stub('mu300-at', r'''
@@ -43,6 +52,11 @@ echo OK
         # mobile-data: radio-locked runs the command; radio-on (the SIM1 warm-up) is only recorded
         self.stub('mobile-data', 'case $1 in radio-locked) shift; exec "$@" ;; *) echo "$*" >> "$STUBLOG/md" ;; esac')
         self.start = self.copy_script('mu300-sim2-start')
+
+    def env(self, **extra):
+        extra.setdefault('MU300_SIM_ROOT', self.tmp)
+        extra.setdefault('MU300_SIM_CONFIG_LIB', TOP / 'rootfs/overlay/opt/mu300/lib/sim-config.sh')
+        return super().env(**extra)
 
     def copy_script(self, name):
         p = self.tmp / name
@@ -119,14 +133,14 @@ echo OK
     # --- the warm-up wrapper: confirms the boot, or falls back to SIM1
     def warmup(self, **env):
         (self.run / 'mu300/sim-slot').write_text('1\n')
-        (self.etc / 'mu300-sim-slot').write_text('1\n')
-        (self.etc / 'mu300-sim-hot').write_text('1\n')
+        (self.etc / 'uci-slot').write_text('1\n')
+        (self.etc / 'uci-hot').write_text('1\n')
         (self.etc / 'mu300-sim-pending').write_text('')
         (self.run / 'mu300/sim-managed').touch()
         return self.script(['bash'], self.copy_script('mu300-sim2-warmup'), **env)
 
     def settings(self):
-        return ((self.etc / 'mu300-sim-slot').read_text(), (self.etc / 'mu300-sim-hot').read_text(),
+        return ((self.etc / 'uci-slot').read_text(), (self.etc / 'uci-hot').read_text(),
                 (self.etc / 'mu300-sim-pending').exists(),
                 (self.etc / 'mu300-sim-fallback').read_text() if (self.etc / 'mu300-sim-fallback').exists() else None)
 
@@ -187,6 +201,7 @@ echo OK
     def test_mobile_data_uses_ready_marker_without_second_bringup(self):
         lib = self.copy_script('mobile-data')
         (self.run / 'mu300/sim2-radio-ready').touch()
+        (self.run / 'mu300/sim-radio-ready').touch()
         r = self.sh(['bash'], f'MU300_LIB=1; . "{lib}"\n'
                     'at() { echo "$*" >> "$STUBLOG/radio-check"; printf "+CFUN: 1\\r\\nOK\\n"; }\n'
                     'radio_on_locked', MU300_SIM_SLOT='1')
@@ -219,8 +234,8 @@ echo OK
     def init_service(self, tail='start_service', device='u30air', **env):
         source = TOP / 'openwrt/overlay/etc/init.d/mu300-atd'
         text = source.read_text().replace('/run/', str(self.run) + '/')
-        text = text.replace('/etc/mu300-sim-slot', str(self.tmp / 'choice'))
-        text = text.replace('/etc/mu300-sim-hot', str(self.tmp / 'hot-choice'))
+        text = text.replace('/etc/mu300-sim-slot', str(self.etc / 'uci-slot'))
+        text = text.replace('/etc/mu300-sim-hot', str(self.etc / 'uci-hot'))
         text = text.replace('/etc/mu300-sim-pending', str(self.tmp / 'pending'))
         text = text.replace('/etc/mu300-sim-fallback', str(self.tmp / 'fallback'))
         text = text.replace('/opt/mu300/bin/mu300-device', 'mu300-device')
@@ -237,8 +252,8 @@ sleep() {{ :; }}
         return [l.split()[1] for l in r.stdout.splitlines() if l.startswith('instance ')]
 
     def test_hot_sim1_boot_opens_both_groups_once(self):
-        (self.tmp / 'choice').write_text('0\n')
-        (self.tmp / 'hot-choice').write_text('1\n')
+        (self.etc / 'uci-slot').write_text('0\n')
+        (self.etc / 'uci-hot').write_text('1\n')
         r = self.init_service()
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(r.stdout.count('MU300_AT_DISABLE_REOPEN=1'), 4)
@@ -247,14 +262,14 @@ sleep() {{ :; }}
         self.assertTrue((self.tmp / 'pending').exists())
 
     def test_setting_is_pinned_until_reboot(self):
-        (self.tmp / 'choice').write_text('0\n')
+        (self.etc / 'uci-slot').write_text('0\n')
         r = self.init_service(f'start_service; echo 1 > "{self.tmp}/choice"; start_service')
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual((self.run / 'mu300/sim-slot').read_text(), '0\n')
         self.assertNotIn('instance atd4', r.stdout)
 
     def test_sim2_owners_are_persistent_and_not_respawned(self):
-        (self.tmp / 'choice').write_text('1\n')
+        (self.etc / 'uci-slot').write_text('1\n')
         r = self.init_service()
         self.assertEqual(r.returncode, 0, r.stderr)
         for channel in (1, 2, 4, 5):
@@ -266,7 +281,7 @@ sleep() {{ :; }}
 
     def test_second_group_waits_for_the_sbuf_inside_its_instance(self):
         # the wait is the instance's, bounded, never start_service's: a boot always gets its brokers
-        (self.tmp / 'choice').write_text('1\n')
+        (self.etc / 'uci-slot').write_text('1\n')
         r = self.init_service()
         commands = [l for l in r.stdout.splitlines() if l.startswith('param command ')]
         self.assertEqual(len(commands), 5)
@@ -278,8 +293,8 @@ sleep() {{ :; }}
         self.assertNotIn('sipc_sbuf', r.stderr)
 
     def test_other_devices_ignore_the_dual_sim_files(self):
-        (self.tmp / 'choice').write_text('1\n')
-        (self.tmp / 'hot-choice').write_text('1\n')
+        (self.etc / 'uci-slot').write_text('1\n')
+        (self.etc / 'uci-hot').write_text('1\n')
         (self.run / 'mu300-radio-freeze').unlink()
         for device in ('f50', 'u30pro', ''):
             with self.subTest(device=device):
@@ -288,31 +303,31 @@ sleep() {{ :; }}
                 self.assertEqual(self.instances(r), ['atd', 'atd2', 'radio-warmup'])
                 self.assertFalse((self.tmp / 'pending').exists())
                 self.assertFalse((self.run / 'mu300-radio-freeze').exists())
-        self.assertEqual((self.tmp / 'choice').read_text(), '1\n', 'left alone, for a U30 Air that reads it')
+        self.assertEqual((self.etc / 'uci-slot').read_text(), '1\n', 'left alone, for a U30 Air that reads it')
 
     def test_unconfirmed_boot_falls_back_to_sim1(self):
         # the last boot's dual-SIM path never confirmed (a broker that never came up, a warm-up that died)
-        (self.tmp / 'choice').write_text('1\n')
-        (self.tmp / 'hot-choice').write_text('1\n')
+        (self.etc / 'uci-slot').write_text('1\n')
+        (self.etc / 'uci-hot').write_text('1\n')
         (self.tmp / 'pending').write_text('')
         r = self.init_service()
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(self.instances(r), ['atd', 'atd2', 'radio-warmup'])
-        self.assertEqual((self.tmp / 'choice').read_text(), '0\n')
-        self.assertEqual((self.tmp / 'hot-choice').read_text(), '0\n')
+        self.assertEqual((self.etc / 'uci-slot').read_text(), '0\n')
+        self.assertEqual((self.etc / 'uci-hot').read_text(), '0\n')
         self.assertEqual((self.tmp / 'fallback').read_text(), 'unconfirmed\n')
         self.assertFalse((self.tmp / 'pending').exists())
         self.assertEqual((self.run / 'mu300/sim-slot').read_text(), '0\n')
         self.assertIn('unconfirmed', r.stderr)
 
     def test_pending_marker_survives_a_restart_within_the_boot(self):
-        (self.tmp / 'choice').write_text('1\n')
+        (self.etc / 'uci-slot').write_text('1\n')
         (self.tmp / 'pending').write_text('')
         (self.run / 'mu300/sim-slot').write_text('1\n')   # this boot's pin: the service is being restarted
         r = self.init_service()
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn('atd4', self.instances(r))
-        self.assertEqual((self.tmp / 'choice').read_text(), '1\n')
+        self.assertEqual((self.etc / 'uci-slot').read_text(), '1\n')
 
 
 if __name__ == '__main__':

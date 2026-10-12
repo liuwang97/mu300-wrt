@@ -5,7 +5,7 @@ import os
 import subprocess
 import time
 import signal
-from helpers import BIN, ShellTest
+from helpers import BIN, TOP, ShellTest
 
 # flock(1) for a host without it (macOS): the lock is taken on the inherited descriptor, and BSD/Linux flock locks
 # belong to the open file description, so it holds for the shell that opened it after this exits.
@@ -18,7 +18,7 @@ except OSError: sys.exit(1)' "$1" "$nb"
 # netifd's wan: up with an address unless the test says T_WAN=0
 UBUS = r'''
 case "$*" in *network.interface.wan*)
-    if [ "${T_WAN:-1}" = 1 ]; then printf '{ "up": true, "ipv4-address": [ { "address": "10.0.0.2" } ] }\n'
+    if [ "${T_WAN:-1}" = 1 ]; then printf '{ "up": true, "l3_device": "sipa_eth%s", "ipv4-address": [ { "address": "10.0.0.2" } ] }\n' "$(( $(cat "$STUBLOG/run/mu300/sim-slot") * 8 ))"
     else printf '{ "up": false, "ipv4-address": [ ] }\n'; fi ;;
 esac
 '''
@@ -32,17 +32,25 @@ class HotSim(ShellTest):
         (self.etc / 'openwrt_release').write_text('DISTRIB_ID=OpenWrt\n')
         (self.run / 'mu300').mkdir(parents=True)
         (self.run / 'mu300/sim-slot').write_text('1\n')
-        (self.etc / 'mu300-sim-slot').write_text('1\n')
-        (self.etc / 'mu300-sim-hot').write_text('1\n')
+        (self.etc / 'uci-slot').write_text('1\n')
+        (self.etc / 'uci-hot').write_text('1\n')
         (self.run / 'mu300-radio-freeze').touch()
         for n in ('mu300-at','mu300-at2','mu300-at4','mu300-at5'):
             d=self.run/n; (d/'owner').mkdir(parents=True)
             (d/'owner/pid').write_text(str(os.getpid())); os.mkfifo(d/'cmd')
         (self.tmp/'radio0').write_text('0'); (self.tmp/'radio1').write_text('1')
-        self.stub('ifdown', 'echo down >> "$STUBLOG/net"')
+        self.stub('uci', r"""case "$*" in
+ '-q get network.wan.sim_slot') cat "$STUBLOG/etc/uci-slot" ;;
+ '-q get network.wan.sim_hot') cat "$STUBLOG/etc/uci-hot" ;;
+ 'set network.wan.sim_slot='*) printf '%s\n' "${2#*=}" > "$STUBLOG/etc/uci-slot" ;;
+ 'set network.wan.sim_hot='*) printf '%s\n' "${2#*=}" > "$STUBLOG/etc/uci-hot" ;;
+ 'commit network') : ;;
+ *) exit 1;;
+esac""")
+        self.stub('ifdown' , 'echo down >> "$STUBLOG/net"')
         self.stub('ifup', 'echo up >> "$STUBLOG/net"')
         self.stub('mu300-device', 'echo "${T_DEVICE:-u30air}"')
-        self.stub('setsid', 'exec "$@"')   # macOS has none; the process group is only for the interrupt
+        self.stub('setsid', "exec python3 -c 'import os, sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])' \"$@\"")   # macOS has none; the process group is only for the interrupt
         self.stub('flock', FLOCK)
         self.stub('ubus', UBUS)
         self.stub('mu300-at', r'''
@@ -62,14 +70,18 @@ echo OK
 ''')
         self.stub('mobile-data', 'shift; ln -s "$$" "$T_RUN/mu300-radio-on.owner"; "$@"; r=$?; rm -f "$T_RUN/mu300-radio-on.owner"; exit "$r"')
         self.controller=self.tmp/'mu300-sim'
-        self.controller.write_text((BIN/'mu300-sim').read_text().replace('/run/',str(self.run)+'/').replace('/etc/',str(self.etc)+'/')
+        self.controller.write_text((BIN/'mu300-sim-u30').read_text().replace('/run/',str(self.run)+'/').replace('/etc/',str(self.etc)+'/')
             .replace('/opt/mu300/bin/mu300-at','mu300-at').replace('/opt/mu300/bin/mobile-data','mobile-data')
             .replace('/opt/mu300/bin/mu300-device','mu300-device'))
         self.controller.chmod(0o755)
 
+    def env(self, **extra):
+        extra.setdefault('MU300_SIM_CONFIG_LIB', TOP / 'rootfs/overlay/opt/mu300/lib/sim-config.sh')
+        return super().env(**extra)
+
     def ctl(self, *args, **env):
         env.setdefault('MU300_SIM_WAN_WAIT', '2')
-        return self.script(['bash'],self.controller,*args,T_RUN=self.run,**env)
+        return self.script(['bash'],self.controller,*args,T_RUN=self.run, MU300_SIM_CONFIG_LIB=TOP / 'rootfs/overlay/opt/mu300/lib/sim-config.sh',**env)
 
     def status(self, **env):
         return json.loads(self.ctl('status', **env).stdout)
@@ -78,7 +90,7 @@ echo OK
         for public,slot in [('1','0'),('2','1')]:
             r=self.ctl('switch',public)
             self.assertEqual(r.returncode,0,r.stdout+r.stderr)
-            self.assertEqual((self.etc/'mu300-sim-slot').read_text(),slot+'\n')
+            self.assertEqual((self.etc/'uci-slot').read_text(),slot+'\n')
             self.assertEqual((self.run/'mu300/sim-slot').read_text(),slot+'\n')
             s=self.status()
             self.assertEqual(s['active'],int(public)); self.assertEqual(s['result'],'switched')
@@ -93,7 +105,7 @@ echo OK
         r=self.ctl('switch','1',T_WAN='0')
         self.assertNotEqual(r.returncode,0)
         self.assertIn('no data',r.stdout)
-        self.assertEqual((self.etc/'mu300-sim-slot').read_text(),'1\n')
+        self.assertEqual((self.etc/'uci-slot').read_text(),'1\n')
         self.assertEqual((self.run/'mu300/sim-slot').read_text(),'1\n')
         s=self.status()
         self.assertEqual(s['active'],2); self.assertEqual(s['default'],2); self.assertEqual(s['result'],'no_data')
@@ -109,7 +121,7 @@ echo OK
 
     def test_target_pin_lock_rolls_back_and_preserves_default(self):
         self.assertNotEqual(self.ctl('switch','1',T_PIN='SIM PIN').returncode,0)
-        self.assertEqual((self.etc/'mu300-sim-slot').read_text(),'1\n')
+        self.assertEqual((self.etc/'uci-slot').read_text(),'1\n')
         self.assertEqual((self.tmp/'net').read_text(),'down\nup\n')
         self.assertEqual(self.status()['result'],'rolled_back')
 
@@ -137,10 +149,10 @@ echo OK
         self.assertEqual(s['busy'],0, 'the holder of the lock is not busy to itself')
         self.assertFalse((self.tmp/'at').exists())
         # and the next boot's choice needs neither hot switching nor the brokers
-        (self.etc/'mu300-sim-hot').write_text('0\n')
+        (self.etc/'uci-hot').write_text('0\n')
         (self.run/'mu300-at4/owner/pid').unlink()
         self.assertEqual(self.ctl('default','2').returncode,0)
-        self.assertEqual((self.etc/'mu300-sim-slot').read_text(),'1\n')
+        self.assertEqual((self.etc/'uci-slot').read_text(),'1\n')
 
     def test_fallback_of_the_last_boot_is_reported_until_the_user_chooses(self):
         (self.etc/'mu300-sim-fallback').write_text('cold-start-failed\n')
@@ -160,14 +172,14 @@ echo OK
         (self.etc/'openwrt_release').unlink()   # Ubuntu
         r=self.ctl('default','2')
         self.assertNotEqual(r.returncode,0); self.assertEqual(json.loads(r.stdout)['ok'],0)
-        self.assertEqual((self.etc/'mu300-sim-slot').read_text(),'1\n')
-        self.assertEqual((self.etc/'mu300-sim-hot').read_text(),'1\n')
+        self.assertEqual((self.etc/'uci-slot').read_text(),'1\n')
+        self.assertEqual((self.etc/'uci-hot').read_text(),'1\n')
         self.assertFalse((self.tmp/'at').exists())
 
     def test_disabled_or_missing_owner_sends_nothing(self):
-        (self.etc/'mu300-sim-hot').write_text('0')
+        (self.etc/'uci-hot').write_text('0')
         self.assertNotEqual(self.ctl('switch','1').returncode,0)
-        (self.etc/'mu300-sim-hot').write_text('1')
+        (self.etc/'uci-hot').write_text('1')
         (self.run/'mu300-at4/owner/pid').unlink()
         self.assertNotEqual(self.ctl('switch','1').returncode,0)
         self.assertFalse((self.tmp/'at').exists())
@@ -184,7 +196,7 @@ echo OK
             fcntl.flock(f,fcntl.LOCK_EX)
             self.assertNotEqual(self.ctl('default','1').returncode,0)
             self.assertEqual(self.status()['busy'],1)
-        self.assertEqual((self.etc/'mu300-sim-slot').read_text(),'1\n')
+        self.assertEqual((self.etc/'uci-slot').read_text(),'1\n')
         self.assertEqual(self.status()['busy'],0)
 
     def test_interrupted_switch_keeps_default_and_requires_reboot(self):

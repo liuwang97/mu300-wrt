@@ -16,10 +16,13 @@ if [ -n "$(read -t 1 _probe </dev/null 2>&1)" ]; then
     done
     echo "mu300-at: need bash or busybox ash (this shell has no 'read -t')" >&2; exit 1
 fi
-SLOT=${MU300_SIM_SLOT:-$(cat /run/mu300/sim-slot 2>/dev/null || echo 0)}
-case "$SLOT" in
-    0) default_dir=/run/mu300-at; default_dev=/dev/stty_nr1 ;;
-    1) default_dir=/run/mu300-at4; default_dev=/dev/stty_nr4 ;;
+SLOT=${MU300_SIM_SLOT:-0}
+[ ! -x /opt/mu300/bin/mu300-sim ] || SLOT=$(/opt/mu300/bin/mu300-sim active) || exit 1
+SIM_NATIVE=0
+[ ! -e /run/mu300-radio-freeze ] || SIM_NATIVE=1
+case "$SLOT:$SIM_NATIVE" in
+    0:*|1:0) default_dir=/run/mu300-at; default_dev=/dev/stty_nr$((SLOT * 3 + 1)) ;;
+    1:1) default_dir=/run/mu300-at4; default_dev=/dev/stty_nr4 ;;
     *) echo "mu300-at: invalid SIM slot $SLOT" >&2; exit 2 ;;
 esac
 DIR=${MU300_AT_DIR:-$default_dir}

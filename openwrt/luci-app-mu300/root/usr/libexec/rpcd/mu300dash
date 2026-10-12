@@ -787,7 +787,7 @@ EOF
 }
 
 SIMCTL=${MU300_DASH_SIM:-/opt/mu300/bin/mu300-sim}
-m_sim_get() { reply_obj "$("$SIMCTL" status 2>/dev/null)" 'SIM control unavailable'; }
+m_sim_get() { reply_obj "$("$SIMCTL" status --json 2>/dev/null)" 'SIM control unavailable'; }
 m_sim_set() {
     local op value
     inp '@.op'; op=$V
@@ -796,7 +796,7 @@ m_sim_set() {
         *) refuse 'Invalid SIM setting'; return;; esac
     if [ "$op" = switch ]; then
         local state
-        state=$("$SIMCTL" status 2>/dev/null)
+        state=$("$SIMCTL" status --json 2>/dev/null)
         [ "$(printf '%s' "$state" | jsonfilter -e '@.hot')" = 1 ] &&
             [ "$(printf '%s' "$state" | jsonfilter -e '@.available')" = 1 ] &&
             [ "$(printf '%s' "$state" | jsonfilter -e '@.busy')" = 0 ] || {

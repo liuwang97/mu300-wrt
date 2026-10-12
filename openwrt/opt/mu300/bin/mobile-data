@@ -21,16 +21,19 @@ set -euo pipefail
 # 1 = slot1: nr3/nr4/nr5
 # /run/mu300/sim-slot is this boot's pin, written by init.d/mu300-atd on the U30 Air (OpenWrt) alone: the saved
 # choice (/etc/mu300-sim-slot) is never read here, so a stray file on another device or system changes nothing.
-SIM_SLOT=${MU300_SIM_SLOT:-$(cat /run/mu300/sim-slot 2>/dev/null || echo 0)}
+SIM_SLOT=${MU300_SIM_SLOT:-0}
+[ ! -x /opt/mu300/bin/mu300-sim ] || SIM_SLOT=$(/opt/mu300/bin/mu300-sim active) || exit 1
+SIM_NATIVE=0
+[ ! -e /run/mu300-radio-freeze ] || SIM_NATIVE=1
 
-case "$SIM_SLOT" in
-    0)
+case "$SIM_SLOT:$SIM_NATIVE" in
+    0:*|1:0)
         MAIN_DIR=/run/mu300-at
         DATA_DIR=/run/mu300-at2
-        MAIN_DEV=/dev/stty_nr1
-        URCLOG_DEFAULT=/run/mu300-at/urc/stty_nr0.log
+        MAIN_DEV=/dev/stty_nr$((SIM_SLOT * 3 + 1))
+        URCLOG_DEFAULT=/run/mu300-at/urc/stty_nr$((SIM_SLOT * 3)).log
         ;;
-    1)
+    1:1)
         MAIN_DIR=/run/mu300-at4
         DATA_DIR=/run/mu300-at5
         MAIN_DEV=/dev/stty_nr4
@@ -160,7 +163,7 @@ at() {  # at CMD [timeout] -> response lines up to the final result code
         MU300_AT_DIR="$MAIN_DIR" /opt/mu300/bin/mu300-at -t "$t" "$cmd"
         return
     fi
-    [ "$SIM_SLOT" = 1 ] && return 1   # SIM2 requires its persistent owners; never open directly
+    [ "$SIM_NATIVE" = 1 ] && return 1   # SIM2 requires its persistent owners; never open directly
     [ -c "$DEV" ] || return 1   # never let the redirection create a regular file in /dev
     # No command fifo, but the daemon can still be there with the channel open - that is what /run/mu300-at
     # being removed under a running mu300-atd leaves behind. Opening the device here would make a second reader
@@ -265,7 +268,7 @@ v6_up() {  # v6_up IID
     echo 1 > "$c/accept_ra_pinfo"
     # 3GPP has the UE build its link-local address from the identifier the network assigned (Android does the
     # same); the kernel's own EUI-64 one would come from sipa_eth0's made-up MAC
-    echo 1 > "$c/addr_gen_mode"
+    echo 1 > "$c/addr_gen_mode" 2>/dev/null || true
     echo 0 > "$c/disable_ipv6"
     ip -6 addr add "fe80::$1/64" dev "$IFACE" 2>/dev/null || true
     for n in $(seq 1 20); do
@@ -354,16 +357,16 @@ v6_relay_ra() {
 # Every decision goes to radio.log. Returns 1 when this round cannot switch the radio on; the caller retries later
 # (netifd's next attempt, systemd's restart, the watchdog).
 PLUGIN_LOCK=${MU300_PLUGIN_LOCK:-/usr/libexec/unisoc-modem/lock}
-[ "$SIM_SLOT" = 1 ] && PLUGIN_LOCK=/nonexistent
+[ "$SIM_NATIVE" = 1 ] && PLUGIN_LOCK=/nonexistent
 radio_on_locked() {
     if [ -e /run/mu300/sim-managed ]; then
         [ -e /run/mu300/sim-radio-ready ] && [ ! -e /run/mu300/sim-active-unknown ] || return 1
         at 'AT+CFUN?' 4 | tr -d '\r' | grep -E '^\+CFUN: *1$' >/dev/null
         return $?
     fi
-    if [ "$SIM_SLOT" = 1 ]; then
+    if [ "$SIM_NATIVE" = 1 ]; then
         # The native boot controller owns SIM2 bring-up. Never let netifd/watchdog run a second SFUN sequence.
-        [ -e /run/mu300/sim2-radio-ready ] || return 1
+        [ -e /run/mu300/sim-radio-ready ] || return 1
         at 'AT+CFUN?' 4 | tr -d '\r' | grep -E '^\+CFUN: *1$' >/dev/null
         return $?
     fi
@@ -582,7 +585,7 @@ modem_stack() { [ -e /dev/modem ] || [ -e /dev/pmsys ] || [ -c "$DEV" ]; }
 # mu300-atd owns the device it has already set the flags on its own descriptor, so leave the tty alone.
 tty_setup() {
     [ -p "$MAIN_DIR/cmd" ] && return 0
-    [ "$SIM_SLOT" = 1 ] && return 1
+    [ "$SIM_NATIVE" = 1 ] && return 1
     # same for a daemon whose fifo has gone missing: its descriptor is still the one the modem talks to
     at_owner_alive "$(cat "$ATLOCK/pid" 2>/dev/null || true)" && return 0
     bnd "$STEPDL" stty -F "$DEV" raw -echo 2>/dev/null || true   # (an open of the SIPC tty can block)
@@ -674,13 +677,23 @@ up_locked() {
     # /etc/mu300/mobile-data.conf is an EnvironmentFile for the service. The argument still wins, which is what
     # the OpenWrt protocol handler uses.
     set -- "${1:-${MU300_APN:-}}"
+    # The APN is pasted into a quoted AT argument: a quote, a CR or a LF in it (a free-text field in LuCI, a
+    # hand-edited mobile-data.conf) would end the argument or the command early and define something else.
+    case ${1:-} in
+        *[\"\\]*|*"$(printf '\r')"*|*'
+'*) echo "the APN contains a quote, a backslash or a line break; not defining the context with it" >&2; exit 1 ;;
+    esac
     if [ -n "${1:-}" ]; then
-        # "IP", not "IPV4V6", because that is what Android's RIL asks this modem for. Measured on the same
-        # device with data working, its sipa_eth0 carries one IPv4 address and has IPv6 switched off outright
-        # (/proc/sys/net/ipv6/conf/sipa_eth0/disable_ipv6 = 1). A dual-stack context is the one part of our
-        # bring-up the working system never performs, and downlink is what we are missing (FINDINGS 13f).
-        # MU300_PDP_TYPE=IPV4V6 asks for both again, for a carrier that needs it.
-        at "AT+CGDCONT=$CID,\"${MU300_PDP_TYPE:-IP}\",\"$1\"" >/dev/null
+        # Keep the external card's established definition; internal F50 stock RIL uses
+        # dual stack with the extended context, PCO and QoS fields below.
+        if [ "$SIM_SLOT:$SIM_NATIVE" = 1:0 ]; then
+            at 'AT+CDEFMP=1,"0"' >/dev/null
+            at "AT+CGDCONT=$CID,\"${MU300_PDP_TYPE:-IPV4V6}\",\"$1\",\"\",0,0,0,0,1,,,,,,,,,,,,,0" >/dev/null
+            at 'AT+CGPCO=0,"","",1,0' >/dev/null
+            at 'AT+CGEQREQ=1,2,0,0,0,0,2,0,"1e4","0e0",3,0,0' >/dev/null
+        else
+            at "AT+CGDCONT=$CID,\"${MU300_PDP_TYPE:-IP}\",\"$1\"" >/dev/null
+        fi
     fi
     # No AT+CGACT? first: at boot the context is always off, the question costs a whole AT round trip, and
     # CGACT=1 on an active context (a reconnect) changes nothing. mu300-at exits 0 on any final result code,
@@ -712,7 +725,18 @@ up_locked() {
     # AT+CGDATA takes its time on this modem: measured, it answers "^ORIG: <cid>,<n>" and then CONNECT about
     # ten to twenty seconds later. With the old eight-second budget the reply arrived after we had given up, so
     # the next command read it instead of its own and the whole channel looked dead for a while.
-    at "AT+CGDATA=\"M-ETHER\",$CID" 45 | grep -q CONNECT || echo "AT+CGDATA did not answer CONNECT" >&2
+    if ! at "AT+CGDATA=\"M-ETHER\",$CID" 45 | grep -q CONNECT; then
+        echo "AT+CGDATA did not answer CONNECT" >&2
+        [ "$SIM_SLOT" != 1 ] || return 1
+    fi
+    # On the F50's internal SIM, CONNECT can succeed while all packets are lost.
+    # Stock RIL selects the packet-data route with SPSWDATA. Keep slot 0 unchanged.
+    if [ "$SIM_SLOT:$SIM_NATIVE" = 1:0 ]; then
+        at 'AT+SPSWDATA' 8 | grep -x OK >/dev/null || {
+            echo 'Could not select the internal SIM packet-data route' >&2
+            return 1
+        }
+    fi
     prefix=$(mask2prefix "$mask")
     iid=$(v6_iid)
     # Without an IPv6 address from the network, switch IPv6 off on this interface, as Android does: otherwise it
@@ -792,7 +816,7 @@ down() {
 
 sim_reset() {
     [ ! -e /run/mu300/sim-managed ] || { echo "Use SIM control or reboot for a managed dual-SIM radio" >&2; return 1; }
-    [ "$SIM_SLOT" != 1 ] || { echo "SIM2 requires a Linux reboot, not a live modem reset" >&2; return 1; }
+    [ "$SIM_NATIVE" != 1 ] || { echo "Native dual SIM requires a Linux reboot, not a live modem reset" >&2; return 1; }
     tty_setup
     at 'AT+SFUN=5' 20; at 'AT+SFUN=3' 10; sleep 2; at 'AT+SFUN=2' 10; at 'AT+SFUN=4' 30
     for _ in $(seq 1 30); do at 'AT+CPIN?' | grep -q READY && break; sleep 2; done
@@ -859,7 +883,7 @@ endc_restore() {
 do_suspend() {
     # A SIM2 cold-start can only run once. Do not power it down until its resume sequence is validated.
     [ ! -e /run/mu300/sim-managed ] || { echo "Managed dual-SIM suspend/resume is not supported" >&2; return 1; }
-    [ "$SIM_SLOT" != 1 ] || { echo "SIM2 radio suspend/resume is not supported yet" >&2; return 1; }
+    [ "$SIM_NATIVE" != 1 ] || { echo "Native dual SIM radio suspend/resume is not supported yet" >&2; return 1; }
     local mode=${1:-off}
     case $mode in off|lte) ;; *) echo "usage: mobile-data suspend off|lte" >&2; return 2 ;; esac
     [ "$(cat "$SUSPEND" 2>/dev/null)" = "$mode" ] && return 0

@@ -105,7 +105,9 @@ fi
 # the reload every ifup triggers to fill in. On the 5.4 kernel that reload failed (hotplug.d/iface/19-mu300-fw4),
 # and the device came up with no DHCP, no LuCI and no NAT on every boot (#67; #61 looks the same). With the devices
 # named, the boot ruleset is complete whatever the reloads do. Added to a zone that lacks its device; once.
-for zd in lan:br-lan wan:sipa_eth0; do
+# sipa_eth8 is the F50's internal card's bearer (mu300-sim select internal; docs/SIM-SELECTION.md): named too, so
+# LAN clients are masqueraded on it from the boot ruleset on, the same as on sipa_eth0.
+for zd in lan:br-lan wan:sipa_eth0 wan:sipa_eth8; do
 	zone=$(uci -q show firewall | sed -n "s/^\(firewall\.@zone\[[0-9]*\]\)\.name='${zd%:*}'$/\1/p" | head -1)
 	[ -n "$zone" ] || continue
 	case " $(uci -q get $zone.device) " in *" ${zd#*:} "*) ;; *) uci add_list $zone.device="${zd#*:}" ;; esac
