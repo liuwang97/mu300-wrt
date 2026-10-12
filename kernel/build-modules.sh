@@ -7,8 +7,9 @@ KV=${KV:-6.18.56}
 K=/src/linux-$KV
 O=/src/out-$KV
 OUT=/work/${OUTDIR:-out}   # as in build.sh
-# every out-of-tree module, in dependency order (wlan/bt use wcn_bsp, the PMIC watchdog and Mali the modem's headers)
-mods=${*:-wcn_bsp sprd_wlan_combo sprdbt_tty sprd_modem sprd_pmic_wdt mali}
+# every out-of-tree module, in dependency order (wlan/bt use wcn_bsp, the PMIC watchdog and Mali the modem's headers;
+# mu300_thermal, the stock virtual thermal zone, needs only the kernel)
+mods=${*:-wcn_bsp sprd_wlan_combo sprdbt_tty sprd_modem sprd_pmic_wdt mali mu300_thermal}
 mkdir -p $OUT/modules
 # a full build starts clean, so no module of another kernel release ends up next to the new ones
 [ $# -gt 0 ] || rm -f $OUT/modules/*.ko $OUT/modules/*.log

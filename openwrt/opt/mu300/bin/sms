@@ -266,7 +266,7 @@ watch)
     # Asking the modem how many messages it holds is more dependable here than waiting for a +CMTI URC: the
     # daemon owns the channel and throws away unsolicited lines between commands, and a message that arrives
     # while the modem is busy would be missed entirely. Polling cannot miss one.
-    # Nor does this ask for direct delivery (AT+CNMI mt=2, which openwrt-luci's mu300-smsd uses, FINDINGS 48): a
+    # Nor does this ask for direct delivery (AT+CNMI mt=2, which openwrt-luci's mu300-smsd uses, FINDINGS 51): a
     # message routed to us must be acknowledged by something that is running, or the modem drops the routing and
     # stores the next ones unannounced; this tool has no daemon, so the modem keeps storing and this keeps polling.
     # A long message whose other parts have not come yet waits, up to MU300_SMS_PARTIAL_WAIT seconds (an hour) from

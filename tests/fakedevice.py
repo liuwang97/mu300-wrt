@@ -12,7 +12,7 @@ from test_boot_image import LIVE_A, fake_misc, fake_stock, with_slots
 ANDROID_SH = r'''#!/bin/sh
 # stand-in for /system/bin/sh running android-install.sh or android-mount-mu300root.sh
 log=$FAKE/android-sh.log
-echo "ASH_STANDALONE=${ASH_STANDALONE:-} PATH=$PATH $* MU300_RO=${MU300_RO:-} MU300_DEVICE_WORK=${MU300_DEVICE_WORK:-} $(ls -ld "${MU300_DEVICE_WORK:-/nonexistent}" 2>/dev/null | cut -c1-10)" >> "$log"
+echo "ASH_STANDALONE=${ASH_STANDALONE:-} PATH=$PATH $* MU300_RO=${MU300_RO:-} MU300_DEVICE_WORK=${MU300_DEVICE_WORK:-} MU300_LOCK_DIR=${MU300_LOCK_DIR:-} $(ls -ld "${MU300_DEVICE_WORK:-/nonexistent}" 2>/dev/null | cut -c1-10)" >> "$log"
 case $1 in
     -c) shift; exec "$FAKE/devsh" -c "$@" ;;
     # the real one, on the fake by-name directory (MU300_BY_NAME), with Android's getprop
@@ -103,6 +103,8 @@ class FakeDevice:
                                  'persist.sys.locale=en-US\n')
         (r / 'volumes').write_text('private mounted null\n')
         (r / 'mounts').write_text('')
+        # /proc/sys/kernel/random/boot_id: the key of the lock a timed-out SD-card stage leaves (FINDINGS 50)
+        (r / 'boot_id').write_text('11111111-2222-3333-4444-555555555555\n')
         for name, body in (('android-sh', ANDROID_SH), ('devsh', DEVSH), ('ubb', UBB)):
             (r / name).write_text(body); (r / name).chmod(0o755)
         for name, body in (('getprop', GETPROP), ('sm', SM)):
@@ -119,5 +121,6 @@ class FakeDevice:
                 'MU300_ANDROID_PATH': os.environ['PATH'], 'MU300_ANDROID_ROOT': r / 'android',
                 'MU300_FW_DIRS': f'{r}/android/vendor/firmware', 'MAGISKBIN': r / 'magisk',
                 'MAGISKBOOT': magiskboot, 'MU300_UBB': r / 'ubb', 'MU300_SKIP_ROOT_CHECK': 1,
+                'MU300_BOOT_ID': r / 'boot_id',
                 # as under Magisk: what the installer starts on Android's side must not inherit it
                 'ASH_STANDALONE': 1}

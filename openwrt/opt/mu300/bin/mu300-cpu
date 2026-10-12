@@ -2,7 +2,8 @@
 # CPU performance profiles for the MU300 (Ubuntu and OpenWrt, POSIX sh). A profile is a governor and a per-cluster
 # scaling_min/max; it moves only inside the hardware frequency table (cpuinfo_min_freq..cpuinfo_max_freq) and never
 # touches voltage or the kernel thermal trips - thermal-guard keeps throttling in every profile.
-#   mu300-cpu status [--json]        per-policy governor, cur/min/max, hw max, saved profile, throttling
+#   mu300-cpu status [--json]        per-policy governor, cur/min/max, hw max, saved profile, throttling (--json: the
+#                                    kernel's thermal zones too, read only)
 #   mu300-cpu profile [NAME]         apply NAME and save it; no NAME shows the saved one
 #   mu300-cpu apply                  apply the saved profile (the boot service)
 # Profiles: saving (cores capped at ~60 % of the maximum, schedutil - cooler, less power), balanced (schedutil over
@@ -104,10 +105,38 @@ throttling() {
     [ -e "$RUNROOT/mu300/thermal-alarm" ] && echo 1 || echo 0
 }
 
+# thermal_json: the kernel's thermal zones for the panel's read-only Thermal section - type, temperature (mC), mode,
+# trip points and the cooling devices bound to the zone (cdevK links) with their states. Read only, every kernel: on
+# mainline the stock soc-thmzone (mu300_thermal, docs/FINDINGS.md 48) is the one with trips and cooling devices.
+thermal_json() {
+    printf '['
+    _sep=
+    for z in "$R"/sys/class/thermal/thermal_zone*; do
+        [ -r "$z/type" ] || continue
+        printf '%s{"zone":%s,"temp":%s,"mode":%s,"trips":[' "$_sep" "$(jstr "$(rd "$z/type")")" \
+            "$(num "$(rd "$z/temp")")" "$(jstr "$(rd "$z/mode")")"
+        _s2=; _i=0
+        while [ -r "$z/trip_point_${_i}_temp" ]; do
+            printf '%s{"type":%s,"temp":%s}' "$_s2" "$(jstr "$(rd "$z/trip_point_${_i}_type")")" "$(num "$(rd "$z/trip_point_${_i}_temp")")"
+            _s2=,; _i=$((_i + 1))
+        done
+        printf '],"cooling":['
+        _s2=
+        for c in "$z"/cdev[0-9]*; do
+            [ -r "$c/type" ] || continue
+            printf '%s{"type":%s,"state":%s,"max":%s}' "$_s2" "$(jstr "$(rd "$c/type")")" "$(num "$(rd "$c/cur_state")")" "$(num "$(rd "$c/max_state")")"
+            _s2=,
+        done
+        printf ']}'
+        _sep=,
+    done
+    printf ']'
+}
+
 status_json() {
     _saved=$(conf_get PROFILE)
-    printf '{"ok":1,"profile":%s,"profiles":["saving","balanced","performance"],"throttling":%s,"policies":[' \
-        "$(jstr "$_saved")" "$(throttling)"
+    printf '{"ok":1,"profile":%s,"profiles":["saving","balanced","performance"],"throttling":%s,"thermal":%s,"policies":[' \
+        "$(jstr "$_saved")" "$(throttling)" "$(thermal_json)"
     _sep=
     for pol in $(policies); do
         _rel=$(rd "$pol/related_cpus")

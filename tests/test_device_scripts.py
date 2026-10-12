@@ -1480,7 +1480,7 @@ class SipaDele(ShellTest):
         self.mods.mkdir(parents=True)
         self.stub('uname', 'echo 5.4.test')
         self.stub('insmod', 'echo "insmod $*" >> "$STUBLOG/calls"\nexit "${INSMOD_RC:-0}"')
-        self.stub('modprobe', 'echo "modprobe $*" >> "$STUBLOG/calls"')
+        self.stub('modprobe', 'echo "modprobe $*" >> "$STUBLOG/calls"\nexit "${MODPROBE_RC:-0}"')
         # the sbuf lines from the modem loader's start may have left the ring buffer long ago: not asked for
         self.stub('dmesg', 'echo "[  80.1] sipa_dele: channel 5-120 send open msg"')
         self.stub('sleep', ':')
@@ -1519,6 +1519,32 @@ class SipaDele(ShellTest):
                 self.assertNotIn('sipa-dele-start', calls)
                 self.assertNotIn('sipa-dele', calls.replace('sipa-dele-start', ''))
             ko.unlink()
+
+    def test_extra_modules_loads_the_stock_thermal_zone_module_when_the_kernel_has_one(self):
+        """mu300_thermal (the stock virtual thermal zone, mainline only): loaded once, by name where depmod indexed it
+        and by path where not (Ubuntu's extra/ before depmod ran); the vendor 5.4 kernel has no such module."""
+        for shell in self.each_shell():
+            r, calls = self.run_script(shell, 'extra-modules')                       # 5.4: no module, nothing tried
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertNotIn('mu300_thermal', calls)
+            for sub in ('', 'extra'):
+                ko = self.mods / sub / 'mu300_thermal.ko'
+                ko.parent.mkdir(exist_ok=True)
+                ko.write_text('')
+                r, calls = self.run_script(shell, 'extra-modules')
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertIn('modprobe mu300_thermal', calls)
+                self.assertNotIn(f'insmod {ko}', calls)
+                self.assertIn('loaded mu300_thermal', r.stdout)
+                r, calls = self.run_script(shell, 'extra-modules', MODPROBE_RC=1)   # no index yet: by path
+                self.assertIn(f'insmod {ko}', calls)
+                self.assertIn('loaded mu300_thermal', r.stdout)
+                r, calls = self.run_script(shell, 'extra-modules', MODPROBE_RC=1, INSMOD_RC=1)
+                self.assertEqual(r.returncode, 0, r.stderr)                          # a failure is logged, not fatal
+                self.assertIn('FAILED mu300_thermal', r.stdout)
+                r, calls = self.run_script(shell, 'extra-modules', 'mu300_thermal 12288 0 - Live 0x0 (O)\n')
+                self.assertNotIn('mu300_thermal', calls)                             # loaded already
+                ko.unlink()
 
     def test_refuses_after_the_wait(self):
         """K46: the packet domain never comes up: exit 1 after MU300_DELE_WAIT s, the module is not inserted."""
@@ -2464,15 +2490,164 @@ class ThermalGuard(ShellTest):
             self.assertEqual(self.round(shell, 86000, 750), ['mu300-led alarm on'])    # the SoC still counts
             self.assertEqual(self.round(shell, 74000, 750), ['mu300-led alarm off'])
 
+    def kernel(self, release):
+        (self.root / 'proc/sys/kernel').mkdir(parents=True, exist_ok=True)
+        (self.root / 'proc/sys/kernel/osrelease').write_text(release + '\n')
+
     def test_vendor_kernel_only_watches(self):
-        # 5.4 has its own trip points: no throttling or power-off here, but the alarm still works
+        # 5.4 throttles and protects itself (its soc-thmzone has the trips and the clusters): no throttling or
+        # power-off here, but the alarm still works
         for shell in self.each_shell():
             shutil.rmtree(self.root, ignore_errors=True)
             self.device('u30air')
+            self.kernel('5.4.254-android12-9-gb50db5b6224c')
             self.assertEqual(self.round(shell, 110000, trips=True), ['mu300-led alarm on'])
             shutil.rmtree(self.root, ignore_errors=True)
             self.device('u30air')
+            self.kernel('7.2.10')
             self.assertEqual(self.round(shell, 110000), ['poweroff', 'mu300-led alarm on'])   # mainline: critical
+
+    # --- the stock virtual zone on mainline (mu300_thermal): the kernel throttles, this guard only watches
+    def cooling(self, n, kind, state=0):
+        d = self.root / f'sys/class/thermal/cooling_device{n}'
+        d.mkdir(parents=True, exist_ok=True)
+        (d / 'type').write_text(kind + '\n')
+        (d / 'cur_state').write_text(f'{state}\n')
+        (d / 'max_state').write_text('9\n')
+        return d
+
+    def zone(self, n, kind, temp, trips=(), cdevs=(), mode='enabled'):
+        """thermal_zoneN of type KIND with TRIPS [(type, temp)] and the cooling devices CDEVS bound (cdevK links)."""
+        z = self.root / f'sys/class/thermal/thermal_zone{n}'
+        z.mkdir(parents=True, exist_ok=True)
+        (z / 'type').write_text(kind + '\n')
+        (z / 'temp').write_text(f'{temp}\n')
+        (z / 'mode').write_text(mode + '\n')
+        for i, (tt, tv) in enumerate(trips):
+            (z / f'trip_point_{i}_type').write_text(tt + '\n')
+            (z / f'trip_point_{i}_temp').write_text(f'{tv}\n')
+        for i, c in enumerate(cdevs):
+            (z / f'cdev{i}').symlink_to(f'../cooling_device{c}')
+        return z
+
+    def soc_zone(self, temp, cdevs=(0, 1, 2), mode='enabled'):
+        """the stock soc-thmzone as mu300_thermal brings it back: passive 70 and 85 C, critical 110 C, the three
+        cpufreq cooling devices bound through the cooling maps (thermal_zone0..2 are physical zones without trips)"""
+        for i, kind in enumerate(('lit0-thmzone', 'big7-thmzone', 'gpu-thmzone')):
+            self.zone(i, kind, temp)
+        for i, cpu in enumerate((0, 4, 7)):
+            self.cooling(i, f'cpufreq-cpu{cpu}')
+        return self.zone(3, 'soc-thmzone', temp, [('passive', 70000), ('passive', 85000), ('critical', 110000)],
+                         cdevs, mode)
+
+    def mainline(self, temp, **zone):
+        shutil.rmtree(self.root, ignore_errors=True)
+        self.device('f50')
+        self.kernel('7.2.10')
+        freqs = [614400, 936000, 1105000, 1404000, 2002000]
+        self.pols = [self.policy(p, freqs, 2002000) for p in ('policy0', 'policy4', 'policy7')]
+        if zone is not None:
+            self.soc_zone(temp, **zone)
+
+    def maxes(self):
+        return [(p / 'scaling_max_freq').read_text().strip() for p in self.pols]
+
+    def log(self):
+        return (self.tmp / 'log').read_text() if (self.tmp / 'log').exists() else ''
+
+    def test_kernel_cooling_bound_to_the_stock_zone_hands_frequency_control_over(self):
+        self.stub('logger', 'echo "$*" >> "$STUBLOG/log"')
+        for shell in self.each_shell():
+            self.mainline(90000)
+            (self.tmp / 'log').unlink(missing_ok=True)
+            self.assertEqual(self.round(shell, 90000), ['mu300-led alarm on'])    # hot: the alarm, no capping
+            self.assertEqual(self.maxes(), ['2002000'] * 3)
+            self.assertIn('soc-thmzone', self.log())
+            self.assertIn('watching', self.log())
+            self.assertEqual(self.round(shell, 105000), ['poweroff'])             # our 105 C power-off stays
+            self.assertEqual(self.maxes(), ['2002000'] * 3)
+
+    def test_mainline_without_the_zone_caps_and_powers_off(self):
+        for shell in self.each_shell():
+            self.mainline(90000)
+            shutil.rmtree(self.root / 'sys/class/thermal/thermal_zone3')
+            self.assertEqual(self.round(shell, 90000), ['mu300-led alarm on'])
+            self.assertEqual(self.maxes(), ['1404000'] * 3)
+            self.assertEqual(self.round(shell, 105000), ['poweroff'])
+
+    def test_a_zone_whose_reading_cannot_be_trusted_keeps_this_guard_capping(self):
+        for shell in self.each_shell():
+            self.mainline(90000)                                                  # bound, but the zone does not read
+            (self.root / 'sys/class/thermal/thermal_zone3/temp').unlink()
+            self.round(shell, 90000)
+            self.assertEqual(self.maxes(), ['1404000'] * 3)
+            self.mainline(90000)                                                  # reads, but not a number
+            (self.root / 'sys/class/thermal/thermal_zone3/temp').write_text('\n')
+            self.round(shell, 90000)
+            self.assertEqual(self.maxes(), ['1404000'] * 3)
+            self.mainline(90000)                                                  # stale: far below the die sensors
+            (self.root / 'sys/class/thermal/thermal_zone3/temp').write_text('40000\n')
+            self.round(shell, 90000)
+            self.assertEqual(self.maxes(), ['1404000'] * 3)
+            self.mainline(90000)                                                  # within 15 C of the hottest: trusted
+            (self.root / 'sys/class/thermal/thermal_zone3/temp').write_text('80000\n')
+            self.round(shell, 90000)
+            self.assertEqual(self.maxes(), ['2002000'] * 3)
+            self.mainline(90000)                                                  # passive trips above HOT: not ours
+            z = self.root / 'sys/class/thermal/thermal_zone3'
+            (z / 'trip_point_0_temp').write_text('95000\n')
+            (z / 'trip_point_1_temp').write_text('100000\n')
+            self.round(shell, 90000)
+            self.assertEqual(self.maxes(), ['1404000'] * 3)
+
+    def test_a_cluster_left_out_of_the_zone_keeps_this_guard_capping(self):
+        for shell in self.each_shell():
+            self.mainline(90000, cdevs=(0, 1))                                    # cpufreq-cpu7 not bound
+            self.round(shell, 90000)
+            self.assertEqual(self.maxes(), ['1404000'] * 3)
+            self.mainline(90000, mode='disabled')                                 # the zone is off
+            self.round(shell, 90000)
+            self.assertEqual(self.maxes(), ['1404000'] * 3)
+            self.mainline(90000)
+            for i in range(3):                                                    # no cpufreq cooling device at all
+                shutil.rmtree(self.root / f'sys/class/thermal/cooling_device{i}')
+            self.round(shell, 90000)
+            self.assertEqual(self.maxes(), ['1404000'] * 3)
+
+    def test_handoff_lifts_the_caps_this_guard_set_and_the_zone_gone_caps_again(self):
+        for shell in self.each_shell():
+            self.mainline(90000, cdevs=())
+            shutil.rmtree(self.root / 'sys/class/thermal/thermal_zone3')          # module not loaded yet
+            (self.root / 'run/mu300/cpu-ceiling').write_text('policy0=1105000\n')
+            self.round(shell, 90000)                                              # hot: one step down everywhere
+            self.round(shell, 90000)
+            self.assertEqual(self.maxes(), ['1105000', '1105000', '1105000'])
+            self.assertTrue((self.root / 'run/mu300/thermal-capped').exists())
+            self.soc_zone(80000)                                                  # mu300_thermal loaded, zone bound
+            self.round(shell, 80000)                                              # neither cool nor hot
+            # our caps go (the kernel holds its own, as a QoS limit under scaling_max_freq), the profile's stays
+            self.assertEqual(self.maxes(), ['1105000', '2002000', '2002000'])
+            self.assertFalse((self.root / 'run/mu300/thermal-capped').exists())
+            self.round(shell, 90000)                                              # hot under the kernel: untouched
+            self.assertEqual(self.maxes(), ['1105000', '2002000', '2002000'])
+            shutil.rmtree(self.root / 'sys/class/thermal/thermal_zone3')          # rmmod
+            self.round(shell, 90000)
+            self.assertEqual(self.maxes(), ['936000', '1404000', '1404000'])
+
+    def test_a_restarted_guard_lifts_its_old_cap_on_the_handoff_too(self):
+        # the marker outlives a restart: the cap of a run before the module loaded does not stick for ever
+        for shell in self.each_shell():
+            self.mainline(80000)
+            for p in self.pols:
+                (p / 'scaling_max_freq').write_text('1404000\n')
+            (self.root / 'run/mu300/thermal-capped').write_text('')
+            self.round(shell, 80000)
+            self.assertEqual(self.maxes(), ['2002000'] * 3)
+            self.mainline(80000)                                                  # no marker: another cap is not ours
+            for p in self.pols:
+                (p / 'scaling_max_freq').write_text('1404000\n')
+            self.round(shell, 80000)
+            self.assertEqual(self.maxes(), ['1404000'] * 3)
 
     def policy(self, name, freqs, cur_max):
         p = self.root / 'sys/devices/system/cpu/cpufreq' / name

@@ -32,6 +32,19 @@ if [ -f "$M/sprd_pmic_wdt.ko" ] && ! grep -q '^sprd_pmic_wdt ' /proc/modules; th
     insmod "$M/sprd_pmic_wdt.ko" 2>/dev/null && echo "loaded sprd_pmic_wdt" || echo "FAILED sprd_pmic_wdt"
 fi
 
+# The stock virtual thermal zone on a mainline kernel (upstream/modules/mu300_thermal, docs/FINDINGS.md 48): soc-thmzone
+# with the device tree's trips and cpufreq cooling maps, so the kernel throttles the clusters at 85 C and thermal-guard
+# hands frequency control over. The vendor 5.4 kernel has its own driver for it and no such module. modprobe needs
+# depmod's index (Ubuntu keeps the bundle's modules in extra/), so insmod by path is the fallback; a failure leaves
+# thermal-guard in charge, as before.
+if ! grep -q '^mu300_thermal ' /proc/modules; then
+    for f in "$M/mu300_thermal.ko" "$M/extra/mu300_thermal.ko"; do
+        [ -f "$f" ] || continue
+        if modprobe mu300_thermal 2>/dev/null || insmod "$f" 2>/dev/null; then echo "loaded mu300_thermal"; else echo "FAILED mu300_thermal"; fi
+        break
+    done
+fi
+
 for m in sprd_soc_thm thermal-generic-adc sprd_cpu_cooling leds-sc27xx-bltc zte_sar zte_card_holder_det sc27xx-vibra sprd_cp_dvfs sprd_ddr_dvfs sprd_gpu_cooling mali_kbase; do
     if modprobe "$m" 2>/tmp/mu300-modprobe.err; then
         echo "loaded $m"
