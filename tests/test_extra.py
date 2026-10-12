@@ -437,6 +437,39 @@ class Extras(ExtrasBase):
             self.assertFalse(os.path.lexists(self.disk / 'openwrt/opt/mu300/bin/mu300-vpn'))
             self.assertFalse(os.path.lexists(self.links / 'mu300-vpn'))
 
+    def test_the_module_in_or_out_drops_the_luci_menu_cache_on_openwrt(self):
+        # the panel's VPN menu depends on the module's mu300-vpn in the extra (menu.d, "fs"), which LuCI checks only
+        # when it builds its index cache: the cache goes with the module, in and out, on OpenWrt alone
+        f = module_tarball(self.tmp / 'm.tar.gz')
+        cache = self.root / 'tmp'
+        names = ['luci-indexcache', 'luci-indexcache.0a1b2c3d.json', 'other']
+
+        def seed():
+            cache.mkdir(exist_ok=True)
+            for n in names:
+                (cache / n).write_text('x')
+
+        for shell in self.each_shell():
+            self.versions('v2026.10.16')
+            self.up(shell, f'rm -rf "{self.disk}/extra"')
+            (self.root / 'etc/openwrt_release').unlink(missing_ok=True)
+            seed()
+            r = self.ex(shell, 'install', 'vpn', '--from', f, MU300_ROOT=self.disk / 'ubuntu')
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertEqual(sorted(p.name for p in cache.iterdir()), names)       # Ubuntu: no LuCI, nothing to drop
+            r = self.ex(shell, 'remove', 'vpn', MU300_ROOT=self.disk / 'ubuntu')
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertEqual(sorted(p.name for p in cache.iterdir()), names)
+            self.openwrt_root()
+            r = self.ex(shell, 'install', 'vpn', '--from', f, MU300_ROOT=self.disk / 'ubuntu')
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertEqual([p.name for p in cache.iterdir()], ['other'])
+            seed()
+            r = self.ex(shell, 'remove', 'vpn', MU300_ROOT=self.disk / 'ubuntu')
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertEqual([p.name for p in cache.iterdir()], ['other'])
+            (self.root / 'etc/openwrt_release').unlink()
+
     def test_link_runs_the_hook_for_this_system(self):
         # every boot: a new image has none of the module (mu300-post, rootfs-fixups: mu300-extra link)
         f = module_tarball(self.tmp / 'm.tar.gz')

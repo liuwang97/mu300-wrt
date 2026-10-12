@@ -257,6 +257,8 @@ EOF
     # without them
     for n_ in $done_; do [ "$n_" = vpn ] || [ "$n_" = "$name" ] || module_hook_all "$n_" link || true; done
     module_hook_all "$name" link || echo "$name: a system it could not be linked into gets it at its next boot (mu300-extra link)" >&2
+    # the panel's VPN menu appears with the module (its mu300-vpn is in the extra now)
+    [ "$name" != vpn ] || luci_menu_refresh
     for n_ in $done_; do [ "$n_" = "$name" ] || printf '%s %s installed in %s\n' "$n_" "$(extra_release "$n_")" "$EXTRA/$n_"; done
     printf '%s %s installed in %s\n' "$name" "$(extra_release "$name")" "$EXTRA/$name"
 }
@@ -330,10 +332,20 @@ do_install() {
     if extra_is_module "$name"; then
         do_link_commands
         module_hook_all "$name" link || true
+        [ "$name" != vpn ] || luci_menu_refresh
     else
         do_link
     fi
     printf '%s %s installed in %s\n' "$name" "$(extra_release "$name")" "$EXTRA/$name"
+}
+
+# luci_menu_refresh: the panel's VPN menu (OpenWrt) depends on the module's mu300-vpn in the extra (menu.d, "fs");
+# LuCI checks that when it builds its index cache, and the cache is keyed on the menu files alone - so the cache
+# goes when the module comes or goes, and the next request builds it again (a reboot clears /tmp anyway)
+luci_menu_refresh() {
+    is_openwrt || return 0
+    rm -f "$SYSROOT"/tmp/luci-indexcache "$SYSROOT"/tmp/luci-indexcache.* 2>/dev/null
+    return 0
 }
 
 do_remove() {
@@ -357,6 +369,7 @@ do_remove() {
     [ "$1" != lang ] || rm -f "$LANGS_ON"
     sync
     do_link
+    [ "$1" != vpn ] || luci_menu_refresh
     echo "$1 removed"
 }
 
