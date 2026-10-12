@@ -294,6 +294,7 @@ return view.extend({
         <div class="mud-r"><span class="mud-k">IMEI</span><span class="mud-v" id="mud-imei">--</span></div>
         <div class="mud-r"><span class="mud-k">IMSI</span><span class="mud-v" id="mud-imsi">--</span></div>
         <div class="mud-r"><span class="mud-k">ICCID</span><span class="mud-v" id="mud-iccid">--</span></div>
+        <div class="mud-r" id="mud-msisdn-r" style="display:none"><span class="mud-k">${_('Own number')}</span><span class="mud-v" id="mud-msisdn">--</span></div>
         <div class="mud-r"><span class="mud-k">${_('Module')}</span><span class="mud-v" id="mud-fwmodel">--</span></div>
         <div class="mud-r"><span class="mud-k">${_('Firmware')}</span><span class="mud-v" id="mud-fw">--</span></div>
       </div>
@@ -510,6 +511,12 @@ return view.extend({
 		M.set('imei', mask(id && id.imei));
 		M.set('imsi', mask(id && id.imsi));
 		M.set('iccid', mask(id && id.iccid));
+		/* The SIM's own number (CNUM, else the IMS identity; full rounds only): a row only when there is one, masked
+		 * like the other identifiers. Personal data: shown here, never logged (the backend keeps it out of its logs). */
+		var num = cell && !cell.error && typeof cell.msisdn === 'string' ? cell.msisdn : '';
+		var numRow = M.v('msisdn-r');
+		if (numRow) numRow.style.display = num ? '' : 'none';
+		M.set('msisdn', mask(num));
 		M.set('fwmodel', id ? (id.model || '--') : '--');
 		M.set('fw', id ? (id.fw || '--') : '--');
 	},
