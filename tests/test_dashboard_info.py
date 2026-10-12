@@ -7,7 +7,7 @@
 - Connections: the kernel's nf_conntrack_count (mainline has no /proc/net/nf_conntrack), the table as fallback,
   null when neither can be read.
 
-The SIM's own number (cell, the collector; home.js, the row; FINDINGS 48, after kanoqwq@0d93695): AT+CNUM on full
+The SIM's own number (cell, the collector; home.js, the row; FINDINGS 49, after kanoqwq@0d93695): AT+CNUM on full
 rounds only, the IMS public identity (AT+SPPAURI?) when the SIM has none, nothing when neither has one; never in
 the fast tier, never on flash, never in a log."""
 import json

@@ -384,6 +384,24 @@ msgstr "硬件最高"
 msgid "Frequencies in MHz."
 msgstr "频率单位为 MHz。"
 
+msgid "Thermal"
+msgstr "温控"
+
+msgid "The kernel's thermal zones, read only. A zone with trip points throttles the cooling devices bound to it at its passive trip; a cooling state of 0 is no throttling."
+msgstr "内核的温区，只读。带有触发点的温区会在其被动触发点限制与之绑定的冷却设备；冷却状态 0 表示未限频。"
+
+msgid "Zone"
+msgstr "温区"
+
+msgid "Temperature"
+msgstr "温度"
+
+msgid "Trip points"
+msgstr "触发点"
+
+msgid "Cooling devices"
+msgstr "冷却设备"
+
 msgid "USB role"
 msgstr "USB 角色"
 
