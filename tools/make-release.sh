@@ -208,7 +208,7 @@ first with \`./install.sh --check\`.
 
 | file | contents |
 |---|---|
-| mu300-kernel.tar.gz | Linux 5.4.254 \`Image\` and modules (with the U30 Air's own in \`modules-u30air/\`), static busybox and logdw for the boot image, and the generic boot ramdisk segment \`mu300-update\` uses |
+| mu300-kernel.tar.gz | Linux 5.4.254 \`Image\` and modules (with the U30 Air's own in \`modules-u30air/\`), with the patches of \`kernel/patches\` (among them: no panic when a network namespace goes away, #103, and the Wi-Fi driver's routine lines no longer at error level, #140), static busybox and logdw for the boot image, and the generic boot ramdisk segment \`mu300-update\` uses |
 | mu300-kernel-6.18.tar.gz | mainline Linux 6.18 (longterm) for \`mu300-update kernel 6.18\`: \`Image\`, modules, generic boot ramdisk segment; with BTF and the BPF JIT (so the VPN module's dae engine runs) and FunctionFS (for adb) |
 | mu300-kernel-7.2.tar.gz | mainline Linux 7.2 (newest stable) for \`mu300-update kernel 7.2\`: the same parts |
 | mu300-ubuntu-rootfs.tar.gz | Ubuntu 24.04 LTS root filesystem |
