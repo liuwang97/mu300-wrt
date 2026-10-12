@@ -5,8 +5,10 @@
 #   mu300-dash-lock refresh             a fresh reading into the cache, one at a time (started detached)
 #   mu300-dash-lock apply KIND VALUE    write one setting, then restart the protocol stack
 #   mu300-dash-lock replay [early]      boot hook: re-apply every enabled saved setting
-#   mu300-dash-lock reset               everything back to automatic, one stack restart,
-#                                       and the saved settings dropped (boot replay keeps off)
+#   mu300-dash-lock reset               everything back to automatic, verified: every write's answer checked, the
+#                                       settings read back before and after the one stack restart, and only then
+#                                       the saved settings dropped (the replay switch is kept); the result on stdout
+#                                       and in the runtime directory for the page (lock get -> "reset")
 #
 # KIND / VALUE:
 #   mode  auto | 4g | sa | nsa          network mode lock (SPTESTMODE + SP5GRAN)
@@ -357,10 +359,13 @@ cell_state_remove() {
 }
 
 emit_state() {
-    local enabled=0
+    local enabled=0 reset
     auto_apply_enabled && enabled=1
-    [ -s "$LOCKCACHE" ] || { printf '{"auto_apply":%s,"error":"Lock cache unavailable"}\n' "$enabled"; return; }
-    sed "s/^{/{\"auto_apply\":$enabled,/" "$LOCKCACHE"
+    # the last reset's result (its own JSON, see reset_result), for the page's read-back after a reset
+    reset=$(reset_status) && reset=",\"reset\":$reset" || reset=
+    [ -s "$LOCKCACHE" ] || { printf '{"auto_apply":%s%s,"error":"Lock cache unavailable"}\n' "$enabled" "$reset"; return; }
+    printf '{"auto_apply":%s%s,' "$enabled" "$reset"
+    sed 's/^{//' "$LOCKCACHE"
 }
 
 do_apply() {  # do_apply KIND VALUE
@@ -376,6 +381,13 @@ do_apply() {  # do_apply KIND VALUE
     fi
     apply_lock
     trap 'rm -rf "$APPLY_DIR" 2>/dev/null' EXIT INT TERM
+    # a reset that committed and was interrupted before its saved settings were all gone: finish it first, or the
+    # setting saved below would be deleted with them later
+    finish_reset_state || {
+        say "apply $1: an interrupted reset's saved settings could not be cleared"
+        printf '{"ok":0,"error":"The saved locks could not be cleared"}\n'
+        exit 1
+    }
     kind=$1; val=$2
     case $kind in
         mode)
@@ -503,29 +515,155 @@ refresh_cache_soon() {
 # values the single applies send for "automatic" (mode auto keeps the modem's
 # slot1/primary fields, EN-DC on, both band masks cleared, both cell locks
 # removed). Verified read-backs on the device: SPTESTMODE 134,134,0, SP5GRAN 1,
-# SPLBAND=0 -> 0,482,0,149,0 (the full LTE set). The saved settings go too, so
-# the boot replay does not put the locks back; the replay switch itself stays.
+# SPLBAND=0 -> 0,482,0,149,0 (the full LTE set), SPLBAND=3 -> 553,0,272 (the
+# full encodable NR set), SPFORCEFRQ=12,3 / 16,3 without a pair.
+#
+# Verified (kanoqwq's 23361ce, ported onto this synchronous design): the mode
+# query must answer before anything is written, every write's answer is checked
+# (an explicit ERROR fails the reset; several vendor setters omit the OK, so
+# silence is left to the read-back), the five settings are read back before the
+# restart and again after it, and only then are the saved settings deleted - so
+# the boot replay never puts back a lock the modem still has. The deletion is
+# committed with a tombstone (reset_pending) written first: a reset interrupted
+# between the two is finished by the next apply or replay (finish_reset_state).
+# A failed reset keeps the saved settings and says why; the modem may hold some
+# of the automatic values by then (a partial write cannot be rolled back), and
+# the cache is refreshed so the page shows what it has.
+#
+# The result goes to $RUNDIR/lock-reset.json (lock get -> "reset"): the page
+# polls it, since the reset runs detached from the rpcd call (half a minute of
+# SFUN plus the read-backs, far past rpcd's budget), and to stdout for a caller.
+RESETF=$RUNDIR/lock-reset.json
+# reset_result STATE [ERROR] [STEP] [CMD]
+reset_result() {
+    local extra=
+    # i18n: The modem did not answer the mode query; nothing was sent
+    # i18n: The modem refused a write
+    # i18n: The read-back does not match the automatic values
+    # i18n: The read-back after the stack restart does not match the automatic values
+    # i18n: The saved locks could not be cleared
+    [ -n "${2:-}" ] && extra="$extra,\"error\":$(json_str "$2")"
+    [ -n "${3:-}" ] && extra="$extra,\"step\":$(json_str "$3")"
+    [ -n "${4:-}" ] && extra="$extra,\"cmd\":$(json_str "$4")"
+    printf '{"state":%s,"ts":%d,"end":%d,"pid":%d%s}\n' "$(json_str "$1")" "${_t0:-0}" "$(date +%s)" "$$" "$extra" \
+        > "$RESETF.part" && mv "$RESETF.part" "$RESETF"
+}
+# reset_status: the last result; one still "running" whose process is gone was interrupted (killed, or the board
+# rebooted under it - the runtime directory is in /run, so that one is simply absent)
+reset_status() {
+    local st pid
+    [ -s "$RESETF" ] || return 1
+    st=$(sed -n 's/^{"state":"\([a-z]*\)".*/\1/p' "$RESETF")
+    pid=$(sed -n 's/.*"pid":\([0-9]*\).*/\1/p' "$RESETF")
+    if [ "$st" = running ] && ! { [ -n "$pid" ] && [ -d "/proc/$pid" ]; }; then
+        # i18n: The reset was interrupted
+        sed 's/^{"state":"running"/{"state":"interrupted","error":"The reset was interrupted"/' "$RESETF"
+    else
+        cat "$RESETF"
+    fi
+}
+# write_setting CMD: one write (CMD is one of the fixed strings below), its answer checked: an explicit ERROR
+# fails; silence does not (several vendor setters apply the value and omit the OK; the read-back decides)
+write_setting() {
+    local reply
+    reply=$(at "$1" 6)
+    printf '%s\n' "$reply" | grep -Eq '^(ERROR|\+CME ERROR|\+CMS ERROR)' && return 1
+    return 0
+}
+# read_field CMD PREFIX: the +PREFIX: line's value, blanks removed
+read_field() { at "$1" 4 | sed -n "s/^+$2: *//p" | head -n1 | tr -d ' \t'; }
+# verify_automatic: every setting reads back as automatic; else status 1 with VERIFY_STEP naming the first that
+# does not (mode, gran, endc, lte, nr, cell-lte, cell-nr) and VERIFY_GOT its raw answer. A silent read fails too.
+# "Automatic" bands: an empty mask, or the full supported set the modem reads a cleared mask back as (the LTE
+# table, or the NR bands SP5GCMDS lists that the SPLBAND codec can carry: n6 is supported and not encodable).
+verify_automatic() {
+    local raw got nr3 want
+    VERIFY_STEP=; VERIFY_GOT=
+    raw=$(read_field 'AT+SPTESTMODE?' SPTESTMODE)
+    [ "${raw%%,*}" = 134 ] || { VERIFY_STEP=mode; VERIFY_GOT=$raw; return 1; }
+    raw=$(read_field 'AT+SP5GRAN?' SP5GRAN)
+    [ "$raw" = 1 ] || { VERIFY_STEP=gran; VERIFY_GOT=$raw; return 1; }
+    raw=$(read_field 'AT+SPENDC?' ENDC)
+    [ "$raw" = 1 ] || { VERIFY_STEP=endc; VERIFY_GOT=$raw; return 1; }
+    raw=$(read_field 'AT+SPLBAND=0' SPLBAND)
+    printf '%s\n' "$raw" | grep -Eq '^[0-9]+(,[0-9]+){4}$' || { VERIFY_STEP=lte; VERIFY_GOT=$raw; return 1; }
+    got=$(canonical_bands "$(lte_bands "$raw")")
+    [ -z "$got" ] || [ "$got" = "$(canonical_bands "$LTE_SUP")" ] || { VERIFY_STEP=lte; VERIFY_GOT=$raw; return 1; }
+    raw=$(read_field 'AT+SPLBAND=3' SPLBAND)
+    printf '%s\n' "$raw" | grep -Eq '^[0-9]+(,[0-9]+){2,3}$' || { VERIFY_STEP=nr; VERIFY_GOT=$raw; return 1; }
+    nr3=$(printf '%s\n' "$raw" | awk -F, 'NF>=4 {print $1","$3","$4; exit} NF==3 {print $1","$3",0"; exit}')
+    got=$(canonical_bands "$(nr_bands "$nr3")")
+    want=$(canonical_bands "$(nr_bands "$(nr_masks "$(nr_sup)")")")
+    [ -z "$got" ] || [ "$got" = "$want" ] || { VERIFY_STEP=nr; VERIFY_GOT=$raw; return 1; }
+    raw=$(read_field 'AT+SPFORCEFRQ=12,3' SPFORCEFRQ)
+    [ "$raw" = 12,3 ] || { VERIFY_STEP=cell-lte; VERIFY_GOT=$raw; return 1; }
+    raw=$(read_field 'AT+SPFORCEFRQ=16,3' SPFORCEFRQ)
+    [ "$raw" = 16,3 ] || { VERIFY_STEP=cell-nr; VERIFY_GOT=$raw; return 1; }
+    return 0
+}
+# verify_retry TRIES NAP: verify_automatic, again after NAP seconds while it fails (right after a restart the
+# modem answers CFUN but not the lock reads yet, for a few seconds; see do_get's guard)
+verify_retry() {
+    local n=0
+    while ! verify_automatic; do
+        n=$((n + 1)); [ "$n" -ge "$1" ] && return 1
+        sleep "$2"
+    done
+    return 0
+}
+# finish_reset_state [commit]: a reset that committed (the tombstone) and did not finish deleting the saved
+# settings is finished here, before anything reads or saves them; status 1 when a setting could not be removed.
+# "commit" is do_reset's own call (the tombstone it has just written), not an interrupted one.
+finish_reset_state() {
+    local k
+    [ -e "$STATE_DIR/reset_pending" ] || return 0
+    rm -f "$STATE_DIR/mode" "$STATE_DIR/endc" "$STATE_DIR/lte" "$STATE_DIR/nr" "$STATE_DIR/cell"
+    for k in mode endc lte nr cell; do [ ! -e "$STATE_DIR/$k" ] || return 1; done
+    rm -f "$STATE_DIR/reset_pending"
+    [ "${1:-}" = commit ] || say "an interrupted reset's saved settings cleared"
+}
+# reset_fail ERROR [STEP] [CMD]: the result, the log line, and the cache refreshed (the modem may hold part of it)
+reset_fail() {
+    reset_result failed "$1" "${2:-}" "${3:-}"
+    say "reset failed: $1${2:+ ($2 read back as '$VERIFY_GOT')}${3:+ ($3)}; saved settings kept"
+    refresh_cache_soon
+    return 1
+}
 do_reset() {
+    local tm m1 prim cmd
     _t0=$(date +%s)
     apply_lock
     trap 'rm -rf "$APPLY_DIR" 2>/dev/null' EXIT INT TERM
-    # do_apply_quiet is the replay's writer; interactive here: the normal timeout
-    AT_BOOT_T=6
-    do_apply_quiet mode auto
-    do_apply_quiet endc on
-    do_apply_quiet lte ''
-    do_apply_quiet nr ''
-    at 'AT+SPFORCEFRQ=12,4' 6 >/dev/null
-    at 'AT+SPFORCEFRQ=16,4' 6 >/dev/null
-    rm -f "$STATE_DIR/mode" "$STATE_DIR/endc" "$STATE_DIR/lte" "$STATE_DIR/nr" "$STATE_DIR/cell"
+    reset_result running
+    finish_reset_state || { reset_fail 'The saved locks could not be cleared'; return 1; }
+    # the mode write keeps the modem's slot1 and primary-SIM fields: they must have been read, and only digits
+    # go back out (the AT strings sent are otherwise fixed)
+    tm=$(read_field 'AT+SPTESTMODE?' SPTESTMODE)
+    m1=$(printf '%s' "$tm" | cut -d, -f2); prim=$(printf '%s' "$tm" | cut -d, -f3)
+    if ! digits "${tm%%,*}" 3 || ! digits "$m1" 3 || ! digits "$prim" 1; then
+        reset_fail 'The modem did not answer the mode query; nothing was sent'
+        return 1
+    fi
+    for cmd in 'AT+SP5GRAN=1' "AT+SPTESTMODE=134,$m1,$prim" 'AT+SPENDC=1' 'AT+SPLBAND=1,0,0,0,0,0' \
+               'AT+SPLBAND=2,0,0,0,0' 'AT+SPFORCEFRQ=12,4' 'AT+SPFORCEFRQ=16,4'; do
+        write_setting "$cmd" || { reset_fail 'The modem refused a write' '' "$cmd"; return 1; }
+    done
+    verify_retry 3 1 || { reset_fail 'The read-back does not match the automatic values' "$VERIFY_STEP"; return 1; }
+    say "all locks -> automatic (mode auto, EN-DC on, bands automatic, cell locks removed), read back; restarting the stack"
+    sfun_restart_locked
+    verify_retry 10 3 ||
+        { reset_fail 'The read-back after the stack restart does not match the automatic values' "$VERIFY_STEP"; return 1; }
+    # commit: the tombstone first, then the saved settings (the replay switch stays); an interruption between the
+    # two is finished by the next apply or replay
+    save_state reset_pending 1
+    finish_reset_state commit || { reset_fail 'The saved locks could not be cleared'; return 1; }
     # no cell file means "seed from the cache" at the next cell lock: the cache
     # must not offer the cells just removed (the fresh read below rewrites it all)
     [ -s "$LOCKCACHE" ] &&
         sed 's/"cell":"[^"]*"/"cell":""/; s/"cells":\[[^]]*\]/"cells":[]/' "$LOCKCACHE" > "$LOCKCACHE.part" 2>/dev/null &&
         mv "$LOCKCACHE.part" "$LOCKCACHE"
-    say "all locks -> automatic (mode auto, EN-DC on, bands automatic, cell locks removed); saved settings cleared"
-    sfun_restart_locked
-    say "reset done"
+    reset_result ok
+    say "reset verified ($(( $(date +%s) - _t0 ))s); saved settings cleared"
     refresh_cache_soon
 }
 
@@ -604,6 +742,8 @@ do_replay() {
     trap 'rm -rf "$APPLY_DIR" 2>/dev/null' EXIT INT TERM
     # Another caller may have completed replay while this one waited for the lock.
     [ -e "$marker" ] && return 0
+    # a reset that committed and was interrupted: its saved settings are not to be replayed - finish deleting them
+    finish_reset_state || { say "replay: an interrupted reset's saved settings could not be cleared; nothing replayed"; return 1; }
     # boot hook: the AT settings do not all survive a modem power cycle, so re-send
     # what the dashboard last applied, then one stack restart at the end
     d=$STATE_DIR
@@ -714,7 +854,7 @@ case "${1:-}" in
         emit_state
         ;;
     apply)  do_apply "${2:-}" "${3:-}" ;;
-    reset)  do_reset ;;
+    reset)  do_reset; rc=$?; reset_status; exit "$rc" ;;
     replay) do_replay "${2:-late}" ;;
     # run by sfun_restart_locked, under the radio lock
     sfun-restart) sfun_restart "${2:-late}" ;;

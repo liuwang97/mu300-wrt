@@ -464,8 +464,12 @@ return view.extend({
 	/* Reset every lock to automatic (lock_set reset: one SFUN restart, the saved settings cleared), wait until the
 	 * lock cache shows a read newer than the one before (or two minutes pass), then run then(). A refused reset stops
 	 * here: the user asked for the reset first. */
+	/* The reset is verified by the backend (unisoc-modem/lock reset: the writes' answers checked, the settings read
+	 * back before and after the restart, the saved locks deleted only then) and its result comes with lock_get as
+	 * "reset"; a result newer than the one shown before the click decides. A failed reset stops the switch: Android
+	 * would come up with the locks the modem still has. */
 	resetLocksThen: function(before, btn, then) {
-		var base = (before && before.ts) || 0, tries = 0;
+		var base = (before && before.ts) || 0, prevEnd = ((before || {}).reset || {}).end || 0, tries = 0;
 		M.busy(btn, true);
 		M.toast(_('Resetting the network locks to automatic (SFUN restart, about 30 seconds)…'), { type: 'busy' });
 		L.resolveDefault(M.callLockSet('reset', 'auto'), null).then(function(r) {
@@ -478,8 +482,15 @@ return view.extend({
 			var step = function() {
 				L.resolveDefault(M.callLockGet(), null).then(function(l) {
 					l = l || {};
-					var fresh = l.ts && l.ts > base, auto = fresh && !(lockDeviations(l) || [ 1 ]).length;
-					if (auto || ++tries > 48) {
+					var res = l.reset || {}, done = res.state && res.state !== 'running' && (res.end || 0) > prevEnd;
+					if (done && res.state !== 'ok') {
+						M.busy(btn, false);
+						M.toast(_('Reset failed: %s. The saved lock settings were kept.').format(
+							M.errText({ error: res.error, detail: res.cmd || res.step })), { type: 'error' });
+						return;
+					}
+					var fresh = l.ts && l.ts > base, auto = done || (fresh && !(lockDeviations(l) || [ 1 ]).length);
+					if (auto || ++tries > 60) {
 						M.busy(btn, false);
 						if (!auto)
 							M.toast(_('The lock reset was not confirmed in time; switching anyway.'), { type: 'error' });

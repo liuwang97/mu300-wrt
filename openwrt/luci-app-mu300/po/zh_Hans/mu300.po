@@ -990,6 +990,9 @@ msgstr "锁定失败：%s"
 msgid "Resetting the network locks to automatic (SFUN restart, about 30 seconds)…"
 msgstr "正在将网络锁定重置为自动（SFUN 重启，约 30 秒）…"
 
+msgid "Reset failed: %s. The saved lock settings were kept."
+msgstr "重置失败：%s。已保存的锁定设置被保留。"
+
 msgid "The lock reset was not confirmed in time; switching anyway."
 msgstr "未能及时确认锁定已重置；仍然切换。"
 
@@ -1334,6 +1337,9 @@ msgstr "状态已回读"
 
 msgid "Readback timed out; select “Refresh lock status”"
 msgstr "回读超时，请点「刷新锁定状态」"
+
+msgid "Reset verified: network mode automatic, EN-DC on, all bands, no cell lock; the saved lock settings are cleared"
+msgstr "重置已核对：网络模式自动、EN-DC 开启、全部频段、无小区锁定；已保存的锁定设置已清除"
 
 msgid "Applied (EN-DC does not require a radio-stack restart)"
 msgstr "已生效（EN-DC 不需要重启协议栈）"
@@ -2997,8 +3003,26 @@ msgstr "无法移除语言包"
 msgid "Lock cache unavailable"
 msgstr "锁定缓存不可用"
 
+msgid "The saved locks could not be cleared"
+msgstr "无法清除已保存的锁定"
+
 msgid "No serving cell to lock to"
 msgstr "没有可锁定的服务小区"
+
+msgid "The modem did not answer the mode query; nothing was sent"
+msgstr "模组未回应模式查询；未发送任何设置"
+
+msgid "The modem refused a write"
+msgstr "模组拒绝了一次写入"
+
+msgid "The read-back does not match the automatic values"
+msgstr "回读结果与自动值不一致"
+
+msgid "The read-back after the stack restart does not match the automatic values"
+msgstr "协议栈重启后的回读结果与自动值不一致"
+
+msgid "The reset was interrupted"
+msgstr "重置被中断"
 
 msgid "Reinstalling packages is not available on this system"
 msgstr "此系统不支持重新安装软件包"
