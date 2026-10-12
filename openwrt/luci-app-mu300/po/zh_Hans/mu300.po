@@ -789,6 +789,9 @@ msgstr "累计发送"
 msgid "Used today"
 msgstr "今日已用"
 
+msgid "SIM source"
+msgstr "SIM 来源"
+
 msgid "Session duration"
 msgstr "会话时长"
 
@@ -1004,6 +1007,12 @@ msgstr "重置失败：%s。已保存的锁定设置被保留。"
 
 msgid "The lock reset was not confirmed in time; switching anyway."
 msgstr "未能及时确认锁定已重置；仍然切换。"
+
+msgid "Internal SIM selected: in use after a reboot"
+msgstr "已选择内置 SIM：重启后生效"
+
+msgid "Internal SIM selected, but not supported on this device: the external SIM is in use"
+msgstr "已选择内置 SIM，但此设备不支持：正在使用外置 SIM"
 
 msgid "Uptime %s"
 msgstr "已运行 %s"

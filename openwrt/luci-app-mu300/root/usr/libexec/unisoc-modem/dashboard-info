@@ -71,8 +71,20 @@ DATA_IFACE6=$(safe_iface "$(cfg data_interface_v6)" wan6)
 WANJSON=$(t3 ubus call "network.interface.$DATA_IFACE" status)
 WAN6JSON=$(t3 ubus call "network.interface.$DATA_IFACE6" status)
 SIM_SLOT=0
-if [ -x /opt/mu300/bin/mu300-sim ]; then
-    SIM_SLOT=$(/opt/mu300/bin/mu300-sim active) || exit 1
+# The SIM selector's own account, for the pages (issue #194): "slot" the card this boot uses, "wanted" the one the
+# configuration asks for, "slot1_supported" whether this device has the internal card at all. mu300-sim falls back to
+# slot 0 on a device without slot 1, and nothing said so: the home page and the interface page read it from here.
+# Local only (uci and a file under /run): no AT command. null without the selector, or when it gives no status.
+SIMBIN=${MU300_SIM_BIN:-/opt/mu300/bin/mu300-sim}
+SIM_JSON=null
+if [ -x "$SIMBIN" ]; then
+    SIM_SLOT=$("$SIMBIN" active) || exit 1
+    sim_status=$("$SIMBIN" status --json 2>/dev/null)
+    sim_n() { printf '%s\n' "$sim_status" | sed -n "s/.*\"$1\": *\([0-9]\).*/\1/p" | head -n1; }
+    sim_wanted=$(sim_n default); sim_s1=$(sim_n slot1_supported)
+    case "$SIM_SLOT$sim_wanted$sim_s1" in
+        [01][12][01]) SIM_JSON="{\"slot\":$SIM_SLOT,\"wanted\":$((sim_wanted - 1)),\"slot1_supported\":$sim_s1}" ;;
+    esac
 fi
 DATA_DEVICE=$(safe_iface "$(cfg data_device)" '')
 [ -n "$DATA_DEVICE" ] || DATA_DEVICE=$(safe_iface "$(jval "$WANJSON" l3_device)" sipa_eth$((SIM_SLOT * 8)))
@@ -402,6 +414,7 @@ printf '"net":{"mobile":%s,"sipa_eth0":%s,"brlan":%s,"wlan0":%s,"usb0":%s},' \
     "$(net_obj "$DATA_DEVICE")" "$(net_obj "$DATA_DEVICE")" "$(net_obj "$LAN_DEVICE")" "$(net_obj "$WIFI_DEVICE")" "$(net_obj "$USB_DEVICE")"
 # the interface the page reads its live rates of (from /proc/net/dev, every second)
 printf '"data_device":%s,' "$(qs "$DATA_DEVICE")"
+printf '"sim":%s,' "$SIM_JSON"
 if [ -n "$T_LEVEL" ]; then
     printf '"traffic":{"level":"%s","today":%s,"used":%s,"cap":%s,"warn":%s,"clock":%s},' "$T_LEVEL" \
         "$(( $(tint today_rx) + $(tint today_tx) ))" "$(tint used)" "$(tint cap)" "$(tint warn)" "$(tint clock)"

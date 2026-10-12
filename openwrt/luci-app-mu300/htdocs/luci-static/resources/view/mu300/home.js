@@ -235,6 +235,7 @@ return view.extend({
       <div class="mud-rows">
         <div class="mud-r"><span class="mud-k">IPv4 / IPv6</span><span class="mud-v" id="mud-ip">--</span></div>
         <div class="mud-r"><span class="mud-k">APN</span><span class="mud-v" id="mud-apn">--</span></div>
+        <div class="mud-r" id="mud-simsrc-r" style="display:none"><span class="mud-k">${_('SIM source')}</span><span class="mud-v" id="mud-simsrc">--</span></div>
         <div class="mud-r"><span class="mud-k">${_('Session duration')}</span><span class="mud-v" id="mud-sess">--</span></div>
         <div class="mud-r"><span class="mud-k">${_('Registration')}</span><span class="mud-v" id="mud-reg">--</span></div>
         <div class="mud-r"><span class="mud-k">DNS</span><span class="mud-v" id="mud-dns">--</span></div>
@@ -502,6 +503,20 @@ return view.extend({
 		});
 	},
 
+	/* The SIM the configuration asks for, when it is not the one in use (dashboard-info's "sim", from mu300-sim).
+	 * On a device without slot 1 the selector uses the external card and every figure on this page is that card's:
+	 * say so, instead of showing it as if the internal SIM had been taken (issue #194). A row only then. */
+	paintSim: function(sim) {
+		var row = M.v('simsrc-r');
+		if (!row) return;
+		var text = '';
+		if (sim && sim.wanted === 1 && sim.slot !== 1)
+			text = sim.slot1_supported ? _('Internal SIM selected: in use after a reboot')
+				: _('Internal SIM selected, but not supported on this device: the external SIM is in use');
+		row.style.display = text ? '' : 'none';
+		M.set('simsrc', text || '--');
+	},
+
 	paintIdent: function(cell) {
 		var id = cell && cell.ident;
 		var mask = function(s) {
@@ -645,6 +660,7 @@ return view.extend({
 		M.v('ip').innerHTML = M.esc(w.ip4 || '--') + (w.ip6 ? '<br>' + M.esc(w.ip6) : '');
 		M.set('dns', w.dns || '--');
 		M.set('apn', w.apn || '--');
+		this.paintSim(i.sim);
 		M.set('sess', w.uptime ? M.fmtUptime(w.uptime) : '--');
 		var regmap = { 0: _('Not registered'), 1: _('Registered'), 2: _('Searching'), 3: _('Registration denied'), 4: _('Unknown'), 5: _('Registered (roaming)'), 7: _('Emergency only'), 8: _('Emergency only'), 10: _('Registered') };
 		var reg = '--';
