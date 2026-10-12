@@ -301,6 +301,88 @@ esac""")
                 self.assertEqual((c['msisdn'], c['msisdn_src']), (number, source), (cnum, ims))
 
 
+class OperatorNameHex(ShellTest):
+    """Issue #174: a name the modem gives as UCS2 hex while its character set is not UCS2 (the F50's is "HEX") is
+    decoded when the text cannot be a name; everything else stays the text the modem gave."""
+
+    def setUp(self):
+        super().setUp()
+        self.stub('uci', 'exit 1')
+        self.stub('fake-at', r"""printf '%s\n' "$*" >> "$STUBLOG/at-commands"
+case "$*" in
+  *'AT+CSCS?;+COPS=3,0;+COPS?;+COPS=3,2'*) printf '%s\n%s\nOK\n' "$CSCS_REPLY" "$NAMED_REPLY" ;;
+  *AT+CFUN?*)  printf '+CFUN: 1\nOK\n' ;;
+  *AT+COPS?*)  printf '%s\nOK\n' "$COPS_REPLY" ;;
+  *AT+CSCS?*)  printf '%s\nOK\n' "$CSCS_REPLY" ;;
+  *)           printf 'OK\n' ;;
+esac""")
+
+    def operator(self, shell, tag, cops, named='', cscs='HEX'):
+        run = self.tmp / f'run-{tag}'
+        r = self.script(shell, CELL, 'full', MU300_AT=self.stubs / 'fake-at', MU300_DASH_DIR=run,
+                        MU300_DASH_IDENT_DIR=self.tmp / f'ident-{tag}', MU300_DASH_POOL_DIR=self.tmp / f'pool-{tag}',
+                        COPS_REPLY=cops, NAMED_REPLY=named,
+                        CSCS_REPLY='ERROR' if cscs is None else f'+CSCS: "{cscs}"')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return json.loads((run / 'cell.json').read_text())['operator']
+
+    def test_the_reported_case(self):
+        # PLMN 46001 in the numeric format, the long name as UCS2 hex, the character set "HEX"
+        for i, shell in enumerate(self.each_shell()):
+            for _ in range(2):      # the second round reads the kept line: the same name, nothing decoded is cached
+                op = self.operator(shell, i, '+COPS: 0,2,"46001",7', '+COPS: 0,0,"4E2D56FD8054901A",7')
+                self.assertEqual((op['name'], op['plmn'], op['act']), ('中国联通', '46001', 7))
+            kept = (self.tmp / f'run-{i}' / 'operator').read_text()
+            self.assertIn('4E2D56FD8054901A', kept)
+            self.assertNotIn('中国联通', kept)
+            asked = (self.tmp / 'at-commands').read_text().count('AT+CSCS?;+COPS=3,0;+COPS?;+COPS=3,2')
+            self.assertEqual(asked, 1 + i)      # once per PLMN, whatever the number of rounds
+
+    def test_decoded_whatever_the_character_set_says(self):
+        cases = [
+            # (COPS?, the long-name answer, CSCS (None: the modem did not say), name)
+            ('+COPS: 0,2,"46000",7', '+COPS: 0,0,"4E2D56FD79FB52A8",7', 'GSM', '中国移动'),
+            ('+COPS: 0,2,"46001",7', '+COPS: 0,0,"4E2D56FD8054901A",7', None, '中国联通'),
+            ('+COPS: 0,0,"4E2D56FD75354FE1",7', '', 'IRA', '中国电信'),              # the name format, no named line
+            ('+COPS: 0,0,"4e2d56fd8054901a",7', '', 'HEX', '中国联通'),              # lower case
+            ('+COPS: 0,0,"0054002D004D006F00620069006C0065",7', '', 'IRA', 'T-Mobile'),
+            ('+COPS: 0,0,"D83DDCF10041",7', '', 'HEX', '\U0001f4f1A'),               # a surrogate pair is one character
+            ('+COPS: 0,0,"4E2D56FD8054901A",7', '', 'UCS2', '中国联通'),             # as before
+            ('+COPS: 0,0,"00540054",7', '', 'UCS2', 'TT'),                           # as before: UCS2 said so
+        ]
+        for i, shell in enumerate(self.each_shell()):
+            for j, (cops, named, cscs, name) in enumerate(cases):
+                op = self.operator(shell, f'{i}-{j}', cops, named, cscs)
+                self.assertEqual(op['name'], name, (cops, named, cscs))
+
+    def test_an_ordinary_name_stays_what_it_is(self):
+        names = [
+            'vodafone TR', 'China Unicom', 'CAFE', 'BEEF', 'FACE',   # one code unit of hex is a word, not UCS2
+            '12345678', '00540054', '4600146001460011',              # a name of digits stays a name
+            'DEADBEEF',                                              # a low surrogate with no high one before it
+            'D83D0041',                                              # a high surrogate with no low one after it
+            '000A0041', '0041007F',                                  # control characters
+            'E000E001', 'F8FF0041',                                  # private use
+            'FFFE0041', '0041FFFF', 'FDD00041',                      # not characters
+            '4E2D56FD80', '4E2D56FD805',                             # not whole code units
+            '4E2D 56FD', '4E2D56FG',                                 # not hex
+        ]
+        for i, shell in enumerate(self.each_shell()):
+            for j, name in enumerate(names):
+                for cscs in ('HEX', 'GSM', None):
+                    op = self.operator(shell, f'{i}-{j}-{cscs}', f'+COPS: 0,0,"{name}",7', '', cscs)
+                    self.assertEqual(op['name'], name, cscs)
+                # and as the long name of a numeric answer
+                op = self.operator(shell, f'{i}-{j}-n', '+COPS: 0,2,"28602",13', f'+COPS: 0,0,"{name}",13')
+                self.assertEqual((op['name'], op['plmn']), (name, '28602'))
+
+    def test_no_name_leaves_the_plmn(self):
+        # the page then names the operator from the PLMN (common.js carrierName)
+        for i, shell in enumerate(self.each_shell()):
+            op = self.operator(shell, i, '+COPS: 0,2,"46001",7', 'ERROR')
+            self.assertEqual((op['name'], op['plmn']), (None, '46001'))
+
+
 @unittest.skipUnless(shutil.which('node'), 'Node.js is needed for the LuCI JS tests')
 class OwnNumberRow(unittest.TestCase):
     """home.js's paintIdent alone: the row is there only with a number, masked like the IMSI until revealed."""

@@ -1174,8 +1174,9 @@ esac
 
     def test_cell_names_the_operator(self):
         # COPS's <format> decides what the quoted text is: 2 a PLMN (the F50's modem keeps that format), whose long
-        # name comes from one line that puts format 2 back, once per PLMN; 0/1 a name, UCS2 hex decoded only when the
-        # modem's character set is UCS2, and never a PLMN however many digits it has
+        # name comes from one line that puts format 2 back, once per PLMN; 0/1 a name, UCS2 hex decoded when the
+        # modem's character set is UCS2 (under another one only a text that cannot be a name: OperatorNameHex in
+        # test_dashboard_info.py), and never a PLMN however many digits it has
         at = self.tmp / 'modem'
         at.write_text(r"""#!/bin/sh
 echo "$3" >> "$STUBLOG/at.log"
