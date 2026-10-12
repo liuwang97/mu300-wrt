@@ -303,6 +303,24 @@ sleep() {{ :; }}
                 self.assertNotIn('sipc_sbuf', c)
         self.assertNotIn('sipc_sbuf', r.stderr)
 
+    def test_generated_broker_wait_reaches_exec_on_posix_shells(self):
+        (self.etc / 'uci-slot').write_text('1\n')
+        r = self.init_service()
+        commands = [l.removeprefix('param command /bin/sh -c ') for l in r.stdout.splitlines()
+                    if l.startswith('param command /bin/sh -c ')]
+        self.assertEqual(len(commands), 4)
+        for command in commands:
+            # Execute the real generated command, with only the device/readiness and owner substituted.
+            # In particular, a stray ]} is syntactically valid but makes the test loop forever.
+            import re
+            command = re.sub(r'\[ -c /dev/stty_nr[1245] \]', 'true', command)
+            command = command.replace("[ -c /dev/sipc_sbuf ] && grep -q '^sbuf_5_006, state: 1,' /dev/sipc_sbuf", 'true')
+            command = command.replace('exec /opt/mu300/bin/mu300-atd', 'echo owner-started')
+            for shell in ('sh', 'bash'):
+                result = subprocess.run([shell, '-c', 'sleep() { exit 97; }; ' + command], capture_output=True, text=True, timeout=5)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.strip(), 'owner-started')
+
     def test_other_devices_ignore_the_dual_sim_files(self):
         (self.etc / 'uci-slot').write_text('1\n')
         (self.etc / 'uci-hot').write_text('1\n')

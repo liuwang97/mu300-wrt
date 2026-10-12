@@ -71,9 +71,11 @@ start_sim1() {
 # The wait is inside the instance, never in start_service: an init script that waits returns without instances
 # when the wait fails, and a boot without AT brokers is a boot without WAN.
 broker() {
-    local name=$1 channel=$2 directory=$3 urc=$4 live=$5 wait=${6:-}
+    local name=$1 channel=$2 directory=$3 urc=$4 live=$5 wait=${6:-} condition=
+    # A literal brace inside ${...:+...} closes the expansion early in ash. Build it separately.
+    [ -z "$wait" ] || condition=" && { $wait; }"
     procd_open_instance "$name"
-    procd_set_param command /bin/sh -c "n=0; until [ -c /dev/stty_nr$channel ]${wait:+ && { $wait; }}; do n=\$((n+1)); [ \"\$n\" -gt 240 ] && { echo 'mu300-atd: /dev/stty_nr$channel never became ready' >&2; exit 1; }; sleep 1; done; exec /opt/mu300/bin/mu300-atd"
+    procd_set_param command /bin/sh -c "n=0; until [ -c /dev/stty_nr$channel ]$condition; do n=\$((n+1)); [ \"\$n\" -gt 240 ] && { echo 'mu300-atd: /dev/stty_nr$channel never became ready' >&2; exit 1; }; sleep 1; done; exec /opt/mu300/bin/mu300-atd"
     procd_set_param env "MU300_AT_DEV=/dev/stty_nr$channel" "MU300_AT_DIR=$directory" \
         "MU300_AT_URC_CHANNELS=$urc" "MU300_AT_LIVE_URC_LOG=$live" \
         MU300_AT_DISABLE_REOPEN=1
