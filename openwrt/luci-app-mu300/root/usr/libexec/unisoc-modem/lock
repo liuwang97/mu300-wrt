@@ -611,15 +611,16 @@ verify_retry() {
     done
     return 0
 }
-# finish_reset_state: a reset that committed (the tombstone) and did not finish deleting the saved settings is
-# finished here, before anything reads or saves them; status 1 when a setting could not be removed
+# finish_reset_state [commit]: a reset that committed (the tombstone) and did not finish deleting the saved
+# settings is finished here, before anything reads or saves them; status 1 when a setting could not be removed.
+# "commit" is do_reset's own call (the tombstone it has just written), not an interrupted one.
 finish_reset_state() {
     local k
     [ -e "$STATE_DIR/reset_pending" ] || return 0
     rm -f "$STATE_DIR/mode" "$STATE_DIR/endc" "$STATE_DIR/lte" "$STATE_DIR/nr" "$STATE_DIR/cell"
     for k in mode endc lte nr cell; do [ ! -e "$STATE_DIR/$k" ] || return 1; done
     rm -f "$STATE_DIR/reset_pending"
-    say "an interrupted reset's saved settings cleared"
+    [ "${1:-}" = commit ] || say "an interrupted reset's saved settings cleared"
 }
 # reset_fail ERROR [STEP] [CMD]: the result, the log line, and the cache refreshed (the modem may hold part of it)
 reset_fail() {
@@ -655,7 +656,7 @@ do_reset() {
     # commit: the tombstone first, then the saved settings (the replay switch stays); an interruption between the
     # two is finished by the next apply or replay
     save_state reset_pending 1
-    finish_reset_state || { reset_fail 'The saved locks could not be cleared'; return 1; }
+    finish_reset_state commit || { reset_fail 'The saved locks could not be cleared'; return 1; }
     # no cell file means "seed from the cache" at the next cell lock: the cache
     # must not offer the cells just removed (the fresh read below rewrites it all)
     [ -s "$LOCKCACHE" ] &&
