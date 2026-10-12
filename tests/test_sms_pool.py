@@ -868,6 +868,134 @@ class Delete(ShellTest):
             self.assertIn('AT+CMGD=7', (self.tmp / 'at.log').read_text())
 
 
+class Send(ShellTest):
+    """`sms send` (every system, its own send path): one transaction under mu300-at's client lock, the modem's SMSC
+    written back unchanged first, and the submission as the one request mu300-sms sends (FINDINGS 46)."""
+
+    SMS_CMD = TOP / 'rootfs/overlay/opt/mu300/bin/sms'
+
+    def setUp(self):
+        super().setUp()
+        self.stub('mu300-at', AT_STUB)
+        (self.tmp / 'at').mkdir()
+        self.atdir = self.tmp / 'run-at'
+        self.atdir.mkdir()
+        os.mkfifo(self.atdir / 'cmd')
+        self.answer('CMGS', '+CMGS: 12\nOK\n')
+        self.answer('CSCA', f'+CSCA: {Pool.SMSC_HEX}\nOK\n')
+
+    def answer(self, name, text):
+        (self.tmp / 'at' / name).write_text(text)
+
+    def at_log(self):
+        p = self.tmp / 'at.log'
+        return p.read_text().splitlines() if p.exists() else []
+
+    def held(self):
+        p = self.tmp / 'held.log'
+        return [line.split() for line in p.read_text().splitlines()] if p.exists() else []
+
+    def send(self, shell, *args, **env):
+        (self.tmp / 'at.log').unlink(missing_ok=True)
+        (self.tmp / 'held.log').unlink(missing_ok=True)
+        return self.script(shell, self.SMS_CMD, 'send', *args,
+                           MU300_SMS_AWK=AWK, MU300_SMS_STATE=self.tmp / 'state', MU300_AT_DIR=self.atdir, **env)
+
+    def test_a_send_is_one_transaction_under_the_at_lock(self):
+        # the SMSC refresh, PDU mode and the submission (one request: AT+CMGS=N, CR, the PDU, Ctrl-Z), under one
+        # acquisition of $ATDIR/lock that the mu300-at calls are told they hold; released afterwards, sent or refused
+        for shell in self.each_shell():
+            for cmgs, rc in (('+CMGS: 12\nOK\n', 0), ('+CMS ERROR: 500\n', 1), ('OK\n', 1)):
+                with self.subTest(cmgs=cmgs.split('\n')[0]):
+                    self.answer('CMGS', cmgs)
+                    r = self.send(shell, '+905551112233', 'Merhaba', 'ğüş')
+                    self.assertEqual(r.returncode, rc, r.stderr)
+                    enc = subprocess.run(['awk', '-v', 'mode=encode', '-v', 'number=+905551112233', '-v',
+                                          'text=Merhaba ğüş', '-f', str(AWK)], capture_output=True, text=True,
+                                         stdin=subprocess.DEVNULL, env=dict(os.environ, LC_ALL='C')).stdout.split()
+                    self.assertEqual(self.at_log(), ['AT+CSCA?', f'AT+CSCA={Pool.SMSC_HEX}', 'AT+CMGF=0',
+                                                     f'AT+CMGS={enc[0]}^{enc[1]}~'])
+                    if rc == 0:
+                        self.assertEqual(r.stdout, 'sent (reference 12)\n')
+                    else:
+                        self.assertTrue(r.stderr.startswith('sms: '), r.stderr)
+                        self.assertNotIn('sent', r.stdout)
+                    held = self.held()
+                    self.assertEqual(len(held), 4, held)
+                    pids = {p for pair in held for p in pair}
+                    self.assertEqual(len(pids), 1, held)      # one holder, the same for all four, and none "none"
+                    self.assertNotIn('none', pids)
+                    self.assertFalse((self.atdir / 'lock').exists())
+            self.answer('CMGS', '+CMGS: 12\nOK\n')
+
+    def test_a_smsc_the_modem_does_not_give_is_left_alone(self):
+        # nothing is written when the SMSC cannot be read as "address",type; a write the modem refuses does not stop
+        # the send; the character set is never touched
+        for shell in self.each_shell():
+            for label, csca, written in (('none', 'OK\n', 0), ('error', '+CME ERROR: 3\n', 0),
+                                         ('no quotes', '+CSCA: 1555010099,145\nOK\n', 0),
+                                         ('junk', '+CSCA: "+1555;AT+CFUN=0",145\nOK\n', 0),
+                                         ('plain', '+CSCA: "+1555010099",145\nOK\n', 1),
+                                         ('refused', '+CSCA: "+1555010099",145\nOK\n', 1)):
+                with self.subTest(case=label):
+                    self.answer('CSCA', csca)
+                    (self.tmp / 'at' / 'CSCA1555').unlink(missing_ok=True)
+                    if label == 'refused':
+                        self.answer('CSCA1555', '+CMS ERROR: 302\n')
+                    r = self.send(shell, '10099', 'hi')
+                    self.assertEqual(r.returncode, 0, r.stderr)
+                    log = self.at_log()
+                    self.assertEqual(log[0], 'AT+CSCA?')
+                    self.assertEqual([c for c in log if c.startswith('AT+CSCA=')], ['AT+CSCA="+1555010099",145'] * written)
+                    self.assertEqual(log[-2:-1], ['AT+CMGF=0'])
+                    self.assertTrue(log[-1].startswith('AT+CMGS='), log)
+                    self.assertNotIn('CSCS', ''.join(log))
+                    self.assertNotIn('AT+CFUN', ''.join(log))
+                    if label == 'refused':
+                        self.assertIn('sms: the modem refused to refresh', r.stderr)
+                    elif written:
+                        self.assertEqual(r.stderr, '')
+                    else:
+                        self.assertIn('without the refresh', r.stderr)
+            (self.tmp / 'at' / 'CSCA1555').unlink(missing_ok=True)
+            self.answer('CSCA', f'+CSCA: {Pool.SMSC_HEX}\nOK\n')
+
+    def test_a_held_at_lock_says_busy_before_anything_is_sent(self):
+        # a live holder of mu300-at's lock: busy within the wait, nothing sent, the holder's lock left alone; a
+        # holder that is gone is taken over
+        lock = self.atdir / 'lock'
+        for shell in self.each_shell():
+            holder = subprocess.Popen(['sh', '-c', 'sleep 30; true', 'mu300-at'])
+            try:
+                lock.mkdir()
+                (lock / 'pid').write_text(f'{holder.pid}\n')
+                t0 = time.monotonic()
+                r = self.send(shell, '10099', 'hi', MU300_AT_LOCK_WAIT='1')
+                self.assertEqual((r.returncode, r.stderr.strip()), (1, 'mu300-at: busy'))
+                self.assertLess(time.monotonic() - t0, 5)
+                self.assertEqual(self.at_log(), [])
+                self.assertEqual((lock / 'pid').read_text().strip(), str(holder.pid))
+            finally:
+                holder.kill()
+                holder.wait()
+            (lock / 'pid').write_text('999999\n')
+            r = self.send(shell, '10099', 'hi', MU300_AT_LOCK_WAIT='1')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(len(self.at_log()), 4)
+            self.assertFalse(lock.exists())
+
+    def test_no_daemon_no_lock(self):
+        # without mu300-atd's fifo mu300-at opens the tty itself and takes no lock: none is taken here either, and the
+        # send still goes the same way
+        (self.atdir / 'cmd').unlink()
+        for shell in self.each_shell():
+            r = self.send(shell, '10099', 'hi')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(len(self.at_log()), 4)
+            self.assertEqual(self.held(), [['none', 'none']] * 4)
+            self.assertFalse((self.atdir / 'lock').exists())
+
+
 class Watch(ShellTest):
     """`sms watch` (every system): a long message waits for its other parts, MU300_SMS_PARTIAL_WAIT at most."""
 
