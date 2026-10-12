@@ -5,6 +5,7 @@ import pty
 import re
 import select
 import shutil
+import stat
 import struct
 import subprocess
 import threading
@@ -1679,6 +1680,129 @@ class VendorStart(ShellTest):
             r = self.sh(shell, f'set -e\nsrc={cmd}\n' + m.group(1) + 'echo "L=$L AS=$AS"', MU300_RUN=run)
             self.assertEqual(r.stdout.strip(), 'L=a AS=b', shell)
             shutil.rmtree(run)
+
+    # ---- the imported Android files (issue #127): whatever unpacked them, the daemons can read them afterwards
+    def android_tree(self):
+        a = self.tmp / 'android'
+        shutil.rmtree(a, ignore_errors=True)
+        files = {'dev-properties/property_info': 0o444, 'dev-properties/u:object_r:radio_prop:s0': 0o444,
+                 'vendor/bin/modem_control': 0o755, 'vendor/etc/modem_cp_info.xml': 0o644,
+                 'vendor/lib64/hw/vulkan.so': 0o644, 'system/bin/cltest': 0o755, 'system/lib64/libc++.so': 0o644,
+                 'apex/com.android.runtime/bin/linker64': 0o755,
+                 'apex/com.android.runtime/lib64/bionic/libc.so': 0o644, 'linkerconfig/ld.config.txt': 0o644,
+                 'data/vendor/local/keep': 0o600}       # not an imported tree: never touched
+        for rel, mode in files.items():
+            f = a / rel
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text(rel)
+            f.chmod(mode)
+        os.symlink('/apex/com.android.runtime/bin/linker64', a / 'system/bin/linker64')
+        (a / 'dev-properties').chmod(0o711)             # as Android has it
+        return a, files
+
+    # the script's own A and mark; the marks go to stdout here
+    MODES_PRE = 'set -e\nA=/nonexistent\nmark() { echo "mark $*"; }\n'
+
+    def modes(self, a):
+        return {p.relative_to(a).as_posix(): stat.S_IMODE(p.lstat().st_mode)
+                for p in a.rglob('*') if not p.is_symlink()}
+
+    def run_modes(self, shell, a):
+        text = (BIN / 'android-vendor-start').read_text()
+        m = re.search(r'# --- modes begin\n(.*?)# --- modes end', text, re.S)
+        self.assertIsNotNone(m, 'android-vendor-start has no modes block')
+        (self.tmp / 'kmsg').write_text('')
+        return self.sh(shell, self.MODES_PRE + m.group(1) + 'echo done', MU300_ANDROID=a,
+                       MU300_KMSG=self.tmp / 'kmsg', MU300_ANDROID_OWNER=f'{os.getuid()}:{os.stat(self.tmp).st_gid}')
+
+    def test_imported_files_installed_0700_become_readable(self):
+        # what install.sh stored from a FAT/exFAT work directory on macOS: every file and directory 0700
+        for shell in self.each_shell():
+            a, files = self.android_tree()
+            good = self.modes(a)
+            for p in sorted(a.rglob('*'), reverse=True):
+                if not p.is_symlink() and p.relative_to(a).parts[0] != 'data':
+                    p.chmod(0o700)
+            r = self.run_modes(shell, a)
+            self.assertEqual(r.stdout.split('\n')[:2], ['mark vendor-modes-repaired', 'done'], (shell, r.stderr))
+            want = dict(good, **{'dev-properties': 0o755})      # a 0700 directory becomes 0755, like the others
+            self.assertEqual(self.modes(a), want, shell)
+            self.assertEqual(os.readlink(a / 'system/bin/linker64'), '/apex/com.android.runtime/bin/linker64')
+            # one line that says what was found, with the count: 10 files and 16 directories
+            n = len([k for k in good if k.split('/')[0] != 'data'])
+            self.assertRegex(r.stderr, rf'android-vendor-start: {n} imported Android files and directories had ', shell)
+            self.assertEqual(len(r.stderr.strip().splitlines()), 1, r.stderr)
+            # the same line for the kernel log: OpenWrt's log daemon is not up yet when this runs
+            self.assertEqual((self.tmp / 'kmsg').read_text(), r.stderr, shell)
+            # and the next start finds nothing to do and says nothing
+            r = self.run_modes(shell, a)
+            self.assertEqual((r.stdout.strip(), r.stderr), ('done', ''), shell)
+            self.assertEqual(self.modes(a), want, shell)
+
+    def test_imported_files_that_are_right_are_left_alone(self):
+        for shell in self.each_shell():
+            a, files = self.android_tree()
+            good = self.modes(a)
+            self.assertEqual(good['dev-properties'], 0o711)
+            r = self.run_modes(shell, a)
+            self.assertEqual((r.stdout.strip(), r.stderr), ('done', ''), shell)
+            self.assertEqual(self.modes(a), good, shell)
+
+    def test_imported_files_one_at_a_time(self):
+        # vendor/etc alone 0700 (tar made it under umask 077): modem_control ends at "can't get modem img!";
+        # a file others can write; a property file that is not read-only; a program that cannot be run
+        cases = (('vendor/etc', 0o700, 0o755), ('system/lib64/libc++.so', 0o666, 0o644),
+                 ('dev-properties/property_info', 0o600, 0o444), ('vendor/bin/modem_control', 0o644, 0o755),
+                 ('apex/com.android.runtime/lib64/bionic/libc.so', 0o4755, 0o644), ('linkerconfig', 0o750, 0o755))
+        for shell in self.each_shell():
+            for rel, bad, fixed in cases:
+                a, files = self.android_tree()
+                good = self.modes(a)
+                (a / rel).chmod(bad)
+                r = self.run_modes(shell, a)
+                self.assertEqual(r.stdout.split(), ['mark', 'vendor-modes-repaired', 'done'], (shell, rel, r.stderr))
+                self.assertEqual(self.modes(a), dict(good, **{rel: fixed}), (shell, rel))
+                self.assertIn(f'1 imported Android files and directories had ', r.stderr, (shell, rel))
+                self.assertIn(f'(the first: {a}/{rel})', r.stderr, (shell, rel))
+
+    def test_imported_files_without_the_trees_or_the_right_to_change_them(self):
+        for shell in self.each_shell():
+            # a system without the imported files (no modem stack): nothing to do, and no error under set -e
+            empty = self.tmp / 'none'
+            empty.mkdir(exist_ok=True)
+            r = self.run_modes(shell, empty)
+            self.assertEqual((r.stdout.strip(), r.stderr), ('done', ''), shell)
+            # an owner that cannot be set (here: not root) is reported, and the script goes on to start the modem
+            a, files = self.android_tree()
+            text = (BIN / 'android-vendor-start').read_text()
+            m = re.search(r'# --- modes begin\n(.*?)# --- modes end', text, re.S)
+            if os.getuid() != 0:
+                r = self.sh(shell, self.MODES_PRE + m.group(1) + 'echo done', MU300_ANDROID=a,
+                            MU300_KMSG=self.tmp / 'no' / 'kmsg')      # nor a kernel log to write to
+                self.assertEqual(r.stdout.split(), ['mark', 'vendor-modes-wrong', 'done'], (shell, r.stderr))
+                self.assertIn('could not be changed', r.stderr, shell)
+                self.assertIn('the modem may not start', r.stderr, shell)
+
+    def test_the_modes_block_runs_before_the_daemons_and_owns_to_root(self):
+        text = (BIN / 'android-vendor-start').read_text()
+        self.assertLess(text.index('# --- modes end'), text.index('exec /opt/mu300/bin/android-run modem_control'))
+        self.assertIn('MO=${MU300_ANDROID_OWNER:-0:0}', text)
+        self.assertIn('MA=${MU300_ANDROID:-$A}', text)
+        m = re.search(r'# --- modes begin\n(.*?)# --- modes end', text, re.S).group(1)
+        # nothing mounted below is entered, links are never followed or changed
+        self.assertEqual(len(re.findall(r'\bfind \$MT -xdev ', m)), 6)
+        self.assertEqual(m.count('find '), 6)
+        self.assertNotIn('chmod -R', m)
+        self.assertNotIn('chown -R', m)
+
+    def test_the_vendor_log_has_a_directory_to_go_to(self):
+        # OpenWrt runs this at S09, its boot script makes /var/log at S10: without the directory the redirection
+        # failed, logdw never started and the daemons' reasons for a modem that did not boot were lost (seen on
+        # the F50-B: no /var/log/android-logcat.txt, no logdw process, until the service was restarted by hand)
+        text = (BIN / 'android-vendor-start').read_text()
+        self.assertLess(text.index('mkdir -p /var/log 2>/dev/null || true\n'),
+                        text.index('/opt/mu300/bin/logdw /dev/socket/logdw >> /var/log/android-logcat.txt'))
+        self.assertEqual((TOP / 'openwrt/overlay/etc/init.d/mu300-vendor').read_text().count('\nSTART=09\n'), 1)
 
     def test_no_forks_in_the_loop_and_no_sleep_after_logdw(self):
         text = (BIN / 'android-vendor-start').read_text()
