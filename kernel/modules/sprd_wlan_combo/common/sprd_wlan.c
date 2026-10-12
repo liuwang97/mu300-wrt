@@ -150,7 +150,14 @@ static void sprd_wlan_remove(struct platform_device *pdev)
 
 	pr_info("%s %s %d.\n", __func__, of_id->compatible, p_match_data->hw_type);
 
-	return;
+	/*
+	 * MU300 (issue #146): the vendor's remove calls sprd_iface_remove(); the port had dropped it with the
+	 * SC2332/SIPC variants, so rmmod unloaded the module with the recovery watchdog's delayed work (static,
+	 * on system_wq, rearming itself every second), the wiphy, wlan0 and the WCN reset notifier all still
+	 * live, and __run_timers fired the watchdog's timer in freed memory within a second.
+	 */
+	if (p_match_data->hw_type == SPRD_HW_SC2355_PCIE)
+		sprd_iface_remove(pdev);
 }
 
 static struct platform_driver sprd_wlan_driver = {

@@ -358,12 +358,13 @@ static int reorder_msdu(struct rx_ba_entry *ba_entry,
 		if (!ret && seqno_geq(seq_num, ba_node_desc->win_tail))
 			ba_node_desc->win_tail = seq_num;
 	} else {
-		pr_err("%s: seq_num: %d is less than win_start: %d\n",
-		       __func__, seq_num, ba_node_desc->win_start);
+		/* MU300 (#140): a retransmission the window already moved past; the drop below is the normal outcome */
+		pr_debug_ratelimited("%s: seq_num: %d is less than win_start: %d\n",
+				     __func__, seq_num, ba_node_desc->win_start);
 	}
 
 	if (ret && skb) {
-		pr_err("%s: kfree skb %d", __func__, ret);
+		pr_debug_ratelimited("%s: kfree skb %d", __func__, ret);
 		dev_kfree_skb(skb);
 	}
 
@@ -555,8 +556,9 @@ static void reorder_wlan_delba_event(struct rx_ba_entry *ba_entry,
 	ba_node = reorder_find_ba_node(ba_entry,
 				       ba_event->sta_lut_index, ba_event->tid);
 	if (!ba_node) {
-		pr_err("%s: NOT FOUND sta_lut_index: %d, tid: %d\n",
-		       __func__, ba_event->sta_lut_index, ba_event->tid);
+		/* MU300 (#140): the firmware sends DELBA for sessions the host never opened or already tore down */
+		pr_debug("%s: NOT FOUND sta_lut_index: %d, tid: %d\n",
+			 __func__, ba_event->sta_lut_index, ba_event->tid);
 		return;
 	}
 

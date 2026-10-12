@@ -31,6 +31,7 @@ var callLockSet = rpc.declare({ object: 'mu300dash', method: 'lock_set', params:
 var callSmsList = rpc.declare({ object: 'mu300dash', method: 'sms_list', params: [ 'page' ], expect: { '': {} }, nobatch: true });
 var callSmsShow = rpc.declare({ object: 'mu300dash', method: 'sms_show', params: [ 'id' ], expect: { '': {} }, nobatch: true });
 var callSmsSend = rpc.declare({ object: 'mu300dash', method: 'sms_send', params: [ 'num', 'text' ], expect: { '': {} }, nobatch: true });
+var callSmsJob  = rpc.declare({ object: 'mu300dash', method: 'sms_job', expect: { '': {} }, nobatch: true });
 var callSmsDel  = rpc.declare({ object: 'mu300dash', method: 'sms_delete', params: [ 'id', 'sim' ], expect: { '': {} }, nobatch: true });
 var callSmsSync = rpc.declare({ object: 'mu300dash', method: 'sms_sync', expect: { '': {} }, nobatch: true });
 var callUsbGet = rpc.declare({ object: 'mu300dash', method: 'usb_get', expect: { '': {} }, nobatch: true });
@@ -410,7 +411,9 @@ function spark(el, arr, min, max, win) {
  * lockedCell is lock_get's cell field (e.g. "nr:627264,501"); a matching row shows a grey "Locked".
  * Pages bind the clicks by event delegation ([data-lock] attribute: "<rat>:<arfcn>,<pci>"). */
 function neighborRows(c, lockedCell) {
-	var nb = (c && c.neigh) || [];
+	var nb = (c && Array.isArray(c.neigh) ? c.neigh : []).filter(function(n) {
+		return n && typeof n === 'object' && (n.rat === 'nr' || n.rat === 'lte');
+	});
 	nb.sort(function(a, b) {
 		if ((a.rat == 'nr') != (b.rat == 'nr')) return a.rat == 'nr' ? -1 : 1;
 		return (b.rsrp || -999) - (a.rsrp || -999);
@@ -684,7 +687,7 @@ return baseclass.extend({
 	callStatus: callStatus, callSignal: callSignal, callSysinfo: callSysinfo, callAct: callAct, callAt: callAt, callAtHist: callAtHist,
 	callAtJob: callAtJob, callOpsLog: callOpsLog, backoff: backoff, ageText: ageText,
 	callLockGet: callLockGet, callLockFresh: callLockFresh, callLockSet: callLockSet,
-	callSmsList: callSmsList, callSmsShow: callSmsShow, callSmsSend: callSmsSend,
+	callSmsList: callSmsList, callSmsShow: callSmsShow, callSmsSend: callSmsSend, callSmsJob: callSmsJob,
 	callSmsDel: callSmsDel, callSmsSync: callSmsSync,
 	callUsbGet: callUsbGet, callUsbSet: callUsbSet,
 	callUsbNetList: callUsbNetList, callUsbNetAdd: callUsbNetAdd,

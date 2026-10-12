@@ -36,11 +36,13 @@ CMGL = f'+CMGL: 3,0,,40\n{PDU_GSM}\n+CMGL: 7,1,,56\n{PDU_UCS2}\nOK\n'
 # The stub mu300-at: `mu300-at -t SECONDS COMMAND`. Appends the command to $STUBLOG/at.log (one per line, the CR and
 # Ctrl-Z of a submit shown as ^ and ~), then answers from $STUBLOG/at/<name>: the first file whose name is a prefix
 # of the command with the characters outside [A-Za-z0-9] dropped (CMGL4, CPMS, CMGS ...); OK when there is none.
-# $STUBLOG/at/BUSY makes it the client that gave up on the lock.
+# $STUBLOG/at/BUSY makes it the client that gave up on the lock. $STUBLOG/held.log gets, per call, the lock the client
+# was told it holds (MU300_AT_LOCK_HELD) and who holds the lock directory (a send's transaction, FINDINGS 46).
 AT_STUB = r'''
 log=$STUBLOG/at.log
 [ "${1:-}" = -t ] && shift 2
 printf '%s\n' "$1" | tr '\r\032' '^~' >> "$log"
+printf '%s %s\n' "${MU300_AT_LOCK_HELD:-none}" "$(cat "$MU300_AT_DIR/lock/pid" 2>/dev/null || echo none)" >> "$STUBLOG/held.log"
 [ -f "$STUBLOG/at/BUSY" ] && { echo "mu300-at: busy" >&2; exit 1; }
 key=$(printf '%s' "$1" | tr -cd 'A-Za-z0-9')
 for f in $(ls "$STUBLOG/at" 2>/dev/null | sort -r); do
@@ -78,6 +80,7 @@ class Pool(ShellTest):
         """An empty pool, an empty AT log and the default answers (for the next shell)."""
         shutil.rmtree(self.pool, ignore_errors=True)
         (self.tmp / 'at.log').unlink(missing_ok=True)
+        (self.tmp / 'held.log').unlink(missing_ok=True)
         for f in (self.tmp / 'at').iterdir():
             f.unlink()
         self.answer('CPMS', '+CPMS: 2,50,2,50,2,50\nOK\n')
@@ -412,8 +415,12 @@ class Pool(ShellTest):
             os.mkfifo(self.atdir / 'cmd')
 
     # ------------------------------------------------------------------ send
+    # an SMSC as the modem shows it under CSCS "HEX" (the hexadecimal of a made-up "+1555010099") and its type
+    SMSC_HEX = '"2B31353535303130303939",145'
+
     def test_send_reads_the_text_on_stdin(self):
         self.answer('CMGS', '+CMGS: 12\nOK\n')
+        self.answer('CSCA', f'+CSCA: {self.SMSC_HEX}\nOK\n')
         for shell in self.each_shell():
             for text in ('Merhaba ğüş', '--help', '-x; $(reboot) `id`', 'two\nlines', 'back\\slash \\n'):
                 with self.subTest(text=text):
@@ -425,7 +432,9 @@ class Pool(ShellTest):
                                           'text=' + text.replace('\\', '\\\\').replace('\n', '\\n'), '-f', str(AWK)],
                                          capture_output=True, text=True, stdin=subprocess.DEVNULL,
                                          env=dict(os.environ, LC_ALL='C')).stdout.split()
-                    self.assertEqual(self.at_log(), ['AT+CMGF=0', f'AT+CMGS={enc[0]}^{enc[1]}~'])
+                    # the modem's SMSC written back as it is, PDU mode, then the submission - and nothing else
+                    self.assertEqual(self.at_log(), ['AT+CSCA?', f'AT+CSCA={self.SMSC_HEX}', 'AT+CMGF=0',
+                                                     f'AT+CMGS={enc[0]}^{enc[1]}~'])
                     if 'ğüş' in text:   # UCS-2 of the letters, also under gawk in a UTF-8 locale
                         self.assertIn('011F00FC015F', enc[1])
                     sent = [(h, b) for h, b in self.msgs().values() if h['dir'] == 'mo']
@@ -438,6 +447,103 @@ class Pool(ShellTest):
             r = self.run_sms(shell, 'send', '10086', '-n', 'hello')
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertEqual(list(self.msgs().values())[-1][1], '-n hello\n')
+
+    def test_the_smsc_is_written_back_unchanged_before_a_send(self):
+        # The modem's own SMSC is set again, byte for byte as the modem shows it (hexadecimal under CSCS "HEX", or
+        # plain) and with its type, before the submission (FINDINGS 46: on one network every send failed until
+        # this was done). Never another address, and the character set is never touched.
+        self.answer('CMGS', '+CMGS: 2\nOK\n')
+        for shell in self.each_shell():
+            for smsc in (self.SMSC_HEX, '"+1555010099",145', '"1555010099",129'):
+                with self.subTest(smsc=smsc):
+                    self.answer('CSCA', f'+CSCA: {smsc}\r\nOK\r\n')
+                    (self.tmp / 'at.log').unlink(missing_ok=True)
+                    r = self.run_sms(shell, 'send', '--stdin', '10099', stdin='CXYL')
+                    self.assertEqual(r.returncode, 0, r.stderr)
+                    log = self.at_log()
+                    self.assertEqual(log[:3], ['AT+CSCA?', f'AT+CSCA={smsc}', 'AT+CMGF=0'])
+                    self.assertTrue(log[3].startswith('AT+CMGS='), log)
+                    self.assertEqual(len(log), 4)
+                    self.assertNotIn('CSCS', ''.join(log))
+                    self.assertNotIn('refresh', r.stderr)
+
+    def test_a_smsc_the_modem_does_not_give_is_left_alone(self):
+        # No SMSC, one that cannot be read as "address",type, a query the modem refuses: nothing is written, the send
+        # goes on and stderr says so. A write the modem refuses does not stop the send either: the SMSC in use is
+        # the same either way, and the submission's own answer is the one that says what is wrong.
+        self.answer('CMGS', '+CMGS: 2\nOK\n')
+        for shell in self.each_shell():
+            for label, csca, written in (('none', 'OK\n', 0), ('error', '+CME ERROR: 3\n', 0),
+                                         ('no quotes', '+CSCA: 1555010099,145\nOK\n', 0),
+                                         ('no type', '+CSCA: "+1555010099"\nOK\n', 0),
+                                         ('empty', '+CSCA: "",145\nOK\n', 0),
+                                         ('junk', '+CSCA: "+1555;AT+CFUN=0",145\nOK\n', 0),
+                                         ('refused', '+CSCA: "+1555010099",145\nOK\n', 1)):
+                with self.subTest(case=label):
+                    self.answer('CSCA', csca)
+                    # the write ("AT+CSCA=..." - a longer prefix than the query's) refused by the modem
+                    (self.tmp / 'at' / 'CSCA1555').unlink(missing_ok=True)
+                    if label == 'refused':
+                        self.answer('CSCA1555', '+CMS ERROR: 302\n')
+                    (self.tmp / 'at.log').unlink(missing_ok=True)
+                    r = self.run_sms(shell, 'send', '--stdin', '10099', stdin='hi')
+                    self.assertEqual(r.returncode, 0, r.stderr)
+                    log = self.at_log()
+                    self.assertEqual(log[0], 'AT+CSCA?')
+                    self.assertEqual([c for c in log if c.startswith('AT+CSCA=')],
+                                     ['AT+CSCA="+1555010099",145'] * written)
+                    self.assertEqual(log[-2:-1], ['AT+CMGF=0'])
+                    self.assertTrue(log[-1].startswith('AT+CMGS='), log)
+                    self.assertIn('refused to refresh' if written else 'without the refresh', r.stderr)
+                    self.assertNotIn('AT+CFUN', ''.join(log))
+            (self.tmp / 'at' / 'CSCA1555').unlink(missing_ok=True)
+
+    def test_a_send_is_one_transaction_under_the_at_lock(self):
+        # The SMSC refresh, PDU mode and the submission go out under one acquisition of mu300-at's client lock
+        # ($ATDIR/lock), which the mu300-at calls under it are told they hold (MU300_AT_LOCK_HELD, with the lock's
+        # own pid file naming the holder); it is released after the submission, taken or refused.
+        self.answer('CSCA', f'+CSCA: {self.SMSC_HEX}\nOK\n')
+        for shell in self.each_shell():
+            for cmgs in ('+CMGS: 7\nOK\n', '+CMS ERROR: 500\n'):
+                with self.subTest(cmgs=cmgs.split('\n')[0]):
+                    self.answer('CMGS', cmgs)
+                    (self.tmp / 'held.log').unlink(missing_ok=True)
+                    r = self.run_sms(shell, 'send', '--stdin', '10099', stdin='hi')
+                    self.assertEqual(r.returncode, 0 if '+CMGS' in cmgs else 1, r.stderr)
+                    held = [line.split() for line in (self.tmp / 'held.log').read_text().splitlines()]
+                    self.assertEqual(len(held), 4, held)
+                    pids = {p for pair in held for p in pair}
+                    self.assertEqual(len(pids), 1, held)      # one holder, the same for all four, and none "none"
+                    self.assertNotIn('none', pids)
+                    self.assertFalse((self.atdir / 'lock').exists())
+
+    def test_a_held_at_lock_says_busy_before_anything_is_sent(self):
+        # Another client holds mu300-at's lock: busy within the wait (in mu300-at's words, which the panel reads), with
+        # not one command sent, and the holder's lock left alone. A holder that is gone is taken over.
+        self.answer('CMGS', '+CMGS: 1\nOK\n')
+        lock = self.atdir / 'lock'
+        for shell in self.each_shell():
+            self.fresh()
+            self.answer('CMGS', '+CMGS: 1\nOK\n')
+            self.answer('CSCA', f'+CSCA: {self.SMSC_HEX}\nOK\n')
+            holder = subprocess.Popen(['sh', '-c', 'sleep 30; true', 'mu300-at'])
+            try:
+                lock.mkdir()
+                (lock / 'pid').write_text(f'{holder.pid}\n')
+                t0 = time.monotonic()
+                r = self.run_sms(shell, 'send', '--stdin', '10099', stdin='hi', MU300_AT_LOCK_WAIT='1')
+                self.assertEqual((r.returncode, r.stderr.strip()), (1, 'mu300-at: busy'))
+                self.assertLess(time.monotonic() - t0, 5)
+                self.assertEqual(self.at_log(), [])
+                self.assertEqual((lock / 'pid').read_text().strip(), str(holder.pid))
+            finally:
+                holder.kill()
+                holder.wait()
+            (lock / 'pid').write_text('999999\n')
+            r = self.run_sms(shell, 'send', '--stdin', '10099', stdin='hi', MU300_AT_LOCK_WAIT='1')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(len(self.at_log()), 4)
+            self.assertFalse(lock.exists())
 
     def test_send_refusals_never_read_as_success(self):
         # mu300dash takes any output with "sent" or "OK" in it for success and one with "busy" for a busy channel
@@ -458,8 +564,8 @@ class Pool(ShellTest):
                     self.assertTrue(r.stderr.startswith('mu300-sms: '), r.stderr)
             self.assertFalse([h for h, _ in self.msgs().values() if h['dir'] == 'mo'])
             # the panel's backend on the same refusal: Sending failed, not Sent
-            r = self.dash(shell, 'sms_send', {'num': '123', 'text': 'hi'})
-            self.assertEqual((r['ok'], r['error']), (0, 'Sending failed'))
+            r = self.dash_send(shell, '123', 'hi')
+            self.assertEqual((r['ok'], r['error'], r['done']), (0, 'Sending failed', 1))
             self.assertEqual(r['detail'], 'mu300-sms: the modem did not take the message: no +CMGS confirmation')
             # one part's worth goes out: 160 GSM characters, 70 UCS-2 ones
             self.answer('CMGS', '+CMGS: 1\nOK\n')
@@ -536,19 +642,33 @@ class Pool(ShellTest):
             self.assertIn('busy', r.stdout + r.stderr)
 
     # ------------------------------------------------------------------ the panel on the pool
-    def dash(self, shell, method, params, **env):
+    def dash_env(self, **env):
         (self.stubs / 'jsonfilter.py').write_text(JSONFILTER)
         self.stub('jsonfilter', f'exec python3 "{self.stubs}/jsonfilter.py" "$@"')
         self.stub('uci', '[ "$3" = unisoc_modem.main.sms_pool ] && [ -n "${UCI_POOL:-}" ] && '
                          'printf "%s\\n" "$UCI_POOL" && exit 0; exit 1')
         self.stub('logger', 'exit 0')
+        # setsid: the send's job is started detached; here it is run by hand (dash_send), so nothing starts
+        self.stub('setsid', 'exit 0')
         e = self.env(MU300_SMS_BIN=SMS, MU300_SMS_POOL=self.pool, MU300_AT_DIR=self.atdir, MU300_SMS_AWK=AWK,
-                     MU300_SMS_RUN=self.run, MU300_DASH_DIR=self.tmp / 'dash', MU300_DASH_BIN=self.tmp / 'none')
+                     MU300_SMS_RUN=self.run, MU300_DASH_DIR=self.tmp / 'dash', MU300_DASH_BIN=self.tmp / 'none',
+                     MU300_DASH_OPS_DIR=self.tmp / 'flash')
         e.update({k: str(v) for k, v in env.items()})
-        e = {k: v for k, v in e.items() if v != ''}
+        return {k: v for k, v in e.items() if v != ''}
+
+    def dash(self, shell, method, params, **env):
         r = subprocess.run(shell + [str(DASH), 'call', method], input=json.dumps(params).encode(),
-                           capture_output=True, env=e, timeout=60)
+                           capture_output=True, env=self.dash_env(**env), timeout=60)
         return json.loads(r.stdout.decode())
+
+    def dash_send(self, shell, num, text, **env):
+        """The panel's send on the real mu300-sms: sms_send starts the job, the job runs here (what setsid would
+        have started), and sms_job tells how it went - the reply sms_send used to give, with done:1."""
+        r = self.dash(shell, 'sms_send', {'num': num, 'text': text}, **env)
+        self.assertEqual((r.get('ok'), r.get('started'), r.get('job')), (1, 1, 1), r)
+        j = subprocess.run(shell + [str(DASH), 'sms-job'], capture_output=True, env=self.dash_env(**env), timeout=60)
+        self.assertEqual(j.returncode, 0, j.stderr)
+        return self.dash(shell, 'sms_job', {}, **env)
 
     def test_the_panel_reads_the_pool(self):
         for shell in self.each_shell():
@@ -566,12 +686,21 @@ class Pool(ShellTest):
             self.assertEqual(r['text'].split('\n---\n', 1)[1], 'Kargonuz yolda ğüş\nline two')
             self.assertEqual(self.dash(shell, 'sms_show', {'id': '9'})['error'], 'Read failed')
             self.answer('CMGS', '+CMGS: 4\nOK\n')
-            r = self.dash(shell, 'sms_send', {'num': '10086', 'text': '-hi'})
-            self.assertEqual((r['ok'], r['reply'].splitlines()[-1]), (1, 'sent (reference 4)'))
+            r = self.dash_send(shell, '10086', '-hi')
+            self.assertEqual((r['ok'], r['done'], r['reply'].splitlines()[-1]), (1, 1, 'sent (reference 4)'))
+            self.assertEqual(list(self.msgs().values())[-1][1], '-hi\n')
+            # the job keeps no copy of the message once it is in the pool
+            self.assertFalse((self.tmp / 'dash' / 'sms-job' / 'text').exists())
             (self.tmp / 'at' / 'CMGS').write_text('+CMS ERROR: 500\n')
-            r = self.dash(shell, 'sms_send', {'num': '10086', 'text': 'hi'})
+            r = self.dash_send(shell, '10086', 'hi')
             self.assertEqual((r['ok'], r['error']), (0, 'Sending failed'))
             self.assertIn('+CMS ERROR: 500', r['detail'])
+            # how each send went is in the operations log, from the job itself (the call only started it)
+            ops = (self.tmp / 'dash' / 'ops.log').read_text()
+            self.assertRegex(ops, r'sms_send result \d+\.\d\ds ok\n')
+            self.assertRegex(ops, r'sms_send result \d+\.\d\ds error\n')
+            self.assertNotIn('-hi', ops)   # never the message, nor the number
+            self.assertNotIn('10086', ops)
             self.assertEqual(self.dash(shell, 'sms_delete', {'id': '1'}), {'ok': 1})
             r = self.dash(shell, 'sms_delete', {'id': '1'})
             self.assertEqual((r['error'], r['detail']), ('Delete failed', 'mu300-sms: no message 1'))
