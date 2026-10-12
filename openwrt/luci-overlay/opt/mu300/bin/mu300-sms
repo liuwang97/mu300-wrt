@@ -313,10 +313,9 @@ sim_raw() {  # the SIM's slots, one "index:stat <TAB> PDU" per line (and a copy 
         /^[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]+$/ { if (idx != "") { print idx "\t" $0; idx = "" } }
     ' | { if [ -n "${SIM_RAW:-}" ]; then tee "$SIM_RAW"; else cat; fi; }
 }
-parts_raw() {  # the parked PDUs, "p<name>:0 <TAB> PDU" per file
+parts_raw() {  # the parked PDUs, "p<name>:0 <TAB> PDU" per file (a regular file of this directory, never a link)
     for _p in "$PARTS"/p*; do
-        case $_p in *.part) continue ;; esac   # a write in progress (or one a crash left behind)
-        [ -f "$_p" ] || continue
+        [ -f "$_p" ] && [ ! -L "$_p" ] || continue
         _pdu=$(head -n 1 "$_p" 2>/dev/null)
         case $_pdu in ''|*[!0-9A-Fa-f]*) continue ;; esac
         printf '%s:0\t%s\n' "${_p##*/}" "$_pdu"
@@ -551,13 +550,32 @@ cmd_sync() {
     absorb sim
 }
 
+# own_dir DIR: DIR is a directory of ours, mode 700, and no symbolic link (made so when it is missing); else false.
+# The same rule as mu300-update's lock directory: import-pdu runs as root in a directory tree, and follows no name
+# somebody else may have planted there.
+own_dir() {
+    [ ! -L "$1" ] || return 1
+    [ -e "$1" ] || ( umask 077; mkdir "$1" ) 2>/dev/null || [ -d "$1" ] || return 1
+    [ ! -L "$1" ] && [ -d "$1" ] || return 1
+    _ls=$(ls -ldn "$1" 2>/dev/null)
+    [ "$(printf '%s\n' "$_ls" | awk '{print $3}')" = "$(id -u)" ] || return 1
+    case $_ls in drwx------*) ;; *) chmod 700 "$1" 2>/dev/null || return 1 ;; esac
+}
+# own_file FILE: a regular file of ours, no symbolic link
+own_file() {
+    [ ! -L "$1" ] && [ -f "$1" ] || return 1
+    [ "$(ls -ldn "$1" 2>/dev/null | awk '{print $3}')" = "$(id -u)" ]
+}
+
 # import-pdu FILE: a message the modem delivered directly, as mu300-cmt-spool wrote it (one line, the PDU in
 # hexadecimal). Refused (exit 1, nothing written) unless the codec makes a message of it; then parked in $PARTS on the
 # disk, and the parked parts absorbed into the pool. Exit 0 means the pool (or $PARTS, for a part whose siblings are
 # still to come) holds it on the disk: mu300-smsd acknowledges the message to the network only then.
+# FILE must be a regular file of ours, the pool and $PARTS directories of ours (own_file, own_dir): no link anywhere.
 cmd_import_pdu() {
     _file=${1:-}
-    [ -n "$_file" ] && [ -f "$_file" ] || die "import-pdu needs a file holding one PDU"
+    [ -n "$_file" ] || die "import-pdu needs a file holding one PDU"
+    own_file "$_file" || die "$_file is not a regular file of ours (or a symbolic link)"
     [ -f "$AWK" ] || die "$AWK is missing"
     _pdu=$(head -n 1 "$_file" 2>/dev/null | tr -d '\r')
     case $_pdu in ''|*[!0-9A-Fa-f]*) die "$_file does not hold a hexadecimal PDU" ;; esac
@@ -565,14 +583,17 @@ cmd_import_pdu() {
     # decodable before it is parked: a PDU the codec makes nothing of would sit in $PARTS for ever
     _rec=$(printf 'p:0\t%s\n' "$_pdu" | awk -v mode=decode -F'\t' -f "$AWK" 2>/dev/null)
     [ -n "$_rec" ] || die "the PDU in $_file cannot be decoded"
+    own_dir "$POOL" || die "$POOL is not a directory of ours (or a symbolic link)"
+    own_dir "$PARTS" || die "$PARTS is not a directory of ours (or a symbolic link)"
     pool_init
-    mkdir -p "$PARTS" 2>/dev/null || die "cannot create $PARTS"
-    # under a name of its own (the second, the pid), written aside and renamed, the file and the directory entry on
-    # the disk: from here on the message is safe whatever happens to the pool
-    _name=p$(date +%s)-$$
-    { printf '%s\n' "$_pdu" > "$PARTS/$_name.part" && durable "$PARTS/$_name.part" &&
-        mv "$PARTS/$_name.part" "$PARTS/$_name" && durable "$PARTS"; } || {
-        rm -f "$PARTS/$_name.part"; die "could not write into $PARTS"; }
+    # made by mktemp inside $PARTS (a dotfile: not one of the parts yet), the file and then its final name (the second,
+    # the pid: nothing can wait there, and a link there is refused) on the disk: from here on the message is safe
+    # whatever happens to the pool
+    _name=$PARTS/p$(date +%s)-$$
+    _tmp=$(umask 077; mktemp "$PARTS/.part.XXXXXX") || die "cannot write into $PARTS"
+    { printf '%s\n' "$_pdu" > "$_tmp" && durable "$_tmp" && [ ! -L "$_name" ] && [ ! -e "$_name" ] &&
+        mv "$_tmp" "$_name" && durable "$PARTS"; } || {
+        rm -f "$_tmp"; die "could not write into $PARTS"; }
     absorb parts
 }
 

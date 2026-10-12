@@ -118,10 +118,17 @@ direct_on || direct_off "the modem did not take direct delivery (or MU300_SMS_DI
 # acknowledgement comes (it forwards no other meanwhile).
 process_spool() {
     for f in "$SPOOL"/*.ready; do
-        [ -f "$f" ] || continue
+        [ -e "$f" ] || [ -L "$f" ] || continue
+        # the spooler writes regular files; a link here is somebody else's, and is never followed
+        if [ -L "$f" ] || [ ! -f "$f" ]; then
+            echo "mu300-smsd: $f is not a regular file; set aside" >&2
+            mv "$f" "${f%.ready}.failed" 2>/dev/null || rm -f "$f"
+            continue
+        fi
         "$SMS" import-pdu "$f" || { echo "mu300-smsd: could not pool $f" >&2; return 1; }
         at_ok 'AT+CNMA=1' || { echo "mu300-smsd: the modem did not take the acknowledgement of $f" >&2; return 1; }
         rm -f "$f"
+        echo "mu300-smsd: pooled and acknowledged ${f##*/}" >&2
     done
     return 0
 }
@@ -163,9 +170,11 @@ while :; do
         elapsed=0
         "$SMS" sync >/dev/null || true
         # the modem drops direct routing by itself (mt=0: no indication at all) after an acknowledgement that never
-        # came; the periodic sync above still finds such a message, and the routing is put back here
+        # came; the periodic sync above still finds such a message, and the routing is put back here. Only mt is
+        # looked at: the modem says OK and then keeps a setting of its own for the rest (measured on the U30 Air:
+        # "3,2,1,0,1" for the "3,2,2,0,1" it was asked)
         if [ "$direct" = 1 ]; then
-            mu300-at -t 5 'AT+CNMI?' 2>/dev/null | grep -q "^+CNMI: ${DIRECT_CNMI#AT+CNMI=}" ||
+            mu300-at -t 5 'AT+CNMI?' 2>/dev/null | grep -q '^+CNMI: [0-9],2,' ||
                 direct_on || direct_off "the modem dropped direct delivery and did not take it again"
         fi
     fi

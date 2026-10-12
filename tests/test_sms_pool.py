@@ -986,10 +986,56 @@ class Pool(ShellTest):
             log = self.at_log()
             self.assertFalse([l for l in log if l.startswith('GLOBAL SYNC')], log)
             parts, msg = self.pool / 'parts', self.pool / 'msg'
-            self.assertRegex(log[0], rf'^FSYNC {re.escape(str(parts))}/p[0-9]+-[0-9]+\.part$')
+            self.assertRegex(log[0], rf'^FSYNC {re.escape(str(parts))}/\.part\.[A-Za-z0-9]+$')   # mktemp's name, then the final one
             self.assertEqual(log[1], f'FSYNC {parts}')
             self.assertEqual(log[2], f'FSYNC {msg}/000001.part')
             self.assertEqual(log[3], f'FSYNC {msg} {self.pool}/next_id {self.pool}')
+
+    def test_import_pdu_follows_no_link(self):
+        """import-pdu runs as root: a spool entry that is a link, a parts directory or a pool that is one, are refused
+        and nothing is written through them."""
+        for shell in self.each_shell():
+            # the spool entry
+            self.fresh()
+            target = self.tmp / 'elsewhere.pdu'
+            target.write_text(PDU_GSM + '\n')
+            (self.pool / 'incoming').mkdir(parents=True)
+            link = self.pool / 'incoming' / 'cmt-1.link.ready'
+            link.symlink_to(target)
+            r = self.run_sms(shell, 'import-pdu', link)
+            self.assertEqual(r.returncode, 1, r.stdout)
+            self.assertIn('symbolic link', r.stderr)
+            self.assertFalse((self.pool / 'msg').exists())
+            # the parts directory, pointing somewhere else
+            self.fresh()
+            elsewhere = self.tmp / 'elsewhere'
+            elsewhere.mkdir(exist_ok=True)
+            self.pool.mkdir()
+            (self.pool / 'parts').symlink_to(elsewhere)
+            r = self.run_sms(shell, 'import-pdu', self.spooled(PDU_GSM))
+            self.assertEqual(r.returncode, 1, r.stdout)
+            self.assertIn('symbolic link', r.stderr)
+            self.assertEqual(sorted(x.name for x in elsewhere.iterdir()), [])
+            self.assertFalse((self.pool / 'msg').exists())
+            # the pool itself
+            self.fresh()
+            shutil.rmtree(elsewhere, ignore_errors=True); elsewhere.mkdir()
+            self.pool.symlink_to(elsewhere)
+            f = self.tmp / 'spooled.ready'
+            f.write_text(PDU_GSM + '\n')
+            r = self.run_sms(shell, 'import-pdu', f)
+            self.assertEqual(r.returncode, 1, r.stdout)
+            self.assertEqual(sorted(x.name for x in elsewhere.iterdir()), [])
+            self.pool.unlink()
+            # a link among the parked parts is never read; a parts directory that is not mode 700 is made so
+            self.fresh()
+            (self.pool / 'parts').mkdir(parents=True, mode=0o755)
+            (self.pool / 'parts' / 'plink').symlink_to(target)
+            r = self.run_sms(shell, 'import-pdu', self.spooled(PDU_UCS2))
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual([h['from'] for h, _ in self.msgs().values()], ['ADANA BLD'])
+            self.assertEqual((self.pool / 'parts').stat().st_mode & 0o777, 0o700)
+            self.assertTrue((self.pool / 'parts' / 'plink').is_symlink())
 
 
 class Spool(ShellTest):
@@ -1037,6 +1083,30 @@ class Spool(ShellTest):
                     self.assertEqual(r.returncode, 1)
                     self.assertEqual(self.files(), [])
                     self.assertFalse((self.tmp / 'fs.log').exists())
+
+    def test_a_spool_or_pool_that_is_a_link_is_refused(self):
+        for shell in self.each_shell():
+            elsewhere = self.tmp / 'elsewhere'
+            shutil.rmtree(elsewhere, ignore_errors=True); elsewhere.mkdir()
+            shutil.rmtree(self.pool, ignore_errors=True)
+            self.pool.mkdir(mode=0o700)
+            (self.pool / 'incoming').symlink_to(elsewhere)
+            r = self.script(shell, self.SPOOLER, stdin=f'+CMT: ,40\n{PDU_GSM}\n', MU300_SMS_POOL=self.pool)
+            self.assertEqual(r.returncode, 1)
+            self.assertIn('symbolic link', r.stderr)
+            self.assertEqual(sorted(x.name for x in elsewhere.iterdir()), [])
+            shutil.rmtree(self.pool)
+            self.pool.symlink_to(elsewhere)
+            r = self.script(shell, self.SPOOLER, stdin=f'+CMT: ,40\n{PDU_GSM}\n', MU300_SMS_POOL=self.pool)
+            self.assertEqual(r.returncode, 1)
+            self.assertEqual(sorted(x.name for x in elsewhere.iterdir()), [])
+            self.pool.unlink()
+            # a pool somebody left mode 755 is made 700, and the spool is written
+            self.pool.mkdir(mode=0o755)
+            r = self.script(shell, self.SPOOLER, stdin=f'+CMT: ,40\n{PDU_GSM}\n', MU300_SMS_POOL=self.pool)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(self.pool.stat().st_mode & 0o777, 0o700)
+            self.assertEqual(len(self.files()), 1)
 
     def test_two_frames_in_one_second_are_two_files(self):
         for shell in self.each_shell():
@@ -1395,6 +1465,24 @@ class Daemon(ShellTest):
                 out, err = self.stop(d)
             self.assertIn('could not pool', err)
             self.assertIn('three rounds of pooling or acknowledging failed', err)
+
+    def test_a_link_in_the_spool_is_set_aside_and_never_imported(self):
+        for shell in self.each_shell():
+            self.fresh()
+            d = self.start(shell)
+            try:
+                self.wait_for(lambda: self.flag.exists(), 'direct delivery was not asked for')
+                self.spool.mkdir(parents=True, exist_ok=True)
+                target = self.tmp / 'target.pdu'
+                target.write_text(PDU_GSM + '\n')
+                (self.spool / 'cmt-1.link.ready').symlink_to(target)
+                self.wait_for(lambda: (self.spool / 'cmt-1.link.failed').is_symlink(), 'the link was not set aside')
+                self.assertFalse([l for l in self.at_log() if l.startswith('SMS import-pdu')])
+                self.assertNotIn('AT+CNMA=1', self.commands())
+                self.assertTrue(self.flag.exists())              # one link is no failure of direct delivery
+            finally:
+                out, err = self.stop(d)
+            self.assertIn('not a regular file; set aside', err)
 
     def test_an_acknowledgement_the_modem_refuses_keeps_the_file(self):
         for shell in self.each_shell():
