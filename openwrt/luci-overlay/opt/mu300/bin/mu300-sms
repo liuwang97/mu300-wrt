@@ -32,7 +32,8 @@
 #
 # The modem is reached only through mu300-atd (mu300-at), in PDU mode, as `sms` does: text mode mangles a sender
 # that is a name and cannot tell the parts of a long message apart (FINDINGS 26c). The frames are decoded and built
-# by the same /opt/mu300/lib/sms-pdu.awk.
+# by the same /opt/mu300/lib/sms-pdu.awk. A send is one transaction under mu300-at's client lock (at_lock): the
+# modem's own SMSC written back to it unchanged, PDU mode, then the submission, with no other client in between.
 #
 # Port of the fork's mu300-sms (kanoqwq/clean-tf-7.2, cd4fb28): its pool format, list/show output (which the
 # panel's backend, mu300dash, parses by column), fingerprint dedupe and tombstones; PDU mode and our codec in place
@@ -80,6 +81,78 @@ durable() {
 # at CMD [SECONDS]: one command through mu300-atd. Its stderr is passed on: "mu300-at: busy" is how the panel learns
 # that the channel was busy.
 at() { mu300-at -t "${2:-8}" "$1"; }
+
+# nap SECONDS: a fraction where the static busybox next to us can sleep one (OpenWrt's /bin/sleep takes whole
+# seconds only), else a whole second
+BB=${MU300_BUSYBOX:-/opt/mu300/bin/busybox}
+nap() { "$BB" sleep "$1" 2>/dev/null || sleep 1; }
+
+# at_lock / at_unlock: mu300-at's client lock ($ATDIR/lock, the mutex its clients take around every single command),
+# held here across a whole transaction. A send is several commands (the SMSC refresh, PDU mode, the submission)
+# that must reach the modem with nothing else in between: as separate mu300-at calls, each one let another client
+# in (the panel's collectors, a sync), and on one network the submission then failed (FINDINGS 46). The mu300-at
+# calls made under it are told so (MU300_AT_LOCK_HELD) and take no lock of their own. The rules are mu300-at's: a
+# holder that is gone is taken over, and the wait is MU300_AT_LOCK_WAIT seconds of the clock (the panel sets it
+# short, so a busy channel is "busy" within seconds, before anything is sent). Giving up says it in mu300-at's own
+# words, which the panel reads (mu300dash at_client_busy).
+at_lock() {
+    _lock=$ATDIR/lock
+    _wait=${MU300_AT_LOCK_WAIT:-90}
+    case $_wait in ''|*[!0-9]*) _wait=90 ;; esac
+    _end=$(( $(date +%s) + _wait ))
+    while ! mkdir "$_lock" 2>/dev/null; do
+        # a holder killed with SIGKILL cannot clean up after itself; take the lock over when it is gone
+        _o=$(cat "$_lock/pid" 2>/dev/null)
+        if [ -n "$_o" ] && ! kill -0 "$_o" 2>/dev/null; then
+            rm -rf "$_lock" 2>/dev/null && continue
+        fi
+        [ "$(date +%s)" -ge "$_end" ] && { echo "mu300-at: busy" >&2; exit 1; }
+        nap 0.1
+    done
+    echo $$ > "$_lock/pid"
+    # when this is done at the latest, as every holder says (lock/until): the four commands of a send, each with
+    # mu300-at's own budget of T + 31 s (8 + 8 + 6 + 40 s of answers), and 10 s more
+    echo $(( $(date +%s) + 196 )) > "$_lock/until"
+    MU300_AT_LOCK_HELD=$$; export MU300_AT_LOCK_HELD
+    trap at_unlock EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+}
+at_unlock() {
+    [ "$(cat "$ATDIR/lock/pid" 2>/dev/null)" = "$$" ] && rm -rf "$ATDIR/lock" 2>/dev/null
+    unset MU300_AT_LOCK_HELD
+    trap - EXIT
+}
+
+# smsc_refresh: the SMSC the modem has, written back to it unchanged (AT+CSCA?, then AT+CSCA="<the same>",<type>)
+# before a send. On one network (China Broadnet, FINDINGS 46) every submission failed with the modem's IMS stack
+# saying "SMS FAILED: CODE:600 REASON:Busy Everywhere" until exactly this had been done; what it puts right inside
+# the modem is not known. The address is kept byte for byte as the modem showed it, in the active character set
+# (AT+CSCS, which is never touched here: "HEX" on that device, where the address reads as hexadecimal), with the
+# same type (145: international). A query that fails or answers something else is logged, and the send goes on
+# without the refresh; so does a write the modem refuses: the SMSC in use is the same either way, and the
+# submission's own answer is the one that says what is wrong. Nothing here ever picks another SMSC.
+smsc_refresh() {
+    _r=$(at 'AT+CSCA?' 8 2>/dev/null) || { echo "mu300-sms: the SMSC could not be read; sending without the refresh" >&2; return 0; }
+    _l=$(printf '%s\n' "$_r" | tr -d '\r' | sed -n 's/^+CSCA: *//p' | head -n 1)
+    # "ADDRESS",TYPE: + and digits, or hexadecimal (CSCS "HEX"), then the type as a number
+    _addr=; _type=
+    case $_l in
+        '"'*'",'[0-9]*) _addr=${_l%,*}; _addr=${_addr#\"}; _addr=${_addr%\"}; _type=${_l##*,} ;;
+    esac
+    case $_addr in ''|*[!+0-9A-Fa-f]*) _addr= ;; esac
+    case $_type in [0-9]|[0-9][0-9]|[0-9][0-9][0-9]) ;; *) _addr= ;; esac
+    if [ -z "$_addr" ] || [ ${#_addr} -gt 64 ]; then
+        echo "mu300-sms: the modem's SMSC answer was not understood; sending without the refresh" >&2
+        return 0
+    fi
+    _w=$(at "AT+CSCA=\"$_addr\",$_type" 8 2>/dev/null) || _w=
+    case $(printf '%s\n' "$_w" | tr -d '\r' | tail -n 1) in
+        OK) ;;
+        *) echo "mu300-sms: the modem refused to refresh its SMSC: $(printf '%s\n' "$_w" | grep -E 'CMS|CME|ERROR' | head -n 1)" >&2 ;;
+    esac
+    return 0
+}
 
 # Without mu300-atd, mu300-at opens the tty itself, which works once and can leave the channel silent until a
 # reboot (FINDINGS 13b): a daemon that syncs every few seconds must never take that path.
@@ -538,9 +611,14 @@ cmd_send() {
         [ "$_udl" -le 160 ] || die "the text is $_udl characters long; one SMS carries 160"
         _coding=gsm
     fi
+    # The whole conversation with the modem under one AT client lock (at_lock): the SMSC refresh, PDU mode and the
+    # submission reach it with nothing from another client in between (FINDINGS 46). The pool lock comes after it
+    # is released: a path holding the pool lock makes no AT call (see cmd_sync).
+    at_lock
+    smsc_refresh
     _r=$(at 'AT+CMGF=0' 6) || exit 1
     # AT+CMGS, the CR, the PDU and Ctrl-Z as one request: the modem prompts with "> " and no newline, which a line
-    # reader never sees, and two requests would let another client in between the prompt and the PDU
+    # reader never sees; mu300-atd writes the whole request and collects the answer (FINDINGS 46 on why it stays so)
     _r=$(at "$(printf 'AT+CMGS=%s\r%s\032' "$_len" "$_pdu")" 40) || {
         die "the modem did not take the message: $(printf '%s\n' "$_r" | grep -E 'CMS|ERROR' | head -n 1)"; }
     case $_r in
@@ -549,6 +627,7 @@ cmd_send() {
         *) _e=$(printf '%s\n' "$_r" | grep -E 'CMS|CME|ERROR' | head -n 1)
            die "the modem did not take the message: ${_e:-no +CMGS confirmation}" ;;
     esac
+    at_unlock
     pool_init
     pool_lock
     store_msg mo sent "$_num" "$(date '+%Y-%m-%d %H:%M:%S')" "" "$_coding" "$_text" >/dev/null

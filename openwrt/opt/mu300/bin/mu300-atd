@@ -252,6 +252,10 @@ while :; do
     DRAIN_MAX=$([ "$silent" -gt 0 ] && echo 25 || echo 3)
     export DRAIN_MAX
     drain "$([ "$clean" = 1 ] && echo "$QUICK" || echo 1)"
+    # A PDU send ("AT+CMGS=N<CR>PDU<Ctrl-Z>") goes out as one write too: the modem's "> " prompt between the
+    # header and the PDU has no newline, so the line reads here never see it, and it is collected with the reply.
+    # Waiting for it before the PDU would need a byte-wise read whose timeout behaviour differs between bash and
+    # busybox ash, in the one process that owns the channel; measured sends work as is (docs/FINDINGS.md 46).
     printf '%s\r' "$cmd" >&3
     # clean: the reply ended in a final result code, by collect's own exact test of its last line
     clean=0
