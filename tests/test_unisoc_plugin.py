@@ -289,8 +289,11 @@ printf 'OK\n'
         self.stub('uci', f'mkdir -p "$STUBLOG/modem"\n{knobs}\nexit 0')
         self.stub('ifup', 'exit 0')
         self.stub('sleep', 'exit 0')
-        # the background cache refresh (sh "$0" get fresh) is not under test: keep it off the AT log
+        # the background cache refreshes (sh "$0" get fresh after a reset, setsid "$0" get fresh after an EN-DC
+        # apply) are not under test: keep them off the AT log - a real setsid (Linux) would append do_get's seven
+        # queries a moment after the tool has returned, racing the next assertion
         self.stub('sh', 'exit 0')
+        self.stub('setsid', 'exit 0')
         return lock, state, self.tmp / 'run', at
 
     def reset_run(self, shell, lock, state, run, at, *args):
