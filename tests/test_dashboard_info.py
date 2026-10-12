@@ -5,12 +5,22 @@
   leases file and its "*" is no name.
 - DNS: the active servers of both data interfaces, from ubus's multi-line JSON, each once, never inactive ones.
 - Connections: the kernel's nf_conntrack_count (mainline has no /proc/net/nf_conntrack), the table as fallback,
-  null when neither can be read."""
+  null when neither can be read.
+
+The SIM's own number (cell, the collector; home.js, the row; FINDINGS 49, after kanoqwq@0d93695): AT+CNUM on full
+rounds only, the IMS public identity (AT+SPPAURI?) when the SIM has none, nothing when neither has one; never in
+the fast tier, never on flash, never in a log."""
 import json
+import os
+import shutil
+import subprocess
+import unittest
 
 from helpers import ShellTest, TOP
 
 INFO = TOP / 'openwrt' / 'luci-app-mu300' / 'root' / 'usr' / 'libexec' / 'unisoc-modem' / 'dashboard-info'
+CELL = TOP / 'openwrt' / 'luci-app-mu300' / 'root' / 'usr' / 'libexec' / 'unisoc-modem' / 'cell'
+HOME = TOP / 'openwrt' / 'luci-app-mu300' / 'htdocs' / 'luci-static' / 'resources' / 'view' / 'mu300' / 'home.js'
 
 STATIONS = '''Station 3C:22:FB:00:00:01 (on wlan0)
 \tinactive time:\t120 ms
@@ -164,6 +174,174 @@ class Info(ShellTest):
             self.assertEqual(self.info(shell)['conns'], 3)
 
 
+class OwnNumber(ShellTest):
+    """The collector's MSISDN: cell.json's msisdn / msisdn_src."""
+
+    NUMBER = '+905551234567'
+    SIM_CNUM = '+CNUM: "","+905551234567",145\nOK'
+    IMS_URI = '+SPPAURI: "sip:+8613800000000@ims.mnc001.mcc460.3gppnetwork.org","tel:+8613800000000"\nOK'
+
+    def setUp(self):
+        super().setUp()
+        self.stub('uci', 'exit 1')
+        # the AT adapter: the replies a registered modem gives, the two number queries from the environment
+        self.stub('fake-at', r"""printf '%s\n' "$*" >> "$STUBLOG/at-commands"
+case "$*" in
+  *AT+CFUN?*)     printf '+CFUN: 1\nOK\n' ;;
+  *AT+CEREG?*)    printf '+CEREG: 2,1,"1A2B","01234567",7\nOK\n' ;;
+  *AT+CESQ*)      printf '+CESQ: 99,99,255,255,20,50\nOK\n' ;;
+  *AT+CIMI*)      printf '286016012345678\nOK\n' ;;
+  *AT+CCID*)      printf '+CCID: 8990011234567890123\nOK\n' ;;
+  *AT+CNUM*)      printf '%s\n' "$CNUM_REPLY" ;;
+  *AT+SPPAURI?*)  printf '%s\n' "$IMS_REPLY" ;;
+  *)              printf 'OK\n' ;;
+esac""")
+        self.log = self.tmp / 'at-commands'
+
+    def collect(self, shell, mode='full', cnum='ERROR', ims='ERROR', tag='a'):
+        """One collector round; returns the cache it wrote (cell.json for full, sig.json for fast)."""
+        run = self.tmp / f'run-{tag}'
+        ident = self.tmp / f'ident-{tag}'
+        r = self.script(shell, CELL, mode, MU300_AT=self.stubs / 'fake-at', MU300_DASH_DIR=run,
+                        MU300_DASH_IDENT_DIR=ident, MU300_DASH_POOL_DIR=self.tmp / f'pool-{tag}',
+                        CNUM_REPLY=cnum, IMS_REPLY=ims)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout + r.stderr, '')     # a collector prints nothing: the number is not for a log
+        return json.loads((run / ('cell.json' if mode == 'full' else 'sig.json')).read_text())
+
+    def commands(self):
+        return self.log.read_text() if self.log.exists() else ''
+
+    def fresh(self, tag):
+        self.log.unlink(missing_ok=True)
+        for d in (f'run-{tag}', f'ident-{tag}', f'pool-{tag}'):
+            shutil.rmtree(self.tmp / d, ignore_errors=True)
+
+    def test_cnum_on_a_full_round(self):
+        for i, shell in enumerate(self.each_shell()):
+            self.fresh(i)
+            c = self.collect(shell, 'full', cnum=self.SIM_CNUM, tag=i)
+            self.assertEqual(c['msisdn'], self.NUMBER)
+            self.assertEqual(c['msisdn_src'], 'sim')
+            self.assertEqual(self.commands().count('AT+CNUM'), 1)
+            self.assertNotIn('AT+SPPAURI?', self.commands())  # the SIM had one: IMS is not asked
+
+    def test_the_ims_identity_when_the_sim_has_no_number(self):
+        for i, shell in enumerate(self.each_shell()):
+            self.fresh(i)
+            c = self.collect(shell, 'full', cnum='+CNUM: "","",129\nOK', ims=self.IMS_URI, tag=i)
+            self.assertEqual(c['msisdn'], '+8613800000000')
+            self.assertEqual(c['msisdn_src'], 'ims')
+            self.assertEqual(self.commands().count('AT+CNUM'), 1)
+            self.assertEqual(self.commands().count('AT+SPPAURI?'), 1)
+
+    def test_neither_has_one(self):
+        for i, shell in enumerate(self.each_shell()):
+            self.fresh(i)
+            c = self.collect(shell, 'full', tag=i)
+            self.assertIsNone(c['msisdn'])
+            self.assertIsNone(c['msisdn_src'])
+            # an empty answer is asked again on the next full round (IMS registers later than the SIM is read)
+            c = self.collect(shell, 'full', ims=self.IMS_URI, tag=i)
+            self.assertEqual(c['msisdn'], '+8613800000000')
+            self.assertEqual(self.commands().count('AT+CNUM'), 2)
+            self.assertEqual(self.commands().count('AT+SPPAURI?'), 2)
+
+    def test_a_number_found_is_kept_for_the_boot(self):
+        for i, shell in enumerate(self.each_shell()):
+            self.fresh(i)
+            self.collect(shell, 'full', cnum=self.SIM_CNUM, tag=i)
+            c = self.collect(shell, 'full', cnum='ERROR', tag=i)   # not asked again, so the reply does not matter
+            self.assertEqual(c['msisdn'], self.NUMBER)
+            self.assertEqual(c['msisdn_src'], 'sim')
+            self.assertEqual(self.commands().count('AT+CNUM'), 1)
+
+    def test_never_in_the_fast_tier(self):
+        for i, shell in enumerate(self.each_shell()):
+            self.fresh(i)
+            s = self.collect(shell, 'fast', cnum=self.SIM_CNUM, ims=self.IMS_URI, tag=i)
+            self.assertNotIn('msisdn', s)
+            self.assertNotIn('AT+CNUM', self.commands())
+            self.assertNotIn('AT+SPPAURI', self.commands())
+
+    def test_never_on_flash_never_in_a_log(self):
+        for i, shell in enumerate(self.each_shell()):
+            self.fresh(i)
+            self.collect(shell, 'full', cnum=self.SIM_CNUM, tag=i)
+            ident = self.tmp / f'ident-{i}'
+            for f in ident.rglob('*'):                       # the 6 h identity cache (flash) has IMSI/ICCID, no number
+                self.assertNotIn('5551234567', f.read_text(), f)
+            run = self.tmp / f'run-{i}'
+            holders = [f for f in run.rglob('*') if f.is_file() and '5551234567' in f.read_text()]
+            self.assertTrue(holders)
+            for f in holders:                                # the runtime caches are root's only (umask 077)
+                self.assertEqual(f.stat().st_mode & 0o077, 0, f)
+                self.assertIn(f.name, ('cell.json', 'own-number'), f)
+            self.assertEqual(self.commands().count('5551234567'), 0)  # the stub logs the commands: none carries it
+        dash = (TOP / 'openwrt' / 'luci-app-mu300' / 'root' / 'usr' / 'libexec' / 'rpcd' / 'mu300dash').read_text()
+        self.assertIn('no IMSI or numbers', dash)           # the operations log's rule, unchanged
+
+    def test_parsing(self):
+        cases = [
+            # (CNUM reply, IMS reply, number, source)
+            ('+CNUM: "Line 1","05551234567",129\nOK', 'ERROR', '05551234567', 'sim'),        # national, as given
+            ('+CNUM: "","905551234567",145\nOK', 'ERROR', '+905551234567', 'sim'),          # type 145: international
+            ('+CNUM: "","+90 555 123-4567",145\nOK', 'ERROR', '+905551234567', 'sim'),      # spaces and dashes
+            ('+CNUM: "","",129\nOK', '+SPPAURI: "tel:+905551234567"\nOK', '+905551234567', 'ims'),
+            ('ERROR', '+SPPAURI: "sip:+905551234567@ims.mnc001.mcc286.3gppnetwork.org"\nOK', '+905551234567', 'ims'),
+            ('ERROR', '+SPPAURI: "sip:286016012345678@ims.mnc001.mcc286.3gppnetwork.org"\nOK', None, None),  # an IMSI
+            ('+CNUM: "","not a number",129\nOK', '+SPPAURI: "sip:x@y"\nOK', None, None),
+            ('+CNUM: "","12345678901234567890",129\nOK', 'ERROR', None, None),              # longer than E.164
+        ]
+        for i, shell in enumerate(self.each_shell()):
+            for j, (cnum, ims, number, source) in enumerate(cases):
+                tag = f'{i}-{j}'
+                self.fresh(tag)
+                c = self.collect(shell, 'full', cnum=cnum, ims=ims, tag=tag)
+                self.assertEqual((c['msisdn'], c['msisdn_src']), (number, source), (cnum, ims))
+
+
+@unittest.skipUnless(shutil.which('node'), 'Node.js is needed for the LuCI JS tests')
+class OwnNumberRow(unittest.TestCase):
+    """home.js's paintIdent alone: the row is there only with a number, masked like the IMSI until revealed."""
+
+    def paint(self, cell, shown=False):
+        src = HOME.read_text(encoding='utf-8')
+        start = src.index('paintIdent: function(cell) {')
+        start = src.index('function', start)
+        end = src.index('\n\t},', start)
+        js = r'''
+const _ = (s) => s;
+const out = {}, row = { style: { display: 'none' } };
+const M = { set: (id, t) => { out[id] = t; }, v: (id) => id === 'msisdn-r' ? row : null };
+const self = { identShown: ''' + json.dumps(shown) + r''', paintIdent: ''' + src[start:end] + '\n\t}' + r''' };
+self.paintIdent(''' + json.dumps(cell) + r''');
+process.stdout.write(JSON.stringify({ shown: row.style.display !== 'none', value: out.msisdn, imsi: out.imsi }));
+'''
+        r = subprocess.run(['node', '-'], input=js, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return json.loads(r.stdout)
+
+    def test_the_row_is_in_the_page(self):
+        src = HOME.read_text(encoding='utf-8')
+        self.assertIn('id="mud-msisdn-r"', src)
+        self.assertIn("_('Own number')", src)
+
+    def test_with_a_number(self):
+        t = self.paint({'ident': {'imsi': '286016012345678'}, 'msisdn': '+905551234567', 'msisdn_src': 'sim'})
+        self.assertTrue(t['shown'])
+        self.assertEqual(t['value'], '+905****567')
+        self.assertEqual(t['imsi'], '2860****678')
+        t = self.paint({'ident': {}, 'msisdn': '+905551234567'}, shown=True)
+        self.assertEqual(t['value'], '+905551234567')
+
+    def test_without_a_number_the_row_is_hidden(self):
+        for cell in ({'ident': {'imsi': '286016012345678'}, 'msisdn': None, 'msisdn_src': None},
+                     {'ident': {'imsi': '286016012345678'}}, None, {'error': 'AT backend did not answer'}):
+            t = self.paint(cell)
+            self.assertFalse(t['shown'], cell)
+            self.assertEqual(t['value'], '--')
+
+
 if __name__ == '__main__':
-    import unittest
     unittest.main()

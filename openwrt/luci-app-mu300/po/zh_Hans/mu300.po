@@ -849,6 +849,9 @@ msgstr "调制解调器"
 msgid "Carrier"
 msgstr "运营商"
 
+msgid "Own number"
+msgstr "本机号码"
+
 msgid "Module"
 msgstr "模组"
 
