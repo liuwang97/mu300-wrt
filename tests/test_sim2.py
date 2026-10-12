@@ -209,6 +209,13 @@ echo OK
         self.assertEqual(self.calls(), [])
         self.assertEqual((self.tmp / 'md').read_text(), 'radio-on\n')
 
+    def test_fifo_from_a_dead_owner_is_not_startup_readiness(self):
+        (self.run / 'mu300-at/owner/pid').write_text('999999999\n')
+        r = self.warmup()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.settings(), ('0\n', '0\n', False, 'brokers-missing\n'))
+        self.assertEqual(self.calls(), [])
+
     def test_mobile_data_uses_ready_marker_without_second_bringup(self):
         lib = self.copy_script('mobile-data')
         (self.run / 'mu300/sim2-radio-ready').touch()
@@ -290,14 +297,14 @@ sleep() {{ :; }}
         self.assertEqual(self.instances(r), ['atd', 'atd2', 'atd4', 'atd5', 'sim2-cold-start'])
         self.assertTrue((self.tmp / 'pending').exists())
 
-    def test_second_group_waits_for_the_sbuf_inside_its_instance(self):
+    def test_all_native_owners_wait_for_the_sbuf_inside_their_instances(self):
         # the wait is the instance's, bounded, never start_service's: a boot always gets its brokers
         (self.etc / 'uci-slot').write_text('1\n')
         r = self.init_service()
         commands = [l for l in r.stdout.splitlines() if l.startswith('param command ')]
         self.assertEqual(len(commands), 5)
         for c in commands:
-            if 'stty_nr4' in c or 'stty_nr5' in c:
+            if '/dev/stty_nr' in c:
                 self.assertIn("sbuf_5_006, state: 1,", c); self.assertIn('/dev/sipc_sbuf', c); self.assertIn('-gt 240', c)
             else:
                 self.assertNotIn('sipc_sbuf', c)

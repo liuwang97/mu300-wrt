@@ -40,10 +40,16 @@ fallback() {  # fallback REASON: SIM1 without live switching from the next boot 
     logger -t mu300-sim "nothing was sent to the radio: starting SIM1 in this boot" 2>/dev/null || true
     exec "$MD" radio-on
 }
+broker_ready() {
+    local directory=$1 owner
+    [[ -p "$directory/cmd" && -s "$directory/owner/pid" ]] || return 1
+    owner=$(cat "$directory/owner/pid")
+    [[ "$owner" =~ ^[0-9]+$ ]] && kill -0 "$owner" 2>/dev/null
+}
 for ((attempt=0; attempt<180; attempt++)); do
     ready=1
     for directory in /run/mu300-at /run/mu300-at2 /run/mu300-at4 /run/mu300-at5; do
-        [[ -p "$directory/cmd" ]] || ready=0
+        broker_ready "$directory" || ready=0
     done
     [[ $ready == 1 ]] && break
     sleep 1

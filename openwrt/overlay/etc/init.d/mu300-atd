@@ -61,9 +61,8 @@ start_sim1() {
 	procd_close_instance
 }
 
-# --- U30 Air dual SIM (docs/U30AIR-SIM2.md): the second card's group nr3/nr4/nr5, a native cold start of the
-# chosen card, and a live switch. Opt-in (/etc/mu300-sim-slot, /etc/mu300-sim-hot, both written by mu300-sim),
-# U30 Air only: on every other device those files are ignored and the SIM1 path above runs.
+# U30 Air native cold/live mode is opted into by network.wan.sim_slot/sim_hot.
+# Other devices keep their shared boot selector path; legacy U30 files are migrated at startup.
 
 # broker NAME CHANNEL DIR URC-CHANNELS LIVE-URC-LOG [WAIT]: one persistent owner of a SIPC tty. WAIT is a shell
 # condition the instance waits for (bounded) before it opens the channel: the second group's channels have a node
@@ -94,8 +93,8 @@ start_sim2() {
     : > /run/mu300-radio-freeze
     : > /run/mu300/sim-active-unknown
     [ "$hot" != 1 ] || : > /run/mu300/sim-managed
-    broker atd 1 /run/mu300-at 0 /run/mu300-at/urc/stty_nr0.log
-    broker atd2 2 /run/mu300-at2 '' /run/mu300-at/urc/stty_nr0.log
+    broker atd 1 /run/mu300-at 0 /run/mu300-at/urc/stty_nr0.log "$SBUF_READY"
+    broker atd2 2 /run/mu300-at2 '' /run/mu300-at/urc/stty_nr0.log "$SBUF_READY"
     broker atd4 4 /run/mu300-at4 3 /run/mu300-at4/urc/stty_nr3.log "$SBUF_READY"
     broker atd5 5 /run/mu300-at5 '' /run/mu300-at4/urc/stty_nr3.log "$SBUF_READY"
     # The cold start (and its fallback to SIM1 when it cannot be done): mu300-sim2-warmup confirms the boot.
