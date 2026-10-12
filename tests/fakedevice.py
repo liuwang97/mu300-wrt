@@ -103,7 +103,7 @@ class FakeDevice:
                                  'persist.sys.locale=en-US\n')
         (r / 'volumes').write_text('private mounted null\n')
         (r / 'mounts').write_text('')
-        # /proc/sys/kernel/random/boot_id: the key of the lock a timed-out SD-card stage leaves (FINDINGS 48)
+        # /proc/sys/kernel/random/boot_id: the key of the lock a timed-out SD-card stage leaves (FINDINGS 50)
         (r / 'boot_id').write_text('11111111-2222-3333-4444-555555555555\n')
         for name, body in (('android-sh', ANDROID_SH), ('devsh', DEVSH), ('ubb', UBB)):
             (r / name).write_text(body); (r / name).chmod(0o755)

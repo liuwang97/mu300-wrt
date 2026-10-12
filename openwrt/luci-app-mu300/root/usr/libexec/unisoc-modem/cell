@@ -23,6 +23,8 @@
 #   AT+SPENGMD=0,6,6    LTE neighbour slots (8 x 12 fields, first 4 per slot are the reading)
 #   AT+SPQ5GNCELLEX     NR neighbour table with real per-cell SINR
 #   AT+CGEQOSRDP=1      QCI + up/down AMBR of the active bearer
+#   AT+CNUM             the SIM's own number (full rounds only, until one is found; see "own number" below)
+#   AT+SPPAURI?         the IMS public identity, when the SIM has no number
 # AT+SPENGMD=0,1,0 is NEVER sent: it switches the AT port into streaming mode and
 # kills the channel until the next reboot (V50 archive; blacklisted in the rpcd
 # AT terminal too).
@@ -114,6 +116,40 @@ at() {
 now() { date +%s; }
 n_or_null() { case "$1" in ''|*[!0-9]*) echo null ;; *) echo "$1" ;; esac; }
 qs() { json_str_or_null "$1"; }
+
+# ------------------------------------------------------------- own number
+# cnum_number: the first number of an AT+CNUM answer, +CNUM: "alpha","number",type[,...]: digits (spaces, dashes and
+# brackets dropped), 3 to 15 of them (E.164), "+" put in front for type 145 (international). A SIM without a number
+# answers OK alone or an empty string: nothing then.
+cnum_number() {
+    awk -F '"' '/^\+CNUM:/ {
+        n = $4; gsub(/[ ()-]/, "", n)
+        if (n !~ /^\+?[0-9][0-9]+[0-9]$/) next
+        d = n; sub(/^\+/, "", d)
+        if (length(d) > 15) next
+        if ($5 ~ /^[ \t]*,[ \t]*145([ \t]*,|[ \t]*$)/ && n !~ /^\+/) n = "+" n
+        print n; exit
+    }'
+}
+# ims_number: the operator-provisioned IMS public identity (AT+SPPAURI?, what the stock RIL reads for the number): a
+# tel: URI first, else a sip:/sips: URI whose user part is an international number. A bare numeric SIP user part
+# is the IMSI on many networks, not a telephone number, so without a "+" it is not taken.
+ims_number() {
+    awk '/^\+SPPAURI:/ {
+        sub(/^\+SPPAURI:[ \t]*/, "")
+        count = split($0, f, /[ \t",<>]+/)
+        for (i = 1; i <= count; i++) {
+            uri = f[i]; lower = tolower(uri)
+            if (lower !~ /^(tel|sips?):/) continue
+            n = uri; sub(/^[^:]*:/, "", n); sub(/[@;?].*$/, "", n); gsub(/[ ().-]/, "", n)
+            d = n; sub(/^\+/, "", d)
+            if (d !~ /^[0-9]+$/ || length(d) < 3 || length(d) > 15) continue
+            if (lower ~ /^tel:/) { print n; done = 1; exit }
+            if (n ~ /^\+/ && sip == "") sip = n
+        }
+    }
+    END { if (!done && sip != "") print sip }'
+}
 
 # --------------------------------------------------------------- one collector
 # the same "one owner, spare waits/takes over" pattern mu300-atd uses, so two
@@ -461,6 +497,27 @@ if [ "$MODE" = full ]; then
             printf '%s\n' "$IDENT_JSON" > "$IDENT.part" 2>/dev/null && mv "$IDENT.part" "$IDENT"
         elif [ -s "$IDENT" ]; then IDENT_JSON=$(cat "$IDENT"); fi
     fi
+    # The SIM's own number (MSISDN): AT+CNUM, else the IMS public identity, which the operator provisions and the
+    # modem has only once IMS is registered - later than the SIM is read. So an empty answer is asked again on every
+    # full round (two commands, ~0.3 s), a number found is kept in the runtime directory for this boot (a SIM change
+    # goes through a reboot). Never in the 6 h identity cache: that file is on flash and a number is personal data.
+    # Never in the fast tier. The panel masks it like the IMSI until "Show SIM identifiers".
+    OWN=$DIR/own-number
+    i_msisdn=; i_msisdn_src=
+    if [ -s "$OWN" ]; then
+        read -r i_msisdn_src i_msisdn < "$OWN" 2>/dev/null || i_msisdn=
+    fi
+    if [ -z "$i_msisdn" ]; then
+        i_msisdn=$(at 'AT+CNUM' 2 | cnum_number); i_msisdn_src=sim
+        if [ -z "$i_msisdn" ]; then
+            i_msisdn=$(at 'AT+SPPAURI?' 2 | ims_number); i_msisdn_src=ims
+        fi
+        if [ -n "$i_msisdn" ]; then
+            printf '%s %s\n' "$i_msisdn_src" "$i_msisdn" > "$OWN.part" 2>/dev/null && mv "$OWN.part" "$OWN"
+        else
+            i_msisdn_src=
+        fi
+    fi
 fi
 
 # "no answer at all" is a modem/daemon problem, not "no signal".
@@ -503,5 +560,6 @@ else NEIGH=null; fi
 COPSJ=$(cops_fragment "$COPS" "$(printf '%s\n' "$OPN" | sed -n 1p)" "$(printf '%s\n' "$OPN" | sed -n 2p)")
 QOSJ=$(qos_fragment "$QOS")
 
-printf '{"ts":%d,"cfun":%s,"reg":%s,"reg5g":%s,"operator":%s,"sig_src":"%s","sig":%s,"lte":%s,"nr":%s,"qos":%s,"neigh":%s,"ident":%s}\n' \
-    "$(now)" "$CFUNN" "$REG" "$REG5" "$COPSJ" "$SRC" "$SIG" "$LTE" "$NR" "$QOSJ" "$NEIGH" "$IDENT_JSON" > "$CELL.part" && mv "$CELL.part" "$CELL"
+printf '{"ts":%d,"cfun":%s,"reg":%s,"reg5g":%s,"operator":%s,"sig_src":"%s","sig":%s,"lte":%s,"nr":%s,"qos":%s,"neigh":%s,"ident":%s,"msisdn":%s,"msisdn_src":%s}\n' \
+    "$(now)" "$CFUNN" "$REG" "$REG5" "$COPSJ" "$SRC" "$SIG" "$LTE" "$NR" "$QOSJ" "$NEIGH" "$IDENT_JSON" \
+    "$(qs "$i_msisdn")" "$(qs "$i_msisdn_src")" > "$CELL.part" && mv "$CELL.part" "$CELL"
