@@ -225,11 +225,12 @@ Install the VPN module (about 40 MB more to download, 120 MB on the device)? (ye
 Downloading the VPN module	正在下载 VPN 模块
 extras:         {1}	扩展组件：      {1}
 none	无
-Allow adb (adb shell, push, pull) to Linux over USB from this computer? Its adb key (~/.android/adbkey.pub) gets a root shell (yes/no)	允许这台电脑通过 USB 对 Linux 使用 adb（adb shell、push、pull）吗？它的 adb 密钥（~/.android/adbkey.pub）将获得 root shell (是/否)
+adb to Linux over USB is on and lets every computer in: a root shell without a password for anyone who plugs in a cable. Let in only this computer's adb key (~/.android/adbkey.pub) instead? (yes/no)	通过 USB 对 Linux 的 adb 已开启，并接受任何电脑：任何插上数据线的人都能获得无需密码的 root shell。改为只接受这台电脑的 adb 密钥（~/.android/adbkey.pub）吗？(是/否)
 no adb key of this computer to authorise ({1})	这台电脑没有可授权的 adb 密钥（{1}）
 adb to Linux:   {1}	Linux adb：     {1}
-on, for this computer	开启，仅限这台电脑
-off	关闭
+on, only for the adb key of this computer	开启，仅限这台电脑的 adb 密钥
+on, for every computer: a root shell without a password (on the device: mu300-usb adb auth keys, or mu300-usb adb off)	开启，任何电脑均可：无需密码的 root shell（在设备上：mu300-usb adb auth keys，或 mu300-usb adb off）
+asking it over adb ({1})	正在通过 adb 请求（{1}）
 Android runs from slot {1}; Linux goes to slot {2} (boot_{2})	Android 从槽位 {1} 运行；Linux 将安装到槽位 {2}（boot_{2}）
 CREATE new ext4 (erases what is there)	新建 ext4（会清除上面的内容）
 Dry run: nothing was written.	试运行：未写入任何内容。

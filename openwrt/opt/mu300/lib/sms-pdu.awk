@@ -14,9 +14,28 @@
 #
 #   decode: awk -v mode=decode -f sms-pdu.awk        (one PDU per line, "index<TAB>pdu")
 #   encode: awk -v mode=encode -v number=... -v text=... -f sms-pdu.awk
+#   group:  awk -v mode=group [-v known=FILE] -f sms-pdu.awk    (decode's records in, the same with a key added)
+#   near:   awk -v mode=near -v a=TIMESTAMP -v b=TIMESTAMP -f sms-pdu.awk   (exit 0: within GROUP_WINDOW seconds)
 #
 # Decode prints one record per line, tab separated and with tabs and newlines escaped inside fields:
 #   index <TAB> sender <TAB> timestamp <TAB> ref <TAB> total <TAB> part <TAB> text
+# ref is empty for a message that is not a part of a long one, and for one whose concatenation header says
+# nothing usable (part 0, part 5 of 3, an element of the wrong length): its text is shown as a message of its own
+# rather than held back for siblings that cannot exist.
+#
+# Group says which records are the parts of one long message: it adds an eighth field, the key of the message
+# the record belongs to ("single:N" for a message of its own, "multi:SENDER:REF:TOTAL@TIMESTAMP" for a part).
+# The reference number alone does not say it: it is eight bits wide in most headers, senders reuse it (some
+# send every long message under the same one), and both `sms` (the SIM keeps messages until somebody deletes
+# them) and mu300-sms (a part waits up to an hour for its siblings) can hold two messages of one sender with one
+# reference at the same time. So the parts of one message are those with the same sender, reference and total
+# whose service centre timestamps are within GROUP_WINDOW seconds (600: the centre stamps the parts of one
+# submission seconds apart, and a redelivery keeps the stamp), and no two of them may claim the same part
+# number with different text. The idea is kanoqwq's (clean-tf-7.2 a5bd3e06), who keys a group by the same
+# things and the same ten minutes; the rest is ours (FINDINGS 63). TIMESTAMP in the key is the earliest stamp
+# among the parts seen. `known` names a file whose first tab field per line is a key from an earlier run (the
+# waiting state of the caller): a group that is the continuation of one of those keeps that key, also when a
+# part with an earlier stamp has arrived since, so the caller's "first seen" stays attached to it.
 
 # Bit operations on non-negative integers, in plain arithmetic so that every awk runs them (see the top).
 function b_and(a, b,    r, p) {
@@ -132,6 +151,34 @@ function ts_decode(h, off,    i, b, d, p) {
 }
 function esc_field(s) { gsub(/\t/, " ", s); gsub(/\n/, " ", s); gsub(/\r/, "", s); return s }
 
+# ts_secs("2026-10-13 09:41:07"): seconds on one time line (days from 2000-01-01, every fourth year a leap year,
+# which holds for the 2000-2099 a timestamp can name), -1 for anything else. No time zone: the decoder drops the
+# centre's, and two stamps are only ever compared to say "the same few minutes".
+function ts_secs(s,    y, m, d, days) {
+    if (s !~ /^20[0-9][0-9]-[0-9][0-9]-[0-9][0-9] [0-9][0-9]:[0-9][0-9]:[0-9][0-9]$/) return -1
+    y = substr(s, 3, 2) + 0; m = substr(s, 6, 2) + 0; d = substr(s, 9, 2) + 0
+    if (m < 1 || m > 12) return -1
+    days = y * 365 + int((y + 3) / 4) + substr("000031059090120151181212243273304334", (m - 1) * 3 + 1, 3) + d - 1
+    if (m > 2 && y % 4 == 0) days++
+    return days * 86400 + substr(s, 12, 2) * 3600 + substr(s, 15, 2) * 60 + substr(s, 18, 2)
+}
+# two timestamps within GROUP_WINDOW seconds of each other; one that cannot be read is near everything (the
+# other things a group is keyed by still have to match)
+function ts_near(a, b,    x, y) {
+    x = ts_secs(a); y = ts_secs(b)
+    if (x < 0 || y < 0) return 1
+    return (x > y ? x - y : y - x) <= GROUP_WINDOW
+}
+# a key without its timestamp ("multi:SENDER:REF:TOTAL"), and the timestamp alone; a key of the format before
+# there was one has none
+function key_base(k,    i) { i = match(k, /@[^@]*$/); return i ? substr(k, 1, i - 1) : k }
+function key_stamp(k,    i) {
+    i = match(k, /@[^@]*$/)
+    if (!i) return ""
+    k = substr(k, i + 1); sub(/#[0-9]+$/, "", k)
+    return k
+}
+
 function decode_pdu(idx, h,    i, smsc, first, oal, toa, oabytes, sender, pid, dcs, ts, udl, udhl, \
                     ref, total, part, off, skipsept, text, alpha, j, hend, iei, ielen, lang, langx) {
     i = 0
@@ -157,12 +204,21 @@ function decode_pdu(idx, h,    i, smsc, first, oal, toa, oabytes, sender, pid, d
         j = i + 1; hend = i + 1 + udhl
         while (j + 1 < hend) {
             iei = byteat(h, j); ielen = byteat(h, j + 1)
-            if (iei == 0)      { ref = byteat(h, j + 2); total = byteat(h, j + 3); part = byteat(h, j + 4) }
-            else if (iei == 8) { ref = byteat(h, j + 2) * 256 + byteat(h, j + 3); total = byteat(h, j + 4); part = byteat(h, j + 5) }
+            # a concatenation element counts only with the length it must have, and inside the header: one that is
+            # cut short would take its reference, total and part from the text behind it
+            if (iei == 0) {
+                if (ielen == 3 && j + 5 <= hend) { ref = byteat(h, j + 2); total = byteat(h, j + 3); part = byteat(h, j + 4) }
+            } else if (iei == 8) {
+                if (ielen == 4 && j + 6 <= hend) {
+                    ref = byteat(h, j + 2) * 256 + byteat(h, j + 3); total = byteat(h, j + 4); part = byteat(h, j + 5)
+                }
+            }
             else if (iei == 36) langx = byteat(h, j + 2)     # 0x24 national language single shift
             else if (iei == 37) lang  = byteat(h, j + 2)     # 0x25 national language locking shift
             j += 2 + ielen
         }
+        # part 0, part 5 of 3, 0 parts: no message could ever be made whole of it, so it is one of its own
+        if (ref != "" && (total < 1 || part < 1 || part > total)) { ref = ""; total = 1; part = 1 }
     }
     off = i + (udhl ? udhl + 1 : 0)
     if (b_and(dcs, 12) == 8) {                             # UCS2
@@ -235,6 +291,9 @@ function ucs2_pack(cp, n,    i, out, v) {
 
 BEGIN {
     gsm_init(); ord_init()
+    if (GROUP_WINDOW == "") GROUP_WINDOW = 600
+    if (mode == "near") exit(ts_near(a, b) ? 0 : 1)
+    if (mode == "group") FS = "\t"
     # A +CUSD body, which is not a PDU: with AT+CSCS="HEX" the modem converts the answer to characters and then
     # hex-dumps them, one byte per character, so there are no packed septets to unpick here. Measured on this
     # modem - eleven bytes for an eleven-character answer. Only the alphabet is in question, and the CBS coding
@@ -273,3 +332,53 @@ mode == "decode" && NF >= 2 {
     line = decode_pdu($1, $2)
     if (line != "") print line
 }
+
+# ---- the parts of one long message (see the top) ---------------------------
+mode == "group" {
+    n++
+    rec[n] = $0; r_ts[n] = $3; r_part[n] = $6 + 0; r_txt[n] = $7
+    r_base[n] = ($4 == "") ? "" : "multi:" $2 ":" $4 ":" ($5 + 0)
+}
+function group_end(    i, j, k, c, g, b, id, name, line, nk, ng) {
+    # every part into the first group of its sender, reference and total that is of its time and has no other text
+    # under its part number; the order is the caller's (the SIM's slots, then what came over the air)
+    for (i = 1; i <= n; i++) {
+        b = r_base[i]
+        if (b == "") continue
+        g = 0
+        for (c = 1; c <= groups[b]; c++) {
+            id = b SUBSEP c
+            if (!ts_near(r_ts[i], g_first[id])) continue
+            if (((id, r_part[i]) in g_txt) && g_txt[id, r_part[i]] != r_txt[i]) continue
+            g = c; break
+        }
+        if (!g) { g = ++groups[b]; g_first[b SUBSEP g] = r_ts[i]; g_min[b SUBSEP g] = r_ts[i]; order[++ng] = b SUBSEP g }
+        id = b SUBSEP g
+        g_txt[id, r_part[i]] = r_txt[i]
+        if (ts_secs(r_ts[i]) >= 0 && (ts_secs(g_min[id]) < 0 || r_ts[i] < g_min[id])) g_min[id] = r_ts[i]
+        r_group[i] = id
+    }
+    # the keys the caller already knows, in its order
+    nk = 0
+    if (known != "") {
+        while ((getline line < known) > 0) { sub(/\t.*/, "", line); if (line ~ /^multi:/) kkey[++nk] = line }
+        close(known)
+    }
+    for (j = 1; j <= ng; j++) {
+        id = order[j]; b = substr(id, 1, index(id, SUBSEP) - 1)
+        name = ""
+        for (k = 1; k <= nk; k++) {
+            if ((kkey[k] in taken) || key_base(kkey[k]) != b) continue
+            if (key_stamp(kkey[k]) != "" && !ts_near(key_stamp(kkey[k]), g_min[id])) continue
+            name = kkey[k]; break
+        }
+        if (name == "") {
+            name = b "@" g_min[id]
+            # two messages of one sender, reference, total and second (the same part number with two texts)
+            for (c = 2; name in taken; c++) name = b "@" g_min[id] "#" c
+        }
+        taken[name] = 1; g_name[id] = name
+    }
+    for (i = 1; i <= n; i++) print rec[i] "\t" (r_base[i] == "" ? "single:" i : g_name[r_group[i]])
+}
+END { if (mode == "group") group_end() }

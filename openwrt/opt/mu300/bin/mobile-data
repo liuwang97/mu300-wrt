@@ -9,12 +9,41 @@
 # radio-on: only switch the radio on (the OpenWrt boot does it early, beside the other init scripts)
 # MU300_NETIFD=1 mobile-data up [APN]: only attach and print IFACE/IP/PREFIX/DNS1/DNS2 (OpenWrt netifd protocol)
 # MU300_IPV6=relay with it: mu300cell's relay mode (openwrt-luci), see v6_relay_ra
+# MU300_APN_USER, MU300_APN_PASSWORD, MU300_APN_AUTH (none|pap|chap|both): the credentials of an APN that asks for
+# them, see define_context
 # OpenWrt: od/timeout come from the static busybox in /opt/mu300/busybox-bin
 export PATH="$PATH:/opt/mu300/busybox-bin"
 # nap SECONDS: a fraction of a second where a sleep takes one. OpenWrt's /bin/sleep (and bash has no sleep of its
 # own) refuses "0.2", so "sleep 0.2 || sleep 1" waited a whole second there; the static busybox next to us takes it.
 nap() { "${MU300_BUSYBOX:-/opt/mu300/bin/busybox}" sleep "$1" 2>/dev/null || sleep "$1" 2>/dev/null || sleep 1; }
 set -euo pipefail
+# The APN credentials (define_context) come in the environment, from systemd's EnvironmentFile or from mu300cell.sh.
+# They are taken out of it before anything is started, so that no child of this script (mu300-at, mu300-sim, the LED,
+# the VPN guard, a hook) has them in its own; and without a trace, should somebody run this with bash -x.
+case $- in *x*) set +x; APN_XTRACE=1 ;; *) APN_XTRACE= ;; esac
+# Ubuntu's settings file. systemd hands it to the two services as their environment, but not every dial starts
+# there: mu300-power's "mobile-data resume" and a command run by hand have no such environment, and used to dial
+# without the APN - with credentials that would be a dial without them. So whatever the environment does not say is
+# read from the file here, by every run, the same way: KEY=VALUE lines as systemd reads them (the last one of a key,
+# quotes around the value taken off), never executed. Not under netifd, whose settings come from mu300cell.sh.
+MD_CONF=${MU300_CONF:-/etc/mu300/mobile-data.conf}
+if [ "${MU300_NETIFD:-}" != 1 ] && [ -f "$MD_CONF" ] && [ -r "$MD_CONF" ]; then
+    for _k in MU300_APN MU300_PDP_TYPE MU300_APN_USER MU300_APN_PASSWORD MU300_APN_AUTH; do
+        [ -z "${!_k+x}" ] || continue                                # the environment says it
+        grep -q "^[[:space:]]*$_k=" "$MD_CONF" 2>/dev/null || continue
+        _v=$(sed -n "s/^[[:space:]]*$_k=//p" "$MD_CONF" | tail -n 1)
+        _v=${_v%$'\r'}
+        case $_v in
+            \"*\") _v=${_v#\"}; _v=${_v%\"} ;;
+            \'*\') _v=${_v#\'}; _v=${_v%\'} ;;
+        esac
+        printf -v "$_k" '%s' "$_v"
+    done
+    unset _k _v
+fi
+APN_SET_USER=${MU300_APN_USER:-}; APN_SET_PASS=${MU300_APN_PASSWORD:-}; APN_SET_AUTH=${MU300_APN_AUTH:-}
+unset MU300_APN_USER MU300_APN_PASSWORD
+[ -z "$APN_XTRACE" ] || set -x
 SIM_SLOT=0
 if [ -x /opt/mu300/bin/mu300-sim ]; then
     SIM_SLOT=$(/opt/mu300/bin/mu300-sim active) || exit 1
@@ -125,15 +154,25 @@ at() {  # at CMD [timeout] -> response lines up to the final result code
     # mobile-data has its own AT channel (nr2, the same slot 0 group as nr1): AT+CGDATA blocks its channel for
     # 10-20 s, and on the shared nr1 every other AT user (toolkit signal checks, SMS) waited behind it. The nr2
     # daemon serves only this script.
+    # AT_SECRET=1 at CMD: CMD carries a secret (an APN password). It reaches mu300-at on its stdin, never as an
+    # argument, which every user of the system could read in ps for as long as the command runs.
     if [ -p /run/mu300-at2/cmd ]; then
-        MU300_AT_DIR=/run/mu300-at2 /opt/mu300/bin/mu300-at -t "$t" "$cmd"
+        if [ -n "${AT_SECRET:-}" ]; then
+            printf '%s\n' "$cmd" | MU300_AT_DIR=/run/mu300-at2 /opt/mu300/bin/mu300-at -t "$t" -
+        else
+            MU300_AT_DIR=/run/mu300-at2 /opt/mu300/bin/mu300-at -t "$t" "$cmd"
+        fi
         return
     fi
     # the nr2 daemon is not running (yet): fall through to the shared nr1 daemon
     # mu300-atd owns the AT channel when it runs: closing the SIPC tty wedges it until the modem restarts, so
     # ask the daemon instead of opening the device here
     if [ -p /run/mu300-at/cmd ]; then
-        /opt/mu300/bin/mu300-at -t "$t" "$cmd"
+        if [ -n "${AT_SECRET:-}" ]; then
+            printf '%s\n' "$cmd" | /opt/mu300/bin/mu300-at -t "$t" -
+        else
+            /opt/mu300/bin/mu300-at -t "$t" "$cmd"
+        fi
         return
     fi
     [ -c "$DEV" ] || return 1   # never let the redirection create a regular file in /dev
@@ -549,6 +588,161 @@ tty_setup() {
     bnd "$STEPDL" stty -F "$DEV" raw -echo 2>/dev/null || true   # (an open of the SIPC tty can block)
 }
 
+# --- the data context and its credentials -------------------------------------------------------------------------
+# An APN that asks for a user name and a password (a private APN, some MVNOs): MU300_APN_USER, MU300_APN_PASSWORD
+# and MU300_APN_AUTH (none, pap, chap, or both: the network picks; unset with a user name or a password means both,
+# as Android does). On OpenWrt they are the wan interface's username, password and auth (mu300cell.sh), on Ubuntu
+# lines of /etc/mu300/mobile-data.conf. They go to the modem as
+#     AT+CGPCO=0,"<user>","<password>",<cid>,<0 none | 1 PAP | 2 CHAP | 3 PAP or CHAP>
+# after AT+CGDCONT and before the context is activated, which is where ZTE's RIL sends it (kanoqwq read that out of
+# the B09 RIL, clean-tf-7.2 3826be8b; the internal SIM's dial here has sent the empty form all along). NOT measured
+# on a device against an APN that checks credentials (FINDINGS 65).
+#
+# What holds for the credentials, on every path (both systems, both cards):
+# - They are never printed, logged, traced (set -x is off while define_context runs) or put on a command line
+#   (AT_SECRET, mu300-at -), and they leave this script's environment at its start (the top of the file), so nothing
+#   it starts inherits them.
+# - Both strings are refused unless they are printable ASCII without a quote or a backslash: they are pasted into a
+#   quoted AT argument.
+# - The settings file they came from is root's alone before they are used (settings_private), or there is no dial.
+# - Nothing falls back to a dial without them: credentials that cannot be used, a file that cannot be made private,
+#   a modem that does not answer OK, all end the bring-up with a line saying which.
+# - The mark says that the modem was given credentials. It is written before they are sent, and removed only
+#   when the modem has taken the empty form: so credentials taken out of the settings, or an APN changed to one
+#   without any, are taken out of the modem before the next dial, and a modem that will not let go of them gets no
+#   dial rather than a dial that presents them to another network. The mark holds nothing.
+#   One mark per card ($APN_MARK, "<mark>.sim<slot>"): each card has its own protocol stack and its own context.
+APN_AUTH_MARK=${MU300_APN_AUTH_MARK:-/etc/mu300/apn-auth-set}
+# where the credentials of this run were read from: netifd's settings, or Ubuntu's file
+if [ "${MU300_NETIFD:-}" = 1 ]; then APN_CONF=${MU300_NETWORK_CONF:-/etc/config/network}
+else APN_CONF=$MD_CONF; fi
+
+# settings_private FILE: FILE, which holds the APN password, can be read by its owner alone - made so when it is a
+# regular file of ours; a link is not followed for that, and what it leads to must already be so. 1 when it is not
+# and cannot be made so. No file at all: the credentials did not come from one (a hand-run command), nothing to do.
+settings_private() {
+    local f=$1 ls
+    [ -e "$f" ] || [ -L "$f" ] || return 0
+    if [ ! -L "$f" ]; then
+        [ -f "$f" ] || return 1
+        chmod 600 "$f" 2>/dev/null || true   # judged by the result below, not by chmod's word
+    fi
+    ls=$(ls -ldLn "$f" 2>/dev/null) || return 1
+    case $ls in -r[w-]-------*) ;; *) return 1 ;; esac
+    [ "$(printf '%s\n' "$ls" | awk '{ print $3 }')" = "$(id -u)" ]
+}
+
+# apn_mark_set: the mark, before credentials go to the modem. A new file of ours renamed over whatever has the name
+# (a link somebody put there is replaced, never written through). 1 when it cannot be written: then no credentials
+# are sent, since nothing would remember to take them back.
+apn_mark_set() {
+    local d=${APN_MARK%/*} t
+    [ -f "$APN_MARK" ] && [ ! -L "$APN_MARK" ] && return 0
+    mkdir -p "$d" 2>/dev/null || return 1
+    t=$(umask 077; mktemp "$d/.apn-auth.XXXXXX" 2>/dev/null) || return 1
+    mv -f "$t" "$APN_MARK" 2>/dev/null || { rm -f "$t"; return 1; }
+}
+
+# apn_credentials: checks the three settings; sets APN_AUTH (0-3), APN_USER and APN_PASS. 1 with a message when
+# they cannot be used.
+apn_credentials() {
+    local LC_ALL=C
+    APN_USER=${APN_SET_USER:-}; APN_PASS=${APN_SET_PASS:-}
+    case ${APN_SET_AUTH:-} in
+        '') if [ -n "$APN_USER$APN_PASS" ]; then APN_AUTH=3; else APN_AUTH=0; fi ;;
+        none) APN_AUTH=0 ;;
+        pap)  APN_AUTH=1 ;;
+        chap) APN_AUTH=2 ;;
+        both) APN_AUTH=3 ;;
+        *) echo "the APN authentication is none, pap, chap or both" >&2; return 1 ;;
+    esac
+    if [ "$APN_AUTH" = 0 ]; then APN_USER=; APN_PASS=; return 0; fi
+    if [ ${#APN_USER} -gt 64 ] || [ ${#APN_PASS} -gt 64 ]; then
+        echo "the APN user name or password is longer than 64 characters" >&2; return 1
+    fi
+    case $APN_USER$APN_PASS in
+        *[!\ -~]*|*[\"\\]*)
+            echo "the APN user name and password may hold printable ASCII only, and no quote or backslash" >&2
+            return 1 ;;
+    esac
+}
+
+# apn_auth_clear: the empty form, which takes credentials back. A modem that does not answer ends the bring-up. One
+# that answers something else than OK: the same when it holds credentials of ours (the mark), since the dial would
+# present them; without a mark it is the internal card's dial as it always was, and goes on.
+apn_auth_clear() {
+    local r
+    r=$(at "AT+CGPCO=0,\"\",\"\",$CID,0") || return 1
+    if printf '%s\n' "$r" | tr -d '\r' | grep -qx OK; then
+        rm -f "$APN_MARK" 2>/dev/null || true   # left behind, it only asks for the empty form once more
+        return 0
+    fi
+    if [ -e "$APN_MARK" ] || [ -L "$APN_MARK" ]; then
+        echo "the modem did not take back the earlier APN credentials (AT+CGPCO): not dialling with them" >&2
+        return 1
+    fi
+}
+
+# apn_auth_send: the credentials (or the empty form) for the context, after its AT+CGDCONT. With credentials the
+# modem's answer must be OK: a dial without them would only be refused by the network later, with nothing to say why.
+apn_auth_send() {
+    local r
+    if [ "$APN_AUTH" = 0 ]; then apn_auth_clear; return; fi
+    apn_mark_set || {
+        echo "cannot write $APN_MARK: the APN credentials are not given to the modem" >&2; return 1; }
+    r=$(AT_SECRET=1 at "AT+CGPCO=0,\"$APN_USER\",\"$APN_PASS\",$CID,$APN_AUTH" 5 2>/dev/null) || {
+        echo "the modem did not answer the APN credentials (AT+CGPCO)" >&2; return 1; }
+    printf '%s\n' "$r" | tr -d '\r' | grep -qx OK || {
+        echo "the modem refused the APN credentials (AT+CGPCO)" >&2; return 1; }
+}
+
+# define_context APN: the data context as the settings ask for it. With no APN nothing is defined: the modem keeps
+# the context the SIM already defines. Runs with set -x off: the trace would hold the password.
+define_context() {
+    local xt= rc=0
+    case $- in *x*) xt=1; set +x ;; esac
+    define_context_quiet "$@" || rc=$?
+    [ -z "$xt" ] || set -x
+    return $rc
+}
+define_context_quiet() {
+    local apn=${1:-}
+    APN_MARK=$APN_AUTH_MARK.sim$SIM_SLOT
+    # The APN is pasted into a quoted AT argument: a quote, a CR or a LF in it (a free-text field in LuCI, a
+    # hand-edited mobile-data.conf) would end the argument or the command early and define something else.
+    case $apn in
+        *[\"\\]*|*"$(printf '\r')"*|*'
+'*) echo "the APN contains a quote, a backslash or a line break; not defining the context with it" >&2; return 1 ;;
+    esac
+    apn_credentials || return 1
+    if [ "$APN_AUTH" != 0 ]; then
+        # credentials belong to a context this script defines; a dial without them is not what was asked for
+        [ -n "$apn" ] || { echo "an APN user name or password is set without an APN: set the APN, or take them out" >&2
+                           return 1; }
+        settings_private "$APN_CONF" || {
+            echo "$APN_CONF holds the APN password and others can read it (chmod 600 it): not dialling" >&2
+            return 1; }
+    fi
+    if [ -z "$apn" ]; then
+        # nothing to define; credentials given to the modem earlier are taken back all the same
+        if [ -e "$APN_MARK" ] || [ -L "$APN_MARK" ]; then apn_auth_clear || return 1; fi
+        return 0
+    fi
+    # (every "|| return 1": a channel that does not answer ends the bring-up, as it did when this was part of up)
+    # Keep the external card's established definition; internal F50 stock RIL uses
+    # dual stack with the extended context, PCO and QoS fields below.
+    if [ "$SIM_SLOT" = 1 ]; then
+        at 'AT+CDEFMP=1,"0"' >/dev/null || return 1
+        at "AT+CGDCONT=$CID,\"${MU300_PDP_TYPE:-IPV4V6}\",\"$apn\",\"\",0,0,0,0,1,,,,,,,,,,,,,0" >/dev/null || return 1
+        apn_auth_send || return 1
+        at 'AT+CGEQREQ=1,2,0,0,0,0,2,0,"1e4","0e0",3,0,0' >/dev/null || return 1
+    else
+        at "AT+CGDCONT=$CID,\"${MU300_PDP_TYPE:-IP}\",\"$apn\"" >/dev/null || return 1
+        # nothing more for an APN without credentials, as before; the empty form only to take earlier ones back
+        if [ "$APN_AUTH" != 0 ] || [ -e "$APN_MARK" ] || [ -L "$APN_MARK" ]; then apn_auth_send || return 1; fi
+    fi
+}
+
 # Only one bring-up at a time: the watchdog and the service can both decide to reconnect, and two of them race for
 # every AT command (each losing the channel lock in turn, so neither finishes). The radio lock's scheme (lock_take,
 # R35): the old directory with a pid file had the same empty-pid moment, in which a waiter removed a lock that had
@@ -635,24 +829,7 @@ up_locked() {
     # /etc/mu300/mobile-data.conf is an EnvironmentFile for the service. The argument still wins, which is what
     # the OpenWrt protocol handler uses.
     set -- "${1:-${MU300_APN:-}}"
-    # The APN is pasted into a quoted AT argument: a quote, a CR or a LF in it (a free-text field in LuCI, a
-    # hand-edited mobile-data.conf) would end the argument or the command early and define something else.
-    case ${1:-} in
-        *[\"\\]*|*"$(printf '\r')"*|*'
-'*) echo "the APN contains a quote, a backslash or a line break; not defining the context with it" >&2; exit 1 ;;
-    esac
-    if [ -n "${1:-}" ]; then
-        # Keep the external card's established definition; internal F50 stock RIL uses
-        # dual stack with the extended context, PCO and QoS fields below.
-        if [ "$SIM_SLOT" = 1 ]; then
-            at 'AT+CDEFMP=1,"0"' >/dev/null
-            at "AT+CGDCONT=$CID,\"${MU300_PDP_TYPE:-IPV4V6}\",\"$1\",\"\",0,0,0,0,1,,,,,,,,,,,,,0" >/dev/null
-            at 'AT+CGPCO=0,"","",1,0' >/dev/null
-            at 'AT+CGEQREQ=1,2,0,0,0,0,2,0,"1e4","0e0",3,0,0' >/dev/null
-        else
-            at "AT+CGDCONT=$CID,\"${MU300_PDP_TYPE:-IP}\",\"$1\"" >/dev/null
-        fi
-    fi
+    define_context "$1" || exit 1
     # No AT+CGACT? first: at boot the context is always off, the question costs a whole AT round trip, and
     # CGACT=1 on an active context (a reconnect) changes nothing. mu300-at exits 0 on any final result code,
     # ERROR included, so only a channel that does not answer (a timeout) ends the bring-up here; an ERROR shows up
