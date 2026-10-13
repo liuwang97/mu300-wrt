@@ -76,6 +76,9 @@ class Hfp(unittest.TestCase):
         self.assertIn('mkfifo(fifo, 0600)', c)
         # refused lines are not logged verbatim
         self.assertIn('refused (%zu bytes)', c)
+        # the answer and hang-up commands inherit none of the headset's sockets
+        child = c[c.index('static void run_bg'):c.index('static void ciev')]
+        self.assertLess(child.index('close(fd)'), child.index('execl('))
 
     @unittest.skipUnless(shutil.which('cc'), 'no C compiler')
     def test_allow_list(self):
