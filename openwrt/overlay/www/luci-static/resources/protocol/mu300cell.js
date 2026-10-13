@@ -105,6 +105,35 @@ return network.registerProtocol('mu300cell', {
 		o.depends('sim_slot', '0');
 		o.retain = true;
 
+		/* an APN that asks for credentials (a private APN, some MVNOs): mobile-data's define_context sends them */
+		o = s.taboption('general', form.Value, 'username', _('APN user name'),
+			_('Only for an APN that asks for one. Needs an APN above.'));
+		o.depends('sim_slot', '0');
+		o.retain = true;
+		o.validate = function(section_id, value) {
+			return (value.length <= 64 && /^[ -~]*$/.test(value) && !/["\\]/.test(value)) ? true :
+				_('At most 64 printable ASCII characters, without quotes or backslashes.');
+		};
+
+		o = s.taboption('general', form.Value, 'password', _('APN password'));
+		o.password = true;
+		o.depends('sim_slot', '0');
+		o.retain = true;
+		o.validate = function(section_id, value) {
+			return (value.length <= 64 && /^[ -~]*$/.test(value) && !/["\\]/.test(value)) ? true :
+				_('At most 64 printable ASCII characters, without quotes or backslashes.');
+		};
+
+		o = s.taboption('general', form.ListValue, 'auth', _('APN authentication'),
+			_('How the user name and password are presented. Automatic lets the network choose between PAP and CHAP.'));
+		o.value('', _('Automatic (PAP or CHAP when a user name is set)'));
+		o.value('pap', 'PAP');
+		o.value('chap', 'CHAP');
+		o.value('both', _('PAP or CHAP'));
+		o.value('none', _('None'));
+		o.depends('sim_slot', '0');
+		o.retain = true;
+
 		o = s.taboption('general', form.Flag, 'peerdns', _('Use DNS servers advertised by peer'));
 		o.default = o.enabled;
 
