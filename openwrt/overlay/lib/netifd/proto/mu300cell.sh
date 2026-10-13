@@ -1,6 +1,8 @@
 #!/bin/sh
 # netifd protocol for the MU300 modem: attach with AT commands (mobile-data) and configure sipa_eth0.
 # /etc/config/network:  config interface 'wan' / option proto 'mu300cell' / option apn 'internet'
+# and, for an APN that asks for them: option username, option password, option auth 'none|pap|chap|both' (the
+# external SIM's context; mobile-data's define_context has the rest)
 # LuCI edits the same options through www/luci-static/resources/protocol/mu300cell.js.
 #
 # The bearer's kernel state is owned here, not by netifd: every update is sent
@@ -38,6 +40,9 @@ proto_mu300cell_init_config() {
 	proto_config_add_string "pdptype_internal"
 	proto_config_add_string "apn"
 	proto_config_add_string "pdptype"
+	proto_config_add_string "auth"
+	proto_config_add_string "username"
+	proto_config_add_string "password"
 	proto_config_add_string "ipv6"
 	proto_config_add_boolean "peerdns"
 	proto_config_add_array "dns:list(ipaddr)"
@@ -46,17 +51,23 @@ proto_mu300cell_init_config() {
 proto_mu300cell_setup() {
 	local config="$1"
 	local apn pdptype peerdns ipv6 out ifname ip prefix dns1 dns2 iid zone a relay=0
-	local slot apn_internal pdptype_internal
-	json_get_vars apn pdptype peerdns ipv6 apn_internal pdptype_internal
+	local slot apn_internal pdptype_internal auth username password
+	json_get_vars apn pdptype peerdns ipv6 apn_internal pdptype_internal auth username password
 	slot=$(mu300cell_slot) || { proto_notify_error "$config" INVALID_SIM_SLOT; return 1; }
 	# Selection is frozen for the boot, so Apply never mixes old AT channels with new IP settings.
 	if [ "$slot" = 1 ]; then
 		apn=$apn_internal
 		pdptype=${pdptype_internal:-IPV4V6}
+		# the credentials are the external card's APN's: never offered to the internal card's carrier
+		auth=; username=; password=
 	fi
 	[ "$ipv6" = relay ] && [ "${pdptype:-IP}" != IP ] && relay=1
 
+	# In the environment only: never an argument, never logged. mobile-data refuses to dial with them unless
+	# /etc/config/network, which holds the password, is root's alone (its settings_private: one gate for this
+	# system and Ubuntu), and says so on stderr, which is logged below; it never prints the credentials.
 	out=$(MU300_NETIFD=1 MU300_PDP_TYPE="${pdptype:-IP}" MU300_IPV6="$ipv6" \
+		MU300_APN_AUTH="$auth" MU300_APN_USER="$username" MU300_APN_PASSWORD="$password" \
 		/opt/mu300/bin/mobile-data up "$apn" 2>/tmp/mu300cell.err)
 	if [ $? = 3 ]; then
 		logger -t mu300cell "$(cat /tmp/mu300cell.err)"
