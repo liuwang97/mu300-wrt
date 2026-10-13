@@ -46,6 +46,7 @@ DEFAULT = {
     'firmware': True,            # the Wi-Fi/Bluetooth firmware files are there
     'vpn_on': '',                # what the VPN probe of an existing installation prints
     'boot_image_bytes': 4096,    # size of the fake boot image a pull gives
+    'linux_json': '',            # what `mu300-device --json` says on a device whose serial is MU300LINUX-...
     'pull': True,                # adb pull works; false: every pull fails, as with a cable that drops out;
                                  # "gpt": only the two pieces of the partition table can be pulled
 }
@@ -107,13 +108,17 @@ def geometry(st):
     return disk, parts, last_end, start * 512, (end - start) * 512
 
 
-def prop(st, name):
+def props(st):
     return {
         'ro.product.model': st['model'], 'ro.product.device': st['device'], 'ro.build.display.id': st['build'],
         'ro.boot.flash.locked': st['locked'], 'ro.boot.verifiedbootstate': st['verified'],
         'ro.boot.slot_suffix': '_' + st['slot'], 'sys.boot_completed': st['boot_completed'],
         'ro.serialno': st['serial'],
-    }.get(name, '')
+    }
+
+
+def prop(st, name):
+    return props(st).get(name, '')
 
 
 def pending(st, content=None):
@@ -128,6 +133,18 @@ def pending(st, content=None):
     with open(p, 'wb') as f:
         f.write(content)
     return content
+
+
+def pending_is_gpt(flag=None):
+    """Whether what waits in mu300-pull.bin is a piece of the partition table (pull: "gpt" lets only those through)."""
+    p = state_path() + '.pull-gpt'
+    if flag is None:
+        return os.path.exists(p)
+    if flag:
+        open(p, 'w').close()
+    elif os.path.exists(p):
+        os.remove(p)
+    return flag
 
 
 def su(st, cmd, argv):
@@ -193,11 +210,13 @@ def su(st, cmd, argv):
     # what a pull of the file written on the device will give
     m = re.fullmatch(r'cat (\S+) > %s/mu300-pull\.bin' % T, cmd)
     if m:
+        pending_is_gpt(False)
         src = m.group(1)
         b = re.fullmatch(r'/dev/block/by-name/boot_([ab])', src)
         pending(st, boot_image(st, b.group(1)) if b else b'fake ' + src.encode() + b'\n')
         return '', 'read'
     if cmd == 'dd if=/dev/block/by-name/misc bs=4096 count=1 2>/dev/null > %s/mu300-pull.bin' % T:
+        pending_is_gpt(False)
         pending(st, misc_head())
         return '', 'read'
     m = re.fullmatch(r'dd if=/dev/block/mmcblk0 bs=512 (?:skip=(\d+) )?count=(34|33) 2>/dev/null > %s/(gpt\.head|gpt\.tail|mu300-pull\.bin)' % T, cmd)
@@ -206,8 +225,9 @@ def su(st, cmd, argv):
         data = head if m.group(2) == '34' else tail
         with open(state_path() + '.' + m.group(3), 'wb') as f:
             f.write(data)
-        if m.group(3) == 'mu300-pull.bin':
+        if m.group(3) == 'mu300-pull.bin':     # install.ps1 reads the table through the same file as everything else
             pending(st, data)
+            pending_is_gpt(True)
         return '', 'read'
     if re.fullmatch(r'rm -f( %s/\S+)+' % T, cmd) or re.fullmatch(r'rm -rf %s/mu300-bootchain-backup' % T, cmd):
         return '', 'read'       # the installer's own leftovers in /data/local/tmp
@@ -299,6 +319,16 @@ def main(argv):
             log('read', argv, line)
             out.write(prop(st, m.group(1)) + '\n')
             return 0
+        if line == 'getprop':
+            log('read', argv, line)
+            out.write(''.join('[%s]: [%s]\n' % kv for kv in sorted(props(st).items())))
+            return 0
+        if line.startswith('/opt/mu300/bin/') and st['serial'].upper().startswith('MU300LINUX'):
+            # a device in our Linux: its adb shell is root, and these are the project's own commands
+            log('read' if ('mu300-device' in line or line.endswith('mu300-update check')) else 'write', argv, line)
+            if 'mu300-device --json' in line:
+                out.write(st.get('linux_json', '') + '\n')
+            return 0
         if line == 'su -v':
             log('read', argv, line)
             if not st['root']:
@@ -314,7 +344,7 @@ def main(argv):
         log('pull', argv)
         src, dst = rest[0], rest[1]
         name = src.rsplit('/', 1)[-1]
-        if not st['pull'] or (st['pull'] == 'gpt' and name not in ('gpt.head', 'gpt.tail')):
+        if not st['pull'] or (st['pull'] == 'gpt' and name not in ('gpt.head', 'gpt.tail') and not pending_is_gpt()):
             sys.stderr.write('adb: error: failed to copy: remote object does not exist\n')
             return 1
         if name == 'mu300-pull.bin':
