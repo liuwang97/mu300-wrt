@@ -8,6 +8,7 @@ sipa_eth0's disable_ipv6 and accept_ra are files there, so what the script write
 Relay mode (K35-K37, K30, D9; openwrt-luci only) has its files in openwrt/luci-overlay: the event monitor
 mu300cell-v6.sh, ndp-learn, init.d/mu300-ndp and the first-boot settings in 91-mu300-luci (class Relay).
 """
+import os
 import re
 import shutil
 import subprocess
@@ -39,7 +40,8 @@ proto_notify_error() { rec proto_notify_error "$@"; }
 proto_block_restart() { rec proto_block_restart "$@"; }
 proto_setup_failed() { rec proto_setup_failed "$@"; }
 proto_add_dynamic_defaults() { rec proto_add_dynamic_defaults; }
-json_get_vars() { apn=$T_APN; pdptype=$T_PDPTYPE; peerdns=$T_PEERDNS; ipv6=$T_IPV6; apn_internal=${T_APN_INTERNAL:-}; pdptype_internal=${T_PDPTYPE_INTERNAL:-}; }
+json_get_vars() { apn=$T_APN; pdptype=$T_PDPTYPE; peerdns=$T_PEERDNS; ipv6=$T_IPV6; apn_internal=${T_APN_INTERNAL:-}; pdptype_internal=${T_PDPTYPE_INTERNAL:-}
+    auth=${T_AUTH:-}; username=${T_USERNAME:-}; password=${T_PASSWORD:-}; }
 json_init() { rec json_init; }
 json_add_string() { rec json_add_string "$@"; }
 json_add_boolean() { rec json_add_boolean "$@"; }
@@ -87,6 +89,7 @@ exit 0''')
 
     def set_mobile(self, out, rc, err=''):
         self.mobile.write_text('#!/bin/sh\necho "mobile-data $* env:$MU300_NETIFD:$MU300_PDP_TYPE:$MU300_IPV6" >> "$STUBLOG/calls"\n'
+                               'echo "$1 $#:${MU300_APN_AUTH-unset}:${MU300_APN_USER-unset}:${MU300_APN_PASSWORD-unset}" >> "$STUBLOG/creds"\n'
                                f'[ "$1" = up ] || exit 0\nprintf \'{out}\'\necho \'{err}\' >&2\nexit {rc}\n')
         self.mobile.chmod(0o755)
 
@@ -118,16 +121,41 @@ exit 0''')
         self.conf = self.conf.parent / 'sipa_eth8'
         self.conf.mkdir()
         for shell in self.each_shell():
+            (self.tmp / 'creds').unlink(missing_ok=True)
             calls = self.run_proto(shell, 'proto_mu300cell_setup',
                                    out=UP_V4.replace('sipa_eth0', 'sipa_eth8'),
-                                   T_APN='ctnet', T_APN_INTERNAL='cmnet')
+                                   T_APN='ctnet', T_APN_INTERNAL='cmnet', T_AUTH='pap', T_USERNAME='user', T_PASSWORD='secret')
             self.assertIn('mobile-data up cmnet env:1:IPV4V6:', calls)
+            # the internal card dials its own APN: the external card's credentials are not offered to its carrier
+            self.assertEqual((self.tmp / 'creds').read_text().splitlines()[0], 'up 2:::')
             self.assertIn('proto_init_update sipa_eth8 1 1', calls)
             self.assertIn('ip -4 route replace default dev sipa_eth8', calls)
             calls = self.run_proto(shell, 'proto_mu300cell_teardown')
             self.assertIn('ip -4 addr flush dev sipa_eth8 scope global', calls)
             self.assertIn('ip -6 route flush dev sipa_eth8', calls)
             self.assertFalse(any('sipa_eth0' in c for c in calls))
+
+    def test_the_apn_credentials_reach_mobile_data_in_its_environment_only(self):
+        # FINDINGS 65: username, password and auth of the wan interface; never an argument (ps), never in the log
+        for shell in self.each_shell():
+            (self.tmp / 'creds').unlink(missing_ok=True)
+            calls = self.run_proto(shell, 'proto_mu300cell_setup', T_AUTH='chap', T_USERNAME='user@apn', T_PASSWORD='s3 cret')
+            self.assertEqual((self.tmp / 'creds').read_text().splitlines()[0], 'up 2:chap:user@apn:s3 cret')
+            self.assertNotIn('s3 cret', '\n'.join(calls))
+            self.assertNotIn('user@apn', '\n'.join(calls))
+            # a dial that fails: what is logged is mobile-data's own words, never the credentials
+            calls = self.run_proto(shell, 'proto_mu300cell_setup', out='', rc=1, err='the modem refused the APN credentials (AT+CGPCO)', ok=1,
+                                   T_AUTH='chap', T_USERNAME='user@apn', T_PASSWORD='s3 cret')
+            self.assertIn('proto_notify_error wan ATTACH_FAILED', calls)
+            self.assertNotIn('s3 cret', '\n'.join(calls))
+            self.assertNotIn('user@apn', '\n'.join(calls))
+            # none set: empty, so nothing of an environment the service was started with gets through
+            (self.tmp / 'creds').unlink()
+            self.run_proto(shell, 'proto_mu300cell_setup')
+            self.assertEqual((self.tmp / 'creds').read_text().splitlines()[0], 'up 2:::')
+            calls = self.run_proto(shell, 'proto_mu300cell_init_config')
+            for name in ('auth', 'username', 'password'):
+                self.assertIn(f'proto_config_add_string {name}', calls)
 
     def test_setup_installs_v4_address_and_route_itself(self):
         for shell in self.each_shell():
@@ -732,6 +760,288 @@ class MobileDataRelay(ShellTest):
         netifd = body.index('if [ "${MU300_NETIFD:-0}" = 1 ]; then')
         self.assertIn('v6_relay_ra || { [ -n "$iid" ] || v6_off; }', body[:netifd])
 
+
+
+
+class MobileDataContext(ShellTest):
+    """mobile-data's define_context (FINDINGS 65), sourced (MU300_LIB=1) with bash: the context of an APN, and the
+    credentials of one that asks for them. mu300-at is a stub that records its arguments, its stdin and what it finds
+    of the credentials in its own environment, and answers from a file; the nr2 command fifo is one in the scratch
+    directory. SECRET never appears anywhere but on the stub's stdin: every run is checked for that."""
+
+    SECRET = 's3 cr,et-Pw'
+    AT_STUB = r"""
+printf 'argv:' >> "$STUBLOG/at.log"; for a in "$@"; do printf ' [%s]' "$a" >> "$STUBLOG/at.log"; done; echo >> "$STUBLOG/at.log"
+printf 'env: %s|%s\n' "${MU300_APN_USER-unset}" "${MU300_APN_PASSWORD-unset}" >> "$STUBLOG/at.log"
+cmd=
+for a in "$@"; do cmd=$a; done
+if [ "$cmd" = - ]; then IFS= read -r cmd; printf 'stdin: %s\n' "$cmd" >> "$STUBLOG/at.log"; fi
+case $cmd in
+    AT+CGPCO=0,\"\",\"\",*) cat "$STUBLOG/cgpco-clear" 2>/dev/null || echo OK ;;
+    AT+CGPCO*) cat "$STUBLOG/cgpco" 2>/dev/null || echo OK ;;
+    *) echo OK ;;
+esac
+"""
+
+    def setUp(self):
+        super().setUp()
+        if not shutil.which('bash'):
+            self.skipTest('no bash')
+        self.stub('mu300-at', self.AT_STUB)
+        os.mkfifo(self.tmp / 'cmd')
+        self.mark = self.tmp / 'etc' / 'apn-auth-set.sim0'      # the external card's; the internal one's: .sim1
+        self.mark.parent.mkdir()
+        self.conf = self.tmp / 'mobile-data.conf'
+        self.netconf = self.tmp / 'network'
+        self.lib = self.tmp / 'mobile-data.lib'
+        self.lib.write_text((BIN / 'mobile-data').read_text()
+                            .replace('/run/mu300-at2/cmd', str(self.tmp / 'cmd'))
+                            .replace('/opt/mu300/bin/mu300-at ', f'{self.stubs}/mu300-at '))
+
+    def define(self, apn, slot=0, trace=False, drop=(), **env):
+        """define_context APN with the settings in the environment (DROP: names left out of it altogether, so that
+        the settings file says them). -> (CompletedProcess, the stub's log lines)."""
+        (self.tmp / 'at.log').unlink(missing_ok=True)
+        e = dict(MU300_APN_USER='', MU300_APN_PASSWORD='', MU300_APN_AUTH='', MU300_PDP_TYPE='', MU300_NETIFD='',
+                 MU300_APN_AUTH_MARK=self.mark.with_suffix(''), MU300_CONF=self.conf, MU300_NETWORK_CONF=self.netconf, APN=apn)
+        e.update(env)
+        full = self.env(**e)
+        for name in drop:
+            full.pop(name, None)
+        code = (f'MU300_LIB=1; . "{self.lib}"\nSIM_SLOT={slot}\nrc=0; '
+                'define_context "${APN:-${MU300_APN:-}}" || rc=$?; echo "rc=$rc"')
+        r = subprocess.run(['bash'] + (['-x'] if trace else []) + ['-c', code], capture_output=True, text=True,
+                           env=full, timeout=60)
+        log = (self.tmp / 'at.log').read_text().splitlines() if (self.tmp / 'at.log').exists() else []
+        # the password: on the stub's stdin and nowhere else - not in an argument, not in the environment of
+        # anything started, not in what the script prints, not in a trace
+        for line in log:
+            if not line.startswith('stdin: '):
+                self.assertNotIn(self.SECRET, line)
+            if line.startswith('env: '):
+                self.assertIn(line, ('env: unset|unset',), 'a child of mobile-data inherited the credentials')
+        self.assertNotIn(self.SECRET, r.stdout + r.stderr)
+        return r, log
+
+    def sent(self, log):
+        """The commands the modem got, in order: (how, command) with how 'argv' or 'stdin'."""
+        out = []
+        for line in log:
+            if line.startswith('stdin: '):
+                out[-1] = ('stdin', line[len('stdin: '):])
+            elif line.startswith('argv:'):
+                out.append(('argv', re.findall(r'\[(.*?)\]', line)[-1]))
+        return out
+
+    def test_no_apn_defines_nothing(self):
+        r, log = self.define('')
+        self.assertEqual((r.stdout.strip(), log, r.stderr), ('rc=0', [], ''))
+
+    def test_credentials_without_an_apn_are_no_dial_at_all(self):
+        # never a dial that quietly leaves them out
+        for env in (dict(MU300_APN_USER='u', MU300_APN_PASSWORD=self.SECRET), dict(MU300_APN_PASSWORD=self.SECRET),
+                    dict(MU300_APN_USER='u'), dict(MU300_APN_USER='u', MU300_APN_AUTH='chap')):
+            r, log = self.define('', **env)
+            self.assertEqual((r.stdout.strip(), log), ('rc=1', []), env)
+            self.assertIn('without an APN', r.stderr)
+
+    def test_an_apn_without_credentials_is_defined_as_before(self):
+        r, log = self.define('internet')
+        self.assertEqual((r.stdout.strip(), self.sent(log)), ('rc=0', [('argv', 'AT+CGDCONT=1,"IP","internet"')]), r.stderr)
+        r, log = self.define('internet', MU300_PDP_TYPE='IPV4V6', MU300_APN_AUTH='none', MU300_APN_USER='u',
+                             MU300_APN_PASSWORD=self.SECRET)
+        self.assertEqual(self.sent(log), [('argv', 'AT+CGDCONT=1,"IPV4V6","internet"')])
+        self.assertFalse(self.mark.exists())
+        # the internal card's dial, byte for byte what it has always sent; an ERROR to its empty form is not the
+        # end of it, as it never was
+        for answer in ('OK\n', 'ERROR\n'):
+            (self.tmp / 'cgpco-clear').write_text(answer)
+            r, log = self.define('cmnet', slot=1)
+            self.assertEqual(r.stdout.strip(), 'rc=0')
+            self.assertEqual(self.sent(log), [('argv', 'AT+CDEFMP=1,"0"'),
+                                              ('argv', 'AT+CGDCONT=1,"IPV4V6","cmnet","",0,0,0,0,1,,,,,,,,,,,,,0'),
+                                              ('argv', 'AT+CGPCO=0,"","",1,0'),
+                                              ('argv', 'AT+CGEQREQ=1,2,0,0,0,0,2,0,"1e4","0e0",3,0,0')])
+
+    def test_credentials_follow_the_context_and_never_touch_a_command_line(self):
+        for auth, n in (('', 3), ('both', 3), ('pap', 1), ('chap', 2)):
+            self.mark.unlink(missing_ok=True)
+            r, log = self.define('private.apn', MU300_APN_USER='user@corp', MU300_APN_PASSWORD=self.SECRET, MU300_APN_AUTH=auth)
+            self.assertEqual(r.stdout.strip(), 'rc=0', r.stderr)
+            self.assertEqual(self.sent(log), [('argv', 'AT+CGDCONT=1,"IP","private.apn"'),
+                                              ('stdin', f'AT+CGPCO=0,"user@corp","{self.SECRET}",1,{n}')], auth)
+            self.assertNotIn('user@corp', '\n'.join(l for l in log if l.startswith('argv:')))
+            self.assertEqual(self.mark.read_text(), '')             # remembers that the modem has some; holds nothing
+            self.assertEqual(self.mark.stat().st_mode & 0o777, 0o600)
+        # the internal card: in the place of its empty form, and with a mark of its own - its dial without
+        # credentials must not make the external card's forgotten, whose context still holds them
+        r, log = self.define('cmnet', slot=1, MU300_APN_USER='u', MU300_APN_PASSWORD=self.SECRET)
+        self.assertEqual(self.sent(log)[2], ('stdin', f'AT+CGPCO=0,"u","{self.SECRET}",1,3'))
+        sim1 = self.mark.with_suffix('.sim1')
+        self.assertTrue(sim1.exists() and self.mark.exists())
+        r, log = self.define('cmnet', slot=1)
+        self.assertEqual((sim1.exists(), self.mark.exists()), (False, True))
+        # a user name alone, and a password alone, are credentials too
+        r, log = self.define('a', MU300_APN_USER='u')
+        self.assertEqual(self.sent(log)[1], ('stdin', 'AT+CGPCO=0,"u","",1,3'))
+        r, log = self.define('a', MU300_APN_PASSWORD=self.SECRET)
+        self.assertEqual(self.sent(log)[1], ('stdin', f'AT+CGPCO=0,"","{self.SECRET}",1,3'))
+
+    def test_a_trace_does_not_hold_the_password(self):
+        # bash -x mobile-data, as somebody looking for a fault would run it
+        r, log = self.define('private.apn', trace=True, MU300_APN_USER='tracedUser', MU300_APN_PASSWORD=self.SECRET)
+        self.assertEqual(r.stdout.strip(), 'rc=0', r.stderr[-400:])
+        self.assertEqual(self.sent(log)[1][0], 'stdin')
+        self.assertIn('+ ', r.stderr)                               # it is a trace
+        self.assertNotIn('tracedUser', r.stderr)
+        # and from the settings file
+        self.conf.write_text(f'MU300_APN=private.apn\nMU300_APN_USER=tracedUser\nMU300_APN_PASSWORD={self.SECRET}\n')
+        self.conf.chmod(0o600)
+        r, log = self.define('', trace=True, drop=('MU300_APN_USER', 'MU300_APN_PASSWORD', 'MU300_APN_AUTH'))
+        self.assertEqual(r.stdout.strip(), 'rc=0', r.stderr[-400:])
+        self.assertNotIn('tracedUser', r.stderr)
+
+    def test_a_modem_that_refuses_the_credentials_ends_the_dial_and_says_nothing_secret(self):
+        for answer in ('ERROR\n', '+CME ERROR: 50\n', ''):
+            (self.tmp / 'cgpco').write_text(answer)
+            r, log = self.define('private.apn', MU300_APN_USER='user', MU300_APN_PASSWORD=self.SECRET)
+            self.assertEqual(r.stdout.strip(), 'rc=1', answer)
+            self.assertIn('refused the APN credentials', r.stderr)
+            # what the modem did with them is not known: the mark stays, so the next dial without them clears first
+            self.assertTrue(self.mark.exists())
+
+    def test_nothing_that_could_end_the_at_argument_reaches_the_modem(self):
+        bad = ['pa"ss', 'pa\\ss', 'pa\rAT+CFUN=0', 'pa\nss', 'päss', 'x' * 65, 'tab\there', '\x7f']
+        for value in bad:
+            for name in ('MU300_APN_USER', 'MU300_APN_PASSWORD'):
+                env = {'MU300_APN_USER': 'u', 'MU300_APN_PASSWORD': 'p', name: value}
+                r, log = self.define('internet', **env)
+                self.assertEqual(r.stdout.strip(), 'rc=1', (name, value))
+                self.assertEqual(log, [], (name, value))            # refused before the context is touched
+                self.assertNotIn(value, r.stderr)
+        r, log = self.define('internet', MU300_APN_USER='u', MU300_APN_AUTH='3;AT+CFUN=0')
+        self.assertEqual((r.stdout.strip(), log), ('rc=1', []))
+        self.assertIn('none, pap, chap or both', r.stderr)
+        # the APN itself, as before
+        for apn in ('a"b', 'a\\b', 'a\rb', 'a\nb'):
+            r, log = self.define(apn)
+            self.assertEqual((r.stdout.strip(), log), ('rc=1', []), apn)
+
+    def test_credentials_taken_out_of_the_settings_are_taken_out_of_the_modem_before_the_next_dial(self):
+        clear = ('argv', 'AT+CGPCO=0,"","",1,0')
+        self.define('private.apn', MU300_APN_USER='u', MU300_APN_PASSWORD=self.SECRET)
+        self.assertTrue(self.mark.exists())
+        r, log = self.define('private.apn')
+        self.assertEqual(self.sent(log), [('argv', 'AT+CGDCONT=1,"IP","private.apn"'), clear])
+        self.assertFalse(self.mark.exists())
+        r, log = self.define('private.apn')
+        self.assertEqual(self.sent(log), [('argv', 'AT+CGDCONT=1,"IP","private.apn"')])
+        # the APN taken out with them: nothing is defined, but the credentials still go
+        self.define('private.apn', MU300_APN_USER='u', MU300_APN_PASSWORD=self.SECRET)
+        r, log = self.define('')
+        self.assertEqual((r.stdout.strip(), self.sent(log), self.mark.exists()), ('rc=0', [clear], False))
+        # A modem that will not take them back: no dial. It would present the old credentials to whatever network
+        # the new settings name. The mark stays, and the next try asks again.
+        for apn in ('other.apn', ''):
+            self.define('private.apn', MU300_APN_USER='u', MU300_APN_PASSWORD=self.SECRET)
+            for answer in ('ERROR\n', ''):
+                (self.tmp / 'cgpco-clear').write_text(answer)
+                r, log = self.define(apn)
+                self.assertEqual((r.stdout.strip(), self.mark.exists()), ('rc=1', True), (apn, answer))
+                self.assertIn('did not take back', r.stderr)
+            (self.tmp / 'cgpco-clear').unlink()
+            r, log = self.define(apn)
+            self.assertEqual((r.stdout.strip(), self.mark.exists()), ('rc=0', False), apn)
+
+    def test_no_credentials_reach_the_modem_unless_the_mark_can_be_written(self):
+        # without the mark nothing would remember to take them back
+        (self.tmp / 'conf-file-not-dir').write_text('')
+        r, log = self.define('private.apn', MU300_APN_USER='u', MU300_APN_PASSWORD=self.SECRET,
+                             MU300_APN_AUTH_MARK=self.tmp / 'conf-file-not-dir' / 'mark')
+        self.assertEqual(r.stdout.strip(), 'rc=1')
+        self.assertEqual(self.sent(log), [('argv', 'AT+CGDCONT=1,"IP","private.apn"')])
+        self.assertIn('are not given to the modem', r.stderr)
+        # a link where the mark goes is replaced by a file of ours, never written through
+        target = self.tmp / 'elsewhere'
+        target.write_text('keep\n')
+        self.mark.symlink_to(target)
+        r, log = self.define('private.apn', MU300_APN_USER='u', MU300_APN_PASSWORD=self.SECRET)
+        self.assertEqual(r.stdout.strip(), 'rc=0', r.stderr)
+        self.assertEqual((target.read_text(), self.mark.is_symlink(), self.mark.read_text()), ('keep\n', False, ''))
+        self.assertEqual([p.name for p in self.mark.parent.iterdir()], ['apn-auth-set.sim0'])     # no temporary file left
+
+    def test_the_settings_file_is_roots_alone_or_there_is_no_dial(self):
+        # one gate for both systems: Ubuntu's mobile-data.conf, and /etc/config/network under netifd
+        creds = dict(MU300_APN_USER='u', MU300_APN_PASSWORD=self.SECRET)
+        for netifd, path in (('', self.conf), ('1', self.netconf)):
+            path.write_text('x\n')
+            path.chmod(0o644)
+            r, log = self.define('private.apn', MU300_NETIFD=netifd, **creds)
+            self.assertEqual(r.stdout.strip(), 'rc=0', r.stderr)
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600, netifd)
+            # without credentials the file is nobody's business
+            path.chmod(0o644)
+            self.define('internet', MU300_NETIFD=netifd)
+            self.assertEqual(path.stat().st_mode & 0o777, 0o644)
+            # a link is not followed to change anything: what it leads to must be private already
+            target = self.tmp / f'real{netifd}'
+            target.write_text('x\n')
+            path.unlink()
+            path.symlink_to(target)
+            for mode, rc in ((0o644, 'rc=1'), (0o640, 'rc=1'), (0o604, 'rc=1'), (0o600, 'rc=0'), (0o400, 'rc=0')):
+                target.chmod(mode)
+                r, log = self.define('private.apn', MU300_NETIFD=netifd, **creds)
+                self.assertEqual((r.stdout.strip(), target.stat().st_mode & 0o777), (rc, mode), (netifd, oct(mode)))
+                if rc == 'rc=1':
+                    self.assertEqual(log, [])                       # refused before anything reaches the modem
+                    self.assertIn('others can read it', r.stderr)
+            # something that is no file at all
+            path.unlink()
+            path.mkdir()
+            r, log = self.define('private.apn', MU300_NETIFD=netifd, **creds)
+            self.assertEqual((r.stdout.strip(), log), ('rc=1', []))
+            path.rmdir()
+            # no file: the credentials came another way (a command run by hand)
+            r, log = self.define('private.apn', MU300_NETIFD=netifd, **creds)
+            self.assertEqual(r.stdout.strip(), 'rc=0')
+
+    def test_every_dial_reads_the_settings_file_the_same_way(self):
+        # mu300-power's "mobile-data resume" and a command run by hand have no environment from systemd: what the
+        # environment does not say comes from the file, so they dial the APN, with its credentials, as the service does
+        names = ('MU300_APN', 'MU300_PDP_TYPE', 'MU300_APN_USER', 'MU300_APN_PASSWORD', 'MU300_APN_AUTH')
+        self.conf.write_text('# a comment\n#MU300_APN=commented\nMU300_APN=first\nMU300_APN="private.apn"\n'
+                             f"MU300_PDP_TYPE=IPV4V6\nMU300_APN_USER='user name'\nMU300_APN_PASSWORD={self.SECRET}\n"
+                             'MU300_APN_AUTH=chap\r\nOTHER=$(touch "$STUBLOG/executed")\n')
+        self.conf.chmod(0o644)
+        r, log = self.define('', drop=names)
+        self.assertEqual(r.stdout.strip(), 'rc=0', r.stderr)
+        self.assertEqual(self.sent(log), [('argv', 'AT+CGDCONT=1,"IPV4V6","private.apn"'),
+                                          ('stdin', f'AT+CGPCO=0,"user name","{self.SECRET}",1,2')])
+        self.assertEqual(self.conf.stat().st_mode & 0o777, 0o600)
+        self.assertFalse((self.tmp / 'executed').exists())          # read, never run
+        # what the environment says wins (systemd read the same file; a hand-set variable)
+        r, log = self.define('', drop=[n for n in names if n != 'MU300_APN_AUTH'], MU300_APN_AUTH='pap')
+        self.assertEqual(self.sent(log)[1], ('stdin', f'AT+CGPCO=0,"user name","{self.SECRET}",1,1'))
+        # under netifd the file is not looked at: mu300cell.sh said everything
+        self.mark.unlink()
+        r, log = self.define('internet', drop=names, MU300_NETIFD='1')
+        self.assertEqual(self.sent(log), [('argv', 'AT+CGDCONT=1,"IP","internet"')])
+
+    def test_the_interface_page_offers_them(self):
+        js = (TOP / 'openwrt/overlay/www/luci-static/resources/protocol/mu300cell.js').read_text()
+        for kind, name in (('Value', 'username'), ('Value', 'password'), ('ListValue', 'auth')):
+            self.assertIn(f"form.{kind}, '{name}'", js)
+        self.assertIn('o.password = true', js)
+        for v in ("o.value('pap'", "o.value('chap'", "o.value('both'", "o.value('none'"):
+            self.assertIn(v, js)
+        example = (TOP / 'rootfs/overlay/etc/mu300/mobile-data.conf.example').read_text()
+        for name in ('MU300_APN_USER', 'MU300_APN_PASSWORD', 'MU300_APN_AUTH', 'install -m 600'):
+            self.assertIn(name, example)
+        # the settings file never goes into a release, and OpenWrt's network settings are private from the first boot
+        self.assertIn('(hotspot|vpn|toolkit|mobile-data)', (TOP / 'tools/make-release.sh').read_text())
+        self.assertIn('chmod 600 /etc/config/network', (TOP / 'openwrt/overlay/etc/uci-defaults/90-mu300').read_text())
+        # the protocol handler has no gate of its own to differ from mobile-data's
+        self.assertNotIn('chmod', (TOP / 'openwrt/overlay/lib/netifd/proto/mu300cell.sh').read_text())
 
 
 if __name__ == '__main__':

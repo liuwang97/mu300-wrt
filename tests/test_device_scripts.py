@@ -1,5 +1,6 @@
 """Small device scripts, against a fake / (MU300_SYSROOT) and stub commands: mu300-device, mu300-lan-ip, mu300-led,
 mu300-ttl. They run on Ubuntu (dash, bash) and OpenWrt (busybox ash)."""
+import json
 import os
 import pty
 import re
@@ -36,6 +37,67 @@ class Device(ShellTest):
                 out = self.script(shell, BIN / 'mu300-device', MU300_SYSROOT=r).stdout.strip()
                 self.assertEqual(out, want, (device, dt))
             (r / 'run' / 'mu300' / 'device').unlink(missing_ok=True)
+
+    def test_json_for_programs(self):
+        """mu300-device --json: the contract of docs/ADB-INTERFACE.md, one line a JSON parser takes."""
+        r = self.root('u30air')
+        (r / 'etc' / 'mu300').mkdir(parents=True)
+        (r / 'etc' / 'mu300' / 'image-version').write_text('v2026.10.23\n')
+        (r / 'etc' / 'os-release').write_text('NAME="Ubuntu"\nVERSION_ID="24.04"\nID=ubuntu\n')
+        disk = self.tmp / 'disk'
+        disk.mkdir()
+        (disk / 'ubuntu').symlink_to(r)            # the directory of the Linux partition that is /
+        self.stub('uname', 'echo 7.2.10')
+        self.stub('id', 'echo 0')
+        env = dict(MU300_SYSROOT=r, MU300_DISK=disk, MU300_BIN=BIN, MU300_ADB_CONF=r / 'etc/mu300/adb',
+                   MU300_ADB_AUTH_CONF=r / 'etc/mu300/adb_auth', MU300_ADB_KEYS=r / 'etc/mu300/adb_keys',
+                   MU300_ADB_ROOT_KEYS=self.tmp / 'none', MU300_ADB_OWNER=os.getuid(),
+                   MU300_ADBD_BIN=shutil.which('true'), MU300_MODULES_BUILTIN=self.tmp / 'builtin')
+        (self.tmp / 'builtin').write_text('kernel/drivers/usb/gadget/function/usb_f_fs.ko\n')
+        want = {'mu300': 1, 'device': 'u30air', 'system': 'ubuntu', 'version_id': '24.04',
+                'release': 'v2026.10.23', 'kernel': '7.2.10', 'root': True, 'adb': 'open'}
+        for shell in self.each_shell():
+            out = self.script(shell, BIN / 'mu300-device', '--json', **env)
+            self.assertEqual('', out.stderr)
+            self.assertEqual(1, out.stdout.count('\n'))
+            self.assertEqual(want, json.loads(out.stdout))
+            # the order of the fields is not part of the contract, their names and kinds are
+            self.assertEqual(list(want), list(json.loads(out.stdout)))
+        # adb as the device has it set; not root; the copy kept by an update (ubuntu.old) is still "ubuntu"
+        (r / 'etc/mu300/adb_auth').write_text('keys\n')
+        (disk / 'ubuntu').unlink()
+        (disk / 'ubuntu.old').symlink_to(r)
+        self.stub('id', 'echo 1000')
+        for shell in self.each_shell():
+            got = json.loads(self.script(shell, BIN / 'mu300-device', '--json', **env).stdout)
+            self.assertEqual(('keys', False, 'ubuntu'), (got['adb'], got['root'], got['system']))
+        (r / 'etc/mu300/adb').write_text('off\n')
+        for shell in self.each_shell():
+            got = json.loads(self.script(shell, BIN / 'mu300-device', '--json', **env).stdout)
+            self.assertEqual('off', got['adb'])
+        (r / 'etc/mu300/adb').unlink()
+        # no adbd in this system
+        for shell in self.each_shell():
+            got = json.loads(self.script(shell, BIN / 'mu300-device', '--json',
+                                         **dict(env, MU300_ADBD_BIN=self.tmp / 'none')).stdout)
+            self.assertEqual('unavailable', got['adb'])
+        # OpenWrt, with and without LuCI, where the Linux partition is not mounted; nothing in a value can end
+        # the string it is in
+        (disk / 'ubuntu.old').unlink()
+        (r / 'etc' / 'openwrt_release').write_text("DISTRIB_ID='OpenWrt'\n")
+        (r / 'etc' / 'os-release').write_text('NAME="OpenWrt"\nVERSION_ID="25.12.5"\n')
+        (r / 'etc' / 'mu300' / 'image-version').write_text('v2026","root":true,"x":"\\\n')
+        (r / 'run' / 'mu300' / 'device').write_text('f50\n')
+        for shell in self.each_shell():
+            got = json.loads(self.script(shell, BIN / 'mu300-device', '--json', **env).stdout)
+            self.assertEqual(('f50', 'openwrt', '25.12.5', 'v2026roottruex'),
+                             (got['device'], got['system'], got['version_id'], got['release']))
+            self.assertFalse(got['root'])
+        (r / 'www' / 'luci-static').mkdir(parents=True)
+        (r / 'etc' / 'mu300' / 'image-version').unlink()
+        for shell in self.each_shell():
+            got = json.loads(self.script(shell, BIN / 'mu300-device', '--json', **env).stdout)
+            self.assertEqual(('openwrt-luci', 'unknown'), (got['system'], got['release']))
 
     def test_lan_ip(self):
         for device, want in (('f50', '192.168.77.1'), ('u30air', '192.168.78.1'), ('', '192.168.77.1')):
@@ -91,6 +153,30 @@ class At(ShellTest):
             r = self.at(shell, 'AT+CSQ')
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertEqual(r.stdout.replace('\r', ''), '+CSQ: 20,99\nOK\n')   # text mode folds CRLF
+
+    def test_a_command_on_stdin(self):
+        # "-": the command is the first line of stdin, for one that carries a secret (an APN password, FINDINGS 65)
+        got = []
+
+        def daemon():
+            with open(self.dir / 'cmd') as f:
+                line = f.readline().rstrip('\n')
+            _t, answer, cmd = line.split(' ', 2)
+            got.append(cmd)
+            with open(answer, 'w', newline='') as a:
+                a.write('OK\r\n')
+        for shell in self.each_shell():
+            del got[:]
+            th = threading.Thread(target=daemon, daemon=True)
+            th.start()
+            r = self.script(shell, BIN / 'mu300-at', '-t', 2, '-', stdin='AT+CGPCO=0,"u","p w",1,3\nAT+CFUN=0\n',
+                            MU300_AT_DIR=self.dir, MU300_BUSYBOX=self.sleeper)
+            th.join(5)
+            self.assertEqual((r.returncode, got), (0, ['AT+CGPCO=0,"u","p w",1,3']), r.stderr)   # one line, no more
+            # nothing on stdin: the usage, and nothing sent
+            r = self.script(shell, BIN / 'mu300-at', '-', stdin='', MU300_AT_DIR=self.dir, MU300_BUSYBOX=self.sleeper)
+            self.assertEqual(r.returncode, 2)
+            self.assertIn('usage', r.stderr)
 
     def test_no_daemon_does_not_hang(self):
         for shell in self.each_shell():
@@ -383,6 +469,31 @@ class Atd(ShellTest):
         elapsed = time.monotonic() - t0
         self.answer = answer.read_text() if answer.exists() else None
         return elapsed
+
+    def test_a_command_with_a_secret_leaves_nothing_readable_behind(self):
+        """FINDINGS 65: an APN password travels in AT+CGPCO. The answer file is root's alone (a modem that echoes the
+        command puts it there, and the file of a client that gave up stays), and an echo that comes late is thrown
+        away, never appended to the URC log."""
+        cmd = 'AT+CGPCO=0,"user","hunter2",1,3'
+        for shell in self.each_shell():
+            _l, m = self.start(shell, nr0=False)
+            self.send(m, cmd, (cmd + '\r\nOK\r\n').encode())
+            self.assertEqual(self.answer, cmd + '\nOK\n')
+            self.assertEqual((self.dir / 'answer.4242').stat().st_mode & 0o777, 0o600)
+            # no answer in time; the echo and the OK arrive late, and the next command's drain finds them
+            self.send(m, cmd, None, t=1)
+            os.write(m, (cmd + '\r\n+CGEV: late\r\nOK\r\n').encode())
+            time.sleep(0.3)
+            self.send(m, 'AT', b'OK\r\n')
+            self.assertEqual(self.answer, 'OK\n')
+            log = (self.dir / 'urc' / 'tty_nr1.log').read_text()
+            self.assertIn('+CGEV: late', log)                     # what is no echo is still kept
+            self.assertNotIn('hunter2', log)
+            self.assertNotIn('CGPCO', log)
+            for p in self.dir.rglob('*'):
+                if p.is_file() and p.name != 'answer.4242':
+                    self.assertNotIn(b'hunter2', p.read_bytes(), p)
+            self.assertNotIn('hunter2', self.err.read_text())
 
     def test_requests_are_parsed_strictly(self):
         """A malformed request line is dropped, never sent to the modem whole (it used to be: "120 /run/... AT" with
