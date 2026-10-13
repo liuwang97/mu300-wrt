@@ -343,3 +343,8 @@ boot chain:     not synced (the model is not recognised)	启动链：        不
 An earlier run of this installer timed out in this Android boot ({1}); the SD card request it waited on is still stuck in the kernel. Reboot Android, then install the zip again. Nothing was changed; the lock is {2}.	本次 Android 开机期间，此安装器的上一次运行已超时（{1}）；它所等待的 SD 卡请求仍卡在内核中。请重启 Android，然后重新安装此 zip。未做任何更改；锁文件：{2}。
 the device log was kept at {1}	设备日志已保存在 {1}
 boot_{1} read back from the eMMC is not the image that was written ({2}); Linux was not armed: misc was not changed, so Android keeps booting	从 eMMC 回读的 boot_{1} 与写入的镜像不一致（{2}）；未启用 Linux：misc 未被更改，Android 会照常启动
+eMMC: {1} ({2} sectors); the partitions end at sector {3}; free after them: {4} MiB	eMMC：{1}（{2} 个扇区）；分区结束于扇区 {3}；其后空闲：{4} MiB
+needed behind the partitions: {1} MiB; missing: {2} MiB	分区之后需要：{1} MiB；缺少：{2} MiB
+to share by shrinking it: {1} MiB up to sector {2}; needed: {3} MiB ({4} MiB Android + {5} MiB Linux); missing: {6} MiB	缩小它后可分配：{1} MiB（到扇区 {2} 为止）；需要：{3} MiB（Android {4} MiB + Linux {5} MiB）；缺少：{6} MiB
+-Check writes nothing. Run the installer without it to make room.	-Check 不会写入任何内容。去掉该参数运行安装程序即可腾出空间。
+the new partition table did not arrive on the device as it was made; nothing is changed	新的分区表未能原样传到设备上；未做任何更改
