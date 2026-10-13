@@ -31,6 +31,7 @@ var callLockSet = rpc.declare({ object: 'mu300dash', method: 'lock_set', params:
 var callSmsList = rpc.declare({ object: 'mu300dash', method: 'sms_list', params: [ 'page' ], expect: { '': {} }, nobatch: true });
 var callSmsShow = rpc.declare({ object: 'mu300dash', method: 'sms_show', params: [ 'id' ], expect: { '': {} }, nobatch: true });
 var callSmsSend = rpc.declare({ object: 'mu300dash', method: 'sms_send', params: [ 'num', 'text' ], expect: { '': {} }, nobatch: true });
+var callSmsJob  = rpc.declare({ object: 'mu300dash', method: 'sms_job', expect: { '': {} }, nobatch: true });
 var callSmsDel  = rpc.declare({ object: 'mu300dash', method: 'sms_delete', params: [ 'id', 'sim' ], expect: { '': {} }, nobatch: true });
 var callSmsSync = rpc.declare({ object: 'mu300dash', method: 'sms_sync', expect: { '': {} }, nobatch: true });
 var callUsbGet = rpc.declare({ object: 'mu300dash', method: 'usb_get', expect: { '': {} }, nobatch: true });
@@ -47,12 +48,16 @@ var callFwdGet = rpc.declare({ object: 'mu300dash', method: 'forward_get', expec
 var callFwdSet = rpc.declare({ object: 'mu300dash', method: 'forward_set', params: [ 'enabled', 'template', 'allow',
 	'deny', 'keywords', 'clear', 'webhook', 'webhook_url', 'webhook_format', 'webhook_headers', 'telegram',
 	'telegram_token', 'telegram_chat', 'email', 'email_host', 'email_port', 'email_tls', 'email_user', 'email_password',
-	'email_from', 'email_to', 'sms', 'sms_number' ], expect: { '': {} }, nobatch: true });
+	'email_from', 'email_to', 'sms', 'sms_number', 'webhook_body' ], expect: { '': {} }, nobatch: true });
 var callFwdTest = rpc.declare({ object: 'mu300dash', method: 'forward_test', expect: { '': {} }, nobatch: true });
 var callCpuGet = rpc.declare({ object: 'mu300dash', method: 'cpu_get', expect: { '': {} }, nobatch: true });
 var callCpuSet = rpc.declare({ object: 'mu300dash', method: 'cpu_set', params: [ 'profile' ], expect: { '': {} }, nobatch: true });
+var callPackagesGet = rpc.declare({ object: 'mu300dash', method: 'packages_get', expect: { '': {} }, nobatch: true });
+var callPackagesAct = rpc.declare({ object: 'mu300dash', method: 'packages_act', params: [ 'op' ], expect: { '': {} }, nobatch: true });
 var callTrafficGet = rpc.declare({ object: 'mu300dash', method: 'traffic_get', expect: { '': {} }, nobatch: true });
 var callTrafficSet = rpc.declare({ object: 'mu300dash', method: 'traffic_set', params: [ 'op', 'value' ], expect: { '': {} }, nobatch: true });
+/* System > Terminal: a one-time token for ttyd (rpcd mu300term, ACL luci-app-mu300-terminal) */
+var callTermToken = rpc.declare({ object: 'mu300term', method: 'token', expect: { '': {} }, nobatch: true });
 /* The live rates' one read: the mu300rates object (rpcd's ucode plugin) returns /proc/net/dev, in rpcd itself (no
  * process started, no AT), every second. Sent on its own (nobatch): a declared call is batched with whatever else is
  * pending, and then waits for the status snapshot, which takes a few hundred milliseconds and made the rates come
@@ -406,7 +411,9 @@ function spark(el, arr, min, max, win) {
  * lockedCell is lock_get's cell field (e.g. "nr:627264,501"); a matching row shows a grey "Locked".
  * Pages bind the clicks by event delegation ([data-lock] attribute: "<rat>:<arfcn>,<pci>"). */
 function neighborRows(c, lockedCell) {
-	var nb = (c && c.neigh) || [];
+	var nb = (c && Array.isArray(c.neigh) ? c.neigh : []).filter(function(n) {
+		return n && typeof n === 'object' && (n.rat === 'nr' || n.rat === 'lte');
+	});
 	nb.sort(function(a, b) {
 		if ((a.rat == 'nr') != (b.rat == 'nr')) return a.rat == 'nr' ? -1 : 1;
 		return (b.rsrp || -999) - (a.rsrp || -999);
@@ -680,7 +687,7 @@ return baseclass.extend({
 	callStatus: callStatus, callSignal: callSignal, callSysinfo: callSysinfo, callAct: callAct, callAt: callAt, callAtHist: callAtHist,
 	callAtJob: callAtJob, callOpsLog: callOpsLog, backoff: backoff, ageText: ageText,
 	callLockGet: callLockGet, callLockFresh: callLockFresh, callLockSet: callLockSet,
-	callSmsList: callSmsList, callSmsShow: callSmsShow, callSmsSend: callSmsSend,
+	callSmsList: callSmsList, callSmsShow: callSmsShow, callSmsSend: callSmsSend, callSmsJob: callSmsJob,
 	callSmsDel: callSmsDel, callSmsSync: callSmsSync,
 	callUsbGet: callUsbGet, callUsbSet: callUsbSet,
 	callUsbNetList: callUsbNetList, callUsbNetAdd: callUsbNetAdd,
@@ -689,7 +696,9 @@ return baseclass.extend({
 	callTtlGet: callTtlGet, callTtlSet: callTtlSet,
 	callFwdGet: callFwdGet, callFwdSet: callFwdSet, callFwdTest: callFwdTest,
 	callCpuGet: callCpuGet, callCpuSet: callCpuSet,
+	callPackagesGet: callPackagesGet, callPackagesAct: callPackagesAct,
 	callTrafficGet: callTrafficGet, callTrafficSet: callTrafficSet, callNetDev: callNetDev, netDev: netDev,
+	callTermToken: callTermToken,
 	carrierName: carrierName, qLevel: qLevel, qLevelLabel: qLevelLabel, qLabel: qLabel, qCol: qCol, qScore: qScore,
 	esc: esc, fmtBytes: fmtBytes, fmtRate: fmtRate, fmtUptime: fmtUptime, PLMN_CN: PLMN_CN,
 	injectCss: injectCss, v: v, set: set, spark: spark, neighborRows: neighborRows,

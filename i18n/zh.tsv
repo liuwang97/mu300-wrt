@@ -225,6 +225,11 @@ Install the VPN module (about 40 MB more to download, 120 MB on the device)? (ye
 Downloading the VPN module	正在下载 VPN 模块
 extras:         {1}	扩展组件：      {1}
 none	无
+Allow adb (adb shell, push, pull) to Linux over USB from this computer? Its adb key (~/.android/adbkey.pub) gets a root shell (yes/no)	允许这台电脑通过 USB 对 Linux 使用 adb（adb shell、push、pull）吗？它的 adb 密钥（~/.android/adbkey.pub）将获得 root shell (是/否)
+no adb key of this computer to authorise ({1})	这台电脑没有可授权的 adb 密钥（{1}）
+adb to Linux:   {1}	Linux adb：     {1}
+on, for this computer	开启，仅限这台电脑
+off	关闭
 Android runs from slot {1}; Linux goes to slot {2} (boot_{2})	Android 从槽位 {1} 运行；Linux 将安装到槽位 {2}（boot_{2}）
 CREATE new ext4 (erases what is there)	新建 ext4（会清除上面的内容）
 Dry run: nothing was written.	试运行：未写入任何内容。
@@ -271,8 +276,9 @@ There is too little free space inside for Linux, and the SD card is smaller than
 There is too little free space inside for Linux and no SD card. Insert a card (MU300_STORAGE=sd and MU300_SD_ERASE=yes in {1}), or make room with the installer for computers.	内部存储空闲空间不足以安装 Linux，且没有 SD 卡。请插入一张卡（在 {1} 中写入 MU300_STORAGE=sd 和 MU300_SD_ERASE=yes），或用电脑版安装程序腾出空间。
 MU300_MODE=wipe formats the SD card ({1}, {2}): the installation on it and everything else is erased. To allow that, put MU300_SD_ERASE=yes into {3} as well.	MU300_MODE=wipe 会格式化 SD 卡（{1}，{2}）：卡上的安装和其他所有内容都会被清除。如允许，请同时在 {3} 中写入 MU300_SD_ERASE=yes。
 could not unmount the Linux filesystem from {1}	无法从 {1} 卸载 Linux 文件系统
-password:       from {1}, written to {2}	密码：          来自 {1}，将写入 {2}
-password:       generated, written to {1}	密码：          自动生成，将写入 {1}
+password:       the one from {1} (not shown)	密码：          来自 {1}（不显示）
+password:       ubuntu for user ubuntu, as in the images ({1} in {2} sets another)	密码：          用户 ubuntu 的密码是 ubuntu，与镜像一致（在 {2} 中写入 {1} 可设置其他密码）
+password:       none: root logs in without one until one is set with passwd or in LuCI, System > Administration ({1} in {2} sets one now)	密码：          无：在用 passwd 或在 LuCI（系统 > 管理权）中设置密码之前，root 无需密码即可登录（在 {2} 中写入 {1} 可现在设置）
 the zip is incomplete or damaged (its manifest is not valid)	zip 不完整或已损坏（其 manifest 无效）
 The free space behind the partitions is not empty ({1} of 16 samples hold data); it may be used by this firmware. To use it anyway, put MU300_STORAGE=internal and MU300_REGION_OVERWRITE=yes into {2}, a file only root can change.	分区之后的空闲空间并不为空（16 个采样中有 {1} 个含有数据）；它可能正被此固件使用。如仍要使用，请在只有 root 能修改的 {2} 中写入 MU300_STORAGE=internal 和 MU300_REGION_OVERWRITE=yes。
 Installing to the SD card ({1}, {2}) erases everything on it. To allow that, put MU300_STORAGE=sd and MU300_SD_ERASE=yes into {3}, a file only root can change.	安装到 SD 卡（{1}，{2}）会清除卡上的全部内容。如允许，请在只有 root 能修改的 {3} 中写入 MU300_STORAGE=sd 和 MU300_SD_ERASE=yes。
@@ -285,7 +291,6 @@ Android runs from slot b, and the kernel of this zip cannot boot Linux from slot
 could not build the boot ramdisk (magiskboot)	无法构建启动 ramdisk（magiskboot）
 could not build the boot image	无法构建启动镜像
 boot image for slot {1}: kernel {2}, {3} bytes	槽位 {1} 的启动镜像：内核 {2}，{3} 字节
-could not generate a password	无法生成密码
 could not hash the password	无法计算密码哈希
 could not copy the installer files	无法复制安装文件
 Installing {1} (this takes a few minutes)	正在安装 {1}（需要几分钟）
@@ -311,9 +316,30 @@ included	包含
 not included	不包含
 misc did not verify after writing; the block it held before was written back and verified, so Android boots as before. Linux was not armed.	写入后 misc 校验失败；原来的块已写回并校验通过，Android 照常启动。Linux 未被启用。
 misc did not verify after writing, and the block it held before could not be written back: misc holds unknown bytes, and the device may not start Android. Do not reboot. Write the saved block back as root: {1}	写入后 misc 校验失败，且原来的块无法写回：misc 中是未知的数据，设备可能无法启动 Android。请不要重启。请以 root 身份写回保存的块：{1}
-password for {1}: "{2}"   (also in {3}; delete that file after the first login)	{1} 的密码："{2}"   （也保存在 {3} 中；首次登录后请删除该文件）
+password for {1}: the one from {2}	{1} 的密码：{2} 中给出的那个
+password for ubuntu: "ubuntu"   (as in the images; change it after the first login: passwd)	ubuntu 的密码："ubuntu"   （与镜像一致；首次登录后请用 passwd 修改）
+password for root: none yet - set one with passwd, or in LuCI (System > Administration)	root 的密码：尚未设置 - 请用 passwd 或在 LuCI（系统 > 管理权）中设置
 could not write {1}; nothing was installed	无法写入 {1}；未安装任何内容
 used by this installation and removed from {1}:{2}	已在本次安装中使用并从 {1} 中删除：{2}
 could not remove{1} from {2}; remove it by hand	无法从 {2} 中删除：{1}；请手动删除
 password:       kept: the accounts and passwords of the installed system are not changed ({1} in {2} sets a new one)	密码：          保留：已安装系统的账户和密码不变（在 {2} 中写入 {1} 可设置新密码）
 password for {1}: unchanged (the one this system had)	{1} 的密码：未改变（仍为该系统原来的密码）
+The web panel for Ubuntu (Cockpit with an MU300 page: signal, SMS, VPN, Wi-Fi, updates, a terminal; on the LAN only) is optional. It can also be added later on the device:	Ubuntu 的网页面板（带 MU300 页面的 Cockpit：信号、短信、VPN、Wi-Fi、更新、终端；仅限局域网）是可选的。之后也可以在设备上添加：
+Install the web panel for Ubuntu (about 24 MB more to download, 50 MB on the device)? (yes/no)	安装 Ubuntu 的网页面板（额外下载约 24 MB，设备上占用 50 MB）？(yes/no)
+release {1} has no web panel for Ubuntu; it can be added on the device later: sudo mu300-extra install panel	版本 {1} 没有 Ubuntu 网页面板；之后可以在设备上添加：sudo mu300-extra install panel
+Building the web panel extra	正在构建网页面板扩展
+boot chain:     identical on both slots	启动链：        两个槽位相同
+boot chain:     {1} differ between the slots; Android's slot {2} is copied to slot {3} (backed up first)	启动链：        {1} 在两个槽位之间不同；将 Android 的槽位 {2} 复制到槽位 {3}（先备份）
+boot chain:     not synced (MU300_SYNC_BOOTCHAIN=0)	启动链：        不同步（MU300_SYNC_BOOTCHAIN=0）
+boot chain:     not synced (-NoBootchainSync)	启动链：        不同步（-NoBootchainSync）
+boot chain:     cannot be synced: {1}	启动链：        无法同步：{1}
+the boot chain cannot be copied to the Linux slot: {1}	无法将启动链复制到 Linux 槽位：{1}
+Nothing was changed. Experts can skip this step with MU300_SYNC_BOOTCHAIN=0.	未做任何更改。高级用户可以用 MU300_SYNC_BOOTCHAIN=0 跳过此步骤。
+Nothing was changed. Experts can skip this step with -NoBootchainSync.	未做任何更改。高级用户可以用 -NoBootchainSync 跳过此步骤。
+no answer from the device	设备没有响应
+boot chain backup: {1}	启动链备份：{1}
+the boot chain backup could not be copied to this computer; it is on the Linux filesystem (.mu300/bootchain)	无法将启动链备份复制到这台电脑；它保存在 Linux 文件系统中（.mu300/bootchain）
+boot chain:     not synced (the model is not recognised)	启动链：        不同步（无法识别设备型号）
+An earlier run of this installer timed out in this Android boot ({1}); the SD card request it waited on is still stuck in the kernel. Reboot Android, then install the zip again. Nothing was changed; the lock is {2}.	本次 Android 开机期间，此安装器的上一次运行已超时（{1}）；它所等待的 SD 卡请求仍卡在内核中。请重启 Android，然后重新安装此 zip。未做任何更改；锁文件：{2}。
+the device log was kept at {1}	设备日志已保存在 {1}
+boot_{1} read back from the eMMC is not the image that was written ({2}); Linux was not armed: misc was not changed, so Android keeps booting	从 eMMC 回读的 boot_{1} 与写入的镜像不一致（{2}）；未启用 Linux：misc 未被更改，Android 会照常启动

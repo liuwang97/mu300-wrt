@@ -1088,20 +1088,21 @@ unsigned char sc2355_pcie_find_lut_index(struct sprd_hif *hif, struct sprd_vif *
 	}
 
 out:
+	/* MU300 (#140): a multicast/broadcast frame has no peer entry by design; the per-mode default is the answer, not an error */
 	if (vif->mode == SPRD_MODE_STATION ||
 	    vif->mode == SPRD_MODE_P2P_CLIENT) {
-		pr_err("%s,%d,bssid not found, multicast?\n"
-		       "default of STA/GC = 0,\n", __func__, vif->ctx_id);
+		pr_debug("%s,%d,bssid not found, multicast?\n"
+			 "default of STA/GC = 0,\n", __func__, vif->ctx_id);
 		return 0;
 	}
 	if (vif->mode == SPRD_MODE_AP) {
-		pr_err("%s,%d,bssid not found, multicast?\n"
-		       "default of AP = 4\n", __func__, vif->ctx_id);
+		pr_debug("%s,%d,bssid not found, multicast?\n"
+			 "default of AP = 4\n", __func__, vif->ctx_id);
 		return 4;
 	}
 	if (vif->mode == SPRD_MODE_P2P_GO) {
-		pr_err("%s,%d,bssid not found, multicast?\n"
-		       "default of GO = 5\n", __func__, vif->ctx_id);
+		pr_debug("%s,%d,bssid not found, multicast?\n"
+			 "default of GO = 5\n", __func__, vif->ctx_id);
 		return 5;
 	}
 	return 0;
@@ -1970,8 +1971,13 @@ int sc2355_pcie_fc_test_send_num(struct sprd_hif *hif,
 	free_num = atomic_read(&tx_mgmt->xmit_msg_list.free_num);
 
 	if ((free_num + data_num) >= tx_buf_max) {
-		pr_err("%s,%d free_num=%d, data_num=%d\n",
-				   __func__, __LINE__, free_num, data_num);
+		/*
+		 * MU300 (from kanoqwq/mu300-linux): a full TX ring is ordinary flow control - the caller sends what fits
+		 * and the rest waits for the next completion - not a firmware error. The vendor printed it with pr_err on
+		 * every scheduling pass, i.e. continuously under load; pr_debug as in sc2355_pcie_fc_get_send_num().
+		 */
+		pr_debug_ratelimited("%s,%d free_num=%d, data_num=%d\n",
+				     __func__, __LINE__, free_num, data_num);
 		return (tx_buf_max - free_num);
 	} else {
 		return data_num;

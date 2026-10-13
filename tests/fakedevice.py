@@ -12,9 +12,11 @@ from test_boot_image import LIVE_A, fake_misc, fake_stock, with_slots
 ANDROID_SH = r'''#!/bin/sh
 # stand-in for /system/bin/sh running android-install.sh or android-mount-mu300root.sh
 log=$FAKE/android-sh.log
-echo "ASH_STANDALONE=${ASH_STANDALONE:-} PATH=$PATH $* MU300_RO=${MU300_RO:-} MU300_DEVICE_WORK=${MU300_DEVICE_WORK:-} $(ls -ld "${MU300_DEVICE_WORK:-/nonexistent}" 2>/dev/null | cut -c1-10)" >> "$log"
+echo "ASH_STANDALONE=${ASH_STANDALONE:-} PATH=$PATH $* MU300_RO=${MU300_RO:-} MU300_DEVICE_WORK=${MU300_DEVICE_WORK:-} MU300_LOCK_DIR=${MU300_LOCK_DIR:-} $(ls -ld "${MU300_DEVICE_WORK:-/nonexistent}" 2>/dev/null | cut -c1-10)" >> "$log"
 case $1 in
     -c) shift; exec "$FAKE/devsh" -c "$@" ;;
+    # the real one, on the fake by-name directory (MU300_BY_NAME), with Android's getprop
+    */android-bootchain.sh) PATH="$FAKE/bin:$PATH" exec sh "$@" ;;
     */android-install.sh)
         cp "$MU300_DEVICE_WORK/mu300-install.env" "$FAKE/install.env"
         [ "${FAKE_INSTALL_FAILS:-0}" = 1 ] && { echo "[device] failing as asked"; exit 1; }
@@ -82,6 +84,10 @@ class FakeDevice:
         # what misc holds while Android runs from that slot (a valid block: magic and CRC)
         fake_misc(by / 'misc', LIVE_A if slot == '_a' else with_slots(LIVE_A, b'_b\0\0', 0x1e, 0x9f))
         (r / 'dev/block/mmcblk0').write_bytes(b'')
+        # the boot chain, the same build on both slots (FakeDevice.bootchain changes one)
+        for p in ('uboot', 'sml', 'teecfg', 'trustos', 'vbmeta'):
+            for s in 'ab':
+                (by / f'{p}_{s}').write_bytes(p.encode() * 1024)
         # partitions end at 8 GiB; a 16 GiB eMMC leaves a ~8 GiB region, a 9 GiB one too little
         sysb = r / 'sys/block/mmcblk0'
         (sysb / 'mmcblk0p1/start').write_text('2048\n')
@@ -97,10 +103,14 @@ class FakeDevice:
                                  'persist.sys.locale=en-US\n')
         (r / 'volumes').write_text('private mounted null\n')
         (r / 'mounts').write_text('')
+        # /proc/sys/kernel/random/boot_id: the key of the lock a timed-out SD-card stage leaves (FINDINGS 50)
+        (r / 'boot_id').write_text('11111111-2222-3333-4444-555555555555\n')
         for name, body in (('android-sh', ANDROID_SH), ('devsh', DEVSH), ('ubb', UBB)):
             (r / name).write_text(body); (r / name).chmod(0o755)
         for name, body in (('getprop', GETPROP), ('sm', SM)):
             (stubs / name).write_text(body); (stubs / name).chmod(0o755)
+        (r / 'bin').mkdir(exist_ok=True)
+        (r / 'bin/getprop').write_text(GETPROP); (r / 'bin/getprop').chmod(0o755)
 
     def env(self, mu300_dir, magiskboot):
         r = self.root
@@ -111,5 +121,6 @@ class FakeDevice:
                 'MU300_ANDROID_PATH': os.environ['PATH'], 'MU300_ANDROID_ROOT': r / 'android',
                 'MU300_FW_DIRS': f'{r}/android/vendor/firmware', 'MAGISKBIN': r / 'magisk',
                 'MAGISKBOOT': magiskboot, 'MU300_UBB': r / 'ubb', 'MU300_SKIP_ROOT_CHECK': 1,
+                'MU300_BOOT_ID': r / 'boot_id',
                 # as under Magisk: what the installer starts on Android's side must not inherit it
                 'ASH_STANDALONE': 1}

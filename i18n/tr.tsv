@@ -225,6 +225,11 @@ Install the VPN module (about 40 MB more to download, 120 MB on the device)? (ye
 Downloading the VPN module	VPN modülü indiriliyor
 extras:         {1}	eklentiler:     {1}
 none	yok
+Allow adb (adb shell, push, pull) to Linux over USB from this computer? Its adb key (~/.android/adbkey.pub) gets a root shell (yes/no)	Bu bilgisayardan USB üzerinden Linux'a adb (adb shell, push, pull) açılsın mı? Bu bilgisayarın adb anahtarı (~/.android/adbkey.pub) root kabuğu alır (evet/hayır)
+no adb key of this computer to authorise ({1})	bu bilgisayarın yetkilendirilecek bir adb anahtarı yok ({1})
+adb to Linux:   {1}	Linux'a adb:    {1}
+on, for this computer	açık, bu bilgisayar için
+off	kapalı
 Android runs from slot {1}; Linux goes to slot {2} (boot_{2})	Android {1} yuvasından çalışıyor; Linux {2} yuvasına kurulacak (boot_{2})
 CREATE new ext4 (erases what is there)	yeni ext4 OLUŞTURULACAK (oradakiler silinir)
 Dry run: nothing was written.	Deneme çalıştırması: hiçbir şey yazılmadı.
@@ -271,8 +276,9 @@ There is too little free space inside for Linux, and the SD card is smaller than
 There is too little free space inside for Linux and no SD card. Insert a card (MU300_STORAGE=sd and MU300_SD_ERASE=yes in {1}), or make room with the installer for computers.	Dahili depolamada Linux için yeterli boş alan yok ve SD kart takılı değil. Bir kart takın ({1} dosyasında MU300_STORAGE=sd ve MU300_SD_ERASE=yes) ya da bilgisayar yükleyicisiyle yer açın.
 MU300_MODE=wipe formats the SD card ({1}, {2}): the installation on it and everything else is erased. To allow that, put MU300_SD_ERASE=yes into {3} as well.	MU300_MODE=wipe SD kartı ({1}, {2}) biçimlendirir: üzerindeki kurulum ve diğer her şey silinir. Buna izin vermek için {3} dosyasına MU300_SD_ERASE=yes de yazın.
 could not unmount the Linux filesystem from {1}	Linux dosya sistemi {1} konumundan ayrılamadı
-password:       from {1}, written to {2}	parola:         {1} dosyasından, {2} dosyasına yazılacak
-password:       generated, written to {1}	parola:         üretilecek, {1} dosyasına yazılacak
+password:       the one from {1} (not shown)	parola:         {1} dosyasındaki (gösterilmez)
+password:       ubuntu for user ubuntu, as in the images ({1} in {2} sets another)	parola:         ubuntu kullanıcısı için ubuntu, imajlardaki gibi (başkası için {2} dosyasına {1})
+password:       none: root logs in without one until one is set with passwd or in LuCI, System > Administration ({1} in {2} sets one now)	parola:         yok: passwd ile ya da LuCI'de (Sistem > Yönetim) bir parola belirlenene kadar root parolasız girer (şimdi belirlemek için {2} dosyasına {1})
 the zip is incomplete or damaged (its manifest is not valid)	zip eksik ya da bozuk (manifest dosyası geçerli değil)
 The free space behind the partitions is not empty ({1} of 16 samples hold data); it may be used by this firmware. To use it anyway, put MU300_STORAGE=internal and MU300_REGION_OVERWRITE=yes into {2}, a file only root can change.	Bölümlerin arkasındaki boş alan boş değil (16 örnekten {1} tanesinde veri var); bu yazılım tarafından kullanılıyor olabilir. Yine de kullanmak için yalnızca root'un değiştirebildiği {2} dosyasına MU300_STORAGE=internal ve MU300_REGION_OVERWRITE=yes yazın.
 Installing to the SD card ({1}, {2}) erases everything on it. To allow that, put MU300_STORAGE=sd and MU300_SD_ERASE=yes into {3}, a file only root can change.	SD karta ({1}, {2}) kurulum karttaki her şeyi siler. Buna izin vermek için yalnızca root'un değiştirebildiği {3} dosyasına MU300_STORAGE=sd ve MU300_SD_ERASE=yes yazın.
@@ -285,7 +291,6 @@ Android runs from slot b, and the kernel of this zip cannot boot Linux from slot
 could not build the boot ramdisk (magiskboot)	açılış ramdisk'i oluşturulamadı (magiskboot)
 could not build the boot image	boot imajı oluşturulamadı
 boot image for slot {1}: kernel {2}, {3} bytes	{1} yuvası için boot imajı: çekirdek {2}, {3} bayt
-could not generate a password	parola üretilemedi
 could not hash the password	parolanın özeti (hash) hesaplanamadı
 could not copy the installer files	kurulum dosyaları kopyalanamadı
 Installing {1} (this takes a few minutes)	{1} kuruluyor (birkaç dakika sürer)
@@ -311,9 +316,30 @@ included	dahil
 not included	dahil değil
 misc did not verify after writing; the block it held before was written back and verified, so Android boots as before. Linux was not armed.	misc yazıldıktan sonra doğrulanamadı; önceki blok geri yazıldı ve doğrulandı, Android eskisi gibi açılır. Linux etkinleştirilmedi.
 misc did not verify after writing, and the block it held before could not be written back: misc holds unknown bytes, and the device may not start Android. Do not reboot. Write the saved block back as root: {1}	misc yazıldıktan sonra doğrulanamadı ve önceki blok geri yazılamadı: misc bilinmeyen baytlar içeriyor, cihaz Android'i açamayabilir. Yeniden başlatmayın. Saklanan bloğu root olarak geri yazın: {1}
-password for {1}: "{2}"   (also in {3}; delete that file after the first login)	{1} için parola: "{2}"   ({3} dosyasında da var; ilk girişten sonra o dosyayı silin)
+password for {1}: the one from {2}	{1} için parola: {2} dosyasındaki
+password for ubuntu: "ubuntu"   (as in the images; change it after the first login: passwd)	ubuntu için parola: "ubuntu"   (imajlardaki gibi; ilk girişten sonra değiştirin: passwd)
+password for root: none yet - set one with passwd, or in LuCI (System > Administration)	root için parola: henüz yok - passwd ile ya da LuCI'de (Sistem > Yönetim) belirleyin
 could not write {1}; nothing was installed	{1} yazılamadı; hiçbir şey kurulmadı
 used by this installation and removed from {1}:{2}	bu kurulumda kullanıldı ve {1} dosyasından kaldırıldı:{2}
 could not remove{1} from {2}; remove it by hand	{2} dosyasından kaldırılamadı:{1}; elle kaldırın
 password:       kept: the accounts and passwords of the installed system are not changed ({1} in {2} sets a new one)	parola:         korunuyor: kurulu sistemin hesapları ve parolaları değişmez (yenisi için {2} dosyasına {1})
 password for {1}: unchanged (the one this system had)	{1} için parola: değişmedi (bu sistemin önceki parolası)
+The web panel for Ubuntu (Cockpit with an MU300 page: signal, SMS, VPN, Wi-Fi, updates, a terminal; on the LAN only) is optional. It can also be added later on the device:	Ubuntu için web paneli (MU300 sayfalı Cockpit: sinyal, SMS, VPN, Wi-Fi, güncellemeler, terminal; yalnızca LAN üzerinden) isteğe bağlıdır. Daha sonra cihazda da eklenebilir:
+Install the web panel for Ubuntu (about 24 MB more to download, 50 MB on the device)? (yes/no)	Ubuntu için web paneli kurulsun mu (yaklaşık 24 MB ek indirme, cihazda 50 MB)? (yes/no)
+release {1} has no web panel for Ubuntu; it can be added on the device later: sudo mu300-extra install panel	{1} sürümünde Ubuntu için web paneli yok; daha sonra cihazda eklenebilir: sudo mu300-extra install panel
+Building the web panel extra	Web paneli eki derleniyor
+boot chain:     identical on both slots	boot zinciri:   iki slotta da aynı
+boot chain:     {1} differ between the slots; Android's slot {2} is copied to slot {3} (backed up first)	boot zinciri:   {1} slotlar arasında farklı; Android'in {2} slotundakiler {3} slotuna kopyalanır (önce yedeklenir)
+boot chain:     not synced (MU300_SYNC_BOOTCHAIN=0)	boot zinciri:   eşitlenmiyor (MU300_SYNC_BOOTCHAIN=0)
+boot chain:     not synced (-NoBootchainSync)	boot zinciri:   eşitlenmiyor (-NoBootchainSync)
+boot chain:     cannot be synced: {1}	boot zinciri:   eşitlenemez: {1}
+the boot chain cannot be copied to the Linux slot: {1}	boot zinciri Linux slotuna kopyalanamıyor: {1}
+Nothing was changed. Experts can skip this step with MU300_SYNC_BOOTCHAIN=0.	Hiçbir şey değiştirilmedi. Deneyimli kullanıcılar bu adımı MU300_SYNC_BOOTCHAIN=0 ile atlayabilir.
+Nothing was changed. Experts can skip this step with -NoBootchainSync.	Hiçbir şey değiştirilmedi. Deneyimli kullanıcılar bu adımı -NoBootchainSync ile atlayabilir.
+no answer from the device	cihazdan yanıt gelmedi
+boot chain backup: {1}	boot zinciri yedeği: {1}
+the boot chain backup could not be copied to this computer; it is on the Linux filesystem (.mu300/bootchain)	boot zinciri yedeği bu bilgisayara kopyalanamadı; Linux dosya sisteminde duruyor (.mu300/bootchain)
+boot chain:     not synced (the model is not recognised)	boot zinciri:   eşitlenmiyor (model tanınmadı)
+An earlier run of this installer timed out in this Android boot ({1}); the SD card request it waited on is still stuck in the kernel. Reboot Android, then install the zip again. Nothing was changed; the lock is {2}.	Bu kurucunun önceki bir çalışması bu Android açılışında zaman aşımına uğradı ({1}); beklediği SD kart isteği çekirdekte hâlâ takılı. Android'i yeniden başlatın, sonra zip'i yeniden kurun. Hiçbir şey değiştirilmedi; kilit: {2}.
+the device log was kept at {1}	cihaz günlüğü şurada saklandı: {1}
+boot_{1} read back from the eMMC is not the image that was written ({2}); Linux was not armed: misc was not changed, so Android keeps booting	eMMC'den geri okunan boot_{1}, yazılan görüntü değil ({2}); Linux etkinleştirilmedi: misc değiştirilmedi, Android açılmaya devam eder

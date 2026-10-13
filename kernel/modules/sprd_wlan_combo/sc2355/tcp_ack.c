@@ -300,8 +300,9 @@ static int tcp_ack_handle(struct sprd_msg *new_msg,
 			ack_info->in_send_msg = NULL;
 			ack_info->drop_cnt = atomic_read(&ack_m->max_drop_cnt);
 		} else {
-			pr_err("%s before abnormal ack: %d, %d\n",
-			       __func__, ack->seq, ack_msg->seq);
+			/* MU300 (#140): a duplicate or reordered ACK (every TCP fast-retransmit sends three), skipped by design */
+			pr_debug_ratelimited("%s before abnormal ack: %d, %d\n",
+					     __func__, ack->seq, ack_msg->seq);
 			drop_msg = new_msg;
 			ret = 1;
 		}
@@ -529,4 +530,12 @@ void sc2355_tcp_ack_deinit(struct sprd_priv *priv)
 		if (drop_msg)
 			sprd_chip_drop_tcp_msg(&priv->chip, drop_msg);
 	}
+
+	/*
+	 * MU300 (issue #146): del_timer() above cannot wait under the seqlock the callback takes, so a timeout
+	 * already running on another CPU could still be inside ack_info after this returns, and priv (with
+	 * ack_m in it) is freed next. With enable 0 and msg NULL the callback does nothing; wait for it.
+	 */
+	for (i = 0; i < SPRD_TCP_ACK_NUM; i++)
+		timer_shutdown_sync(&ack_m->ack_info[i].timer);
 }

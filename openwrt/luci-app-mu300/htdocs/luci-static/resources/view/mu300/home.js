@@ -235,6 +235,7 @@ return view.extend({
       <div class="mud-rows">
         <div class="mud-r"><span class="mud-k">IPv4 / IPv6</span><span class="mud-v" id="mud-ip">--</span></div>
         <div class="mud-r"><span class="mud-k">APN</span><span class="mud-v" id="mud-apn">--</span></div>
+        <div class="mud-r" id="mud-simsrc-r" style="display:none"><span class="mud-k">${_('SIM source')}</span><span class="mud-v" id="mud-simsrc">--</span></div>
         <div class="mud-r"><span class="mud-k">${_('Session duration')}</span><span class="mud-v" id="mud-sess">--</span></div>
         <div class="mud-r"><span class="mud-k">${_('Registration')}</span><span class="mud-v" id="mud-reg">--</span></div>
         <div class="mud-r"><span class="mud-k">DNS</span><span class="mud-v" id="mud-dns">--</span></div>
@@ -294,6 +295,7 @@ return view.extend({
         <div class="mud-r"><span class="mud-k">IMEI</span><span class="mud-v" id="mud-imei">--</span></div>
         <div class="mud-r"><span class="mud-k">IMSI</span><span class="mud-v" id="mud-imsi">--</span></div>
         <div class="mud-r"><span class="mud-k">ICCID</span><span class="mud-v" id="mud-iccid">--</span></div>
+        <div class="mud-r" id="mud-msisdn-r" style="display:none"><span class="mud-k">${_('Own number')}</span><span class="mud-v" id="mud-msisdn">--</span></div>
         <div class="mud-r"><span class="mud-k">${_('Module')}</span><span class="mud-v" id="mud-fwmodel">--</span></div>
         <div class="mud-r"><span class="mud-k">${_('Firmware')}</span><span class="mud-v" id="mud-fw">--</span></div>
       </div>
@@ -463,8 +465,12 @@ return view.extend({
 	/* Reset every lock to automatic (lock_set reset: one SFUN restart, the saved settings cleared), wait until the
 	 * lock cache shows a read newer than the one before (or two minutes pass), then run then(). A refused reset stops
 	 * here: the user asked for the reset first. */
+	/* The reset is verified by the backend (unisoc-modem/lock reset: the writes' answers checked, the settings read
+	 * back before and after the restart, the saved locks deleted only then) and its result comes with lock_get as
+	 * "reset"; a result newer than the one shown before the click decides. A failed reset stops the switch: Android
+	 * would come up with the locks the modem still has. */
 	resetLocksThen: function(before, btn, then) {
-		var base = (before && before.ts) || 0, tries = 0;
+		var base = (before && before.ts) || 0, prevEnd = ((before || {}).reset || {}).end || 0, tries = 0;
 		M.busy(btn, true);
 		M.toast(_('Resetting the network locks to automatic (SFUN restart, about 30 seconds)…'), { type: 'busy' });
 		L.resolveDefault(M.callLockSet('reset', 'auto'), null).then(function(r) {
@@ -477,8 +483,15 @@ return view.extend({
 			var step = function() {
 				L.resolveDefault(M.callLockGet(), null).then(function(l) {
 					l = l || {};
-					var fresh = l.ts && l.ts > base, auto = fresh && !(lockDeviations(l) || [ 1 ]).length;
-					if (auto || ++tries > 48) {
+					var res = l.reset || {}, done = res.state && res.state !== 'running' && (res.end || 0) > prevEnd;
+					if (done && res.state !== 'ok') {
+						M.busy(btn, false);
+						M.toast(_('Reset failed: %s. The saved lock settings were kept.').format(
+							M.errText({ error: res.error, detail: res.cmd || res.step })), { type: 'error' });
+						return;
+					}
+					var fresh = l.ts && l.ts > base, auto = done || (fresh && !(lockDeviations(l) || [ 1 ]).length);
+					if (auto || ++tries > 60) {
 						M.busy(btn, false);
 						if (!auto)
 							M.toast(_('The lock reset was not confirmed in time; switching anyway.'), { type: 'error' });
@@ -490,6 +503,20 @@ return view.extend({
 		});
 	},
 
+	/* The SIM the configuration asks for, when it is not the one in use (dashboard-info's "sim", from mu300-sim).
+	 * On a device without slot 1 the selector uses the external card and every figure on this page is that card's:
+	 * say so, instead of showing it as if the internal SIM had been taken (issue #194). A row only then. */
+	paintSim: function(sim) {
+		var row = M.v('simsrc-r');
+		if (!row) return;
+		var text = '';
+		if (sim && sim.wanted === 1 && sim.slot !== 1)
+			text = sim.slot1_supported ? _('Internal SIM selected: in use after a reboot')
+				: _('Internal SIM selected, but not supported on this device: the external SIM is in use');
+		row.style.display = text ? '' : 'none';
+		M.set('simsrc', text || '--');
+	},
+
 	paintIdent: function(cell) {
 		var id = cell && cell.ident;
 		var mask = function(s) {
@@ -499,6 +526,12 @@ return view.extend({
 		M.set('imei', mask(id && id.imei));
 		M.set('imsi', mask(id && id.imsi));
 		M.set('iccid', mask(id && id.iccid));
+		/* The SIM's own number (CNUM, else the IMS identity; full rounds only): a row only when there is one, masked
+		 * like the other identifiers. Personal data: shown here, never logged (the backend keeps it out of its logs). */
+		var num = cell && !cell.error && typeof cell.msisdn === 'string' ? cell.msisdn : '';
+		var numRow = M.v('msisdn-r');
+		if (numRow) numRow.style.display = num ? '' : 'none';
+		M.set('msisdn', mask(num));
 		M.set('fwmodel', id ? (id.model || '--') : '--');
 		M.set('fw', id ? (id.fw || '--') : '--');
 	},
@@ -627,6 +660,7 @@ return view.extend({
 		M.v('ip').innerHTML = M.esc(w.ip4 || '--') + (w.ip6 ? '<br>' + M.esc(w.ip6) : '');
 		M.set('dns', w.dns || '--');
 		M.set('apn', w.apn || '--');
+		this.paintSim(i.sim);
 		M.set('sess', w.uptime ? M.fmtUptime(w.uptime) : '--');
 		var regmap = { 0: _('Not registered'), 1: _('Registered'), 2: _('Searching'), 3: _('Registration denied'), 4: _('Unknown'), 5: _('Registered (roaming)'), 7: _('Emergency only'), 8: _('Emergency only'), 10: _('Registered') };
 		var reg = '--';

@@ -37,6 +37,8 @@ android/magisk/*.zip
 
 # built by tools/ctlset/build.sh
 tools/ctlset/ctlset
+# built by tools/adbd/build.sh
+tools/adbd/adbd
 
 # written by the installer self-update in copies without git
 .mu300-source

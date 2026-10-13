@@ -46,7 +46,11 @@ VOLUME=6
 [ -r "$CONF" ] && . "$CONF"
 RATE=${MU300_VOICE_RATE:-8000}
 DIR=${MU300_AT_DIR:-/run/mu300-at}
-URCLOG=$DIR/urc/stty_nr0.log
+SIM_SLOT=0
+if [ -x /opt/mu300/bin/mu300-sim ]; then
+    SIM_SLOT=$(/opt/mu300/bin/mu300-sim active) || exit 1
+fi
+URCLOG=$DIR/urc/stty_nr$((SIM_SLOT * 3)).log
 TMP=${MU300_VOICE_TMP:-/run/mu300-voice}
 HFP_CTL=/run/mu300-hfp.ctl
 # root-only: the scene and headset logs live here

@@ -5,6 +5,7 @@ import pty
 import re
 import select
 import shutil
+import stat
 import struct
 import subprocess
 import threading
@@ -438,6 +439,117 @@ class Atd(ShellTest):
         for shell in self.each_shell():
             logs, _m = self.start(shell)
             self.assertEqual(logs, ['tty_nr0.log'])
+
+    # ------------------------------------------------------------------ +CMT frames (direct SMS delivery)
+    PDU = '07911326040000F0040B911346610089F60000208062917314480CC8F71D14969741F977FD07'
+    SPOOLER = BIN / 'mu300-cmt-spool'
+
+    def start_spooling(self, shell, nr0=True):
+        """The daemon with the real spooler and a pool of its own; returns (nr1 master, nr0 master or None)."""
+        self.pool = self.tmp / f'pool{len(self.procs)}'
+        _logs, m = self.start(shell, nr0=nr0, MU300_SMS_POOL=self.pool, MU300_CMT_SPOOL_BIN=self.SPOOLER)
+        return m, (self.masters[-1] if nr0 else None)
+
+    def spooled(self, timeout=10):
+        """[the PDUs in the pool's spool], once one is there (or the time is up)."""
+        end = time.monotonic() + timeout
+        while time.monotonic() < end:
+            d = self.pool / 'incoming'
+            files = sorted(d.glob('*.ready')) if d.exists() else []
+            if files:
+                return [f.read_text().rstrip('\n') for f in files]
+            time.sleep(0.05)
+        return []
+
+    def test_a_cmt_frame_on_the_urc_channel_is_spooled_and_kept_out_of_the_log(self):
+        """The modem's unsolicited channel (nr0, where +CMTI comes) carries the +CMT frame when mu300-smsd asked for
+        direct delivery: the PDU goes to the spooler on its stdin, the log gets the header and not the message."""
+        for shell in self.each_shell():
+            _m, nr0 = self.start_spooling(shell)
+            os.write(nr0, f'\r\n+CSQ: 20,99\r\n\r\n+CMT: ,27\r\n{self.PDU}\r\n\r\n+CEREG: 1\r\n'.encode())
+            self.assertEqual(self.spooled(), [self.PDU])
+            log = self.dir / 'urc' / 'tty_nr0.log'
+            for _ in range(100):
+                if '+CEREG: 1' in log.read_text():
+                    break
+                time.sleep(0.05)
+            self.assertEqual([l for l in log.read_text().splitlines() if l], ['+CSQ: 20,99', '+CMT (PDU spooled)', '+CEREG: 1'])
+            self.assertNotIn(self.PDU, log.read_text())
+            self.assertNotIn(self.PDU, self.err.read_text())
+
+    def test_a_cmt_frame_inside_a_reply_is_spooled_and_never_in_the_answer(self):
+        for shell in self.each_shell():
+            m, _nr0 = self.start_spooling(shell, nr0=False)
+            self.send(m, 'AT+CSQ', f'\r\n+CMT: ,27\r\n{self.PDU}\r\n\r\n+CSQ: 20,99\r\n\r\nOK\r\n'.encode(), t=3)
+            self.assertEqual(self.answer, '+CSQ: 20,99\nOK\n')
+            self.assertEqual(self.spooled(), [self.PDU])
+            self.assertIn('+CMT (PDU spooled)\n', (self.dir / 'urc' / 'tty_nr1.log').read_text())
+            self.assertNotIn(self.PDU, (self.dir / 'urc' / 'tty_nr1.log').read_text())
+
+    def test_a_cmt_frame_while_idle_is_spooled_before_the_next_command(self):
+        for shell in self.each_shell():
+            m, _nr0 = self.start_spooling(shell, nr0=False)
+            os.write(m, f'\r\n+CMT: "ADANA BLD",27\r\n{self.PDU}\r\n'.encode())
+            time.sleep(0.3)
+            self.assertEqual(self.spooled(timeout=0.1), [])        # nobody reads an idle command channel
+            self.send(m, 'AT', b'\r\nOK\r\n', t=3)                 # the drain before the command takes it
+            self.assertEqual(self.answer, 'OK\n')
+            self.assertEqual(self.spooled(), [self.PDU])
+            self.assertIn('+CMT (PDU spooled)\n', (self.dir / 'urc' / 'tty_nr1.log').read_text())
+            self.assertNotIn('ADANA', (self.dir / 'urc' / 'tty_nr1.log').read_text())   # the header is never logged
+
+    def test_a_frame_that_is_no_message_is_not_spooled_and_the_daemon_goes_on(self):
+        for shell in self.each_shell():
+            _m, nr0 = self.start_spooling(shell)
+            os.write(nr0, b'\r\n+CMT: ,27\r\nnot a pdu\r\n+CSQ: 1,2\r\n')
+            log = self.dir / 'urc' / 'tty_nr0.log'
+            for _ in range(100):
+                if '+CSQ: 1,2' in log.read_text():
+                    break
+                time.sleep(0.05)
+            self.assertEqual([l for l in log.read_text().splitlines() if l], ['+CMT (not spooled)', '+CSQ: 1,2'])
+            self.assertEqual(self.spooled(timeout=0.2), [])
+            self.assertIn('could not be spooled', self.err.read_text())
+            # a header with no PDU after it (two seconds): the same, and the lines after it are logged as usual
+            os.write(nr0, b'+CMT: ,27\r\n')
+            time.sleep(2.5)
+            os.write(nr0, b'+CSQ: 3,4\r\n')
+            for _ in range(100):
+                if '+CSQ: 3,4' in log.read_text():
+                    break
+                time.sleep(0.05)
+            self.assertEqual([l for l in log.read_text().splitlines() if l][-2:], ['+CMT (not spooled)', '+CSQ: 3,4'])
+            self.assertEqual(self.spooled(timeout=0.2), [])
+
+    def test_a_text_mode_frame_is_written_nowhere(self):
+        """Nothing here asks for text mode, but another tool might: then the header carries the sender and the next
+        line the message. Neither reaches the log, a reply or stderr; the spooler takes hexadecimal only."""
+        header, text = '+CMT: "+905551112233",,"26/10/12,15:00:00+12"', 'the secret text of a message'
+        for shell in self.each_shell():
+            m, nr0 = self.start_spooling(shell)
+            os.write(nr0, f'\r\n{header}\r\n{text}\r\n+CSQ: 1,2\r\n'.encode())
+            log0 = self.dir / 'urc' / 'tty_nr0.log'
+            for _ in range(100):
+                if '+CSQ: 1,2' in log0.read_text():
+                    break
+                time.sleep(0.05)
+            self.assertEqual([l for l in log0.read_text().splitlines() if l], ['+CMT (not spooled)', '+CSQ: 1,2'])
+            # and inside a reply on the command channel
+            self.send(m, 'AT+CSQ', f'\r\n{header}\r\n{text}\r\n\r\n+CSQ: 20,99\r\n\r\nOK\r\n'.encode(), t=3)
+            self.assertEqual(self.answer, '+CSQ: 20,99\nOK\n')
+            everything = log0.read_text() + (self.dir / 'urc' / 'tty_nr1.log').read_text() + self.err.read_text()
+            for secret in ('905551112233', 'secret', '26/10/12'):
+                self.assertNotIn(secret, everything)
+            self.assertEqual(self.spooled(timeout=0.2), [])
+
+    def test_without_the_spooler_nothing_is_spooled_and_nothing_breaks(self):
+        for shell in self.each_shell():
+            self.pool = self.tmp / f'pool{len(self.procs)}'
+            _logs, m = self.start(shell, nr0=False, MU300_SMS_POOL=self.pool, MU300_CMT_SPOOL_BIN=self.tmp / 'nowhere')
+            self.send(m, 'AT+CSQ', f'\r\n+CMT: ,27\r\n{self.PDU}\r\n\r\n+CSQ: 20,99\r\n\r\nOK\r\n'.encode(), t=3)
+            self.assertEqual(self.answer, '+CSQ: 20,99\nOK\n')
+            self.assertFalse((self.pool / 'incoming').exists())
+            self.assertIn('+CMT (not spooled)\n', (self.dir / 'urc' / 'tty_nr1.log').read_text())
 
     def test_empty_urc_channels_open_none(self):
         for shell in self.each_shell():
@@ -1369,7 +1481,7 @@ class SipaDele(ShellTest):
         self.mods.mkdir(parents=True)
         self.stub('uname', 'echo 5.4.test')
         self.stub('insmod', 'echo "insmod $*" >> "$STUBLOG/calls"\nexit "${INSMOD_RC:-0}"')
-        self.stub('modprobe', 'echo "modprobe $*" >> "$STUBLOG/calls"')
+        self.stub('modprobe', 'echo "modprobe $*" >> "$STUBLOG/calls"\nexit "${MODPROBE_RC:-0}"')
         # the sbuf lines from the modem loader's start may have left the ring buffer long ago: not asked for
         self.stub('dmesg', 'echo "[  80.1] sipa_dele: channel 5-120 send open msg"')
         self.stub('sleep', ':')
@@ -1378,6 +1490,8 @@ class SipaDele(ShellTest):
 
     def copy(self, name):
         text = (BIN / name).read_text()
+        if name == 'sipa-dele-start':
+            text = text.replace('/dev/stty_nr$((SIM_SLOT * 3 + 1))', '/dev/null')
         for a, b in (('/lib/modules/', f'{self.tmp}/lib/modules/'), ('/proc/modules', f'{self.tmp}/proc-modules'),
                      ('/opt/mu300/bin/', f'{self.stubs}/'), ('/dev/stty_nr1', '/dev/null')):
             text = text.replace(a, b)
@@ -1406,6 +1520,32 @@ class SipaDele(ShellTest):
                 self.assertNotIn('sipa-dele-start', calls)
                 self.assertNotIn('sipa-dele', calls.replace('sipa-dele-start', ''))
             ko.unlink()
+
+    def test_extra_modules_loads_the_stock_thermal_zone_module_when_the_kernel_has_one(self):
+        """mu300_thermal (the stock virtual thermal zone, mainline only): loaded once, by name where depmod indexed it
+        and by path where not (Ubuntu's extra/ before depmod ran); the vendor 5.4 kernel has no such module."""
+        for shell in self.each_shell():
+            r, calls = self.run_script(shell, 'extra-modules')                       # 5.4: no module, nothing tried
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertNotIn('mu300_thermal', calls)
+            for sub in ('', 'extra'):
+                ko = self.mods / sub / 'mu300_thermal.ko'
+                ko.parent.mkdir(exist_ok=True)
+                ko.write_text('')
+                r, calls = self.run_script(shell, 'extra-modules')
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertIn('modprobe mu300_thermal', calls)
+                self.assertNotIn(f'insmod {ko}', calls)
+                self.assertIn('loaded mu300_thermal', r.stdout)
+                r, calls = self.run_script(shell, 'extra-modules', MODPROBE_RC=1)   # no index yet: by path
+                self.assertIn(f'insmod {ko}', calls)
+                self.assertIn('loaded mu300_thermal', r.stdout)
+                r, calls = self.run_script(shell, 'extra-modules', MODPROBE_RC=1, INSMOD_RC=1)
+                self.assertEqual(r.returncode, 0, r.stderr)                          # a failure is logged, not fatal
+                self.assertIn('FAILED mu300_thermal', r.stdout)
+                r, calls = self.run_script(shell, 'extra-modules', 'mu300_thermal 12288 0 - Live 0x0 (O)\n')
+                self.assertNotIn('mu300_thermal', calls)                             # loaded already
+                ko.unlink()
 
     def test_refuses_after_the_wait(self):
         """K46: the packet domain never comes up: exit 1 after MU300_DELE_WAIT s, the module is not inserted."""
@@ -1540,6 +1680,132 @@ class VendorStart(ShellTest):
             r = self.sh(shell, f'set -e\nsrc={cmd}\n' + m.group(1) + 'echo "L=$L AS=$AS"', MU300_RUN=run)
             self.assertEqual(r.stdout.strip(), 'L=a AS=b', shell)
             shutil.rmtree(run)
+
+    # ---- the imported Android files (issue #127): whatever unpacked them, the daemons can read them afterwards
+    def android_tree(self):
+        a = self.tmp / 'android'
+        shutil.rmtree(a, ignore_errors=True)
+        files = {'dev-properties/property_info': 0o444, 'dev-properties/u:object_r:radio_prop:s0': 0o444,
+                 'vendor/bin/modem_control': 0o755, 'vendor/etc/modem_cp_info.xml': 0o644,
+                 'vendor/lib64/hw/vulkan.so': 0o644, 'system/bin/cltest': 0o755, 'system/lib64/libc++.so': 0o644,
+                 'apex/com.android.runtime/bin/linker64': 0o755,
+                 'apex/com.android.runtime/lib64/bionic/libc.so': 0o644, 'linkerconfig/ld.config.txt': 0o644,
+                 'data/vendor/local/keep': 0o600}       # not an imported tree: never touched
+        for rel, mode in files.items():
+            f = a / rel
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text(rel)
+            f.chmod(mode)
+        os.symlink('/apex/com.android.runtime/bin/linker64', a / 'system/bin/linker64')
+        for d in a.rglob('*'):
+            if d.is_dir() and not d.is_symlink():
+                d.chmod(0o755)                          # whatever umask the tests run under
+        (a / 'dev-properties').chmod(0o711)             # as Android has it
+        return a, files
+
+    # the script's own A and mark; the marks go to stdout here
+    MODES_PRE = 'set -e\nA=/nonexistent\nmark() { echo "mark $*"; }\n'
+
+    def modes(self, a):
+        return {p.relative_to(a).as_posix(): stat.S_IMODE(p.lstat().st_mode)
+                for p in a.rglob('*') if not p.is_symlink()}
+
+    def run_modes(self, shell, a):
+        text = (BIN / 'android-vendor-start').read_text()
+        m = re.search(r'# --- modes begin\n(.*?)# --- modes end', text, re.S)
+        self.assertIsNotNone(m, 'android-vendor-start has no modes block')
+        (self.tmp / 'kmsg').write_text('')
+        return self.sh(shell, self.MODES_PRE + m.group(1) + 'echo done', MU300_ANDROID=a,
+                       MU300_KMSG=self.tmp / 'kmsg', MU300_ANDROID_OWNER=f'{os.getuid()}:{os.stat(self.tmp).st_gid}')
+
+    def test_imported_files_installed_0700_become_readable(self):
+        # what install.sh stored from a FAT/exFAT work directory on macOS: every file and directory 0700
+        for shell in self.each_shell():
+            a, files = self.android_tree()
+            good = self.modes(a)
+            for p in sorted(a.rglob('*'), reverse=True):
+                if not p.is_symlink() and p.relative_to(a).parts[0] != 'data':
+                    p.chmod(0o700)
+            r = self.run_modes(shell, a)
+            self.assertEqual(r.stdout.split('\n')[:2], ['mark vendor-modes-repaired', 'done'], (shell, r.stderr))
+            want = dict(good, **{'dev-properties': 0o755})      # a 0700 directory becomes 0755, like the others
+            self.assertEqual(self.modes(a), want, shell)
+            self.assertEqual(os.readlink(a / 'system/bin/linker64'), '/apex/com.android.runtime/bin/linker64')
+            # one line that says what was found, with the count: 10 files and 16 directories
+            n = len([k for k in good if k.split('/')[0] != 'data'])
+            self.assertRegex(r.stderr, rf'android-vendor-start: {n} imported Android files and directories had ', shell)
+            self.assertEqual(len(r.stderr.strip().splitlines()), 1, r.stderr)
+            # the same line for the kernel log: OpenWrt's log daemon is not up yet when this runs
+            self.assertEqual((self.tmp / 'kmsg').read_text(), r.stderr, shell)
+            # and the next start finds nothing to do and says nothing
+            r = self.run_modes(shell, a)
+            self.assertEqual((r.stdout.strip(), r.stderr), ('done', ''), shell)
+            self.assertEqual(self.modes(a), want, shell)
+
+    def test_imported_files_that_are_right_are_left_alone(self):
+        for shell in self.each_shell():
+            a, files = self.android_tree()
+            good = self.modes(a)
+            self.assertEqual(good['dev-properties'], 0o711)
+            r = self.run_modes(shell, a)
+            self.assertEqual((r.stdout.strip(), r.stderr), ('done', ''), shell)
+            self.assertEqual(self.modes(a), good, shell)
+
+    def test_imported_files_one_at_a_time(self):
+        # vendor/etc alone 0700 (tar made it under umask 077): modem_control ends at "can't get modem img!";
+        # a file others can write; a property file that is not read-only; a program that cannot be run
+        cases = (('vendor/etc', 0o700, 0o755), ('system/lib64/libc++.so', 0o666, 0o644),
+                 ('dev-properties/property_info', 0o600, 0o444), ('vendor/bin/modem_control', 0o644, 0o755),
+                 ('apex/com.android.runtime/lib64/bionic/libc.so', 0o4755, 0o644), ('linkerconfig', 0o750, 0o755))
+        for shell in self.each_shell():
+            for rel, bad, fixed in cases:
+                a, files = self.android_tree()
+                good = self.modes(a)
+                (a / rel).chmod(bad)
+                r = self.run_modes(shell, a)
+                self.assertEqual(r.stdout.split(), ['mark', 'vendor-modes-repaired', 'done'], (shell, rel, r.stderr))
+                self.assertEqual(self.modes(a), dict(good, **{rel: fixed}), (shell, rel))
+                self.assertIn(f'1 imported Android files and directories had ', r.stderr, (shell, rel))
+                self.assertIn(f'(the first: {a}/{rel})', r.stderr, (shell, rel))
+
+    def test_imported_files_without_the_trees_or_the_right_to_change_them(self):
+        for shell in self.each_shell():
+            # a system without the imported files (no modem stack): nothing to do, and no error under set -e
+            empty = self.tmp / 'none'
+            empty.mkdir(exist_ok=True)
+            r = self.run_modes(shell, empty)
+            self.assertEqual((r.stdout.strip(), r.stderr), ('done', ''), shell)
+            # an owner that cannot be set (here: not root) is reported, and the script goes on to start the modem
+            a, files = self.android_tree()
+            text = (BIN / 'android-vendor-start').read_text()
+            m = re.search(r'# --- modes begin\n(.*?)# --- modes end', text, re.S)
+            if os.getuid() != 0:
+                r = self.sh(shell, self.MODES_PRE + m.group(1) + 'echo done', MU300_ANDROID=a,
+                            MU300_KMSG=self.tmp / 'no' / 'kmsg')      # nor a kernel log to write to
+                self.assertEqual(r.stdout.split(), ['mark', 'vendor-modes-wrong', 'done'], (shell, r.stderr))
+                self.assertIn('could not be changed', r.stderr, shell)
+                self.assertIn('the modem may not start', r.stderr, shell)
+
+    def test_the_modes_block_runs_before_the_daemons_and_owns_to_root(self):
+        text = (BIN / 'android-vendor-start').read_text()
+        self.assertLess(text.index('# --- modes end'), text.index('exec /opt/mu300/bin/android-run modem_control'))
+        self.assertIn('MO=${MU300_ANDROID_OWNER:-0:0}', text)
+        self.assertIn('MA=${MU300_ANDROID:-$A}', text)
+        m = re.search(r'# --- modes begin\n(.*?)# --- modes end', text, re.S).group(1)
+        # nothing mounted below is entered, links are never followed or changed
+        self.assertEqual(len(re.findall(r'\bfind \$MT -xdev ', m)), 6)
+        self.assertEqual(m.count('find '), 6)
+        self.assertNotIn('chmod -R', m)
+        self.assertNotIn('chown -R', m)
+
+    def test_the_vendor_log_has_a_directory_to_go_to(self):
+        # OpenWrt runs this at S09, its boot script makes /var/log at S10: without the directory the redirection
+        # failed, logdw never started and the daemons' reasons for a modem that did not boot were lost (seen on
+        # the F50-B: no /var/log/android-logcat.txt, no logdw process, until the service was restarted by hand)
+        text = (BIN / 'android-vendor-start').read_text()
+        self.assertLess(text.index('mkdir -p /var/log 2>/dev/null || true\n'),
+                        text.index('/opt/mu300/bin/logdw /dev/socket/logdw >> /var/log/android-logcat.txt'))
+        self.assertEqual((TOP / 'openwrt/overlay/etc/init.d/mu300-vendor').read_text().count('\nSTART=09\n'), 1)
 
     def test_no_forks_in_the_loop_and_no_sleep_after_logdw(self):
         text = (BIN / 'android-vendor-start').read_text()
@@ -2351,15 +2617,164 @@ class ThermalGuard(ShellTest):
             self.assertEqual(self.round(shell, 86000, 750), ['mu300-led alarm on'])    # the SoC still counts
             self.assertEqual(self.round(shell, 74000, 750), ['mu300-led alarm off'])
 
+    def kernel(self, release):
+        (self.root / 'proc/sys/kernel').mkdir(parents=True, exist_ok=True)
+        (self.root / 'proc/sys/kernel/osrelease').write_text(release + '\n')
+
     def test_vendor_kernel_only_watches(self):
-        # 5.4 has its own trip points: no throttling or power-off here, but the alarm still works
+        # 5.4 throttles and protects itself (its soc-thmzone has the trips and the clusters): no throttling or
+        # power-off here, but the alarm still works
         for shell in self.each_shell():
             shutil.rmtree(self.root, ignore_errors=True)
             self.device('u30air')
+            self.kernel('5.4.254-android12-9-gb50db5b6224c')
             self.assertEqual(self.round(shell, 110000, trips=True), ['mu300-led alarm on'])
             shutil.rmtree(self.root, ignore_errors=True)
             self.device('u30air')
+            self.kernel('7.2.10')
             self.assertEqual(self.round(shell, 110000), ['poweroff', 'mu300-led alarm on'])   # mainline: critical
+
+    # --- the stock virtual zone on mainline (mu300_thermal): the kernel throttles, this guard only watches
+    def cooling(self, n, kind, state=0):
+        d = self.root / f'sys/class/thermal/cooling_device{n}'
+        d.mkdir(parents=True, exist_ok=True)
+        (d / 'type').write_text(kind + '\n')
+        (d / 'cur_state').write_text(f'{state}\n')
+        (d / 'max_state').write_text('9\n')
+        return d
+
+    def zone(self, n, kind, temp, trips=(), cdevs=(), mode='enabled'):
+        """thermal_zoneN of type KIND with TRIPS [(type, temp)] and the cooling devices CDEVS bound (cdevK links)."""
+        z = self.root / f'sys/class/thermal/thermal_zone{n}'
+        z.mkdir(parents=True, exist_ok=True)
+        (z / 'type').write_text(kind + '\n')
+        (z / 'temp').write_text(f'{temp}\n')
+        (z / 'mode').write_text(mode + '\n')
+        for i, (tt, tv) in enumerate(trips):
+            (z / f'trip_point_{i}_type').write_text(tt + '\n')
+            (z / f'trip_point_{i}_temp').write_text(f'{tv}\n')
+        for i, c in enumerate(cdevs):
+            (z / f'cdev{i}').symlink_to(f'../cooling_device{c}')
+        return z
+
+    def soc_zone(self, temp, cdevs=(0, 1, 2), mode='enabled'):
+        """the stock soc-thmzone as mu300_thermal brings it back: passive 70 and 85 C, critical 110 C, the three
+        cpufreq cooling devices bound through the cooling maps (thermal_zone0..2 are physical zones without trips)"""
+        for i, kind in enumerate(('lit0-thmzone', 'big7-thmzone', 'gpu-thmzone')):
+            self.zone(i, kind, temp)
+        for i, cpu in enumerate((0, 4, 7)):
+            self.cooling(i, f'cpufreq-cpu{cpu}')
+        return self.zone(3, 'soc-thmzone', temp, [('passive', 70000), ('passive', 85000), ('critical', 110000)],
+                         cdevs, mode)
+
+    def mainline(self, temp, **zone):
+        shutil.rmtree(self.root, ignore_errors=True)
+        self.device('f50')
+        self.kernel('7.2.10')
+        freqs = [614400, 936000, 1105000, 1404000, 2002000]
+        self.pols = [self.policy(p, freqs, 2002000) for p in ('policy0', 'policy4', 'policy7')]
+        if zone is not None:
+            self.soc_zone(temp, **zone)
+
+    def maxes(self):
+        return [(p / 'scaling_max_freq').read_text().strip() for p in self.pols]
+
+    def log(self):
+        return (self.tmp / 'log').read_text() if (self.tmp / 'log').exists() else ''
+
+    def test_kernel_cooling_bound_to_the_stock_zone_hands_frequency_control_over(self):
+        self.stub('logger', 'echo "$*" >> "$STUBLOG/log"')
+        for shell in self.each_shell():
+            self.mainline(90000)
+            (self.tmp / 'log').unlink(missing_ok=True)
+            self.assertEqual(self.round(shell, 90000), ['mu300-led alarm on'])    # hot: the alarm, no capping
+            self.assertEqual(self.maxes(), ['2002000'] * 3)
+            self.assertIn('soc-thmzone', self.log())
+            self.assertIn('watching', self.log())
+            self.assertEqual(self.round(shell, 105000), ['poweroff'])             # our 105 C power-off stays
+            self.assertEqual(self.maxes(), ['2002000'] * 3)
+
+    def test_mainline_without_the_zone_caps_and_powers_off(self):
+        for shell in self.each_shell():
+            self.mainline(90000)
+            shutil.rmtree(self.root / 'sys/class/thermal/thermal_zone3')
+            self.assertEqual(self.round(shell, 90000), ['mu300-led alarm on'])
+            self.assertEqual(self.maxes(), ['1404000'] * 3)
+            self.assertEqual(self.round(shell, 105000), ['poweroff'])
+
+    def test_a_zone_whose_reading_cannot_be_trusted_keeps_this_guard_capping(self):
+        for shell in self.each_shell():
+            self.mainline(90000)                                                  # bound, but the zone does not read
+            (self.root / 'sys/class/thermal/thermal_zone3/temp').unlink()
+            self.round(shell, 90000)
+            self.assertEqual(self.maxes(), ['1404000'] * 3)
+            self.mainline(90000)                                                  # reads, but not a number
+            (self.root / 'sys/class/thermal/thermal_zone3/temp').write_text('\n')
+            self.round(shell, 90000)
+            self.assertEqual(self.maxes(), ['1404000'] * 3)
+            self.mainline(90000)                                                  # stale: far below the die sensors
+            (self.root / 'sys/class/thermal/thermal_zone3/temp').write_text('40000\n')
+            self.round(shell, 90000)
+            self.assertEqual(self.maxes(), ['1404000'] * 3)
+            self.mainline(90000)                                                  # within 15 C of the hottest: trusted
+            (self.root / 'sys/class/thermal/thermal_zone3/temp').write_text('80000\n')
+            self.round(shell, 90000)
+            self.assertEqual(self.maxes(), ['2002000'] * 3)
+            self.mainline(90000)                                                  # passive trips above HOT: not ours
+            z = self.root / 'sys/class/thermal/thermal_zone3'
+            (z / 'trip_point_0_temp').write_text('95000\n')
+            (z / 'trip_point_1_temp').write_text('100000\n')
+            self.round(shell, 90000)
+            self.assertEqual(self.maxes(), ['1404000'] * 3)
+
+    def test_a_cluster_left_out_of_the_zone_keeps_this_guard_capping(self):
+        for shell in self.each_shell():
+            self.mainline(90000, cdevs=(0, 1))                                    # cpufreq-cpu7 not bound
+            self.round(shell, 90000)
+            self.assertEqual(self.maxes(), ['1404000'] * 3)
+            self.mainline(90000, mode='disabled')                                 # the zone is off
+            self.round(shell, 90000)
+            self.assertEqual(self.maxes(), ['1404000'] * 3)
+            self.mainline(90000)
+            for i in range(3):                                                    # no cpufreq cooling device at all
+                shutil.rmtree(self.root / f'sys/class/thermal/cooling_device{i}')
+            self.round(shell, 90000)
+            self.assertEqual(self.maxes(), ['1404000'] * 3)
+
+    def test_handoff_lifts_the_caps_this_guard_set_and_the_zone_gone_caps_again(self):
+        for shell in self.each_shell():
+            self.mainline(90000, cdevs=())
+            shutil.rmtree(self.root / 'sys/class/thermal/thermal_zone3')          # module not loaded yet
+            (self.root / 'run/mu300/cpu-ceiling').write_text('policy0=1105000\n')
+            self.round(shell, 90000)                                              # hot: one step down everywhere
+            self.round(shell, 90000)
+            self.assertEqual(self.maxes(), ['1105000', '1105000', '1105000'])
+            self.assertTrue((self.root / 'run/mu300/thermal-capped').exists())
+            self.soc_zone(80000)                                                  # mu300_thermal loaded, zone bound
+            self.round(shell, 80000)                                              # neither cool nor hot
+            # our caps go (the kernel holds its own, as a QoS limit under scaling_max_freq), the profile's stays
+            self.assertEqual(self.maxes(), ['1105000', '2002000', '2002000'])
+            self.assertFalse((self.root / 'run/mu300/thermal-capped').exists())
+            self.round(shell, 90000)                                              # hot under the kernel: untouched
+            self.assertEqual(self.maxes(), ['1105000', '2002000', '2002000'])
+            shutil.rmtree(self.root / 'sys/class/thermal/thermal_zone3')          # rmmod
+            self.round(shell, 90000)
+            self.assertEqual(self.maxes(), ['936000', '1404000', '1404000'])
+
+    def test_a_restarted_guard_lifts_its_old_cap_on_the_handoff_too(self):
+        # the marker outlives a restart: the cap of a run before the module loaded does not stick for ever
+        for shell in self.each_shell():
+            self.mainline(80000)
+            for p in self.pols:
+                (p / 'scaling_max_freq').write_text('1404000\n')
+            (self.root / 'run/mu300/thermal-capped').write_text('')
+            self.round(shell, 80000)
+            self.assertEqual(self.maxes(), ['2002000'] * 3)
+            self.mainline(80000)                                                  # no marker: another cap is not ours
+            for p in self.pols:
+                (p / 'scaling_max_freq').write_text('1404000\n')
+            self.round(shell, 80000)
+            self.assertEqual(self.maxes(), ['1404000'] * 3)
 
     def policy(self, name, freqs, cur_max):
         p = self.root / 'sys/devices/system/cpu/cpufreq' / name
@@ -3040,6 +3455,37 @@ class NextBoot(ShellTest):
         r = self.nb('android')
         self.assertNotEqual(r.returncode, 0)
         self.assertEqual(self.misc.read_bytes(), before)
+
+    def test_trial_with_android_as_the_default_boot_arms_nothing_and_says_so(self):
+        # mu300-update calls this before it writes a boot image. With Android as the default boot there is nothing to
+        # arm - every Linux boot is a one-shot trial armed from Android - and a reboot goes to Android by itself, so
+        # the caller has to be able to tell (exit 3): an update that promised a reboot left a device in Android on
+        # 2026-10-12, and nothing on the screen had said it would
+        (self.tmp / 'default-boot').write_text('android\n')
+        before = self.misc.read_bytes()
+        r = self.nb('--trial')
+        self.assertEqual(r.returncode, 3, r.stderr)
+        self.assertIn('default boot is not linux', r.stderr)
+        self.assertEqual(r.stdout, '')
+        self.assertEqual(self.misc.read_bytes(), before)
+        # --rearm is the periodic best effort (mu300-boot-ok, mu300-post): nothing to do is not a failure there
+        self.assertEqual(self.nb('--rearm').returncode, 0)
+        self.assertEqual(self.misc.read_bytes(), before)
+
+    def test_an_arm_that_cannot_rebuild_the_block_is_one_boot_and_a_failure(self):
+        # the initramfs' block is not the one this misc's arithmetic needs: mu300-next-boot writes that block back -
+        # one boot to prove itself, not N (FINDINGS 32) - and exits 1, so mu300-update does not report the usual
+        # attempts for an image that gets only the one
+        linux_b = bytearray(self.blocks[1])
+        linux_b[14] = 0x3f                      # tries 3: make_bc_b 2 2 cannot reproduce this block
+        linux_b[28:32] = struct.pack('<I', zlib.crc32(bytes(linux_b[:28])))
+        (self.run_dir / 'linux-slot').write_text('b\n')
+        (self.run_dir / 'misc-bc-android.bin').write_bytes(self.blocks[0])
+        (self.run_dir / 'misc-bc-linux-trial.bin').write_bytes(bytes(linux_b))
+        r = self.nb('--trial')
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn('arming with 1 attempt, not 5', r.stderr)
+        self.assertEqual(self.bc(), bytes(linux_b))
 
 
 class EarlyRecorder(ShellTest):

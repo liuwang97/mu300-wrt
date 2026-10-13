@@ -1574,18 +1574,24 @@ static int iface_notify_init(struct sprd_priv *priv)
 {
 	int ret = 0;
 
-	atomic_notifier_chain_register(&wcn_reset_notifier_list,
-				       &iface_host_reset_cb);
-
+	/*
+	 * MU300 (from kanoqwq/mu300-linux): the WCN reset notifier last, and every step undone when a later one
+	 * fails. The vendor registered the notifier first and returned on a failure with it (and the misc device,
+	 * and the inetaddr notifier) still registered: the probe then freed priv, and the next WCN reset called
+	 * iface_host_reset() on it. A reset before misc_register() also queued the FW_ERROR uevent for a misc
+	 * device that had no this_device yet, and a failed misc_register() went on as if it had worked.
+	 */
 	ret = misc_register(&wlan_misc_device);
-	if (ret)
+	if (ret) {
 		pr_err("wlan misc dev register fail\n");
+		return ret;
+	}
 
 	ret = register_inetaddr_notifier(&iface_inetaddr_cb);
 	if (ret) {
 		pr_err("%s failed to register inetaddr notifier(%d)!\n",
 		       __func__, ret);
-		return ret;
+		goto err_misc;
 	}
 
 	if (priv->fw_capa & SPRD_CAPA_NS_OFFLOAD) {
@@ -1595,10 +1601,21 @@ static int iface_notify_init(struct sprd_priv *priv)
 			pr_err
 			    ("%s failed to register inet6addr notifier(%d)!\n",
 			     __func__, ret);
-			return ret;
+			goto err_inet;
 		}
 	}
 
+	ret = atomic_notifier_chain_register(&wcn_reset_notifier_list,
+					     &iface_host_reset_cb);
+	if (!ret)
+		return 0;
+
+	if (priv->fw_capa & SPRD_CAPA_NS_OFFLOAD)
+		unregister_inet6addr_notifier(&iface_inet6addr_cb);
+err_inet:
+	unregister_inetaddr_notifier(&iface_inetaddr_cb);
+err_misc:
+	misc_deregister(&wlan_misc_device);
 	return ret;
 }
 
@@ -2001,16 +2018,23 @@ int sprd_iface_remove(struct platform_device *pdev)
 	pr_info("%s\n wlan driver remove.", __func__);
 	iface_wd_stop();	/* MU300: before hif goes */
 
+	/*
+	 * MU300 (issue #146): the vendor returned here when the power-on failed, with everything still registered;
+	 * a platform remove cannot refuse (the device is unbound and the module freed either way), so the
+	 * teardown goes on without the chip. The power-on only fails from a count of 0, i.e. with no interface
+	 * open, so the close commands it would have carried are not needed and there is no power-off to balance.
+	 */
 	pr_info("Power on WCN (%d time)\n", atomic_read(&hif->power_cnt));
 	ret = sprd_iface_set_power(hif, true);
 	if (ret)
-		return ret;
+		pr_err("%s: WCN power-on failed (%d), removing without the chip\n", __func__, ret);
 
 	iface_notify_deinit(priv);
 	iface_core_deinit(priv);
 	/* MU300: power off while hif still exists (sprd_core_free frees priv, and hif and its lock with it) */
 	pr_info("Power off WCN (%d time)\n", atomic_read(&hif->power_cnt));
-	sprd_iface_set_power(hif, false);
+	if (!ret)
+		sprd_iface_set_power(hif, false);
 	sprd_hif_deinit(hif);
 	sprd_core_free(priv);
 	iface_set_priv(NULL);

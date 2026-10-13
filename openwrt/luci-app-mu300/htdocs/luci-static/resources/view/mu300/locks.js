@@ -114,7 +114,7 @@ return view.extend({
 				.then(function(go) { if (go) applyNow(kind, val, what, opts); });
 		};
 		var applyNow = function(kind, val, what, opts) {
-			var btn = opts.btn;
+			var btn = opts.btn, prevEnd = ((self.lastLock || {}).reset || {}).end || 0;
 			if (opts.optimistic) opts.optimistic();   /* the button shows the target state at once; the readback corrects it */
 			M.busy(btn, true);   /* after optimistic: it may reset the button's className */
 			self.note((opts.noSfun ? _('Applying %s in the background…')
@@ -135,6 +135,10 @@ return view.extend({
 				if (kind == 'auto_apply') {
 					self.note(_('Confirming apply at startup…'), 'busy');
 					return self.confirmToggle(kind, val, btn);
+				}
+				if (kind == 'reset') {
+					self.note(_('Started in background: %s (SFUN restart, about 30 seconds); reading the status back…').format(r.op || kind), 'busy');
+					return self.readbackReset(prevEnd, btn);
 				}
 				self.note(_('Started in background: %s (SFUN restart, about 30 seconds); reading the status back…').format(r.op || kind), 'busy');
 				self.readback(Date.now(), btn);
@@ -368,6 +372,34 @@ return view.extend({
 			});
 		};
 		step();
+	},
+	/* Read-back after a reset: the backend's reset is verified (every write's answer checked, the five settings read
+	 * back before and after the stack restart, the saved locks deleted only then) and runs detached; its result
+	 * comes with lock_get as "reset" ({state: ok|failed|interrupted|running, end, error, step, cmd}). A result is
+	 * new when its end is after the one shown before the click (the device's clock on both sides, never the
+	 * browser's); a failed reset says why and that the saved locks were kept. Up to 150 s: the restart waits for
+	 * the radio lock, and the read-back after it retries for half a minute. */
+	readbackReset: function(prevEnd, btn) {
+		var self = this, tries = 0;
+		var step = function() {
+			L.resolveDefault(M.callLockGet()).then(function(l) {
+				l = l || {};
+				var res = l.reset || {};
+				var done = res.state && res.state !== 'running' && (res.end || 0) > prevEnd;
+				if (done || ++tries > 60) {
+					M.busy(btn, false);
+					self.lastLock = l; self.paint(); self.paintServing(self.lastCell);
+					if (!done)
+						self.note(_('Readback timed out; select “Refresh lock status”'), 'error');
+					else if (res.state === 'ok')
+						self.note(_('Reset verified: network mode automatic, EN-DC on, all bands, no cell lock; the saved lock settings are cleared'), 'success');
+					else
+						self.note(_('Reset failed: %s. The saved lock settings were kept.').format(
+							M.errText({ error: res.error, detail: res.cmd || res.step })), 'error');
+				} else setTimeout(step, 2500);
+			});
+		};
+		setTimeout(step, 1500);
 	},
 	refreshSoon: function() {
 		var self = this;

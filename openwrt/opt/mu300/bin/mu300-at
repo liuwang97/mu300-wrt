@@ -17,7 +17,11 @@ if [ -n "$(read -t 1 _probe </dev/null 2>&1)" ]; then
     echo "mu300-at: need bash or busybox ash (this shell has no 'read -t')" >&2; exit 1
 fi
 DIR=${MU300_AT_DIR:-/run/mu300-at}
-DEV=${MU300_AT_DEV:-/dev/stty_nr1}
+SIM_SLOT=0
+if [ -x /opt/mu300/bin/mu300-sim ]; then
+    SIM_SLOT=$(/opt/mu300/bin/mu300-sim active) || exit 1
+fi
+DEV=${MU300_AT_DEV:-/dev/stty_nr$((SIM_SLOT * 3 + 1))}
 CR=$(printf '\r')
 T=6
 if [ "${1:-}" = -t ]; then
@@ -87,10 +91,21 @@ if [ -p "$DIR/cmd" ]; then
     esac
     wait=${MU300_AT_LOCK_WAIT:-90}
     case $wait in ''|*[!0-9]*) wait=90 ;; esac
+    # A caller that holds this lock for a whole transaction says so with MU300_AT_LOCK_HELD=<its pid>: mu300-sms
+    # takes it around a send (the SMSC refresh, PDU mode and the submission, which no other client may get in
+    # between - docs/FINDINGS.md 46) and runs each command through here. The lock is borrowed only when it really
+    # is that process's (lock/pid names it, and it is alive): then no lock is taken, and none is removed on the way
+    # out. Anything else and the variable is ignored, and the lock is taken as usual.
+    held=0
+    case ${MU300_AT_LOCK_HELD:-} in
+        ''|*[!0-9]*) ;;
+        *) [ "$(cat "$lock/pid" 2>/dev/null)" = "$MU300_AT_LOCK_HELD" ] && kill -0 "$MU300_AT_LOCK_HELD" 2>/dev/null &&
+               held=1 ;;
+    esac
     # The wait is in seconds of the clock, not in rounds: a round is meant to be 0.1 s, but where no sleep takes a
     # fraction each one is a whole second, and the 90 s wait became 900 s (kanoqwq/mu300-linux@25f8d0c)
     lock_end=$(( $(date +%s) + wait ))
-    while ! mkdir "$lock" 2>/dev/null; do
+    while [ "$held" = 0 ] && ! mkdir "$lock" 2>/dev/null; do
         # a client killed with SIGKILL cannot clean up after itself; take the lock over when its owner is gone.
         # Only "continue" (which skips the wait below) once the lock is really gone.
         owner=$(cat "$lock/pid" 2>/dev/null || true)
@@ -116,16 +131,22 @@ if [ -p "$DIR/cmd" ]; then
         [ "$(date +%s)" -ge "$lock_end" ] && { echo "mu300-at: busy" >&2; exit 1; }
         nap 0.1
     done
-    echo $$ > "$lock/pid" 2>/dev/null || true
-    echo $(( $(date +%s) + budget + 10 )) > "$lock/until" 2>/dev/null || true
-    trap 'rm -rf "$lock" 2>/dev/null' EXIT
+    if [ "$held" = 0 ]; then
+        echo $$ > "$lock/pid" 2>/dev/null || true
+        echo $(( $(date +%s) + budget + 10 )) > "$lock/until" 2>/dev/null || true
+        trap 'rm -rf "$lock" 2>/dev/null' EXIT
+    fi
     trap 'exit 130' INT
     trap 'exit 143' TERM
     # The answer comes back in a file of our own, not through a fifo: a fifo needs both ends at the same time,
     # so a client that gave up waiting used to leave the daemon (or a leftover writer) blocked for ever.
     answer=$DIR/answer.$$
     rm -f "$answer" "$answer.part"
-    trap 'rm -rf "$lock" "$answer" "$answer.part" 2>/dev/null' EXIT
+    if [ "$held" = 0 ]; then
+        trap 'rm -rf "$lock" "$answer" "$answer.part" 2>/dev/null' EXIT
+    else
+        trap 'rm -f "$answer" "$answer.part" 2>/dev/null' EXIT   # the lock is the caller's
+    fi
     # a signalled client must stop, not keep polling while another client already holds the lock
     trap 'exit 130' INT
     trap 'exit 143' TERM

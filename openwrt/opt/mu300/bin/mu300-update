@@ -3,7 +3,8 @@
 #   mu300-update check            what is installed, what is the newest release
 #   mu300-update version          what is installed (no network needed)
 #   mu300-update apply [OS...]    download, unpack and switch (default: every installed system), then the kernel and
-#                                 the boot image (MU300_UBUNTU=24.04|26.04: move Ubuntu to that release)
+#                                 the boot image (MU300_UBUNTU=24.04|26.04: move Ubuntu to that release). Packages
+#                                 installed on the device are installed again at the first boot (--no-reinstall: not)
 #   mu300-update boot             only the kernel and the boot image
 #   mu300-update rollback [OS]    go back to the previous version kept as <os>.old
 #   mu300-update rollback-boot    go back to the previous boot image
@@ -12,10 +13,10 @@
 #   mu300-update clean            delete the kept <os>.old copies
 #   mu300-update notice           only look: a note for the login message and mu300-toolkit when a newer release is
 #                                 out (at boot and every 6 hours; nothing is installed without apply)
-# Installed extras (mu300-extra: LuCI's languages) are updated with the release, the VPN module (mu300-vpn, from
-# github.com/dikeckaan/mu300-linux-vpn) to its latest release. A device that uses the VPN is never left without it:
-# when the module cannot be downloaded, apply stops before it changes anything (MU300_VPN_MODULE=FILE|DIR, or
-# mu300-linux-vpn.tar.gz and its SHA256SUMS copied to /mnt/mu300-disk/.mu300-update/vpn/, serve it offline).
+# Installed extras (mu300-extra: LuCI's languages) are updated with the release, the VPN module (mu300-vpn and its
+# engines, from github.com/dikeckaan/mu300-linux-vpn) to its latest release. A device that uses the VPN is never left
+# without it or its engines: when they cannot be had, apply stops before it changes anything (MU300_VPN_MODULE=FILE|DIR,
+# or the module's tarballs and SHA256SUMS copied to /mnt/mu300-disk/.mu300-update/vpn/, serve them offline).
 #
 # How it works: the new filesystem is unpacked next to the old one as <os>.new on the Linux partition, your settings
 # and the vendor files are carried over, and only then are the directories swapped (<os> -> <os>.old, <os>.new ->
@@ -35,7 +36,8 @@ SYSTEMS="ubuntu openwrt openwrt-luci"
 os_kind() { case $1 in ubuntu) echo ubuntu ;; openwrt|openwrt-*) echo openwrt ;; *) return 1 ;; esac; }
 
 say() { printf '\n==> %s\n' "$*"; }
-die() { printf '\nERROR: %s\n' "$*" >&2; exit 1; }
+# (the private copies of the VPN module's tarballs go with it: MODULE_VDIR, module_vdir)
+die() { [ -z "${MODULE_VDIR:-}" ] || rm -rf "$MODULE_VDIR"; printf '\nERROR: %s\n' "$*" >&2; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
 
 # A transfer that stalls is cut off and retried rather than waited for: with older boot images the IPA's downlink
@@ -122,12 +124,35 @@ untar() {
 installed_version() { [ -r "$VERSION_FILE" ] && cat "$VERSION_FILE" || echo unknown; }
 this_device() { "${MU300_BIN:-/opt/mu300/bin}/mu300-device"; }
 # A new boot image must never meet a locked slot (mu300-next-boot lock): its first boots are the usual attempts, and
-# the first one that gets to mu300-boot-ok locks again. Quiet when there is nothing to do; a failure only warns.
+# the first one that gets to mu300-boot-ok locks again. Two states leave it without them, and saying nothing about
+# either is how an update on such a device ended with the operator rebooting into Android while the screen said
+# "Reboot to start the updated openwrt-luci" (2026-10-12, a U30 Air): the default boot is Android, so the image is
+# not tried at all and a reboot goes there (exit 3), or this slot's block cannot be rebuilt, so the image gets one
+# boot instead of N (any other failure, and mu300-next-boot's own line is passed on). Quiet when it was armed.
+# Never fails the update: the boot image is written either way, and a warning is no reason to roll it back.
 unlock_for_trial() {
     _nb=${MU300_BIN:-/opt/mu300/bin}/mu300-next-boot
     [ -x "$_nb" ] || return 0
-    "$_nb" --trial >/dev/null 2>&1 || echo "boot: could not arm the Linux slot for a trial (mu300-next-boot --trial)" >&2
+    _rc=0; _out=$("$_nb" --trial 2>&1) || _rc=$?
+    case $_rc in
+        0) ;;
+        3) echo "boot: the default boot is Android, so this boot image gets no trial: only a boot from Android" >&2
+           echo "      tries it (mu300-linux, or the panel)" >&2 ;;
+        *) echo "boot: could not arm the Linux slot for a trial (mu300-next-boot --trial)${_out:+: $_out}" >&2 ;;
+    esac
 }
+
+# Where the next boot goes: mu300-next-boot's file (MU300_DEFAULT_BOOT, /etc/mu300/default-boot - the knob is for
+# tests). With Android as the default boot every Linux boot is a one-shot trial armed from Android (mu300-linux, the
+# panel's switch), so a plain reboot does not start what was just written or switched. Says what to do instead and
+# returns true then; false when Linux is the default, and the caller's own "Reboot to start it" is what happens.
+reboot_goes_to_android() {
+    [ "$(cat "${MU300_DEFAULT_BOOT:-/etc/mu300/default-boot}" 2>/dev/null)" = linux ] && return 1
+    echo 'The default boot is Android, so a reboot goes to Android by itself. Start Linux by hand (mu300-linux, or'
+    echo '"Switch to Linux" on the panel), and keep it: mu300-next-boot linux'
+    return 0
+}
+
 # bundle_runs_here BUNDLE LIST DIR: does this kernel bundle (LIST: its file list) run on this device? Bundles name
 # their devices in ./devices; one without it is from before the U30 Air and runs on the F50 only (see boot_update).
 bundle_runs_here() {
@@ -244,6 +269,8 @@ check() {
     _xs=; for x in $(extra_installed); do _xs="$_xs $x ($(extra_release "$x"))"; done
     printf 'extras           %s\n' "${_xs:- none (mu300-extra list)}"
     printf 'kernel            %s (boot image: %s; kernel choice %s)\n' "$(uname -r)" "$(cat "$BOOTDIR/installed.tag" 2>/dev/null || echo "from the installer")" "$(kernel_choice)"
+    _up=${MU300_BIN:-/opt/mu300/bin}/mu300-user-packages
+    [ ! -x "$_up" ] || [ ! -s "$CONF/user-packages/wanted" ] || printf 'your packages     %s\n' "$("$_up" brief)"
     for os in $(installed_systems); do
         [ -d "$DISK/$os.old" ] && printf 'rollback available for %s (%s)\n' "$os" "$(cat "$DISK/$os.old/etc/mu300/image-version" 2>/dev/null || echo unknown)"
     done
@@ -331,6 +358,246 @@ accounts() {
     rm -f "$ACCOUNTS_MARK"
 }
 
+# --- user-packages begin
+# Packages installed on the device are not in the release's image, and an update puts the image in place while it
+# keeps /etc/config (OpenWrt) and /etc/mu300: their programs were gone and their settings stayed - OpenClash's left
+# the device without DNS (#116). So before the switch the update writes down what was added - the packages asked for
+# by hand (OpenWrt: /etc/apk/world; Ubuntu: dpkg's packages that apt did not pull in by itself) less the image's
+# own set (etc/mu300/image-packages, written when the image is built) - into etc/mu300/user-packages/ of the new
+# system, and sets the UCI files of those packages aside (etc/mu300/orphaned-config/): a package that is not there
+# leaves no settings behind. At its first boot the new system installs them again (mu300-user-packages, a service)
+# and puts their settings back. tools/android-install.sh (the installers' update) has a copy of this block; tests
+# hold the two to one text. It runs on Android too: sh, awk, sed, grep, sort - nothing else, and safe under set -e.
+UPK_DIR=etc/mu300/user-packages
+UPK_ORPH=etc/mu300/orphaned-config
+# what is never installed again: kernel modules (the feed's are for another kernel), and what the images take out on
+# purpose (sysupgrade would flash the eMMC; ujail crash-loops services on 5.4)
+upk_skip() {
+    case $1 in
+        kmod-*|kernel|procd-ujail|procd-seccomp|luci-app-attendedsysupgrade|attendedsysupgrade-common|owut) return 0 ;;
+        linux-image-*|linux-modules-*|linux-headers-*|linux-generic*|linux-firmware) return 0 ;;
+    esac
+    return 1
+}
+upk_kind() { case $1 in ubuntu) echo ubuntu ;; *) echo openwrt ;; esac; }
+# upk_dpkg ROOT [manual]: dpkg's installed packages in ROOT; with manual, less those apt installed as dependencies
+# (what apt-mark showmanual says, read from the files: ROOT need not be the running system)
+upk_dpkg() {
+    [ -f "$1/var/lib/dpkg/status" ] || return 0
+    { [ "${2:-}" != manual ] || cat "$1/var/lib/apt/extended_states" 2>/dev/null || :; echo '@dpkg'; cat "$1/var/lib/dpkg/status"; } |
+        awk '$0 == "@dpkg" { s = 1; next }
+             $1 == "Package:" { p = $2; next }
+             !s && $1 == "Auto-Installed:" && $2 == 1 { auto[p] = 1; next }
+             s && $1 == "Status:" && $3 == "ok" && $4 == "installed" { inst[p] = 1 }
+             END { for (p in inst) if (!(p in auto)) print p }' | sort
+}
+# upk_manual ROOT KIND: the packages asked for by name (OpenWrt: the world file, versions and pins taken off)
+upk_manual() {
+    if [ "$2" = ubuntu ]; then upk_dpkg "$1" manual; return 0; fi
+    [ -f "$1/etc/apk/world" ] || return 0
+    sed 's/[<>=~@ ].*//' "$1/etc/apk/world" | awk 'NF' | sort -u
+}
+# upk_installed ROOT KIND: every installed package
+upk_installed() {
+    if [ "$2" = ubuntu ]; then upk_dpkg "$1"; return 0; fi
+    [ -f "$1/lib/apk/db/installed" ] || return 0
+    sed -n 's/^P://p' "$1/lib/apk/db/installed" | sort -u
+}
+# upk_txt_names FILE: the names in etc/mu300/packages.txt ("apk list --installed": name-version-rN arch ...)
+upk_txt_names() {
+    [ -f "$1" ] || return 0
+    awk '{print $1}' "$1" | sed 's/-r[0-9][0-9]*$//; s/-[^-]*$//'
+}
+# upk_pending DIR: the packages of a record not installed again yet (nor given up on)
+upk_pending() {
+    [ -f "$1/wanted" ] || return 0
+    { for _uf in done failed; do [ ! -f "$1/$_uf" ] || sed 's/^/x /' "$1/$_uf"; done; sed 's/^/w /' "$1/wanted"; } |
+        awk '$1 == "x" { d[$2] = 1; next } NF > 1 && !($2 in d) { print $2 }'
+}
+# What belongs to the new image, not to the device, in the directories an update keeps: its version and package
+# lists in etc/mu300 (an update carried the old ones over: every update then reported the version it replaced), and
+# the names of its own files in etc/config (never set aside). image_own_save NEW before the settings are copied,
+# image_own_restore NEW after; upk_record removes what they keep in NEW/.mu300-image.
+image_own_save() {
+    rm -rf "$1/.mu300-image"; mkdir -p "$1/.mu300-image" || return 1
+    for _uf in image-version image-packages packages.txt; do
+        [ ! -f "$1/etc/mu300/$_uf" ] || cp "$1/etc/mu300/$_uf" "$1/.mu300-image/$_uf" || return 1
+    done
+    for _uf in "$1"/etc/config/*; do [ ! -e "$_uf" ] || echo "${_uf##*/}"; done > "$1/.mu300-image/config"
+}
+image_own_restore() {
+    [ -d "$1/.mu300-image" ] || return 0
+    mkdir -p "$1/etc/mu300" || return 1
+    for _uf in image-version image-packages packages.txt; do
+        if [ -f "$1/.mu300-image/$_uf" ]; then cp "$1/.mu300-image/$_uf" "$1/etc/mu300/$_uf" || return 1
+        # a list of the old image would describe the wrong one (the version stays: "unknown" says less)
+        elif [ "$_uf" != image-version ]; then rm -f "$1/etc/mu300/$_uf"; fi
+    done
+}
+# upk_os_codename ROOT: Ubuntu's release name (noble, ...)
+upk_os_codename() {
+    sed -n 's/^VERSION_CODENAME=//p' "$1/usr/lib/os-release" 2>/dev/null | tr -d '"' | head -n 1
+}
+# upk_apt_keep OLD NEW [checked]: Ubuntu keeps only parts of /etc, and apt's sources were not among them: a PPA's
+# packages could not come back. The source files added in etc/apt/sources.list.d are copied where the new image
+# has no file of that name (the image's own are never replaced), with the keys they need: one in etc/apt/keyrings
+# or usr/share/keyrings that a kept source names, and etc/apt/trusted.gpg.d's - each only where the new image has
+# no file of that name. checked: the first boot tries apt-get update and disables a kept source that makes it fail
+# (mu300-user-packages); without it (nothing to install again) a source of another Ubuntu release (24.04 -> 26.04)
+# is copied disabled (NAME.disabled, which apt skips) and said so. NEW/.mu300-image/apt-kept: the sources kept on.
+upk_apt_keep() {
+    _ua=$2/.mu300-image/apt-kept _ul=
+    : > "$_ua" || return 1
+    _uoc=$(upk_os_codename "$1") _unc=$(upk_os_codename "$2")
+    for _uf in "$1"/etc/apt/sources.list.d/*.list "$1"/etc/apt/sources.list.d/*.sources; do
+        [ -f "$_uf" ] || continue
+        _ur=etc/apt/sources.list.d/${_uf##*/}
+        { [ ! -e "$2/$_ur" ] && [ ! -L "$2/$_ur" ]; } || continue
+        mkdir -p "$2/etc/apt/sources.list.d" || return 1
+        if [ -z "${3:-}" ] && [ "$_uoc" != "$_unc" ]; then
+            cp -p "$_uf" "$2/$_ur.disabled" || return 1
+            echo "  apt: /$_ur is for Ubuntu $_uoc, this is $_unc: kept disabled (/$_ur.disabled)"
+        else
+            cp -p "$_uf" "$2/$_ur" || return 1
+            echo "$_ur" >> "$_ua"
+            echo "  apt: /$_ur kept"
+        fi
+        _ul="$_ul $_uf"
+    done
+    [ -n "$_ul" ] || return 0
+    # their pinning (etc/apt/preferences.d), where the new image has no file of that name; a pin whose source is
+    # turned off later does nothing on its own (mu300-user-packages status names it). NEW/.mu300-image/apt-prefs.
+    : > "$2/.mu300-image/apt-prefs" || return 1
+    for _uf in "$1"/etc/apt/preferences.d/*; do
+        [ -f "$_uf" ] || continue
+        _ur=etc/apt/preferences.d/${_uf##*/}
+        { [ ! -e "$2/$_ur" ] && [ ! -L "$2/$_ur" ]; } || continue
+        mkdir -p "$2/etc/apt/preferences.d" && cp -p "$_uf" "$2/$_ur" || return 1
+        echo "$_ur" >> "$2/.mu300-image/apt-prefs"
+        echo "  apt: /$_ur kept"
+    done
+    # shellcheck disable=SC2086
+    _us=$(cat $_ul 2>/dev/null)
+    for _uf in "$1"/etc/apt/keyrings/* "$1"/usr/share/keyrings/* "$1"/etc/apt/trusted.gpg.d/*; do
+        [ -f "$_uf" ] || continue
+        _ur=${_uf#"$1"/}
+        { [ ! -e "$2/$_ur" ] && [ ! -L "$2/$_ur" ]; } || continue
+        case $_ur in
+            etc/apt/trusted.gpg.d/*) ;;
+            *) printf '%s\n' "$_us" | grep -qF "/$_ur" || continue ;;
+        esac
+        mkdir -p "$2/${_ur%/*}" && cp -p "$_uf" "$2/$_ur" || return 1
+    done
+}
+# upk_units OLD: "PACKAGE UNIT enabled|disabled|masked" for the systemd units the packages named on stdin have in
+# OLD (dpkg's file lists), as OLD had them - mu300-user-packages puts that back after it installs them again
+upk_units() {
+    while read -r _up; do
+        for _ul in "$1/var/lib/dpkg/info/$_up.list" "$1/var/lib/dpkg/info/$_up":*.list; do
+            [ -f "$_ul" ] || continue
+            grep -E '^/(usr/)?lib/systemd/system/[A-Za-z0-9_.:-]+\.(service|socket|timer|path)$' "$_ul" |
+                while read -r _uu; do
+                    # an alias (a link to the unit, smartd.service) follows its unit
+                    [ ! -L "$1$_uu" ] || continue
+                    _uu=${_uu##*/}
+                    case $_uu in *@*) continue ;; esac
+                    _us=disabled
+                    for _uw in "$1"/etc/systemd/system/*.wants/"$_uu" "$1"/etc/systemd/system/*.requires/"$_uu"; do
+                        [ ! -L "$_uw" ] || _us=enabled
+                    done
+                    [ "$(readlink "$1/etc/systemd/system/$_uu" 2>/dev/null)" != /dev/null ] || _us=masked
+                    echo "$_up $_uu $_us"
+                done
+        done
+    done | sort -u
+}
+# upk_record OLD NEW OS: after the settings are in NEW, before the switch. Writes NEW/etc/mu300/user-packages/
+# (wanted: the names; files: "package path" of their files in etc/; rc.d: the services enabled in OLD; from; state)
+# and moves their etc/config files out of the way. MU300_KEEP_PACKAGES=0: they are not installed again (state
+# skipped; mu300-user-packages retry does it later), their settings are set aside all the same.
+upk_record() {
+    _uo=$1 _un=$2 _uk=$(upk_kind "$3")
+    _ut=$2/.mu300-image _ud=$2/$UPK_DIR
+    mkdir -p "$_ut" || return 1
+    # the old image's own set; a system from before that list: the new image's and the one packages.txt names
+    if [ -s "$_uo/etc/mu300/image-packages" ]; then cat "$_uo/etc/mu300/image-packages"
+    else
+        cat "$_ut/image-packages" 2>/dev/null || :
+        upk_manual "$_un" "$_uk"
+        upk_txt_names "$_uo/etc/mu300/packages.txt"
+    fi > "$_ut/not"
+    upk_installed "$_un" "$_uk" >> "$_ut/not"
+    # what an earlier update recorded and the device never got back (offline since, or skipped) stays wanted
+    { upk_manual "$_uo" "$_uk"; upk_pending "$_uo/$UPK_DIR"; } > "$_ut/had"
+    { sed 's/^/x /' "$_ut/not"; sed 's/^/w /' "$_ut/had"; } |
+        awk '$1 == "x" { n[$2] = 1; next } NF > 1 && !($2 in n) { print $2 }' | sort -u > "$_ut/added"
+    rm -rf "$_ud"
+    : > "$_ut/wanted"
+    while read -r _up; do upk_skip "$_up" || echo "$_up" >> "$_ut/wanted"; done < "$_ut/added"
+    # Ubuntu: the apt sources added on the device (a PPA's packages cannot come back without it), see upk_apt_keep
+    if [ "$_uk" = ubuntu ]; then
+        upk_apt_keep "$_uo" "$_un" "$([ -s "$_ut/wanted" ] && echo checked)" || return 1
+    fi
+    if [ ! -s "$_ut/wanted" ]; then
+        echo "  none: everything installed is part of the new image"
+        rm -rf "$_ut"
+        return 0
+    fi
+    mkdir -p "$_ud" || return 1
+    mv "$_ut/wanted" "$_ud/wanted"
+    [ ! -s "$_ut/apt-kept" ] || mv "$_ut/apt-kept" "$_ud/apt-sources"
+    [ ! -s "$_ut/apt-prefs" ] || mv "$_ut/apt-prefs" "$_ud/apt-prefs"
+    : > "$_ud/done"; : > "$_ud/failed"
+    cat "$_uo/etc/mu300/image-version" > "$_ud/from" 2>/dev/null || echo unknown > "$_ud/from"
+    # their files in etc/, from the package database of OLD (and of the record a pending one came from)
+    if [ "$_uk" = openwrt ]; then
+        { cat "$_uo/$UPK_DIR/files" 2>/dev/null || :
+          [ ! -f "$_uo/lib/apk/db/installed" ] || awk '
+            $0 ~ /^P:/ { p = substr($0, 3); next }
+            $0 ~ /^F:/ { d = substr($0, 3); next }
+            $0 ~ /^R:/ && (d == "etc" || d ~ /^etc\//) { print p " " d "/" substr($0, 3) }' "$_uo/lib/apk/db/installed"
+        } | { sed 's/^/w /' "$_ud/wanted"; sed 's/^/f /'; } |
+            awk '$1 == "w" { w[$2] = 1; next } ($2 in w) && NF > 2 { print substr($0, 3) }' | sort -u > "$_ud/files"
+        for _uf in "$_uo"/etc/rc.d/*; do { [ -L "$_uf" ] || [ -e "$_uf" ]; } && echo "${_uf##*/}"; done > "$_ud/rc.d" || :
+    else
+        : > "$_ud/files"; : > "$_ud/rc.d"
+        upk_units "$_uo" < "$_ud/wanted" > "$_ud/units"
+    fi
+    if [ "${MU300_KEEP_PACKAGES:-1}" = 0 ]; then echo skipped > "$_ud/state"; else echo pending > "$_ud/state"; fi
+    echo "  $(tr '\n' ' ' < "$_ud/wanted")"
+    if [ "$(cat "$_ud/state")" = skipped ]; then
+        echo "  The new system does not have them, and they are not installed again (MU300_KEEP_PACKAGES=0 or"
+        echo "  --no-reinstall; later: mu300-user-packages retry)."
+    else
+        echo "  The new system does not have them: its first boot installs them again once the device is online"
+        echo "  (the result: mu300-user-packages status)."
+    fi
+    # their UCI files: a package that is not there must leave nothing behind that acts on the network. Only a file
+    # its package owns, in etc/config, that the new image does not have itself (dhcp, firewall, luci: never).
+    _um=
+    while read -r _up _uf; do
+        case $_uf in etc/config/?*) ;; *) continue ;; esac
+        { [ -f "$_un/$_uf" ] && [ ! -L "$_un/$_uf" ]; } || continue
+        ! grep -qxF "${_uf#etc/config/}" "$_ut/config" 2>/dev/null || continue
+        mkdir -p "$_un/$UPK_ORPH/etc/config" && mv -f "$_un/$_uf" "$_un/$UPK_ORPH/$_uf" || return 1
+        [ -n "$_um" ] || echo "  Their settings are set aside until they are back, so that they cannot act without them:"
+        echo "    /$_uf -> /$UPK_ORPH/$_uf ($_up)"
+        _um=1
+    done < "$_ud/files"
+    rm -rf "$_ut"
+}
+# stale_config_clean NEW: what the images of v2026.10.18 left in etc/config and an update then copied onto every
+# device (the config files of the image are added to the kept ones): attendedsysupgrade, of a package the images
+# remove on purpose, and the .apk-new copies apk leaves beside a changed config. Gone from NEW's etc/config unless
+# the package is installed there (attendedsysupgrade stays with attendedsysupgrade-common or its LuCI app).
+stale_config_clean() {
+    for _uf in "$1"/etc/config/*.apk-new; do [ ! -e "$_uf" ] || rm -f "$_uf"; done
+    [ -e "$1/etc/config/attendedsysupgrade" ] || return 0
+    upk_installed "$1" openwrt | grep -qx 'attendedsysupgrade-common\|luci-app-attendedsysupgrade' && return 0
+    rm -f "$1/etc/config/attendedsysupgrade"
+}
+# --- user-packages end
+
 apply_one() {  # apply_one OS TAG
     os=$1 tag=$2
     old=$DISK/$os
@@ -348,9 +615,10 @@ apply_one() {  # apply_one OS TAG
     [ -x "$new/sbin/init" ] || [ -L "$new/sbin/init" ] || [ -x "$new/bin/busybox" ] || { rm -rf "$new"; die "the unpacked system looks wrong, nothing was changed"; }
 
     say "$os: keeping your settings and the vendor files"
-    # etc/mu300 is kept as a whole (hotspot.conf, vpn.conf, ...), but the version of the image belongs to the new
-    # filesystem: copying the old directory over it would make every update report the version it replaced
-    newver=$(cat "$new$VERSION_FILE" 2>/dev/null || true)
+    # etc/mu300 is kept as a whole (hotspot.conf, vpn.conf, ...), but the version of the image and its package lists
+    # belong to the new filesystem: copying the old directory over them made every update report the version it
+    # replaced
+    image_own_save "$new" || { rm -rf "$new"; die "$os: could not read the new image, nothing was changed"; }
     for k in $(keep_list "$os"); do
         [ -e "$old/$k" ] || continue
         mkdir -p "$new/$(dirname "$k")"
@@ -364,13 +632,12 @@ apply_one() {  # apply_one OS TAG
         if [ -d "$new/$k.image" ]; then
             copy_missing "$new/$k.image" "$new/$k" || echo "$os: could not add the image's new settings files" >&2
             rm -rf "$new/$k.image"
+            # the stray files of v2026.10.18 (the old system's, or that image's own) do not stay
+            stale_config_clean "$new"
         fi
     done
     merge_accounts "$old" "$new" || echo "$os: could not carry the accounts over; the image's default password applies" >&2
-    if [ -n "$newver" ]; then
-        mkdir -p "$new$CONF"
-        printf '%s\n' "$newver" > "$new$VERSION_FILE"
-    fi
+    image_own_restore "$new" || { rm -rf "$new"; die "$os: could not write the new image's version, nothing was changed"; }
     # firmware and the Android userspace come from this device, never from the release
     # then what only <os>.old still has: the updaters of 2026-09-18 to this fix, run from OpenWrt, left the system
     # they put in place without them, so on such a device the only copy is in <os>.old, which this update removes
@@ -402,9 +669,16 @@ apply_one() {  # apply_one OS TAG
             [ -L "$l" ] || continue
             u=${l##*/}
             [ -L "$new/etc/rc.d/$u" ] && continue
+            # only for a service the new system has (as the installers do): the one of a package it does not have
+            # comes back with the package (mu300-user-packages)
+            [ -x "$new/etc/init.d/${u#[SK][0-9][0-9]}" ] || continue
             cp -a "$l" "$new/etc/rc.d/$u" 2>/dev/null || true
         done
     fi
+    # the packages installed on the device: written down, their settings set aside, put back at the first boot
+    say "$os: packages installed on the device"
+    upk_record "$old" "$new" "$os" || { rm -rf "$new"; die "$os: could not write down the packages installed on the device, nothing was changed"; }
+    rm -rf "$new/.mu300-image"
 
     say "$os: switching over"
     sync
@@ -423,13 +697,19 @@ apply_one() {  # apply_one OS TAG
 # that has mu300-extra exists. Two kinds:
 #   lang         a release asset of mu300-linux, mu300-extra-lang.tar.gz (tools/make-extra.sh: ./name, ./release,
 #                ./components, ./languages, ./manifest, ./i18n/<catalogs>), for the release it was published with
-#   vpn, vpn-mihomo   the VPN module, released on its own by github.com/dikeckaan/mu300-linux-vpn under fixed names
-#                (mu300-linux-vpn.tar.gz, mu300-linux-vpn-mihomo.tar.gz, SHA256SUMS): ./VERSION, ./components,
-#                ./requires ("mu300-linux vYYYY.MM.DD", the oldest system it works with), ./bin/<programs>, and for vpn
-#                ./lib/vpn, ./service, ./etc and ./hooks/link, ./hooks/unlink - which make one system use it
-#                (sh hooks/link SYSROOT, "" for the running system), so the images carry no mu300-vpn at all.
+#   vpn, vpn-xray, vpn-singbox, vpn-mihomo, vpn-dae   the VPN module, released on its own by
+#                github.com/dikeckaan/mu300-linux-vpn under fixed names (mu300-linux-vpn-core.tar.gz for vpn - the
+#                core, mu300-vpn without an engine - and mu300-linux-vpn-ENGINE.tar.gz for the engines, SHA256SUMS):
+#                ./VERSION, ./components, ./requires ("mu300-linux vYYYY.MM.DD", the oldest system it works with),
+#                ./bin/<programs>, ./hooks/link, ./hooks/unlink - which make one system use it (sh hooks/link SYSROOT,
+#                "" for the running system), and for vpn ./lib/vpn, ./service, ./etc, so the images carry no mu300-vpn
+#                at all. mu300-linux-vpn.tar.gz is vpn as module v1 was, the core with xray and sing-box in it (the
+#                bundle, which mu300-extra and mu300-update from before the engine extras download): taken when the
+#                core is not to be had (a pinned v1 release, a copy brought by hand), and as the fallback of a set.
 EXTRA=$DISK/extra
-EXTRAS="vpn lang vpn-mihomo"
+EXTRAS="vpn lang vpn-mihomo panel vpn-xray vpn-singbox vpn-dae"
+# the engines, each an extra of the VPN module
+VPN_ENGINE_EXTRAS="vpn-xray vpn-singbox vpn-mihomo vpn-dae"
 VPN_REPO=dikeckaan/mu300-linux-vpn
 # MU300_VPN_URL: another place with the module's files and SHA256SUMS (a pinned tag: .../releases/download/v1.0.0,
 # or a local server)
@@ -438,14 +718,24 @@ VPN_URL=${MU300_VPN_URL:-https://github.com/$VPN_REPO/releases/latest/download}
 VPN_STAGED=$DISK/.mu300-update/vpn
 extra_desc() {
     case $1 in
-        vpn) echo "the VPN toolkit (mu300-vpn with Xray-core, hev-socks5-tunnel, sing-box), the module of github.com/$VPN_REPO (about 40 MB to download, 120 MB installed)" ;;
+        vpn) echo "the VPN toolkit (mu300-vpn: profiles, kill switch), the module of github.com/$VPN_REPO; the engines are the vpn-* extras, the ones the profiles need come along (about 0.1 MB, with xray 15 MB)" ;;
         lang) echo "LuCI (the web interface) in 40 more languages, the MU300 panel in 29 of them; OpenWrt only (about 2 MB to download, 6 MB installed)" ;;
+        vpn-xray) echo "Xray-core and hev-socks5-tunnel, the engine of mu300-vpn's VLESS, VMess, Trojan, Shadowsocks and Xray JSON profiles (about 15 MB to download, 40 MB installed)" ;;
+        vpn-singbox) echo "sing-box, the engine of mu300-vpn's sing-box JSON profiles, and of VLESS links behind the kill switch (about 15 MB to download, 40 MB installed)" ;;
         vpn-mihomo) echo "mihomo (Clash.Meta), the engine of mu300-vpn's mihomo profiles, from the same module repository (about 15 MB to download, 40 MB installed)" ;;
+        vpn-dae) echo "dae (eBPF transparent proxy) with its geodata, for mu300-vpn's dae profiles; needs a kernel with BTF (mainline) (about 25 MB to download, 60 MB installed)" ;;
+        panel) echo "the web panel for Ubuntu: Cockpit (terminal, logs, services) and the MU300 page, on the LAN only (port 9090); Cockpit from Ubuntu's archive (about 12 MB, 45 MB installed), or offline with --from mu300-extra-panel-offline.tar.gz" ;;
     esac
 }
 extra_asset() { echo "mu300-extra-$1.tar.gz"; }
-extra_is_module() { case $1 in vpn|vpn-mihomo) return 0 ;; esac; return 1; }
-module_asset() { case $1 in vpn) echo mu300-linux-vpn.tar.gz ;; vpn-mihomo) echo mu300-linux-vpn-mihomo.tar.gz ;; esac; }
+extra_is_module() { case $1 in vpn|vpn-mihomo|vpn-xray|vpn-singbox|vpn-dae) return 0 ;; esac; return 1; }
+# module_asset NAME: the release file of a module extra (vpn-bundle: the vpn extra as the bundle)
+module_asset() {
+    case $1 in
+        vpn) echo mu300-linux-vpn-core.tar.gz ;; vpn-bundle) echo mu300-linux-vpn.tar.gz ;;
+        vpn-mihomo|vpn-xray|vpn-singbox|vpn-dae) echo "mu300-linux-$1.tar.gz" ;;
+    esac
+}
 extra_known() { case " $EXTRAS " in *" $1 "*) return 0 ;; esac; return 1; }
 extra_installed() {
     for d in "$EXTRA"/*; do
@@ -506,6 +796,12 @@ extra_tree_ok() {
         ! printf '%s\n' "$_t" | LC_ALL=C grep -Evxq -- "$MODULE_ENTRY"
         return
     fi
+    # panel: its four files, bin/, the Cockpit page (cockpit/mu300/<files>) and, offline, Cockpit's packages for each
+    # Ubuntu release (debs/<release>/<name>.deb)
+    if [ "$1" = panel ]; then
+        ! printf '%s\n' "$_t" | LC_ALL=C grep -Evxq -- "$PANEL_ENTRY"
+        return
+    fi
     # the other extras: their four files and programs in bin/, nothing else (whatever a tar did to the names)
     if [ "$1" != lang ]; then
         ! printf '%s\n' "$_t" | LC_ALL=C grep -Evxq -- '\.|\./(name|release|components|manifest|bin|bin/[A-Za-z0-9._+-]+)'
@@ -548,6 +844,7 @@ lang_tar_ok() {
 # backslash, $, backquote, <, >, & or control character: it goes into /etc/config/luci, into JSON and into a page)
 # ./release: a tag
 EXTRA_RELEASE='[A-Za-z0-9._-]{1,40}'
+PANEL_ENTRY='\.|\./(name|release|components|manifest|bin|bin/mu300-panel|cockpit|cockpit/mu300|cockpit/mu300/[A-Za-z0-9_-][A-Za-z0-9._-]*|debs|debs/[0-9]{2}\.[0-9]{2}|debs/[0-9]{2}\.[0-9]{2}/[A-Za-z0-9][A-Za-z0-9._+~-]*\.deb)'
 MODULE_ENTRY='\.|\./[A-Za-z0-9_+-][A-Za-z0-9._+-]*(/[A-Za-z0-9_+-][A-Za-z0-9._+-]*){0,3}'
 LANG_LINE='[a-z]{2,3}(_[a-z]{2})?	[^	"`$<>&\\'"'"'[:cntrl:]]{1,100}'
 
@@ -656,60 +953,271 @@ version_ok() {
     case $2 in v[0-9]*) ;; *) return 0 ;; esac
     [ "$(printf '%s\n%s\n' "$1" "$2" | sort | tail -n1)" = "$2" ]
 }
-sha_of() { sha256sum "$1" | cut -d' ' -f1; }
-sums_want() { awk -v f="$2" '$2 == f || $2 == "*" f {print $1; exit}' "$1" 2>/dev/null; }
+# sha_ok HASH: a SHA-256 as sha256sum writes it (64 lowercase hex digits); nothing else ever counts as a hash, so an
+# empty or broken value can never compare equal to anything
+sha_ok() { case $1 in ''|*[!0-9a-f]*) return 1 ;; esac; [ ${#1} -eq 64 ]; }
+# sha_of FILE: its SHA-256, or nothing and 1 (no sha256sum, a read error): a failure is never a hash
+sha_of() { _so=$(sha256sum "$1" 2>/dev/null) || return 1; _so=${_so%% *}; sha_ok "$_so" || return 1; printf '%s\n' "$_so"; }
+# sums_want SUMS NAME: the hash SUMS lists for NAME, only when it is a hash
+sums_want() { _sw=$(awk -v f="$2" '$2 == f || $2 == "*" f {print $1; exit}' "$1" 2>/dev/null); ! sha_ok "$_sw" || printf '%s\n' "$_sw"; }
 
 # The module's tarball, checked, as MODULE_FILE (its hash: MODULE_SHA). Status 0 with a file, 3 when the installed
 # one is that release's already (nothing downloaded), 1 when it cannot be had (offline, GitHub down), 2 when what
 # there is fails its check.
-# module_from DIR|FILE NAME: a copy brought onto the device. A directory must hold the tarball and its SHA256SUMS and
-# is verified; a file is checked against a SHA256SUMS next to it that lists it (else it is the user's own choice).
+# What is checked is what is installed: every tarball (and the SHA256SUMS it is checked against) is first copied, as a
+# regular file and not through a link, into a directory of this run's own (MODULE_VDIR, 0700, root's), and the hash is
+# taken of that copy, which is the file extra_unpack reads. A file swapped at the source after the check - in a --from
+# directory, the staging directory or a download directory another process can write - changes nothing.
+# module_asset_ok NAME: a release file name of the module, as module_asset gives them and nothing else
+module_asset_ok() {
+    case $1 in mu300-linux-vpn.tar.gz|mu300-linux-vpn-*.tar.gz) ;; *) return 1 ;; esac
+    case ${1%.tar.gz} in *[!a-z0-9-]*) return 1 ;; esac
+}
+# module_vdir: MODULE_VDIR made (once per run), fresh and private
+MODULE_VDIR=
+module_vdir() {
+    [ -n "$MODULE_VDIR" ] && [ -d "$MODULE_VDIR" ] && [ ! -L "$MODULE_VDIR" ] && return 0
+    mkdir -p "$EXTRA" || return 1
+    # (one left by a run that died: nothing reads it again)
+    rm -rf "$EXTRA"/.verified.*
+    MODULE_VDIR=$EXTRA/.verified.$$
+    ( umask 077; mkdir -m 700 "$MODULE_VDIR" ) || { MODULE_VDIR=; return 1; }
+}
+module_vdir_clean() { [ -z "$MODULE_VDIR" ] || rm -rf "$MODULE_VDIR"; MODULE_VDIR=; }
+# module_copy SRC NAME: SRC - a regular file, not a symbolic link - copied to MODULE_VDIR/NAME (prints that path)
+module_copy() {
+    [ -f "$1" ] && [ ! -L "$1" ] || { echo "$1 is not a regular file (a link or something else): not used" >&2; return 2; }
+    module_asset_ok "$2" || [ "$2" = SHA256SUMS ] || { echo "not a file name of the VPN module: refused" >&2; return 2; }
+    [ -n "$MODULE_VDIR" ] && [ -d "$MODULE_VDIR" ] || { echo "no private directory to check $2 in" >&2; return 1; }
+    rm -f "$MODULE_VDIR/$2"
+    ( umask 077; cat < "$1" > "$MODULE_VDIR/$2" ) 2>/dev/null || { rm -f "$MODULE_VDIR/$2"; echo "cannot read $1" >&2; return 2; }
+    printf '%s\n' "$MODULE_VDIR/$2"
+}
+# module_from DIR|FILE NAME [ASSET]: a copy brought onto the device. A directory must hold the tarball and its
+# SHA256SUMS and is verified; a file is checked against a SHA256SUMS next to it that lists it (else it is the user's
+# own choice).
 module_from() {
+    # (here, not in module_copy: that runs in a command substitution, whose MODULE_VDIR would be lost)
+    module_vdir || { echo "cannot create a private directory under $EXTRA" >&2; return 1; }
     if [ -d "$1" ]; then
-        _a=$(module_asset "$2")
+        _a=${3:-$(module_asset "$2")}
+        module_asset_ok "$_a" || { echo "not a file name of the VPN module: refused" >&2; return 2; }
         [ -s "$1/$_a" ] || { echo "no $_a in $1" >&2; return 2; }
-        _w=$(sums_want "$1/SHA256SUMS" "$_a")
-        [ -n "$_w" ] || { echo "$1/SHA256SUMS is missing or does not list $_a: not installed unverified" >&2; return 2; }
-        [ "$(sha_of "$1/$_a")" = "$_w" ] || { echo "$1/$_a does not match its SHA256SUMS" >&2; return 2; }
-        MODULE_FILE=$1/$_a MODULE_SHA=$_w
+        _sc=$(module_copy "$1/SHA256SUMS" SHA256SUMS) ||
+            { echo "$1/SHA256SUMS is missing or not a regular file: $_a not installed unverified" >&2; return 2; }
+        _w=$(sums_want "$_sc" "$_a")
+        [ -n "$_w" ] || { echo "$1/SHA256SUMS does not list $_a: not installed unverified" >&2; return 2; }
+        _c=$(module_copy "$1/$_a" "$_a") || return 2
+        [ "$(sha_of "$_c")" = "$_w" ] || { rm -f "$_c"; echo "$1/$_a does not match its SHA256SUMS" >&2; return 2; }
+        MODULE_FILE=$_c MODULE_SHA=$_w
         return 0
     fi
     [ -s "$1" ] || { echo "$1 not found" >&2; return 2; }
-    _w=$(sums_want "$(dirname "$1")/SHA256SUMS" "${1##*/}")
-    MODULE_SHA=$(sha_of "$1")
-    [ -z "$_w" ] || [ "$MODULE_SHA" = "$_w" ] || { echo "$1 does not match $(dirname "$1")/SHA256SUMS" >&2; return 2; }
-    MODULE_FILE=$1
+    case $1 in */*) _d=${1%/*}; [ -n "$_d" ] || _d=/ ;; *) _d=. ;; esac
+    _w=
+    if _sc=$(module_copy "$_d/SHA256SUMS" SHA256SUMS 2>/dev/null); then _w=$(sums_want "$_sc" "${1##*/}"); fi
+    # a file that no SHA256SUMS next to it vouches for is refused, unless MU300_VPN_UNVERIFIED=1 says it is wanted
+    # unchecked (a build of one's own)
+    if [ -z "$_w" ] && [ "${MU300_VPN_UNVERIFIED:-}" != 1 ]; then
+        echo "no SHA256SUMS next to $1 lists it: not installed unverified (copy the release's SHA256SUMS next to it, or MU300_VPN_UNVERIFIED=1 for a build of your own)" >&2
+        return 2
+    fi
+    _c=$(module_copy "$1" "$(module_asset "$2")") || return 2
+    MODULE_SHA=$(sha_of "$_c") || { rm -f "$_c"; echo "cannot compute the SHA-256 of $1 (sha256sum): not installed" >&2; return 2; }
+    [ -z "$_w" ] || [ "$MODULE_SHA" = "$_w" ] || { rm -f "$_c"; echo "$1 does not match $_d/SHA256SUMS" >&2; return 2; }
+    [ -n "$_w" ] || echo "note: $1 is installed unverified (MU300_VPN_UNVERIFIED=1)" >&2
+    MODULE_FILE=$_c
 }
-# module_download NAME DIR: the module's latest release (VPN_URL) into DIR, checked against that release's SHA256SUMS
-# (fetched every time: under releases/latest the same name is a new file with every release)
+# module_download NAME DIR [ASSET]: the module's latest release (VPN_URL) into DIR, checked against that release's
+# SHA256SUMS (fetched every time: under releases/latest the same name is a new file with every release)
 module_download() {
-    _a=$(module_asset "$1")
+    _a=${3:-$(module_asset "$1")}
+    module_asset_ok "$_a" || { echo "not a file name of the VPN module: refused" >&2; return 1; }
+    module_vdir || { echo "cannot create a private directory under $EXTRA" >&2; return 1; }
     mkdir -p "$2" || return 1
     _s=$(fetch_stdout "$VPN_URL/SHA256SUMS") && [ -n "$_s" ] ||
         { echo "cannot download SHA256SUMS of the VPN module ($VPN_URL)" >&2; return 1; }
-    printf '%s\n' "$_s" > "$2/SHA256SUMS"
-    _w=$(sums_want "$2/SHA256SUMS" "$_a")
-    [ -n "$_w" ] || { echo "$_a is not part of the VPN module's release ($VPN_URL)" >&2; return 1; }
+    _w=$(printf '%s\n' "$_s" | awk -v f="$_a" '$2 == f || $2 == "*" f {print $1; exit}')
+    sha_ok "$_w" || { echo "$_a is not part of the VPN module's release ($VPN_URL), or its SHA256SUMS line is no hash" >&2; return 1; }
     MODULE_SHA=$_w
     # the installed one is this release's: nothing to download
     [ -d "$EXTRA/$1/bin" ] && [ "$(cat "$EXTRA/.$1.sha256" 2>/dev/null)" = "$_w" ] && return 3
     for _try in 1 2 3; do
-        [ -s "$2/$_a" ] && [ "$(sha_of "$2/$_a")" = "$_w" ] && { MODULE_FILE=$2/$_a; return 0; }
-        fetch_file "$VPN_URL/$_a" "$2/$_a" && [ "$(sha_of "$2/$_a")" = "$_w" ] && { MODULE_FILE=$2/$_a; return 0; }
+        if [ -s "$2/$_a" ] || { rm -f "$2/$_a"; fetch_file "$VPN_URL/$_a" "$2/$_a"; }; then
+            if _c=$(module_copy "$2/$_a" "$_a") && [ "$(sha_of "$_c")" = "$_w" ]; then
+                rm -f "$2/$_a"; MODULE_FILE=$_c; return 0
+            fi
+            [ -z "${_c:-}" ] || rm -f "$_c"
+        fi
         rm -f "$2/$_a"
     done
     echo "downloading $_a failed" >&2
     return 1
 }
-# module_get NAME DIR [FROM]: FROM (a file or a directory) when given, else the download into DIR
+
+# module_get NAME DIR [FROM]: FROM (a file or a directory) when given, else the download into DIR. For vpn, the core
+# (mu300-linux-vpn-core.tar.gz), else the bundle (mu300-linux-vpn.tar.gz: a release or a copy from before the
+# engine extras); MODULE_BUNDLE=1 when what it got (or what is installed, status 3) carries xray and sing-box.
+# module_get vpn-bundle DIR [FROM]: the bundle alone, as the vpn extra (FROM a directory)
 module_get() {
-    MODULE_FILE= MODULE_SHA=
-    if [ -n "${3:-}" ]; then module_from "$3" "$1"; else module_download "$1" "$2"; fi
+    MODULE_FILE= MODULE_SHA= MODULE_BUNDLE=
+    if [ "$1" = vpn-bundle ]; then
+        _mg=0
+        if [ -n "${3:-}" ]; then module_from "$3" vpn "$(module_asset vpn-bundle)" || _mg=$?
+        else module_download vpn "$2" "$(module_asset vpn-bundle)" || _mg=$?; fi
+        case $_mg in 0) MODULE_BUNDLE=1 ;; 3) [ ! -x "$EXTRA/vpn/bin/xray" ] || MODULE_BUNDLE=1 ;; esac
+        return "$_mg"
+    fi
+    if [ "$1" != vpn ] || { [ -n "${3:-}" ] && [ ! -d "$3" ]; }; then
+        if [ -n "${3:-}" ]; then module_from "$3" "$1"; else module_download "$1" "$2"; fi
+        _mg=$?
+    else
+        _mg=0
+        if [ -n "${3:-}" ]; then module_from "$3" vpn 2>/dev/null || _mg=$?; else module_download vpn "$2" 2>/dev/null || _mg=$?; fi
+        if [ "$_mg" != 0 ] && [ "$_mg" != 3 ]; then
+            _mg2=0
+            if [ -n "${3:-}" ]; then module_from "$3" vpn "$(module_asset vpn-bundle)" || _mg2=$?
+            else module_download vpn "$2" "$(module_asset vpn-bundle)" || _mg2=$?; fi
+            # (the core's status when neither is to be had: offline stays offline)
+            case $_mg2 in 0|3) _mg=$_mg2 ;; esac
+        fi
+    fi
+    if [ "$1" = vpn ]; then
+        case $_mg in
+            0) ! untar -tzf "$MODULE_FILE" 2>/dev/null | grep -qx '\./bin/xray' || MODULE_BUNDLE=1 ;;
+            3) [ ! -x "$EXTRA/vpn/bin/xray" ] || MODULE_BUNDLE=1 ;;
+        esac
+    fi
+    return "$_mg"
 }
 # module_install NAME FILE SHA FOR: extra_unpack, and the hash kept, to know the installed release next time
 module_install() {
     extra_unpack "$1" "$2" "$4" || return 1
     printf '%s\n' "$3" > "$EXTRA/.$1.sha256"
+}
+
+# ---- which engines the device needs ------------------------------------------------------------------------------
+# vpn_type_engine TYPE: the engine extra of a profile type (wireguard and openvpn are the system's packages)
+vpn_type_engine() {
+    case $1 in xray) echo vpn-xray ;; sing-box) echo vpn-singbox ;; mihomo) echo vpn-mihomo ;; dae) echo vpn-dae ;; esac
+}
+# vpn_engines_of ROOT: the engine extras the profiles of the system at ROOT run on (every profile, not only the
+# active one: profile use must not find its engine gone); a vpn.conf with a link and no profile store (never
+# migrated) runs on xray, or on sing-box behind the kill switch
+vpn_engines_of() {
+    if [ -d "$1/etc/mu300/vpn/profiles" ]; then
+        for _vm in "$1"/etc/mu300/vpn/profiles/*/meta; do
+            [ -r "$_vm" ] && vpn_type_engine "$(vpn_conf_value "$_vm" TYPE)"
+        done
+    elif grep -q '^VLESS_URI=' "$1/etc/mu300/vpn.conf" 2>/dev/null; then
+        echo vpn-xray; echo vpn-singbox
+    fi
+    return 0
+}
+# vpn_engine_have X: the device runs on engine X now - its extra, or the vpn extra that carries it (module v1, the
+# bundle)
+vpn_engine_have() {
+    [ -d "$EXTRA/$1/bin" ] && return 0
+    case $1 in vpn-xray) [ -x "$EXTRA/vpn/bin/xray" ] ;; vpn-singbox) [ -x "$EXTRA/vpn/bin/sing-box" ] ;; *) return 1 ;; esac
+}
+# vpn_engines_wanted: the engine extras the VPN module comes with - every one the device has now (installed, or in
+# the vpn extra, which v1 and the bundle are: all of v1's engines stay), every one a profile of an installed system
+# needs, and for a first install MU300_VPN_ENGINES (default vpn-xray; none: the core alone)
+vpn_engines_wanted() {
+    {
+        for _x in $VPN_ENGINE_EXTRAS; do vpn_engine_have "$_x" && echo "$_x"; done
+        for _o in $(installed_systems); do vpn_engines_of "$DISK/$_o"; done
+        [ -z "${MU300_SYSROOT:-}" ] || vpn_engines_of "$MU300_SYSROOT"
+        if [ ! -d "$EXTRA/vpn/bin" ]; then
+            for _x in $(printf '%s' "${MU300_VPN_ENGINES-vpn-xray}" | tr ',' ' '); do
+                case $_x in xray|singbox|sing-box|mihomo|dae) _x=vpn-$_x ;; esac
+                [ "$_x" != vpn-sing-box ] || _x=vpn-singbox
+                case " $VPN_ENGINE_EXTRAS " in *" $_x "*) echo "$_x" ;; esac
+            done
+        fi
+    } | sort -u
+}
+# vpn_engine_in_use X [ROOT...]: a system (default: every installed one) has the VPN on with an active profile that
+# runs on engine X
+vpn_engine_in_use() {
+    _x=$1; shift
+    [ $# -gt 0 ] || set -- $(for _o in $(installed_systems); do echo "$DISK/$_o"; done) "${MU300_SYSROOT:-}"
+    for _r; do
+        # the engine the running service recorded (module v2's /run/mu300-vpn/engine: sing-box for a VLESS xray profile
+        # behind the kill switch; the service writes it when it starts the tunnel, mu300-vpn off removes it)
+        case $(head -n1 "$_r/run/mu300-vpn/engine" 2>/dev/null) in
+            xray) [ "$_x" != vpn-xray ] || return 0 ;; sing-box) [ "$_x" != vpn-singbox ] || return 0 ;;
+            mihomo) [ "$_x" != vpn-mihomo ] || return 0 ;; dae) [ "$_x" != vpn-dae ] || return 0 ;;
+        esac
+        extra_vpn_wanted "$_r" || continue
+        _a=$(head -n1 "$_r/etc/mu300/vpn/active" 2>/dev/null | tr -cd 'a-z0-9-')
+        if [ -n "$_a" ] && [ -r "$_r/etc/mu300/vpn/profiles/$_a/meta" ]; then
+            _t=$(vpn_conf_value "$_r/etc/mu300/vpn/profiles/$_a/meta" TYPE)
+            [ "$(vpn_type_engine "$_t")" = "$_x" ] && return 0
+            # an xray profile runs on sing-box only with a VLESS link behind the kill switch (as mu300-vpn's
+            # engine_in_use); without sing-box it runs on xray, so otherwise vpn-singbox is free to go
+            if [ "$_t" = xray ] && [ "$_x" = vpn-singbox ] && vpn_killswitch_wanted "$_r"; then
+                case $(head -c 8 "$_r/etc/mu300/vpn/profiles/$_a/uri" 2>/dev/null) in vless://) return 0 ;; esac
+            fi
+        elif [ ! -d "$_r/etc/mu300/vpn/profiles" ]; then
+            # a vpn.conf never migrated: its link runs on xray or sing-box
+            case $_x in vpn-xray|vpn-singbox) grep -q '^VLESS_URI=' "$_r/etc/mu300/vpn.conf" 2>/dev/null && return 0 ;; esac
+        fi
+    done
+    return 1
+}
+
+# ---- the module as a set -----------------------------------------------------------------------------------------
+# vpn_module_get STAGEDIR [FROM]: before anything is changed, the VPN module the device will have: VPN_SET gets
+# "NAME FILE SHA" lines for modules_install, the engine extras first and the core (vpn) last; every file checked and
+# all from one source - FROM (a directory, or a file whose directory has the engines), or the download. An engine
+# the device runs on now (vpn_engine_have) that is not to be had, while the core would replace the vpn extra that
+# carries it, makes the set the bundle instead (the core with xray and sing-box), and when there is no bundle either,
+# nothing (status 4): an update must never leave a profile without the engine it had. An engine that is installed on
+# its own and is not to be had stays as it is; one a profile wants and that was never there is said and skipped.
+# Status: 0 (VPN_SET may be empty: everything is up to date), 1 the core is not to be had, 2 a file failed its
+# check, 4 an engine is missing (above).
+VPN_SET=
+vpn_module_get() {
+    VPN_SET=
+    _vs=$1; _vf=${2:-}
+    _ef=$_vf; [ -z "$_vf" ] || [ -d "$_vf" ] || _ef=$(dirname "$_vf")
+    module_get vpn "$_vs" "$_vf"; _vr=$?
+    case $_vr in 0|3) ;; *) return "$_vr" ;; esac
+    _core=; [ "$_vr" = 3 ] || _core="vpn $MODULE_FILE $MODULE_SHA"
+    _bundle=$MODULE_BUNDLE
+    _set=; _missing=
+    for _x in $(vpn_engines_wanted); do
+        if [ -n "$_bundle" ]; then case $_x in vpn-xray|vpn-singbox) continue ;; esac; fi
+        _xr=0; module_get "$_x" "$_vs" "$_ef" || _xr=$?
+        case $_xr in
+            0) _set="$_set$_x $MODULE_FILE $MODULE_SHA
+" ;;
+            3) ;;
+            *) if [ -d "$EXTRA/$_x/bin" ]; then
+                   echo "extra $_x: not to be had; the installed one ($(extra_release "$_x")) stays" >&2
+               elif vpn_engine_have "$_x"; then
+                   _missing="$_missing $_x"
+               else
+                   echo "extra $_x: a profile runs on it and it is not to be had; install it later (mu300-extra install $_x)" >&2
+               fi ;;
+        esac
+    done
+    if [ -n "$_missing" ]; then
+        # the bundle carries xray and sing-box: the set it makes needs no engine extra for them
+        _br=0; module_get vpn-bundle "$_vs" "$_ef" 2>/dev/null || _br=$?
+        if { [ "$_br" = 0 ] || [ "$_br" = 3 ]; } && [ -n "$MODULE_BUNDLE" ]; then
+            echo "the VPN module's engines$_missing are not to be had: taking mu300-linux-vpn.tar.gz (the core with xray and sing-box) instead" >&2
+            VPN_SET=$(printf '%s' "$_set" | grep -v -e '^vpn-xray ' -e '^vpn-singbox ' || true)
+            [ "$_br" = 3 ] || VPN_SET="${VPN_SET:+$VPN_SET
+}vpn $MODULE_FILE $MODULE_SHA"
+            return 0
+        fi
+        echo "the VPN module needs its engines$_missing, which the device runs on now, and they are not to be had" >&2
+        return 4
+    fi
+    VPN_SET="$_set$_core"
+    return 0
 }
 
 # module_hook NAME link|unlink SYSROOT: the module's hook for one system (SYSROOT "" is the running one, $DISK/<os>
@@ -749,9 +1257,12 @@ vpn_in_use() {
     return 1
 }
 vpn_stage_hint() {
-    printf '\nCopy mu300-linux-vpn.tar.gz and SHA256SUMS from https://github.com/%s/releases/latest\n' "$VPN_REPO" >&2
-    printf 'into %s/ on this device (or: MU300_VPN_MODULE=/path/to/mu300-linux-vpn.tar.gz mu300-update apply),\n' "$VPN_STAGED" >&2
-    printf 'or get the device online, and run mu300-update apply again.\n' >&2
+    _eng=$(vpn_engines_wanted | sed 's/^vpn-//' | tr '\n' ' ')
+    printf '\nCopy SHA256SUMS and mu300-linux-vpn-core.tar.gz with the engines this device needs (%s:\n' "${_eng% }" >&2
+    printf 'mu300-linux-vpn-ENGINE.tar.gz each) - or mu300-linux-vpn.tar.gz, the core with xray and sing-box - from\n' >&2
+    printf 'https://github.com/%s/releases/latest into %s/ on this device\n' "$VPN_REPO" "$VPN_STAGED" >&2
+    printf '(or: MU300_VPN_MODULE=/path/to/that/directory mu300-update apply), or get the device online, and run\n' >&2
+    printf 'mu300-update apply again.\n' >&2
 }
 
 # extras_to_fetch TAG: the extras of the mu300-linux release an update to TAG downloads - the installed ones that are
@@ -765,51 +1276,65 @@ extras_to_fetch() {
     echo $_want
 }
 
-# modules_fetch TAG "OS...": before anything is changed, the VPN module the device will have after the update:
-# MODULES_NEW gets "NAME FILE SHA" lines for modules_install. MU300_VPN_MODULE (a file or a directory), else a copy in
-# VPN_STAGED, else the download. When the VPN is in use, the update replaces a system and there is no module, it
-# stops here: the new systems have no mu300-vpn, and a VPN with its kill switch would leave the device with no
-# connection after the reboot. An installed module that cannot be refreshed stays; so does vpn-mihomo (an engine).
+# modules_fetch TAG "OS...": before anything is changed, the VPN module the device will have after the update (the core
+# and the engines, vpn_module_get): MODULES_NEW gets its "NAME FILE SHA" lines for modules_install. MU300_VPN_MODULE
+# (a file or a directory), else the copies in VPN_STAGED, else the download. When the VPN is in use, the update
+# replaces a system and there is no module, it stops here: the new systems have no mu300-vpn, and a VPN with its kill
+# switch would leave the device with no connection after the reboot. An installed module whose set cannot be had
+# stays as it is, engines and all.
 MODULES_NEW=
 modules_fetch() {
     MODULES_NEW=
     _from=${MU300_VPN_MODULE:-}
-    [ -n "$_from" ] || [ ! -s "$VPN_STAGED/$(module_asset vpn)" ] || _from=$VPN_STAGED
-    if vpn_in_use "$2"; then
-        module_get vpn "$STAGE/module" "$_from"; _r=$?
-        case $_r in
-            0) MODULES_NEW="vpn $MODULE_FILE $MODULE_SHA" ;;
-            3) ;;
-            *) if vpn_module_in "$EXTRA/vpn"; then
-                   echo "extra vpn: the VPN module could not be updated; the installed one ($(extra_release vpn)) stays" >&2
-               elif [ -n "$2" ]; then
-                   vpn_stage_hint
-                   die "this device uses the VPN, whose toolkit (mu300-vpn) is a module of its own now that the new systems do not carry, and it could not be had: nothing was changed"
-               else
-                   echo "extra vpn: the VPN module could not be had; once the device is online: mu300-extra install vpn" >&2
-               fi ;;
-        esac
+    if [ -z "$_from" ] && { [ -s "$VPN_STAGED/$(module_asset vpn)" ] || [ -s "$VPN_STAGED/$(module_asset vpn-bundle)" ]; }; then
+        _from=$VPN_STAGED
     fi
-    if [ -d "$EXTRA/vpn-mihomo/bin" ]; then
-        _mf=
-        [ -z "$_from" ] || [ ! -d "$_from" ] || [ ! -s "$_from/$(module_asset vpn-mihomo)" ] || _mf=$_from
-        module_get vpn-mihomo "$STAGE/module" "$_mf"; _r=$?
-        case $_r in
-            0) MODULES_NEW="$MODULES_NEW
-vpn-mihomo $MODULE_FILE $MODULE_SHA" ;;
-            3) ;;
-            *) echo "extra vpn-mihomo: not updated; the installed one ($(extra_release vpn-mihomo)) stays" >&2 ;;
-        esac
+    if ! vpn_in_use "$2"; then
+        # engines without the core (it was removed): each follows its latest release, never fatal
+        _ef=$_from; [ -z "$_from" ] || [ -d "$_from" ] || _ef=$(dirname "$_from")
+        for _x in $VPN_ENGINE_EXTRAS; do
+            [ -d "$EXTRA/$_x/bin" ] || continue
+            _r=0; module_get "$_x" "$STAGE/module" "$_ef" || _r=$?
+            case $_r in
+                0) MODULES_NEW="$MODULES_NEW$_x $MODULE_FILE $MODULE_SHA
+" ;;
+                3) ;;
+                *) echo "extra $_x: not updated; the installed one ($(extra_release "$_x")) stays" >&2 ;;
+            esac
+        done
+        return 0
     fi
+    _r=0; vpn_module_get "$STAGE/module" "$_from" || _r=$?
+    case $_r in
+        0) MODULES_NEW=$VPN_SET ;;
+        *) if vpn_module_in "$EXTRA/vpn"; then
+               echo "extra vpn: the VPN module could not be updated; the installed one ($(extra_release vpn)) stays, with its engines" >&2
+           elif [ -n "$2" ]; then
+               vpn_stage_hint
+               die "this device uses the VPN, whose toolkit (mu300-vpn) is a module of its own now that the new systems do not carry, and it could not be had: nothing was changed"
+           else
+               echo "extra vpn: the VPN module could not be had; once the device is online: mu300-extra install vpn" >&2
+           fi ;;
+    esac
     return 0
 }
-# modules_install TAG: install what modules_fetch got, before the systems are switched: a module that fails its
-# checks (./requires newer than TAG, a broken tarball) stops a device that needs it while nothing is changed. The
-# running system keeps working meanwhile: its own mu300-vpn finds the engines in the extra where they were.
+# modules_install TAG: install what modules_fetch got, before the systems are switched, the engines first and the core
+# last: a core is never put in place without the engines its set came with. One that fails its checks (./requires newer
+# than TAG, a broken tarball) stops a device that needs it while nothing is changed. The running system keeps working
+# meanwhile: its own mu300-vpn finds the engines where they were (a running engine keeps its open files).
 modules_install() {
     # own names: module_install -> extra_unpack counts files in _n and _f, which named the module here ("extra 4")
+    _mi_bad=
     while read -r _mi_name _mi_file _mi_sha; do
         [ -n "$_mi_name" ] || continue
+        if [ "$_mi_name" = vpn ] && [ -n "$_mi_bad" ]; then
+            if vpn_module_in "$EXTRA/vpn"; then
+                echo "extra vpn: not updated, because its engine$_mi_bad could not be installed; the installed one ($(extra_release vpn)) stays" >&2
+                continue
+            fi
+            vpn_stage_hint
+            die "the VPN module's engine$_mi_bad could not be installed (see above): nothing was changed"
+        fi
         if module_install "$_mi_name" "$_mi_file" "$_mi_sha" "$1"; then
             printf 'extra %s: %s\n' "$_mi_name" "$(extra_release "$_mi_name")"
             EXTRA_CHANGED=1
@@ -818,16 +1343,19 @@ modules_install() {
             die "the VPN module could not be installed (see above): nothing was changed"
         else
             echo "extra $_mi_name: not updated (see above)" >&2
+            # an engine the core of this set needs, which the device has not got otherwise
+            [ "$_mi_name" = vpn ] || vpn_engine_have "$_mi_name" || _mi_bad="$_mi_bad $_mi_name"
         fi
     done <<EOF
 $MODULES_NEW
 EOF
     rm -rf "$STAGE/module"
+    module_vdir_clean
 }
 # modules_link "OS...": the updated systems use the module (their images have no mu300-vpn); one the hook could not
 # link gets another try at its first boot (mu300-extra link)
 modules_link() {
-    for _x in vpn vpn-mihomo; do
+    for _x in vpn $VPN_ENGINE_EXTRAS; do
         [ -f "$EXTRA/$_x/hooks/link" ] || continue
         for _o in $1; do
             module_hook_fits "$_x" link "$DISK/$_o" "$(cat "$DISK/$_o$VERSION_FILE" 2>/dev/null || echo unknown)" ||
@@ -957,11 +1485,16 @@ bootimg_assemble() {  # bootimg_assemble DIR VBMETA_SIZE KERNEL RAMDISK...
     for _r in "$@"; do _rsz=$((_rsz + $(fsize "$_r"))); done
     bytes "$(fsize "$_kernel")" 4 le | poke "$_dir/new" 8
     bytes "$_rsz" 4 le | poke "$_dir/new" 12
+    _hs=$(fsize "$_dir/new") _ksz=$(fsize "$_kernel")
     cat "$_kernel" >> "$_dir/new"; pad_page "$_dir/new"
     cat "$@" >> "$_dir/new"; pad_page "$_dir/new"
     _os=$(fsize "$_dir/new")
+    # the file must be what was just put together: two updaters in the same directory once both appended their
+    # kernel to it, and the size check below then refused a 56 MB "image" (lock_take keeps them apart now)
+    [ "$_os" = $(( (_hs + _ksz + 4095) / 4096 * 4096 + (_rsz + 4095) / 4096 * 4096 )) ] ||
+        { echo "boot: $_dir/new is not the image just assembled ($_os bytes; another mu300-update in the same directory?)" >&2; return 1; }
     [ $((_os + _vs)) -le "$PERSIST_LOG" ] ||
-        { echo "boot: the new image ($_os bytes) would reach the persistent log area" >&2; return 1; }
+        { echo "boot: the new image ($_os bytes: kernel $_ksz, ramdisks $_rsz, with vbmeta $_vs) would reach the persistent log area at $PERSIST_LOG bytes" >&2; return 1; }
     cp "$_dir/footer" "$_dir/newfooter"
     { bytes "$_os" 8 be; bytes "$_os" 8 be; bytes "$_vs" 8 be; } | poke "$_dir/newfooter" 12
 }
@@ -1188,7 +1721,8 @@ kernel_cmd() {  # kernel [5.4|6.18|7.2]: show or change the kernel, and install 
     fi
     rm -rf "$STAGE"
     sync
-    printf '\nkernel %s selected. Reboot to start it (mu300-update rollback-boot goes back).\n' "$1"
+    printf '\nkernel %s selected. ' "$1"
+    reboot_goes_to_android || printf 'Reboot to start it (mu300-update rollback-boot goes back).\n'
 }
 
 rollback_boot() {
@@ -1215,7 +1749,79 @@ rollback_boot() {
         cat "$BOOTDIR/prev.kernel" > "$BOOTDIR/installed.kernel"
     fi
     sync
-    printf 'boot: previous boot image (%s) restored. Reboot to start it.\n' "$(cat "$BOOTDIR/prev.tag" 2>/dev/null || echo unknown)"
+    printf 'boot: previous boot image (%s) restored. ' "$(cat "$BOOTDIR/prev.tag" 2>/dev/null || echo unknown)"
+    reboot_goes_to_android || printf 'Reboot to start it.\n'
+}
+
+# One mu300-update at a time. apply, boot, kernel, rollback, rollback-boot and clean all work in $STAGE: two runs
+# started together once both appended their kernel to the same $STAGE/boot/new, and both stopped at the size check
+# (a 56 MB "image" that "would reach the persistent log area" - harmless, but puzzling). The second run now says who
+# holds the lock and exits 1 before it touches anything. Nothing runs unlocked: when the lock cannot be had, the
+# run stops (fails closed).
+#   The lock lives in a directory of root's own under /run (root's, so no one else can put anything at that path):
+# made here with mode 700, and refused when what is there is a link, not a directory of exactly that mode, or
+# someone else's - never in $STAGE (clean deletes it) nor under /tmp or /var/lock, where any login user could plant
+# a link or a lock of their own. Inside it, flock(1) on a regular file through fd 9 where flock exists (busybox's
+# applet on OpenWrt, util-linux on Ubuntu; the kernel releases it however the run ends), else a directory "held"
+# made atomically with the holder's pid in it. A pid read from the lock is digits only and bounded, and the holder
+# counts as running only when that pid is alive and is a mu300-update (/proc/PID/cmdline where there is one):
+# a lock left by a run that is gone is taken over, with a line saying so, never a denial for good. A run that
+# continues with the release's own updater (exec in apply) keeps its pid and fd 9, so it simply locks again.
+# check, version and notice (at boot and every 6 hours) only read and do not lock.
+LOCK=${MU300_LOCK:-/run/mu300-update}
+lock_refuse() { echo "cannot lock: $*; not running" >&2; exit 1; }
+lock_pid() {  # lock_pid FILE: the pid in it, when it is one (digits only, at most 8 of them); else nothing
+    _lp=$(head -c 16 "$1" 2>/dev/null | tr -d '\n')
+    case $_lp in ''|*[!0-9]*) return 0 ;; esac
+    [ ${#_lp} -le 8 ] && echo "$_lp"
+}
+update_alive() {  # update_alive PID: that process runs, and is a mu300-update where /proc can tell
+    kill -0 "$1" 2>/dev/null || return 1
+    [ -r "/proc/$1/cmdline" ] || return 0
+    { tr '\0' ' ' < "/proc/$1/cmdline"; } 2>/dev/null | grep -q mu300-update
+}
+lock_dir_ok() {  # the lock directory as this run needs it, or a refusal
+    [ ! -L "$LOCK" ] || lock_refuse "$LOCK is a symbolic link"
+    [ -e "$LOCK" ] || ( umask 077; mkdir "$LOCK" ) 2>/dev/null || [ -d "$LOCK" ] || lock_refuse "cannot make $LOCK"
+    [ ! -L "$LOCK" ] || lock_refuse "$LOCK is a symbolic link"
+    _ls=$(ls -ldn "$LOCK" 2>/dev/null)
+    case $_ls in drwx------*) ;; *) lock_refuse "$LOCK is not a directory of mode 700" ;; esac
+    [ "$(printf '%s\n' "$_ls" | awk '{print $3}')" = "$(id -u)" ] || lock_refuse "$LOCK is not ours"
+}
+lock_take() {
+    lock_dir_ok
+    if have flock; then
+        # never a link, not even a dangling one (>> would make its target), and nothing but a regular file
+        [ ! -L "$LOCK/lock" ] && { [ ! -e "$LOCK/lock" ] || [ -f "$LOCK/lock" ]; } || lock_refuse "$LOCK/lock is not a regular file"
+        exec 9>>"$LOCK/lock" || lock_refuse "cannot open $LOCK/lock"
+        flock -n 9 || lock_busy "$(lock_pid "$LOCK/lock")"
+        echo $$ > "$LOCK/lock"
+        return 0
+    fi
+    _try=0
+    until ( umask 077; mkdir "$LOCK/held" ) 2>/dev/null; do
+        [ -d "$LOCK/held" ] || lock_refuse "cannot make $LOCK/held"
+        _pid=$(lock_pid "$LOCK/held/pid")
+        [ "$_pid" = "$$" ] && { LOCK_DIR=1; return 0; }     # this run, continued with the release's updater
+        # a holder writes its pid right after making the directory: none a second later is a run that is gone
+        [ -n "$_pid" ] || { sleep 1; _pid=$(lock_pid "$LOCK/held/pid"); }
+        if [ -n "$_pid" ] && update_alive "$_pid"; then lock_busy "$_pid"; fi
+        [ "$_try" = 0 ] || lock_busy "$_pid"
+        echo "taking over the lock of a mu300-update that is gone${_pid:+ (pid $_pid)}" >&2
+        rm -rf "$LOCK/held"; _try=1
+    done
+    echo $$ > "$LOCK/held/pid"
+    LOCK_DIR=1
+}
+lock_busy() {  # lock_busy [PID]: the refusal, and the end
+    _p=$1
+    [ -n "$_p" ] && update_alive "$_p" || _p=
+    echo "another mu300-update is running${_p:+ (pid $_p)}" >&2
+    exit 1
+}
+lock_drop() {
+    [ -n "${LOCK_DIR:-}" ] && [ "$(lock_pid "$LOCK/held/pid")" = "$$" ] && rm -rf "$LOCK/held"
+    LOCK_DIR=
 }
 
 # Older boot images lose the mobile downlink for good when the IPA goes idle and fails to power off
@@ -1262,7 +1868,11 @@ apply() {
         cp "$STAGE/mu300-update" "$self.new" && chmod 755 "$self.new" && mv -f "$self.new" "$self" 2>/dev/null || true
         MU300_SELF_UPDATED=1 MU300_RELEASE=$tag exec sh "$STAGE/mu300-update" apply "$@"
     fi
-    list=$*
+    list=
+    for a in "$@"; do
+        # the packages installed on the device are not installed again (their settings are set aside all the same)
+        case $a in --no-reinstall) MU300_KEEP_PACKAGES=0 ;; *) list="$list $a" ;; esac
+    done
     [ -n "$list" ] || list=$(installed_systems)
     BOOT_CHANGED=
     SYSTEM_CHANGED=
@@ -1333,12 +1943,15 @@ apply() {
         return 0
     fi
     if [ -z "$SYSTEM_CHANGED" ]; then
-        printf '\nReboot to start the new kernel. The previous boot image is kept: mu300-update rollback-boot\n'
+        if reboot_goes_to_android; then printf 'The previous boot image is kept: mu300-update rollback-boot\n'
+        else printf '\nReboot to start the new kernel. The previous boot image is kept: mu300-update rollback-boot\n'; fi
         return 0
     fi
     case " $list " in
-        *" $(running_os) "*) printf '\nReboot to start the updated %s. The previous version is kept: mu300-update rollback\n' "$(running_os)" ;;
-        *) printf '\nDone. The updated system is used the next time you switch to it.\n' ;;
+        *" $(running_os) "*)
+            if reboot_goes_to_android; then printf 'The previous version is kept: mu300-update rollback\n'
+            else printf '\nReboot to start the updated %s. The previous version is kept: mu300-update rollback\n' "$(running_os)"; fi ;;
+        *) reboot_goes_to_android || printf '\nDone. The updated system is used the next time you switch to it.\n' ;;
     esac
 }
 
@@ -1373,7 +1986,7 @@ rollback() {
         printf '%s: rolled back to %s\n' "$os" "$(cat "$DISK/$os$VERSION_FILE" 2>/dev/null || echo unknown)"
         done_any=1
     done
-    [ -n "$done_any" ] && printf '\nReboot to start it.\n'
+    [ -n "$done_any" ] && { printf '\n'; reboot_goes_to_android || printf 'Reboot to start it.\n'; }
 }
 
 clean() {
@@ -1392,19 +2005,23 @@ clean() {
 [ -z "${MU300_LIB:-}" ] || return 0
 
 [ "$(id -u)" = 0 ] || { echo "run as root" >&2; exit 1; }
-case ${1:-check} in apply|boot|kernel) keepalive_start; trap 'keepalive_stop; resume_data' EXIT; trap 'exit 130' INT TERM HUP ;; esac
+case ${1:-check} in
+    apply|boot|kernel|rollback|rollback-boot|clean|accounts)
+        lock_take; trap 'keepalive_stop; resume_data; lock_drop' EXIT; trap 'exit 130' INT TERM HUP ;;
+esac
+case ${1:-check} in apply|boot|kernel) keepalive_start ;; esac
 case ${1:-check} in
     check) check ;;
     version) version ;;
     apply) shift; apply "$@" ;;
     boot) mounted_disk; t=${MU300_RELEASE:-$(latest_release)}; [ -n "$t" ] || die "could not reach GitHub (is the device online?)"
-          boot_update "$t" || exit 1; rm -rf "$STAGE"; [ -n "${BOOT_CHANGED:-}" ] && printf '\nReboot to start the new kernel.\n' ;;
+          boot_update "$t" || exit 1; rm -rf "$STAGE"; [ -n "${BOOT_CHANGED:-}" ] && { printf '\n'; reboot_goes_to_android || printf 'Reboot to start the new kernel.\n'; } ;;
     rollback) shift; rollback "$@" ;;
     rollback-boot) rollback_boot ;;
     kernel) shift; kernel_cmd "$@" ;;
     accounts) accounts ;;
     clean) clean ;;
     notice) notice ;;
-    -h|--help|help) sed -n '2,17s/^# \{0,1\}//p' "$0" ;;
-    *) echo "usage: mu300-update check|version|apply [ubuntu|openwrt|openwrt-luci ...]|boot|kernel [5.4|6.18|7.2]|rollback [os]|rollback-boot|clean|notice" >&2; exit 2 ;;
+    -h|--help|help) sed -n '2,19s/^# \{0,1\}//p' "$0" ;;
+    *) echo "usage: mu300-update check|version|apply [--no-reinstall] [ubuntu|openwrt|openwrt-luci ...]|boot|kernel [5.4|6.18|7.2]|rollback [os]|rollback-boot|clean|notice" >&2; exit 2 ;;
 esac

@@ -73,6 +73,36 @@ class Orphaned(ShellTest):
         for f in (BIN / 'mu300-update', TOP / 'tools/android-install.sh'):
             self.assertEqual(fns(f.read_text()), fns(lib), f)
 
+    def test_the_engine_missing(self):
+        """vpn_engine_missing: the VPN on, and its active profile's engine extra not installed (module v2: each
+        engine is an extra; module v1 and the bundle carry xray and sing-box in the vpn extra)"""
+        root = self.tmp / 'root'
+        disk = self.tmp / 'disk'
+
+        def case(shell, typ, enable='1', have=()):
+            shutil.rmtree(root, ignore_errors=True)
+            shutil.rmtree(disk, ignore_errors=True)
+            (root / 'etc/mu300/vpn/profiles/p').mkdir(parents=True)
+            (root / 'etc/mu300/vpn.conf').write_text(f'ENABLE={enable}\n')
+            (root / 'etc/mu300/vpn/active').write_text('p\n')
+            (root / 'etc/mu300/vpn/profiles/p/meta').write_text(f"NAME='p'\nTYPE='{typ}'\n")
+            for path in have:
+                (disk / 'extra' / path).parent.mkdir(parents=True, exist_ok=True)
+                (disk / 'extra' / path).write_text('#!/bin/sh\n')
+                (disk / 'extra' / path).chmod(0o755)
+            r = self.sh(shell, f'. "{ORPHAN_LIB}"; vpn_engine_missing "{root}" || echo none', MU300_DISK=disk)
+            return r.stdout.strip()
+
+        for shell in self.each_shell():
+            self.assertEqual(case(shell, 'xray'), 'vpn-xray')
+            self.assertEqual(case(shell, 'xray', enable='0'), 'none')
+            self.assertEqual(case(shell, 'xray', have=('vpn-xray/bin/xray',)), 'none')
+            self.assertEqual(case(shell, 'xray', have=('vpn/bin/xray',)), 'none')          # v1, the bundle
+            self.assertEqual(case(shell, 'sing-box', have=('vpn/bin/sing-box',)), 'none')
+            self.assertEqual(case(shell, 'dae', have=('vpn/bin/xray',)), 'vpn-dae')
+            self.assertEqual(case(shell, 'mihomo', have=('vpn-mihomo/bin/mihomo',)), 'none')
+            self.assertEqual(case(shell, 'wireguard'), 'none')                           # a package, not an extra
+
     def test_nothing_is_sourced(self):
         for shell in self.each_shell():
             self.check(shell, 'ENABLE=1\nKILL_SWITCH=$(touch "$STUBLOG/ran")\n',
@@ -192,6 +222,57 @@ class Toolkit(ShellTest):
         self.assertIn('VPN (not installed: how to add it)', src)
         # the services list shows mu300-vpn only with the module
         self.assertIn('[ "$s" != mu300-vpn ] || vpn_present', src)
+        # the menus name the VPN only to someone who has the module (mu300-extra's test: its mu300-vpn in the vpn
+        # extra on the disk), or had it (the kill switch orphaned): the main menu's label and the Network item
+        self.assertIn('vpn_installed() { [ -x "${MU300_DISK:-/mnt/mu300-disk}/extra/vpn/bin/mu300-vpn" ]; }', src)
+        self.assertIn('vpn_shown() { vpn_installed || vpn_orphaned; }', src)
+        self.assertIn('"Network, mobile data$(vpn_shown && echo \', VPN\')"', src)
+
+    def test_the_network_menu_lists_the_vpn_only_with_the_module(self):
+        src = TOOLKIT.read_text()
+        network = src[src.index('\nmenu_network() {'):src.index('\nMU300_SERVICES=')]
+        pre = ('menu() { shift; for l in "$@"; do echo "item: $l"; done; read -r CHOICE || CHOICE=0; }\n'
+               'menu_vpn() { echo "-> vpn"; }; menu_ttl() { echo "-> ttl"; }; menu_wifi() { echo "-> wifi"; }\n'
+               'title() { :; }; pause() { :; }; svc() { :; }; monitor() { :; }; menu_signal() { :; }; is_openwrt() { false; }\n'
+               'C=; N=; D=; B=; G=\nVPN_CONF=/nonexistent\n')
+        # (the stubs after the block: its own menu_vpn is not what is under test here)
+        code = self.block + '\n' + pre + network + '\nmenu_network; echo "rc=$?"'
+        disk = self.tmp / 'disk'
+        root = self.tmp / 'root'
+        module = disk / 'extra/vpn/bin/mu300-vpn'
+
+        def run(shell, answers, conf='ENABLE=0\n'):
+            (root / 'etc/mu300').mkdir(parents=True, exist_ok=True)
+            (root / 'etc/mu300/vpn.conf').write_text(conf)
+            return self.sh(shell, code, stdin=answers, MU300_DISK=disk, MU300_SYSROOT=root,
+                           MU300_VPN_CMD=self.tmp / 'no-such-mu300-vpn', MU300_EXTRA_CMD=self.stubs / 'mu300-extra',
+                           MU300_VPN_ORPHAN_LIB=ORPHAN_LIB)
+
+        for shell in self.each_shell():
+            shutil.rmtree(disk, ignore_errors=True)
+            # without the module: no word of a VPN, TTL is item 8 and 9 goes back
+            r = run(shell, '8\n9\n0\n')
+            self.assertIn('rc=0', r.stdout, r.stderr)
+            self.assertNotIn('VPN', r.stdout)
+            self.assertEqual(r.stdout.count('-> ttl'), 1)
+            self.assertNotIn('-> vpn', r.stdout)
+            # the VPN on with its kill switch and the module gone: the item is there (it says why mobile data is down)
+            r = run(shell, '8\n0\n', conf='ENABLE=1\nKILL_SWITCH=1\n')
+            self.assertIn('item: VPN (not installed: how to add it)', r.stdout)
+            self.assertIn('-> vpn', r.stdout)
+            # the module on the disk (mu300-extra's test), not linked into this system: the item, and TTL is 9
+            module.parent.mkdir(parents=True)
+            module.write_text('#!/bin/sh\n')
+            module.chmod(0o755)
+            r = run(shell, '8\n9\n0\n')
+            self.assertIn('rc=0', r.stdout, r.stderr)
+            self.assertIn('item: VPN (not installed: how to add it)', r.stdout)
+            self.assertEqual(r.stdout.count('-> vpn'), 1)
+            self.assertEqual(r.stdout.count('-> ttl'), 1)
+            # linked too: the plain item
+            r = self.sh(shell, code, stdin='0\n', MU300_DISK=disk, MU300_SYSROOT=root, MU300_VPN_CMD=module,
+                        MU300_EXTRA_CMD=self.stubs / 'mu300-extra', MU300_VPN_ORPHAN_LIB=ORPHAN_LIB)
+            self.assertIn('item: VPN\n', r.stdout)
 
 
 class Static(unittest.TestCase):

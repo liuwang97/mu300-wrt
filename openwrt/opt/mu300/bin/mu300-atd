@@ -44,7 +44,15 @@ if [ -z "${MU300_ATD_SHELL:-}" ] && [ -n "$(read -t 0.1 _probe </dev/null 2>&1)"
         esac
     done
 fi
-DEV=${MU300_AT_DEV:-/dev/stty_nr1}
+# The command channel follows the SIM slot pinned for this boot (mu300-sim active): slot 0 is nr1 (nr2 for the data
+# role), slot 1 - the F50's internal card - is nr4 (nr5), with its URCs on nr3 instead of nr0.
+SIM_SLOT=0
+if [ -x /opt/mu300/bin/mu300-sim ]; then
+    SIM_SLOT=$(/opt/mu300/bin/mu300-sim active) || exit 1
+fi
+channel=$((SIM_SLOT * 3 + 1))
+[ "${MU300_AT_ROLE:-}" != data ] || channel=$((channel + 1))
+DEV=${MU300_AT_DEV:-/dev/stty_nr$channel}
 DIR=${MU300_AT_DIR:-/run/mu300-at}
 CMD=$DIR/cmd
 CR=$(printf '\r')
@@ -126,9 +134,33 @@ open_tty || { echo "mu300-atd: cannot open $DEV" >&2; exit 1; }
 URCDIR=$DIR/urc
 URCMAX=${MU300_AT_URC_MAX:-65536}
 mkdir -p "$URCDIR"
+# A message the modem delivers directly (mu300-smsd asks for that with AT+CNMI mt=2, openwrt-luci only) is a two-line
+# frame: "+CMT: <alpha>,<length>" and the PDU on the next line, on whichever channel the modem's unsolicited output
+# goes (nr0 here, where +CMTI comes too), or on the command channel between or inside replies. The two lines go to
+# mu300-cmt-spool on its stdin, which puts the PDU on the disk for mu300-smsd to pool and acknowledge. Neither line
+# is logged (the log is world readable, and emptied when it grows): in text mode - which nothing here asks for, but
+# another tool might - the header carries the sender and the second line the text; the log gets one fixed word
+# either way, and the spooler takes nothing but hexadecimal. A reply never carries the frame either (a client parsing
+# a listing would take the PDU line for one of its own). Never an argument: argv is public.
+CMT_SPOOL=${MU300_CMT_SPOOL_BIN:-/opt/mu300/bin/mu300-cmt-spool}
+cmt_frame() {  # cmt_frame HEADER FD LOG: the line after a +CMT header, from FD, with the header to the spooler
+    _pdu=
+    # the PDU is the next line, written with the header; an empty line (the frame's own CRLF) is skipped once
+    for _try in 1 2; do
+        IFS= read -r -t 2 _pdu <&"$2" || { _pdu=; break; }
+        _pdu=${_pdu%"$CR"}
+        [ -n "$_pdu" ] && break
+    done
+    if [ -x "$CMT_SPOOL" ] && printf '%s\n%s\n' "$1" "$_pdu" | "$CMT_SPOOL"; then
+        printf '%s\n' "+CMT (PDU spooled)" >> "$3" 2>/dev/null
+    else
+        echo "mu300-atd: a message delivered directly (+CMT) could not be spooled; it stays unacknowledged" >&2
+        printf '%s\n' "+CMT (not spooled)" >> "$3" 2>/dev/null
+    fi
+}
 # '-' and not ':-': a value that is set but empty means this daemon opens no URC channel at all. With ':-' a
 # second daemon (another command channel) fell back to nr0 as well, and several readers split that stream.
-for n in ${MU300_AT_URC_CHANNELS-0}; do
+for n in ${MU300_AT_URC_CHANNELS-$((SIM_SLOT * 3))}; do
     other=${DEV%[0-9]}$n
     [ "$other" = "$DEV" ] && continue
     [ -c "$other" ] || continue
@@ -137,7 +169,9 @@ for n in ${MU300_AT_URC_CHANNELS-0}; do
         log=$URCDIR/$(basename "$other").log
         : > "$log"
         while IFS= read -r urc; do
-            printf '%s\n' "${urc%"$CR"}" >> "$log"
+            urc=${urc%"$CR"}
+            case $urc in '+CMT:'*) cmt_frame "$urc" 0 "$log"; continue ;; esac
+            printf '%s\n' "$urc" >> "$log"
             # cheap cap: start over rather than grow without end, /run is RAM
             [ "$(wc -c < "$log" 2>/dev/null || echo 0)" -gt "$URCMAX" ] && : > "$log"
         done < "$other"
@@ -156,7 +190,7 @@ now() { date +%s; }
 # Has the modem said anything at all lately? The drainers above append every unsolicited line to a log, so a log
 # that has been written to in the last few minutes means the modem is running, whatever it thinks of our
 # commands. With no drainer (a single-channel device) there is nothing to go on, and this answers "no".
-URCLOG=$URCDIR/$(basename "${DEV%[0-9]}0").log
+URCLOG=$URCDIR/stty_nr$((SIM_SLOT * 3)).log
 modem_alive() {
     [ -f "$URCLOG" ] || return 1
     [ "$(( $(now) - $(date -r "$URCLOG" +%s 2>/dev/null || echo 0) ))" -lt "${MU300_AT_URC_QUIET:-240}" ]
@@ -191,6 +225,7 @@ drain() {  # drain WAIT: throw away what the modem sent while nobody was asking 
         # land here, and some of them matter. +CUSD is the plain case - the network's reply to *101# comes
         # seconds after the modem has already said OK - and +CMTI, announcing a new SMS, is another.
         junk=${junk%"$CR"}
+        case $junk in '+CMT:'*) cmt_frame "$junk" 3 "$URCDIR/$(basename "$DEV").log"; continue ;; esac
         [ -n "$junk" ] && printf '%s\n' "$junk" >> "$URCDIR/$(basename "$DEV").log" 2>/dev/null
         [ "$rc" = 0 ] || break   # nothing for WAIT seconds (a partial line was kept above): quiet again
     done
@@ -207,6 +242,8 @@ collect() {  # collect TIMEOUT -> the reply lines, up to the final result code; 
         IFS= read -r -t 2 l <&3 || continue
         l=${l%"$CR"}
         [ -n "$l" ] || continue
+        # a message delivered while a reply was being collected: spooled, and kept out of the reply
+        case $l in '+CMT:'*) cmt_frame "$l" 3 "$URCDIR/$(basename "$DEV").log"; continue ;; esac
         echo "$l"
         case $l in
             OK|ERROR|+CME\ ERROR*|+CMS\ ERROR*|CONNECT*|NO\ CARRIER) return 0 ;;
@@ -244,6 +281,10 @@ while :; do
     DRAIN_MAX=$([ "$silent" -gt 0 ] && echo 25 || echo 3)
     export DRAIN_MAX
     drain "$([ "$clean" = 1 ] && echo "$QUICK" || echo 1)"
+    # A PDU send ("AT+CMGS=N<CR>PDU<Ctrl-Z>") goes out as one write too: the modem's "> " prompt between the
+    # header and the PDU has no newline, so the line reads here never see it, and it is collected with the reply.
+    # Waiting for it before the PDU would need a byte-wise read whose timeout behaviour differs between bash and
+    # busybox ash, in the one process that owns the channel; measured sends work as is (docs/FINDINGS.md 46).
     printf '%s\r' "$cmd" >&3
     # clean: the reply ended in a final result code, by collect's own exact test of its last line
     clean=0

@@ -430,7 +430,7 @@ class EarlyUsbOpenWrt(ShellTest):
             self.assertEqual(1, log.count('uci add_list firewall.@zone[0].device=br-lan\n'))
             self.assertEqual(1, log.count('uci add_list firewall.@zone[1].device=sipa_eth0\n'))
             self.assertEqual(self.uci('get', 'firewall.@zone[0].device'), 'br-lan')
-            self.assertEqual(self.uci('get', 'firewall.@zone[1].device'), 'sipa_eth0')
+            self.assertEqual(self.uci('get', 'firewall.@zone[1].device'), 'sipa_eth0 sipa_eth8')   # #67 + #72: both bearers
             self.tearDown(); self.setUp()
 
     # --- hotplug.d/iface/19-mu300-fw4 (issue #67): the 5.4 kernel's stale flowtable before 20-firewall's reload
@@ -456,7 +456,7 @@ class EarlyUsbOpenWrt(ShellTest):
 
     def test_fw4_hook_leaves_the_flowtable_alone_when_no_reload_follows_or_the_kernel_updates_it(self):
         for shell in self.each_shell():
-            for kw in ({'kernel': '6.18.55'}, {'kernel': '7.2.9'}, {'action': 'ifdown'}, {'in_zone': False},
+            for kw in ({'kernel': '6.18.56'}, {'kernel': '7.2.10'}, {'action': 'ifdown'}, {'in_zone': False},
                        {'flowtable': False}):
                 with self.subTest(shell=' '.join(shell), **kw):
                     self.assertNotIn('delete', self.fw4_hook(shell, **kw))

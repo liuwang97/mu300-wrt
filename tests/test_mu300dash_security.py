@@ -93,10 +93,11 @@ DEFAULTS = {
     'dashboard-info': '{"ok":1,"host":"f50"}', 'cell': '{"ok":1}', 'action': '{"ok":1,"op":"x"}',
     'lock': '{"ok":1,"mode":{"label":"auto"}}', 'device-usb': '{"ok":1}', 'at': 'OK', 'sms': 'sent (12)',
     'languages': '{"ok":1}', 'power': '{"ok":1}', 'ttl': '{"ok":1}', 'traffic': '{"ok":1}', 'forward': '{"ok":1}',
+    'packages': '{"ok":1}',
 }
 
 # The methods that start something with setsid (in the background of mu300dash)
-DETACHED = {'act', 'at', 'lock_get', 'lock_set', 'sms_sync', 'status'}
+DETACHED = {'act', 'at', 'lock_get', 'lock_set', 'sms_send', 'sms_sync', 'status'}
 
 # Hostile values: each is refused by every field that takes a fixed set, a number or a name. The NUL cases: the
 # stand-in jsonfilter passes the NUL on (the backend maps it to \001 and refuses); the real jsonfilter prints strings
@@ -186,6 +187,38 @@ class Mu300Dash(ShellTest):
             recs.append(rec)
         return r, recs, stdins
 
+    def send_job(self, shell, params, **extra):
+        """The panel's send: sms_send starts the job detached, and the job itself is then run here as setsid would
+        have, on a shared runtime directory: (the sms_job reply, [[name, arg...], ...] of the job, {index: stdin}).
+        A send refused before the job (a bad number, an empty text) comes back as sms_send's own reply."""
+        self.n += 1
+        d = self.tmp / f'sms-run{self.n}'
+        d.mkdir()
+        r, recs, _ = self.call(shell, 'sms_send', params, MU300_DASH_DIR=d, **extra)
+        obj = self.reply(r)
+        if not obj.get('started'):
+            return obj, recs, {}
+        self.assertEqual(recs, [['setsid', 'mu300dash', 'sms-job']])
+        calls = d / 'calls'
+        calls.mkdir()
+        env = self.env(STUB_CALLS=calls, STUB_OUT=self.out, MU300_DASH_BIN=self.adapters, MU300_DASH_DIR=d,
+                       MU300_AT=self.adapters / 'at', MU300_SMS_BIN=self.adapters / 'sms', MU300_SMS_POOL=d / 'pool',
+                       MU300_DASH_OPS_DIR=d / 'flash')
+        env.update({k: str(v) for k, v in extra.items()})
+        j = subprocess.run(shell + [str(DASH), 'sms-job'], capture_output=True, env=env, timeout=60)
+        self.assertEqual(j.returncode, 0, j.stderr)
+        recs, stdins = [], {}
+        for f in sorted(calls.glob('call.*')):
+            if f.suffix == '.stdin':
+                continue
+            rec = [a.decode('utf-8', 'surrogateescape') for a in f.read_bytes().split(b'\0')[:-1]]
+            sin = f.with_name(f.name + '.stdin')
+            if sin.exists():
+                stdins[len(recs)] = sin.read_text()
+            recs.append(rec)
+        r, _, _ = self.call(shell, 'sms_job', {}, MU300_DASH_DIR=d, **extra)
+        return self.reply(r), recs, stdins
+
     def reply(self, r):
         """The reply: one JSON object, whatever happened."""
         try:
@@ -212,10 +245,10 @@ class Mu300Dash(ShellTest):
 
 class Inventory(Mu300Dash):
     METHODS = {'sysinfo', 'status', 'signal', 'act', 'at', 'at_job', 'at_history', 'ops_log', 'lock_get', 'lock_set', 'sms_list',
-               'sms_show', 'sms_send', 'sms_delete', 'sms_sync', 'usb_get', 'usb_set', 'usb_net_list', 'usb_net_add',
+               'sms_show', 'sms_send', 'sms_job', 'sms_delete', 'sms_sync', 'usb_get', 'usb_set', 'usb_net_list', 'usb_net_add',
                'lang_get', 'lang_set', 'power_get', 'power_set',
                'ttl_get', 'ttl_set', 'cpu_get', 'cpu_set', 'forward_get', 'forward_set', 'forward_test',
-               'traffic_get', 'traffic_set'}
+               'traffic_get', 'traffic_set', 'packages_get', 'packages_act'}
 
     def test_list_declares_every_method(self):
         for shell in self.each_shell():
@@ -238,7 +271,7 @@ class Inventory(Mu300Dash):
         for shell in self.each_shell():
             for p in [DASH, LIB] + [ADAPTERS / n for n in ('action', 'at', 'boot-replay', 'cell', 'dashboard-info',
                                                          'device-usb', 'lock', 'languages', 'power', 'ttl',
-                                                         'cpu', 'forward', 'traffic')]:
+                                                         'cpu', 'forward', 'traffic', 'packages')]:
                 with self.subTest(p=p.name):
                     r = subprocess.run(shell + ['-n', str(p)], capture_output=True, text=True)
                     self.assertEqual(r.returncode, 0, r.stderr)
@@ -294,6 +327,9 @@ class Refusals(Mu300Dash):
         ('usb_net_add', {}, 'iface', 'eth1'),
         ('ttl_set', {}, 'value', '64'),
         ('ttl_set', {}, 'value', 'off'),
+        ('packages_act', {}, 'op', 'retry'),
+        ('packages_act', {}, 'op', 'repair_dns'),
+        ('packages_act', {}, 'op', 'dismiss'),
         ('traffic_set', {'op': 'cap', 'value': '1024'}, 'op', 'cap'),
         ('traffic_set', {'op': 'cap', 'value': '1024'}, 'value', '1024'),
         ('traffic_set', {'op': 'reset_day', 'value': '15'}, 'value', '15'),
@@ -377,6 +413,10 @@ class Refusals(Mu300Dash):
             ('cpu unknown profile', 'cpu_set', {'profile': 'turbo'}),
             ('cpu profile chained', 'cpu_set', {'profile': 'saving; reboot'}),
             ('cpu profile empty', 'cpu_set', {'profile': ''}),
+            ('packages unknown op', 'packages_act', {'op': 'skip'}),
+            ('packages dash form', 'packages_act', {'op': 'repair-dns'}),
+            ('packages op chained', 'packages_act', {'op': 'retry; reboot'}),
+            ('packages op empty', 'packages_act', {'op': ''}),
             ('ttl zero', 'ttl_set', {'value': '0'}),
             ('ttl 256', 'ttl_set', {'value': '256'}),
             ('ttl 999', 'ttl_set', {'value': '999'}),
@@ -445,6 +485,10 @@ class Passthrough(Mu300Dash):
         ('power_set', {'op': 'wake'}, [['power', 'wake']]),
         ('power_set', {'op': 'idle'}, [['power', 'idle']]),
         ('ttl_get', {}, [['ttl', 'get']]),
+        ('packages_get', {}, [['packages', 'get']]),
+        ('packages_act', {'op': 'retry'}, [['packages', 'act', 'retry']]),
+        ('packages_act', {'op': 'repair_dns'}, [['packages', 'act', 'repair_dns']]),
+        ('packages_act', {'op': 'dismiss'}, [['packages', 'act', 'dismiss']]),
         ('ttl_set', {'value': '64'}, [['ttl', 'set', '64']]),
         ('ttl_set', {'value': 128}, [['ttl', 'set', '128']]),
         ('ttl_set', {'value': '255'}, [['ttl', 'set', '255']]),
@@ -491,8 +535,9 @@ class Passthrough(Mu300Dash):
         for shell in self.each_shell():
             for t in texts:
                 with self.subTest(text=t[:20]):
-                    r, recs, stdins = self.call(shell, 'sms_send', {'num': '+905551112233', 'text': t})
-                    self.assertEqual(self.reply(r)['ok'], 1, r.stdout)
+                    # (the send runs as a job: the text reaches it through a root-only file, and mu300-sms on stdin)
+                    obj, recs, stdins = self.send_job(shell, {'num': '+905551112233', 'text': t})
+                    self.assertEqual(obj['ok'], 1, obj)
                     self.assertEqual(recs, [['sms', 'send', '--stdin', '+905551112233']])
                     self.assertEqual(stdins, {0: t})
             self.assert_refused(shell, [
@@ -504,7 +549,7 @@ class Passthrough(Mu300Dash):
                 ('10000', 'sms_send', {'num': '123', 'text': 'a' * 10000}),
             ])
             # a JSON object where the text belongs is only text: it travels on stdin like any other
-            r, recs, stdins = self.call(shell, 'sms_send', {'num': '123', 'text': {'a': '$(id)'}})
+            _, recs, stdins = self.send_job(shell, {'num': '123', 'text': {'a': '$(id)'}})
             self.assertEqual(recs, [['sms', 'send', '--stdin', '123']])
             self.assertEqual(json.loads(stdins[0]), {'a': '$(id)'})
 
@@ -534,6 +579,7 @@ class Replies(Mu300Dash):
         ('sms_sync', {}), ('usb_get', {}), ('usb_set', {'kind': 'role', 'value': 'device', 'auto': '0'}),
         ('usb_net_list', {}), ('usb_net_add', {'iface': 'eth1'}), ('ttl_get', {}), ('ttl_set', {'value': '64'}),
         ('forward_get', {}), ('forward_set', {'enabled': '0'}), ('forward_test', {}),
+        ('packages_get', {}), ('packages_act', {'op': 'dismiss'}),
     ]
     OUTPUTS = {
         'garbage': NASTY,
@@ -576,8 +622,8 @@ class Replies(Mu300Dash):
             self.output('sms', text)
             r, _, _ = self.call(shell, 'sms_show', {'id': '4'})
             self.assertEqual(self.reply(r)['text'], text)
-            r, _, _ = self.call(shell, 'sms_send', {'num': '123', 'text': 'sent'})
-            self.assertEqual(self.reply(r)['ok'], 0)
+            obj, _, _ = self.send_job(shell, {'num': '123', 'text': 'sent'})
+            self.assertEqual(obj['ok'], 0)
 
     def test_sms_list_fields_are_escaped(self):
         row = '%-7s %-7s %-3s %-18s %-21s %s' % ('3', 'unread', 'mt', 'A"B\\C', '26/10/05,12:00:00',
@@ -893,10 +939,10 @@ class TrafficAdapter(ShellTest):
 class Acl(unittest.TestCase):
     # SMS bodies (one-time codes) and the AT history (AT+CPIN PINs) are not for read-only users (ruling R14)
     READ = {'sysinfo', 'status', 'signal', 'lock_get', 'usb_get', 'usb_net_list', 'lang_get', 'power_get', 'ttl_get',
-            'cpu_get', 'traffic_get', 'ops_log'}
-    WRITE = {'act', 'at', 'at_job', 'at_history', 'lock_set', 'sms_list', 'sms_show', 'sms_send', 'sms_delete', 'sms_sync',
+            'cpu_get', 'traffic_get', 'ops_log', 'packages_get'}
+    WRITE = {'act', 'at', 'at_job', 'at_history', 'lock_set', 'sms_list', 'sms_show', 'sms_send', 'sms_job', 'sms_delete', 'sms_sync',
              'usb_set', 'usb_net_add', 'lang_set', 'power_set', 'ttl_set', 'cpu_set', 'forward_get',
-             'forward_set', 'forward_test', 'traffic_set'}
+             'forward_set', 'forward_test', 'traffic_set', 'packages_act'}
 
     def test_actions_need_write_access(self):
         acl = json.loads(ACL.read_text())['luci-app-mu300']
@@ -905,9 +951,14 @@ class Acl(unittest.TestCase):
         self.assertEqual(read, self.READ)
         self.assertEqual(write, self.WRITE)
         self.assertEqual(read | write, Inventory.METHODS)
-        # the Languages page uploads to one fixed path, and only with write access
+        # the Languages page and the VPN pages upload to fixed paths (a language pack; a VPN config and a VPN
+        # extra's tarball), and only with write access; mu300vpn has its own read/write split (test_mu300vpn)
         self.assertEqual(acl['write'].get('cgi-io'), ['upload'])
-        self.assertEqual(acl['write'].get('file'), {'/tmp/mu300-extra-lang.tar.gz': ['write']})
+        self.assertEqual(acl['write'].get('file'), {'/tmp/mu300-extra-lang.tar.gz': ['write'],
+                                                    '/tmp/mu300-vpn-upload': ['write'],
+                                                    '/tmp/mu300-vpn-extra.tar.gz': ['write']})
+        self.assertEqual(set(acl['read']['ubus']), {'mu300dash', 'mu300rates', 'mu300vpn'})
+        self.assertEqual(set(acl['write']['ubus']), {'mu300dash', 'mu300vpn'})
         self.assertNotIn('cgi-io', acl['read'])
         # the dashboard's live rates come from one fixed method that takes no argument: no file read access at all
         # (a /proc/<pid> glob would have matched paths far beyond the interface counters)
@@ -996,8 +1047,9 @@ class FixRound1(Mu300Dash):
         for shell in self.each_shell():
             r, _, _ = self.call(shell, 'sms_show', {'id': '4'})
             self.assertEqual(self.reply(r), {'ok': 0, 'error': 'Read failed', 'detail': 'no message "4"\\x'})
-            r, _, _ = self.call(shell, 'sms_send', {'num': '123', 'text': 'hi'})
-            self.assertEqual(self.reply(r), {'ok': 0, 'error': 'Sending failed', 'detail': 'no message "4"\\x'})
+            obj, _, _ = self.send_job(shell, {'num': '123', 'text': 'hi'})
+            self.assertEqual({k: obj.get(k) for k in ('ok', 'error', 'detail', 'done')},
+                             {'ok': 0, 'error': 'Sending failed', 'detail': 'no message "4"\\x', 'done': 1})
             r, _, _ = self.call(shell, 'sms_delete', {'id': '4'})
             self.assertEqual(self.reply(r), {'ok': 0, 'error': 'Delete failed', 'detail': 'no message "4"\\x'})
 
@@ -1014,7 +1066,6 @@ class FixRound1(Mu300Dash):
             ('empty', 'sms_send', {'num': '12', 'text': ''}, {}, 'The message is empty'),
             ('too long', 'sms_send', {'num': '12', 'text': 'x' * 481}, {},
              'The message is too long (over 480 characters)'),
-            ('sms busy', 'sms_send', {'num': '12', 'text': 'hi'}, {'sms': 'mu300-at: busy\n'}, busy),
             ('at busy', 'at', {'cmd': 'ATI'}, {'at': 'mu300-at: busy\n'}, busy),
             ('no sms', 'sms_list', {}, {'sms': ''},
              'mu300-sms is not available (the SMS service is not installed or not running)'),
@@ -1049,15 +1100,18 @@ class FixRound1(Mu300Dash):
                 with self.subTest(client=label):
                     self.output('at', text)
                     self.assertEqual(self.reply(self.call(shell, 'at', {'cmd': 'ATI'})[0]), busy)
-                    # mu300-sms passes mu300-at's line on, with its own after it
+                    # mu300-sms passes mu300-at's line on, with its own after it (the send runs as a job: the
+                    # verdict comes from sms_job, with the same words, which are in the catalogs)
                     self.output('sms', text + 'mu300-sms: the modem did not take the message\n')
                     self.output('sms.rc', '1')
-                    self.assertEqual(self.reply(self.call(shell, 'sms_send', {'num': '12', 'text': 'hi'})[0]), busy)
+                    obj, _, _ = self.send_job(shell, {'num': '12', 'text': 'hi'})
+                    self.assertEqual({k: obj.get(k) for k in busy}, busy)
+                    self.assertNotIn('detail', obj)
             self.output('at', '+CME ERROR: SIM busy\n')
             obj = self.reply(self.call(shell, 'at', {'cmd': 'AT+CPMS?'})[0])
             self.assertEqual((obj['ok'], obj.get('busy'), obj['reply']), (1, None, '+CME ERROR: SIM busy'))
             self.output('sms', 'mu300-sms: the modem did not take the message: +CMS ERROR: SIM busy\n')
-            obj = self.reply(self.call(shell, 'sms_send', {'num': '12', 'text': 'hi'})[0])
+            obj, _, _ = self.send_job(shell, {'num': '12', 'text': 'hi'})
             self.assertEqual((obj['ok'], obj.get('busy'), obj['error']), (0, None, 'Sending failed'))
             self.assertIn('SIM busy', obj['detail'])
 
@@ -1120,8 +1174,9 @@ esac
 
     def test_cell_names_the_operator(self):
         # COPS's <format> decides what the quoted text is: 2 a PLMN (the F50's modem keeps that format), whose long
-        # name comes from one line that puts format 2 back, once per PLMN; 0/1 a name, UCS2 hex decoded only when the
-        # modem's character set is UCS2, and never a PLMN however many digits it has
+        # name comes from one line that puts format 2 back, once per PLMN; 0/1 a name, UCS2 hex decoded when the
+        # modem's character set is UCS2 (under another one only a text that cannot be a name: OperatorNameHex in
+        # test_dashboard_info.py), and never a PLMN however many digits it has
         at = self.tmp / 'modem'
         at.write_text(r"""#!/bin/sh
 echo "$3" >> "$STUBLOG/at.log"
@@ -1402,3 +1457,78 @@ class AtBudget(Mu300Dash):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class PackagesAdapter(ShellTest):
+    """unisoc-modem/packages: the record of mu300-user-packages as JSON for the panel (hostile names and text from the
+    record never break it), retry and repair-dns started in the background, dismiss inline, anything else refused"""
+
+    def setUp(self):
+        super().setUp()
+        self.d = self.tmp / 'rec'
+        self.orph = self.tmp / 'orph'
+        (self.orph / 'etc/config').mkdir(parents=True)
+        (self.orph / 'etc/config/openclash').write_text('x')
+        (self.orph / 'etc/config/bad"name').write_text('x')
+        self.d.mkdir()
+        for f, t in {'wanted': 'luci-app-openclash\nnano\nbad"pkg\nddns-scripts\n', 'done': 'nano\n',
+                     'failed': 'luci-app-openclash ERROR: "quoted" \\ \x01 text\nbad"pkg x\n', 'state': 'failed\n',
+                     'from': 'v2026.10.12\n', 'dns-note': 'DNS goes to 127.0.0.1#7874 "x"\n'}.items():
+            (self.d / f).write_text(t)
+        self.stub('mu300-user-packages', 'echo "$*" >> "$STUBLOG/upk.log"; [ "$1" = brief ] && echo "1 of 3 \\"back\\""; exit 0')
+        self.stub('setsid', 'echo "setsid $*" >> "$STUBLOG/upk.log"')
+
+    def run_ad(self, shell, *args):
+        r = self.script(shell, ADAPTERS / 'packages', *args, MU300_UPK_CMD=self.stubs / 'mu300-user-packages',
+                        MU300_UPK_DIR=self.d, MU300_UPK_ORPH=self.orph, MU300_UPK_LOCK=self.tmp / 'lock')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return json.loads(r.stdout)
+
+    def log(self):
+        p = self.tmp / 'upk.log'
+        t = p.read_text() if p.exists() else ''
+        p.unlink(missing_ok=True)
+        return t
+
+    def test_get(self):
+        for shell in self.each_shell():
+            o = self.run_ad(shell, 'get')
+            self.assertEqual(o['ok'], 1)
+            self.assertEqual(o['recorded'], 1)
+            self.assertEqual(o['state'], 'failed')
+            self.assertEqual(o['from'], 'v2026.10.12')
+            self.assertEqual(o['summary'], '1 of 3 "back"')
+            self.assertEqual(o['wanted'], ['luci-app-openclash', 'nano', 'ddns-scripts'])
+            self.assertEqual(o['done'], ['nano'])
+            self.assertEqual(o['pending'], ['ddns-scripts'])
+            self.assertEqual(o['failed'], [{'name': 'luci-app-openclash', 'why': 'ERROR: "quoted" \\ \x01 text'}])
+            self.assertEqual(o['orphaned'], ['etc/config/openclash'])
+            self.assertEqual(o['dns'], 'DNS goes to 127.0.0.1#7874 "x"')
+            self.assertEqual(o['running'], 0)
+            # nothing recorded
+            for f in self.d.iterdir():
+                f.unlink()
+            o = self.run_ad(shell, 'get')
+            self.assertEqual((o['recorded'], o['state'], o['wanted'], o['dns']), (0, 'none', [], None))
+            self.setUp()
+
+    def test_act(self):
+        for shell in self.each_shell():
+            self.log()
+            self.assertEqual(self.run_ad(shell, 'act', 'retry'), {'ok': 1, 'started': 1})
+            self.assertEqual(self.run_ad(shell, 'act', 'repair_dns'), {'ok': 1, 'started': 1})
+            self.assertEqual(self.run_ad(shell, 'act', 'dismiss'), {'ok': 1})
+            log = self.log()
+            self.assertIn(f'setsid {self.stubs}/mu300-user-packages retry\n', log)
+            self.assertIn(f'setsid {self.stubs}/mu300-user-packages repair-dns\n', log)
+            self.assertIn('dismiss\n', log)
+            for bad in ('repair-dns', 'skip', 'retry;reboot', '', '-h'):
+                with self.subTest(op=bad):
+                    self.assertEqual(self.run_ad(shell, 'act', bad)['ok'], 0)
+                    self.assertEqual(self.log(), '')
+            # one at a time
+            (self.tmp / 'lock').mkdir()
+            self.assertEqual(self.run_ad(shell, 'act', 'retry'), {'ok': 0, 'error': 'Reinstalling is running already'})
+            self.assertEqual(self.run_ad(shell, 'get')['running'], 1)
+            (self.tmp / 'lock').rmdir()
+            self.assertEqual(self.log(), 'brief\n')      # only the status, nothing started

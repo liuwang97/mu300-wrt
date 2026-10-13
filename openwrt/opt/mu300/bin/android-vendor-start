@@ -20,6 +20,54 @@ link_partitions() {
     return 0
 }
 mark vendor-start
+# The imported Android files, as the daemons need them whoever unpacked them and from where. modem_control and
+# refnotify run as the vendor account (uid 1000 without one) and keep no capability that reads past a mode: with the
+# property area 0700 they end at "can't get modem type!", with vendor/etc 0700 at "can't get modem img!", and all
+# the radio then shows is ENODEV on the AT ttys (issue #127: install.sh run from a FAT or exFAT folder on macOS,
+# which shows every file and directory there as 0700, and the overlay stored that; an update carries the files over
+# as they are). Root's, and nobody else's to write (a Magisk zip stored bionic as Android's system, uid 1000: the
+# first login account here, and root's cp_diskserver loads it): directories 0755 (0711, as Android has the property
+# area, is left), programs - whatever lies in a bin directory - 0755, the property files 0444, every other file
+# 0644. Links are not touched and nothing mounted below is entered. One find when all is right, and no write.
+# --- modes begin
+# (MU300_ANDROID / MU300_ANDROID_OWNER: the tests, which have no root to give files to)
+MA=${MU300_ANDROID:-$A}
+MO=${MU300_ANDROID_OWNER:-0:0}
+MT=
+for t in dev-properties vendor system apex linkerconfig; do
+    [ ! -d "$MA/$t" ] || [ -L "$MA/$t" ] || MT="$MT $MA/$t"
+done
+modes_wrong() {
+    find $MT -xdev ! -type l \( ! -user ${MO%:*} -o ! -group ${MO#*:} -o -type d ! -perm 755 ! -perm 711 \
+        -o -type f -path '*/bin/*' ! -perm 755 -o -type f -path "$MA/dev-properties/*" ! -perm 444 \
+        -o -type f ! -path '*/bin/*' ! -path "$MA/dev-properties/*" ! -perm 644 \) -print 2>/dev/null
+}
+modes_count() { echo $#; }
+# to the service's log and to the kernel's: OpenWrt starts this before its log daemon, and stderr is lost there
+modes_say() {
+    echo "android-vendor-start: $*" >&2
+    { echo "android-vendor-start: $*" > "${MU300_KMSG:-/dev/kmsg}"; } 2>/dev/null || true
+}
+if [ -n "$MT" ] && MW=$(modes_wrong) && [ -n "$MW" ]; then
+    {
+        find $MT -xdev ! -type l \( ! -user ${MO%:*} -o ! -group ${MO#*:} \) -exec chown $MO {} +
+        find $MT -xdev -type d ! -perm 755 ! -perm 711 -exec chmod 755 {} +
+        find $MT -xdev -type f -path '*/bin/*' ! -perm 755 -exec chmod 755 {} +
+        find $MT -xdev -type f -path "$MA/dev-properties/*" ! -perm 444 -exec chmod 444 {} +
+        find $MT -xdev -type f ! -path '*/bin/*' ! -path "$MA/dev-properties/*" ! -perm 644 -exec chmod 644 {} +
+    } 2>/dev/null || true
+    ML=$(modes_wrong) || ML=
+    if [ -z "$ML" ]; then
+        modes_say "$(modes_count $MW) imported Android files and directories had an owner or a mode the vendor daemons cannot work with (the first: ${MW%%
+*}); now root's, 0755/0644/0444"
+        mark vendor-modes-repaired
+    else
+        modes_say "$(modes_count $ML) imported Android files and directories have an owner or a mode the vendor daemons cannot work with, and that could not be changed (the first: ${ML%%
+*}); the modem may not start"
+        mark vendor-modes-wrong
+    fi
+fi
+# --- modes end
 # wait for the modem stack: on the mainline kernel the modules are loaded by userspace (see extra-modules), so
 # this service can start before /dev/modem exists
 for n in $(seq 1 90); do
@@ -32,6 +80,10 @@ mkdir -p /dev/socket /dev/block/by-name
 # ownership and the cmdline bind come first), and /dev is rbind-mounted into the chroot, so a socket that
 # appears late shows up in $A/dev just the same.
 if [ ! -S /dev/socket/logdw ]; then
+    # OpenWrt starts this service (S09) before its boot script (S10) makes /var/log, and procd runs it at once:
+    # when it gets here first the redirection below fails, logdw never runs, and what the vendor daemons say
+    # about a modem that does not start is lost (seen on three of four boots of an F50)
+    mkdir -p /var/log 2>/dev/null || true
     /opt/mu300/bin/logdw /dev/socket/logdw >> /var/log/android-logcat.txt 2>&1 &
 fi
 # bind the read-only Android property area instead of copying it: it is ~85 MiB (RAM on tmpfs) and OpenWrt's /dev
@@ -55,6 +107,18 @@ for b in "$SYS"/block/mmcblk*; do
 done
 # --- emmc end
 [ -z "$E" ] || link_partitions /sys/class/block /dev "$E"
+# The vendor daemons' own account, before the nodes are handed to it (ueventd-perms.sh) and the daemons start as it
+# (android-run): Android's system user is uid 1000, and that is the first human account on a distribution. The image
+# has it; this makes it on a system that does not (an image from before it, or useradd's run in the build failed).
+# Only where useradd is (not OpenWrt, which has no account at 1000); a failure leaves the daemons at uid 1000.
+# --- account begin
+if ! grep -q '^mu300vnd:' "${MU300_ETC:-/etc}/passwd" 2>/dev/null && command -v useradd >/dev/null 2>&1; then
+    nologin=/usr/sbin/nologin; [ -x $nologin ] || nologin=/usr/bin/nologin
+    useradd --system --user-group --no-create-home --home-dir /nonexistent --shell $nologin \
+        --comment 'MU300 Android vendor daemons' mu300vnd ||
+        echo "android-vendor-start: could not create the mu300vnd account; the vendor daemons run as uid 1000" >&2
+fi
+# --- account end
 sh /opt/mu300/bin/ueventd-perms.sh
 mark vendor-perms
 for m in dev proc sys; do mkdir -p $A/$m; done
@@ -78,9 +142,7 @@ case $L in a) AS=b ;; *) L=b; AS=a ;; esac
 # --- slot end
 tr -d '\000' < $src | sed "s/androidboot.slot_suffix=_$L/androidboot.slot_suffix=_$AS/" > /run/mu300-cmdline.android
 mount --bind /run/mu300-cmdline.android $A/proc/cmdline
-# sprd_modem_loader only accepts a task whose comm is exactly "modem_control": exec it directly
-# OpenWrt's procd preloads /lib/libsetlbf.so into services; the bionic linker in the chroot cannot load it
-unset LD_PRELOAD
-export LD_LIBRARY_PATH=/apex/com.android.runtime/lib64/bionic:/system/lib64:/vendor/lib64
 mark vendor-chroot-ready
-exec chroot $A /vendor/bin/modem_control
+# sprd_modem_loader only accepts a task whose comm is exactly "modem_control": android-run execs it directly, as the
+# vendor account where there is one
+exec /opt/mu300/bin/android-run modem_control

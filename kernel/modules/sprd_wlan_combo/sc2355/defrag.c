@@ -282,8 +282,9 @@ void sc2355_defrag_recover(struct sprd_vif *vif)
 		if ((lut_index == node->desc.sta_lut_index) &&
 		    (!skb_queue_empty(&node->skb_list))) {
 			skb_queue_purge(&node->skb_list);
-			pr_err("%s:defrag clear cache\n", __func__);
+			/* MU300 (#140): dropping a peer's partial frames when it leaves is the job, not an error */
+			pr_debug("%s:defrag clear cache\n", __func__);
 		}
-		pr_err("%s:msdu len %d\n", __func__, node->msdu_len);
+		pr_debug("%s:msdu len %d\n", __func__, node->msdu_len);
 	}
 }
