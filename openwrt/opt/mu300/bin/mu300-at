@@ -2,6 +2,8 @@
 # Send an AT command through mu300-atd (which owns the modem's AT channel; see that script for why).
 #   mu300-at "AT+CSQ"            print the reply
 #   mu300-at -t 20 "AT+SFUN=4"   wait longer than the default 6 s
+#   mu300-at -                   the command is the first line of stdin: for one that carries a secret (an APN
+#                                password), which as an argument every user of the system could read in ps
 # Falls back to opening the tty directly when the daemon is not running - that works once, and then the channel
 # needs a modem restart, so the daemon is strongly preferred.
 # Needs a shell with "read -t" (bash or busybox ash): dash has no such option, and this tty ignores the termios
@@ -33,7 +35,11 @@ fi
 # request without a timeout and send all of it to the modem (kanoqwq/mu300-linux@25f8d0c).
 case $T in [1-9]|[1-9][0-9]) ;; *) echo "mu300-at: the timeout is 1 to 99 seconds, not '$T'" >&2; exit 2 ;; esac
 cmd=${1:-}
-[ -n "$cmd" ] || { echo "usage: mu300-at [-t SECONDS] \"AT+COMMAND\"" >&2; exit 2; }
+if [ "$cmd" = - ]; then
+    cmd=
+    IFS= read -r cmd || [ -n "$cmd" ] || cmd=
+fi
+[ -n "$cmd" ] || { echo "usage: mu300-at [-t SECONDS] \"AT+COMMAND\" (or - and the command on stdin)" >&2; exit 2; }
 # One request, the same bytes on both paths. The daemon's fifo carries one "T ANSWER-FILE COMMAND" line per request,
 # and the modem ends a command at a CR, so a line feed would make the rest a request of its own (answer file
 # included) and a CR a second modem command. Both are refused, here and again in mu300-atd (one_request there is the

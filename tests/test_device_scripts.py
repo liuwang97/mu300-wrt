@@ -92,6 +92,30 @@ class At(ShellTest):
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertEqual(r.stdout.replace('\r', ''), '+CSQ: 20,99\nOK\n')   # text mode folds CRLF
 
+    def test_a_command_on_stdin(self):
+        # "-": the command is the first line of stdin, for one that carries a secret (an APN password, FINDINGS 65)
+        got = []
+
+        def daemon():
+            with open(self.dir / 'cmd') as f:
+                line = f.readline().rstrip('\n')
+            _t, answer, cmd = line.split(' ', 2)
+            got.append(cmd)
+            with open(answer, 'w', newline='') as a:
+                a.write('OK\r\n')
+        for shell in self.each_shell():
+            del got[:]
+            th = threading.Thread(target=daemon, daemon=True)
+            th.start()
+            r = self.script(shell, BIN / 'mu300-at', '-t', 2, '-', stdin='AT+CGPCO=0,"u","p w",1,3\nAT+CFUN=0\n',
+                            MU300_AT_DIR=self.dir, MU300_BUSYBOX=self.sleeper)
+            th.join(5)
+            self.assertEqual((r.returncode, got), (0, ['AT+CGPCO=0,"u","p w",1,3']), r.stderr)   # one line, no more
+            # nothing on stdin: the usage, and nothing sent
+            r = self.script(shell, BIN / 'mu300-at', '-', stdin='', MU300_AT_DIR=self.dir, MU300_BUSYBOX=self.sleeper)
+            self.assertEqual(r.returncode, 2)
+            self.assertIn('usage', r.stderr)
+
     def test_no_daemon_does_not_hang(self):
         for shell in self.each_shell():
             t0 = time.monotonic()
@@ -383,6 +407,31 @@ class Atd(ShellTest):
         elapsed = time.monotonic() - t0
         self.answer = answer.read_text() if answer.exists() else None
         return elapsed
+
+    def test_a_command_with_a_secret_leaves_nothing_readable_behind(self):
+        """FINDINGS 65: an APN password travels in AT+CGPCO. The answer file is root's alone (a modem that echoes the
+        command puts it there, and the file of a client that gave up stays), and an echo that comes late is thrown
+        away, never appended to the URC log."""
+        cmd = 'AT+CGPCO=0,"user","hunter2",1,3'
+        for shell in self.each_shell():
+            _l, m = self.start(shell, nr0=False)
+            self.send(m, cmd, (cmd + '\r\nOK\r\n').encode())
+            self.assertEqual(self.answer, cmd + '\nOK\n')
+            self.assertEqual((self.dir / 'answer.4242').stat().st_mode & 0o777, 0o600)
+            # no answer in time; the echo and the OK arrive late, and the next command's drain finds them
+            self.send(m, cmd, None, t=1)
+            os.write(m, (cmd + '\r\n+CGEV: late\r\nOK\r\n').encode())
+            time.sleep(0.3)
+            self.send(m, 'AT', b'OK\r\n')
+            self.assertEqual(self.answer, 'OK\n')
+            log = (self.dir / 'urc' / 'tty_nr1.log').read_text()
+            self.assertIn('+CGEV: late', log)                     # what is no echo is still kept
+            self.assertNotIn('hunter2', log)
+            self.assertNotIn('CGPCO', log)
+            for p in self.dir.rglob('*'):
+                if p.is_file() and p.name != 'answer.4242':
+                    self.assertNotIn(b'hunter2', p.read_bytes(), p)
+            self.assertNotIn('hunter2', self.err.read_text())
 
     def test_requests_are_parsed_strictly(self):
         """A malformed request line is dropped, never sent to the modem whole (it used to be: "120 /run/... AT" with
