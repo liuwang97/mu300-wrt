@@ -287,10 +287,14 @@ check() {
 }
 
 # everything that belongs to this device and must survive an update
+# etc/unisoc-modem: the control panel's state (openwrt-luci), above all lock-state.d, the network, band and cell
+# locks it saved and replays at boot. The modem keeps a lock by itself; without this directory the panel came up
+# after an update showing none, while the modem was still locked (FINDINGS 64). tools/android-install.sh has the
+# same list.
 keep_list() {
     case $(os_kind "$1") in
         ubuntu) echo "etc/mu300 etc/ssh etc/hostname etc/localtime etc/timezone etc/fstab home root srv usr/local var/lib/bluetooth" ;;
-        openwrt) echo "etc/config etc/mu300 etc/dropbear etc/rc.local root" ;;
+        openwrt) echo "etc/config etc/mu300 etc/unisoc-modem etc/dropbear etc/rc.local root" ;;
     esac
 }
 # vendor files that the published images deliberately do not contain
