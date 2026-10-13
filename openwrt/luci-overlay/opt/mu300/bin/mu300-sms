@@ -26,6 +26,17 @@
 # did arrive are pooled as one message, "[...]" where a part is missing, with an "incomplete: HAVE/TOTAL" header. A
 # part that arrives after that is pooled at once, as a message of its own.
 #
+# Which parts are one message is sms-pdu.awk's to say (its group mode): the same sender, reference number and total,
+# service centre timestamps within ten minutes of each other, and no part number twice with two texts. The reference
+# number alone is not enough: senders reuse it (it is eight bits wide, and some send every long message under the same
+# one), so a second long message under the reference of one still waiting here used to be mixed into it, and every
+# later message under the reference of one that had been pooled incomplete was pooled part by part, never joined
+# (FINDINGS 63; the idea of keying by more than the reference is kanoqwq's, clean-tf-7.2 a5bd3e06).
+#
+# A long message in the pool remembers its parts (a header "part_ids: <md5 of each part's PDU>", his idea too): a
+# part the network delivers once more (an acknowledgement that did not reach it) is then known as part of a message
+# the pool has, and dropped, where it used to wait its hour alone and be pooled as an incomplete message.
+#
 # A message the modem delivers directly (AT+CNMI mt=2, which mu300-smsd asks for: no SIM slot, a "+CMT:" frame that
 # mu300-atd puts in $POOL/incoming as one PDU) comes in through import-pdu. Its PDU is parked in $POOL/parts, on the
 # disk, before anything else; then the parts there are decoded and grouped exactly as a SIM listing is (absorb), so a
@@ -323,11 +334,13 @@ parts_raw() {  # the parked PDUs, "p<name>:0 <TAB> PDU" per file (a regular file
 }
 # sim_slots INDEXES: the SIM slots among a message's indexes (the parts' names left out), comma-separated; may be empty
 sim_slots() { printf '%s' "$1" | tr ',' '\n' | grep -E '^[0-9]+$' | tr '\n' ',' | sed 's/,$//'; }
+# The key of a long message is the one sms-pdu.awk's group mode gives it ("multi:SENDER:REF:TOTAL@TIME"); the waiting
+# state ($POOL/partial) is handed to it, so a message that waits keeps its key while its parts come in.
 decode_list() {
-    awk -v mode=decode -F'\t' -f "$AWK" | awk -F'\t' '
+    awk -v mode=decode -F'\t' -f "$AWK" | awk -v mode=group -v known="$POOL/partial" -f "$AWK" | awk -F'\t' '
         {
             split($1, a, ":")
-            key = ($4 == "") ? "single:" a[1] : "multi:" $2 ":" $4
+            key = $8
             if (!(key in seen)) { seen[key] = 1; order[++k] = key; snd[key] = $2; ts[key] = $3; unread[key] = 0 }
             if (a[2] == "0") unread[key] = 1
             if ($6 + 0 == 1) ts[key] = $3                  # the first part dates the message
@@ -347,12 +360,12 @@ decode_list() {
                 if (!ok) {
                     incomplete++
                     if (out != "")
-                        printf "%s:%d\t%s\t%s\t%s\t%s\t%d/%d\t%s\n", key, parts[key], idxs[key], unread[key], snd[key],
+                        printf "%s\t%s\t%s\t%s\t%s\t%d/%d\t%s\n", key, idxs[key], unread[key], snd[key],
                             ts[key], n, parts[key], g > out
                     continue
                 }
                 # the keys of the long messages that are whole, for the waiting state (SIM_COMPLETE names a file)
-                if (parts[key] > 1 && ENVIRON["SIM_COMPLETE"] != "") printf "%s:%d\n", key, parts[key] > ENVIRON["SIM_COMPLETE"]
+                if (parts[key] > 1 && ENVIRON["SIM_COMPLETE"] != "") print key > ENVIRON["SIM_COMPLETE"]
                 printf "%s\t%s\t%s\t%s\t%s\n", idxs[key], unread[key], snd[key], ts[key], t
             }
             if (incomplete) printf "incomplete %d\n", incomplete > "/dev/stderr"
@@ -396,6 +409,42 @@ known_or_dead() {
     return 0
 }
 
+# rest_of_pooled HASH TIME: the pool holds, pooled incomplete, the earlier parts of the long message whose key
+# (without its time) has the md5 HASH and whose parts are of TIME: a message with the header "partial: HASH" and a
+# timestamp within the codec's ten minutes of TIME. The time is what tells the rest of that message from a later
+# message under the same reference number, which must wait for its own parts.
+rest_of_pooled() {
+    for _m in $(grep -lx "partial: $1" "$MSGDIR"/[0-9]* 2>/dev/null); do
+        awk -v mode=near -v a="$(hdr "$_m" scts)" -v b="$2" -f "$AWK" </dev/null && return 0
+    done
+    return 1
+}
+
+# part_ids INDEXES: the md5 of the PDU behind each of a message's indexes (SIM slots, parked parts), space-separated,
+# in the order of INDEXES; from the listing absorb keeps ($_all).
+part_ids() {
+    _o=
+    for _i in $(printf '%s' "$1" | tr ',' ' '); do
+        _h=$(I=$_i awk -F'\t' '{ split($1, a, ":"); if (a[1] == ENVIRON["I"]) { printf "%s", toupper($2); exit } }' "$_all" |
+            { md5sum 2>/dev/null || cksum; } | cut -d' ' -f1)
+        _o="$_o${_o:+ }$_h"
+    done
+    printf '%s' "$_o"
+}
+# parts_pooled IDS: every one of these parts belongs to a long message the pool holds, or held and was told to
+# forget (its part_ids header, the tombstones). The list of those is made once per absorb, and only when asked.
+parts_pooled() {
+    [ -n "$1" ] || return 1
+    if [ ! -f "$_pooled" ]; then
+        { awk 'FNR == 1 { h = 1 } h && /^$/ { h = 0 } h && sub(/^part_ids: /, "") { gsub(/ /, "\n"); print }' \
+            "$MSGDIR"/[0-9]* 2>/dev/null; cat "$POOL/deleted" 2>/dev/null; } > "$_pooled"
+    fi
+    for _i in $1; do
+        grep -qxF "$_i" "$_pooled" || return 1
+    done
+    return 0
+}
+
 # take SLOTS UNREAD FROM TIME TEXT [HEADERS]: a message the pool does not have yet, into the pool; its slots leave the
 # SIM, and the hook and the forwarding get it. Uses the lists cmd_sync keeps.
 take() {
@@ -429,6 +478,8 @@ take() {
 absorb() {
     [ -f "$AWK" ] || die "$AWK is missing"
     pool_init
+    # the listings below hold message text: ours alone, like the file mktemp makes
+    umask 077
     _tmp=$(mktemp "${TMPDIR:-/tmp}/mu300-sms.XXXXXX") || die "mktemp failed"
     SIM_PARTIAL=$_tmp.partial
     SIM_COMPLETE=$_tmp.complete
@@ -445,7 +496,9 @@ absorb() {
         # listing that skipped a store
         _store_unsure=1
     fi
-    { cat "$_tmp.raw"; parts_raw; } | decode_list > "$_tmp" 2>/dev/null
+    _all=$_tmp.all; _pooled=$_tmp.pooled
+    { cat "$_tmp.raw"; parts_raw; } > "$_all"
+    decode_list < "$_all" > "$_tmp" 2>/dev/null
     # The AT conversation is over before the pool lock is taken: a path holding the pool lock makes no AT call, so
     # send (AT lock, then pool lock) and sync can never wait for each other.
     pool_lock
@@ -464,13 +517,16 @@ absorb() {
         _fp=$(fingerprint "$_from" "$_ts" "$_text")
         echo "$_fp" >> "$_seen"
         known_or_dead "$_fp" "$_idx" && continue
-        take "$_idx" "$_unread" "$_from" "$_ts" "$_text"
+        # a long message remembers its parts
+        _hd=
+        case $_idx in *,*) _hd="part_ids: $(part_ids "$_idx")" ;; esac
+        take "$_idx" "$_unread" "$_from" "$_ts" "$_text" "$_hd"
     done < "$_tmp"
     # The parts of long messages that are not whole yet. $POOL/partial keeps when each was first seen, and whether it
     # was unread then ("key <TAB> epoch <TAB> 0|1": AT+CMGL marks what it lists read on this modem, FINDINGS 35, so
     # the next listing would say read); one that has waited PARTIAL_WAIT seconds is taken as it is. So is one whose
-    # earlier parts the pool already took that way (a header "partial: <md5 of its key>"): the rest of a message that
-    # is in the pool already.
+    # earlier parts the pool already took that way (a header "partial: <md5 of its key without the time>", on a
+    # message of the same ten minutes: rest_of_pooled): the rest of a message that is in the pool already.
     _now=$(date +%s)
     _waiting=0
     : > "$_tmp.pstate"
@@ -480,14 +536,22 @@ absorb() {
         _fp=$(fingerprint "$_from" "$_ts" "$_text")
         echo "$_fp" >> "$_seen"
         known_or_dead "$_fp" "$_idx" && continue
+        # parts of a message the pool already has whole (or was told to forget), delivered once more: nothing to
+        # wait for, they go
+        _pids=$(part_ids "$_idx")
+        printf '%s\n' "$_pids" | tr ' ' '\n' >> "$_seen"
+        if parts_pooled "$_pids"; then
+            printf '%s\n' "$_idx" | tr ',' '\n' >> "$_move"
+            continue
+        fi
         _was=$(K=$_key awk -F'\t' '$1 == ENVIRON["K"] { print $2 " " $3; exit }' "$POOL/partial" 2>/dev/null)
         _first=${_was% *}
         case $_first in ''|*[!0-9]*) _first=$_now ;; esac
         [ "${_was#* }" = 1 ] && _unread=1
-        _ph=$(printf '%s' "$_key" | { md5sum 2>/dev/null || cksum; } | cut -d' ' -f1)
-        if [ $((_now - _first)) -ge "$PARTIAL_WAIT" ] ||
-            grep -lx "partial: $_ph" "$MSGDIR"/[0-9]* >/dev/null 2>&1; then
-            take "$_idx" "$_unread" "$_from" "$_ts" "$_text" "$(printf 'incomplete: %s\npartial: %s' "$_have" "$_ph")" &&
+        _ph=$(printf '%s' "${_key%@*}" | { md5sum 2>/dev/null || cksum; } | cut -d' ' -f1)
+        if [ $((_now - _first)) -ge "$PARTIAL_WAIT" ] || rest_of_pooled "$_ph" "$_ts"; then
+            take "$_idx" "$_unread" "$_from" "$_ts" "$_text" \
+                "$(printf 'incomplete: %s\npartial: %s\npart_ids: %s' "$_have" "$_ph" "$_pids")" &&
                 continue
         fi
         printf '%s\t%s\t%s\n' "$_key" "$_first" "$_unread" >> "$_tmp.pstate"
@@ -514,7 +578,7 @@ absorb() {
         if [ -s "$_seen" ]; then grep -xFf "$_seen" "$POOL/deleted" > "$_tmp.del"; else : > "$_tmp.del"; fi
         cmp -s "$_tmp.del" "$POOL/deleted" || { cat "$_tmp.del" > "$POOL/deleted.part" && mv "$POOL/deleted.part" "$POOL/deleted"; }
     fi
-    rm -f "$_tmp" "$_fps" "$_seen" "$_tmp.del" "$_tmp.partial" "$_tmp.complete" "$_tmp.pstate"
+    rm -f "$_tmp" "$_fps" "$_seen" "$_tmp.del" "$_tmp.partial" "$_tmp.complete" "$_tmp.pstate" "$_all" "$_pooled"
     _inpool=$(ids_newest_first | wc -l | tr -d ' ')
     pool_unlock
     # what this sync took is on the disk before any of it leaves the SIM: each file was (store_msg), now the names
@@ -787,10 +851,14 @@ cmd_delete() {
     pool_unlock
     echo "deleted $_what"
 }
-# a deleted message is remembered by its fingerprint, so that the next sync does not bring it back from the SIM
+# a deleted message is remembered by its fingerprint, so that the next sync does not bring it back from the SIM; a
+# long one by its parts too, so that one of them delivered again does not come back alone
 tombstone() {
     _fp=$(hdr "$1" fingerprint)
     [ -n "$_fp" ] && printf '%s\n' "$_fp" >> "$POOL/deleted"
+    for _i in $(hdr "$1" part_ids); do
+        printf '%s\n' "$_i" >> "$POOL/deleted"
+    done
     return 0
 }
 

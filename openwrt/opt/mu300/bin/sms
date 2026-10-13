@@ -134,14 +134,17 @@ fetch_all() {
 # turns into a character of its own (ü came out as Ã¼); mawk and busybox awk were never affected
 decode() { LC_ALL=C awk -v mode=decode -F'\t' -f "$AWK"; }
 
-# Join the parts of a concatenated message. Parts share a reference number; they arrive in any order and may be
-# stored under indices that are not adjacent, so sort on reference and part before gluing the text together.
+# Join the parts of a concatenated message. They arrive in any order and may be stored under indices that are not
+# adjacent, so sort on message and part before gluing the text together. Which parts are one message is the codec's
+# to say (its group mode: the sender, the reference number, the total and the time, since senders reuse reference
+# numbers and the SIM keeps old messages). reassemble FILE: FILE holds the keys of the messages still waiting (watch),
+# so that each keeps its key, and with it the time it was first seen, while its parts come in.
 reassemble() {
-    awk -F'\t' '
-        { idx[NR] = $1; snd[NR] = $2; ts[NR] = $3; ref[NR] = $4; tot[NR] = $5; part[NR] = $6; txt[NR] = $7; n = NR }
+    LC_ALL=C awk -v mode=group -v known="${1:-}" -f "$AWK" | awk -F'\t' '
+        { idx[NR] = $1; snd[NR] = $2; ts[NR] = $3; tot[NR] = $5; part[NR] = $6; txt[NR] = $7; grp[NR] = $8; n = NR }
         END {
             for (i = 1; i <= n; i++) {
-                if (ref[i] == "") { key = "single:" idx[i] } else { key = "multi:" snd[i] ":" ref[i] }
+                key = grp[i]
                 if (!(key in seen)) { seen[key] = 1; order[++k] = key; first[key] = i; idxs[key] = idx[i] }
                 else idxs[key] = idxs[key] "," idx[i]
                 body[key, part[i] + 0] = txt[i]
@@ -280,7 +283,7 @@ watch)
     while :; do
         now=$(date +%s)
         : > "$partial.new"
-        fetch_all | decode | reassemble | while IFS="$(printf '\t')" read -r idxs sender ts parts text have mkey; do
+        fetch_all | decode | reassemble "$partial" | while IFS="$(printf '\t')" read -r idxs sender ts parts text have mkey; do
             if [ "${have:-0}" -lt "${parts:-0}" ]; then
                 first=$(K=$mkey awk -F'\t' '$1 == ENVIRON["K"] { print $2; exit }' "$partial" 2>/dev/null)
                 case $first in ''|*[!0-9]*) first=$now ;; esac
