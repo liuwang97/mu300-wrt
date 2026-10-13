@@ -826,6 +826,42 @@ class Lock(UpdateBase):
         rc, err, out = self.take(shell, prelude)
         self.assertEqual((rc, out), (0, 'taken\n'), err)
 
+    def test_a_run_continued_with_the_releases_updater_keeps_its_lock(self):
+        """apply execs the release's mu300-update when it differs: the same process, and the lock is its own. What
+        the updater before the exec left behind - its keep-alive's ping or sleep, started after lock_take with the
+        lock's descriptor - holds the flock for a few seconds more, and the continued run then said "another
+        mu300-update is running" with its own pid and ended: every update to a release with another updater
+        (v2026.10.23 to v2026.10.24 on a device, docs/FINDINGS.md 81). A stranger's lock is still refused."""
+        for shell in self.each_shell():
+            with self.subTest(shell=shell[0]):
+                if not shutil.which('flock'):
+                    self.skipTest('no flock here')
+                # the first half takes the lock, leaves a child with its descriptor, and execs the second half
+                second = f'. "{BIN}/mu300-update"; lock_take; trap lock_drop EXIT; echo taken'
+                r = self.sh(shell, f'. "{BIN}/mu300-update"; lock_take; sleep 3 & '
+                                   f'MU300_SELF_UPDATED=1 exec {" ".join(shell)} -c \'{second}\'',
+                            MU300_LIB=1, MU300_DISK=self.disk, MU300_BIN=BIN, MU300_SYSROOT=self.root, MU300_LOCK=self.lock)
+                self.assertEqual((r.returncode, r.stdout), (0, 'taken\n'), r.stderr)
+                # a run that is not the lock's owner is refused as before, continued or not
+                pid = self.hold(shell)
+                r = self.sh(shell, f'. "{BIN}/mu300-update"; lock_take; echo taken', MU300_LIB=1, MU300_SELF_UPDATED=1,
+                            MU300_DISK=self.disk, MU300_BIN=BIN, MU300_SYSROOT=self.root, MU300_LOCK=self.lock)
+                self.assertEqual((r.returncode, r.stdout), (1, ''), r.stderr)
+                self.assertIn(f'another mu300-update is running (pid {pid})', r.stderr)
+                self.end_holders()
+
+    def test_the_keep_alive_does_not_hold_the_lock(self):
+        """keepalive_start's loop runs without the lock's descriptor: a ping or sleep of it that outlives the run
+        (kill ends the subshell, not its child) must not keep the next run out."""
+        for shell in self.each_shell():
+            with self.subTest(shell=shell[0]):
+                if not shutil.which('flock'):
+                    self.skipTest('no flock here')
+                r = self.sh(shell, f'. "{BIN}/mu300-update"; lock_take; keepalive_start; sleep 0.3; keepalive_stop; '
+                                   f'exec 9>&-; . "{BIN}/mu300-update"; lock_take; echo taken',
+                            MU300_LIB=1, MU300_DISK=self.disk, MU300_BIN=BIN, MU300_SYSROOT=self.root, MU300_LOCK=self.lock)
+                self.assertEqual((r.returncode, r.stdout), (0, 'taken\n'), r.stderr)
+
     def test_second_run_is_refused_with_the_holders_pid(self):
         for shell in self.each_shell():
             self.check_second_run(shell, ':')
