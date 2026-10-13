@@ -7,8 +7,7 @@
    edit - which is what the modem interface looked like, even though /lib/netifd/proto/mu300cell.sh has read an
    apn option all along. The options here are exactly the ones that protocol handler understands. */
 
-/* Whether this device has the internal SIM (slot 1) at all is mu300-sim's to say (slot1_supported: the F50 only so
-   far). The control panel's local snapshot carries its answer as "sim" (mu300dash sysinfo: uci and files, no AT
+/* Whether this device has the internal SIM (slot 1) at all is mu300-sim's to say (slot1_supported: F50 boot selection and the positively gated U30 Air/OpenWrt backend). The control panel's local snapshot carries its answer as "sim" (mu300dash sysinfo: uci and files, no AT
    command). Without the panel, or when the call fails, nothing is known and both sources are offered as before. */
 var callSysinfo = rpc.declare({ object: 'mu300dash', method: 'sysinfo', expect: { '': {} }, nobatch: true });
 

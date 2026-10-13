@@ -72,6 +72,8 @@ SIM_SLOT=0
 if [ -x /opt/mu300/bin/mu300-sim ]; then
     SIM_SLOT=$(/opt/mu300/bin/mu300-sim active) || exit 1
 fi
+SIM_NATIVE=0
+[ ! -e /run/mu300-radio-freeze ] || SIM_NATIVE=1
 ATC=${MU300_DASH_AT_DIR:-}
 DASH_CHANNELS='6 7'
 DASH_FALLBACKS='/run/mu300-at6 /run/mu300-at7 /run/mu300-at'
@@ -81,6 +83,14 @@ if [ "$SIM_SLOT" = 1 ]; then
     DASH_FALLBACKS=/run/mu300-at
     IDENT=$IDENT_DIR/sim-slot1.json
 fi
+if [ "$SIM_NATIVE" = 1 ]; then
+    case "$SIM_SLOT" in
+        0) DASH_CHANNELS=1; DASH_FALLBACKS=/run/mu300-at ;;
+        1) DASH_CHANNELS=4; DASH_FALLBACKS=/run/mu300-at4 ;;
+        *) exit 2 ;;
+    esac
+fi
+
 # A whole round has a deadline (MU300_DASH_DEADLINE seconds from now; 25 for a full round, 12 for a fast one).
 # Without one, a modem that stopped answering held a collector for many minutes - every command waited out mu300-at's
 # whole budget (T + 31 s) on each of four channels - and the collectors the panel started kept piling up behind it.
@@ -182,7 +192,7 @@ mkdir -p "$POOL" 2>/dev/null
 SLOT=
 for n in $DASH_CHANNELS; do
     channel_dir=/run/mu300-at$n
-    [ "$SIM_SLOT" != 1 ] || channel_dir=/run/mu300-at
+    [ "$SIM_SLOT:$SIM_NATIVE" != 1:0 ] || channel_dir=/run/mu300-at
     s=$POOL/nr$n
     if mkdir "$s" 2>/dev/null; then
         SLOT=$s; ATC=$channel_dir; break

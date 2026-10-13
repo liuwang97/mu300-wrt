@@ -176,7 +176,7 @@ if [ -d /in/u30-sae ]; then
 else
     apk add wpad-basic-mbedtls >/dev/null
 fi
-apk add wifi-scripts iwinfo wireless-regdb iw bash ip-full coreutils-stty openssl-util \
+apk add wifi-scripts iwinfo wireless-regdb iw bash flock ip-full coreutils-stty openssl-util \
     i2c-tools gpiod-tools jq >/dev/null
 # the router protocols LuCI offers, with their tools: WireGuard, PPTP/L2TP (PPPoE is in the base), 6in4/6rd/DS-Lite,
 # GRE and VXLAN, ipset, and SQM (cake). Their kmod-* dependencies install the 6.12 modules of the feed, removed below like

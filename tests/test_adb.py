@@ -167,7 +167,9 @@ class Gadget(ShellTest):
                          MU300_ADB_ROOT_KEYS=self.tmp / 'root_adb_keys', MU300_ADB_OWNER=os.getuid(),
                          MU300_PROC_MOUNTS=self.mounts, MU300_PROC_FILESYSTEMS=self.tmp / 'nofs',
                          MU300_MODULES_BUILTIN=self.builtin, MU300_UDC_CLASS=udc, MU300_USB_ROLE=self.role,
-                         MU300_USB_HOOK=self.tmp / 'nohook', MU300_ADBD_TICK='0.1', MU300_ADBD_GRACE='3')
+                         MU300_USB_HOOK=self.tmp / 'nohook', MU300_ADBD_TICK='0.1', MU300_ADBD_GRACE='3',
+                         # no waiting for a FunctionFS that comes late, except in the test of that
+                         MU300_ADB_WAIT='0')
 
     def start(self, shell, **env):
         e = dict(self.envs)
@@ -224,6 +226,27 @@ class Gadget(ShellTest):
             self.assertIn('no FunctionFS', r.stderr)
             self.assertEqual(self.UDC, self.read('UDC'))
             self.assertFalse(self.linked())
+            self.builtin.write_text('kernel/drivers/usb/gadget/function/usb_f_fs.ko\n')
+
+    def test_a_functionfs_that_comes_late_in_the_boot_is_waited_for(self):
+        """OpenWrt starts the service 13 s after power-on (S19), when the FunctionFS module cannot be had yet: making
+        the function failed, the service said "no FunctionFS" and ended for good - with adb on by default, no
+        OpenWrt had adb after a boot (v2026.10.24 pre-release on an F50, docs/FINDINGS.md 82). It asks again for a
+        minute now."""
+        for shell in self.each_shell():
+            self.builtin.write_text('kernel/drivers/usb/gadget/function/usb_f_ncm.ko\n')
+            block = self.g / 'functions/ffs.adb'
+            block.write_text('')
+            p = self.start(shell, MU300_ADB_WAIT='20')
+            try:
+                time.sleep(1.5)
+                self.assertIsNone(p.poll(), 'the service gave up at the first no')
+                block.unlink()
+                self.assertTrue(self.until(self.linked, 15), 'adb never joined the gadget')
+            finally:
+                rc, out = self.stop(p)
+            self.assertEqual(0, rc, out)
+            self.assertNotIn('no FunctionFS', out)
             self.builtin.write_text('kernel/drivers/usb/gadget/function/usb_f_fs.ko\n')
 
     def test_joins_the_gadget_and_leaves_it_whole(self):

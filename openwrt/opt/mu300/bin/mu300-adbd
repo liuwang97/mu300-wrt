@@ -206,7 +206,15 @@ run() {
         if adb_damaged; then log "$CONF says neither on nor off: adb stays off (mu300-usb adb on, or adb off)"; fi
         echo "adb is off (mu300-usb adb on)"; exit 0
     fi
-    why=$(usable) || { log "$why"; exit 0; }
+    # Not at the first no: early in a boot the FunctionFS module cannot be had yet (OpenWrt starts this at S19, 13 s
+    # after power-on on an F50, and making the function failed there; a minute later it works - FINDINGS 82). With adb
+    # on by default a service that gives up then leaves every OpenWrt without adb until somebody restarts it. Asked
+    # again for a minute (MU300_ADB_WAIT), and only then is the reason logged.
+    _w=0
+    until why=$(usable); do
+        _w=$((_w + 1)); [ "$_w" -le "${MU300_ADB_WAIT:-60}" ] || { log "$why"; exit 0; }
+        nap 1
+    done
     prepare || exit 1
     auth_read; auth=$MODE
     if [ "$auth" = open ]; then

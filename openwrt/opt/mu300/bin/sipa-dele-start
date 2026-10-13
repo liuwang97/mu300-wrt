@@ -59,8 +59,19 @@ if [ -x /opt/mu300/bin/mu300-sim ]; then
     SIM_SLOT=$(/opt/mu300/bin/mu300-sim active) || exit 1
 fi
 modem_up() {
-    [ -c /dev/stty_nr$((SIM_SLOT * 3 + 1)) ] || return 1
-    mu300-at -t 8 'AT+CGATT?' 2>/dev/null | grep '+CGATT: *1' >/dev/null
+    local slot directory device
+    slot=$SIM_SLOT
+    case "$slot" in
+        0) directory=/run/mu300-at; device=/dev/stty_nr1 ;;
+        1)
+            directory=/run/mu300-at; device=/dev/stty_nr4
+            [ ! -e /run/mu300-radio-freeze ] || directory=/run/mu300-at4
+            ;;
+        *) return 1 ;;
+    esac
+    [ -c "$device" ] || return 1
+    [ "$slot" = 0 ] || [ -p "$directory/cmd" ] || return 1
+    MU300_AT_DIR="$directory" mu300-at -t 8 'AT+CGATT?' 2>/dev/null | grep '+CGATT: *1' >/dev/null
 }
 
 # a deadline in seconds: one round is an AT answer (up to 8 s) plus the pause, not the 2 s the old count assumed

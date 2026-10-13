@@ -1,20 +1,36 @@
 #!/bin/sh
 # Select one SIM for the whole boot. Reopening SIPC channels is not a hot switch.
 # OpenWrt: network.wan.sim_slot; other systems: /etc/mu300/sim-slot.
-# No modem, SIM-profile or identity writes are made here.
+# Shared boot preferences are saved here; live modem operations dispatch only to the gated U30 backend.
 set -eu
+umask 077
 root=${MU300_SIM_ROOT:-}
 state=$root/run/mu300/sim-slot
 conf=$root/etc/mu300/sim-slot
 device_cmd=${MU300_DEVICE_CMD:-/opt/mu300/bin/mu300-device}
+backend=${MU300_SIM_U30_BACKEND:-/opt/mu300/bin/mu300-sim-u30}
+lib=${MU300_SIM_CONFIG_LIB:-/opt/mu300/lib/sim-config.sh}
+# The short way. Every AT client asks "active" before every command (mu300-at, mobile-data, the panel's collectors),
+# and on nearly every device the answer is the pinned 0: one file read, as it was before the U30 backend existed
+# (measured on a U30 Air: 2.8 ms a call; with the library and the device's name read first, 6.7 ms).
+if [ "${1:-}" = active ] && [ "$#" = 1 ] && [ -f "$state" ] && [ "$(cat "$state" 2>/dev/null)" = 0 ]; then
+    echo 0
+    exit 0
+fi
+. "$lib"
 device_name() {
     [ -x "$device_cmd" ] || return 0
     "$device_cmd" 2>/dev/null || true
 }
+SIM_CONFIG_U30=0
+if [ -e "$root/etc/openwrt_release" ] && [ "$(device_name)" = u30air ]; then SIM_CONFIG_U30=1; fi
+export SIM_CONFIG_U30
+u30_supported() { [ "$SIM_CONFIG_U30" = 1 ]; }
+
 ensure_f50() {
     local device
     device=$(device_name)
-    [ -z "$device" ] || [ "$device" = f50 ] || {
+    [ "$device" = f50 ] || u30_supported || {
         echo "mu300-sim: SIM selection is supported on F50 only (detected $device)" >&2
         return 1
     }
@@ -22,23 +38,14 @@ ensure_f50() {
 slot1_supported() {
     local device
     device=$(device_name)
-    [ -z "$device" ] || [ "$device" = f50 ]
+    [ "$device" = f50 ] || u30_supported
 }
 ensure_slot_supported() {
     [ "$1" != 1 ] || ensure_f50
 }
 valid() { case "$1" in 0|1) return 0 ;; *) echo 'SIM slot must be 0 (external) or 1 (internal)' >&2; return 1 ;; esac; }
-configured() {
-    local slot
-    if command -v uci >/dev/null 2>&1; then
-        slot=$(uci -q get network.wan.sim_slot || true)
-    else
-        slot=$(cat "$conf" 2>/dev/null || true)
-    fi
-    slot=${slot:-0}
-    valid "$slot" || return 1
-    printf '%s\n' "$slot"
-}
+configured() { sim_cfg_default; }
+
 active() {
     local slot tmp
     if [ ! -e "$state" ]; then
@@ -64,15 +71,24 @@ active() {
     printf '%s\n' "$slot"
 }
 case ${1:-status} in
+    migrate)
+        [ "$#" = 1 ] || exit 2
+        u30_supported || exit 1
+        sim_cfg_migrate
+        exit $?
+        ;;
     active) active ;;
     configured) configured ;;
     status)
+        case ${2:-} in ''|--json) ;; *) exit 2;; esac
+        [ "$#" -le 2 ] || exit 2
+        if u30_supported && [ "${2:-}" = --json ]; then exec "$backend" status --json; fi
         old=$(active) || exit 1
         next=$(configured) || exit 1
         supported=0
         slot1_supported && supported=1
         if [ "${2:-}" = --json ]; then
-            printf '{"ok":1,"active":%s,"default":%s,"slot1_supported":%s,"hot":0,"available":0,"result":"reboot_required"}\n' "$((old + 1))" "$((next + 1))" "$supported"
+            printf '{"version":1,"ok":1,"active":%s,"default":%s,"slot1_supported":%s,"hot":0,"available":false,"busy":false,"phase":"idle","result":"reboot_required","error":null,"capabilities":{"boot_selection":%s,"live_switch":false},"radio_ready":null,"registered":null,"wan_up":null}\n' "$((old + 1))" "$((next + 1))" "$supported" "$([ "$supported" = 1 ] && echo true || echo false)"
         else
             printf 'active slot: %s\nnext boot slot: %s\n' "$old" "$next"
         fi
@@ -87,20 +103,25 @@ case ${1:-status} in
         ensure_slot_supported "$next" || exit 1
         # Pin the current slot before changing the next-boot setting.
         old=$(active) || exit 1
-        if command -v uci >/dev/null 2>&1; then
-            uci set "network.wan.sim_slot=$next"
-            uci commit network
-        else
-            mkdir -p "${conf%/*}"
-            tmp=$(mktemp "${conf}.XXXXXX")
-            printf '%s\n' "$next" > "$tmp"
-            mv "$tmp" "$conf"
+        if u30_supported; then
+            command -v flock >/dev/null 2>&1 || exit 1
+            mkdir -p "$root/run/mu300"
+            exec 9>"$root/run/mu300/sim-control.lock"
+            flock -n 9 || { echo 'mu300-sim: SIM control is busy' >&2; exit 1; }
+        fi
+        sim_cfg_save_default "$next" || exit 1
+        if u30_supported; then
+            rm -f "$root/etc/mu300-sim-fallback"
+            MU300_SIM_LOCKED=1 "$backend" status --json
+            exit $?
         fi
         echo "SIM slot $next saved. Active slot remains $old until reboot."
         ;;
     hot|switch)
+        [ "$#" = 2 ] || exit 2
+        if u30_supported; then exec "$backend" "$@"; fi
         echo 'mu300-sim: live SIM switching is not supported on F50; select a slot and reboot' >&2
         exit 1
         ;;
-    *) echo 'usage: mu300-sim status [--json]|active|configured|select external|internal|default 1|2' >&2; exit 2 ;;
+    *) echo 'usage: mu300-sim status [--json]|active|configured|select external|internal|default 1|2 (U30 Air on OpenWrt also: hot 0|1, switch 1|2)' >&2; exit 2 ;;
 esac
