@@ -348,3 +348,6 @@ needed behind the partitions: {1} MiB; missing: {2} MiB	分区之后需要：{1}
 to share by shrinking it: {1} MiB up to sector {2}; needed: {3} MiB ({4} MiB Android + {5} MiB Linux); missing: {6} MiB	缩小它后可分配：{1} MiB（到扇区 {2} 为止）；需要：{3} MiB（Android {4} MiB + Linux {5} MiB）；缺少：{6} MiB
 -Check writes nothing. Run the installer without it to make room.	-Check 不会写入任何内容。去掉该参数运行安装程序即可腾出空间。
 the new partition table did not arrive on the device as it was made; nothing is changed	新的分区表未能原样传到设备上；未做任何更改
+A beta is out: {1}, a prerelease for testing, newer than the newest full release {2}.	有新的测试版：{1}，这是供测试的预发布版本，比最新的正式版 {2} 更新。
+Install the beta {1} instead of {2}? (yes/no)	安装测试版 {1} 而不是 {2} 吗？(是/否)
+News and new releases are on the Telegram channel of the project, you can follow it: {1}	新闻和新版本发布在本项目的 Telegram 频道，欢迎关注：{1}
