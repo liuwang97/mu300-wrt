@@ -32,8 +32,9 @@
 #   ttl_get, ttl_set value  the TTL of mobile data (unisoc-modem/ttl, mu300-ttl); value off or 1-255
 #   traffic_get, traffic_set op value  the mobile data count, its billing cycle and cap (unisoc-modem/traffic,
 #                     mu300-traffic)
-#   forward_get, forward_set ..., forward_test  SMS forwarding (unisoc-modem/forward, mu300-sms-forward); the
-#                     settings go to the adapter on stdin, as sent: they hold secrets, never an argument
+#   forward_get, forward_set ..., forward_test, forward_log_clear  SMS forwarding (unisoc-modem/forward,
+#                     mu300-sms-forward); the settings go to the adapter on stdin, as sent: they hold secrets, never
+#                     an argument. forward_log_clear empties the delivery log and takes nothing.
 #   cpu_get, cpu_set profile  the CPU performance profile (unisoc-modem/cpu, mu300-cpu); saving|balanced|performance
 #   packages_get, packages_act op  the packages installed before an update, installed again (unisoc-modem/packages,
 #                     mu300-user-packages); op retry|repair_dns|dismiss
@@ -809,6 +810,7 @@ m_forward_set() {
     reply_obj "$(printf '%s' "$INPUT" | "$FWDA" set 2>/dev/null)" 'The forwarding adapter gave no valid reply'
 }
 m_forward_test() { reply_obj "$("$FWDA" test 2>/dev/null)" 'The forwarding adapter gave no valid reply'; }
+m_forward_log_clear() { reply_obj "$("$FWDA" logclear 2>/dev/null)" 'The forwarding adapter gave no valid reply'; }
 # The CPU page: mu300-cpu through the adapter, which checks the profile name again
 CPUA=${MU300_CPU_ADAPTER:-$DASH/cpu}
 m_cpu_get() { reply_obj "$("$CPUA" get 2>/dev/null)" 'The CPU adapter gave no valid reply'; }
@@ -867,8 +869,10 @@ do_list() {
 		"webhook_format": "String", "webhook_headers": "String", "telegram": "String", "telegram_token": "String",
 		"telegram_chat": "String", "email": "String", "email_host": "String", "email_port": "String",
 		"email_tls": "String", "email_user": "String", "email_password": "String", "email_from": "String",
-		"email_to": "String", "sms": "String", "sms_number": "String", "webhook_body": "String" },
+		"email_to": "String", "sms": "String", "sms_number": "String", "webhook_body": "String",
+		"webhook_expect": "String" },
 	"forward_test": { },
+	"forward_log_clear": { },
 	"cpu_get": { },
 	"cpu_set": { "profile": "String" },
 	"packages_get": { },
@@ -1056,6 +1060,7 @@ call)
         forward_get)  run_m forward_get  m_forward_get ;;
         forward_set)  run_m forward_set  m_forward_set ;;
         forward_test) run_m forward_test m_forward_test ;;
+        forward_log_clear) run_m forward_log_clear m_forward_log_clear ;;
         cpu_get)      run_m cpu_get      m_cpu_get ;;
         cpu_set)      run_m cpu_set      m_cpu_set ;;
         packages_get) run_m packages_get m_packages_get ;;
