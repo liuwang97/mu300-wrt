@@ -38,7 +38,8 @@ docker run --rm mu300-ubuntu:24.04 cat /bin/busybox > "$IN/busybox"; chmod +x "$
 docker run --rm -v "$TOP/tools":/src:ro -v "$IN/tools":/o mu300-kbuild sh -c '
   gcc -O2 -static -o /o/logdw/logdw /src/logdw/logdw.c &&
   gcc -O2 -static -o /o/bt-init/mu300-bt-init /src/bt-init/mu300-bt-init.c &&
-  mkdir -p /o/keys && gcc -O2 -static -o /o/keys/mu300-keys /src/keys/mu300-keys.c'
+  mkdir -p /o/keys && gcc -O2 -static -o /o/keys/mu300-keys /src/keys/mu300-keys.c &&
+  mkdir -p /o/carry && gcc -O2 -static -o /o/carry/mu300-carry /src/carry/mu300-carry.c'
 # adbd (adb over USB to Linux): static aarch64, from AOSP's sources (tools/adbd/build.sh)
 sh "$TOP/tools/adbd/build.sh" "$IN/tools/adbd/adbd" >/dev/null
 # cltest links against Android's libraries at build time only; use a local build when there is one
@@ -83,7 +84,8 @@ for u in 24.04 26.04; do
     cltest=""; [ -f "$IN/tools/gpu/cltest" ] && cltest="-v $IN/tools/gpu/cltest:/cltest:ro"
     # shellcheck disable=SC2086
     docker run --rm -v "$B":/w -v "$IN/out/modules":/kmods:ro -v "$IN/out":/kout:ro -v "$IN/tools/logdw/logdw":/logdw:ro \
-      -v "$IN/tools/bt-init/mu300-bt-init":/bt-init:ro -v "$IN/tools/keys/mu300-keys":/keys:ro -v "$IN/tools/adbd/adbd":/adbd:ro $cltest \
+      -v "$IN/tools/bt-init/mu300-bt-init":/bt-init:ro -v "$IN/tools/keys/mu300-keys":/keys:ro -v "$IN/tools/adbd/adbd":/adbd:ro \
+      -v "$IN/tools/carry/mu300-carry":/carry:ro $cltest \
       -e MU300_VERSION="$TAG" mu300-ubuntu:$u bash /w/assemble.sh >/dev/null
     out=mu300-ubuntu-rootfs.tar.gz; [ $u = 24.04 ] || out=mu300-ubuntu-$u-rootfs.tar.gz
     mv "$B/mu300-ubuntu-$u-rootfs.tar.gz" "$D/$out"; rm -rf "$B"
@@ -108,6 +110,7 @@ sh "$TOP/tools/make-extra.sh" panel-offline "$D/mu300-extra-panel-offline.tar.gz
 
 echo "==> audit"
 fail=0
+list_of_image() { tar -tzf "$D/$1.tar.gz" | sed 's|^\./||'; }
 for a in mu300-kernel mu300-kernel-6.18 mu300-kernel-7.2 mu300-ubuntu-rootfs mu300-ubuntu-26.04-rootfs mu300-openwrt-rootfs \
          mu300-openwrt-luci-rootfs; do
     bad=$(tar -tzf "$D/$a.tar.gz" | sed 's|^\./||' | grep -E \
@@ -121,6 +124,23 @@ for a in mu300-kernel mu300-kernel-6.18 mu300-kernel-7.2 mu300-ubuntu-rootfs mu3
     if [ -n "$bad" ]; then echo "$a contains files that must not be published:"; echo "$bad" | head -20; fail=1; fi
     mid=$(tar -xzOf "$D/$a.tar.gz" ./etc/machine-id 2>/dev/null || true)
     [ -z "$mid" ] || { echo "$a has a machine-id"; fail=1; }
+done
+# An update carries everything of the user's over with what the NEW image brings (mu300-update's carry block): each
+# image must have mu300-carry, a static busybox, the manifests of the releases before v2026.10.26 for its own system,
+# and the manifest of its own files - which must be the one this tool makes from the tarball (two implementations,
+# held against each other at every release). Without them an update would quietly keep only the list of places.
+# The manifest is published beside the image, too (mu300-<image>-rootfs.manifest.gz, in SHA256SUMS).
+for a in mu300-ubuntu-rootfs:usr/bin/busybox:ubuntu-24.04,ubuntu-26.04 mu300-ubuntu-26.04-rootfs:usr/bin/busybox:ubuntu-24.04,ubuntu-26.04 \
+         mu300-openwrt-rootfs:opt/mu300/bin/busybox:openwrt mu300-openwrt-luci-rootfs:opt/mu300/bin/busybox:openwrt-luci; do
+    old=${a##*:}; a=${a%:*}; bb=${a#*:}; a=${a%%:*}
+    l=$(list_of_image "$a")
+    for f in opt/mu300/bin/mu300-carry "$bb" etc/mu300/image-manifest.gz $(echo "$old" | tr ',' '\n' | sed 's|.*|opt/mu300/lib/image-manifests/&.gz|'); do
+        printf '%s\n' "$l" | grep -qx "$f" || { echo "$a lacks $f: an update to it would not carry everything over"; fail=1; }
+    done
+    [ "$(printf '%s\n' "$l" | grep -c '^opt/mu300/lib/image-manifests/.')" = "$(echo "$old" | tr ',' '\n' | wc -l | tr -d ' ')" ] ||
+        { echo "$a has manifests of another system in opt/mu300/lib/image-manifests"; fail=1; }
+    python3 "$TOP/tools/image-manifest.py" check "$D/$a.tar.gz" || fail=1
+    tar -xzOf "$D/$a.tar.gz" ./etc/mu300/image-manifest.gz > "$D/$a.manifest.gz" 2>/dev/null || { echo "$a: no manifest to publish"; fail=1; }
 done
 # the panel: everything of it is in the luci asset, and nothing of it (nor Aurora) in the plain OpenWrt one
 list_of() { tar -tzf "$D/$1.tar.gz" | sed 's|^\./||'; }
@@ -194,7 +214,7 @@ done
 rm -rf "$IN"
 # the updater itself: an older mu300-update fetches this one and continues with it
 cp "$TOP/rootfs/overlay/opt/mu300/bin/mu300-update" "$D/mu300-update"
-(cd "$D" && { shasum -a 256 *.tar.gz mu300-update 2>/dev/null || sha256sum *.tar.gz mu300-update; } > SHA256SUMS)
+(cd "$D" && { shasum -a 256 *.tar.gz *.manifest.gz mu300-update 2>/dev/null || sha256sum *.tar.gz *.manifest.gz mu300-update; } > SHA256SUMS)
 ls -la "$D"
 
 [ "$PUBLISH" = --publish ] || { echo "built release/$TAG (run again with --publish to upload)"; exit 0; }
@@ -219,6 +239,7 @@ first with \`./install.sh --check\`.
 | mu300-extra-panel.tar.gz | the web panel for Ubuntu: Cockpit (Ubuntu's web console: terminal, logs, services, networking, storage) and the MU300 page (signal, mobile data, data usage, SMS, VPN, power and CPU, Wi-Fi, updates), on the LAN only: \`sudo mu300-extra install panel\` on the device (Cockpit from Ubuntu's archive), or the installer's question |
 | mu300-extra-panel-offline.tar.gz | the same with Cockpit's packages for Ubuntu 24.04 and 26.04, for a device that is not online: \`sudo mu300-extra install panel --from mu300-extra-panel-offline.tar.gz\` |
 | mu300-update | the on-device updater of this release (\`mu300-update apply\` switches to it before it changes anything) |
+| mu300-*-rootfs.manifest.gz | the list of each image's files (type, mode, owner, size, sha256), which the image also carries: an update reads it to tell the image's files from yours, and carries yours over |
 | (the VPN) | not part of this release: the VPN toolkit (\`mu300-vpn\`, module v2: the core with hev-socks5-tunnel, and the engines as extras: \`vpn-xray\`, \`vpn-singbox\`, \`vpn-mihomo\`, \`vpn-dae\`) is the module of https://github.com/dikeckaan/mu300-linux-vpn - \`mu300-extra install vpn\` on the device, or the installer's question, takes its latest release with the engines its profiles need; on OpenWrt with the panel the VPN menu drives it |
 
 The images contain **no proprietary files**: the installer pulls the Wi-Fi/Bluetooth firmware and the Android
@@ -236,10 +257,10 @@ Aurora (luci-theme-aurora 1.4.0) from https://github.com/eamonxg/luci-theme-auro
 News and releases: the Telegram channel https://t.me/mu300project
 EOF
 if gh release view "$TAG" -R "$REPO" >/dev/null 2>&1; then
-    gh release upload "$TAG" -R "$REPO" --clobber "$D"/*.tar.gz "$D/mu300-update" "$D/SHA256SUMS"
+    gh release upload "$TAG" -R "$REPO" --clobber "$D"/*.tar.gz "$D"/*.manifest.gz "$D/mu300-update" "$D/SHA256SUMS"
 else
     # shellcheck disable=SC2086
     gh release create "$TAG" -R "$REPO" --target "$commit" --title "MU300 Linux $TAG" --notes-file "$notes" $PRERELEASE \
-      "$D"/*.tar.gz "$D/mu300-update" "$D/SHA256SUMS"
+      "$D"/*.tar.gz "$D"/*.manifest.gz "$D/mu300-update" "$D/SHA256SUMS"
 fi
 rm -f "$notes"

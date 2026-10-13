@@ -232,7 +232,6 @@ on, only for the adb key of this computer	开启，仅限这台电脑的 adb 密
 on, for every computer: a root shell without a password (on the device: mu300-usb adb auth keys, or mu300-usb adb off)	开启，任何电脑均可：无需密码的 root shell（在设备上：mu300-usb adb auth keys，或 mu300-usb adb off）
 asking it over adb ({1})	正在通过 adb 请求（{1}）
 Android runs from slot {1}; Linux goes to slot {2} (boot_{2})	Android 从槽位 {1} 运行；Linux 将安装到槽位 {2}（boot_{2}）
-CREATE new ext4 (erases what is there)	新建 ext4（会清除上面的内容）
 Dry run: nothing was written.	试运行：未写入任何内容。
 MU300_BOOT_OS={1}, but {1} is not installed	MU300_BOOT_OS={1}，但 {1} 未安装
 Magisk's magiskboot was not found; install this zip with Magisk 26 or newer	未找到 Magisk 的 magiskboot；请使用 Magisk 26 或更新版本安装此 zip
@@ -248,7 +247,6 @@ could not mount the existing Linux filesystem	无法挂载现有的 Linux 文件
 could not unpack the kernel bundle	无法解压内核包
 could not unpack the zip	无法解压 zip
 default	默认
-keep: settings and data of {1} are kept	保留：{1} 的设置和数据会保留
 misc holds no valid boot control block; nothing was changed	misc 中没有有效的启动控制块；未做任何更改
 mu300-install.conf: MU300_PASSWORD must have at least 6 characters	mu300-install.conf：MU300_PASSWORD 至少需要 6 个字符
 mu300-install.conf: {1} is not a setting of this installer; ignored	mu300-install.conf：{1} 不是此安装程序的设置；已忽略
@@ -351,3 +349,12 @@ to share by shrinking it: {1} MiB up to sector {2}; needed: {3} MiB ({4} MiB And
 the new partition table did not arrive on the device as it was made; nothing is changed	新的分区表未能原样传到设备上；未做任何更改
 {1} is not a file that only root can change; nothing was changed	{1} 不是只有 root 才能修改的文件；未做任何更改
 on, for {1}	开启，用于 {1}
+The installed {1} is {2}, and this zip is {3}, an older release. Going back to an older release is not done by itself: the older release may not carry over everything you added to the system.	已安装的 {1} 是 {2}，而这个 zip 是 {3}，版本更旧。不会自动退回旧版本：旧版本可能无法保留你添加到系统中的全部内容。
+Nothing was changed. To install it all the same, put MU300_DOWNGRADE=yes into {1} (a release before v2026.10.26 then keeps only settings, users and home directories), or MU300_MODE=wipe to start fresh.	没有任何改动。仍要安装，请在 {1} 中写入 MU300_DOWNGRADE=yes（v2026.10.26 之前的版本只保留设置、用户和主目录），或用 MU300_MODE=wipe 全新安装。
+CREATE new ext4 (erases what is there: every installed system, every file in them, the extras)	新建 ext4（会清除上面的内容：已安装的每个系统、其中的每个文件、扩展）
+keep: nothing is erased	保留：不清除任何内容
+update:         {1} {2} -> {3}: only settings, users and home directories are kept (MU300_UPDATE_KEEP=list)	更新：          {1} {2} -> {3}：只保留设置、用户和主目录（MU300_UPDATE_KEEP=list）
+update:         {1} {2} -> {3}: everything you added to it or changed in it is kept (files, settings, accounts and passwords);	更新：          {1} {2} -> {3}：你添加或修改的一切都会保留（文件、设置、账户和密码）；
+                packages you installed are installed again at its first boot; what could not stay in place is listed in /etc/mu300/update-report	                你安装的软件包会在首次启动时重新安装；无法留在原位的内容列在 /etc/mu300/update-report 中
+                {1} is the OLDER release (MU300_DOWNGRADE=yes): one from before v2026.10.26 keeps only settings, users and home directories	                {1} 是更旧的版本（MU300_DOWNGRADE=yes）：v2026.10.26 之前的版本只保留设置、用户和主目录
+not touched:    {1}and the extras (the VPN module) stay as they are	不改动：        {1}以及扩展（VPN 模块）保持原样
