@@ -1,4 +1,5 @@
 """Compile the actual metadata parser from the hostapd patch, with malformed IE input."""
+import json
 import random
 import os
 import shutil
@@ -8,7 +9,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from helpers import TOP, ShellTest
+from helpers import BIN, TOP, ShellTest
 
 PATCH = TOP / 'openwrt/patches/hostapd/990-u30-sae-offload.patch'
 
@@ -254,6 +255,232 @@ int main(void) {
         self.assertEqual(r.returncode, 0, r.stderr)
         r = subprocess.run([str(exe)], capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stderr)
+
+
+UCI = r"""
+[ "$1" = -q ] && shift
+f=$STUBLOG/uci.state
+case "$1" in
+    show) cat "$f" ;;
+    get) v=$(sed -n "s/^$2='\(.*\)'$/\1/p" "$f" | head -n1); [ -n "$v" ] || exit 1; echo "$v"; exit 0 ;;
+    set) k=${2%%=*}; grep -v "^$k=" "$f" > "$f.n"; echo "$k='${2#*=}'" >> "$f.n"; mv "$f.n" "$f" ;;
+    delete) grep -v "^$2=" "$f" > "$f.n"; mv "$f.n" "$f" ;;
+    del_list) k=${2%%=*}; sed -e "/^$k=/s/ *'${2#*=}'//" -e "/^$k=\$/d" "$f" > "$f.n"; mv "$f.n" "$f" ;;
+    commit) ;;
+esac
+[ "$1" = show ] || echo "$*" >> "$STUBLOG/uci.log"
+exit 0
+"""
+# what `uci show wireless` prints for the documented opt-in (docs/U30AIR-SAE.md), with a synthetic passphrase
+SAE_STATE = """wireless.radio0=wifi-device
+wireless.radio0.band='5g'
+wireless.ap0=wifi-iface
+wireless.ap0.device='radio0'
+wireless.ap0.mode='ap'
+wireless.ap0.ifname='wlan0'
+wireless.ap0.ssid='MU300-TEST'
+wireless.ap0.encryption='sae'
+wireless.ap0.key='synthetic-test-password'
+wireless.ap0.ieee80211w='2'
+wireless.ap0.sae_pwe='0'
+wireless.ap0.hostapd_bss_options='max_listen_interval=10' 'u30_sae_offload=1'
+"""
+WPA2_STATE = """wireless.radio0=wifi-device
+wireless.ap0=wifi-iface
+wireless.ap0.device='radio0'
+wireless.ap0.mode='ap'
+wireless.ap0.ifname='wlan0'
+wireless.ap0.encryption='psk2'
+wireless.ap0.key='synthetic-test-password'
+"""
+
+
+class SaeGuard(ShellTest):
+    """openwrt-wifi-sae-guard: a hotspot that cannot start with the offload goes back to WPA2; nothing else moves."""
+    GUARD = BIN / 'openwrt-wifi-sae-guard'
+
+    def setUp(self):
+        super().setUp()
+        self.root = self.tmp / 'root'
+        for d in ('etc/mu300', 'etc/config', 'etc/init.d', 'usr/sbin', 'run/mu300/power'):
+            (self.root / d).mkdir(parents=True)
+        (self.root / 'etc/openwrt_release').write_text('DISTRIB_ID=OpenWrt\n')
+        (self.root / 'etc/config/wireless').write_text('the file as it was\n')
+        wpad = self.root / 'etc/init.d/wpad'
+        wpad.write_text('#!/bin/sh\necho "wpad $*" >> "$STUBLOG/wifi.log"\n')
+        wpad.chmod(0o755)
+        self.hostapd(patched=True)
+        self.stub('uci', UCI)
+        # the access point is up from the Nth question on ($STUBLOG/ap-after), never without that file
+        self.stub('ubus', 'echo "$*" >> "$STUBLOG/ubus.log"\n'
+                          '[ "$(wc -l < "$STUBLOG/ubus.log")" -ge "$(cat "$STUBLOG/ap-after" 2>/dev/null || echo 9999)" ]'
+                          ' || exit 4\nprintf \'{\\n\\t"status": "ENABLED",\\n\\t"freq": 5180\\n}\\n\'')
+        self.stub('wifi', 'echo "wifi $*" >> "$STUBLOG/wifi.log"')
+        self.stub('logger', 'echo "$*" >> "$STUBLOG/logger.log"')
+        self.stub('sleep', 'echo "$*" >> "$STUBLOG/sleep.log"')
+
+    def hostapd(self, patched):
+        # the option's name is in the binary that parses it; the stock wpad has no such string
+        (self.root / 'usr/sbin/hostapd').write_bytes(
+            b'\x7fELF\x00sae_pwe\x00' + (b'u30_sae_offload\x00' if patched else b'') + b'sae_confirm_immediate\x00')
+
+    def run_guard(self, shell, mode, state, up_after=None):
+        (self.tmp / 'uci.state').write_text(state)
+        for f in ('uci.log', 'ubus.log', 'wifi.log', 'logger.log', 'sleep.log', 'ap-after'):
+            (self.tmp / f).unlink(missing_ok=True)
+        (self.root / 'etc/mu300/wireless.sae-offload').unlink(missing_ok=True)
+        if up_after:
+            (self.tmp / 'ap-after').write_text(str(up_after))
+        r = self.script(shell, self.GUARD, mode, MU300_SYSROOT=self.root, MU300_SAE_WAIT=10)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return r
+
+    def log(self, name):
+        p = self.tmp / name
+        return p.read_text().splitlines() if p.exists() else []
+
+    def assertUntouched(self, r, state):
+        self.assertEqual(r.stderr, '')
+        self.assertEqual((self.tmp / 'uci.state').read_text(), state)
+        self.assertEqual([c for c in self.log('uci.log') if not c.startswith('get ')], [])
+        self.assertEqual(self.log('wifi.log') + self.log('logger.log'), [])
+        self.assertFalse((self.root / 'etc/mu300/wireless.sae-offload').exists())
+
+    def assertWpa2(self, r, reason):
+        state = (self.tmp / 'uci.state').read_text()
+        self.assertIn("wireless.ap0.encryption='psk2'\n", state)
+        self.assertIn("wireless.ap0.key='synthetic-test-password'\n", state)
+        # only this option leaves the list
+        self.assertIn("wireless.ap0.hostapd_bss_options='max_listen_interval=10'\n", state)
+        for gone in ('u30_sae_offload', 'ieee80211w', 'sae_pwe'):
+            self.assertNotIn(gone, state)
+        self.assertEqual(self.log('uci.log')[-1], 'commit wireless')
+        self.assertIn(reason, r.stderr)
+        self.assertIn('back on WPA2 with the same password', r.stderr)
+        self.assertNotIn('synthetic-test-password', r.stderr + '\n'.join(self.log('logger.log')))
+        self.assertEqual(len(self.log('logger.log')), 1)
+        self.assertIn('-p daemon.err', self.log('logger.log')[0])
+        saved = self.root / 'etc/mu300/wireless.sae-offload'
+        self.assertEqual(saved.read_text(), 'the file as it was\n')
+        self.assertEqual(saved.stat().st_mode & 0o077, 0)
+
+    def test_without_the_option_nothing_is_asked_or_changed(self):
+        for shell in self.each_shell():
+            for mode in ('precheck', 'verify'):
+                self.hostapd(patched=False)
+                r = self.run_guard(shell, mode, WPA2_STATE)
+                self.assertUntouched(r, WPA2_STATE)
+                self.assertEqual(self.log('uci.log') + self.log('ubus.log') + self.log('sleep.log'), [])
+
+    def test_not_openwrt(self):
+        (self.root / 'etc/openwrt_release').unlink()
+        self.hostapd(patched=False)
+        for shell in self.each_shell():
+            self.assertUntouched(self.run_guard(shell, 'precheck', SAE_STATE), SAE_STATE)
+
+    def test_precheck_keeps_a_hostapd_that_has_the_option(self):
+        for shell in self.each_shell():
+            self.assertUntouched(self.run_guard(shell, 'precheck', SAE_STATE), SAE_STATE)
+
+    def test_precheck_stock_hostapd_after_an_update(self):
+        self.hostapd(patched=False)
+        for shell in self.each_shell():
+            r = self.run_guard(shell, 'precheck', SAE_STATE)
+            self.assertWpa2(r, 'the installed hostapd does not have it')
+            # mu300-hw brings Wi-Fi up right after; the client mode's disabled access point is repaired too
+            self.assertEqual(self.log('wifi.log'), [])
+            r = self.run_guard(shell, 'precheck', SAE_STATE + "wireless.ap0.disabled='1'\n")
+            self.assertWpa2(r, 'the installed hostapd does not have it')
+
+    def test_verify_access_point_up(self):
+        for shell in self.each_shell():
+            self.assertUntouched(self.run_guard(shell, 'verify', SAE_STATE, up_after=1), SAE_STATE)
+            self.assertEqual(self.log('ubus.log'), ['-t 5 call hostapd.wlan0 get_status'])
+            # automatic channel selection takes half a minute: up on a later look is up
+            self.assertUntouched(self.run_guard(shell, 'verify', SAE_STATE, up_after=3), SAE_STATE)
+            self.assertEqual(self.log('sleep.log'), ['5', '5'])
+
+    def test_verify_access_point_never_up(self):
+        for shell in self.each_shell():
+            r = self.run_guard(shell, 'verify', SAE_STATE)
+            self.assertWpa2(r, 'the access point did not start')
+            self.assertEqual(self.log('sleep.log'), ['5', '5'])
+            self.assertEqual(self.log('wifi.log'), ['wifi down', 'wpad restart', 'wifi up'])
+
+    def test_verify_leaves_a_hotspot_that_is_off_on_purpose(self):
+        for shell in self.each_shell():
+            for state in (SAE_STATE + "wireless.ap0.disabled='1'\n", SAE_STATE + "wireless.radio0.disabled='1'\n",
+                          SAE_STATE.replace("mode='ap'", "mode='sta'")):
+                self.assertUntouched(self.run_guard(shell, 'verify', state), state)
+            for marker in ('run/mu300-wifi-client.active', 'run/mu300-wifi-scan-mode', 'run/mu300/power/hotspot-off'):
+                (self.root / marker).write_text('')
+                self.assertUntouched(self.run_guard(shell, 'verify', SAE_STATE), SAE_STATE)
+                (self.root / marker).unlink()
+
+    def test_boot_calls_it_before_wifi_up_and_after_the_retry(self):
+        hw = (TOP / 'openwrt/overlay/etc/init.d/mu300-hw').read_text()
+        self.assertLess(hw.index('openwrt-wifi-config'), hw.index('openwrt-wifi-sae-guard precheck'))
+        self.assertLess(hw.index('openwrt-wifi-sae-guard precheck'), hw.index('wifi down'))
+        post = (TOP / 'openwrt/overlay/etc/init.d/mu300-post').read_text()
+        self.assertLess(post.index("'AP not up, retrying'; wifi up"), post.index('openwrt-wifi-sae-guard verify'))
+
+
+@unittest.skipUnless(os.environ.get('MU300_WRT_IMAGE') and shutil.which('docker'),
+                     'MU300_WRT_IMAGE (an OpenWrt 25.12 arm64 docker image) not set')
+class SaeWifiScripts(unittest.TestCase):
+    """OpenWrt's wifi-scripts for a fake wiphy (as test_wifi_channels): the hostapd configuration of the documented
+    opt-in, and of what openwrt-wifi-sae-guard leaves behind."""
+
+    def test_hostapd_config_of_the_opt_in_and_of_the_fallback(self):
+        import test_wifi_channels as channels
+        fake = channels.WifiScriptsInOpenWrt
+        opt_in = {'encryption': 'sae', 'ieee80211w': '2', 'sae_pwe': '0',
+                  'hostapd_bss_options': ['u30_sae_offload=1']}
+        cases = {'stock': {}, 'opt-in': opt_in, 'fallback': {'encryption': 'psk2', 'hostapd_bss_options': []}}
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            (d / 'cases').mkdir()
+            (d / 'out').mkdir()
+            for name, iface in cases.items():
+                data = fake.data(36, 'VHT80')
+                data['interfaces']['ap0']['config'].update(iface)
+                (d / 'cases' / f'{name}.wiphy.json').write_text(json.dumps(fake.wiphy(False, {})))
+                (d / 'cases' / f'{name}.data.json').write_text(json.dumps(data))
+            script = r"""
+mkdir -p /var/lock /var/run /tmp /fake/wifi
+apk update >/dev/null && apk add wifi-scripts >/dev/null 2>&1 || exit 1
+sed -e "s/^export function wiphy_info(phy) {/function nl_wiphy_info(phy) {/" /usr/share/ucode/wifi/common.uc > /fake/wifi/common.uc
+grep -q "^function nl_wiphy_info" /fake/wifi/common.uc || exit 1
+echo "export function wiphy_info(phy) { return json(fs.readfile(getenv(\"FAKE_WIPHY\"))); };" >> /fake/wifi/common.uc
+for f in /t/cases/*.data.json; do
+    n=$(basename "$f" .data.json)
+    FAKE_DATA=$f FAKE_WIPHY=/t/cases/$n.wiphy.json FAKE_CC=CN \
+        ucode -L "/fake/*.uc" -L "/usr/share/ucode/*.uc" /fx/run.uc > /t/out/$n.conf 2>&1 || echo "rc=$?" >> /t/out/$n.conf
+done
+"""
+            r = subprocess.run(['docker', 'run', '--rm', '--platform', 'linux/arm64',
+                                '-v', f'{channels.FIXTURES}:/fx:ro', '-v', f'{d}:/t',
+                                os.environ['MU300_WRT_IMAGE'], '/bin/sh', '-c', script],
+                               capture_output=True, text=True, timeout=900)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+            def conf(name):
+                text = (d / 'out' / f'{name}.conf').read_text()
+                self.assertNotIn('rc=', text, name)
+                return dict(l.split('=', 1) for l in text.splitlines() if '=' in l and not l.startswith('#'))
+
+            c = conf('opt-in')
+            self.assertEqual((c['wpa_key_mgmt'], c['ieee80211w'], c['sae_pwe'], c['u30_sae_offload']),
+                             ('SAE', '2', '0', '1'))
+            # the patch reads the passphrase from wpa_passphrase and refuses a BSS with sae_password entries
+            self.assertEqual(c['wpa_passphrase'], '12345678')
+            self.assertNotIn('sae_password', c)
+            # the hotspot of the images, and the guard's fallback: the same WPA2 configuration, no key of the offload
+            stock, back = conf('stock'), conf('fallback')
+            self.assertEqual(stock, back)
+            self.assertEqual(back['wpa_key_mgmt'], 'WPA-PSK')
+            self.assertNotIn('u30_sae_offload', back)
+            self.assertNotIn('sae_pwe', back)
 
 
 class DriverPrivacy(unittest.TestCase):

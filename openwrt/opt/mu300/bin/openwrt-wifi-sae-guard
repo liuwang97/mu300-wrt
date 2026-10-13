@@ -1,0 +1,81 @@
+#!/bin/sh
+# OpenWrt only: the way back from the U30 Air's firmware SAE offload (docs/U30AIR-SAE.md, FINDINGS 80), for a device
+# whose hotspot is the only way in. Does nothing unless a wifi-iface carries "u30_sae_offload=1" in its
+# hostapd_bss_options, which no image sets.
+#   openwrt-wifi-sae-guard precheck   at boot, before the first "wifi up" (mu300-hw): the installed hostapd does not
+#                                     know the option - the stock wpad after mu300-update, which keeps /etc/config and
+#                                     replaces the packages - and would refuse the whole configuration
+#   openwrt-wifi-sae-guard verify     after boot (mu300-post, after its one retry): the access point is still not up
+#                                     (the firmware refused the vendor command, a mode the patch rejects, a second BSS)
+# Either way the hotspot goes back to WPA2 with the same password, the option is taken out, the settings it had are
+# kept in /etc/mu300/wireless.sae-offload, and one line in the log says so. WPA2 and not hostapd's own SAE: on this
+# driver the firmware does the SAE exchange, so a WPA3 hotspot without the offload lets nobody in (FINDINGS 80).
+# The passphrase is then open to an offline guess from a captured WPA2 handshake, which WPA3 was chosen to prevent:
+# that is the price of a device that can be reached, and why the line is logged as an error.
+# (MU300_SYSROOT, MU300_SAE_WAIT: for tests/)
+R=${MU300_SYSROOT:-}
+WAIT=${MU300_SAE_WAIT:-60}
+[ -f "$R/etc/openwrt_release" ] || exit 0
+
+sections() {  # the wifi-ifaces with the option, one name per line
+	uci -q show wireless | sed -n "s/^wireless\.\([^.=]*\)\.hostapd_bss_options=.*'u30_sae_offload=1'.*/\1/p"
+}
+enabled() {  # an access point netifd would start
+	[ "$(uci -q get "wireless.$1.disabled")" != 1 ] || return 1
+	[ "$(uci -q get "wireless.$(uci -q get "wireless.$1.device").disabled")" != 1 ] || return 1
+	case $(uci -q get "wireless.$1.mode") in ap|'') return 0 ;; esac
+	return 1
+}
+ap_up() {
+	ifn=$(uci -q get "wireless.$1.ifname"); ifn=${ifn:-wlan0}
+	ubus -t 5 call "hostapd.$ifn" get_status 2>/dev/null | grep -q '"status": *"ENABLED"'
+}
+off_on_purpose() {  # the radio is a Wi-Fi client, in scan mode, or the Wi-Fi key turned the hotspot off
+	[ -e "$R/run/mu300-wifi-client.active" ] || [ -e "$R/run/mu300-wifi-scan-mode" ] ||
+		[ -e "$R/run/mu300/power/hotspot-off" ]
+}
+fall_back() {  # fall_back REASON SECTION...
+	reason=$1; shift
+	mkdir -p "$R/etc/mu300"
+	( umask 077; cat "$R/etc/config/wireless" > "$R/etc/mu300/wireless.sae-offload" ) 2>/dev/null
+	for s in "$@"; do
+		uci -q del_list "wireless.$s.hostapd_bss_options=u30_sae_offload=1"
+		uci -q set "wireless.$s.encryption=psk2"
+		uci -q delete "wireless.$s.ieee80211w"
+		uci -q delete "wireless.$s.sae_pwe"
+	done
+	uci commit wireless
+	msg="WPA3 hotspot (U30 SAE offload): $reason. The hotspot is back on WPA2 with the same password; the settings it had are in /etc/mu300/wireless.sae-offload"
+	echo "$msg" >&2
+	logger -t mu300-wifi -p daemon.err "$msg" 2>/dev/null || true
+}
+
+all=$(sections)
+[ -n "$all" ] || exit 0
+case ${1:-} in
+	precheck)
+		hostapd=$R/usr/sbin/hostapd
+		[ -e "$hostapd" ] || hostapd=$R/usr/sbin/wpad
+		[ -e "$hostapd" ] || exit 0
+		grep -q u30_sae_offload "$hostapd" && exit 0
+		# shellcheck disable=SC2086
+		fall_back "the installed hostapd does not have it" $all ;;
+	verify)
+		n=0
+		while :; do
+			off_on_purpose && exit 0
+			failed=
+			for s in $all; do enabled "$s" && ! ap_up "$s" && failed="$failed $s"; done
+			[ -n "$failed" ] || exit 0
+			[ "$n" -lt "$WAIT" ] || break
+			sleep 5; n=$((n + 5))
+		done
+		# shellcheck disable=SC2086
+		fall_back "the access point did not start" $failed
+		# a full restart, as every change of this mode needs (docs/U30AIR-SAE.md)
+		wifi down >/dev/null 2>&1
+		[ ! -x "$R/etc/init.d/wpad" ] || "$R/etc/init.d/wpad" restart >/dev/null 2>&1
+		wifi up >/dev/null 2>&1 ;;
+	*) echo "usage: $0 precheck|verify" >&2; exit 2 ;;
+esac
+exit 0
