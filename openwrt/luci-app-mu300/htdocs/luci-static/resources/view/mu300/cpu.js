@@ -102,6 +102,37 @@ return view.extend({
 			E('div', { 'class': 'mud-note' }, _('Frequencies in MHz.'))
 		]);
 
-		dom.content(this.root, [ card, table ]);
+		/* 3. the kernel's thermal zones, read only (mu300-cpu status --json "thermal": /sys/class/thermal; on mainline the
+		 * stock soc-thmzone with its trips and the cpufreq cooling devices, docs/FINDINGS.md 48). Nothing here writes. */
+		var cards = [ card, table ];
+		if (Array.isArray(st.thermal) && st.thermal.length) {
+			var deg = function(mc) { return num(mc) == null ? '--' : (mc / 1000).toFixed(1) + ' \u00b0C'; };
+			var cnt = function(x) { return num(x) == null ? '--' : String(x); };
+			var zones = st.thermal.slice().sort(function(a, b) {   /* the zones with trip points first */
+				return ((b.trips || []).length ? 1 : 0) - ((a.trips || []).length ? 1 : 0);
+			});
+			var zrows = zones.map(function(z) {
+				var trips = (z.trips || []).map(function(t) { return String(t.type || '?') + ' ' + deg(t.temp); }).join(', ');
+				var cool = (z.cooling || []).map(function(c) { return String(c.type || '?') + ' ' + cnt(c.state) + '/' + cnt(c.max); }).join(', ');
+				return E('tr', {}, [
+					E('td', {}, [ String(z.zone || '') ]),
+					E('td', {}, [ deg(z.temp) ]),
+					E('td', {}, [ trips || '--' ]),
+					E('td', {}, [ cool || '--' ])
+				]);
+			});
+			cards.push(E('section', { 'class': 'mud-card', 'style': 'margin-top:14px', 'id': 'mud-cpu-thermal' }, [
+				E('h3', {}, _('Thermal')),
+				E('div', { 'class': 'mud-note' },
+					_('The kernel\'s thermal zones, read only. A zone with trip points throttles the cooling devices bound to it at its passive trip; a cooling state of 0 is no throttling.')),
+				E('table', { 'class': 'mud-table', 'id': 'mud-cpu-thermal-table' }, [
+					E('tr', {}, [
+						E('th', {}, _('Zone')), E('th', {}, _('Temperature')), E('th', {}, _('Trip points')), E('th', {}, _('Cooling devices'))
+					])
+				].concat(zrows))
+			]));
+		}
+
+		dom.content(this.root, cards);
 	}
 });

@@ -31,6 +31,7 @@ var callLockSet = rpc.declare({ object: 'mu300dash', method: 'lock_set', params:
 var callSmsList = rpc.declare({ object: 'mu300dash', method: 'sms_list', params: [ 'page' ], expect: { '': {} }, nobatch: true });
 var callSmsShow = rpc.declare({ object: 'mu300dash', method: 'sms_show', params: [ 'id' ], expect: { '': {} }, nobatch: true });
 var callSmsSend = rpc.declare({ object: 'mu300dash', method: 'sms_send', params: [ 'num', 'text' ], expect: { '': {} }, nobatch: true });
+var callSmsJob  = rpc.declare({ object: 'mu300dash', method: 'sms_job', expect: { '': {} }, nobatch: true });
 var callSmsDel  = rpc.declare({ object: 'mu300dash', method: 'sms_delete', params: [ 'id', 'sim' ], expect: { '': {} }, nobatch: true });
 var callSmsSync = rpc.declare({ object: 'mu300dash', method: 'sms_sync', expect: { '': {} }, nobatch: true });
 var callUsbGet = rpc.declare({ object: 'mu300dash', method: 'usb_get', expect: { '': {} }, nobatch: true });
@@ -47,8 +48,9 @@ var callFwdGet = rpc.declare({ object: 'mu300dash', method: 'forward_get', expec
 var callFwdSet = rpc.declare({ object: 'mu300dash', method: 'forward_set', params: [ 'enabled', 'template', 'allow',
 	'deny', 'keywords', 'clear', 'webhook', 'webhook_url', 'webhook_format', 'webhook_headers', 'telegram',
 	'telegram_token', 'telegram_chat', 'email', 'email_host', 'email_port', 'email_tls', 'email_user', 'email_password',
-	'email_from', 'email_to', 'sms', 'sms_number' ], expect: { '': {} }, nobatch: true });
+	'email_from', 'email_to', 'sms', 'sms_number', 'webhook_body', 'webhook_expect' ], expect: { '': {} }, nobatch: true });
 var callFwdTest = rpc.declare({ object: 'mu300dash', method: 'forward_test', expect: { '': {} }, nobatch: true });
+var callFwdLogClear = rpc.declare({ object: 'mu300dash', method: 'forward_log_clear', expect: { '': {} }, nobatch: true });
 var callCpuGet = rpc.declare({ object: 'mu300dash', method: 'cpu_get', expect: { '': {} }, nobatch: true });
 var callCpuSet = rpc.declare({ object: 'mu300dash', method: 'cpu_set', params: [ 'profile' ], expect: { '': {} }, nobatch: true });
 var callPackagesGet = rpc.declare({ object: 'mu300dash', method: 'packages_get', expect: { '': {} }, nobatch: true });
@@ -686,14 +688,14 @@ return baseclass.extend({
 	callStatus: callStatus, callSignal: callSignal, callSysinfo: callSysinfo, callAct: callAct, callAt: callAt, callAtHist: callAtHist,
 	callAtJob: callAtJob, callOpsLog: callOpsLog, backoff: backoff, ageText: ageText,
 	callLockGet: callLockGet, callLockFresh: callLockFresh, callLockSet: callLockSet,
-	callSmsList: callSmsList, callSmsShow: callSmsShow, callSmsSend: callSmsSend,
+	callSmsList: callSmsList, callSmsShow: callSmsShow, callSmsSend: callSmsSend, callSmsJob: callSmsJob,
 	callSmsDel: callSmsDel, callSmsSync: callSmsSync,
 	callUsbGet: callUsbGet, callUsbSet: callUsbSet,
 	callUsbNetList: callUsbNetList, callUsbNetAdd: callUsbNetAdd,
 	callLangGet: callLangGet, callLangSet: callLangSet,
 	callPowerGet: callPowerGet, callPowerSet: callPowerSet,
 	callTtlGet: callTtlGet, callTtlSet: callTtlSet,
-	callFwdGet: callFwdGet, callFwdSet: callFwdSet, callFwdTest: callFwdTest,
+	callFwdGet: callFwdGet, callFwdSet: callFwdSet, callFwdTest: callFwdTest, callFwdLogClear: callFwdLogClear,
 	callCpuGet: callCpuGet, callCpuSet: callCpuSet,
 	callPackagesGet: callPackagesGet, callPackagesAct: callPackagesAct,
 	callTrafficGet: callTrafficGet, callTrafficSet: callTrafficSet, callNetDev: callNetDev, netDev: netDev,

@@ -7,10 +7,12 @@
 /* Every value from the backend goes into E() inside an array: LuCI's E() takes a lone string as HTML, an array's
  * strings as text. */
 /* Cellular > SMS forwarding: received messages sent on to a webhook, a Telegram chat, an e-mail address (when the image
- * has msmtp) or another phone. The backend is mu300dash forward_get/forward_set/forward_test (unisoc-modem/forward,
- * mu300-sms-forward), driven by the SMS pool: nothing here asks the modem anything.
+ * has msmtp) or another phone. The backend is mu300dash forward_get/forward_set/forward_test/forward_log_clear
+ * (unisoc-modem/forward, mu300-sms-forward), driven by the SMS pool: nothing here asks the modem anything.
  * The secrets (webhook address and headers, bot token, mail password) are never sent back: an empty field keeps the
- * saved one, "Remove the saved value" deletes it. */
+ * saved one, "Remove the saved value" deletes it. The webhook's custom body is a template like the message template:
+ * it is sent back to be edited, and an empty one means the standard body. So is the answer check (key=value the
+ * service's answer must have): the device compares it, and the log gets its verdict, never the answer. */
 
 var DEFAULT_TEMPLATE = '{text}\n-- {sender}, {time} ({device})';
 
@@ -90,6 +92,22 @@ return view.extend({
 			return;
 		}
 		var mail = !!st.email_available;
+		var fmt = (st.webhook_format === 'form' || st.webhook_format === 'text') ? st.webhook_format : 'json';
+
+		/* what the service's answer must have (mu300-sms-forward answer_verdict); the presets only fill the field in */
+		var expect = this.text('webhook_expect', st.webhook_expect, { placeholder: 'errcode=0' });
+		var preset = E('select', { 'class': 'cbi-input-select', 'id': 'mud-fwd-webhook_expect_preset',
+			'style': 'display:block;margin-top:4px' }, [
+			E('option', { 'value': '' }, [ _('Presets') ]),
+			E('option', { 'value': 'errcode=0' }, [ 'DingTalk, WeCom: errcode=0' ]),
+			E('option', { 'value': 'code=0' }, [ 'Feishu, Lark: code=0' ]),
+			E('option', { 'value': 'code=200' }, [ 'Bark: code=200' ]),
+			E('option', { 'value': 'ok=true' }, [ 'Slack API, Telegram API: ok=true' ])
+		]);
+		preset.addEventListener('change', function() {
+			if (preset.value) expect.value = preset.value;
+			preset.value = '';
+		});
 
 		var general = E('section', { 'class': 'mud-card', 'id': 'mud-fwd-card-general' }, [
 			E('h3', {}, _('SMS forwarding')),
@@ -110,11 +128,18 @@ return view.extend({
 			this.secret('webhook_url', st.webhook_url_set, st.webhook_url_hint, _('Address (http:// or https://)'),
 				{ placeholder: 'https://example.com/sms' }),
 			this.field(_('Body'), E('select', { 'class': 'cbi-input-select', 'id': 'mud-fwd-webhook_format' }, [
-				E('option', { 'value': 'json', 'selected': st.webhook_format !== 'form' ? '' : null }, [ 'JSON' ]),
-				E('option', { 'value': 'form', 'selected': st.webhook_format === 'form' ? '' : null }, [ _('Form (URL-encoded)') ])
+				E('option', { 'value': 'json', 'selected': fmt === 'json' ? '' : null }, [ 'JSON' ]),
+				E('option', { 'value': 'form', 'selected': fmt === 'form' ? '' : null }, [ _('Form (URL-encoded)') ]),
+				E('option', { 'value': 'text', 'selected': fmt === 'text' ? '' : null }, [ _('Plain text') ])
 			]), _('Fields: sender, time, text, device, message (the template filled in)')),
+			/* the device fills this in (mu300-sms-forward fill): a template, not a secret, so it comes back */
+			this.field(_('Custom body'), this.area('webhook_body', st.webhook_body, 4,
+				'{"msg_type":"text","content":{"text":"{message}"}}'),
+				_('Empty: the standard fields (plain text: the message). Placeholders: {sender}, {time}, {text}, {device}, {message}. Each value is escaped for the chosen type. This body is shown again here: keep secrets in the address or a header.')),
 			this.secret('webhook_headers', st.webhook_headers_set, st.webhook_header_names,
-				_('Extra headers (one "Name: value" per line)'), { area: true, placeholder: 'Authorization: Bearer ...' })
+				_('Extra headers (one "Name: value" per line)'), { area: true, placeholder: 'Authorization: Bearer ...' }),
+			this.field(_('The answer must contain'), E('div', {}, [ expect, preset ]),
+				_('Empty: every HTTP 2xx answer counts as delivered. With key=value (for example errcode=0), the answer must also be a JSON object that has this value under this key at its top level; otherwise the delivery fails. Only the result of the check is logged, never the answer.'))
 		]);
 
 		var telegram = E('section', { 'class': 'mud-card', 'id': 'mud-fwd-card-telegram' }, [
@@ -169,7 +194,9 @@ return view.extend({
 		var targets = { webhook: _('Webhook'), telegram: 'Telegram', email: _('E-mail'), sms: _('SMS to another phone') };
 		var results = { sent: _('Delivered'), retry: _('Will retry'), failed: _('Failed'), skipped: _('Filtered out'),
 			dropped: _('Dropped') };
-		var log = st.log || [];
+		var log = st.log || [], self = this;
+		var clear = E('button', { 'class': 'mud-btn', 'id': 'mud-fwd-log-clear', 'style': 'margin-top:8px' }, [ _('Clear') ]);
+		clear.addEventListener('click', function() { self.clearLog(clear); });
 		var rows = log.map(function(e) {
 			var d = new Date((e.time || 0) * 1000);
 			return E('tr', {}, [
@@ -187,8 +214,26 @@ return view.extend({
 			log.length ? E('div', { 'style': 'overflow-x:auto' }, E('table', { 'class': 'mud-table' }, [
 				E('tr', {}, [ E('th', {}, [ _('Time') ]), E('th', {}, [ _('Message') ]), E('th', {}, [ _('Target') ]),
 					E('th', {}, [ _('Result') ]), E('th', { 'style': 'text-align:left' }, [ _('Detail') ]) ])
-			].concat(rows))) : E('div', { 'class': 'mud-note' }, [ _('No deliveries yet') ])
+			].concat(rows))) : E('div', { 'class': 'mud-note' }, [ _('No deliveries yet') ]),
+			log.length ? clear : ''
 		]);
+	},
+
+	/* the log is in RAM on the device (the last 100 lines); the queue is not touched */
+	clearLog: function(btn) {
+		var self = this;
+		M.busy(btn, true);
+		return M.callFwdLogClear().then(function(r) {
+			M.busy(btn, false);
+			if (!r || r.ok !== 1) {
+				M.toast(_('Failed: %s').format(M.errText(r)), { type: 'error', timeout: 6000 });
+				return;
+			}
+			return L.resolveDefault(M.callFwdGet(), null).then(function(st) { if (st && st.ok) self.paintLog(st); });
+		}, function() {
+			M.busy(btn, false);
+			M.toast(_('Management connection lost'), { type: 'error', timeout: 6000 });
+		});
 	},
 
 	save: function(btn) {
@@ -202,7 +247,8 @@ return view.extend({
 			this.val('webhook_format'), this.val('webhook_headers'), this.on('telegram'), this.val('telegram_token').trim(),
 			this.val('telegram_chat').trim(), this.on('email'), this.val('email_host').trim(), this.val('email_port').trim(),
 			this.val('email_tls'), this.val('email_user').trim(), this.val('email_password'), this.val('email_from').trim(),
-			this.val('email_to').trim(), this.on('sms'), this.val('sms_number').trim()).then(function(r) {
+			this.val('email_to').trim(), this.on('sms'), this.val('sms_number').trim(), this.val('webhook_body'),
+			this.val('webhook_expect').trim()).then(function(r) {
 			M.busy(btn, false);
 			if (!r || r.ok !== 1) {
 				M.toast(_('Failed: %s').format(M.errText(r)), { type: 'error', timeout: 6000 });

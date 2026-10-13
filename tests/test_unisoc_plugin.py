@@ -5,6 +5,7 @@ read their uci options through the shared allow-lists of lib.sh (S1), so a saved
 /etc/unisoc-modem or /etc/mu300 and a custom AT program must sit in the platform directory. The tests that need a
 state directory therefore run a copy of the plugin's libexec/share tree whose /etc/unisoc-modem is the scratch
 directory; the allow-list itself is tested on the unmodified lib.sh."""
+import json
 import shutil
 import threading
 
@@ -235,53 +236,117 @@ esac
                     else:
                         self.assertEqual(sfun[:2], ['-t 10 AT+SFUN=5 locked=1', '-t 30 AT+SFUN=4 locked=1'])
 
-    def test_reset_sends_the_automatic_values_with_one_restart_and_clears_the_saved_state(self):
-        """#96: mode and band locks live in the modem's NV and stay in force in Android. reset puts every lock back
-        to automatic (the values measured on an F50), restarts the stack once, and drops the saved settings so the
-        boot replay does not put them back; the replay switch itself is kept."""
+    # A fake modem for the reset: it starts with every lock set (mode 4G, EN-DC off, B3, n78, one cell per RAT) and
+    # answers each read from what the writes so far have changed, the way the real one does. Knobs in $STUBLOG/modem
+    # (the uci stub, the first command the tool runs, is where a test writes them):
+    #   refuse              a command prefix the modem answers with ERROR
+    #   silent-mode         AT+SPTESTMODE? answers nothing
+    #   revert-after-sfun   once AT+SFUN=4 was sent, the LTE bands read back as locked again
+    MODEM = r"""#!/bin/sh
+M=$STUBLOG/modem; mkdir -p "$M"
+printf "%s\n" "$*" >> "$STUBLOG/at.commands"
+all=$*; cmd=AT+${all##*AT+}
+if [ -f "$M/refuse" ] && [ "${cmd#"$(cat "$M/refuse")"}" != "$cmd" ]; then printf 'ERROR\n'; exit 0; fi
+case "$cmd" in
+  'AT+SPTESTMODE=134,'*) touch "$M/mode" ;;
+  'AT+SP5GRAN=1') touch "$M/gran" ;;
+  'AT+SPENDC=1') touch "$M/endc" ;;
+  'AT+SPLBAND=1,0,0,0,0,0') touch "$M/lte" ;;
+  'AT+SPLBAND=2,0,0,0,0') touch "$M/nr" ;;
+  'AT+SPFORCEFRQ=12,4') touch "$M/cell12" ;;
+  'AT+SPFORCEFRQ=16,4') touch "$M/cell16" ;;
+  'AT+SFUN=4') touch "$M/sfun" ;;
+esac
+case "$cmd" in
+  'AT+SPTESTMODE?') [ -f "$M/silent-mode" ] && exit 0
+      if [ -f "$M/mode" ]; then printf '+SPTESTMODE: 134,134,0,19,3,1\n'; else printf '+SPTESTMODE: 3,134,0,19,3,1\n'; fi ;;
+  'AT+SP5GRAN?') if [ -f "$M/gran" ]; then printf '+SP5GRAN: 1\n'; else printf '+SP5GRAN: 0\n'; fi ;;
+  'AT+SPENDC?') if [ -f "$M/endc" ]; then printf '+ENDC: 1\n'; else printf '+ENDC: 2\n'; fi ;;
+  'AT+SPLBAND=0')
+      if [ -f "$M/lte" ] && ! { [ -f "$M/revert-after-sfun" ] && [ -f "$M/sfun" ]; }; then printf '+SPLBAND: 0,482,0,149,0\n'
+      else printf '+SPLBAND: 0,0,0,4,0\n'; fi ;;
+  'AT+SPLBAND=3') if [ -f "$M/nr" ]; then printf '+SPLBAND: 553,0,272\n'; else printf '+SPLBAND: 0,0,256\n'; fi ;;
+  'AT+SPFORCEFRQ=12,3') if [ -f "$M/cell12" ]; then printf '+SPFORCEFRQ: 12,3\n'; else printf '+SPFORCEFRQ: 12,3,1650,211\n'; fi ;;
+  'AT+SPFORCEFRQ=16,3') if [ -f "$M/cell16" ]; then printf '+SPFORCEFRQ: 16,3\n'; else printf '+SPFORCEFRQ: 16,3,627264,393\n'; fi ;;
+  'AT+CFUN?') printf '+CFUN: 1\n' ;;
+esac
+printf 'OK\n'
+"""
+    SAVED = (('auto_apply', 'on'), ('mode', '4g'), ('endc', 'off'), ('lte', '3'), ('nr', '78'), ('cell', 'lte:1650,211\n'))
+    RESET_WRITES = ['AT+SP5GRAN=1', 'AT+SPTESTMODE=134,134,0', 'AT+SPENDC=1', 'AT+SPLBAND=1,0,0,0,0,0',
+                    'AT+SPLBAND=2,0,0,0,0', 'AT+SPFORCEFRQ=12,4', 'AT+SPFORCEFRQ=16,4']
+
+    def reset_setup(self, knobs=''):
+        """The lock tool on the fake modem with every lock saved and set: (lock, state dir, run dir, at). KNOBS is
+        shell code the uci stub runs (the first command the tool runs) to set the fake modem's knobs."""
         _, _, lock, state = self.tree()
         at = self.tmp / 'at'
-        at.write_text('''#!/bin/sh
-printf "%s\\n" "$*" >> "$STUBLOG/at.commands"
-case "$*" in
-  *'AT+SPTESTMODE?'*) printf '+SPTESTMODE: 3,134,0,0,0,0\\nOK\\n' ;;
-  *'AT+CFUN?'*) printf '+CFUN: 1\\nOK\\n' ;;
-  *) printf 'OK\\n' ;;
-esac
-''')
+        at.write_text(self.MODEM)
         at.chmod(0o755)
         md = self.tmp / 'mobile-data'
         md.write_text('#!/bin/sh\n[ "$1" = radio-locked ] || exit 0\nshift; exec "$@"\n')
         md.chmod(0o755)
-        self.stub('uci', 'exit 0')
+        self.stub('uci', f'mkdir -p "$STUBLOG/modem"\n{knobs}\nexit 0')
         self.stub('ifup', 'exit 0')
         self.stub('sleep', 'exit 0')
-        # the background cache refresh (sh "$0" get fresh) is not under test: keep it off the AT log
+        # the background cache refreshes (sh "$0" get fresh after a reset, setsid "$0" get fresh after an EN-DC
+        # apply) are not under test: keep them off the AT log - a real setsid (Linux) would append do_get's seven
+        # queries a moment after the tool has returned, racing the next assertion
         self.stub('sh', 'exit 0')
+        self.stub('setsid', 'exit 0')
+        return lock, state, self.tmp / 'run', at
+
+    def reset_run(self, shell, lock, state, run, at, *args):
+        """One `lock reset` (or ARGS) from the saved-and-set starting point: (result, [AT commands sent])."""
+        shutil.rmtree(state, ignore_errors=True)
+        state.mkdir(parents=True)
+        for k, v in self.SAVED:
+            (state / k).write_text(v)
+        shutil.rmtree(self.tmp / 'modem', ignore_errors=True)
+        (self.tmp / 'at.commands').unlink(missing_ok=True)
+        shutil.rmtree(run, ignore_errors=True)
+        run.mkdir(mode=0o700)
+        (run / 'lock.json').write_text('{"ts":1,"mode":{"label":"4g"},"cell":"lte:1650,211",'
+                                       '"cells":["lte:1650,211"],"caps":{"nr":"1,5,6,8,28,41,78","lte":"1,3,5,8,34,38,39,40,41"}}\n')
+        r = self.script(shell, lock, *(args or ('reset',)), MU300_AT=at, MU300_MOBILE_DATA=self.tmp / 'mobile-data',
+                        MU300_DASH_DIR=run, UNISOC_APPLY_DIR=self.tmp / 'apply')
+        return r, self.sent()
+
+    def sent(self):
+        f = self.tmp / 'at.commands'
+        if not f.exists():
+            return []
+        return [l.split(' ', 2)[2] for l in f.read_text().splitlines() if l.startswith('-t ')]
+
+    def writes(self, sent):
+        return [c for c in sent if '=' in c and not c.endswith('?') and not c.startswith('AT+SFUN')
+                and c not in ('AT+SPLBAND=0', 'AT+SPLBAND=3') and not c.endswith(',3')]
+
+    def reset_result(self, run):
+        return json.loads((run / 'lock-reset.json').read_text())
+
+    def test_reset_sends_the_automatic_values_with_one_restart_and_clears_the_saved_state(self):
+        """#96: mode and band locks live in the modem's NV and stay in force in Android. reset puts every lock back
+        to automatic (the values measured on an F50), restarts the stack once, and drops the saved settings so the
+        boot replay does not put them back; the replay switch itself is kept. Verified (kanoqwq's 23361ce, ported):
+        every write's answer is checked, the five settings are read back before and after the restart, and the
+        saved settings go only after both read-backs matched."""
+        lock, state, run, at = self.reset_setup()
         for shell in self.each_shell():
-            state.mkdir(parents=True, exist_ok=True)
-            for k, v in (('auto_apply', 'on'), ('mode', '4g'), ('endc', 'off'), ('lte', '3'), ('nr', '78'),
-                         ('cell', 'lte:1650,211\n')):
-                (state / k).write_text(v)
-            (self.tmp / 'at.commands').unlink(missing_ok=True)
-            run = self.tmp / 'run'
-            run.mkdir(mode=0o700, exist_ok=True)
-            (run / 'lock.json').write_text('{"ts":1,"mode":{"label":"4g"},"cell":"lte:1650,211",'
-                                           '"cells":["lte:1650,211"],"caps":{"nr":"78","lte":"3"}}\n')
-            r = self.script(shell, lock, 'reset', MU300_AT=at, MU300_MOBILE_DATA=md, MU300_DASH_DIR=run,
-                            UNISOC_APPLY_DIR=self.tmp / 'apply')
-            self.assertEqual(r.returncode, 0, r.stderr)
-            sent = [l.split(' ', 2)[2] for l in (self.tmp / 'at.commands').read_text().splitlines()
-                    if l.startswith('-t ')]
-            writes = [c for c in sent if '=' in c and not c.endswith('?') and not c.startswith('AT+SFUN')
-                      and c not in ('AT+SPLBAND=0', 'AT+SPLBAND=3') and not c.endswith(',3')]
-            self.assertEqual(writes, ['AT+SP5GRAN=1', 'AT+SPTESTMODE=134,134,0', 'AT+SPENDC=1',
-                                      'AT+SPLBAND=1,0,0,0,0,0', 'AT+SPLBAND=2,0,0,0,0',
-                                      'AT+SPFORCEFRQ=12,4', 'AT+SPFORCEFRQ=16,4'])
-            # one stack restart, after every write
+            r, sent = self.reset_run(shell, lock, state, run, at)
+            self.assertEqual(r.returncode, 0, r.stderr + r.stdout + (run / 'lock.log').read_text())
+            self.assertEqual(self.writes(sent), self.RESET_WRITES)
+            # one stack restart, after every write and after the first read-back
             sfun = [i for i, c in enumerate(sent) if c.startswith('AT+SFUN=')]
             self.assertEqual([sent[i] for i in sfun], ['AT+SFUN=5', 'AT+SFUN=4'])
             self.assertGreater(sfun[0], sent.index('AT+SPFORCEFRQ=16,4'))
+            # read back: the mode, the NR mode, EN-DC, both band tables and both cell locks, before and after
+            for q in ('AT+SPTESTMODE?', 'AT+SP5GRAN?', 'AT+SPENDC?', 'AT+SPLBAND=0', 'AT+SPLBAND=3',
+                      'AT+SPFORCEFRQ=12,3', 'AT+SPFORCEFRQ=16,3'):
+                before = [i for i, c in enumerate(sent) if c == q and sent.index('AT+SPFORCEFRQ=16,4') < i < sfun[0]]
+                after = [i for i, c in enumerate(sent) if c == q and i > sfun[1]]
+                self.assertTrue(before, (q, sent))
+                self.assertTrue(after, (q, sent))
             self.assertEqual(sorted(p.name for p in state.iterdir()), ['auto_apply'])
             self.assertEqual((state / 'auto_apply').read_text(), 'on')
             self.assertFalse((self.tmp / 'apply').exists())
@@ -289,6 +354,95 @@ esac
             cache = (run / 'lock.json').read_text()
             self.assertIn('"cells":[]', cache)
             self.assertIn('"cell":""', cache)
+            # the result, for the page (lock get) and the caller
+            res = self.reset_result(run)
+            self.assertEqual(res['state'], 'ok')
+            self.assertEqual(json.loads(r.stdout)['state'], 'ok')
+            got = self.script(shell, lock, 'get', 'cached', MU300_DASH_DIR=run)
+            self.assertEqual(json.loads(got.stdout)['reset']['state'], 'ok')
+
+    def test_a_refused_write_keeps_the_saved_locks_and_restarts_nothing(self):
+        lock, state, run, at = self.reset_setup('printf "AT+SPLBAND=2," > "$STUBLOG/modem/refuse"')
+        for shell in self.each_shell():
+            r, sent = self.reset_run(shell, lock, state, run, at)
+            self.assertNotEqual(r.returncode, 0)
+            self.assertEqual(self.writes(sent), self.RESET_WRITES[:5])   # stops at the refused one
+            self.assertEqual([c for c in sent if c.startswith('AT+SFUN=')], [])
+            self.assertEqual(sorted(p.name for p in state.iterdir()), sorted(k for k, _ in self.SAVED))
+            res = self.reset_result(run)
+            self.assertEqual((res['state'], res['error'], res['cmd']),
+                             ('failed', 'The modem refused a write', 'AT+SPLBAND=2,0,0,0,0'))
+            self.assertEqual(json.loads(r.stdout)['state'], 'failed')
+
+    def test_a_readback_that_differs_keeps_the_saved_locks(self):
+        # the LTE table never clears (the write is swallowed): the read-back says so before any restart
+        lock, state, run, at = self.reset_setup(': > "$STUBLOG/modem/revert-after-sfun"; : > "$STUBLOG/modem/sfun"')
+        for shell in self.each_shell():
+            r, sent = self.reset_run(shell, lock, state, run, at)
+            self.assertNotEqual(r.returncode, 0)
+            self.assertEqual(self.writes(sent), self.RESET_WRITES)
+            self.assertEqual([c for c in sent if c.startswith('AT+SFUN=')], [])
+            self.assertEqual(sorted(p.name for p in state.iterdir()), sorted(k for k, _ in self.SAVED))
+            res = self.reset_result(run)
+            self.assertEqual((res['state'], res['error'], res['step']),
+                             ('failed', 'The read-back does not match the automatic values', 'lte'))
+
+    def test_a_readback_that_differs_after_the_restart_keeps_the_saved_locks(self):
+        lock, state, run, at = self.reset_setup(': > "$STUBLOG/modem/revert-after-sfun"')
+        for shell in self.each_shell():
+            r, sent = self.reset_run(shell, lock, state, run, at)
+            self.assertNotEqual(r.returncode, 0)
+            self.assertEqual([c for c in sent if c.startswith('AT+SFUN=')], ['AT+SFUN=5', 'AT+SFUN=4'])
+            self.assertEqual(sorted(p.name for p in state.iterdir()), sorted(k for k, _ in self.SAVED))
+            res = self.reset_result(run)
+            self.assertEqual((res['state'], res['error'], res['step']),
+                             ('failed', 'The read-back after the stack restart does not match the automatic values', 'lte'))
+
+    def test_a_modem_that_does_not_answer_the_mode_query_gets_nothing(self):
+        lock, state, run, at = self.reset_setup(': > "$STUBLOG/modem/silent-mode"')
+        for shell in self.each_shell():
+            r, sent = self.reset_run(shell, lock, state, run, at)
+            self.assertNotEqual(r.returncode, 0)
+            self.assertEqual(self.writes(sent), [])
+            self.assertEqual(sorted(p.name for p in state.iterdir()), sorted(k for k, _ in self.SAVED))
+            self.assertEqual(self.reset_result(run)['error'], 'The modem did not answer the mode query; nothing was sent')
+
+    def test_an_interrupted_reset_finishes_at_the_next_apply_or_replay(self):
+        """A reset ended after it committed (the reset_pending tombstone written, the saved settings not yet
+        deleted) is finished before the next apply saves anything and before the next replay reads anything."""
+        lock, state, run, at = self.reset_setup()
+        for shell in self.each_shell():
+            # rm, the moment it is asked for the saved settings: the reset dies there (as a reboot or a kill would)
+            self.stub('rm', 'case "$*" in *lock-state.d/mode*) kill -9 $PPID; exit 1 ;; esac\nexec /bin/rm "$@"')
+            r, sent = self.reset_run(shell, lock, state, run, at)
+            self.assertNotEqual(r.returncode, 0)
+            self.assertEqual([c for c in sent if c.startswith('AT+SFUN=')], ['AT+SFUN=5', 'AT+SFUN=4'])
+            self.assertTrue((state / 'reset_pending').exists())
+            self.assertEqual(sorted(p.name for p in state.iterdir()),
+                             sorted(['reset_pending'] + [k for k, _ in self.SAVED]))
+            (self.stubs / 'rm').unlink()
+            # the page sees an interrupted reset, not one that is still running
+            got = json.loads(self.script(shell, lock, 'get', 'cached', MU300_DASH_DIR=run).stdout)
+            self.assertEqual((got['reset']['state'], got['reset']['error']), ('interrupted', 'The reset was interrupted'))
+            # the next apply finishes the cleanup first, then saves its own setting
+            r = self.script(shell, lock, 'apply', 'endc', 'on', MU300_AT=at, MU300_MOBILE_DATA=self.tmp / 'mobile-data',
+                            MU300_DASH_DIR=run, UNISOC_APPLY_DIR=self.tmp / 'apply')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(sorted(p.name for p in state.iterdir()), ['auto_apply', 'endc'])
+            self.assertEqual((state / 'endc').read_text(), 'on')
+            # and the early replay: the tombstone first, then nothing to replay, no AT write, the marker set
+            for k, v in self.SAVED:
+                (state / k).write_text(v)
+            (state / 'reset_pending').write_text('1')
+            (self.tmp / 'at.commands').unlink(missing_ok=True)
+            marker = self.tmp / 'replayed'
+            marker.unlink(missing_ok=True)
+            r = self.script(shell, lock, 'replay', 'early', MU300_AT=at, MU300_DASH_DIR=run,
+                            UNISOC_APPLY_DIR=self.tmp / 'apply', UNISOC_REPLAY_MARKER=marker)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(sorted(p.name for p in state.iterdir()), ['auto_apply'])
+            self.assertEqual(self.sent(), [])
+            self.assertTrue(marker.exists())
 
     def test_early_replay_readback_failure_keeps_late_fallback(self):
         _, _, lock, state = self.tree()

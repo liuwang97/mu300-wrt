@@ -644,6 +644,50 @@ class FromStock(UpdateBase):
             self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(set((self.tmp / 'nb.log').read_text().split()), {'--trial'})
 
+    def test_the_trial_arming_says_what_it_could_not_do(self):
+        # a boot image written while Android is the default boot is not tried at all, and one whose slot block cannot
+        # be rebuilt gets a single boot instead of N: both are said (2026-10-12: silence about the first is how an
+        # update ended in Android while its last line promised a reboot). boot_update keeps going - the image is
+        # written either way - so unlock_for_trial itself never fails
+        nb = self.tmp / 'nb'
+        (nb / 'mu300-next-boot').parent.mkdir(parents=True, exist_ok=True)
+        for shell in self.each_shell():
+            for code, line, want in (('0', '', None),
+                                     ('3', 'default boot is not linux: nothing armed', 'the default boot is Android'),
+                                     ('1', 'arming with 1 attempt, not 5', 'arming with 1 attempt, not 5')):
+                (nb / 'mu300-next-boot').write_text(
+                    '#!/bin/sh\n' + (f'echo "{line}" >&2\n' if line else '') + f'exit {code}\n')
+                (nb / 'mu300-next-boot').chmod(0o755)
+                r = self.sh(shell, f'. "{BIN}/mu300-update"; unlock_for_trial; echo "rc=$?"', MU300_LIB=1, MU300_BIN=nb,
+                            MU300_DISK=self.disk, MU300_SYSROOT=self.root)
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertIn('rc=0', r.stdout, code)
+                if want:
+                    self.assertIn(want, r.stderr, code)
+                else:
+                    self.assertEqual(r.stderr, '', code)
+
+    def test_the_reboot_line_knows_android_is_the_default_boot(self):
+        # what apply, kernel, rollback and boot print last: with Android as the default boot a plain reboot starts
+        # Android, so the way to Linux takes the place of "Reboot to start it" (2026-10-12)
+        f = self.tmp / 'default-boot'
+        for shell in self.each_shell():
+            for value in ('linux\n', 'android\n', None):
+                if value is None:
+                    f.unlink(missing_ok=True)
+                else:
+                    f.write_text(value)
+                r = self.sh(shell, f'. "{BIN}/mu300-update"; reboot_goes_to_android || echo REBOOT-LINE',
+                            MU300_LIB=1, MU300_BIN=BIN, MU300_DISK=self.disk, MU300_SYSROOT=self.root,
+                            MU300_DEFAULT_BOOT=f)
+                self.assertEqual(r.returncode, 0, r.stderr)
+                if value == 'linux\n':
+                    self.assertEqual(r.stdout, 'REBOOT-LINE\n')
+                else:
+                    self.assertIn('The default boot is Android', r.stdout, value)
+                    self.assertIn('mu300-next-boot linux', r.stdout, value)
+                    self.assertNotIn('REBOOT-LINE', r.stdout, value)
+
     def test_rollback_boot_brings_the_modules_of_its_image_back(self):
         # two builds of one kernel release share lib/modules/<release>: the set in place is kept with the image it
         # runs with, and goes back with it (seen on F50-B: rollback-boot to a 6.18.55 image with the other
@@ -723,8 +767,10 @@ class Lock(UpdateBase):
         mark = self.tmp / 'held'
         mark.unlink(missing_ok=True)
         # its own process group: the lock is the shell's and its children's (sleep inherits the flock descriptor), as
-        # a run's is while its unpacking or download still runs - ending the holder means the whole group
-        h = subprocess.Popen(shell + ['-c', f'. "{BIN}/mu300-update"; {prelude}; lock_take || exit 9; echo $$ > "{mark}"; sleep 30'],
+        # a run's is while its unpacking or download still runs - ending the holder means the whole group. The sleep
+        # is not the last command: bash (5.1 and later) execs the last command of a -c string in the shell's own
+        # process, and the holder would then be a "sleep" in /proc, not a mu300-update - a run that is gone
+        h = subprocess.Popen(shell + ['-c', f'. "{BIN}/mu300-update"; {prelude}; lock_take || exit 9; echo $$ > "{mark}"; sleep 30; :'],
                              env=self.lock_env(), stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
                              start_new_session=True)
         self.holders.append(h)

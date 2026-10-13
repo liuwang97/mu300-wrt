@@ -166,6 +166,58 @@ class Json(CpuTest):
             self.assertEqual(p0['cpus'], '0-3')
             self.assertIn(st['throttling'], (0, 1))
 
+    def thermal(self):
+        """the kernel's zones as mainline with mu300_thermal shows them: two physical zones without trips, the stock
+        soc-thmzone with its three trips and the cpufreq cooling devices bound (cdevK -> ../cooling_deviceM)"""
+        th = self.root / 'sys/class/thermal'
+        for i, (kind, temp) in enumerate((('lit0-thmzone', 51200), ('big7-thmzone', 56800))):
+            z = th / f'thermal_zone{i}'
+            z.mkdir(parents=True)
+            (z / 'type').write_text(kind + '\n')
+            (z / 'temp').write_text(f'{temp}\n')
+            (z / 'mode').write_text('enabled\n')
+        for i, cpu in enumerate((0, 4, 7)):
+            c = th / f'cooling_device{i}'
+            c.mkdir()
+            (c / 'type').write_text(f'cpufreq-cpu{cpu}\n')
+            (c / 'cur_state').write_text(f'{2 if cpu == 7 else 0}\n')
+            (c / 'max_state').write_text('9\n')
+        z = th / 'thermal_zone2'
+        z.mkdir()
+        (z / 'type').write_text('soc-thmzone\n')
+        (z / 'temp').write_text('56800\n')
+        (z / 'mode').write_text('enabled\n')
+        for i, (tt, tv) in enumerate((('passive', 70000), ('passive', 85000), ('critical', 110000))):
+            (z / f'trip_point_{i}_type').write_text(tt + '\n')
+            (z / f'trip_point_{i}_temp').write_text(f'{tv}\n')
+        for i in range(3):
+            (z / f'cdev{i}').symlink_to(f'../cooling_device{i}')
+
+    def test_status_json_lists_the_thermal_zones_read_only(self):
+        # the panel's read-only Thermal section: every zone with its temperature (mC), the trips and the cooling
+        # devices bound to it; the symlinks and trip files are read, nothing is written
+        self.three_clusters()
+        self.thermal()
+        for shell in self.each_shell():
+            st = json.loads(self.cpu(shell, 'status --json').stdout)
+            zones = {z['zone']: z for z in st['thermal']}
+            self.assertEqual(sorted(zones), ['big7-thmzone', 'lit0-thmzone', 'soc-thmzone'])
+            self.assertEqual(zones['lit0-thmzone'], {'zone': 'lit0-thmzone', 'temp': 51200, 'mode': 'enabled',
+                                                     'trips': [], 'cooling': []})
+            soc = zones['soc-thmzone']
+            self.assertEqual(soc['trips'], [{'type': 'passive', 'temp': 70000}, {'type': 'passive', 'temp': 85000},
+                                            {'type': 'critical', 'temp': 110000}])
+            self.assertEqual(soc['cooling'], [{'type': 'cpufreq-cpu0', 'state': 0, 'max': 9},
+                                              {'type': 'cpufreq-cpu4', 'state': 0, 'max': 9},
+                                              {'type': 'cpufreq-cpu7', 'state': 2, 'max': 9}])
+            self.assertEqual(st['throttling'], 1)     # a cooling device above state 0
+
+    def test_status_json_without_thermal_zones(self):
+        self.three_clusters()
+        for shell in self.each_shell():
+            st = json.loads(self.cpu(shell, 'status --json').stdout)
+            self.assertEqual(st['thermal'], [])
+
     def test_throttling_reflects_the_alarm_flag(self):
         self.three_clusters()
         (self.run_dir / 'mu300/thermal-alarm').write_text('')

@@ -134,9 +134,25 @@ json_val() {
 
 # ------------------------------------------------------------------ the CLI
 installed() { [ -x "$VPN" ]; }
+# cli_message FILE: the CLI's last message, from its stderr in FILE. A refused import, edit or switch ends with a
+# line that says only that nothing was done ("profile not added", "profile ID not changed", "subscription not added",
+# "profile ID does not check: the VPN stays on profile X"); the line before it says why, and that is what the page
+# must show - with the closing line alone, every refused config read "The profile could not be added: profile not
+# added" (FINDINGS 56). A note of the CLI ("note: top-level keys ... not used") is never the reason.
+cli_message() {
+    tr -d '\r' < "$1" 2>/dev/null | sed '/^[[:space:]]*$/d' | awk '
+        { prev = last; last = $0 }
+        END {
+            if (prev != "" && prev !~ /^note: / &&
+                last ~ /^(profile( [a-z0-9-]+)? not (added|changed)|subscription( [a-z0-9-]+)? not (added|refreshed)|profile [a-z0-9-]+ (does not check|cannot run on this system): .*)$/)
+                print prev
+            else
+                print last
+        }'
+}
 # cli ARG...: mu300-vpn with ARGs (stdin: the caller's), bounded in time; OUT its stdout (at most OUT_MAX bytes),
-# ERR its last message (the JSON error on stdout, else stderr's last line), RC its status. The two files are in the
-# root-only runtime directory and gone before this returns.
+# ERR its last message (the JSON error on stdout, else stderr's: cli_message), RC its status. The two files are in
+# the root-only runtime directory and gone before this returns.
 cli() {
     _o=$JOB/cli.$$.out; _e=$JOB/cli.$$.err
     if command -v timeout >/dev/null 2>&1; then
@@ -146,7 +162,7 @@ cli() {
     fi
     OUT=$(head -c "$OUT_MAX" "$_o" 2>/dev/null)
     ERR=$(printf '%s' "$OUT" | jsonfilter -e '@.error' 2>/dev/null | head -n 1)
-    [ -n "$ERR" ] || ERR=$(tr -d '\r' < "$_e" 2>/dev/null | sed '/^[[:space:]]*$/d' | tail -n 1)
+    [ -n "$ERR" ] || ERR=$(cli_message "$_e")
     ERR=$(printf '%s' "$ERR" | LC_ALL=C tr -d '\000-\037\177' | redact | head -c "$ERR_MAX")
     rm -f "$_o" "$_e"
     case $RC in 124|143) ERR='timed out' ;; esac
@@ -471,7 +487,9 @@ m_profile_check() {
     inp '@.id'; id=$V
     allowed "$id" "$ID" || { refuse 'Invalid profile id'; return; }
     need_vpn || return
-    cli profile check "$id" </dev/null || { cli_fail 'The profile does not pass the check'; return; }
+    # "check ID", which every module has: "profile check ID" (the spec's name for it) exists only in the modules
+    # after v2.0.0, and v2.0.0 answered it with its usage text - this page's check never worked (FINDINGS 56)
+    cli check "$id" </dev/null || { cli_fail 'The profile does not pass the check'; return; }
     printf '{"ok":1}\n'
 }
 

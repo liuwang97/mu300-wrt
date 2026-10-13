@@ -9,6 +9,11 @@
 // One line goes to stdout: "status N" (the HTTP status), or "error WHAT" when no status came (the address could not
 // be reached, TLS failed, no answer within the timeout). Nothing else: not the URL, not the reply's body.
 //
+// The one exception is asked for by the caller, never by the request: with MU300_FWD_ANSWER=N in the environment
+// (N bytes, 65536 at most) the first N bytes of a 2xx reply's body follow the status line, for the caller's check of
+// what the service answered (mu300-sms-forward answer_verdict reads them from this pipe and nowhere else). The rest
+// of the reply is read and dropped as before; nothing is kept of any other reply.
+//
 // HTTPS checks the server's certificate against the system's CA bundle. Redirects are not followed (a 3xx is the
 // status). uclient sends a POST body chunked (Transfer-Encoding: chunked), as HTTP/1.1 servers must accept.
 // connect() is checked before request(): a request on a client that never connected crashes this ucode.
@@ -18,6 +23,10 @@ import { stdin } from 'fs';
 
 const CA = '/etc/ssl/certs/ca-certificates.crt';
 const TIMEOUT_MS = 15000;
+
+let keep = +(getenv('MU300_FWD_ANSWER') ?? 0);
+keep = (keep > 0) ? min(keep, 65536) : 0;
+let answer = '';
 
 function finish(line) {
 	print(line, '\n');
@@ -45,7 +54,12 @@ let result = null;
 let cl;
 cl = uclient.new(url, null, {
 	header_done: function() {},
-	data_read: function() { while (length(cl.read() ?? '') > 0); },
+	data_read: function() {
+		let d;
+		while (length(d = cl.read() ?? '') > 0)
+			if (length(answer) < keep)
+				answer += substr(d, 0, keep - length(answer));
+	},
 	data_eof: function() { result = result ?? 'eof'; uloop.end(); },
 	error: function(c, code) { result = 'error ' + code; uloop.end(); },
 });
@@ -61,6 +75,10 @@ if (!cl.request('POST', { headers: headers, post_data: body }))
 uloop.run();
 
 let st = cl.status() ?? {};
+if (st.status >= 200 && st.status < 300 && keep > 0) {
+	print('status ' + st.status + '\n', answer);
+	exit(0);
+}
 if (st.status > 0)
 	finish('status ' + st.status);
 // uclient's error codes (UCLIENT_ERROR_*)
