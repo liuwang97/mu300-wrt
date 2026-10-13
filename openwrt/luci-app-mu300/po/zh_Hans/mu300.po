@@ -9,6 +9,9 @@ msgstr "状态看板"
 msgid "Cellular"
 msgstr "蜂窝"
 
+msgid "Dual SIM"
+msgstr "双 SIM 卡"
+
 msgid "Network locks"
 msgstr "网络锁定"
 
@@ -1689,6 +1692,91 @@ msgstr "仅控制主页状态看板的刷新频率；允许 0.5–60 秒，保�
 msgid "Persistent state directory"
 msgstr "持久化状态目录"
 
+msgid "Switching SIM. Mobile data will disconnect briefly."
+msgstr "正在切换 SIM 卡，移动网络会短暂断开。"
+
+msgid "SIM switch failed; check SIM readiness and hot switching."
+msgstr "SIM 切换失败，请检查 SIM 卡状态和热切换开关。"
+
+# Dual SIM controls.
+msgid "Ready"
+msgstr "就绪"
+
+msgid "Switching SIM"
+msgstr "正在切换 SIM 卡"
+
+msgid "SIM switched; saved as boot default"
+msgstr "已切换，同时设为默认启动卡"
+
+msgid "Switch failed; previous SIM restored"
+msgstr "切换失败，已恢复原卡"
+
+msgid "The target SIM got no mobile data; the previous SIM is restored and the saved boot preference is unchanged."
+msgstr "目标 SIM 卡未获得移动网络；已恢复原活动卡，保存的启动选择保持不变。"
+
+msgid "The target SIM has no mobile data yet, and the previous SIM had none either: the device stays on the target. The saved boot preference is unchanged."
+msgstr "目标 SIM 暂时没有移动数据，之前的 SIM 也没有：设备停留在目标 SIM 上。已保存的启动首选项未更改。"
+
+msgid "Radio state unknown; reboot required"
+msgstr "射频状态未知，请重启设备"
+
+msgid "Radio state unknown; the device is restarting."
+msgstr "射频状态未知；设备正在重启。"
+
+msgid "Dual SIM control is only for the U30 Air on OpenWrt."
+msgstr "双卡控制仅适用于运行 OpenWrt 的 U30 Air。"
+
+msgid "The chosen SIM could not be started at the last boot (no card, PIN, or the modem refused it)."
+msgstr "上次开机时无法启动所选的 SIM 卡（无卡、需要 PIN，或调制解调器拒绝）。"
+
+msgid "No card answered in the chosen SIM position at the last boot."
+msgstr "上次启动时，所选 SIM 位置没有卡应答。"
+
+msgid "The chosen SIM is locked by its PIN."
+msgstr "所选 SIM 被 PIN 码锁定。"
+
+msgid "The chosen SIM got no mobile data within the time at its first boot."
+msgstr "所选 SIM 在首次启动时未能在规定时间内获得移动数据。"
+
+msgid "The second SIM's modem channels did not come up at the last boot."
+msgstr "上次开机时第二张 SIM 卡的调制解调器通道没有就绪。"
+
+msgid "The last dual-SIM boot never confirmed itself."
+msgstr "上一次双卡开机未能确认完成。"
+
+msgid "A live switch saves the target as the next boot default only after it gets mobile data. Without data, the previous SIM is restored and the saved boot preference is unchanged. Each SIM uses its own APN/PDP profile from the WAN settings."
+msgstr "热切换只有在目标卡获得移动网络后才将其保存为下次启动卡。没有网络时会恢复原活动卡，已保存的启动选择保持不变。每张卡使用 WAN 设置中各自的 APN/PDP 配置。"
+
+msgid "Active SIM"
+msgstr "当前使用卡"
+
+msgid "Cold-boot default"
+msgstr "冷启动默认卡"
+
+msgid "SIM control unavailable"
+msgstr "SIM 控制不可用"
+
+msgid "The device is back on SIM1 without live switching; choose again below to try once more."
+msgstr "设备已回到 SIM1 且关闭了热切换；在下方重新选择即可再试一次。"
+
+msgid "Waiting for the first mobile data on SIM2: %d s left. Without data the device goes back to SIM1 and restarts."
+msgstr "正在等待 SIM2 的首次移动数据：还剩 %d 秒。没有数据时设备将回到 SIM1 并重启。"
+
+msgid "Enable hot switching"
+msgstr "启用热切换"
+
+msgid "This device supports next-boot SIM selection only; live switching is unavailable."
+msgstr "此设备仅支持选择下次启动的 SIM 卡，不支持热切换。"
+
+msgid "Reboot after enabling hot switching to prepare both SIM channels."
+msgstr "启用热切换后请重启，以准备两张 SIM 卡的通道。"
+
+msgid "Switch to SIM%d"
+msgstr "切换到卡%d"
+
+msgid "Use SIM%d at next boot"
+msgstr "下次启动使用卡%d"
+
 msgid "Recipient: number, e.g. 10086 or +86..."
 msgstr "收件人：号码，如 10086 或 +86..."
 
@@ -2529,8 +2617,8 @@ msgstr "刷新会保留名称未变的配置文件，添加新的，并删除已
 msgid "Dashboard info failed"
 msgstr "获取仪表盘信息失败"
 
-msgid "Applying network locks: no live signal right now"
-msgstr "正在应用网络锁定，暂无实时信号"
+msgid "The modem is restarting (network locks or a SIM switch): no live signal right now"
+msgstr "调制解调器正在重启（网络锁定或 SIM 切换）：暂时没有实时信号"
 
 msgid "Live signal read failed"
 msgstr "读取实时信号失败"
@@ -2562,8 +2650,11 @@ msgstr "不允许用 \";\" 串联命令"
 msgid "Denied: this command wedges the AT port until a reboot"
 msgstr "已拒绝：此命令会让 AT 端口卡死，直到重启"
 
-msgid "Applying network locks: the modem is restarting (about half a minute), try again shortly"
-msgstr "正在应用网络锁定，调制解调器重启中（约半分钟），请稍后再试"
+msgid "Denied: this command moves the SIM selection or the data route; the SIM settings do that"
+msgstr "已拒绝：此命令会改变 SIM 选择或数据路由；请使用 SIM 设置"
+
+msgid "The modem is restarting (network locks or a SIM switch, about half a minute), try again shortly"
+msgstr "调制解调器正在重启（网络锁定或 SIM 切换，约半分钟），请稍后再试"
 
 msgid "A long AT command is still running in the background; try again when it has finished"
 msgstr "一条耗时较长的 AT 命令仍在后台运行；请在其完成后重试"
@@ -2705,6 +2796,18 @@ msgstr "软件包适配器没有返回有效回复"
 
 msgid "Invalid packages operation"
 msgstr "无效的软件包操作"
+
+# Dual SIM controls.
+msgid "Invalid SIM setting"
+msgstr "SIM 设置无效"
+
+# Dual SIM controls.
+msgid "Enable hot switching; reboot if channels are unavailable or wait until idle"
+msgstr "请启用热切换；通道尚未准备好时请重启，操作进行中请等待。"
+
+# Dual SIM controls.
+msgid "SIM control failed"
+msgstr "SIM 控制失败"
 
 msgid "Request too large"
 msgstr "请求过大"
@@ -2858,6 +2961,10 @@ msgstr "行数必须在 1 到 1000 之间"
 
 msgid "The log could not be read"
 msgstr "无法读取日志"
+
+# Dual SIM controls.
+msgid "Use SIM control or reboot for managed dual-SIM radio"
+msgstr "请使用双 SIM 控制页或重启来操作受管理的双卡射频。"
 
 msgid "Radio did not come up"
 msgstr "射频未能开启"

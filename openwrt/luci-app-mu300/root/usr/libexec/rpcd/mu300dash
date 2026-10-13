@@ -174,7 +174,7 @@ m_status() {
     # a full round in flight also writes the fast cache, so it counts for both.
     # During a lock apply (SFUN restart) do not kick anything: the modem answers
     # garbage mid-restart and the collectors would only burn the AT channel.
-    if [ -d /run/unisoc-modem-lock-apply ]; then busy=1; fbusy=1; fi
+    if { [ -d /run/unisoc-modem-lock-apply ] || [ -e /run/mu300/sim-switching ] || [ -e /run/mu300/sim-active-unknown ]; }; then busy=1; fbusy=1; fi
     if collecting; then busy=1; fbusy=1; fi
     fast_busy && fbusy=1
     # A full round also refreshes sig.json. Prefer it when both tiers are stale;
@@ -200,9 +200,9 @@ m_signal() {
     # that window return garbage or wedge, and rpcd died with a userspace
     # segfault (sessions wiped -> LuCI login loop) on at least one live
     # read's output. Serve the last snapshot until the apply finishes.
-    if [ -d /run/unisoc-modem-lock-apply ]; then
+    if { [ -d /run/unisoc-modem-lock-apply ] || [ -e /run/mu300/sim-switching ] || [ -e /run/mu300/sim-active-unknown ]; }; then
         json_obj "$(cat "$SIGF" 2>/dev/null)" ||
-            printf '{"error":"Applying network locks: no live signal right now"}\n'
+            printf '{"error":"The modem is restarting (network locks or a SIM switch): no live signal right now"}\n'
         return
     fi
     local live="$DIR/live.$$"
@@ -267,11 +267,22 @@ at_wedges() {
         }
     } END { exit !found }'
 }
+# at_moves_sim CMD: CMD is one of the three commands that say which card the modem's channels and its packet data
+# belong to: AT+SPACTCARD=, AT+SMMSWAP=, and AT+SPSWDATA as a command (its "?" forms only ask). The SIM selector
+# sends them itself, in an order that was measured, and keeps a mark of where the data route is (mu300-sim,
+# mobile-data); from the terminal they would move the route under a connection that then answers CONNECT and loses
+# every packet. Denied on every device, in any spelling, as kanoqwq's terminal does.
+at_moves_sim() {
+    printf '%s\n' "$1" | tr -d ' "' | tr 'a-z' 'A-Z' | awk '{
+        if ($0 ~ /\+(SPACTCARD|SMMSWAP)=([^?]|$)/ || $0 ~ /\+SPSWDATA($|[^?=])/ || $0 ~ /\+SPSWDATA=([^?]|$)/) found = 1
+    } END { exit !found }'
+}
 # at_class CMD: what sending CMD would do beyond answering, by its commands anywhere on the line (spaces and quotes
 # dropped, case ignored; "=?" is a test command and changes nothing):
 #   scan   takes minutes and holds the channel: AT+COPS=? (the network list), any *SCAN* command (AT+SPFREQSCAN)
 #   nv     a setting the modem keeps in its NV: network mode, NR mode, EN-DC, band and cell locks (AT+SPTESTMODE=,
-#          AT+SP5GRAN=, AT+SPENDC=, AT+SPLBAND=1/2, AT+SPFORCEFRQ= other than the =x,3 read). They survive a
+#          its two-card form AT+SPTESTMODEM=, AT+SP5GRAN=, AT+SPENDC=, AT+SPLBAND=1/2, AT+SPFORCEFRQ= other than
+#          the =x,3 read). They survive a
 #          reboot and stay in force in Android (#96); the Locks page sets and undoes them.
 #   radio  the radio, the data connection or the modem itself: AT+CFUN=, AT+SFUN=, AT+CGATT=, AT+CGACT=, AT+CGDATA,
 #          AT+COPS=0/1/2/4 (operator selection, deregistration), ATD (a call), AT+SPATASSERT= (crashes the modem)
@@ -282,7 +293,7 @@ at_class() {
     printf '%s\n' "$1" | tr -d ' "' | tr 'a-z' 'A-Z' | awk '{
         s = $0
         if (s ~ /\+COPS=\?/ || s ~ /SCAN/) c = "scan"
-        else if (s ~ /\+(SPTESTMODE|SP5GRAN|SPENDC)=([^?]|$)/ || s ~ /\+SPLBAND=0*[12]([^0-9]|$)/ ||
+        else if (s ~ /\+(SPTESTMODEM?|SP5GRAN|SPENDC)=([^?]|$)/ || s ~ /\+SPLBAND=0*[12]([^0-9]|$)/ ||
                  (s ~ /\+SPFORCEFRQ=[0-9]*,/ && s !~ /\+SPFORCEFRQ=[0-9]*,0*3([^0-9]|$)/)) c = "nv"
         else if (s ~ /\+(CFUN|SFUN|CGATT|CGACT|SPATASSERT)=([^?]|$)/ || s ~ /\+CGDATA/ ||
                  s ~ /\+COPS=0*[0124]([^0-9]|$)/ || s ~ /^ATD/) c = "radio"
@@ -354,10 +365,14 @@ m_at() {
         refuse 'Denied: this command wedges the AT port until a reboot'
         return
     fi
+    if at_moves_sim "$cmd"; then
+        refuse 'Denied: this command moves the SIM selection or the data route; the SIM settings do that'
+        return
+    fi
     # a lock apply in flight means the modem is restarting (SFUN) - say so instead
     # of a generic busy, so it does not look like the console died
-    if [ -d /run/unisoc-modem-lock-apply ]; then
-        printf '{"ok":0,"busy":1,"error":"Applying network locks: the modem is restarting (about half a minute), try again shortly"}\n'
+    if { [ -d /run/unisoc-modem-lock-apply ] || [ -e /run/mu300/sim-switching ] || [ -e /run/mu300/sim-active-unknown ]; }; then
+        printf '{"ok":0,"busy":1,"error":"The modem is restarting (network locks or a SIM switch, about half a minute), try again shortly"}\n'
         return
     fi
     # a scan in the background holds the channel for minutes: say so, not just "busy"
@@ -468,7 +483,7 @@ m_lock_set() {
     # cellular - exactly the thing that must never run inside a request
     # queued=1 tells the page another apply is still running (SFUN restart);
     # the new one waits for the modem and the page can say so
-    [ -d /run/unisoc-modem-lock-apply ] && q=1
+    { [ -d /run/unisoc-modem-lock-apply ] || [ -e /run/mu300/sim-switching ] || [ -e /run/mu300/sim-active-unknown ]; } && q=1
     if [ "$kind" = reset ]; then
         setsid "$DASH/lock" reset >/dev/null 2>&1 &
     else
@@ -859,6 +874,8 @@ do_list() {
 	"lang_set": { "op": "String", "codes": "String", "source": "String" },
 	"power_get": { },
 	"power_set": { "op": "String", "key": "String", "value": "String" },
+	"sim_get": { },
+	"sim_set": { "op": "String", "value": "String" },
 	"ttl_get": { },
 	"ttl_set": { "value": "String" },
 	"traffic_get": { },
@@ -879,6 +896,29 @@ do_list() {
 	"packages_act": { "op": "String" }
 }
 EOF
+}
+
+SIMCTL=${MU300_DASH_SIM:-/opt/mu300/bin/mu300-sim}
+m_sim_get() { reply_obj "$("$SIMCTL" status --json 2>/dev/null)" 'SIM control unavailable'; }
+m_sim_set() {
+    local op value
+    inp '@.op'; op=$V
+    inp '@.value'; value=$V
+    case $op:$value in default:1|default:2|hot:0|hot:1|switch:1|switch:2) ;;
+        *) refuse 'Invalid SIM setting'; return;; esac
+    if [ "$op" = switch ]; then
+        local state
+        state=$("$SIMCTL" status --json 2>/dev/null)
+        [ "$(printf '%s' "$state" | jsonfilter -e '@.hot')" = 1 ] &&
+            [ "$(printf '%s' "$state" | jsonfilter -e '@.available')" = 1 ] &&
+            [ "$(printf '%s' "$state" | jsonfilter -e '@.busy')" = 0 ] || {
+                refuse 'Enable hot switching; reboot if channels are unavailable or wait until idle'; return;
+            }
+        setsid "$SIMCTL" switch "$value" </dev/null >/dev/null 2>&1 &
+        printf '{"ok":1,"started":1}\n'
+    else
+        reply_obj "$("$SIMCTL" "$op" "$value" 2>/dev/null)" 'SIM control failed'
+    fi
 }
 
 # Forensics for the rpcd crash (2026-09-28): rpcd segfaulted while parsing a
@@ -1053,6 +1093,8 @@ call)
         lang_set)     run_m lang_set     m_lang_set ;;
         power_get)    run_m power_get    m_power_get ;;
         power_set)    run_m power_set    m_power_set ;;
+        sim_get)      run_m sim_get m_sim_get ;;
+        sim_set)      run_m sim_set m_sim_set ;;
         ttl_get)      run_m ttl_get      m_ttl_get ;;
         ttl_set)      run_m ttl_set      m_ttl_set ;;
         traffic_get)  run_m traffic_get  m_traffic_get ;;

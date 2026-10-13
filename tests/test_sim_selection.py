@@ -7,23 +7,115 @@ import unittest
 from pathlib import Path
 
 from helpers import BIN, TOP, ShellTest
+from test_sim_hot import FLOCK
 
 
 class SimSelection(ShellTest):
     def setUp(self):
         super().setUp()
+        self.stub('mu300-device', 'echo f50')
+        self.stub('flock', FLOCK)
         self.state = self.tmp / 'run/mu300/sim-slot'
+        self.config_lib = TOP / 'rootfs/overlay/opt/mu300/lib/sim-config.sh'
         self.choice = self.tmp / 'choice'
         self.choice.write_text('0\n')
-        self.stub('uci', '''case "$*" in
-  '-q get network.wan.sim_slot') cat "$STUBLOG/choice" ;;
-  'set network.wan.sim_slot='*) printf '%s\\n' "${2#*=}" > "$STUBLOG/choice" ;;
-  'commit network') : ;;
-  *) exit 1 ;;
-esac''')
+        self.stub('uci', r"""
+[ "$1" != -q ] || shift
+verb=$1; key=${2:-}
+case $key in
+ network.wan.sim_slot|network.wan.sim_slot=*) file="$STUBLOG/choice" ;;
+ network.wan.sim_hot|network.wan.sim_hot=*) file="$STUBLOG/hot-choice" ;;
+ network.wan.apn|network.wan.apn=*) file="$STUBLOG/apn" ;;
+ network.wan.pdptype|network.wan.pdptype=*) file="$STUBLOG/pdptype" ;;
+ network.wan.apn_internal|network.wan.apn_internal=*) file="$STUBLOG/apn_internal" ;;
+ network.wan.pdptype_internal|network.wan.pdptype_internal=*) file="$STUBLOG/pdptype_internal" ;;
+ *) file= ;;
+esac
+case $verb in
+ get) [ -n "$file" ] && cat "$file" ;;
+ set) [ -n "$file" ] && printf '%s\n' "${key#*=}" > "$file" ;;
+ delete) [ -n "$file" ] && rm -f "$file" ;;
+ commit) [ "${T_COMMIT_FAIL:-0}" != 1 ] ;;
+ *) exit 1;;
+esac
+""")
+
+    def env(self, **extra):
+        extra.setdefault('MU300_DEVICE_CMD', self.stubs / 'mu300-device')
+        extra.setdefault('MU300_SIM_CONFIG_LIB', self.config_lib)
+        return super().env(**extra)
 
     def sim(self, shell, *args):
         return self.script(shell, BIN / 'mu300-sim', *args, MU300_SIM_ROOT=self.tmp)
+
+    def native(self):
+        (self.tmp / 'etc').mkdir(exist_ok=True)
+        (self.tmp / 'etc/openwrt_release').touch()
+        self.stub('mu300-device', 'echo u30air')
+        self.backend = self.tmp / 'mu300-sim-u30'
+        self.backend.write_text((BIN / 'mu300-sim-u30').read_text()
+                                .replace('/run/', str(self.tmp / 'run') + '/')
+                                .replace('/etc/', str(self.tmp / 'etc') + '/')
+                                .replace('/opt/mu300/bin/mu300-device', str(self.stubs / 'mu300-device')))
+        self.backend.chmod(0o755)
+
+    def test_u30_manual_default_needs_no_hot_mode_modem_or_wan(self):
+        self.native()
+        for shell in self.each_shell():
+            self.state.unlink(missing_ok=True)
+            self.choice.write_text('0\n')
+            result = self.script(shell, BIN / 'mu300-sim', 'default', '2',
+                                 MU300_SIM_ROOT=self.tmp, MU300_SIM_U30_BACKEND=self.backend)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            status = json.loads(result.stdout)
+            self.assertEqual((status['version'], status['active'], status['default'], status['hot']), (1, 1, 2, 0))
+            self.assertFalse(status['available'])
+            self.assertEqual(self.state.read_text(), '0\n')
+            self.assertEqual(self.choice.read_text(), '1\n')
+            self.assertFalse((self.tmp / 'run/mu300-radio-freeze').exists())
+            self.assertFalse((self.tmp / 'run/mu300/sim-switch.log').exists())
+
+    def test_u30_migration_copies_legacy_preference_and_profile_once(self):
+        self.native()
+        self.choice.unlink()
+        (self.tmp / 'etc/mu300-sim-slot').write_text('1\n')
+        (self.tmp / 'etc/mu300-sim-hot').write_text('1\n')
+        (self.tmp / 'apn').write_text('carrier.example\n')
+        (self.tmp / 'pdptype').write_text('IP\n')
+        result = self.sim(['sh'], 'migrate')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.choice.read_text(), '1\n')
+        self.assertEqual((self.tmp / 'hot-choice').read_text(), '1\n')
+        self.assertEqual((self.tmp / 'apn_internal').read_text(), 'carrier.example\n')
+        self.assertEqual((self.tmp / 'pdptype_internal').read_text(), 'IP\n')
+        self.assertTrue((self.tmp / 'etc/mu300/sim-migration/mu300-sim-slot.migrated').exists())
+        self.assertEqual(self.sim(['sh'], 'migrate').returncode, 0)
+
+    def test_u30_migration_preserves_existing_choice_and_explicit_empty_apn(self):
+        self.native()
+        (self.tmp / 'hot-choice').write_text('0\n')
+        (self.tmp / 'apn_internal').write_text('')
+        (self.tmp / 'apn').write_text('old-carrier\n')
+        (self.tmp / 'etc/mu300-sim-slot').write_text('1\n')
+        (self.tmp / 'etc/mu300-sim-hot').write_text('1\n')
+        self.assertEqual(self.sim(['sh'], 'migrate').returncode, 0)
+        self.assertEqual(self.choice.read_text(), '0\n')
+        self.assertEqual((self.tmp / 'hot-choice').read_text(), '0\n')
+        self.assertEqual((self.tmp / 'apn_internal').read_text(), '')
+
+    def test_u30_commit_failure_restores_visible_preference_and_keeps_legacy(self):
+        self.native()
+        result = self.script(['sh'], BIN / 'mu300-sim', 'default', '2', MU300_SIM_ROOT=self.tmp,
+                             MU300_SIM_U30_BACKEND=self.backend, T_COMMIT_FAIL=1)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.choice.read_text(), '0\n')
+        self.choice.unlink()
+        (self.tmp / 'etc/mu300-sim-slot').write_text('1\n')
+        result = self.script(['sh'], BIN / 'mu300-sim', 'migrate', MU300_SIM_ROOT=self.tmp, T_COMMIT_FAIL=1)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(self.choice.exists())
+        self.assertTrue((self.tmp / 'etc/mu300-sim-slot').exists())
+        self.assertFalse((self.tmp / 'etc/mu300/sim-migration/mu300-sim-slot.migrated').exists())
 
     def test_selection_refuses_other_devices(self):
         device = self.tmp / 'mu300-device'
@@ -55,8 +147,10 @@ esac''')
             status = self.sim(shell, 'status', '--json')
             self.assertEqual(status.returncode, 0, status.stderr)
             self.assertEqual(json.loads(status.stdout), {
-                'ok': 1, 'active': 1, 'default': 2, 'slot1_supported': 1, 'hot': 0,
-                'available': 0, 'result': 'reboot_required',
+                'version': 1, 'ok': 1, 'active': 1, 'default': 2, 'slot1_supported': 1, 'hot': 0,
+                'available': False, 'result': 'reboot_required', 'busy': False, 'phase': 'idle',
+                'error': None, 'capabilities': {'boot_selection': True, 'live_switch': False},
+                'radio_ready': None, 'registered': None, 'wan_up': None,
             })
             hot = self.sim(shell, 'hot', '1')
             self.assertNotEqual(hot.returncode, 0)
@@ -78,6 +172,26 @@ esac''')
             self.assertEqual(self.sim(shell, 'active').stdout.strip(), '1')
             self.state.unlink()
             self.assertEqual(self.sim(shell, 'active').stdout.strip(), '0')
+
+    def test_the_pinned_external_card_is_answered_from_one_file_read(self):
+        # every AT client asks "active" before every command: with the pin at 0 (nearly every device) neither the
+        # settings library nor the device's name is read (measured on a U30 Air: 2.8 ms a call, 6.7 ms with them)
+        self.stub('mu300-device', 'echo asked >> "$STUBLOG/device-asked"; echo f50')
+        for shell in self.each_shell():
+            (self.tmp / 'device-asked').unlink(missing_ok=True)
+            self.state.parent.mkdir(parents=True, exist_ok=True)
+            self.state.write_text('0\n')
+            r = self.script(shell, BIN / 'mu300-sim', 'active', MU300_SIM_ROOT=self.tmp,
+                            MU300_SIM_CONFIG_LIB=self.tmp / 'no-such-library.sh')
+            self.assertEqual((r.returncode, r.stdout.strip(), r.stderr), (0, '0', ''))
+            self.assertFalse((self.tmp / 'device-asked').exists())
+            # a pinned internal card is still checked against the device, as before
+            self.state.write_text('1\n')
+            self.assertEqual(self.sim(shell, 'active').stdout.strip(), '1')
+            self.assertTrue((self.tmp / 'device-asked').exists())
+            self.state.write_text('junk\n')
+            self.assertNotEqual(self.sim(shell, 'active').returncode, 0)
+            self.state.unlink()
 
     def test_invalid_selection_never_writes_or_executes(self):
         for shell in self.each_shell():
@@ -154,13 +268,13 @@ esac''')
 
     def test_data_route_command_failure_stops_slot1_only(self):
         s = (BIN / 'mobile-data').read_text()
-        start = s.index('    if [ "$SIM_SLOT" = 1 ]; then', s.index('mark dial-addr-ok'))
+        start = s.index('    if [ "$SIM_SLOT:$SIM_NATIVE" = 1:0 ]; then', s.index('mark dial-addr-ok'))
         block = s[start:s.index('    prefix=$(mask2prefix', start)]
         for shell in self.each_shell():
             for slot, reply, rc in [(0, 'ERROR', 0), (1, 'OK', 0), (1, 'ERROR', 1)]:
                 calls = self.tmp / 'calls'; calls.write_text('')
                 code = 'at() { echo "$1" >> "$STUBLOG/calls"; echo "$REPLY"; }; dial() {\n' + block + '\necho connected; }; dial'
-                r = self.sh(shell, code, SIM_SLOT=slot, REPLY=reply)
+                r = self.sh(shell, code, SIM_SLOT=slot, SIM_NATIVE=0, REPLY=reply)
                 self.assertEqual(r.returncode, rc, r.stderr)
                 self.assertEqual(calls.read_text().splitlines(), [] if slot == 0 else ['AT+SPSWDATA'])
                 if rc: self.assertNotIn('connected', r.stdout)
@@ -236,6 +350,7 @@ class SimInTheSnapshot(ShellTest):
         # the selector as the pages' backend finds it: the real script, on a root of the test's
         self.simbin = self.tmp / 'mu300-sim'
         self.simbin.write_text(f'#!/bin/sh\nMU300_SIM_ROOT="{self.root}" MU300_DEVICE_CMD="{self.device}" '
+                               f'MU300_SIM_CONFIG_LIB="{TOP / "rootfs/overlay/opt/mu300/lib/sim-config.sh"}" '
                                f'exec sh "{BIN / "mu300-sim"}" "$@"\n')
         self.simbin.chmod(0o755)
 
@@ -251,6 +366,40 @@ class SimInTheSnapshot(ShellTest):
         r = self.script(shell, INFO, MU300_SIM_BIN=env.pop('simbin', self.simbin), **env)
         self.assertEqual(r.returncode, 0, r.stderr)
         return json.loads(r.stdout)
+
+    def native(self):
+        (self.root / 'etc').mkdir(parents=True, exist_ok=True)
+        (self.root / 'etc/openwrt_release').write_text('DISTRIB_ID=OpenWrt\n')
+        self.backend = self.tmp / 'mu300-sim-u30'
+        self.backend.write_text((BIN / 'mu300-sim-u30').read_text()
+                               .replace('/run/', str(self.root / 'run') + '/')
+                               .replace('/etc/', str(self.root / 'etc') + '/')
+                               .replace('/opt/mu300/bin/mu300-device', str(self.device))
+                               .replace('/opt/mu300/bin/mu300-at', str(self.stubs / 'mu300-at')))
+        self.backend.chmod(0o755)
+        self.stub('flock', FLOCK)
+        self.stub('mu300-at', 'touch "$STUBLOG/unexpected-at"; exit 1')
+
+    def test_native_u30_snapshot_keeps_slot_1_supported_without_probing_the_modem(self):
+        self.native()
+        for shell in self.each_shell():
+            for boot_slot in (0, 1):
+                i = self.info(shell, 'u30air', 1, boot_slot, MU300_SIM_U30_BACKEND=self.backend)
+                self.assertEqual(i['sim'], {'slot': boot_slot, 'wanted': 1, 'slot1_supported': 1})
+                self.assertEqual(i['data_device'], 'sipa_eth' + str(boot_slot * 8))
+                self.assertEqual(self.choice.read_text(), '1\n')
+        self.assertFalse((self.tmp / 'unexpected-at').exists())
+
+    def test_unknown_u30_active_card_is_not_replaced_with_the_routing_pin(self):
+        self.native()
+        marker = self.root / 'run/mu300/sim-active-unknown'
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.touch()
+        for shell in self.each_shell():
+            i = self.info(shell, 'u30air', 1, 1, MU300_SIM_U30_BACKEND=self.backend)
+            self.assertIsNone(i['sim'])
+            self.assertEqual(i['data_device'], 'sipa_eth8')
+        self.assertFalse((self.tmp / 'unexpected-at').exists())
 
     def test_the_reported_case_an_internal_sim_chosen_on_a_u30_air(self):
         for shell in self.each_shell():
@@ -343,6 +492,11 @@ Promise.resolve(o.load('wan')).then((cur) => {
             o = self.options({'sim': {'slot': 0, 'wanted': int(saved), 'slot1_supported': 1}}, saved)
             self.assertEqual((o['cur'], o['keys'], o['labels']), (saved, ['0', '1'], self.BOTH))
             self.assertIn('Applies after reboot', o['description'])
+
+    def test_native_u30_keeps_both_cards_in_the_wan_form(self):
+        for saved in ('0', '1'):
+            o = self.options({'sim': {'slot': 1, 'wanted': int(saved), 'slot1_supported': 1}}, saved)
+            self.assertEqual((o['cur'], o['keys'], o['labels']), (saved, ['0', '1'], self.BOTH))
 
     def test_nothing_known_changes_nothing(self):
         # no panel (the call fails), an older panel (no "sim"), no selector (null), or an answer that is not 0 or 1
