@@ -70,7 +70,21 @@ one_request() {
 }
 
 [ -c "$DEV" ] || { echo "mu300-atd: $DEV is not a character device" >&2; exit 1; }
-mkdir -p "$DIR"
+# $DIR is ours alone, or it is made so: /run takes files from every user on these images, and in a directory
+# somebody else made first (or behind his symlink) the command fifo would be his to write - AT commands, to the
+# modem, as us - and every answer his to read. Recovered from, not refused: without this daemon there is no
+# modem at all. The same helper as mu300-voice (lib/run-dir.sh); the owner asked for is whoever runs this (root).
+RUN_DIR_LIB=${MU300_RUN_DIR_LIB:-/opt/mu300/lib/run-dir.sh}
+if [ -r "$RUN_DIR_LIB" ]; then
+    # shellcheck disable=SC1090
+    . "$RUN_DIR_LIB"
+    case $DIR in */*) mkdir -p "${DIR%/*}" 2>/dev/null ;; esac
+    run_dir_take "$DIR" "$(id -u)" mu300-atd || exit 1
+    chmod 755 "$DIR"
+else
+    echo "mu300-atd: $RUN_DIR_LIB is missing; $DIR is not checked" >&2
+    mkdir -p "$DIR"
+fi
 
 # Exactly one daemon, or the modem looks dead to the whole device. Two of them read the same SIPC channel and
 # each gets a random half of every reply, and the newcomer replaces the command fifo under the one already

@@ -55,20 +55,14 @@ TMP=${MU300_VOICE_TMP:-/run/mu300-voice}
 HFP_CTL=$TMP/hfp.ctl
 # root-only: the scene and headset logs live here
 umask 077
-mkdir -p "$TMP" 2>/dev/null
 # /run takes files from every user on these images (boot/init mounts it 1777), so a directory of this name may be
 # one somebody else made first - and what is in it are pid files this kills, an undo log it writes back to the
-# mixer and files it writes as root. Only root's own directory, which nobody else may write, is used
-# (run_dir_ours PATH [UID]).
-run_dir_ours() {
-    set -- "$1" "${2:-0}" $(ls -lnd "$1" 2>/dev/null)
-    case ${3:-} in d????w*|d???????w*) return 1 ;; d*) ;; *) return 1 ;; esac
-    [ "${5:-}" = "$2" ]
-}
-run_dir_ours "$TMP" "${MU300_VOICE_RUN_UID:-0}" || {
-    echo "mu300-voice: $TMP is not root's own directory (or others may write it); remove it and try again" >&2
-    exit 1
-}
+# mixer and files it writes as root. Only root's own directory, which nobody else may write, is used; a foreign
+# one is replaced and said so, not a reason to stay down (run_dir_take, shared with mu300-atd).
+RUN_DIR_LIB=${MU300_RUN_DIR_LIB:-/opt/mu300/lib/run-dir.sh}
+# shellcheck disable=SC1090
+. "$RUN_DIR_LIB" || { echo "mu300-voice: $RUN_DIR_LIB is missing" >&2; exit 1; }
+run_dir_take "$TMP" "${MU300_VOICE_RUN_UID:-0}" mu300-voice || exit 1
 chmod 700 "$TMP" 2>/dev/null
 
 card=$(awk '/sprdphone/ {print $1; exit}' /proc/asound/cards 2>/dev/null)

@@ -61,12 +61,19 @@ class Masking(unittest.TestCase):
         self.assertIn('umask 077', src)
 
 
+RUN_DIR_LIB = TOP / 'rootfs' / 'overlay' / 'opt' / 'mu300' / 'lib' / 'run-dir.sh'
+
+
 class RunDirectory(unittest.TestCase):
-    """/run is world-writable on the images, so /run/mu300-voice may be a directory somebody else made first."""
+    """/run is world-writable on the images, so /run/mu300-voice (and /run/mu300-at) may be a directory somebody
+    else made first. lib/run-dir.sh is the one check both daemons use."""
+
+    def call(self, fn, path, uid):
+        return subprocess.run(['sh', '-c', '. "$0"; %s "$1" "$2" test' % fn, str(RUN_DIR_LIB), str(path), str(uid)],
+                              capture_output=True, text=True)
 
     def ours(self, path, uid):
-        fn = shell_function(VOICE.read_text(), 'run_dir_ours')
-        return subprocess.run(['sh', '-c', fn + 'run_dir_ours "$1" "$2"', 'sh', str(path), str(uid)]).returncode == 0
+        return self.call('run_dir_ours', path, uid).returncode == 0
 
     def test_only_the_owners_own_directory(self):
         import os
@@ -88,13 +95,68 @@ class RunDirectory(unittest.TestCase):
             self.assertFalse(self.ours(d / 'file', os.getuid()))
             self.assertFalse(self.ours(d / 'missing', os.getuid()))
 
-    def test_checked_before_anything_is_written_there(self):
+    def test_taken_created_recovered_and_never_through_a_symlink(self):
+        import os
+        me = os.getuid()
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            # missing: created, the owner's alone
+            r = self.call('run_dir_take', d / 'new', me)
+            self.assertEqual((r.returncode, r.stderr), (0, ''))
+            self.assertEqual((d / 'new').stat().st_mode & 0o777, 0o700)
+            # ours already, with what is in it: untouched and silent
+            (d / 'new' / 'cmd').write_text('x')
+            r = self.call('run_dir_take', d / 'new', me)
+            self.assertEqual((r.returncode, r.stderr, (d / 'new' / 'cmd').read_text()), (0, '', 'x'))
+            # ours, but others may write: that is taken away, the contents stay
+            (d / 'new').chmod(0o777)
+            r = self.call('run_dir_take', d / 'new', me)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn('taken away', r.stderr)
+            self.assertEqual(((d / 'new').stat().st_mode & 0o777, (d / 'new' / 'cmd').exists()), (0o755, True))
+            # a symlink to somewhere else: replaced by a real directory, and nothing is made or removed behind it
+            target = d / 'elsewhere'
+            target.mkdir()
+            (target / 'keep').write_text('k')
+            (d / 'link').symlink_to(target)
+            r = self.call('run_dir_take', d / 'link', me)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn('replaced', r.stderr)
+            self.assertFalse((d / 'link').is_symlink())
+            self.assertTrue((d / 'link').is_dir())
+            self.assertEqual(sorted(p.name for p in target.iterdir()), ['keep'])
+            # a dangling symlink (mkdir -p would make its target): the same
+            (d / 'dangling').symlink_to(d / 'nowhere')
+            r = self.call('run_dir_take', d / 'dangling', me)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertFalse((d / 'nowhere').exists())
+            self.assertTrue((d / 'dangling').is_dir() and not (d / 'dangling').is_symlink())
+            # a file of that name: replaced
+            (d / 'file').write_text('')
+            self.assertEqual(self.call('run_dir_take', d / 'file', me).returncode, 0)
+            self.assertTrue((d / 'file').is_dir())
+            # somebody who is not the owner asked for (a member of the voice group): the check alone, with the reason
+            r = self.call('run_dir_take', d / 'new', me + 1)
+            self.assertEqual(r.returncode, 1)
+            self.assertIn("test: %s is missing or not the daemon's own directory" % (d / 'new'), r.stderr)
+            self.assertTrue((d / 'new' / 'cmd').exists())
+            r = self.call('run_dir_take', d / 'never', me + 1)
+            self.assertEqual(r.returncode, 1)
+
+    def test_both_daemons_use_the_one_helper_before_they_write(self):
         src = VOICE.read_text()
-        check = src.index('run_dir_ours "$TMP"')
+        check = src.index('run_dir_take "$TMP"')
         for first_use in ('SAVED=$TMP/saved', 'chmod 700 "$TMP"', 'SCENE_PID=$TMP/scene.pid'):
             self.assertLess(check, src.index(first_use), first_use)
+        self.assertNotIn('mkdir -p "$TMP"', src)
         # the headset's control fifo is inside it, not in /run itself
         self.assertIn('HFP_CTL=$TMP/hfp.ctl', src)
+        atd = (VOICE.parent / 'mu300-atd').read_text()
+        check = atd.index('run_dir_take "$DIR"')
+        for first_use in ('mkdir "$LOCK"', 'mkfifo -m 600 "$CMD"', 'mkdir -p "$URCDIR"'):
+            self.assertLess(check, atd.index(first_use), first_use)
+        for script in (src, atd):
+            self.assertNotIn('run_dir_ours() {', script)       # no copy of its own
 
 
 class Hfp(unittest.TestCase):

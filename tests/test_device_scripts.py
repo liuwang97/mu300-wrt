@@ -333,7 +333,7 @@ class Atd(ShellTest):
         """Start the daemon on tty_nr1 (and a tty_nr0 if NR0); wait until it owns the channel and every drainer it
         started has made its log. Returns the URC logs and the nr1 master."""
         self.run_dir = self.tmp / f'run{len(self.procs)}'   # one per daemon: each_shell starts several
-        self.run_dir.mkdir()
+        self.run_dir.mkdir(exist_ok=True)
         self.dir = self.run_dir / 'at'
         dev, master = self.pty('tty_nr1')
         if nr0:
@@ -407,6 +407,24 @@ class Atd(ShellTest):
             self.assertFalse(outside.exists())
             self.assertFalse((self.dir / 'answer.1').exists())
             self.assertIn('malformed request', self.err.read_text())
+
+    def test_a_directory_somebody_else_made_first_is_replaced(self):
+        """/run takes files from every user: a symlink (or a foreign directory) where $DIR should be is not where the
+        command fifo and the answers go."""
+        lib = BIN.parent / 'lib' / 'run-dir.sh'
+        for shell in self.shells:
+            elsewhere = self.tmp / f'elsewhere{len(self.procs)}'
+            elsewhere.mkdir()
+            run = self.tmp / f'run{len(self.procs)}'
+            run.mkdir()
+            (run / 'at').symlink_to(elsewhere)
+            logs, m = self.start(shell, MU300_RUN_DIR_LIB=lib)
+            self.assertFalse(self.dir.is_symlink())
+            self.assertEqual(self.dir.stat().st_mode & 0o777, 0o755)
+            self.assertEqual(list(elsewhere.iterdir()), [])
+            self.assertIn('was somebody else', self.err.read_text())
+            self.send(m, 'AT', b'\r\nOK\r\n')
+            self.assertEqual(self.answer, 'OK\n')
 
     def test_a_second_command_never_reaches_the_modem(self):
         """The daemon repeats mu300-at's one_request test: a CR outside AT+CMGS=N<CR>PDU<Ctrl-Z> is refused with an
