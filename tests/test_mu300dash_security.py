@@ -97,7 +97,7 @@ DEFAULTS = {
 }
 
 # The methods that start something with setsid (in the background of mu300dash)
-DETACHED = {'act', 'at', 'lock_get', 'lock_set', 'sms_sync', 'status', 'sim_set'}
+DETACHED = {'act', 'at', 'lock_get', 'lock_set', 'sms_send', 'sms_sync', 'status', 'sim_set'}
 
 # Hostile values: each is refused by every field that takes a fixed set, a number or a name. The NUL cases: the
 # stand-in jsonfilter passes the NUL on (the backend maps it to \001 and refuses); the real jsonfilter prints strings
@@ -187,6 +187,38 @@ class Mu300Dash(ShellTest):
             recs.append(rec)
         return r, recs, stdins
 
+    def send_job(self, shell, params, **extra):
+        """The panel's send: sms_send starts the job detached, and the job itself is then run here as setsid would
+        have, on a shared runtime directory: (the sms_job reply, [[name, arg...], ...] of the job, {index: stdin}).
+        A send refused before the job (a bad number, an empty text) comes back as sms_send's own reply."""
+        self.n += 1
+        d = self.tmp / f'sms-run{self.n}'
+        d.mkdir()
+        r, recs, _ = self.call(shell, 'sms_send', params, MU300_DASH_DIR=d, **extra)
+        obj = self.reply(r)
+        if not obj.get('started'):
+            return obj, recs, {}
+        self.assertEqual(recs, [['setsid', 'mu300dash', 'sms-job']])
+        calls = d / 'calls'
+        calls.mkdir()
+        env = self.env(STUB_CALLS=calls, STUB_OUT=self.out, MU300_DASH_BIN=self.adapters, MU300_DASH_DIR=d,
+                       MU300_AT=self.adapters / 'at', MU300_SMS_BIN=self.adapters / 'sms', MU300_SMS_POOL=d / 'pool',
+                       MU300_DASH_OPS_DIR=d / 'flash')
+        env.update({k: str(v) for k, v in extra.items()})
+        j = subprocess.run(shell + [str(DASH), 'sms-job'], capture_output=True, env=env, timeout=60)
+        self.assertEqual(j.returncode, 0, j.stderr)
+        recs, stdins = [], {}
+        for f in sorted(calls.glob('call.*')):
+            if f.suffix == '.stdin':
+                continue
+            rec = [a.decode('utf-8', 'surrogateescape') for a in f.read_bytes().split(b'\0')[:-1]]
+            sin = f.with_name(f.name + '.stdin')
+            if sin.exists():
+                stdins[len(recs)] = sin.read_text()
+            recs.append(rec)
+        r, _, _ = self.call(shell, 'sms_job', {}, MU300_DASH_DIR=d, **extra)
+        return self.reply(r), recs, stdins
+
     def reply(self, r):
         """The reply: one JSON object, whatever happened."""
         try:
@@ -213,7 +245,7 @@ class Mu300Dash(ShellTest):
 
 class Inventory(Mu300Dash):
     METHODS = {'sysinfo', 'status', 'signal', 'act', 'at', 'at_job', 'at_history', 'ops_log', 'lock_get', 'lock_set', 'sms_list',
-               'sms_show', 'sms_send', 'sms_delete', 'sms_sync', 'usb_get', 'usb_set', 'usb_net_list', 'usb_net_add',
+               'sms_show', 'sms_send', 'sms_job', 'sms_delete', 'sms_sync', 'usb_get', 'usb_set', 'usb_net_list', 'usb_net_add',
                'lang_get', 'lang_set', 'power_get', 'power_set',
                'ttl_get', 'ttl_set', 'cpu_get', 'cpu_set', 'forward_get', 'forward_set', 'forward_test',
                'traffic_get', 'traffic_set', 'packages_get', 'packages_act', 'sim_get', 'sim_set'}
@@ -508,8 +540,9 @@ class Passthrough(Mu300Dash):
         for shell in self.each_shell():
             for t in texts:
                 with self.subTest(text=t[:20]):
-                    r, recs, stdins = self.call(shell, 'sms_send', {'num': '+905551112233', 'text': t})
-                    self.assertEqual(self.reply(r)['ok'], 1, r.stdout)
+                    # (the send runs as a job: the text reaches it through a root-only file, and mu300-sms on stdin)
+                    obj, recs, stdins = self.send_job(shell, {'num': '+905551112233', 'text': t})
+                    self.assertEqual(obj['ok'], 1, obj)
                     self.assertEqual(recs, [['sms', 'send', '--stdin', '+905551112233']])
                     self.assertEqual(stdins, {0: t})
             self.assert_refused(shell, [
@@ -521,7 +554,7 @@ class Passthrough(Mu300Dash):
                 ('10000', 'sms_send', {'num': '123', 'text': 'a' * 10000}),
             ])
             # a JSON object where the text belongs is only text: it travels on stdin like any other
-            r, recs, stdins = self.call(shell, 'sms_send', {'num': '123', 'text': {'a': '$(id)'}})
+            _, recs, stdins = self.send_job(shell, {'num': '123', 'text': {'a': '$(id)'}})
             self.assertEqual(recs, [['sms', 'send', '--stdin', '123']])
             self.assertEqual(json.loads(stdins[0]), {'a': '$(id)'})
 
@@ -594,8 +627,8 @@ class Replies(Mu300Dash):
             self.output('sms', text)
             r, _, _ = self.call(shell, 'sms_show', {'id': '4'})
             self.assertEqual(self.reply(r)['text'], text)
-            r, _, _ = self.call(shell, 'sms_send', {'num': '123', 'text': 'sent'})
-            self.assertEqual(self.reply(r)['ok'], 0)
+            obj, _, _ = self.send_job(shell, {'num': '123', 'text': 'sent'})
+            self.assertEqual(obj['ok'], 0)
 
     def test_sms_list_fields_are_escaped(self):
         row = '%-7s %-7s %-3s %-18s %-21s %s' % ('3', 'unread', 'mt', 'A"B\\C', '26/10/05,12:00:00',
@@ -912,7 +945,7 @@ class Acl(unittest.TestCase):
     # SMS bodies (one-time codes) and the AT history (AT+CPIN PINs) are not for read-only users (ruling R14)
     READ = {'sysinfo', 'status', 'signal', 'lock_get', 'usb_get', 'usb_net_list', 'lang_get', 'power_get', 'ttl_get',
             'cpu_get', 'traffic_get', 'ops_log', 'packages_get', 'sim_get'}
-    WRITE = {'act', 'at', 'at_job', 'at_history', 'lock_set', 'sms_list', 'sms_show', 'sms_send', 'sms_delete', 'sms_sync',
+    WRITE = {'act', 'at', 'at_job', 'at_history', 'lock_set', 'sms_list', 'sms_show', 'sms_send', 'sms_job', 'sms_delete', 'sms_sync',
              'usb_set', 'usb_net_add', 'lang_set', 'power_set', 'ttl_set', 'cpu_set', 'forward_get',
              'forward_set', 'forward_test', 'traffic_set', 'packages_act', 'sim_set'}
 
@@ -1019,8 +1052,9 @@ class FixRound1(Mu300Dash):
         for shell in self.each_shell():
             r, _, _ = self.call(shell, 'sms_show', {'id': '4'})
             self.assertEqual(self.reply(r), {'ok': 0, 'error': 'Read failed', 'detail': 'no message "4"\\x'})
-            r, _, _ = self.call(shell, 'sms_send', {'num': '123', 'text': 'hi'})
-            self.assertEqual(self.reply(r), {'ok': 0, 'error': 'Sending failed', 'detail': 'no message "4"\\x'})
+            obj, _, _ = self.send_job(shell, {'num': '123', 'text': 'hi'})
+            self.assertEqual({k: obj.get(k) for k in ('ok', 'error', 'detail', 'done')},
+                             {'ok': 0, 'error': 'Sending failed', 'detail': 'no message "4"\\x', 'done': 1})
             r, _, _ = self.call(shell, 'sms_delete', {'id': '4'})
             self.assertEqual(self.reply(r), {'ok': 0, 'error': 'Delete failed', 'detail': 'no message "4"\\x'})
 
@@ -1037,7 +1071,6 @@ class FixRound1(Mu300Dash):
             ('empty', 'sms_send', {'num': '12', 'text': ''}, {}, 'The message is empty'),
             ('too long', 'sms_send', {'num': '12', 'text': 'x' * 481}, {},
              'The message is too long (over 480 characters)'),
-            ('sms busy', 'sms_send', {'num': '12', 'text': 'hi'}, {'sms': 'mu300-at: busy\n'}, busy),
             ('at busy', 'at', {'cmd': 'ATI'}, {'at': 'mu300-at: busy\n'}, busy),
             ('no sms', 'sms_list', {}, {'sms': ''},
              'mu300-sms is not available (the SMS service is not installed or not running)'),
@@ -1072,15 +1105,18 @@ class FixRound1(Mu300Dash):
                 with self.subTest(client=label):
                     self.output('at', text)
                     self.assertEqual(self.reply(self.call(shell, 'at', {'cmd': 'ATI'})[0]), busy)
-                    # mu300-sms passes mu300-at's line on, with its own after it
+                    # mu300-sms passes mu300-at's line on, with its own after it (the send runs as a job: the
+                    # verdict comes from sms_job, with the same words, which are in the catalogs)
                     self.output('sms', text + 'mu300-sms: the modem did not take the message\n')
                     self.output('sms.rc', '1')
-                    self.assertEqual(self.reply(self.call(shell, 'sms_send', {'num': '12', 'text': 'hi'})[0]), busy)
+                    obj, _, _ = self.send_job(shell, {'num': '12', 'text': 'hi'})
+                    self.assertEqual({k: obj.get(k) for k in busy}, busy)
+                    self.assertNotIn('detail', obj)
             self.output('at', '+CME ERROR: SIM busy\n')
             obj = self.reply(self.call(shell, 'at', {'cmd': 'AT+CPMS?'})[0])
             self.assertEqual((obj['ok'], obj.get('busy'), obj['reply']), (1, None, '+CME ERROR: SIM busy'))
             self.output('sms', 'mu300-sms: the modem did not take the message: +CMS ERROR: SIM busy\n')
-            obj = self.reply(self.call(shell, 'sms_send', {'num': '12', 'text': 'hi'})[0])
+            obj, _, _ = self.send_job(shell, {'num': '12', 'text': 'hi'})
             self.assertEqual((obj['ok'], obj.get('busy'), obj['error']), (0, None, 'Sending failed'))
             self.assertIn('SIM busy', obj['detail'])
 
@@ -1143,8 +1179,9 @@ esac
 
     def test_cell_names_the_operator(self):
         # COPS's <format> decides what the quoted text is: 2 a PLMN (the F50's modem keeps that format), whose long
-        # name comes from one line that puts format 2 back, once per PLMN; 0/1 a name, UCS2 hex decoded only when the
-        # modem's character set is UCS2, and never a PLMN however many digits it has
+        # name comes from one line that puts format 2 back, once per PLMN; 0/1 a name, UCS2 hex decoded when the
+        # modem's character set is UCS2 (under another one only a text that cannot be a name: OperatorNameHex in
+        # test_dashboard_info.py), and never a PLMN however many digits it has
         at = self.tmp / 'modem'
         at.write_text(r"""#!/bin/sh
 echo "$3" >> "$STUBLOG/at.log"

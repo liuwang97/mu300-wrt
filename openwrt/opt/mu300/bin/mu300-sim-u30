@@ -74,7 +74,7 @@ status() {
     fi
     case "$result" in failed|no_data|reboot_required|rolled_back) error="\"$result\"";; esac
     [ "$busy" = 0 ] || can=0
-    printf '{"version":1,"ok":1,"supported":1,"active":%s,"default":%s,"hot":%s,"available":%s,"busy":%s,"phase":"%s","result":"%s","error":%s,"fallback":%s,"capabilities":{"boot_selection":true,"live_switch":true},"radio_ready":%s,"registered":null,"wan_up":%s}\n' \
+    printf '{"version":1,"ok":1,"supported":1,"slot1_supported":1,"active":%s,"default":%s,"hot":%s,"available":%s,"busy":%s,"phase":"%s","result":"%s","error":%s,"fallback":%s,"capabilities":{"boot_selection":true,"live_switch":true},"radio_ready":%s,"registered":null,"wan_up":%s}\n' \
         "$slot" "$boot" "$hot" "$can" "$busy" "$phase" "$result" "$error" "$fallback" "$radio" "$wan"
 }
 cmd() {

@@ -1,7 +1,9 @@
 """SIM selection stays consistent for a boot; no hardware is contacted."""
 import json
 import re
+import shutil
 import subprocess
+import unittest
 from pathlib import Path
 
 from helpers import BIN, TOP, ShellTest
@@ -298,3 +300,215 @@ for (const neigh of [null, [null], {}, [null, {rat:'nr', band:41, pci:315, arfcn
             r = self.script(shell, script, '--prefix', MU300_IF_INET6=addresses)
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertEqual(r.stdout.strip(), '2409:4:5:6::/64')
+
+
+INFO = TOP / 'openwrt/luci-app-mu300/root/usr/libexec/unisoc-modem/dashboard-info'
+HOME = TOP / 'openwrt/luci-app-mu300/htdocs/luci-static/resources/view/mu300/home.js'
+PROTO = TOP / 'openwrt/overlay/www/luci-static/resources/protocol/mu300cell.js'
+
+
+class SimInTheSnapshot(ShellTest):
+    """Issue #194: dashboard-info's "sim" is mu300-sim's own account - the card in use, the one asked for, whether
+    the device has slot 1 - so that a page can say that an internal SIM chosen on a device without one is not used.
+    The real mu300-sim runs, on a fake root, with a fake mu300-device."""
+
+    def setUp(self):
+        super().setUp()
+        self.stub('busybox', 'shift 4; exec "$@"')   # busybox timeout -s KILL N CMD...
+        for name in ('ip', 'ubus', 'iw', 'jsonfilter'):
+            self.stub(name, 'exit 1')
+        self.choice = self.tmp / 'choice'
+        self.stub('uci', 'case "$*" in "-q get network.wan.sim_slot") cat "$STUBLOG/choice" ;; *) exit 1 ;; esac')
+        self.device = self.tmp / 'mu300-device'
+        self.root = self.tmp / 'root'
+        # the selector as the pages' backend finds it: the real script, on a root of the test's
+        self.simbin = self.tmp / 'mu300-sim'
+        self.simbin.write_text(f'#!/bin/sh\nMU300_SIM_ROOT="{self.root}" MU300_DEVICE_CMD="{self.device}" '
+                               f'MU300_SIM_CONFIG_LIB="{TOP / "rootfs/overlay/opt/mu300/lib/sim-config.sh"}" '
+                               f'exec sh "{BIN / "mu300-sim"}" "$@"\n')
+        self.simbin.chmod(0o755)
+
+    def info(self, shell, device, wanted, boot_slot=None, **env):
+        self.device.write_text(f'#!/bin/sh\necho {device}\n')
+        self.device.chmod(0o755)
+        self.choice.write_text(f'{wanted}\n')
+        state = self.root / 'run/mu300/sim-slot'
+        state.parent.mkdir(parents=True, exist_ok=True)
+        state.unlink(missing_ok=True)
+        if boot_slot is not None:
+            state.write_text(f'{boot_slot}\n')
+        r = self.script(shell, INFO, MU300_SIM_BIN=env.pop('simbin', self.simbin), **env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return json.loads(r.stdout)
+
+    def native(self):
+        (self.root / 'etc').mkdir(parents=True, exist_ok=True)
+        (self.root / 'etc/openwrt_release').write_text('DISTRIB_ID=OpenWrt\n')
+        self.backend = self.tmp / 'mu300-sim-u30'
+        self.backend.write_text((BIN / 'mu300-sim-u30').read_text()
+                               .replace('/run/', str(self.root / 'run') + '/')
+                               .replace('/etc/', str(self.root / 'etc') + '/')
+                               .replace('/opt/mu300/bin/mu300-device', str(self.device))
+                               .replace('/opt/mu300/bin/mu300-at', str(self.stubs / 'mu300-at')))
+        self.backend.chmod(0o755)
+        self.stub('flock', FLOCK)
+        self.stub('mu300-at', 'touch "$STUBLOG/unexpected-at"; exit 1')
+
+    def test_native_u30_snapshot_keeps_slot_1_supported_without_probing_the_modem(self):
+        self.native()
+        for shell in self.each_shell():
+            for boot_slot in (0, 1):
+                i = self.info(shell, 'u30air', 1, boot_slot, MU300_SIM_U30_BACKEND=self.backend)
+                self.assertEqual(i['sim'], {'slot': boot_slot, 'wanted': 1, 'slot1_supported': 1})
+                self.assertEqual(i['data_device'], 'sipa_eth' + str(boot_slot * 8))
+                self.assertEqual(self.choice.read_text(), '1\n')
+        self.assertFalse((self.tmp / 'unexpected-at').exists())
+
+    def test_unknown_u30_active_card_is_not_replaced_with_the_routing_pin(self):
+        self.native()
+        marker = self.root / 'run/mu300/sim-active-unknown'
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.touch()
+        for shell in self.each_shell():
+            i = self.info(shell, 'u30air', 1, 1, MU300_SIM_U30_BACKEND=self.backend)
+            self.assertIsNone(i['sim'])
+            self.assertEqual(i['data_device'], 'sipa_eth8')
+        self.assertFalse((self.tmp / 'unexpected-at').exists())
+
+    def test_the_reported_case_an_internal_sim_chosen_on_a_u30_air(self):
+        for shell in self.each_shell():
+            for boot_slot in (None, 1):     # chosen before this boot (the state says 1), or the state not yet written
+                i = self.info(shell, 'u30air', 1, boot_slot)
+                self.assertEqual(i['sim'], {'slot': 0, 'wanted': 1, 'slot1_supported': 0})
+                self.assertEqual(i['data_device'], 'sipa_eth0')     # and the page's figures are slot 0's
+
+    def test_the_f50(self):
+        for shell in self.each_shell():
+            self.assertEqual(self.info(shell, 'f50', 0)['sim'], {'slot': 0, 'wanted': 0, 'slot1_supported': 1})
+            i = self.info(shell, 'f50', 1, boot_slot=1)
+            self.assertEqual(i['sim'], {'slot': 1, 'wanted': 1, 'slot1_supported': 1})
+            self.assertEqual(i['data_device'], 'sipa_eth8')
+            # selected, not yet rebooted
+            self.assertEqual(self.info(shell, 'f50', 1, boot_slot=0)['sim'], {'slot': 0, 'wanted': 1, 'slot1_supported': 1})
+
+    def test_a_u30_air_on_the_external_sim_has_nothing_to_say(self):
+        for shell in self.each_shell():
+            self.assertEqual(self.info(shell, 'u30air', 0)['sim'], {'slot': 0, 'wanted': 0, 'slot1_supported': 0})
+
+    def test_without_the_selector_or_its_status_the_field_is_null(self):
+        odd = self.tmp / 'odd-sim'
+        odd.write_text('#!/bin/sh\ncase $1 in active) echo 0 ;; *) echo \'{"ok":1,"active":x,"default":"; rm -rf /"}\' ;; esac\n')
+        odd.chmod(0o755)
+        for shell in self.each_shell():
+            self.assertIsNone(self.info(shell, 'f50', 0, simbin=self.tmp / 'none')['sim'])
+            self.assertIsNone(self.info(shell, 'f50', 0, simbin=odd)['sim'])
+
+
+def _node(js):
+    r = subprocess.run(['node', '-'], input=js, capture_output=True, text=True)
+    if r.returncode:
+        raise AssertionError(r.stderr)
+    return json.loads(r.stdout)
+
+
+@unittest.skipUnless(shutil.which('node'), 'Node.js is needed for the LuCI JS tests')
+class SimSourceOnThePages(unittest.TestCase):
+    """The interface page (protocol/mu300cell.js) offers the internal SIM only where mu300-sim supports it, and the
+    home page says when the one chosen is not the one in use. Both run here under Node with LuCI's objects faked."""
+
+    def options(self, sysinfo, saved, fail=False):
+        """The SIM source option after its load(): its choices, labels and description. sysinfo is what mu300dash
+        sysinfo answers (fail: the call is rejected - no panel, no access), saved the uci value."""
+        js = r'''
+const src = ''' + json.dumps(PROTO.read_text(encoding='utf-8')) + r''';
+const opts = {};
+function Opt(name, description) { this.name = name; this.description = description; this.keylist = []; this.vallist = []; }
+Opt.prototype.value = function(k, v) { this.keylist.push(k); this.vallist.push(v); };
+Opt.prototype.depends = function() {};
+const form = {};
+for (const c of [ 'ListValue', 'Value', 'Flag', 'DynamicList' ]) form[c] = function() {};
+form.ListValue.prototype.load = function(section) { return ''' + json.dumps(saved) + r'''; };
+const s = { taboption: (tab, cls, name, title, description) => (opts[name] = new Opt(name, description)) };
+const network = { registerProtocol: (name, proto) => proto, getIfnameOf: (x) => x };
+const calls = [];
+const rpc = { declare: (spec) => () => { calls.push(spec.object + '.' + spec.method);
+	return ''' + ('Promise.reject(new Error("no such object"))' if fail else 'Promise.resolve(' + json.dumps(sysinfo) + ')') + r'''; } };
+const L = { resolveDefault: (p, d) => Promise.resolve(p).catch(() => d) };
+const proto = new Function('form', 'network', 'rpc', 'L', '_', src)(form, network, rpc, L, (t) => t);
+proto.renderFormOptions(s);
+const o = opts.sim_slot;
+Promise.resolve(o.load('wan')).then((cur) => {
+	process.stdout.write(JSON.stringify({ cur: cur, keys: o.keylist, labels: o.vallist, description: o.description,
+		calls: calls, others: Object.keys(opts) }));
+});
+'''
+        return _node(js)
+
+    BOTH = ['External SIM (slot 0)', 'Internal SIM (slot 1)']
+
+    def test_a_device_without_slot_1_is_not_offered_the_internal_sim(self):
+        o = self.options({'sim': {'slot': 0, 'wanted': 0, 'slot1_supported': 0}}, '0')
+        self.assertEqual((o['keys'], o['labels']), (['0'], ['External SIM (slot 0)']))
+        self.assertIn('not supported on this device', o['description'])
+        self.assertEqual(o['calls'], ['mu300dash.sysinfo'])     # the local snapshot: no AT command behind it
+        o = self.options({'sim': {'slot': 0, 'wanted': 0, 'slot1_supported': 0}}, None)   # nothing saved yet
+        self.assertEqual(o['keys'], ['0'])
+
+    def test_an_internal_sim_already_saved_is_shown_for_what_it_is(self):
+        # the reporter's state: the page must show what is saved and that it has no effect, not "External"
+        o = self.options({'sim': {'slot': 0, 'wanted': 1, 'slot1_supported': 0}}, '1')
+        self.assertEqual((o['cur'], o['keys']), ('1', ['0', '1']))
+        self.assertEqual(o['labels'], ['External SIM (slot 0)', 'Internal SIM (slot 1): not supported on this device'])
+        self.assertIn('the external SIM is used', o['description'])
+
+    def test_the_f50_keeps_both(self):
+        for saved in ('0', '1'):
+            o = self.options({'sim': {'slot': 0, 'wanted': int(saved), 'slot1_supported': 1}}, saved)
+            self.assertEqual((o['cur'], o['keys'], o['labels']), (saved, ['0', '1'], self.BOTH))
+            self.assertIn('Applies after reboot', o['description'])
+
+    def test_native_u30_keeps_both_cards_in_the_wan_form(self):
+        for saved in ('0', '1'):
+            o = self.options({'sim': {'slot': 1, 'wanted': int(saved), 'slot1_supported': 1}}, saved)
+            self.assertEqual((o['cur'], o['keys'], o['labels']), (saved, ['0', '1'], self.BOTH))
+
+    def test_nothing_known_changes_nothing(self):
+        # no panel (the call fails), an older panel (no "sim"), no selector (null), or an answer that is not 0 or 1
+        for sysinfo, fail in (({}, True), ({}, False), ({'error': 'Dashboard info failed'}, False), ({'sim': None}, False),
+                              ({'sim': {'slot1_supported': 'no'}}, False), ({'sim': {}}, False)):
+            o = self.options(sysinfo, '1', fail)
+            self.assertEqual((o['cur'], o['keys'], o['labels']), ('1', ['0', '1'], self.BOTH), sysinfo)
+            self.assertIn('Applies after reboot', o['description'])
+
+    def test_the_other_options_are_still_there(self):
+        o = self.options({'sim': {'slot': 0, 'wanted': 0, 'slot1_supported': 0}}, '0')
+        self.assertEqual(o['others'], ['sim_slot', 'apn_internal', 'pdptype_internal', 'apn', 'pdptype', 'peerdns', 'dns'])
+
+    def paint(self, sim):
+        src = HOME.read_text(encoding='utf-8')
+        start = src.index('paintSim: function(sim) {')
+        start = src.index('function', start)
+        end = src.index('\n\t},', start)
+        js = r'''
+const _ = (s) => s;
+const out = {}, row = { style: { display: 'none' } };
+const M = { set: (id, t) => { out[id] = t; }, v: (id) => id === 'simsrc-r' ? row : null };
+const self = { paintSim: ''' + src[start:end] + '\n\t}' + r''' };
+self.paintSim(''' + json.dumps(sim) + r''');
+process.stdout.write(JSON.stringify({ shown: row.style.display !== 'none', text: out.simsrc }));
+'''
+        return _node(js)
+
+    def test_the_home_page_says_so(self):
+        src = HOME.read_text(encoding='utf-8')
+        self.assertIn('id="mud-simsrc-r" style="display:none"', src)
+        self.assertIn('this.paintSim(i.sim);', src)
+        t = self.paint({'slot': 0, 'wanted': 1, 'slot1_supported': 0})
+        self.assertEqual(t, {'shown': True,
+                             'text': 'Internal SIM selected, but not supported on this device: the external SIM is in use'})
+        t = self.paint({'slot': 0, 'wanted': 1, 'slot1_supported': 1})
+        self.assertEqual(t, {'shown': True, 'text': 'Internal SIM selected: in use after a reboot'})
+        for sim in ({'slot': 0, 'wanted': 0, 'slot1_supported': 0}, {'slot': 0, 'wanted': 0, 'slot1_supported': 1},
+                    {'slot': 1, 'wanted': 1, 'slot1_supported': 1}, {'slot': 1, 'wanted': 0, 'slot1_supported': 1},
+                    None, {}):
+            self.assertEqual(self.paint(sim), {'shown': False, 'text': '--'}, sim)

@@ -142,37 +142,37 @@
 		"title": "Overview",
 		"order": 1,
 		"action": { "type": "view", "path": "mu300/vpn-overview" },
-		"depends": { "acl": [ "luci-app-mu300" ] }
+		"depends": { "acl": [ "luci-app-mu300" ], "fs": { "/mnt/mu300-disk/extra/vpn/bin/mu300-vpn": "executable" } }
 	},
 	"admin/vpn/mu300-profiles": {
 		"title": "Profiles",
 		"order": 2,
 		"action": { "type": "view", "path": "mu300/vpn-profiles" },
-		"depends": { "acl": [ "luci-app-mu300" ] }
+		"depends": { "acl": [ "luci-app-mu300" ], "fs": { "/mnt/mu300-disk/extra/vpn/bin/mu300-vpn": "executable" } }
 	},
 	"admin/vpn/mu300-subscriptions": {
 		"title": "Subscriptions",
 		"order": 3,
 		"action": { "type": "view", "path": "mu300/vpn-subscriptions" },
-		"depends": { "acl": [ "luci-app-mu300" ] }
+		"depends": { "acl": [ "luci-app-mu300" ], "fs": { "/mnt/mu300-disk/extra/vpn/bin/mu300-vpn": "executable" } }
 	},
 	"admin/vpn/mu300-engines": {
 		"title": "Engines",
 		"order": 4,
 		"action": { "type": "view", "path": "mu300/vpn-engines" },
-		"depends": { "acl": [ "luci-app-mu300" ] }
+		"depends": { "acl": [ "luci-app-mu300" ], "fs": { "/mnt/mu300-disk/extra/vpn/bin/mu300-vpn": "executable" } }
 	},
 	"admin/vpn/mu300-settings": {
 		"title": "Settings",
 		"order": 5,
 		"action": { "type": "view", "path": "mu300/vpn-settings" },
-		"depends": { "acl": [ "luci-app-mu300" ] }
+		"depends": { "acl": [ "luci-app-mu300" ], "fs": { "/mnt/mu300-disk/extra/vpn/bin/mu300-vpn": "executable" } }
 	},
 	"admin/vpn/mu300-logs": {
 		"title": "Logs",
 		"order": 6,
 		"action": { "type": "view", "path": "mu300/vpn-logs" },
-		"depends": { "acl": [ "luci-app-mu300" ] }
+		"depends": { "acl": [ "luci-app-mu300" ], "fs": { "/mnt/mu300-disk/extra/vpn/bin/mu300-vpn": "executable" } }
 	},
 	"admin/system/mu300-packages": {
 		"title": "Packages after an update",

@@ -36,11 +36,13 @@ CMGL = f'+CMGL: 3,0,,40\n{PDU_GSM}\n+CMGL: 7,1,,56\n{PDU_UCS2}\nOK\n'
 # The stub mu300-at: `mu300-at -t SECONDS COMMAND`. Appends the command to $STUBLOG/at.log (one per line, the CR and
 # Ctrl-Z of a submit shown as ^ and ~), then answers from $STUBLOG/at/<name>: the first file whose name is a prefix
 # of the command with the characters outside [A-Za-z0-9] dropped (CMGL4, CPMS, CMGS ...); OK when there is none.
-# $STUBLOG/at/BUSY makes it the client that gave up on the lock.
+# $STUBLOG/at/BUSY makes it the client that gave up on the lock. $STUBLOG/held.log gets, per call, the lock the client
+# was told it holds (MU300_AT_LOCK_HELD) and who holds the lock directory (a send's transaction, FINDINGS 46).
 AT_STUB = r'''
 log=$STUBLOG/at.log
 [ "${1:-}" = -t ] && shift 2
 printf '%s\n' "$1" | tr '\r\032' '^~' >> "$log"
+printf '%s %s\n' "${MU300_AT_LOCK_HELD:-none}" "$(cat "$MU300_AT_DIR/lock/pid" 2>/dev/null || echo none)" >> "$STUBLOG/held.log"
 [ -f "$STUBLOG/at/BUSY" ] && { echo "mu300-at: busy" >&2; exit 1; }
 key=$(printf '%s' "$1" | tr -cd 'A-Za-z0-9')
 for f in $(ls "$STUBLOG/at" 2>/dev/null | sort -r); do
@@ -78,6 +80,7 @@ class Pool(ShellTest):
         """An empty pool, an empty AT log and the default answers (for the next shell)."""
         shutil.rmtree(self.pool, ignore_errors=True)
         (self.tmp / 'at.log').unlink(missing_ok=True)
+        (self.tmp / 'held.log').unlink(missing_ok=True)
         for f in (self.tmp / 'at').iterdir():
             f.unlink()
         self.answer('CPMS', '+CPMS: 2,50,2,50,2,50\nOK\n')
@@ -412,8 +415,12 @@ class Pool(ShellTest):
             os.mkfifo(self.atdir / 'cmd')
 
     # ------------------------------------------------------------------ send
+    # an SMSC as the modem shows it under CSCS "HEX" (the hexadecimal of a made-up "+1555010099") and its type
+    SMSC_HEX = '"2B31353535303130303939",145'
+
     def test_send_reads_the_text_on_stdin(self):
         self.answer('CMGS', '+CMGS: 12\nOK\n')
+        self.answer('CSCA', f'+CSCA: {self.SMSC_HEX}\nOK\n')
         for shell in self.each_shell():
             for text in ('Merhaba ğüş', '--help', '-x; $(reboot) `id`', 'two\nlines', 'back\\slash \\n'):
                 with self.subTest(text=text):
@@ -425,7 +432,9 @@ class Pool(ShellTest):
                                           'text=' + text.replace('\\', '\\\\').replace('\n', '\\n'), '-f', str(AWK)],
                                          capture_output=True, text=True, stdin=subprocess.DEVNULL,
                                          env=dict(os.environ, LC_ALL='C')).stdout.split()
-                    self.assertEqual(self.at_log(), ['AT+CMGF=0', f'AT+CMGS={enc[0]}^{enc[1]}~'])
+                    # the modem's SMSC written back as it is, PDU mode, then the submission - and nothing else
+                    self.assertEqual(self.at_log(), ['AT+CSCA?', f'AT+CSCA={self.SMSC_HEX}', 'AT+CMGF=0',
+                                                     f'AT+CMGS={enc[0]}^{enc[1]}~'])
                     if 'ğüş' in text:   # UCS-2 of the letters, also under gawk in a UTF-8 locale
                         self.assertIn('011F00FC015F', enc[1])
                     sent = [(h, b) for h, b in self.msgs().values() if h['dir'] == 'mo']
@@ -438,6 +447,103 @@ class Pool(ShellTest):
             r = self.run_sms(shell, 'send', '10086', '-n', 'hello')
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertEqual(list(self.msgs().values())[-1][1], '-n hello\n')
+
+    def test_the_smsc_is_written_back_unchanged_before_a_send(self):
+        # The modem's own SMSC is set again, byte for byte as the modem shows it (hexadecimal under CSCS "HEX", or
+        # plain) and with its type, before the submission (FINDINGS 46: on one network every send failed until
+        # this was done). Never another address, and the character set is never touched.
+        self.answer('CMGS', '+CMGS: 2\nOK\n')
+        for shell in self.each_shell():
+            for smsc in (self.SMSC_HEX, '"+1555010099",145', '"1555010099",129'):
+                with self.subTest(smsc=smsc):
+                    self.answer('CSCA', f'+CSCA: {smsc}\r\nOK\r\n')
+                    (self.tmp / 'at.log').unlink(missing_ok=True)
+                    r = self.run_sms(shell, 'send', '--stdin', '10099', stdin='CXYL')
+                    self.assertEqual(r.returncode, 0, r.stderr)
+                    log = self.at_log()
+                    self.assertEqual(log[:3], ['AT+CSCA?', f'AT+CSCA={smsc}', 'AT+CMGF=0'])
+                    self.assertTrue(log[3].startswith('AT+CMGS='), log)
+                    self.assertEqual(len(log), 4)
+                    self.assertNotIn('CSCS', ''.join(log))
+                    self.assertNotIn('refresh', r.stderr)
+
+    def test_a_smsc_the_modem_does_not_give_is_left_alone(self):
+        # No SMSC, one that cannot be read as "address",type, a query the modem refuses: nothing is written, the send
+        # goes on and stderr says so. A write the modem refuses does not stop the send either: the SMSC in use is
+        # the same either way, and the submission's own answer is the one that says what is wrong.
+        self.answer('CMGS', '+CMGS: 2\nOK\n')
+        for shell in self.each_shell():
+            for label, csca, written in (('none', 'OK\n', 0), ('error', '+CME ERROR: 3\n', 0),
+                                         ('no quotes', '+CSCA: 1555010099,145\nOK\n', 0),
+                                         ('no type', '+CSCA: "+1555010099"\nOK\n', 0),
+                                         ('empty', '+CSCA: "",145\nOK\n', 0),
+                                         ('junk', '+CSCA: "+1555;AT+CFUN=0",145\nOK\n', 0),
+                                         ('refused', '+CSCA: "+1555010099",145\nOK\n', 1)):
+                with self.subTest(case=label):
+                    self.answer('CSCA', csca)
+                    # the write ("AT+CSCA=..." - a longer prefix than the query's) refused by the modem
+                    (self.tmp / 'at' / 'CSCA1555').unlink(missing_ok=True)
+                    if label == 'refused':
+                        self.answer('CSCA1555', '+CMS ERROR: 302\n')
+                    (self.tmp / 'at.log').unlink(missing_ok=True)
+                    r = self.run_sms(shell, 'send', '--stdin', '10099', stdin='hi')
+                    self.assertEqual(r.returncode, 0, r.stderr)
+                    log = self.at_log()
+                    self.assertEqual(log[0], 'AT+CSCA?')
+                    self.assertEqual([c for c in log if c.startswith('AT+CSCA=')],
+                                     ['AT+CSCA="+1555010099",145'] * written)
+                    self.assertEqual(log[-2:-1], ['AT+CMGF=0'])
+                    self.assertTrue(log[-1].startswith('AT+CMGS='), log)
+                    self.assertIn('refused to refresh' if written else 'without the refresh', r.stderr)
+                    self.assertNotIn('AT+CFUN', ''.join(log))
+            (self.tmp / 'at' / 'CSCA1555').unlink(missing_ok=True)
+
+    def test_a_send_is_one_transaction_under_the_at_lock(self):
+        # The SMSC refresh, PDU mode and the submission go out under one acquisition of mu300-at's client lock
+        # ($ATDIR/lock), which the mu300-at calls under it are told they hold (MU300_AT_LOCK_HELD, with the lock's
+        # own pid file naming the holder); it is released after the submission, taken or refused.
+        self.answer('CSCA', f'+CSCA: {self.SMSC_HEX}\nOK\n')
+        for shell in self.each_shell():
+            for cmgs in ('+CMGS: 7\nOK\n', '+CMS ERROR: 500\n'):
+                with self.subTest(cmgs=cmgs.split('\n')[0]):
+                    self.answer('CMGS', cmgs)
+                    (self.tmp / 'held.log').unlink(missing_ok=True)
+                    r = self.run_sms(shell, 'send', '--stdin', '10099', stdin='hi')
+                    self.assertEqual(r.returncode, 0 if '+CMGS' in cmgs else 1, r.stderr)
+                    held = [line.split() for line in (self.tmp / 'held.log').read_text().splitlines()]
+                    self.assertEqual(len(held), 4, held)
+                    pids = {p for pair in held for p in pair}
+                    self.assertEqual(len(pids), 1, held)      # one holder, the same for all four, and none "none"
+                    self.assertNotIn('none', pids)
+                    self.assertFalse((self.atdir / 'lock').exists())
+
+    def test_a_held_at_lock_says_busy_before_anything_is_sent(self):
+        # Another client holds mu300-at's lock: busy within the wait (in mu300-at's words, which the panel reads), with
+        # not one command sent, and the holder's lock left alone. A holder that is gone is taken over.
+        self.answer('CMGS', '+CMGS: 1\nOK\n')
+        lock = self.atdir / 'lock'
+        for shell in self.each_shell():
+            self.fresh()
+            self.answer('CMGS', '+CMGS: 1\nOK\n')
+            self.answer('CSCA', f'+CSCA: {self.SMSC_HEX}\nOK\n')
+            holder = subprocess.Popen(['sh', '-c', 'sleep 30; true', 'mu300-at'])
+            try:
+                lock.mkdir()
+                (lock / 'pid').write_text(f'{holder.pid}\n')
+                t0 = time.monotonic()
+                r = self.run_sms(shell, 'send', '--stdin', '10099', stdin='hi', MU300_AT_LOCK_WAIT='1')
+                self.assertEqual((r.returncode, r.stderr.strip()), (1, 'mu300-at: busy'))
+                self.assertLess(time.monotonic() - t0, 5)
+                self.assertEqual(self.at_log(), [])
+                self.assertEqual((lock / 'pid').read_text().strip(), str(holder.pid))
+            finally:
+                holder.kill()
+                holder.wait()
+            (lock / 'pid').write_text('999999\n')
+            r = self.run_sms(shell, 'send', '--stdin', '10099', stdin='hi', MU300_AT_LOCK_WAIT='1')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(len(self.at_log()), 4)
+            self.assertFalse(lock.exists())
 
     def test_send_refusals_never_read_as_success(self):
         # mu300dash takes any output with "sent" or "OK" in it for success and one with "busy" for a busy channel
@@ -458,8 +564,8 @@ class Pool(ShellTest):
                     self.assertTrue(r.stderr.startswith('mu300-sms: '), r.stderr)
             self.assertFalse([h for h, _ in self.msgs().values() if h['dir'] == 'mo'])
             # the panel's backend on the same refusal: Sending failed, not Sent
-            r = self.dash(shell, 'sms_send', {'num': '123', 'text': 'hi'})
-            self.assertEqual((r['ok'], r['error']), (0, 'Sending failed'))
+            r = self.dash_send(shell, '123', 'hi')
+            self.assertEqual((r['ok'], r['error'], r['done']), (0, 'Sending failed', 1))
             self.assertEqual(r['detail'], 'mu300-sms: the modem did not take the message: no +CMGS confirmation')
             # one part's worth goes out: 160 GSM characters, 70 UCS-2 ones
             self.answer('CMGS', '+CMGS: 1\nOK\n')
@@ -536,19 +642,33 @@ class Pool(ShellTest):
             self.assertIn('busy', r.stdout + r.stderr)
 
     # ------------------------------------------------------------------ the panel on the pool
-    def dash(self, shell, method, params, **env):
+    def dash_env(self, **env):
         (self.stubs / 'jsonfilter.py').write_text(JSONFILTER)
         self.stub('jsonfilter', f'exec python3 "{self.stubs}/jsonfilter.py" "$@"')
         self.stub('uci', '[ "$3" = unisoc_modem.main.sms_pool ] && [ -n "${UCI_POOL:-}" ] && '
                          'printf "%s\\n" "$UCI_POOL" && exit 0; exit 1')
         self.stub('logger', 'exit 0')
+        # setsid: the send's job is started detached; here it is run by hand (dash_send), so nothing starts
+        self.stub('setsid', 'exit 0')
         e = self.env(MU300_SMS_BIN=SMS, MU300_SMS_POOL=self.pool, MU300_AT_DIR=self.atdir, MU300_SMS_AWK=AWK,
-                     MU300_SMS_RUN=self.run, MU300_DASH_DIR=self.tmp / 'dash', MU300_DASH_BIN=self.tmp / 'none')
+                     MU300_SMS_RUN=self.run, MU300_DASH_DIR=self.tmp / 'dash', MU300_DASH_BIN=self.tmp / 'none',
+                     MU300_DASH_OPS_DIR=self.tmp / 'flash')
         e.update({k: str(v) for k, v in env.items()})
-        e = {k: v for k, v in e.items() if v != ''}
+        return {k: v for k, v in e.items() if v != ''}
+
+    def dash(self, shell, method, params, **env):
         r = subprocess.run(shell + [str(DASH), 'call', method], input=json.dumps(params).encode(),
-                           capture_output=True, env=e, timeout=60)
+                           capture_output=True, env=self.dash_env(**env), timeout=60)
         return json.loads(r.stdout.decode())
+
+    def dash_send(self, shell, num, text, **env):
+        """The panel's send on the real mu300-sms: sms_send starts the job, the job runs here (what setsid would
+        have started), and sms_job tells how it went - the reply sms_send used to give, with done:1."""
+        r = self.dash(shell, 'sms_send', {'num': num, 'text': text}, **env)
+        self.assertEqual((r.get('ok'), r.get('started'), r.get('job')), (1, 1, 1), r)
+        j = subprocess.run(shell + [str(DASH), 'sms-job'], capture_output=True, env=self.dash_env(**env), timeout=60)
+        self.assertEqual(j.returncode, 0, j.stderr)
+        return self.dash(shell, 'sms_job', {}, **env)
 
     def test_the_panel_reads_the_pool(self):
         for shell in self.each_shell():
@@ -566,12 +686,21 @@ class Pool(ShellTest):
             self.assertEqual(r['text'].split('\n---\n', 1)[1], 'Kargonuz yolda ğüş\nline two')
             self.assertEqual(self.dash(shell, 'sms_show', {'id': '9'})['error'], 'Read failed')
             self.answer('CMGS', '+CMGS: 4\nOK\n')
-            r = self.dash(shell, 'sms_send', {'num': '10086', 'text': '-hi'})
-            self.assertEqual((r['ok'], r['reply'].splitlines()[-1]), (1, 'sent (reference 4)'))
+            r = self.dash_send(shell, '10086', '-hi')
+            self.assertEqual((r['ok'], r['done'], r['reply'].splitlines()[-1]), (1, 1, 'sent (reference 4)'))
+            self.assertEqual(list(self.msgs().values())[-1][1], '-hi\n')
+            # the job keeps no copy of the message once it is in the pool
+            self.assertFalse((self.tmp / 'dash' / 'sms-job' / 'text').exists())
             (self.tmp / 'at' / 'CMGS').write_text('+CMS ERROR: 500\n')
-            r = self.dash(shell, 'sms_send', {'num': '10086', 'text': 'hi'})
+            r = self.dash_send(shell, '10086', 'hi')
             self.assertEqual((r['ok'], r['error']), (0, 'Sending failed'))
             self.assertIn('+CMS ERROR: 500', r['detail'])
+            # how each send went is in the operations log, from the job itself (the call only started it)
+            ops = (self.tmp / 'dash' / 'ops.log').read_text()
+            self.assertRegex(ops, r'sms_send result \d+\.\d\ds ok\n')
+            self.assertRegex(ops, r'sms_send result \d+\.\d\ds error\n')
+            self.assertNotIn('-hi', ops)   # never the message, nor the number
+            self.assertNotIn('10086', ops)
             self.assertEqual(self.dash(shell, 'sms_delete', {'id': '1'}), {'ok': 1})
             r = self.dash(shell, 'sms_delete', {'id': '1'})
             self.assertEqual((r['error'], r['detail']), ('Delete failed', 'mu300-sms: no message 1'))
@@ -712,6 +841,279 @@ class Pool(ShellTest):
             self.run_sms(shell, 'sync', MU300_SMS_FORWARD=fwd)
             self.assertEqual((self.tmp / 'fwd.log').read_text().splitlines(), ['enqueue 000001 000002', 'kick'])
 
+    # ------------------------------------------------------------------ delivered directly (import-pdu)
+    def spooled(self, pdu, name='cmt-1.abcdef.ready'):
+        """A PDU in the pool's spool, as mu300-cmt-spool writes it."""
+        d = self.pool / 'incoming'
+        d.mkdir(parents=True, exist_ok=True)
+        (d / name).write_text(pdu + '\n')
+        return d / name
+
+    def parts(self):
+        d = self.pool / 'parts'
+        return sorted(p.name for p in d.iterdir()) if d.exists() else []
+
+    def test_import_pdu_pools_a_direct_message_without_the_modem(self):
+        hook = self.tmp / 'hook'
+        out = self.tmp / 'hook.out'
+        hook.write_text(f'#!/bin/sh\nprintf "%s|%s|%s\\n" "$SMS_FROM" "$SMS_DATE" "$SMS_TEXT" >> "{out}"\n')
+        hook.chmod(0o755)
+        fwd = self.tmp / 'fwd'
+        fwd.write_text('#!/bin/sh\necho "$*" >> "$STUBLOG/fwd.log"\n')
+        fwd.chmod(0o755)
+        for shell in self.each_shell():
+            self.fresh()
+            out.unlink(missing_ok=True)
+            (self.tmp / 'fwd.log').unlink(missing_ok=True)
+            f = self.spooled(PDU_GSM)
+            r = self.run_sms(shell, 'import-pdu', f, MU300_SMS_HOOK=hook, MU300_SMS_FORWARD=fwd)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn('import: 1 new, 1 in the pool', r.stdout)
+            self.assertEqual(self.at_log(), [])                     # no AT command at all
+            [(h, body)] = self.msgs().values()
+            self.assertEqual((h['dir'], h['status'], h['from'], h['scts'], h['sim_index'], h['coding'], body),
+                             ('mt', 'unread', '+31641600986', '2002-08-26 19:37:41', '', 'gsm', 'How are you?\n'))
+            self.assertTrue(f.exists(), 'the spool file is the daemon\'s to remove, after the acknowledgement')
+            self.assertEqual(self.parts(), [])                      # parked, taken, gone
+            for _ in range(50):
+                if out.exists():
+                    break
+                time.sleep(0.1)
+            self.assertEqual(out.read_text(), '+31641600986|2002-08-26 19:37:41|How are you?\n')
+            self.assertEqual((self.tmp / 'fwd.log').read_text().splitlines(), ['enqueue 000001'])
+            # the same PDU again (an acknowledgement that failed, and the file imported once more): nothing new
+            r = self.run_sms(shell, 'import-pdu', f, MU300_SMS_HOOK=hook, MU300_SMS_FORWARD=fwd)
+            self.assertEqual((r.returncode, r.stdout.strip()), (0, 'import: 0 new, 1 in the pool'), r.stderr)
+            self.assertEqual(len(self.msgs()), 1)
+            self.assertEqual(self.parts(), [])
+            # a message deleted from the pool stays deleted, however often the modem delivers it again
+            self.run_sms(shell, 'delete', '1')
+            r = self.run_sms(shell, 'import-pdu', f)
+            self.assertEqual((r.returncode, len(self.msgs()), self.parts()), (0, 0, []), r.stderr)
+            # the panel shows it as not on the SIM
+            self.spooled(PDU_UCS2, 'cmt-2.abcdef.ready')
+            self.run_sms(shell, 'import-pdu', self.pool / 'incoming' / 'cmt-2.abcdef.ready')
+            show = self.run_sms(shell, 'show', '2').stdout
+            self.assertIn('\nsim index:   not on the SIM\n', show)
+            self.assertIn('\nfrom:        ADANA BLD\n', show)
+
+    def test_import_pdu_joins_the_parts_of_a_long_message(self):
+        p1, p2 = self.part(0x42, 2, 1, 'hello'), self.part(0x42, 2, 2, ' world')
+        for shell in self.each_shell():
+            self.fresh()
+            r = self.run_sms(shell, 'import-pdu', self.spooled(p1, 'cmt-1.a.ready'))
+            self.assertEqual(r.returncode, 0, r.stderr)          # safe on the disk: the modem may be acknowledged
+            self.assertIn('import: 0 new, 0 in the pool, 1 waiting for its other parts', r.stdout)
+            self.assertEqual(self.msgs(), {})
+            self.assertEqual(len(self.parts()), 1)
+            key, _first, unread = (self.pool / 'partial').read_text().rstrip('\n').split('\t')
+            self.assertEqual((key, unread), ('multi:+31641600986:66:2', '1'))
+            r = self.run_sms(shell, 'import-pdu', self.spooled(p2, 'cmt-2.a.ready'))
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn('import: 1 new, 1 in the pool', r.stdout)
+            [(h, body)] = self.msgs().values()
+            self.assertEqual((h['from'], h['sim_index'], h['status'], body), ('+31641600986', '', 'unread', 'hello world\n'))
+            self.assertEqual(self.parts(), [])
+            self.assertFalse((self.pool / 'partial').exists())
+            self.assertEqual(self.at_log(), [])
+
+    def test_a_direct_part_whose_siblings_never_come_is_pooled_by_a_sync(self):
+        half = self.part(0x44, 2, 2, 'only the end')
+        for shell in self.each_shell():
+            self.fresh()
+            self.answer('CMGL4', 'OK\n')                         # nothing on the SIM
+            self.run_sms(shell, 'import-pdu', self.spooled(half))
+            self.assertEqual(len(self.parts()), 1)
+            # a sync in between keeps it waiting (and its first-seen time)
+            r = self.run_sms(shell, 'sync')
+            self.assertIn('sync: 0 new, 0 on the SIM, 0 in the pool, 1 waiting for its other parts, 0 moved', r.stdout)
+            key, first, unread = (self.pool / 'partial').read_text().rstrip('\n').split('\t')
+            self.assertEqual(len(self.parts()), 1)
+            # an hour later: pooled as it is by the periodic sync, the parked part gone
+            (self.pool / 'partial').write_text(f'{key}\t{int(first) - 3600}\t{unread}\n')
+            r = self.run_sms(shell, 'sync')
+            self.assertIn('sync: 1 new, 0 on the SIM, 1 in the pool, 0 moved off the SIM', r.stdout)
+            [(h, body)] = self.msgs().values()
+            self.assertEqual((h['incomplete'], h['sim_index'], body), ('1/2', '', '[...]only the end\n'))
+            self.assertEqual(self.parts(), [])
+            self.assertFalse([c for c in self.at_log() if c.startswith('AT+CMGD') or c.startswith('AT+CMGR')])
+            # with no wait at all, import-pdu pools it at once
+            self.fresh()
+            r = self.run_sms(shell, 'import-pdu', self.spooled(half), MU300_SMS_PARTIAL_WAIT=0)
+            self.assertIn('import: 1 new, 1 in the pool', r.stdout)
+            self.assertEqual(self.parts(), [])
+
+    def test_the_parts_of_one_message_join_across_the_sim_and_the_air(self):
+        # a class 2 part on the SIM and its sibling delivered directly are one message
+        p1, p2 = self.part(0x45, 2, 1, 'sim'), self.part(0x45, 2, 2, ' and air')
+        for shell in self.each_shell():
+            self.fresh()
+            self.answer('CMGL4', f'+CMGL: 3,0,,30\n{p1}\nOK\n')
+            self.cmgr(3, p1)
+            self.run_sms(shell, 'import-pdu', self.spooled(p2))
+            r = self.run_sms(shell, 'sync')
+            self.assertIn('sync: 1 new, 1 on the SIM, 1 in the pool, 1 moved off the SIM', r.stdout)
+            [(h, body)] = self.msgs().values()
+            self.assertEqual((h['sim_index'], body), ('3', 'sim and air\n'))
+            self.assertEqual(self.cmgd(), ['AT+CMGD=3'])
+            self.assertEqual(self.parts(), [])
+
+    def test_import_pdu_refuses_what_is_not_a_message(self):
+        for shell in self.each_shell():
+            for bad in ('', 'zz', 'ABC', '00', 'ABCD', '07911326040000F0', 'F' * 1026):
+                with self.subTest(pdu=bad[:16]):
+                    self.fresh()
+                    f = self.spooled(bad)
+                    r = self.run_sms(shell, 'import-pdu', f)
+                    self.assertEqual(r.returncode, 1, r.stdout)
+                    self.assertIn('mu300-sms:', r.stderr)
+                    self.assertFalse((self.pool / 'msg').exists(), 'the pool was touched')
+                    self.assertFalse((self.pool / 'parts').exists(), 'the PDU was parked')
+                    self.assertTrue(f.exists(), 'the spool file is not this command\'s to remove')
+            r = self.run_sms(shell, 'import-pdu', self.tmp / 'nowhere')
+            self.assertEqual(r.returncode, 1)
+            r = self.run_sms(shell, 'import-pdu')
+            self.assertEqual(r.returncode, 1)
+            self.assertEqual(self.at_log(), [])
+
+    def test_a_parked_part_is_on_the_disk_before_the_pool_is_touched(self):
+        self.stub('fsync', 'echo "FSYNC $*" >> "$STUBLOG/at.log"')
+        self.stub('sync', 'echo "GLOBAL SYNC $*" >> "$STUBLOG/at.log"')
+        for shell in self.each_shell():
+            self.fresh()
+            r = self.run_sms(shell, 'import-pdu', self.spooled(PDU_GSM))
+            self.assertEqual(r.returncode, 0, r.stderr)
+            log = self.at_log()
+            self.assertFalse([l for l in log if l.startswith('GLOBAL SYNC')], log)
+            parts, msg = self.pool / 'parts', self.pool / 'msg'
+            self.assertRegex(log[0], rf'^FSYNC {re.escape(str(parts))}/\.part\.[A-Za-z0-9]+$')   # mktemp's name, then the final one
+            self.assertEqual(log[1], f'FSYNC {parts}')
+            self.assertEqual(log[2], f'FSYNC {msg}/000001.part')
+            self.assertEqual(log[3], f'FSYNC {msg} {self.pool}/next_id {self.pool}')
+
+    def test_import_pdu_follows_no_link(self):
+        """import-pdu runs as root: a spool entry that is a link, a parts directory or a pool that is one, are refused
+        and nothing is written through them."""
+        for shell in self.each_shell():
+            # the spool entry
+            self.fresh()
+            target = self.tmp / 'elsewhere.pdu'
+            target.write_text(PDU_GSM + '\n')
+            (self.pool / 'incoming').mkdir(parents=True)
+            link = self.pool / 'incoming' / 'cmt-1.link.ready'
+            link.symlink_to(target)
+            r = self.run_sms(shell, 'import-pdu', link)
+            self.assertEqual(r.returncode, 1, r.stdout)
+            self.assertIn('symbolic link', r.stderr)
+            self.assertFalse((self.pool / 'msg').exists())
+            # the parts directory, pointing somewhere else
+            self.fresh()
+            elsewhere = self.tmp / 'elsewhere'
+            elsewhere.mkdir(exist_ok=True)
+            self.pool.mkdir()
+            (self.pool / 'parts').symlink_to(elsewhere)
+            r = self.run_sms(shell, 'import-pdu', self.spooled(PDU_GSM))
+            self.assertEqual(r.returncode, 1, r.stdout)
+            self.assertIn('symbolic link', r.stderr)
+            self.assertEqual(sorted(x.name for x in elsewhere.iterdir()), [])
+            self.assertFalse((self.pool / 'msg').exists())
+            # the pool itself
+            self.fresh()
+            shutil.rmtree(elsewhere, ignore_errors=True); elsewhere.mkdir()
+            self.pool.symlink_to(elsewhere)
+            f = self.tmp / 'spooled.ready'
+            f.write_text(PDU_GSM + '\n')
+            r = self.run_sms(shell, 'import-pdu', f)
+            self.assertEqual(r.returncode, 1, r.stdout)
+            self.assertEqual(sorted(x.name for x in elsewhere.iterdir()), [])
+            self.pool.unlink()
+            # a link among the parked parts is never read; a parts directory that is not mode 700 is made so
+            self.fresh()
+            (self.pool / 'parts').mkdir(parents=True, mode=0o755)
+            (self.pool / 'parts' / 'plink').symlink_to(target)
+            r = self.run_sms(shell, 'import-pdu', self.spooled(PDU_UCS2))
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual([h['from'] for h, _ in self.msgs().values()], ['ADANA BLD'])
+            self.assertEqual((self.pool / 'parts').stat().st_mode & 0o777, 0o700)
+            self.assertTrue((self.pool / 'parts' / 'plink').is_symlink())
+
+
+class Spool(ShellTest):
+    """mu300-cmt-spool (every system): the two lines of a +CMT frame on stdin, the PDU into the pool's spool."""
+
+    SPOOLER = TOP / 'rootfs' / 'overlay' / 'opt' / 'mu300' / 'bin' / 'mu300-cmt-spool'
+
+    def setUp(self):
+        super().setUp()
+        self.pool = self.tmp / 'pool'
+        self.stub('fsync', 'echo "FSYNC $*" >> "$STUBLOG/fs.log"')
+        self.stub('sync', 'echo "GLOBAL SYNC $*" >> "$STUBLOG/fs.log"')
+
+    def spool(self, shell, frame):
+        shutil.rmtree(self.pool, ignore_errors=True)
+        (self.tmp / 'fs.log').unlink(missing_ok=True)
+        return self.script(shell, self.SPOOLER, stdin=frame, MU300_SMS_POOL=self.pool)
+
+    def files(self):
+        d = self.pool / 'incoming'
+        return sorted(p.name for p in d.iterdir()) if d.exists() else []
+
+    def test_a_frame_is_written_whole_fsynced_and_root_only(self):
+        for shell in self.each_shell():
+            for header in ('+CMT: ,40', '+CMT: "ADANA BLD",56', '+CMT: ,40\r'):
+                with self.subTest(header=header):
+                    r = self.spool(shell, f'{header}\n{PDU_GSM}\r\n')
+                    self.assertEqual(r.returncode, 0, r.stderr)
+                    [name] = self.files()
+                    self.assertRegex(name, r'^cmt-[0-9]+\.[A-Za-z0-9]+\.ready$')
+                    f = self.pool / 'incoming' / name
+                    self.assertEqual(f.read_text(), PDU_GSM + '\n')
+                    self.assertEqual(f.stat().st_mode & 0o777, 0o600)
+                    self.assertEqual((self.pool / 'incoming').stat().st_mode & 0o777, 0o700)
+                    fs = (self.tmp / 'fs.log').read_text().splitlines()
+                    # the file (under its name before the rename), then the directory entry; never everything
+                    self.assertEqual(fs, [f'FSYNC {str(f)[:-len(".ready")]}', f'FSYNC {self.pool}/incoming'])
+
+    def test_anything_but_a_message_is_refused_and_nothing_written(self):
+        for shell in self.each_shell():
+            for frame in (f'+CMTI: "SM",4\n{PDU_GSM}\n', f'+CMT: ,40\n{PDU_GSM[:-1]}\n', '+CMT: ,40\nnot hex\n',
+                          '+CMT: ,40\n\n', '+CMT: ,40\n', '', f'{PDU_GSM}\n+CMT: ,40\n', '+CMT: ,40\n' + 'A' * 1026 + '\n'):
+                with self.subTest(frame=frame[:24]):
+                    r = self.spool(shell, frame)
+                    self.assertEqual(r.returncode, 1)
+                    self.assertEqual(self.files(), [])
+                    self.assertFalse((self.tmp / 'fs.log').exists())
+
+    def test_a_spool_or_pool_that_is_a_link_is_refused(self):
+        for shell in self.each_shell():
+            elsewhere = self.tmp / 'elsewhere'
+            shutil.rmtree(elsewhere, ignore_errors=True); elsewhere.mkdir()
+            shutil.rmtree(self.pool, ignore_errors=True)
+            self.pool.mkdir(mode=0o700)
+            (self.pool / 'incoming').symlink_to(elsewhere)
+            r = self.script(shell, self.SPOOLER, stdin=f'+CMT: ,40\n{PDU_GSM}\n', MU300_SMS_POOL=self.pool)
+            self.assertEqual(r.returncode, 1)
+            self.assertIn('symbolic link', r.stderr)
+            self.assertEqual(sorted(x.name for x in elsewhere.iterdir()), [])
+            shutil.rmtree(self.pool)
+            self.pool.symlink_to(elsewhere)
+            r = self.script(shell, self.SPOOLER, stdin=f'+CMT: ,40\n{PDU_GSM}\n', MU300_SMS_POOL=self.pool)
+            self.assertEqual(r.returncode, 1)
+            self.assertEqual(sorted(x.name for x in elsewhere.iterdir()), [])
+            self.pool.unlink()
+            # a pool somebody left mode 755 is made 700, and the spool is written
+            self.pool.mkdir(mode=0o755)
+            r = self.script(shell, self.SPOOLER, stdin=f'+CMT: ,40\n{PDU_GSM}\n', MU300_SMS_POOL=self.pool)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(self.pool.stat().st_mode & 0o777, 0o700)
+            self.assertEqual(len(self.files()), 1)
+
+    def test_two_frames_in_one_second_are_two_files(self):
+        for shell in self.each_shell():
+            self.spool(shell, f'+CMT: ,40\n{PDU_GSM}\n')
+            self.script(shell, self.SPOOLER, stdin=f'+CMT: ,56\n{PDU_UCS2}\n', MU300_SMS_POOL=self.pool)
+            self.assertEqual(len(self.files()), 2)
+
 
 class Delete(ShellTest):
     """`sms delete` (every system): only a message index, read or all reach the modem."""
@@ -737,6 +1139,134 @@ class Delete(ShellTest):
                                env=self.env(MU300_SMS_AWK=AWK, MU300_SMS_STATE=self.tmp / 'state'))
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertIn('AT+CMGD=7', (self.tmp / 'at.log').read_text())
+
+
+class Send(ShellTest):
+    """`sms send` (every system, its own send path): one transaction under mu300-at's client lock, the modem's SMSC
+    written back unchanged first, and the submission as the one request mu300-sms sends (FINDINGS 46)."""
+
+    SMS_CMD = TOP / 'rootfs/overlay/opt/mu300/bin/sms'
+
+    def setUp(self):
+        super().setUp()
+        self.stub('mu300-at', AT_STUB)
+        (self.tmp / 'at').mkdir()
+        self.atdir = self.tmp / 'run-at'
+        self.atdir.mkdir()
+        os.mkfifo(self.atdir / 'cmd')
+        self.answer('CMGS', '+CMGS: 12\nOK\n')
+        self.answer('CSCA', f'+CSCA: {Pool.SMSC_HEX}\nOK\n')
+
+    def answer(self, name, text):
+        (self.tmp / 'at' / name).write_text(text)
+
+    def at_log(self):
+        p = self.tmp / 'at.log'
+        return p.read_text().splitlines() if p.exists() else []
+
+    def held(self):
+        p = self.tmp / 'held.log'
+        return [line.split() for line in p.read_text().splitlines()] if p.exists() else []
+
+    def send(self, shell, *args, **env):
+        (self.tmp / 'at.log').unlink(missing_ok=True)
+        (self.tmp / 'held.log').unlink(missing_ok=True)
+        return self.script(shell, self.SMS_CMD, 'send', *args,
+                           MU300_SMS_AWK=AWK, MU300_SMS_STATE=self.tmp / 'state', MU300_AT_DIR=self.atdir, **env)
+
+    def test_a_send_is_one_transaction_under_the_at_lock(self):
+        # the SMSC refresh, PDU mode and the submission (one request: AT+CMGS=N, CR, the PDU, Ctrl-Z), under one
+        # acquisition of $ATDIR/lock that the mu300-at calls are told they hold; released afterwards, sent or refused
+        for shell in self.each_shell():
+            for cmgs, rc in (('+CMGS: 12\nOK\n', 0), ('+CMS ERROR: 500\n', 1), ('OK\n', 1)):
+                with self.subTest(cmgs=cmgs.split('\n')[0]):
+                    self.answer('CMGS', cmgs)
+                    r = self.send(shell, '+905551112233', 'Merhaba', 'ğüş')
+                    self.assertEqual(r.returncode, rc, r.stderr)
+                    enc = subprocess.run(['awk', '-v', 'mode=encode', '-v', 'number=+905551112233', '-v',
+                                          'text=Merhaba ğüş', '-f', str(AWK)], capture_output=True, text=True,
+                                         stdin=subprocess.DEVNULL, env=dict(os.environ, LC_ALL='C')).stdout.split()
+                    self.assertEqual(self.at_log(), ['AT+CSCA?', f'AT+CSCA={Pool.SMSC_HEX}', 'AT+CMGF=0',
+                                                     f'AT+CMGS={enc[0]}^{enc[1]}~'])
+                    if rc == 0:
+                        self.assertEqual(r.stdout, 'sent (reference 12)\n')
+                    else:
+                        self.assertTrue(r.stderr.startswith('sms: '), r.stderr)
+                        self.assertNotIn('sent', r.stdout)
+                    held = self.held()
+                    self.assertEqual(len(held), 4, held)
+                    pids = {p for pair in held for p in pair}
+                    self.assertEqual(len(pids), 1, held)      # one holder, the same for all four, and none "none"
+                    self.assertNotIn('none', pids)
+                    self.assertFalse((self.atdir / 'lock').exists())
+            self.answer('CMGS', '+CMGS: 12\nOK\n')
+
+    def test_a_smsc_the_modem_does_not_give_is_left_alone(self):
+        # nothing is written when the SMSC cannot be read as "address",type; a write the modem refuses does not stop
+        # the send; the character set is never touched
+        for shell in self.each_shell():
+            for label, csca, written in (('none', 'OK\n', 0), ('error', '+CME ERROR: 3\n', 0),
+                                         ('no quotes', '+CSCA: 1555010099,145\nOK\n', 0),
+                                         ('junk', '+CSCA: "+1555;AT+CFUN=0",145\nOK\n', 0),
+                                         ('plain', '+CSCA: "+1555010099",145\nOK\n', 1),
+                                         ('refused', '+CSCA: "+1555010099",145\nOK\n', 1)):
+                with self.subTest(case=label):
+                    self.answer('CSCA', csca)
+                    (self.tmp / 'at' / 'CSCA1555').unlink(missing_ok=True)
+                    if label == 'refused':
+                        self.answer('CSCA1555', '+CMS ERROR: 302\n')
+                    r = self.send(shell, '10099', 'hi')
+                    self.assertEqual(r.returncode, 0, r.stderr)
+                    log = self.at_log()
+                    self.assertEqual(log[0], 'AT+CSCA?')
+                    self.assertEqual([c for c in log if c.startswith('AT+CSCA=')], ['AT+CSCA="+1555010099",145'] * written)
+                    self.assertEqual(log[-2:-1], ['AT+CMGF=0'])
+                    self.assertTrue(log[-1].startswith('AT+CMGS='), log)
+                    self.assertNotIn('CSCS', ''.join(log))
+                    self.assertNotIn('AT+CFUN', ''.join(log))
+                    if label == 'refused':
+                        self.assertIn('sms: the modem refused to refresh', r.stderr)
+                    elif written:
+                        self.assertEqual(r.stderr, '')
+                    else:
+                        self.assertIn('without the refresh', r.stderr)
+            (self.tmp / 'at' / 'CSCA1555').unlink(missing_ok=True)
+            self.answer('CSCA', f'+CSCA: {Pool.SMSC_HEX}\nOK\n')
+
+    def test_a_held_at_lock_says_busy_before_anything_is_sent(self):
+        # a live holder of mu300-at's lock: busy within the wait, nothing sent, the holder's lock left alone; a
+        # holder that is gone is taken over
+        lock = self.atdir / 'lock'
+        for shell in self.each_shell():
+            holder = subprocess.Popen(['sh', '-c', 'sleep 30; true', 'mu300-at'])
+            try:
+                lock.mkdir()
+                (lock / 'pid').write_text(f'{holder.pid}\n')
+                t0 = time.monotonic()
+                r = self.send(shell, '10099', 'hi', MU300_AT_LOCK_WAIT='1')
+                self.assertEqual((r.returncode, r.stderr.strip()), (1, 'mu300-at: busy'))
+                self.assertLess(time.monotonic() - t0, 5)
+                self.assertEqual(self.at_log(), [])
+                self.assertEqual((lock / 'pid').read_text().strip(), str(holder.pid))
+            finally:
+                holder.kill()
+                holder.wait()
+            (lock / 'pid').write_text('999999\n')
+            r = self.send(shell, '10099', 'hi', MU300_AT_LOCK_WAIT='1')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(len(self.at_log()), 4)
+            self.assertFalse(lock.exists())
+
+    def test_no_daemon_no_lock(self):
+        # without mu300-atd's fifo mu300-at opens the tty itself and takes no lock: none is taken here either, and the
+        # send still goes the same way
+        (self.atdir / 'cmd').unlink()
+        for shell in self.each_shell():
+            r = self.send(shell, '10099', 'hi')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(len(self.at_log()), 4)
+            self.assertEqual(self.held(), [['none', 'none']] * 4)
+            self.assertFalse((self.atdir / 'lock').exists())
 
 
 class Watch(ShellTest):
@@ -800,20 +1330,187 @@ class Daemon(ShellTest):
         self.atdir = self.tmp / 'run-at'
         (self.atdir / 'urc').mkdir(parents=True)
         os.mkfifo(self.atdir / 'cmd')
-        self.stub('mu300-at', 'printf "%s\\n" "$*" >> "$STUBLOG/at.log"; '
-                              'case $* in *CPIN*) printf "+CPIN: READY\\nOK\\n" ;; *) echo OK ;; esac')
-        self.stub('fake-sms', 'echo "$*" >> "$STUBLOG/sms.log"')
+        # The stub modem: every command into at.log (and the stub mu300-sms's calls too, as "SMS ...", so the order
+        # between the two is one list); OK to everything but the commands $STUBLOG/refuse names (ERROR), +CPIN: READY,
+        # and +CNMI? answered from $STUBLOG/cnmi (what the daemon asked for, by default).
+        self.stub('mu300-at', 'printf "%s\\n" "$*" >> "$STUBLOG/at.log"; cmd=$3\n'
+                              'for r in $(cat "$STUBLOG/refuse" 2>/dev/null); do case $cmd in "$r"*) echo ERROR; exit 0 ;; esac; done\n'
+                              'case $cmd in\n'
+                              '    *CPIN*) printf "+CPIN: READY\\nOK\\n" ;;\n'
+                              '    "AT+CNMI?") cat "$STUBLOG/cnmi" 2>/dev/null || echo "+CNMI: 3,2,2,0,1"; echo OK ;;\n'
+                              '    *) echo OK ;;\n'
+                              'esac')
+        self.stub('fake-sms', 'echo "$*" >> "$STUBLOG/sms.log"; echo "SMS $*" >> "$STUBLOG/at.log"; '
+                              'echo "${MU300_AT_LOCK_WAIT:-unset}" > "$STUBLOG/lockwait"; '
+                              '[ -f "$STUBLOG/sms-fail" ] && [ "$1" = import-pdu ] && exit 1; exit 0')
         self.lock = self.tmp / 'smsd.lock'
+        self.flag = self.tmp / 'direct'
+        self.pool = self.tmp / 'pool'
+        self.spool = self.pool / 'incoming'
 
-    def start(self, shell):
-        e = self.env(MU300_AT_DIR=self.atdir, MU300_SMS_BIN=self.stubs / 'fake-sms', MU300_SMS_LOCK=self.lock,
-                     MU300_SMS_POLL=1, MU300_SMS_SYNC_INTERVAL=600, MU300_SMS_POOL=self.tmp / 'pool')
+    def start(self, shell, **env):
+        e = dict(MU300_AT_DIR=self.atdir, MU300_SMS_BIN=self.stubs / 'fake-sms', MU300_SMS_LOCK=self.lock,
+                 MU300_SMS_POLL=1, MU300_SMS_SYNC_INTERVAL=600, MU300_SMS_POOL=self.pool,
+                 MU300_SMS_DIRECT_FLAG=self.flag)
+        e.update(env)
         return subprocess.Popen(shell + [str(SMSD)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                                env=e)
+                                env=self.env(**e))
 
     def syncs(self):
         p = self.tmp / 'sms.log'
         return p.read_text().splitlines() if p.exists() else []
+
+    def at_log(self):
+        p = self.tmp / 'at.log'
+        return p.read_text().splitlines() if p.exists() else []
+
+    def commands(self):
+        """The AT commands asked so far (the stub mu300-sms's lines left out)."""
+        return [l.split(' ', 2)[2] for l in self.at_log() if l.startswith('-t ')]
+
+    def fresh(self):
+        for f in ('sms.log', 'at.log', 'refuse', 'cnmi', 'sms-fail', 'lockwait'):
+            (self.tmp / f).unlink(missing_ok=True)
+        shutil.rmtree(self.pool, ignore_errors=True)
+        self.flag.unlink(missing_ok=True)
+
+    def spooled(self, name='cmt-1.abcdef.ready', pdu=PDU_GSM):
+        self.spool.mkdir(parents=True, exist_ok=True)
+        (self.spool / name).write_text(pdu + '\n')
+        return self.spool / name
+
+    def stop(self, d):
+        d.send_signal(signal.SIGTERM)
+        return d.communicate(timeout=10)
+
+    def test_direct_delivery_is_asked_after_the_first_sync_and_a_message_is_acknowledged_after_its_import(self):
+        for shell in self.each_shell():
+            self.fresh()
+            d = self.start(shell)
+            try:
+                self.wait_for(lambda: 'AT+CNMI=3,2,2,0,1' in self.commands(), 'direct delivery was not asked for')
+                c = self.commands()
+                # the SIM first, in the mode it is announced in, then PDU mode, the service that acknowledges, routing
+                self.assertEqual(c[c.index('AT+CNMI=2,1,0,0,0'):], ['AT+CNMI=2,1,0,0,0', 'AT+CMGF=0', 'AT+CSMS=1', 'AT+CNMI=3,2,2,0,1'])
+                log = self.at_log()
+                self.assertLess(log.index('SMS sync'), log.index('-t 5 AT+CMGF=0'))
+                self.wait_for(lambda: self.flag.exists(), 'no flag for direct delivery')
+                self.assertEqual((self.tmp / 'lockwait').read_text().strip(), '8')   # never behind a stuck client for 90 s
+                # a spooled message: pooled, and only then acknowledged; the file goes once the modem took the ack
+                f = self.spooled()
+                self.wait_for(lambda: 'AT+CNMA=1' in self.commands(), 'no acknowledgement', timeout=15)
+                log = self.at_log()
+                self.assertLess(log.index(f'SMS import-pdu {f}'), log.index('-t 5 AT+CNMA=1'))
+                self.assertEqual(log.count('-t 5 AT+CNMA=1'), 1)
+                self.wait_for(lambda: not f.exists(), 'the acknowledged file stayed')
+                self.assertEqual(sorted(p.name for p in self.spool.iterdir()), [])
+                # two at once: oldest first, one acknowledgement each
+                self.spooled('cmt-200.b.ready'); self.spooled('cmt-100.a.ready', PDU_UCS2)
+                self.wait_for(lambda: self.at_log().count('-t 5 AT+CNMA=1') == 3, 'two more acknowledgements', timeout=15)
+                imports = [l for l in self.at_log() if l.startswith('SMS import-pdu')]
+                self.assertEqual([i.rsplit('/', 1)[1] for i in imports[1:]], ['cmt-100.a.ready', 'cmt-200.b.ready'])
+            finally:
+                out, err = self.stop(d)
+            self.assertIn('direct delivery is on', err)
+            self.assertFalse(self.flag.exists(), 'the flag outlived its daemon')
+
+    def test_a_refusal_leaves_the_sim_path_as_it_was(self):
+        for shell in self.each_shell():
+            for refuse, told in (('AT+CNMI=3', True), ('AT+CSMS=1', True), ('AT+CMGF=0', True), (None, False)):
+                with self.subTest(refuse=refuse):
+                    self.fresh()
+                    if refuse:
+                        (self.tmp / 'refuse').write_text(refuse + '\n')
+                    d = self.start(shell, **({} if refuse else {'MU300_SMS_DIRECT': '0'}))
+                    try:
+                        self.wait_for(lambda: self.commands().count('AT+CNMI=2,1,0,0,0') == 2, 'storage indications not asked again')
+                        c = self.commands()
+                        second = c.index('AT+CNMI=2,1,0,0,0', c.index('AT+CNMI=2,1,0,0,0') + 1)
+                        self.assertEqual(c[second:], ['AT+CNMI=2,1,0,0,0'])    # the last word
+                        if not told:
+                            self.assertNotIn('AT+CSMS=1', c)
+                            self.assertNotIn('AT+CNMI=3,2,2,0,1', c)
+                        time.sleep(1.2)
+                        self.assertFalse(self.flag.exists())
+                        # a +CMTI still starts a sync, as before
+                        with open(self.atdir / 'urc' / 'stty_nr0.log', 'a') as f:
+                            f.write('+CMTI: "SM",4\n')
+                        self.wait_for(lambda: self.syncs() == ['sync', 'sync'], 'no sync after +CMTI', timeout=15)
+                        # a frame that comes anyway is still pooled and acknowledged
+                        self.spooled()
+                        self.wait_for(lambda: 'AT+CNMA=1' in self.commands(), 'no acknowledgement', timeout=15)
+                    finally:
+                        out, err = self.stop(d)
+                    self.assertIn('did not take direct delivery', err)
+                    self.assertIn('announced (+CMTI)', err)
+
+    def test_a_failed_import_is_never_acknowledged_and_three_rounds_give_direct_delivery_up(self):
+        for shell in self.each_shell():
+            self.fresh()
+            (self.tmp / 'sms-fail').write_text('')
+            d = self.start(shell)
+            try:
+                self.wait_for(lambda: self.flag.exists(), 'direct delivery was not asked for')
+                f = self.spooled()
+                self.wait_for(lambda: len([l for l in self.at_log() if l.startswith('SMS import-pdu')]) >= 3,
+                              'three rounds of importing', timeout=15)
+                self.assertNotIn('AT+CNMA=1', self.commands())
+                self.wait_for(lambda: not self.flag.exists(), 'direct delivery was not given up')
+                self.assertTrue((self.spool / 'cmt-1.abcdef.failed').exists())
+                self.assertFalse(f.exists())
+                c = self.commands()
+                self.assertEqual(c[-1], 'AT+CNMI=2,1,0,0,0')
+                self.assertNotIn('AT+CNMA=1', c)
+            finally:
+                out, err = self.stop(d)
+            self.assertIn('could not pool', err)
+            self.assertIn('three rounds of pooling or acknowledging failed', err)
+
+    def test_a_link_in_the_spool_is_set_aside_and_never_imported(self):
+        for shell in self.each_shell():
+            self.fresh()
+            d = self.start(shell)
+            try:
+                self.wait_for(lambda: self.flag.exists(), 'direct delivery was not asked for')
+                self.spool.mkdir(parents=True, exist_ok=True)
+                target = self.tmp / 'target.pdu'
+                target.write_text(PDU_GSM + '\n')
+                (self.spool / 'cmt-1.link.ready').symlink_to(target)
+                self.wait_for(lambda: (self.spool / 'cmt-1.link.failed').is_symlink(), 'the link was not set aside')
+                self.assertFalse([l for l in self.at_log() if l.startswith('SMS import-pdu')])
+                self.assertNotIn('AT+CNMA=1', self.commands())
+                self.assertTrue(self.flag.exists())              # one link is no failure of direct delivery
+            finally:
+                out, err = self.stop(d)
+            self.assertIn('not a regular file; set aside', err)
+
+    def test_an_acknowledgement_the_modem_refuses_keeps_the_file(self):
+        for shell in self.each_shell():
+            self.fresh()
+            (self.tmp / 'refuse').write_text('AT+CNMA\n')
+            d = self.start(shell)
+            try:
+                self.wait_for(lambda: self.flag.exists(), 'direct delivery was not asked for')
+                f = self.spooled()
+                self.wait_for(lambda: self.commands().count('AT+CNMA=1') == 2, 'a second try', timeout=15)
+                self.assertTrue(f.exists())                       # imported (twice, idempotent), never removed
+                self.assertEqual(len([l for l in self.at_log() if l.startswith('SMS import-pdu')]), 2)
+            finally:
+                out, err = self.stop(d)
+            self.assertIn('did not take the acknowledgement', err)
+
+    def test_routing_the_modem_dropped_is_put_back_at_the_periodic_sync(self):
+        for shell in self.each_shell():
+            self.fresh()
+            (self.tmp / 'cnmi').write_text('+CNMI: 0,0,0,0,0\n')   # what a modem answers after an acknowledgement never came
+            d = self.start(shell, MU300_SMS_SYNC_INTERVAL=2)
+            try:
+                self.wait_for(lambda: self.commands().count('AT+CNMI=3,2,2,0,1') >= 2, 'routing not put back', timeout=15)
+                c = self.commands()
+                self.assertLess(c.index('AT+CNMI?'), len(c) - c[::-1].index('AT+CNMI=3,2,2,0,1') - 1)
+                self.assertTrue(self.flag.exists())
+            finally:
+                self.stop(d)
 
     def wait_for(self, cond, what, timeout=10):
         end = time.monotonic() + timeout
@@ -878,6 +1575,22 @@ class Daemon(ShellTest):
 
 
 class Wiring(unittest.TestCase):
+    def test_the_spooler_is_on_every_system_and_the_at_daemon_knows_it(self):
+        # mu300-atd runs on Ubuntu too, and a +CMT frame must never end in its log or be lost: the spooler is in the
+        # shared tree, the pool and spool paths are the pool's everywhere
+        spooler = TOP / 'rootfs' / 'overlay' / 'opt' / 'mu300' / 'bin' / 'mu300-cmt-spool'
+        self.assertTrue(spooler.stat().st_mode & 0o111, 'not executable')
+        self.assertIn('POOL=${MU300_SMS_POOL:-/etc/mu300/sms-pool}\n', spooler.read_text())
+        self.assertIn('SPOOL=$POOL/incoming\n', spooler.read_text())
+        atd = (TOP / 'rootfs' / 'overlay' / 'opt' / 'mu300' / 'bin' / 'mu300-atd').read_text()
+        self.assertIn('CMT_SPOOL=${MU300_CMT_SPOOL_BIN:-/opt/mu300/bin/mu300-cmt-spool}\n', atd)
+        self.assertIn('SPOOL=$POOL/incoming\n', SMSD.read_text())
+        self.assertIn('PARTS=$POOL/parts', SMS.read_text())
+        # the message is never an argument: the daemon pipes the frame, the daemon of the pool reads a file
+        self.assertNotRegex(atd, r'"\$CMT_SPOOL" +"\$')
+        self.assertIn('"$SMS" import-pdu "$f"', SMSD.read_text())
+        self.assertIn('export MU300_AT_LOCK_WAIT=${MU300_AT_LOCK_WAIT:-8}', SMSD.read_text())
+
     def test_init_script(self):
         src = INITD.read_text()
         self.assertTrue(src.startswith('#!/bin/sh /etc/rc.common\n'))

@@ -9,6 +9,10 @@
 # with a hint where one is harmless (the URL's host, the header names, the bot's number). In set, an empty secret keeps
 # the one saved; "clear" (space-separated names) removes them. The configuration file is root's only (0600), written
 # whole (aside, then renamed), in the line format mu300-sms-forward reads.
+#
+# The webhook's own body (webhook_body, 2000 bytes at most) is a template like the message template, not a secret: it
+# comes back so that it can be edited, an empty one means the standard body, and the page says to keep secrets in the
+# address or a header. It is only ever stored and copied here; mu300-sms-forward fills it in.
 set -u
 export PATH="$PATH:/opt/mu300/bin:/usr/sbin:/sbin"
 LIB=${0%/*}/../../share/unisoc-modem/lib.sh
@@ -73,10 +77,8 @@ do_get() {
     _allow=$(sed -n 's/^allow=//p' "$CONF" 2>/dev/null)
     _deny=$(sed -n 's/^deny=//p' "$CONF" 2>/dev/null)
     _kw=$(sed -n 's/^keyword=//p' "$CONF" 2>/dev/null)
-    _tpl=$(saved template | awk '{
-        t = $0; u = ""
-        while ((i = index(t, "\\")) > 0) { c = substr(t, i + 1, 1); u = u substr(t, 1, i - 1) (c == "n" ? "\n" : c); t = substr(t, i + 2) }
-        printf "%s", u t }')
+    _tpl=$(saved template | unesc_tpl)
+    _body=$(saved webhook_body | unesc_tpl)
     _st=$("$FWD" status 2>/dev/null)
     _q=$(printf '%s\n' "$_st" | sed -n 's/^queued //p'); _r=$(printf '%s\n' "$_st" | sed -n 's/^running //p')
     _m=$(printf '%s\n' "$_st" | sed -n 's/^email //p')
@@ -85,6 +87,7 @@ do_get() {
     printf '"webhook":%s,"webhook_url_set":%s,"webhook_url_hint":%s,"webhook_format":%s,"webhook_headers_set":%s,"webhook_header_names":%s,' \
         "$(b "$(saved webhook)")" "$(set01 "$_url")" "$(json_str "$_h_url")" "$(json_str "$(saved webhook_format)")" \
         "$(set01 "$_names")" "$(json_str "$_names")"
+    printf '"webhook_body":%s,' "$(json_str "$_body")"
     printf '"telegram":%s,"telegram_token_set":%s,"telegram_token_hint":%s,"telegram_chat":%s,' \
         "$(b "$(saved telegram)")" "$(set01 "$_tok")" "$(json_str "$_h_tok")" "$(json_str "$(saved telegram_chat)")"
     printf '"email_available":%s,"email":%s,"email_host":%s,"email_port":%s,"email_tls":%s,"email_user":%s,"email_password_set":%s,"email_from":%s,"email_to":%s,' \
@@ -100,12 +103,27 @@ do_get() {
         END { for (i = NR; i >= 1; i--) printf "%s%s", line[i], (i > 1 ? "," : "") }'
     printf ']}\n'
 }
+# unesc_tpl: a template's one-line form on stdin, as the page edits it (\n a newline, \\ a backslash)
+unesc_tpl() {
+    awk '{
+        t = $0; u = ""
+        while ((i = index(t, "\\")) > 0) { c = substr(t, i + 1, 1); u = u substr(t, 1, i - 1) (c == "n" ? "\n" : c); t = substr(t, i + 2) }
+        printf "%s", u t }'
+}
 b() { [ "$1" = 1 ] && echo 1 || echo 0; }
 set01() { [ -n "$1" ] && echo 1 || echo 0; }
 
 # ------------------------------------------------------------------ set
-# esc_tpl TEXT: the template in the file's one-line form (a newline as \n, a backslash as \\)
-esc_tpl() { printf '%s' "$1" | awk '{ gsub(/\\/, "\\\\"); out = out (NR > 1 ? "\\n" : "") $0 } END { printf "%s", out }'; }
+# esc_tpl TEXT: the template in the file's one-line form (a newline as \n, a backslash as \\). The backslashes are
+# doubled by hand: what "\\\\" means as a gsub replacement differs between awks (busybox awk, the device's, writes one
+# backslash, so a template's backslash - every \" and \n of a JSON body - was stored bare and read back as an escape)
+esc_tpl() {
+    printf '%s' "$1" | awk '{
+        t = $0; u = ""
+        while ((i = index(t, "\\")) > 0) { u = u substr(t, 1, i - 1) "\\\\"; t = substr(t, i + 1) }
+        out = out (NR > 1 ? "\\n" : "") u t
+    } END { printf "%s", out }'
+}
 
 do_set() {
     INPUT=$(cat)
@@ -128,7 +146,9 @@ do_set() {
         case $clear in *" webhook_url "*) ;; *) url=$(saved webhook_url) ;; esac
     fi
     inp webhook_format; fmt=${V:-json}
-    like "$fmt" '(json|form)' || error 'Invalid forwarding setting'
+    like "$fmt" '(json|form|text)' || error 'Invalid forwarding setting'
+    inp webhook_body; body=$V
+    text_ok "$body" && [ "$(bytes "$body")" -le 2000 ] || error 'The webhook body is too long or contains a control character'
     list webhook_headers 512 '[A-Za-z0-9-]{1,64}: ?[ -~]*' || error 'Invalid header (one "Name: value" per line; Host, Content-Type, Content-Length, Transfer-Encoding and Connection are set by the device)'
     hdrs=$V
     if [ -n "$hdrs" ]; then
@@ -193,6 +213,7 @@ do_set() {
             printf '%s' "$deny" | sed 's/^/deny=/'
             printf '%s' "$kw" | sed 's/^/keyword=/'
             printf 'webhook=%s\nwebhook_url=%s\nwebhook_format=%s\n' "$wh" "$url" "$fmt"
+            printf 'webhook_body=%s\n' "$(esc_tpl "$body")"
             printf '%s' "$hdrs" | sed 's/^/webhook_header=/'
             printf 'telegram=%s\ntelegram_token=%s\ntelegram_chat=%s\n' "$tg" "$tok" "$chat"
             printf 'email=%s\nemail_host=%s\nemail_port=%s\nemail_tls=%s\nemail_user=%s\nemail_password=%s\n' \

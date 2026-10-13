@@ -175,6 +175,16 @@ echo OK
         self.assertEqual(self.ctl('default','2').returncode,0)
         self.assertEqual((self.etc/'uci-slot').read_text(),'1\n')
 
+    def test_legacy_slot_capability_agrees_with_native_u30_capabilities(self):
+        s = self.status()
+        self.assertEqual(s['slot1_supported'], 1)
+        self.assertTrue(s['capabilities']['boot_selection'])
+        self.assertTrue(s['capabilities']['live_switch'])
+        (self.run / 'mu300/sim-active-unknown').touch()
+        s = self.status()
+        self.assertEqual(s['slot1_supported'], 1)
+        self.assertIsNone(s['active'])
+
     def test_fallback_of_the_last_boot_is_reported_until_the_user_chooses(self):
         (self.etc/'mu300-sim-fallback').write_text('cold-start-failed\n')
         self.assertEqual(self.status()['fallback'],'cold-start-failed')

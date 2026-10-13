@@ -23,8 +23,9 @@
 # a command line or the log: an HTTP request goes to the ucode helper (/opt/mu300/lib/sms-forward-http.uc) on stdin,
 # the mail password to msmtp in a 0600 file in RAM. The log says which message went where and how it ended, never the
 # message, the sender or a secret. Lines are "key=value": enabled, template (a newline as \n, a backslash as \\),
-# allow, deny, keyword (one entry per line, repeated), webhook, webhook_url, webhook_format (json|form),
-# webhook_header ("Name: value", repeated), telegram, telegram_token, telegram_chat, email, email_host, email_port,
+# allow, deny, keyword (one entry per line, repeated), webhook, webhook_url, webhook_format (json|form|text),
+# webhook_body (the user's own request body, stored like the template; empty: the standard one), webhook_header
+# ("Name: value", repeated), telegram, telegram_token, telegram_chat, email, email_host, email_port,
 # email_tls (starttls|tls|off), email_user, email_password, email_from, email_to, sms, sms_number.
 set -u
 export PATH="$PATH:/opt/mu300/bin:/opt/mu300/busybox-bin:/usr/sbin:/sbin"
@@ -44,6 +45,8 @@ SMS=${MU300_SMS_BIN:-/opt/mu300/bin/mu300-sms}
 HTTP=${MU300_FWD_HTTP:-/opt/mu300/lib/sms-forward-http.uc}
 QUEUE_MAX=${MU300_FWD_QUEUE_MAX:-100}
 ATTEMPTS=${MU300_FWD_ATTEMPTS:-10}
+# the largest webhook request body, filled in (the panel takes a body template of 2000 bytes at most)
+BODY_MAX=${MU300_FWD_BODY_MAX:-65536}
 LOG_MAX=100
 TAB=$(printf '\t')
 NL='
@@ -56,7 +59,7 @@ say() { echo "mu300-sms-forward: $*" >&2; }
 # conf_load: the settings into c_* (lists newline-separated); never sourced, every line is matched by its key
 conf_load() {
     c_enabled=0 c_template=$DEFAULT_TEMPLATE c_allow= c_deny= c_keyword=
-    c_webhook=0 c_webhook_url= c_webhook_format=json c_webhook_header=
+    c_webhook=0 c_webhook_url= c_webhook_format=json c_webhook_header= c_webhook_body=
     c_telegram=0 c_telegram_token= c_telegram_chat=
     c_email=0 c_email_host= c_email_port=587 c_email_tls=starttls c_email_user= c_email_password= c_email_from= c_email_to=
     c_sms=0 c_sms_number=
@@ -73,6 +76,7 @@ conf_load() {
             webhook) c_webhook=$_v ;;
             webhook_url) c_webhook_url=$_v ;;
             webhook_format) c_webhook_format=$_v ;;
+            webhook_body) c_webhook_body=$_v ;;
             webhook_header) c_webhook_header=$c_webhook_header$_v$NL ;;
             telegram) c_telegram=$_v ;;
             telegram_token) c_telegram_token=$_v ;;
@@ -183,10 +187,37 @@ passes() {
     return 0
 }
 
-# render SENDER TIME TEXT DEVICE: the template filled in. Placeholders {sender} {time} {text} {device}; anything else in
-# braces stays as it is. The values never pass through a shell or awk -v (no escapes are read in them).
-render() {
-    T=$c_template F=$1 D=$2 X=$3 V=$4 awk 'BEGIN {
+# fill TEMPLATE MODE SENDER TIME TEXT DEVICE [MESSAGE]: TEMPLATE (in the stored one-line form) with its placeholders
+# replaced: {sender} {time} {text} {device}, and {message} when MESSAGE is given. Anything else in braces stays as it
+# is. MODE says how a value is written: raw as it is; json as the inside of a JSON string (quote, backslash and every
+# control character escaped - the quotes around it are the template's); url percent-encoded. One pass: a value put in
+# is never read again for placeholders. Neither the template nor a value passes through a shell, eval or awk -v (no
+# escapes are read in them): they reach awk in its environment and are only ever copied.
+fill() {
+    T=$1 M=$2 F=$3 D=$4 X=$5 V=$6 G=${7:-} N=$# awk '
+    function enc(s,   i, c, o) {
+        if (mode == "json") {
+            o = ""
+            for (i = 1; i <= length(s); i++) { c = substr(s, i, 1); o = o ((c in je) ? je[c] : c) }
+            return o
+        }
+        if (mode == "url") {
+            o = ""
+            for (i = 1; i <= length(s); i++) {
+                c = substr(s, i, 1)
+                if (c ~ /[A-Za-z0-9._~-]/) o = o c; else o = o sprintf("%%%02X", ord[c])
+            }
+            return o
+        }
+        return s
+    }
+    BEGIN {
+        mode = ENVIRON["M"]
+        if (mode == "json") {
+            for (i = 1; i < 32; i++) je[sprintf("%c", i)] = sprintf("\\u%04x", i)
+            je["\""] = "\\\""; je["\\"] = "\\\\"; je["\n"] = "\\n"; je["\t"] = "\\t"; je["\r"] = "\\r"
+        }
+        if (mode == "url") for (i = 0; i < 256; i++) ord[sprintf("%c", i)] = i
         t = ENVIRON["T"]; u = ""
         # the stored form: \n is a newline, \\ a backslash
         while ((i = index(t, "\\")) > 0) {
@@ -195,19 +226,23 @@ render() {
             t = substr(t, i + 2)
         }
         t = u t; out = ""
-        n = split("sender time text device", name, " ")
+        n = split("sender time text device" (ENVIRON["N"] + 0 >= 7 ? " message" : ""), name, " ")
         val["sender"] = ENVIRON["F"]; val["time"] = ENVIRON["D"]; val["text"] = ENVIRON["X"]; val["device"] = ENVIRON["V"]
+        val["message"] = ENVIRON["G"]
         while ((i = index(t, "{")) > 0) {
             out = out substr(t, 1, i - 1); t = substr(t, i); hit = 0
             for (k = 1; k <= n; k++) {
                 p = "{" name[k] "}"
-                if (substr(t, 1, length(p)) == p) { out = out val[name[k]]; t = substr(t, length(p) + 1); hit = 1; break }
+                if (substr(t, 1, length(p)) == p) { out = out enc(val[name[k]]); t = substr(t, length(p) + 1); hit = 1; break }
             }
             if (!hit) { out = out "{"; t = substr(t, 2) }
         }
         printf "%s", out t
     }'
 }
+
+# render SENDER TIME TEXT DEVICE: the message template filled in, as text
+render() { fill "$c_template" raw "$1" "$2" "$3" "$4"; }
 
 device_name() { cat /proc/sys/kernel/hostname 2>/dev/null || uname -n; }
 
@@ -309,14 +344,23 @@ deliver() {
     _msg=$(render "$_from" "$_time" "$_text" "$_dev")
     case $1 in
     webhook)
+        # the format is the content type, and how a value is written into a body of the user's own (webhook_body);
+        # with none, the standard body of that format: the five fields, or for text the message alone
         case $c_webhook_format in
-            form)
-                _type=application/x-www-form-urlencoded
-                _body="sender=$(urlencode "$_from")&time=$(urlencode "$_time")&text=$(urlencode "$_text")&device=$(urlencode "$_dev")&message=$(urlencode "$_msg")" ;;
-            *)
-                _type='application/json; charset=utf-8'
-                _body="{\"sender\":$(json "$_from"),\"time\":$(json "$_time"),\"text\":$(json "$_text"),\"device\":$(json "$_dev"),\"message\":$(json "$_msg")}" ;;
+            form) _type=application/x-www-form-urlencoded; _mode=url ;;
+            text) _type='text/plain; charset=utf-8'; _mode=raw ;;
+            *) _type='application/json; charset=utf-8'; _mode=json ;;
         esac
+        if [ -n "$c_webhook_body" ]; then
+            _body=$(fill "$c_webhook_body" "$_mode" "$_from" "$_time" "$_text" "$_dev" "$_msg")
+        else
+            case $_mode in
+                url) _body="sender=$(urlencode "$_from")&time=$(urlencode "$_time")&text=$(urlencode "$_text")&device=$(urlencode "$_dev")&message=$(urlencode "$_msg")" ;;
+                raw) _body=$_msg ;;
+                *) _body="{\"sender\":$(json "$_from"),\"time\":$(json "$_time"),\"text\":$(json "$_text"),\"device\":$(json "$_dev"),\"message\":$(json "$_msg")}" ;;
+            esac
+        fi
+        if [ "$(printf '%s' "$_body" | wc -c)" -gt "$BODY_MAX" ]; then d_detail='the webhook body is too large'; return 2; fi
         http_post "$c_webhook_url" "$_type" "$_body" "$c_webhook_header"
         http_result ;;
     telegram)

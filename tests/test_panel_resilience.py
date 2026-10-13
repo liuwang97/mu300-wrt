@@ -138,6 +138,22 @@ class AtLock(ShellTest):
             r = self.at(shell, '-t', '2', 'AT', MU300_AT_LOCK_WAIT='1')
             self.assertEqual(r.returncode, 0, r.stderr)
 
+    def test_a_lock_the_caller_holds_is_borrowed(self):
+        # a client told that its caller holds the lock (MU300_AT_LOCK_HELD: mu300-sms, around a whole send) runs at
+        # once under it and leaves it in place - only while lock/pid names that live process; any other value, and
+        # it waits for the lock like every client
+        p = self.holder(name='mu300-sms')
+        for shell in self.each_shell():
+            self.daemon()
+            r = self.at(shell, '-t', '2', 'AT', MU300_AT_LOCK_HELD=str(p.pid), MU300_AT_LOCK_WAIT='1')
+            self.assertEqual((r.returncode, r.stdout.strip()), (0, 'OK'), r.stderr)
+            self.assertEqual((self.dir / 'lock' / 'pid').read_text().strip(), str(p.pid))
+            for wrong in ('1', str(os.getpid()), 'x', ''):
+                with self.subTest(held=wrong):
+                    r = self.at(shell, '-t', '1', 'AT', MU300_AT_LOCK_HELD=wrong, MU300_AT_LOCK_WAIT='1')
+                    self.assertEqual((r.returncode, r.stderr.strip()), (1, 'mu300-at: busy'))
+            self.assertTrue((self.dir / 'lock').exists())
+
     def test_the_holder_says_when_it_will_be_done(self):
         # no live daemon (no owner/pid): the budget is T + 2, so "until" is about now + T + 2 + 10
         for shell in self.each_shell():
@@ -317,6 +333,56 @@ class Backend(sec.Mu300Dash):
                 f.unlink()
             self.assertEqual(self.reply(self.call(shell, 'at_job', {})[0]), {'none': 1})
 
+    def test_a_send_runs_in_the_background_and_its_result_waits(self):
+        # mu300-sms waits up to 40 s for the modem's +CMGS, and rpcd ends a call at 30 s: a slow send was killed with
+        # the call and its result lost (#176). sms_send only starts the job; sms_job says running, then how it went
+        # - the reply sms_send used to give - and a second send meanwhile is busy, never a second submission.
+        d = self.tmp / 'shared'
+        for shell in self.each_shell():
+            shutil.rmtree(d, ignore_errors=True)
+            d.mkdir()
+            self.output('sms', 'sent (reference 9)')
+            r, recs, _ = self.call(shell, 'sms_send', {'num': '10099', 'text': 'CXYL'}, MU300_DASH_DIR=d)
+            self.assertEqual(self.reply(r), {'ok': 1, 'started': 1, 'job': 1, 'limit': 200})
+            self.assertEqual(recs, [['setsid', 'mu300dash', 'sms-job']])
+            # started a moment ago and not yet running: it counts as running, and another send is not started
+            obj = self.reply(self.call(shell, 'sms_job', {}, MU300_DASH_DIR=d)[0])
+            self.assertEqual((obj['running'], obj['limit']), (1, 200))
+            r, recs, _ = self.call(shell, 'sms_send', {'num': '10099', 'text': 'again'}, MU300_DASH_DIR=d)
+            obj = self.reply(r)
+            self.assertEqual((obj['ok'], obj['busy'], obj['job'], recs), (0, 1, 1, []))
+            self.assertEqual((d / 'sms-job' / 'text').read_text(), 'CXYL')
+            # the detached half (what setsid would have started), with the sms stub as mu300-sms
+            calls = self.tmp / 'jobcalls'
+            shutil.rmtree(calls, ignore_errors=True)
+            calls.mkdir()
+            j = subprocess.run(shell + [str(sec.DASH), 'sms-job'], capture_output=True, timeout=60, env=self.env(
+                STUB_CALLS=calls, STUB_OUT=self.out, MU300_DASH_BIN=self.adapters, MU300_DASH_DIR=d,
+                MU300_SMS_BIN=self.adapters / 'sms', MU300_DASH_OPS_DIR=self.tmp / 'flash'))
+            self.assertEqual(j.returncode, 0, j.stderr)
+            rec = next(f for f in calls.glob('call.*') if f.suffix != '.stdin')
+            self.assertEqual([a.decode() for a in rec.read_bytes().split(b'\0')[:-1]], ['sms', 'send', '--stdin', '10099'])
+            self.assertEqual(rec.with_name(rec.name + '.stdin').read_text(), 'CXYL')
+            obj = self.reply(self.call(shell, 'sms_job', {}, MU300_DASH_DIR=d)[0])
+            self.assertEqual((obj['done'], obj['running'], obj['ok'], obj['reply']), (1, 0, 1, 'sent (reference 9)'))
+            self.assertFalse((d / 'sms-job' / 'text').exists())   # no copy of the message is kept
+            # the operations log: the request, and how the send went (from the job); never the number or the text
+            ops = (d / 'ops.log').read_text()
+            self.assertRegex(ops, r' sms_send \d+\.\d\ds ok\n')
+            self.assertRegex(ops, r' sms_send result \d+\.\d\ds ok\n')
+            self.assertNotIn('10099', ops)
+            self.assertNotIn('CXYL', ops)
+            # a job that died under the send (no result): not sent again by itself, and said so
+            (d / 'sms-job' / 'reply').unlink()
+            obj = self.reply(self.call(shell, 'sms_job', {}, MU300_DASH_DIR=d)[0])
+            self.assertEqual((obj['done'], obj['ok'], obj['error']), (1, 0, 'Sending failed'))
+            self.assertIn('without a result', obj['detail'])
+            # the next send starts afresh
+            r, recs, _ = self.call(shell, 'sms_send', {'num': '10099', 'text': 'next'}, MU300_DASH_DIR=d)
+            self.assertEqual(self.reply(r).get('started'), 1)
+            self.assertEqual(recs, [['setsid', 'mu300dash', 'sms-job']])
+            self.assertEqual(self.reply(self.call(shell, 'sms_job', {})[0]), {'none': 1})
+
     def test_lock_get_never_reads_the_modem_in_the_request(self):
         d = self.tmp / 'shared'
         d.mkdir()
@@ -326,6 +392,22 @@ class Backend(sec.Mu300Dash):
             r, recs, _ = self.call(shell, 'lock_get', {}, MU300_DASH_DIR=d)
             self.assertEqual(recs, [['lock', 'get', 'cached']])
             self.assertLess(time.monotonic() - t0, 3)
+
+    def test_lock_get_carries_the_reset_result(self):
+        # the verified reset (unisoc-modem/lock reset) runs detached and leaves its result in the lock state; the
+        # page polls lock_get for it, so the result object comes through as the adapter wrote it
+        d = self.tmp / 'shared'
+        d.mkdir()
+        (d / 'lock.json').write_text('{"ts":1,"mode":{"label":"4g"}}\n')
+        reset = {'state': 'failed', 'ts': 5, 'end': 9, 'error': 'The modem refused a write', 'cmd': 'AT+SPLBAND=2,0,0,0,0'}
+        self.output('lock', json.dumps({'ts': 1, 'mode': {'label': '4g'}, 'auto_apply': 1, 'reset': reset}))
+        for shell in self.each_shell():
+            r, recs, _ = self.call(shell, 'lock_get', {}, MU300_DASH_DIR=d)
+            self.assertEqual(recs, [['lock', 'get', 'cached']])
+            self.assertEqual(self.reply(r)['reset'], reset)
+            r, recs, _ = self.call(shell, 'lock_set', {'kind': 'reset', 'val': 'auto'}, MU300_DASH_DIR=d)
+            self.assertEqual(self.reply(r).get('started'), 1)
+            self.assertEqual(recs, [['setsid', 'lock', 'reset']])
 
     @unittest.skipUnless(HAVE_PROC, 'needs /proc')
     def test_without_a_reading_yet_lock_get_says_busy_in_time(self):

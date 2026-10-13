@@ -10,7 +10,8 @@
  * has msmtp) or another phone. The backend is mu300dash forward_get/forward_set/forward_test (unisoc-modem/forward,
  * mu300-sms-forward), driven by the SMS pool: nothing here asks the modem anything.
  * The secrets (webhook address and headers, bot token, mail password) are never sent back: an empty field keeps the
- * saved one, "Remove the saved value" deletes it. */
+ * saved one, "Remove the saved value" deletes it. The webhook's custom body is a template like the message template:
+ * it is sent back to be edited, and an empty one means the standard body. */
 
 var DEFAULT_TEMPLATE = '{text}\n-- {sender}, {time} ({device})';
 
@@ -90,6 +91,7 @@ return view.extend({
 			return;
 		}
 		var mail = !!st.email_available;
+		var fmt = (st.webhook_format === 'form' || st.webhook_format === 'text') ? st.webhook_format : 'json';
 
 		var general = E('section', { 'class': 'mud-card', 'id': 'mud-fwd-card-general' }, [
 			E('h3', {}, _('SMS forwarding')),
@@ -110,9 +112,14 @@ return view.extend({
 			this.secret('webhook_url', st.webhook_url_set, st.webhook_url_hint, _('Address (http:// or https://)'),
 				{ placeholder: 'https://example.com/sms' }),
 			this.field(_('Body'), E('select', { 'class': 'cbi-input-select', 'id': 'mud-fwd-webhook_format' }, [
-				E('option', { 'value': 'json', 'selected': st.webhook_format !== 'form' ? '' : null }, [ 'JSON' ]),
-				E('option', { 'value': 'form', 'selected': st.webhook_format === 'form' ? '' : null }, [ _('Form (URL-encoded)') ])
+				E('option', { 'value': 'json', 'selected': fmt === 'json' ? '' : null }, [ 'JSON' ]),
+				E('option', { 'value': 'form', 'selected': fmt === 'form' ? '' : null }, [ _('Form (URL-encoded)') ]),
+				E('option', { 'value': 'text', 'selected': fmt === 'text' ? '' : null }, [ _('Plain text') ])
 			]), _('Fields: sender, time, text, device, message (the template filled in)')),
+			/* the device fills this in (mu300-sms-forward fill): a template, not a secret, so it comes back */
+			this.field(_('Custom body'), this.area('webhook_body', st.webhook_body, 4,
+				'{"msg_type":"text","content":{"text":"{message}"}}'),
+				_('Empty: the standard fields (plain text: the message). Placeholders: {sender}, {time}, {text}, {device}, {message}. Each value is escaped for the chosen type. This body is shown again here: keep secrets in the address or a header.')),
 			this.secret('webhook_headers', st.webhook_headers_set, st.webhook_header_names,
 				_('Extra headers (one "Name: value" per line)'), { area: true, placeholder: 'Authorization: Bearer ...' })
 		]);
@@ -202,7 +209,7 @@ return view.extend({
 			this.val('webhook_format'), this.val('webhook_headers'), this.on('telegram'), this.val('telegram_token').trim(),
 			this.val('telegram_chat').trim(), this.on('email'), this.val('email_host').trim(), this.val('email_port').trim(),
 			this.val('email_tls'), this.val('email_user').trim(), this.val('email_password'), this.val('email_from').trim(),
-			this.val('email_to').trim(), this.on('sms'), this.val('sms_number').trim()).then(function(r) {
+			this.val('email_to').trim(), this.on('sms'), this.val('sms_number').trim(), this.val('webhook_body')).then(function(r) {
 			M.busy(btn, false);
 			if (!r || r.ok !== 1) {
 				M.toast(_('Failed: %s').format(M.errText(r)), { type: 'error', timeout: 6000 });

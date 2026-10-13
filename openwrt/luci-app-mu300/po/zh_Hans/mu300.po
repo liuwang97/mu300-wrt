@@ -387,6 +387,24 @@ msgstr "硬件最高"
 msgid "Frequencies in MHz."
 msgstr "频率单位为 MHz。"
 
+msgid "Thermal"
+msgstr "温控"
+
+msgid "The kernel's thermal zones, read only. A zone with trip points throttles the cooling devices bound to it at its passive trip; a cooling state of 0 is no throttling."
+msgstr "内核的温区，只读。带有触发点的温区会在其被动触发点限制与之绑定的冷却设备；冷却状态 0 表示未限频。"
+
+msgid "Zone"
+msgstr "温区"
+
+msgid "Temperature"
+msgstr "温度"
+
+msgid "Trip points"
+msgstr "触发点"
+
+msgid "Cooling devices"
+msgstr "冷却设备"
+
 msgid "USB role"
 msgstr "USB 角色"
 
@@ -603,8 +621,17 @@ msgstr "正文"
 msgid "Form (URL-encoded)"
 msgstr "表单（URL 编码）"
 
+msgid "Plain text"
+msgstr "纯文本"
+
 msgid "Fields: sender, time, text, device, message (the template filled in)"
 msgstr "字段：sender、time、text、device、message（填好的模板）"
+
+msgid "Custom body"
+msgstr "自定义请求体"
+
+msgid "Empty: the standard fields (plain text: the message). Placeholders: {sender}, {time}, {text}, {device}, {message}. Each value is escaped for the chosen type. This body is shown again here: keep secrets in the address or a header."
+msgstr "留空：使用标准字段（纯文本：消息本身）。占位符：{sender}、{time}、{text}、{device}、{message}。每个值都会按所选类型转义。此请求体会在这里再次显示：请把密钥放在地址或请求头里。"
 
 msgid "Extra headers (one \"Name: value\" per line)"
 msgstr "附加请求头（每行一个 \"Name: value\"）"
@@ -765,6 +792,9 @@ msgstr "累计发送"
 msgid "Used today"
 msgstr "今日已用"
 
+msgid "SIM source"
+msgstr "SIM 来源"
+
 msgid "Session duration"
 msgstr "会话时长"
 
@@ -833,6 +863,9 @@ msgstr "调制解调器"
 
 msgid "Carrier"
 msgstr "运营商"
+
+msgid "Own number"
+msgstr "本机号码"
 
 msgid "Module"
 msgstr "模组"
@@ -972,8 +1005,17 @@ msgstr "锁定失败：%s"
 msgid "Resetting the network locks to automatic (SFUN restart, about 30 seconds)…"
 msgstr "正在将网络锁定重置为自动（SFUN 重启，约 30 秒）…"
 
+msgid "Reset failed: %s. The saved lock settings were kept."
+msgstr "重置失败：%s。已保存的锁定设置被保留。"
+
 msgid "The lock reset was not confirmed in time; switching anyway."
 msgstr "未能及时确认锁定已重置；仍然切换。"
+
+msgid "Internal SIM selected: in use after a reboot"
+msgstr "已选择内置 SIM：重启后生效"
+
+msgid "Internal SIM selected, but not supported on this device: the external SIM is in use"
+msgstr "已选择内置 SIM，但此设备不支持：正在使用外置 SIM"
 
 msgid "Uptime %s"
 msgstr "已运行 %s"
@@ -1316,6 +1358,9 @@ msgstr "状态已回读"
 
 msgid "Readback timed out; select “Refresh lock status”"
 msgstr "回读超时，请点「刷新锁定状态」"
+
+msgid "Reset verified: network mode automatic, EN-DC on, all bands, no cell lock; the saved lock settings are cleared"
+msgstr "重置已核对：网络模式自动、EN-DC 开启、全部频段、无小区锁定；已保存的锁定设置已清除"
 
 msgid "Applied (EN-DC does not require a radio-stack restart)"
 msgstr "已生效（EN-DC 不需要重启协议栈）"
@@ -1720,6 +1765,15 @@ msgstr "短信内容（Enter 发送，Shift+Enter 换行）"
 msgid "Sending uses AT+CMGS (PDU mode); retry if the channel is busy. To delete one message, use the bin icon on its bubble."
 msgstr "发送走 AT+CMGS（PDU 模式）；通道忙会提示重试。删除单条：点气泡右上角的垃圾桶图标。"
 
+msgid "Sending…"
+msgstr "发送中…"
+
+msgid "Sent; the list refreshes shortly."
+msgstr "已发送，稍后自动刷新。"
+
+msgid "Sending failed"
+msgstr "发送失败"
+
 msgid "Syncing from the SIM in the background (AT+CMGL)…"
 msgstr "正在后台从 SIM 同步（AT+CMGL）…"
 
@@ -1758,15 +1812,6 @@ msgstr "已删除（仅本地）"
 
 msgid "Enter both a number and a message."
 msgstr "号码和内容都要填。"
-
-msgid "Sending…"
-msgstr "发送中…"
-
-msgid "Sent; the list refreshes shortly."
-msgstr "已发送，稍后自动刷新。"
-
-msgid "Sending failed"
-msgstr "发送失败"
 
 msgid "· %d messages, %d unread · %d conversations"
 msgstr "· %d 条，%d 条未读 · %d 个会话"
@@ -3005,6 +3050,9 @@ msgstr "无效的过滤列表（最多 50 行）"
 msgid "The webhook address must be an http:// or https:// URL"
 msgstr "webhook 地址必须是 http:// 或 https:// 开头的 URL"
 
+msgid "The webhook body is too long or contains a control character"
+msgstr "Webhook 请求体过长或包含控制字符"
+
 msgid "Invalid header (one \"Name: value\" per line; Host, Content-Type, Content-Length, Transfer-Encoding and Connection are set by the device)"
 msgstr "无效的请求头（每行一个 \"Name: value\"；Host、Content-Type、Content-Length、Transfer-Encoding 和 Connection 由设备设置）"
 
@@ -3062,8 +3110,26 @@ msgstr "无法移除语言包"
 msgid "Lock cache unavailable"
 msgstr "锁定缓存不可用"
 
+msgid "The saved locks could not be cleared"
+msgstr "无法清除已保存的锁定"
+
 msgid "No serving cell to lock to"
 msgstr "没有可锁定的服务小区"
+
+msgid "The modem did not answer the mode query; nothing was sent"
+msgstr "模组未回应模式查询；未发送任何设置"
+
+msgid "The modem refused a write"
+msgstr "模组拒绝了一次写入"
+
+msgid "The read-back does not match the automatic values"
+msgstr "回读结果与自动值不一致"
+
+msgid "The read-back after the stack restart does not match the automatic values"
+msgstr "协议栈重启后的回读结果与自动值不一致"
+
+msgid "The reset was interrupted"
+msgstr "重置被中断"
 
 msgid "Reinstalling packages is not available on this system"
 msgstr "此系统不支持重新安装软件包"

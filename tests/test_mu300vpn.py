@@ -228,8 +228,20 @@ class Inventory(Mu300Vpn):
         self.assertEqual(sorted(pages), sorted('admin/vpn/mu300-' + p for p in
                                                ('overview', 'profiles', 'subscriptions', 'engines', 'settings', 'logs')))
         for k, v in pages.items():
-            self.assertEqual(v['depends'], {'acl': ['luci-app-mu300']})
+            # the pages only with the VPN module: LuCI's "fs" dependency on the module's mu300-vpn in the vpn extra
+            # (mu300-extra's own test, vpn_module_in: EXTRA/vpn/bin/mu300-vpn executable); without it the VPN menu
+            # is not there at all. LuCI checks it when it builds its index cache, so mu300-extra drops the cache
+            # when the module comes or goes (luci_menu_refresh)
+            self.assertEqual(v['depends'], {'acl': ['luci-app-mu300'],
+                                            'fs': {'/mnt/mu300-disk/extra/vpn/bin/mu300-vpn': 'executable'}})
             self.assertTrue((VIEWS / (v['action']['path'].split('/')[1] + '.js')).is_file(), k)
+        for k, v in menu.items():
+            if not k.startswith('admin/vpn/'):
+                self.assertNotIn('fs', v['depends'], k)
+        extra = (TOP / 'rootfs' / 'overlay' / 'opt' / 'mu300' / 'bin' / 'mu300-extra').read_text()
+        self.assertIn('[ "$name" != vpn ] || luci_menu_refresh', extra)
+        self.assertIn('[ "$1" != vpn ] || luci_menu_refresh', extra)
+        self.assertIn('rm -f "$SYSROOT"/tmp/luci-indexcache "$SYSROOT"/tmp/luci-indexcache.*', extra)
 
     def test_an_unknown_method_runs_nothing(self):
         for shell in self.each_shell():
@@ -435,7 +447,9 @@ class Passthrough(Mu300Vpn):
             ('profile_rename', {'id': 'office', 'name': 'Ali\'s "VPN"; $(x)'},
              ['profile', 'set', 'office', 'NAME', 'Ali\'s "VPN"; $(x)']),
             ('profile_remove', {'id': 'office'}, ['profile', 'remove', 'office']),
-            ('profile_check', {'id': 'office'}, ['profile', 'check', 'office']),
+            # (check ID, the command every module has: "profile check ID" is in the spec's table, but module
+            # v2.0.0 answers it with its usage text - the page's check never worked, docs/FINDINGS.md 56)
+            ('profile_check', {'id': 'office'}, ['check', 'office']),
             ('profile_option', {'id': 'm', 'key': 'MIHOMO_STACK', 'value': 'system'},
              ['profile', 'set', 'm', 'MIHOMO_STACK', 'system']),
             ('profile_option', {'id': 'm', 'key': 'MIHOMO_STACK', 'value': ''}, ['profile', 'set', 'm', 'MIHOMO_STACK', '']),
@@ -694,6 +708,52 @@ class Replies(Mu300Vpn):
                     self.output(name, out, rc=rc, err=err)
                     obj = self.reply(self.call(shell, method, params)[0])
                     self.assertEqual(obj, want)
+
+    def test_a_refusal_shows_its_reason_not_the_closing_line(self):
+        """The CLI ends a refused import, edit or switch with a line that says only that nothing was done ("profile
+        not added"); the reason is the line before it. The page showed the closing line for every refused config -
+        "The profile could not be added: profile not added" - and never why (docs/FINDINGS.md 56)."""
+        note = ('note: top-level keys of the file that are not used (this driver writes its own tun and dns; nothing '
+                'listens but the TUN): port tun dns\n')
+        cases = [
+            ('vpn.profile', note + 'the mihomo config has no proxies or proxy-providers at the top level\n'
+                                   'profile not added\n',
+             'profile_add', {'source': 'text', 'data': 'mode: rule\n', 'type': 'mihomo', 'name': 'x'},
+             'The profile could not be added', 'the mihomo config has no proxies or proxy-providers at the top level'),
+            ('vpn.profile', 'the mihomo config (line 3) has a second YAML document (---)\nprofile office not changed\n',
+             'profile_edit', {'id': 'office', 'config': 'a: b\n'},
+             'The config was not saved', 'the mihomo config (line 3) has a second YAML document (---)'),
+            ('vpn.use', note + 'mihomo rejects the config as this driver rebuilds it\n'
+                               'profile sub does not check: the VPN stays on profile home\n',
+             'use', {'id': 'sub'},
+             'The profile could not be made the active one', 'mihomo rejects the config as this driver rebuilds it'),
+            ('vpn.use', 'dae needs Linux 5.17 or newer with BTF, and this kernel is 5.4.210\n'
+                        'profile hy cannot run on this system: the VPN stays on profile home\n',
+             'use', {'id': 'hy'},
+             'The profile could not be made the active one',
+             'dae needs Linux 5.17 or newer with BTF, and this kernel is 5.4.210'),
+            # a closing line alone is still the message, and so is a last line that is a reason itself
+            ('vpn.profile', 'profile not added\n', 'profile_add',
+             {'source': 'text', 'data': 'mode: rule\n', 'type': 'mihomo', 'name': 'x'},
+             'The profile could not be added', 'profile not added'),
+            ('vpn.use', 'the engines of profile sub are not installed: run mu300-vpn engines install mihomo '
+                        '(the VPN stays on profile home)\n', 'use', {'id': 'sub'},
+             'The profile could not be made the active one',
+             'the engines of profile sub are not installed: run mu300-vpn engines install mihomo '
+             '(the VPN stays on profile home)'),
+            # a note is never the reason
+            ('vpn.profile', note + 'profile not added\n', 'profile_add',
+             {'source': 'text', 'data': 'mode: rule\n', 'type': 'mihomo', 'name': 'x'},
+             'The profile could not be added', 'profile not added'),
+        ]
+        for shell in self.each_shell():
+            for name, err, method, params, error, detail in cases:
+                with self.subTest(case=(method, detail)):
+                    for p in self.out.iterdir():
+                        p.unlink()
+                    self.output(name, '', rc=1, err=err)
+                    obj = self.reply(self.call(shell, method, params)[0])
+                    self.assertEqual(obj, {'ok': 0, 'error': error, 'detail': detail})
 
     def test_errors_are_english_sentences_in_the_catalogs(self):
         known = set(subprocess.run([sys.executable, str(TOP / 'tools' / 'luci-i18n.py'), 'extract'], check=True,
