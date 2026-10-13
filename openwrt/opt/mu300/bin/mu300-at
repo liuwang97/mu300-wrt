@@ -18,12 +18,26 @@ if [ -n "$(read -t 1 _probe </dev/null 2>&1)" ]; then
     done
     echo "mu300-at: need bash or busybox ash (this shell has no 'read -t')" >&2; exit 1
 fi
-DIR=${MU300_AT_DIR:-/run/mu300-at}
-SIM_SLOT=0
-if [ -x /opt/mu300/bin/mu300-sim ]; then
-    SIM_SLOT=$(/opt/mu300/bin/mu300-sim active) || exit 1
+SLOT=${MU300_SIM_SLOT:-0}
+[ ! -x /opt/mu300/bin/mu300-sim ] || SLOT=$(/opt/mu300/bin/mu300-sim active) || exit 1
+SIM_NATIVE=0
+[ ! -e /run/mu300-radio-freeze ] || SIM_NATIVE=1
+case "$SLOT:$SIM_NATIVE" in
+    0:*|1:0) default_dir=/run/mu300-at; default_dev=/dev/stty_nr$((SLOT * 3 + 1)) ;;
+    1:1) default_dir=/run/mu300-at4; default_dev=/dev/stty_nr4 ;;
+    *) echo "mu300-at: invalid SIM slot $SLOT" >&2; exit 2 ;;
+esac
+DIR=${MU300_AT_DIR:-$default_dir}
+DEV=${MU300_AT_DEV:-$default_dev}
+# A live SIM switch (mu300-sim-u30, the U30 Air) is moving the radio from one card to the other: its own commands
+# pass (MU300_SIM_CONTROL), every other client is told "busy" in the words the callers already know, so that no SMS,
+# USSD or terminal command lands on a card that is being switched off. The marker alone is not believed: a switch
+# that was killed leaves it behind, so it counts only while the switch holds its lock.
+if [ -e /run/mu300/sim-sequence ] && [ "${MU300_SIM_CONTROL:-}" != 1 ] && command -v flock >/dev/null 2>&1 &&
+   ! ( exec 8>>/run/mu300/sim-control.lock && flock -n 8 ) 2>/dev/null; then
+    echo "mu300-at: busy" >&2
+    exit 1
 fi
-DEV=${MU300_AT_DEV:-/dev/stty_nr$((SIM_SLOT * 3 + 1))}
 CR=$(printf '\r')
 T=6
 if [ "${1:-}" = -t ]; then
@@ -206,6 +220,8 @@ if [ -n "$owner" ] && [ -d "/proc/$owner" ] &&
     exit 1
 fi
 
+# the U30 Air's dual-SIM boot never opens a channel a second time: without its owner there is no AT on it
+[ "$SIM_NATIVE" = 1 ] && { echo "mu300-at: the dual-SIM owner of this channel is not running; not opening $DEV directly" >&2; exit 1; }
 echo "mu300-at: daemon not running, using $DEV directly (this can wedge the channel)" >&2
 [ -c "$DEV" ] || { echo "mu300-at: no $DEV" >&2; exit 1; }
 exec 3<>"$DEV"
