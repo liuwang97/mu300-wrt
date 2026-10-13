@@ -230,6 +230,7 @@ Corresponding source (GPL): kernel https://github.com/Enceka/android_kernel_zte_
 Wi-Fi/Bluetooth/Mali modules https://github.com/realme-kernel-opensource/realme_C51_C53_Narzo-N53-AndroidT-kernel-source/tree/$modules_rev ,
 patches in \`kernel/patches\`. Ubuntu, OpenWrt and busybox packages come from their distributions' archives;
 Aurora (luci-theme-aurora 1.4.0) from https://github.com/eamonxg/luci-theme-aurora/releases/tag/v1.4.0.
+News and releases: the Telegram channel https://t.me/mu300project
 EOF
 if gh release view "$TAG" -R "$REPO" >/dev/null 2>&1; then
     gh release upload "$TAG" -R "$REPO" --clobber "$D"/*.tar.gz "$D/mu300-update" "$D/SHA256SUMS"

@@ -579,6 +579,9 @@ msgstr "已保存：%s"
 msgid "Remove the saved value"
 msgstr "删除已保存的值"
 
+msgid "Presets"
+msgstr "预设"
+
 msgid "Received messages are sent on as they reach the SMS pool. A failed delivery is retried after 30 s, then after twice as long each time (an hour at most), ten times in all."
 msgstr "收到的短信进入短信池后即被转发。发送失败时 30 秒后重试，之后每次间隔加倍（最长一小时），共十次。"
 
@@ -635,6 +638,12 @@ msgstr "留空：使用标准字段（纯文本：消息本身）。占位符：
 
 msgid "Extra headers (one \"Name: value\" per line)"
 msgstr "附加请求头（每行一个 \"Name: value\"）"
+
+msgid "The answer must contain"
+msgstr "响应必须包含"
+
+msgid "Empty: every HTTP 2xx answer counts as delivered. With key=value (for example errcode=0), the answer must also be a JSON object that has this value under this key at its top level; otherwise the delivery fails. Only the result of the check is logged, never the answer."
+msgstr "留空：任何 HTTP 2xx 响应都算作已送达。填写 键=值（例如 errcode=0）后，响应还必须是一个 JSON 对象，并且其顶层的该键为该值；否则本次发送算作失败。日志中只记录检查结果，绝不记录响应内容。"
 
 msgid "Bot token"
 msgstr "机器人令牌"
@@ -701,6 +710,9 @@ msgstr "已过滤"
 
 msgid "Dropped"
 msgstr "已丢弃"
+
+msgid "Clear"
+msgstr "清空"
 
 msgid "Test"
 msgstr "测试"
@@ -1785,9 +1797,6 @@ msgstr "清空本地短信池"
 
 msgid "Only local files will be deleted; messages on the SIM remain."
 msgstr "只删本地文件，SIM 上的不动。"
-
-msgid "Clear"
-msgstr "清空"
 
 msgid "Delete this SMS"
 msgstr "删除这条短信"
@@ -3053,6 +3062,9 @@ msgstr "webhook 地址必须是 http:// 或 https:// 开头的 URL"
 msgid "The webhook body is too long or contains a control character"
 msgstr "Webhook 请求体过长或包含控制字符"
 
+msgid "The answer check must be key=value, like errcode=0 or ok=true (the value a whole number or lowercase letters, 16 at most)"
+msgstr "响应检查必须是 键=值 的形式，例如 errcode=0 或 ok=true（值为整数或小写字母，最多 16 个字符）"
+
 msgid "Invalid header (one \"Name: value\" per line; Host, Content-Type, Content-Length, Transfer-Encoding and Connection are set by the device)"
 msgstr "无效的请求头（每行一个 \"Name: value\"；Host、Content-Type、Content-Length、Transfer-Encoding 和 Connection 由设备设置）"
 
@@ -3082,6 +3094,12 @@ msgstr "无法保存转发设置"
 
 msgid "SMS forwarding is not installed"
 msgstr "未安装短信转发"
+
+msgid "A test was started a moment ago; wait a few seconds"
+msgstr "刚刚已开始一次测试；请等待几秒"
+
+msgid "The delivery log could not be cleared"
+msgstr "无法清空发送日志"
 
 msgid "Unknown forwarding operation"
 msgstr "未知的转发操作"

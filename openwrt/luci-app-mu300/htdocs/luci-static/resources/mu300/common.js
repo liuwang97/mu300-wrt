@@ -50,8 +50,9 @@ var callFwdGet = rpc.declare({ object: 'mu300dash', method: 'forward_get', expec
 var callFwdSet = rpc.declare({ object: 'mu300dash', method: 'forward_set', params: [ 'enabled', 'template', 'allow',
 	'deny', 'keywords', 'clear', 'webhook', 'webhook_url', 'webhook_format', 'webhook_headers', 'telegram',
 	'telegram_token', 'telegram_chat', 'email', 'email_host', 'email_port', 'email_tls', 'email_user', 'email_password',
-	'email_from', 'email_to', 'sms', 'sms_number', 'webhook_body' ], expect: { '': {} }, nobatch: true });
+	'email_from', 'email_to', 'sms', 'sms_number', 'webhook_body', 'webhook_expect' ], expect: { '': {} }, nobatch: true });
 var callFwdTest = rpc.declare({ object: 'mu300dash', method: 'forward_test', expect: { '': {} }, nobatch: true });
+var callFwdLogClear = rpc.declare({ object: 'mu300dash', method: 'forward_log_clear', expect: { '': {} }, nobatch: true });
 var callCpuGet = rpc.declare({ object: 'mu300dash', method: 'cpu_get', expect: { '': {} }, nobatch: true });
 var callCpuSet = rpc.declare({ object: 'mu300dash', method: 'cpu_set', params: [ 'profile' ], expect: { '': {} }, nobatch: true });
 var callPackagesGet = rpc.declare({ object: 'mu300dash', method: 'packages_get', expect: { '': {} }, nobatch: true });
@@ -697,7 +698,7 @@ return baseclass.extend({
 	callPowerGet: callPowerGet, callPowerSet: callPowerSet,
 	callSimGet: callSimGet, callSimSet: callSimSet,
 	callTtlGet: callTtlGet, callTtlSet: callTtlSet,
-	callFwdGet: callFwdGet, callFwdSet: callFwdSet, callFwdTest: callFwdTest,
+	callFwdGet: callFwdGet, callFwdSet: callFwdSet, callFwdTest: callFwdTest, callFwdLogClear: callFwdLogClear,
 	callCpuGet: callCpuGet, callCpuSet: callCpuSet,
 	callPackagesGet: callPackagesGet, callPackagesAct: callPackagesAct,
 	callTrafficGet: callTrafficGet, callTrafficSet: callTrafficSet, callNetDev: callNetDev, netDev: netDev,

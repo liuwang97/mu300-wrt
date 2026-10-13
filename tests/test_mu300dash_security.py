@@ -248,7 +248,7 @@ class Inventory(Mu300Dash):
                'sms_show', 'sms_send', 'sms_job', 'sms_delete', 'sms_sync', 'usb_get', 'usb_set', 'usb_net_list', 'usb_net_add',
                'lang_get', 'lang_set', 'power_get', 'power_set',
                'ttl_get', 'ttl_set', 'cpu_get', 'cpu_set', 'forward_get', 'forward_set', 'forward_test',
-               'traffic_get', 'traffic_set', 'packages_get', 'packages_act', 'sim_get', 'sim_set'}
+               'forward_log_clear', 'traffic_get', 'traffic_set', 'packages_get', 'packages_act', 'sim_get', 'sim_set'}
 
     def test_list_declares_every_method(self):
         for shell in self.each_shell():
@@ -510,6 +510,9 @@ class Passthrough(Mu300Dash):
         ('forward_get', {}, [['forward', 'get']]),
         ('forward_set', {'enabled': '1', 'telegram_token': 'x'}, [['forward', 'set']]),
         ('forward_test', {}, [['forward', 'test']]),
+        ('forward_log_clear', {}, [['forward', 'logclear']]),
+        # it takes nothing: what a caller adds never becomes an argument
+        ('forward_log_clear', {'path': '/etc/passwd', 'op': 'x;id'}, [['forward', 'logclear']]),
     ]
 
     def test_valid_values_reach_the_adapter(self):
@@ -584,7 +587,7 @@ class Replies(Mu300Dash):
         ('sms_sync', {}), ('usb_get', {}), ('usb_set', {'kind': 'role', 'value': 'device', 'auto': '0'}),
         ('usb_net_list', {}), ('usb_net_add', {'iface': 'eth1'}), ('ttl_get', {}), ('ttl_set', {'value': '64'}),
         ('forward_get', {}), ('forward_set', {'enabled': '0'}), ('forward_test', {}),
-        ('packages_get', {}), ('packages_act', {'op': 'dismiss'}),
+        ('forward_log_clear', {}), ('packages_get', {}), ('packages_act', {'op': 'dismiss'}),
     ]
     OUTPUTS = {
         'garbage': NASTY,
@@ -947,7 +950,7 @@ class Acl(unittest.TestCase):
             'cpu_get', 'traffic_get', 'ops_log', 'packages_get', 'sim_get'}
     WRITE = {'act', 'at', 'at_job', 'at_history', 'lock_set', 'sms_list', 'sms_show', 'sms_send', 'sms_job', 'sms_delete', 'sms_sync',
              'usb_set', 'usb_net_add', 'lang_set', 'power_set', 'ttl_set', 'cpu_set', 'forward_get',
-             'forward_set', 'forward_test', 'traffic_set', 'packages_act', 'sim_set'}
+             'forward_set', 'forward_test', 'forward_log_clear', 'traffic_set', 'packages_act', 'sim_set'}
 
     def test_actions_need_write_access(self):
         acl = json.loads(ACL.read_text())['luci-app-mu300']
