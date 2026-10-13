@@ -4,9 +4,12 @@
   tools/check-i18n.py            list, per language, the messages without a translation and the stale lines
   tools/check-i18n.py --keys     print every message key once (to start a new language)
 
-A message is the first argument of t '...' / t "..." in the shell scripts and of T '...' / T "..." in install.ps1.
-The {1}.. placeholders of a translation must be the ones of its message.
+A message is the first argument of t '...' / t "..." in the shell scripts and of T '...' / T "..." in install.ps1,
+and of _('...') / N_('...') in the graphical installer (gui/, read with Python's own parser, so a message there is
+whatever the string is once Python has read it). The {1}.. placeholders of a translation must be the ones of its
+message.
 """
+import ast
 import re
 import sys
 from pathlib import Path
@@ -21,6 +24,17 @@ PATTERNS = [re.compile(r"""\b[tT] '((?:[^']|'')*)'"""), re.compile(r'''\b[tT] "(
 EXTRA = ['yes', 'no', 'update', 'ERROR:']
 
 
+def gui_keys():
+    """The messages of the graphical installer: the first argument of _() and N_(), where it is a plain string."""
+    found = []
+    for path in sorted((TOP / 'gui').rglob('*.py')):
+        for node in ast.walk(ast.parse(path.read_text(encoding='utf-8'))):
+            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in ('_', 'N_') and node.args
+                    and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str)):
+                found.append(node.args[0].value)
+    return found
+
+
 def keys():
     found = []
     for src in SOURCES:
@@ -32,6 +46,9 @@ def keys():
                     k = k.replace("''", "'")
                 if k and k not in found:
                     found.append(k)
+    for k in gui_keys():
+        if k and k not in found:
+            found.append(k)
     return found + [k for k in EXTRA if k not in found]
 
 
