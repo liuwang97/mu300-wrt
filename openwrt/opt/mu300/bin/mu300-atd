@@ -243,6 +243,9 @@ drain() {  # drain WAIT: throw away what the modem sent while nobody was asking 
         # seconds after the modem has already said OK - and +CMTI, announcing a new SMS, is another.
         junk=${junk%"$CR"}
         case $junk in '+CMT:'*) cmt_frame "$junk" 3 "$URCDIR/$(basename "$DEV").log"; continue ;; esac
+        # The modem's echo of a command is no announcement, and a command can carry a secret (an APN password in
+        # AT+CGPCO, a PIN in AT+CPIN): it is thrown away and never reaches the log, which outlives the command.
+        case $junk in [Aa][Tt]*) junk= ;; esac
         [ -n "$junk" ] && printf '%s\n' "$junk" >> "$URCDIR/$(basename "$DEV").log" 2>/dev/null
         [ "$rc" = 0 ] || break   # nothing for WAIT seconds (a partial line was kept above): quiet again
     done
@@ -291,7 +294,7 @@ while :; do
     # the same one-command test as mu300-at's, so both paths put exactly the same bytes on the channel
     one_request "$cmd" || {
         echo "mu300-atd: a request with more than one command, refused" >&2
-        printf '%s\n' "mu300-atd: refused" > "$answer.part" 2>/dev/null && mv "$answer.part" "$answer" 2>/dev/null
+        ( umask 077; printf '%s\n' "mu300-atd: refused" > "$answer.part" ) 2>/dev/null && mv "$answer.part" "$answer" 2>/dev/null
         continue
     }
     # after a timeout, give the late reply time to show up and throw it away before asking anything new
@@ -335,7 +338,9 @@ while :; do
         silent=0
     fi
     if [ -n "$answer" ]; then
-        # write it complete, then move it into place, so the client never reads half an answer
-        printf '%s\n' "$reply" > "$answer.part" 2>/dev/null && mv "$answer.part" "$answer" 2>/dev/null
+        # write it complete, then move it into place, so the client never reads half an answer. Root's alone
+        # (every client is root's): a reply can hold what the command held, when the modem echoes it, and one
+        # whose client gave up stays behind.
+        ( umask 077; printf '%s\n' "$reply" > "$answer.part" ) 2>/dev/null && mv "$answer.part" "$answer" 2>/dev/null
     fi
 done

@@ -195,14 +195,20 @@ esac
 
     def test_apn_with_a_quote_or_line_break_never_reaches_the_modem(self):
         s = (BIN / 'mobile-data').read_text()
-        start = s.index('    set -- "${1:-${MU300_APN:-}}"')
-        block = s[start:s.index('    if [ -n "${1:-}" ]; then', start)]
+        # define_context and what it calls (tests/test_mu300cell.py MobileDataContext has the rest of it)
+        start = s.index('# settings_private FILE:')
+        block = s[start:s.index('# Only one bring-up at a time', start)]
+        self.assertIn('    define_context "$1" || exit 1\n', s)
         for shell in self.each_shell():
             for apn, rc in [('internet', 0), ('cmnet', 0), ('a-b.c_d', 0), ('x"y', 1), ('x\\y', 1), ('x\ry', 1), ('x\ny', 1), ('', 0)]:
-                code = 'at() { echo "$1" >> "$STUBLOG/calls"; }; up() {\n' + block + '\necho defined; }; up "$APN"'
+                (self.tmp / 'calls').unlink(missing_ok=True)
+                code = ('at() { echo "$1" >> "$STUBLOG/calls"; }; CID=1; APN_AUTH_MARK=$STUBLOG/mark; MD_CONF=$STUBLOG/conf\n' +
+                        block + '\ndefine_context "$APN" || exit 1; echo defined')
                 r = self.sh(shell, code, APN=apn, SIM_SLOT='0')
                 self.assertEqual(r.returncode, rc, (apn, r.stderr))
                 self.assertEqual('defined' in r.stdout, rc == 0, apn)
+                calls = (self.tmp / 'calls').read_text().splitlines() if (self.tmp / 'calls').exists() else []
+                self.assertEqual(calls, [f'AT+CGDCONT=1,"IP","{apn}"'] if apn and rc == 0 else [], apn)
 
     def test_concurrent_first_readers_publish_one_complete_slot(self):
         for shell in self.each_shell():
@@ -482,7 +488,8 @@ Promise.resolve(o.load('wan')).then((cur) => {
 
     def test_the_other_options_are_still_there(self):
         o = self.options({'sim': {'slot': 0, 'wanted': 0, 'slot1_supported': 0}}, '0')
-        self.assertEqual(o['others'], ['sim_slot', 'apn_internal', 'pdptype_internal', 'apn', 'pdptype', 'peerdns', 'dns'])
+        self.assertEqual(o['others'], ['sim_slot', 'apn_internal', 'pdptype_internal', 'apn', 'pdptype',
+                                       'username', 'password', 'auth', 'peerdns', 'dns'])
 
     def paint(self, sim):
         src = HOME.read_text(encoding='utf-8')

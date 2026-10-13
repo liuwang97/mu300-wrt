@@ -971,5 +971,59 @@ class Rules(unittest.TestCase):
             self.assertNotIn(kept, patch[patch.index('--- a/'):])
 
 
+
+class ApkRetry(unittest.TestCase):
+    """openwrt/build-rootfs.sh: the feed's packages are fetched while the image is built, and a download that broke
+    off failed the image; update, upgrade and add are tried three times (FINDINGS 66)."""
+
+    def setUp(self):
+        text = (TOP / 'openwrt' / 'build-rootfs.sh').read_text()
+        self.block = re.search(r'# --- apk-retry begin\n(.*?)# --- apk-retry end\n', text, re.S).group(1)
+        # the function stands before the first use, inside the one single-quoted script of the container
+        self.assertLess(text.index('# --- apk-retry end'), text.index('\napk update >/dev/null'))
+        self.assertNotIn("'", self.block)
+        self.tmp = Path(tempfile.mkdtemp(prefix='mu300-test-'))
+        stub = self.tmp / 'apk'
+        # fails FAIL times (a counter in a file), then succeeds; records every call
+        stub.write_text('#!/bin/sh\necho "$*" >> "$LOG"\nn=$(cat "$COUNT" 2>/dev/null || echo 0)\n'
+                        '[ "$n" -lt "$FAIL" ] || { echo "ok $1"; exit 0; }\necho $((n + 1)) > "$COUNT"\nexit 1\n')
+        stub.chmod(0o755)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def run_apk(self, shell, args, fail):
+        for f in ('log', 'count'):
+            (self.tmp / f).unlink(missing_ok=True)
+        env = dict(os.environ, PATH=f'{self.tmp}{os.pathsep}{os.environ["PATH"]}', LOG=str(self.tmp / 'log'),
+                   COUNT=str(self.tmp / 'count'), FAIL=str(fail), MU300_APK_RETRY_WAIT='0')
+        # as the build runs it: sh -eu, the output thrown away
+        r = subprocess.run(shell + ['-eu', '-c', self.block + f'apk {args} >/dev/null\necho done'], env=env,
+                           capture_output=True, text=True, timeout=30)
+        log = (self.tmp / 'log').read_text().splitlines() if (self.tmp / 'log').exists() else []
+        return r, log
+
+    def test_a_download_that_breaks_off_is_tried_again(self):
+        for shell in shells():
+            for cmd in ('update', 'upgrade', 'add wpad-basic-mbedtls iw', 'add --allow-untrusted /in/x.apk'):
+                for fail, tries, ok in ((0, 1, True), (1, 2, True), (2, 3, True), (3, 3, False)):
+                    r, log = self.run_apk(shell, cmd, fail)
+                    self.assertEqual(log, [cmd] * tries, (shell, cmd, fail))     # the same arguments every time
+                    self.assertEqual((r.returncode == 0, 'done' in r.stdout), (ok, ok), (shell, cmd, fail, r.stderr))
+                    self.assertEqual(r.stderr.count('trying again'), tries - 1)
+
+    def test_anything_else_runs_once(self):
+        for shell in shells():
+            r, log = self.run_apk(shell, 'del procd-ujail', 1)
+            self.assertEqual((log, r.returncode), (['del procd-ujail'], 1), shell)
+            self.assertNotIn('done', r.stdout)
+            # "apk del ... || true", as the build has it
+            env = dict(os.environ, PATH=f'{self.tmp}{os.pathsep}{os.environ["PATH"]}', LOG=str(self.tmp / 'log'),
+                       COUNT=str(self.tmp / 'count'), FAIL='9')
+            r = subprocess.run(shell + ['-eu', '-c', self.block + 'apk del x >/dev/null 2>&1 || true\necho done'],
+                               env=env, capture_output=True, text=True, timeout=30)
+            self.assertEqual((r.returncode, r.stdout.strip()), (0, 'done'), r.stderr)
+
+
 if __name__ == '__main__':
     unittest.main()
