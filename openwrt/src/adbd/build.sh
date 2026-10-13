@@ -5,11 +5,13 @@
 # AOSP sources with BoringSSL vendored; checked against its SHA-256), built with CMakeLists.txt here - adbd only,
 # the tarball's own build makes the host tools - and mu300-adbd.patch:
 #   - USB (FunctionFS at /dev/usb-ffs/adb) on Linux, and nothing else: no TCP or vsock listener, ever
-#   - public-key authentication always (ro.adb.secure=1): keys in /etc/mu300/adb_keys and /root/.android/adb_keys,
-#     no Android framework socket that could approve one
+#   - authentication by one switch, the environment variable mu300-adbd starts it with: MU300_ADB_AUTH=open accepts
+#     every computer (ro.adb.secure=0; the default of "mu300-usb adb auth"), anything else is public-key
+#     authentication (ro.adb.secure=1): keys in /etc/mu300/adb_keys and /root/.android/adb_keys, no Android
+#     framework socket that could approve one
 #   - the shell: the user's login shell, TMPDIR=/tmp, umask 022; no property monitor (Android's)
 # stubs.cpp leaves out JDWP, adb over Wi-Fi (pairing) and mDNS, and with them protobuf. Debian's and Ubuntu's adbd
-# package (26.04 only) is no option: it is patched to require no authorisation at all and listens on TCP 5555.
+# package (26.04 only) is no option: it has no authorisation to turn on and listens on TCP 5555.
 set -eu
 OUT=${1:?usage: tools/adbd/build.sh OUT}
 HERE=$(cd "$(dirname "$0")" && pwd)

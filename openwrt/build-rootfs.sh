@@ -282,7 +282,7 @@ fi
 [ -e /in/logdw ] && { cp /in/logdw $R/opt/mu300/bin/logdw; chmod 755 $R/opt/mu300/bin/logdw; }
 [ -e /in/bt-init ] && { cp /in/bt-init $R/opt/mu300/bin/mu300-bt-init; chmod 755 $R/opt/mu300/bin/mu300-bt-init; }
 [ -e /in/keys ] && { cp /in/keys $R/opt/mu300/bin/mu300-keys; chmod 755 $R/opt/mu300/bin/mu300-keys; }
-# adb over USB (tools/adbd, static): off until mu300-usb adb on
+# adb over USB (tools/adbd, static): on unless mu300-usb adb off
 [ -e /in/adbd ] && { cp /in/adbd $R/opt/mu300/bin/adbd; chmod 755 $R/opt/mu300/bin/adbd; }
 # the VPN engines are not part of the image: they are the vpn extra (mu300-extra install vpn)
 # full static busybox for the tools OpenWrt busybox leaves out (od, timeout, mountpoint, losetup, rfkill, telnetd)

@@ -223,7 +223,10 @@ first with \`./install.sh --check\`.
 
 The images contain **no proprietary files**: the installer pulls the Wi-Fi/Bluetooth firmware and the Android
 modem/GPU userspace from your own device and adds them during installation. They carry a static adbd (AOSP
-platform-tools, built by \`tools/adbd/build.sh\`) for \`mu300-usb adb on\`, off by default and key-authorised only.
+platform-tools, built by \`tools/adbd/build.sh\`) for adb to Linux over USB, which is **on by default and lets every
+computer in**: whoever can plug a cable into the device gets a root shell without a password. To close it:
+\`sudo mu300-usb adb auth keys\` (only the keys authorised with \`sudo mu300-usb adb key FILE\`) or
+\`sudo mu300-usb adb off\`. A device where adb was turned off, or set up with a key, before this release stays as it was.
 
 Built from $REPO@$commit with \`kernel/build-all.sh\` and \`tools/make-release.sh\`.
 Corresponding source (GPL): kernel https://github.com/Enceka/android_kernel_zte_ums9620_mifi_u30air/tree/$kernel_rev ,

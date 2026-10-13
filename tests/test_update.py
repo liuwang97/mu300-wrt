@@ -506,9 +506,14 @@ class FromStock(UpdateBase):
                         ('opt/mu300/android/vendor/lib/libril.so', b'vendor'),
                         ('opt/mu300/android/dev-properties/property_info', b'props'),
                         ('lib/firmware/wcnmodem.bin', b'fw'), ('lib/firmware/regulatory.db', b'old'),
-                        ('lib/modules/5.4.254/x.ko', b'ko'), ('etc/mu300/vpn.conf', b'mine')]:
+                        ('lib/modules/5.4.254/x.ko', b'ko'), ('etc/mu300/vpn.conf', b'mine'),
+                        # adb: off, keys only, and the keys - somebody's choice, which an update must not turn
+                        # back into the default (on, and open to every computer)
+                        ('etc/mu300/adb', b'off\n'), ('etc/mu300/adb_auth', b'keys\n'),
+                        ('etc/mu300/adb_keys', b'QAAAAkey me@pc\n')]:
             (old / f).parent.mkdir(parents=True, exist_ok=True)
             (old / f).write_bytes(data)
+        (old / 'etc/mu300/adb_keys').chmod(0o600)
         (old / 'opt/mu300/android/system/lib').symlink_to('../vendor/lib')
         stage = self.disk / '.mu300-update'
         for shell in self.each_shell():
@@ -529,6 +534,10 @@ class FromStock(UpdateBase):
             self.assertEqual((new / 'opt/mu300/android/system/bin/cltest').read_bytes(), b'image')
             self.assertEqual((new / 'lib/firmware/regulatory.db').read_bytes(), b'image')
             self.assertEqual((new / 'etc/mu300/vpn.conf').read_bytes(), b'mine')
+            self.assertEqual((new / 'etc/mu300/adb').read_bytes(), b'off\n')
+            self.assertEqual((new / 'etc/mu300/adb_auth').read_bytes(), b'keys\n')
+            self.assertEqual((new / 'etc/mu300/adb_keys').read_bytes(), b'QAAAAkey me@pc\n')
+            self.assertEqual((new / 'etc/mu300/adb_keys').stat().st_mode & 0o777, 0o600)
             # the next shell updates from this one (disk/openwrt again)
 
     def test_apply_keeps_the_settings_and_adds_the_images_new_config_files(self):
