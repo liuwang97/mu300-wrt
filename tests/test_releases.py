@@ -4,6 +4,7 @@ asked about only when there is one newer than the newest full release, never wit
 that does not answer the list leaves the newest release, as before."""
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 import unittest
@@ -96,6 +97,7 @@ class Pick(unittest.TestCase):
                                                          'files': {'v2026.10.23': release_pick._files(FULL)}})
 
 
+@unittest.skipIf(os.name == 'nt', 'the stub curl is a shell script; install.ps1 has its own lookup, tested in installer.Tests.ps1')
 class Resolve(ShellTest):
     """release_resolve with a stub curl: $STUBLOG/list is the answer to the list of releases, $STUBLOG/latest the
     one to releases/latest; a missing file is a failed request (curl -f)."""
