@@ -7,7 +7,8 @@ shows every question it asks and every command it would have sent.
     python fakeadb.py --new <state.json> [key=value ...]     write a state file (see DEFAULT for the keys)
     python fakeadb.py --stub <dir> <state.json>              put an `adb` (and adb.cmd) there that runs this file
 
-Every call is appended to <state.json>.log as one JSON line: {"argv": [...], "kind": ..., "cmd": ...}. kind is
+Every call is appended to <state.json>.log as one JSON line: {"argv": [...], "kind": ..., "cmd": ..., "answers":
+[the MU300_ANS_* variables in this adb's environment]}. kind is
 "read" for what only reads, "write" for a device command that would have written (dd of=, rm, a redirection into a
 file, sh of a pushed script), "push", "pull", "reboot", and "unknown" for a command this file has no answer for -
 which a test should treat as a mistake.
@@ -67,7 +68,9 @@ def load():
 
 def log(kind, argv, cmd=''):
     with open(state_path() + '.log', 'a', encoding='utf-8') as f:
-        f.write(json.dumps({'kind': kind, 'argv': argv, 'cmd': cmd}) + '\n')
+        # 'answers': the answer variables this adb was started with - a secret must never be among them
+        f.write(json.dumps({'kind': kind, 'argv': argv, 'cmd': cmd,
+                            'answers': sorted(k for k in os.environ if k.upper().startswith('MU300_ANS_'))}) + '\n')
 
 
 def boot_image(st, slot):

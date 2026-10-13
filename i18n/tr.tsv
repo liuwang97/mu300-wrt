@@ -360,3 +360,19 @@ this question has no variable and cannot be answered without a terminal: {1}	bu 
 no answer to the question "{1}": set {2} (nothing is asked and nothing is assumed in answers mode)	"{1}" sorusunun yanıtı yok: {2} değişkenini ayarlayın (yanıt kipinde hiçbir şey sorulmaz ve hiçbir şey varsayılmaz)
 no answer to the question "{1}" on standard input ({2}=@stdin)	"{1}" sorusunun yanıtı standart girdiden gelmedi ({2}=@stdin)
 the answer in {1} was not accepted: {2}	{1} içindeki yanıt kabul edilmedi: {2}
+Use the graphical installer (a window with the same steps)? (yes/no)	Grafik yükleyici kullanılsın mı (aynı adımları içeren bir pencere)? (evet/hayır)
+Python {1} is there ({2}), but without tkinter, which the window is made with.	Python {1} var ({2}), ancak pencerenin yapıldığı tkinter olmadan.
+Python {1} is there ({2}), but the window needs Python 3.8 or newer.	Python {1} var ({2}), ancak pencere için Python 3.8 veya daha yenisi gerekiyor.
+No Python 3 was found for the window.	Pencere için Python 3 bulunamadı.
+This command installs it:	Şu komut onu kurar:
+Run that command now? (yes/no)	Bu komut şimdi çalıştırılsın mı? (evet/hayır)
+the command failed	komut başarısız oldu
+Install tkinter for it with the package tool of this system (the package is usually called python3-tk).	Bu sistemin paket aracıyla onun için tkinter kurun (paketin adı genellikle python3-tk'dir).
+Get it from python.org, or with Homebrew: brew install python-tk	python.org adresinden ya da Homebrew ile edinin: brew install python-tk
+Continuing with the text installer.	Metin tabanlı yükleyiciyle devam ediliyor.
+Starting the graphical installer (Python {1})	Grafik yükleyici başlatılıyor (Python {1})
+The graphical installer could not start or stopped with an error ({1}).	Grafik yükleyici başlatılamadı ya da bir hatayla durdu ({1}).
+The installers of python.org and winget include it: this one was set up without "tcl/tk and IDLE".	python.org ve winget kurulumları onu içerir: bu Python "tcl/tk and IDLE" seçeneği olmadan kurulmuş.
+Type the path of a python.exe, or winget to install Python 3.12 with winget, or no for the text installer	Bir python.exe dosyasının yolunu yazın; Python 3.12'yi winget ile kurmak için winget, metin tabanlı yükleyici için no yazın
+winget is not on this computer. Python is at https://www.python.org/downloads/ (leave "tcl/tk and IDLE" ticked).	Bu bilgisayarda winget yok. Python şurada: https://www.python.org/downloads/ ("tcl/tk and IDLE" seçeneğini işaretli bırakın).
+That is not a Python 3.8 or newer with tkinter.	Bu, tkinter içeren bir Python 3.8 veya daha yenisi değil.

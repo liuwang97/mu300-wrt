@@ -13,7 +13,7 @@ from helpers import BIN, TOP, shells
 
 OPENWRT = TOP / 'openwrt' / 'overlay'
 # the PowerShell the installers are made of: the rules of Windows PowerShell 5.1 hold for every file of it
-POWERSHELL = ('install.ps1', 'uninstall.ps1', 'tools/answers.ps1')
+POWERSHELL = ('install.ps1', 'uninstall.ps1', 'tools/answers.ps1', 'tools/gui-launch.ps1')
 LUCI_OVERLAY = TOP / 'openwrt' / 'luci-overlay'
 
 

@@ -360,3 +360,19 @@ this question has no variable and cannot be answered without a terminal: {1}	这
 no answer to the question "{1}": set {2} (nothing is asked and nothing is assumed in answers mode)	问题“{1}”没有答案：请设置 {2}（应答模式下不提问，也不做任何假设）
 no answer to the question "{1}" on standard input ({2}=@stdin)	标准输入中没有问题“{1}”的答案（{2}=@stdin）
 the answer in {1} was not accepted: {2}	{1} 中的答案未被接受：{2}
+Use the graphical installer (a window with the same steps)? (yes/no)	使用图形安装程序吗（一个包含相同步骤的窗口）？(是/否)
+Python {1} is there ({2}), but without tkinter, which the window is made with.	已找到 Python {1}（{2}），但缺少窗口所需的 tkinter。
+Python {1} is there ({2}), but the window needs Python 3.8 or newer.	已找到 Python {1}（{2}），但窗口需要 Python 3.8 或更新版本。
+No Python 3 was found for the window.	没有找到可用于窗口的 Python 3。
+This command installs it:	这条命令可以安装它：
+Run that command now? (yes/no)	现在运行这条命令吗？(是/否)
+the command failed	命令执行失败
+Install tkinter for it with the package tool of this system (the package is usually called python3-tk).	请用本系统的包管理工具为它安装 tkinter（软件包通常叫 python3-tk）。
+Get it from python.org, or with Homebrew: brew install python-tk	可从 python.org 获取，或用 Homebrew 安装：brew install python-tk
+Continuing with the text installer.	继续使用文本安装程序。
+Starting the graphical installer (Python {1})	正在启动图形安装程序（Python {1}）
+The graphical installer could not start or stopped with an error ({1}).	图形安装程序无法启动，或因错误而停止（{1}）。
+The installers of python.org and winget include it: this one was set up without "tcl/tk and IDLE".	python.org 和 winget 的安装包都包含它：这个 Python 安装时没有勾选“tcl/tk and IDLE”。
+Type the path of a python.exe, or winget to install Python 3.12 with winget, or no for the text installer	请输入 python.exe 的路径；输入 winget 用 winget 安装 Python 3.12；输入 no 使用文本安装程序
+winget is not on this computer. Python is at https://www.python.org/downloads/ (leave "tcl/tk and IDLE" ticked).	这台电脑上没有 winget。Python 可在 https://www.python.org/downloads/ 下载（请保持勾选“tcl/tk and IDLE”）。
+That is not a Python 3.8 or newer with tkinter.	这不是带有 tkinter 的 Python 3.8 或更新版本。

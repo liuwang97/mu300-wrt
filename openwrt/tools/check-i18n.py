@@ -12,7 +12,8 @@ import sys
 from pathlib import Path
 
 TOP = Path(__file__).resolve().parent.parent
-SOURCES = ['install.sh', 'install.ps1', 'tools/linux-mode.sh', 'tools/self-update.sh', 'tools/storage.sh', 'tools/releases.sh', 'tools/answers.sh', 'tools/answers.ps1',
+SOURCES = ['install.sh', 'install.ps1', 'tools/linux-mode.sh', 'tools/self-update.sh', 'tools/storage.sh',
+           'tools/releases.sh', 'tools/answers.sh', 'tools/answers.ps1', 'tools/gui-launch.sh', 'tools/gui-launch.ps1',
            'android/magisk/installer/mu300-install.sh']
 # single- or double-quoted first argument; the PowerShell side writes '' for a quote inside '...'
 PATTERNS = [re.compile(r"""\b[tT] '((?:[^']|'')*)'"""), re.compile(r'''\b[tT] "([^"$`]*)"''')]
