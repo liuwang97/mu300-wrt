@@ -9,6 +9,7 @@
 #   mu300-sms-forward clear           empty the queue (forwarding turned off)
 #   mu300-sms-forward status          "queued N", "running 0|1", "email 0|1" (msmtp there or not)
 #   mu300-sms-forward log             the delivery log, oldest first: epoch, id, target, result, detail (tab-separated)
+#   mu300-sms-forward log-clear       empty the delivery log (the panel's button)
 #
 # Driven by the pool, never by the modem: mu300-sms hands over each new message by its id, and nothing here polls
 # anything. The queue ("target <TAB> message file", at most MU300_FWD_QUEUE_MAX lines) is on flash, next to the
@@ -24,7 +25,8 @@
 # the mail password to msmtp in a 0600 file in RAM. The log says which message went where and how it ended, never the
 # message, the sender or a secret. Lines are "key=value": enabled, template (a newline as \n, a backslash as \\),
 # allow, deny, keyword (one entry per line, repeated), webhook, webhook_url, webhook_format (json|form|text),
-# webhook_body (the user's own request body, stored like the template; empty: the standard one), webhook_header
+# webhook_body (the user's own request body, stored like the template; empty: the standard one), webhook_expect
+# (KEY=VALUE the service's answer must have; empty: any 2xx is a delivery), webhook_header
 # ("Name: value", repeated), telegram, telegram_token, telegram_chat, email, email_host, email_port,
 # email_tls (starttls|tls|off), email_user, email_password, email_from, email_to, sms, sms_number.
 set -u
@@ -47,6 +49,8 @@ QUEUE_MAX=${MU300_FWD_QUEUE_MAX:-100}
 ATTEMPTS=${MU300_FWD_ATTEMPTS:-10}
 # the largest webhook request body, filled in (the panel takes a body template of 2000 bytes at most)
 BODY_MAX=${MU300_FWD_BODY_MAX:-65536}
+# how much of a webhook's answer is looked at for webhook_expect (the helper keeps no more, answer_verdict reads no more)
+ANSWER_MAX=4096
 LOG_MAX=100
 TAB=$(printf '\t')
 NL='
@@ -59,7 +63,7 @@ say() { echo "mu300-sms-forward: $*" >&2; }
 # conf_load: the settings into c_* (lists newline-separated); never sourced, every line is matched by its key
 conf_load() {
     c_enabled=0 c_template=$DEFAULT_TEMPLATE c_allow= c_deny= c_keyword=
-    c_webhook=0 c_webhook_url= c_webhook_format=json c_webhook_header= c_webhook_body=
+    c_webhook=0 c_webhook_url= c_webhook_format=json c_webhook_header= c_webhook_body= c_webhook_expect=
     c_telegram=0 c_telegram_token= c_telegram_chat=
     c_email=0 c_email_host= c_email_port=587 c_email_tls=starttls c_email_user= c_email_password= c_email_from= c_email_to=
     c_sms=0 c_sms_number=
@@ -77,6 +81,7 @@ conf_load() {
             webhook_url) c_webhook_url=$_v ;;
             webhook_format) c_webhook_format=$_v ;;
             webhook_body) c_webhook_body=$_v ;;
+            webhook_expect) c_webhook_expect=$_v ;;
             webhook_header) c_webhook_header=$c_webhook_header$_v$NL ;;
             telegram) c_telegram=$_v ;;
             telegram_token) c_telegram_token=$_v ;;
@@ -301,19 +306,117 @@ one_sms() {
 }
 
 # ------------------------------------------------------------------ delivery
-# http_post URL CONTENT_TYPE BODY [HEADER LINES]: d_status, the HTTP status (0: no answer) and d_detail. The whole
-# request goes to the helper on stdin.
+# http_request URL CONTENT_TYPE BODY [HEADER LINES]: the request as the helper reads it on stdin
+http_request() {
+    printf '%s\n' "$1"
+    printf 'Content-Type: %s\n' "$2"
+    [ -n "${4:-}" ] && printf '%s' "$4" | grep -v '^$'
+    printf '\n'
+    printf '%s' "$3"
+}
+
+# expect_ok RULE: RULE is KEY=VALUE, each 1 to 32 of the characters the panel takes (unisoc-modem/forward)
+expect_ok() {
+    _k=${1%%=*}; _w=${1#*=}
+    [ "$_k" != "$1" ] && [ -n "$_k" ] && [ -n "$_w" ] && [ "${#_k}" -le 32 ] && [ "${#_w}" -le 32 ] || return 1
+    case $_k in *[!A-Za-z0-9_-]*) return 1 ;; esac
+    case $_w in *[!A-Za-z0-9_.+-]*) return 1 ;; esac
+    return 0
+}
+
+# answer_verdict KEY VALUE: stdin is what the helper wrote when asked for the answer: its status line, then the start
+# of the reply. Out: the status line, then one line saying whether the answer is a JSON object whose top-level KEY is
+# VALUE:
+#   answer ok | answer differs TOKEN | answer missing | answer empty | answer notjson
+# TOKEN is the value found, cut to 24 bytes, every byte outside A-Za-z0-9_.+- as "?" ("object", "array" for those).
+# This is the only place a reply is read, and nothing else of it leaves here: it comes down the pipe, its first
+# ANSWER_MAX bytes are kept in awk (in memory), and that one line goes out. KEY and VALUE reach awk in its
+# environment and are compared as text (a string by its content, anything else as it is written: 0 is not 0.0);
+# nothing of them or of the answer is ever run as a program. Not a JSON parser: it walks the text once, counting
+# brackets and skipping strings, so an answer cut short still gives its verdict when the key came before the cut. A
+# value the cut may have shortened is not looked at. A key that is there twice must have the value both times.
+answer_verdict() {
+    K=$1 W=$2 MAX=$ANSWER_MAX awk '
+    function token(v,   i, c, o) {
+        o = ""
+        for (i = 1; i <= length(v) && i <= 24; i++) { c = substr(v, i, 1); o = o (c ~ /[A-Za-z0-9_.+-]/ ? c : "?") }
+        return o == "" ? "(empty)" : o
+    }
+    # str(i): b has a quote at i; the content of that string in s, the position after its closing quote (0: cut short)
+    function str(i,   j, c) {
+        for (j = i + 1; j <= n; j++) {
+            c = substr(b, j, 1)
+            if (c == "\\") { j++; continue }
+            if (c == "\"") { s = substr(b, i + 1, j - i - 1); return j + 1 }
+        }
+        return 0
+    }
+    function blank(i) { while (i <= n && index(" \t\r\n", substr(b, i, 1))) i++; return i }
+    BEGIN { max = ENVIRON["MAX"] + 0; key = ENVIRON["K"]; want = ENVIRON["W"] }
+    NR == 1 { print; next }
+    {
+        b = b (NR > 2 ? "\n" : "") $0
+        if (length(b) >= max) { b = substr(b, 1, max); exit }
+    }
+    END {
+        if (NR == 0) exit
+        n = length(b)
+        i = blank(substr(b, 1, 3) == "\357\273\277" ? 4 : 1)
+        if (i > n) { print "answer empty"; exit }
+        if (substr(b, i, 1) != "{") { print "answer notjson"; exit }
+        depth = 0; found = 0; bad = ""
+        while (i <= n) {
+            c = substr(b, i, 1)
+            if (c == "{" || c == "[") { depth++; i++; continue }
+            if (c == "}" || c == "]") { if (--depth <= 0) break; i++; continue }
+            if (c != "\"") { i++; continue }
+            i = str(i)
+            if (!i) break
+            # a string of the object itself with a colon after it is a key
+            j = blank(i)
+            if (depth != 1 || substr(b, j, 1) != ":" || s != key) continue
+            i = blank(j + 1)
+            if (i > n) break
+            c = substr(b, i, 1)
+            if (c == "{" || c == "[") {
+                # never the value of a rule; the walk goes on into it
+                found++; if (bad == "") bad = (c == "{" ? "object" : "array")
+                continue
+            }
+            if (c == "\"") {
+                j = str(i)
+                if (!j) break
+                v = s
+            } else {
+                j = i
+                while (j <= n && !index(",}] \t\r\n", substr(b, j, 1))) j++
+                if (j > n) break
+                v = substr(b, i, j - i)
+            }
+            i = j
+            found++; if (v != want && bad == "") bad = token(v)
+        }
+        if (bad != "") print "answer differs " bad
+        else if (found) print "answer ok"
+        else print "answer missing"
+    }'
+}
+
+# http_post URL CONTENT_TYPE BODY [HEADER LINES [EXPECT]]: d_status, the HTTP status (0: no answer) and d_detail. The
+# whole request goes to the helper on stdin. The helper passes on the status and nothing of the reply; with EXPECT
+# (KEY=VALUE) it is asked (MU300_FWD_ANSWER) for the start of a 2xx reply as well, which goes straight into
+# answer_verdict: d_answer is that verdict.
 http_post() {
-    d_status=0
+    d_status=0 d_answer=
     if ! command -v ucode >/dev/null 2>&1 || [ ! -f "$HTTP" ]; then d_detail='no HTTP client (ucode)'; return; fi
     _to=; command -v timeout >/dev/null 2>&1 && _to='timeout 40'
-    _r=$({
-        printf '%s\n' "$1"
-        printf 'Content-Type: %s\n' "$2"
-        [ -n "${4:-}" ] && printf '%s' "$4" | grep -v '^$'
-        printf '\n'
-        printf '%s' "$3"
-    } | $_to ucode "$HTTP" 2>/dev/null | head -n 1)
+    if [ -n "${5:-}" ]; then
+        _r=$(http_request "$@" | MU300_FWD_ANSWER=$ANSWER_MAX $_to ucode "$HTTP" 2>/dev/null |
+            answer_verdict "${5%%=*}" "${5#*=}" 2>/dev/null)
+        case $_r in *"$NL"*) d_answer=${_r#*"$NL"}; _r=${_r%%"$NL"*} ;; esac
+    else
+        _r=$(http_request "$@" | $_to ucode "$HTTP" 2>/dev/null | head -n 1)
+    fi
     case $_r in
         'status '[0-9]*) d_status=${_r#status }; d_detail="HTTP $d_status" ;;
         'error '*) d_detail=${_r#error } ;;
@@ -328,6 +431,24 @@ http_result() {
         408|429|0) return 1 ;;
         [34][0-9][0-9]) return 2 ;;
         *) return 1 ;;
+    esac
+}
+
+# answer_result RULE: after a 2xx with RULE (KEY=VALUE), what d_answer makes of the delivery, added to d_detail. 0: the
+# answer has the value. 1: it has another one - the service says it did not take the message, so another try cannot
+# deliver it twice. 2: the answer does not have the key (or is empty, or no JSON object) - nothing says the message
+# was not taken, the rule does not fit what this service answers, and a retry could deliver the message again.
+answer_result() {
+    _k=${1%%=*}
+    case $d_answer in
+        'answer ok') d_detail="$d_detail, $1"; return 0 ;;
+        'answer differs '*)
+            _tok=${d_answer#answer differs }
+            case $_tok in '(empty)') ;; ''|*[!A-Za-z0-9_.+?-]*) _tok='?' ;; esac
+            d_detail="$d_detail, the service answered $_k=$_tok"; return 1 ;;
+        'answer missing') d_detail="$d_detail, the answer has no $_k"; return 2 ;;
+        'answer empty') d_detail="$d_detail, the answer is empty"; return 2 ;;
+        *) d_detail="$d_detail, the answer is not a JSON object"; return 2 ;;
     esac
 }
 
@@ -361,8 +482,12 @@ deliver() {
             esac
         fi
         if [ "$(printf '%s' "$_body" | wc -c)" -gt "$BODY_MAX" ]; then d_detail='the webhook body is too large'; return 2; fi
-        http_post "$c_webhook_url" "$_type" "$_body" "$c_webhook_header"
-        http_result ;;
+        # a rule this cannot read (the panel never writes one) is not guessed at: nothing is sent
+        if [ -n "$c_webhook_expect" ] && ! expect_ok "$c_webhook_expect"; then d_detail='the answer check is not KEY=VALUE'; return 2; fi
+        http_post "$c_webhook_url" "$_type" "$_body" "$c_webhook_header" "$c_webhook_expect"
+        http_result || return
+        [ -n "$c_webhook_expect" ] || return 0
+        answer_result "$c_webhook_expect" ;;
     telegram)
         http_post "https://api.telegram.org/bot$c_telegram_token/sendMessage" application/x-www-form-urlencoded \
             "chat_id=$(urlencode "$c_telegram_chat")&disable_web_page_preview=true&text=$(urlencode "$_msg")"
@@ -566,6 +691,14 @@ cmd_clear() {
     unlock queue
 }
 
+# cmd_log_clear: the log is unlinked, never opened: whatever stands at its name goes (a link too), and what a link
+# points to is not touched
+cmd_log_clear() {
+    state_init
+    rm -f "$LOG" "$LOG.part" 2>/dev/null
+    [ ! -e "$LOG" ] && [ ! -L "$LOG" ]
+}
+
 cmd_status() {
     _q=0; [ -s "$QUEUE" ] && _q=$(wc -l < "$QUEUE" | tr -d ' ')
     _w=0; alive "$(cat "$RUN/worker.lock/pid" 2>/dev/null)" && _w=1
@@ -581,5 +714,6 @@ case ${1:-} in
     clear)   cmd_clear ;;
     status)  cmd_status ;;
     log)     cat "$LOG" 2>/dev/null; true ;;
-    *) sed -n '5,11p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+    log-clear) cmd_log_clear ;;
+    *) sed -n '5,12p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

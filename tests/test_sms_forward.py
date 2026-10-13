@@ -26,7 +26,9 @@ PASSWORD = 'hunter2-mail-pass'
 HOOK_URL = 'http://192.0.2.10:8099/hook?key=urlsecret'
 
 # the stub ucode: the request (stdin) into $STUBLOG/http.N, its arguments into $STUBLOG/argv.log; it answers with the
-# first line of $STUBLOG/answers (consumed), else "status 200"
+# first line of $STUBLOG/answers (consumed), else "status 200". Like the helper, it adds the reply's body to a 2xx
+# only when MU300_FWD_ANSWER asks for it ($STUBLOG/answers.env says, per request, whether it did): the bytes of
+# $STUBLOG/answers.reply.N, else answers.reply - all of them, the cut to the first bytes is then the forwarder's
 UCODE = r'''
 import os, sys
 log = os.environ['STUBLOG']
@@ -35,9 +37,17 @@ open(os.path.join(log, 'http.%d' % n), 'wb').write(sys.stdin.buffer.read())
 open(os.path.join(log, 'argv.log'), 'a').write(' '.join(sys.argv) + '\n')
 a = os.path.join(log, 'answers')
 lines = open(a).read().splitlines() if os.path.exists(a) else []
-print(lines[0] if lines else 'status 200')
+line = lines[0] if lines else 'status 200'
 if lines:
     open(a, 'w').write(''.join(l + '\n' for l in lines[1:]))
+ask = os.environ.get('MU300_FWD_ANSWER')
+open(a + '.env', 'a').write((ask or '-') + '\n')
+sys.stdout.buffer.write(line.encode() + b'\n')
+if ask and line.startswith('status 2'):
+    for f in (a + '.reply.%d' % n, a + '.reply'):
+        if os.path.exists(f):
+            sys.stdout.buffer.write(open(f, 'rb').read())
+            break
 '''
 
 
@@ -325,6 +335,297 @@ class Forwarder(ShellTest):
         self.assertNotIn('awk -v', body)
         self.assertNotIn('"$1"', body)
 
+    # ------------------------------------------------------------------ the answer check (webhook_expect) and the log
+    SAFE_VERDICT = r'answer (ok|missing|empty|notjson|differs (\(empty\)|[A-Za-z0-9_.+?-]{1,24}))'
+
+    def verdict(self, shell, reply, key='errcode', want='0'):
+        """answer_verdict on what the helper writes: the status line, then REPLY (bytes); the verdict line."""
+        r = subprocess.run(shell + ['-c', f'. "{self.tmp}/lib.sh"; answer_verdict "$1" "$2"', 'sh', key, want],
+                           input=b'status 200\n' + reply, capture_output=True, env=self.env(), timeout=60)
+        self.assertEqual((r.returncode, r.stderr), (0, b''))
+        lines = r.stdout.split(b'\n')
+        # the status line, one verdict line of a fixed shape, and nothing else, whatever the reply was
+        self.assertEqual((lines[0], lines[2:]), (b'status 200', [b'']), reply[:60])
+        self.assertRegex(lines[1].decode('ascii'), '^' + self.SAFE_VERDICT + '$')
+        return lines[1].decode('ascii')[len('answer '):]
+
+    def test_answers_that_pass(self):
+        self.lib_from_script()
+        deep = '{"a":' * 300 + '1' + '}' * 300
+        cases = [
+            ('errcode', '0', '{"errcode":0,"errmsg":"ok"}'),                       # DingTalk, WeCom
+            ('errcode', '0', '{"errmsg" : "ok" ,\r\n\t"errcode" : 0 }'),
+            ('errcode', '0', '{"errcode":"0"}'),                                   # a string by its content
+            ('code', '0', '{"code":0,"msg":"success","data":{}}'),                 # Feishu, Lark
+            ('StatusCode', '0', '{"StatusCode":0,"StatusMessage":"success","code":0,"data":{},"msg":"success"}'),
+            ('code', '200', '{"code":200,"message":"success","timestamp":1791000000}'),   # Bark
+            ('ok', 'true', '{"ok":true,"result":{"message_id":5,"ok":false,"text":"\\"ok\\":false"}}'),
+            ('errcode', '0', '﻿ \n{"errcode":0}'),
+            ('errcode', '0', '{"errcode":0}\n{"errcode":1}'),                      # only the first object is the answer
+            ('errcode', '0', '{\n  "errmsg": "line\nbreak \\\\",\n  "errcode": 0\n}\n'),
+            ('errcode', '0', '{"a":"\\\\","b":"\\\\\\"","errcode":0}'),
+            ('errcode', '0', '{"errcode":0,"pad":"' + 'x' * 100000 + '"}'),        # cut after the key: still a verdict
+            ('errcode', '0', '{"deep":' + deep + ',"errcode":0}'),
+            ('errcode', '0', '{"errcode":0,"errcode":0}'),
+            ('status', 'success', '{"status":"success"}'),
+            ('errcode', '-1', '{"errcode":-1}'),
+        ]
+        for shell in self.each_shell():
+            for key, want, reply in cases:
+                with self.subTest(reply=reply[:50]):
+                    self.assertEqual(self.verdict(shell, reply.encode('utf-8'), key, want), 'ok')
+
+    def test_answers_that_fail(self):
+        self.lib_from_script()
+        cases = [
+            ('errcode', '0', '{"errcode":310000,"errmsg":"keywords not in content"}', 'differs 310000'),
+            ('code', '0', '{"code":19024,"msg":"Key Words Not Found"}', 'differs 19024'),
+            ('ok', 'true', '{"ok":false,"error":"invalid_auth"}', 'differs false'),
+            ('errcode', '0', '{"errcode":0.0}', 'differs 0.0'),                    # text, not arithmetic
+            ('errcode', '0', '{"errcode":null}', 'differs null'),
+            ('errcode', '0', '{"errcode":""}', 'differs (empty)'),
+            ('errcode', '0', '{"errcode":"0 "}', 'differs 0?'),
+            ('errcode', '0', '{"errcode":{"errcode":0}}', 'differs object'),
+            ('errcode', '0', '{"errcode":[0]}', 'differs array'),
+            ('errcode', '0', '{"errcode":0,"errcode":1}', 'differs 1'),             # there twice: both must be right
+            ('errcode', '0', '{"errcode":1,"errcode":0}', 'differs 1'),
+            ('errcode', '0', '{"errcode":"' + 'A' * 100 + '"}', 'differs ' + 'A' * 24),
+            ('errcode', '0', '{"errcode":"$(touch pwned)`touch pwned`;touch pwned|\'\\"\\\\\n<b>&é"}',
+             'differs ??touch?pwned??touch?pwn'),
+            # the key is not there, or not at the top
+            ('errcode', '0', '{}', 'missing'),
+            ('errcode', '0', '{"data":{"errcode":0},"list":[{"errcode":0}]}', 'missing'),
+            ('errcode', '0', '{"x":"errcode","y":"\\"errcode\\":0","z":"errcode:0"}', 'missing'),
+            ('errcode', '0', '{"ERRCODE":0,"errcode ":0," errcode":0,"err\\u0063ode":0}', 'missing'),
+            ('errcode', '0', '{"deep":' + '{"a":' * 300 + '{"errcode":0}' + '}' * 300 + '}', 'missing'),
+            ('errcode', '0', '{"deep":' + '[' * 100000, 'missing'),
+            ('errcode', '0', '{"pad":"' + 'x' * 1000000 + '","errcode":0}', 'missing'),   # after the cut: not read
+            ('errcode', '0', '{"errcode":31', 'missing'),                            # a value the cut may have shortened
+            ('errcode', '0', '{"errcode":"0', 'missing'),
+            ('errcode', '0', '{"errcode"', 'missing'),
+            ('errcode', '0', '{"errcode":', 'missing'),
+            # not an object at all
+            ('errcode', '0', '', 'empty'),
+            ('errcode', '0', ' \r\n\t\n', 'empty'),
+            ('errcode', '0', 'ok', 'notjson'),
+            ('errcode', '0', '"errcode":0', 'notjson'),
+            ('errcode', '0', '[{"errcode":0}]', 'notjson'),
+            ('errcode', '0', '<html><body>{"errcode":0}</body></html>', 'notjson'),
+            ('errcode', '0', 'x' * 1000000, 'notjson'),
+            # the rule is text: nothing in it is a pattern or a program
+            ('.*', '.*', '{"abc":"x"}', 'missing'),
+            ('a', '.', '{"a":"x"}', 'differs x'),
+            ('a', '0" || "1', '{"a":1}', 'differs 1'),
+            ('a"} END{system("touch pwned")} #', '0', '{"a":1}', 'missing'),
+        ]
+        for shell in self.each_shell():
+            for key, want, reply, verdict in cases:
+                with self.subTest(reply=reply[:50]):
+                    self.assertEqual(self.verdict(shell, reply.encode('utf-8'), key, want), verdict)
+            # bytes that are no text: one verdict line of the fixed shape (verdict() checks that), never "ok"
+            for raw in (bytes(range(256)) * 40, b'{' + bytes(range(256)) * 40, b'\x00' * 5000,
+                        b'{"errcode":"\xff\xfe\x00\x01\x1b[2J"}', b'{"errcode":1,"x":"\x00","errcode":0}'):
+                with self.subTest(raw=raw[:20]):
+                    self.assertNotEqual(self.verdict(shell, raw), 'ok')
+            self.assertFalse(list(self.tmp.rglob('pwned')))
+            self.assertFalse((TOP / 'tests' / 'pwned').exists())
+
+    def test_the_form_of_a_rule(self):
+        self.lib_from_script()
+        good = ['errcode=0', 'code=200', 'ok=true', 'StatusCode=0', 'a-b_c=-1', 'v=1.0', 'v=+1', 'k' * 32 + '=' + 'v' * 32]
+        bad = ['', 'errcode', 'errcode=', '=0', 'a=b=c', 'err code=0', 'errcode=0 ', 'errcode=$(id)', 'errcode=`id`',
+               'errcode=0;id', 'a.b=0', 'é=0', 'errcode=é', 'errcode="0"', 'errcode=0\nx', 'k' * 33 + '=0',
+               'k=' + 'v' * 33, 'data.errcode=0', '*=0', 'errcode=*']
+        for shell in self.each_shell():
+            for rule, want in [(r, 0) for r in good] + [(r, 1) for r in bad]:
+                r = subprocess.run(shell + ['-c', f'. "{self.tmp}/lib.sh"; expect_ok "$1"', 'sh', rule],
+                                   capture_output=True, env=self.env())
+                self.assertEqual((r.returncode, r.stdout + r.stderr), (want, b''), rule)
+
+    def reply(self, text, n=None):
+        """What the stub helper writes after its status line when it is asked for the answer (request N, or every)."""
+        (self.tmp / ('answers.reply' + ('' if n is None else f'.{n}'))).write_bytes(
+            text if isinstance(text, bytes) else text.encode('utf-8'))
+
+    def asked(self):
+        """Per request: what MU300_FWD_ANSWER was for the helper ('-': not set, it passes on the status alone)."""
+        return (self.tmp / 'answers.env').read_text().split()
+
+    def test_a_service_error_in_a_200_is_retried_until_the_answer_is_right(self):
+        pool_msg(self.pool, 1, '+905551112233', 'x')
+        for shell in self.each_shell():
+            self.fresh()
+            self.write_conf(enabled=1, webhook=1, webhook_url=HOOK_URL, webhook_expect='errcode=0')
+            self.fwd(shell, 'enqueue', '1')
+            self.reply('{"errcode":130101,"errmsg":"send too fast"}', 0)
+            self.reply('{"errcode":0,"errmsg":"ok"}', 1)
+            r = self.fwd(shell, 'run')
+            self.assertEqual((r.returncode, r.stdout + r.stderr), (0, ''))
+            self.assertEqual([l[2:] for l in self.log()], [
+                ['webhook', 'retry', 'HTTP 200, the service answered errcode=130101, attempt 1, next in 1 s'],
+                ['webhook', 'sent', 'HTTP 200, errcode=0']])
+            self.assertEqual(len(self.requests()), 2)
+            self.assertEqual(self.asked(), ['4096', '4096'])
+            self.assertEqual(self.queue(), [])
+            # and given up like any other failure
+            self.fresh()
+            self.write_conf(enabled=1, webhook=1, webhook_url=HOOK_URL, webhook_expect='errcode=0')
+            self.fwd(shell, 'enqueue', '1')
+            self.reply('{"errcode":310000,"errmsg":"sign not match"}')
+            self.fwd(shell, 'run', MU300_FWD_ATTEMPTS=2)
+            self.assertEqual([l[3:] for l in self.log()], [
+                ['retry', 'HTTP 200, the service answered errcode=310000, attempt 1, next in 1 s'],
+                ['failed', 'HTTP 200, the service answered errcode=310000, gave up after 2 attempts']])
+            self.assertEqual(self.queue(), [])
+
+    def test_an_answer_the_rule_does_not_fit_fails_and_is_not_sent_again(self):
+        pool_msg(self.pool, 1, '+905551112233', 'x')
+        for shell in self.each_shell():
+            for reply, detail in (('{"code":0,"msg":"success"}', 'HTTP 200, the answer has no errcode'),
+                                  ('', 'HTTP 200, the answer is empty'),
+                                  ('ok', 'HTTP 200, the answer is not a JSON object')):
+                self.fresh()
+                self.write_conf(enabled=1, webhook=1, webhook_url=HOOK_URL, webhook_expect='errcode=0')
+                self.fwd(shell, 'enqueue', '1')
+                self.reply(reply)
+                self.fwd(shell, 'run')
+                self.assertEqual([l[3:] for l in self.log()], [['failed', detail]])
+                self.assertEqual((len(self.requests()), self.queue()), (1, []))
+
+    def test_without_a_rule_any_2xx_is_a_delivery_and_the_answer_is_not_asked_for(self):
+        pool_msg(self.pool, 1, '+905551112233', 'x')
+        for shell in self.each_shell():
+            for conf in ({}, {'webhook_expect': ''}):
+                self.fresh()
+                self.write_conf(enabled=1, webhook=1, webhook_url=HOOK_URL, telegram=1, telegram_token=TOKEN,
+                                telegram_chat='42', **conf)
+                self.fwd(shell, 'enqueue', '1')
+                self.reply('{"errcode":310000,"ok":false}')
+                self.fwd(shell, 'run')
+                self.assertEqual([l[2:] for l in self.log()], [['webhook', 'sent', 'HTTP 200'], ['telegram', 'sent', 'HTTP 200']])
+                self.assertEqual(self.asked(), ['-', '-'])
+            # with a rule: the webhook's answer only, never Telegram's
+            self.fresh()
+            self.write_conf(enabled=1, webhook=1, webhook_url=HOOK_URL, telegram=1, telegram_token=TOKEN,
+                            telegram_chat='42', webhook_expect='errcode=0')
+            self.fwd(shell, 'enqueue', '1')
+            self.reply('{"errcode":0}')
+            self.fwd(shell, 'run')
+            self.assertEqual([l[2:] for l in self.log()], [['webhook', 'sent', 'HTTP 200, errcode=0'], ['telegram', 'sent', 'HTTP 200']])
+            self.assertEqual(self.asked(), ['4096', '-'])
+
+    def test_the_http_status_still_decides_first(self):
+        pool_msg(self.pool, 1, '+905551112233', 'x')
+        for shell in self.each_shell():
+            self.fresh()
+            self.write_conf(enabled=1, webhook=1, webhook_url=HOOK_URL, webhook_expect='errcode=0')
+            self.fwd(shell, 'enqueue', '1')
+            self.answers('status 500', 'error timeout', 'status 401')
+            self.reply('{"errcode":0}')
+            self.fwd(shell, 'run')
+            self.assertEqual([l[3:] for l in self.log()], [['retry', 'HTTP 500, attempt 1, next in 1 s'],
+                                                           ['retry', 'timeout, attempt 2, next in 2 s'], ['failed', 'HTTP 401']])
+
+    def test_send_test_applies_the_rule(self):
+        for shell in self.each_shell():
+            self.fresh()
+            self.write_conf(enabled=0, webhook=1, webhook_url=HOOK_URL, webhook_expect='code=0')
+            self.reply('{"code":19024,"msg":"Key Words Not Found"}')
+            r = self.fwd(shell, 'test')
+            self.assertEqual(r.returncode, 1)
+            self.reply('{"code":0,"msg":"success","data":{}}')
+            r = self.fwd(shell, 'test')
+            self.assertEqual(r.returncode, 0)
+            self.reply('{"StatusCode":0}')
+            r = self.fwd(shell, 'test')
+            self.assertEqual(r.returncode, 1)
+            self.assertEqual([l[1:] for l in self.log()], [
+                ['test', 'webhook', 'failed', 'HTTP 200, the service answered code=19024'],
+                ['test', 'webhook', 'sent', 'HTTP 200, code=0'],
+                ['test', 'webhook', 'failed', 'HTTP 200, the answer has no code']])
+
+    def test_nothing_of_an_answer_is_kept_but_the_verdict(self):
+        """Whatever the service answers, the log gets the verdict and a short token of the one value, and no file
+        anywhere gets the answer."""
+        pool_msg(self.pool, 1, '+905551112233', 'x')
+        mark = 'ANSWERMARK'
+        replies = ['{"errcode":7,"errmsg":"%s $(touch pwned) `touch pwned`","token":"%s"}' % (mark, mark),
+                   '{"errcode":"%s"}' % (mark * 10 + '\t\n\x1b[31m";touch pwned;"'),
+                   '{"errmsg":"%s"}' % mark, mark, '{"errcode":0,"secret":"%s"}' % mark]
+        details = ['HTTP 200, the service answered errcode=7', 'HTTP 200, the service answered errcode=' + (mark * 10)[:24],
+                   'HTTP 200, the answer has no errcode', 'HTTP 200, the answer is not a JSON object', 'HTTP 200, errcode=0']
+        for shell in self.each_shell():
+            for reply, detail in zip(replies, details):
+                self.fresh()
+                self.write_conf(enabled=1, webhook=1, webhook_url=HOOK_URL, webhook_expect='errcode=0')
+                self.fwd(shell, 'enqueue', '1')
+                self.reply(reply)
+                r = self.fwd(shell, 'run', MU300_FWD_ATTEMPTS=1)
+                self.assertEqual((r.returncode, r.stdout + r.stderr), (0, ''))
+                self.assertTrue(self.log()[-1][4].startswith(detail), self.log())
+                kept = b''
+                for f in list(self.run_dir.rglob('*')) + list(self.state.rglob('*')) + [self.conf]:
+                    if f.is_file():
+                        kept += f.read_bytes()
+                # the token is the one thing of the answer that may be there, and it is 24 bytes at most
+                self.assertLessEqual(kept.count(mark.encode()), 3 if reply == replies[1] else 0)
+                self.assertNotIn(b'pwned', kept)
+                self.assertNotIn(b'\x1b', kept)
+                self.assertEqual(sorted(p.name for p in self.run_dir.iterdir()), ['log', 'retry'])
+            self.assertFalse(list(self.tmp.rglob('pwned')))
+            self.assertFalse((TOP / 'tests' / 'pwned').exists())
+
+    def test_a_rule_that_is_not_key_value_sends_nothing(self):
+        pool_msg(self.pool, 1, '+905551112233', 'x')
+        for shell in self.each_shell():
+            for rule in ('errcode=$(touch pwned)', 'errcode', 'a=b=c', 'errcode=0;touch pwned', '`touch pwned`=0'):
+                self.fresh()
+                self.write_conf(enabled=1, webhook=1, webhook_url=HOOK_URL, webhook_expect=rule)
+                self.fwd(shell, 'enqueue', '1')
+                self.reply('{"errcode":0}')
+                r = self.fwd(shell, 'run')
+                self.assertEqual((r.returncode, r.stdout + r.stderr), (0, ''))
+                self.assertEqual([l[3:] for l in self.log()], [['failed', 'the answer check is not KEY=VALUE']])
+                self.assertEqual((self.requests(), self.queue()), ([], []))
+            self.assertFalse(list(self.tmp.rglob('pwned')))
+            self.assertFalse((TOP / 'tests' / 'pwned').exists())
+
+    def test_log_clear_empties_the_log_and_follows_no_link(self):
+        for shell in self.each_shell():
+            self.fresh()
+            self.write_conf(enabled=0, webhook=1, webhook_url=HOOK_URL)
+            self.fwd(shell, 'test')
+            self.assertEqual(len(self.log()), 1)
+            r = self.fwd(shell, 'log-clear')
+            self.assertEqual((r.returncode, r.stdout + r.stderr), (0, ''))
+            self.assertFalse((self.run_dir / 'log').exists())
+            self.assertEqual(self.fwd(shell, 'log').stdout, '')
+            # cleared twice, and with nothing there at all (not even the directory)
+            self.assertEqual(self.fwd(shell, 'log-clear').returncode, 0)
+            self.fresh()
+            self.assertEqual(self.fwd(shell, 'log-clear').returncode, 0)
+            # a link at the log's name goes; what it points to is not emptied
+            victim = self.tmp / 'victim'
+            victim.write_text('keep me\n')
+            for name in ('log', 'log.part'):
+                (self.run_dir / name).symlink_to(victim)
+            self.assertEqual(self.fwd(shell, 'log-clear').returncode, 0)
+            self.assertEqual(victim.read_text(), 'keep me\n')
+            self.assertEqual(list(self.run_dir.iterdir()), [])
+            # the next delivery starts a new log, a file of root's only
+            self.fwd(shell, 'test')
+            self.assertEqual(len(self.log()), 1)
+            self.assertFalse((self.run_dir / 'log').is_symlink())
+            self.assertEqual(stat.S_IMODE((self.run_dir / 'log').stat().st_mode), 0o600)
+            self.assertEqual(victim.read_text(), 'keep me\n')
+            # the queue and the retry state are not the log's to clear
+            pool_msg(self.pool, 1, '+905551112233', 'x')
+            self.write_conf(enabled=1, webhook=1, webhook_url=HOOK_URL)
+            self.fwd(shell, 'enqueue', '1')
+            before = self.queue()
+            self.fwd(shell, 'log-clear')
+            self.assertEqual((self.queue(), len(before)), (before, 1))
+
     def test_telegram_token_never_in_argv_or_log(self):
         pool_msg(self.pool, 3, 'ADANA BLD', 'Kargonuz yolda ğüş & co')
         for shell in self.each_shell():
@@ -532,6 +833,10 @@ class Forwarder(ShellTest):
         self.assertNotIn('ARGV', src)
         self.assertIn('verify: true', src)
         self.assertIn('if (!cl.connect())', src)
+        # the reply's body: only when the caller asks in the environment, only of a 2xx, only its first bytes
+        self.assertIn("getenv('MU300_FWD_ANSWER')", src)
+        self.assertIn('if (st.status >= 200 && st.status < 300 && keep > 0) {', src)
+        self.assertIn('answer += substr(d, 0, keep - length(answer));', src)
         fwd = FWD.read_text()
         self.assertIn('ucode "$HTTP"', fwd)
         self.assertNotRegex(fwd, r'ucode[^\n]*\$c_')
@@ -549,6 +854,7 @@ class Adapter(ShellTest):
         # the forwarder: its status, a log, and what it was asked
         self.stub('fwd', 'echo "$*" >> "$STUBLOG/fwd.log"; case $1 in '
                          'status) printf "queued 2\\nrunning 1\\nemail ${FWD_EMAIL:-0}\\n" ;; '
+                         'log-clear) [ -z "${FWD_CLEAR_FAIL:-}" ] || exit 1 ;; '
                          'log) printf "1791000000\\t12\\twebhook\\tsent\\tHTTP 200\\n1791000001\\ttest\\ttelegram\\tfailed\\tHTTP 4\\"01\\n" ;; '
                          'esac')
 
@@ -685,6 +991,42 @@ class Adapter(ShellTest):
                 self.assertEqual((r['ok'], r['error']), (0, err), body[:10])
                 self.assertEqual(self.conf.read_text(), before)
 
+    def test_the_answer_check_is_saved_shown_again_and_checked(self):
+        for shell in self.each_shell():
+            self.conf.parent.mkdir(exist_ok=True)
+            self.conf.unlink(missing_ok=True)
+            for rule in ('errcode=0', 'ok=true', 'StatusCode=0', 'a-b_c=-1.5', 'k' * 32 + '=' + 'v' * 32):
+                self.assertEqual(self.set(shell, **dict(self.FULL, webhook_expect=rule)), {'ok': 1})
+                self.assertIn('webhook_expect=' + rule, self.conf.read_text().splitlines())
+                raw, st = self.get(shell)
+                self.assertEqual(st['webhook_expect'], rule)
+                for secret in ('urlsecret', 'hdrsecret', '/hook'):
+                    self.assertNotIn(secret, raw)
+            before = self.conf.read_text()
+            err = 'The answer check must be key=value, like errcode=0 (letters, digits, _ and -; the value also . and +)'
+            for rule in ('errcode', 'errcode=', '=0', 'a=b=c', 'err code=0', 'errcode=0;id', 'errcode=$(id)',
+                         'errcode=`id`', 'errcode="0"', 'é=0', 'errcode=é', 'data.errcode=0', 'k' * 33 + '=0',
+                         'k=' + 'v' * 33, 'errcode=0\nwebhook_url=http://198.51.100.1/', 'errcode=0\n', 'errcode=*'):
+                r = self.set(shell, **dict(self.FULL, webhook_expect=rule))
+                self.assertEqual((r['ok'], r['error']), (0, err), rule)
+                self.assertEqual(self.conf.read_text(), before)
+            # empty, or a page from before the field (it does not send it): any 2xx counts again
+            for fields in (dict(self.FULL, webhook_expect=''), self.FULL):
+                self.set(shell, **dict(self.FULL, webhook_expect='errcode=0'))
+                self.assertEqual(self.set(shell, **fields), {'ok': 1})
+                self.assertIn('webhook_expect=', self.conf.read_text().splitlines())
+                self.assertEqual(self.get(shell)[1]['webhook_expect'], '')
+
+    def test_logclear(self):
+        for shell in self.each_shell():
+            (self.tmp / 'fwd.log').unlink(missing_ok=True)
+            r = self.adapter(shell, 'logclear')
+            self.assertEqual(json.loads(r.stdout), {'ok': 1})
+            self.assertEqual((self.tmp / 'fwd.log').read_text().splitlines(), ['log-clear'])
+            r = self.adapter(shell, 'logclear', '/etc/passwd', FWD_CLEAR_FAIL=1)
+            self.assertEqual(json.loads(r.stdout), {'ok': 0, 'error': 'The delivery log could not be cleared'})
+            self.assertEqual((self.tmp / 'fwd.log').read_text().splitlines(), ['log-clear', 'log-clear'])
+
     def test_turning_off_empties_the_queue(self):
         for shell in self.each_shell():
             self.conf.parent.mkdir(exist_ok=True)
@@ -760,17 +1102,28 @@ class Wiring(unittest.TestCase):
         cellular = [k for _, k in sorted((v['order'], k) for k, v in menu.items() if k.startswith('admin/modem/'))]
         self.assertEqual(cellular[cellular.index('admin/modem/sms') + 1], 'admin/modem/sms-forward')
         acl = json.loads((app / 'root/usr/share/rpcd/acl.d/luci-app-mu300.json').read_text())['luci-app-mu300']
-        for m in ('forward_get', 'forward_set', 'forward_test'):
+        for m in ('forward_get', 'forward_set', 'forward_test', 'forward_log_clear'):
             self.assertIn(m, acl['write']['ubus']['mu300dash'])
             self.assertNotIn(m, acl['read']['ubus']['mu300dash'])
         common = (app / 'htdocs/luci-static/resources/mu300/common.js').read_text()
-        self.assertIn('callFwdGet: callFwdGet, callFwdSet: callFwdSet, callFwdTest: callFwdTest', common)
-        # the custom body (issue #171): declared to rpcd, sent by the page as the last parameter, edited in a textarea
-        self.assertIn("'sms_number', 'webhook_body' ]", common)
+        self.assertIn('callFwdGet: callFwdGet, callFwdSet: callFwdSet, callFwdTest: callFwdTest, '
+                      'callFwdLogClear: callFwdLogClear', common)
+        # the custom body, then the answer check (issue #171): declared to rpcd, sent by the page as the last
+        # parameters in that order (an older cached page still lines up)
+        self.assertIn("'sms_number', 'webhook_body', 'webhook_expect' ]", common)
         self.assertIn('"webhook_body": "String"', DASH.read_text())
+        self.assertIn('"webhook_expect": "String"', DASH.read_text())
+        self.assertIn('"forward_log_clear": { }', DASH.read_text())
         view = (app / 'htdocs/luci-static/resources/view/mu300/forward.js').read_text()
         self.assertIn("this.area('webhook_body', st.webhook_body,", view)
-        self.assertIn("this.val('sms_number').trim(), this.val('webhook_body'))", view)
+        self.assertIn("this.val('sms_number').trim(), this.val('webhook_body'),\n"
+                      "\t\t\tthis.val('webhook_expect').trim())", view)
+        self.assertIn("this.text('webhook_expect', st.webhook_expect,", view)
+        # a preset fills the field in and is nothing else: every one is a rule the adapter takes
+        import re
+        presets = re.findall(r"E\('option', \{ 'value': '([^']*=[^']*)' \}", view)
+        self.assertEqual(presets, ['errcode=0', 'code=0', 'code=200', 'ok=true'])
+        self.assertIn('M.callFwdLogClear()', view)
         self.assertIn("'value': 'text'", view)
         self.assertTrue(os.access(ADAPTER, os.X_OK))
         self.assertTrue(os.access(FWD, os.X_OK))
