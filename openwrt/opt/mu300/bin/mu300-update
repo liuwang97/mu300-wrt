@@ -13,6 +13,10 @@
 #   mu300-update clean            delete the kept <os>.old copies
 #   mu300-update notice           only look: a note for the login message and mu300-toolkit when a newer release is
 #                                 out (at boot and every 6 hours; nothing is installed without apply)
+#   mu300-update apply --from FILE|DIR   the same update without the network: from a Magisk zip of a release, or a
+#                                 directory with a release's files and their SHA256SUMS (--unsigned: one the project's
+#                                 release key cannot vouch for; --downgrade: one older than what is installed)
+#   mu300-update status|releases|inspect FILE   JSON for a panel (see "for a panel" below)
 # Installed extras (mu300-extra: LuCI's languages) are updated with the release, the VPN module (mu300-vpn and its
 # engines, from github.com/dikeckaan/mu300-linux-vpn) to its latest release. A device that uses the VPN is never left
 # without it or its engines: when they cannot be had, apply stops before it changes anything (MU300_VPN_MODULE=FILE|DIR,
@@ -70,8 +74,11 @@ fetch_file() {  # fetch_file URL OUT (resumes a partial OUT)
 # already there and matches is not downloaded again, a partial one is resumed
 STAGE=$DISK/.mu300-update
 fetch_verified() {
+    progress file "$2"
+    # (apply --from: the release is a file or a directory, see from_verified)
+    [ -z "${MU300_FROM:-}" ] || { from_verified "$@"; return; }
     # MU300_RELEASE_URL: another server with the same files and SHA256SUMS (a local test server), as for install.sh
-    base=${MU300_RELEASE_URL:-https://github.com/$REPO/releases/download/$1}
+    base=${MU300_RELEASE_URL:-${MU300_DOWNLOAD_URL:-https://github.com/$REPO/releases/download}/$1}
     mkdir -p "$STAGE"
     # SHA256SUMS is fetched once per run, never trusted from an earlier one: a release published again under the
     # same tag left a stale copy that every file then failed (and the updater it had verified replaced this one).
@@ -86,6 +93,8 @@ fetch_verified() {
             return 1
         fi
     fi
+    # (where this system has the project's release key: the signature of SHA256SUMS, see sums_trusted)
+    sums_trusted "$1" "$base" || return 1
     want=$(awk -v f="$2" '$2 == f || $2 == "*" f {print $1}' "$STAGE/SHA256SUMS")
     [ -n "$want" ] || { echo "$2 is not part of release $1" >&2; return 2; }
     for try in 1 2 3; do
@@ -96,6 +105,7 @@ fetch_verified() {
         rm -f "$STAGE/$2"
         if _sums=$(fetch_stdout "$base/SHA256SUMS") && [ -n "$_sums" ]; then
             printf '%s\n' "$_sums" > "$STAGE/SHA256SUMS"
+            SUMS_FETCHED=$1; SUMS_OK=; sums_trusted "$1" "$base" || return 1
             want=$(awk -v f="$2" '$2 == f || $2 == "*" f {print $1}' "$STAGE/SHA256SUMS")
             [ -n "$want" ] || { echo "$2 is not part of release $1" >&2; return 2; }
         fi
@@ -212,7 +222,7 @@ installed_systems() {
 }
 
 latest_release() {
-    fetch_stdout "https://api.github.com/repos/$REPO/releases/latest" \
+    fetch_stdout "${MU300_API_URL:-https://api.github.com/repos/$REPO}/releases/latest" \
         | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1
 }
 
@@ -1868,6 +1878,8 @@ resume_data() {
 
 apply() {
     mounted_disk
+    # (apply --from: the source is checked and names the release, see from_begin)
+    [ -z "${MU300_FROM:-}" ] || from_begin
     tag=${MU300_RELEASE:-$(latest_release)}
     [ -n "$tag" ] || { offline_hint; die "could not reach GitHub (is the device online?)"; }
     # The release's own updater does the update when it differs from this one (releases from v2026.09.28 on
@@ -1876,7 +1888,7 @@ apply() {
     # would be kept by every later update, with usr/local, and hide the updater of the system)
     self=$(readlink -f "$0" 2>/dev/null || echo "$0")
     if [ -z "${MU300_SELF_UPDATED:-}" ] && fetch_verified "$tag" mu300-update 2>/dev/null &&
-        ! cmp -s "$STAGE/mu300-update" "$self" && sh -n "$STAGE/mu300-update"; then
+        ! cmp -s "$STAGE/mu300-update" "$self" && sh -n "$STAGE/mu300-update" && from_handover "$STAGE/mu300-update"; then
         printf 'continuing with the mu300-update of %s\n' "$tag"
         keepalive_stop
         cp "$STAGE/mu300-update" "$self.new" && chmod 755 "$self.new" && mv -f "$self.new" "$self" 2>/dev/null || true
@@ -1888,6 +1900,7 @@ apply() {
         case $a in --no-reinstall) MU300_KEEP_PACKAGES=0 ;; *) list="$list $a" ;; esac
     done
     [ -n "$list" ] || list=$(installed_systems)
+    [ -z "${FROM_ONLY:-}" ] || list=$FROM_ONLY     # (a Magisk zip holds one system)
     BOOT_CHANGED=
     SYSTEM_CHANGED=
     [ "${MU300_UBUNTU:-}" = 26.04 ] && [ "$(kernel_choice)" = 5.4 ] &&
@@ -2015,6 +2028,458 @@ clean() {
     df -h "$DISK" | tail -1
 }
 
+# ---- for a panel: status, the releases, an update from a file, release signatures ---------------------------------
+# What a page needs to update the device from a browser (LuCI's System > Update; docs/FINDINGS.md 86), and nothing
+# that changes what an update does or keeps. All of it is below this line, except the few lines that call it:
+# fetch_verified (the offline source, the signature, the file being fetched), latest_release (the mirror), apply
+# (from_begin, the system of an offline source, the updater it continues with) and the commands at the end.
+#   status [--sizes]   one JSON object, no network: the systems and their releases, what is kept for a rollback, the
+#                      kernel and the boot image, the default boot, free space, who holds the lock, the note
+#   releases           one JSON object: the newest release and, when there is one newer than it, the newest
+#                      pre-release, each with what this device would download
+#   inspect FILE|DIR   one JSON object: what an offline source says it is, its SHA-256, whether its files match,
+#                      whether it is for this device, how its signature checks. Changes nothing.
+#   apply --from FILE|DIR [--unsigned] [--downgrade]   update from that source instead of GitHub
+# Every string in the JSON goes through jv, which lets only harmless characters through: nothing needs escaping.
+jv() { printf '%s' "$1" | tr -cd 'A-Za-z0-9._+:,()@ /-' | cut -c1-200; }
+jstr() { if [ -n "$1" ]; then printf '"%s"' "$(jv "$1")"; else printf null; fi; }      # a string, or null when empty
+jnum() { case $1 in ''|*[!0-9]*) printf null ;; 0) printf 0 ;; 0*) printf null ;; *) printf '%s' "$1" ;; esac; }
+mtime() { _mt=$(date -r "$1" +%s 2>/dev/null) || _mt=; jnum "$_mt"; }
+tag_ok() { printf '%s\n' "$1" | grep -Eqx 'v[0-9]{4}\.[0-9]{2}\.[0-9]{2}'; }
+# newer A B: release A is newer than B (tags are dates and sort as text); false when either is no release tag
+newer() { tag_ok "$1" && tag_ok "$2" && [ "$1" != "$2" ] && [ "$(printf '%s\n%s\n' "$1" "$2" | sort | tail -n1)" = "$1" ]; }
+# the space an update wants free on the Linux partition, in KiB, for N systems: the rule apply() has
+space_needed() { echo $((1000000 + 1000000 * $1)); }
+
+# /etc/mu300/update-source: another place to take the releases from (a mirror on the LAN, a copy where GitHub cannot
+# be reached), for the command and the panel alike. Root's own regular file, lines NAME=URL with these names only;
+# the environment wins. MU300_API_URL stands for https://api.github.com/repos/REPO (releases/latest and releases
+# below it), MU300_DOWNLOAD_URL for https://github.com/REPO/releases/download (TAG/FILE below it).
+SOURCE_CONF=${MU300_SOURCE_CONF:-$CONF/update-source}
+source_conf() {
+    [ -f "$SOURCE_CONF" ] && [ ! -L "$SOURCE_CONF" ] || return 0
+    _sc=$(ls -ln "$SOURCE_CONF" 2>/dev/null)
+    case $_sc in -????-??-?*) ;; *) echo "$SOURCE_CONF is writable by others: ignored" >&2; return 0 ;; esac
+    [ "$(printf '%s\n' "$_sc" | awk '{print $3}')" = "$(id -u)" ] || { echo "$SOURCE_CONF is not ours: ignored" >&2; return 0; }
+    while IFS='=' read -r _sk _sv; do
+        printf '%s\n' "$_sv" | grep -Eqx 'https?://[A-Za-z0-9._:/-]{1,200}' || continue
+        case $_sk in
+            MU300_API_URL) [ -n "${MU300_API_URL:-}" ] || MU300_API_URL=$_sv ;;
+            MU300_DOWNLOAD_URL) [ -n "${MU300_DOWNLOAD_URL:-}" ] || MU300_DOWNLOAD_URL=$_sv ;;
+        esac
+    done < "$SOURCE_CONF"
+}
+
+# -- release signatures. A release is trusted today because it comes from GitHub over TLS and matches its
+# SHA256SUMS. A signature of SHA256SUMS (SHA256SUMS.sig: Ed25519, in the format of OpenWrt's usign and OpenBSD's
+# signify, made by the release workflow from a key that is a repository secret) ties the files to the project
+# whatever brought them: a mirror, a memory stick, an upload. The public key is part of the system, RELEASE_PUB -
+# beside the programs, not in /etc/mu300, which an update carries over from the old system as a whole (a device
+# would never get the key, nor a new one). Without that file nothing is checked and everything is as it was.
+RELEASE_PUB=${MU300_RELEASE_PUB:-/opt/mu300/lib/release.pub}
+# sig_raw FILE: a key or a signature without its comment line, as bytes
+sig_raw() { sed -n 2p "$1" | openssl base64 -d -A 2>/dev/null; }
+# sig_state SUMS SIG: valid, bad, unsigned (there is no SIG), nokey (this system has no release key) or notool
+# (nothing here can check one). usign where there is one (OpenWrt), else openssl (Ubuntu; 3.0 or newer).
+sig_state() {
+    [ -s "$RELEASE_PUB" ] || { echo nokey; return 0; }
+    [ -s "$2" ] || { echo unsigned; return 0; }
+    if have usign; then
+        if usign -V -q -m "$1" -p "$RELEASE_PUB" -x "$2" >/dev/null 2>&1; then echo valid; else echo bad; fi
+        return 0
+    fi
+    have openssl && have od || { echo notool; return 0; }
+    _sd=$(mktemp -d 2>/dev/null) || { echo notool; return 0; }
+    # the key is "Ed", its 8-byte number and 32 bytes; the signature "Ed", the number and 64 bytes. openssl wants
+    # the key as DER (the 12 bytes every Ed25519 public key starts with, then the 32).
+    sig_raw "$RELEASE_PUB" > "$_sd/pub"; sig_raw "$2" > "$_sd/sig"
+    _st=bad
+    if [ "$(fsize "$_sd/pub")" = 42 ] && [ "$(fsize "$_sd/sig")" = 74 ] &&
+        [ "$(head -c 10 "$_sd/pub" | od -An -tx1)" = "$(head -c 10 "$_sd/sig" | od -An -tx1)" ]; then
+        { printf '\060\052\060\005\006\003\053\145\160\003\041\000'; tail -c 32 "$_sd/pub"; } > "$_sd/der"
+        tail -c 64 "$_sd/sig" > "$_sd/raw"
+        if openssl pkeyutl -verify -pubin -inkey "$_sd/der" -keyform DER -rawin -in "$1" -sigfile "$_sd/raw" >/dev/null 2>&1; then
+            _st=valid
+        elif ! openssl pkeyutl -help 2>&1 | grep -q -- -rawin; then _st=notool
+        fi
+    fi
+    rm -rf "${_sd:?}"
+    echo "$_st"
+}
+# sums_trusted TAG BASE: is $STAGE/SHA256SUMS of TAG what the project signed? Once per run (SUMS_OK). A signature
+# that does not match stops the run, always. A release without one stops it when this system has a key and the
+# release is this system's or newer - every release from the one that brought the key is signed, so a missing
+# signature there is a file taken away on the way; an older release (going back) was published before signing and
+# is taken as it always was. MU300_ALLOW_UNSIGNED=1 is the way out for the owner of the device, in words.
+SUMS_OK=
+sums_trusted() {
+    [ "$SUMS_OK" != "$1" ] || return 0
+    [ -s "$RELEASE_PUB" ] || { SUMS_OK=$1; return 0; }
+    # the signature belongs to the SHA256SUMS just fetched; a kept SHA256SUMS keeps the one fetched with it
+    if [ "${SUMS_FETCHED:-}" = "$1" ]; then
+        rm -f "${STAGE:?}/SHA256SUMS.sig"
+        _sg=$(fetch_stdout "$2/SHA256SUMS.sig" 2>/dev/null) && [ -n "$_sg" ] && printf '%s\n' "$_sg" > "$STAGE/SHA256SUMS.sig"
+    fi
+    sums_verdict "$1" "$(sig_state "$STAGE/SHA256SUMS" "$STAGE/SHA256SUMS.sig")" "release $1" || return 1
+    SUMS_OK=$1
+}
+# sums_verdict TAG STATE WHAT: what a signature state means for this run (see sums_trusted). An offline source
+# (MU300_FROM) has no origin at all, so one that cannot be checked - no signature, or no key on this system - is
+# never taken without the owner's word.
+sums_verdict() {
+    case $2 in
+        valid) echo "$3: signed with the project's release key"; return 0 ;;
+        bad) echo "the signature of $3 does not match the project's release key: not used" >&2; return 1 ;;
+        nokey) [ -n "${MU300_FROM:-}" ] || return 0 ;;
+    esac
+    if [ -n "${MU300_ALLOW_UNSIGNED:-}" ]; then
+        echo "$3 is not signed, or cannot be checked here ($2): used because you said so" >&2
+    elif [ -n "${MU300_FROM:-}" ] || ! newer "$(installed_version)" "$1"; then
+        echo "$3 is not signed with the project's release key ($2): not used (MU300_ALLOW_UNSIGNED=1 takes it anyway)" >&2
+        return 1
+    else
+        echo "$3 is from before releases were signed: taken as it is" >&2
+    fi
+    return 0
+}
+
+# -- an update from a file or a directory, for a device that is not online (MU300_FROM, set by apply --from).
+# A directory holds a release's files as they are published, with their SHA256SUMS (and SHA256SUMS.sig). A file is
+# a Magisk zip of the release (mu300-magisk-TAG-SYSTEM-kKERNEL.zip, tools/make-magisk-zips.sh): one system and one
+# kernel, with mu300/manifest naming them and their hashes, and - from the release that brought this - the release's
+# SHA256SUMS and its signature. Nothing of a zip is unpacked to a path it names: each member is read to a pipe by a
+# name this code made.
+zip_p() {  # zip_p ZIP MEMBER: the member on stdout
+    # (OpenWrt has no unzip, and its own busybox no such applet: the static busybox of the image has)
+    _zb=${MU300_BIN:-/opt/mu300/bin}/busybox
+    if have unzip; then unzip -p "$1" "$2"
+    elif [ -x "$_zb" ]; then "$_zb" unzip -p "$1" "$2"
+    else busybox unzip -p "$1" "$2"; fi 2>/dev/null
+}
+man_val() { sed -n "s/^$2=//p" "$1" | head -n1 | tr -d '\r'; }
+# from_open: read the source once per run. FROM_KIND zip|dir, FROM_TAG, and for a zip FROM_OS, FROM_UBUNTU,
+# FROM_KERNEL, FROM_ROOTFS, FROM_KASSET; $FROM_TMP/SHA256SUMS (and .sig) are its checksums. Status 1 with a reason in
+# FROM_WHY when it is not a release: not-found, not-release, no-tag. FROM_TMP is in the staging directory, which
+# the end of an update removes and only a run that holds the lock writes; inspect, which holds none, brings a
+# directory of its own (FROM_SCRATCH).
+FROM_KIND=
+from_open() {
+    [ -z "$FROM_KIND" ] || return 0
+    FROM_WHY=not-found
+    [ -e "$MU300_FROM" ] && [ ! -L "$MU300_FROM" ] || return 1
+    FROM_TMP=${FROM_SCRATCH:-$STAGE/.from}
+    rm -rf "${FROM_TMP:?}"
+    mkdir -p "$FROM_TMP" || return 1
+    FROM_WHY=not-release
+    FROM_OS= FROM_UBUNTU= FROM_KERNEL= FROM_ROOTFS= FROM_KASSET=
+    if [ -d "$MU300_FROM" ]; then
+        [ -f "$MU300_FROM/SHA256SUMS" ] && [ ! -L "$MU300_FROM/SHA256SUMS" ] || return 1
+        cat "$MU300_FROM/SHA256SUMS" > "$FROM_TMP/SHA256SUMS"
+        [ ! -f "$MU300_FROM/SHA256SUMS.sig" ] || [ -L "$MU300_FROM/SHA256SUMS.sig" ] || cat "$MU300_FROM/SHA256SUMS.sig" > "$FROM_TMP/SHA256SUMS.sig"
+        # which release: said (MU300_RELEASE), else what the first root filesystem there says it is
+        FROM_TAG=${MU300_RELEASE:-}
+        if [ -z "$FROM_TAG" ]; then
+            for _fo in $SYSTEMS; do
+                [ -f "$MU300_FROM/mu300-$_fo-rootfs.tar.gz" ] || continue
+                FROM_TAG=$(untar -xzOf "$MU300_FROM/mu300-$_fo-rootfs.tar.gz" ./etc/mu300/image-version 2>/dev/null | head -n1)
+                break
+            done
+        fi
+        tag_ok "$FROM_TAG" || { FROM_WHY=no-tag; return 1; }
+        FROM_KIND=dir
+        return 0
+    fi
+    [ -f "$MU300_FROM" ] && [ "$(head -c 2 "$MU300_FROM")" = PK ] || return 1
+    zip_p "$MU300_FROM" mu300/manifest > "$FROM_TMP/manifest" && [ -s "$FROM_TMP/manifest" ] || return 1
+    FROM_TAG=$(man_val "$FROM_TMP/manifest" TAG)
+    FROM_OS=$(man_val "$FROM_TMP/manifest" OS)
+    FROM_UBUNTU=$(man_val "$FROM_TMP/manifest" UBUNTU)
+    FROM_KERNEL=$(man_val "$FROM_TMP/manifest" KERNEL)
+    FROM_ROOTFS=$(man_val "$FROM_TMP/manifest" ROOTFS_ASSET)
+    FROM_KASSET=$(man_val "$FROM_TMP/manifest" KERNEL_ASSET)
+    # every field is one of the values the release makes, and the file names are the ones those values give
+    tag_ok "$FROM_TAG" || return 1
+    case $FROM_OS:$FROM_UBUNTU in
+        openwrt:|openwrt-luci:) _fr=mu300-$FROM_OS-rootfs.tar.gz ;;
+        ubuntu:24.04) _fr=mu300-ubuntu-rootfs.tar.gz ;;
+        ubuntu:26.04) _fr=mu300-ubuntu-26.04-rootfs.tar.gz ;;
+        *) return 1 ;;
+    esac
+    case $FROM_KERNEL in 5.4) _fk=mu300-kernel.tar.gz ;; 6.18|7.2) _fk=mu300-kernel-$FROM_KERNEL.tar.gz ;; *) return 1 ;; esac
+    [ "$FROM_ROOTFS" = "$_fr" ] && [ "$FROM_KASSET" = "$_fk" ] || return 1
+    # the release's own SHA256SUMS where the zip has it (it is what the signature covers); else the two hashes of
+    # the manifest, which say only that the file is whole
+    if zip_p "$MU300_FROM" mu300/SHA256SUMS > "$FROM_TMP/SHA256SUMS" && [ -s "$FROM_TMP/SHA256SUMS" ]; then
+        zip_p "$MU300_FROM" mu300/SHA256SUMS.sig > "$FROM_TMP/SHA256SUMS.sig" || :
+        [ -s "$FROM_TMP/SHA256SUMS.sig" ] || rm -f "${FROM_TMP:?}/SHA256SUMS.sig"
+    else
+        _f1=$(man_val "$FROM_TMP/manifest" SHA256_ROOTFS); _f2=$(man_val "$FROM_TMP/manifest" SHA256_KERNEL)
+        sha_ok "$_f1" && sha_ok "$_f2" || return 1
+        printf '%s  %s\n%s  %s\n' "$_f1" "$FROM_ROOTFS" "$_f2" "$FROM_KASSET" > "$FROM_TMP/SHA256SUMS"
+    fi
+    FROM_KIND=zip
+}
+from_close() {
+    [ -z "${FROM_TMP:-}" ] || rm -rf "${FROM_TMP:?}"
+    [ -z "${FROM_SCRATCH:-}" ] || rm -rf "${FROM_SCRATCH:?}"
+    FROM_TMP=; FROM_KIND=; FROM_SCRATCH=
+}
+# from_member NAME: the file NAME of the source on stdout
+from_member() {
+    if [ "$FROM_KIND" = dir ]; then
+        [ -f "$MU300_FROM/$1" ] && [ ! -L "$MU300_FROM/$1" ] && cat "$MU300_FROM/$1"
+    else
+        case $1 in mu300-update) zip_p "$MU300_FROM" mu300/mu300-update ;; *) zip_p "$MU300_FROM" "payload/$1" ;; esac
+    fi
+}
+# from_fits: is the source for this device and what is installed? Else the reason in FROM_WHY: system-missing (a
+# zip's system is not on this device; a directory has no system that is), ubuntu-release (the other Ubuntu), kernel
+# (a zip's kernel is not the one this device uses: the system and the kernel of one release go together), device
+# (its kernel does not run on this model).
+from_fits() {
+    if [ "$FROM_KIND" = dir ]; then
+        for _fo in $(installed_systems); do
+            [ -z "$(sums_want "$FROM_TMP/SHA256SUMS" "$(rootfs_asset "$_fo")")" ] || return 0
+        done
+        FROM_WHY=system-missing; return 1
+    fi
+    [ -d "$DISK/$FROM_OS" ] || { FROM_WHY=system-missing; return 1; }
+    [ "$FROM_OS" != ubuntu ] || [ "$(rootfs_asset ubuntu)" = "$FROM_ROOTFS" ] || { FROM_WHY=ubuntu-release; return 1; }
+    [ "$FROM_KERNEL" = "$(kernel_choice)" ] || { FROM_WHY=kernel; return 1; }
+    _fd=$(from_member "$FROM_KASSET" | untar -xzOf - ./devices 2>/dev/null)
+    _fd=$(echo $_fd)
+    # (a bundle from before ./devices is the F50's, as bundle_runs_here has it)
+    if [ -z "$_fd" ]; then [ "$(this_device)" = f50 ] || { FROM_WHY=device; return 1; }
+    else case " $_fd " in *" $(this_device) "*) ;; *) FROM_WHY=device; return 1 ;; esac; fi
+}
+# from_installed: the release the source would replace (a zip: its system's; a directory: the image's)
+from_installed() {
+    if [ "$FROM_KIND" = zip ]; then cat "$DISK/$FROM_OS$VERSION_FILE" 2>/dev/null || echo unknown; else installed_version; fi
+}
+# apply_options ARG...: the options of an offline source taken out of apply's arguments; what is left (systems,
+# --no-reinstall) in APPLY_ARGS
+apply_options() {
+    APPLY_ARGS= _ao=
+    for _aa in "$@"; do
+        if [ -n "$_ao" ]; then MU300_FROM=$_aa; _ao=; continue; fi
+        case $_aa in
+            --from) _ao=1 ;;
+            --unsigned) MU300_ALLOW_UNSIGNED=1 ;;
+            --downgrade) MU300_ALLOW_DOWNGRADE=1 ;;
+            # (a system's name or an option: one plain word, so that the list can be passed on as words)
+            ''|*[!A-Za-z0-9._-]*) die "unknown system '$_aa'" ;;
+            *) APPLY_ARGS="$APPLY_ARGS $_aa" ;;
+        esac
+    done
+    [ -z "$_ao" ] || die "usage: mu300-update apply --from FILE|DIR [--unsigned] [--downgrade]"
+}
+# from_begin: apply --from, before anything else: the source is a release for this device, signed (or taken with
+# --unsigned), and not older than what is installed (or taken with --downgrade). Then apply runs as it always
+# does, with fetch_verified reading from the source.
+from_begin() {
+    from_open || { _fw=$FROM_WHY; from_close
+        die "$MU300_FROM is not a release of this project ($_fw): a Magisk zip of a release (mu300-magisk-TAG-SYSTEM-kKERNEL.zip), or a directory with the release's files and their SHA256SUMS"; }
+    from_fits || {
+        case $FROM_WHY in
+            system-missing) _fw="its system${FROM_OS:+ ($FROM_OS)} is not installed on this device" ;;
+            ubuntu-release) _fw="it is Ubuntu $FROM_UBUNTU, and this device has the other release" ;;
+            kernel) _fw="it carries kernel $FROM_KERNEL, and this device uses $(kernel_choice): take the zip for k$(kernel_choice), or change the kernel first" ;;
+            *) _fw="its kernel does not run on the $(this_device)" ;;
+        esac
+        from_close; die "$MU300_FROM is not for this device: $_fw. Nothing was changed"
+    }
+    if newer "$(from_installed)" "$FROM_TAG" && [ -z "${MU300_ALLOW_DOWNGRADE:-}" ]; then
+        _fi=$(from_installed); from_close
+        die "$MU300_FROM is $FROM_TAG, older than what is installed ($_fi): not used (--downgrade takes it anyway)"
+    fi
+    sums_verdict "$FROM_TAG" "$(sig_state "$FROM_TMP/SHA256SUMS" "$FROM_TMP/SHA256SUMS.sig")" "$MU300_FROM" ||
+        { from_close; die "nothing was changed (--unsigned takes a file that is not signed; never one whose signature is wrong)"; }
+    FROM_ONLY=$FROM_OS
+    MU300_RELEASE=$FROM_TAG
+    export MU300_FROM MU300_RELEASE
+    [ -z "${MU300_ALLOW_UNSIGNED:-}" ] || export MU300_ALLOW_UNSIGNED
+    [ -z "${MU300_ALLOW_DOWNGRADE:-}" ] || export MU300_ALLOW_DOWNGRADE
+}
+# from_verified TAG ASSET: fetch_verified's work from the source. 2 when the source does not have the file (as a
+# release that does not carry it), 1 when what it has does not match.
+from_verified() {
+    from_open || { echo "$MU300_FROM is not a release ($FROM_WHY)" >&2; return 1; }
+    mkdir -p "$STAGE"
+    cat "$FROM_TMP/SHA256SUMS" > "$STAGE/SHA256SUMS"; echo "$1" > "$STAGE/SHA256SUMS.tag"
+    want=$(sums_want "$STAGE/SHA256SUMS" "$2")
+    [ -n "$want" ] || { echo "$2 is not part of $MU300_FROM" >&2; return 2; }
+    [ -s "$STAGE/$2" ] && [ "$(sha_of "$STAGE/$2")" = "$want" ] && return 0
+    from_member "$2" > "$STAGE/$2" && [ -s "$STAGE/$2" ] || { rm -f "${STAGE:?}/${2:?}"; echo "$2 is not in $MU300_FROM" >&2; return 2; }
+    [ "$(sha_of "$STAGE/$2")" = "$want" ] && return 0
+    rm -f "${STAGE:?}/${2:?}"
+    echo "$2 in $MU300_FROM does not match its checksum" >&2
+    return 1
+}
+# from_handover FILE: may apply continue with the release's own updater FILE? Always when online; from a file only
+# with one that knows what a file is (an older one would go to GitHub for the release instead). What this run read of
+# the source is let go of: the next one reads it again.
+from_handover() {
+    [ -n "${MU300_FROM:-}" ] || return 0
+    grep -q '^from_verified() {' "$1" 2>/dev/null || return 1
+    from_close
+}
+
+# inspect FILE|DIR: what the source is, as JSON, for a page to show before anything is applied
+inspect_json() {
+    MU300_FROM=$1
+    [ -n "$MU300_FROM" ] || { echo '{"ok":0,"why":"not-found"}'; return 1; }
+    FROM_SCRATCH=$(mktemp -d 2>/dev/null) || { echo '{"ok":0,"why":"not-found"}'; return 1; }
+    if ! from_open; then printf '{"ok":0,"why":"%s"}\n' "$FROM_WHY"; from_close; return 1; fi
+    _is=; [ ! -f "$MU300_FROM" ] || _is=$(sha_of "$MU300_FROM")
+    _iz=; [ ! -f "$MU300_FROM" ] || _iz=$(fsize "$MU300_FROM")
+    _if=1 _iw=
+    from_fits || { _if=0; _iw=$FROM_WHY; }
+    # the files it would install are whole: each one the source has is hashed against its checksum
+    if [ "$FROM_KIND" = zip ]; then _il="$FROM_ROOTFS $FROM_KASSET"
+    else _il="$(for _fo in $(installed_systems); do rootfs_asset "$_fo"; done) $(kernel_asset)"; fi
+    for _ia in $_il; do
+        _iwant=$(sums_want "$FROM_TMP/SHA256SUMS" "$_ia")
+        [ -n "$_iwant" ] || { [ "$FROM_KIND" = dir ] && continue; _if=0; _iw=checksum; break; }
+        [ "$FROM_KIND" != dir ] || [ -f "$MU300_FROM/$_ia" ] || continue
+        _ihave=$(from_member "$_ia" | sha256sum | cut -d' ' -f1)
+        [ "$_ihave" = "$_iwant" ] || { _if=0; _iw=checksum; break; }
+    done
+    _ig=$(sig_state "$FROM_TMP/SHA256SUMS" "$FROM_TMP/SHA256SUMS.sig")
+    [ "$_ig" != bad ] || { _if=0; _iw=signature; }
+    _ii=$(from_installed)
+    printf '{"ok":1,"kind":"%s","sha256":%s,"size":%s,"tag":"%s","system":%s,"ubuntu":%s,"kernel":%s,"signature":"%s","installed":%s,"downgrade":%d,"same":%d,"fits":%d,"why":%s}\n' \
+        "$FROM_KIND" "$(jstr "$_is")" "$(jnum "$_iz")" "$(jv "$FROM_TAG")" "$(jstr "$FROM_OS")" "$(jstr "$FROM_UBUNTU")" "$(jstr "$FROM_KERNEL")" \
+        "$_ig" "$(jstr "$_ii")" "$(newer "$_ii" "$FROM_TAG" && echo 1 || echo 0)" "$([ "$_ii" = "$FROM_TAG" ] && echo 1 || echo 0)" "$_if" "$(jstr "$_iw")"
+    from_close
+}
+
+# lock_holder: the pid of the mu300-update that holds the lock now, or nothing. Only looks (the lock itself is
+# never tried: a probe that held it for a moment could turn a real run away).
+lock_holder() {
+    for _lf in "$LOCK/lock" "$LOCK/held/pid"; do
+        [ -f "$_lf" ] && [ ! -L "$_lf" ] || continue
+        _lh=$(lock_pid "$_lf")
+        [ -n "$_lh" ] && [ "$_lh" != "$$" ] && update_alive "$_lh" || continue
+        # (the pid may be another program's by now, or a mu300-update that only looks)
+        case " $({ tr '\0' ' ' < "/proc/$_lh/cmdline"; } 2>/dev/null) " in
+            *" status "*|*" releases "*|*" inspect "*|*" notice "*|*" check "*|*" version "*) continue ;;
+        esac
+        echo "$_lh"; return 0
+    done
+}
+# size_kb DIR: its size in KiB, only when asked for (status --sizes: a whole system takes seconds to add up)
+size_kb() { if [ -n "$STATUS_SIZES" ]; then jnum "$(du -sk "$1" 2>/dev/null | awk '{print $1}')"; else printf null; fi; }
+status_json() {
+    STATUS_SIZES=; [ "${1:-}" != --sizes ] || STATUS_SIZES=1
+    _run=$(running_os)
+    printf '{"ok":1,"device":"%s","installed":"%s","running":"%s","restart_pending":%d,' "$(jv "$(this_device 2>/dev/null)")" \
+        "$(jv "$(installed_version)")" "$(jv "$_run")" "$(is_root "$DISK/$_run.old" && echo 1 || echo 0)"
+    printf '"systems":['
+    _sep=
+    for _os in $(installed_systems); do
+        printf '%s{"name":"%s","release":"%s","ubuntu":%s,"since":%s,"previous":' "$_sep" "$_os" \
+            "$(jv "$(cat "$DISK/$_os$VERSION_FILE" 2>/dev/null || echo unknown)")" \
+            "$([ "$_os" = ubuntu ] && jstr "$(sed -n 's/^VERSION_ID="\(.*\)"/\1/p' "$DISK/ubuntu/etc/os-release" 2>/dev/null)" || printf null)" \
+            "$(mtime "$DISK/$_os$VERSION_FILE")"
+        if [ -d "$DISK/$_os.old" ]; then
+            printf '{"release":"%s","kb":%s,"running":%d}' "$(jv "$(cat "$DISK/$_os.old$VERSION_FILE" 2>/dev/null || echo unknown)")" \
+                "$(size_kb "$DISK/$_os.old")" "$(is_root "$DISK/$_os.old" && echo 1 || echo 0)"
+        else printf null; fi
+        printf '}'
+        _sep=,
+    done
+    printf '],"kernel":{"running":"%s","choice":"%s","choices":[' "$(jv "$(uname -r)")" "$(kernel_choice)"
+    _sep=
+    for _k in $KERNELS; do
+        # (the one refusal known before the download: Ubuntu 26.04 does not run on 5.4, see kernel_cmd)
+        _why=; [ "$_k" != 5.4 ] || [ "$(ubuntu_release)" != 26.04 ] || _why=ubuntu-26.04
+        printf '%s{"name":"%s","ok":%d,"why":%s}' "$_sep" "$_k" "$([ -z "$_why" ] && echo 1 || echo 0)" "$(jstr "$_why")"
+        _sep=,
+    done
+    printf '],"boot":%s,"boot_kernel":%s,"slot":"%s","previous":' "$(jstr "$(cat "$BOOTDIR/installed.tag" 2>/dev/null)")" \
+        "$(jstr "$(cat "$BOOTDIR/installed.kernel" 2>/dev/null)")" "$(linux_slot)"
+    if [ -s "$BOOTDIR/prev.body" ]; then
+        _ps=$(cat "$BOOTDIR/prev.slot" 2>/dev/null || echo b)
+        printf '{"release":%s,"kernel":%s,"since":%s,"usable":%d}' "$(jstr "$(cat "$BOOTDIR/prev.tag" 2>/dev/null)")" \
+            "$(jstr "$(cat "$BOOTDIR/prev.kernel" 2>/dev/null)")" "$(mtime "$BOOTDIR/prev.body")" "$([ "$_ps" = "$(linux_slot)" ] && echo 1 || echo 0)"
+    else printf null; fi
+    # the default boot, and how many boots in a row may fail before Android takes over (mu300-next-boot)
+    _db=$(cat "${MU300_DEFAULT_BOOT:-/etc/mu300/default-boot}" 2>/dev/null); [ "$_db" = linux ] || _db=android
+    _at=$(cat "$DISK/.mu300/boot-attempts" 2>/dev/null); case $_at in [1-6]) ;; *) _at=5 ;; esac
+    printf '},"boot_default":"%s","boot_attempts":%s,"boot_locked":%d,' "$_db" "$_at" "$([ -f "$DISK/.mu300/boot-lock" ] && echo 1 || echo 0)"
+    _n=$(echo $(installed_systems) | wc -w | tr -d ' ')
+    printf '"disk":{"free_kb":%s,"total_kb":%s,"need_one_kb":%s,"need_all_kb":%s},' "$(jnum "$(df -Pk "$DISK" 2>/dev/null | awk 'NR==2 {print $4}')")" \
+        "$(jnum "$(df -Pk "$DISK" 2>/dev/null | awk 'NR==2 {print $2}')")" "$(space_needed 1)" "$(space_needed "$_n")"
+    _lh=$(lock_holder)
+    printf '"lock":{"held":%d,"pid":%s,"command":%s},' "$([ -n "$_lh" ] && echo 1 || echo 0)" "$(jnum "$_lh")" \
+        "$([ -n "$_lh" ] && jstr "$({ tr '\0' ' ' < "/proc/$_lh/cmdline"; } 2>/dev/null | sed 's/ *$//')" || printf null)"
+    # the note of a newer release (notice, at boot and every 6 hours): its tag
+    _nt=$(sed -n 's/^mu300-linux \(v[0-9.]*\) is out .*/\1/p' "$NOTICE" 2>/dev/null | head -n1)
+    tag_ok "$_nt" || _nt=
+    _vt=none; if have usign; then _vt=usign; elif have openssl; then _vt=openssl; fi
+    printf '"notice":%s,"signing":{"key":%d,"tool":"%s"}}\n' "$(jstr "$_nt")" "$([ -s "$RELEASE_PUB" ] && echo 1 || echo 0)" "$_vt"
+}
+
+# releases: the newest release, and the newest pre-release when it is newer (never offered by itself: the page
+# asks). GitHub's list is read line by line - one "key": value a line once every ," and {" is given a line of its
+# own, which the escaped quotes inside a release's notes never are - so no JSON tool is needed (OpenWrt has
+# jsonfilter, Ubuntu has none). What this device would download for each: the root filesystem of every system
+# that is not that release yet, the kernel of its choice, the installed extras, the updater.
+# release_json TAG: one release of $RELEASES (lines "R TAG PRE DRAFT PUBLISHED TITLE", then "A TAG SIZE NAME" for
+# each of its files) as JSON
+release_json() {
+    _rl=$(printf '%s\n' "$RELEASES" | awk -v t="$1" '$1 == "R" && $2 == t { print; exit }')
+    _want="$(kernel_asset) mu300-update"
+    _ns=0
+    for _os in $(installed_systems); do
+        [ "$(cat "$DISK/$_os$VERSION_FILE" 2>/dev/null)" = "$1" ] && continue
+        _want="$_want $(rootfs_asset "$_os")"; _ns=$((_ns + 1))
+    done
+    for _x in $(extras_to_fetch "$1"); do _want="$_want $(extra_asset "$_x")"; done
+    printf '{"tag":"%s","title":%s,"published":%s,"url":"https://github.com/%s/releases/tag/%s","signed":%d,"systems":%d,"need_kb":%s,"files":[' \
+        "$1" "$(jstr "$(printf '%s\n' "$_rl" | cut -d' ' -f6-)")" "$(jstr "$(printf '%s\n' "$_rl" | awk '{print $5}' | cut -c1-10)")" \
+        "$(jv "$REPO")" "$1" "$(printf '%s\n' "$RELEASES" | awk -v t="$1" '$1 == "A" && $2 == t && $4 == "SHA256SUMS.sig" { f = 1 } END { print f + 0 }')" \
+        "$_ns" "$(space_needed "$_ns")"
+    _sep= _tot=0
+    for _f in $_want; do
+        _sz=$(printf '%s\n' "$RELEASES" | awk -v t="$1" -v f="$_f" '$1 == "A" && $2 == t && $4 == f { print $3; exit }')
+        case $_sz in ''|*[!0-9]*) continue ;; esac
+        printf '%s{"name":"%s","size":%s}' "$_sep" "$(jv "$_f")" "$_sz"
+        _sep=,; _tot=$((_tot + _sz))
+    done
+    printf '],"download":%s}' "$_tot"
+}
+releases_json() {
+    _latest=$(latest_release)
+    _all=$(fetch_stdout "${MU300_API_URL:-https://api.github.com/repos/$REPO}/releases?per_page=10") || _all=
+    if ! tag_ok "$_latest" || [ -z "$_all" ]; then echo '{"ok":0,"why":"offline"}'; return 1; fi
+    RELEASES=$(printf '%s\n' "$_all" | awk '
+        function val(s) { sub(/^[^:]*:[ \t]*/, "", s); sub(/[ \t]*,?[ \t\r]*$/, "", s); gsub(/^"|"$/, "", s); return s }
+        function flush() { if (tag != "") { print "R", tag, pre, draft, pub, title; printf "%s", files } tag = ""; files = "" }
+        function line(s) {
+            if (s ~ /^[ \t]*"tag_name":/) { flush(); tag = val(s); pre = "false"; draft = "false"; pub = "-"; title = ""; inas = 0; an = ""; return }
+            if (tag == "") return
+            if (s ~ /^[ \t]*"assets":/) { inas = 1; return }
+            if (s ~ /^[ \t]*"tarball_url":/) { inas = 0; return }
+            if (s ~ /^[ \t]*"name":/) { if (inas) an = val(s); else if (title == "") title = val(s); return }
+            if (inas && an != "" && s ~ /^[ \t]*"size":/) { files = files "A " tag " " val(s) " " an "\n"; an = ""; return }
+            if (inas) return
+            if (s ~ /^[ \t]*"prerelease":/) pre = val(s)
+            else if (s ~ /^[ \t]*"draft":/) draft = val(s)
+            else if (s ~ /^[ \t]*"published_at":/) pub = val(s)
+        }
+        { gsub(/,"/, ",\n\""); gsub(/\{"/, "{\n\""); n = split($0, L, "\n"); for (i = 1; i <= n; i++) line(L[i]) }
+        END { flush() }')
+    _beta=$(printf '%s\n' "$RELEASES" | awk '$1 == "R" && $3 == "true" && $4 == "false" { print $2 }' | grep -Ex 'v[0-9]{4}\.[0-9]{2}\.[0-9]{2}' | sort | tail -n1)
+    newer "$_beta" "$_latest" || _beta=
+    printf '{"ok":1,"installed":"%s","boot":%s,"latest":%s,"beta":%s}\n' "$(jv "$(installed_version)")" \
+        "$(jstr "$(cat "$BOOTDIR/installed.tag" 2>/dev/null)")" "$(release_json "$_latest")" \
+        "$([ -n "$_beta" ] && release_json "$_beta" || printf null)"
+}
+# progress WHAT: a line for whoever follows this run (MU300_PROGRESS, a file): "file NAME" as a download starts
+progress() { [ -z "${MU300_PROGRESS:-}" ] || printf '%s\n' "$*" >> "$MU300_PROGRESS" 2>/dev/null || :; }
+# ---- for a panel: end
+
 # tests/ source this file for its functions only (MU300_BIN, MU300_DISK: a fake device)
 [ -z "${MU300_LIB:-}" ] || return 0
 
@@ -2023,11 +2488,16 @@ case ${1:-check} in
     apply|boot|kernel|rollback|rollback-boot|clean|accounts)
         lock_take; trap 'keepalive_stop; resume_data; lock_drop' EXIT; trap 'exit 130' INT TERM HUP ;;
 esac
+source_conf
 case ${1:-check} in apply|boot|kernel) keepalive_start ;; esac
 case ${1:-check} in
     check) check ;;
     version) version ;;
-    apply) shift; apply "$@" ;;
+    # (apply_options: --from FILE|DIR, --unsigned, --downgrade, the offline source; the rest is apply's, as words)
+    apply) shift; apply_options "$@"; apply $APPLY_ARGS ;;
+    status) shift; status_json "$@" ;;
+    releases) mounted_disk; releases_json ;;
+    inspect) mounted_disk; inspect_json "${2:-}" ;;
     boot) mounted_disk; t=${MU300_RELEASE:-$(latest_release)}; [ -n "$t" ] || die "could not reach GitHub (is the device online?)"
           boot_update "$t" || exit 1; rm -rf "$STAGE"; [ -n "${BOOT_CHANGED:-}" ] && { printf '\n'; reboot_goes_to_android || printf 'Reboot to start the new kernel.\n'; } ;;
     rollback) shift; rollback "$@" ;;
@@ -2036,6 +2506,6 @@ case ${1:-check} in
     accounts) accounts ;;
     clean) clean ;;
     notice) notice ;;
-    -h|--help|help) sed -n '2,19s/^# \{0,1\}//p' "$0" ;;
-    *) echo "usage: mu300-update check|version|apply [--no-reinstall] [ubuntu|openwrt|openwrt-luci ...]|boot|kernel [5.4|6.18|7.2]|rollback [os]|rollback-boot|clean|notice" >&2; exit 2 ;;
+    -h|--help|help) sed -n '2,23s/^# \{0,1\}//p' "$0" ;;
+    *) echo "usage: mu300-update check|version|apply [--no-reinstall] [ubuntu|openwrt|openwrt-luci ...]|boot|kernel [5.4|6.18|7.2]|rollback [os]|rollback-boot|clean|notice|status|releases|inspect FILE" >&2; exit 2 ;;
 esac

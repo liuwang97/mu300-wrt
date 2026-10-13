@@ -162,9 +162,13 @@ jobs:
       - name: Build logs
         if: failure()
         run: tail -n 60 upstream/out/modules/*.log upstream/out-7.2/modules/*.log 2>/dev/null || true
-      - name: Root filesystems, extras, audit, publish
+      # MU300_RELEASE_KEY: the release key (a usign secret key, see tools/sign-release.sh). With it make-release.sh
+      # signs SHA256SUMS and publishes SHA256SUMS.sig; without it the release is as it always was - unless the tree
+      # has the public key (rootfs/overlay/opt/mu300/lib/release.pub), and then nothing is published unsigned.
+      - name: Root filesystems, extras, audit, sign, publish
         env:
           INPUT_PRERELEASE: ${{ inputs.prerelease }}
+          MU300_RELEASE_KEY: ${{ secrets.MU300_RELEASE_KEY }}
         run: |
           pre=; [ "$INPUT_PRERELEASE" != true ] || pre=--prerelease
           # the build outputs are ignored by git, so the tree is still the commit the release says it is

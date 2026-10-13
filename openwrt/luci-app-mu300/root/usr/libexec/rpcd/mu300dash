@@ -38,6 +38,9 @@
 #   cpu_get, cpu_set profile  the CPU performance profile (unisoc-modem/cpu, mu300-cpu); saving|balanced|performance
 #   packages_get, packages_act op  the packages installed before an update, installed again (unisoc-modem/packages,
 #                     mu300-user-packages); op retry|repair_dns|dismiss
+#   update_get [sizes], update_job, update_act op ...  the System > Update page (unisoc-modem/update, mu300-update):
+#                     what is installed and what is kept, the releases, the one update task and its log; update_act
+#                     starts a check, an update, a rollback, a kernel change, or takes an uploaded release file
 #
 # No call waits for the modem longer than about 17 s, under both the browser's 20 s
 # (LuCI's rpctimeout) and rpcd's 30 s: the AT terminal's wait is capped (AT_LOCK_WAIT
@@ -832,6 +835,40 @@ m_packages_act() {
     reply_obj "$("$PKGA" act "$op" 2>/dev/null)" 'The packages adapter gave no valid reply'
 }
 
+# The Update page: mu300-update through the adapter, which checks every value again and runs the command as a task
+# of its own (an update takes minutes; the page asks update_job after it). Each parameter is a fixed word, a release
+# tag, a size or a SHA-256: nothing typed reaches the adapter.
+UPDA=${MU300_UPDATE_ADAPTER:-$DASH/update}
+UPD_SYS='(ubuntu|openwrt|openwrt-luci)'
+UPD_FLAG='(no_reinstall|unsigned|downgrade)'
+m_update_get() {
+    local sizes
+    inp '@.sizes'; sizes=$V
+    allowed "$sizes" '(0|1)?' || { refuse 'The sizes parameter must be 0 or 1'; return; }
+    [ "$sizes" = 1 ] || sizes=
+    reply_obj "$("$UPDA" get $sizes 2>/dev/null)" 'The update adapter gave no valid reply'
+}
+m_update_job() { reply_obj "$("$UPDA" job 2>/dev/null)" 'The update adapter gave no valid reply'; }
+m_update_act() {
+    local op tag systems kernel sha size flags confirm
+    inp '@.op'; op=$V
+    inp '@.tag'; tag=$V
+    inp '@.systems'; systems=$V
+    inp '@.kernel'; kernel=$V
+    inp '@.sha256'; sha=$V
+    inp '@.size'; size=$V
+    inp '@.flags'; flags=$V
+    inp '@.confirm'; confirm=$V
+    allowed "$op" '(check|apply|upload_begin|upload_done|upload_cancel|apply_file|rollback|rollback_boot|clean|kernel|dismiss)' ||
+        { refuse 'Unknown update operation'; return; }
+    allowed "$tag" '(v[0-9]{4}\.[0-9]{2}\.[0-9]{2})?' && allowed "$systems" "($UPD_SYS( $UPD_SYS){0,2})?" &&
+        allowed "$kernel" '(5\.4|6\.18|7\.2)?' && allowed "$sha" '([0-9a-f]{64})?' && allowed "$size" '([1-9][0-9]{0,9})?' &&
+        allowed "$flags" "($UPD_FLAG( $UPD_FLAG){0,2})?" && allowed "$confirm" '(apply|rollback|clean|kernel)?' ||
+        { refuse 'Invalid update request'; return; }
+    reply_obj "$("$UPDA" act "$op" "$tag" "$systems" "$kernel" "$sha" "$size" "$flags" "$confirm" 2>/dev/null)" \
+        'The update adapter gave no valid reply'
+}
+
 do_list() {
     cat <<EOF
 {
@@ -876,7 +913,11 @@ do_list() {
 	"cpu_get": { },
 	"cpu_set": { "profile": "String" },
 	"packages_get": { },
-	"packages_act": { "op": "String" }
+	"packages_act": { "op": "String" },
+	"update_get": { "sizes": "String" },
+	"update_job": { },
+	"update_act": { "op": "String", "tag": "String", "systems": "String", "kernel": "String", "sha256": "String",
+		"size": "String", "flags": "String", "confirm": "String" }
 }
 EOF
 }
@@ -928,6 +969,7 @@ ops_detail() {
         act)      inp '@.op'; allowed "$V" '[a-z-]{1,16}' && printf '%s\n' "$V" ;;
         lock_set) inp '@.kind'; allowed "$V" '[a-z_]{1,16}' && printf '%s\n' "$V" ;;
         lock_get) inp '@.fresh'; [ "$V" = 1 ] && echo fresh ;;
+        update_act) inp '@.op'; allowed "$V" '[a-z_]{1,16}' && printf '%s\n' "$V" ;;
     esac
 }
 
@@ -1007,7 +1049,7 @@ run_m() {  # run_m LABEL FUNCTION: the method's reply, logged
     # or failed is.
     case $1 in
         # (the send's job logs its own result once it is in; the polls that ask after it are not worth a line each)
-        ops_log|sms_job) return ;;
+        ops_log|sms_job|update_job) return ;;
         sysinfo|status|signal|at_job|at_history|sms_list|sms_show|*_get|usb_net_list)
             [ "$how" != ok ] || [ "$dt" -ge 200 ] || [ -n "$detail" ] || return ;;
     esac
@@ -1065,6 +1107,9 @@ call)
         cpu_set)      run_m cpu_set      m_cpu_set ;;
         packages_get) run_m packages_get m_packages_get ;;
         packages_act) run_m packages_act m_packages_act ;;
+        update_get)   run_m update_get   m_update_get ;;
+        update_job)   run_m update_job   m_update_job ;;
+        update_act)   run_m update_act   m_update_act ;;
         *)           refuse 'No such method' ;;
     esac
     ;;

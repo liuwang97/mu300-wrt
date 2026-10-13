@@ -391,6 +391,11 @@ CAP_DUALBOOT=0; [ -x /opt/mu300/bin/mu300-next-boot ] && CAP_DUALBOOT=1
 BOOT_LOCK=0
 for _d in /mnt/mu300-disk ""; do [ -f "$_d/.mu300/boot-lock" ] && { BOOT_LOCK=1; break; }; done
 
+# A newer release: the note mu300-update keeps (notice, at boot and every 6 hours; this only reads it). Its tag, for
+# the home page's link to System > Update.
+UPDATE_TAG=$(sed -n 's/^mu300-linux \(v[0-9.]*\) is out .*/\1/p' "${MU300_NOTICE:-/run/mu300/update-available}" 2>/dev/null | head -n1)
+case $UPDATE_TAG in v[0-9][0-9][0-9][0-9].[0-9][0-9].[0-9][0-9]) ;; *) UPDATE_TAG= ;; esac
+
 # ------------------------------------------------------------- data usage
 # mu300-traffic's service writes this summary after each of its readings (RAM, once a minute): today and the
 # billing cycle, against the cap. Numbers and fixed words only; anything else is left out.
@@ -428,5 +433,6 @@ printf '"wifi":{"up":%d,"ssid":%s,"channel":%s,"band":%s,"width":%s,"country":%s
 printf '"lan":{"leases":%s,"ip":%s,"list":[%s]},' "$(n_or_null "$LAN_LEASES")" "$(qs "$LAN_IP")" "${LEASES:-}"
 printf '"modem":{"alive":%d,"atd":%d,"data_paused":%d},' "$MODEM_ALIVE" "$ATD_OK" "$DATA_PAUSED"
 printf '"capabilities":{"vpn":%d,"dualboot":%d,"bootlock":%d},' "$CAP_VPN" "$CAP_DUALBOOT" "$BOOT_LOCK"
+printf '"update":%s,' "$(qs "$UPDATE_TAG")"
 printf '"conns":%s,' "$(n_or_null "$CONNS")"
 printf '"vpn":{"enabled":%d,"engine":%s,"up":%d,"orphaned":%d}}\n' "$VPN_ENABLED" "$(qs "$VPN_ENGINE")" "$VPN_UP" "$VPN_ORPHANED"
