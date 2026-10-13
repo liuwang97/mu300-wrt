@@ -417,6 +417,19 @@ class Rules(unittest.TestCase):
         # the fuel gauge asks the charger by the name the driver registers
         p10 = (TOP / 'upstream' / 'patches' / '0010-power-sc27xx-fuel-gauge-status-from-bq256xx.patch').read_text()
         self.assertIn('+\t"bq256xx-charger",', p10)
+        # the U30 Air's other charger (issue #102): when nothing answers at the node's address, ZTE's driver goes on
+        # at 0x1a (an SGM41513), and so does this one, with that chip's charge and termination current steps; a
+        # charger that answers at the node's address takes none of it
+        p15 = (TOP / 'upstream' / 'patches' / '0015-power-bq256xx-SGM41513-at-0x1a.patch').read_text()
+        for s in ('#define SGM41513_I2C_ADDR\t\t0x1a', 'if (part < 0 && client->addr != SGM41513_I2C_ADDR) {',
+                  'devm_i2c_new_dummy_device(dev, client->adapter, SGM41513_I2C_ADDR)',
+                  'bq->regmap = devm_regmap_init_i2c(chip,', 'no charger: %d (and %d at 0x%02x)',
+                  '{ 0, 40000, 130000, 300000, 540000, 1020000, 1500000, 2460000 }',
+                  '{ 5000, 10000, 20000, 30000, 60000, 60000, 120000, 120000 }',
+                  '80000, 100000, 120000, 140000, 160000, 180000, 200000, 240000,',
+                  'info->bq256xx_set_ichg = sgm41513_set_ichg_curr;', 'info->bq256xx_set_iterm = sgm41513_set_term_curr;',
+                  'info->bq256xx_set_iprechg = sgm41513_set_prechrg_curr;'):
+            self.assertIn(s, p15)
         # the PMIC's charger detection reads the UMP9620's own register (0x239c), not the SC2730's (0x1b9c), and a
         # tree prepared with the old one is corrected
         self.assertIn(r"#define SPRD_UMP9620_CHG_DET\t\t0x239c", port)
