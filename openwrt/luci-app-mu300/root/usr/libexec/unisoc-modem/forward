@@ -1,9 +1,11 @@
 #!/bin/sh
-# SMS forwarding adapter: the panel's Cellular > SMS forwarding page (mu300dash forward_get, forward_set, forward_test)
-# on mu300-sms-forward and its configuration. Every reply is one JSON object.
+# SMS forwarding adapter: the panel's Cellular > SMS forwarding page (mu300dash forward_get, forward_set, forward_test,
+# forward_log_clear) on mu300-sms-forward and its configuration. Every reply is one JSON object.
 #   forward get     the settings, with every secret masked, the queue and the delivery log
 #   forward set     the settings, as the page's JSON object on stdin (see below); {"ok":1} or {"ok":0,"error":...}
-#   forward test    a test delivery to every target that is on, in the background; its result goes to the log
+#   forward test    a test delivery to every target that is on, in the background; its result goes to the log;
+#                   refused when one was started under 5 s ago (mu300-sms-forward test-gate)
+#   forward logclear  the delivery log emptied
 #
 # The secrets (webhook URL and headers, Telegram token, mail password) never come back: get says whether each is set,
 # with a hint where one is harmless (the URL's host, the header names, the bot's number). In set, an empty secret keeps
@@ -13,6 +15,12 @@
 # The webhook's own body (webhook_body, 2000 bytes at most) is a template like the message template, not a secret: it
 # comes back so that it can be edited, an empty one means the standard body, and the page says to keep secrets in the
 # address or a header. It is only ever stored and copied here; mu300-sms-forward fills it in.
+#
+# webhook_expect is what the service's answer must have for a 2xx to count as delivered: KEY=VALUE, a top-level key
+# of a JSON answer and its value (errcode=0). KEY is a name (a letter or _, then letters, digits, _; 32 at most),
+# VALUE a whole number (16 digits at most) or 1 to 16 lowercase letters; empty: any 2xx counts. Not a secret either.
+# mu300-sms-forward compares it as text and checks its form again. The form is as narrow as a status needs, because
+# whoever may set the address and this rule learns from the log whether the answer has that value.
 set -u
 export PATH="$PATH:/opt/mu300/bin:/usr/sbin:/sbin"
 LIB=${0%/*}/../../share/unisoc-modem/lib.sh
@@ -87,7 +95,7 @@ do_get() {
     printf '"webhook":%s,"webhook_url_set":%s,"webhook_url_hint":%s,"webhook_format":%s,"webhook_headers_set":%s,"webhook_header_names":%s,' \
         "$(b "$(saved webhook)")" "$(set01 "$_url")" "$(json_str "$_h_url")" "$(json_str "$(saved webhook_format)")" \
         "$(set01 "$_names")" "$(json_str "$_names")"
-    printf '"webhook_body":%s,' "$(json_str "$_body")"
+    printf '"webhook_body":%s,"webhook_expect":%s,' "$(json_str "$_body")" "$(json_str "$(saved webhook_expect)")"
     printf '"telegram":%s,"telegram_token_set":%s,"telegram_token_hint":%s,"telegram_chat":%s,' \
         "$(b "$(saved telegram)")" "$(set01 "$_tok")" "$(json_str "$_h_tok")" "$(json_str "$(saved telegram_chat)")"
     printf '"email_available":%s,"email":%s,"email_host":%s,"email_port":%s,"email_tls":%s,"email_user":%s,"email_password_set":%s,"email_from":%s,"email_to":%s,' \
@@ -149,6 +157,9 @@ do_set() {
     like "$fmt" '(json|form|text)' || error 'Invalid forwarding setting'
     inp webhook_body; body=$V
     text_ok "$body" && [ "$(bytes "$body")" -le 2000 ] || error 'The webhook body is too long or contains a control character'
+    inp webhook_expect; exp=$V
+    [ -z "$exp" ] || like "$exp" '[A-Za-z_][A-Za-z0-9_]{0,31}=(-?[0-9]{1,16}|[a-z]{1,16})' ||
+        error 'The answer check must be key=value, like errcode=0 or ok=true (the value a whole number or lowercase letters, 16 at most)'
     list webhook_headers 512 '[A-Za-z0-9-]{1,64}: ?[ -~]*' || error 'Invalid header (one "Name: value" per line; Host, Content-Type, Content-Length, Transfer-Encoding and Connection are set by the device)'
     hdrs=$V
     if [ -n "$hdrs" ]; then
@@ -214,6 +225,7 @@ do_set() {
             printf '%s' "$kw" | sed 's/^/keyword=/'
             printf 'webhook=%s\nwebhook_url=%s\nwebhook_format=%s\n' "$wh" "$url" "$fmt"
             printf 'webhook_body=%s\n' "$(esc_tpl "$body")"
+            printf 'webhook_expect=%s\n' "$exp"
             printf '%s' "$hdrs" | sed 's/^/webhook_header=/'
             printf 'telegram=%s\ntelegram_token=%s\ntelegram_chat=%s\n' "$tg" "$tok" "$chat"
             printf 'email=%s\nemail_host=%s\nemail_port=%s\nemail_tls=%s\nemail_user=%s\nemail_password=%s\n' \
@@ -228,6 +240,7 @@ do_set() {
 
 do_test() {
     [ -x "$FWD" ] || error 'SMS forwarding is not installed'
+    "$FWD" test-gate >/dev/null 2>&1 || error 'A test was started a moment ago; wait a few seconds'
     if command -v setsid >/dev/null 2>&1; then
         setsid "$FWD" test </dev/null >/dev/null 2>&1 &
     else
@@ -236,9 +249,16 @@ do_test() {
     echo '{"ok":1,"started":1}'
 }
 
+do_logclear() {
+    [ -x "$FWD" ] || error 'SMS forwarding is not installed'
+    "$FWD" log-clear >/dev/null 2>&1 || error 'The delivery log could not be cleared'
+    echo '{"ok":1}'
+}
+
 case ${1:-} in
     get) do_get ;;
     set) do_set ;;
     test) do_test ;;
+    logclear) do_logclear ;;
     *) error 'Unknown forwarding operation' ;;
 esac
