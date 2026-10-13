@@ -775,9 +775,162 @@ class Pool(ShellTest):
             self.assertFalse((self.pool / 'next_id.part').exists())
 
     @staticmethod
-    def part(ref, total, n, text):
-        ud = bytes([5, 0, 3, ref, total, n]).hex().upper() + text.encode('utf-16-be').hex().upper()
-        return f'00440B911346610089F6000820806291731448{len(ud) // 2:02X}{ud}'
+    def part(ref, total, n, text, at='2002-08-26 19:37:41', header=None):
+        """Part N of TOTAL of the long message REF from +31641600986, stamped AT by the service centre (UCS-2);
+        HEADER: the user data header's bytes in place of the concatenation element."""
+        udh = bytes([5, 0, 3, ref, total, n] if header is None else header)
+        ud = udh.hex().upper() + text.encode('utf-16-be').hex().upper()
+        scts = ''.join(d[1] + d[0] for d in re.findall('[0-9]{2}', at[2:])) + '48'
+        return f'00440B911346610089F60008{scts}{len(ud) // 2:02X}{ud}'
+
+    # ------------------------------------------------------------------ a reference number used again (FINDINGS 63)
+    def test_a_second_message_under_a_waiting_reference_is_not_mixed_into_it(self):
+        # part 1 of 3 of an old message still waits on the SIM; an hour later the same sender sends a two-part and a
+        # three-part message under the same reference number
+        old = self.part(0x42, 3, 1, 'old ', at='2026-10-13 08:00:00')
+        a1, a2 = (self.part(0x42, 2, 1, 'new ', at='2026-10-13 09:00:01'),
+                  self.part(0x42, 2, 2, 'two', at='2026-10-13 09:00:02'))
+        b3, b1, b2 = (self.part(0x42, 3, 3, 'three', at='2026-10-13 09:30:02'),
+                      self.part(0x42, 3, 1, 'one ', at='2026-10-13 09:30:00'),
+                      self.part(0x42, 3, 2, 'two ', at='2026-10-13 09:30:01'))
+        slots = ((1, old), (2, a1), (3, a2), (4, b3), (5, b1), (6, b2))
+        for shell in self.each_shell():
+            self.fresh()
+            self.answer('CMGL4', ''.join(f'+CMGL: {n},0,,30\n{pdu}\n' for n, pdu in slots) + 'OK\n')
+            for n, pdu in slots:
+                self.cmgr(n, pdu)
+            r = self.run_sms(shell, 'sync')
+            self.assertIn('sync: 2 new, 2 on the SIM, 2 in the pool, 1 waiting for its other parts, 5 moved', r.stdout)
+            got = sorted((h['scts'], h['sim_index'], body) for h, body in self.msgs().values())
+            self.assertEqual(got, [('2026-10-13 09:00:01', '2,3', 'new two\n'),
+                                   ('2026-10-13 09:30:00', '4,5,6', 'one two three\n')])
+            self.assertEqual(sorted(self.cmgd()), [f'AT+CMGD={n}' for n in (2, 3, 4, 5, 6)])   # the old part stays
+            self.assertEqual((self.pool / 'partial').read_text().split('\t')[0],
+                             'multi:+31641600986:66:3@2026-10-13 08:00:00')
+
+    def test_a_later_message_under_the_reference_of_one_pooled_incomplete_waits_and_joins(self):
+        first = self.part(0x43, 2, 1, 'the start', at='2026-10-12 10:00:00')
+        late = self.part(0x43, 2, 2, ' the end', at='2026-10-12 10:00:03')
+        n1, n2 = (self.part(0x43, 2, 1, 'another ', at='2026-10-13 10:00:00'),
+                  self.part(0x43, 2, 2, 'message', at='2026-10-13 10:00:01'))
+        for shell in self.each_shell():
+            self.fresh()
+            # pooled incomplete (no wait at all)
+            self.run_sms(shell, 'import-pdu', self.spooled(first, 'cmt-1.a.ready'), MU300_SMS_PARTIAL_WAIT=0)
+            [(h, body)] = self.msgs().values()
+            self.assertEqual((h['incomplete'], body), ('1/2', 'the start[...]\n'))
+            # the rest of that message, late: at once, as before
+            r = self.run_sms(shell, 'import-pdu', self.spooled(late, 'cmt-2.a.ready'))
+            self.assertIn('import: 1 new, 2 in the pool', r.stdout)
+            self.assertNotIn('waiting', r.stdout)
+            # the next day, the same reference number: a message of its own, which waits for its second part
+            r = self.run_sms(shell, 'import-pdu', self.spooled(n1, 'cmt-3.a.ready'))
+            self.assertIn('import: 0 new, 2 in the pool, 1 waiting for its other parts', r.stdout)
+            r = self.run_sms(shell, 'import-pdu', self.spooled(n2, 'cmt-4.a.ready'))
+            self.assertIn('import: 1 new, 3 in the pool', r.stdout)
+            bodies = [body for _, body in self.msgs().values()]
+            self.assertEqual(bodies, ['the start[...]\n', '[...] the end\n', 'another message\n'])
+            self.assertNotIn('incomplete', self.msgs()['000003'][0])
+            self.assertEqual(self.parts(), [])
+            self.assertFalse((self.pool / 'partial').exists())
+
+    def test_two_messages_of_one_reference_and_second_stay_two(self):
+        # a sender that numbers every long message 0 and sends two in one second: a part number that is taken, with
+        # another text, starts the other message
+        a1, a2 = self.part(0, 2, 1, 'Dear A, '), self.part(0, 2, 2, 'your code is 1')
+        b1, b2 = self.part(0, 2, 1, 'Dear B, '), self.part(0, 2, 2, 'your code is 2')
+        for shell in self.each_shell():
+            self.fresh()
+            for i, pdu in enumerate((a1, b1, a2, b2, a2)):          # the last one a redelivery
+                r = self.run_sms(shell, 'import-pdu', self.spooled(pdu, f'cmt-{i}.a.ready'))
+                self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(sorted(body for _, body in self.msgs().values()),
+                             ['Dear A, your code is 1\n', 'Dear B, your code is 2\n'])
+            self.assertEqual(self.parts(), [])
+
+    def test_a_part_delivered_again_is_known_as_part_of_a_message_the_pool_has(self):
+        # the acknowledgement of the last part did not reach the network: mu300-smsd imports the file once more, and
+        # the network delivers the part again later
+        p1, p2 = self.part(0x47, 2, 1, 'hello'), self.part(0x47, 2, 2, ' world')
+        for shell in self.each_shell():
+            self.fresh()
+            self.answer('CMGL4', 'OK\n')
+            self.run_sms(shell, 'import-pdu', self.spooled(p1, 'cmt-1.a.ready'))
+            last = self.spooled(p2, 'cmt-2.a.ready')
+            self.run_sms(shell, 'import-pdu', last)
+            [(h, body)] = self.msgs().values()
+            self.assertEqual(body, 'hello world\n')
+            self.assertRegex(h['part_ids'], r'^[0-9a-f]{32} [0-9a-f]{32}$|^[0-9]+ [0-9]+$')
+            for again in (last, self.spooled(p1, 'cmt-3.a.ready')):
+                r = self.run_sms(shell, 'import-pdu', again)
+                self.assertEqual((r.returncode, r.stdout.strip()), (0, 'import: 0 new, 1 in the pool'), r.stderr)
+                self.assertEqual((len(self.msgs()), self.parts()), (1, []))
+            self.assertFalse((self.pool / 'partial').exists())
+            # on the SIM (direct delivery refused): the slot is freed
+            self.answer('CMGL4', f'+CMGL: 6,0,,30\n{p2}\nOK\n')
+            self.cmgr(6, p2)
+            r = self.run_sms(shell, 'sync')
+            self.assertIn('sync: 0 new, 0 on the SIM, 1 in the pool, 1 moved off the SIM', r.stdout)
+            # deleted from the pool, and a part comes again before the next sync: it stays deleted
+            self.answer('CMGL4', 'OK\n')
+            self.run_sms(shell, 'delete', '1')
+            r = self.run_sms(shell, 'import-pdu', self.spooled(p2, 'cmt-4.a.ready'))
+            self.assertEqual((r.returncode, len(self.msgs()), self.parts()), (0, 0, []), r.stderr)
+            # a message pooled incomplete knows its parts too
+            self.fresh()
+            self.run_sms(shell, 'import-pdu', self.spooled(p2, 'cmt-5.a.ready'), MU300_SMS_PARTIAL_WAIT=0)
+            r = self.run_sms(shell, 'import-pdu', self.spooled(p2, 'cmt-6.a.ready'))
+            self.assertEqual((r.stdout.strip(), len(self.msgs()), self.parts()), ('import: 0 new, 1 in the pool', 1, []))
+
+    def test_a_waiting_message_keeps_its_key_and_its_first_seen_time(self):
+        # part 2 comes first; part 1, stamped a second earlier, must not start the hour over
+        p2, p1 = (self.part(0x46, 3, 2, 'b', at='2026-10-13 10:00:01'),
+                  self.part(0x46, 3, 1, 'a', at='2026-10-13 10:00:00'))
+        for shell in self.each_shell():
+            self.fresh()
+            self.run_sms(shell, 'import-pdu', self.spooled(p2, 'cmt-1.a.ready'))
+            key, first, unread = (self.pool / 'partial').read_text().rstrip('\n').split('\t')
+            self.assertEqual(key, 'multi:+31641600986:70:3@2026-10-13 10:00:01')
+            (self.pool / 'partial').write_text(f'{key}\t{int(first) - 1800}\t{unread}\n')
+            self.run_sms(shell, 'import-pdu', self.spooled(p1, 'cmt-2.a.ready'))
+            self.assertEqual((self.pool / 'partial').read_text(), f'{key}\t{int(first) - 1800}\t{unread}\n')
+            # and the hour ends when it would have
+            (self.pool / 'partial').write_text(f'{key}\t{int(first) - 3600}\t{unread}\n')
+            self.answer('CMGL4', 'OK\n')
+            r = self.run_sms(shell, 'sync')
+            self.assertIn('sync: 1 new', r.stdout)
+            [(h, body)] = self.msgs().values()
+            self.assertEqual((h['incomplete'], h['scts'], body), ('2/3', '2026-10-13 10:00:00', 'ab[...]\n'))
+
+    def test_the_waiting_state_of_the_version_before_is_understood(self):
+        # $POOL/partial as it was written before the key carried a time: the message has waited its hour
+        p1 = self.part(0x43, 3, 1, 'first ')
+        for shell in self.each_shell():
+            self.fresh()
+            self.run_sms(shell, 'list')                             # makes the pool
+            (self.pool / 'partial').write_text(f'multi:+31641600986:67:3\t{int(time.time()) - 3600}\t1\n')
+            self.answer('CMGL4', f'+CMGL: 4,1,,30\n{p1}\nOK\n')
+            self.cmgr(4, p1)
+            r = self.run_sms(shell, 'sync')
+            self.assertIn('sync: 1 new, 0 on the SIM, 1 in the pool, 1 moved off the SIM', r.stdout)
+            [(h, body)] = self.msgs().values()
+            self.assertEqual((h['incomplete'], h['status'], body), ('1/3', 'unread', 'first [...][...]\n'))
+
+    def test_a_concatenation_header_that_says_nothing_usable_is_a_message_of_its_own(self):
+        # part 0 of 2, part 3 of 2, no parts at all, an element of the wrong length, one cut off by the header's
+        # end: none can ever be made whole, so none waits; the text is shown
+        cases = {'zero': [5, 0, 3, 9, 2, 0], 'beyond': [5, 0, 3, 9, 2, 3], 'none': [5, 0, 3, 9, 0, 1],
+                 'short': [4, 0, 2, 9, 2], 'cut': [4, 0, 3, 9, 2], 'wide': [6, 8, 4, 0, 9, 2, 3]}
+        for shell in self.each_shell():
+            self.fresh()
+            for i, (text, header) in enumerate(cases.items()):
+                pdu = self.part(0, 0, 0, text, header=header)
+                r = self.run_sms(shell, 'import-pdu', self.spooled(pdu, f'cmt-{i}.a.ready'))
+                self.assertEqual(r.returncode, 0, (text, r.stderr))
+                self.assertNotIn('waiting', r.stdout, text)
+            self.assertEqual([body for _, body in self.msgs().values()], [t + '\n' for t in cases])
+            self.assertEqual(self.parts(), [])
+            self.assertFalse((self.pool / 'partial').exists())
 
     def test_parts_that_never_complete_are_pooled_after_the_wait(self):
         p1, p3 = self.part(0x43, 3, 1, 'first '), self.part(0x43, 3, 3, ' third')
@@ -790,7 +943,7 @@ class Pool(ShellTest):
             r = self.run_sms(shell, 'sync')
             self.assertIn('sync: 0 new, 0 on the SIM, 0 in the pool, 1 waiting for its other parts, 0 moved', r.stdout)
             key, first, unread = (self.pool / 'partial').read_text().rstrip('\n').split('\t')
-            self.assertEqual((key, unread), ('multi:+31641600986:67:3', '1'))
+            self.assertEqual((key, unread), ('multi:+31641600986:67:3@2002-08-26 19:37:41', '1'))
             # unchanged while it waits: the state file is not written again, though the modem now lists the parts
             # as read (AT+CMGL marks what it lists read)
             self.answer('CMGL4', cmgl.replace('+CMGL: 4,0,', '+CMGL: 4,1,'))
@@ -907,7 +1060,7 @@ class Pool(ShellTest):
             self.assertEqual(self.msgs(), {})
             self.assertEqual(len(self.parts()), 1)
             key, _first, unread = (self.pool / 'partial').read_text().rstrip('\n').split('\t')
-            self.assertEqual((key, unread), ('multi:+31641600986:66:2', '1'))
+            self.assertEqual((key, unread), ('multi:+31641600986:66:2@2002-08-26 19:37:41', '1'))
             r = self.run_sms(shell, 'import-pdu', self.spooled(p2, 'cmt-2.a.ready'))
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertIn('import: 1 new, 1 in the pool', r.stdout)
@@ -1113,6 +1266,106 @@ class Spool(ShellTest):
             self.spool(shell, f'+CMT: ,40\n{PDU_GSM}\n')
             self.script(shell, self.SPOOLER, stdin=f'+CMT: ,56\n{PDU_UCS2}\n', MU300_SMS_POOL=self.pool)
             self.assertEqual(len(self.files()), 2)
+
+
+class Codec(ShellTest):
+    """sms-pdu.awk's group and near modes: which decoded records are the parts of one long message."""
+
+    def awk(self, *args, stdin=''):
+        return subprocess.run(['awk', *args, '-f', str(AWK)], input=stdin, capture_output=True, text=True, timeout=30,
+                              env=self.env(LC_ALL='C'))
+
+    def group(self, rows, known=None):
+        """rows: (sender, timestamp, ref, total, part, text) -> the key of each, in order."""
+        args = ['-v', 'mode=group']
+        if known is not None:
+            (self.tmp / 'known').write_text(known)
+            args += ['-v', f'known={self.tmp / "known"}']
+        text = ''.join(f'{i}\t' + '\t'.join(str(f) for f in row) + '\n' for i, row in enumerate(rows))
+        r = self.awk(*args, stdin=text)
+        self.assertEqual((r.returncode, r.stderr), (0, ''))
+        out = [line.split('\t') for line in r.stdout.splitlines()]
+        self.assertEqual(['\t'.join(f[:7]) + '\n' for f in out], text.splitlines(True))   # the records as they came
+        return [f[7] for f in out]
+
+    def test_near_is_ten_minutes_on_the_calendar(self):
+        import datetime
+        fmt = '%Y-%m-%d %H:%M:%S'
+        for a, seconds in (('2026-10-13 09:41:07', 600), ('2026-10-13 23:55:00', 600), ('2026-12-31 23:59:59', 1),
+                           ('2024-02-28 23:59:00', 600), ('2024-02-29 23:59:00', 600), ('2025-02-28 23:59:00', 600),
+                           ('2000-01-01 00:00:00', 0), ('2099-12-31 23:50:00', 599)):
+            t = datetime.datetime.strptime(a, fmt)
+            for delta, near in ((seconds, True), (-seconds, True), (601, False), (-601, False), (86400, False)):
+                try:
+                    b = (t + datetime.timedelta(seconds=delta)).strftime(fmt)
+                except OverflowError:
+                    continue
+                if not b.startswith('20'):
+                    continue
+                r = self.awk('-v', 'mode=near', '-v', f'a={a}', '-v', f'b={b}')
+                self.assertEqual(r.returncode == 0, near, (a, b, r.stderr))
+        # a timestamp that cannot be read is near everything, and decides nothing
+        for bad in ('', '2026-13-01 00:00:00', '20:6-10-13 09:41:07', 'x'):
+            self.assertEqual(self.awk('-v', 'mode=near', '-v', f'a={bad}', '-v', 'b=2026-10-13 09:41:07').returncode, 0)
+
+    def test_groups(self):
+        t = '2026-10-13 09:00:0'
+        self.assertEqual(self.group([
+            ('A', t + '1', 7, 2, 1, 'a1'), ('B', t + '1', 7, 2, 1, 'b1'),      # another sender
+            ('A', t + '2', '', 1, 1, 'single'),
+            ('A', t + '2', 7, 3, 1, 'c1'),                                      # another total
+            ('A', t + '3', 7, 2, 2, 'a2'), ('A', t + '3', 7, 2, 2, 'a2'),      # the second part, twice
+            ('A', '2026-10-13 09:10:02', 7, 2, 1, 'd1'),                        # ten minutes and a second later
+            ('A', t + '0', 7, 2, 1, 'e1'),                                      # part 1 again, another text
+        ]), ['multi:A:7:2@' + t + '1', 'multi:B:7:2@' + t + '1', 'single:3', 'multi:A:7:3@' + t + '2',
+             'multi:A:7:2@' + t + '1', 'multi:A:7:2@' + t + '1', 'multi:A:7:2@2026-10-13 09:10:02',
+             'multi:A:7:2@' + t + '0'])
+        # one second, one reference, two messages: two keys
+        self.assertEqual(self.group([('A', t + '1', 0, 2, 1, 'x'), ('A', t + '1', 0, 2, 1, 'y')]),
+                         ['multi:A:0:2@' + t + '1', 'multi:A:0:2@' + t + '1#2'])
+        # a sender with every character a key is made of
+        self.assertEqual(self.group([('a:b@c#2', t + '1', 1, 2, 1, 'x')]), ['multi:a:b@c#2:1:2@' + t + '1'])
+
+    def test_a_known_key_is_kept(self):
+        t = '2026-10-13 09:00:0'
+        rows = [('A', t + '5', 7, 2, 2, 'a2'), ('A', t + '1', 7, 2, 1, 'a1')]
+        self.assertEqual(self.group(rows), ['multi:A:7:2@' + t + '1'] * 2)
+        self.assertEqual(self.group(rows, known=f'multi:A:7:2@{t}5\t1700000000\t1\n'), ['multi:A:7:2@' + t + '5'] * 2)
+        # not the key of another time, sender or total; a key of the format before fits any time, once
+        self.assertEqual(self.group(rows, known='multi:A:7:2@2026-10-12 09:00:05\t1\nmulti:B:7:2@' + t + '5\t1\n'
+                                                'multi:A:7:3@' + t + '5\t1\n'), ['multi:A:7:2@' + t + '1'] * 2)
+        two = rows + [('A', '2026-10-14 09:00:00', 7, 2, 1, 'later')]
+        self.assertEqual(self.group(two, known='multi:A:7:2\t1\t1\n'),
+                         ['multi:A:7:2', 'multi:A:7:2', 'multi:A:7:2@2026-10-14 09:00:00'])
+        # a state file that is not there, or holds something else
+        self.assertEqual(self.group(rows, known='garbage\n\n'), ['multi:A:7:2@' + t + '1'] * 2)
+        r = self.awk('-v', 'mode=group', '-v', f'known={self.tmp}/none', stdin='0\tA\t' + t + '1\t7\t2\t1\tx\n')
+        self.assertEqual((r.returncode, r.stdout), (0, '0\tA\t' + t + '1\t7\t2\t1\tx\tmulti:A:7:2@' + t + '1\n'))
+
+
+class Listing(ShellTest):
+    """`sms json` / `sms list` (every system): the SIM keeps messages until they are deleted, so two long messages of
+    one sender under one reference number are both there; each is shown whole (FINDINGS 63)."""
+
+    def setUp(self):
+        super().setUp()
+        self.stub('mu300-at', AT_STUB)
+        (self.tmp / 'at').mkdir()
+        (self.tmp / 'at' / 'CPMS').write_text('+CPMS: 4,50,4,50,4,50\nOK\n')
+
+    def test_two_messages_under_one_reference_are_two(self):
+        part = Pool.part
+        pdus = (part(0x42, 2, 1, 'monday ', at='2026-10-12 08:00:00'), part(0x42, 2, 2, 'morning', at='2026-10-12 08:00:01'),
+                part(0x42, 2, 2, 'evening', at='2026-10-13 20:00:01'), part(0x42, 2, 1, 'tuesday ', at='2026-10-13 20:00:00'))
+        (self.tmp / 'at' / 'CMGL4').write_text(''.join(f'+CMGL: {i + 1},1,,30\n{p}\n' for i, p in enumerate(pdus)) + 'OK\n')
+        for shell in self.each_shell():
+            r = subprocess.run(shell + [str(TOP / 'rootfs/overlay/opt/mu300/bin/sms'), 'json'],
+                               capture_output=True, text=True, timeout=30,
+                               env=self.env(MU300_SMS_AWK=AWK, MU300_SMS_STATE=self.tmp / 'state'))
+            self.assertEqual(r.returncode, 0, r.stderr)
+            got = [(m['index'], m['time'], m['parts'], m['have'], m['text']) for m in json.loads(r.stdout)['messages']]
+            self.assertEqual(got, [([1, 2], '2026-10-12 08:00:00', 2, 2, 'monday morning'),
+                                   ([3, 4], '2026-10-13 20:00:01', 2, 2, 'tuesday evening')])
 
 
 class Delete(ShellTest):
