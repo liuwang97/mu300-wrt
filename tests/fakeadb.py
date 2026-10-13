@@ -319,6 +319,12 @@ def main(argv):
             log('read', argv, line)
             out.write(prop(st, m.group(1)) + '\n')
             return 0
+        if line == 'ls -d /opt/mu300/bin 2>/dev/null' or line.startswith('test -x /opt/mu300/bin/mu300-next-boot && echo mu300'):
+            # how the installers and the window tell our Linux from Android
+            log('read', argv, line)
+            if st['serial'].upper().startswith('MU300LINUX'):
+                out.write('/opt/mu300/bin\n' if line.startswith('ls') else 'mu300\n')
+            return 0
         if line == 'getprop':
             log('read', argv, line)
             out.write(''.join('[%s]: [%s]\n' % kv for kv in sorted(props(st).items())))

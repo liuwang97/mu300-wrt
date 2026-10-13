@@ -225,11 +225,12 @@ Install the VPN module (about 40 MB more to download, 120 MB on the device)? (ye
 Downloading the VPN module	VPN modülü indiriliyor
 extras:         {1}	eklentiler:     {1}
 none	yok
-Allow adb (adb shell, push, pull) to Linux over USB from this computer? Its adb key (~/.android/adbkey.pub) gets a root shell (yes/no)	Bu bilgisayardan USB üzerinden Linux'a adb (adb shell, push, pull) açılsın mı? Bu bilgisayarın adb anahtarı (~/.android/adbkey.pub) root kabuğu alır (evet/hayır)
+adb to Linux over USB is on and lets every computer in: a root shell without a password for anyone who plugs in a cable. Let in only this computer's adb key (~/.android/adbkey.pub) instead? (yes/no)	USB üzerinden Linux'a adb açık ve her bilgisayarı kabul ediyor: kablo takan herkes parolasız root kabuğu alır. Bunun yerine yalnızca bu bilgisayarın adb anahtarı (~/.android/adbkey.pub) kabul edilsin mi? (evet/hayır)
 no adb key of this computer to authorise ({1})	bu bilgisayarın yetkilendirilecek bir adb anahtarı yok ({1})
 adb to Linux:   {1}	Linux'a adb:    {1}
-on, for this computer	açık, bu bilgisayar için
-off	kapalı
+on, only for the adb key of this computer	açık, yalnızca bu bilgisayarın adb anahtarı için
+on, for every computer: a root shell without a password (on the device: mu300-usb adb auth keys, or mu300-usb adb off)	açık, her bilgisayar için: parolasız root kabuğu (cihazda: mu300-usb adb auth keys ya da mu300-usb adb off)
+asking it over adb ({1})	adb üzerinden isteniyor ({1})
 Android runs from slot {1}; Linux goes to slot {2} (boot_{2})	Android {1} yuvasından çalışıyor; Linux {2} yuvasına kurulacak (boot_{2})
 CREATE new ext4 (erases what is there)	yeni ext4 OLUŞTURULACAK (oradakiler silinir)
 Dry run: nothing was written.	Deneme çalıştırması: hiçbir şey yazılmadı.
@@ -422,8 +423,8 @@ The VPN module (about 40 MB more to download, 120 MB on the device)	VPN modülü
 mu300-vpn with Xray and sing-box. A system being replaced whose VPN is on needs it: the installer stops otherwise. It can be added later: sudo mu300-extra install vpn	Xray ve sing-box ile mu300-vpn. Değiştirilen sistemde VPN açıksa bu modül gerekir: yoksa yükleyici durur. Sonradan eklenebilir: sudo mu300-extra install vpn
 The web panel for Ubuntu (about 24 MB more to download, 50 MB on the device)	Ubuntu için web paneli (yaklaşık 24 MB ek indirme, cihazda 50 MB)
 Cockpit with an MU300 page, on the LAN only. It can be added later: sudo mu300-extra install panel	MU300 sayfalı Cockpit, yalnızca LAN üzerinden. Sonradan eklenebilir: sudo mu300-extra install panel
-Allow adb to Linux over USB from this computer	Bu bilgisayardan USB üzerinden Linux'a adb erişimine izin ver
-This computer's adb key (~/.android/adbkey.pub) gets a root shell on the device.	Bu bilgisayarın adb anahtarı (~/.android/adbkey.pub) cihazda root kabuğu alır.
+Let only this computer in over adb to Linux	adb ile Linux'a yalnızca bu bilgisayar girebilsin
+adb to Linux over USB is on and lets every computer in: a root shell without a password for anyone who plugs in a cable. With this, only this computer's adb key (~/.android/adbkey.pub) is let in.	USB üzerinden Linux'a adb açıktır ve her bilgisayarı içeri alır: kablo takan herkes için şifresiz bir root kabuğu. Bu seçenekle yalnızca bu bilgisayarın adb anahtarı (~/.android/adbkey.pub) içeri alınır.
 Password	Şifre
 For the user "ubuntu" (Ubuntu) and for "root" (OpenWrt): the login over SSH and the web interface. At least 6 characters.	"ubuntu" kullanıcısı (Ubuntu) ve "root" (OpenWrt) için: SSH ve web arayüzü girişi. En az 6 karakter.
 What is copied to this computer before anything is written	Herhangi bir şey yazılmadan önce bu bilgisayara kopyalananlar
@@ -776,7 +777,7 @@ VPN module	VPN modülü
 web panel for Ubuntu	Ubuntu için web paneli
 GPU userspace	GPU kullanıcı alanı
 hotspot name and password from Android	Android'den hotspot adı ve şifresi
-adb to Linux for this computer	bu bilgisayar için Linux'a adb
+adb to Linux for this computer only	Linux'a adb yalnızca bu bilgisayar için
 The SD card holds another Linux (ext4) filesystem, and the installer never formats one that is not its own.	SD kartta başka bir Linux (ext4) dosya sistemi var ve yükleyici kendisine ait olmayan bir dosya sistemini asla biçimlendirmez.
 Type ERASE to allow a new filesystem on the SD card: everything on it is erased.	SD kartta yeni bir dosya sistemine izin vermek için ERASE yazın: üzerindeki her şey silinir.
 boots: {1}	açılan: {1}

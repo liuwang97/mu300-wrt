@@ -419,6 +419,19 @@ class Rules(unittest.TestCase):
         # the fuel gauge asks the charger by the name the driver registers
         p10 = (TOP / 'upstream' / 'patches' / '0010-power-sc27xx-fuel-gauge-status-from-bq256xx.patch').read_text()
         self.assertIn('+\t"bq256xx-charger",', p10)
+        # the U30 Air's other charger (issue #102): when nothing answers at the node's address, ZTE's driver goes on
+        # at 0x1a (an SGM41513), and so does this one, with that chip's charge and termination current steps; a
+        # charger that answers at the node's address takes none of it
+        p15 = (TOP / 'upstream' / 'patches' / '0015-power-bq256xx-SGM41513-at-0x1a.patch').read_text()
+        for s in ('#define SGM41513_I2C_ADDR\t\t0x1a', 'if (part < 0 && client->addr != SGM41513_I2C_ADDR) {',
+                  'devm_i2c_new_dummy_device(dev, client->adapter, SGM41513_I2C_ADDR)',
+                  'bq->regmap = devm_regmap_init_i2c(chip,', 'no charger: %d (and %d at 0x%02x)',
+                  '{ 0, 40000, 130000, 300000, 540000, 1020000, 1500000, 2460000 }',
+                  '{ 5000, 10000, 20000, 30000, 60000, 60000, 120000, 120000 }',
+                  '80000, 100000, 120000, 140000, 160000, 180000, 200000, 240000,',
+                  'info->bq256xx_set_ichg = sgm41513_set_ichg_curr;', 'info->bq256xx_set_iterm = sgm41513_set_term_curr;',
+                  'info->bq256xx_set_iprechg = sgm41513_set_prechrg_curr;'):
+            self.assertIn(s, p15)
         # the PMIC's charger detection reads the UMP9620's own register (0x239c), not the SC2730's (0x1b9c), and a
         # tree prepared with the old one is corrected
         self.assertIn(r"#define SPRD_UMP9620_CHG_DET\t\t0x239c", port)
@@ -956,6 +969,60 @@ class Rules(unittest.TestCase):
         self.assertIn('pr_err("%s: NOT FOUND sta_lut_index: %d, tid: %d\\n"', bar[:bar.index('\n}\n')])
         for kept in ('too short', 'alloc skb fail'):
             self.assertNotIn(kept, patch[patch.index('--- a/'):])
+
+
+
+class ApkRetry(unittest.TestCase):
+    """openwrt/build-rootfs.sh: the feed's packages are fetched while the image is built, and a download that broke
+    off failed the image; update, upgrade and add are tried three times (FINDINGS 66)."""
+
+    def setUp(self):
+        text = (TOP / 'openwrt' / 'build-rootfs.sh').read_text()
+        self.block = re.search(r'# --- apk-retry begin\n(.*?)# --- apk-retry end\n', text, re.S).group(1)
+        # the function stands before the first use, inside the one single-quoted script of the container
+        self.assertLess(text.index('# --- apk-retry end'), text.index('\napk update >/dev/null'))
+        self.assertNotIn("'", self.block)
+        self.tmp = Path(tempfile.mkdtemp(prefix='mu300-test-'))
+        stub = self.tmp / 'apk'
+        # fails FAIL times (a counter in a file), then succeeds; records every call
+        stub.write_text('#!/bin/sh\necho "$*" >> "$LOG"\nn=$(cat "$COUNT" 2>/dev/null || echo 0)\n'
+                        '[ "$n" -lt "$FAIL" ] || { echo "ok $1"; exit 0; }\necho $((n + 1)) > "$COUNT"\nexit 1\n')
+        stub.chmod(0o755)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def run_apk(self, shell, args, fail):
+        for f in ('log', 'count'):
+            (self.tmp / f).unlink(missing_ok=True)
+        env = dict(os.environ, PATH=f'{self.tmp}{os.pathsep}{os.environ["PATH"]}', LOG=str(self.tmp / 'log'),
+                   COUNT=str(self.tmp / 'count'), FAIL=str(fail), MU300_APK_RETRY_WAIT='0')
+        # as the build runs it: sh -eu, the output thrown away
+        r = subprocess.run(shell + ['-eu', '-c', self.block + f'apk {args} >/dev/null\necho done'], env=env,
+                           capture_output=True, text=True, timeout=30)
+        log = (self.tmp / 'log').read_text().splitlines() if (self.tmp / 'log').exists() else []
+        return r, log
+
+    def test_a_download_that_breaks_off_is_tried_again(self):
+        for shell in shells():
+            for cmd in ('update', 'upgrade', 'add wpad-basic-mbedtls iw', 'add --allow-untrusted /in/x.apk'):
+                for fail, tries, ok in ((0, 1, True), (1, 2, True), (2, 3, True), (3, 3, False)):
+                    r, log = self.run_apk(shell, cmd, fail)
+                    self.assertEqual(log, [cmd] * tries, (shell, cmd, fail))     # the same arguments every time
+                    self.assertEqual((r.returncode == 0, 'done' in r.stdout), (ok, ok), (shell, cmd, fail, r.stderr))
+                    self.assertEqual(r.stderr.count('trying again'), tries - 1)
+
+    def test_anything_else_runs_once(self):
+        for shell in shells():
+            r, log = self.run_apk(shell, 'del procd-ujail', 1)
+            self.assertEqual((log, r.returncode), (['del procd-ujail'], 1), shell)
+            self.assertNotIn('done', r.stdout)
+            # "apk del ... || true", as the build has it
+            env = dict(os.environ, PATH=f'{self.tmp}{os.pathsep}{os.environ["PATH"]}', LOG=str(self.tmp / 'log'),
+                       COUNT=str(self.tmp / 'count'), FAIL='9')
+            r = subprocess.run(shell + ['-eu', '-c', self.block + 'apk del x >/dev/null 2>&1 || true\necho done'],
+                               env=env, capture_output=True, text=True, timeout=30)
+            self.assertEqual((r.returncode, r.stdout.strip()), (0, 'done'), r.stderr)
 
 
 if __name__ == '__main__':

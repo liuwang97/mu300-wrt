@@ -225,11 +225,12 @@ Install the VPN module (about 40 MB more to download, 120 MB on the device)? (ye
 Downloading the VPN module	正在下载 VPN 模块
 extras:         {1}	扩展组件：      {1}
 none	无
-Allow adb (adb shell, push, pull) to Linux over USB from this computer? Its adb key (~/.android/adbkey.pub) gets a root shell (yes/no)	允许这台电脑通过 USB 对 Linux 使用 adb（adb shell、push、pull）吗？它的 adb 密钥（~/.android/adbkey.pub）将获得 root shell (是/否)
+adb to Linux over USB is on and lets every computer in: a root shell without a password for anyone who plugs in a cable. Let in only this computer's adb key (~/.android/adbkey.pub) instead? (yes/no)	通过 USB 对 Linux 的 adb 已开启，并接受任何电脑：任何插上数据线的人都能获得无需密码的 root shell。改为只接受这台电脑的 adb 密钥（~/.android/adbkey.pub）吗？(是/否)
 no adb key of this computer to authorise ({1})	这台电脑没有可授权的 adb 密钥（{1}）
 adb to Linux:   {1}	Linux adb：     {1}
-on, for this computer	开启，仅限这台电脑
-off	关闭
+on, only for the adb key of this computer	开启，仅限这台电脑的 adb 密钥
+on, for every computer: a root shell without a password (on the device: mu300-usb adb auth keys, or mu300-usb adb off)	开启，任何电脑均可：无需密码的 root shell（在设备上：mu300-usb adb auth keys，或 mu300-usb adb off）
+asking it over adb ({1})	正在通过 adb 请求（{1}）
 Android runs from slot {1}; Linux goes to slot {2} (boot_{2})	Android 从槽位 {1} 运行；Linux 将安装到槽位 {2}（boot_{2}）
 CREATE new ext4 (erases what is there)	新建 ext4（会清除上面的内容）
 Dry run: nothing was written.	试运行：未写入任何内容。
@@ -422,8 +423,8 @@ The VPN module (about 40 MB more to download, 120 MB on the device)	VPN 模块�
 mu300-vpn with Xray and sing-box. A system being replaced whose VPN is on needs it: the installer stops otherwise. It can be added later: sudo mu300-extra install vpn	mu300-vpn，含 Xray 和 sing-box。如果被替换的系统中 VPN 已开启，就需要它：否则安装程序会停止。也可以稍后添加：sudo mu300-extra install vpn
 The web panel for Ubuntu (about 24 MB more to download, 50 MB on the device)	Ubuntu 的网页面板（约多下载 24 MB，在设备上占用 50 MB）
 Cockpit with an MU300 page, on the LAN only. It can be added later: sudo mu300-extra install panel	带 MU300 页面的 Cockpit，仅限局域网。也可以稍后添加：sudo mu300-extra install panel
-Allow adb to Linux over USB from this computer	允许这台电脑通过 USB 对 Linux 使用 adb
-This computer's adb key (~/.android/adbkey.pub) gets a root shell on the device.	这台电脑的 adb 密钥（~/.android/adbkey.pub）将获得设备上的 root shell。
+Let only this computer in over adb to Linux	只允许这台电脑通过 adb 进入 Linux
+adb to Linux over USB is on and lets every computer in: a root shell without a password for anyone who plugs in a cable. With this, only this computer's adb key (~/.android/adbkey.pub) is let in.	通过 USB 到 Linux 的 adb 默认开启，并且允许任何电脑接入：任何插上数据线的人都能得到无需密码的 root shell。勾选后，只允许这台电脑的 adb 密钥（~/.android/adbkey.pub）接入。
 Password	密码
 For the user "ubuntu" (Ubuntu) and for "root" (OpenWrt): the login over SSH and the web interface. At least 6 characters.	用于用户 "ubuntu"（Ubuntu）和 "root"（OpenWrt）：通过 SSH 和网页界面登录时使用。至少 6 个字符。
 What is copied to this computer before anything is written	写入任何内容之前复制到这台电脑的内容
@@ -776,7 +777,7 @@ VPN module	VPN 模块
 web panel for Ubuntu	Ubuntu 的网页面板
 GPU userspace	GPU 用户空间组件
 hotspot name and password from Android	来自 Android 的热点名称和密码
-adb to Linux for this computer	这台电脑对 Linux 的 adb
+adb to Linux for this computer only	仅限这台电脑的 Linux adb
 The SD card holds another Linux (ext4) filesystem, and the installer never formats one that is not its own.	SD 卡上有另一个 Linux（ext4）文件系统，安装程序绝不会格式化不属于自己的文件系统。
 Type ERASE to allow a new filesystem on the SD card: everything on it is erased.	输入 ERASE 以允许在 SD 卡上新建文件系统：卡上的所有内容都会被清除。
 boots: {1}	启动：{1}
