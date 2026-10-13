@@ -445,7 +445,6 @@ The Manage page does both over the cable, and uninstalls.	“管理”页面可�
 News	新闻
 Uninstall MU300 Linux	卸载 MU300 Linux
 How an installation goes	安装过程
-You need a ZTE F50 / MU300 or U30 Air that is already rooted and unlocked, USB debugging on, a USB cable, and adb on this computer.	你需要一台已经 root 并解锁的 ZTE F50 / MU300 或 U30 Air，开启 USB 调试，一根 USB 数据线，以及这台电脑上的 adb。
 Device: plug it in. The window looks at it without writing anything: the model, root, the bootloader, the storage.	设备：接上设备。窗口只查看而不写入任何内容：型号、root、引导加载程序、存储。
 Storage: Linux goes into free space behind Android's partitions (about 32 GiB on the 64 GB device) or onto an SD card (F50). Android and its data stay.	存储：Linux 放在 Android 分区之后的空闲空间里（64 GB 设备上约 32 GiB），或放在 SD 卡上（F50）。Android 及其数据保持不变。
 What to install: Ubuntu, OpenWrt or both, the kernel, a password.	安装内容：Ubuntu、OpenWrt 或两者，内核，密码。
@@ -471,7 +470,6 @@ Serial number	序列号
 Runs	当前运行
 USB debugging	USB 调试
 authorised for this computer	已授权这台电脑
-This project does not root or unlock devices and gives no help with it: the device has to come that way.	本项目不负责 root 或解锁设备，也不提供这方面的帮助：设备必须本来就是这样的状态。
 eMMC	eMMC
 Partitions end at	分区结束于
 Free after them	其后的空闲空间
@@ -566,7 +564,6 @@ Android becomes the only thing that starts again, the Linux slot gets Android's 
 The device is running MU300 Linux	设备正在运行 MU300 Linux
 Do something on it	在设备上执行操作
 Type ERASE (in capitals) to allow growing userdata, or switch that off.	输入 ERASE（大写）以允许扩大 userdata，或关闭该选项。
-A hobby project, with no warranty. A wrong step, a power cut or a bad cable can still leave a device unusable. This project does not root or unlock devices and gives no help with it.	这是一个业余项目，不提供任何保证。错误的操作、断电或劣质数据线仍可能导致设备无法使用。本项目不负责 root 或解锁设备，也不提供这方面的帮助。
 Ubuntu and OpenWrt for the ZTE F50 and U30 Air	适用于 ZTE F50 和 U30 Air 的 Ubuntu 与 OpenWrt
 Language	语言
 Continue to the installation	继续安装
@@ -578,8 +575,6 @@ Open the Manage page	打开“管理”页面
 not recognised	未识别
 unlocked	已解锁
 locked	已锁定
-the device does not say	设备未说明
-The device reports a locked bootloader, yet root works - and root is what the installer goes by. Linux starts from its own boot image in the other slot; if the bootloader refuses that image, the device goes back to Android by itself.	设备报告引导加载程序已锁定，但 root 可用——而安装程序以 root 为准。Linux 从另一个槽位中它自己的启动镜像启动；如果引导加载程序拒绝该镜像，设备会自动回到 Android。
 Checked: {1}	已检查：{1}
 The check only reads: nothing is written to the device.	检查只读取数据：不会向设备写入任何内容。
 {1} sectors	{1} 个扇区
@@ -624,7 +619,6 @@ Copy it	复制
 Not ready	未就绪
 Without root nothing can be installed: the installer reads the partition table, copies the device's own Wi-Fi and modem files, and writes the Linux filesystem and the boot image of the unused slot - all of that through su. If the device is rooted, open its root manager and allow "shell" (adb), then press Refresh.	没有 root 就无法安装任何内容：安装程序要读取分区表、复制设备自身的 Wi-Fi 和调制解调器文件，并写入 Linux 文件系统和未使用槽位的启动镜像——这一切都通过 su 完成。如果设备已 root，请打开它的 root 管理器并允许 "shell"（adb），然后按“刷新”。
 Verified boot state	验证启动状态
-A locked bootloader starts only the manufacturer's own boot image. Linux needs its own boot image in the other slot, which a locked bootloader refuses, so nothing can be installed on this device as it is.	已锁定的引导加载程序只会启动厂商自己的启动镜像。Linux 需要在另一个槽位中放入它自己的启动镜像，而锁定的引导加载程序会拒绝它，因此此设备在当前状态下无法安装任何内容。
 A card with a MU300 Linux filesystem always starts first. The boot image starts any card labelled mu300sd, so whoever holds the device can start a system of their own from a card.	带有 MU300 Linux 文件系统的卡总是最先启动。启动镜像会启动任何标签为 mu300sd 的卡，因此任何拿到设备的人都可以用一张卡启动自己的系统。
 userdata fills the disk, and there is not enough to share: {1} in all, of which Android needs at least {2}. Nothing can be changed here; an SD card is the other way (F50).	userdata 占满了磁盘，且可分配的空间不足：总共 {1}，其中 Android 至少需要 {2}。这里无法做任何更改；另一种办法是使用 SD 卡（F50）。
 userdata now	当前 userdata
@@ -783,3 +777,9 @@ adb to Linux for this computer only	仅限这台电脑的 Linux adb
 The SD card holds another Linux (ext4) filesystem, and the installer never formats one that is not its own.	SD 卡上有另一个 Linux（ext4）文件系统，安装程序绝不会格式化不属于自己的文件系统。
 Type ERASE to allow a new filesystem on the SD card: everything on it is erased.	输入 ERASE 以允许在 SD 卡上新建文件系统：卡上的所有内容都会被清除。
 boots: {1}	启动：{1}
+The bootloader is locked. Did you patch TrustOS? With a patched TrustOS Linux boots on a locked bootloader; without it the device goes back to Android by itself after the install.	引导加载程序已锁定。你给 TrustOS 打过补丁吗？打过补丁的 TrustOS 可以让 Linux 在锁定的引导加载程序上启动；否则安装后设备会自行回到 Android。
+WARNING: {1}	警告：{1}
+not reported	未报告
+This project does not root, unlock or patch devices and gives no help with it: the device has to come that way.	本项目不负责对设备进行 root、解锁或打补丁，也不提供这方面的帮助：设备本身必须已经具备这些条件。
+You need a ZTE F50 / MU300 or U30 Air that is already rooted and able to boot a modified boot image (an unlocked bootloader, or a locked one with a patched TrustOS), USB debugging on, a USB cable, and adb on this computer.	你需要一台已经 root 并且能够启动修改过的启动镜像的 ZTE F50 / MU300 或 U30 Air（引导加载程序已解锁，或者已锁定但 TrustOS 打过补丁）、已开启的 USB 调试、一根 USB 数据线，以及这台电脑上的 adb。
+A hobby project, with no warranty. A wrong step, a power cut or a bad cable can still leave a device unusable. This project does not root, unlock or patch devices and gives no help with it.	这是一个业余项目，不提供任何保证。错误的操作、断电或劣质数据线仍可能导致设备无法使用。本项目不负责对设备进行 root、解锁或打补丁，也不提供这方面的帮助。

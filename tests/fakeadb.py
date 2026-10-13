@@ -34,6 +34,7 @@ DEFAULT = {
     'build': 'MU300_ZYV1.0.0B09',
     'locked': '0',               # ro.boot.flash.locked
     'verified': 'orange',        # ro.boot.verifiedbootstate
+    'device_state': 'unlocked',  # ro.boot.vbmeta.device_state
     'boot_completed': '1',
     'slot': 'a',                 # the slot Android runs from
     'layout': 'factory64',       # tests/fakegpt.py: factory64 (the gap), vendor64 (userdata fills the disk), ...
@@ -112,6 +113,7 @@ def props(st):
     return {
         'ro.product.model': st['model'], 'ro.product.device': st['device'], 'ro.build.display.id': st['build'],
         'ro.boot.flash.locked': st['locked'], 'ro.boot.verifiedbootstate': st['verified'],
+        'ro.boot.vbmeta.device_state': st['device_state'],
         'ro.boot.slot_suffix': '_' + st['slot'], 'sys.boot_completed': st['boot_completed'],
         'ro.serialno': st['serial'],
     }

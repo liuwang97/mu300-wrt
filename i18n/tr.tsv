@@ -445,7 +445,6 @@ The Manage page does both over the cable, and uninstalls.	Yönet sayfası ikisin
 News	Haberler
 Uninstall MU300 Linux	MU300 Linux'u kaldır
 How an installation goes	Kurulum nasıl ilerler
-You need a ZTE F50 / MU300 or U30 Air that is already rooted and unlocked, USB debugging on, a USB cable, and adb on this computer.	Önceden root'lanmış ve kilidi açılmış bir ZTE F50 / MU300 ya da U30 Air, etkin USB hata ayıklama, bir USB kablosu ve bu bilgisayarda adb gerekir.
 Device: plug it in. The window looks at it without writing anything: the model, root, the bootloader, the storage.	Cihaz: cihazı bağlayın. Pencere hiçbir şey yazmadan cihazı inceler: model, root, önyükleyici, depolama.
 Storage: Linux goes into free space behind Android's partitions (about 32 GiB on the 64 GB device) or onto an SD card (F50). Android and its data stay.	Depolama: Linux, Android bölümlerinin arkasındaki boş alana (64 GB'lık cihazda yaklaşık 32 GiB) ya da bir SD karta (F50) kurulur. Android ve verileri kalır.
 What to install: Ubuntu, OpenWrt or both, the kernel, a password.	Ne kurulacak: Ubuntu, OpenWrt ya da ikisi, çekirdek, bir şifre.
@@ -471,7 +470,6 @@ Serial number	Seri numarası
 Runs	Çalışan sistem
 USB debugging	USB hata ayıklama
 authorised for this computer	bu bilgisayar için yetkilendirildi
-This project does not root or unlock devices and gives no help with it: the device has to come that way.	Bu proje cihazları root'lamaz, kilidini açmaz ve bu konuda yardım vermez: cihazın bu şekilde gelmesi gerekir.
 eMMC	eMMC
 Partitions end at	Bölümlerin bittiği yer
 Free after them	Sonrasındaki boş alan
@@ -566,7 +564,6 @@ Android becomes the only thing that starts again, the Linux slot gets Android's 
 The device is running MU300 Linux	Cihazda MU300 Linux çalışıyor
 Do something on it	Cihazda işlem yapın
 Type ERASE (in capitals) to allow growing userdata, or switch that off.	userdata'nın büyütülmesine izin vermek için ERASE yazın (büyük harflerle) ya da bu seçeneği kapatın.
-A hobby project, with no warranty. A wrong step, a power cut or a bad cable can still leave a device unusable. This project does not root or unlock devices and gives no help with it.	Garantisi olmayan bir hobi projesidir. Yanlış bir adım, bir elektrik kesintisi ya da kötü bir kablo yine de cihazı kullanılamaz hale getirebilir. Bu proje cihazları root'lamaz, kilidini açmaz ve bu konuda yardım vermez.
 Ubuntu and OpenWrt for the ZTE F50 and U30 Air	ZTE F50 ve U30 Air için Ubuntu ve OpenWrt
 Language	Dil
 Continue to the installation	Kuruluma devam et
@@ -578,8 +575,6 @@ Open the Manage page	Yönet sayfasını aç
 not recognised	tanınmadı
 unlocked	kilidi açık
 locked	kilitli
-the device does not say	cihaz bildirmiyor
-The device reports a locked bootloader, yet root works - and root is what the installer goes by. Linux starts from its own boot image in the other slot; if the bootloader refuses that image, the device goes back to Android by itself.	Cihaz önyükleyicinin kilitli olduğunu bildiriyor, ama root çalışıyor - yükleyici de root'a bakar. Linux, diğer yuvadaki kendi önyükleme imajından açılır; önyükleyici bu imajı reddederse cihaz kendiliğinden Android'e döner.
 Checked: {1}	Kontrol edildi: {1}
 The check only reads: nothing is written to the device.	Kontrol yalnızca okur: cihaza hiçbir şey yazılmaz.
 {1} sectors	{1} sektör
@@ -624,7 +619,6 @@ Copy it	Kopyala
 Not ready	Hazır değil
 Without root nothing can be installed: the installer reads the partition table, copies the device's own Wi-Fi and modem files, and writes the Linux filesystem and the boot image of the unused slot - all of that through su. If the device is rooted, open its root manager and allow "shell" (adb), then press Refresh.	Root olmadan hiçbir şey kurulamaz: yükleyici bölüm tablosunu okur, cihazın kendi Wi-Fi ve modem dosyalarını kopyalar, Linux dosya sistemini ve kullanılmayan yuvanın önyükleme imajını yazar - bunların hepsini su üzerinden yapar. Cihaz root'luysa root yöneticisini açıp "shell" (adb) için izin verin, sonra Yenile'ye basın.
 Verified boot state	Doğrulanmış önyükleme durumu
-A locked bootloader starts only the manufacturer's own boot image. Linux needs its own boot image in the other slot, which a locked bootloader refuses, so nothing can be installed on this device as it is.	Kilitli bir önyükleyici yalnızca üreticinin kendi önyükleme imajını başlatır. Linux'un diğer yuvada kendi önyükleme imajına ihtiyacı vardır ve kilitli bir önyükleyici bunu reddeder; bu yüzden bu cihaza bu haliyle hiçbir şey kurulamaz.
 A card with a MU300 Linux filesystem always starts first. The boot image starts any card labelled mu300sd, so whoever holds the device can start a system of their own from a card.	MU300 Linux dosya sistemi içeren bir kart her zaman önce açılır. Önyükleme imajı mu300sd etiketli her kartı başlatır; yani cihazı elinde tutan herkes bir karttan kendi sistemini başlatabilir.
 userdata fills the disk, and there is not enough to share: {1} in all, of which Android needs at least {2}. Nothing can be changed here; an SD card is the other way (F50).	userdata diski kaplıyor ve paylaşacak kadar alan yok: toplam {1}, bunun en az {2} kadarı Android'e gerekiyor. Burada hiçbir şey değiştirilemez; diğer yol bir SD karttır (F50).
 userdata now	şu anki userdata
@@ -783,3 +777,9 @@ adb to Linux for this computer only	Linux'a adb yalnızca bu bilgisayar için
 The SD card holds another Linux (ext4) filesystem, and the installer never formats one that is not its own.	SD kartta başka bir Linux (ext4) dosya sistemi var ve yükleyici kendisine ait olmayan bir dosya sistemini asla biçimlendirmez.
 Type ERASE to allow a new filesystem on the SD card: everything on it is erased.	SD kartta yeni bir dosya sistemine izin vermek için ERASE yazın: üzerindeki her şey silinir.
 boots: {1}	açılan: {1}
+The bootloader is locked. Did you patch TrustOS? With a patched TrustOS Linux boots on a locked bootloader; without it the device goes back to Android by itself after the install.	Bootloader kilitli. TrustOS'u yamaladınız mı? Yamalı TrustOS ile Linux kilitli bootloader'da açılır; yamalı değilse kurulumdan sonra cihaz kendiliğinden Android'e döner.
+WARNING: {1}	UYARI: {1}
+not reported	bildirilmedi
+This project does not root, unlock or patch devices and gives no help with it: the device has to come that way.	Bu proje cihazlara root atmaz, kilidini açmaz, yama uygulamaz ve bu konuda yardım vermez: cihazın bu şekilde gelmesi gerekir.
+You need a ZTE F50 / MU300 or U30 Air that is already rooted and able to boot a modified boot image (an unlocked bootloader, or a locked one with a patched TrustOS), USB debugging on, a USB cable, and adb on this computer.	Zaten root'lu olan ve değiştirilmiş bir önyükleme imajını açabilen (kilidi açık bir bootloader ya da yamalı TrustOS'lu kilitli bir bootloader) bir ZTE F50 / MU300 ya da U30 Air, açık USB hata ayıklama, bir USB kablosu ve bu bilgisayarda adb gerekir.
+A hobby project, with no warranty. A wrong step, a power cut or a bad cable can still leave a device unusable. This project does not root, unlock or patch devices and gives no help with it.	Garantisi olmayan bir hobi projesidir. Yanlış bir adım, bir elektrik kesintisi ya da kötü bir kablo yine de cihazı kullanılamaz hale getirebilir. Bu proje cihazlara root atmaz, kilidini açmaz, yama uygulamaz ve bu konuda yardım vermez.
