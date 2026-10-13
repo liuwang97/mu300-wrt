@@ -1798,7 +1798,16 @@ lock_take() {
         # never a link, not even a dangling one (>> would make its target), and nothing but a regular file
         [ ! -L "$LOCK/lock" ] && { [ ! -e "$LOCK/lock" ] || [ -f "$LOCK/lock" ]; } || lock_refuse "$LOCK/lock is not a regular file"
         exec 9>>"$LOCK/lock" || lock_refuse "cannot open $LOCK/lock"
-        flock -n 9 || lock_busy "$(lock_pid "$LOCK/lock")"
+        if ! flock -n 9; then
+            # This run, continued with the release's updater (apply execs it: the same process id, and the lock file
+            # says so): the lock is held by what the updater before it left behind - its keep-alive's ping or sleep,
+            # which had the lock's descriptor and outlive it by a few seconds. Up to v2026.10.24 that ended every
+            # update whose release brought another mu300-update with "another mu300-update is running" (FINDINGS 81).
+            # They are gone within seconds; and should one stay, the lock is still this run's.
+            [ -n "${MU300_SELF_UPDATED:-}" ] && [ "$(lock_pid "$LOCK/lock")" = "$$" ] || lock_busy "$(lock_pid "$LOCK/lock")"
+            _n=0
+            until flock -n 9; do _n=$((_n + 1)); [ "$_n" -lt 10 ] || break; sleep 1; done
+        fi
         echo $$ > "$LOCK/lock"
         return 0
     fi
@@ -1833,7 +1842,8 @@ lock_drop() {
 # keeps it from going idle while the update runs (two targets, one of them reachable from mainland China).
 keepalive_start() {
     have ping || return 0
-    ( while :; do ping -c1 -W2 1.1.1.1 >/dev/null 2>&1 & ping -c1 -W2 223.5.5.5 >/dev/null 2>&1; sleep 3; done ) &
+    # (9>&-: without the lock's descriptor - a ping or sleep of this that outlives the run would hold the lock)
+    ( while :; do ping -c1 -W2 1.1.1.1 >/dev/null 2>&1 & ping -c1 -W2 223.5.5.5 >/dev/null 2>&1; sleep 3; done ) 9>&- &
     KEEPALIVE=$!
 }
 keepalive_stop() { [ -n "${KEEPALIVE:-}" ] && kill "$KEEPALIVE" 2>/dev/null; KEEPALIVE=; }
