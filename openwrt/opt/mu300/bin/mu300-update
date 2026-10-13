@@ -15,7 +15,8 @@
 #                                 out (at boot and every 6 hours; nothing is installed without apply)
 #   mu300-update apply --from FILE|DIR   the same update without the network: from a Magisk zip of a release, or a
 #                                 directory with a release's files and their SHA256SUMS (--unsigned: one the project's
-#                                 release key cannot vouch for; --downgrade: one older than what is installed)
+#                                 release key cannot vouch for)
+#   mu300-update apply --downgrade   go to a release older than what is installed (online or --from): never by itself
 #   mu300-update status|releases|inspect FILE   JSON for a panel (see "for a panel" below)
 # Installed extras (mu300-extra: LuCI's languages) are updated with the release, the VPN module (mu300-vpn and its
 # engines, from github.com/dikeckaan/mu300-linux-vpn) to its latest release. A device that uses the VPN is never left
@@ -79,7 +80,7 @@ fetch_verified() {
     [ -z "${MU300_FROM:-}" ] || { from_verified "$@"; return; }
     # MU300_RELEASE_URL: another server with the same files and SHA256SUMS (a local test server), as for install.sh
     base=${MU300_RELEASE_URL:-${MU300_DOWNLOAD_URL:-https://github.com/$REPO/releases/download}/$1}
-    mkdir -p "$STAGE"
+    stage_private || return 1
     # SHA256SUMS is fetched once per run, never trusted from an earlier one: a release published again under the
     # same tag left a stale copy that every file then failed (and the updater it had verified replaced this one).
     # Only without GitHub does the kept copy of the same tag stand in.
@@ -286,7 +287,7 @@ check() {
     done
     # tags are dates (vYYYY.MM.DD), so they sort as text; a device ahead of the newest release runs a test one
     if [ "$(printf '%s\n%s\n' "$(installed_version)" "$latest" | sort | tail -n1)" != "$latest" ]; then
-        printf '\nThis is newer than the newest release (a test release); mu300-update apply would go back to %s.\n' "$latest"
+        printf '\nThis is newer than the newest release (a test release); mu300-update apply --downgrade would go back to %s.\n' "$latest"
     elif [ "$(installed_version)" = "$latest" ] && [ "$(cat "$BOOTDIR/installed.tag" 2>/dev/null)" != "$latest" ]; then
         printf '\nThe system is up to date; the boot image may not be. Run: mu300-update apply\n'
     elif [ "$(installed_version)" = "$latest" ]; then
@@ -1729,6 +1730,7 @@ kernel_cmd() {  # kernel [5.4|6.18|7.2]: show or change the kernel, and install 
     echo "$1" > "$KERNEL_CHOICE"
     t=${MU300_RELEASE:-$(latest_release)}
     [ -n "$t" ] || { echo "$old" > "$KERNEL_CHOICE"; die "could not reach GitHub (is the device online?)"; }
+    boot_downgrade_ok "$t" || { echo "$old" > "$KERNEL_CHOICE"; die "the $1 kernel was not installed; staying on $old"; }
     if ! boot_update "$t"; then
         echo "$old" > "$KERNEL_CHOICE"
         die "the $1 kernel was not installed; staying on $old"
@@ -1882,6 +1884,8 @@ apply() {
     [ -z "${MU300_FROM:-}" ] || from_begin
     tag=${MU300_RELEASE:-$(latest_release)}
     [ -n "$tag" ] || { offline_hint; die "could not reach GitHub (is the device online?)"; }
+    # (an older release than what is installed only when asked for, whatever the source: see downgrade_ok)
+    downgrade_ok "$tag" $(apply_targets "$@") || die "nothing was changed"
     # The release's own updater does the update when it differs from this one (releases from v2026.09.28 on
     # carry it): fixes to the update itself then reach a device before the update runs, not one update later.
     # $0 is usually the link in /usr/local/bin: the file it points to is replaced, never the link (a file there
@@ -2060,7 +2064,7 @@ source_conf() {
     [ -f "$SOURCE_CONF" ] && [ ! -L "$SOURCE_CONF" ] || return 0
     _sc=$(ls -ln "$SOURCE_CONF" 2>/dev/null)
     case $_sc in -????-??-?*) ;; *) echo "$SOURCE_CONF is writable by others: ignored" >&2; return 0 ;; esac
-    [ "$(printf '%s\n' "$_sc" | awk '{print $3}')" = "$(id -u)" ] || { echo "$SOURCE_CONF is not ours: ignored" >&2; return 0; }
+    [ -O "$SOURCE_CONF" ] || { echo "$SOURCE_CONF is not ours: ignored" >&2; return 0; }
     while IFS='=' read -r _sk _sv; do
         printf '%s\n' "$_sv" | grep -Eqx 'https?://[A-Za-z0-9._:/-]{1,200}' || continue
         case $_sk in
@@ -2076,13 +2080,27 @@ source_conf() {
 # whatever brought them: a mirror, a memory stick, an upload. The public key is part of the system, RELEASE_PUB -
 # beside the programs, not in /etc/mu300, which an update carries over from the old system as a whole (a device
 # would never get the key, nor a new one). Without that file nothing is checked and everything is as it was.
+# The key is only ever this file of the installed system: never one a release, a zip or a directory brings, and
+# only as root's own regular file that nobody else can write (key_state) - anything else there is not "no key",
+# which would let a release through as before signing, but a key that cannot be trusted, and stops every update.
 RELEASE_PUB=${MU300_RELEASE_PUB:-/opt/mu300/lib/release.pub}
+# key_state: none (this system has no release key), ok, or unsafe (a link, not a regular file, not ours, or
+# writable by group or others)
+key_state() {
+    [ -e "$RELEASE_PUB" ] || [ -L "$RELEASE_PUB" ] || { echo none; return 0; }
+    [ -f "$RELEASE_PUB" ] && [ ! -L "$RELEASE_PUB" ] && [ -s "$RELEASE_PUB" ] || { echo unsafe; return 0; }
+    _ks=$(ls -ln "$RELEASE_PUB" 2>/dev/null)
+    case $_ks in -????-??-?*) ;; *) echo unsafe; return 0 ;; esac
+    [ -O "$RELEASE_PUB" ] || { echo unsafe; return 0; }
+    echo ok
+}
 # sig_raw FILE: a key or a signature without its comment line, as bytes
 sig_raw() { sed -n 2p "$1" | openssl base64 -d -A 2>/dev/null; }
-# sig_state SUMS SIG: valid, bad, unsigned (there is no SIG), nokey (this system has no release key) or notool
-# (nothing here can check one). usign where there is one (OpenWrt), else openssl (Ubuntu; 3.0 or newer).
+# sig_state SUMS SIG: valid, bad, unsigned (there is no SIG), nokey (this system has no release key), badkey (what
+# is at the key's place is not a key of root's own) or notool (nothing here can check a signature). usign where
+# there is one (OpenWrt), else openssl (Ubuntu; 3.0 or newer). Only "valid" ever says the files are the project's.
 sig_state() {
-    [ -s "$RELEASE_PUB" ] || { echo nokey; return 0; }
+    case $(key_state) in none) echo nokey; return 0 ;; unsafe) echo badkey; return 0 ;; esac
     [ -s "$2" ] || { echo unsigned; return 0; }
     if have usign; then
         if usign -V -q -m "$1" -p "$RELEASE_PUB" -x "$2" >/dev/null 2>&1; then echo valid; else echo bad; fi
@@ -2106,40 +2124,104 @@ sig_state() {
     rm -rf "${_sd:?}"
     echo "$_st"
 }
-# sums_trusted TAG BASE: is $STAGE/SHA256SUMS of TAG what the project signed? Once per run (SUMS_OK). A signature
-# that does not match stops the run, always. A release without one stops it when this system has a key and the
-# release is this system's or newer - every release from the one that brought the key is signed, so a missing
-# signature there is a file taken away on the way; an older release (going back) was published before signing and
-# is taken as it always was. MU300_ALLOW_UNSIGNED=1 is the way out for the owner of the device, in words.
-SUMS_OK=
+# stage_private: the staging directory, root's own and closed to everyone else before anything is put into it or
+# checked in it: what is verified there is what is unpacked minutes later
+stage_private() {
+    [ ! -L "$STAGE" ] || { echo "$STAGE is a symbolic link: not used" >&2; return 1; }
+    ( umask 077; mkdir -p "$STAGE" ) 2>/dev/null
+    [ -d "$STAGE" ] && [ ! -L "$STAGE" ] && [ -O "$STAGE" ] ||
+        { echo "$STAGE is not a directory of our own: not used" >&2; return 1; }
+    chmod 700 "$STAGE"
+}
+# tag_sha TAG: the checksum of the file mu300-release of that release (its tag and a newline). SHA256SUMS lists it,
+# so the signature of SHA256SUMS covers which release the checksums are of: a signed SHA256SUMS of one release
+# cannot be handed out under the name of another.
+tag_sha() { printf '%s\n' "$1" | sha256sum | cut -d' ' -f1; }
+# sums_trusted TAG BASE: is $STAGE/SHA256SUMS of TAG what the project signed? Decided once per run (SUMS_OK), and
+# the file that was judged is pinned by its hash (SUMS_PIN): every later look at it is at those very bytes, or the
+# run stops. The rules are sums_verdict's.
+SUMS_OK= SUMS_PIN=
 sums_trusted() {
-    [ "$SUMS_OK" != "$1" ] || return 0
-    [ -s "$RELEASE_PUB" ] || { SUMS_OK=$1; return 0; }
+    if [ "$SUMS_OK" = "$1" ]; then
+        [ -n "$SUMS_PIN" ] && [ "$(sha_of "$STAGE/SHA256SUMS")" = "$SUMS_PIN" ] && return 0
+        echo "SHA256SUMS of $1 changed after it was checked: nothing more is taken from it" >&2
+        return 1
+    fi
     # the signature belongs to the SHA256SUMS just fetched; a kept SHA256SUMS keeps the one fetched with it
-    if [ "${SUMS_FETCHED:-}" = "$1" ]; then
+    if [ "$(key_state)" != none ] && [ "${SUMS_FETCHED:-}" = "$1" ]; then
         rm -f "${STAGE:?}/SHA256SUMS.sig"
         _sg=$(fetch_stdout "$2/SHA256SUMS.sig" 2>/dev/null) && [ -n "$_sg" ] && printf '%s\n' "$_sg" > "$STAGE/SHA256SUMS.sig"
     fi
-    sums_verdict "$1" "$(sig_state "$STAGE/SHA256SUMS" "$STAGE/SHA256SUMS.sig")" "release $1" || return 1
+    # one copy is judged and pinned: its hash is taken first, so nothing can be put in its place in between
+    SUMS_PIN=$(sha_of "$STAGE/SHA256SUMS") || return 1
+    sums_verdict "$1" "$(sig_state "$STAGE/SHA256SUMS" "$STAGE/SHA256SUMS.sig")" "release $1" "$STAGE/SHA256SUMS" || { SUMS_PIN=; return 1; }
+    [ "$(sha_of "$STAGE/SHA256SUMS")" = "$SUMS_PIN" ] || { SUMS_PIN=; echo "SHA256SUMS of $1 changed while it was checked" >&2; return 1; }
     SUMS_OK=$1
 }
-# sums_verdict TAG STATE WHAT: what a signature state means for this run (see sums_trusted). An offline source
-# (MU300_FROM) has no origin at all, so one that cannot be checked - no signature, or no key on this system - is
-# never taken without the owner's word.
+# sums_verdict TAG STATE WHAT SUMS: may the checksums SUMS, whose signature is in STATE, be used as release TAG's?
+#   - a signature that does not match, or a key file that is not root's own: never, whatever is said;
+#   - checksums that name another release than TAG (their mu300-release line, tag_sha): never; and signed checksums
+#     that name none are not taken as signed, since nothing in them says which release they are;
+#   - valid: yes;
+#   - this system has no release key, and the release comes from GitHub or a mirror: yes, as before signing (there
+#     is nothing to check with; such a system trusts the connection, as it always did);
+#   - everything else - no signature, no tool to check one, and any file or directory brought to the device, which
+#     has no origin at all: only with the owner's word, MU300_ALLOW_UNSIGNED=1 (apply --unsigned). A system with a
+#     key takes no unsigned release silently, older or newer: taking the signature away is not a way in.
 sums_verdict() {
     case $2 in
-        valid) echo "$3: signed with the project's release key"; return 0 ;;
         bad) echo "the signature of $3 does not match the project's release key: not used" >&2; return 1 ;;
+        badkey) echo "the release key of this system ($RELEASE_PUB) is not a file of root's own: nothing is trusted with it, and nothing is updated" >&2; return 1 ;;
+    esac
+    _sv=$(sums_want "$4" mu300-release)
+    if [ -n "$_sv" ] && [ "$_sv" != "$(tag_sha "$1")" ]; then
+        echo "$3: these are the checksums of another release than $1: not used" >&2; return 1
+    fi
+    case $2 in
+        valid)
+            [ -n "$_sv" ] || { echo "$3 is signed, but its checksums do not say which release they are: not used" >&2; return 1; }
+            echo "$3: signed with the project's release key"; return 0 ;;
         nokey) [ -n "${MU300_FROM:-}" ] || return 0 ;;
     esac
     if [ -n "${MU300_ALLOW_UNSIGNED:-}" ]; then
         echo "$3 is not signed, or cannot be checked here ($2): used because you said so" >&2
-    elif [ -n "${MU300_FROM:-}" ] || ! newer "$(installed_version)" "$1"; then
-        echo "$3 is not signed with the project's release key ($2): not used (MU300_ALLOW_UNSIGNED=1 takes it anyway)" >&2
-        return 1
-    else
-        echo "$3 is from before releases were signed: taken as it is" >&2
+        return 0
     fi
+    echo "$3 is not signed with the project's release key ($2): not used (MU300_ALLOW_UNSIGNED=1, or apply --unsigned, takes it anyway)" >&2
+    return 1
+}
+# apply_targets ARG...: the systems an apply with these arguments is about (the named ones, else all installed; a
+# zip's one), for downgrade_ok
+apply_targets() {
+    [ -z "${FROM_ONLY:-}" ] || { echo "$FROM_ONLY"; return 0; }
+    _at=
+    for _aa in "$@"; do case $_aa in -*) ;; *) _at="$_at $_aa" ;; esac; done
+    [ -n "$_at" ] || _at=$(installed_systems)
+    echo $_at
+}
+# downgrade_ok TAG OS...: none of these systems is newer than TAG - or going back was asked for in words
+# (MU300_ALLOW_DOWNGRADE=1, apply --downgrade). An old release is a correctly made, correctly signed release with
+# the faults that were fixed since: whoever can hand the device one (a mirror, a file) must not be able to put it
+# back by that alone. For every source, and before the release's own updater is given the run.
+downgrade_ok() {
+    _dt=$1; shift
+    [ -z "${MU300_ALLOW_DOWNGRADE:-}" ] || return 0
+    for _do in "$@"; do
+        _di=$(cat "$DISK/$_do$VERSION_FILE" 2>/dev/null)
+        newer "$_di" "$_dt" || continue
+        echo "$_do is $_di and $_dt is older: going back to an older release needs --downgrade (mu300-update rollback goes back to the kept version without one)" >&2
+        return 1
+    done
+    return 0
+}
+# boot_downgrade_ok TAG: the same for a kernel or a boot image taken alone (boot, kernel)
+boot_downgrade_ok() {
+    [ -z "${MU300_ALLOW_DOWNGRADE:-}" ] || return 0
+    for _bi in "$(installed_version)" "$(cat "$BOOTDIR/installed.tag" 2>/dev/null)"; do
+        newer "$_bi" "$1" || continue
+        echo "$1 is older than what is installed ($_bi): its kernel is taken only with MU300_ALLOW_DOWNGRADE=1" >&2
+        return 1
+    done
     return 0
 }
 
@@ -2167,6 +2249,7 @@ from_open() {
     [ -z "$FROM_KIND" ] || return 0
     FROM_WHY=not-found
     [ -e "$MU300_FROM" ] && [ ! -L "$MU300_FROM" ] || return 1
+    [ -n "${FROM_SCRATCH:-}" ] || stage_private || return 1
     FROM_TMP=${FROM_SCRATCH:-$STAGE/.from}
     rm -rf "${FROM_TMP:?}"
     mkdir -p "$FROM_TMP" || return 1
@@ -2292,7 +2375,9 @@ from_begin() {
         _fi=$(from_installed); from_close
         die "$MU300_FROM is $FROM_TAG, older than what is installed ($_fi): not used (--downgrade takes it anyway)"
     fi
-    sums_verdict "$FROM_TAG" "$(sig_state "$FROM_TMP/SHA256SUMS" "$FROM_TMP/SHA256SUMS.sig")" "$MU300_FROM" ||
+    # the checksums are judged once and pinned by their hash: every file is then checked against those very bytes
+    FROM_PIN=$(sha_of "$FROM_TMP/SHA256SUMS") || { from_close; die "cannot read the checksums of $MU300_FROM"; }
+    sums_verdict "$FROM_TAG" "$(sig_state "$FROM_TMP/SHA256SUMS" "$FROM_TMP/SHA256SUMS.sig")" "$MU300_FROM" "$FROM_TMP/SHA256SUMS" ||
         { from_close; die "nothing was changed (--unsigned takes a file that is not signed; never one whose signature is wrong)"; }
     FROM_ONLY=$FROM_OS
     MU300_RELEASE=$FROM_TAG
@@ -2303,9 +2388,12 @@ from_begin() {
 # from_verified TAG ASSET: fetch_verified's work from the source. 2 when the source does not have the file (as a
 # release that does not carry it), 1 when what it has does not match.
 from_verified() {
-    from_open || { echo "$MU300_FROM is not a release ($FROM_WHY)" >&2; return 1; }
-    mkdir -p "$STAGE"
+    # only what from_begin judged: the checksums it pinned, read again from nowhere else
+    [ -n "${FROM_PIN:-}" ] && [ "$FROM_KIND" != "" ] || { echo "$MU300_FROM was not checked (from_begin): nothing is taken from it" >&2; return 1; }
+    stage_private || return 1
     cat "$FROM_TMP/SHA256SUMS" > "$STAGE/SHA256SUMS"; echo "$1" > "$STAGE/SHA256SUMS.tag"
+    [ "$(sha_of "$STAGE/SHA256SUMS")" = "$FROM_PIN" ] ||
+        { echo "the checksums of $MU300_FROM changed after they were checked: nothing more is taken from it" >&2; return 1; }
     want=$(sums_want "$STAGE/SHA256SUMS" "$2")
     [ -n "$want" ] || { echo "$2 is not part of $MU300_FROM" >&2; return 2; }
     [ -s "$STAGE/$2" ] && [ "$(sha_of "$STAGE/$2")" = "$want" ] && return 0
@@ -2321,7 +2409,7 @@ from_verified() {
 from_handover() {
     [ -n "${MU300_FROM:-}" ] || return 0
     grep -q '^from_verified() {' "$1" 2>/dev/null || return 1
-    from_close
+    from_close; FROM_PIN=
 }
 
 # inspect FILE|DIR: what the source is, as JSON, for a page to show before anything is applied
@@ -2345,6 +2433,12 @@ inspect_json() {
         [ "$_ihave" = "$_iwant" ] || { _if=0; _iw=checksum; break; }
     done
     _ig=$(sig_state "$FROM_TMP/SHA256SUMS" "$FROM_TMP/SHA256SUMS.sig")
+    # (signed checksums must be this release's own: what a signature says of another release, or of none, is
+    # nothing - "bad" for the page, as sums_verdict refuses it)
+    _it=$(sums_want "$FROM_TMP/SHA256SUMS" mu300-release)
+    if [ -n "$_it" ] && [ "$_it" != "$(tag_sha "$FROM_TAG")" ]; then _ig=bad
+    elif [ "$_ig" = valid ] && [ -z "$_it" ]; then _ig=bad
+    elif [ "$_ig" = badkey ]; then _ig=bad; fi
     [ "$_ig" != bad ] || { _if=0; _iw=signature; }
     _ii=$(from_installed)
     printf '{"ok":1,"kind":"%s","sha256":%s,"size":%s,"tag":"%s","system":%s,"ubuntu":%s,"kernel":%s,"signature":"%s","installed":%s,"downgrade":%d,"same":%d,"fits":%d,"why":%s}\n' \
@@ -2417,7 +2511,7 @@ status_json() {
     _nt=$(sed -n 's/^mu300-linux \(v[0-9.]*\) is out .*/\1/p' "$NOTICE" 2>/dev/null | head -n1)
     tag_ok "$_nt" || _nt=
     _vt=none; if have usign; then _vt=usign; elif have openssl; then _vt=openssl; fi
-    printf '"notice":%s,"signing":{"key":%d,"tool":"%s"}}\n' "$(jstr "$_nt")" "$([ -s "$RELEASE_PUB" ] && echo 1 || echo 0)" "$_vt"
+    printf '"notice":%s,"signing":{"key":%d,"tool":"%s"}}\n' "$(jstr "$_nt")" "$([ "$(key_state)" = none ] && echo 0 || echo 1)" "$_vt"
 }
 
 # releases: the newest release, and the newest pre-release when it is newer (never offered by itself: the page
@@ -2499,6 +2593,7 @@ case ${1:-check} in
     releases) mounted_disk; releases_json ;;
     inspect) mounted_disk; inspect_json "${2:-}" ;;
     boot) mounted_disk; t=${MU300_RELEASE:-$(latest_release)}; [ -n "$t" ] || die "could not reach GitHub (is the device online?)"
+          boot_downgrade_ok "$t" || exit 1
           boot_update "$t" || exit 1; rm -rf "$STAGE"; [ -n "${BOOT_CHANGED:-}" ] && { printf '\n'; reboot_goes_to_android || printf 'Reboot to start the new kernel.\n'; } ;;
     rollback) shift; rollback "$@" ;;
     rollback-boot) rollback_boot ;;
@@ -2506,6 +2601,6 @@ case ${1:-check} in
     accounts) accounts ;;
     clean) clean ;;
     notice) notice ;;
-    -h|--help|help) sed -n '2,23s/^# \{0,1\}//p' "$0" ;;
+    -h|--help|help) sed -n '2,24s/^# \{0,1\}//p' "$0" ;;
     *) echo "usage: mu300-update check|version|apply [--no-reinstall] [ubuntu|openwrt|openwrt-luci ...]|boot|kernel [5.4|6.18|7.2]|rollback [os]|rollback-boot|clean|notice|status|releases|inspect FILE" >&2; exit 2 ;;
 esac

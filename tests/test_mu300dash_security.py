@@ -93,11 +93,11 @@ DEFAULTS = {
     'dashboard-info': '{"ok":1,"host":"f50"}', 'cell': '{"ok":1}', 'action': '{"ok":1,"op":"x"}',
     'lock': '{"ok":1,"mode":{"label":"auto"}}', 'device-usb': '{"ok":1}', 'at': 'OK', 'sms': 'sent (12)',
     'languages': '{"ok":1}', 'power': '{"ok":1}', 'ttl': '{"ok":1}', 'traffic': '{"ok":1}', 'forward': '{"ok":1}',
-    'packages': '{"ok":1}', 'update': '{"ok":1}',
+    'packages': '{"ok":1}', 'sim': '{"ok":1,"hot":1,"available":1,"busy":0}', 'update': '{"ok":1}',
 }
 
 # The methods that start something with setsid (in the background of mu300dash)
-DETACHED = {'act', 'at', 'lock_get', 'lock_set', 'sms_send', 'sms_sync', 'status'}
+DETACHED = {'act', 'at', 'lock_get', 'lock_set', 'sms_send', 'sms_sync', 'status', 'sim_set'}
 
 # Hostile values: each is refused by every field that takes a fixed set, a number or a name. The NUL cases: the
 # stand-in jsonfilter passes the NUL on (the backend maps it to \001 and refuses); the real jsonfilter prints strings
@@ -159,7 +159,7 @@ class Mu300Dash(ShellTest):
         stdin = raw if raw is not None else json.dumps(params or {}, ensure_ascii=False)
         env = self.env(STUB_CALLS=calls, STUB_OUT=self.out, MU300_DASH_BIN=self.adapters,
                        MU300_DASH_DIR=run / 'dash', MU300_AT=self.adapters / 'at', MU300_SMS_BIN=self.adapters / 'sms',
-                       MU300_SMS_POOL=run / 'pool')
+                       MU300_SMS_POOL=run / 'pool', MU300_DASH_SIM=self.adapters / 'sim')
         env.update({k: str(v) for k, v in extra.items()})
         env = {k: v for k, v in env.items() if v != ''}
         r = subprocess.run(shell + [str(DASH), 'call', method], input=stdin.encode(), capture_output=True,
@@ -248,7 +248,7 @@ class Inventory(Mu300Dash):
                'sms_show', 'sms_send', 'sms_job', 'sms_delete', 'sms_sync', 'usb_get', 'usb_set', 'usb_net_list', 'usb_net_add',
                'lang_get', 'lang_set', 'power_get', 'power_set',
                'ttl_get', 'ttl_set', 'cpu_get', 'cpu_set', 'forward_get', 'forward_set', 'forward_test',
-               'forward_log_clear', 'traffic_get', 'traffic_set', 'packages_get', 'packages_act',
+               'forward_log_clear', 'traffic_get', 'traffic_set', 'packages_get', 'packages_act', 'sim_get', 'sim_set',
                'update_get', 'update_job', 'update_act'}
 
     def test_list_declares_every_method(self):
@@ -315,6 +315,8 @@ class Refusals(Mu300Dash):
         ('power_set', {'op': 'set', 'key': 'battery.WIFI_IDLE', 'value': '15'}, 'value', '15'),
         ('power_set', {'op': 'wake'}, 'key', ''),
         ('power_set', {'op': 'wake'}, 'value', ''),
+        ('sim_set', {'op':'switch','value':'1'}, 'op','switch'),
+        ('sim_set', {'op':'switch','value':'1'}, 'value','1'),
         ('lang_set', {'op': 'enable', 'codes': 'de'}, 'codes', 'de'),
         ('lang_set', {'op': 'disable', 'codes': 'de pt_br'}, 'codes', 'de pt_br'),
         ('lang_set', {'op': 'use', 'codes': 'en'}, 'codes', 'en'),
@@ -542,6 +544,9 @@ class Passthrough(Mu300Dash):
         ('update_act', {'op': 'rollback', 'systems': 'ubuntu', 'confirm': 'rollback'},
          [['update', 'act', 'rollback', '', 'ubuntu', '', '', '', '', 'rollback']]),
         ('update_act', {'op': 'clean', 'confirm': 'clean'}, [['update', 'act', 'clean', '', '', '', '', '', '', 'clean']]),
+        ('sim_get', {}, [['sim', 'status', '--json']]),
+        ('sim_set', {'op':'default','value':'2'}, [['sim','default','2']]),
+        ('sim_set', {'op':'hot','value':'1'}, [['sim','hot','1']]),
         ('ttl_set', {'value': '64'}, [['ttl', 'set', '64']]),
         ('ttl_set', {'value': 128}, [['ttl', 'set', '128']]),
         ('ttl_set', {'value': '255'}, [['ttl', 'set', '255']]),
@@ -996,10 +1001,10 @@ class TrafficAdapter(ShellTest):
 class Acl(unittest.TestCase):
     # SMS bodies (one-time codes) and the AT history (AT+CPIN PINs) are not for read-only users (ruling R14)
     READ = {'sysinfo', 'status', 'signal', 'lock_get', 'usb_get', 'usb_net_list', 'lang_get', 'power_get', 'ttl_get',
-            'cpu_get', 'traffic_get', 'ops_log', 'packages_get', 'update_get', 'update_job'}
+            'cpu_get', 'traffic_get', 'ops_log', 'packages_get', 'sim_get', 'update_get', 'update_job'}
     WRITE = {'act', 'at', 'at_job', 'at_history', 'lock_set', 'sms_list', 'sms_show', 'sms_send', 'sms_job', 'sms_delete', 'sms_sync',
              'usb_set', 'usb_net_add', 'lang_set', 'power_set', 'ttl_set', 'cpu_set', 'forward_get',
-             'forward_set', 'forward_test', 'forward_log_clear', 'traffic_set', 'packages_act', 'update_act'}
+             'forward_set', 'forward_test', 'forward_log_clear', 'traffic_set', 'packages_act', 'sim_set', 'update_act'}
 
     def test_actions_need_write_access(self):
         acl = json.loads(ACL.read_text())['luci-app-mu300']
@@ -1099,6 +1104,28 @@ class FixRound1(Mu300Dash):
             for c in good:
                 r, recs, _ = self.call(shell, 'at', {'cmd': c})
                 self.assertEqual(recs, [['at', '-t', '8', c]], c)
+
+    def test_the_commands_that_move_the_sim_or_the_data_route_are_the_selectors_alone(self):
+        # AT+SPSWDATA from the terminal moves the packet-data route under a connection that then answers CONNECT and
+        # loses every packet; the SIM selector sends these three itself, in a measured order, and keeps a mark of
+        # where the route is (FINDINGS 74, after kanoqwq's terminal). Their "?" forms only ask.
+        bad = ['AT+SPSWDATA', 'at+spswdata', 'AT + SPSWDATA', 'AT+SPSWDATA=1', 'AT+SPSWDATA=0', 'AT+SPACTCARD=1',
+               'AT+SPACTCARD=0', 'at+spactcard = 1', 'AT+SPACTCARD="1"', 'AT+SMMSWAP=0', 'AT+SMMSWAP=1', 'at+smmswap=1',
+               'ATE0+SPSWDATA', 'AT+SPACTCARD=']
+        good = ['AT+SPSWDATA?', 'AT+SPSWDATA=?', 'AT+SPACTCARD?', 'AT+SPACTCARD=?', 'AT+SMMSWAP?', 'AT+SPTESTMODE?']
+        for shell in self.each_shell():
+            for c in bad:
+                r, recs, _ = self.call(shell, 'at', {'cmd': c, 'confirm': '1'})
+                self.assertEqual(recs, [], c)
+                self.assertEqual(self.reply(r).get('error'),
+                                 'Denied: this command moves the SIM selection or the data route; the SIM settings do that', c)
+            for c in good:
+                r, recs, _ = self.call(shell, 'at', {'cmd': c})
+                self.assertEqual(recs, [['at', '-t', '8', c]], c)
+            # the two-card form of the work-mode write is an NV write like the one-card form: asked about first
+            r, recs, _ = self.call(shell, 'at', {'cmd': 'AT+SPTESTMODEM=134,134'})
+            self.assertEqual(recs, [])
+            self.assertEqual({k: self.reply(r).get(k) for k in ('confirm', 'kind')}, {'confirm': 1, 'kind': 'nv'})
 
     def test_sms_failures_carry_a_fixed_error_and_a_detail(self):
         self.output('sms', 'no message "4"\\x')

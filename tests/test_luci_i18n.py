@@ -934,9 +934,9 @@ get('mud-btn-wifi').onclick.call(get('mud-btn-wifi')); await flush();
 return [ notes().pop() ];""", [('Failed: %s', 'Expected on or off', None)]),
         ('locks', """V.render(); await flush();
 V.lastLock = { error: 'Lock cache unavailable' }; V.paint();
-V.paintServing({ error: 'Applying network locks: no live signal right now' });
+V.paintServing({ error: 'The modem is restarting (network locks or a SIM switch): no live signal right now' });
 return [ text('lock-nrline'), text('srv-rat') ];""",
-         [(None, 'Lock cache unavailable', None), (None, 'Applying network locks: no live signal right now', None)]),
+         [(None, 'Lock cache unavailable', None), (None, 'The modem is restarting (network locks or a SIM switch): no live signal right now', None)]),
         ('sms', """V.render();
 rpcReply = { error: 'mu300-sms is not available (the SMS service is not installed or not running)' };
 await V.reload(); await flush();

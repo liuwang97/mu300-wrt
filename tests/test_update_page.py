@@ -26,7 +26,8 @@ from pathlib import Path
 
 from helpers import BIN, TOP, ShellTest
 from test_mu300dash_security import JSONFILTER
-from test_update import Lock, UpdateBase
+import test_update
+from test_update import UpdateBase
 
 APP = TOP / 'openwrt' / 'luci-app-mu300'
 ADAPTER = APP / 'root' / 'usr' / 'libexec' / 'unisoc-modem' / 'update'
@@ -105,7 +106,9 @@ def release_dir(d, tag='v2026.11.02', os_='openwrt-luci', ubuntu='', kernel='5.4
     if devices is not None:
         files.append(('devices', devices, 0o644))
     tgz(d / kasset, files)
-    (d / 'SHA256SUMS').write_text(''.join(f'{sha(d / n)}  {n}\n' for n in (kasset, rootfs)))
+    # mu300-release: the tag as a file, listed like the others - what binds the checksums to their release
+    (d / 'mu300-release').write_text(tag + '\n')
+    (d / 'SHA256SUMS').write_text(''.join(f'{sha(d / n)}  {n}\n' for n in (kasset, rootfs, 'mu300-release')))
     return d
 
 
@@ -247,7 +250,7 @@ class Offline(UpdateBase):
         for shell in self.each_shell():
             o, _ = self.inspect(shell, z)
             self.assertEqual((o['ok'], o['fits'], o['why']), (1, 0, 'checksum'))
-            r = self.frm(shell, z, 'from_verified v2026.11.02 mu300-openwrt-luci-rootfs.tar.gz; echo "rc=$?"')
+            r = self.frm(shell, z, 'MU300_ALLOW_UNSIGNED=1; from_begin; from_verified v2026.11.02 mu300-openwrt-luci-rootfs.tar.gz; echo "rc=$?"')
             self.assertIn('rc=1', r.stdout)
             self.assertIn('does not match its checksum', r.stderr)
             self.assertFalse((self.disk / '.mu300-update/mu300-openwrt-luci-rootfs.tar.gz').exists())
@@ -256,7 +259,7 @@ class Offline(UpdateBase):
         for shell in self.each_shell():
             for src in (self.zip, self.rel):
                 shutil.rmtree(self.disk / '.mu300-update', ignore_errors=True)
-                r = self.frm(shell, src, 'MU300_RELEASE=v2026.11.02; for f in mu300-openwrt-luci-rootfs.tar.gz mu300-kernel.tar.gz '
+                r = self.frm(shell, src, 'MU300_ALLOW_UNSIGNED=1; from_begin; for f in mu300-openwrt-luci-rootfs.tar.gz mu300-kernel.tar.gz '
                                          'mu300-extra-lang.tar.gz mu300-update; do fetch_verified v2026.11.02 $f; echo "$f=$?"; done')
                 stage = self.disk / '.mu300-update'
                 self.assertIn('mu300-openwrt-luci-rootfs.tar.gz=0', r.stdout, r.stderr)
@@ -267,6 +270,73 @@ class Offline(UpdateBase):
                 self.assertIn('mu300-update=2', r.stdout)
                 self.assertEqual(sha(stage / 'mu300-kernel.tar.gz'), sha(self.rel / 'mu300-kernel.tar.gz'))
                 self.assertEqual((stage / 'SHA256SUMS.tag').read_text(), 'v2026.11.02\n')
+                # the staging directory is closed to everyone else before anything is checked in it
+                self.assertEqual(stage.stat().st_mode & 0o777, 0o700)
+            # a source that was not judged first gives nothing
+            shutil.rmtree(self.disk / '.mu300-update', ignore_errors=True)
+            r = self.frm(shell, self.zip, 'fetch_verified v2026.11.02 mu300-kernel.tar.gz; echo "rc=$?"')
+            self.assertIn('rc=1', r.stdout)
+            self.assertIn('was not checked', r.stderr)
+
+    def test_checksums_swapped_after_the_check_stop_the_run(self):
+        # time of check, time of use: the checksums are judged once and pinned by their hash; other bytes at their
+        # place afterwards (and a payload that matches those) are not taken
+        evil = release_dir(self.tmp / 'evil')
+        tgz(evil / 'mu300-kernel.tar.gz', [('Image', 'another kernel', 0o644)])
+        swapped = f'{sha(evil / "mu300-kernel.tar.gz")}  mu300-kernel.tar.gz\n'
+        for shell in self.each_shell():
+            shutil.rmtree(self.disk / '.mu300-update', ignore_errors=True)
+            r = self.frm(shell, self.zip, 'MU300_ALLOW_UNSIGNED=1; from_begin; fetch_verified v2026.11.02 mu300-openwrt-luci-rootfs.tar.gz; '
+                                          f'echo "first=$?"; printf "%s" "{swapped}" > "$FROM_TMP/SHA256SUMS"; '
+                                          f'cp "{evil}/mu300-kernel.tar.gz" "$STAGE/mu300-kernel.tar.gz"; '
+                                          'fetch_verified v2026.11.02 mu300-kernel.tar.gz; echo "second=$?"')
+            self.assertIn('first=0', r.stdout, r.stderr)
+            self.assertIn('second=1', r.stdout)
+            self.assertIn('changed after they were checked', r.stderr)
+
+    def test_a_staging_directory_that_is_not_ours_is_not_used(self):
+        elsewhere = self.tmp / 'elsewhere'
+        elsewhere.mkdir()
+        (self.disk / '.mu300-update').symlink_to(elsewhere)
+        for shell in self.each_shell():
+            r = self.frm(shell, self.zip, 'MU300_ALLOW_UNSIGNED=1; from_begin; echo began')
+            self.assertNotIn('began', r.stdout)
+            r = self.up(shell, 'fetch_stdout() { echo x; }; fetch_verified v2026.11.02 mu300-update; echo "rc=$?"')
+            self.assertIn('rc=1', r.stdout)
+            self.assertIn('symbolic link', r.stderr)
+            self.assertEqual(os.listdir(elsewhere), [])
+
+    def test_an_older_release_is_never_taken_by_itself(self):
+        # whatever the source - GitHub, a mirror (MU300_RELEASE, MU300_RELEASE_URL), a file - and before the
+        # release's own updater is given the run: an old release is a way back to its faults
+        (self.disk / 'openwrt-luci/etc/mu300/image-version').write_text('v2026.12.01\n')
+        asked = 'fetch_stdout() { echo "FETCHED $1" >&2; return 1; }; fetch_file() { echo "FETCHED $1" >&2; return 1; }; '
+        for shell in self.each_shell():
+            for env in ({'MU300_RELEASE': 'v2026.11.02'}, {'MU300_RELEASE': 'v2026.11.02', 'MU300_RELEASE_URL': 'http://mirror.invalid/x'}):
+                r = self.up(shell, self.APPLY + asked + 'apply', **env)
+                self.assertNotEqual(r.returncode, 0)
+                self.assertIn('openwrt-luci is v2026.12.01 and v2026.11.02 is older', r.stderr)
+                self.assertNotIn('FETCHED', r.stderr)             # not even the release's updater was asked for
+                self.assertNotIn('BOOT', r.stdout)
+                # said in words, it goes on (and here stops at the download)
+                r = self.up(shell, self.APPLY + asked + 'apply_options --downgrade; apply $APPLY_ARGS', **env)
+                self.assertIn('FETCHED', r.stderr)
+            # the newest release as "latest" says it, older than a test release that is installed
+            r = self.up(shell, self.APPLY + asked + 'latest_release() { echo v2026.11.02; }; apply')
+            self.assertIn('is older', r.stderr)
+            # the same release, or a newer one, needs no word
+            r = self.up(shell, self.APPLY + asked + 'apply', MU300_RELEASE='v2026.12.01')
+            self.assertNotIn('is older', r.stderr)
+            # a kernel or a boot image taken alone
+            for code in ('boot_downgrade_ok v2026.11.02; echo "rc=$?"',):
+                r = self.up(shell, 'installed_version() { echo v2026.12.01; }; ' + code)
+                self.assertIn('rc=1', r.stdout)
+                r = self.up(shell, 'installed_version() { echo v2026.12.01; }; ' + code, MU300_ALLOW_DOWNGRADE=1)
+                self.assertIn('rc=0', r.stdout)
+            src = UPDATE.read_text()
+            self.assertLess(src.index('downgrade_ok "$tag" $(apply_targets "$@")'), src.index('exec sh "$STAGE/mu300-update" apply'))
+            self.assertIn('boot_downgrade_ok "$t" || exit 1', src)
+            self.assertIn('boot_downgrade_ok "$t" || { echo "$old" > "$KERNEL_CHOICE"', src)
 
     def test_a_directory_names_its_release_by_its_root_filesystem(self):
         for shell in self.each_shell():
@@ -471,6 +541,10 @@ class Signature(UpdateBase):
         # the key is in no file of the tree: the public half arrives with the owner's commit, the secret never
         self.assertNotIn('RWRSqAkN', rel + wf)
         self.assertIn("RELEASE_PUB=${MU300_RELEASE_PUB:-/opt/mu300/lib/release.pub}", UPDATE.read_text())
+        # the release names itself inside what is signed
+        self.assertIn('echo "$TAG" > "$D/mu300-release"', rel)
+        self.assertIn('sha256sum *.tar.gz mu300-update mu300-release; } > SHA256SUMS', rel)
+        self.assertEqual(rel.count('"$D/mu300-release" "$D/SHA256SUMS" $SIG'), 2)
 
     @unittest.skipUnless(shutil.which('zip') and shutil.which('unzip'), 'zip and unzip are needed to build the Magisk zips')
     def test_the_zips_of_a_signed_release_check_on_the_device(self):
@@ -479,6 +553,8 @@ class Signature(UpdateBase):
         from test_magisk_zip import fake_release
         rel = self.tmp / 'v2026.11.02'
         fake_release(rel)
+        with open(rel / 'SHA256SUMS', 'a') as f:        # as make-release.sh writes it: the release names itself
+            f.write(hashlib.sha256(b'v2026.11.02\n').hexdigest() + '  mu300-release\n')
         self.assertEqual(self.sign_release(rel / 'SHA256SUMS', self.key.pub, MU300_RELEASE_KEY=self.secret(self.key)).returncode, 0)
         r = subprocess.run(['sh', str(TOP / 'tools/make-magisk-zips.sh'), str(rel), str(self.tmp / 'zips')], capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stderr)
@@ -503,24 +579,134 @@ class Signature(UpdateBase):
             self.assertIn(f'-V -q -m {self.sums} -p {self.key.pub} -x {self.sig}', (self.tmp / 'usign').read_text())
 
     def test_what_a_state_means(self):
-        # (state, offline source, the owner's word, release against the installed one) -> taken or not
+        # the checksums of v2026.11.02 (they say so: their mu300-release line), of no release, and of another one
+        named, plain, other = self.tmp / 'named', self.tmp / 'plain', self.tmp / 'other-release'
+        tagsha = hashlib.sha256(b'v2026.11.02\n').hexdigest()
+        named.write_text('a' * 64 + '  mu300-kernel.tar.gz\n' + tagsha + '  mu300-release\n')
+        plain.write_text('a' * 64 + '  mu300-kernel.tar.gz\n')
+        other.write_text('a' * 64 + '  mu300-kernel.tar.gz\n' + hashlib.sha256(b'v2026.10.01\n').hexdigest() + '  mu300-release\n')
+        # (state, checksums, offline source, the owner's word) -> taken or not
         cases = [
-            ('valid', '', '', 'v2026.11.02', True), ('valid', '/x.zip', '', 'v2026.11.02', True),
-            ('bad', '', '1', 'v2026.11.02', False), ('bad', '/x.zip', '1', 'v2026.11.02', False),
-            ('nokey', '', '', 'v2026.11.02', True),            # online, no key: as it always was
-            ('nokey', '/x.zip', '', 'v2026.11.02', False), ('nokey', '/x.zip', '1', 'v2026.11.02', True),
-            ('unsigned', '/x.zip', '', 'v2026.11.02', False), ('unsigned', '/x.zip', '1', 'v2026.11.02', True),
-            ('unsigned', '', '', 'v2026.11.02', False),        # this system has a key: a newer release is signed
-            ('unsigned', '', '', 'v2026.10.25', False),        # ... and so is its own
-            ('unsigned', '', '', 'v2026.10.01', True),         # going back to one from before signing
-            ('unsigned', '', '1', 'v2026.11.02', True),
-            ('notool', '', '', 'v2026.11.02', False), ('notool', '', '1', 'v2026.11.02', True),
+            ('valid', named, '', '', True), ('valid', named, '/x.zip', '', True),
+            # a signature says nothing about checksums that name no release, or another one - with any word
+            ('valid', plain, '', '1', False), ('valid', other, '', '1', False), ('valid', other, '/x.zip', '1', False),
+            ('unsigned', other, '/x.zip', '1', False), ('nokey', other, '', '', False),
+            ('bad', named, '', '1', False), ('bad', named, '/x.zip', '1', False),
+            ('badkey', named, '', '1', False), ('badkey', named, '/x.zip', '1', False),
+            ('nokey', named, '', '', True), ('nokey', plain, '', '', True),    # online, no key: as it always was
+            ('nokey', named, '/x.zip', '', False), ('nokey', plain, '/x.zip', '1', True),
+            ('unsigned', named, '/x.zip', '', False), ('unsigned', plain, '/x.zip', '1', True),
+            # this system has a key: no unsigned release silently, newer or older - taking the signature away is
+            # not a way in
+            ('unsigned', named, '', '', False), ('unsigned', plain, '', '', False), ('unsigned', plain, '', '1', True),
+            ('notool', named, '', '', False), ('notool', named, '', '1', True),
         ]
         for shell in self.each_shell():
-            for state, frm, word, tag, taken in cases:
-                r = self.up(shell, f'installed_version() {{ echo v2026.10.25; }}; MU300_FROM={frm}; MU300_ALLOW_UNSIGNED={word}; '
-                                   f'sums_verdict {tag} {state} "release {tag}"; echo "rc=$?"')
-                self.assertIn('rc=0' if taken else 'rc=1', r.stdout, (state, frm, word, tag, r.stderr))
+            for installed in ('v2026.10.25', 'v2026.12.01'):
+                for state, sums, frm, word, taken in cases:
+                    r = self.up(shell, f'installed_version() {{ echo {installed}; }}; MU300_FROM={frm}; MU300_ALLOW_UNSIGNED={word}; '
+                                       f'sums_verdict v2026.11.02 {state} "release v2026.11.02" "{sums}"; echo "rc=$?"')
+                    self.assertIn('rc=0' if taken else 'rc=1', r.stdout, (state, sums.name, frm, word, r.stderr))
+
+    def test_the_key_is_the_systems_own_file_or_nothing_is_trusted(self):
+        # never a key that came with the release, and never one that somebody else could have put there: a link, a
+        # file others can write. That is not "no key" (which would let everything through as before signing)
+        rel = release_dir(self.tmp / 'rel')
+        sig = self.key.sign(rel / 'SHA256SUMS')
+        z = magisk_zip(self.tmp / 'signed.zip', rel, sums=True, sig=sig)
+        (self.disk / 'openwrt-luci/etc/mu300').mkdir(parents=True)
+        (self.disk / 'openwrt-luci/etc/mu300/image-version').write_text('v2026.10.25\n')
+        link = self.tmp / 'link.pub'
+        link.symlink_to(self.key.pub)
+        loose = self.tmp / 'loose.pub'
+        loose.write_text(self.key.pub.read_text())
+        loose.chmod(0o666)
+        empty = self.tmp / 'empty.pub'
+        empty.write_text('')
+        get = (self.serve(rel) + 'installed_version() { echo v2026.10.25; }; '
+               'fetch_verified v2026.11.02 mu300-kernel.tar.gz; echo "rc=$?"')
+        for shell in self.each_shell():
+            for pub in (link, loose, empty, self.tmp):
+                self.assertEqual(self.state(shell, rel / 'SHA256SUMS', sig, pub=pub), 'badkey', pub.name)
+                shutil.rmtree(self.disk / '.mu300-update', ignore_errors=True)
+                for word in ('', '1'):
+                    r = self.up(shell, get, MU300_RELEASE_PUB=pub, MU300_ALLOW_UNSIGNED=word, TMPDIR=self.tmp)
+                    self.assertIn('rc=1', r.stdout, (pub.name, r.stderr))
+                    r = self.up(shell, f'MU300_FROM="{z}"; from_begin; echo began', MU300_RELEASE_PUB=pub,
+                                MU300_ALLOW_UNSIGNED=word, TMPDIR=self.tmp)
+                    self.assertNotIn('began', r.stdout, pub.name)
+                o = json.loads(self.up(shell, f'inspect_json "{z}"', MU300_RELEASE_PUB=pub, TMPDIR=self.tmp).stdout)
+                self.assertEqual((o['signature'], o['fits'], o['why']), ('bad', 0, 'signature'), pub.name)
+        # a zip that brings a key of its own, and is signed with it: the key is never read from there
+        own = magisk_zip(self.tmp / 'own.zip', rel, sums=True, sig=self.other.sign(rel / 'SHA256SUMS', self.tmp / 'own.sig'),
+                         extra=[('mu300/release.pub', self.other.pub.read_text()), ('release.pub', self.other.pub.read_text()),
+                                ('opt/mu300/lib/release.pub', self.other.pub.read_text())])
+        for shell in self.each_shell():
+            o = json.loads(self.up(shell, f'inspect_json "{own}"', MU300_RELEASE_PUB=self.key.pub, TMPDIR=self.tmp).stdout)
+            self.assertEqual(o['signature'], 'bad')
+            o = json.loads(self.up(shell, f'inspect_json "{own}"', MU300_RELEASE_PUB=self.tmp / 'none.pub', TMPDIR=self.tmp).stdout)
+            self.assertEqual(o['signature'], 'nokey')
+        src = UPDATE.read_text()
+        self.assertEqual(src.count('release.pub'), 1)          # one place names the key: the system's own path
+
+    def test_a_signature_of_one_release_under_the_name_of_another(self):
+        # the signed checksums of the old v2026.10.01, handed out as v2026.11.02: by a mirror, and in a zip whose
+        # manifest says the newer tag. The tag is inside what is signed.
+        (self.disk / 'openwrt-luci/etc/mu300').mkdir(parents=True)
+        (self.disk / 'openwrt-luci/etc/mu300/image-version').write_text('v2026.10.25\n')
+        old = release_dir(self.tmp / 'old', tag='v2026.10.01')
+        sig = self.key.sign(old / 'SHA256SUMS')
+        relabelled = magisk_zip(self.tmp / 'relabelled.zip', old, tag='v2026.11.02', sums=True, sig=sig)
+        honest = magisk_zip(self.tmp / 'honest.zip', old, tag='v2026.10.01', sums=True, sig=sig)
+        inst = 'installed_version() { echo v2026.10.25; }; '
+        for shell in self.each_shell():
+            shutil.rmtree(self.disk / '.mu300-update', ignore_errors=True)
+            r = self.up(shell, self.serve(old) + inst + 'fetch_verified v2026.11.02 mu300-kernel.tar.gz; echo "rc=$?"',
+                        MU300_RELEASE_PUB=self.key.pub, TMPDIR=self.tmp)
+            self.assertIn('rc=1', r.stdout, r.stderr)
+            self.assertIn('checksums of another release than v2026.11.02', r.stderr)
+            self.assertFalse((self.disk / '.mu300-update/mu300-kernel.tar.gz').exists())
+            o = json.loads(self.up(shell, f'inspect_json "{relabelled}"', MU300_RELEASE_PUB=self.key.pub, TMPDIR=self.tmp).stdout)
+            self.assertEqual((o['signature'], o['fits'], o['why']), ('bad', 0, 'signature'))
+            for word in ('', '1'):
+                r = self.up(shell, f'MU300_FROM="{relabelled}"; MU300_ALLOW_UNSIGNED={word}; MU300_ALLOW_DOWNGRADE={word}; from_begin; echo began',
+                            MU300_RELEASE_PUB=self.key.pub, TMPDIR=self.tmp)
+                self.assertNotIn('began', r.stdout, r.stderr)
+            # under its own name it is what it is: signed, and older than what is installed
+            o = json.loads(self.up(shell, f'inspect_json "{honest}"', MU300_RELEASE_PUB=self.key.pub, TMPDIR=self.tmp).stdout)
+            self.assertEqual((o['signature'], o['downgrade'], o['fits']), ('valid', 1, 1))
+            r = self.up(shell, f'MU300_FROM="{honest}"; from_begin; echo began', MU300_RELEASE_PUB=self.key.pub, TMPDIR=self.tmp)
+            self.assertNotIn('began', r.stdout)
+            self.assertIn('older than what is installed', r.stderr)
+        # signed checksums that name no release (a SHA256SUMS from before the line, signed by hand) are not "signed"
+        plain = release_dir(self.tmp / 'plain')
+        (plain / 'SHA256SUMS').write_text(''.join(l + '\n' for l in (plain / 'SHA256SUMS').read_text().split('\n')
+                                                  if l and 'mu300-release' not in l))
+        psig = self.key.sign(plain / 'SHA256SUMS')
+        for shell in self.each_shell():
+            shutil.rmtree(self.disk / '.mu300-update', ignore_errors=True)
+            r = self.up(shell, self.serve(plain) + inst + 'fetch_verified v2026.11.02 mu300-kernel.tar.gz; echo "rc=$?"',
+                        MU300_RELEASE_PUB=self.key.pub, TMPDIR=self.tmp)
+            self.assertIn('rc=1', r.stdout, r.stderr)
+            self.assertIn('do not say which release', r.stderr)
+
+    def test_checksums_swapped_between_two_downloads(self):
+        # the SHA256SUMS that was verified is the one every file is checked against: the same bytes, or nothing
+        rel = release_dir(self.tmp / 'rel')
+        self.key.sign(rel / 'SHA256SUMS')
+        evil = self.tmp / 'evil-kernel.tar.gz'
+        tgz(evil, [('Image', 'another kernel', 0o644)])
+        code = (self.serve(rel) + 'installed_version() { echo v2026.10.25; }; '
+                'fetch_verified v2026.11.02 mu300-openwrt-luci-rootfs.tar.gz; echo "first=$?"; '
+                f'printf "%s  mu300-kernel.tar.gz\n" "{sha(evil)}" > "$STAGE/SHA256SUMS"; cp "{evil}" "$STAGE/mu300-kernel.tar.gz"; '
+                'fetch_verified v2026.11.02 mu300-kernel.tar.gz; echo "second=$?"')
+        for shell in self.each_shell():
+            for pub in (self.key.pub, self.tmp / 'no.pub'):
+                shutil.rmtree(self.disk / '.mu300-update', ignore_errors=True)
+                r = self.up(shell, code, MU300_RELEASE_PUB=pub, TMPDIR=self.tmp)
+                self.assertIn('first=0', r.stdout, r.stderr)
+                self.assertIn('second=1', r.stdout, r.stderr)
+                self.assertIn('changed after it was checked', r.stderr)
 
     def serve(self, d):
         """fetch_stdout and fetch_file read from the directory D instead of the network"""
@@ -551,6 +737,17 @@ class Signature(UpdateBase):
                 r = self.up(shell, self.serve(evil) + inst + get, MU300_RELEASE_PUB=self.key.pub, TMPDIR=self.tmp)
                 self.assertIn('rc=1', r.stdout, (strip, r.stderr))
                 self.assertFalse((stage / 'mu300-kernel.tar.gz').exists())
+            # a release from before signing, older than what is installed: not silently either, once there is a key
+            shutil.rmtree(stage, ignore_errors=True)
+            unsigned = self.tmp / 'unsigned'
+            shutil.rmtree(unsigned, ignore_errors=True)
+            shutil.copytree(rel, unsigned)
+            (unsigned / 'SHA256SUMS.sig').unlink()
+            older = 'installed_version() { echo v2026.12.01; }; '
+            r = self.up(shell, self.serve(unsigned) + older + get, MU300_RELEASE_PUB=self.key.pub, TMPDIR=self.tmp)
+            self.assertIn('rc=1', r.stdout, r.stderr)
+            r = self.up(shell, self.serve(unsigned) + older + get, MU300_RELEASE_PUB=self.key.pub, TMPDIR=self.tmp, MU300_ALLOW_UNSIGNED=1)
+            self.assertIn('rc=0', r.stdout, r.stderr)
             # the same mirror, a system without a key: as before signing, the checksum is all there is
             shutil.rmtree(stage, ignore_errors=True)
             r = self.up(shell, self.serve(evil) + inst + get, MU300_RELEASE_PUB=self.tmp / 'no.pub', TMPDIR=self.tmp)
@@ -578,7 +775,7 @@ class Signature(UpdateBase):
                     self.assertEqual('began' in r.stdout, want, (z.name, word, r.stderr))
 
 
-class Status(Lock):
+class Status(test_update.Lock):
     """mu300-update status and releases: JSON a page can take as it is."""
 
     def fill(self):
@@ -806,14 +1003,14 @@ class Status(Lock):
         block = src[src.index('# ---- for a panel: status'):src.index('# ---- for a panel: end')]
         import re
         self.assertEqual(sorted(re.findall(r'^([a-z_]+)\(\) \{', block, re.M)), sorted([
-            'jv', 'jstr', 'jnum', 'mtime', 'tag_ok', 'newer', 'space_needed', 'source_conf', 'sig_raw', 'sig_state',
-            'sums_trusted', 'sums_verdict', 'zip_p', 'man_val', 'from_open', 'from_close', 'from_member', 'from_fits',
+            'jv', 'jstr', 'jnum', 'mtime', 'tag_ok', 'newer', 'space_needed', 'source_conf', 'key_state', 'sig_raw', 'sig_state',
+            'stage_private', 'tag_sha', 'sums_trusted', 'sums_verdict', 'apply_targets', 'downgrade_ok', 'boot_downgrade_ok', 'zip_p', 'man_val', 'from_open', 'from_close', 'from_member', 'from_fits',
             'from_installed', 'apply_options', 'from_begin', 'from_verified', 'from_handover', 'inspect_json',
             'lock_holder', 'size_kb', 'status_json', 'release_json', 'releases_json', 'progress']))
 
 
 # (Status borrows Lock's holder of the lock, not its tests: those run in test_update)
-for _name in dir(Lock):
+for _name in dir(test_update.Lock):
     if _name.startswith('test_'):
         setattr(Status, _name, None)
 
@@ -827,6 +1024,8 @@ case ${1:-} in
     inspect) printf '%s\n' "$*" >> "$FAKE/calls"; [ -f "$FAKE/inspect" ] && cat "$FAKE/inspect"; exit 0 ;;
 esac
 printf '%s|%s|%s\n' "$*" "${MU300_RELEASE:-}" "${MU300_PROGRESS:+progress}" >> "$FAKE/calls"
+printf '[%s][%s][%s][%s][%s]\n' "${MU300_ALLOW_UNSIGNED:-}" "${MU300_ALLOW_DOWNGRADE:-}" "${MU300_RELEASE_PUB:-}" "${MU300_FROM:-}" \
+    "${MU300_RELEASE_URL:-}${MU300_API_URL:-}${MU300_DOWNLOAD_URL:-}${MU300_FORCE:-}" >> "$FAKE/env"
 [ -z "${MU300_PROGRESS:-}" ] || [ ! -f "$FAKE/progress" ] || cat "$FAKE/progress" >> "$MU300_PROGRESS"
 [ ! -f "$FAKE/log" ] || cat "$FAKE/log"
 [ ! -f "$FAKE/newtag" ] || cp "$FAKE/newtag" "$MU300_DISK/openwrt-luci/etc/mu300/image-version"
@@ -1252,6 +1451,26 @@ class Adapter(ShellTest):
             self.act(shell, 'upload_done')
             self.run_job(shell)
             self.assertEqual(self.ad(shell, 'get')['upload']['inspect'], {'ok': 0, 'why': 'not-release'})
+
+    def test_nothing_in_the_environment_turns_a_check_off(self):
+        # --unsigned and --downgrade come from the request, by name (the flags of apply_file); what the adapter was
+        # started with reaches the updater in no other way - not the word, not the key, not the source
+        hostile = dict(MU300_ALLOW_UNSIGNED=1, MU300_ALLOW_DOWNGRADE=1, MU300_RELEASE_PUB='/tmp/x.pub', MU300_FROM='/tmp/x.zip',
+                       MU300_RELEASE_URL='http://x/', MU300_API_URL='http://x/', MU300_DOWNLOAD_URL='http://x/', MU300_FORCE=1)
+        for shell in self.each_shell():
+            staged = self.upload(shell, self.INSPECT)
+            (self.fake / 'env').unlink(missing_ok=True)
+            self.assertEqual(self.act(shell, 'apply_file', sha256='ab' * 32, confirm='apply', **hostile)['ok'], 1)
+            self.assertEqual(self.started(wait=5), [f'{ADAPTER} run-job'])
+            r = self.ad(shell, 'run-job', **hostile)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(self.calls(), [f'apply --from {staged}||progress'])
+            self.assertEqual((self.fake / 'env').read_text(), '[][][][][]\n')
+            # and the flags are words of a fixed set, each needed for what the file is - never taken for more
+            self.upload(shell, self.INSPECT)
+            for flags in ('unsigned;id', '--unsigned', 'unsigned downgrade force', 'MU300_ALLOW_UNSIGNED=1'):
+                self.assertEqual(self.act(shell, 'apply_file', sha256='ab' * 32, confirm='apply', flags=flags),
+                                 {'ok': 0, 'error': 'Invalid update request'})
 
     def test_cancel_removes_the_upload(self):
         for shell in self.each_shell():
