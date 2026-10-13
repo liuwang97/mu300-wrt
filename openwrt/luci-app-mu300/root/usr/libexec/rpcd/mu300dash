@@ -267,11 +267,22 @@ at_wedges() {
         }
     } END { exit !found }'
 }
+# at_moves_sim CMD: CMD is one of the three commands that say which card the modem's channels and its packet data
+# belong to: AT+SPACTCARD=, AT+SMMSWAP=, and AT+SPSWDATA as a command (its "?" forms only ask). The SIM selector
+# sends them itself, in an order that was measured, and keeps a mark of where the data route is (mu300-sim,
+# mobile-data); from the terminal they would move the route under a connection that then answers CONNECT and loses
+# every packet. Denied on every device, in any spelling, as kanoqwq's terminal does.
+at_moves_sim() {
+    printf '%s\n' "$1" | tr -d ' "' | tr 'a-z' 'A-Z' | awk '{
+        if ($0 ~ /\+(SPACTCARD|SMMSWAP)=([^?]|$)/ || $0 ~ /\+SPSWDATA($|[^?=])/ || $0 ~ /\+SPSWDATA=([^?]|$)/) found = 1
+    } END { exit !found }'
+}
 # at_class CMD: what sending CMD would do beyond answering, by its commands anywhere on the line (spaces and quotes
 # dropped, case ignored; "=?" is a test command and changes nothing):
 #   scan   takes minutes and holds the channel: AT+COPS=? (the network list), any *SCAN* command (AT+SPFREQSCAN)
 #   nv     a setting the modem keeps in its NV: network mode, NR mode, EN-DC, band and cell locks (AT+SPTESTMODE=,
-#          AT+SP5GRAN=, AT+SPENDC=, AT+SPLBAND=1/2, AT+SPFORCEFRQ= other than the =x,3 read). They survive a
+#          its two-card form AT+SPTESTMODEM=, AT+SP5GRAN=, AT+SPENDC=, AT+SPLBAND=1/2, AT+SPFORCEFRQ= other than
+#          the =x,3 read). They survive a
 #          reboot and stay in force in Android (#96); the Locks page sets and undoes them.
 #   radio  the radio, the data connection or the modem itself: AT+CFUN=, AT+SFUN=, AT+CGATT=, AT+CGACT=, AT+CGDATA,
 #          AT+COPS=0/1/2/4 (operator selection, deregistration), ATD (a call), AT+SPATASSERT= (crashes the modem)
@@ -282,7 +293,7 @@ at_class() {
     printf '%s\n' "$1" | tr -d ' "' | tr 'a-z' 'A-Z' | awk '{
         s = $0
         if (s ~ /\+COPS=\?/ || s ~ /SCAN/) c = "scan"
-        else if (s ~ /\+(SPTESTMODE|SP5GRAN|SPENDC)=([^?]|$)/ || s ~ /\+SPLBAND=0*[12]([^0-9]|$)/ ||
+        else if (s ~ /\+(SPTESTMODEM?|SP5GRAN|SPENDC)=([^?]|$)/ || s ~ /\+SPLBAND=0*[12]([^0-9]|$)/ ||
                  (s ~ /\+SPFORCEFRQ=[0-9]*,/ && s !~ /\+SPFORCEFRQ=[0-9]*,0*3([^0-9]|$)/)) c = "nv"
         else if (s ~ /\+(CFUN|SFUN|CGATT|CGACT|SPATASSERT)=([^?]|$)/ || s ~ /\+CGDATA/ ||
                  s ~ /\+COPS=0*[0124]([^0-9]|$)/ || s ~ /^ATD/) c = "radio"
@@ -352,6 +363,10 @@ m_at() {
     # leading zeros, more parameters, after another command on the same line)
     if at_wedges "$cmd"; then
         refuse 'Denied: this command wedges the AT port until a reboot'
+        return
+    fi
+    if at_moves_sim "$cmd"; then
+        refuse 'Denied: this command moves the SIM selection or the data route; the SIM settings do that'
         return
     fi
     # a lock apply in flight means the modem is restarting (SFUN) - say so instead

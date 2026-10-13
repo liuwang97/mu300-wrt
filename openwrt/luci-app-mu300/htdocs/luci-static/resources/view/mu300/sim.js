@@ -31,7 +31,9 @@ return view.extend({
 			idle: _('Ready'), switching: _('Switching SIM'), switched: _('SIM switched; saved as boot default'),
 			rolled_back: _('Switch failed; previous SIM restored'),
 			no_data: _('The target SIM got no mobile data; the previous SIM is restored and the saved boot preference is unchanged.'),
-			reboot_required: _('Radio state unknown; reboot required')
+			no_data_kept: _('The target SIM has no mobile data yet, and the previous SIM had none either: the device stays on the target. The saved boot preference is unchanged.'),
+			reboot_required: _('Radio state unknown; reboot required'),
+			restarting: _('Radio state unknown; the device is restarting.')
 		};
 		/* The shared controller exposes boot selection on F50 and live switching only on verified U30 Air/OpenWrt. */
 		if (!st || (st.capabilities && !st.capabilities.boot_selection) || (st.ok !== 1 && !st.result)) {
@@ -42,8 +44,13 @@ return view.extend({
 			return;
 		}
 		/* the last boot's cold start of the chosen SIM failed: the device is on SIM1 without live switching */
+		/* (the reasons are identifiers of mu300-sim2-start and mu300-sim2-warmup; one it does not know is shown as it is) */
+		var generic = _('The chosen SIM could not be started at the last boot (no card, PIN, or the modem refused it).');
 		var fallbacks = {
-			'cold-start-failed': _('The chosen SIM could not be started at the last boot (no card, PIN, or the modem refused it).'),
+			'cold-start-failed': generic,
+			'no-sim': _('No card answered in the chosen SIM position at the last boot.'),
+			'sim-pin': _('The chosen SIM is locked by its PIN.'),
+			'no-data': _('The chosen SIM got no mobile data within the time at its first boot.'),
 			'brokers-missing': _('The second SIM\'s modem channels did not come up at the last boot.'),
 			'unconfirmed': _('The last dual-SIM boot never confirmed itself.')
 		};
@@ -56,7 +63,11 @@ return view.extend({
 		]);
 		if (st.fallback)
 			card.appendChild(E('p', { 'style': 'color:#b45309;font-weight:600' }, [
-				(fallbacks[st.fallback] || st.fallback) + ' ' + _('The device is back on SIM1 without live switching; choose again below to try once more.') ]));
+				(fallbacks[st.fallback] || (generic + ' (' + st.fallback + ')')) + ' ' + _('The device is back on SIM1 without live switching; choose again below to try once more.') ]));
+		/* a second SIM that never had data under Linux is on trial for its first boot (mu300-sim2-warmup) */
+		if (st.boot_check === 'waiting')
+			card.appendChild(E('p', { 'style': 'color:#b45309;font-weight:600' }, [
+				_('Waiting for the first mobile data on SIM2: %d s left. Without data the device goes back to SIM1 and restarts.').format(st.boot_check_left || 0) ]));
 		var hot = E('input', { 'type': 'checkbox', 'checked': st.hot ? '' : null, 'disabled': (!live || st.busy) ? '' : null });
 		hot.addEventListener('change', function() { self.set('hot', hot.checked ? 1 : 0); });
 		card.appendChild(E('label', {}, [ hot, ' ', _('Enable hot switching') ]));

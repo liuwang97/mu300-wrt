@@ -1049,6 +1049,28 @@ class FixRound1(Mu300Dash):
                 r, recs, _ = self.call(shell, 'at', {'cmd': c})
                 self.assertEqual(recs, [['at', '-t', '8', c]], c)
 
+    def test_the_commands_that_move_the_sim_or_the_data_route_are_the_selectors_alone(self):
+        # AT+SPSWDATA from the terminal moves the packet-data route under a connection that then answers CONNECT and
+        # loses every packet; the SIM selector sends these three itself, in a measured order, and keeps a mark of
+        # where the route is (FINDINGS 74, after kanoqwq's terminal). Their "?" forms only ask.
+        bad = ['AT+SPSWDATA', 'at+spswdata', 'AT + SPSWDATA', 'AT+SPSWDATA=1', 'AT+SPSWDATA=0', 'AT+SPACTCARD=1',
+               'AT+SPACTCARD=0', 'at+spactcard = 1', 'AT+SPACTCARD="1"', 'AT+SMMSWAP=0', 'AT+SMMSWAP=1', 'at+smmswap=1',
+               'ATE0+SPSWDATA', 'AT+SPACTCARD=']
+        good = ['AT+SPSWDATA?', 'AT+SPSWDATA=?', 'AT+SPACTCARD?', 'AT+SPACTCARD=?', 'AT+SMMSWAP?', 'AT+SPTESTMODE?']
+        for shell in self.each_shell():
+            for c in bad:
+                r, recs, _ = self.call(shell, 'at', {'cmd': c, 'confirm': '1'})
+                self.assertEqual(recs, [], c)
+                self.assertEqual(self.reply(r).get('error'),
+                                 'Denied: this command moves the SIM selection or the data route; the SIM settings do that', c)
+            for c in good:
+                r, recs, _ = self.call(shell, 'at', {'cmd': c})
+                self.assertEqual(recs, [['at', '-t', '8', c]], c)
+            # the two-card form of the work-mode write is an NV write like the one-card form: asked about first
+            r, recs, _ = self.call(shell, 'at', {'cmd': 'AT+SPTESTMODEM=134,134'})
+            self.assertEqual(recs, [])
+            self.assertEqual({k: self.reply(r).get(k) for k in ('confirm', 'kind')}, {'confirm': 1, 'kind': 'nv'})
+
     def test_sms_failures_carry_a_fixed_error_and_a_detail(self):
         self.output('sms', 'no message "4"\\x')
         self.output('sms.rc', '1')

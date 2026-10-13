@@ -807,7 +807,7 @@ esac
         self.netconf = self.tmp / 'network'
         self.lib = self.tmp / 'mobile-data.lib'
         self.lib.write_text((BIN / 'mobile-data').read_text()
-                            .replace('/run/mu300-at2/cmd', str(self.tmp / 'cmd'))
+                            .replace('DATA_DIR=/run/mu300-at2', f'DATA_DIR={self.tmp}')   # its command fifo
                             .replace('/opt/mu300/bin/mu300-at ', f'{self.stubs}/mu300-at '))
 
     def define(self, apn, slot=0, trace=False, drop=(), **env):

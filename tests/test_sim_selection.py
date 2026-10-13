@@ -173,6 +173,26 @@ esac
             self.state.unlink()
             self.assertEqual(self.sim(shell, 'active').stdout.strip(), '0')
 
+    def test_the_pinned_external_card_is_answered_from_one_file_read(self):
+        # every AT client asks "active" before every command: with the pin at 0 (nearly every device) neither the
+        # settings library nor the device's name is read (measured on a U30 Air: 2.8 ms a call, 6.7 ms with them)
+        self.stub('mu300-device', 'echo asked >> "$STUBLOG/device-asked"; echo f50')
+        for shell in self.each_shell():
+            (self.tmp / 'device-asked').unlink(missing_ok=True)
+            self.state.parent.mkdir(parents=True, exist_ok=True)
+            self.state.write_text('0\n')
+            r = self.script(shell, BIN / 'mu300-sim', 'active', MU300_SIM_ROOT=self.tmp,
+                            MU300_SIM_CONFIG_LIB=self.tmp / 'no-such-library.sh')
+            self.assertEqual((r.returncode, r.stdout.strip(), r.stderr), (0, '0', ''))
+            self.assertFalse((self.tmp / 'device-asked').exists())
+            # a pinned internal card is still checked against the device, as before
+            self.state.write_text('1\n')
+            self.assertEqual(self.sim(shell, 'active').stdout.strip(), '1')
+            self.assertTrue((self.tmp / 'device-asked').exists())
+            self.state.write_text('junk\n')
+            self.assertNotEqual(self.sim(shell, 'active').returncode, 0)
+            self.state.unlink()
+
     def test_invalid_selection_never_writes_or_executes(self):
         for shell in self.each_shell():
             for bad in ['2', '-1', '1;touch injected', '$(touch injected)', '1\n0']:

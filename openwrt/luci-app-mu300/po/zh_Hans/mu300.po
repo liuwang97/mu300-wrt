@@ -1714,14 +1714,29 @@ msgstr "切换失败，已恢复原卡"
 msgid "The target SIM got no mobile data; the previous SIM is restored and the saved boot preference is unchanged."
 msgstr "目标 SIM 卡未获得移动网络；已恢复原活动卡，保存的启动选择保持不变。"
 
+msgid "The target SIM has no mobile data yet, and the previous SIM had none either: the device stays on the target. The saved boot preference is unchanged."
+msgstr "目标 SIM 暂时没有移动数据，之前的 SIM 也没有：设备停留在目标 SIM 上。已保存的启动首选项未更改。"
+
 msgid "Radio state unknown; reboot required"
 msgstr "射频状态未知，请重启设备"
+
+msgid "Radio state unknown; the device is restarting."
+msgstr "射频状态未知；设备正在重启。"
 
 msgid "Dual SIM control is only for the U30 Air on OpenWrt."
 msgstr "双卡控制仅适用于运行 OpenWrt 的 U30 Air。"
 
 msgid "The chosen SIM could not be started at the last boot (no card, PIN, or the modem refused it)."
 msgstr "上次开机时无法启动所选的 SIM 卡（无卡、需要 PIN，或调制解调器拒绝）。"
+
+msgid "No card answered in the chosen SIM position at the last boot."
+msgstr "上次启动时，所选 SIM 位置没有卡应答。"
+
+msgid "The chosen SIM is locked by its PIN."
+msgstr "所选 SIM 被 PIN 码锁定。"
+
+msgid "The chosen SIM got no mobile data within the time at its first boot."
+msgstr "所选 SIM 在首次启动时未能在规定时间内获得移动数据。"
 
 msgid "The second SIM's modem channels did not come up at the last boot."
 msgstr "上次开机时第二张 SIM 卡的调制解调器通道没有就绪。"
@@ -1743,6 +1758,9 @@ msgstr "SIM 控制不可用"
 
 msgid "The device is back on SIM1 without live switching; choose again below to try once more."
 msgstr "设备已回到 SIM1 且关闭了热切换；在下方重新选择即可再试一次。"
+
+msgid "Waiting for the first mobile data on SIM2: %d s left. Without data the device goes back to SIM1 and restarts."
+msgstr "正在等待 SIM2 的首次移动数据：还剩 %d 秒。没有数据时设备将回到 SIM1 并重启。"
 
 msgid "Enable hot switching"
 msgstr "启用热切换"
@@ -2631,6 +2649,9 @@ msgstr "不允许用 \";\" 串联命令"
 
 msgid "Denied: this command wedges the AT port until a reboot"
 msgstr "已拒绝：此命令会让 AT 端口卡死，直到重启"
+
+msgid "Denied: this command moves the SIM selection or the data route; the SIM settings do that"
+msgstr "已拒绝：此命令会改变 SIM 选择或数据路由；请使用 SIM 设置"
 
 msgid "The modem is restarting (network locks or a SIM switch, about half a minute), try again shortly"
 msgstr "调制解调器正在重启（网络锁定或 SIM 切换，约半分钟），请稍后再试"

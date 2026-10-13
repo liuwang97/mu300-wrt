@@ -105,24 +105,36 @@ start_sim2() {
     procd_close_instance
 }
 
-# sim_fallback REASON: back to SIM1 without live switching, the reason kept for the Dual SIM page (mu300-sim status)
+# sim_fallback REASON: back to SIM1 without live switching, the reason kept for the Dual SIM page (mu300-sim status).
+# It never fails its caller: settings that cannot be written (a full or read-only filesystem) leave the pending
+# marker, and the caller makes this boot a SIM1 boot either way.
 sim_fallback() {
     echo "mu300-atd: dual SIM: $1; SIM1 without live switching from now on" >&2
-    sim_cfg_save_default 0 || return 1
-    sim_cfg_save_hot 0 || return 1
-    printf '%s\n' "$1" > /etc/mu300-sim-fallback
-    rm -f /etc/mu300-sim-pending
+    printf '%s\n' "$1" > /etc/mu300-sim-fallback 2>/dev/null
+    sim_cfg_save_default 0 && sim_cfg_save_hot 0 && rm -f /etc/mu300-sim-pending
+    return 0
+}
+# sim1_only: this boot is a plain SIM1 boot, whatever was chosen. The pin says so to every reader (mu300-sim active):
+# without it start_sim1 would take a saved second card for the F50's kind and open nr4/nr5 under SIM1's names.
+sim1_only() {
+    mkdir -p /run/mu300
+    printf '0\n' > /run/mu300/sim-slot
+    start_sim1
 }
 
+# Every path through here ends with AT owners started: a return without instances is a boot without modem control,
+# and nothing starts this service a second time. Whatever cannot be read, written or understood is a SIM1 boot.
 start_service() {
-    local slot hot temporary
+    local slot hot temporary lib=${MU300_SIM_CONFIG_LIB:-/opt/mu300/lib/sim-config.sh}
     # Only the U30 Air has the second group and the validated sequences; everywhere else the files are ignored.
     [ "$(/opt/mu300/bin/mu300-device 2>/dev/null)" = u30air ] || { start_sim1; return; }
+    [ -r "$lib" ] || { start_sim1; return; }
     SIM_CONFIG_U30=1
-    . "${MU300_SIM_CONFIG_LIB:-/opt/mu300/lib/sim-config.sh}"
-    if ! sim_cfg_migrate; then
-        sim_fallback invalid-settings || return 1
-    fi
+    . "$lib"
+    mkdir -p /run/mu300
+    # mu300-sim2-warmup gave the dual-SIM start up in this boot and started the service over: SIM1, nothing else
+    [ ! -e /run/mu300/sim-fallback-boot ] || { sim1_only; return; }
+    sim_cfg_migrate || sim_fallback invalid-settings
     slot=$(cat /run/mu300/sim-slot 2>/dev/null || sim_cfg_default) || slot=invalid
     hot=$(sim_cfg_hot) || hot=invalid
     case "$hot" in 0|1) ;; *) sim_fallback invalid-hot; slot=0; hot=0;; esac
@@ -131,24 +143,30 @@ start_service() {
     # is up (or it falls back itself). A marker still there at the next boot means that boot never confirmed
     # (a broker that never came up, a warm-up that died): this boot is a plain SIM1 boot, and the page says why.
     if [ ! -e /run/mu300/sim-boot-policy ] && [ -e /etc/mu300-sim-pending ]; then
-        sim_fallback unconfirmed; slot=0; hot=0
-        mkdir -p /run/mu300
-        printf '0\n' > /run/mu300/sim-slot
+        sim_fallback unconfirmed
+        : > /run/mu300/sim-boot-policy
+        sim1_only; return
     fi
-    mkdir -p /run/mu300
     : > /run/mu300/sim-boot-policy
     # Pin the active slot for this boot; changing network.wan.sim_slot only affects the next boot.
-    mkdir -p /run/mu300
     if [ ! -e /run/mu300/sim-slot ]; then
-        temporary=$(mktemp /run/mu300/sim-slot.XXXXXX) || return 1
+        temporary=$(mktemp /run/mu300/sim-slot.XXXXXX) || { sim1_only; return; }
         printf '%s\n' "$slot" > "$temporary"
         ln "$temporary" /run/mu300/sim-slot 2>/dev/null
         rm -f "$temporary"
     fi
-    slot=$(cat /run/mu300/sim-slot) || return 1
+    slot=$(cat /run/mu300/sim-slot 2>/dev/null) || slot=invalid
     case "$slot:$hot" in
-        0:1|1:*) [ -e /etc/mu300-sim-pending ] || : > /etc/mu300-sim-pending; start_sim2 ;;
-        0:*) start_sim1 ;;
-        *) echo "mu300-atd: invalid SIM slot $slot" >&2; return 1 ;;
+        0:0) start_sim1 ;;
+        0:1|1:[01])
+            # The dual-SIM path's helpers are bash, and its one-boot guarantee needs the marker on the disk: without
+            # either this is a SIM1 boot, and the settings go back so that the next one does not try again.
+            if command -v bash >/dev/null 2>&1 && touch /etc/mu300-sim-pending 2>/dev/null; then
+                start_sim2
+            else
+                sim_fallback not-startable
+                sim1_only
+            fi ;;
+        *) echo "mu300-atd: invalid SIM slot $slot; SIM1" >&2; sim1_only ;;
     esac
 }

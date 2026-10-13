@@ -584,6 +584,13 @@ wait_registered() {
         next=$((SECONDS + 5))
     fi
     while [ "$SECONDS" -lt "$deadline" ]; do
+        # A live SIM switch (the U30 Air's mu300-sim-u30) has begun: this wait is for a card the radio is leaving.
+        # Measured: a dial left waiting its 60 s for a card without service held the bring-up lock, and the card
+        # the radio went back to stayed without data for half a minute more.
+        if [ -e /run/mu300/sim-switching ]; then
+            radio_say "a SIM switch began: this dial ends"
+            return 1
+        fi
         size=$(fsize "$URCLOG")
         [ "$size" -lt "$seen" ] && seen=0   # mu300-atd started the log over at its size cap
         if [ "$size" -gt "$seen" ] && tail -c +"$((seen + 1))" "$URCLOG" 2>/dev/null | is_registered urc; then
@@ -774,7 +781,7 @@ define_context_quiet() {
     # Keep the external card's established definition; internal F50 stock RIL uses
     # dual stack with the extended context, PCO and QoS fields below. The U30 Air's own second card (its native
     # owners, SIM_NATIVE) was measured with the plain definition, and keeps it.
-    if [ "$SIM_SLOT:$SIM_NATIVE" = 1:0 ]; then
+    if [ "$SIM_SLOT:${SIM_NATIVE:-0}" = 1:0 ]; then
         at 'AT+CDEFMP=1,"0"' >/dev/null || return 1
         at "AT+CGDCONT=$CID,\"${MU300_PDP_TYPE:-IPV4V6}\",\"$apn\",\"\",0,0,0,0,1,,,,,,,,,,,,,0" >/dev/null || return 1
         apn_auth_send || return 1
@@ -784,6 +791,26 @@ define_context_quiet() {
         # nothing more for an APN without credentials, as before; the empty form only to take earlier ones back
         if [ "$APN_AUTH" != 0 ] || [ -e "$APN_MARK" ] || [ -L "$APN_MARK" ]; then apn_auth_send || return 1; fi
     fi
+}
+
+# data_route_back: which card has the packet-data route (AT+SPSWDATA?), and the route back to this one when the
+# modem still names the second card: the same command, on this card's data channel, that the dual-SIM cold start
+# sends for it. Whether the modem keeps the route over a restart was never measured (no unit here has two working
+# cards); with the route elsewhere a dial answers CONNECT and every packet is lost (the F50's internal card,
+# docs/SIM-SELECTION.md). The mark goes once the modem says the route is here; a modem that does not answer the
+# question keeps the mark, and is asked again at the next dial.
+ROUTE_MARK=${MU300_SIM_ROUTE_MARK:-/etc/mu300/sim-data-route-2}
+data_route_card() { at 'AT+SPSWDATA?' 4 2>/dev/null | tr -d '\r' | sed -n 's/^+SPSWDATA: *\([01]\) *$/\1/p' | head -n 1; }
+data_route_back() {
+    local card
+    card=$(data_route_card) || card=
+    if [ "$card" = 1 ]; then
+        radio_say "the data route was still the second card's; taking it back (AT+SPSWDATA)"
+        at 'AT+SPSWDATA' 8 | tr -d '\r' | grep -x OK >/dev/null || {
+            radio_say "the modem did not give the data route back"; return 1; }
+        card=$(data_route_card) || card=
+    fi
+    [ "$card" != 0 ] || rm -f "$ROUTE_MARK"
 }
 
 # Only one bring-up at a time: the watchdog and the service can both decide to reconnect, and two of them race for
@@ -826,6 +853,17 @@ up_locked() {
     # up too, only starts after this)
     "${MU300_VPN_CMD:-/opt/mu300/bin/mu300-vpn}" guard >/dev/null 2>&1 || true
     rm -f /run/mu300-mobile-data-down
+    # The U30 Air's dual-SIM boot: its cold start (mu300-sim2-warmup) brings the radio up, about 20 s into the boot,
+    # and netifd's first dial comes before that - before the owners even have their command fifos (tty_setup below
+    # ends the dial without them). Wait for the cold start here - outside the radio lock, which it needs - instead
+    # of failing at once and coming back after netifd's 20 s pause (measured: data at 39 s into the boot without
+    # the wait). Ended by the marker, by the cold start giving up for SIM1 (the freeze goes), or by the time.
+    if [ "$SIM_NATIVE" = 1 ] && [ ! -e /run/mu300/sim-radio-ready ]; then
+        local native_end=$((SECONDS + ${MU300_NATIVE_RADIO_WAIT:-40}))
+        until [ -e /run/mu300/sim-radio-ready ] || [ ! -e /run/mu300-radio-freeze ] || [ "$SECONDS" -ge "$native_end" ]; do
+            sleep 1
+        done
+    fi
     tty_setup
     mark dial-start
     if ! radio_on; then
@@ -915,6 +953,9 @@ up_locked() {
             return 1
         }
     fi
+    # The U30 Air's first card again, after its dual-SIM path gave the data route to the second one in an earlier
+    # boot (the mark: lib/sim-config.sh). Without the mark nothing is asked and nothing is sent.
+    if [ "$SIM_SLOT" = 0 ] && [ -e "$ROUTE_MARK" ]; then data_route_back || true; fi
     prefix=$(mask2prefix "$mask")
     iid=$(v6_iid)
     # Without an IPv6 address from the network, switch IPv6 off on this interface, as Android does: otherwise it
@@ -1159,10 +1200,13 @@ watch() {
         fi
         [ -e /run/mu300/sim-switching ] && continue
         [ -e /run/mu300/sim-active-unknown ] && continue
-        # A live switch publishes the slot only after its RF and routing gates pass.
-        local current_slot
+        # A live switch publishes the slot only after its RF and routing gates pass. The same when the dual-SIM
+        # boot gave up for SIM1 in this boot (mu300-sim2-warmup: the freeze goes, the card may stay the same):
+        # this process chose its channels and its radio rules at its start, so it starts over.
+        local current_slot current_native=0
         current_slot=$(cat /run/mu300/sim-slot 2>/dev/null || echo "$SIM_SLOT")
-        if [ "$current_slot" != "$SIM_SLOT" ]; then
+        [ ! -e /run/mu300-radio-freeze ] || current_native=1
+        if [ "$current_slot" != "$SIM_SLOT" ] || [ "$current_native" != "$SIM_NATIVE" ]; then
             rm -rf "$wlock"
             trap - EXIT INT TERM
             unset MU300_SIM_SLOT

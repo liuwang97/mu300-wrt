@@ -10,16 +10,22 @@ conf=$root/etc/mu300/sim-slot
 device_cmd=${MU300_DEVICE_CMD:-/opt/mu300/bin/mu300-device}
 backend=${MU300_SIM_U30_BACKEND:-/opt/mu300/bin/mu300-sim-u30}
 lib=${MU300_SIM_CONFIG_LIB:-/opt/mu300/lib/sim-config.sh}
+# The short way. Every AT client asks "active" before every command (mu300-at, mobile-data, the panel's collectors),
+# and on nearly every device the answer is the pinned 0: one file read, as it was before the U30 backend existed
+# (measured on a U30 Air: 2.8 ms a call; with the library and the device's name read first, 6.7 ms).
+if [ "${1:-}" = active ] && [ "$#" = 1 ] && [ -f "$state" ] && [ "$(cat "$state" 2>/dev/null)" = 0 ]; then
+    echo 0
+    exit 0
+fi
 . "$lib"
-u30_supported() { [ -e "$root/etc/openwrt_release" ] && [ "$(device_name)" = u30air ]; }
-
 device_name() {
     [ -x "$device_cmd" ] || return 0
     "$device_cmd" 2>/dev/null || true
 }
 SIM_CONFIG_U30=0
-u30_supported && SIM_CONFIG_U30=1
+if [ -e "$root/etc/openwrt_release" ] && [ "$(device_name)" = u30air ]; then SIM_CONFIG_U30=1; fi
 export SIM_CONFIG_U30
+u30_supported() { [ "$SIM_CONFIG_U30" = 1 ]; }
 
 ensure_f50() {
     local device
@@ -117,5 +123,5 @@ case ${1:-status} in
         echo 'mu300-sim: live SIM switching is not supported on F50; select a slot and reboot' >&2
         exit 1
         ;;
-    *) echo 'usage: mu300-sim status [--json]|active|configured|select external|internal|default 1|2' >&2; exit 2 ;;
+    *) echo 'usage: mu300-sim status [--json]|active|configured|select external|internal|default 1|2 (U30 Air on OpenWrt also: hot 0|1, switch 1|2)' >&2; exit 2 ;;
 esac
