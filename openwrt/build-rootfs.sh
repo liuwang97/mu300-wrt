@@ -130,6 +130,25 @@ docker run --rm --platform linux/arm64 \
   $(opt busybox busybox) $(opt upstream/out/modules mainline-modules) -v "$TOP/openwrt":/out -v "$REGDB":/in/regdb:ro "$@" \
   -e KREL=$KREL -e OUT="$(basename "$OUT")" -e MU300_VERSION="${MU300_VERSION:-dev}" mu300-$FLAVOUR-base:$VER /bin/sh -eu -c '
 mkdir -p /var/lock /var/run /tmp
+# The packages come from the feed over the network while the image is built, and one connection cut in the middle of
+# one package failed the whole image, and a release with it. update, upgrade and add are tried three times, ten
+# seconds apart; what fails three times (a package the feed does not have) fails the build as before. Everything
+# else (del) runs once. The idea is from kanoqwq/clean-tf-7.2 33640d01 (FINDINGS 66).
+# --- apk-retry begin
+apk() {
+    case ${1:-} in
+        update|upgrade|add) ;;
+        *) command apk "$@"; return ;;
+    esac
+    _try=1
+    until command apk "$@"; do
+        [ "$_try" -lt 3 ] || return 1
+        _try=$((_try + 1))
+        echo "apk $1 failed; trying again ($_try of 3)" >&2
+        sleep "${MU300_APK_RETRY_WAIT:-10}"
+    done
+}
+# --- apk-retry end
 apk update >/dev/null
 # the release tarball carries the packages of the day the release was cut; the feed of the release branch moves on
 # (LuCI, mbedtls, the CA bundle, iwinfo ...), and "apk add" below installs only what is missing, so without this
