@@ -66,6 +66,11 @@ run_dir_take "$TMP" "${MU300_VOICE_RUN_UID:-0}" mu300-voice || exit 1
 chmod 700 "$TMP" 2>/dev/null
 
 card=$(awk '/sprdphone/ {print $1; exit}' /proc/asound/cards 2>/dev/null)
+# on a kernel without the audio drivers (every mainline one, and 5.4 as released) there is nothing to load
+if [ -z "$card" ] && [ ! -d "/lib/modules/$(uname -r)/audio" ]; then
+    echo "mu300-voice: no call audio on this kernel ($(uname -r)): the audio drivers are for 5.4 and not in the releases (kernel/build-audio.sh)" >&2
+    exit 1
+fi
 [ -n "$card" ] || { echo "mu300-voice: the sound card is not registered; run mu300-audio-dsp load" >&2; exit 1; }
 # by name, not number: the device numbers are not the same on every build of the card
 pcmdev() { awk -F': ' -v n="$1 " 'index($2, n) == 1 { split($1, a, "-"); print a[2] + 0; exit }' /proc/asound/pcm; }

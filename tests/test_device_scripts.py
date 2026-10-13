@@ -408,6 +408,14 @@ class Atd(ShellTest):
             self.assertFalse((self.dir / 'answer.1').exists())
             self.assertIn('malformed request', self.err.read_text())
 
+    def test_the_urc_logs_are_roots_alone(self):
+        """What the modem says unasked is the owner's to read and nobody else's: with caller id on (mu300-voice
+        watch) every ring puts the caller's number into this log."""
+        for shell in self.shells:
+            logs, m = self.start(shell)
+            self.assertEqual(logs, ['tty_nr0.log'])
+            self.assertEqual((self.dir / 'urc').stat().st_mode & 0o777, 0o700)
+
     def test_a_directory_somebody_else_made_first_is_replaced(self):
         """/run takes files from every user: a symlink (or a foreign directory) where $DIR should be is not where the
         command fifo and the answers go."""
@@ -422,7 +430,7 @@ class Atd(ShellTest):
             self.assertFalse(self.dir.is_symlink())
             self.assertEqual(self.dir.stat().st_mode & 0o777, 0o755)
             self.assertEqual(list(elsewhere.iterdir()), [])
-            self.assertIn('was somebody else', self.err.read_text())
+            self.assertIn("was somebody else's", self.err.read_text())
             self.send(m, 'AT', b'\r\nOK\r\n')
             self.assertEqual(self.answer, 'OK\n')
 
