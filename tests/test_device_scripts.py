@@ -1,5 +1,6 @@
 """Small device scripts, against a fake / (MU300_SYSROOT) and stub commands: mu300-device, mu300-lan-ip, mu300-led,
 mu300-ttl. They run on Ubuntu (dash, bash) and OpenWrt (busybox ash)."""
+import json
 import os
 import pty
 import re
@@ -36,6 +37,67 @@ class Device(ShellTest):
                 out = self.script(shell, BIN / 'mu300-device', MU300_SYSROOT=r).stdout.strip()
                 self.assertEqual(out, want, (device, dt))
             (r / 'run' / 'mu300' / 'device').unlink(missing_ok=True)
+
+    def test_json_for_programs(self):
+        """mu300-device --json: the contract of docs/ADB-INTERFACE.md, one line a JSON parser takes."""
+        r = self.root('u30air')
+        (r / 'etc' / 'mu300').mkdir(parents=True)
+        (r / 'etc' / 'mu300' / 'image-version').write_text('v2026.10.23\n')
+        (r / 'etc' / 'os-release').write_text('NAME="Ubuntu"\nVERSION_ID="24.04"\nID=ubuntu\n')
+        disk = self.tmp / 'disk'
+        disk.mkdir()
+        (disk / 'ubuntu').symlink_to(r)            # the directory of the Linux partition that is /
+        self.stub('uname', 'echo 7.2.10')
+        self.stub('id', 'echo 0')
+        env = dict(MU300_SYSROOT=r, MU300_DISK=disk, MU300_BIN=BIN, MU300_ADB_CONF=r / 'etc/mu300/adb',
+                   MU300_ADB_AUTH_CONF=r / 'etc/mu300/adb_auth', MU300_ADB_KEYS=r / 'etc/mu300/adb_keys',
+                   MU300_ADB_ROOT_KEYS=self.tmp / 'none', MU300_ADB_OWNER=os.getuid(),
+                   MU300_ADBD_BIN=shutil.which('true'), MU300_MODULES_BUILTIN=self.tmp / 'builtin')
+        (self.tmp / 'builtin').write_text('kernel/drivers/usb/gadget/function/usb_f_fs.ko\n')
+        want = {'mu300': 1, 'device': 'u30air', 'system': 'ubuntu', 'version_id': '24.04',
+                'release': 'v2026.10.23', 'kernel': '7.2.10', 'root': True, 'adb': 'open'}
+        for shell in self.each_shell():
+            out = self.script(shell, BIN / 'mu300-device', '--json', **env)
+            self.assertEqual('', out.stderr)
+            self.assertEqual(1, out.stdout.count('\n'))
+            self.assertEqual(want, json.loads(out.stdout))
+            # the order of the fields is not part of the contract, their names and kinds are
+            self.assertEqual(list(want), list(json.loads(out.stdout)))
+        # adb as the device has it set; not root; the copy kept by an update (ubuntu.old) is still "ubuntu"
+        (r / 'etc/mu300/adb_auth').write_text('keys\n')
+        (disk / 'ubuntu').unlink()
+        (disk / 'ubuntu.old').symlink_to(r)
+        self.stub('id', 'echo 1000')
+        for shell in self.each_shell():
+            got = json.loads(self.script(shell, BIN / 'mu300-device', '--json', **env).stdout)
+            self.assertEqual(('keys', False, 'ubuntu'), (got['adb'], got['root'], got['system']))
+        (r / 'etc/mu300/adb').write_text('off\n')
+        for shell in self.each_shell():
+            got = json.loads(self.script(shell, BIN / 'mu300-device', '--json', **env).stdout)
+            self.assertEqual('off', got['adb'])
+        (r / 'etc/mu300/adb').unlink()
+        # no adbd in this system
+        for shell in self.each_shell():
+            got = json.loads(self.script(shell, BIN / 'mu300-device', '--json',
+                                         **dict(env, MU300_ADBD_BIN=self.tmp / 'none')).stdout)
+            self.assertEqual('unavailable', got['adb'])
+        # OpenWrt, with and without LuCI, where the Linux partition is not mounted; nothing in a value can end
+        # the string it is in
+        (disk / 'ubuntu.old').unlink()
+        (r / 'etc' / 'openwrt_release').write_text("DISTRIB_ID='OpenWrt'\n")
+        (r / 'etc' / 'os-release').write_text('NAME="OpenWrt"\nVERSION_ID="25.12.5"\n')
+        (r / 'etc' / 'mu300' / 'image-version').write_text('v2026","root":true,"x":"\\\n')
+        (r / 'run' / 'mu300' / 'device').write_text('f50\n')
+        for shell in self.each_shell():
+            got = json.loads(self.script(shell, BIN / 'mu300-device', '--json', **env).stdout)
+            self.assertEqual(('f50', 'openwrt', '25.12.5', 'v2026roottruex'),
+                             (got['device'], got['system'], got['version_id'], got['release']))
+            self.assertFalse(got['root'])
+        (r / 'www' / 'luci-static').mkdir(parents=True)
+        (r / 'etc' / 'mu300' / 'image-version').unlink()
+        for shell in self.each_shell():
+            got = json.loads(self.script(shell, BIN / 'mu300-device', '--json', **env).stdout)
+            self.assertEqual(('openwrt-luci', 'unknown'), (got['system'], got['release']))
 
     def test_lan_ip(self):
         for device, want in (('f50', '192.168.77.1'), ('u30air', '192.168.78.1'), ('', '192.168.77.1')):
