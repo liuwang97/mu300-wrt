@@ -349,6 +349,8 @@ needed behind the partitions: {1} MiB; missing: {2} MiB	bölümlerin arkasında 
 to share by shrinking it: {1} MiB up to sector {2}; needed: {3} MiB ({4} MiB Android + {5} MiB Linux); missing: {6} MiB	küçültülerek paylaşılabilecek: {2}. sektöre kadar {1} MiB; gereken: {3} MiB ({4} MiB Android + {5} MiB Linux); eksik: {6} MiB
 -Check writes nothing. Run the installer without it to make room.	-Check hiçbir şey yazmaz. Yer açmak için yükleyiciyi onsuz çalıştırın.
 the new partition table did not arrive on the device as it was made; nothing is changed	yeni bölüm tablosu cihaza oluşturulduğu gibi ulaşmadı; hiçbir şey değiştirilmedi
+{1} is not a file that only root can change; nothing was changed	{1} yalnızca root'un değiştirebildiği bir dosya değil; hiçbir şey değiştirilmedi
+on, for {1}	açık, {1} için
 A beta is out: {1}, a prerelease for testing, newer than the newest full release {2}.	Bir beta yayımlandı: {1}; deneme amaçlı bir ön sürüm, en yeni tam sürüm olan {2} sürümünden daha yeni.
 Install the beta {1} instead of {2}? (yes/no)	{2} yerine {1} betası kurulsun mu? (evet/hayır)
 News and new releases are on the Telegram channel of the project, you can follow it: {1}	Haberler ve yeni sürümler projenin Telegram kanalında, takip edebilirsiniz: {1}
