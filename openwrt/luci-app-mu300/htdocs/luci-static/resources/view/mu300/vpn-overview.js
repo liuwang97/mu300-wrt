@@ -233,7 +233,7 @@ return view.extend({
 			E('div', { 'class': 'mvp-row' }, [ v6sel ]),
 			V.row(_('The tunnel carries IPv6'), v6.tunnel ? _('Yes') : _('No'), 'mud-vpn-v6-tunnel'),
 			V.row(_('IPv6 guard'), v6.guard ? _('Active: IPv6 outside the tunnel is refused') : _('Not active'), 'mud-vpn-v6-guard'),
-			V.note(_('While the VPN is up, IPv6 never leaves beside a tunnel that does not carry it: it is refused at once, so programs and LAN clients fall back to IPv4 instead of leaking or waiting. Automatic: WireGuard uses the IPv6 addresses of its config, the other engines stay IPv4.'))
+			V.note(_('While the VPN is up, IPv6 never leaves beside a tunnel that does not carry it: it is refused at once, so programs and LAN clients fall back to IPv4 instead of leaking or waiting. Automatic: WireGuard and OpenVPN use the IPv6 addresses of their config; Xray, sing-box and mihomo are asked at every start whether IPv6 works through the tunnel, and carry it only then; dae stays IPv4.'))
 		], 'mvp-ipv6');
 
 		var grid = E('div', { 'class': 'mud-grid' }, [ ctl, ksCard, swCard, v6Card ]);
