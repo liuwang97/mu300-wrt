@@ -343,3 +343,8 @@ boot chain:     not synced (the model is not recognised)	boot zinciri:   eşitle
 An earlier run of this installer timed out in this Android boot ({1}); the SD card request it waited on is still stuck in the kernel. Reboot Android, then install the zip again. Nothing was changed; the lock is {2}.	Bu kurucunun önceki bir çalışması bu Android açılışında zaman aşımına uğradı ({1}); beklediği SD kart isteği çekirdekte hâlâ takılı. Android'i yeniden başlatın, sonra zip'i yeniden kurun. Hiçbir şey değiştirilmedi; kilit: {2}.
 the device log was kept at {1}	cihaz günlüğü şurada saklandı: {1}
 boot_{1} read back from the eMMC is not the image that was written ({2}); Linux was not armed: misc was not changed, so Android keeps booting	eMMC'den geri okunan boot_{1}, yazılan görüntü değil ({2}); Linux etkinleştirilmedi: misc değiştirilmedi, Android açılmaya devam eder
+eMMC: {1} ({2} sectors); the partitions end at sector {3}; free after them: {4} MiB	eMMC: {1} ({2} sektör); bölümler {3}. sektörde bitiyor; sonrasında boş: {4} MiB
+needed behind the partitions: {1} MiB; missing: {2} MiB	bölümlerin arkasında gereken: {1} MiB; eksik: {2} MiB
+to share by shrinking it: {1} MiB up to sector {2}; needed: {3} MiB ({4} MiB Android + {5} MiB Linux); missing: {6} MiB	küçültülerek paylaşılabilecek: {2}. sektöre kadar {1} MiB; gereken: {3} MiB ({4} MiB Android + {5} MiB Linux); eksik: {6} MiB
+-Check writes nothing. Run the installer without it to make room.	-Check hiçbir şey yazmaz. Yer açmak için yükleyiciyi onsuz çalıştırın.
+the new partition table did not arrive on the device as it was made; nothing is changed	yeni bölüm tablosu cihaza oluşturulduğu gibi ulaşmadı; hiçbir şey değiştirilmedi
