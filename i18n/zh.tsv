@@ -351,3 +351,12 @@ the new partition table did not arrive on the device as it was made; nothing is 
 A beta is out: {1}, a prerelease for testing, newer than the newest full release {2}.	有新的测试版：{1}，这是供测试的预发布版本，比最新的正式版 {2} 更新。
 Install the beta {1} instead of {2}? (yes/no)	安装测试版 {1} 而不是 {2} 吗？(是/否)
 News and new releases are on the Telegram channel of the project, you can follow it: {1}	新闻和新版本发布在本项目的 Telegram 频道，欢迎关注：{1}
+Copying the boot image of Android (boot_{1}) and the first block of misc to this computer	正在把 Android 的启动镜像（boot_{1}）和 misc 的第一个块复制到这台电脑
+the copy of boot_{1} is not what the device holds; do not rely on it	boot_{1} 的副本与设备上的内容不一致；请不要依赖它
+Not copied, here or during an installation: the NV and calibration partitions (IMEI, radio calibration). The installer never reads or writes them.	这里和安装过程中都不会复制：NV 与校准分区（IMEI、射频校准）。安装程序从不读取或写入它们。
+Nothing was written to the device.	没有向设备写入任何内容。
+Installing on the device	正在设备上安装
+this question has no variable and cannot be answered without a terminal: {1}	这个问题没有对应的变量，没有终端就无法回答：{1}
+no answer to the question "{1}": set {2} (nothing is asked and nothing is assumed in answers mode)	问题“{1}”没有答案：请设置 {2}（应答模式下不提问，也不做任何假设）
+no answer to the question "{1}" on standard input ({2}=@stdin)	标准输入中没有问题“{1}”的答案（{2}=@stdin）
+the answer in {1} was not accepted: {2}	{1} 中的答案未被接受：{2}

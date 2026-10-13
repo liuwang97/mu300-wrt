@@ -58,6 +58,12 @@ jobs:
       - name: install.ps1 functions (PowerShell 7)
         shell: pwsh
         run: pwsh -NoProfile -File tests\installer.Tests.ps1
+      - name: install.ps1 and uninstall.ps1 in answers mode against the fake adb (Windows PowerShell 5.1)
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests\answers.Tests.ps1
+      - name: install.ps1 and uninstall.ps1 in answers mode against the fake adb (PowerShell 7)
+        shell: pwsh
+        run: pwsh -NoProfile -File tests\answers.Tests.ps1
       - name: boot image builder (the Windows install runs it too)
         shell: pwsh
         run: |

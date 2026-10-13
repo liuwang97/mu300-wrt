@@ -351,3 +351,12 @@ the new partition table did not arrive on the device as it was made; nothing is 
 A beta is out: {1}, a prerelease for testing, newer than the newest full release {2}.	Bir beta yayımlandı: {1}; deneme amaçlı bir ön sürüm, en yeni tam sürüm olan {2} sürümünden daha yeni.
 Install the beta {1} instead of {2}? (yes/no)	{2} yerine {1} betası kurulsun mu? (evet/hayır)
 News and new releases are on the Telegram channel of the project, you can follow it: {1}	Haberler ve yeni sürümler projenin Telegram kanalında, takip edebilirsiniz: {1}
+Copying the boot image of Android (boot_{1}) and the first block of misc to this computer	Android'in önyükleme imajı (boot_{1}) ve misc bölümünün ilk bloğu bu bilgisayara kopyalanıyor
+the copy of boot_{1} is not what the device holds; do not rely on it	boot_{1} kopyası cihazdakiyle aynı değil; ona güvenmeyin
+Not copied, here or during an installation: the NV and calibration partitions (IMEI, radio calibration). The installer never reads or writes them.	Ne burada ne de kurulum sırasında kopyalananlar: NV ve kalibrasyon bölümleri (IMEI, radyo kalibrasyonu). Yükleyici bunları asla okumaz ve yazmaz.
+Nothing was written to the device.	Cihaza hiçbir şey yazılmadı.
+Installing on the device	Cihaza kuruluyor
+this question has no variable and cannot be answered without a terminal: {1}	bu sorunun bir değişkeni yok ve terminal olmadan yanıtlanamaz: {1}
+no answer to the question "{1}": set {2} (nothing is asked and nothing is assumed in answers mode)	"{1}" sorusunun yanıtı yok: {2} değişkenini ayarlayın (yanıt kipinde hiçbir şey sorulmaz ve hiçbir şey varsayılmaz)
+no answer to the question "{1}" on standard input ({2}=@stdin)	"{1}" sorusunun yanıtı standart girdiden gelmedi ({2}=@stdin)
+the answer in {1} was not accepted: {2}	{1} içindeki yanıt kabul edilmedi: {2}
