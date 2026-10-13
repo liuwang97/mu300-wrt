@@ -216,10 +216,12 @@ class Inventory(Mu300Vpn):
         acl = json.loads(ACL.read_text())['luci-app-mu300']
         self.assertEqual(set(acl['read']['ubus']['mu300vpn']), READ)
         self.assertEqual(set(acl['write']['ubus']['mu300vpn']), WRITE)
-        # the two upload paths, write only, and nothing else of the file system
+        # the two upload paths, write only, and nothing else of the file system (beside the Languages page's and the
+        # Update page's own one each)
         self.assertEqual(acl['write']['file'], {'/tmp/mu300-extra-lang.tar.gz': ['write'],
                                                 '/tmp/mu300-vpn-upload': ['write'],
-                                                '/tmp/mu300-vpn-extra.tar.gz': ['write']})
+                                                '/tmp/mu300-vpn-extra.tar.gz': ['write'],
+                                                '/mnt/mu300-disk/.mu300-upload/update.zip': ['write']})
         self.assertNotIn('file', acl['read'])
 
     def test_the_menu_has_the_six_pages_and_their_views_exist(self):
