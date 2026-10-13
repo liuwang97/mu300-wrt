@@ -216,6 +216,12 @@ class Update(UpdateBase):
     def test_lists_by_kind(self):
         for shell in self.each_shell():
             self.assertEqual(self.up(shell, 'keep_list openwrt-luci').stdout, self.up(shell, 'keep_list openwrt').stdout)
+            # the panel's saved locks (FINDINGS 64)
+            self.assertIn('etc/unisoc-modem', self.up(shell, 'keep_list openwrt-luci').stdout.split())
+            # the installer on Android carries the same things over (its own copy of the lists)
+            ai = (TOP / 'tools/android-install.sh').read_text()
+            for kind, pattern in (('ubuntu', r'ubuntu\) keep="([^"]*)"'), ('openwrt', r'openwrt\|openwrt-\*\) keep="([^"]*)"')):
+                self.assertEqual(re.search(pattern, ai).group(1), self.up(shell, f'keep_list {kind}').stdout.strip())
             self.assertEqual(self.up(shell, 'vendor_list openwrt-luci').stdout, self.up(shell, 'vendor_list openwrt').stdout)
             self.assertEqual(self.up(shell, 'rootfs_asset openwrt-luci').stdout.strip(), 'mu300-openwrt-luci-rootfs.tar.gz')
 
@@ -535,7 +541,8 @@ class FromStock(UpdateBase):
             (img / f).write_bytes(data)
         (img / 'sbin/init').chmod(0o755)
         old = self.disk / 'openwrt'
-        for f, data in [('sbin/init', b'#!/bin/sh\n'), ('etc/config/network', b'mine'), ('etc/config/tailscale', b'mine too')]:
+        for f, data in [('sbin/init', b'#!/bin/sh\n'), ('etc/config/network', b'mine'), ('etc/config/tailscale', b'mine too'),
+                        ('etc/unisoc-modem/lock-state.d/lte_band', b'3,7'), ('etc/unisoc-modem/panel-ops.log', b'log')]:
             (old / f).parent.mkdir(parents=True, exist_ok=True)
             (old / f).write_bytes(data)
         stage = self.disk / '.mu300-update'
@@ -551,6 +558,10 @@ class FromStock(UpdateBase):
             self.assertEqual((cfg / 'tailscale').read_bytes(), b'mine too')    # and stay
             self.assertEqual((cfg / 'sqm').read_bytes(), b'image sqm')         # the new package's file is added
             self.assertFalse((self.disk / 'openwrt/etc/config.image').exists())
+            # the panel's saved locks come along (they are replayed at boot, and the modem holds them anyway)
+            state = self.disk / 'openwrt/etc/unisoc-modem'
+            self.assertEqual((state / 'lock-state.d/lte_band').read_bytes(), b'3,7')
+            self.assertEqual((state / 'panel-ops.log').read_bytes(), b'log')
 
     def test_copy_missing_never_writes_through_a_link_of_the_target(self):
         a, b, outside = self.tmp / 'a', self.tmp / 'b', self.tmp / 'outside'
