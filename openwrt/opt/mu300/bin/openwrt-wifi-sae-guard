@@ -12,9 +12,10 @@
 # driver the firmware does the SAE exchange, so a WPA3 hotspot without the offload lets nobody in (FINDINGS 80).
 # The passphrase is then open to an offline guess from a captured WPA2 handshake, which WPA3 was chosen to prevent:
 # that is the price of a device that can be reached, and why the line is logged as an error.
-# (MU300_SYSROOT, MU300_SAE_WAIT: for tests/)
+# (MU300_SYSROOT, MU300_SAE_WAIT, MU300_SAE_STEP: for tests/)
 R=${MU300_SYSROOT:-}
 WAIT=${MU300_SAE_WAIT:-60}
+STEP=${MU300_SAE_STEP:-5}
 [ -f "$R/etc/openwrt_release" ] || exit 0
 
 sections() {  # the wifi-ifaces with the option, one name per line
@@ -68,7 +69,7 @@ case ${1:-} in
 			for s in $all; do enabled "$s" && ! ap_up "$s" && failed="$failed $s"; done
 			[ -n "$failed" ] || exit 0
 			[ "$n" -lt "$WAIT" ] || break
-			sleep 5; n=$((n + 5))
+			sleep "$STEP"; n=$((n + STEP))
 		done
 		# shellcheck disable=SC2086
 		fall_back "the access point did not start" $failed

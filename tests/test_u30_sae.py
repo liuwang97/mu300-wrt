@@ -317,7 +317,6 @@ class SaeGuard(ShellTest):
                           ' || exit 4\nprintf \'{\\n\\t"status": "ENABLED",\\n\\t"freq": 5180\\n}\\n\'')
         self.stub('wifi', 'echo "wifi $*" >> "$STUBLOG/wifi.log"')
         self.stub('logger', 'echo "$*" >> "$STUBLOG/logger.log"')
-        self.stub('sleep', 'echo "$*" >> "$STUBLOG/sleep.log"')
 
     def hostapd(self, patched):
         # the option's name is in the binary that parses it; the stock wpad has no such string
@@ -326,12 +325,13 @@ class SaeGuard(ShellTest):
 
     def run_guard(self, shell, mode, state, up_after=None):
         (self.tmp / 'uci.state').write_text(state)
-        for f in ('uci.log', 'ubus.log', 'wifi.log', 'logger.log', 'sleep.log', 'ap-after'):
+        for f in ('uci.log', 'ubus.log', 'wifi.log', 'logger.log', 'ap-after'):
             (self.tmp / f).unlink(missing_ok=True)
         (self.root / 'etc/mu300/wireless.sae-offload').unlink(missing_ok=True)
         if up_after:
             (self.tmp / 'ap-after').write_text(str(up_after))
-        r = self.script(shell, self.GUARD, mode, MU300_SYSROOT=self.root, MU300_SAE_WAIT=10)
+        # two more looks, a second apart (busybox ash runs its own sleep, so a stub would not be asked)
+        r = self.script(shell, self.GUARD, mode, MU300_SYSROOT=self.root, MU300_SAE_WAIT=2, MU300_SAE_STEP=1)
         self.assertEqual(r.returncode, 0, r.stderr)
         return r
 
@@ -370,7 +370,7 @@ class SaeGuard(ShellTest):
                 self.hostapd(patched=False)
                 r = self.run_guard(shell, mode, WPA2_STATE)
                 self.assertUntouched(r, WPA2_STATE)
-                self.assertEqual(self.log('uci.log') + self.log('ubus.log') + self.log('sleep.log'), [])
+                self.assertEqual(self.log('uci.log') + self.log('ubus.log'), [])
 
     def test_not_openwrt(self):
         (self.root / 'etc/openwrt_release').unlink()
@@ -398,13 +398,13 @@ class SaeGuard(ShellTest):
             self.assertEqual(self.log('ubus.log'), ['-t 5 call hostapd.wlan0 get_status'])
             # automatic channel selection takes half a minute: up on a later look is up
             self.assertUntouched(self.run_guard(shell, 'verify', SAE_STATE, up_after=3), SAE_STATE)
-            self.assertEqual(self.log('sleep.log'), ['5', '5'])
+            self.assertEqual(len(self.log('ubus.log')), 3)
 
     def test_verify_access_point_never_up(self):
         for shell in self.each_shell():
             r = self.run_guard(shell, 'verify', SAE_STATE)
             self.assertWpa2(r, 'the access point did not start')
-            self.assertEqual(self.log('sleep.log'), ['5', '5'])
+            self.assertEqual(len(self.log('ubus.log')), 3)
             self.assertEqual(self.log('wifi.log'), ['wifi down', 'wpad restart', 'wifi up'])
 
     def test_verify_leaves_a_hotspot_that_is_off_on_purpose(self):
