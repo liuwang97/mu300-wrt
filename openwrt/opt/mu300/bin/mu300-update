@@ -1936,6 +1936,8 @@ apply() {
     for os in $todo; do
         fetch_verified "$tag" "$(rootfs_asset "$os")" || { offline_hint; die "nothing was changed; run mu300-update apply again to continue the download"; }
     done
+    # (the release that was judged - signature, downgrade - is the one these files are: see payload_is)
+    payload_is "$tag" $todo || die "nothing was changed"
     # the extras of the release: an installed one follows it (a release without it: r=2, the installed one stays)
     extras=
     for x in $(extras_to_fetch "$tag"); do
@@ -2128,6 +2130,11 @@ sig_state() {
 # checked in it: what is verified there is what is unpacked minutes later
 stage_private() {
     [ ! -L "$STAGE" ] || { echo "$STAGE is a symbolic link: not used" >&2; return 1; }
+    # one that others could write into (made by an older updater with another umask, or by hand) may hold what
+    # they put there - a link under a name this writes to: it is emptied, not trusted
+    if [ -d "$STAGE" ] && [ -O "$STAGE" ]; then
+        case $(ls -ldn "$STAGE" 2>/dev/null) in d????-??-?*) ;; *) rm -rf "${STAGE:?}" ;; esac
+    fi
     ( umask 077; mkdir -p "$STAGE" ) 2>/dev/null
     [ -d "$STAGE" ] && [ ! -L "$STAGE" ] && [ -O "$STAGE" ] ||
         { echo "$STAGE is not a directory of our own: not used" >&2; return 1; }
@@ -2150,7 +2157,7 @@ sums_trusted() {
     # the signature belongs to the SHA256SUMS just fetched; a kept SHA256SUMS keeps the one fetched with it
     if [ "$(key_state)" != none ] && [ "${SUMS_FETCHED:-}" = "$1" ]; then
         rm -f "${STAGE:?}/SHA256SUMS.sig"
-        _sg=$(fetch_stdout "$2/SHA256SUMS.sig" 2>/dev/null) && [ -n "$_sg" ] && printf '%s\n' "$_sg" > "$STAGE/SHA256SUMS.sig"
+        _sg=$(fetch_stdout "$2/SHA256SUMS.sig" 2>/dev/null) && [ -n "$_sg" ] && ( umask 077; printf '%s\n' "$_sg" > "$STAGE/SHA256SUMS.sig" )
     fi
     # one copy is judged and pinned: its hash is taken first, so nothing can be put in its place in between
     SUMS_PIN=$(sha_of "$STAGE/SHA256SUMS") || return 1
@@ -2212,6 +2219,27 @@ downgrade_ok() {
         echo "$_do is $_di and $_dt is older: going back to an older release needs --downgrade (mu300-update rollback goes back to the kept version without one)" >&2
         return 1
     done
+    # (an update also writes the release's kernel and boot image: the same rule for what is there now)
+    _di=$(cat "$BOOTDIR/installed.tag" 2>/dev/null)
+    if newer "$_di" "$_dt"; then
+        echo "the boot image is $_di and $_dt is older: going back to an older release needs --downgrade (mu300-update rollback-boot goes back to the kept one without)" >&2
+        return 1
+    fi
+    return 0
+}
+# payload_is TAG OS...: the root filesystem staged for each of these systems is release TAG's - its own
+# etc/mu300/image-version says so. Every gate before this (the signature, the downgrade rule, what the page showed)
+# judged the name TAG; what is installed is the files. Where the checksums are signed the two are bound already
+# (tag_sha); where they are not - an unsigned file taken on the owner's word, a mirror on a system without a key -
+# nothing else stops an old system handed out under a new name, which the downgrade rule would then never see.
+payload_is() {
+    _pt=$1; shift
+    for _po in "$@"; do
+        _pv=$(untar -xzOf "$STAGE/$(rootfs_asset "$_po")" ./etc/mu300/image-version 2>/dev/null | head -n1)
+        [ "$_pv" = "$_pt" ] && continue
+        echo "$(rootfs_asset "$_po") says it is ${_pv:-no release at all}, not $_pt: not installed" >&2
+        return 1
+    done
     return 0
 }
 # boot_downgrade_ok TAG: the same for a kernel or a boot image taken alone (boot, kernel)
@@ -2252,7 +2280,13 @@ from_open() {
     [ -n "${FROM_SCRATCH:-}" ] || stage_private || return 1
     FROM_TMP=${FROM_SCRATCH:-$STAGE/.from}
     rm -rf "${FROM_TMP:?}"
-    mkdir -p "$FROM_TMP" || return 1
+    ( umask 077; mkdir -p "$FROM_TMP" ) || return 1
+    # (what this run writes of the source, here and into the staging directory, is root's alone: the umask of the
+    # run itself stays as it is - the new system's directories are made under it)
+    _fu=$(umask); umask 077; from_read; _fr=$?; umask "$_fu"
+    return $_fr
+}
+from_read() {
     FROM_WHY=not-release
     FROM_OS= FROM_UBUNTU= FROM_KERNEL= FROM_ROOTFS= FROM_KASSET=
     if [ -d "$MU300_FROM" ]; then
@@ -2343,12 +2377,16 @@ from_installed() {
 # --no-reinstall) in APPLY_ARGS
 apply_options() {
     APPLY_ARGS= _ao=
+    # (said on the command line of this run, never inherited - but kept by a run continued with the release's updater)
+    [ -n "${MU300_SELF_UPDATED:-}" ] || MU300_FROM_SHA=
     for _aa in "$@"; do
         if [ -n "$_ao" ]; then MU300_FROM=$_aa; _ao=; continue; fi
         case $_aa in
             --from) _ao=1 ;;
             --unsigned) MU300_ALLOW_UNSIGNED=1 ;;
             --downgrade) MU300_ALLOW_DOWNGRADE=1 ;;
+            # (--sha256=HASH: the file is the one with this SHA-256 - the one inspect was shown for - or nothing)
+            --sha256=*) MU300_FROM_SHA=${_aa#--sha256=}; sha_ok "$MU300_FROM_SHA" || die "usage: mu300-update apply --from FILE --sha256=HASH" ;;
             # (a system's name or an option: one plain word, so that the list can be passed on as words)
             ''|*[!A-Za-z0-9._-]*) die "unknown system '$_aa'" ;;
             *) APPLY_ARGS="$APPLY_ARGS $_aa" ;;
@@ -2360,6 +2398,11 @@ apply_options() {
 # --unsigned), and not older than what is installed (or taken with --downgrade). Then apply runs as it always
 # does, with fetch_verified reading from the source.
 from_begin() {
+    if [ -n "${MU300_FROM_SHA:-}" ]; then
+        [ -f "$MU300_FROM" ] && [ ! -L "$MU300_FROM" ] && [ "$(sha_of "$MU300_FROM")" = "$MU300_FROM_SHA" ] ||
+            die "$MU300_FROM is not the file that was looked at (another SHA-256): nothing was changed"
+        export MU300_FROM_SHA
+    fi
     from_open || { _fw=$FROM_WHY; from_close
         die "$MU300_FROM is not a release of this project ($_fw): a Magisk zip of a release (mu300-magisk-TAG-SYSTEM-kKERNEL.zip), or a directory with the release's files and their SHA256SUMS"; }
     from_fits || {
@@ -2391,13 +2434,14 @@ from_verified() {
     # only what from_begin judged: the checksums it pinned, read again from nowhere else
     [ -n "${FROM_PIN:-}" ] && [ "$FROM_KIND" != "" ] || { echo "$MU300_FROM was not checked (from_begin): nothing is taken from it" >&2; return 1; }
     stage_private || return 1
-    cat "$FROM_TMP/SHA256SUMS" > "$STAGE/SHA256SUMS"; echo "$1" > "$STAGE/SHA256SUMS.tag"
+    ( umask 077; rm -f "${STAGE:?}/SHA256SUMS"; cat "$FROM_TMP/SHA256SUMS" > "$STAGE/SHA256SUMS"; echo "$1" > "$STAGE/SHA256SUMS.tag" )
     [ "$(sha_of "$STAGE/SHA256SUMS")" = "$FROM_PIN" ] ||
         { echo "the checksums of $MU300_FROM changed after they were checked: nothing more is taken from it" >&2; return 1; }
     want=$(sums_want "$STAGE/SHA256SUMS" "$2")
     [ -n "$want" ] || { echo "$2 is not part of $MU300_FROM" >&2; return 2; }
     [ -s "$STAGE/$2" ] && [ "$(sha_of "$STAGE/$2")" = "$want" ] && return 0
-    from_member "$2" > "$STAGE/$2" && [ -s "$STAGE/$2" ] || { rm -f "${STAGE:?}/${2:?}"; echo "$2 is not in $MU300_FROM" >&2; return 2; }
+    rm -f "${STAGE:?}/${2:?}"
+    ( umask 077; from_member "$2" > "$STAGE/$2" ) && [ -s "$STAGE/$2" ] || { rm -f "${STAGE:?}/${2:?}"; echo "$2 is not in $MU300_FROM" >&2; return 2; }
     [ "$(sha_of "$STAGE/$2")" = "$want" ] && return 0
     rm -f "${STAGE:?}/${2:?}"
     echo "$2 in $MU300_FROM does not match its checksum" >&2

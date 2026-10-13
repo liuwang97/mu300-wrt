@@ -32,8 +32,13 @@ LIB=${0%/*}/../../share/unisoc-modem/lib.sh
 # What turns a check of the updater off is said per run, by name, in a request that passed mu300dash's checks
 # (flags unsigned and downgrade of apply_file, which become --unsigned and --downgrade): never by the environment
 # this happens to run in, and never the key or the source.
-unset MU300_ALLOW_UNSIGNED MU300_ALLOW_DOWNGRADE MU300_FROM MU300_RELEASE MU300_RELEASE_URL MU300_RELEASE_PUB \
+unset MU300_ALLOW_UNSIGNED MU300_ALLOW_DOWNGRADE MU300_FROM MU300_FROM_SHA MU300_RELEASE MU300_RELEASE_URL MU300_RELEASE_PUB \
     MU300_API_URL MU300_DOWNLOAD_URL MU300_SOURCE_CONF MU300_FORCE MU300_SELF_UPDATED MU300_REPO MU300_KERNEL_BUNDLE
+# Everything this writes - the task's files, the releases, what was said about an upload - is root's alone (the
+# pages read it through this program, never as files). The updater itself runs under the usual umask (run_cmd): it
+# makes the directories of the new system.
+umask 077
+run_cmd() { ( umask 022; exec "$@" ); }
 CMD=${MU300_UPDATE_CMD:-/opt/mu300/bin/mu300-update}
 DISK=${MU300_DISK:-/mnt/mu300-disk}
 RUN=${MU300_UPDATE_RUN_DIR:-$RUN_DIR}
@@ -160,20 +165,20 @@ run_job() {
     tag=$(head -n1 "$JOB/tag" 2>/dev/null)
     case $kind in
         check)
-            "$CMD" releases > "$JOB/out" 2> "$JOB/log" </dev/null || rc=$?
+            run_cmd "$CMD" releases > "$JOB/out" 2> "$JOB/log" </dev/null || rc=$?
             # an answer either way: the page shows the releases, or that GitHub could not be asked
             [ "$(json_or_null "$JOB/out")" != null ] || echo '{"ok":0,"why":"offline"}' > "$JOB/out"
             cp "$JOB/out" "$CHECK.part" && mv -f "$CHECK.part" "$CHECK" ;;
         inspect)
-            "$CMD" inspect "$STAGED" > "$JOB/out" 2> "$JOB/log" </dev/null || rc=$?
+            run_cmd "$CMD" inspect "$STAGED" > "$JOB/out" 2> "$JOB/log" </dev/null || rc=$?
             [ "$(json_or_null "$JOB/out")" != null ] || echo '{"ok":0,"why":"not-release"}' > "$JOB/out"
             cp "$JOB/out" "$INSPECT.part" && mv -f "$INSPECT.part" "$INSPECT"
             rc=0 ;;
         *)
             export MU300_PROGRESS="$JOB/progress"
-            if [ -n "$tag" ]; then MU300_RELEASE=$tag "$CMD" "$@" > "$JOB/log" 2>&1 </dev/null || rc=$?
-            else "$CMD" "$@" > "$JOB/log" 2>&1 </dev/null || rc=$?
-            fi
+            : > "$JOB/progress"
+            [ -z "$tag" ] || export MU300_RELEASE="$tag"
+            run_cmd "$CMD" "$@" > "$JOB/log" 2>&1 </dev/null || rc=$?
             # the upload has done its work, however it went: a failed run is tried again with a new upload
             if [ "$kind" = file ]; then rm -f "$STAGED" "$UPLOAD" "$INSPECT"; fi ;;
     esac
@@ -295,6 +300,7 @@ do_act() {  # do_act OP TAG SYSTEMS KERNEL SHA256 SIZE FLAGS CONFIRM
                 upload_file "$UPLOAD" || { rm -f "$UPLOAD"; error 'No uploaded file'; }
                 rm -f "$STAGED" "$INSPECT"
                 mv -f -- "$UPLOAD" "$STAGED" 2>/dev/null || error 'No uploaded file'
+                chmod 600 "$STAGED"
             fi
             upload_file "$STAGED" || error 'No uploaded file'
             start_job inspect -- ;;
@@ -320,7 +326,8 @@ do_act() {  # do_act OP TAG SYSTEMS KERNEL SHA256 SIZE FLAGS CONFIRM
             esac
             [ "$(jget "$insp" '@.downgrade')" != 1 ] || has_flag "$flags" downgrade || error 'This file is older than what is installed: that needs confirmation'
             lock_free
-            set -- apply --from "$STAGED"
+            # (the updater takes the file only if it is still the one that was looked at)
+            set -- apply --from "$STAGED" "--sha256=$sha"
             ! has_flag "$flags" unsigned || set -- "$@" --unsigned
             ! has_flag "$flags" downgrade || set -- "$@" --downgrade
             ! has_flag "$flags" no_reinstall || set -- "$@" --no-reinstall

@@ -294,6 +294,91 @@ class Offline(UpdateBase):
             self.assertIn('second=1', r.stdout)
             self.assertIn('changed after they were checked', r.stderr)
 
+    def test_what_is_staged_is_roots_alone(self):
+        # the staging directory 700 and every file this puts there 600, whatever the umask of the run - which stays
+        # what it was for the rest of the update (the new system's directories are made under it)
+        for shell in self.each_shell():
+            shutil.rmtree(self.disk / '.mu300-update', ignore_errors=True)
+            r = self.frm(shell, self.zip, 'umask 022; MU300_ALLOW_UNSIGNED=1; from_begin; fetch_verified v2026.11.02 mu300-kernel.tar.gz; '
+                                          'echo "umask=$(umask)"')
+            self.assertIn('umask=0022', r.stdout.replace('umask=022', 'umask=0022'), r.stderr)
+            stage = self.disk / '.mu300-update'
+            self.assertEqual(stage.stat().st_mode & 0o777, 0o700)
+            open_ = {str(p.relative_to(stage)): oct(p.stat().st_mode & 0o777) for p in stage.rglob('*') if p.stat().st_mode & 0o077}
+            self.assertEqual(open_, {})
+            self.assertTrue((stage / 'mu300-kernel.tar.gz').exists() and (stage / '.from/SHA256SUMS').exists())
+            # one that others could write into is emptied before it is used: what they left there is not followed
+            shutil.rmtree(stage)
+            stage.mkdir()
+            stage.chmod(0o777)
+            victim = self.tmp / 'victim'
+            victim.write_text('untouched')
+            (stage / 'SHA256SUMS').symlink_to(victim)
+            (stage / 'mu300-kernel.tar.gz').symlink_to(victim)
+            r = self.frm(shell, self.zip, 'MU300_ALLOW_UNSIGNED=1; from_begin; fetch_verified v2026.11.02 mu300-kernel.tar.gz; echo "rc=$?"')
+            self.assertIn('rc=0', r.stdout, r.stderr)
+            self.assertEqual(victim.read_text(), 'untouched')
+            self.assertEqual(stage.stat().st_mode & 0o777, 0o700)
+            self.assertFalse((stage / 'mu300-kernel.tar.gz').is_symlink())
+
+    def test_the_file_that_was_looked_at_is_the_file_that_is_used(self):
+        # the page shows a file's SHA-256 and the owner says yes to that file: the updater takes it by that hash
+        other = magisk_zip(self.tmp / 'other.zip', release_dir(self.tmp / 'rel2', tag='v2026.11.03'), tag='v2026.11.03')
+        for shell in self.each_shell():
+            r = self.frm(shell, self.zip, f'apply_options --from "{self.zip}" --unsigned --sha256={sha(self.zip)}; from_begin; echo "began $MU300_RELEASE"')
+            self.assertIn('began v2026.11.02', r.stdout, r.stderr)
+            # another file at that path since
+            r = self.frm(shell, other, f'apply_options --from "{other}" --unsigned --sha256={sha(self.zip)}; from_begin; echo began')
+            self.assertNotIn('began', r.stdout)
+            self.assertIn('is not the file that was looked at', r.stderr)
+            for bad in ('--sha256=xyz', '--sha256=', '--sha256=' + 'A' * 64):
+                r = self.up(shell, f'apply_options --from /x.zip {bad}; echo parsed')
+                self.assertNotIn('parsed', r.stdout, bad)
+            # the hash is this run's own word, not the environment's
+            r = self.up(shell, 'apply_options --from /x.zip; echo "[$MU300_FROM_SHA]"', MU300_FROM_SHA='ab' * 32)
+            self.assertEqual(r.stdout.strip(), '[]')
+
+    def test_a_system_under_another_releases_name_is_not_installed(self):
+        # what is judged (the signature, the downgrade rule, what the page showed) is a name; what is installed is
+        # the files. An unsigned zip that calls itself v2026.12.24 and carries the system of v2026.09.01 passes the
+        # downgrade rule by its name - and stops at the root filesystem's own word, before anything is changed.
+        old = release_dir(self.tmp / 'old', tag='v2026.09.01')
+        liar = magisk_zip(self.tmp / 'liar.zip', old, tag='v2026.12.24')
+        nameless = release_dir(self.tmp / 'nameless')
+        tgz(nameless / 'mu300-openwrt-luci-rootfs.tar.gz', [('sbin/init', '#!/bin/sh\n', 0o755)])
+        (nameless / 'SHA256SUMS').write_text(''.join(f'{sha(nameless / n)}  {n}\n' for n in ('mu300-kernel.tar.gz', 'mu300-openwrt-luci-rootfs.tar.gz')))
+        for shell in self.each_shell():
+            for src, said, env in ((liar, 'says it is v2026.09.01, not v2026.12.24', {}),
+                                   (nameless, 'says it is no release at all, not v2026.11.02', {'MU300_RELEASE': 'v2026.11.02'})):
+                shutil.rmtree(self.disk / 'openwrt-luci.old', ignore_errors=True)
+                shutil.rmtree(self.disk / '.mu300-update', ignore_errors=True)
+                r = self.frm(shell, src, self.APPLY + 'MU300_ALLOW_UNSIGNED=1; apply', **env, **self.busybox_applets(shell))
+                self.assertNotEqual(r.returncode, 0, src.name)
+                self.assertIn(said, r.stderr)
+                self.assertEqual((self.disk / 'openwrt-luci/etc/mu300/image-version').read_text(), 'v2026.10.25\n')
+                self.assertFalse((self.disk / 'openwrt-luci.old').exists())
+                self.assertNotIn('BOOT', r.stdout)
+            # the same for a download: a mirror that serves the old system as the new release (no key on the system)
+            shutil.rmtree(self.disk / '.mu300-update', ignore_errors=True)
+            serve = (f'fetch_stdout() {{ cat "{old}/${{1##*/}}" 2>/dev/null; }}; fetch_file() {{ cp "{old}/${{1##*/}}" "$2" 2>/dev/null; }}; sleep() {{ :; }}; ')
+            (old / 'SHA256SUMS').write_text(''.join(l + '\n' for l in (old / 'SHA256SUMS').read_text().split('\n') if l and 'mu300-release' not in l))
+            r = self.up(shell, self.APPLY + serve + 'apply', MU300_RELEASE='v2026.12.24', MU300_RELEASE_PUB=self.nokey, **self.busybox_applets(shell))
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn('says it is v2026.09.01, not v2026.12.24', r.stderr)
+            self.assertEqual((self.disk / 'openwrt-luci/etc/mu300/image-version').read_text(), 'v2026.10.25\n')
+
+    def test_the_boot_image_is_not_taken_back_by_a_system_update(self):
+        # an update writes the release's kernel too: a system that was rolled back is older than the boot image, and
+        # a release between the two would take the boot image back without a word
+        (self.disk / 'boot').mkdir()
+        (self.disk / 'boot/installed.tag').write_text('v2026.12.01\n')
+        for shell in self.each_shell():
+            r = self.up(shell, 'downgrade_ok v2026.11.02 openwrt-luci; echo "rc=$?"')
+            self.assertIn('rc=1', r.stdout)
+            self.assertIn('the boot image is v2026.12.01 and v2026.11.02 is older', r.stderr)
+            self.assertIn('rc=0', self.up(shell, 'downgrade_ok v2026.12.01 openwrt-luci; echo "rc=$?"').stdout)
+            self.assertIn('rc=0', self.up(shell, 'downgrade_ok v2026.11.02 openwrt-luci; echo "rc=$?"', MU300_ALLOW_DOWNGRADE=1).stdout)
+
     def test_a_staging_directory_that_is_not_ours_is_not_used(self):
         elsewhere = self.tmp / 'elsewhere'
         elsewhere.mkdir()
@@ -1004,7 +1089,7 @@ class Status(test_update.Lock):
         import re
         self.assertEqual(sorted(re.findall(r'^([a-z_]+)\(\) \{', block, re.M)), sorted([
             'jv', 'jstr', 'jnum', 'mtime', 'tag_ok', 'newer', 'space_needed', 'source_conf', 'key_state', 'sig_raw', 'sig_state',
-            'stage_private', 'tag_sha', 'sums_trusted', 'sums_verdict', 'apply_targets', 'downgrade_ok', 'boot_downgrade_ok', 'zip_p', 'man_val', 'from_open', 'from_close', 'from_member', 'from_fits',
+            'stage_private', 'tag_sha', 'sums_trusted', 'sums_verdict', 'apply_targets', 'downgrade_ok', 'boot_downgrade_ok', 'zip_p', 'man_val', 'from_open', 'from_read', 'payload_is', 'from_close', 'from_member', 'from_fits',
             'from_installed', 'apply_options', 'from_begin', 'from_verified', 'from_handover', 'inspect_json',
             'lock_holder', 'size_kb', 'status_json', 'release_json', 'releases_json', 'progress']))
 
@@ -1025,7 +1110,8 @@ case ${1:-} in
 esac
 printf '%s|%s|%s\n' "$*" "${MU300_RELEASE:-}" "${MU300_PROGRESS:+progress}" >> "$FAKE/calls"
 printf '[%s][%s][%s][%s][%s]\n' "${MU300_ALLOW_UNSIGNED:-}" "${MU300_ALLOW_DOWNGRADE:-}" "${MU300_RELEASE_PUB:-}" "${MU300_FROM:-}" \
-    "${MU300_RELEASE_URL:-}${MU300_API_URL:-}${MU300_DOWNLOAD_URL:-}${MU300_FORCE:-}" >> "$FAKE/env"
+    "${MU300_RELEASE_URL:-}${MU300_API_URL:-}${MU300_DOWNLOAD_URL:-}${MU300_FORCE:-}${MU300_FROM_SHA:-}" >> "$FAKE/env"
+umask > "$FAKE/umask"
 [ -z "${MU300_PROGRESS:-}" ] || [ ! -f "$FAKE/progress" ] || cat "$FAKE/progress" >> "$MU300_PROGRESS"
 [ ! -f "$FAKE/log" ] || cat "$FAKE/log"
 [ ! -f "$FAKE/newtag" ] || cp "$FAKE/newtag" "$MU300_DISK/openwrt-luci/etc/mu300/image-version"
@@ -1412,7 +1498,7 @@ class Adapter(ShellTest):
             self.assertEqual(self.act(shell, 'apply_file', flags='no_reinstall', **ok), {'ok': 1, 'started': 1, 'kind': 'file'})
             self.put('newtag', 'v2026.11.02\n')
             self.run_job(shell)
-            self.assertEqual(self.calls(), [f'apply --from {staged} --no-reinstall||progress'])
+            self.assertEqual(self.calls(), [f'apply --from {staged} --sha256={"ab" * 32} --no-reinstall||progress'])
             j = self.ad(shell, 'job')['job']
             self.assertEqual((j['kind'], j['state'], j['changed']), ('file', 'done', 1))
             # the upload is gone after the run, and with it what was said about it
@@ -1430,13 +1516,13 @@ class Adapter(ShellTest):
                                      {'ok': 0, 'error': 'This file is not signed: that needs confirmation'})
                 self.assertEqual(self.act(shell, 'apply_file', flags='unsigned', **ok)['ok'], 1)
                 self.run_job(shell)
-                self.assertEqual(self.calls(), [f'apply --from {staged} --unsigned||progress'])
+                self.assertEqual(self.calls(), [f'apply --from {staged} --sha256={"ab" * 32} --unsigned||progress'])
             staged = self.upload(shell, dict(self.INSPECT, downgrade=1, signature='unsigned'))
             self.assertEqual(self.act(shell, 'apply_file', flags='unsigned', **ok)['error'],
                              'This file is older than what is installed: that needs confirmation')
             self.assertEqual(self.act(shell, 'apply_file', flags='unsigned downgrade', **ok)['ok'], 1)
             self.run_job(shell)
-            self.assertEqual(self.calls(), [f'apply --from {staged} --unsigned --downgrade||progress'])
+            self.assertEqual(self.calls(), [f'apply --from {staged} --sha256={"ab" * 32} --unsigned --downgrade||progress'])
             # never: a wrong signature, a file for another device, something that is no release
             for insp, error in ((dict(self.INSPECT, signature='bad', fits=0, why='signature'), 'This file is not for this device'),
                                 (dict(self.INSPECT, signature='bad'), 'The signature of this file is wrong'),
@@ -1456,6 +1542,7 @@ class Adapter(ShellTest):
         # --unsigned and --downgrade come from the request, by name (the flags of apply_file); what the adapter was
         # started with reaches the updater in no other way - not the word, not the key, not the source
         hostile = dict(MU300_ALLOW_UNSIGNED=1, MU300_ALLOW_DOWNGRADE=1, MU300_RELEASE_PUB='/tmp/x.pub', MU300_FROM='/tmp/x.zip',
+                       MU300_FROM_SHA='cd' * 32,
                        MU300_RELEASE_URL='http://x/', MU300_API_URL='http://x/', MU300_DOWNLOAD_URL='http://x/', MU300_FORCE=1)
         for shell in self.each_shell():
             staged = self.upload(shell, self.INSPECT)
@@ -1464,13 +1551,39 @@ class Adapter(ShellTest):
             self.assertEqual(self.started(wait=5), [f'{ADAPTER} run-job'])
             r = self.ad(shell, 'run-job', **hostile)
             self.assertEqual(r.returncode, 0, r.stderr)
-            self.assertEqual(self.calls(), [f'apply --from {staged}||progress'])
+            self.assertEqual(self.calls(), [f'apply --from {staged} --sha256={"ab" * 32}||progress'])
             self.assertEqual((self.fake / 'env').read_text(), '[][][][][]\n')
             # and the flags are words of a fixed set, each needed for what the file is - never taken for more
             self.upload(shell, self.INSPECT)
             for flags in ('unsigned;id', '--unsigned', 'unsigned downgrade force', 'MU300_ALLOW_UNSIGNED=1'):
                 self.assertEqual(self.act(shell, 'apply_file', sha256='ab' * 32, confirm='apply', flags=flags),
                                  {'ok': 0, 'error': 'Invalid update request'})
+
+    def test_what_the_adapter_keeps_is_roots_alone(self):
+        # the task's files, the releases and what was said about an upload are read through the adapter, never as
+        # files: none is readable by anyone else, whatever umask rpcd runs with. The updater itself runs under the
+        # usual umask: it makes the directories of the new system.
+        for shell in self.each_shell():
+            staged = self.upload(shell, self.INSPECT)
+            self.check(shell)
+            self.put('log', 'x\n')
+            self.put('progress', 'file mu300-kernel.tar.gz\n')
+            old = os.umask(0)
+            try:
+                self.assertEqual(self.act(shell, 'apply', tag='v2026.11.02', confirm='apply')['ok'], 1)
+                self.assertEqual(self.started(wait=5), [f'{ADAPTER} run-job'])
+                self.assertEqual(self.ad(shell, 'run-job').returncode, 0)
+            finally:
+                os.umask(old)
+            self.assertEqual((self.fake / 'umask').read_text().strip().lstrip('0'), '22')
+            job = self.run_dir / 'update-job'
+            modes = {p.name: p.stat().st_mode & 0o777 for p in list(job.iterdir()) + list(self.run_dir.glob('update-*.json'))}
+            self.assertGreaterEqual(set(modes), {'log', 'progress', 'rc', 'end', 'start', 'kind', 'args', 'update-check.json',
+                                                 'update-inspect.json'})
+            self.assertEqual({n: m for n, m in modes.items() if m & 0o077}, {})
+            for d in (job, self.run_dir, self.updir):
+                self.assertEqual(d.stat().st_mode & 0o777, 0o700, d)
+            self.assertEqual(staged.stat().st_mode & 0o777, 0o600)
 
     def test_cancel_removes_the_upload(self):
         for shell in self.each_shell():
