@@ -327,7 +327,8 @@ class SaeGuard(ShellTest):
         (self.tmp / 'uci.state').write_text(state)
         for f in ('uci.log', 'ubus.log', 'wifi.log', 'logger.log', 'ap-after'):
             (self.tmp / f).unlink(missing_ok=True)
-        (self.root / 'etc/mu300/wireless.sae-offload').unlink(missing_ok=True)
+        for f in ('wireless.sae-offload', 'wireless.sae-offload.why'):
+            (self.root / 'etc/mu300' / f).unlink(missing_ok=True)
         if up_after:
             (self.tmp / 'ap-after').write_text(str(up_after))
         # two more looks, a second apart (busybox ash runs its own sleep, so a stub would not be asked)
@@ -344,7 +345,7 @@ class SaeGuard(ShellTest):
         self.assertEqual((self.tmp / 'uci.state').read_text(), state)
         self.assertEqual([c for c in self.log('uci.log') if not c.startswith('get ')], [])
         self.assertEqual(self.log('wifi.log') + self.log('logger.log'), [])
-        self.assertFalse((self.root / 'etc/mu300/wireless.sae-offload').exists())
+        self.assertEqual(sorted(p.name for p in (self.root / 'etc/mu300').iterdir()), [])
 
     def assertWpa2(self, r, reason):
         state = (self.tmp / 'uci.state').read_text()
@@ -363,6 +364,12 @@ class SaeGuard(ShellTest):
         saved = self.root / 'etc/mu300/wireless.sae-offload'
         self.assertEqual(saved.read_text(), 'the file as it was\n')
         self.assertEqual(saved.stat().st_mode & 0o077, 0)
+        # the log keeps the line for minutes (the driver's own lines push it out): the reason and the time stay
+        # next to the settings, without the password
+        why = (self.root / 'etc/mu300/wireless.sae-offload.why').read_text()
+        self.assertRegex(why, r'^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d WPA3 hotspot \(U30 SAE offload\): ' + reason + r'\. ')
+        self.assertEqual(why.count('\n'), 1)
+        self.assertNotIn('synthetic-test-password', why)
 
     def test_without_the_option_nothing_is_asked_or_changed(self):
         for shell in self.each_shell():
@@ -420,7 +427,7 @@ class SaeGuard(ShellTest):
     def test_boot_calls_it_before_wifi_up_and_after_the_retry(self):
         hw = (TOP / 'openwrt/overlay/etc/init.d/mu300-hw').read_text()
         self.assertLess(hw.index('openwrt-wifi-config'), hw.index('openwrt-wifi-sae-guard precheck'))
-        self.assertLess(hw.index('openwrt-wifi-sae-guard precheck'), hw.index('wifi down'))
+        self.assertLess(hw.index('openwrt-wifi-sae-guard precheck'), hw.index('\twifi down >>'))
         post = (TOP / 'openwrt/overlay/etc/init.d/mu300-post').read_text()
         self.assertLess(post.index("'AP not up, retrying'; wifi up"), post.index('openwrt-wifi-sae-guard verify'))
 
