@@ -343,3 +343,5 @@ boot chain:     not synced (the model is not recognised)	boot zinciri:   eşitle
 An earlier run of this installer timed out in this Android boot ({1}); the SD card request it waited on is still stuck in the kernel. Reboot Android, then install the zip again. Nothing was changed; the lock is {2}.	Bu kurucunun önceki bir çalışması bu Android açılışında zaman aşımına uğradı ({1}); beklediği SD kart isteği çekirdekte hâlâ takılı. Android'i yeniden başlatın, sonra zip'i yeniden kurun. Hiçbir şey değiştirilmedi; kilit: {2}.
 the device log was kept at {1}	cihaz günlüğü şurada saklandı: {1}
 boot_{1} read back from the eMMC is not the image that was written ({2}); Linux was not armed: misc was not changed, so Android keeps booting	eMMC'den geri okunan boot_{1}, yazılan görüntü değil ({2}); Linux etkinleştirilmedi: misc değiştirilmedi, Android açılmaya devam eder
+{1} is not a file that only root can change; nothing was changed	{1} yalnızca root'un değiştirebildiği bir dosya değil; hiçbir şey değiştirilmedi
+on, for {1}	açık, {1} için
