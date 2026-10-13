@@ -2976,8 +2976,8 @@ msgstr "webhook 地址必须是 http:// 或 https:// 开头的 URL"
 msgid "The webhook body is too long or contains a control character"
 msgstr "Webhook 请求体过长或包含控制字符"
 
-msgid "The answer check must be key=value, like errcode=0 (letters, digits, _ and -; the value also . and +)"
-msgstr "响应检查必须是 键=值 的形式，例如 errcode=0（字母、数字、_ 和 -；值中还可以有 . 和 +）"
+msgid "The answer check must be key=value, like errcode=0 or ok=true (the value a whole number or lowercase letters, 16 at most)"
+msgstr "响应检查必须是 键=值 的形式，例如 errcode=0 或 ok=true（值为整数或小写字母，最多 16 个字符）"
 
 msgid "Invalid header (one \"Name: value\" per line; Host, Content-Type, Content-Length, Transfer-Encoding and Connection are set by the device)"
 msgstr "无效的请求头（每行一个 \"Name: value\"；Host、Content-Type、Content-Length、Transfer-Encoding 和 Connection 由设备设置）"
@@ -3008,6 +3008,9 @@ msgstr "无法保存转发设置"
 
 msgid "SMS forwarding is not installed"
 msgstr "未安装短信转发"
+
+msgid "A test was started a moment ago; wait a few seconds"
+msgstr "刚刚已开始一次测试；请等待几秒"
 
 msgid "The delivery log could not be cleared"
 msgstr "无法清空发送日志"

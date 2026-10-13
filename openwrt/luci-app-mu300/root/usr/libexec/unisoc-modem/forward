@@ -3,7 +3,8 @@
 # forward_log_clear) on mu300-sms-forward and its configuration. Every reply is one JSON object.
 #   forward get     the settings, with every secret masked, the queue and the delivery log
 #   forward set     the settings, as the page's JSON object on stdin (see below); {"ok":1} or {"ok":0,"error":...}
-#   forward test    a test delivery to every target that is on, in the background; its result goes to the log
+#   forward test    a test delivery to every target that is on, in the background; its result goes to the log;
+#                   refused when one was started under 5 s ago (mu300-sms-forward test-gate)
 #   forward logclear  the delivery log emptied
 #
 # The secrets (webhook URL and headers, Telegram token, mail password) never come back: get says whether each is set,
@@ -16,8 +17,10 @@
 # address or a header. It is only ever stored and copied here; mu300-sms-forward fills it in.
 #
 # webhook_expect is what the service's answer must have for a 2xx to count as delivered: KEY=VALUE, a top-level key
-# of a JSON answer and its value (errcode=0), each 1 to 32 of A-Za-z0-9_- (the value . and + as well); empty: any 2xx
-# counts. Not a secret either. mu300-sms-forward compares it as text and checks its form again.
+# of a JSON answer and its value (errcode=0). KEY is a name (a letter or _, then letters, digits, _; 32 at most),
+# VALUE a whole number (16 digits at most) or 1 to 16 lowercase letters; empty: any 2xx counts. Not a secret either.
+# mu300-sms-forward compares it as text and checks its form again. The form is as narrow as a status needs, because
+# whoever may set the address and this rule learns from the log whether the answer has that value.
 set -u
 export PATH="$PATH:/opt/mu300/bin:/usr/sbin:/sbin"
 LIB=${0%/*}/../../share/unisoc-modem/lib.sh
@@ -155,8 +158,8 @@ do_set() {
     inp webhook_body; body=$V
     text_ok "$body" && [ "$(bytes "$body")" -le 2000 ] || error 'The webhook body is too long or contains a control character'
     inp webhook_expect; exp=$V
-    [ -z "$exp" ] || like "$exp" '[A-Za-z0-9_-]{1,32}=[A-Za-z0-9_.+-]{1,32}' ||
-        error 'The answer check must be key=value, like errcode=0 (letters, digits, _ and -; the value also . and +)'
+    [ -z "$exp" ] || like "$exp" '[A-Za-z_][A-Za-z0-9_]{0,31}=(-?[0-9]{1,16}|[a-z]{1,16})' ||
+        error 'The answer check must be key=value, like errcode=0 or ok=true (the value a whole number or lowercase letters, 16 at most)'
     list webhook_headers 512 '[A-Za-z0-9-]{1,64}: ?[ -~]*' || error 'Invalid header (one "Name: value" per line; Host, Content-Type, Content-Length, Transfer-Encoding and Connection are set by the device)'
     hdrs=$V
     if [ -n "$hdrs" ]; then
@@ -237,6 +240,7 @@ do_set() {
 
 do_test() {
     [ -x "$FWD" ] || error 'SMS forwarding is not installed'
+    "$FWD" test-gate >/dev/null 2>&1 || error 'A test was started a moment ago; wait a few seconds'
     if command -v setsid >/dev/null 2>&1; then
         setsid "$FWD" test </dev/null >/dev/null 2>&1 &
     else
