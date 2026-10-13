@@ -7,6 +7,8 @@
 #   mu300-audio-dsp routes     just the routes (see set_routes below)
 #   mu300-audio-dsp profiles [MODE]  load the DSP parameter blobs and select a call mode (default 7)
 #   mu300-audio-dsp stop       stop the DSP (the modules stay)
+#   mu300-audio-dsp install FILE   check an AGDSP image you supply and put it where "start" reads it
+#   mu300-audio-dsp uninstall  take it out again (the previous file, if there was one, comes back)
 #
 # "start" used to reboot this device and the note here used to say so, blaming the card not being registered.
 # That is no longer reproducible: on the current memory reservation the firmware has been written both with the
@@ -30,6 +32,13 @@ export PATH="$PATH:/opt/mu300/bin:/opt/mu300/busybox-bin:/usr/sbin:/sbin"
 A=/lib/modules/$(uname -r)/audio
 BOOT=/sys/devices/platform/audiocp_boot
 FW=${MU300_AGDSP_FW:-/lib/firmware/agdsp.bin}
+# the sha256 of the image "install" put there, kept on the device only
+FW_SUM=${MU300_AGDSP_SUM:-/etc/mu300/agdsp.sha256}
+# The one image measured on an F50 so far: a ZTE Voyage 41S (same T760/UMS9620) AGDSP, the image the community
+# Android module boots media audio and Bluetooth calls with (docs/FINDINGS.md 24). Only the ends of its sha256
+# were ever written down; a different image is not refused, only reported.
+KNOWN_SUM_HEAD=378ceea7
+KNOWN_SUM_TAIL=b937
 
 # memory-region 0 and 1, which this board's device tree does not have. The kernel reserves these ranges through
 # CONFIG_OF_RESERVED_MEM_ADD; audio_mem takes them as parameters. Index 0 is the DDR32 shared memory, index 1
@@ -296,13 +305,61 @@ profiles)
         esac
         amixer -c "$card" cset name="$u" 1 >/dev/null 2>&1 && n=$((n + 1))
     done
+    # The selects are declared with max 0x0fffffff and carry the mode in bits 24-31, so amixer clamps every mode
+    # from 16 up (the Bluetooth headset modes start at 28) to 0x0fffffff, which the driver then applies as a
+    # garbage case. tools/ctlset writes the value as it is (kanoqwq/e5-linux found the same clamp on the E5).
     for s in 'Audio Structure Profile Select' 'DSP VBC Profile Select'; do
-        amixer -c "$card" cset name="$s" "$sel" >/dev/null 2>&1
+        if command -v ctlset >/dev/null 2>&1; then
+            ctlset "$card" "$s" "$sel" >/dev/null 2>&1
+        else
+            [ "$mode" -ge 16 ] && echo "mode $mode needs tools/ctlset (amixer clamps it); not selected" >&2
+            [ "$mode" -lt 16 ] && amixer -c "$card" cset name="$s" "$sel" >/dev/null 2>&1
+        fi
     done
     echo "profiles: $n loaded, mode $mode selected (value $sel)"
     ;;
 
+install)
+    # The AGDSP image is not part of this project and never will be (it is Unisoc's, and no copy exists on the
+    # F50). This takes one you have yourself - from your own phone of the same SoC, or its official firmware
+    # package - checks that it is plausibly one, and puts it at $FW for "start". docs/FINDINGS.md 24 has which
+    # image has been measured to run here.
+    src=${2:?usage: mu300-audio-dsp install FILE}
+    [ -f "$src" ] || { echo "no file $src" >&2; exit 1; }
+    size=$(wc -c < "$src")
+    # room for it: ldinfo's size when sprd_audcp_boot is up, else the reserved region this board uses
+    room=$(od -An -tu4 -j36 -N4 "$BOOT/ldinfo" 2>/dev/null | tr -d ' ')
+    [ -n "$room" ] && [ "$room" -gt 0 ] 2>/dev/null || room=$((${DSPBIN#*,}))
+    [ "$size" -ge 1048576 ] || { echo "$src is $size bytes - too small for an AGDSP image" >&2; exit 1; }
+    [ "$size" -le "$room" ] || { echo "$src is $size bytes, the DSP region holds $room: it would be cut short" >&2; exit 1; }
+    # every Unisoc AGDSP image seen so far carries "<SoC>_AUDCP_<year>Y_VER_<n>" in its first kilobytes
+    head -c 65536 "$src" | tr -c 'A-Za-z0-9_' '\n' | grep -q 'AUDCP' ||
+        { echo "$src does not look like an AGDSP image (no AUDCP header in its first 64 KiB)" >&2; exit 1; }
+    sum=$(sha256sum "$src" | cut -d' ' -f1)
+    mkdir -p "${FW%/*}" "${FW_SUM%/*}"
+    [ -f "$FW" ] && [ ! -f "$FW.orig" ] && cp -p "$FW" "$FW.orig"
+    cp "$src" "$FW.new" && mv "$FW.new" "$FW" || { echo "could not write $FW" >&2; exit 1; }
+    echo "$sum  ${FW##*/}" > "$FW_SUM"
+    echo "installed $FW ($size bytes, header $(head -c 65536 "$src" | tr -c 'A-Za-z0-9_' '\n' | grep -m1 AUDCP))"
+    echo "sha256 $sum"
+    case $sum in
+        $KNOWN_SUM_HEAD*$KNOWN_SUM_TAIL) echo "this is the image measured on an F50 (docs/FINDINGS.md 24)" ;;
+        *) echo "not the image measured on an F50 so far; it may still work, and 'start' will say whether the DSP answers" ;;
+    esac
+    echo "next: mu300-audio-dsp start   (or reboot: mu300-audio starts it at boot)"
+    ;;
+
+uninstall)
+    if [ -f "$FW.orig" ]; then
+        mv "$FW.orig" "$FW" && echo "restored the previous $FW"
+    else
+        rm -f "$FW" && echo "removed $FW"
+    fi
+    rm -f "$FW_SUM"
+    echo "a DSP that is already running keeps running until the next reboot"
+    ;;
+
 *)
-    sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'
     exit 2 ;;
 esac
