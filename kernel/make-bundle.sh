@@ -21,6 +21,8 @@ REF=${2:-$(ls -t "$TOP"/release/*/mu300-kernel.tar.gz 2>/dev/null | head -1)}
 [ -f "$UO/Image" ] || { echo "no $UO/Image (run build.sh)" >&2; exit 1; }
 [ -f "$REF" ] || { echo "no 5.4 kernel bundle for busybox/logdw (give one as the second argument)" >&2; exit 1; }
 
+python3 "$U/audit-bundle.py" "$UO" "$U/mu300-mainline.config"
+
 krel=$(strings "$UO/Image" | sed -n 's/^Linux version \([^ ]*\) .*/\1/p' | head -1)
 [ -n "$krel" ] || { echo "cannot read the kernel release from upstream/out/Image" >&2; exit 1; }
 # a module left over from another kernel release would only fail on the device, at insmod
@@ -42,6 +44,8 @@ python3 "$TOP/boot/build-boot-image.py" --generic-ramdisk --modules "$UO/modules
     --ueventd-perms "$TOP/android-vendor/ueventd-perms.sh" --out "$W/b/ramdisk-generic.lz4" >/dev/null
 cp "$UO"/modules/*.ko "$W/b/modules/"
 for f in modules.builtin modules.builtin.modinfo; do [ ! -f "$UO/$f" ] || cp "$UO/$f" "$W/b/"; done
+cp "$UO/kernel.config" "$UO/modules.in-tree" "$W/b/"
+( cd "$W/b/modules" && printf '%s\n' *.ko ) > "$W/b/modules.list"
 echo "$krel" > "$W/b/kernel.release"
 # the devices this kernel runs on; mu300-update and the installers check it (FINDINGS 33c: mainline kernels from
 # before this file do not bring up the U30 Air's USB)
