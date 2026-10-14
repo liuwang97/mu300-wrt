@@ -53,4 +53,5 @@ for m in $mods; do
         strip --strip-debug "$OUT/modules/${ko##*/}"
     done
 done
+cp "$O/modules.in-tree" "$OUT/modules.in-tree"
 ls -la $OUT/modules/*.ko
