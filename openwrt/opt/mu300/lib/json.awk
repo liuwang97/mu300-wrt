@@ -44,9 +44,18 @@ function ws(   c) {
     while (P <= L) { c = substr(S, P, 1); if (c == " " || c == "\n" || c == TABC || c == CRC) P++; else break }
 }
 # enc(TEXT): TEXT as a JSON string
+# rep(T, FROM, TO): every FROM in T replaced by TO, literally. Not gsub: what a backslash in gsub's replacement means
+# differs between awks, and busybox's awk (OpenWrt) turned "\\\\" into one backslash - a quote in a string came out
+# unescaped and a backslash was lost (seen on a U30 Air: every SSID with a quote broke wifi.get's answer).
+function rep(t, from, to,   o, i) {
+    o = ""
+    while ((i = index(t, from)) > 0) { o = o substr(t, 1, i - 1) to; t = substr(t, i + length(from)) }
+    return o t
+}
+# esc(T): backslash, newline, tab and CR written \\ \n \t \r
+function esc(t) { return rep(rep(rep(rep(t, BS, BS BS), "\n", BS "n"), TABC, BS "t"), CRC, BS "r") }
 function enc(t,   o, c, i) {
-    gsub(/\\/, "\\\\", t); gsub(/"/, "\\\"", t)
-    gsub(/\n/, "\\n", t); gsub(TABC, "\\t", t); gsub(CRC, "\\r", t)
+    t = esc(t); t = rep(t, QU, BS QU)
     if (t ~ CTL) {
         o = ""
         for (i = 1; i <= length(t); i++) {
@@ -191,7 +200,7 @@ function flat(   k, c, t, v, seen) {
         } else if (c == "-" || c ~ /[0-9]/) { t = "n"; v = num() }
         else { v = lit(); t = (v == "null" ? "z" : "b") }
         if (BAD) return
-        gsub(/\\/, "\\\\", v); gsub(/\n/, "\\n", v); gsub(TABC, "\\t", v); gsub(CRC, "\\r", v)
+        v = esc(v)
         OUT = OUT k "\t" t "\t" v "\n"
         ws()
         if (substr(S, P, 1) == ",") { P++; continue }

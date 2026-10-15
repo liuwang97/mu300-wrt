@@ -384,6 +384,14 @@ class HotspotUbuntu(ApiCase):
             self.assertEqual(self.calls('later'), [])
             (self.root / 'run/mu300-wifi-client.active').unlink()
 
+    def test_on_while_starting(self):
+        """The hotspot restarted by wifi.set stays "activating" for about 20 s (its ExecStartPost checks): on, not off."""
+        (self.root / 'etc/mu300/hotspot.conf').write_text('SSID=MU300-AB12\nPSK=hotspotsecret1\n')
+        for state, want in (('activating\n', True), ('active\n', True), ('inactive\n', False), ('failed\n', False)):
+            self.out('systemctl', state)
+            for shell in self.each_shell():
+                self.assertEqual(self.ok(shell, 'wifi.get')['enabled'], want, state)
+
     def test_power(self):
         for shell in self.each_shell():
             self.clear_calls()
@@ -418,6 +426,15 @@ class HotspotOpenWrt(ApiCase):
             # a band goes through mu300-wifi-band (its channel list and widths)
             self.ok(shell, 'wifi.set', {'band': '2.4'})
             self.assertIn(['mu300-wifi-band', '2.4'], self.calls('mu300-wifi-band'))
+            # a band with a channel: the channel after mu300-wifi-band (which puts the band on auto), then a reload
+            # (a U30 Air: "2.4 GHz, channel 11" came up on 6). Here the stub leaves the band as it was.
+            db = self.ucidb()
+            self.uci({**db, 'wireless': {**db['wireless'], 'radio0': {**db['wireless']['radio0'], 'band': '2g', 'channel': 'auto'}}})
+            self.clear_calls()
+            self.ok(shell, 'wifi.set', {'band': '2.4', 'channel': '11'})
+            self.assertEqual(self.calls('mu300-wifi-band'), [['mu300-wifi-band', '2.4']])
+            self.assertEqual(self.ucidb()['wireless']['radio0']['channel'], '11')
+            self.assertEqual(self.calls('later')[-1][-2:], ['wifi', 'reload'])
 
 
 class MobileData(ApiCase):
@@ -758,8 +775,31 @@ class Jobs(ApiCase):
             self.assertEqual((self.tmp / 'stdin.wifi-client').read_text(), 'wifi$ecret1\n')
             self.assertNotIn('wifi$ecret1', self.everything_written())
 
+    def test_a_tool_message_with_its_indented_lines_is_the_reason(self):
+        """wifi-client scan with the hotspot on (an F50): the reason is the whole message, not its last line."""
+        self.out('wifi-client', '', rc=1, err='some earlier line\n'
+                 'wifi-client: the radio is an access point right now, and this driver cannot turn it back into a\n'
+                 '             client without a reboot.\n\n'
+                 '             That saves it, and after a reboot the device joins it.\n')
+        for shell in self.each_shell():
+            self.refused(shell, 'wificlient.scan', {}, 'failed',
+                         'wifi-client: the radio is an access point right now, and this driver cannot turn it back '
+                         'into a client without a reboot. That saves it, and after a reboot the device joins it.')
+        self.out('wifi-client', '', rc=1, err='wifi-client: no wlan0\n')
+        for shell in self.each_shell():
+            self.refused(shell, 'wificlient.scan', {}, 'failed', 'wifi-client: no wlan0')
+
 
 class Static(unittest.TestCase):
+    def test_no_backslash_in_a_gsub_replacement(self):
+        """busybox 1.37's awk (OpenWrt 25.12) read gsub's "\\\\\\\\" as one backslash: quotes came out unescaped and
+        backslashes were lost on a U30 Air. json.awk replaces literally (rep); no gsub/sub may carry a backslash."""
+        import re
+        for p in (LIB / 'json.awk', API):
+            for n, line in enumerate(p.read_text().splitlines(), 1):
+                for m in re.finditer(r'\bg?sub\(([^;]*)\)', line):
+                    self.assertNotRegex(m.group(1).split(',', 1)[-1], r'"[^"]*\\\\', f'{p.name}:{n}: {line.strip()}')
+
     def test_on_the_path_and_every_method_dispatched(self):
         self.assertIn('mu300-api', (LIB / 'path-commands').read_text().split())
         text = API.read_text()

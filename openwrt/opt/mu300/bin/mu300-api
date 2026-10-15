@@ -90,6 +90,12 @@ refuse() {
 sanitize() { LC_ALL=C tr -d '\000-\010\013-\037\177' | sed -E 's#((https?|wss?|vless|vmess|trojan|ss|hysteria2|hy2|tuic|wg|wireguard)://)[^ "]*#\1...#g'; }
 ok() { printf '{"ok":1%s}\n' "${1:+,$1}"; exit 0; }
 lastline() { printf '%s\n' "$1" | sed '/^[[:space:]]*$/d' | tail -n 1; }
+# lastmsg TEXT: the last message of a tool's stderr, with the indented lines that continue it (the CLIs here write
+# "prog: first line" and indent the rest), on one line. Seen on an F50: "wifi-client scan" with the hotspot on ends
+# with a hint, and its last line alone ("That saves it, and after a reboot...") was the reason the page showed.
+lastmsg() {
+    printf '%s\n' "$1" | awk '/^[ \t]*$/ { next } /^[ \t]/ { sub(/^[ \t]+/, ""); m = (m == "" ? $0 : m " " $0); next } { m = $0 } END { print m }'
+}
 
 # ------------------------------------------------------------------ JSON in
 FIELDS=
@@ -198,6 +204,12 @@ svc_active() {
     elif [ -x "$R/etc/init.d/$1" ]; then "$R/etc/init.d/$1" running >/dev/null 2>&1
     else return 1; fi
 }
+# hotspot_on: the Ubuntu hotspot is on, or on its way (systemd's "activating": mu300-hotspot's ExecStartPost checks
+# take about 20 s after a restart, seen on an F50, and the page read "off" right after every change it made)
+hotspot_on() {
+    case $(systemctl is-active mu300-hotspot 2>/dev/null) in active|activating|reloading) return 0 ;; esac
+    return 1
+}
 # later CMD...: CMD in a new session, two seconds from now (after the answer has gone out: a restart of the
 # hotspot, the LAN or adb, a reboot)
 later() { setsid sh -c 'sleep 2; "$@"' sh "$@" </dev/null >/dev/null 2>&1 & }
@@ -220,7 +232,7 @@ tool() {
     _o=$RUN/tool.$$.out; _e=$RUN/tool.$$.err
     timed "$_s" "$@" >"$_o" 2>"$_e"; RC=$?
     OUT=$(head -c 262144 "$_o" 2>/dev/null)
-    ERR=$(lastline "$(cat "$_e" 2>/dev/null)")
+    ERR=$(lastmsg "$(cat "$_e" 2>/dev/null)")
     [ -n "$ERR" ] || ERR=$(lastline "$OUT")
     rm -f "$_o" "$_e"
     case $RC in 124|143) ERR="timed out" ;; esac
@@ -358,7 +370,7 @@ m_overview() {
     if is_openwrt; then
         _ssid=$(uci_q get "$(wifi_iface).ssid"); _hs=$([ "$(uci_q get "$(wifi_radio).disabled")" = 1 ] && echo false || echo true)
     else
-        _ssid=$(conf SSID "$HOTSPOT"); _hs=$(svc_active mu300-hotspot && echo true || echo false)
+        _ssid=$(conf SSID "$HOTSPOT"); _hs=$(hotspot_on && echo true || echo false)
     fi
     printf '{"ok":1,"system":"%s","os":%s,"device":%s,"release":%s,"kernel":%s,"kernel_choice":%s,"hostname":%s,' \
         "$SYS" "$(js "$(os_name)")" "$(js "$DEV")" "$(js "$(release)")" "$(js "$(uname -r)")" \
@@ -437,7 +449,7 @@ m_wifi_get() {
         _sec=wpa2
         _hidden=$(conf HIDDEN "$HOTSPOT")
         _pw=$([ -n "$(conf PSK "$HOTSPOT")" ] && echo true || echo false)
-        _on=$(svc_active mu300-hotspot && echo true || echo false)
+        _on=$(hotspot_on && echo true || echo false)
         _client=$([ -e "$R/run/mu300-wifi-client.active" ] && echo true || echo false)
     fi
     printf '{"ok":1,"enabled":%s,"client_mode":%s,"ssid":%s,"band":"%s","channel":%s,"channel_live":%s,"country":"%s",' \
@@ -472,6 +484,15 @@ m_band_now() {
     if is_openwrt; then case $(uci_q get "$(wifi_radio).band") in 2g) echo 2.4 ;; *) echo 5 ;; esac
     else case $(conf BAND "$HOTSPOT") in 2.4) echo 2.4 ;; *) echo 5 ;; esac; fi
 }
+# uci_channel RADIO: the uci batch lines for $CHAN on RADIO, and on 5 GHz the width the country allows there
+uci_channel() {
+    printf 'set %s.channel=%s\n' "$1" "$CHAN"
+    if [ "$CHAN" != auto ] && [ "$(m_band_now)" = 5 ]; then
+        _ht=$(uci_q get "$1.htmode"); _w=$(wifi_ap5_width "$(wifi_country)" "$CHAN")
+        case $_ht in NOHT|'') ;; HT*) [ "$_w" = 80 ] && _w=40; printf 'set %s.htmode=HT%s\n' "$1" "$_w" ;;
+            *) printf 'set %s.htmode=%s%s\n' "$1" "${_ht%%[0-9]*}" "$_w" ;; esac
+    fi
+}
 m_wifi_set() {
     only ssid password band channel hidden
     hotspot_check
@@ -486,18 +507,17 @@ m_wifi_set() {
                 case $_enc in none|'') printf 'set %s.encryption=psk2\n' "$_if" ;; esac
             fi
             [ -z "$HIDDEN" ] || printf 'set %s.hidden=%s\n' "$_if" "$HIDDEN"
-            if [ -n "$CHAN" ] && [ -z "$BAND" ]; then
-                printf 'set %s.channel=%s\n' "$_rd" "$CHAN"
-                if [ "$CHAN" != auto ] && [ "$(m_band_now)" = 5 ]; then
-                    _ht=$(uci_q get "$_rd.htmode"); _w=$(wifi_ap5_width "$(wifi_country)" "$CHAN")
-                    case $_ht in NOHT|'') ;; HT*) [ "$_w" = 80 ] && _w=40; printf 'set %s.htmode=HT%s\n' "$_rd" "$_w" ;;
-                        *) printf 'set %s.htmode=%s%s\n' "$_rd" "${_ht%%[0-9]*}" "$_w" ;; esac
-                fi
-            fi
+            [ -z "$CHAN" ] || [ -n "$BAND" ] || uci_channel "$_rd"
             echo 'commit wireless'
         } | uci_batch || refuse failed "uci"
         if [ -n "$BAND" ]; then
             tool 30 "$BIN/mu300-wifi-band" "$BAND" </dev/null || refuse failed "$ERR"
+            # mu300-wifi-band puts the new band on its automatic channel; a channel asked for with it comes after
+            # (a U30 Air: "2.4 GHz, channel 11" came up on channel 6)
+            if [ -n "$CHAN" ] && [ "$CHAN" != auto ]; then
+                { uci_channel "$_rd"; echo 'commit wireless'; } | uci_batch || refuse failed "uci"
+                later wifi reload
+            fi
         else
             case $_enc in sae*) later sh -c 'wifi down; sleep 1; wifi up' ;; *) later wifi reload ;; esac
         fi
