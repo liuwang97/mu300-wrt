@@ -351,3 +351,8 @@ to share by shrinking it: {1} MiB up to sector {2}; needed: {3} MiB ({4} MiB And
 the new partition table did not arrive on the device as it was made; nothing is changed	yeni bölüm tablosu cihaza oluşturulduğu gibi ulaşmadı; hiçbir şey değiştirilmedi
 {1} is not a file that only root can change; nothing was changed	{1} yalnızca root'un değiştirebildiği bir dosya değil; hiçbir şey değiştirilmedi
 on, for {1}	açık, {1} için
+This looks like a ZTE V50 but is not one this installer knows (model V50, device MU3351, platform ums9620): {1}	Bu bir ZTE V50 gibi görünüyor ama bu kurulum programının tanıdığı bir V50 değil (model V50, cihaz MU3351, platform ums9620): {1}
+ZTE V50: EXPERIMENTAL, tested by nobody in this project (kano ported it); mainline kernel only; no second SIM, no NFC; USB network 192.168.79.1	ZTE V50: DENEYSEL, bu projede kimse denemedi (kano uyarladı); yalnızca ana hat (mainline) çekirdek; ikinci SIM yok, NFC yok; USB ağı 192.168.79.1
+The ZTE V50 runs a mainline kernel only: install a prebuilt release (without --build)	ZTE V50 yalnızca ana hat (mainline) çekirdekle çalışır: hazır bir sürüm kurun (--build olmadan)
+The ZTE V50 runs a mainline kernel only (6.18 or 7.2).	ZTE V50 yalnızca ana hat (mainline) çekirdekle çalışır (6.18 ya da 7.2).
+The ZTE V50 runs only a mainline kernel of a release that knows it: take the zip for kernel 6.18 or 7.2 (of a newer release if this one has none)	ZTE V50 yalnızca onu tanıyan bir sürümün ana hat (mainline) çekirdeğiyle çalışır: 6.18 ya da 7.2 çekirdeğinin zip dosyasını alın (bu sürümde yoksa daha yeni bir sürümün)

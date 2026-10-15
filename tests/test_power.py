@@ -171,6 +171,15 @@ class Config(PowerTest):
             self.assertIn('battery: none', r.stdout)
             self.assertIn('profile: plugged (auto)', r.stdout)
 
+    def test_v50_ignores_its_fuel_gauge(self):
+        # the V50 (FINDINGS 95): no battery either, its PMIC's fuel gauge as the F50's
+        self.stub('mu300-device', 'echo v50')
+        self.battery(capacity=19, temp=750)
+        for shell in self.each_shell():
+            r = self.power(shell, 'status')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn('battery: none', r.stdout)
+
     def test_no_battery_is_plugged(self):
         # the F50: no battery node; the daemon runs with battery knobs inert and the device counts as plugged
         for shell in self.each_shell():

@@ -48,7 +48,8 @@ echo "==> kernel bundle"
 K=$D/kernel && mkdir -p "$K"
 cp -R "$IN/out/modules" "$K/modules"
 cp -R "$KOUT/modules-u30air" "$K/modules-u30air"
-# the devices this bundle runs on (mu300-update and the installers check it)
+# the devices this bundle runs on (mu300-update and the installers check it); not the V50: the only V50 known to run
+# this project (kano's) ran mainline, and its LED driver is mainline only (upstream/make-bundle.sh, FINDINGS 95)
 echo "f50 u30air" > "$K/devices"
 # what it can do that older bundles could not: 5.4 reads the SD card (FINDINGS 31j), so a system on the card may get
 # it; its init runs from either slot, so a Linux on slot a may get it (mu300-update checks both)
