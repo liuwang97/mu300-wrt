@@ -1006,7 +1006,8 @@ static int edma_pending_q_buffer(int chn, void *head, void *tail, int num)
 
 	if ((q->wt + 1) % (q->max) == q->rd) {
 		pr_warn_ratelimited("WARN %s(%d) full\n", __func__, chn);
-		return ERROR;
+		/* MU300: nothing was taken; the producer retries after a completion (sc2355 pcie.c) */
+		return -EAGAIN;
 	}
 	q->ring[q->wt].head = head;
 	q->ring[q->wt].tail = tail;
