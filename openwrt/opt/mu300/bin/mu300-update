@@ -72,7 +72,9 @@ fetch_file() {  # fetch_file URL OUT (resumes a partial OUT)
 }
 
 # fetch_verified TAG ASSET: the release file in $STAGE, checked against the release's SHA256SUMS; a file that is
-# already there and matches is not downloaded again, a partial one is resumed
+# already there and matches is not downloaded again, a partial one is resumed. 2: the release has no such file;
+# 3: the release itself was refused (its signature, or its checksums are another release's) - trying again changes
+# nothing, so apply does not say it would (fetch_stop)
 STAGE=$DISK/.mu300-update
 fetch_verified() {
     progress file "$2"
@@ -95,7 +97,7 @@ fetch_verified() {
         fi
     fi
     # (where this system has the project's release key: the signature of SHA256SUMS, see sums_trusted)
-    sums_trusted "$1" "$base" || return 1
+    sums_trusted "$1" "$base" || return 3
     want=$(awk -v f="$2" '$2 == f || $2 == "*" f {print $1}' "$STAGE/SHA256SUMS")
     [ -n "$want" ] || { echo "$2 is not part of release $1" >&2; return 2; }
     for try in 1 2 3; do
@@ -106,7 +108,7 @@ fetch_verified() {
         rm -f "$STAGE/$2"
         if _sums=$(fetch_stdout "$base/SHA256SUMS") && [ -n "$_sums" ]; then
             printf '%s\n' "$_sums" > "$STAGE/SHA256SUMS"
-            SUMS_FETCHED=$1; SUMS_OK=; sums_trusted "$1" "$base" || return 1
+            SUMS_FETCHED=$1; SUMS_OK=; sums_trusted "$1" "$base" || return 3
             want=$(awk -v f="$2" '$2 == f || $2 == "*" f {print $1}' "$STAGE/SHA256SUMS")
             [ -n "$want" ] || { echo "$2 is not part of release $1" >&2; return 2; }
         fi
@@ -1866,6 +1868,12 @@ offline_hint() {
     printf 'If this device ran for a while without traffic, older boot images can lose mobile data\n' >&2
     printf 'until the next boot: reboot, then run mu300-update apply right away.\n' >&2
 }
+# fetch_stop RC: apply ends after fetch_verified failed with RC. A refused release (3) is not a download to continue,
+# and its log should not send the owner looking for a network fault (seen on the U30 Air, an unsigned release).
+fetch_stop() {
+    [ "$1" != 3 ] || die "nothing was changed"
+    offline_hint; die "nothing was changed; run mu300-update apply again to continue the download"
+}
 
 # While the update unpacks and writes the boot image, mobile data is left alone: the watchdog of the connection would
 # otherwise redial (AT commands, the IPA brought down and up) in the middle of it. The connection stays as it is.
@@ -1937,7 +1945,7 @@ apply() {
     free=$(df -k "$DISK" | awk 'NR==2 {print $4}')
     [ "$free" -gt $((1000000 + 1000000 * $(echo $todo | wc -w))) ] || die "not enough free space on the Linux partition (about 1 GB, plus 1 GB for every system to update)"
     for os in $todo; do
-        fetch_verified "$tag" "$(rootfs_asset "$os")" || { offline_hint; die "nothing was changed; run mu300-update apply again to continue the download"; }
+        fetch_verified "$tag" "$(rootfs_asset "$os")" || fetch_stop $?
     done
     # (the release that was judged - signature, downgrade - is the one these files are: see payload_is)
     payload_is "$tag" $todo || die "nothing was changed"
@@ -1946,7 +1954,7 @@ apply() {
     for x in $(extras_to_fetch "$tag"); do
         fetch_verified "$tag" "$(extra_asset "$x")"; r=$?
         [ "$r" = 0 ] && { extras="$extras $x"; continue; }
-        [ "$r" = 2 ] || { offline_hint; die "nothing was changed; run mu300-update apply again to continue the download"; }
+        [ "$r" = 2 ] || fetch_stop "$r"
     done
     # the VPN module, from its own repository: a device that uses the VPN gets it, or the update stops here
     modules_fetch "$tag" "$todo"
@@ -1955,7 +1963,7 @@ apply() {
         boot_asset=$(kernel_asset)
         fetch_verified "$tag" "$boot_asset"; r=$?
         # a release without this bundle leaves the boot image alone (boot_update says so); anything else stops here
-        [ "$r" = 0 ] || [ "$r" = 2 ] || { offline_hint; die "nothing was changed; run mu300-update apply again to continue the download"; }
+        [ "$r" = 0 ] || [ "$r" = 2 ] || fetch_stop "$r"
     fi
     echo "all files are here and verified; from now on the network is not needed"
 

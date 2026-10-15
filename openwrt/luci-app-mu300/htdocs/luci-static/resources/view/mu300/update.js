@@ -271,6 +271,13 @@ return view.extend({
 					newer(st.installed, rel.tag) ? _('This system is newer than the newest release (a test release).') : _('Up to date.') ]));
 				return box;
 			}
+			/* a system with the release key takes no unsigned release from the internet (mu300-update refuses it, and
+			 * the page has no word to give for that): say so instead of offering an update that can only fail */
+			if (rel.signed !== 1 && st.signing && st.signing.key) {
+				box.appendChild(E('div', { 'id': pre ? 'mud-upd-beta-unsigned' : 'mud-upd-unsigned-online', 'style': 'margin:8px 0;color:var(--danger,#E25555)' },
+					_('This release is not signed, and this system checks signatures: it is not installed from here. Update from its file below, which asks you to confirm.')));
+				return box;
+			}
 			var ub = E('button', { 'class': 'mud-btn on', 'id': pre ? 'mud-upd-apply-beta' : 'mud-upd-apply', 'disabled': off ? '' : null },
 				[ _('Update to %s').format(rel.tag) ]);
 			ub.addEventListener('click', function() {

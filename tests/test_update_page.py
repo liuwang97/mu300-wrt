@@ -716,7 +716,7 @@ class Signature(UpdateBase):
                 shutil.rmtree(self.disk / '.mu300-update', ignore_errors=True)
                 for word in ('', '1'):
                     r = self.up(shell, get, MU300_RELEASE_PUB=pub, MU300_ALLOW_UNSIGNED=word, TMPDIR=self.tmp)
-                    self.assertIn('rc=1', r.stdout, (pub.name, r.stderr))
+                    self.assertIn('rc=3', r.stdout, (pub.name, r.stderr))
                     r = self.up(shell, f'MU300_FROM="{z}"; from_begin; echo began', MU300_RELEASE_PUB=pub,
                                 MU300_ALLOW_UNSIGNED=word, TMPDIR=self.tmp)
                     self.assertNotIn('began', r.stdout, pub.name)
@@ -748,7 +748,7 @@ class Signature(UpdateBase):
             shutil.rmtree(self.disk / '.mu300-update', ignore_errors=True)
             r = self.up(shell, self.serve(old) + inst + 'fetch_verified v2026.11.02 mu300-kernel.tar.gz; echo "rc=$?"',
                         MU300_RELEASE_PUB=self.key.pub, TMPDIR=self.tmp)
-            self.assertIn('rc=1', r.stdout, r.stderr)
+            self.assertIn('rc=3', r.stdout, r.stderr)
             self.assertIn('checksums of another release than v2026.11.02', r.stderr)
             self.assertFalse((self.disk / '.mu300-update/mu300-kernel.tar.gz').exists())
             o = json.loads(self.up(shell, f'inspect_json "{relabelled}"', MU300_RELEASE_PUB=self.key.pub, TMPDIR=self.tmp).stdout)
@@ -772,7 +772,7 @@ class Signature(UpdateBase):
             shutil.rmtree(self.disk / '.mu300-update', ignore_errors=True)
             r = self.up(shell, self.serve(plain) + inst + 'fetch_verified v2026.11.02 mu300-kernel.tar.gz; echo "rc=$?"',
                         MU300_RELEASE_PUB=self.key.pub, TMPDIR=self.tmp)
-            self.assertIn('rc=1', r.stdout, r.stderr)
+            self.assertIn('rc=3', r.stdout, r.stderr)
             self.assertIn('do not say which release', r.stderr)
 
     def test_checksums_swapped_between_two_downloads(self):
@@ -790,7 +790,7 @@ class Signature(UpdateBase):
                 shutil.rmtree(self.disk / '.mu300-update', ignore_errors=True)
                 r = self.up(shell, code, MU300_RELEASE_PUB=pub, TMPDIR=self.tmp)
                 self.assertIn('first=0', r.stdout, r.stderr)
-                self.assertIn('second=1', r.stdout, r.stderr)
+                self.assertIn('second=3', r.stdout, r.stderr)
                 self.assertIn('changed after it was checked', r.stderr)
 
     def serve(self, d):
@@ -820,7 +820,8 @@ class Signature(UpdateBase):
                     (evil / 'SHA256SUMS.sig').unlink()
                 shutil.rmtree(stage, ignore_errors=True)
                 r = self.up(shell, self.serve(evil) + inst + get, MU300_RELEASE_PUB=self.key.pub, TMPDIR=self.tmp)
-                self.assertIn('rc=1', r.stdout, (strip, r.stderr))
+                # (3: the release was refused, which no second try changes - apply says no more than that)
+                self.assertIn('rc=3', r.stdout, (strip, r.stderr))
                 self.assertFalse((stage / 'mu300-kernel.tar.gz').exists())
             # a release from before signing, older than what is installed: not silently either, once there is a key
             shutil.rmtree(stage, ignore_errors=True)
@@ -830,7 +831,16 @@ class Signature(UpdateBase):
             (unsigned / 'SHA256SUMS.sig').unlink()
             older = 'installed_version() { echo v2026.12.01; }; '
             r = self.up(shell, self.serve(unsigned) + older + get, MU300_RELEASE_PUB=self.key.pub, TMPDIR=self.tmp)
-            self.assertIn('rc=1', r.stdout, r.stderr)
+            self.assertIn('rc=3', r.stdout, r.stderr)
+            # apply on a refusal: nothing changed, and no hint of a network fault or a download to continue (the U30
+            # Air's log of an unsigned release said both)
+            r = self.up(shell, self.serve(unsigned) + older + get.replace('; echo "rc=$?"', ' || fetch_stop $?'),
+                        MU300_RELEASE_PUB=self.key.pub, TMPDIR=self.tmp)
+            self.assertIn('ERROR: nothing was changed\n', r.stderr)
+            self.assertNotIn('mobile data', r.stderr)
+            self.assertNotIn('continue the download', r.stderr)
+            r = self.up(shell, 'fetch_stop 1', TMPDIR=self.tmp)
+            self.assertIn('continue the download', r.stderr)
             r = self.up(shell, self.serve(unsigned) + older + get, MU300_RELEASE_PUB=self.key.pub, TMPDIR=self.tmp, MU300_ALLOW_UNSIGNED=1)
             self.assertIn('rc=0', r.stdout, r.stderr)
             # the same mirror, a system without a key: as before signing, the checksum is all there is
@@ -1921,6 +1931,21 @@ class Page(unittest.TestCase):
         r = self.page("const root = await open(STATE); return root.find('mud-upd-error').textContent;",
                       {'ok': 0, 'error': 'Updating is not available on this system'})
         self.assertEqual(r, 'Updating is not available on this system')
+
+    def test_an_unsigned_release_is_not_offered_where_signatures_are_checked(self):
+        # mu300-update refuses it there and the page has no word to give: it says so instead of an Update button that
+        # can only fail (on the U30 Air it was offered, and the task failed with a hint at the network)
+        js = '''const root = await open(STATE);
+            return { apply: !!root.find('mud-upd-apply'), note: (root.find('mud-upd-unsigned-online') || {}).textContent || null };'''
+        st = self.with_(status__signing={'key': 1, 'tool': 'usign'}, check__latest__signed=0)
+        r = self.page(js, st)
+        self.assertFalse(r['apply'])
+        self.assertIn('not signed, and this system checks signatures', r['note'])
+        # signed, or a system without the key (as before signing): offered
+        for change in ({'status__signing': {'key': 1, 'tool': 'usign'}, 'check__latest__signed': 1},
+                       {'status__signing': {'key': 0, 'tool': 'usign'}, 'check__latest__signed': 0}):
+            r = self.page(js, self.with_(**change))
+            self.assertEqual((r['apply'], r['note']), (True, None), change)
 
     def test_no_form_buttons(self):
         # nothing on the page is a form: LuCI's Save & Apply, Save and Reset did nothing there (seen on the U30 Air)
