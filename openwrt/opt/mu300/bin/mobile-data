@@ -695,7 +695,9 @@ roam_hold() {
     echo "$SIM_SLOT" 2>/dev/null > "$ROAM_HELD" || true
     radio_say "$msg"
     logger -t mobile-data "$msg" 2>/dev/null || true
-    echo "mobile-data: $msg" >&2
+    # stderr for a dial run by hand; under systemd stderr is the journal, which logger has just written to (seen on
+    # an F50: the same line twice in the journal)
+    [ -n "${JOURNAL_STREAM:-}" ] || echo "mobile-data: $msg" >&2
 }
 # roam_release WHY: the hold is over
 roam_release() {

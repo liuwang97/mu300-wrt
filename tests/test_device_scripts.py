@@ -1705,6 +1705,16 @@ class DataRoaming(ShellTest):
         self.assertFalse(self.held.exists())
         self.assertIn('on the home network, mobile data comes back', self.radio_log())
 
+    def test_the_hold_is_said_once_in_the_journal(self):
+        """By hand the line goes to stderr too; under systemd stderr is the journal, where logger already put it
+        (seen on an F50: the same line twice)."""
+        r, _ = self.dial(self.ROAM, T_ROAM0='0')
+        self.assertIn('registered on a roaming network and data roaming is off', r.stderr)
+        self.held.unlink()
+        r, _ = self.dial(self.ROAM, T_ROAM0='0', JOURNAL_STREAM='8:12345')
+        self.assertNotIn('registered on a roaming network', r.stderr)
+        self.assertEqual((self.tmp / 'logger').read_text().count('data roaming is off'), 2)
+
     def test_a_registration_that_cannot_be_read_is_no_dial_with_roaming_off(self):
         # registered according to the URC log, then the queries say nothing
         log = self.tmp / 'urc.log'
