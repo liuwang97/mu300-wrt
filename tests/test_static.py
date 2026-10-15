@@ -430,6 +430,13 @@ class Rules(unittest.TestCase):
                   'info->bq256xx_set_ichg = sgm41513_set_ichg_curr;', 'info->bq256xx_set_iterm = sgm41513_set_term_curr;',
                   'info->bq256xx_set_iprechg = sgm41513_set_prechrg_curr;'):
             self.assertIn(s, p15)
+        # ... but only something that looks like a charger there: on the F50 every register at 0x1a reads 0, and
+        # that phantom was bound, told to charge and reset the board in a loop (issue #225, patch 0016)
+        p16 = (TOP / 'upstream' / 'patches' / '0016-power-bq256xx-no-phantom-SGM41513.patch').read_text()
+        for s in ('for (reg = 0; reg <= 0x0a; reg++) {', 'if (val != 0x00 && val != 0xff)', 'if (nz < 3)',
+                  'no SGM41513', '+\t\tint part, err, reg, val, nz;'):
+            self.assertIn(s, p16)
+        self.assertLess(p16.index('if (nz < 3)'), p16.index('strscpy(bq->model_name, "sgm41513"'))
         # the PMIC's charger detection reads the UMP9620's own register (0x239c), not the SC2730's (0x1b9c), and a
         # tree prepared with the old one is corrected
         self.assertIn(r"#define SPRD_UMP9620_CHG_DET\t\t0x239c", port)
