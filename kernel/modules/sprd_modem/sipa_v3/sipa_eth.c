@@ -38,7 +38,11 @@
 #define SIPA_ETH_NAPI_WEIGHT 64
 #define SIPA_ETH_IFACE_PREF "sipa_eth"
 
-static unsigned long queue_lock_flags;
+/*
+ * MU300: the IRQ flags of spin_lock_irqsave() live on each caller's stack. The vendor kept them in one static
+ * variable, which a second CPU spinning on the lock overwrites with its own while the first holds it: the holder
+ * then restores the other CPU's interrupt state (kanoqwq's clean-tf-7.2 149c9d2a).
+ */
 static spinlock_t queue_lock; /* spin-lock for queue status protection */
 
 #ifdef CONFIG_DEBUG_FS
@@ -50,13 +54,14 @@ static void sipa_eth_flowctrl_handler(void *priv, int flowctrl)
 {
 	struct sipa_eth *sipa_eth = (struct sipa_eth *)priv;
 	struct net_device *dev = sipa_eth->netdev;
+	unsigned long flags;
 
 	if (flowctrl) {
 		netif_stop_queue(dev);
 	} else if (netif_queue_stopped(dev)) {
-		spin_lock_irqsave(&queue_lock, queue_lock_flags);
+		spin_lock_irqsave(&queue_lock, flags);
 		netif_wake_queue(dev);
-		spin_unlock_irqrestore(&queue_lock, queue_lock_flags);
+		spin_unlock_irqrestore(&queue_lock, flags);
 		pr_info("wakeup queue on dev %s\n", dev->name);
 	}
 }
@@ -90,6 +95,9 @@ static netdev_tx_t sipa_eth_start_xmit(struct sk_buff *skb,
 	unsigned int len;
 	struct iphdr *iph;
 	struct ipv6hdr *ipv6h;
+	unsigned long flags;
+	__sum16 *csum = NULL, csum_seed = 0;
+	bool pushed = false;
 
 	if (sipa_eth->state != DEV_ON) {
 		pr_err("called when %s is down\n", dev->name);
@@ -102,7 +110,8 @@ static netdev_tx_t sipa_eth_start_xmit(struct sk_buff *skb,
 	if (unlikely(ret)) {
 		stats->tx_dropped++;
 		dev_kfree_skb_any(skb);
-		return ret;
+		/* MU300: the skb is gone; anything but NETDEV_TX_OK would have the stack use it again */
+		return NETDEV_TX_OK;
 	}
 
 	netid = pdata->netid;
@@ -112,36 +121,53 @@ static netdev_tx_t sipa_eth_start_xmit(struct sk_buff *skb,
 		if (skb->protocol == htons(ETH_P_IP)) {
 			iph = ip_hdr(skb);
 			if (iph->protocol == IPPROTO_TCP)
-				tcp_hdr(skb)->check = 0;
+				csum = &tcp_hdr(skb)->check;
 			else if (iph->protocol == IPPROTO_UDP)
-				udp_hdr(skb)->check = 0;
+				csum = &udp_hdr(skb)->check;
 		} else if (skb->protocol == htons(ETH_P_IPV6)) {
 			ipv6h = ipv6_hdr(skb);
 			if (ipv6h->nexthdr == NEXTHDR_TCP)
-				tcp_hdr(skb)->check = 0;
+				csum = &tcp_hdr(skb)->check;
 			else if (ipv6h->nexthdr == NEXTHDR_UDP)
-				udp_hdr(skb)->check = 0;
+				csum = &udp_hdr(skb)->check;
 		}
+	}
+	/* the IPA computes the checksum itself (cs_en) over a zero field; the seed is kept for a retry, below */
+	if (csum) {
+		csum_seed = *csum;
+		*csum = 0;
 	}
 
 	/* because the BPF program and dev->type is rawip,
 	 * the IPv6 forwarding packet is without ethernet header
 	 */
 	if (likely(skb_headroom(skb) >= ETH_HLEN)) {
-		if (skb->mac_header == skb->network_header)
+		if (skb->mac_header == skb->network_header) {
 			skb_push(skb, ETH_HLEN);
+			pushed = true;
+		}
 	}
 
 	ret = sipa_nic_tx(sipa_eth->nic_id, pdata->src_id, netid, skb);
 	if (unlikely(ret != 0)) {
-		pr_err("fail to send, ret %d\n", ret);
+		/*
+		 * MU300 (kanoqwq's clean-tf-7.2 149c9d2a): sipa_nic_tx() keeps nothing when it fails (a full IPA FIFO is
+		 * -EAGAIN), and NETDEV_TX_BUSY hands this same skb back to the qdisc to be sent again. Give it back as it
+		 * came: the push does not move mac_header, so every retry pushed another Ethernet header in front of the
+		 * packet, and the checksum seed stayed zero.
+		 */
+		if (pushed)
+			__skb_pull(skb, ETH_HLEN);
+		if (csum)
+			*csum = csum_seed;
+		pr_err_ratelimited("fail to send, ret %d\n", ret);
 		stats->tx_errors++;
-		spin_lock_irqsave(&queue_lock, queue_lock_flags);
+		spin_lock_irqsave(&queue_lock, flags);
 		if (sipa_nic_check_flow_ctrl(sipa_eth->nic_id)) {
 			netif_stop_queue(dev);
 			pr_info("stop queue on dev %s\n", dev->name);
 		}
-		spin_unlock_irqrestore(&queue_lock, queue_lock_flags);
+		spin_unlock_irqrestore(&queue_lock, flags);
 		sipa_nic_trigger_flow_ctrl_work(sipa_eth->nic_id, ret);
 		return NETDEV_TX_BUSY;
 	}

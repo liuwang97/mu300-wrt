@@ -1428,6 +1428,100 @@ at() {
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(sent, [])
 
+    # FINDINGS 90: AT+CGACT? as the watchdog reads it. $CGACT is the answer's lines ("none": no final result code,
+    # mu300-at's exit 1); the interface has its address unless NOADDR is set. radio_on, up and ifup only log.
+    WATCH_MODEM = r'''
+at() {
+    echo "$SECONDS $1" >> "$STUBLOG/at"
+    case $1 in
+        'AT+CGACT?')
+            [ "${CGACT:-}" != none ] || return 1
+            printf '%b\n' "${CGACT:-+CGACT:1,1\nOK}" ;;
+        'AT+CFUN?') printf '+CFUN: 1\nOK\n' ;;
+        AT+CGPADDR=*) printf '+CGPADDR: 1,"10.1.2.3"\nOK\n' ;;
+        *) printf 'OK\n' ;;
+    esac
+}
+radio_on() { at RADIO_ON; }
+up() { at UP; }
+'''
+
+    def watch(self, rounds, **env):
+        self.stub('ip', '[ -n "$NOADDR" ] || echo "2: sipa_eth0    inet 10.1.2.3/24 scope global sipa_eth0"')
+        self.stub('ifup', 'echo "$SECONDS IFUP $*" >> "$STUBLOG/at"')
+        r, sent = self.lib('watch', modem=self.WATCH_MODEM, MU300_AT_DEV='/dev/null', MU300_WATCH_INTERVAL='0',
+                           MU300_WATCH_ROUNDS=str(rounds), NOADDR=env.pop('NOADDR', ''), **env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return r, [s.split(' ', 1)[1] for s in sent]
+
+    def test_the_openwrt_watchdog_logs(self):
+        # FINDINGS 90 (measured on a U30 Air): procd kept none of the watchdog's stderr, so on OpenWrt nothing it said
+        # ("mobile data lost ... reconnecting", "no answer about the data context") ever reached logread
+        post = (TOP / 'openwrt/overlay/etc/init.d/mu300-post').read_text()
+        inst = post[post.index('procd_open_instance cellwatch'):]
+        inst = inst[:inst.index('procd_close_instance')]
+        self.assertIn('procd_set_param command /opt/mu300/bin/mobile-data watch', inst)
+        self.assertIn('procd_set_param stderr 1', inst)
+
+    def test_watch_context_states(self):
+        cases = [('+CGACT:1,1\\nOK', 'active'), ('+CGACT: 1,1\\r\\nOK', 'active'),
+                 ('+CGACT:1,0\\nOK', 'inactive'), ('OK', 'inactive'),             # a reset modem lists nothing
+                 ('+CGACT:11,1\\nOK', 'inactive'), ('+CGACT:1,10\\nOK', 'inactive'),
+                 ('ERROR', 'unknown'), ('+CME ERROR: 100', 'unknown'), ('none', 'unknown')]
+        for answer, want in cases:
+            with self.subTest(answer=answer):
+                r, _ = self.lib('watch_context', modem=self.WATCH_MODEM, CGACT=answer)
+                self.assertEqual(r.stdout.strip(), want, r.stderr)
+
+    def test_watch_leaves_the_bearer_alone_while_the_modem_does_not_answer(self):
+        """A channel without an answer for up to three rounds: no radio check, no reconnect."""
+        r, sent = self.watch(3, CGACT='none')
+        self.assertEqual(sent, ['AT+CGACT?'] * 3, r.stderr)
+        # ERROR is no answer about the context either
+        r, sent = self.watch(3, CGACT='ERROR')
+        self.assertEqual(sent, ['AT+CGACT?'] * 3, r.stderr)
+
+    def test_watch_still_reconnects_a_modem_that_stays_silent(self):
+        """Four silent rounds make the first failed round, the fifth the reconnect: about 2.5 min instead of 1."""
+        r, sent = self.watch(5, CGACT='none')
+        self.assertEqual(sent.count('UP'), 1, sent)
+        self.assertEqual(sent.index('UP'), len(sent) - 1, sent)
+        self.assertEqual(sent.count('AT+CGACT?'), 5, sent)
+        self.assertIn('no answer about the data context for 4 rounds', r.stderr)
+        # netifd: ifup, as before
+        r, sent = self.watch(5, CGACT='none', MU300_NETIFD='1')
+        self.assertIn('IFUP wan', sent)
+
+    def test_an_answer_between_silent_rounds_starts_the_count_over(self):
+        r, sent = self.watch(1, CGACT='none')
+        self.assertNotIn('UP', sent)
+        # silent, silent, silent, answered and up, silent x3: never a reconnect
+        script = self.tmp / 'answers'
+        script.write_text('none\nnone\nnone\nup\nnone\nnone\nnone\n')
+        modem = self.WATCH_MODEM.replace(
+            "[ \"${CGACT:-}\" != none ] || return 1",
+            'n=$(($(cat "$STUBLOG/n" 2>/dev/null || echo 0) + 1)); echo $n > "$STUBLOG/n"\n'
+            '            [ "$(sed -n "${n}p" "$STUBLOG/answers")" != none ] || return 1')
+        self.stub('ip', 'echo "2: sipa_eth0    inet 10.1.2.3/24 scope global sipa_eth0"')
+        r, sent = self.lib('watch', modem=modem, MU300_AT_DEV='/dev/null', MU300_WATCH_INTERVAL='0',
+                           MU300_WATCH_ROUNDS='7')
+        sent = [s.split(' ', 1)[1] for s in sent]
+        self.assertNotIn('UP', sent, r.stderr)
+        self.assertNotIn('RADIO_ON', sent, r.stderr)
+
+    def test_an_answered_lost_context_still_reconnects_in_two_rounds(self):
+        """What a firmware reset leaves (no context listed, or <cid>,0) is evidence: the old two rounds."""
+        for answer in ('OK', '+CGACT:1,0\\nOK'):
+            with self.subTest(answer=answer):
+                r, sent = self.watch(2, CGACT=answer)
+                self.assertEqual(sent.count('UP'), 1, sent)
+        # active, but the interface lost its address: the same
+        r, sent = self.watch(2, NOADDR='1')
+        self.assertEqual(sent.count('UP'), 1, sent)
+        # active with the address: nothing
+        r, sent = self.watch(2)
+        self.assertNotIn('UP', sent)
+
     # 2026-10-07: `mobile-data suspend off` after `suspend lte` never returned on the U30 Air, and the device stayed dark
     # for hours. suspend/resume now end within MU300_SUSPEND_DEADLINE whatever the modem does. Here the real at() talks
     # to an nr2 daemon whose client never answers (a mu300-at that sleeps): the whole command must come back in time,
@@ -3725,6 +3819,125 @@ class NextBoot(ShellTest):
         self.assertEqual(r.returncode, 1, r.stdout)
         self.assertIn('arming with 1 attempt, not 5', r.stderr)
         self.assertEqual(self.bc(), bytes(linux_b))
+
+    def slot_b_blocks(self):
+        android_a, linux_b, _, _ = self.blocks
+        (self.run_dir / 'linux-slot').write_text('b\n')
+        (self.run_dir / 'misc-bc-android.bin').write_bytes(android_a)
+        (self.run_dir / 'misc-bc-linux-trial.bin').write_bytes(linux_b)
+        return android_a, linux_b
+
+    def test_the_default_boot_is_written_only_after_misc_reads_back(self):
+        # kanoqwq's 1f8f03fb: a switch changes misc and nothing else until misc is known good. Here: the file the
+        # initramfs reads ("linux" = skip restoring Android's slot) used to be written first, whatever misc did then
+        android_a, _ = self.slot_b_blocks()
+        conf = self.tmp / 'default-boot'
+        (self.run_dir / 'misc-dev').write_text(str(self.tmp / 'no-such-dir' / 'misc'))   # every write fails
+        r = self.nb('android')
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn('writing misc failed', r.stderr)
+        self.assertEqual(conf.read_text(), 'linux\n')
+        # no Android block at all: nothing written either
+        (self.run_dir / 'misc-dev').write_text(str(self.misc))
+        (self.run_dir / 'misc-bc-android.bin').unlink()
+        self.assertNotEqual(self.nb('android').returncode, 0)
+        self.assertEqual(conf.read_text(), 'linux\n')
+        (self.run_dir / 'misc-bc-android.bin').write_bytes(android_a)
+        r = self.nb('android')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual((self.bc(), conf.read_text()), (android_a, 'android\n'))
+        # and back: "linux" with a misc that cannot be written leaves "android"
+        (self.run_dir / 'misc-dev').write_text(str(self.tmp / 'no-such-dir' / 'misc'))
+        self.assertNotEqual(self.nb('linux').returncode, 0)
+        self.assertEqual(conf.read_text(), 'android\n')
+        (self.run_dir / 'misc-dev').write_text(str(self.misc))
+        r = self.nb('linux')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual((self.bc()[14], conf.read_text()), (0x6f, 'linux\n'))
+        self.assertEqual([p.name for p in self.tmp.glob('.default-boot.*')], [])
+
+    def test_the_degraded_arm_still_records_linux(self):
+        # FINDINGS 32: a slot block that cannot be rebuilt here gets the initramfs' one-shot block - written and read
+        # back, so "linux" is recorded with it as before (exit 1 says the arm is degraded)
+        linux_b = bytearray(self.blocks[1])
+        linux_b[14] = 0x3f
+        linux_b[28:32] = struct.pack('<I', zlib.crc32(bytes(linux_b[:28])))
+        (self.run_dir / 'linux-slot').write_text('b\n')
+        (self.run_dir / 'misc-bc-android.bin').write_bytes(self.blocks[0])
+        (self.run_dir / 'misc-bc-linux-trial.bin').write_bytes(bytes(linux_b))
+        (self.tmp / 'default-boot').write_text('android\n')
+        r = self.nb('linux')
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertEqual((self.bc(), (self.tmp / 'default-boot').read_text()), (bytes(linux_b), 'linux\n'))
+
+    def test_the_default_boot_is_never_written_through_a_symlink(self):
+        android_a, _ = self.slot_b_blocks()
+        victim = self.tmp / 'victim'
+        victim.write_text('keep\n')
+        conf = self.tmp / 'default-boot'
+        conf.unlink()
+        conf.symlink_to(victim)
+        r = self.nb('android')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(victim.read_text(), 'keep\n')
+        self.assertFalse(conf.is_symlink())
+        self.assertEqual(conf.read_text(), 'android\n')
+
+    def test_a_running_change_is_waited_for_and_never_overwritten(self):
+        # --rearm (mu300-boot-ok) reads the default boot, then writes the Linux block: an "android" in between was
+        # lost. The script holds a lock from its first read to its last write; a stub flock stands for the real one
+        # here (macOS has none) and says busy while the marker exists.
+        android_a, _ = self.slot_b_blocks()
+        busy = self.tmp / 'busy'
+        flock = self.stubs / 'flock'
+        flock.write_text(f'#!/bin/sh\necho "$*" >> "{self.tmp}/flock.log"\n[ ! -e "{busy}" ]\n')
+        flock.chmod(0o755)
+        sleep = self.stubs / 'sleep'
+        sleep.write_text('#!/bin/sh\nexit 0\n')
+        sleep.chmod(0o755)
+        busy.touch()
+        before = self.misc.read_bytes()
+        if not shutil.which('bash'):
+            self.skipTest('no bash')
+        env = self.env(MU300_RUN=self.run_dir, MU300_CONF=self.tmp / 'default-boot',
+                       MU300_CMDLINE_SRC=self.tmp / 'cmdline', MU300_NEXT_BOOT_WAIT=3)
+        run = lambda *a: subprocess.run(['bash', str(BIN / 'mu300-next-boot'), *a], capture_output=True, text=True,
+                                        env=env)
+        r = run('android')
+        self.assertEqual(r.returncode, 1)
+        self.assertIn('another mu300-next-boot is still running', r.stderr)
+        self.assertEqual(self.misc.read_bytes(), before)
+        self.assertEqual((self.tmp / 'default-boot').read_text(), 'linux\n')
+        self.assertTrue((self.run_dir / 'next-boot.lock').exists())
+        # status reads only: it never waits
+        self.assertEqual(run('status').returncode, 0)
+        self.assertEqual((self.tmp / 'flock.log').read_text().split('\n').count('-n 9'), 3)
+        busy.unlink()
+        r = run('android')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.bc(), android_a)
+        # a lock file that is a symlink is not opened (and nothing is serialised then, as without flock)
+        (self.run_dir / 'next-boot.lock').unlink()
+        (self.run_dir / 'next-boot.lock').symlink_to(self.tmp / 'elsewhere')
+        busy.touch()
+        self.assertEqual(run('android').returncode, 0)
+        self.assertFalse((self.tmp / 'elsewhere').exists())
+
+    @unittest.skipUnless(shutil.which('flock') and shutil.which('bash'), 'needs flock(1) and bash')
+    def test_the_real_flock_holds_off_a_second_writer(self):
+        import fcntl
+        android_a, _ = self.slot_b_blocks()
+        before = self.misc.read_bytes()
+        with open(self.run_dir / 'next-boot.lock', 'a') as held:
+            fcntl.flock(held, fcntl.LOCK_EX)
+            r = subprocess.run(['bash', str(BIN / 'mu300-next-boot'), 'android'], capture_output=True, text=True,
+                               env=self.env(MU300_RUN=self.run_dir, MU300_CONF=self.tmp / 'default-boot',
+                                            MU300_CMDLINE_SRC=self.tmp / 'cmdline', MU300_NEXT_BOOT_WAIT=2))
+            self.assertEqual(r.returncode, 1, r.stderr)
+            self.assertEqual(self.misc.read_bytes(), before)
+        r = self.nb('android')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.bc(), android_a)
 
 
 class EarlyRecorder(ShellTest):

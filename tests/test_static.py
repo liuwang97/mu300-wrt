@@ -886,6 +886,26 @@ class Rules(unittest.TestCase):
             self.assertIn(pre + '\tsmp_store_release(&sc2355_hif.hif, (void *)hif);', text)
             self.assertIn(pre + '\tWRITE_ONCE(sc2355_hif.hif, NULL);', text)
 
+    def test_wifi_per_frame_logs_are_bounded(self):
+        # FINDINGS 92 (after kanoqwq's clean-tf-7.2 3cbf37fc): three lines the TX path wrote for every frame - a
+        # group frame's LUT lookup (pr_info), a frame for a client that has left (pr_err) and a send that failed
+        # (netdev_err) - are debug or rate-limited; the frames are still dropped and freed as before
+        wlan = TOP / 'upstream' / 'modules' / 'sprd_wlan_combo'
+        for name in ('pcie.c', 'sdio.c'):
+            text = (wlan / 'sc2355' / name).read_text()
+            self.assertNotIn('pr_info("%s, %d, group lut_index=%d\\n"', text, name)
+            self.assertNotIn('pr_err("%s, %d, sta disconn, no data tx!"', text, name)
+            self.assertIn('pr_debug_ratelimited("%s, %d, group lut_index=%d\\n"', text, name)
+            self.assertIn('\t\tpr_debug_ratelimited("%s, %d, sta disconn, no data tx!\\n", __func__, __LINE__);\n'
+                          '\t\treturn -EPERM;', text, name)
+        iface = (wlan / 'common' / 'iface.c').read_text()
+        body = iface[iface.index('static netdev_tx_t iface_start_xmit('):]
+        body = body[:body.index('\n}\n')]
+        self.assertIn('\t\tif (net_ratelimit())\n\t\t\tnetdev_err(ndev, "%s drop msg due to TX Err\\n", __func__);', body)
+        after = body[body.index('drop msg due to TX Err'):]
+        self.assertLess(after.index('dev_kfree_skb(skb);'), after.index('return NETDEV_TX_OK;'))
+        self.assertLess(after.index('sprd_chip_free_msg(&vif->priv->chip, msg);'), after.index('return NETDEV_TX_OK;'))
+
     def test_wifi_notify_init_unwinds_and_registers_the_reset_notifier_last(self):
         # kanoqwq/mu300-linux@23361ce: a failed notify_init left the WCN reset notifier registered on a freed priv
         iface = (TOP / 'upstream' / 'modules' / 'sprd_wlan_combo' / 'common' / 'iface.c').read_text()
