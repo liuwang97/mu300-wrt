@@ -8,7 +8,7 @@
 #                goes through with --no-rollback
 #     again      OpenWrt updated twice (the second time to NEW_TAG+1, repacked here): the first update's own manifest
 #                is what the second one reads, and what the first set aside is still there
-#     list       MU300_UPDATE_KEEP=list: the update as it was before v2026.10.26
+#     list       MU300_UPDATE_KEEP=list: the update as it was before v2026.10.28
 # OUT_DIR gets NAME-*.tsv with their .log, .report, .sane; one line per run says how the planted items fared.
 set -eu
 HERE=$(cd "$(dirname "$0")" && pwd)

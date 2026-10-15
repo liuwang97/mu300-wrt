@@ -14,7 +14,7 @@
 
 An update needs to know which files of the installed system came with its image and which are the user's: a path the
 old image did not have was put there by the user (or by software they installed), one it had with other content was
-changed by them (mu300-update, the carry block; docs/FINDINGS.md 85). Images from v2026.10.26 on carry their own
+changed by them (mu300-update, the carry block; docs/FINDINGS.md 85). Images from v2026.10.28 on carry their own
 manifest, written when they are built (mu300-carry manifest, the same lines); for the releases before that the
 manifests made here ship in the images.
 
