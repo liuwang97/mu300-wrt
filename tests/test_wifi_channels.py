@@ -163,6 +163,13 @@ class HotspotStart(ShellTest):
             self.assertTrue(cfg['ht_capab'].startswith(ht), ch)
             self.assertEqual(err, '', ch)
 
+    def test_a_hidden_name(self):
+        # HIDDEN=1 (mu300-api wifi.set's switch): not broadcast; anything else, or no line: broadcast
+        self.iw_list()
+        for line, want in (('HIDDEN=1\n', '1'), ('HIDDEN=0\n', '0'), ('', '0'), ('HIDDEN=yes\n', '0')):
+            cfg, _ = self.run_start(f'SSID=x\nPSK=12345678\nBAND=5\nCHANNEL=36\nCOUNTRY=CN\n{line}')
+            self.assertEqual(cfg['ignore_broadcast_ssid'], want, line)
+
     def test_165_is_20_mhz(self):
         self.iw_list()
         cfg, _ = self.run_start('SSID=x\nPSK=12345678\nBAND=5\nCHANNEL=165\nCOUNTRY=CN\n')
