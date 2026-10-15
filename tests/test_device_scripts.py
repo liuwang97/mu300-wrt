@@ -3820,6 +3820,125 @@ class NextBoot(ShellTest):
         self.assertIn('arming with 1 attempt, not 5', r.stderr)
         self.assertEqual(self.bc(), bytes(linux_b))
 
+    def slot_b_blocks(self):
+        android_a, linux_b, _, _ = self.blocks
+        (self.run_dir / 'linux-slot').write_text('b\n')
+        (self.run_dir / 'misc-bc-android.bin').write_bytes(android_a)
+        (self.run_dir / 'misc-bc-linux-trial.bin').write_bytes(linux_b)
+        return android_a, linux_b
+
+    def test_the_default_boot_is_written_only_after_misc_reads_back(self):
+        # kanoqwq's 1f8f03fb: a switch changes misc and nothing else until misc is known good. Here: the file the
+        # initramfs reads ("linux" = skip restoring Android's slot) used to be written first, whatever misc did then
+        android_a, _ = self.slot_b_blocks()
+        conf = self.tmp / 'default-boot'
+        (self.run_dir / 'misc-dev').write_text(str(self.tmp / 'no-such-dir' / 'misc'))   # every write fails
+        r = self.nb('android')
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn('writing misc failed', r.stderr)
+        self.assertEqual(conf.read_text(), 'linux\n')
+        # no Android block at all: nothing written either
+        (self.run_dir / 'misc-dev').write_text(str(self.misc))
+        (self.run_dir / 'misc-bc-android.bin').unlink()
+        self.assertNotEqual(self.nb('android').returncode, 0)
+        self.assertEqual(conf.read_text(), 'linux\n')
+        (self.run_dir / 'misc-bc-android.bin').write_bytes(android_a)
+        r = self.nb('android')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual((self.bc(), conf.read_text()), (android_a, 'android\n'))
+        # and back: "linux" with a misc that cannot be written leaves "android"
+        (self.run_dir / 'misc-dev').write_text(str(self.tmp / 'no-such-dir' / 'misc'))
+        self.assertNotEqual(self.nb('linux').returncode, 0)
+        self.assertEqual(conf.read_text(), 'android\n')
+        (self.run_dir / 'misc-dev').write_text(str(self.misc))
+        r = self.nb('linux')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual((self.bc()[14], conf.read_text()), (0x6f, 'linux\n'))
+        self.assertEqual([p.name for p in self.tmp.glob('.default-boot.*')], [])
+
+    def test_the_degraded_arm_still_records_linux(self):
+        # FINDINGS 32: a slot block that cannot be rebuilt here gets the initramfs' one-shot block - written and read
+        # back, so "linux" is recorded with it as before (exit 1 says the arm is degraded)
+        linux_b = bytearray(self.blocks[1])
+        linux_b[14] = 0x3f
+        linux_b[28:32] = struct.pack('<I', zlib.crc32(bytes(linux_b[:28])))
+        (self.run_dir / 'linux-slot').write_text('b\n')
+        (self.run_dir / 'misc-bc-android.bin').write_bytes(self.blocks[0])
+        (self.run_dir / 'misc-bc-linux-trial.bin').write_bytes(bytes(linux_b))
+        (self.tmp / 'default-boot').write_text('android\n')
+        r = self.nb('linux')
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertEqual((self.bc(), (self.tmp / 'default-boot').read_text()), (bytes(linux_b), 'linux\n'))
+
+    def test_the_default_boot_is_never_written_through_a_symlink(self):
+        android_a, _ = self.slot_b_blocks()
+        victim = self.tmp / 'victim'
+        victim.write_text('keep\n')
+        conf = self.tmp / 'default-boot'
+        conf.unlink()
+        conf.symlink_to(victim)
+        r = self.nb('android')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(victim.read_text(), 'keep\n')
+        self.assertFalse(conf.is_symlink())
+        self.assertEqual(conf.read_text(), 'android\n')
+
+    def test_a_running_change_is_waited_for_and_never_overwritten(self):
+        # --rearm (mu300-boot-ok) reads the default boot, then writes the Linux block: an "android" in between was
+        # lost. The script holds a lock from its first read to its last write; a stub flock stands for the real one
+        # here (macOS has none) and says busy while the marker exists.
+        android_a, _ = self.slot_b_blocks()
+        busy = self.tmp / 'busy'
+        flock = self.stubs / 'flock'
+        flock.write_text(f'#!/bin/sh\necho "$*" >> "{self.tmp}/flock.log"\n[ ! -e "{busy}" ]\n')
+        flock.chmod(0o755)
+        sleep = self.stubs / 'sleep'
+        sleep.write_text('#!/bin/sh\nexit 0\n')
+        sleep.chmod(0o755)
+        busy.touch()
+        before = self.misc.read_bytes()
+        if not shutil.which('bash'):
+            self.skipTest('no bash')
+        env = self.env(MU300_RUN=self.run_dir, MU300_CONF=self.tmp / 'default-boot',
+                       MU300_CMDLINE_SRC=self.tmp / 'cmdline', MU300_NEXT_BOOT_WAIT=3)
+        run = lambda *a: subprocess.run(['bash', str(BIN / 'mu300-next-boot'), *a], capture_output=True, text=True,
+                                        env=env)
+        r = run('android')
+        self.assertEqual(r.returncode, 1)
+        self.assertIn('another mu300-next-boot is still running', r.stderr)
+        self.assertEqual(self.misc.read_bytes(), before)
+        self.assertEqual((self.tmp / 'default-boot').read_text(), 'linux\n')
+        self.assertTrue((self.run_dir / 'next-boot.lock').exists())
+        # status reads only: it never waits
+        self.assertEqual(run('status').returncode, 0)
+        self.assertEqual((self.tmp / 'flock.log').read_text().split('\n').count('-n 9'), 3)
+        busy.unlink()
+        r = run('android')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.bc(), android_a)
+        # a lock file that is a symlink is not opened (and nothing is serialised then, as without flock)
+        (self.run_dir / 'next-boot.lock').unlink()
+        (self.run_dir / 'next-boot.lock').symlink_to(self.tmp / 'elsewhere')
+        busy.touch()
+        self.assertEqual(run('android').returncode, 0)
+        self.assertFalse((self.tmp / 'elsewhere').exists())
+
+    @unittest.skipUnless(shutil.which('flock') and shutil.which('bash'), 'needs flock(1) and bash')
+    def test_the_real_flock_holds_off_a_second_writer(self):
+        import fcntl
+        android_a, _ = self.slot_b_blocks()
+        before = self.misc.read_bytes()
+        with open(self.run_dir / 'next-boot.lock', 'a') as held:
+            fcntl.flock(held, fcntl.LOCK_EX)
+            r = subprocess.run(['bash', str(BIN / 'mu300-next-boot'), 'android'], capture_output=True, text=True,
+                               env=self.env(MU300_RUN=self.run_dir, MU300_CONF=self.tmp / 'default-boot',
+                                            MU300_CMDLINE_SRC=self.tmp / 'cmdline', MU300_NEXT_BOOT_WAIT=2))
+            self.assertEqual(r.returncode, 1, r.stderr)
+            self.assertEqual(self.misc.read_bytes(), before)
+        r = self.nb('android')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.bc(), android_a)
+
 
 class EarlyRecorder(ShellTest):
     """early-recorder's choice of boot partition: the Linux slot's, never Android's."""
