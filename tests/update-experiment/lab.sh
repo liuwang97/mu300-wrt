@@ -5,6 +5,11 @@
 #       the device's own path: the old image is installed, the planted system is entered with chroot and runs its
 #       installed "mu300-update apply OS" against RELEASE_DIR served on 127.0.0.1 (MU300_RELEASE_URL): the files of
 #       release TAG, with SHA256SUMS and mu300-update, so the installed updater continues with the release's
+#   lab.sh from OS OLD.tar.gz ZIP RELEASE_DIR OUT.tsv
+#       the device's path without a network: the planted system gets the new release's mu300-update (as a user of a
+#       release before apply --from does it: FINDINGS 86) and runs "mu300-update apply --from ZIP --unsigned OS", ZIP
+#       being the release's Magisk zip of that system (--unsigned: a release before the key has none to check with,
+#       and a file brought by hand is taken only on the owner's word); nothing is served
 #   lab.sh android OS OLD.tar.gz NEW.tar.gz ANDROID_INSTALL_SH OUT.tsv
 #       the installers' path (install.sh, install.ps1, the Magisk zip): the install loop of tools/android-install.sh in
 #       update mode, run by mksh with toybox's commands and the one true awk first on PATH, as on Android
@@ -104,6 +109,17 @@ update_in() {  # update_in ROOT REL TAG LOG: the system at ROOT runs its install
     kill $srv 2>/dev/null || true
     for d in "$D/$os.old" "$D/$os.broken" "$D/$os"; do [ ! -d "$d" ] || leave "$d"; done
 }
+from_in() {  # from_in ROOT ZIP LOG: the system at ROOT updates itself from ZIP (on the partition), offline
+    enter "$1" "$D"
+    rc=0
+    # (no server: an address that refuses, should anything try the network)
+    # shellcheck disable=SC2086
+    chroot "$1" /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin HOME=/root MU300_FETCH_DELAY=0 \
+        MU300_RELEASE_URL=http://127.0.0.1:9 MU300_API_URL=http://127.0.0.1:9 ${MU300_LAB_ENV:-} \
+        /bin/sh /opt/mu300/bin/mu300-update apply --from "/mnt/mu300-disk/${2##*/}" --unsigned ${MU300_LAB_APPLY:-} "$os" >> "$3" 2>&1 || rc=$?
+    echo "mu300-update apply --from: exit $rc" >> "$3"
+    for d in "$D/$os.old" "$D/$os.broken" "$D/$os"; do [ ! -d "$d" ] || leave "$d"; done
+}
 
 clean
 case $mode in
@@ -134,6 +150,31 @@ device)
     fi
     ls "$D" | tr '\n' ' '; echo
     [ -z "${MU300_LAB_BIG:-}" ] || ls -ln "$D/$os/srv/big.img" 2>&1 | awk '{ print "the big file in the new system:", $5, $NF }'
+    ;;
+from)
+    zip=$4 rel=$5 out=$6
+    D=$W/disk
+    disk "$D"
+    install_old "$D/$os"
+    mkdir -p "$D/boot" "$D/.mu300"; echo "${MU300_LAB_KERNEL:-5.4}" > "$D/boot/kernel"; echo "$os" > "$D/.mu300/boot-os"
+    beside "$D"
+    # shellcheck disable=SC2086
+    python3 "$HERE/experiment.py" plant "$D/$os" "$kind" "$W/spec.json" ${MU300_LAB_PLANT:-}
+    beside_sum "$D" > "$W/beside.before"
+    fill "$D"
+    # the new release's updater, as the user fetches it (its own file: what the carry block then sees as the
+    # project's program changed by the user, and the release's again)
+    install -m 755 "$rel/mu300-update" "$D/$os/opt/mu300/bin/mu300-update"
+    cp "$zip" "$D/${zip##*/}"
+    : > "$out.log"
+    from_in "$D/$os" "$zip" "$out.log"
+    rm -f "$D/${zip##*/}"
+    new=$D/$os
+    if [ -d "$D/$os.old" ]; then
+        python3 "$HERE/experiment.py" verify "$D/$os.old" "$W/spec.json" > "$out.rollback"
+        echo "kept for a rollback ($os.old): $(cut -f2 "$out.rollback" | sort | uniq -c | tr '\n' ' ')"
+    fi
+    ls "$D" | tr '\n' ' '; echo
     ;;
 android)
     newtar=$4 script=$5 out=$6
@@ -166,7 +207,7 @@ android)
     new=$M/$os
     D=$M
     ;;
-*) echo "usage: lab.sh device|android ..." >&2; exit 2 ;;
+*) echo "usage: lab.sh device|from|android ..." >&2; exit 2 ;;
 esac
 python3 "$HERE/experiment.py" verify "$new" "$W/spec.json" > "$out"
 [ ! -f "$new/etc/mu300/update-report" ] || cp "$new/etc/mu300/update-report" "$out.report"

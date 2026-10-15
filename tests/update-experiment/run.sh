@@ -15,10 +15,14 @@
 #                                    its own: git show TAG:tools/android-install.sh > FILE)
 #   MU300_LAB_SCENARIOS="link move"  also the updates that are not the plain one (scenarios.sh; "all" for every one)
 #   MU300_LAB_IMAGES="openwrt"       of ubuntu ubuntu-26.04 openwrt openwrt-luci, the ones to run
+#   MU300_LAB_ZIPS=DIR               the Magisk zips of NEW_TAG (tools/make-magisk-zips.sh): a third path, the old system
+#                                    updated offline by "mu300-update apply --from" the zip of its system
+#   MU300_LAB_HOST_WORK=DIR          the container's working directory (the filesystems in files, some GB) on the
+#                                    computer instead of in docker's own disk
 # Needs docker; the container is privileged (it mounts a filesystem and changes root into the installed system) and
 # is removed at the end. Nothing is written to the release directories.
 set -eu
-[ $# = 5 ] || { sed -n '2,20s/^# \{0,1\}//p' "$0" >&2; exit 2; }
+[ $# = 5 ] || { sed -n '2,24s/^# \{0,1\}//p' "$0" >&2; exit 2; }
 HERE=$(cd "$(dirname "$0")" && pwd)
 TOP=$(cd "$HERE/../.." && pwd)
 label=$1 old=$(cd "$2" && pwd) new=$(cd "$3" && pwd) tag=$4
@@ -27,6 +31,9 @@ docker build -q -t mu300-update-lab "$HERE" >/dev/null
 c=mu300-update-lab-$$
 script=/src/tools/android-install.sh
 set -- -v "$TOP":/src:ro -v "$old":/old:ro -v "$new":/new:ro -v "$out":/out
+zips=
+if [ -n "${MU300_LAB_ZIPS:-}" ]; then set -- "$@" -v "$(cd "$MU300_LAB_ZIPS" && pwd)":/zips:ro; zips=/zips; fi
+if [ -n "${MU300_LAB_HOST_WORK:-}" ]; then mkdir -p "$MU300_LAB_HOST_WORK"; set -- "$@" -v "$(cd "$MU300_LAB_HOST_WORK" && pwd)":/w; fi
 if [ -n "${MU300_LAB_ANDROID_INSTALL:-}" ]; then
     set -- "$@" -v "$(cd "$(dirname "$MU300_LAB_ANDROID_INSTALL")" && pwd)/$(basename "$MU300_LAB_ANDROID_INSTALL")":/android-install.sh:ro
     script=/android-install.sh
@@ -38,7 +45,7 @@ if [ "${MU300_LAB_REPACK:-0}" = 1 ]; then
     docker exec "$c" sh /src/tests/update-experiment/repack.sh /new /w/release "$tag" >/dev/null
     to=/w/release
 fi
-docker exec "$c" sh /src/tests/update-experiment/all.sh /old "$to" "$tag" /out "$label" "$script" "${MU300_LAB_IMAGES:-ubuntu ubuntu-26.04 openwrt openwrt-luci}"
+docker exec "$c" sh /src/tests/update-experiment/all.sh /old "$to" "$tag" /out "$label" "$script" "${MU300_LAB_IMAGES:-ubuntu ubuntu-26.04 openwrt openwrt-luci}" "$zips"
 case ${MU300_LAB_SCENARIOS:-} in
     '') ;;
     all) docker exec "$c" sh /src/tests/update-experiment/scenarios.sh /old "$to" "$tag" /out ;;
