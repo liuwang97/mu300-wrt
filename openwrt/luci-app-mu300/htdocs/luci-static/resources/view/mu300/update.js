@@ -28,6 +28,9 @@ function check(id, label, on) {
 }
 
 return view.extend({
+	/* nothing here is a form: every button acts at once, so LuCI's Save & Apply, Save and Reset are not shown */
+	handleSaveApply: null, handleSave: null, handleReset: null,
+
 	load: function() { return L.resolveDefault(M.callUpdateGet('1'), {}); },
 
 	render: function(state) {

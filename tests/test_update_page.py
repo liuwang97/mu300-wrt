@@ -1922,6 +1922,11 @@ class Page(unittest.TestCase):
                       {'ok': 0, 'error': 'Updating is not available on this system'})
         self.assertEqual(r, 'Updating is not available on this system')
 
+    def test_no_form_buttons(self):
+        # nothing on the page is a form: LuCI's Save & Apply, Save and Reset did nothing there (seen on the U30 Air)
+        src = VIEW.read_text(encoding='utf-8')
+        self.assertIn('handleSaveApply: null, handleSave: null, handleReset: null', src)
+
     def test_nothing_from_the_backend_is_markup(self):
         # LuCI's E(tag, attrs, 'string') sets innerHTML: every value that is not a literal or a _() message goes in
         # as [ value ] (the same rule, and the same check, as the Languages page)
