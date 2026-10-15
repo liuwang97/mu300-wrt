@@ -708,7 +708,7 @@ unsigned char sc2355_find_lut_index(struct sprd_hif *hif, struct sprd_vif *vif)
 		for (i = 0; i < MAX_LUT_NUM; i++) {
 			if ((sc2355_is_group(hif->peer_entry[i].tx.da)) &&
 			    hif->peer_entry[i].ctx_id == vif->ctx_id) {
-				pr_info("%s, %d, group lut_index=%d\n",
+				pr_debug_ratelimited("%s, %d, group lut_index=%d\n",
 					__func__, __LINE__,
 					hif->peer_entry[i].lut_index);
 				return hif->peer_entry[i].lut_index;
@@ -820,7 +820,7 @@ int sc2355_hif_fill_msdu_dscr(struct sprd_vif *vif,
 
 	lut_index = sc2355_find_lut_index(hif, vif);
 	if (lut_index < 6 && (!sc2355_is_group(hif->skb_da))) {
-		pr_err("%s, %d, sta disconn, no data tx!", __func__, __LINE__);
+		pr_debug_ratelimited("%s, %d, sta disconn, no data tx!\n", __func__, __LINE__);
 		return -EPERM;
 	}
 	skb_push(skb, sizeof(struct tx_msdu_dscr) + offset + dscr_rsvd);
