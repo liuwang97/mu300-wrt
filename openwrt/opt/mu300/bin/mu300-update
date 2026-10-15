@@ -245,8 +245,9 @@ notice() {
     [ -n "$latest" ] || return 1   # offline: the note stays as it was, the next round asks again
     inst=$(installed_version)
     mkdir -p "${NOTICE%/*}"
-    # tags are dates (vYYYY.MM.DD), so they sort as text; a test release newer than the newest is no reason to note
-    if [ "$inst" != "$latest" ] && [ "$(printf '%s\n%s\n' "$inst" "$latest" | sort | tail -n1)" = "$latest" ]; then
+    # (newer: the release tags, docs/FINDINGS.md 125) a test release newer than the newest is no reason to note; a
+    # system that is no release (unknown, a build of one's own) hears of every one
+    if newer "$latest" "$inst" || { tag_ok "$latest" && ! tag_ok "$inst"; }; then
         printf 'mu300-linux %s is out (this is %s): sudo mu300-update apply\n' "$latest" "$inst" > "$NOTICE"
     else
         rm -f "$NOTICE"
@@ -288,8 +289,8 @@ check() {
     for os in $(installed_systems); do
         [ -d "$DISK/$os.old" ] && printf 'rollback available for %s (%s)\n' "$os" "$(cat "$DISK/$os.old/etc/mu300/image-version" 2>/dev/null || echo unknown)"
     done
-    # tags are dates (vYYYY.MM.DD), so they sort as text; a device ahead of the newest release runs a test one
-    if [ "$(printf '%s\n%s\n' "$(installed_version)" "$latest" | sort | tail -n1)" != "$latest" ]; then
+    # a device ahead of the newest release runs a test one (newer: docs/FINDINGS.md 125)
+    if newer "$(installed_version)" "$latest"; then
         printf '\nThis is newer than the newest release (a test release); mu300-update apply --downgrade would go back to %s.\n' "$latest"
     elif [ "$(installed_version)" = "$latest" ] && [ "$(cat "$BOOTDIR/installed.tag" 2>/dev/null)" != "$latest" ]; then
         printf '\nThe system is up to date; the boot image may not be. Run: mu300-update apply\n'
@@ -965,13 +966,16 @@ vpn_killswitch_wanted() {
 }
 
 # ---- the VPN module -----------------------------------------------------------------------------------------------
-# module_needs DIR: the mu300-linux release the module in DIR needs (./requires: "mu300-linux vYYYY.MM.DD"; none: any)
+# module_needs DIR: the mu300-linux release the module in DIR needs (./requires: "mu300-linux vYYYY.MM.DD", or
+# vYYYY.MM.DD.N; none: any)
 module_needs() { awk '$1 == "mu300-linux" {print $2; exit}' "$1/requires" 2>/dev/null; }
-# version_ok NEED HAVE: HAVE is NEED or newer. Tags are dates (vYYYY.MM.DD) and sort as text; a system that is no
-# release (a build of one's own, "dev", unknown) is not judged.
+# version_ok NEED HAVE: HAVE is NEED or newer (newer: the release tags, vYYYY.MM.DD and vYYYY.MM.DD.N, FINDINGS
+# 125); a system that is no release (a build of one's own, "dev", unknown) is not judged. Anything else that starts
+# with v is compared as text, as it always was.
 version_ok() {
     [ -n "$1" ] || return 0
     case $2 in v[0-9]*) ;; *) return 0 ;; esac
+    if tag_ok "$1" && tag_ok "$2"; then ! newer "$1" "$2"; return; fi
     [ "$(printf '%s\n%s\n' "$1" "$2" | sort | tail -n1)" = "$2" ]
 }
 # sha_ok HASH: a SHA-256 as sha256sum writes it (64 lowercase hex digits); nothing else ever counts as a hash, so an
@@ -2075,9 +2079,44 @@ jv() { printf '%s' "$1" | tr -cd 'A-Za-z0-9._+:,()@ /-' | cut -c1-200; }
 jstr() { if [ -n "$1" ]; then printf '"%s"' "$(jv "$1")"; else printf null; fi; }      # a string, or null when empty
 jnum() { case $1 in ''|*[!0-9]*) printf null ;; 0) printf 0 ;; 0*) printf null ;; *) printf '%s' "$1" ;; esac; }
 mtime() { _mt=$(date -r "$1" +%s 2>/dev/null) || _mt=; jnum "$_mt"; }
-tag_ok() { printf '%s\n' "$1" | grep -Eqx 'v[0-9]{4}\.[0-9]{2}\.[0-9]{2}'; }
-# newer A B: release A is newer than B (tags are dates and sort as text); false when either is no release tag
-newer() { tag_ok "$1" && tag_ok "$2" && [ "$1" != "$2" ] && [ "$(printf '%s\n%s\n' "$1" "$2" | sort | tail -n1)" = "$1" ]; }
+# --- release-tag begin
+# The release tags (docs/FINDINGS.md 125): vYYYY.MM.DD up to v2026.10.27, where the "day" was a counter, and from then
+# on vYYYY.MM.DD.N: the real (UTC) day the release was built, N = 1..99 for the releases of that day. Every four-field
+# tag is newer than every three-field one; four-field tags compare by the date, then by N, as numbers. The same block,
+# word for word, is in tools/releases.sh (install.sh, make-release.sh), mu300-update and tools/android-install.sh
+# (tests/test_releases.py holds the copies to each other and to tests/fixtures/release-tags.tsv).
+# tag_ok TAG: TAG is a release tag (in the shell's own patterns: no grep, no locale, no regex engine to differ)
+tag_ok() {
+    case $1 in
+        v[0-9][0-9][0-9][0-9].[0-9][0-9].[0-9][0-9]) return 0 ;;
+        v[0-9][0-9][0-9][0-9].[0-9][0-9].[0-9][0-9].[1-9]|v[0-9][0-9][0-9][0-9].[0-9][0-9].[0-9][0-9].[1-9][0-9]) ;;
+        *) return 1 ;;
+    esac
+    case ${1#v?????} in 0[1-9].*|1[0-2].*) ;; *) return 1 ;; esac
+    case ${1#v????????} in 0[1-9].*|[12][0-9].*|3[01].*) ;; *) return 1 ;; esac
+}
+# tag_key TAG: a number in the order of the releases (1YYYYMMDD00 for vYYYY.MM.DD, 2YYYYMMDDNN for vYYYY.MM.DD.N);
+# nothing and status 1 for what is no release tag
+tag_key() {
+    tag_ok "$1" || return 1
+    case $1 in
+        *.*.*.*) _tn=${1##*.}; [ ${#_tn} = 2 ] || _tn=0$_tn; _tk=${1%.*}; _te=2 ;;
+        *) _tn=00; _tk=$1; _te=1 ;;
+    esac
+    _tk=${_tk#v}; _td=${_tk#*.}
+    echo "$_te${_tk%%.*}${_td%.*}${_td#*.}$_tn"
+}
+# newer A B: release A is newer than release B; false when either is no release tag. The key is compared in two
+# parts (the era and the date, nine digits; then N without its leading zero), so that no shell's integers overflow
+# and none reads 08 as octal.
+newer() {
+    _na=$(tag_key "$1") && _nb=$(tag_key "$2") || return 1
+    [ "${_na%??}" -gt "${_nb%??}" ] && return 0
+    [ "${_na%??}" = "${_nb%??}" ] || return 1
+    _na=${_na#?????????}; _nb=${_nb#?????????}
+    [ "${_na#0}" -gt "${_nb#0}" ]
+}
+# --- release-tag end
 # the space an update wants free on the Linux partition, in KiB, for N systems: the rule apply() has
 space_needed() { echo $((1000000 + 1000000 * $1)); }
 
@@ -2635,7 +2674,10 @@ releases_json() {
         }
         { gsub(/,"/, ",\n\""); gsub(/\{"/, "{\n\""); n = split($0, L, "\n"); for (i = 1; i <= n; i++) line(L[i]) }
         END { flush() }')
-    _beta=$(printf '%s\n' "$RELEASES" | awk '$1 == "R" && $3 == "true" && $4 == "false" { print $2 }' | grep -Ex 'v[0-9]{4}\.[0-9]{2}\.[0-9]{2}' | sort | tail -n1)
+    _beta=
+    for _bt in $(printf '%s\n' "$RELEASES" | awk '$1 == "R" && $3 == "true" && $4 == "false" { print $2 }'); do
+        tag_ok "$_bt" && { [ -z "$_beta" ] || newer "$_bt" "$_beta"; } && _beta=$_bt
+    done
     newer "$_beta" "$_latest" || _beta=
     printf '{"ok":1,"installed":"%s","boot":%s,"latest":%s,"beta":%s}\n' "$(jv "$(installed_version)")" \
         "$(jstr "$(cat "$BOOTDIR/installed.tag" 2>/dev/null)")" "$(release_json "$_latest")" \
