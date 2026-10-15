@@ -482,7 +482,9 @@ class Service(ShellTest):
         # transaction, as apk does); "info -e" says installed for a name in $STUBLOG/installed
         self.stub('apk', 'echo "apk $*" >> "$STUBLOG/pm.log"\n'
                          'case $1 in\n'
-                         '  update) [ -e "$STUBLOG/online" ] || { echo "ERROR: unable to fetch index" ; exit 1; } ;;\n'
+                         '  update) n=$(cat "$MU300_SYSROOT"/etc/apk/repositories "$MU300_SYSROOT"/etc/apk/repositories.d/*.list 2>/dev/null | grep -c .)\n'
+                         '          [ -e "$STUBLOG/online" ] || { echo "ERROR: unable to fetch index"; echo "$n unavailable, 0 stale; 0 distinct packages available"; exit 1; }\n'
+                         '          [ ! -e "$STUBLOG/deadfeed" ] || { echo " [https://example.invalid/packages.adb]"; echo "1 unavailable, 0 stale; 11141 distinct packages available"; exit 1; } ;;\n'
                          '  add) shift; for p; do grep -qx "$p" "$STUBLOG/missing" 2>/dev/null && { echo "ERROR: unable to select packages:"; echo "  $p (no such package)"; exit 1; }; done\n'
                          '       for p; do echo "$p" >> "$STUBLOG/installed"; done ;;\n'
                          '  info) grep -qx "$3" "$STUBLOG/installed" 2>/dev/null ;;\n'
@@ -668,6 +670,24 @@ class Service(ShellTest):
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertEqual(self.dhcp(), before)
             self.assertIn('0100007F:1EC2', (self.R / 'proc/net/udp').read_text())   # the wait did run
+
+    def test_a_dead_feed_of_the_users_is_not_offline(self):
+        """apk update fails for one feed that does not answer (a U30 Air: a custom feed of example.invalid); the
+        others answered, so the packages are installed again. With every feed unavailable it is offline."""
+        for shell in self.each_shell():
+            self.setup_openwrt(listening=True)
+            write(self.R, {'etc/apk/repositories.d/distfeeds.list': 'https://downloads.openwrt.org/a/packages.adb\n'
+                                                                    'https://downloads.openwrt.org/b/packages.adb\n',
+                           'etc/apk/repositories.d/customfeeds.list': '# mine\nhttps://example.invalid/packages.adb\n'})
+            (self.tmp / 'deadfeed').write_text('')
+            r = self.run_upk(shell, 'run')
+            self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+            self.assertEqual(self.rec('state'), 'offline\n')
+            (self.tmp / 'online').write_text('')
+            r = self.run_upk(shell, 'retry')
+            self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+            self.assertEqual(self.rec('state'), 'done\n')
+            (self.tmp / 'deadfeed').unlink()
 
     def test_offline_tries_again_at_the_next_boots_then_gives_up(self):
         for shell in self.each_shell():

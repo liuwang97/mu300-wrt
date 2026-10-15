@@ -51,7 +51,19 @@ count() { [ -s "$1" ] && awk 'NF' "$1" | wc -l | tr -d ' ' || echo 0; }
 # ---- the package managers --------------------------------------------------------------------------------------
 # offline is a failure: apk says so, apt-get only with --error-on=any (else it warns and returns 0)
 pm_update() {
-    if [ "$KIND" = openwrt ]; then apk update; else apt-get update -q --error-on=any; fi
+    if [ "$KIND" = openwrt ]; then apk_update; else apt-get update -q --error-on=any; fi
+}
+# apk_update: apk update, online when at least one of the configured feeds answered. apk fails the whole update for
+# one feed that does not (a user's own feed that is gone, "N unavailable"), and the reinstall then waited for an
+# internet that was there, boot after boot, and gave up (a U30 Air with a custom feed of example.invalid, the update
+# device test of FINDINGS 85). Offline every feed is unavailable.
+apk_update() {
+    _au=$(apk update 2>&1); _ar=$?
+    printf '%s\n' "$_au"
+    [ "$_ar" != 0 ] || return 0
+    _un=$(printf '%s\n' "$_au" | sed -n 's/^\([0-9][0-9]*\) unavailable.*/\1/p' | tail -n 1)
+    _all=$(cat "$R/etc/apk/repositories" "$R"/etc/apk/repositories.d/*.list 2>/dev/null | grep -c '^[^#[:space:]]')
+    [ -n "$_un" ] && [ "$_un" -lt "$_all" ]
 }
 pm_add() {
     if [ "$KIND" = openwrt ]; then apk add "$@"
