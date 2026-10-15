@@ -186,6 +186,7 @@ class ShellTags(ShellTest):
         for f in (BIN_UPDATE, TOP / 'tools/android-install.sh'):
             self.assertEqual(self.block(f.read_text()), lib, f)
 
+    @unittest.skipIf(os.name == 'nt', 'the device scripts run on Linux and Android; Windows has install.ps1 (installer.Tests.ps1)')
     def test_the_table(self):
         oks, bads, cmps = tag_table()
         # one run per shell and file: every line answered, then compared here
