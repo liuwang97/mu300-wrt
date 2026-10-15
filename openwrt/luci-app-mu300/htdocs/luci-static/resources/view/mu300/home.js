@@ -239,6 +239,7 @@ return view.extend({
         <div class="mud-r" id="mud-simsrc-r" style="display:none"><span class="mud-k">${_('SIM source')}</span><span class="mud-v" id="mud-simsrc">--</span></div>
         <div class="mud-r"><span class="mud-k">${_('Session duration')}</span><span class="mud-v" id="mud-sess">--</span></div>
         <div class="mud-r"><span class="mud-k">${_('Registration')}</span><span class="mud-v" id="mud-reg">--</span></div>
+        <div class="mud-r"><span class="mud-k">${_('Data roaming')}</span><span class="mud-v" id="mud-roam">--</span></div>
         <div class="mud-r"><span class="mud-k">DNS</span><span class="mud-v" id="mud-dns">--</span></div>
       </div>
     </div>
@@ -312,6 +313,7 @@ return view.extend({
   <div class="mud-ctl" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr))">
     <button class="mud-btn" id="mud-btn-data">${_('Data connection')}</button>
     <button class="mud-btn" id="mud-btn-radio">${_('Cellular radio')}</button>
+    <button class="mud-btn" id="mud-btn-roam">${_('Data roaming')}</button>
     <button class="mud-btn" id="mud-btn-wifi">${_('Wi-Fi hotspot')}</button>
     <button class="mud-btn warn" id="mud-btn-modem">${_('Restart modem')}</button>
     <button class="mud-btn warn" id="mud-btn-reboot">${_('Restart device')}</button>
@@ -363,6 +365,17 @@ return view.extend({
 				? M.confirmBox(_('Turn off cellular radio'), _('Cellular connectivity will be interrupted.'), { danger: true })
 				: M.confirmBox(_('Turn on cellular radio'), _('The SFUN power-on sequence will run (up to about 1 minute).'))
 			).then(function(go) { if (go) act('radio', on ? 'off' : 'on', null, btn); });
+		};
+		/* data roaming of the SIM in use (mobile-data, FINDINGS 120): off keeps data down while the SIM is registered
+		 * as roaming. Some SIMs say "roaming" at home (an MVNO on another operator's network, national roaming). */
+		q('btn-roam').onclick = function() {
+			var ro = self.lastInfo && self.lastInfo.wan && self.lastInfo.wan.roaming;
+			var on = !ro || !!ro.allowed;
+			var btn = this;
+			(on
+				? M.confirmBox(_('Turn data roaming off'), _('While the SIM is registered on a roaming network, mobile data stays off; SMS, calls and the registration are not affected. Some SIMs report roaming at home (an MVNO, national roaming): there, data would stop as well.'))
+				: M.confirmBox(_('Allow data roaming'), _('Mobile data is used on roaming networks too, which can cost extra. Some SIMs report roaming at home (an MVNO, national roaming) and need this to have data at all.'))
+			).then(function(go) { if (go) act('roaming', on ? 'off' : 'on', null, btn); });
 		};
 		q('btn-wifi').onclick = function() {
 			var on = self.lastInfo && self.lastInfo.wifi && self.lastInfo.wifi.up;
@@ -674,6 +687,9 @@ return view.extend({
 			if (c.reg5g && c.reg5g.stat == 1) reg += ' · 5G ' + regmap[c.reg5g.stat];
 		} else if (c && c.error) reg = M.errText(c);
 		M.set('reg', reg);
+		var ro = w.roaming || null;
+		M.set('roam', !ro ? '--' : ro.held ? _('Off: data held back while roaming') : ro.allowed ? _('Allowed') : _('Off'));
+		M.v('roam').style.color = ro && ro.held ? 'var(--warning,#f59e0b)' : '';
 
 		var anchor = (c && c.lte && c.lte.band) ? c.lte : null;
 		M.v('lteanchor').innerHTML = anchor ?
@@ -796,6 +812,7 @@ return view.extend({
 		var b;
 		b = M.v('btn-data'); b.className = 'mud-btn' + (w.up ? ' on' : ''); b.textContent = _('Data connection');
 		b = M.v('btn-radio'); b.className = 'mud-btn' + (c && c.cfun === 1 ? ' on' : ''); b.textContent = _('Cellular radio');
+		b = M.v('btn-roam'); b.className = 'mud-btn' + (!w.roaming || w.roaming.allowed ? ' on' : ''); b.textContent = _('Data roaming');
 		b = M.v('btn-wifi'); b.className = 'mud-btn' + (wf.up ? ' on' : ''); b.textContent = _('Wi-Fi hotspot');
 	}
 });

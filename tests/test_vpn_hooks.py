@@ -233,6 +233,7 @@ class Toolkit(ShellTest):
         network = src[src.index('\nmenu_network() {'):src.index('\nMU300_SERVICES=')]
         pre = ('menu() { shift; for l in "$@"; do echo "item: $l"; done; read -r CHOICE || CHOICE=0; }\n'
                'menu_vpn() { echo "-> vpn"; }; menu_ttl() { echo "-> ttl"; }; menu_wifi() { echo "-> wifi"; }\n'
+               'menu_roaming() { echo "-> roaming"; }\n'
                'title() { :; }; pause() { :; }; svc() { :; }; monitor() { :; }; menu_signal() { :; }; is_openwrt() { false; }\n'
                'C=; N=; D=; B=; G=\nVPN_CONF=/nonexistent\n')
         # (the stubs after the block: its own menu_vpn is not what is under test here)
@@ -250,25 +251,28 @@ class Toolkit(ShellTest):
 
         for shell in self.each_shell():
             shutil.rmtree(disk, ignore_errors=True)
-            # without the module: no word of a VPN, TTL is item 8 and 9 goes back
-            r = run(shell, '8\n9\n0\n')
+            # without the module: no word of a VPN, TTL is item 8, data roaming 9 and 10 goes back
+            r = run(shell, '8\n9\n10\n')
             self.assertIn('rc=0', r.stdout, r.stderr)
             self.assertNotIn('VPN', r.stdout)
             self.assertEqual(r.stdout.count('-> ttl'), 1)
+            self.assertEqual(r.stdout.count('-> roaming'), 1)
             self.assertNotIn('-> vpn', r.stdout)
             # the VPN on with its kill switch and the module gone: the item is there (it says why mobile data is down)
             r = run(shell, '8\n0\n', conf='ENABLE=1\nKILL_SWITCH=1\n')
             self.assertIn('item: VPN (not installed: how to add it)', r.stdout)
             self.assertIn('-> vpn', r.stdout)
-            # the module on the disk (mu300-extra's test), not linked into this system: the item, and TTL is 9
+            # the module on the disk (mu300-extra's test), not linked into this system: the item, TTL is 9, data
+            # roaming 10
             module.parent.mkdir(parents=True)
             module.write_text('#!/bin/sh\n')
             module.chmod(0o755)
-            r = run(shell, '8\n9\n0\n')
+            r = run(shell, '8\n9\n10\n0\n')
             self.assertIn('rc=0', r.stdout, r.stderr)
             self.assertIn('item: VPN (not installed: how to add it)', r.stdout)
             self.assertEqual(r.stdout.count('-> vpn'), 1)
             self.assertEqual(r.stdout.count('-> ttl'), 1)
+            self.assertEqual(r.stdout.count('-> roaming'), 1)
             # linked too: the plain item
             r = self.sh(shell, code, stdin='0\n', MU300_DISK=disk, MU300_SYSROOT=root, MU300_VPN_CMD=module,
                         MU300_EXTRA_CMD=self.stubs / 'mu300-extra', MU300_VPN_ORPHAN_LIB=ORPHAN_LIB)

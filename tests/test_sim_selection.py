@@ -511,7 +511,7 @@ Promise.resolve(o.load('wan')).then((cur) => {
 
     def test_the_other_options_are_still_there(self):
         o = self.options({'sim': {'slot': 0, 'wanted': 0, 'slot1_supported': 0}}, '0')
-        self.assertEqual(o['others'], ['sim_slot', 'apn_internal', 'pdptype_internal', 'apn', 'pdptype',
+        self.assertEqual(o['others'], ['sim_slot', 'apn_internal', 'pdptype_internal', 'roaming_internal', 'apn', 'pdptype', 'roaming',
                                        'username', 'password', 'auth', 'peerdns', 'dns'])
 
     def paint(self, sim):

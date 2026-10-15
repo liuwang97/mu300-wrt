@@ -382,18 +382,19 @@ echo OK
 
     def test_no_verdict_while_the_connection_is_off(self):
         (self.etc / 'uci-sim_data_wait').write_text('1\n')
-        for how in ('down', 'suspend', 'auto', 'disabled'):
+        for how in ('down', 'suspend', 'auto', 'disabled', 'roaming'):
             with self.subTest(how=how):
                 for f in ('at', 'radio-on', 'route'):
                     (self.tmp / f).unlink(missing_ok=True)
                 for f in ('attempted', 'sent'):
                     (self.run / f'mu300/sim2-cold-start.{f}').unlink(missing_ok=True)
                 for f in (self.tmp / 'wan-held-down', self.run / 'mu300-mobile-data.suspend',
-                          self.etc / 'uci-auto', self.etc / 'uci-disabled'):
+                          self.etc / 'uci-auto', self.etc / 'uci-disabled', self.run / 'mu300/data-roaming-held'):
                     f.unlink(missing_ok=True)
                 if how == 'down': (self.tmp / 'wan-held-down').touch()                 # ifdown wan by hand
                 elif how == 'suspend': (self.run / 'mu300-mobile-data.suspend').write_text('off\n')   # mu300-power
                 elif how == 'auto': (self.etc / 'uci-auto').write_text('0\n')
+                elif how == 'roaming': (self.run / 'mu300/data-roaming-held').write_text('1\n')   # FINDINGS 120
                 else: (self.etc / 'uci-disabled').write_text('1\n')
                 r = self.warmup()
                 self.assertEqual(r.returncode, 0, r.stderr)
