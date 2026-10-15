@@ -26,7 +26,7 @@ jobs:
           node-version: 22
       - name: shells and lz4
         run: |
-          sudo apt-get install -y -qq dash busybox lz4 zip unzip cpio jq >/dev/null
+          sudo apt-get install -y -qq dash busybox lz4 zip unzip cpio jq python3-tk xvfb >/dev/null   # (tk and Xvfb: the graphical installer's window, tests/test_gui.py)
           python3 -m pip install -q lz4 || python3 -m pip install -q --break-system-packages lz4
       - name: SAE parser and SDK regressions with UBSan (Linux)
         if: runner.os == 'Linux'
@@ -63,6 +63,17 @@ jobs:
       - name: install.ps1 functions (PowerShell 7)
         shell: pwsh
         run: pwsh -NoProfile -File tests\installer.Tests.ps1
+      - name: install.ps1 and uninstall.ps1 in answers mode against the fake adb (Windows PowerShell 5.1)
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests\answers.Tests.ps1
+      - name: install.ps1 and uninstall.ps1 in answers mode against the fake adb (PowerShell 7)
+        shell: pwsh
+        run: pwsh -NoProfile -File tests\answers.Tests.ps1
+      - name: the graphical installer - its logic, a run against the fake installer, and the window itself
+        shell: pwsh
+        run: |
+          cd tests
+          python -m unittest test_gui test_releases -v
       - name: boot image builder (the Windows install runs it too)
         shell: pwsh
         run: |
