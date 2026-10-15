@@ -227,6 +227,15 @@ class SlotBlocks(Fixtures):
             hdr = (self.tmp / 'boot.img').read_bytes()[:4096]
             self.assertEqual(hdr[44:55], b'loglevel=5\0', extra)
 
+    def test_device_modules_and_the_manifest(self):
+        # every install from a computer passes the U30 Air's set (the 5.4 bundle has it): the manifest's module
+        # count must be the base order's, not trip over the device loop's own order file (2026-10-16, F50-C:
+        # "TypeError: object of type 'PosixPath' has no len()" at "Building the boot image")
+        files = self.image('--device-modules', f'u30air={self.u30}')
+        self.assertIn('etc/module-order-u30air', files)
+        manifest = json.loads((self.tmp / 'boot.json').read_text())
+        self.assertEqual(manifest['modules'], len((BOOT / 'module-order.txt').read_text().split()))
+
     def test_generic_has_no_slot(self):
         r, _ = self.build('--linux-slot', 'a')
         self.assertNotEqual(r.returncode, 0)
