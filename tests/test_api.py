@@ -453,6 +453,32 @@ class MobileData(ApiCase):
             self.ok(shell, 'data.set', {'clear_credentials': True})
             self.assertEqual(conf.read_text().splitlines(), ['# mine', 'MU300_APN=corp.example-1', 'MU300_PDP_TYPE=IPV4V6'])
 
+    def test_data_roaming(self):
+        """FINDINGS 120: mobile-data roaming --json in data.get; data.set roaming true/false runs mobile-data roaming
+        on/off and restarts nothing; a system without the command has no switch."""
+        for shell in self.each_shell():
+            o = self.ok(shell, 'data.get')
+            self.assertEqual((o['roaming'], o['roaming_switch']), (None, False))
+            self.refused(shell, 'data.set', {'roaming': False}, 'unsupported', 'roaming')
+            self.tool('mobile-data')
+            self.out('mobile-data', '{"allowed":true,"held":false,"slot":0,"per_sim":false,"slots":[true,true]}\n')
+            o = self.ok(shell, 'data.get')
+            self.assertEqual((o['roaming']['allowed'], o['roaming']['held'], o['roaming_switch']), (True, False, True))
+            self.refused(shell, 'data.set', {'roaming': [True]}, 'bad-request')
+            for bad in ('off', 'no', 2):
+                self.refused(shell, 'data.set', {'roaming': bad}, 'bad-value', 'roaming')
+            self.clear_calls()
+            o = self.ok(shell, 'data.set', {'roaming': False})
+            self.assertEqual(o.get('restart'), False)
+            self.assertEqual(self.calls('mobile-data')[-1], ['mobile-data', 'roaming', 'off'])
+            self.assertEqual(self.calls('later'), [])
+            self.ok(shell, 'data.set', {'roaming': True})
+            self.assertEqual(self.calls('mobile-data')[-1], ['mobile-data', 'roaming', 'on'])
+            # mobile-data refuses: the request fails with its last line
+            self.out('mobile-data', '', rc=1, err='the data roaming setting could not be saved')
+            self.refused(shell, 'data.set', {'roaming': True}, 'failed', 'the data roaming setting could not be saved')
+            (self.bin / 'mobile-data').unlink()
+
     def test_sim_select_and_power(self):
         for shell in self.each_shell():
             self.refused(shell, 'sim.select', {'slot': 3}, 'bad-value', 'slot')

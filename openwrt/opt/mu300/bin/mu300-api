@@ -588,18 +588,25 @@ m_data_get() {
     fi
     _sim=null
     [ -x "$BIN/mu300-sim" ] && _sim=$(jcheck "$(timed 10 "$BIN/mu300-sim" status --json 2>/dev/null)")
+    # data roaming (mobile-data roaming --json, FINDINGS 120): {"allowed","held","slot","per_sim","slots"}; null where
+    # the system's mobile-data has no such command (then there is no switch)
+    _roam=null _rsw=false
+    if [ -x "$BIN/mobile-data" ]; then
+        _rj=$(timed 10 "$BIN/mobile-data" roaming --json 2>/dev/null | head -n 1)
+        case $_rj in '{"allowed":'*) _roam=$(jcheck "$_rj") && _rsw=true ;; esac
+    fi
     printf '{"ok":1,"state":%s,"iface":%s,"address":%s,"apn":%s,"pdp":%s,"auth":%s,"user":%s,"password_set":%s,' \
         "$(js "$(data_service)")" "$(js "${_da%% *}")" "$(js "${_da#* }")" "$(js "$_apn")" "$(js "${_pdp:-IP}")" \
         "$(js "$_auth")" "$(js "$_user")" "$_pw"
-    printf '"signal":%s,"sim":%s,"roaming_switch":false}\n' "$(signal_json)" "$_sim"
+    printf '"signal":%s,"sim":%s,"roaming":%s,"roaming_switch":%s}\n' "$(signal_json)" "$_sim" "$_roam" "$_rsw"
     exit 0
 }
 # the dial's own rules (mobile-data.conf, FINDINGS 65): an APN of 3GPP's characters, credentials of printable ASCII
 # without a quote or a backslash, at most 64 each
 cred_ok() { allowed "$1" '[ -~]{0,64}' && case $1 in *[\"\'\\]*|' '*|*' ') false ;; *) true ;; esac; }
 m_data_set() {
-    only apn pdp auth user password clear_credentials
-    _apn=- _pdp=- _auth=- _user=- _pw=-
+    only apn pdp auth user password clear_credentials roaming
+    _apn=- _pdp=- _auth=- _user=- _pw=- _roam=-
     fget apn && { [ "$FT" = s ] && { [ -z "$FV" ] || allowed "$FV" '[A-Za-z0-9]([A-Za-z0-9.-]{0,98}[A-Za-z0-9])?'; } || refuse bad-value apn; _apn=$FV; }
     word pdp 'IP|IPV6|IPV4V6' && _pdp=$V
     word auth 'none|pap|chap|both' && _auth=$V
@@ -607,6 +614,17 @@ m_data_set() {
     fget password && { [ "$FT" = s ] && [ -n "$FV" ] && cred_ok "$FV" || refuse bad-value password; _pw=$FV; }
     flag clear_credentials
     if [ "${V:-0}" = 1 ]; then _user= _pw= _auth=; fi
+    # roaming: true allows data while roaming, false keeps it down there (the SIM in use; mobile-data roaming on|off)
+    if flag roaming; then
+        if [ "$V" = 1 ]; then _roam=on; else _roam=off; fi
+    fi
+    if [ "$_roam" != - ]; then
+        [ -x "$BIN/mobile-data" ] || refuse unsupported roaming
+        tool 15 "$BIN/mobile-data" roaming "$_roam"
+        [ "$RC" = 0 ] || refuse failed "$ERR"
+        # the setting alone: the dial and its watchdog take it up within half a minute, nothing is restarted
+        [ "$_apn$_pdp$_auth$_user$_pw" != ----- ] || ok '"restart":false'
+    fi
     [ "$_apn$_pdp$_auth$_user$_pw" != ----- ] || refuse missing apn
     if is_openwrt; then
         {
