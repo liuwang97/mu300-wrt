@@ -237,6 +237,12 @@ static void rx_skb_process(struct sprd_priv *priv, struct sk_buff *skb)
 		    msdu_desc->bc_mc_w2w_flag) {
 			struct ethhdr *eth = (struct ethhdr *)skb->data;
 
+			/* h_proto is big endian, so on this CPU the test is always true and every group frame (IP ones
+			 * too) is sent back to the BSS here. Unless the bridge port has hairpin mode, this copy is how
+			 * mDNS, SSDP and IPv6 ND reach the other clients of the same radio: a bridge never sends a frame
+			 * back out of the port it came from. "Fixing" it with htons() hands IP multicast to the stack
+			 * alone and can cut that, so it stays as the vendor shipped it until it is measured
+			 * (docs/FINDINGS.md 92). */
 			if (eth->h_proto != ETH_P_IP &&
 			    eth->h_proto != ETH_P_IPV6) {
 				tx_skb = pskb_copy(skb, GFP_ATOMIC);
