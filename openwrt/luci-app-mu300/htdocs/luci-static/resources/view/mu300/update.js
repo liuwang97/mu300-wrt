@@ -352,7 +352,8 @@ return view.extend({
 					[ _('This file cannot be used here.') + ' ' + (why || '') ]));
 				else {
 					ok = true;
-					filec.appendChild(E('div', { 'class': 'mud-note' }, _('Compare the SHA-256 with the one in SHA256SUMS-magisk on the release page: it is the only proof of where an unsigned file comes from.')));
+					/* (a signed file is proven by its signature: the note is for one that is not - on the U30 Air it showed for both) */
+					if (insp.signature !== 'valid') filec.appendChild(E('div', { 'class': 'mud-note', 'id': 'mud-upd-compare' }, _('Compare the SHA-256 with the one in SHA256SUMS-magisk on the release page: it is the only proof of where an unsigned file comes from.')));
 					if (insp.same) filec.appendChild(E('div', { 'class': 'mud-note' }, _('This release is installed already; the update would only refresh the boot image.')));
 					if (insp.signature !== 'valid') flags.push({ name: 'unsigned', c: check('mud-upd-unsigned',
 						_('I know this file is not signed: nothing proves that it comes from the project. I compared its SHA-256 myself and want it installed.'), false) });

@@ -208,9 +208,10 @@ copy_missing() {
 is_root() { [ -d "$1" ] && [ / -ef "$1" ]; }
 # the directory this system booted from; /etc/openwrt_release alone cannot tell the two OpenWrt systems apart
 running_os() {
-    # between apply and the reboot / is the kept copy: $n.old
+    # between apply and the reboot / is the kept copy: $n.old; between rollback and the reboot, $n.broken (without it
+    # a rolled-back openwrt-luci was "openwrt" here, and the Update page named the wrong system: U30 Air, FINDINGS 86)
     for n in $SYSTEMS; do
-        for d in "$DISK/$n" "$DISK/$n.old"; do
+        for d in "$DISK/$n" "$DISK/$n.old" "$DISK/$n.broken"; do
             [ -d "$d" ] && [ "${MU300_ROOT:-/}" -ef "$d" ] && { echo "$n"; return; }
         done
     done
@@ -2534,7 +2535,7 @@ status_json() {
     STATUS_SIZES=; [ "${1:-}" != --sizes ] || STATUS_SIZES=1
     _run=$(running_os)
     printf '{"ok":1,"device":"%s","installed":"%s","running":"%s","restart_pending":%d,' "$(jv "$(this_device 2>/dev/null)")" \
-        "$(jv "$(installed_version)")" "$(jv "$_run")" "$(is_root "$DISK/$_run.old" && echo 1 || echo 0)"
+        "$(jv "$(installed_version)")" "$(jv "$_run")" "$(is_root "$DISK/$_run.old" || is_root "$DISK/$_run.broken" && echo 1 || echo 0)"
     printf '"systems":['
     _sep=
     for _os in $(installed_systems); do
@@ -2612,6 +2613,9 @@ release_json() {
 }
 releases_json() {
     _latest=$(latest_release)
+    # (no answer to the first question: offline, without waiting for a second one - on the U30 Air without a route
+    # each question took 24 s)
+    tag_ok "$_latest" || { echo '{"ok":0,"why":"offline"}'; return 1; }
     _all=$(fetch_stdout "${MU300_API_URL:-https://api.github.com/repos/$REPO}/releases?per_page=10") || _all=
     if ! tag_ok "$_latest" || [ -z "$_all" ]; then echo '{"ok":0,"why":"offline"}'; return 1; fi
     RELEASES=$(printf '%s\n' "$_all" | awk '

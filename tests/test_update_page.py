@@ -1043,6 +1043,11 @@ class Status(test_update.Lock):
                         f'fetch_stdout() {{ [ -s "{self.tmp}/list.json" ] && cat "{self.tmp}/list.json"; }}; releases_json; echo "rc=$?"')
                 r = self.sh(shell, code, MU300_LIB=1, MU300_DISK=self.disk, MU300_BIN=BIN, MU300_SYSROOT=self.root)
                 self.assertEqual(r.stdout, '{"ok":0,"why":"offline"}\nrc=1\n', r.stderr)
+            # no newest release: the list is not asked for at all (each question waits for its retries)
+            code = (f'. "{UPDATE}"; latest_release() {{ echo ""; }}; '
+                    'fetch_stdout() { echo "ASKED $1" >&2; return 1; }; releases_json; echo "rc=$?"')
+            r = self.sh(shell, code, MU300_LIB=1, MU300_DISK=self.disk, MU300_BIN=BIN, MU300_SYSROOT=self.root)
+            self.assertEqual((r.stdout, r.stderr), ('{"ok":0,"why":"offline"}\nrc=1\n', ''))
 
     def test_another_source(self):
         # /etc/mu300/update-source: a mirror, for the command and the panel alike; root's own file, URLs only
@@ -1890,8 +1895,14 @@ class Page(unittest.TestCase):
                      sent: calls.filter((c) => c[0] === 'update_act').map((c) => c[1]) };'''
         r = self.page(body, self.with_(upload={'present': 1, 'size': 1000, 'inspect': insp}))
         for want in ('ab' * 32, 'v2026.10.01 · openwrt-luci · kernel 6.18', 'not signed', 'nothing proves that it comes from the project',
-                     'older than the installed v2026.10.25'):
+                     'older than the installed v2026.10.25', 'the only proof of where an unsigned file comes from'):
             self.assertIn(want, r['text'])
+        # a signed file is not told to be compared by hand (the note showed for one on the U30 Air)
+        signed = self.page('''const root = await open(STATE); return { text: root.find('mud-upd-file').textContent,
+                                  button: !!root.find('mud-upd-apply-file') };''',
+                           self.with_(upload={'present': 1, 'size': 1000, 'inspect': dict(insp, signature='valid')}))
+        self.assertTrue(signed['button'])
+        self.assertNotIn('the only proof', signed['text'])
         self.assertEqual(r['early'], 0)
         self.assertEqual(r['toasts'], ['Tick the confirmations above first'])
         self.assertEqual(r['danger'], [True])

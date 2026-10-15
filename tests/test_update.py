@@ -284,6 +284,15 @@ class Update(UpdateBase):
             r = self.up(shell, 'running_os', MU300_ROOT=self.disk / 'openwrt-luci.old')
             self.assertEqual(r.stdout.strip(), 'openwrt-luci')
 
+    def test_running_os_after_rollback_is_the_broken_copy(self):
+        # between rollback and the reboot / is <os>.broken: it was "openwrt" for an openwrt-luci (U30 Air, FINDINGS 86)
+        (self.disk / 'openwrt-luci').mkdir()
+        (self.disk / 'openwrt-luci.broken' / 'etc').mkdir(parents=True)
+        (self.disk / 'openwrt-luci.broken' / 'etc' / 'openwrt_release').write_text('x')
+        for shell in self.each_shell():
+            r = self.up(shell, 'running_os', MU300_ROOT=self.disk / 'openwrt-luci.broken')
+            self.assertEqual(r.stdout.strip(), 'openwrt-luci')
+
     def test_clean_knows_the_third_system(self):
         (self.disk / 'openwrt-luci.old').mkdir()
         for shell in self.each_shell():
