@@ -1381,6 +1381,91 @@ at() {
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(sent, [])
 
+    # FINDINGS 90: AT+CGACT? as the watchdog reads it. $CGACT is the answer's lines ("none": no final result code,
+    # mu300-at's exit 1); the interface has its address unless NOADDR is set. radio_on, up and ifup only log.
+    WATCH_MODEM = r'''
+at() {
+    echo "$SECONDS $1" >> "$STUBLOG/at"
+    case $1 in
+        'AT+CGACT?')
+            [ "${CGACT:-}" != none ] || return 1
+            printf '%b\n' "${CGACT:-+CGACT:1,1\nOK}" ;;
+        'AT+CFUN?') printf '+CFUN: 1\nOK\n' ;;
+        AT+CGPADDR=*) printf '+CGPADDR: 1,"10.1.2.3"\nOK\n' ;;
+        *) printf 'OK\n' ;;
+    esac
+}
+radio_on() { at RADIO_ON; }
+up() { at UP; }
+'''
+
+    def watch(self, rounds, **env):
+        self.stub('ip', '[ -n "$NOADDR" ] || echo "2: sipa_eth0    inet 10.1.2.3/24 scope global sipa_eth0"')
+        self.stub('ifup', 'echo "$SECONDS IFUP $*" >> "$STUBLOG/at"')
+        r, sent = self.lib('watch', modem=self.WATCH_MODEM, MU300_AT_DEV='/dev/null', MU300_WATCH_INTERVAL='0',
+                           MU300_WATCH_ROUNDS=str(rounds), NOADDR=env.pop('NOADDR', ''), **env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return r, [s.split(' ', 1)[1] for s in sent]
+
+    def test_watch_context_states(self):
+        cases = [('+CGACT:1,1\\nOK', 'active'), ('+CGACT: 1,1\\r\\nOK', 'active'),
+                 ('+CGACT:1,0\\nOK', 'inactive'), ('OK', 'inactive'),             # a reset modem lists nothing
+                 ('+CGACT:11,1\\nOK', 'inactive'), ('+CGACT:1,10\\nOK', 'inactive'),
+                 ('ERROR', 'unknown'), ('+CME ERROR: 100', 'unknown'), ('none', 'unknown')]
+        for answer, want in cases:
+            with self.subTest(answer=answer):
+                r, _ = self.lib('watch_context', modem=self.WATCH_MODEM, CGACT=answer)
+                self.assertEqual(r.stdout.strip(), want, r.stderr)
+
+    def test_watch_leaves_the_bearer_alone_while_the_modem_does_not_answer(self):
+        """A channel without an answer for up to three rounds: no radio check, no reconnect."""
+        r, sent = self.watch(3, CGACT='none')
+        self.assertEqual(sent, ['AT+CGACT?'] * 3, r.stderr)
+        # ERROR is no answer about the context either
+        r, sent = self.watch(3, CGACT='ERROR')
+        self.assertEqual(sent, ['AT+CGACT?'] * 3, r.stderr)
+
+    def test_watch_still_reconnects_a_modem_that_stays_silent(self):
+        """Four silent rounds make the first failed round, the fifth the reconnect: about 2.5 min instead of 1."""
+        r, sent = self.watch(5, CGACT='none')
+        self.assertEqual(sent.count('UP'), 1, sent)
+        self.assertEqual(sent.index('UP'), len(sent) - 1, sent)
+        self.assertEqual(sent.count('AT+CGACT?'), 5, sent)
+        self.assertIn('no answer about the data context for 4 rounds', r.stderr)
+        # netifd: ifup, as before
+        r, sent = self.watch(5, CGACT='none', MU300_NETIFD='1')
+        self.assertIn('IFUP wan', sent)
+
+    def test_an_answer_between_silent_rounds_starts_the_count_over(self):
+        r, sent = self.watch(1, CGACT='none')
+        self.assertNotIn('UP', sent)
+        # silent, silent, silent, answered and up, silent x3: never a reconnect
+        script = self.tmp / 'answers'
+        script.write_text('none\nnone\nnone\nup\nnone\nnone\nnone\n')
+        modem = self.WATCH_MODEM.replace(
+            "[ \"${CGACT:-}\" != none ] || return 1",
+            'n=$(($(cat "$STUBLOG/n" 2>/dev/null || echo 0) + 1)); echo $n > "$STUBLOG/n"\n'
+            '            [ "$(sed -n "${n}p" "$STUBLOG/answers")" != none ] || return 1')
+        self.stub('ip', 'echo "2: sipa_eth0    inet 10.1.2.3/24 scope global sipa_eth0"')
+        r, sent = self.lib('watch', modem=modem, MU300_AT_DEV='/dev/null', MU300_WATCH_INTERVAL='0',
+                           MU300_WATCH_ROUNDS='7')
+        sent = [s.split(' ', 1)[1] for s in sent]
+        self.assertNotIn('UP', sent, r.stderr)
+        self.assertNotIn('RADIO_ON', sent, r.stderr)
+
+    def test_an_answered_lost_context_still_reconnects_in_two_rounds(self):
+        """What a firmware reset leaves (no context listed, or <cid>,0) is evidence: the old two rounds."""
+        for answer in ('OK', '+CGACT:1,0\\nOK'):
+            with self.subTest(answer=answer):
+                r, sent = self.watch(2, CGACT=answer)
+                self.assertEqual(sent.count('UP'), 1, sent)
+        # active, but the interface lost its address: the same
+        r, sent = self.watch(2, NOADDR='1')
+        self.assertEqual(sent.count('UP'), 1, sent)
+        # active with the address: nothing
+        r, sent = self.watch(2)
+        self.assertNotIn('UP', sent)
+
     # 2026-10-07: `mobile-data suspend off` after `suspend lte` never returned on the U30 Air, and the device stayed dark
     # for hours. suspend/resume now end within MU300_SUSPEND_DEADLINE whatever the modem does. Here the real at() talks
     # to an nr2 daemon whose client never answers (a mu300-at that sleeps): the whole command must come back in time,
