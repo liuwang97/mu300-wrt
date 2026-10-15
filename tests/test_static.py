@@ -432,6 +432,12 @@ class Rules(unittest.TestCase):
                   'info->bq256xx_set_ichg = sgm41513_set_ichg_curr;', 'info->bq256xx_set_iterm = sgm41513_set_term_curr;',
                   'info->bq256xx_set_iprechg = sgm41513_set_prechrg_curr;'):
             self.assertIn(s, p15)
+        # ... but only on a board with a battery (the U30 Air's charger policy service): the F50 has a charger at
+        # 0x1a too, and bound and told to charge it reset the board in a loop on a router's port (issue #225)
+        p16 = (TOP / 'upstream' / 'patches' / '0016-power-bq256xx-SGM41513-only-with-a-battery.patch').read_text()
+        for s in ('of_find_node_by_path("/charger_policy_service")', 'of_node_put(np);',
+                  '+\t\tif (part < 0 && client->addr != SGM41513_I2C_ADDR && battery) {'):
+            self.assertIn(s, p16)
         # the PMIC's charger detection reads the UMP9620's own register (0x239c), not the SC2730's (0x1b9c), and a
         # tree prepared with the old one is corrected
         self.assertIn(r"#define SPRD_UMP9620_CHG_DET\t\t0x239c", port)
@@ -501,10 +507,13 @@ class Rules(unittest.TestCase):
                 # an option given twice must say the same thing both times: merge_config takes the last one silently
                 self.assertEqual(opts.setdefault(k, v), v, k)
         for k in ('CONFIG_VIRTUALIZATION', 'CONFIG_KVM', 'CONFIG_MODULES', 'CONFIG_WIREGUARD', 'CONFIG_NET_SCH_CAKE',
-                  'CONFIG_TUN', 'CONFIG_NF_FLOW_TABLE', 'CONFIG_IKCONFIG_PROC'):
+                  'CONFIG_TUN', 'CONFIG_NF_FLOW_TABLE', 'CONFIG_IKCONFIG_PROC', 'CONFIG_CHECKPOINT_RESTORE',
+                  'CONFIG_MPTCP', 'CONFIG_IP_MROUTE', 'CONFIG_NFSD_V4', 'CONFIG_FS_ENCRYPTION'):
             self.assertEqual(opts.get(k), 'y', k)
         for k in ('CONFIG_VHOST_NET', 'CONFIG_NTFS3_FS', 'CONFIG_DM_CRYPT', 'CONFIG_NET_SCH_HTB', 'CONFIG_USB_NET_CDC_MBIM',
-                  'CONFIG_XFRM_USER', 'CONFIG_BRIDGE_NETFILTER', 'CONFIG_BINFMT_MISC', 'CONFIG_SND_USB_AUDIO'):
+                  'CONFIG_XFRM_USER', 'CONFIG_BRIDGE_NETFILTER', 'CONFIG_BINFMT_MISC', 'CONFIG_SND_USB_AUDIO',
+                  'CONFIG_VIRTIO_FS', 'CONFIG_VHOST_SCSI', 'CONFIG_9P_FS', 'CONFIG_DM_INTEGRITY',
+                  'CONFIG_MPLS_ROUTING', 'CONFIG_USBIP_HOST', 'CONFIG_USB_VIDEO_CLASS'):
             self.assertEqual(opts.get(k), 'm', k)
         mods = (TOP / 'upstream' / 'build-modules.sh').read_text()
         self.assertIn('INSTALL_MOD_STRIP=1 DEPMOD=true modules_install', mods)
