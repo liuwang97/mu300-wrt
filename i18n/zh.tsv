@@ -351,3 +351,8 @@ to share by shrinking it: {1} MiB up to sector {2}; needed: {3} MiB ({4} MiB And
 the new partition table did not arrive on the device as it was made; nothing is changed	新的分区表未能原样传到设备上；未做任何更改
 {1} is not a file that only root can change; nothing was changed	{1} 不是只有 root 才能修改的文件；未做任何更改
 on, for {1}	开启，用于 {1}
+This looks like a ZTE V50 but is not one this installer knows (model V50, device MU3351, platform ums9620): {1}	这看起来是 ZTE V50，但不是本安装程序认识的 V50（型号 V50、设备 MU3351、平台 ums9620）：{1}
+ZTE V50: EXPERIMENTAL, tested by nobody in this project (kano ported it); mainline kernel only; no second SIM, no NFC; USB network 192.168.79.1	ZTE V50：实验性支持，本项目中无人测试过（由 kano 移植）；只能使用主线内核；不支持第二张 SIM 卡和 NFC；USB 网络 192.168.79.1
+The ZTE V50 runs a mainline kernel only: install a prebuilt release (without --build)	ZTE V50 只能使用主线内核：请安装预编译的版本（不加 --build）
+The ZTE V50 runs a mainline kernel only (6.18 or 7.2).	ZTE V50 只能使用主线内核（6.18 或 7.2）。
+The ZTE V50 runs only a mainline kernel of a release that knows it: take the zip for kernel 6.18 or 7.2 (of a newer release if this one has none)	ZTE V50 只能使用认识它的版本中的主线内核：请选择 6.18 或 7.2 内核的 zip（本版本没有时请用更新的版本）

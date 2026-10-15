@@ -1,5 +1,5 @@
 #!/bin/bash
-# One LAN for USB and Wi-Fi clients: br-lan (192.168.77.1/24 on an F50, 192.168.78.1/24 on a U30 Air, unless
+# One LAN for USB and Wi-Fi clients: br-lan (192.168.77.1/24 on an F50, 192.168.78.1/24 on a U30 Air, 192.168.79.1/24 on a V50, unless
 # lan.conf says otherwise) with usb0 (NCM/ECM gadget, bound in the initramfs, plus rndis0 for Windows)
 # and wlan0 (added by hostapd via bridge=br-lan). A single dnsmasq serves DHCP/DNS on the bridge.
 set -euo pipefail

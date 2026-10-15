@@ -89,13 +89,31 @@ echo 1 > /proc/sys/kernel/sysrq
 # and its own load order; without them the charger manager never probes and USB stays down. The installer names
 # the device in /etc/mu300-device (the device segment of the ramdisk, which the generic segment of an update does
 # not replace); without that file the stock device tree tells: only the U30 Air's has the charger policy service.
-if [ -s /etc/mu300-device ]; then
-    DEVICE=$(cat /etc/mu300-device)
-elif [ -d /proc/device-tree/charger_policy_service ]; then
+# The ZTE V50 (MU3351, experimental, docs/FINDINGS.md 95) runs as an F50 does (the same modules and order) with a
+# subnet of its own; it is told by its device tree whatever the label says (mu300-device has the same rule): its
+# AW9523B LED controller is in no F50's or U30 Air's. An F50 or U30 Air is decided exactly as before.
+# --- device begin
+DT=${MU300_DT:-/proc/device-tree}
+v50_dt() {  # the V50's AW9523B node; its parent is soc:ap-ahb or ap-ahb, by kernel
+    for _n in "$DT"/soc/*/i2c@2270000/aw9523b_led@5b; do [ -d "$_n" ] && return 0; done
+    return 1
+}
+v50_fix() {  # v50_fix LABEL: the label, unless the device tree says otherwise about a V50
+    case $1 in
+        f50) if [ ! -d "$DT/charger_policy_service" ] && v50_dt; then echo v50; else echo f50; fi ;;
+        v50) if [ ! -d "$DT" ] || { [ ! -d "$DT/charger_policy_service" ] && v50_dt; }; then echo v50
+             elif [ -d "$DT/charger_policy_service" ]; then echo u30air; else echo f50; fi ;;
+        *) echo "$1" ;;
+    esac
+}
+if [ -s ${MU300_DEVICE_FILE:-/etc/mu300-device} ]; then
+    DEVICE=$(v50_fix "$(cat ${MU300_DEVICE_FILE:-/etc/mu300-device})")
+elif [ -d "$DT/charger_policy_service" ]; then
     DEVICE=u30air
 else
-    DEVICE=f50
+    DEVICE=$(v50_fix f50)
 fi
+# --- device end
 # its modules only for the kernel they were built for (a mainline kernel brings its own set and order)
 MODULE_ORDER=/etc/module-order
 if [ "$DEVICE" != f50 ] && [ -s /etc/module-order-$DEVICE ] &&
@@ -107,11 +125,12 @@ fi
 log "stage=device $DEVICE order=$MODULE_ORDER"
 
 # The USB network. Its subnet goes with the kind of device, so that an F50 and a U30 Air on one computer do not
-# collide: F50 192.168.77.1, U30 Air 192.168.78.1 (the system's lan.conf overrides it after switch_root). The
+# collide: F50 192.168.77.1, U30 Air 192.168.78.1, V50 192.168.79.1 (the system's lan.conf overrides it after
+# switch_root). The
 # gadget's MAC addresses and USB serial number go with the device's serial number and its eMMC's: two devices on one
 # computer used to have the same ones, and macOS then gave the second one no network interface at all. The serial
 # number alone was not enough: a device restored from another's backup has its androidboot.serialno too.
-case $DEVICE in u30air) NET=192.168.78 ;; *) NET=192.168.77 ;; esac
+case $DEVICE in u30air) NET=192.168.78 ;; v50) NET=192.168.79 ;; *) NET=192.168.77 ;; esac
 # --- usb-id begin
 # usb_id BOOTARGS...: USBID (serial number-eMMC serial) and MAC (its first five bytes) from the bootloader's
 # arguments. Not from the eMMC's CID in /sys: this runs before the modules that find the eMMC, so it would come and go.
