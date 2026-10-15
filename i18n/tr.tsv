@@ -830,3 +830,20 @@ A prepared installation waits for this device (EXPERIMENTAL: room was made by re
 A prepared installation waits for this device, but it cannot be continued: {1}. Nothing is written. Its record: {2}	Bu cihaz için hazırlanmış bir kurulum bekliyor, ama sürdürülemiyor: {1}. Hiçbir şey yazılmaz. Kaydı: {2}
 Back up the partition table, misc, boot and the boot chain	Bölüm tablosunu, misc'i, boot'u ve önyükleme zincirini yedekle
 Rewrite the partition table and ask Android's recovery for the reset	Bölüm tablosunu yeniden yaz ve Android'in kurtarma modundan sıfırlama iste
+--build builds the systems itself: run it from a copy of the project, not from an unpacked Magisk zip	--build sistemleri kendisi derler: onu açılmış bir Magisk zip'inden değil, projenin bir kopyasından çalıştırın
+Package: {1} with kernel {2}, release {3} (unpacked Magisk zip at {4})	Paket: {1}, {2} çekirdeği, sürüm {3} ({4} konumunda açılmış Magisk zip'i)
+This package installs {1} with kernel {2} (release {3}); nothing is downloaded.	Bu paket {1} ve {2} çekirdeğini kurar (sürüm {3}); hiçbir şey indirilmez.
+Another system or kernel: the zip of that combination, or ./install.sh of the project.	Başka bir sistem ya da çekirdek için: o birleşimin zip'i ya da projenin ./install.sh dosyası.
+The ZTE V50 runs a mainline kernel only: take the zip for kernel 6.18 or 7.2 of this release	ZTE V50 yalnızca ana hat (mainline) çekirdekle çalışır: bu sürümün 6.18 ya da 7.2 çekirdekli zip'ini alın
+It is not part of this package.	Bu paketin parçası değildir.
+Checking the files of this package	Bu paketin dosyaları doğrulanıyor
+no unpacked Magisk zip at {1}	{1} konumunda açılmış bir Magisk zip'i yok
+{1} is not an unpacked Magisk zip of a release (it has no mu300/manifest and mu300/SHA256SUMS)	{1} bir sürümün açılmış Magisk zip'i değil (mu300/manifest ve mu300/SHA256SUMS yok)
+the package is incomplete or damaged (its manifest is not valid)	paket eksik ya da bozuk (manifest dosyası geçersiz)
+{1} is missing from the package (payload/)	{1} pakette yok (payload/)
+This package	Bu paket
+This window was started from an unpacked Magisk zip: it installs the system and the kernel of that zip, from its own files, and downloads nothing. Another system or kernel: the zip of that combination.	Bu pencere açılmış bir Magisk zip'inden başlatıldı: o zip'in sistemini ve çekirdeğini kendi dosyalarından kurar, hiçbir şey indirmez. Başka bir sistem ya da çekirdek için o birleşimin zip'ini kullanın.
+{1} is not an unpacked Magisk zip of a release that this installer can read (its mu300/manifest is not valid). Unpack the zip again.	{1}, bu kurulum programının okuyabildiği, bir sürümün açılmış Magisk zip'i değil (mu300/manifest geçersiz). Zip'i yeniden açın.
+Files	Dosyalar
+From	Kaynak
+this unpacked Magisk zip, nothing downloaded: {1}	bu açılmış Magisk zip'i, hiçbir şey indirilmeden: {1}
