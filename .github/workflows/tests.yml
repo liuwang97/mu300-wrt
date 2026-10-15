@@ -28,6 +28,11 @@ jobs:
         run: |
           sudo apt-get install -y -qq dash busybox lz4 zip unzip cpio jq python3-tk xvfb >/dev/null   # (tk and Xvfb: the graphical installer's window, tests/test_gui.py)
           python3 -m pip install -q lz4 || python3 -m pip install -q --break-system-packages lz4
+      - name: SAE parser and SDK regressions with UBSan (Linux)
+        if: runner.os == 'Linux'
+        env:
+          MU300_TEST_UBSAN: '1'
+        run: python3 -m unittest discover -s tests -p test_u30_sae.py -v
       - name: tests
         # quick mode on pull requests: the device scripts under busybox sh only (what OpenWrt runs; dash and bash
         # are Ubuntu's) - a third of the time. A push to main runs every shell.
