@@ -430,6 +430,12 @@ class Rules(unittest.TestCase):
                   'info->bq256xx_set_ichg = sgm41513_set_ichg_curr;', 'info->bq256xx_set_iterm = sgm41513_set_term_curr;',
                   'info->bq256xx_set_iprechg = sgm41513_set_prechrg_curr;'):
             self.assertIn(s, p15)
+        # ... but only on a board with a battery (the U30 Air's charger policy service): the F50 has a charger at
+        # 0x1a too, and bound and told to charge it reset the board in a loop on a router's port (issue #225)
+        p16 = (TOP / 'upstream' / 'patches' / '0016-power-bq256xx-SGM41513-only-with-a-battery.patch').read_text()
+        for s in ('of_find_node_by_path("/charger_policy_service")', 'of_node_put(np);',
+                  '+\t\tif (part < 0 && client->addr != SGM41513_I2C_ADDR && battery) {'):
+            self.assertIn(s, p16)
         # the PMIC's charger detection reads the UMP9620's own register (0x239c), not the SC2730's (0x1b9c), and a
         # tree prepared with the old one is corrected
         self.assertIn(r"#define SPRD_UMP9620_CHG_DET\t\t0x239c", port)
