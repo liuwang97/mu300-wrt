@@ -195,6 +195,19 @@ esac
             self.assertEqual(json.loads(raw.stdout)['ok'], 1)
             self.wait_text(self.role, 'host')
 
+    def test_v50_writes_the_role_switch_as_the_f50(self):
+        # the V50 (FINDINGS 95): the F50's raw role switch, never the U30 Air's charger path (mu300-usb)
+        self.stub('mu300-usb', 'echo called > "$STUBLOG/mu300-usb"; exit 1')
+        for shell in self.each_shell():
+            self.reset()
+            self.role.write_text('device\n')
+            raw = self.script(shell, USB, 'set-role', 'host', '0',
+                              MU300_USB_ROLE_FILE=self.role, MU300_USB_DEVICE='v50',
+                              MU300_USB_NET_FILE=self.net_file)
+            self.assertEqual(json.loads(raw.stdout)['ok'], 1, raw.stdout)
+            self.wait_text(self.role, 'host')
+            self.assertFalse((self.tmp / 'mu300-usb').exists())
+
     def test_async_role_readback_is_pending_not_a_false_failure(self):
         slow = self.tmp / 'slow-role'
         slow.write_text('#!/bin/sh\nprintf "%s\\n" "$1" > "$STUBLOG/role-request"\n')

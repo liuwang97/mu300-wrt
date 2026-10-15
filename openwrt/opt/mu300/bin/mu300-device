@@ -1,20 +1,39 @@
 #!/bin/sh
-# Which device this is: f50 or u30air. boot/init writes it to /run/mu300/device; a boot image from before that
+# Which device this is: f50, u30air or v50. boot/init writes it to /run/mu300/device; a boot image from before that
 # (an older release's or a mainline kernel) does not, so then the device tree tells, the way init decides:
 # only the U30 Air's has the charger policy service. (MU300_SYSROOT is for tests/: a fake / to read from.)
-#   mu300-device          f50 or u30air
+# The ZTE V50 (MU3351; experimental, docs/FINDINGS.md 95) is told by its device tree whatever the label says: its LED
+# controller, an AW9523B at 0x5b on I2C3, is in no F50's or U30 Air's (kano's reading of a V50, 2026-10-14). A V50
+# that an older installer labelled f50 is a v50 here; a v50 label on a board without that node is not believed. A
+# U30 Air (the charger policy service) is never a V50, and an F50 or U30 Air answers as it always did.
+#   mu300-device          f50, u30air or v50
 #   mu300-device --json   one line of JSON for programs (the web installer, a GUI: "adb shell mu300-device --json"):
 #                         the device, the system that runs, its release, the kernel, whether the caller is root and
 #                         what adb does. The fields are a contract: docs/ADB-INTERFACE.md. New fields may be added;
 #                         "mu300" (the version of this format) changes when one is taken away or changes meaning.
 R=${MU300_SYSROOT:-}
+DT=$R/proc/device-tree
+# --- v50 begin (the same rule in boot/init; tests/test_device_scripts.py holds the two to it)
+v50_dt() {  # the V50's AW9523B node; its parent is soc:ap-ahb or ap-ahb, by kernel
+    for _n in "$DT"/soc/*/i2c@2270000/aw9523b_led@5b; do [ -d "$_n" ] && return 0; done
+    return 1
+}
+v50_fix() {  # v50_fix LABEL: the label, unless the device tree says otherwise about a V50
+    case $1 in
+        f50) if [ ! -d "$DT/charger_policy_service" ] && v50_dt; then echo v50; else echo f50; fi ;;
+        v50) if [ ! -d "$DT" ] || { [ ! -d "$DT/charger_policy_service" ] && v50_dt; }; then echo v50
+             elif [ -d "$DT/charger_policy_service" ]; then echo u30air; else echo f50; fi ;;
+        *) echo "$1" ;;
+    esac
+}
+# --- v50 end
 device() {
     if [ -s "$R/run/mu300/device" ]; then
-        cat "$R/run/mu300/device"
-    elif [ -d "$R/proc/device-tree/charger_policy_service" ]; then
+        v50_fix "$(cat "$R/run/mu300/device")"
+    elif [ -d "$DT/charger_policy_service" ]; then
         echo u30air
     else
-        echo f50
+        v50_fix f50
     fi
 }
 [ "${1:-}" = --json ] || { device; exit 0; }

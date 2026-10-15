@@ -63,6 +63,14 @@ class Power(ShellTest):
         self.assertIsNone(p['capacity'])
         self.assertIsNone(p['w'])
 
+    def test_v50_has_no_battery(self):
+        # the V50 (FINDINGS 95) has none either, and the same PMIC fuel gauge under mainline
+        self.device('v50')
+        self.supply('sc27xx-fgu', **FGU_MAINLINE)
+        p = self.power()
+        self.assertEqual(p['present'], 0)
+        self.assertIsNone(p['capacity'])
+
     def test_f50_under_54_has_no_battery(self):
         self.device('f50')
         self.supply('usb', type='USB', online='1')
