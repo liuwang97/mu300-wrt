@@ -411,7 +411,8 @@ if (selected !== true) throw Error('the Bootstrap token bridge must survive the 
 
 
 VIEWS = APP / 'htdocs/luci-static/resources/view/mu300'
-VIEW_NAMES = ('home', 'locks', 'sms', 'at', 'settings', 'device', 'languages', 'ttl', 'traffic', 'packages', 'terminal')
+VIEW_NAMES = ('home', 'locks', 'sms', 'at', 'settings', 'device', 'languages', 'ttl', 'traffic', 'packages', 'terminal',
+              'update')
 CJK_RE = re.compile('[\u2e80-\u9fff\uf900-\ufaff\uff00-\uffef]')
 
 
@@ -976,6 +977,25 @@ return [ notes().pop() ];""", [('Add failed: %s', 'Not a USB network interface',
                         text = cat.get(error, error) + (' (%s)' % detail if detail else '')
                         want.append(cat.get(template, template).replace('%s', text) if template else text)
                     self.assertEqual(self.run_view(name, lang, body)['result'], want)
+
+    # System > Update with a release offered, a pre-release, an uploaded file and a finished task (its buttons and
+    # dialogs are in tests/test_update_page.py)
+    UPDATE = '''
+rpcReply = { ok: 1, check_age: 60, report: 'kept: etc/config',
+    status: { ok: 1, installed: 'v2026.10.25', running: 'openwrt-luci', restart_pending: 1, boot_default: 'linux', boot_attempts: 5,
+        systems: [ { name: 'openwrt-luci', release: 'v2026.10.25', since: 1790000000, previous: { release: 'v2026.10.18', kb: 5, running: 0 } },
+                   { name: 'ubuntu', release: 'v2026.10.18', ubuntu: '26.04', previous: null } ],
+        kernel: { running: '6.18.3', choice: '6.18', boot: 'v2026.10.25', choices: [ { name: '5.4', ok: 0, why: 'ubuntu-26.04' },
+            { name: '6.18', ok: 1 } ], previous: { release: 'v2026.10.18', kernel: '5.4', since: 1790000000, usable: 1 } },
+        disk: { free_kb: 5000000, total_kb: 9000000 }, lock: { held: 0 }, signing: { key: 1 } },
+    check: { ok: 1, latest: { tag: 'v2026.11.02', published: '2026-11-02', url: 'https://example.invalid/', download: 5, need_kb: 9 },
+             beta: { tag: 'v2026.11.09', url: 'https://example.invalid/', download: 5, need_kb: 9 } },
+    upload: { present: 1, size: 9, inspect: { ok: 1, sha256: 'ab', tag: 'v2026.10.01', system: 'openwrt-luci', kernel: '6.18',
+        signature: 'unsigned', installed: 'v2026.10.25', downgrade: 1, same: 0, fits: 1 } },
+    job: { kind: 'apply', state: 'done', elapsed: 9, rc: 0, stage: 'boot', changed: 1, log: 'updated' } };
+const st = await V.load();
+V.beta = true;
+V.render(st); await flush();'''
 
     def test_every_view_in_an_unknown_language_is_english_and_catalogued(self):
         # German has no catalog: everything a page shows is English, and every message it used is in both catalogs

@@ -12,6 +12,8 @@ from pathlib import Path
 from helpers import BIN, TOP, shells
 
 OPENWRT = TOP / 'openwrt' / 'overlay'
+# the PowerShell the installers are made of: the rules of Windows PowerShell 5.1 hold for every file of it
+POWERSHELL = ('install.ps1', 'uninstall.ps1', 'tools/answers.ps1', 'tools/gui-launch.ps1')
 LUCI_OVERLAY = TOP / 'openwrt' / 'luci-overlay'
 
 
@@ -128,7 +130,7 @@ class Rules(unittest.TestCase):
         # Windows PowerShell 5.1 drops the double quotes inside an argument to a native program: `tr -d "\000"`
         # reached the device as tr -d \000 ("delete the character 0"), and every empty region was "not empty".
         # A command for the device (SuDo, adb shell) may therefore contain no `" and no "".
-        for name in ('install.ps1', 'uninstall.ps1'):
+        for name in POWERSHELL:
             for n, line in enumerate((TOP / name).read_text().splitlines(), 1):
                 code = line.split('#', 1)[0] if not line.lstrip().startswith('#') else ''
                 if re.search(r'\bSuDo(ToFile)?\s+"|adb shell\s+"', code) and ('`"' in code or '""' in code):
@@ -143,7 +145,7 @@ class Rules(unittest.TestCase):
 
     def test_powershell_scripts_are_ascii(self):
         # Windows PowerShell 5.1 reads a file without a BOM as ANSI: non-ASCII text in the script is garbled
-        for name in ('install.ps1', 'uninstall.ps1'):
+        for name in POWERSHELL + ('tests/installer.Tests.ps1', 'tests/answers.Tests.ps1'):
             data = (TOP / name).read_bytes()
             bad = [i for i, b in enumerate(data) if b > 127]
             self.assertFalse(bad, f'{name}: non-ASCII byte at offset {bad[:1]}')
@@ -151,7 +153,7 @@ class Rules(unittest.TestCase):
     def test_windows_pushes_text_with_lf(self):
         # a CRLF clone pushed its scripts as they were and Android's sh ran none of them (issue #7): the Windows
         # installers send text files through PushUnix, never a plain adb push
-        for name in ('install.ps1', 'uninstall.ps1'):
+        for name in POWERSHELL:
             for n, line in enumerate((TOP / name).read_text().splitlines(), 1):
                 if 'adb push' in line:
                     self.assertNotRegex(line, r'\.(sh|prop)\b|mu300-linux"|\$f"', f'{name}:{n}')
