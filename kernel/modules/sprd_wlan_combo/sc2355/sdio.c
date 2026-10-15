@@ -778,7 +778,6 @@ int sc2355_hif_fill_msdu_dscr(struct sprd_vif *vif,
 	struct tx_msdu_dscr *dscr;
 	struct sprd_hif *hif;
 	u8 lut_index;
-	struct sk_buff *temp_skb;
 	unsigned char dscr_rsvd = 0;
 	struct ethhdr *ethhdr = (struct ethhdr *)skb->data;
 	u8 is_special_data = 0;
@@ -796,22 +795,24 @@ int sc2355_hif_fill_msdu_dscr(struct sprd_vif *vif,
 
 	hif = &vif->priv->hif;
 	dscr_rsvd = 0;
-	if (skb_headroom(skb) < (DSCR_LEN + hif->hif_offset +
-				 MSG_PTR_LEN + dscr_rsvd)) {
-		temp_skb = skb;
-
-		skb = skb_realloc_headroom(skb, (DSCR_LEN + hif->hif_offset +
-						 MSG_PTR_LEN + dscr_rsvd));
-		kfree_skb(temp_skb);
-		if (!skb) {
-			pr_err("%s:%d failed to unshare skbuff: NULL\n",
-			       __func__, __LINE__);
-			return -EPERM;
+	/*
+	 * MU300 (kanoqwq's clean-tf-7.2 149c9d2a): the headroom is made in place. The vendor replaced the skb with
+	 * skb_realloc_headroom() and freed the old one, but only this function's copy of the pointer changed: every
+	 * caller went on with the freed skb (and freed it again when this failed). skb_cow_head() keeps the skb the
+	 * caller holds, also makes a header shared with a clone (a bridge flooding a frame) private before the
+	 * descriptor is written into it, and counts the offset the push below adds; on failure the caller frees.
+	 */
+	if (skb_headroom(skb) < (DSCR_LEN + offset + hif->hif_offset + MSG_PTR_LEN + dscr_rsvd) ||
+	    skb_header_cloned(skb)) {
+		if (skb_cow_head(skb, DSCR_LEN + offset + hif->hif_offset + MSG_PTR_LEN + dscr_rsvd)) {
+			pr_err_ratelimited("%s: no headroom for the descriptor\n", __func__);
+			return -ENOMEM;
 		}
 #if defined(MORE_DEBUG)
 		hif->stats.tx_realloc++;
 #endif
 	}
+	ethhdr = (struct ethhdr *)skb->data;	/* skb_cow_head may have moved the data */
 
 	if (skb->data) {
 		memcpy(hif->skb_da, skb->data, ETH_ALEN);

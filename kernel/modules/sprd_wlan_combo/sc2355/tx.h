@@ -113,6 +113,8 @@ struct tx_mgmt {
 	unsigned long ring_cp;
 	unsigned long ring_ap;
 	atomic_t flow0;
+	/* MU300: a PCIe data submission waits for the bus' completion (pcie.c) */
+	atomic_t pcie_tx_waiting;
 	atomic_t flow1;
 	atomic_t flow2;
 	unsigned long tx_num;
