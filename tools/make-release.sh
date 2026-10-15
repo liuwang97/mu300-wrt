@@ -173,7 +173,7 @@ for a in mu300-kernel mu300-kernel-6.18 mu300-kernel-7.2 mu300-ubuntu-rootfs mu3
     [ -z "$mid" ] || { echo "$a has a machine-id"; fail=1; }
 done
 # An update carries everything of the user's over with what the NEW image brings (mu300-update's carry block): each
-# image must have mu300-carry, a static busybox, the manifests of the releases before v2026.10.28 for its own system,
+# image must have mu300-carry, a static busybox, the manifests of the releases before the first release with a four-field tag for its own system,
 # and the manifest of its own files - which must be the one this tool makes from the tarball (two implementations,
 # held against each other at every release). Without them an update would quietly keep only the list of places.
 # The manifest is published beside the image, too (mu300-<image>-rootfs.manifest.gz, in SHA256SUMS).

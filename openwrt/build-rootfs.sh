@@ -304,7 +304,7 @@ fi
 # adb over USB (tools/adbd, static): on unless mu300-usb adb off
 [ -e /in/adbd ] && { cp /in/adbd $R/opt/mu300/bin/adbd; chmod 755 $R/opt/mu300/bin/adbd; }
 # an update carries everything of the user over with it (tools/carry, static; mu300-update, the carry block). Without
-# it an update of this image keeps only the list of places, as before v2026.10.28
+# it an update of this image keeps only the list of places, as before the first release with a four-field tag
 [ -e /in/carry ] && { cp /in/carry $R/opt/mu300/bin/mu300-carry; chmod 755 $R/opt/mu300/bin/mu300-carry; }
 # the manifests of the releases before images carried their own: of this system only (opt/mu300 has all four)
 for m in $R/opt/mu300/lib/image-manifests/*.gz; do

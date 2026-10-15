@@ -1525,7 +1525,7 @@ apply_one() {  # apply_one OS TAG
             3) rm -rf "$new"
                die "$os: nothing was changed. Make room (mu300-update clean deletes the kept previous versions), or update without keeping the previous system for a rollback, which needs no room for your files: mu300-update apply --no-rollback" ;;
             *) rm -rf "$new"
-               die "$os: carrying your files over failed, nothing was changed (MU300_UPDATE_KEEP=list mu300-update apply updates as before v2026.10.28: only the settings an update always kept)" ;;
+               die "$os: carrying your files over failed, nothing was changed (MU300_UPDATE_KEEP=list mu300-update apply updates as before the first release with a four-field tag: only the settings an update always kept)" ;;
         esac
     elif [ "${MU300_UPDATE_KEEP:-all}" != list ]; then
         echo "$os: this image does not bring what carries everything over (mu300-carry): keeping the settings an update always kept"

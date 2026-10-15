@@ -240,7 +240,7 @@ class Helper(unittest.TestCase):
 
 class Tool(unittest.TestCase):
     def test_union_gives_every_release_back(self):
-        # the manifests of the releases before v2026.10.28 ship as one file per image: every distinct line once
+        # the manifests of the releases before the first release with a four-field tag ship as one file per image: every distinct line once
         sys.path.insert(0, str(TOP / 'tools'))
         try:
             import importlib
@@ -714,7 +714,7 @@ class Carry(CarryCase):
 
     def test_a_manifest_of_another_release_is_not_used(self):
         # the old system says v1, the manifest in it says another release (a system updated by an updater from
-        # before v2026.10.28 kept the old file): not trusted, and the update goes on as without one
+        # before the first release with a four-field tag kept the old file): not trusted, and the update goes on as without one
         def user(old):
             m = gzip.decompress((old / 'etc/mu300/image-manifest.gz').read_bytes()).decode().replace(' v1\n', ' v0\n', 1)
             (old / 'etc/mu300/image-manifest.gz').write_bytes(gzip.compress(m.encode()))
@@ -1328,7 +1328,7 @@ class Apply(ShellTest):
 
     def test_the_old_way_stays_reachable(self):
         for shell in self.each_shell():
-            # asked for: only the list of places, as before v2026.10.28
+            # asked for: only the list of places, as before the first release with a four-field tag
             self.fresh()
             r = self.up(shell, 'apply_one ubuntu v2', MU300_UPDATE_KEEP='list')
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
