@@ -1,6 +1,8 @@
 #!/bin/sh
 # netifd protocol for the MU300 modem: attach with AT commands (mobile-data) and configure sipa_eth0.
 # /etc/config/network:  config interface 'wan' / option proto 'mu300cell' / option apn 'internet'
+# and, for an APN that asks for them: option username, option password, option auth 'none|pap|chap|both' (the
+# external SIM's context; mobile-data's define_context has the rest)
 # LuCI edits the same options through www/luci-static/resources/protocol/mu300cell.js.
 #
 # The bearer's kernel state is owned here, not by netifd: every update is sent
@@ -38,6 +40,9 @@ proto_mu300cell_init_config() {
 	proto_config_add_string "pdptype_internal"
 	proto_config_add_string "apn"
 	proto_config_add_string "pdptype"
+	proto_config_add_string "auth"
+	proto_config_add_string "username"
+	proto_config_add_string "password"
 	proto_config_add_string "ipv6"
 	proto_config_add_boolean "peerdns"
 	proto_config_add_array "dns:list(ipaddr)"
@@ -46,24 +51,41 @@ proto_mu300cell_init_config() {
 proto_mu300cell_setup() {
 	local config="$1"
 	local apn pdptype peerdns ipv6 out ifname ip prefix dns1 dns2 iid zone a relay=0
-	local slot apn_internal pdptype_internal
-	json_get_vars apn pdptype peerdns ipv6 apn_internal pdptype_internal
+	local slot apn_internal pdptype_internal auth username password
+	json_get_vars apn pdptype peerdns ipv6 apn_internal pdptype_internal auth username password
 	slot=$(mu300cell_slot) || { proto_notify_error "$config" INVALID_SIM_SLOT; return 1; }
 	# Selection is frozen for the boot, so Apply never mixes old AT channels with new IP settings.
 	if [ "$slot" = 1 ]; then
 		apn=$apn_internal
 		pdptype=${pdptype_internal:-IPV4V6}
+		# the credentials are the external card's APN's: never offered to the internal card's carrier
+		auth=; username=; password=
 	fi
 	[ "$ipv6" = relay ] && [ "${pdptype:-IP}" != IP ] && relay=1
 
+	# In the environment only: never an argument, never logged. mobile-data refuses to dial with them unless
+	# /etc/config/network, which holds the password, is root's alone (its settings_private: one gate for this
+	# system and Ubuntu), and says so on stderr, which is logged below; it never prints the credentials.
 	out=$(MU300_NETIFD=1 MU300_PDP_TYPE="${pdptype:-IP}" MU300_IPV6="$ipv6" \
+		MU300_APN_AUTH="$auth" MU300_APN_USER="$username" MU300_APN_PASSWORD="$password" \
 		/opt/mu300/bin/mobile-data up "$apn" 2>/tmp/mu300cell.err)
-	if [ $? = 3 ]; then
+	case $? in
+	3)
 		logger -t mu300cell "$(cat /tmp/mu300cell.err)"
 		proto_notify_error "$config" NO_MODEM
 		proto_block_restart "$config"
 		return 1
-	fi
+		;;
+	4)
+		# Data roaming is off (option roaming / roaming_internal '0') and the card is registered as roaming: held
+		# back on purpose (mobile-data logged it once, docs/FINDINGS.md 120). Asked again in a minute - no context is
+		# activated by that, only the registration read - and data comes back by itself at home. ifdown ends it.
+		proto_notify_error "$config" DATA_ROAMING
+		sleep "${MU300_ROAM_RETRY:-60}"
+		proto_setup_failed "$config"
+		return 1
+		;;
+	esac
 	ip=$(echo "$out" | sed -n 's/^IP=//p')
 	if [ -z "$ip" ]; then
 		logger -t mu300cell "attach failed: $(cat /tmp/mu300cell.err)"
@@ -168,14 +190,16 @@ proto_mu300cell_renew() {
 }
 
 proto_mu300cell_teardown() {
-	local config="$1" slot ifname
-	slot=$(mu300cell_slot) || return 1
-	ifname=sipa_eth$((slot * 8))
+	local config="$1" ifname
+	ifname=$(ubus call "network.interface.$config" status 2>/dev/null | jsonfilter -e "@.l3_device")
+	case "$ifname" in sipa_eth[0-9]|sipa_eth[0-9][0-9]) ;;
+		*) case "$(mu300cell_slot)" in 1) ifname=sipa_eth8 ;; *) ifname=sipa_eth0 ;; esac ;;
+	esac
 	proto_kill_command "$config"
 	/opt/mu300/bin/mobile-data down >/dev/null 2>&1
 	# External state is not removed by netifd on ifdown, so clean the bearer ourselves, both families:
 	# an unflushed SLAAC address (infinite RA lifetimes) would survive every redial and stack up.
-	# Tear down the active boot slot even if the next-boot selection has changed.
+	# Remove the active SIM bearer reported by netifd, including SIM2 sipa_eth8.
 	ip -4 addr flush dev "$ifname" scope global 2>/dev/null
 	ip -4 route del default dev "$ifname" 2>/dev/null
 	ip -6 addr flush dev "$ifname" scope global 2>/dev/null

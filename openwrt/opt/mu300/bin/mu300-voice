@@ -1,6 +1,9 @@
 #!/bin/sh
 # Voice calls with audio, over the AGDSP path.
 #
+#   mu300-voice audio start [bt|dsp]  put the DSP into the call: the hostless call scene, profiles, routes, unmute
+#   mu300-voice audio stop            take it out again and put every control it touched back
+#   mu300-voice watch                 follow calls and do the above by itself (and drive a Bluetooth headset)
 #   mu300-voice answer [-t SECONDS]   wait for a call, answer it, then run the demo below
 #   mu300-voice call NUMBER           place a call, then run the demo
 #   mu300-voice demo                  on a call that is already up: play the melody, then echo
@@ -9,20 +12,38 @@
 #   mu300-voice status                what a call and the audio path are doing
 #   mu300-voice hangup
 #
-# The two ends of a call, neither of which needs a speaker - this board has none:
+# Outputs. This board has no speaker, earpiece or microphone, so a call's audio has two places to go:
 #
-#   playback  hw:<card>,53   FE_ST_VOICE_PCM_P -> BE_DAI_ID_VOICE_PCM_P   what the other side hears
-#   capture   hw:<card>,9    FE_ST_VOICE_C                                what they said
+#   bt   a paired Bluetooth headset. The controller's PSKey sends SCO audio over its PCM pins into the audio
+#        DSP's IIS3 (g_sys_sco_transmit_mode = 0), so the DSP moves the call between the modem and the headset
+#        and the AP only holds the links open: tools/hfp (mu300-hfp) for the headset, the scene here for the DSP.
+#        Set BT_HEADSET=<address> in /etc/mu300/voice.conf. This is the route the F50's own Android carries call
+#        audio on with the community module (docs/FINDINGS.md 24).
+#   dsp  nothing physical: the call's two ends are reachable from the AP instead -
+#          playback  hw:<card>,FE_ST_VOICE_PCM_P   what the other side hears
+#          capture   hw:<card>,FE_ST_VOICE_C       what they said
+#        which is what tone, echo and a SIP bridge use.
 #
-# Both need their route switched on first; the card registers with all ~70 of them off and an unrouted PCM
-# fails with "Unable to install hw params", which looks like a format problem and is not one. See
-# mu300-audio-dsp routes and docs/FINDINGS.md 24.
+# How a call is started is from the Rongyue E5's working port of the same DSP (kanoqwq/e5-linux@402fde1,
+# @8e9b8a4, @2c726fc - its downlink was heard on the receiver and speaker): the call scene is the hostless
+# FE_ST_VOICE, opened in both directions at 8 kHz mono and prepared before either is started; the DSP profiles
+# are selected with the value (mode << 24) | (mode << 16) | 5 - param id equal to the mode, low byte the voice DAI
+# (5) - before and again after the start; VBC_VOLUME is the voice volume + 1, written raw because the control
+# declares a signed maximum of -1 that amixer clamps to; and the downlink is muted while routes change and
+# explicitly unmuted after the start (VBC_DL_MUTE and the DAC1 DSP MDG), because a mute the driver caches as off
+# is not proof the DSP is unmuted.
 #
 # The melody is generated here rather than shipped: this repo carries no audio files, and busybox awk has
 # sin(), which is all a few notes need.
 set -u
 export PATH="$PATH:/opt/mu300/bin:/opt/mu300/busybox-bin:/usr/sbin:/sbin"
 
+CONF=${MU300_VOICE_CONF:-/etc/mu300/voice.conf}
+BT_HEADSET=
+OUTPUT=
+VOLUME=6
+# shellcheck disable=SC1090
+[ -r "$CONF" ] && . "$CONF"
 RATE=${MU300_VOICE_RATE:-8000}
 DIR=${MU300_AT_DIR:-/run/mu300-at}
 SIM_SLOT=0
@@ -30,51 +51,277 @@ if [ -x /opt/mu300/bin/mu300-sim ]; then
     SIM_SLOT=$(/opt/mu300/bin/mu300-sim active) || exit 1
 fi
 URCLOG=$DIR/urc/stty_nr$((SIM_SLOT * 3)).log
-TMP=${MU300_VOICE_TMP:-/tmp/mu300-voice}
-mkdir -p "$TMP"
+TMP=${MU300_VOICE_TMP:-/run/mu300-voice}
+HFP_CTL=$TMP/hfp.ctl
+# root-only: the scene and headset logs live here
+umask 077
+# /run takes files from every user on these images (boot/init mounts it 1777), so a directory of this name may be
+# one somebody else made first - and what is in it are pid files this kills, an undo log it writes back to the
+# mixer and files it writes as root. Only root's own directory, which nobody else may write, is used; a foreign
+# one is replaced and said so, not a reason to stay down (run_dir_take, shared with mu300-atd).
+RUN_DIR_LIB=${MU300_RUN_DIR_LIB:-/opt/mu300/lib/run-dir.sh}
+# shellcheck disable=SC1090
+. "$RUN_DIR_LIB" || { echo "mu300-voice: $RUN_DIR_LIB is missing" >&2; exit 1; }
+run_dir_take "$TMP" "${MU300_VOICE_RUN_UID:-0}" mu300-voice || exit 1
+chmod 700 "$TMP" 2>/dev/null
 
 card=$(awk '/sprdphone/ {print $1; exit}' /proc/asound/cards 2>/dev/null)
+# on a kernel without the audio drivers (every mainline one, and 5.4 as released) there is nothing to load
+if [ -z "$card" ] && [ ! -d "/lib/modules/$(uname -r)/audio" ]; then
+    echo "mu300-voice: no call audio on this kernel ($(uname -r)): the audio drivers are for 5.4 and not in the releases (kernel/build-audio.sh)" >&2
+    exit 1
+fi
 [ -n "$card" ] || { echo "mu300-voice: the sound card is not registered; run mu300-audio-dsp load" >&2; exit 1; }
-PLAY=hw:$card,53
-CAP=hw:$card,9
+# by name, not number: the device numbers are not the same on every build of the card
+pcmdev() { awk -F': ' -v n="$1 " 'index($2, n) == 1 { split($1, a, "-"); print a[2] + 0; exit }' /proc/asound/pcm; }
+VOICE=$(pcmdev FE_ST_VOICE); VOICE=${VOICE:-5}
+PLAY=hw:$card,$(pcmdev FE_ST_VOICE_PCM_P || true)
+CAP=hw:$card,$(pcmdev FE_ST_VOICE_C || true)
+[ "$PLAY" = "hw:$card," ] && PLAY=hw:$card,53
+[ "$CAP" = "hw:$card," ] && CAP=hw:$card,9
 
 at() { mu300-at -t "${2:-10}" "$1" 2>&1; }
-mix() { amixer -c "$card" cset name="$1" "$2" >/dev/null 2>&1; }
+# Phone numbers never reach a log in full: every run of five or more digits (with its +) keeps the two digits after
+# a + and its last two, the rest becomes * (+905321234540 -> +90********40). Call history is not kept at all.
+mask() {
+    awk '{
+        out = ""
+        while (match($0, /\+?[0-9][0-9][0-9][0-9][0-9]+/)) {
+            n = substr($0, RSTART, RLENGTH); keep = (substr(n, 1, 1) == "+") ? 3 : 0
+            m = substr(n, 1, keep)
+            for (i = keep + 1; i <= length(n) - 2; i++) m = m "*"
+            out = out substr($0, 1, RSTART - 1) m substr(n, length(n) - 1)
+            $0 = substr($0, RSTART + RLENGTH)
+        }
+        print out $0
+    }'
+}
+log() { echo "mu300-voice: $*" | mask; }
 
-# What a call needs, beyond the routes mu300-audio-dsp sets:
-#
-#   S_VOICE_CAP_C          the back end for FE_VOICE_C. Without it the capture opens and dies with
-#                          "no backend DAIs enabled for FE_VOICE_C" - and S_VOICE_C_CODEC, which sounds like
-#                          the same thing, is not: that one is the codec's own microphone, which this board
-#                          does not have.
-#   VOICE_CAPTURE_TYPE 0   VOICE_CAPTURE_DOWNLINK: record what the far end says, not the (absent) local mic.
-#   VOICE_PCM_PLAY_MODE 1  VOICE_PCM_PLAY_UPLINK_ONLY: the far end hears what we play instead of a mix with
-#                          the mic. 0 mixes, which on a board with no microphone only adds noise.
-call_routes() {
-    mu300-audio-dsp routes >/dev/null 2>&1
-    mix 'S_VOICE_CAP_C SWITCH' 1
-    mix 'S_VOICE_PCM_P SWITCH' 1
-    mix 'VBC_DSP_VOICE_CAPTURE_TYPE' "${MU300_VOICE_CAPTURE_TYPE:-0}"
-    mix 'VBC_DSP_VOICE_PCM_PLAY_MODE' "${MU300_VOICE_PLAY_MODE:-1}"
+# --- mixer, with an undo log ---------------------------------------------------------------------------------
+# Every control the call touches is read before its first write and put back by "audio stop", so a call leaves
+# the card exactly as it found it (the E5 port does the same). Raw controls (profile selects, VBC_VOLUME) go
+# through tools/ctlset, which writes the full 32-bit value.
+SAVED=$TMP/saved
+RAW_CTLS='DSP VBC Profile Select|Audio Structure Profile Select|CVS Profile Select|NXP Profile Select|VBC_VOLUME'
+is_raw() { case "|$RAW_CTLS|" in *"|$1|"*) return 0 ;; esac; return 1; }
+cget() { amixer -c "$card" cget name="$1" 2>/dev/null | sed -n 's/^ *: values=//p' | tail -1; }
+put() {   # put NAME VALUE - a missing control is reported once and skipped: not every build has all of them
+    name=$1; val=$2
+    if ! awk -v n="$name" 'index($0, n "=") == 1 { f = 1 } END { exit !f }' "$SAVED" 2>/dev/null; then
+        old=$(cget "$name")
+        if [ -z "$old" ]; then log "no control '$name' on this card, skipped"; return 1; fi
+        printf '%s=%s\n' "$name" "$old" >> "$SAVED"
+    fi
+    if is_raw "$name"; then
+        command -v ctlset >/dev/null 2>&1 || { log "'$name' needs tools/ctlset (amixer clamps it)"; return 1; }
+        ctlset "$card" "$name" "$val" >/dev/null
+    else
+        amixer -q -c "$card" cset name="$name" "$val" >/dev/null 2>&1
+    fi
+}
+restore() {
+    [ -f "$SAVED" ] || return 0
+    # newest first, so a control written twice ends at its oldest value
+    sed '1!G;h;$!d' "$SAVED" | while IFS= read -r line; do
+        name=${line%%=*}; val=${line#*=}
+        if is_raw "$name"; then ctlset "$card" "$name" "$val" >/dev/null 2>&1
+        else amixer -q -c "$card" cset name="$name" "$val" >/dev/null 2>&1; fi
+    done
+    rm -f "$SAVED"
+}
+
+# --- the call scene ------------------------------------------------------------------------------------------
+# Profile mode by output and bandwidth (audio_structure.xml's order: Handset, Handsfree, Headset4P, Headset3P,
+# BTHS, ... each NB1 NB2 WB1 WB2 SWB1 FB1 VOIP1), NB1/WB1/SWB1/FB1 picked by the DSP's bandwidth message.
+mode_for() {   # mode_for OUTPUT BAND
+    case $1 in
+        bt) set -- 28 30 32 33 "$2" ;;      # BTHS
+        *)  set -- 0 2 4 5 "$2" ;;          # Handset - the scene needs one, and this board has no device of its own
+    esac
+    eval "echo \${$(( ${5:-0} + 1 ))}"
+}
+profiles() {   # profiles OUTPUT
+    # the parameter blobs themselves, once per boot: the kernel request_firmware()s them by these names
+    # (tools/vbc-profile builds them from a vendor XML set; docs/FINDINGS.md 24)
+    if [ ! -f "$TMP/profiles-loaded" ]; then
+        for p in audio_structure:'Audio Structure Profile Update' dsp_vbc:'DSP VBC Profile Update' cvs:'CVS Profile Update'; do
+            [ -f "/lib/firmware/${p%%:*}" ] || { log "no /lib/firmware/${p%%:*}: the DSP runs the call on its defaults"; continue; }
+            amixer -q -c "$card" cset name="${p#*:}" 1 >/dev/null 2>&1
+        done
+        touch "$TMP/profiles-loaded"
+    fi
+    band=$(cat "$TMP/band" 2>/dev/null || echo 0)
+    mode=$(mode_for "$1" "$band")
+    word=$(( (mode << 24) | (mode << 16) | 5 ))
+    for p in 'DSP VBC Profile Select' 'Audio Structure Profile Select' 'CVS Profile Select'; do put "$p" "$word"; done
+    # the voice volume + 1, which is what the vendor HAL writes
+    put VBC_VOLUME $(( ${VOLUME:-6} + 1 ))
+    log "profiles: mode $mode (band $band) = $(printf '%#x' "$word"), VBC_VOLUME $(( ${VOLUME:-6} + 1 ))"
+}
+bt_rate() {
+    # the SCO link's rate: 8000 for CVSD, which is all mu300-hfp offers (no codec negotiation)
+    put VBC_SRC_BT_DAC "${BT_RATE:-8000}"; put VBC_SRC_BT_ADC "${BT_RATE:-8000}"
+}
+routes() {   # routes OUTPUT
+    # always on in the vendor route (be_switch "opened"): the AP's taps on the call
+    put 'S_VOICE_PCM_P SWITCH' 1
+    put 'S_VOICE_CAP_C SWITCH' 1
     # Hold the AGDSP power domain for the length of the call. Closing a voice stream runs mcdt_dac_dma_disable,
-    # which reads an AGCP register to check the MCDT clock - and if the domain has already dropped by then the
-    # read is a bus error and the kernel panics ("Asynchronous SError Interrupt", regmap_read <-
-    # check_agcp_mcdt_clock <- fe_hw_free). Android's HAL holds the domain the same way while a call is up.
-    mix 'agdsp_access_en' 1
+    # which reads an AGCP register - and if the domain has already dropped by then the read is a bus error and
+    # the kernel panics (docs/FINDINGS.md 24b). It is also what lets the AP DMA move at all (kanoqwq/e5-linux
+    # FINDINGS 24.2: without it one burst and a stall).
+    put agdsp_access_en 1
+    case $1 in
+        bt)
+            # the vendor route for bt_sco: the SoC's IIS0 pins to VBC IIS3 (where the controller's PCM lands), and
+            # the voice back ends to Bluetooth
+            put SYS_IIS0 vbc_iis3
+            put 'S_VOICE_P_BT SWITCH' 1
+            put 'S_VOICE_C_BT SWITCH' 1
+            bt_rate ;;
+        *)
+            # the codec back ends: nothing is connected to the codec here, but the scene needs a back end, and
+            # this is the one the taps were measured with
+            put 'S_VOICE_P_CODEC SWITCH' 1
+            put 'S_VOICE_C_CODEC SWITCH' 1
+            # VOICE_CAPTURE_DOWNLINK: the capture tap records the far end, not the absent microphone
+            put VBC_DSP_VOICE_CAPTURE_TYPE "${MU300_VOICE_CAPTURE_TYPE:-0}"
+            # VOICE_PCM_PLAY_UPLINK_ONLY: the far end hears what is played, not a mix with the absent microphone
+            put VBC_DSP_VOICE_PCM_PLAY_MODE "${MU300_VOICE_PLAY_MODE:-1}" ;;
+    esac
 }
+mute_dl() { put VBC_DL_MUTE enable; put 'VBC DAC1 DSP MDG Set' 1,1024; }
+unmute_dl() { put 'VBC DAC1 DSP MDG Set' 0,1024; put VBC_DL_MUTE disable; log "downlink unmuted"; }
 
-# The call scene itself is a hostless front end (FE_VOICE, device 5): it carries no data and only has to be
-# opened and started, which is what puts the DSP into the call - the HAL does it with pcm_start(). aplay cannot
-# (it writes, and a hostless PCM answers EINVAL), so tools/pcmhost does it. Measured on the device: the scene
-# goes to RUNNING. Audio still does not move on this board; docs/FINDINGS.md 24 has why.
-SCENE_PID=/run/mu300-voice-scene.pid
-scene_start() {
-    command -v pcmhost >/dev/null 2>&1 || { echo "no pcmhost (tools/pcmhost); the call scene is not started" >&2; return 0; }
-    pcmhost "/dev/snd/pcmC${card}D5p" 16000 1 86400 >/dev/null 2>&1 &
+SCENE_PID=$TMP/scene.pid
+scene_running() { [ -f "$SCENE_PID" ] && kill -0 "$(cat "$SCENE_PID")" 2>/dev/null; }
+audio_start() {   # audio_start OUTPUT
+    out=${1:-${OUTPUT:-dsp}}
+    scene_running && { log "audio already running ($(cat "$TMP/output" 2>/dev/null))"; return 0; }
+    command -v pcmhost >/dev/null 2>&1 || { log "no pcmhost (tools/pcmhost); the call scene cannot start" >&2; return 1; }
+    rm -f "$SAVED"
+    echo "$out" > "$TMP/output"
+    profiles "$out"
+    routes "$out"
+    mute_dl
+    # both directions of the hostless scene, prepared together and then started (pcmhost does that order)
+    pcmhost "/dev/snd/pcmC${card}D${VOICE}p,/dev/snd/pcmC${card}D${VOICE}c" "$RATE" 1 0 > "$TMP/scene.log" 2>&1 &
     echo $! > "$SCENE_PID"
+    n=0
+    while ! grep -q '^started' "$TMP/scene.log" 2>/dev/null; do
+        scene_running || { log "the call scene did not start: $(tail -1 "$TMP/scene.log")" >&2; audio_stop; return 1; }
+        n=$((n + 1)); [ "$n" -gt 50 ] && { log "the call scene did not start in 5 s" >&2; audio_stop; return 1; }
+        sleep 0.1
+    done
+    # the vendor applies the parameters again once both directions run - and the Bluetooth rate again too, which
+    # only takes after the scene is RUNNING (kanoqwq/e5-linux FINDINGS 59: set before, the BT side ran 3x slow)
+    profiles "$out"
+    [ "$out" = bt ] && bt_rate
+    unmute_dl
+    log "VOICE-RUNNING hw:$card,$VOICE both directions, ${RATE} Hz, output $out"
 }
-scene_stop() { [ -f "$SCENE_PID" ] && kill "$(cat "$SCENE_PID")" 2>/dev/null; rm -f "$SCENE_PID"; }
+audio_stop() {
+    if [ -f "$SCENE_PID" ]; then
+        kill "$(cat "$SCENE_PID")" 2>/dev/null
+        n=0; while scene_running && [ "$n" -lt 30 ]; do sleep 0.1; n=$((n + 1)); done
+        rm -f "$SCENE_PID"
+    fi
+    restore
+    rm -f "$TMP/output"
+    log "VOICE-STOPPED; the controls are back as they were"
+}
 
+# The DSP says which bandwidth the network gave the call (NB/WB/SWB/FB) on the voice pipe: 20 bytes, u16 command,
+# u16 channel, four u32. Command 0 on channel 2 is the network message, its second parameter the bandwidth
+# (kanoqwq/e5-linux@402fde1). The profile follows it.
+PIPE_PID=$TMP/pipe.pid
+pipe_watch() {
+    [ -c /dev/audio_pipe_voice ] || return 0
+    (
+        while :; do
+            set -- $(dd if=/dev/audio_pipe_voice bs=20 count=1 2>/dev/null | od -An -tu4)
+            [ $# -ge 3 ] || { sleep 1; continue; }
+            cmd=$(( $1 & 0xffff )); ch=$(( $1 >> 16 ))
+            if [ "$cmd" = 0 ] && [ "$ch" = 2 ] && [ "$3" -le 3 ]; then
+                echo "$3" > "$TMP/band"
+                log "DSP: network bandwidth $3"
+                if scene_running; then profiles "$(cat "$TMP/output")"; unmute_dl; fi
+            else
+                log "DSP: cmd $(printf '%#x' "$cmd") channel $ch params $2 $3"
+            fi
+        done
+    ) &
+    echo $! > "$PIPE_PID"
+}
+
+# --- the Bluetooth headset -----------------------------------------------------------------------------------
+HFP_PID=$TMP/hfp.pid
+hfp_up() { [ -f "$HFP_PID" ] && kill -0 "$(cat "$HFP_PID")" 2>/dev/null && [ -p "$HFP_CTL" ]; }
+hfp() { hfp_up && echo "$*" > "$HFP_CTL"; }
+hfp_connect() {
+    [ -n "$BT_HEADSET" ] || return 1
+    hfp_up && return 0
+    command -v mu300-hfp >/dev/null 2>&1 || { log "no mu300-hfp (tools/hfp)"; return 1; }
+    mu300-hfp -C "$HFP_CTL" -a "mu300-at ATA" -x "mu300-at AT+CHUP" "$BT_HEADSET" > "$TMP/hfp.log" 2>&1 &
+    echo $! > "$HFP_PID"
+    n=0
+    while ! grep -q 'service level connection up' "$TMP/hfp.log" 2>/dev/null; do
+        kill -0 "$(cat "$HFP_PID")" 2>/dev/null || { log "headset $BT_HEADSET: $(tail -1 "$TMP/hfp.log")"; rm -f "$HFP_PID"; return 1; }
+        n=$((n + 1)); [ "$n" -gt 100 ] && { log "headset $BT_HEADSET: no service level connection in 10 s"; hfp_disconnect; return 1; }
+        sleep 0.1
+    done
+    log "headset $BT_HEADSET connected"
+}
+hfp_disconnect() {
+    [ -f "$HFP_PID" ] || return 0
+    hfp quit 2>/dev/null; sleep 0.5
+    kill "$(cat "$HFP_PID")" 2>/dev/null; rm -f "$HFP_PID"
+}
+
+# --- following calls -----------------------------------------------------------------------------------------
+# +CLCC: <idx>,<dir>,<stat>,<mode>,... with stat 0 active, 1 held, 2 dialling, 3 alerting, 4 incoming, 5 waiting.
+# This never places, answers or ends a call by itself; only the headset's own buttons do, and only when pressed.
+watch() {
+    pipe_watch
+    trap 'audio_stop; hfp_disconnect; [ -f "$PIPE_PID" ] && kill "$(cat "$PIPE_PID")" 2>/dev/null; exit 0' INT TERM
+    log "watching calls (output ${OUTPUT:-auto}, headset ${BT_HEADSET:-none})"
+    last=; ring=0
+    while :; do
+        clcc=$(at 'AT+CLCC' 8 | grep '^+CLCC:' | grep ',0,' | head -1)
+        stat=$(echo "$clcc" | cut -d, -f3)
+        number=$(echo "$clcc" | cut -d'"' -f2)
+        [ "$stat" != "$last" ] && log "call state: ${stat:-none} ${number:+($number)}"
+        case $stat in
+            0|1|2|3)
+                if ! scene_running; then
+                    out=${OUTPUT:-}
+                    [ -z "$out" ] && { [ -n "$BT_HEADSET" ] && out=bt || out=dsp; }
+                    if [ "$out" = bt ] && ! hfp_connect; then out=dsp; fi
+                    audio_start "$out" || true
+                fi
+                if [ "$(cat "$TMP/output" 2>/dev/null)" = bt ]; then
+                    case $stat in 2) hfp setup 2 ;; 3) hfp setup 3 ;; *) hfp call 1; hfp setup 0 ;; esac
+                    hfp sco on
+                fi ;;
+            4|5)
+                if [ -n "$BT_HEADSET" ] && hfp_connect; then
+                    hfp setup 1
+                    now=$(date +%s); [ $((now - ring)) -ge 3 ] && { hfp "ring $number"; ring=$now; }
+                fi ;;
+            *)
+                if [ -n "$last" ]; then
+                    scene_running && audio_stop
+                    hfp sco off; hfp call 0; hfp setup 0
+                    hfp_disconnect
+                fi ;;
+        esac
+        last=$stat
+        sleep "${MU300_VOICE_POLL:-1}"
+    done
+}
+
+# --- the AP's taps on a call (output dsp) ----------------------------------------------------------------------
 # A melody, as raw S16_LE mono at $RATE. Two voices and a slow decay, so it sounds like something rather than
 # a test tone - the point is for a human on the other end to recognise it instantly as "the device is playing
 # me music", not to be pretty.
@@ -105,6 +352,8 @@ melody() {
 # nothing about periods and sent me looking at routes and firmware instead. 20 ms at the call's rate is what
 # the vendor HAL uses. The rest of the list is there because the first one is a guess about hardware nobody
 # documented: whichever works, works, and voice_play says which.
+# These are AP DMA streams, so they need the period timer of kernel/patches/audio-pcm-period-timer.patch: the
+# DMA completion interrupt never arrives on this SoC, and without it every one stops after its first buffer.
 PERIODS="160,960 320,1920 0,0"
 voice_play() {   # voice_play FILE -> play it into the call, trying each framing until one takes
     f=$1
@@ -155,7 +404,7 @@ echo_loop() {
 in_call() { at 'AT+CLCC' 8 | grep -q '^+CLCC:'; }
 
 demo() {
-    call_routes
+    scene_running || audio_start dsp
     echo "playing the melody..."
     tone 2
     echo "now echoing you back every ${1:-5}s"
@@ -163,10 +412,18 @@ demo() {
 }
 
 case "${1:-status}" in
+audio)
+    case "${2:-}" in
+        start) audio_start "${3:-}" ;;
+        stop) audio_stop ;;
+        *) echo "usage: mu300-voice audio start [bt|dsp] | audio stop" >&2; exit 2 ;;
+    esac ;;
+
+watch) watch ;;
+
 answer)
     wait=300
     [ "${2:-}" = -t ] && wait=$3
-    call_routes
     at 'AT+CLIP=1' 8 >/dev/null
     [ -f "$URCLOG" ] || { echo "mu300-voice: no $URCLOG - mu300-atd is not draining nr0" >&2; exit 1; }
     mark=$(wc -l < "$URCLOG")
@@ -175,12 +432,12 @@ answer)
     while [ "$(date +%s)" -lt "$end" ]; do
         line=$(tail -n +$((mark + 1)) "$URCLOG" 2>/dev/null | grep -m1 -E '^(RING|\+CLIP:)')
         if [ -n "$line" ]; then
-            echo "incoming: $line"
+            echo "incoming: $line" | mask
             at 'ATA' 15
             sleep 2
             in_call || { echo "mu300-voice: the call did not connect" >&2; exit 1; }
             echo "answered"
-            scene_start
+            audio_start dsp
             demo "${4:-5}"
             exit 0
         fi
@@ -191,26 +448,26 @@ answer)
 
 call)
     num=${2:?usage: mu300-voice call NUMBER}
-    call_routes
     at "ATD$num;" 20
     sleep 5
     in_call || { echo "mu300-voice: the call did not connect" >&2; exit 1; }
-    scene_start
+    audio_start dsp
     demo "${3:-5}" ;;
 
 demo)   demo "${2:-5}" ;;
-tone)   call_routes; tone "${2:-1}" ;;
-echo)   call_routes; echo_loop "${2:-5}" ;;
-hangup) at 'AT+CHUP' 10; scene_stop ;;
+tone)   scene_running || audio_start dsp; tone "${2:-1}" ;;
+echo)   scene_running || audio_start dsp; echo_loop "${2:-5}" ;;
+hangup) at 'AT+CHUP' 10; audio_stop ;;
 
 status)
-    echo "call:     $(at 'AT+CLCC' 8 | tr '\n' ' ')"
+    echo "call:     $(at 'AT+CLCC' 8 | tr '\n' ' ' | mask)"
+    echo "scene:    $(scene_running && echo "running, output $(cat "$TMP/output")" || echo "not running") (hw:$card,$VOICE)"
     echo "playback: $PLAY (FE_ST_VOICE_PCM_P)"
     echo "capture:  $CAP (FE_ST_VOICE_C)"
-    echo "routes:   S_VOICE_PCM_P is $(amixer -c "$card" cget name='S_VOICE_PCM_P SWITCH' 2>/dev/null | sed -n 's/.*values=//p' | tail -1)"
+    echo "headset:  ${BT_HEADSET:-none set in $CONF}$(hfp_up && echo ', connected')"
     mu300-audio-dsp status 2>/dev/null | sed -n 's/^dsp:/dsp:     /p' ;;
 
 *)
-    sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
     exit 2 ;;
 esac

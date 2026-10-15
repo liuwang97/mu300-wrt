@@ -463,9 +463,7 @@ static int cmdevt_send_cmd(struct sprd_priv *priv, struct sprd_msg *msg)
 		le32_to_cpu(hdr->mstime),
 		hdr->common.mode, cmdevt_cmd2str(hdr->cmd_id));
 
-	if (sprd_get_debug_level() >= L_DBG)
-		print_hex_dump_debug("CMD: ", DUMP_PREFIX_OFFSET, 16, 1,
-				     (u8 *)hdr, hdr->plen, 0);
+	/* Keep command identifiers above, never dump credential-bearing payloads. */
 
 	ret = sprd_chip_tx(&priv->chip, msg);
 	if (ret)
@@ -2646,6 +2644,14 @@ int sprd_xmit_data2cmd_wq(struct sk_buff *skb, struct net_device *ndev)
 			return -EPERM;
 		}
 	}
+	/*
+	 * MU300 (kanoqwq's clean-tf-7.2 149c9d2a): the descriptor is where the fill put it - behind the 5-byte address
+	 * prefix on PCIe - and is found before SDIO's flag goes in front. The vendor read it at skb->data, i.e. the
+	 * prefix on PCIe, so "sta_lut_index" was the descriptor's offset byte (11) and group frames never got the BK
+	 * TID that this is for.
+	 */
+	dscr = (struct tx_msdu_dscr *)(skb->data +
+		(hif->hw_type == SPRD_HW_SC2355_PCIE ? MSDU_DSCR_RSVD : 0));
 	/*alloc five byte for fw 16 byte need
 	 *dscr:11+flag:5 =16
 	 */
@@ -2653,13 +2659,11 @@ int sprd_xmit_data2cmd_wq(struct sk_buff *skb, struct net_device *ndev)
 		skb_push(skb,FLAG_SIZE);
 		memcpy(skb->data,temp_flag,FLAG_SIZE);
 	}
-	    /*send group in BK to avoid FW hang*/
-	    dscr = (struct tx_msdu_dscr *)skb->data;
+	/*send group in BK to avoid FW hang*/
 	if ((vif->mode == SPRD_MODE_AP ||
 	     vif->mode == SPRD_MODE_P2P_GO) && dscr->sta_lut_index < 6) {
 		dscr->buffer_info.msdu_tid = prio_1;
-		pr_info("%s, %d, SOFTAP/GO group go as BK\n", __func__,
-			__LINE__);
+		pr_debug_ratelimited("%s, %d, SOFTAP/GO group go as BK\n", __func__, __LINE__);
 	}
 
 	/*create work queue*/
@@ -3948,8 +3952,10 @@ unsigned short sc2355_rx_evt_process(struct sprd_priv *priv, u8 *msg)
 		return plen;
 	}
 
-	print_hex_dump_debug("EVENT: ", DUMP_PREFIX_OFFSET, 16, 1,
-			     (u8 *)hdr, hdr->plen, 0);
+	/* NEW_STATION can contain the firmware SAE PMK/PMKID. */
+	if (hdr->cmd_id != EVT_NEW_STATION)
+		print_hex_dump_debug("EVENT: ", DUMP_PREFIX_OFFSET, 16, 1,
+				     (u8 *)hdr, hdr->plen, 0);
 
 	len = plen - sizeof(*hdr);
 	vif = sc2355_ctxid_to_vif(priv, ctx_id);
@@ -4103,8 +4109,7 @@ unsigned short sc2355_rx_rsp_process(struct sprd_priv *priv, u8 *msg)
 	hdr = (struct sprd_cmd_hdr *)msg;
 	plen = SPRD_GET_LE16(hdr->plen);
 
-	print_hex_dump_debug("CMD RSP: ", DUMP_PREFIX_OFFSET, 16, 1,
-			     (u8 *)hdr, hdr->plen, 0);
+	/* Command replies may echo credential-bearing payloads. */
 
 	/* 2048 use mac */
 	/*TODO here ctx_id range*/

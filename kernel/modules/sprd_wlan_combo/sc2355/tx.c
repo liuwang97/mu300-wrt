@@ -334,6 +334,9 @@ static int tx_handle_to_send_list(struct sprd_hif *hif, enum sprd_mode mode)
 						&tx_list_head,
 						credit, SPRD_AC_MAX, coex_bt_on);
 			sc2355_pcie_handle_tx_return(hif, list, credit, ret);
+			/* MU300: the pending ring was full and kept nothing; the completion wakes us (pcie.c) */
+			if (ret == -EAGAIN)
+				return ret;
 		} else {
 			ret = sc2355_hif_tx_list(hif,
 						to_send_list,
@@ -932,6 +935,18 @@ static int tx_mc_pkt(struct sk_buff *skb, struct net_device *ndev)
 
 	vif = netdev_priv(ndev);
 	hif = &vif->priv->hif;
+
+	/*
+	 * MU300 (kanoqwq's clean-tf-7.2 149c9d2a, measured on an F50): this sent every IPv6 multicast frame of the
+	 * access point - neighbour discovery, router advertisements, mDNS - as a firmware command (CMD_TX_DATA). The
+	 * firmware answers a burst of them with an error after six (eight 12-byte mDNS queries a second: the last two
+	 * of each eight refused), and the command worker had already let the frame go. On PCIe they now take the data
+	 * queue, as IPv4 multicast always has: credits, the EDMA backpressure, the group LUT entry. tx_filter_ip_pkt()
+	 * after this still sends DHCPv6, DNS and VoWiFi by command, and EAPOL never comes here. SDIO (not on our
+	 * boards) keeps the vendor's path.
+	 */
+	if (hif->hw_type == SPRD_HW_SC2355_PCIE)
+		return 1;
 
 	if (skb->data) {
 		memcpy(hif->skb_da, skb->data, ETH_ALEN);
@@ -2037,6 +2052,7 @@ int sc2355_tx_init(struct sprd_hif *hif)
 	tx_mgmt->cmd_timeout = msecs_to_jiffies(SPRD_TX_CMD_TIMEOUT);
 	tx_mgmt->data_timeout = msecs_to_jiffies(SPRD_TX_DATA_TIMEOUT);
 	atomic_set(&tx_mgmt->flow0, 0);
+	atomic_set(&tx_mgmt->pcie_tx_waiting, 0);
 	atomic_set(&tx_mgmt->flow1, 0);
 	atomic_set(&tx_mgmt->flow2, 0);
 
@@ -2347,8 +2363,6 @@ int sc2355_send_data(struct sprd_vif *vif, struct sprd_msg *msg,
 
 	hif = &vif->priv->hif;
 
-	buf = skb->data;
-
 	if (hif->hw_type == SPRD_HW_SC2355_PCIE) {
 		if (sc2355_pcie_hif_fill_msdu_dscr(vif, skb, SPRD_TYPE_DATA, offset))
 			return -EPERM;
@@ -2359,8 +2373,10 @@ int sc2355_send_data(struct sprd_vif *vif, struct sprd_msg *msg,
 
 	sprd_fill_msg(msg, skb, skb->data, skb->len);
 
+	/* MU300: the frame behind the descriptor, taken after the fill (which may move skb->data) */
+	buf = skb->data + DSCR_LEN + offset;
 	if (hif->hw_type == SPRD_HW_SC2355_PCIE)
-		buf = skb->data + MSDU_DSCR_RSVD + DSCR_LEN;
+		buf += MSDU_DSCR_RSVD;
 
 	if (sc2355_tcp_ack_filter_send(vif->priv, msg, buf, plen))
 		return 0;

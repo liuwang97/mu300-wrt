@@ -1,9 +1,11 @@
 """Small device scripts, against a fake / (MU300_SYSROOT) and stub commands: mu300-device, mu300-lan-ip, mu300-led,
 mu300-ttl. They run on Ubuntu (dash, bash) and OpenWrt (busybox ash)."""
+import json
 import os
 import pty
 import re
 import select
+import shlex
 import shutil
 import stat
 import struct
@@ -18,13 +20,23 @@ from helpers import BIN, TOP, ShellTest
 
 
 class Device(ShellTest):
-    def root(self, device=None, dt_u30=False):
+    # the stock device trees as far as mu300-device looks: the F50's has neither node, the U30 Air's the charger
+    # policy service, the V50's the AW9523B under I2C3 (its parent named soc:ap-ahb or ap-ahb, by kernel)
+    V50_NODE = 'soc/{}/i2c@2270000/aw9523b_led@5b'
+
+    def root(self, device=None, dt_u30=False, dt_v50=None, dt=False):
         r = self.tmp / 'root'
+        shutil.rmtree(r / 'proc', ignore_errors=True)
         (r / 'run' / 'mu300').mkdir(parents=True, exist_ok=True)
         if device is not None:
             (r / 'run' / 'mu300' / 'device').write_text(device + '\n')
+        if dt or dt_u30 or dt_v50:
+            # every board's device tree has an I2C3 (the F50's is empty and disabled)
+            (r / 'proc' / 'device-tree' / 'soc' / 'ap-ahb' / 'i2c@2270000').mkdir(parents=True, exist_ok=True)
         if dt_u30:
             (r / 'proc' / 'device-tree' / 'charger_policy_service').mkdir(parents=True, exist_ok=True)
+        if dt_v50:
+            (r / 'proc' / 'device-tree' / self.V50_NODE.format(dt_v50)).mkdir(parents=True, exist_ok=True)
         return r
 
     def test_mu300_device(self):
@@ -37,8 +49,106 @@ class Device(ShellTest):
                 self.assertEqual(out, want, (device, dt))
             (r / 'run' / 'mu300' / 'device').unlink(missing_ok=True)
 
+    def test_mu300_device_three_boards(self):
+        """The V50 (FINDINGS 95) is told by its AW9523B node whatever the label says; the F50 and the U30 Air answer
+        exactly as before, with or without a label, and neither is ever taken for a V50 nor a V50 for either."""
+        cases = [
+            # an F50: its device tree, labelled or not, or labelled v50 by mistake (a backup moved over)
+            (None, dict(dt=True), 'f50'), ('f50', dict(dt=True), 'f50'), ('v50', dict(dt=True), 'f50'),
+            # a U30 Air: the charger policy service; a v50 label is not believed, and the AW9523B never makes a V50
+            # of a U30 Air
+            (None, dict(dt_u30=True), 'u30air'), ('u30air', dict(dt_u30=True), 'u30air'),
+            ('v50', dict(dt_u30=True), 'u30air'), (None, dict(dt_u30=True, dt_v50='ap-ahb'), 'u30air'),
+            ('u30air', dict(dt_v50='ap-ahb'), 'u30air'), ('f50', dict(dt_u30=True, dt_v50='ap-ahb'), 'f50'),
+            # a V50: unlabelled (a mainline boot image of before), labelled v50, or labelled f50 by an older
+            # installer; under either parent name
+            (None, dict(dt_v50='ap-ahb'), 'v50'), (None, dict(dt_v50='soc:ap-ahb'), 'v50'),
+            ('v50', dict(dt_v50='ap-ahb'), 'v50'), ('f50', dict(dt_v50='ap-ahb'), 'v50'),
+            ('f50', dict(dt_v50='soc:ap-ahb'), 'v50'),
+            # no device tree at all (not on a device): the label
+            ('v50', {}, 'v50'), ('f50', {}, 'f50'), ('u30air', {}, 'u30air'), (None, {}, 'f50'),
+        ]
+        for device, dt, want in cases:
+            r = self.root(device, **dt)
+            for shell in self.each_shell():
+                out = self.script(shell, BIN / 'mu300-device', MU300_SYSROOT=r).stdout.strip()
+                self.assertEqual(out, want, (device, dt))
+            (r / 'run' / 'mu300' / 'device').unlink(missing_ok=True)
+
+    def test_device_rule_is_the_one_of_init(self):
+        """boot/init and mu300-device decide alike: the v50 block is the same code in both."""
+        init = (TOP / 'boot' / 'init').read_text()
+        dev = (BIN / 'mu300-device').read_text()
+        a = re.search(r'\nv50_dt\(\) \{.*?\n\}\nv50_fix\(\) \{.*?\n\}\n', init, re.S)
+        b = re.search(r'\nv50_dt\(\) \{.*?\n\}\nv50_fix\(\) \{.*?\n\}\n', dev, re.S)
+        self.assertIsNotNone(a)
+        self.assertIsNotNone(b)
+        self.assertEqual(a.group(0), b.group(0))
+
+    def test_json_for_programs(self):
+        """mu300-device --json: the contract of docs/ADB-INTERFACE.md, one line a JSON parser takes."""
+        r = self.root('u30air')
+        (r / 'etc' / 'mu300').mkdir(parents=True)
+        (r / 'etc' / 'mu300' / 'image-version').write_text('v2026.10.23\n')
+        (r / 'etc' / 'os-release').write_text('NAME="Ubuntu"\nVERSION_ID="24.04"\nID=ubuntu\n')
+        disk = self.tmp / 'disk'
+        disk.mkdir()
+        (disk / 'ubuntu').symlink_to(r)            # the directory of the Linux partition that is /
+        self.stub('uname', 'echo 7.2.10')
+        self.stub('id', 'echo 0')
+        env = dict(MU300_SYSROOT=r, MU300_DISK=disk, MU300_BIN=BIN, MU300_ADB_CONF=r / 'etc/mu300/adb',
+                   MU300_ADB_AUTH_CONF=r / 'etc/mu300/adb_auth', MU300_ADB_KEYS=r / 'etc/mu300/adb_keys',
+                   MU300_ADB_ROOT_KEYS=self.tmp / 'none', MU300_ADB_OWNER=os.getuid(),
+                   MU300_ADBD_BIN=shutil.which('true'), MU300_MODULES_BUILTIN=self.tmp / 'builtin')
+        (self.tmp / 'builtin').write_text('kernel/drivers/usb/gadget/function/usb_f_fs.ko\n')
+        want = {'mu300': 1, 'device': 'u30air', 'system': 'ubuntu', 'version_id': '24.04',
+                'release': 'v2026.10.23', 'kernel': '7.2.10', 'root': True, 'adb': 'open'}
+        for shell in self.each_shell():
+            out = self.script(shell, BIN / 'mu300-device', '--json', **env)
+            self.assertEqual('', out.stderr)
+            self.assertEqual(1, out.stdout.count('\n'))
+            self.assertEqual(want, json.loads(out.stdout))
+            # the order of the fields is not part of the contract, their names and kinds are
+            self.assertEqual(list(want), list(json.loads(out.stdout)))
+        # adb as the device has it set; not root; the copy kept by an update (ubuntu.old) is still "ubuntu"
+        (r / 'etc/mu300/adb_auth').write_text('keys\n')
+        (disk / 'ubuntu').unlink()
+        (disk / 'ubuntu.old').symlink_to(r)
+        self.stub('id', 'echo 1000')
+        for shell in self.each_shell():
+            got = json.loads(self.script(shell, BIN / 'mu300-device', '--json', **env).stdout)
+            self.assertEqual(('keys', False, 'ubuntu'), (got['adb'], got['root'], got['system']))
+        (r / 'etc/mu300/adb').write_text('off\n')
+        for shell in self.each_shell():
+            got = json.loads(self.script(shell, BIN / 'mu300-device', '--json', **env).stdout)
+            self.assertEqual('off', got['adb'])
+        (r / 'etc/mu300/adb').unlink()
+        # no adbd in this system
+        for shell in self.each_shell():
+            got = json.loads(self.script(shell, BIN / 'mu300-device', '--json',
+                                         **dict(env, MU300_ADBD_BIN=self.tmp / 'none')).stdout)
+            self.assertEqual('unavailable', got['adb'])
+        # OpenWrt, with and without LuCI, where the Linux partition is not mounted; nothing in a value can end
+        # the string it is in
+        (disk / 'ubuntu.old').unlink()
+        (r / 'etc' / 'openwrt_release').write_text("DISTRIB_ID='OpenWrt'\n")
+        (r / 'etc' / 'os-release').write_text('NAME="OpenWrt"\nVERSION_ID="25.12.5"\n')
+        (r / 'etc' / 'mu300' / 'image-version').write_text('v2026","root":true,"x":"\\\n')
+        (r / 'run' / 'mu300' / 'device').write_text('f50\n')
+        for shell in self.each_shell():
+            got = json.loads(self.script(shell, BIN / 'mu300-device', '--json', **env).stdout)
+            self.assertEqual(('f50', 'openwrt', '25.12.5', 'v2026roottruex'),
+                             (got['device'], got['system'], got['version_id'], got['release']))
+            self.assertFalse(got['root'])
+        (r / 'www' / 'luci-static').mkdir(parents=True)
+        (r / 'etc' / 'mu300' / 'image-version').unlink()
+        for shell in self.each_shell():
+            got = json.loads(self.script(shell, BIN / 'mu300-device', '--json', **env).stdout)
+            self.assertEqual(('openwrt-luci', 'unknown'), (got['system'], got['release']))
+
     def test_lan_ip(self):
-        for device, want in (('f50', '192.168.77.1'), ('u30air', '192.168.78.1'), ('', '192.168.77.1')):
+        for device, want in (('f50', '192.168.77.1'), ('u30air', '192.168.78.1'), ('', '192.168.77.1'),
+                             ('v50', '192.168.79.1')):
             r = self.root(device)
             for shell in self.each_shell():
                 out = self.script(shell, BIN / 'mu300-lan-ip', MU300_SYSROOT=r, MU300_BIN=BIN).stdout.strip()
@@ -91,6 +201,30 @@ class At(ShellTest):
             r = self.at(shell, 'AT+CSQ')
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertEqual(r.stdout.replace('\r', ''), '+CSQ: 20,99\nOK\n')   # text mode folds CRLF
+
+    def test_a_command_on_stdin(self):
+        # "-": the command is the first line of stdin, for one that carries a secret (an APN password, FINDINGS 65)
+        got = []
+
+        def daemon():
+            with open(self.dir / 'cmd') as f:
+                line = f.readline().rstrip('\n')
+            _t, answer, cmd = line.split(' ', 2)
+            got.append(cmd)
+            with open(answer, 'w', newline='') as a:
+                a.write('OK\r\n')
+        for shell in self.each_shell():
+            del got[:]
+            th = threading.Thread(target=daemon, daemon=True)
+            th.start()
+            r = self.script(shell, BIN / 'mu300-at', '-t', 2, '-', stdin='AT+CGPCO=0,"u","p w",1,3\nAT+CFUN=0\n',
+                            MU300_AT_DIR=self.dir, MU300_BUSYBOX=self.sleeper)
+            th.join(5)
+            self.assertEqual((r.returncode, got), (0, ['AT+CGPCO=0,"u","p w",1,3']), r.stderr)   # one line, no more
+            # nothing on stdin: the usage, and nothing sent
+            r = self.script(shell, BIN / 'mu300-at', '-', stdin='', MU300_AT_DIR=self.dir, MU300_BUSYBOX=self.sleeper)
+            self.assertEqual(r.returncode, 2)
+            self.assertIn('usage', r.stderr)
 
     def test_no_daemon_does_not_hang(self):
         for shell in self.each_shell():
@@ -333,7 +467,7 @@ class Atd(ShellTest):
         """Start the daemon on tty_nr1 (and a tty_nr0 if NR0); wait until it owns the channel and every drainer it
         started has made its log. Returns the URC logs and the nr1 master."""
         self.run_dir = self.tmp / f'run{len(self.procs)}'   # one per daemon: each_shell starts several
-        self.run_dir.mkdir()
+        self.run_dir.mkdir(exist_ok=True)
         self.dir = self.run_dir / 'at'
         dev, master = self.pty('tty_nr1')
         if nr0:
@@ -384,6 +518,31 @@ class Atd(ShellTest):
         self.answer = answer.read_text() if answer.exists() else None
         return elapsed
 
+    def test_a_command_with_a_secret_leaves_nothing_readable_behind(self):
+        """FINDINGS 65: an APN password travels in AT+CGPCO. The answer file is root's alone (a modem that echoes the
+        command puts it there, and the file of a client that gave up stays), and an echo that comes late is thrown
+        away, never appended to the URC log."""
+        cmd = 'AT+CGPCO=0,"user","hunter2",1,3'
+        for shell in self.each_shell():
+            _l, m = self.start(shell, nr0=False)
+            self.send(m, cmd, (cmd + '\r\nOK\r\n').encode())
+            self.assertEqual(self.answer, cmd + '\nOK\n')
+            self.assertEqual((self.dir / 'answer.4242').stat().st_mode & 0o777, 0o600)
+            # no answer in time; the echo and the OK arrive late, and the next command's drain finds them
+            self.send(m, cmd, None, t=1)
+            os.write(m, (cmd + '\r\n+CGEV: late\r\nOK\r\n').encode())
+            time.sleep(0.3)
+            self.send(m, 'AT', b'OK\r\n')
+            self.assertEqual(self.answer, 'OK\n')
+            log = (self.dir / 'urc' / 'tty_nr1.log').read_text()
+            self.assertIn('+CGEV: late', log)                     # what is no echo is still kept
+            self.assertNotIn('hunter2', log)
+            self.assertNotIn('CGPCO', log)
+            for p in self.dir.rglob('*'):
+                if p.is_file() and p.name != 'answer.4242':
+                    self.assertNotIn(b'hunter2', p.read_bytes(), p)
+            self.assertNotIn('hunter2', self.err.read_text())
+
     def test_requests_are_parsed_strictly(self):
         """A malformed request line is dropped, never sent to the modem whole (it used to be: "120 /run/... AT" with
         a timeout the daemon did not take), and an answer file outside $DIR is never written."""
@@ -407,6 +566,32 @@ class Atd(ShellTest):
             self.assertFalse(outside.exists())
             self.assertFalse((self.dir / 'answer.1').exists())
             self.assertIn('malformed request', self.err.read_text())
+
+    def test_the_urc_logs_are_roots_alone(self):
+        """What the modem says unasked is the owner's to read and nobody else's: with caller id on (mu300-voice
+        watch) every ring puts the caller's number into this log."""
+        for shell in self.shells:
+            logs, m = self.start(shell)
+            self.assertEqual(logs, ['tty_nr0.log'])
+            self.assertEqual((self.dir / 'urc').stat().st_mode & 0o777, 0o700)
+
+    def test_a_directory_somebody_else_made_first_is_replaced(self):
+        """/run takes files from every user: a symlink (or a foreign directory) where $DIR should be is not where the
+        command fifo and the answers go."""
+        lib = BIN.parent / 'lib' / 'run-dir.sh'
+        for shell in self.shells:
+            elsewhere = self.tmp / f'elsewhere{len(self.procs)}'
+            elsewhere.mkdir()
+            run = self.tmp / f'run{len(self.procs)}'
+            run.mkdir()
+            (run / 'at').symlink_to(elsewhere)
+            logs, m = self.start(shell, MU300_RUN_DIR_LIB=lib)
+            self.assertFalse(self.dir.is_symlink())
+            self.assertEqual(self.dir.stat().st_mode & 0o777, 0o755)
+            self.assertEqual(list(elsewhere.iterdir()), [])
+            self.assertIn("was somebody else's", self.err.read_text())
+            self.send(m, 'AT', b'\r\nOK\r\n')
+            self.assertEqual(self.answer, 'OK\n')
 
     def test_a_second_command_never_reaches_the_modem(self):
         """The daemon repeats mu300-at's one_request test: a CR outside AT+CMGS=N<CR>PDU<Ctrl-Z> is refused with an
@@ -628,7 +813,8 @@ class MobileData(ShellTest):
         body = text[text.index('\nat() {'):text.index('\n}\n', text.index('\nat() {')) + 3]
         body = body.replace('/run/', f'{run}/').replace('/opt/mu300/bin/mu300-at', 'mu300-at')
         (self.tmp / 'calls').unlink(missing_ok=True)
-        r = self.sh(shell, body + '\nat "AT+CSQ" 4', MU300_AT_DIR='')
+        r = self.sh(shell, body + '\nat "AT+CSQ" 4', MU300_AT_DIR='', SIM_SLOT='0',
+                    MAIN_DIR=run / 'mu300-at', DATA_DIR=run / 'mu300-at2')
         self.assertEqual(r.returncode, 0, r.stderr)
         return (self.tmp / 'calls').read_text().strip()
 
@@ -638,7 +824,7 @@ class MobileData(ShellTest):
             self.assertRegex(out, r'^dir=\S*/run/mu300-at2 args=-t 4 AT\+CSQ$', shell)
             # the nr1 daemon takes over while nr2's is not there (yet): mu300-at's own default directory
             out = self.run_at(shell, nr2=False)
-            self.assertEqual(out, 'dir= args=-t 4 AT+CSQ', shell)
+            self.assertRegex(out, r'^dir=\S*/run/mu300-at args=-t 4 AT\+CSQ$', shell)
 
     # mobile-data's functions with MU300_LIB=1 (K56, K59-K62). mobile-data is a bash script (#!/bin/bash, on OpenWrt
     # too), so these run under bash only; under alpine they still use busybox's tail, wc, sleep and awk.
@@ -1243,6 +1429,100 @@ at() {
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(sent, [])
 
+    # FINDINGS 90: AT+CGACT? as the watchdog reads it. $CGACT is the answer's lines ("none": no final result code,
+    # mu300-at's exit 1); the interface has its address unless NOADDR is set. radio_on, up and ifup only log.
+    WATCH_MODEM = r'''
+at() {
+    echo "$SECONDS $1" >> "$STUBLOG/at"
+    case $1 in
+        'AT+CGACT?')
+            [ "${CGACT:-}" != none ] || return 1
+            printf '%b\n' "${CGACT:-+CGACT:1,1\nOK}" ;;
+        'AT+CFUN?') printf '+CFUN: 1\nOK\n' ;;
+        AT+CGPADDR=*) printf '+CGPADDR: 1,"10.1.2.3"\nOK\n' ;;
+        *) printf 'OK\n' ;;
+    esac
+}
+radio_on() { at RADIO_ON; }
+up() { at UP; }
+'''
+
+    def watch(self, rounds, **env):
+        self.stub('ip', '[ -n "$NOADDR" ] || echo "2: sipa_eth0    inet 10.1.2.3/24 scope global sipa_eth0"')
+        self.stub('ifup', 'echo "$SECONDS IFUP $*" >> "$STUBLOG/at"')
+        r, sent = self.lib('watch', modem=self.WATCH_MODEM, MU300_AT_DEV='/dev/null', MU300_WATCH_INTERVAL='0',
+                           MU300_WATCH_ROUNDS=str(rounds), NOADDR=env.pop('NOADDR', ''), **env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return r, [s.split(' ', 1)[1] for s in sent]
+
+    def test_the_openwrt_watchdog_logs(self):
+        # FINDINGS 90 (measured on a U30 Air): procd kept none of the watchdog's stderr, so on OpenWrt nothing it said
+        # ("mobile data lost ... reconnecting", "no answer about the data context") ever reached logread
+        post = (TOP / 'openwrt/overlay/etc/init.d/mu300-post').read_text()
+        inst = post[post.index('procd_open_instance cellwatch'):]
+        inst = inst[:inst.index('procd_close_instance')]
+        self.assertIn('procd_set_param command /opt/mu300/bin/mobile-data watch', inst)
+        self.assertIn('procd_set_param stderr 1', inst)
+
+    def test_watch_context_states(self):
+        cases = [('+CGACT:1,1\\nOK', 'active'), ('+CGACT: 1,1\\r\\nOK', 'active'),
+                 ('+CGACT:1,0\\nOK', 'inactive'), ('OK', 'inactive'),             # a reset modem lists nothing
+                 ('+CGACT:11,1\\nOK', 'inactive'), ('+CGACT:1,10\\nOK', 'inactive'),
+                 ('ERROR', 'unknown'), ('+CME ERROR: 100', 'unknown'), ('none', 'unknown')]
+        for answer, want in cases:
+            with self.subTest(answer=answer):
+                r, _ = self.lib('watch_context', modem=self.WATCH_MODEM, CGACT=answer)
+                self.assertEqual(r.stdout.strip(), want, r.stderr)
+
+    def test_watch_leaves_the_bearer_alone_while_the_modem_does_not_answer(self):
+        """A channel without an answer for up to three rounds: no radio check, no reconnect."""
+        r, sent = self.watch(3, CGACT='none')
+        self.assertEqual(sent, ['AT+CGACT?'] * 3, r.stderr)
+        # ERROR is no answer about the context either
+        r, sent = self.watch(3, CGACT='ERROR')
+        self.assertEqual(sent, ['AT+CGACT?'] * 3, r.stderr)
+
+    def test_watch_still_reconnects_a_modem_that_stays_silent(self):
+        """Four silent rounds make the first failed round, the fifth the reconnect: about 2.5 min instead of 1."""
+        r, sent = self.watch(5, CGACT='none')
+        self.assertEqual(sent.count('UP'), 1, sent)
+        self.assertEqual(sent.index('UP'), len(sent) - 1, sent)
+        self.assertEqual(sent.count('AT+CGACT?'), 5, sent)
+        self.assertIn('no answer about the data context for 4 rounds', r.stderr)
+        # netifd: ifup, as before
+        r, sent = self.watch(5, CGACT='none', MU300_NETIFD='1')
+        self.assertIn('IFUP wan', sent)
+
+    def test_an_answer_between_silent_rounds_starts_the_count_over(self):
+        r, sent = self.watch(1, CGACT='none')
+        self.assertNotIn('UP', sent)
+        # silent, silent, silent, answered and up, silent x3: never a reconnect
+        script = self.tmp / 'answers'
+        script.write_text('none\nnone\nnone\nup\nnone\nnone\nnone\n')
+        modem = self.WATCH_MODEM.replace(
+            "[ \"${CGACT:-}\" != none ] || return 1",
+            'n=$(($(cat "$STUBLOG/n" 2>/dev/null || echo 0) + 1)); echo $n > "$STUBLOG/n"\n'
+            '            [ "$(sed -n "${n}p" "$STUBLOG/answers")" != none ] || return 1')
+        self.stub('ip', 'echo "2: sipa_eth0    inet 10.1.2.3/24 scope global sipa_eth0"')
+        r, sent = self.lib('watch', modem=modem, MU300_AT_DEV='/dev/null', MU300_WATCH_INTERVAL='0',
+                           MU300_WATCH_ROUNDS='7')
+        sent = [s.split(' ', 1)[1] for s in sent]
+        self.assertNotIn('UP', sent, r.stderr)
+        self.assertNotIn('RADIO_ON', sent, r.stderr)
+
+    def test_an_answered_lost_context_still_reconnects_in_two_rounds(self):
+        """What a firmware reset leaves (no context listed, or <cid>,0) is evidence: the old two rounds."""
+        for answer in ('OK', '+CGACT:1,0\\nOK'):
+            with self.subTest(answer=answer):
+                r, sent = self.watch(2, CGACT=answer)
+                self.assertEqual(sent.count('UP'), 1, sent)
+        # active, but the interface lost its address: the same
+        r, sent = self.watch(2, NOADDR='1')
+        self.assertEqual(sent.count('UP'), 1, sent)
+        # active with the address: nothing
+        r, sent = self.watch(2)
+        self.assertNotIn('UP', sent)
+
     # 2026-10-07: `mobile-data suspend off` after `suspend lte` never returned on the U30 Air, and the device stayed dark
     # for hours. suspend/resume now end within MU300_SUSPEND_DEADLINE whatever the modem does. Here the real at() talks
     # to an nr2 daemon whose client never answers (a mu300-at that sleeps): the whole command must come back in time,
@@ -1405,6 +1685,303 @@ at() {
         self.assertTrue(m, r.stdout + r.stderr)
         self.assertEqual(m.group(1), m.group(2))
         self.assertNotEqual(m.group(1), m.group(3))
+
+
+class DataRoaming(ShellTest):
+    """Data roaming (FINDINGS 120): the setting, the dial's gate, the watchdog's two moves. mobile-data sourced as in
+    MobileData (its lib() and modem); the modem here also answers AT+C5GREG? ($C5GREG) and AT+CGACT? ($CGACT), and
+    `uci` is a stub answering network.wan.roaming / roaming_internal from $T_ROAM0 / $T_ROAM1."""
+    lib = MobileData.lib
+    MODEM = MobileData.MODEM.replace(
+        "        'AT+CFUN?')",
+        "        'AT+C5GREG?') printf '%s\\nOK\\n' \"${C5GREG:-+C5GREG: 2,0}\" ;;\n"
+        "        'AT+CGACT?') printf '%s\\nOK\\n' \"${CGACT:-+CGACT: 1,0}\" ;;\n"
+        "        'AT+CFUN?')")
+    HOME = '+CEREG: 2,1,"1A2B","0123ABCD",7'
+    ROAM = '+CEREG: 2,5,"1A2B","0123ABCD",7'
+
+    def setUp(self):
+        super().setUp()
+        self.stub('uci', 'echo "uci $*" >> "$STUBLOG/uci"\n'
+                  'case "$*" in\n'
+                  '  "-q get network.wan.roaming") [ -n "${T_ROAM0:-}" ] && echo "$T_ROAM0" || exit 1 ;;\n'
+                  '  "-q get network.wan.roaming_internal") [ -n "${T_ROAM1:-}" ] && echo "$T_ROAM1" || exit 1 ;;\n'
+                  'esac')
+        self.stub('logger', 'echo "logger $*" >> "$STUBLOG/logger"')
+        self.stub('ifup', 'echo "ifup $*" >> "$STUBLOG/ifup"')
+        self.stub('ubus', 'echo "{ \\"up\\": false, \\"autostart\\": ${T_AUTOSTART:-true} }"')
+        for n in ('nft', 'sysctl', 'ethtool', 'resolvectl'):
+            self.stub(n, 'exit 0')
+        # the bearer has the context's address (the watchdog's healthy round)
+        self.stub('ip', 'case "$*" in *"-o addr show"*) echo "2: sipa_eth0    inet 10.1.2.3/24 scope global sipa_eth0" ;;\n'
+                  '  *"addr show"*) echo "    inet 10.1.2.3/24 scope global sipa_eth0" ;; esac; exit 0')
+        self.run_dir = self.tmp / 'run'
+        self.held = self.run_dir / 'mu300' / 'data-roaming-held'
+        self.conf = self.tmp / 'mobile-data.conf'
+
+    def dial(self, cereg, **env):
+        e = dict(MU300_NETIFD=1, MU300_AT_DEV='/dev/null', MU300_URC_LOG=self.tmp / 'none', MU300_CFUN_WAIT=0,
+                 CEREG=cereg)
+        e.update(env)
+        r, sent = self.lib('up_locked', **e)
+        return r, [s.split(' ', 1)[1] for s in sent]
+
+    def radio_log(self):
+        p = self.run_dir / 'mu300' / 'radio.log'
+        return p.read_text() if p.exists() else ''
+
+    def test_the_registration_says_home_roaming_or_nothing(self):
+        cases = [('1', '', 'home'), ('5', '', 'roaming'), ('9', '', 'home'), ('10', '', 'roaming'),
+                 ('0', '5', 'roaming'), ('2', '1', 'home'), ('2', '', 'unknown'), ('', '', 'unknown'),
+                 ('8', '0', 'unknown'), ('3', '', 'unknown')]
+        code = '; '.join(f'echo "{a}/{b}=$(roam_classify "{a}" "{b}")"' for a, b, _ in cases)
+        r, _ = self.lib(code)
+        for a, b, want in cases:
+            self.assertIn(f'{a}/{b}={want}\n', r.stdout, r.stderr)
+        # the query forms, as the modem answers them; the 5G registration only when LTE's says neither
+        r, sent = self.lib('roam_state', CEREG=self.ROAM)
+        self.assertEqual(r.stdout.strip(), 'roaming', r.stderr)
+        self.assertEqual([s.split(' ', 1)[1] for s in sent], ['AT+CEREG?'])
+        r, sent = self.lib('roam_state', CEREG='+CEREG: 2,0', C5GREG='+C5GREG: 2,5,"00A1","0000012345",11')
+        self.assertEqual(r.stdout.strip(), 'roaming', r.stderr)
+        self.assertEqual([s.split(' ', 1)[1] for s in sent], ['AT+CEREG?', 'AT+C5GREG?'])
+        r, _ = self.lib('roam_state', CEREG='ERROR', C5GREG='ERROR')
+        self.assertEqual(r.stdout.strip(), 'unknown')
+
+    def test_the_setting_and_its_values(self):
+        words = {'1': '1', 'on': '1', 'yes': '1', 'true': '1', '0': '0', 'off': '0', 'no': '0', 'false': '0',
+                 '': '', 'maybe': '', '0 ; reboot': '', '2': '', 'ON': ''}
+        for v, want in words.items():
+            r, _ = self.lib(f'echo "[$(roaming_word {shlex.quote(v)})]"')
+            self.assertEqual(r.stdout.strip(), f'[{want}]', v)
+        # OpenWrt: one option per card; unset or not a word: allowed
+        r, _ = self.lib('echo "$(roaming_setting 0) $(roaming_setting 1)"', MU300_NETIFD=1, T_ROAM0='0', T_ROAM1='1')
+        self.assertEqual(r.stdout.strip(), '0 1', r.stderr)
+        r, _ = self.lib('echo "$(roaming_setting 0) $(roaming_setting 1)"', MU300_NETIFD=1, T_ROAM1='nonsense')
+        self.assertEqual(r.stdout.strip(), '1 1', r.stderr)
+        # Ubuntu: the settings file, read (quotes, CR, the last line), never executed
+        self.conf.write_text('MU300_APN=internet\nMU300_DATA_ROAMING=1\nMU300_DATA_ROAMING="0"\r\n')
+        r, _ = self.lib('roaming_setting', MU300_NETIFD=0, MU300_CONF=self.conf)
+        self.assertEqual(r.stdout.strip(), '0', r.stderr)
+        self.conf.write_text('MU300_DATA_ROAMING=$(touch "$STUBLOG/ran")\n')
+        r, _ = self.lib('roaming_setting', MU300_NETIFD=0, MU300_CONF=self.conf)
+        self.assertEqual(r.stdout.strip(), '1', r.stderr)
+        self.assertFalse((self.tmp / 'ran').exists())
+        # no file: allowed (the default, today's behaviour)
+        r, _ = self.lib('roaming_setting', MU300_NETIFD=0, MU300_CONF=self.tmp / 'none.conf')
+        self.assertEqual(r.stdout.strip(), '1', r.stderr)
+
+    def test_the_default_dials_a_roaming_sim_as_before(self):
+        """Nothing set: a SIM registered as roaming gets data, and no extra question is sent."""
+        r, cmds = self.dial(self.ROAM)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn('IP=10.1.2.3\n', r.stdout)
+        self.assertIn('AT+CGACT=1,1', cmds)
+        self.assertEqual(cmds.count('AT+CEREG?'), 1, cmds)
+        self.assertNotIn('AT+C5GREG?', cmds)
+        self.assertFalse(self.held.exists())
+
+    def test_roaming_off_holds_the_dial_under_netifd(self):
+        for _ in range(2):
+            r, cmds = self.dial(self.ROAM, T_ROAM0='0')
+            self.assertEqual(r.returncode, 4, r.stderr)
+            self.assertNotIn('IP=', r.stdout)
+            self.assertFalse([c for c in cmds if c.startswith(('AT+CGACT', 'AT+CGDCONT', 'AT+CGDATA', 'sipa-dele'))], cmds)
+            self.assertEqual(self.held.read_text().strip(), '0')
+            self.assertTrue((self.run_dir / 'mu300-mobile-data-down').exists())
+        # said once, not on every retry of netifd
+        self.assertEqual(self.radio_log().count('data roaming is off'), 1, self.radio_log())
+        self.assertEqual((self.tmp / 'logger').read_text().count('data roaming is off'), 1)
+        # at home the same setting dials, and the hold is over
+        r, cmds = self.dial(self.HOME, T_ROAM0='0')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn('AT+CGACT=1,1', cmds)
+        self.assertFalse(self.held.exists())
+        self.assertIn('on the home network, mobile data comes back', self.radio_log())
+
+    def test_the_hold_is_said_once_in_the_journal(self):
+        """By hand the line goes to stderr too; under systemd stderr is the journal, where logger already put it
+        (seen on an F50: the same line twice)."""
+        r, _ = self.dial(self.ROAM, T_ROAM0='0', JOURNAL_STREAM='')   # (a CI runner under systemd has one)
+        self.assertIn('registered on a roaming network and data roaming is off', r.stderr)
+        self.held.unlink()
+        r, _ = self.dial(self.ROAM, T_ROAM0='0', JOURNAL_STREAM='8:12345')
+        self.assertNotIn('registered on a roaming network', r.stderr)
+        self.assertEqual((self.tmp / 'logger').read_text().count('data roaming is off'), 2)
+
+    def test_a_registration_that_cannot_be_read_is_no_dial_with_roaming_off(self):
+        # registered according to the URC log, then the queries say nothing
+        log = self.tmp / 'urc.log'
+        log.write_text('')
+        modem = self.MODEM.replace("'AT+CEREG?') printf '%s\\nOK\\n' \"${CEREG:-+CEREG: 2,2}\" ;;",
+                                   "'AT+CEREG?') printf 'ERROR\\n' ;;")
+        r, sent = self.lib('(sleep 1; echo "+CEREG: 1" >> "$MU300_URC_LOG") & up_locked', modem=modem, MU300_NETIFD=1,
+                           MU300_AT_DEV='/dev/null', MU300_URC_LOG=log, MU300_CFUN_WAIT=0, T_ROAM0='0', C5GREG='ERROR')
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertFalse([s for s in sent if 'AT+CGACT' in s], sent)
+        self.assertFalse(self.held.exists())
+        self.assertIn('could not tell', r.stderr)
+
+    def test_the_second_card_has_its_own_setting(self):
+        """dual SIM: slot 1 reads roaming_internal; the hold names the slot."""
+        r, cmds = self.dial(self.ROAM, MU300_SIM_SLOT='1', T_ROAM0='0', T_ROAM1='1')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn('AT+CGACT=1,1', cmds)
+        self.assertIn('uci -q get network.wan.roaming_internal', (self.tmp / 'uci').read_text())
+        r, cmds = self.dial(self.ROAM, MU300_SIM_SLOT='1', T_ROAM0='1', T_ROAM1='0')
+        self.assertEqual(r.returncode, 4, r.stderr)
+        self.assertEqual(self.held.read_text().strip(), '1')
+
+    def test_the_card_is_asked_on_its_own_channel(self):
+        """FINDINGS 74: each card's dial channel answers for that card; the question carries no AT+SPACTCARD (which
+        the panel's terminal refuses as a command anyway)."""
+        for d in ('mu300-at2', 'mu300-at5'):
+            (self.run_dir / d).mkdir(parents=True, exist_ok=True)
+            if not (self.run_dir / d / 'cmd').exists():
+                os.mkfifo(self.run_dir / d / 'cmd')
+        (self.run_dir / 'mu300-radio-freeze').touch()
+        stubdir = self.tmp / 'chan'
+        stubdir.mkdir(exist_ok=True)
+        (stubdir / 'mu300-at').write_text('#!/bin/sh\n[ "$1" = -t ] && shift 2\n'
+                                          'echo "${MU300_AT_DIR##*/} $1" >> "$STUBLOG/chan.log"\n'
+                                          'echo "+CEREG: 2,5"; echo OK\n')
+        (stubdir / 'mu300-at').chmod(0o755)
+        r, _ = self.lib('unset -f at; . "$STUBLOG/mobile-data.lib"; PATH="$STUBLOG/chan:$PATH"; roam_state',
+                        MU300_SIM_SLOT='1')
+        self.assertEqual(r.stdout.strip().splitlines()[-1], 'roaming', r.stderr)
+        self.assertEqual((self.tmp / 'chan.log').read_text().splitlines(), ['mu300-at5 AT+CEREG?'])
+
+    def test_ubuntu_holds_without_a_failure_and_the_watchdog_brings_data_back(self):
+        self.conf.write_text('MU300_DATA_ROAMING=0\n')
+        env = dict(MU300_NETIFD=0, MU300_CONF=self.conf)
+        r, cmds = self.dial(self.ROAM, **env)
+        self.assertEqual(r.returncode, 0, r.stderr)          # the service stays up: no restart every 30 s
+        self.assertIn('held back', r.stdout)
+        self.assertNotIn('AT+CGACT=1,1', cmds)
+        self.assertTrue(self.held.exists())
+        watch = 'up() { echo up >> "$STUBLOG/ups"; }\nwatch'
+        wenv = dict(env, MU300_AT_DEV='/dev/null', MU300_WATCH_INTERVAL='0', MU300_WATCH_ROUNDS='3')
+        # still roaming: one question a round, no dial, no "mobile data lost"
+        r, sent = self.lib(watch, CEREG=self.ROAM, **wenv)
+        cmds = [s.split(' ', 1)[1] for s in sent]
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(set(cmds), {'AT+CEREG?'}, cmds)
+        self.assertFalse((self.tmp / 'ups').exists())
+        self.assertNotIn('lost', r.stderr)
+        # home again: the hold ends and the watchdog dials, once
+        r, sent = self.lib(watch, CEREG=self.HOME, **wenv)
+        self.assertEqual((self.tmp / 'ups').read_text().split(), ['up'], r.stderr)
+        self.assertFalse(self.held.exists())
+        # or roaming allowed meanwhile, still abroad
+        (self.tmp / 'ups').unlink()
+        self.held.write_text('0\n')
+        self.conf.write_text('MU300_DATA_ROAMING=1\n')
+        r, sent = self.lib(watch, CEREG=self.ROAM, **wenv)
+        self.assertEqual((self.tmp / 'ups').read_text().split(), ['up'], r.stderr)
+        self.assertIn('data roaming: allowed', self.radio_log())
+
+    def test_the_watchdog_takes_data_down_when_the_card_goes_roaming(self):
+        """A live connection, then roaming with data roaming off: down once (no redial loop), and the default does
+        not ask more than before."""
+        wenv = dict(MU300_AT_DEV='/dev/null', MU300_WATCH_INTERVAL='0', MU300_WATCH_ROUNDS='3', CGACT='+CGACT:1,1')
+        # netifd: the wan restarted once, its dial then holds; later rounds leave it to netifd
+        r, sent = self.lib('watch', MU300_NETIFD=1, CEREG=self.ROAM, T_ROAM0='0', **wenv)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual((self.tmp / 'ifup').read_text().splitlines(), ['ifup wan'])
+        self.assertTrue(self.held.exists())
+        self.assertEqual(self.radio_log().count('data roaming is off'), 1)
+        # the wan taken down by hand (netifd's autostart off; its teardown left the marker): the hold ends
+        (self.tmp / 'ifup').unlink()
+        (self.run_dir / 'mu300-mobile-data-down').touch()
+        r, _ = self.lib('watch', MU300_NETIFD=1, CEREG=self.ROAM, T_ROAM0='0', T_AUTOSTART='false', **wenv)
+        self.assertFalse(self.held.exists())
+        self.assertFalse((self.tmp / 'ifup').exists())
+        # Ubuntu: the connection goes down as `mobile-data down` takes it
+        (self.run_dir / 'mu300-mobile-data-down').unlink()
+        self.conf.write_text('MU300_DATA_ROAMING=0\n')
+        r, sent = self.lib('up() { echo up >> "$STUBLOG/ups"; }\nwatch', MU300_NETIFD=0, MU300_CONF=self.conf,
+                           CEREG=self.ROAM, **wenv)
+        cmds = [s.split(' ', 1)[1] for s in sent]
+        self.assertEqual(cmds.count('AT+CGACT=0,1'), 1, cmds)
+        self.assertTrue(self.held.exists())
+        self.assertFalse((self.tmp / 'ups').exists())
+        # the default (nothing set), roaming or not: the round asks what it asked before, and nothing goes down
+        self.held.unlink()
+        (self.run_dir / 'mu300-mobile-data-down').unlink()   # (down's)
+        for cereg in (self.ROAM, self.HOME):
+            (self.tmp / 'ifup').unlink(missing_ok=True)
+            r, sent = self.lib('watch', MU300_NETIFD=1, CEREG=cereg, **dict(wenv, MU300_WATCH_ROUNDS='1'))
+            cmds = [s.split(' ', 1)[1] for s in sent]
+            self.assertEqual(cmds.count('AT+CEREG?'), 1, cmds)
+            self.assertNotIn('AT+C5GREG?', cmds)
+            self.assertFalse((self.tmp / 'ifup').exists(), (cmds, r.stderr))
+            self.assertFalse(self.held.exists())
+
+    def test_the_watchdog_stands_aside_while_suspended_and_held(self):
+        self.held.parent.mkdir(parents=True, exist_ok=True)
+        self.held.write_text('0\n')
+        (self.run_dir / 'mu300-mobile-data.suspend').write_text('off\n')
+        r, sent = self.lib('watch', MU300_NETIFD=0, MU300_AT_DEV='/dev/null', MU300_WATCH_INTERVAL='0',
+                           MU300_WATCH_ROUNDS='2', CEREG=self.HOME)
+        self.assertEqual(sent, [])
+        self.assertTrue(self.held.exists())
+
+    def test_the_test_hook_only_as_a_file_of_ours(self):
+        hook = self.run_dir / 'mu300' / 'roaming-test'
+        hook.parent.mkdir(parents=True, exist_ok=True)
+        r, _ = self.lib('roam_classify 1')
+        self.assertEqual(r.stdout.strip(), 'home')
+        hook.write_text('home-as-roaming\n')
+        r, _ = self.lib('roam_classify 1')
+        self.assertEqual(r.stdout.strip(), 'roaming')
+        hook.write_text('yes\n')
+        r, _ = self.lib('roam_classify 1')
+        self.assertEqual(r.stdout.strip(), 'home')
+        hook.unlink()
+        (self.tmp / 'elsewhere').write_text('home-as-roaming\n')
+        hook.symlink_to(self.tmp / 'elsewhere')
+        r, _ = self.lib('roam_classify 1')
+        self.assertEqual(r.stdout.strip(), 'home')
+
+    def test_the_command_writes_the_setting(self):
+        # Ubuntu: the other lines kept (the APN password among them), root's alone, the old value replaced
+        self.conf.write_text('MU300_APN=internet\nMU300_APN_PASSWORD=s3cret\nMU300_DATA_ROAMING=1\n')
+        self.conf.chmod(0o644)
+        r, _ = self.lib('roaming_cmd off; echo rc=$?', MU300_NETIFD=0, MU300_CONF=self.conf)
+        self.assertIn('rc=0', r.stdout, r.stderr)
+        self.assertEqual(self.conf.read_text(), 'MU300_APN=internet\nMU300_APN_PASSWORD=s3cret\nMU300_DATA_ROAMING=0\n')
+        self.assertEqual(self.conf.stat().st_mode & 0o777, 0o600)
+        r, _ = self.lib('roaming_json', MU300_NETIFD=0, MU300_CONF=self.conf)
+        self.assertEqual(json.loads(r.stdout), {'allowed': False, 'held': False, 'slot': 0, 'per_sim': False,
+                                                'slots': [False, False]})
+        for bad in ('maybe', 'on --slot 1', 'on extra'):
+            r, _ = self.lib(f'rc=0; roaming_cmd {bad} || rc=$?; echo rc=$rc', MU300_NETIFD=0, MU300_CONF=self.conf)
+            self.assertIn('rc=2', r.stdout, bad)
+        self.assertIn('MU300_DATA_ROAMING=0', self.conf.read_text())
+        # a file that is not there yet is made, root's alone
+        new = self.tmp / 'etc' / 'mobile-data.conf'
+        r, _ = self.lib('roaming_cmd on', MU300_NETIFD=0, MU300_CONF=new)
+        self.assertEqual(new.read_text(), 'MU300_DATA_ROAMING=1\n', r.stderr)
+        self.assertEqual(new.stat().st_mode & 0o777, 0o600)
+        # OpenWrt: the card in use, or the one named
+        r, _ = self.lib('roaming_cmd off; roaming_cmd on --slot 1; rc=0; roaming_cmd on --slot 2 || rc=$?; echo rc=$rc',
+                        MU300_NETIFD=1)
+        self.assertIn('rc=2', r.stdout, r.stderr)
+        calls = (self.tmp / 'uci').read_text().splitlines()
+        self.assertIn('uci -q set network.wan.roaming=0', calls)
+        self.assertIn('uci -q set network.wan.roaming_internal=1', calls)
+        self.assertEqual(calls.count('uci -q commit network'), 2)
+        self.assertFalse([c for c in calls if 'slot' in c or '=2' in c], calls)
+
+    def test_an_explicit_down_ends_the_hold_on_ubuntu_only(self):
+        text = (BIN / 'mobile-data').read_text()
+        case = text[text.index('\ncase "${1:-status}" in'):]
+        for netifd, kept in (('0', False), ('1', True)):
+            self.held.parent.mkdir(parents=True, exist_ok=True)
+            self.held.write_text('0\n')
+            r, _ = self.lib('down() { :; }\nmain() { set -- down' + case + '\n}\nmain; echo ok', MU300_NETIFD=netifd)
+            self.assertIn('ok', r.stdout, r.stderr)
+            self.assertEqual(self.held.exists(), kept, netifd)
 
 
 class RadioLocked(ShellTest):
@@ -2049,6 +2626,55 @@ class Led(ShellTest):
                 self.led(shell, device, 'sleep', '--if-due')
                 lit = 'net_blue' if device == 'u30air' else 'sc27xx:blue'
                 self.assertEqual(self.state()[lit], '255', device)
+
+    def test_v50(self):
+        # the ZTE V50 (FINDINGS 95, kano's mapping): the AW9523B's NET1 lamp is the network LED (blue 4G, white 5G,
+        # red without service), its Wi-Fi lamp white on 5 GHz and blue on 2.4 GHz, NET2 stays dark; the PMIC's LEDs,
+        # which its device tree has as well, are never written, and the lamps go no brighter than the driver allows
+        lamps = {f'v50:{l}:{c}': 80 if c == 'white' else 120 for l in ('net1', 'net2', 'wifi') for c in ('white', 'blue', 'red')}
+        for n, m in lamps.items():
+            d = self.root / 'sys' / 'class' / 'leds' / n
+            d.mkdir(parents=True, exist_ok=True)
+            (d / 'max_brightness').write_text(f'{m}\n')
+            (d / 'trigger').write_text('[none] timer\n')
+
+        def lamp_state():
+            return {n: (self.root / 'sys/class/leds' / n / 'brightness').read_text().strip() for n in lamps}
+        net1 = ('v50:net1:red', 'v50:net1:white', 'v50:net1:blue')
+        for shell in self.each_shell():
+            self.reset()
+            for n in lamps:
+                (self.root / 'sys/class/leds' / n / 'brightness').write_text('0\n')
+            for args in (('power', 'on'), ('wake',), ('sleep',), ('power', 'off')):
+                self.assertEqual(self.led(shell, 'v50', *args).returncode, 0, args)   # no power LED, no timeout
+            self.assertEqual(set(lamp_state().values()), {'0'})
+            for args, lit in ((('data', 'error'), 'v50:net1:red'), (('data', 'on'), 'v50:net1:blue'),
+                              (('data', '5g'), 'v50:net1:white'), (('data', 'on'), 'v50:net1:blue'),
+                              (('data', 'error'), 'v50:net1:red')):
+                self.assertEqual(self.led(shell, 'v50', *args).returncode, 0, args)
+                s = lamp_state()
+                self.assertEqual({n: s[n] for n in net1}, {n: str(lamps[n]) if n == lit else '0' for n in net1}, args)
+            self.led(shell, 'v50', 'data', 'off')
+            self.assertEqual({lamp_state()[n] for n in net1}, {'0'})
+            for iw, lit, dark in (('channel 36 (5180 MHz), width: 80 MHz', 'v50:wifi:white', 'v50:wifi:blue'),
+                                  ('channel 6 (2437 MHz), width: 20 MHz', 'v50:wifi:blue', 'v50:wifi:white')):
+                (self.tmp / 'iw.out').write_text(f'Interface wlan0\n\tssid V50\n\ttype AP\n\t{iw}\n')
+                self.led(shell, 'v50', 'wifi', 'on')
+                s = lamp_state()
+                self.assertEqual((s[lit], s[dark]), (str(lamps[lit]), '0'), iw)
+            self.led(shell, 'v50', 'wifi', 'off')
+            self.assertEqual((lamp_state()['v50:wifi:white'], lamp_state()['v50:wifi:blue']), ('0', '0'))
+            self.assertEqual({lamp_state()[f'v50:net2:{c}'] for c in ('white', 'blue', 'red')}, {'0'})
+            self.assertEqual(set(self.state().values()), {'0'})   # no PMIC LED, nothing of the F50's or U30 Air's
+        # a V50 under 5.4 (no driver: no lamps): every LED is skipped, the PMIC's are still not written
+        for n in lamps:
+            shutil.rmtree(self.root / 'sys' / 'class' / 'leds' / n)
+        for shell in self.each_shell():
+            self.reset()
+            for args in (('data', 'on'), ('data', 'error'), ('wifi', 'on'), ('alarm', 'on')):
+                self.assertEqual(self.led(shell, 'v50', *args).returncode, 0, args)
+            self.led(shell, 'v50', 'alarm', 'off')
+            self.assertEqual(set(self.state().values()), {'0'})
 
     def test_f50(self):
         # ZTE's F50 (read from its Android): one network light on the PMIC's RGB LED - blue on 4G, white (the green
@@ -2954,6 +3580,11 @@ elif op.startswith('w'):
             r = self.nfc(shell, 'wifi', device='f50')
             self.assertEqual(r.returncode, 1)
             self.assertIn('only the U30 Air', r.stderr)
+            # the V50's tag is on another reset line: not driven, and the tag is not touched (FINDINGS 95)
+            r = self.nfc(shell, 'wifi', device='v50')
+            self.assertEqual(r.returncode, 1)
+            self.assertIn("the V50's NFC tag is not supported yet", r.stderr)
+            self.assertEqual(self.writes(), [])
             self.assertEqual(self.nfc(shell, 'blink').returncode, 2)
             self.assertEqual(self.nfc(shell, 'url').returncode, 1)
             # no capability container: not written
@@ -3487,6 +4118,125 @@ class NextBoot(ShellTest):
         self.assertIn('arming with 1 attempt, not 5', r.stderr)
         self.assertEqual(self.bc(), bytes(linux_b))
 
+    def slot_b_blocks(self):
+        android_a, linux_b, _, _ = self.blocks
+        (self.run_dir / 'linux-slot').write_text('b\n')
+        (self.run_dir / 'misc-bc-android.bin').write_bytes(android_a)
+        (self.run_dir / 'misc-bc-linux-trial.bin').write_bytes(linux_b)
+        return android_a, linux_b
+
+    def test_the_default_boot_is_written_only_after_misc_reads_back(self):
+        # kanoqwq's 1f8f03fb: a switch changes misc and nothing else until misc is known good. Here: the file the
+        # initramfs reads ("linux" = skip restoring Android's slot) used to be written first, whatever misc did then
+        android_a, _ = self.slot_b_blocks()
+        conf = self.tmp / 'default-boot'
+        (self.run_dir / 'misc-dev').write_text(str(self.tmp / 'no-such-dir' / 'misc'))   # every write fails
+        r = self.nb('android')
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn('writing misc failed', r.stderr)
+        self.assertEqual(conf.read_text(), 'linux\n')
+        # no Android block at all: nothing written either
+        (self.run_dir / 'misc-dev').write_text(str(self.misc))
+        (self.run_dir / 'misc-bc-android.bin').unlink()
+        self.assertNotEqual(self.nb('android').returncode, 0)
+        self.assertEqual(conf.read_text(), 'linux\n')
+        (self.run_dir / 'misc-bc-android.bin').write_bytes(android_a)
+        r = self.nb('android')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual((self.bc(), conf.read_text()), (android_a, 'android\n'))
+        # and back: "linux" with a misc that cannot be written leaves "android"
+        (self.run_dir / 'misc-dev').write_text(str(self.tmp / 'no-such-dir' / 'misc'))
+        self.assertNotEqual(self.nb('linux').returncode, 0)
+        self.assertEqual(conf.read_text(), 'android\n')
+        (self.run_dir / 'misc-dev').write_text(str(self.misc))
+        r = self.nb('linux')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual((self.bc()[14], conf.read_text()), (0x6f, 'linux\n'))
+        self.assertEqual([p.name for p in self.tmp.glob('.default-boot.*')], [])
+
+    def test_the_degraded_arm_still_records_linux(self):
+        # FINDINGS 32: a slot block that cannot be rebuilt here gets the initramfs' one-shot block - written and read
+        # back, so "linux" is recorded with it as before (exit 1 says the arm is degraded)
+        linux_b = bytearray(self.blocks[1])
+        linux_b[14] = 0x3f
+        linux_b[28:32] = struct.pack('<I', zlib.crc32(bytes(linux_b[:28])))
+        (self.run_dir / 'linux-slot').write_text('b\n')
+        (self.run_dir / 'misc-bc-android.bin').write_bytes(self.blocks[0])
+        (self.run_dir / 'misc-bc-linux-trial.bin').write_bytes(bytes(linux_b))
+        (self.tmp / 'default-boot').write_text('android\n')
+        r = self.nb('linux')
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertEqual((self.bc(), (self.tmp / 'default-boot').read_text()), (bytes(linux_b), 'linux\n'))
+
+    def test_the_default_boot_is_never_written_through_a_symlink(self):
+        android_a, _ = self.slot_b_blocks()
+        victim = self.tmp / 'victim'
+        victim.write_text('keep\n')
+        conf = self.tmp / 'default-boot'
+        conf.unlink()
+        conf.symlink_to(victim)
+        r = self.nb('android')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(victim.read_text(), 'keep\n')
+        self.assertFalse(conf.is_symlink())
+        self.assertEqual(conf.read_text(), 'android\n')
+
+    def test_a_running_change_is_waited_for_and_never_overwritten(self):
+        # --rearm (mu300-boot-ok) reads the default boot, then writes the Linux block: an "android" in between was
+        # lost. The script holds a lock from its first read to its last write; a stub flock stands for the real one
+        # here (macOS has none) and says busy while the marker exists.
+        android_a, _ = self.slot_b_blocks()
+        busy = self.tmp / 'busy'
+        flock = self.stubs / 'flock'
+        flock.write_text(f'#!/bin/sh\necho "$*" >> "{self.tmp}/flock.log"\n[ ! -e "{busy}" ]\n')
+        flock.chmod(0o755)
+        sleep = self.stubs / 'sleep'
+        sleep.write_text('#!/bin/sh\nexit 0\n')
+        sleep.chmod(0o755)
+        busy.touch()
+        before = self.misc.read_bytes()
+        if not shutil.which('bash'):
+            self.skipTest('no bash')
+        env = self.env(MU300_RUN=self.run_dir, MU300_CONF=self.tmp / 'default-boot',
+                       MU300_CMDLINE_SRC=self.tmp / 'cmdline', MU300_NEXT_BOOT_WAIT=3)
+        run = lambda *a: subprocess.run(['bash', str(BIN / 'mu300-next-boot'), *a], capture_output=True, text=True,
+                                        env=env)
+        r = run('android')
+        self.assertEqual(r.returncode, 1)
+        self.assertIn('another mu300-next-boot is still running', r.stderr)
+        self.assertEqual(self.misc.read_bytes(), before)
+        self.assertEqual((self.tmp / 'default-boot').read_text(), 'linux\n')
+        self.assertTrue((self.run_dir / 'next-boot.lock').exists())
+        # status reads only: it never waits
+        self.assertEqual(run('status').returncode, 0)
+        self.assertEqual((self.tmp / 'flock.log').read_text().split('\n').count('-n 9'), 3)
+        busy.unlink()
+        r = run('android')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.bc(), android_a)
+        # a lock file that is a symlink is not opened (and nothing is serialised then, as without flock)
+        (self.run_dir / 'next-boot.lock').unlink()
+        (self.run_dir / 'next-boot.lock').symlink_to(self.tmp / 'elsewhere')
+        busy.touch()
+        self.assertEqual(run('android').returncode, 0)
+        self.assertFalse((self.tmp / 'elsewhere').exists())
+
+    @unittest.skipUnless(shutil.which('flock') and shutil.which('bash'), 'needs flock(1) and bash')
+    def test_the_real_flock_holds_off_a_second_writer(self):
+        import fcntl
+        android_a, _ = self.slot_b_blocks()
+        before = self.misc.read_bytes()
+        with open(self.run_dir / 'next-boot.lock', 'a') as held:
+            fcntl.flock(held, fcntl.LOCK_EX)
+            r = subprocess.run(['bash', str(BIN / 'mu300-next-boot'), 'android'], capture_output=True, text=True,
+                               env=self.env(MU300_RUN=self.run_dir, MU300_CONF=self.tmp / 'default-boot',
+                                            MU300_CMDLINE_SRC=self.tmp / 'cmdline', MU300_NEXT_BOOT_WAIT=2))
+            self.assertEqual(r.returncode, 1, r.stderr)
+            self.assertEqual(self.misc.read_bytes(), before)
+        r = self.nb('android')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.bc(), android_a)
+
 
 class EarlyRecorder(ShellTest):
     """early-recorder's choice of boot partition: the Linux slot's, never Android's."""
@@ -3508,3 +4258,53 @@ class EarlyRecorder(ShellTest):
                         p.write_text(data)
                 r = self.sh(shell, m.group(1) + '\necho "$PART"', MU300_RUN=run, MU300_CMDLINE_SRC=cmdline)
                 self.assertEqual((r.stdout.strip(), r.stderr), (f'boot_{want}', ''), (v, cl))
+
+
+class EarlyRecorderNode(ShellTest):
+    """early-recorder writes only into the block device: on OpenWrt procd replaces /dev while it runs, and a dd in that
+    moment made /dev/mmcblk0p38 a plain file in RAM that took every later write, mu300-update's boot image too (U30 Air,
+    FINDINGS 86)."""
+
+    def run_node(self, shell, logdev, sysdir):
+        import re
+        m = re.search(r'# --- node begin\n(.*?)# --- node end', (BIN / 'early-recorder').read_text(), re.S)
+        self.assertIsNotNone(m, 'early-recorder has no node block')
+        log = self.tmp / 'mknod.log'
+        log.unlink(missing_ok=True)
+        code = (f'mknod() {{ echo "$*" >> "{log}"; }}\nLOGDEV="{logdev}" LOGSYS="{sysdir}"\n' + m.group(1)
+                + '\nif node_ok; then echo ok; else echo no; fi')
+        r = self.sh(shell, code)
+        return r.stdout.strip(), (log.read_text() if log.exists() else '')
+
+    def test_node(self):
+        sysdir = self.tmp / 'sys-p38'
+        sysdir.mkdir()
+        dev = self.tmp / 'mmcblk0p38'
+        for shell in self.each_shell():
+            (sysdir / 'dev').write_text('259:30\n')
+            # missing: no write (hotplug makes it), nothing made here
+            self.assertEqual(self.run_node(shell, dev, sysdir), ('no', ''))
+            self.assertFalse(dev.exists())
+            # a plain file in its place: removed, and the node made from sysfs (here mknod is a stand-in)
+            dev.write_bytes(b'x' * 100)
+            self.assertEqual(self.run_node(shell, dev, sysdir), ('no', f'-m 600 {dev} b 259 30\n'))
+            self.assertFalse(dev.exists())
+            # a link, or a sysfs entry that is not MAJOR:MINOR: left alone
+            dev.symlink_to(self.tmp / 'elsewhere')
+            self.assertEqual(self.run_node(shell, dev, sysdir), ('no', ''))
+            self.assertTrue(dev.is_symlink())
+            dev.unlink()
+            dev.write_bytes(b'x')
+            for bad in ('', 'junk\n', '259:\n'):
+                (sysdir / 'dev').write_text(bad)
+                self.assertEqual(self.run_node(shell, dev, sysdir), ('no', ''), bad)
+                self.assertTrue(dev.exists(), bad)
+            dev.unlink()
+
+    def test_every_write_is_behind_node_ok(self):
+        s = (BIN / 'early-recorder').read_text()
+        writes = [line for line in s.splitlines() if 'of="$LOGDEV"' in line]
+        self.assertEqual(len(writes), 1)
+        self.assertTrue(writes[0].strip().startswith('node_ok && dd '), writes[0])
+        after = s[s.index('node_ok && dd '):]
+        self.assertIn('\n    node_ok\n', after)

@@ -7,7 +7,7 @@
 #     ./modules/*.ko         every module - the kernel's own (=m) and the vendor ones - flat, for /lib/modules/<release>
 #                            on the root filesystem (Ubuntu: extra/, indexed by depmod; OpenWrt: flat, for kmodloader)
 #     ./kernel.release       the kernel's release string (uname -r)
-#     ./devices              the devices it runs on (f50 u30air)
+#     ./devices              the devices it runs on (f50 u30air, and v50 when the kernel has its LED driver)
 #     ./features             what it can do that older bundles could not (sdcard, linux-slot)
 #     ./modules.builtin*     what the kernel has built in, for depmod/modprobe
 # busybox and logdw are the static helpers of the 5.4 bundle (default: the newest one under release/).
@@ -20,6 +20,8 @@ OUT=${1:?usage: upstream/make-bundle.sh OUT.tar.gz [mu300-kernel.tar.gz]}
 REF=${2:-$(ls -t "$TOP"/release/*/mu300-kernel.tar.gz 2>/dev/null | head -1)}
 [ -f "$UO/Image" ] || { echo "no $UO/Image (run build.sh)" >&2; exit 1; }
 [ -f "$REF" ] || { echo "no 5.4 kernel bundle for busybox/logdw (give one as the second argument)" >&2; exit 1; }
+
+python3 "$U/audit-bundle.py" "$UO" "$U/mu300-mainline.config"
 
 krel=$(strings "$UO/Image" | sed -n 's/^Linux version \([^ ]*\) .*/\1/p' | head -1)
 [ -n "$krel" ] || { echo "cannot read the kernel release from upstream/out/Image" >&2; exit 1; }
@@ -42,10 +44,17 @@ python3 "$TOP/boot/build-boot-image.py" --generic-ramdisk --modules "$UO/modules
     --ueventd-perms "$TOP/android-vendor/ueventd-perms.sh" --out "$W/b/ramdisk-generic.lz4" >/dev/null
 cp "$UO"/modules/*.ko "$W/b/modules/"
 for f in modules.builtin modules.builtin.modinfo; do [ ! -f "$UO/$f" ] || cp "$UO/$f" "$W/b/"; done
+cp "$UO/kernel.config" "$UO/modules.in-tree" "$W/b/"
+( cd "$W/b/modules" && printf '%s\n' *.ko ) > "$W/b/modules.list"
 echo "$krel" > "$W/b/kernel.release"
 # the devices this kernel runs on; mu300-update and the installers check it (FINDINGS 33c: mainline kernels from
-# before this file do not bring up the U30 Air's USB)
-echo "f50 u30air" > "$W/b/devices"
+# before this file do not bring up the U30 Air's USB). The ZTE V50 (experimental, FINDINGS 95) only with a kernel
+# that has its LED driver and its eMMC host kept awake (patch 0017): both came with it, the driver's option tells.
+if grep -qx 'CONFIG_LEDS_AW9523B=y' "$UO/kernel.config"; then
+    echo "f50 u30air v50" > "$W/b/devices"
+else
+    echo "f50 u30air" > "$W/b/devices"
+fi
 # what this kernel can do that an older bundle could not; mu300-update reads it before it replaces a kernel
 # (sdcard: the card slot's host is probed, so a system on the SD card can boot with it; linux-slot: its init runs
 # from slot a as well, when Android is on b)

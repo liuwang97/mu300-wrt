@@ -93,11 +93,11 @@ DEFAULTS = {
     'dashboard-info': '{"ok":1,"host":"f50"}', 'cell': '{"ok":1}', 'action': '{"ok":1,"op":"x"}',
     'lock': '{"ok":1,"mode":{"label":"auto"}}', 'device-usb': '{"ok":1}', 'at': 'OK', 'sms': 'sent (12)',
     'languages': '{"ok":1}', 'power': '{"ok":1}', 'ttl': '{"ok":1}', 'traffic': '{"ok":1}', 'forward': '{"ok":1}',
-    'packages': '{"ok":1}',
+    'packages': '{"ok":1}', 'sim': '{"ok":1,"hot":1,"available":1,"busy":0}', 'update': '{"ok":1}',
 }
 
 # The methods that start something with setsid (in the background of mu300dash)
-DETACHED = {'act', 'at', 'lock_get', 'lock_set', 'sms_send', 'sms_sync', 'status'}
+DETACHED = {'act', 'at', 'lock_get', 'lock_set', 'sms_send', 'sms_sync', 'status', 'sim_set'}
 
 # Hostile values: each is refused by every field that takes a fixed set, a number or a name. The NUL cases: the
 # stand-in jsonfilter passes the NUL on (the backend maps it to \001 and refuses); the real jsonfilter prints strings
@@ -159,7 +159,7 @@ class Mu300Dash(ShellTest):
         stdin = raw if raw is not None else json.dumps(params or {}, ensure_ascii=False)
         env = self.env(STUB_CALLS=calls, STUB_OUT=self.out, MU300_DASH_BIN=self.adapters,
                        MU300_DASH_DIR=run / 'dash', MU300_AT=self.adapters / 'at', MU300_SMS_BIN=self.adapters / 'sms',
-                       MU300_SMS_POOL=run / 'pool')
+                       MU300_SMS_POOL=run / 'pool', MU300_DASH_SIM=self.adapters / 'sim')
         env.update({k: str(v) for k, v in extra.items()})
         env = {k: v for k, v in env.items() if v != ''}
         r = subprocess.run(shell + [str(DASH), 'call', method], input=stdin.encode(), capture_output=True,
@@ -248,7 +248,8 @@ class Inventory(Mu300Dash):
                'sms_show', 'sms_send', 'sms_job', 'sms_delete', 'sms_sync', 'usb_get', 'usb_set', 'usb_net_list', 'usb_net_add',
                'lang_get', 'lang_set', 'power_get', 'power_set',
                'ttl_get', 'ttl_set', 'cpu_get', 'cpu_set', 'forward_get', 'forward_set', 'forward_test',
-               'traffic_get', 'traffic_set', 'packages_get', 'packages_act'}
+               'forward_log_clear', 'traffic_get', 'traffic_set', 'packages_get', 'packages_act', 'sim_get', 'sim_set',
+               'update_get', 'update_job', 'update_act'}
 
     def test_list_declares_every_method(self):
         for shell in self.each_shell():
@@ -271,7 +272,7 @@ class Inventory(Mu300Dash):
         for shell in self.each_shell():
             for p in [DASH, LIB] + [ADAPTERS / n for n in ('action', 'at', 'boot-replay', 'cell', 'dashboard-info',
                                                          'device-usb', 'lock', 'languages', 'power', 'ttl',
-                                                         'cpu', 'forward', 'traffic', 'packages')]:
+                                                         'cpu', 'forward', 'traffic', 'packages', 'update')]:
                 with self.subTest(p=p.name):
                     r = subprocess.run(shell + ['-n', str(p)], capture_output=True, text=True)
                     self.assertEqual(r.returncode, 0, r.stderr)
@@ -286,6 +287,7 @@ class Refusals(Mu300Dash):
         ('act', {'op': 'radio', 'arg': 'on'}, 'arg', 'on'),
         ('act', {'op': 'data', 'arg': 'up'}, 'arg', 'up'),
         ('act', {'op': 'wifi', 'arg': 'off'}, 'arg', 'off'),
+        ('act', {'op': 'roaming', 'arg': 'off'}, 'arg', 'off'),
         ('act', {'op': 'vpn', 'arg': 'start'}, 'arg', 'start'),
         ('act', {'op': 'os', 'arg': 'android'}, 'arg', 'android'),
         ('act', {'op': 'os', 'arg': 'lock'}, 'arg', 'lock'),
@@ -314,6 +316,8 @@ class Refusals(Mu300Dash):
         ('power_set', {'op': 'set', 'key': 'battery.WIFI_IDLE', 'value': '15'}, 'value', '15'),
         ('power_set', {'op': 'wake'}, 'key', ''),
         ('power_set', {'op': 'wake'}, 'value', ''),
+        ('sim_set', {'op':'switch','value':'1'}, 'op','switch'),
+        ('sim_set', {'op':'switch','value':'1'}, 'value','1'),
         ('lang_set', {'op': 'enable', 'codes': 'de'}, 'codes', 'de'),
         ('lang_set', {'op': 'disable', 'codes': 'de pt_br'}, 'codes', 'de pt_br'),
         ('lang_set', {'op': 'use', 'codes': 'en'}, 'codes', 'en'),
@@ -330,6 +334,17 @@ class Refusals(Mu300Dash):
         ('packages_act', {}, 'op', 'retry'),
         ('packages_act', {}, 'op', 'repair_dns'),
         ('packages_act', {}, 'op', 'dismiss'),
+        # the Update page: every parameter is a fixed word, a release tag, a size or a SHA-256
+        ('update_get', {}, 'sizes', '1'),
+        ('update_act', {'op': 'check'}, 'op', 'check'),
+        ('update_act', {'op': 'apply', 'tag': 'v2026.10.25', 'confirm': 'apply'}, 'tag', 'v2026.10.25'),
+        ('update_act', {'op': 'apply', 'tag': 'v2026.10.25', 'confirm': 'apply'}, 'confirm', 'apply'),
+        ('update_act', {'op': 'apply', 'tag': 'v2026.10.25', 'confirm': 'apply'}, 'systems', 'openwrt-luci ubuntu'),
+        ('update_act', {'op': 'apply', 'tag': 'v2026.10.25', 'confirm': 'apply'}, 'flags', 'no_reinstall'),
+        ('update_act', {'op': 'kernel', 'confirm': 'kernel'}, 'kernel', '6.18'),
+        ('update_act', {'op': 'upload_begin'}, 'size', '52428800'),
+        ('update_act', {'op': 'apply_file', 'confirm': 'apply'}, 'sha256', 'ab' * 32),
+        ('update_act', {'op': 'apply_file', 'confirm': 'apply', 'sha256': 'ab' * 32}, 'flags', 'unsigned downgrade'),
         ('traffic_set', {'op': 'cap', 'value': '1024'}, 'op', 'cap'),
         ('traffic_set', {'op': 'cap', 'value': '1024'}, 'value', '1024'),
         ('traffic_set', {'op': 'reset_day', 'value': '15'}, 'value', '15'),
@@ -352,6 +367,9 @@ class Refusals(Mu300Dash):
     def test_values_out_of_range_are_refused(self):
         jobs = [
             ('act op unknown', 'act', {'op': 'shell', 'arg': 'on'}),
+            ('act roaming slot', 'act', {'op': 'roaming', 'arg': 'on --slot 1'}),
+            ('act roaming word', 'act', {'op': 'roaming', 'arg': 'yes'}),
+            ('act roaming empty', 'act', {'op': 'roaming', 'arg': ''}),
             ('lock val mode', 'lock_set', {'kind': 'mode', 'val': '5g'}),
             ('lock lte too many', 'lock_set', {'kind': 'lte', 'val': ','.join(['1'] * 33)}),
             ('lock lte four digits', 'lock_set', {'kind': 'lte', 'val': '1000'}),
@@ -417,6 +435,29 @@ class Refusals(Mu300Dash):
             ('packages dash form', 'packages_act', {'op': 'repair-dns'}),
             ('packages op chained', 'packages_act', {'op': 'retry; reboot'}),
             ('packages op empty', 'packages_act', {'op': ''}),
+            ('update unknown op', 'update_act', {'op': 'boot'}),
+            ('update op empty', 'update_act', {'op': ''}),
+            ('update op of the command', 'update_act', {'op': 'rollback-boot'}),
+            ('update tag not a date', 'update_act', {'op': 'apply', 'tag': 'v2026.10.5'}),
+            ('update tag a test build', 'update_act', {'op': 'apply', 'tag': 'test-issue-102'}),
+            ('update tag latest', 'update_act', {'op': 'apply', 'tag': 'latest'}),
+            ('update tag a url', 'update_act', {'op': 'apply', 'tag': 'http://x/v2026.10.25'}),
+            ('update tag an option', 'update_act', {'op': 'apply', 'tag': '--from'}),
+            ('update system unknown', 'update_act', {'op': 'apply', 'systems': 'android'}),
+            ('update system a path', 'update_act', {'op': 'rollback', 'systems': '../ubuntu'}),
+            ('update systems four', 'update_act', {'op': 'apply', 'systems': 'ubuntu openwrt openwrt-luci ubuntu'}),
+            ('update kernel unknown', 'update_act', {'op': 'kernel', 'kernel': '6.6'}),
+            ('update kernel version', 'update_act', {'op': 'kernel', 'kernel': '6.18.3'}),
+            ('update sha short', 'update_act', {'op': 'apply_file', 'sha256': 'ab' * 31}),
+            ('update sha upper', 'update_act', {'op': 'apply_file', 'sha256': 'AB' * 32}),
+            ('update size zero', 'update_act', {'op': 'upload_begin', 'size': '0'}),
+            ('update size leading zero', 'update_act', {'op': 'upload_begin', 'size': '0123'}),
+            ('update size eleven digits', 'update_act', {'op': 'upload_begin', 'size': '1' * 11}),
+            ('update size negative', 'update_act', {'op': 'upload_begin', 'size': '-1'}),
+            ('update flag unknown', 'update_act', {'op': 'apply', 'flags': 'force'}),
+            ('update flag an option', 'update_act', {'op': 'apply_file', 'flags': '--unsigned'}),
+            ('update confirm yes', 'update_act', {'op': 'clean', 'confirm': 'yes'}),
+            ('update sizes word', 'update_get', {'sizes': 'yes'}),
             ('ttl zero', 'ttl_set', {'value': '0'}),
             ('ttl 256', 'ttl_set', {'value': '256'}),
             ('ttl 999', 'ttl_set', {'value': '999'}),
@@ -444,6 +485,7 @@ class Passthrough(Mu300Dash):
         ('act', {'op': 'reboot', 'arg': None}, [['setsid', 'action', 'reboot', '']]),
         ('act', {'op': 'vpn', 'arg': 'stop'}, [['setsid', 'action', 'vpn', 'stop']]),
         ('act', {'op': 'wifi', 'arg': 'off'}, [['action', 'wifi', 'off']]),
+        ('act', {'op': 'roaming', 'arg': 'on'}, [['action', 'roaming', 'on']]),
         ('act', {'op': 'os', 'arg': 'android'}, [['action', 'os', 'android']]),
         ('act', {'op': 'os', 'arg': 'lock'}, [['action', 'os', 'lock']]),
         ('act', {'op': 'os', 'arg': 'unlock'}, [['action', 'os', 'unlock']]),
@@ -489,6 +531,27 @@ class Passthrough(Mu300Dash):
         ('packages_act', {'op': 'retry'}, [['packages', 'act', 'retry']]),
         ('packages_act', {'op': 'repair_dns'}, [['packages', 'act', 'repair_dns']]),
         ('packages_act', {'op': 'dismiss'}, [['packages', 'act', 'dismiss']]),
+        # the Update page: always the same eight arguments, in the same places (an empty one stays an argument)
+        ('update_get', {}, [['update', 'get']]),
+        ('update_get', {'sizes': '1'}, [['update', 'get', '1']]),
+        ('update_job', {}, [['update', 'job']]),
+        ('update_job', {'op': 'clean', 'confirm': 'clean'}, [['update', 'job']]),
+        ('update_act', {'op': 'check'}, [['update', 'act', 'check', '', '', '', '', '', '', '']]),
+        ('update_act', {'op': 'apply', 'tag': 'v2026.10.25', 'systems': 'openwrt-luci ubuntu', 'flags': 'no_reinstall',
+                        'confirm': 'apply'},
+         [['update', 'act', 'apply', 'v2026.10.25', 'openwrt-luci ubuntu', '', '', '', 'no_reinstall', 'apply']]),
+        ('update_act', {'op': 'kernel', 'kernel': '7.2', 'confirm': 'kernel'},
+         [['update', 'act', 'kernel', '', '', '7.2', '', '', '', 'kernel']]),
+        ('update_act', {'op': 'upload_begin', 'size': '52428800'},
+         [['update', 'act', 'upload_begin', '', '', '', '', '52428800', '', '']]),
+        ('update_act', {'op': 'apply_file', 'sha256': 'ab' * 32, 'flags': 'unsigned downgrade', 'confirm': 'apply'},
+         [['update', 'act', 'apply_file', '', '', '', 'ab' * 32, '', 'unsigned downgrade', 'apply']]),
+        ('update_act', {'op': 'rollback', 'systems': 'ubuntu', 'confirm': 'rollback'},
+         [['update', 'act', 'rollback', '', 'ubuntu', '', '', '', '', 'rollback']]),
+        ('update_act', {'op': 'clean', 'confirm': 'clean'}, [['update', 'act', 'clean', '', '', '', '', '', '', 'clean']]),
+        ('sim_get', {}, [['sim', 'status', '--json']]),
+        ('sim_set', {'op':'default','value':'2'}, [['sim','default','2']]),
+        ('sim_set', {'op':'hot','value':'1'}, [['sim','hot','1']]),
         ('ttl_set', {'value': '64'}, [['ttl', 'set', '64']]),
         ('ttl_set', {'value': 128}, [['ttl', 'set', '128']]),
         ('ttl_set', {'value': '255'}, [['ttl', 'set', '255']]),
@@ -505,6 +568,9 @@ class Passthrough(Mu300Dash):
         ('forward_get', {}, [['forward', 'get']]),
         ('forward_set', {'enabled': '1', 'telegram_token': 'x'}, [['forward', 'set']]),
         ('forward_test', {}, [['forward', 'test']]),
+        ('forward_log_clear', {}, [['forward', 'logclear']]),
+        # it takes nothing: what a caller adds never becomes an argument
+        ('forward_log_clear', {'path': '/etc/passwd', 'op': 'x;id'}, [['forward', 'logclear']]),
     ]
 
     def test_valid_values_reach_the_adapter(self):
@@ -579,7 +645,8 @@ class Replies(Mu300Dash):
         ('sms_sync', {}), ('usb_get', {}), ('usb_set', {'kind': 'role', 'value': 'device', 'auto': '0'}),
         ('usb_net_list', {}), ('usb_net_add', {'iface': 'eth1'}), ('ttl_get', {}), ('ttl_set', {'value': '64'}),
         ('forward_get', {}), ('forward_set', {'enabled': '0'}), ('forward_test', {}),
-        ('packages_get', {}), ('packages_act', {'op': 'dismiss'}),
+        ('forward_log_clear', {}), ('packages_get', {}), ('packages_act', {'op': 'dismiss'}),
+        ('update_get', {}), ('update_job', {}), ('update_act', {'op': 'check'}),
     ]
     OUTPUTS = {
         'garbage': NASTY,
@@ -939,10 +1006,10 @@ class TrafficAdapter(ShellTest):
 class Acl(unittest.TestCase):
     # SMS bodies (one-time codes) and the AT history (AT+CPIN PINs) are not for read-only users (ruling R14)
     READ = {'sysinfo', 'status', 'signal', 'lock_get', 'usb_get', 'usb_net_list', 'lang_get', 'power_get', 'ttl_get',
-            'cpu_get', 'traffic_get', 'ops_log', 'packages_get'}
+            'cpu_get', 'traffic_get', 'ops_log', 'packages_get', 'sim_get', 'update_get', 'update_job'}
     WRITE = {'act', 'at', 'at_job', 'at_history', 'lock_set', 'sms_list', 'sms_show', 'sms_send', 'sms_job', 'sms_delete', 'sms_sync',
              'usb_set', 'usb_net_add', 'lang_set', 'power_set', 'ttl_set', 'cpu_set', 'forward_get',
-             'forward_set', 'forward_test', 'traffic_set', 'packages_act'}
+             'forward_set', 'forward_test', 'forward_log_clear', 'traffic_set', 'packages_act', 'sim_set', 'update_act'}
 
     def test_actions_need_write_access(self):
         acl = json.loads(ACL.read_text())['luci-app-mu300']
@@ -951,12 +1018,14 @@ class Acl(unittest.TestCase):
         self.assertEqual(read, self.READ)
         self.assertEqual(write, self.WRITE)
         self.assertEqual(read | write, Inventory.METHODS)
-        # the Languages page and the VPN pages upload to fixed paths (a language pack; a VPN config and a VPN
-        # extra's tarball), and only with write access; mu300vpn has its own read/write split (test_mu300vpn)
+        # the Languages page, the VPN pages and the Update page upload to fixed paths (a language pack; a VPN config
+        # and a VPN extra's tarball; a release file, which goes to the Linux partition, into a directory only root
+        # can enter), and only with write access; mu300vpn has its own read/write split (test_mu300vpn)
         self.assertEqual(acl['write'].get('cgi-io'), ['upload'])
         self.assertEqual(acl['write'].get('file'), {'/tmp/mu300-extra-lang.tar.gz': ['write'],
                                                     '/tmp/mu300-vpn-upload': ['write'],
-                                                    '/tmp/mu300-vpn-extra.tar.gz': ['write']})
+                                                    '/tmp/mu300-vpn-extra.tar.gz': ['write'],
+                                                    '/mnt/mu300-disk/.mu300-upload/update.zip': ['write']})
         self.assertEqual(set(acl['read']['ubus']), {'mu300dash', 'mu300rates', 'mu300vpn'})
         self.assertEqual(set(acl['write']['ubus']), {'mu300dash', 'mu300vpn'})
         self.assertNotIn('cgi-io', acl['read'])
@@ -1040,6 +1109,28 @@ class FixRound1(Mu300Dash):
             for c in good:
                 r, recs, _ = self.call(shell, 'at', {'cmd': c})
                 self.assertEqual(recs, [['at', '-t', '8', c]], c)
+
+    def test_the_commands_that_move_the_sim_or_the_data_route_are_the_selectors_alone(self):
+        # AT+SPSWDATA from the terminal moves the packet-data route under a connection that then answers CONNECT and
+        # loses every packet; the SIM selector sends these three itself, in a measured order, and keeps a mark of
+        # where the route is (FINDINGS 74, after kanoqwq's terminal). Their "?" forms only ask.
+        bad = ['AT+SPSWDATA', 'at+spswdata', 'AT + SPSWDATA', 'AT+SPSWDATA=1', 'AT+SPSWDATA=0', 'AT+SPACTCARD=1',
+               'AT+SPACTCARD=0', 'at+spactcard = 1', 'AT+SPACTCARD="1"', 'AT+SMMSWAP=0', 'AT+SMMSWAP=1', 'at+smmswap=1',
+               'ATE0+SPSWDATA', 'AT+SPACTCARD=']
+        good = ['AT+SPSWDATA?', 'AT+SPSWDATA=?', 'AT+SPACTCARD?', 'AT+SPACTCARD=?', 'AT+SMMSWAP?', 'AT+SPTESTMODE?']
+        for shell in self.each_shell():
+            for c in bad:
+                r, recs, _ = self.call(shell, 'at', {'cmd': c, 'confirm': '1'})
+                self.assertEqual(recs, [], c)
+                self.assertEqual(self.reply(r).get('error'),
+                                 'Denied: this command moves the SIM selection or the data route; the SIM settings do that', c)
+            for c in good:
+                r, recs, _ = self.call(shell, 'at', {'cmd': c})
+                self.assertEqual(recs, [['at', '-t', '8', c]], c)
+            # the two-card form of the work-mode write is an NV write like the one-card form: asked about first
+            r, recs, _ = self.call(shell, 'at', {'cmd': 'AT+SPTESTMODEM=134,134'})
+            self.assertEqual(recs, [])
+            self.assertEqual({k: self.reply(r).get(k) for k in ('confirm', 'kind')}, {'confirm': 1, 'kind': 'nv'})
 
     def test_sms_failures_carry_a_fixed_error_and_a_detail(self):
         self.output('sms', 'no message "4"\\x')

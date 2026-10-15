@@ -3,7 +3,8 @@ name: Release
 # The whole release on a GitHub arm64 runner: the vendor 5.4 kernel (kernel/build-all.sh), the mainline 6.18 and 7.2
 # kernels with their modules (upstream/build.sh, build-modules.sh), then tools/make-release.sh, which builds the root
 # filesystems and the extras, audits every asset and publishes the release. Actions > Release > Run workflow on main,
-# with the tag: a prerelease by default, which the installers and mu300-update do not offer until the maintainer has
+# with the tag left empty (the next one of today: vYYYY.MM.DD.N, tools/make-release.sh --next-tag, docs/FINDINGS.md
+# 125) or given (then it must be of today, in that form): a prerelease by default, which the installers and mu300-update do not offer until the maintainer has
 # tried it on a device and promoted it on GitHub (gh release edit TAG --prerelease=false --latest). The release's commit
 # is the main commit the workflow ran on, and nothing else: the job refuses another ref, and a tag or release that
 # already exists. The Magisk zips follow by the Magisk installers workflow, started at the end (a release made with the
@@ -13,8 +14,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag, e.g. v2026.10.12'
-        required: true
+        description: 'Release tag: empty for the next one of today (vYYYY.MM.DD.N), or that tag of today'
+        required: false
+        default: ''
       prerelease:
         description: 'Publish as a prerelease'
         type: boolean
@@ -38,19 +40,22 @@ jobs:
       contents: write   # the release and its assets
       actions: write    # the Magisk installers dispatch at the end
     env:
-      TAG: ${{ inputs.tag }}
+      INPUT_TAG: ${{ inputs.tag }}
       GH_TOKEN: ${{ github.token }}
       MU300_REPO: ${{ github.repository }}
     steps:
-      - name: Tag and ref
-        run: |
-          [ "$GITHUB_REF_NAME" = main ] || { echo "releases come from main, not $GITHUB_REF_NAME"; exit 1; }
-          tag_ok=1
-          case "$TAG" in v[0-9]*) ;; *) tag_ok= ;; esac
-          case "$TAG" in *[!0-9A-Za-z._-]*|*..*) tag_ok= ;; esac
-          [ -n "$tag_ok" ] || { echo "not a release tag: $TAG"; exit 1; }
-          echo "release $TAG from $GITHUB_REF_NAME@$GITHUB_SHA"
+      - name: Ref
+        run: '[ "$GITHUB_REF_NAME" = main ] || { echo "releases come from main, not $GITHUB_REF_NAME"; exit 1; }'
       - uses: actions/checkout@v5
+      # the tag: the next one of today when none was given; a given one must be vYYYY.MM.DD.N of today. Checked here,
+      # at the start: the build takes hours, and make-release.sh is told below that its day may have passed by then
+      - name: Tag
+        run: |
+          TAG=$INPUT_TAG
+          [ -n "$TAG" ] || TAG=$(sh tools/make-release.sh --next-tag)
+          sh tools/make-release.sh --check-tag "$TAG"
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          echo "release $TAG from $GITHUB_REF_NAME@$GITHUB_SHA"
       # make-release.sh adds to a release that exists (its retry path for a hand run); the workflow must never build
       # over one, nor tag a second commit with a name a tag has
       - name: Not yet released
@@ -162,13 +167,17 @@ jobs:
       - name: Build logs
         if: failure()
         run: tail -n 60 upstream/out/modules/*.log upstream/out-7.2/modules/*.log 2>/dev/null || true
-      - name: Root filesystems, extras, audit, publish
+      # MU300_RELEASE_KEY: the release key (a usign secret key, see tools/sign-release.sh). With it make-release.sh
+      # signs SHA256SUMS and publishes SHA256SUMS.sig; without it the release is as it always was - unless the tree
+      # has the public key (rootfs/overlay/opt/mu300/lib/release.pub), and then nothing is published unsigned.
+      - name: Root filesystems, extras, audit, sign, publish
         env:
           INPUT_PRERELEASE: ${{ inputs.prerelease }}
+          MU300_RELEASE_KEY: ${{ secrets.MU300_RELEASE_KEY }}
         run: |
           pre=; [ "$INPUT_PRERELEASE" != true ] || pre=--prerelease
           # the build outputs are ignored by git, so the tree is still the commit the release says it is
           sudo -E git status --porcelain
-          sudo -E sh tools/make-release.sh "$TAG" --publish $pre
+          sudo -E sh tools/make-release.sh "$TAG" --publish --any-date $pre
       - name: Magisk installers
         run: gh workflow run magisk.yml -R "$GITHUB_REPOSITORY" --ref main -f tag="$TAG"

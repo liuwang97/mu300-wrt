@@ -9,6 +9,9 @@ msgstr "状态看板"
 msgid "Cellular"
 msgstr "蜂窝"
 
+msgid "Dual SIM"
+msgstr "双 SIM 卡"
+
 msgid "Network locks"
 msgstr "网络锁定"
 
@@ -32,6 +35,9 @@ msgstr "流量统计"
 
 msgid "Device management"
 msgstr "设备管理"
+
+msgid "Update"
+msgstr "更新"
 
 msgid "Languages"
 msgstr "语言"
@@ -576,6 +582,9 @@ msgstr "已保存：%s"
 msgid "Remove the saved value"
 msgstr "删除已保存的值"
 
+msgid "Presets"
+msgstr "预设"
+
 msgid "Received messages are sent on as they reach the SMS pool. A failed delivery is retried after 30 s, then after twice as long each time (an hour at most), ten times in all."
 msgstr "收到的短信进入短信池后即被转发。发送失败时 30 秒后重试，之后每次间隔加倍（最长一小时），共十次。"
 
@@ -632,6 +641,12 @@ msgstr "留空：使用标准字段（纯文本：消息本身）。占位符：
 
 msgid "Extra headers (one \"Name: value\" per line)"
 msgstr "附加请求头（每行一个 \"Name: value\"）"
+
+msgid "The answer must contain"
+msgstr "响应必须包含"
+
+msgid "Empty: every HTTP 2xx answer counts as delivered. With key=value (for example errcode=0), the answer must also be a JSON object that has this value under this key at its top level; otherwise the delivery fails. Only the result of the check is logged, never the answer."
+msgstr "留空：任何 HTTP 2xx 响应都算作已送达。填写 键=值（例如 errcode=0）后，响应还必须是一个 JSON 对象，并且其顶层的该键为该值；否则本次发送算作失败。日志中只记录检查结果，绝不记录响应内容。"
 
 msgid "Bot token"
 msgstr "机器人令牌"
@@ -698,6 +713,9 @@ msgstr "已过滤"
 
 msgid "Dropped"
 msgstr "已丢弃"
+
+msgid "Clear"
+msgstr "清空"
 
 msgid "Test"
 msgstr "测试"
@@ -797,6 +815,9 @@ msgstr "会话时长"
 
 msgid "Registration"
 msgstr "注册状态"
+
+msgid "Data roaming"
+msgstr "数据漫游"
 
 msgid "Bandwidth"
 msgstr "频宽"
@@ -933,6 +954,18 @@ msgstr "打开蜂窝射频"
 msgid "The SFUN power-on sequence will run (up to about 1 minute)."
 msgstr "将执行 SFUN 上电序列（最多约 1 分钟）。"
 
+msgid "Turn data roaming off"
+msgstr "关闭数据漫游"
+
+msgid "While the SIM is registered on a roaming network, mobile data stays off; SMS, calls and the registration are not affected. Some SIMs report roaming at home (an MVNO, national roaming): there, data would stop as well."
+msgstr "当 SIM 卡注册在漫游网络上时，移动数据保持关闭；短信、通话和网络注册不受影响。部分 SIM 卡在本地也会报告漫游（虚拟运营商、国内漫游）：在那里数据同样会停止。"
+
+msgid "Allow data roaming"
+msgstr "允许数据漫游"
+
+msgid "Mobile data is used on roaming networks too, which can cost extra. Some SIMs report roaming at home (an MVNO, national roaming) and need this to have data at all."
+msgstr "移动数据也会在漫游网络上使用，可能产生额外费用。部分 SIM 卡在本地也会报告漫游（虚拟运营商、国内漫游），需要开启此项才能使用数据。"
+
 msgid "Cellular connectivity may stop for 1–2 minutes."
 msgstr "蜂窝连接会中断 1-2 分钟。"
 
@@ -1038,6 +1071,9 @@ msgstr "锚点 B%s"
 msgid "No serving cell"
 msgstr "未驻留小区"
 
+msgid "Version %s is out: update"
+msgstr "%s 版本已发布：更新"
+
 msgid "Not registered"
 msgstr "未注册"
 
@@ -1058,6 +1094,15 @@ msgstr "仅紧急"
 
 msgid "Status %s"
 msgstr "状态 %s"
+
+msgid "Off: data held back while roaming"
+msgstr "关闭：漫游时已暂停数据"
+
+msgid "Allowed"
+msgstr "允许"
+
+msgid "Off"
+msgstr "关"
 
 msgid "LTE anchor"
 msgstr "LTE 锚点"
@@ -1584,9 +1629,6 @@ msgstr "保持不变"
 msgid "LTE only (5G off)"
 msgstr "仅 LTE（关闭 5G）"
 
-msgid "Off"
-msgstr "关"
-
 msgid "On"
 msgstr "开"
 
@@ -1677,6 +1719,91 @@ msgstr "仅控制主页状态看板的刷新频率；允许 0.5–60 秒，保�
 msgid "Persistent state directory"
 msgstr "持久化状态目录"
 
+msgid "Switching SIM. Mobile data will disconnect briefly."
+msgstr "正在切换 SIM 卡，移动网络会短暂断开。"
+
+msgid "SIM switch failed; check SIM readiness and hot switching."
+msgstr "SIM 切换失败，请检查 SIM 卡状态和热切换开关。"
+
+# Dual SIM controls.
+msgid "Ready"
+msgstr "就绪"
+
+msgid "Switching SIM"
+msgstr "正在切换 SIM 卡"
+
+msgid "SIM switched; saved as boot default"
+msgstr "已切换，同时设为默认启动卡"
+
+msgid "Switch failed; previous SIM restored"
+msgstr "切换失败，已恢复原卡"
+
+msgid "The target SIM got no mobile data; the previous SIM is restored and the saved boot preference is unchanged."
+msgstr "目标 SIM 卡未获得移动网络；已恢复原活动卡，保存的启动选择保持不变。"
+
+msgid "The target SIM has no mobile data yet, and the previous SIM had none either: the device stays on the target. The saved boot preference is unchanged."
+msgstr "目标 SIM 暂时没有移动数据，之前的 SIM 也没有：设备停留在目标 SIM 上。已保存的启动首选项未更改。"
+
+msgid "Radio state unknown; reboot required"
+msgstr "射频状态未知，请重启设备"
+
+msgid "Radio state unknown; the device is restarting."
+msgstr "射频状态未知；设备正在重启。"
+
+msgid "Dual SIM control is only for the U30 Air on OpenWrt."
+msgstr "双卡控制仅适用于运行 OpenWrt 的 U30 Air。"
+
+msgid "The chosen SIM could not be started at the last boot (no card, PIN, or the modem refused it)."
+msgstr "上次开机时无法启动所选的 SIM 卡（无卡、需要 PIN，或调制解调器拒绝）。"
+
+msgid "No card answered in the chosen SIM position at the last boot."
+msgstr "上次启动时，所选 SIM 位置没有卡应答。"
+
+msgid "The chosen SIM is locked by its PIN."
+msgstr "所选 SIM 被 PIN 码锁定。"
+
+msgid "The chosen SIM got no mobile data within the time at its first boot."
+msgstr "所选 SIM 在首次启动时未能在规定时间内获得移动数据。"
+
+msgid "The second SIM's modem channels did not come up at the last boot."
+msgstr "上次开机时第二张 SIM 卡的调制解调器通道没有就绪。"
+
+msgid "The last dual-SIM boot never confirmed itself."
+msgstr "上一次双卡开机未能确认完成。"
+
+msgid "A live switch saves the target as the next boot default only after it gets mobile data. Without data, the previous SIM is restored and the saved boot preference is unchanged. Each SIM uses its own APN/PDP profile from the WAN settings."
+msgstr "热切换只有在目标卡获得移动网络后才将其保存为下次启动卡。没有网络时会恢复原活动卡，已保存的启动选择保持不变。每张卡使用 WAN 设置中各自的 APN/PDP 配置。"
+
+msgid "Active SIM"
+msgstr "当前使用卡"
+
+msgid "Cold-boot default"
+msgstr "冷启动默认卡"
+
+msgid "SIM control unavailable"
+msgstr "SIM 控制不可用"
+
+msgid "The device is back on SIM1 without live switching; choose again below to try once more."
+msgstr "设备已回到 SIM1 且关闭了热切换；在下方重新选择即可再试一次。"
+
+msgid "Waiting for the first mobile data on SIM2: %d s left. Without data the device goes back to SIM1 and restarts."
+msgstr "正在等待 SIM2 的首次移动数据：还剩 %d 秒。没有数据时设备将回到 SIM1 并重启。"
+
+msgid "Enable hot switching"
+msgstr "启用热切换"
+
+msgid "This device supports next-boot SIM selection only; live switching is unavailable."
+msgstr "此设备仅支持选择下次启动的 SIM 卡，不支持热切换。"
+
+msgid "Reboot after enabling hot switching to prepare both SIM channels."
+msgstr "启用热切换后请重启，以准备两张 SIM 卡的通道。"
+
+msgid "Switch to SIM%d"
+msgstr "切换到卡%d"
+
+msgid "Use SIM%d at next boot"
+msgstr "下次启动使用卡%d"
+
 msgid "Recipient: number, e.g. 10086 or +86..."
 msgstr "收件人：号码，如 10086 或 +86..."
 
@@ -1715,9 +1842,6 @@ msgstr "清空本地短信池"
 
 msgid "Only local files will be deleted; messages on the SIM remain."
 msgstr "只删本地文件，SIM 上的不动。"
-
-msgid "Clear"
-msgstr "清空"
 
 msgid "Delete this SMS"
 msgstr "删除这条短信"
@@ -1929,6 +2053,396 @@ msgstr "关闭"
 msgid "64 makes every packet leave like the device's own traffic"
 msgstr "64 使每个数据包都像设备自身的流量一样发出"
 
+msgid "Check for updates"
+msgstr "检查更新"
+
+msgid "Checking the file"
+msgstr "正在检查文件"
+
+msgid "Update from a file"
+msgstr "从文件更新"
+
+msgid "Back to the previous version"
+msgstr "回到上一个版本"
+
+msgid "Back to the previous boot image"
+msgstr "回到上一个启动镜像"
+
+msgid "Remove the previous version"
+msgstr "移除上一个版本"
+
+msgid "Kernel change"
+msgstr "更换内核"
+
+msgid "Starting…"
+msgstr "正在开始…"
+
+msgid "Downloading"
+msgstr "正在下载"
+
+msgid "All files are here and verified"
+msgstr "所有文件已就绪并通过校验"
+
+msgid "Unpacking the new system"
+msgstr "正在解包新系统"
+
+msgid "Carrying over your settings"
+msgstr "正在迁移您的设置"
+
+msgid "Writing down the packages you installed"
+msgstr "正在记录您安装的软件包"
+
+msgid "Switching to the new system"
+msgstr "正在切换到新系统"
+
+msgid "Kernel and boot image"
+msgstr "内核和启动镜像"
+
+msgid "Restart the device?"
+msgstr "重启设备？"
+
+msgid "The device restarts now. The default boot is Android, so it starts Android: switch to Linux from there to start the updated system."
+msgstr "设备现在重启。默认启动的是 Android，所以会进入 Android：请在那里切换到 Linux 以启动更新后的系统。"
+
+msgid "The device restarts now and is away for about a minute. If the new system does not start, the device goes back to Android by itself after the failed attempts."
+msgstr "设备现在重启，大约一分钟内无法访问。如果新系统无法启动，设备会在几次失败后自动回到 Android。"
+
+msgid "Restart"
+msgstr "重启"
+
+msgid "Restarting… open this page again in about a minute."
+msgstr "正在重启… 请在大约一分钟后重新打开此页面。"
+
+msgid "Running for %s. It goes on when this page is closed; do not switch the device off."
+msgstr "已运行 %s。关闭此页面后仍会继续；请勿关闭设备电源。"
+
+msgid "Done. Restart the device to start it."
+msgstr "已完成。重启设备即可启动。"
+
+msgid "Done. Nothing needs a restart."
+msgstr "已完成。无需重启。"
+
+msgid "It did not finish, and part of it was done: read the log before you restart."
+msgstr "未能完成，且已执行了一部分：重启前请先阅读日志。"
+
+msgid "It did not finish. Nothing was changed; the log says why."
+msgstr "未能完成。没有任何改动；原因见日志。"
+
+msgid "Log"
+msgstr "日志"
+
+msgid "Restart now"
+msgstr "立即重启"
+
+msgid "Later"
+msgstr "稍后"
+
+msgid "Close"
+msgstr "关闭"
+
+msgid "Updating is not available on this system"
+msgstr "此系统不支持更新"
+
+msgid "Another update is running on the device"
+msgstr "设备上正在运行另一个更新"
+
+msgid "It was started outside this page (a terminal, the toolkit). Nothing can be started here until it has finished."
+msgstr "它是在此页面之外启动的（终端、工具包）。在它结束之前，这里无法启动任何操作。"
+
+msgid "Restart needed"
+msgstr "需要重启"
+
+msgid "This system was updated and still runs the old version. The new one starts at the next restart."
+msgstr "此系统已更新，但仍在运行旧版本。新版本将在下次重启时启动。"
+
+msgid "Installed"
+msgstr "已安装"
+
+msgid "This system"
+msgstr "本系统"
+
+msgid "Also on this device"
+msgstr "此设备上还有"
+
+msgid "Kernel"
+msgstr "内核"
+
+msgid "choice %s"
+msgstr "选择 %s"
+
+msgid "Boot image"
+msgstr "启动镜像"
+
+msgid "from the installer"
+msgstr "来自安装程序"
+
+msgid "Default boot"
+msgstr "默认启动"
+
+msgid "Free space"
+msgstr "可用空间"
+
+msgid "Release signatures"
+msgstr "发布版本签名"
+
+msgid "checked with the project's key"
+msgstr "用项目的密钥校验"
+
+msgid "this system has no release key"
+msgstr "本系统没有发布密钥"
+
+msgid "The default boot is Android: a restart goes to Android, and Linux is started from there."
+msgstr "默认启动的是 Android：重启后进入 Android，再从那里启动 Linux。"
+
+msgid "Linux is locked as the default boot: a failed start does not send the device to Android by itself, except the first starts of a new boot image."
+msgstr "Linux 已锁定为默认启动：启动失败时设备不会自动进入 Android，新启动镜像的头几次启动除外。"
+
+msgid "If Linux fails to start %d times in a row, the device starts Android by itself."
+msgstr "如果 Linux 连续 %d 次启动失败，设备会自动启动 Android。"
+
+msgid "Report of the last update"
+msgstr "上次更新的报告"
+
+msgid "Online update"
+msgstr "在线更新"
+
+msgid "Asking GitHub…"
+msgstr "正在询问 GitHub…"
+
+msgid "Checked %s ago"
+msgstr "%s前已检查"
+
+msgid "Not checked yet"
+msgstr "尚未检查"
+
+msgid "Install the packages I added again after the update (needs the device online at the first start)"
+msgstr "更新后重新安装我添加的软件包（首次启动时设备需要联网）"
+
+msgid "Pre-release"
+msgstr "预发布版本"
+
+msgid "Newest release"
+msgstr "最新发布版本"
+
+msgid "Release notes"
+msgstr "发布说明"
+
+msgid "Download"
+msgstr "下载"
+
+msgid "Free space needed"
+msgstr "所需可用空间"
+
+msgid "not enough: remove the previous version first"
+msgstr "不足：请先移除上一个版本"
+
+msgid "A pre-release is a release still being tried: it can have faults a release does not. The previous version is kept all the same."
+msgstr "预发布版本是仍在试用中的版本：可能有正式发布版本没有的问题。上一个版本同样会保留。"
+
+msgid "This system is newer than the newest release (a test release)."
+msgstr "本系统比最新发布版本还新（测试版本）。"
+
+msgid "Up to date."
+msgstr "已是最新。"
+
+msgid "This release is not signed, and this system checks signatures: it is not installed from here. Update from its file below, which asks you to confirm."
+msgstr "此版本未签名，而本系统会检查签名：不能从这里安装。请在下方用它的文件更新，那里会请你确认。"
+
+msgid "Update to %s"
+msgstr "更新到 %s"
+
+msgid "Choose at least one system"
+msgstr "请至少选择一个系统"
+
+msgid "Update to %s?"
+msgstr "更新到 %s？"
+
+msgid "The device downloads %s, puts the new system beside the running one and switches to it at the next restart. Your settings are carried over and the previous version is kept. It takes several minutes; do not switch the device off."
+msgstr "设备会下载 %s，把新系统放在当前运行的系统旁边，并在下次重启时切换过去。您的设置会迁移过去，上一个版本会保留。需要几分钟；请勿关闭设备电源。"
+
+msgid "Also offer the pre-release %s"
+msgstr "同时提供预发布版本 %s"
+
+msgid "Systems to update:"
+msgstr "要更新的系统："
+
+msgid "GitHub could not be reached: the device has no internet connection, or GitHub did not answer. Without internet, update from a file below."
+msgstr "无法连接 GitHub：设备没有互联网连接，或 GitHub 没有响应。没有网络时，请在下方从文件更新。"
+
+msgid "release"
+msgstr "发布版本"
+
+msgid "For a device without internet: download the Magisk zip of a release for this system and this kernel on another computer, from the release page on GitHub, and upload it here. For this device that is:"
+msgstr "适用于没有网络的设备：在另一台电脑上，从 GitHub 的发布页面下载对应本系统和本内核的发布版本 Magisk zip，然后在这里上传。本设备对应的文件是："
+
+msgid "Uploaded file"
+msgstr "已上传的文件"
+
+msgid "Checking the file…"
+msgstr "正在检查文件…"
+
+msgid "It says it is"
+msgstr "文件自称为"
+
+msgid "kernel %s"
+msgstr "内核 %s"
+
+msgid "Signature"
+msgstr "签名"
+
+msgid "signed with the project's release key"
+msgstr "已用项目的发布密钥签名"
+
+msgid "WRONG: it does not match the project's release key"
+msgstr "错误：与项目的发布密钥不匹配"
+
+msgid "not signed"
+msgstr "未签名"
+
+msgid "cannot be checked on this system"
+msgstr "无法在本系统上校验"
+
+msgid "Its system is not installed on this device."
+msgstr "此文件中的系统未安装在此设备上。"
+
+msgid "It is the other Ubuntu release, not the one installed."
+msgstr "这是另一个 Ubuntu 版本，不是已安装的那个。"
+
+msgid "It carries another kernel than this device uses. Take the zip for kernel %s, or change the kernel first."
+msgstr "它带的内核与此设备使用的不同。请使用内核 %s 对应的 zip，或先更换内核。"
+
+msgid "Its kernel does not run on this model."
+msgstr "它的内核无法在此型号上运行。"
+
+msgid "The file is damaged: its contents do not match their checksums."
+msgstr "文件已损坏：内容与校验和不符。"
+
+msgid "Its signature is wrong. This file does not come from the project as it is; it is never installed."
+msgstr "签名错误。此文件并非原样来自本项目；绝不会被安装。"
+
+msgid "This file cannot be used here."
+msgstr "此文件不能在这里使用。"
+
+msgid "Compare the SHA-256 with the one in SHA256SUMS-magisk on the release page: it is the only proof of where an unsigned file comes from."
+msgstr "请将 SHA-256 与发布页面上 SHA256SUMS-magisk 中的值比对：这是证明未签名文件来源的唯一依据。"
+
+msgid "This release is installed already; the update would only refresh the boot image."
+msgstr "此发布版本已经安装；更新只会刷新启动镜像。"
+
+msgid "I know this file is not signed: nothing proves that it comes from the project. I compared its SHA-256 myself and want it installed."
+msgstr "我知道此文件未签名：没有任何东西能证明它来自本项目。我已自行比对其 SHA-256，并希望安装它。"
+
+msgid "I know this is %s, older than the installed %s, and want to go back to it."
+msgstr "我知道这是 %s，比已安装的 %s 旧，并希望回到这个版本。"
+
+msgid "This is not a release file of this project: a Magisk zip of a release is expected."
+msgstr "这不是本项目的发布文件：需要的是某个发布版本的 Magisk zip。"
+
+msgid "Update from this file"
+msgstr "从此文件更新"
+
+msgid "Tick the confirmations above first"
+msgstr "请先勾选上方的确认项"
+
+msgid "The device puts the system of this file beside the running one and switches to it at the next restart. Your settings are carried over and the previous version is kept. It takes several minutes; do not switch the device off."
+msgstr "设备会把此文件中的系统放在当前运行的系统旁边，并在下次重启时切换过去。您的设置会迁移过去，上一个版本会保留。需要几分钟；请勿关闭设备电源。"
+
+msgid "Check the file"
+msgstr "检查文件"
+
+msgid "Remove the file"
+msgstr "移除文件"
+
+msgid "Previous version"
+msgstr "上一个版本"
+
+msgid "No previous version is kept on this device."
+msgstr "此设备上没有保留上一个版本。"
+
+msgid "replaced %s"
+msgstr "替换于 %s"
+
+msgid "I want the previous system back; what I changed since the update stays in the version I leave."
+msgstr "我想恢复上一个系统；更新之后所做的更改会留在我离开的版本中。"
+
+msgid "Back to the previous version?"
+msgstr "回到上一个版本？"
+
+msgid "The previous system (%s) becomes the one that starts at the next restart. The version you leave is not kept; settings you changed since the update are not carried back."
+msgstr "上一个系统（%s）将成为下次重启时启动的系统。您离开的版本不会保留；更新之后更改的设置不会带回去。"
+
+msgid "Go back"
+msgstr "回退"
+
+msgid "The previous version is the one running now: restart first."
+msgstr "当前运行的就是上一个版本：请先重启。"
+
+msgid "I want the previous kernel and boot image back."
+msgstr "我想恢复上一个内核和启动镜像。"
+
+msgid "Back to the previous boot image?"
+msgstr "回到上一个启动镜像？"
+
+msgid "The previous boot image (%s) is written to the Linux slot and starts at the next restart. If it does not start, the device goes back to Android by itself."
+msgstr "上一个启动镜像（%s）会写入 Linux 槽位，并在下次重启时启动。如果无法启动，设备会自动回到 Android。"
+
+msgid "I do not need to go back: delete the previous system to free its space."
+msgstr "我不需要回退：删除上一个系统以释放空间。"
+
+msgid "Remove the previous version?"
+msgstr "移除上一个版本？"
+
+msgid "The kept copy of the previous system is deleted for good. After that there is no going back to it from this page."
+msgstr "保留的上一个系统副本将被永久删除。之后无法再从此页面回到它。"
+
+msgid "the vendor kernel"
+msgstr "厂商内核"
+
+msgid "mainline"
+msgstr "主线"
+
+msgid "not with Ubuntu 26.04"
+msgstr "不适用于 Ubuntu 26.04"
+
+msgid "Change the kernel"
+msgstr "更换内核"
+
+msgid "This kernel is the one in use"
+msgstr "当前使用的就是这个内核"
+
+msgid "Change the kernel to %s?"
+msgstr "将内核更换为 %s？"
+
+msgid "The device downloads that kernel from the newest release and writes a new boot image; it starts at the next restart. The previous boot image is kept, and if the new one does not start the device goes back to Android by itself. The device must be online."
+msgstr "设备会从最新发布版本下载该内核并写入新的启动镜像；下次重启时启动。上一个启动镜像会保留，如果新镜像无法启动，设备会自动回到 Android。设备必须联网。"
+
+msgid "Start Android at the next restart"
+msgstr "下次重启时启动 Android"
+
+msgid "Start Android at the next restart?"
+msgstr "下次重启时启动 Android？"
+
+msgid "The next restart, and the ones after it, start Android instead of Linux. Linux is started again from Android (the Magisk module's Action button, or mu300-linux)."
+msgstr "下次及之后的重启都会启动 Android 而不是 Linux。之后可从 Android 重新启动 Linux（Magisk 模块的 Action 按钮，或 mu300-linux）。"
+
+msgid "Start Android next"
+msgstr "下次启动 Android"
+
+msgid "What an update keeps"
+msgstr "更新会保留什么"
+
+msgid "An update puts the system of the new release in place and carries over what is yours: the settings, the accounts and their passwords, the device's keys and the home directories. Packages you installed yourself are written down and installed again at the first start, once the device is online. The previous version stays on the device until you remove it, so you can go back."
+msgstr "更新会装上新发布版本的系统，并迁移属于您的内容：设置、账户及其密码、设备的密钥和主目录。您自己安装的软件包会被记录下来，并在设备联网后的首次启动时重新安装。上一个版本会一直留在设备上，直到您将其移除，因此您可以回退。"
+
+msgid "The wiki's Updating page lists exactly what is kept."
+msgstr "Wiki 的「更新」页面列出了具体保留的内容。"
+
+msgid "Choose a file first"
+msgstr "请先选择文件"
+
+msgid "Uploading: %s of %s"
+msgstr "正在上传：%s / %s"
+
 msgid "running"
 msgstr "运行中"
 
@@ -1962,9 +2476,6 @@ msgstr "没有配置文件使用它。"
 msgid "Removed"
 msgstr "已移除"
 
-msgid "Check for updates"
-msgstr "检查更新"
-
 msgid "Each engine is an extra of its own: install only the ones your profiles need. Xray runs vless, vmess, trojan and ss links (with hev-socks5-tunnel), sing-box the same links and its own JSON, mihomo Clash subscriptions, dae hysteria2, tuic and the rest on newer kernels. WireGuard and OpenVPN are packages of the system."
 msgstr "每个引擎都是独立的附加包：只安装配置文件需要的引擎。Xray 运行 vless、vmess、trojan 和 ss 链接（配合 hev-socks5-tunnel），sing-box 运行同样的链接及其自身的 JSON，mihomo 运行 Clash 订阅，dae 在较新内核上运行 hysteria2、tuic 等。WireGuard 和 OpenVPN 是系统软件包。"
 
@@ -1973,9 +2484,6 @@ msgstr "每个引擎下载几十 MB：使用移动数据时会计入套餐流量
 
 msgid "The available versions come from the latest release of the VPN module."
 msgstr "可用版本来自 VPN 模块的最新发布。"
-
-msgid "Update"
-msgstr "更新"
 
 msgid "system package"
 msgstr "系统软件包"
@@ -2144,9 +2652,6 @@ msgstr "启动"
 
 msgid "Stop"
 msgstr "停止"
-
-msgid "Restart"
-msgstr "重启"
 
 msgid "Stop the VPN?"
 msgstr "停止 VPN？"
@@ -2324,9 +2829,6 @@ msgstr "此配置文件来自订阅：下次刷新会覆盖您的修改。"
 
 msgid "Config of %s"
 msgstr "%s 的配置"
-
-msgid "Close"
-msgstr "关闭"
 
 msgid "Rename"
 msgstr "重命名"
@@ -2520,8 +3022,8 @@ msgstr "刷新会保留名称未变的配置文件，添加新的，并删除已
 msgid "Dashboard info failed"
 msgstr "获取仪表盘信息失败"
 
-msgid "Applying network locks: no live signal right now"
-msgstr "正在应用网络锁定，暂无实时信号"
+msgid "The modem is restarting (network locks or a SIM switch): no live signal right now"
+msgstr "调制解调器正在重启（网络锁定或 SIM 切换）：暂时没有实时信号"
 
 msgid "Live signal read failed"
 msgstr "读取实时信号失败"
@@ -2553,8 +3055,11 @@ msgstr "不允许用 \";\" 串联命令"
 msgid "Denied: this command wedges the AT port until a reboot"
 msgstr "已拒绝：此命令会让 AT 端口卡死，直到重启"
 
-msgid "Applying network locks: the modem is restarting (about half a minute), try again shortly"
-msgstr "正在应用网络锁定，调制解调器重启中（约半分钟），请稍后再试"
+msgid "Denied: this command moves the SIM selection or the data route; the SIM settings do that"
+msgstr "已拒绝：此命令会改变 SIM 选择或数据路由；请使用 SIM 设置"
+
+msgid "The modem is restarting (network locks or a SIM switch, about half a minute), try again shortly"
+msgstr "调制解调器正在重启（网络锁定或 SIM 切换，约半分钟），请稍后再试"
 
 msgid "A long AT command is still running in the background; try again when it has finished"
 msgstr "一条耗时较长的 AT 命令仍在后台运行；请在其完成后重试"
@@ -2696,6 +3201,30 @@ msgstr "软件包适配器没有返回有效回复"
 
 msgid "Invalid packages operation"
 msgstr "无效的软件包操作"
+
+msgid "The sizes parameter must be 0 or 1"
+msgstr "sizes 参数必须为 0 或 1"
+
+msgid "The update adapter gave no valid reply"
+msgstr "更新适配器未返回有效响应"
+
+msgid "Unknown update operation"
+msgstr "未知的更新操作"
+
+msgid "Invalid update request"
+msgstr "无效的更新请求"
+
+# Dual SIM controls.
+msgid "Invalid SIM setting"
+msgstr "SIM 设置无效"
+
+# Dual SIM controls.
+msgid "Enable hot switching; reboot if channels are unavailable or wait until idle"
+msgstr "请启用热切换；通道尚未准备好时请重启，操作进行中请等待。"
+
+# Dual SIM controls.
+msgid "SIM control failed"
+msgstr "SIM 控制失败"
 
 msgid "Request too large"
 msgstr "请求过大"
@@ -2850,8 +3379,18 @@ msgstr "行数必须在 1 到 1000 之间"
 msgid "The log could not be read"
 msgstr "无法读取日志"
 
+# Dual SIM controls.
+msgid "Use SIM control or reboot for managed dual-SIM radio"
+msgstr "请使用双 SIM 控制页或重启来操作受管理的双卡射频。"
+
 msgid "Radio did not come up"
 msgstr "射频未能开启"
+
+msgid "Mobile data integration is not provided by this platform"
+msgstr "此平台未提供移动数据集成"
+
+msgid "The data roaming setting could not be saved"
+msgstr "无法保存数据漫游设置"
 
 msgid "Expected on or off"
 msgstr "应为 on 或 off"
@@ -2967,6 +3506,9 @@ msgstr "webhook 地址必须是 http:// 或 https:// 开头的 URL"
 msgid "The webhook body is too long or contains a control character"
 msgstr "Webhook 请求体过长或包含控制字符"
 
+msgid "The answer check must be key=value, like errcode=0 or ok=true (the value a whole number or lowercase letters, 16 at most)"
+msgstr "响应检查必须是 键=值 的形式，例如 errcode=0 或 ok=true（值为整数或小写字母，最多 16 个字符）"
+
 msgid "Invalid header (one \"Name: value\" per line; Host, Content-Type, Content-Length, Transfer-Encoding and Connection are set by the device)"
 msgstr "无效的请求头（每行一个 \"Name: value\"；Host、Content-Type、Content-Length、Transfer-Encoding 和 Connection 由设备设置）"
 
@@ -2996,6 +3538,12 @@ msgstr "无法保存转发设置"
 
 msgid "SMS forwarding is not installed"
 msgstr "未安装短信转发"
+
+msgid "A test was started a moment ago; wait a few seconds"
+msgstr "刚刚已开始一次测试；请等待几秒"
+
+msgid "The delivery log could not be cleared"
+msgstr "无法清空发送日志"
 
 msgid "Unknown forwarding operation"
 msgstr "未知的转发操作"
@@ -3077,3 +3625,42 @@ msgstr "无法设置 TTL"
 
 msgid "Unknown TTL operation"
 msgstr "未知的 TTL 操作"
+
+msgid "An update task is already running"
+msgstr "已有更新任务正在运行"
+
+msgid "The task could not be started"
+msgstr "无法启动任务"
+
+msgid "The updater gave no valid reply"
+msgstr "更新程序未返回有效响应"
+
+msgid "This needs confirmation"
+msgstr "此操作需要确认"
+
+msgid "Check for updates first"
+msgstr "请先检查更新"
+
+msgid "The upload directory is not safe; nothing was changed"
+msgstr "上传目录不安全；未做任何更改"
+
+msgid "Not enough memory for this upload"
+msgstr "内存不足，无法完成此次上传"
+
+msgid "Not enough free space on the Linux partition"
+msgstr "Linux 分区的可用空间不足"
+
+msgid "The file was not checked; upload it again"
+msgstr "文件未经检查；请重新上传"
+
+msgid "This file is not for this device"
+msgstr "此文件不适用于此设备"
+
+msgid "The signature of this file is wrong"
+msgstr "此文件的签名不正确"
+
+msgid "This file is not signed: that needs confirmation"
+msgstr "此文件未签名：需要确认"
+
+msgid "This file is older than what is installed: that needs confirmation"
+msgstr "此文件比已安装的版本旧：需要确认"

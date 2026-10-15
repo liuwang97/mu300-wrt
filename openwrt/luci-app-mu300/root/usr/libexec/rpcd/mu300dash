@@ -32,11 +32,15 @@
 #   ttl_get, ttl_set value  the TTL of mobile data (unisoc-modem/ttl, mu300-ttl); value off or 1-255
 #   traffic_get, traffic_set op value  the mobile data count, its billing cycle and cap (unisoc-modem/traffic,
 #                     mu300-traffic)
-#   forward_get, forward_set ..., forward_test  SMS forwarding (unisoc-modem/forward, mu300-sms-forward); the
-#                     settings go to the adapter on stdin, as sent: they hold secrets, never an argument
+#   forward_get, forward_set ..., forward_test, forward_log_clear  SMS forwarding (unisoc-modem/forward,
+#                     mu300-sms-forward); the settings go to the adapter on stdin, as sent: they hold secrets, never
+#                     an argument. forward_log_clear empties the delivery log and takes nothing.
 #   cpu_get, cpu_set profile  the CPU performance profile (unisoc-modem/cpu, mu300-cpu); saving|balanced|performance
 #   packages_get, packages_act op  the packages installed before an update, installed again (unisoc-modem/packages,
 #                     mu300-user-packages); op retry|repair_dns|dismiss
+#   update_get [sizes], update_job, update_act op ...  the System > Update page (unisoc-modem/update, mu300-update):
+#                     what is installed and what is kept, the releases, the one update task and its log; update_act
+#                     starts a check, an update, a rollback, a kernel change, or takes an uploaded release file
 #
 # No call waits for the modem longer than about 17 s, under both the browser's 20 s
 # (LuCI's rpctimeout) and rpcd's 30 s: the AT terminal's wait is capped (AT_LOCK_WAIT
@@ -173,7 +177,7 @@ m_status() {
     # a full round in flight also writes the fast cache, so it counts for both.
     # During a lock apply (SFUN restart) do not kick anything: the modem answers
     # garbage mid-restart and the collectors would only burn the AT channel.
-    if [ -d /run/unisoc-modem-lock-apply ]; then busy=1; fbusy=1; fi
+    if { [ -d /run/unisoc-modem-lock-apply ] || [ -e /run/mu300/sim-switching ] || [ -e /run/mu300/sim-active-unknown ]; }; then busy=1; fbusy=1; fi
     if collecting; then busy=1; fbusy=1; fi
     fast_busy && fbusy=1
     # A full round also refreshes sig.json. Prefer it when both tiers are stale;
@@ -199,9 +203,9 @@ m_signal() {
     # that window return garbage or wedge, and rpcd died with a userspace
     # segfault (sessions wiped -> LuCI login loop) on at least one live
     # read's output. Serve the last snapshot until the apply finishes.
-    if [ -d /run/unisoc-modem-lock-apply ]; then
+    if { [ -d /run/unisoc-modem-lock-apply ] || [ -e /run/mu300/sim-switching ] || [ -e /run/mu300/sim-active-unknown ]; }; then
         json_obj "$(cat "$SIGF" 2>/dev/null)" ||
-            printf '{"error":"Applying network locks: no live signal right now"}\n'
+            printf '{"error":"The modem is restarting (network locks or a SIM switch): no live signal right now"}\n'
         return
     fi
     local live="$DIR/live.$$"
@@ -225,6 +229,7 @@ m_act() {
     case $op in
         radio|wifi)         allowed "$arg" '(on|off)' ;;
         data)               allowed "$arg" '(up|down)' ;;
+        roaming)            allowed "$arg" '(on|off)' ;;
         vpn)                allowed "$arg" '(start|stop)' ;;
         os)                 allowed "$arg" '(android|lock|unlock)' ;;
         modem-reset|reboot) [ -z "$arg" ] ;;
@@ -246,7 +251,7 @@ m_act() {
             ;;
         # os runs inline: arming takes milliseconds and a failure (misc write
         # rejected, tool missing) must reach the page instead of a silent no-op
-        data|wifi|os)
+        data|wifi|os|roaming)
             out=$("$DASH/action" "$op" "$arg" 2>/dev/null)
             reply_obj "$out" 'The action gave no valid reply'
             ;;
@@ -266,11 +271,22 @@ at_wedges() {
         }
     } END { exit !found }'
 }
+# at_moves_sim CMD: CMD is one of the three commands that say which card the modem's channels and its packet data
+# belong to: AT+SPACTCARD=, AT+SMMSWAP=, and AT+SPSWDATA as a command (its "?" forms only ask). The SIM selector
+# sends them itself, in an order that was measured, and keeps a mark of where the data route is (mu300-sim,
+# mobile-data); from the terminal they would move the route under a connection that then answers CONNECT and loses
+# every packet. Denied on every device, in any spelling, as kanoqwq's terminal does.
+at_moves_sim() {
+    printf '%s\n' "$1" | tr -d ' "' | tr 'a-z' 'A-Z' | awk '{
+        if ($0 ~ /\+(SPACTCARD|SMMSWAP)=([^?]|$)/ || $0 ~ /\+SPSWDATA($|[^?=])/ || $0 ~ /\+SPSWDATA=([^?]|$)/) found = 1
+    } END { exit !found }'
+}
 # at_class CMD: what sending CMD would do beyond answering, by its commands anywhere on the line (spaces and quotes
 # dropped, case ignored; "=?" is a test command and changes nothing):
 #   scan   takes minutes and holds the channel: AT+COPS=? (the network list), any *SCAN* command (AT+SPFREQSCAN)
 #   nv     a setting the modem keeps in its NV: network mode, NR mode, EN-DC, band and cell locks (AT+SPTESTMODE=,
-#          AT+SP5GRAN=, AT+SPENDC=, AT+SPLBAND=1/2, AT+SPFORCEFRQ= other than the =x,3 read). They survive a
+#          its two-card form AT+SPTESTMODEM=, AT+SP5GRAN=, AT+SPENDC=, AT+SPLBAND=1/2, AT+SPFORCEFRQ= other than
+#          the =x,3 read). They survive a
 #          reboot and stay in force in Android (#96); the Locks page sets and undoes them.
 #   radio  the radio, the data connection or the modem itself: AT+CFUN=, AT+SFUN=, AT+CGATT=, AT+CGACT=, AT+CGDATA,
 #          AT+COPS=0/1/2/4 (operator selection, deregistration), ATD (a call), AT+SPATASSERT= (crashes the modem)
@@ -281,7 +297,7 @@ at_class() {
     printf '%s\n' "$1" | tr -d ' "' | tr 'a-z' 'A-Z' | awk '{
         s = $0
         if (s ~ /\+COPS=\?/ || s ~ /SCAN/) c = "scan"
-        else if (s ~ /\+(SPTESTMODE|SP5GRAN|SPENDC)=([^?]|$)/ || s ~ /\+SPLBAND=0*[12]([^0-9]|$)/ ||
+        else if (s ~ /\+(SPTESTMODEM?|SP5GRAN|SPENDC)=([^?]|$)/ || s ~ /\+SPLBAND=0*[12]([^0-9]|$)/ ||
                  (s ~ /\+SPFORCEFRQ=[0-9]*,/ && s !~ /\+SPFORCEFRQ=[0-9]*,0*3([^0-9]|$)/)) c = "nv"
         else if (s ~ /\+(CFUN|SFUN|CGATT|CGACT|SPATASSERT)=([^?]|$)/ || s ~ /\+CGDATA/ ||
                  s ~ /\+COPS=0*[0124]([^0-9]|$)/ || s ~ /^ATD/) c = "radio"
@@ -353,10 +369,14 @@ m_at() {
         refuse 'Denied: this command wedges the AT port until a reboot'
         return
     fi
+    if at_moves_sim "$cmd"; then
+        refuse 'Denied: this command moves the SIM selection or the data route; the SIM settings do that'
+        return
+    fi
     # a lock apply in flight means the modem is restarting (SFUN) - say so instead
     # of a generic busy, so it does not look like the console died
-    if [ -d /run/unisoc-modem-lock-apply ]; then
-        printf '{"ok":0,"busy":1,"error":"Applying network locks: the modem is restarting (about half a minute), try again shortly"}\n'
+    if { [ -d /run/unisoc-modem-lock-apply ] || [ -e /run/mu300/sim-switching ] || [ -e /run/mu300/sim-active-unknown ]; }; then
+        printf '{"ok":0,"busy":1,"error":"The modem is restarting (network locks or a SIM switch, about half a minute), try again shortly"}\n'
         return
     fi
     # a scan in the background holds the channel for minutes: say so, not just "busy"
@@ -467,7 +487,7 @@ m_lock_set() {
     # cellular - exactly the thing that must never run inside a request
     # queued=1 tells the page another apply is still running (SFUN restart);
     # the new one waits for the modem and the page can say so
-    [ -d /run/unisoc-modem-lock-apply ] && q=1
+    { [ -d /run/unisoc-modem-lock-apply ] || [ -e /run/mu300/sim-switching ] || [ -e /run/mu300/sim-active-unknown ]; } && q=1
     if [ "$kind" = reset ]; then
         setsid "$DASH/lock" reset >/dev/null 2>&1 &
     else
@@ -809,6 +829,7 @@ m_forward_set() {
     reply_obj "$(printf '%s' "$INPUT" | "$FWDA" set 2>/dev/null)" 'The forwarding adapter gave no valid reply'
 }
 m_forward_test() { reply_obj "$("$FWDA" test 2>/dev/null)" 'The forwarding adapter gave no valid reply'; }
+m_forward_log_clear() { reply_obj "$("$FWDA" logclear 2>/dev/null)" 'The forwarding adapter gave no valid reply'; }
 # The CPU page: mu300-cpu through the adapter, which checks the profile name again
 CPUA=${MU300_CPU_ADAPTER:-$DASH/cpu}
 m_cpu_get() { reply_obj "$("$CPUA" get 2>/dev/null)" 'The CPU adapter gave no valid reply'; }
@@ -828,6 +849,41 @@ m_packages_act() {
     inp '@.op'; op=$V
     allowed "$op" '(retry|repair_dns|dismiss)' || { refuse 'Invalid packages operation'; return; }
     reply_obj "$("$PKGA" act "$op" 2>/dev/null)" 'The packages adapter gave no valid reply'
+}
+
+# The Update page: mu300-update through the adapter, which checks every value again and runs the command as a task
+# of its own (an update takes minutes; the page asks update_job after it). Each parameter is a fixed word, a release
+# tag, a size or a SHA-256: nothing typed reaches the adapter.
+UPDA=${MU300_UPDATE_ADAPTER:-$DASH/update}
+UPD_SYS='(ubuntu|openwrt|openwrt-luci)'
+UPD_FLAG='(no_reinstall|unsigned|downgrade)'
+m_update_get() {
+    local sizes
+    inp '@.sizes'; sizes=$V
+    allowed "$sizes" '(0|1)?' || { refuse 'The sizes parameter must be 0 or 1'; return; }
+    [ "$sizes" = 1 ] || sizes=
+    reply_obj "$("$UPDA" get $sizes 2>/dev/null)" 'The update adapter gave no valid reply'
+}
+m_update_job() { reply_obj "$("$UPDA" job 2>/dev/null)" 'The update adapter gave no valid reply'; }
+m_update_act() {
+    local op tag systems kernel sha size flags confirm
+    inp '@.op'; op=$V
+    inp '@.tag'; tag=$V
+    inp '@.systems'; systems=$V
+    inp '@.kernel'; kernel=$V
+    inp '@.sha256'; sha=$V
+    inp '@.size'; size=$V
+    inp '@.flags'; flags=$V
+    inp '@.confirm'; confirm=$V
+    allowed "$op" '(check|apply|upload_begin|upload_done|upload_cancel|apply_file|rollback|rollback_boot|clean|kernel|dismiss)' ||
+        { refuse 'Unknown update operation'; return; }
+    # a release tag (docs/FINDINGS.md 125: vYYYY.MM.DD, and vYYYY.MM.DD.N after v2026.10.27) or none
+    allowed "$tag" '(v[0-9]{4}\.[0-9]{2}\.[0-9]{2}|v[0-9]{4}\.(0[1-9]|1[0-2])\.(0[1-9]|[12][0-9]|3[01])\.[1-9][0-9]?)?' && allowed "$systems" "($UPD_SYS( $UPD_SYS){0,2})?" &&
+        allowed "$kernel" '(5\.4|6\.18|7\.2)?' && allowed "$sha" '([0-9a-f]{64})?' && allowed "$size" '([1-9][0-9]{0,9})?' &&
+        allowed "$flags" "($UPD_FLAG( $UPD_FLAG){0,2})?" && allowed "$confirm" '(apply|rollback|clean|kernel)?' ||
+        { refuse 'Invalid update request'; return; }
+    reply_obj "$("$UPDA" act "$op" "$tag" "$systems" "$kernel" "$sha" "$size" "$flags" "$confirm" 2>/dev/null)" \
+        'The update adapter gave no valid reply'
 }
 
 do_list() {
@@ -857,6 +913,8 @@ do_list() {
 	"lang_set": { "op": "String", "codes": "String", "source": "String" },
 	"power_get": { },
 	"power_set": { "op": "String", "key": "String", "value": "String" },
+	"sim_get": { },
+	"sim_set": { "op": "String", "value": "String" },
 	"ttl_get": { },
 	"ttl_set": { "value": "String" },
 	"traffic_get": { },
@@ -867,14 +925,43 @@ do_list() {
 		"webhook_format": "String", "webhook_headers": "String", "telegram": "String", "telegram_token": "String",
 		"telegram_chat": "String", "email": "String", "email_host": "String", "email_port": "String",
 		"email_tls": "String", "email_user": "String", "email_password": "String", "email_from": "String",
-		"email_to": "String", "sms": "String", "sms_number": "String", "webhook_body": "String" },
+		"email_to": "String", "sms": "String", "sms_number": "String", "webhook_body": "String",
+		"webhook_expect": "String" },
 	"forward_test": { },
+	"forward_log_clear": { },
 	"cpu_get": { },
 	"cpu_set": { "profile": "String" },
 	"packages_get": { },
-	"packages_act": { "op": "String" }
+	"packages_act": { "op": "String" },
+	"update_get": { "sizes": "String" },
+	"update_job": { },
+	"update_act": { "op": "String", "tag": "String", "systems": "String", "kernel": "String", "sha256": "String",
+		"size": "String", "flags": "String", "confirm": "String" }
 }
 EOF
+}
+
+SIMCTL=${MU300_DASH_SIM:-/opt/mu300/bin/mu300-sim}
+m_sim_get() { reply_obj "$("$SIMCTL" status --json 2>/dev/null)" 'SIM control unavailable'; }
+m_sim_set() {
+    local op value
+    inp '@.op'; op=$V
+    inp '@.value'; value=$V
+    case $op:$value in default:1|default:2|hot:0|hot:1|switch:1|switch:2) ;;
+        *) refuse 'Invalid SIM setting'; return;; esac
+    if [ "$op" = switch ]; then
+        local state
+        state=$("$SIMCTL" status --json 2>/dev/null)
+        [ "$(printf '%s' "$state" | jsonfilter -e '@.hot')" = 1 ] &&
+            [ "$(printf '%s' "$state" | jsonfilter -e '@.available')" = 1 ] &&
+            [ "$(printf '%s' "$state" | jsonfilter -e '@.busy')" = 0 ] || {
+                refuse 'Enable hot switching; reboot if channels are unavailable or wait until idle'; return;
+            }
+        setsid "$SIMCTL" switch "$value" </dev/null >/dev/null 2>&1 &
+        printf '{"ok":1,"started":1}\n'
+    else
+        reply_obj "$("$SIMCTL" "$op" "$value" 2>/dev/null)" 'SIM control failed'
+    fi
 }
 
 # Forensics for the rpcd crash (2026-09-28): rpcd segfaulted while parsing a
@@ -924,6 +1011,7 @@ ops_detail() {
         act)      inp '@.op'; allowed "$V" '[a-z-]{1,16}' && printf '%s\n' "$V" ;;
         lock_set) inp '@.kind'; allowed "$V" '[a-z_]{1,16}' && printf '%s\n' "$V" ;;
         lock_get) inp '@.fresh'; [ "$V" = 1 ] && echo fresh ;;
+        update_act) inp '@.op'; allowed "$V" '[a-z_]{1,16}' && printf '%s\n' "$V" ;;
     esac
 }
 
@@ -1003,7 +1091,7 @@ run_m() {  # run_m LABEL FUNCTION: the method's reply, logged
     # or failed is.
     case $1 in
         # (the send's job logs its own result once it is in; the polls that ask after it are not worth a line each)
-        ops_log|sms_job) return ;;
+        ops_log|sms_job|update_job) return ;;
         sysinfo|status|signal|at_job|at_history|sms_list|sms_show|*_get|usb_net_list)
             [ "$how" != ok ] || [ "$dt" -ge 200 ] || [ -n "$detail" ] || return ;;
     esac
@@ -1049,6 +1137,8 @@ call)
         lang_set)     run_m lang_set     m_lang_set ;;
         power_get)    run_m power_get    m_power_get ;;
         power_set)    run_m power_set    m_power_set ;;
+        sim_get)      run_m sim_get m_sim_get ;;
+        sim_set)      run_m sim_set m_sim_set ;;
         ttl_get)      run_m ttl_get      m_ttl_get ;;
         ttl_set)      run_m ttl_set      m_ttl_set ;;
         traffic_get)  run_m traffic_get  m_traffic_get ;;
@@ -1056,10 +1146,14 @@ call)
         forward_get)  run_m forward_get  m_forward_get ;;
         forward_set)  run_m forward_set  m_forward_set ;;
         forward_test) run_m forward_test m_forward_test ;;
+        forward_log_clear) run_m forward_log_clear m_forward_log_clear ;;
         cpu_get)      run_m cpu_get      m_cpu_get ;;
         cpu_set)      run_m cpu_set      m_cpu_set ;;
         packages_get) run_m packages_get m_packages_get ;;
         packages_act) run_m packages_act m_packages_act ;;
+        update_get)   run_m update_get   m_update_get ;;
+        update_job)   run_m update_job   m_update_job ;;
+        update_act)   run_m update_act   m_update_act ;;
         *)           refuse 'No such method' ;;
     esac
     ;;

@@ -7,8 +7,7 @@
    edit - which is what the modem interface looked like, even though /lib/netifd/proto/mu300cell.sh has read an
    apn option all along. The options here are exactly the ones that protocol handler understands. */
 
-/* Whether this device has the internal SIM (slot 1) at all is mu300-sim's to say (slot1_supported: the F50 only so
-   far). The control panel's local snapshot carries its answer as "sim" (mu300dash sysinfo: uci and files, no AT
+/* Whether this device has the internal SIM (slot 1) at all is mu300-sim's to say (slot1_supported: F50 boot selection and the positively gated U30 Air/OpenWrt backend). The control panel's local snapshot carries its answer as "sim" (mu300dash sysinfo: uci and files, no AT
    command). Without the panel, or when the call fails, nothing is known and both sources are offered as before. */
 var callSysinfo = rpc.declare({ object: 'mu300dash', method: 'sysinfo', expect: { '': {} }, nobatch: true });
 
@@ -91,6 +90,14 @@ return network.registerProtocol('mu300cell', {
 		o.depends('sim_slot', '1');
 		o.retain = true;
 
+		/* data roaming, one setting per card (mobile-data, docs/FINDINGS.md 120): unset is allowed, as every release
+		   before it did; the dial and its watchdog read it, so a change applies within half a minute */
+		o = s.taboption('general', form.Flag, 'roaming_internal', _('Internal SIM data roaming'),
+			_('Off: no mobile data while the SIM is registered on a roaming network (SMS and calls are not affected). Some SIMs report roaming at home (an MVNO, national roaming): those need it on.'));
+		o.default = o.enabled;
+		o.depends('sim_slot', '1');
+		o.retain = true;
+
 		o = s.taboption('general', form.Value, 'apn', _('APN'),
 			_('Leave empty unless the carrier needs a specific one. Empty means the modem keeps the context the SIM already defines, which is what most SIMs expect and what this device has been using.'));
 		o.placeholder = _('whatever the SIM defines');
@@ -102,6 +109,43 @@ return network.registerProtocol('mu300cell', {
 		o.value('IP', _('IPv4 only (default)'));
 		o.value('IPV4V6', _('IPv4 and IPv6'));
 		o.default = 'IP';
+		o.depends('sim_slot', '0');
+		o.retain = true;
+
+		/* data roaming, one setting per card (mobile-data, docs/FINDINGS.md 120): unset is allowed, as every release
+		   before it did; the dial and its watchdog read it, so a change applies within half a minute */
+		o = s.taboption('general', form.Flag, 'roaming', _('Data roaming'),
+			_('Off: no mobile data while the SIM is registered on a roaming network (SMS and calls are not affected). Some SIMs report roaming at home (an MVNO, national roaming): those need it on.'));
+		o.default = o.enabled;
+		o.depends('sim_slot', '0');
+		o.retain = true;
+
+		/* an APN that asks for credentials (a private APN, some MVNOs): mobile-data's define_context sends them */
+		o = s.taboption('general', form.Value, 'username', _('APN user name'),
+			_('Only for an APN that asks for one. Needs an APN above.'));
+		o.depends('sim_slot', '0');
+		o.retain = true;
+		o.validate = function(section_id, value) {
+			return (value.length <= 64 && /^[ -~]*$/.test(value) && !/["\\]/.test(value)) ? true :
+				_('At most 64 printable ASCII characters, without quotes or backslashes.');
+		};
+
+		o = s.taboption('general', form.Value, 'password', _('APN password'));
+		o.password = true;
+		o.depends('sim_slot', '0');
+		o.retain = true;
+		o.validate = function(section_id, value) {
+			return (value.length <= 64 && /^[ -~]*$/.test(value) && !/["\\]/.test(value)) ? true :
+				_('At most 64 printable ASCII characters, without quotes or backslashes.');
+		};
+
+		o = s.taboption('general', form.ListValue, 'auth', _('APN authentication'),
+			_('How the user name and password are presented. Automatic lets the network choose between PAP and CHAP.'));
+		o.value('', _('Automatic (PAP or CHAP when a user name is set)'));
+		o.value('pap', 'PAP');
+		o.value('chap', 'CHAP');
+		o.value('both', _('PAP or CHAP'));
+		o.value('none', _('None'));
 		o.depends('sim_slot', '0');
 		o.retain = true;
 

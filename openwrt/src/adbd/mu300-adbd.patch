@@ -23,18 +23,23 @@
  
  #if defined(__ANDROID__)
      bool device_unlocked = android::base::GetProperty("ro.boot.verifiedbootstate", "") == "orange";
-@@ -225,6 +232,10 @@
+@@ -225,6 +232,15 @@
          auth_required = android::base::GetBoolProperty("ro.adb.secure", false);
  #endif
      }
 +#else
-+    // MU300 Linux: ro.adb.secure=1, always. Only a key in /etc/mu300/adb_keys or /root/.android/adb_keys
-+    // gets in; there is no property, environment variable or option that turns this off.
-+    auth_required = true;
++    // MU300 Linux: one switch, set by mu300-adbd from "mu300-usb adb auth open|keys" when it starts this daemon.
++    // MU300_ADB_AUTH=open is Android's ro.adb.secure=0: every computer on the USB cable is accepted without a
++    // key and gets a root shell (the default since the owner's decision of 2026-10-13, FINDINGS 70). Anything
++    // else, a missing variable included, is ro.adb.secure=1: only a key in /etc/mu300/adb_keys or
++    // /root/.android/adb_keys gets in. No property and no option does the same.
++    const char* mu300_adb_auth = getenv("MU300_ADB_AUTH");
++    auth_required = !(mu300_adb_auth != nullptr && std::string(mu300_adb_auth) == "open");
++    LOG(INFO) << "authentication: " << (auth_required ? "keys" : "open (every computer is accepted)");
  #endif
  
      // Our external storage path may be different than apps, since
-@@ -252,7 +263,7 @@
+@@ -252,7 +268,7 @@
  
      bool is_usb = false;
  
@@ -43,7 +48,7 @@
      if (access(USB_FFS_ADB_EP0, F_OK) == 0) {
          // Listen on USB.
          usb_init();
-@@ -260,6 +271,16 @@
+@@ -260,6 +276,16 @@
      }
  #endif
  
@@ -60,7 +65,7 @@
      // If one of these properties is set, also listen on that port.
      // If one of the properties isn't set and we couldn't listen on usb, listen
      // on the default port.
-@@ -296,6 +317,7 @@
+@@ -296,6 +322,7 @@
          addrs = android::base::Split(prop_addr, ",");
          setup_adb(addrs);
      }

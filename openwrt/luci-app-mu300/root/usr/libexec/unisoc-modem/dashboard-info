@@ -74,16 +74,17 @@ SIM_SLOT=0
 # The SIM selector's own account, for the pages (issue #194): "slot" the card this boot uses, "wanted" the one the
 # configuration asks for, "slot1_supported" whether this device has the internal card at all. mu300-sim falls back to
 # slot 0 on a device without slot 1, and nothing said so: the home page and the interface page read it from here.
-# Local only (uci and a file under /run): no AT command. null without the selector, or when it gives no status.
+# Local only (uci and a file under /run): no AT command. null without the selector, when status fails, or when
+# the U30 transaction reports active:null. A pinned routing slot is not proof of an observed active card.
 SIMBIN=${MU300_SIM_BIN:-/opt/mu300/bin/mu300-sim}
 SIM_JSON=null
 if [ -x "$SIMBIN" ]; then
     SIM_SLOT=$("$SIMBIN" active) || exit 1
     sim_status=$("$SIMBIN" status --json 2>/dev/null)
     sim_n() { printf '%s\n' "$sim_status" | sed -n "s/.*\"$1\": *\([0-9]\).*/\1/p" | head -n1; }
-    sim_wanted=$(sim_n default); sim_s1=$(sim_n slot1_supported)
-    case "$SIM_SLOT$sim_wanted$sim_s1" in
-        [01][12][01]) SIM_JSON="{\"slot\":$SIM_SLOT,\"wanted\":$((sim_wanted - 1)),\"slot1_supported\":$sim_s1}" ;;
+    sim_active=$(sim_n active); sim_wanted=$(sim_n default); sim_s1=$(sim_n slot1_supported)
+    case "$sim_active$sim_wanted$sim_s1" in
+        [12][12][01]) SIM_JSON="{\"slot\":$((sim_active - 1)),\"wanted\":$((sim_wanted - 1)),\"slot1_supported\":$sim_s1}" ;;
     esac
 fi
 DATA_DEVICE=$(safe_iface "$(cfg data_device)" '')
@@ -117,6 +118,13 @@ apn_option=apn
 [ "$SIM_SLOT" != 1 ] || apn_option=apn_internal
 apn=$(t3 uci -q get "network.$DATA_IFACE.$apn_option")
 [ -n "$apn" ] || apn="(SIM default)"
+# data roaming (mobile-data, docs/FINDINGS.md 120): the card's setting - unset or anything but a "no" is allowed, as
+# the dial reads it - and whether data is held back because the card is registered as roaming
+roam_option=roaming
+[ "$SIM_SLOT" != 1 ] || roam_option=roaming_internal
+case $(t3 uci -q get "network.$DATA_IFACE.$roam_option") in 0|off|no|false) roam_allowed=0 ;; *) roam_allowed=1 ;; esac
+roam_held=0
+[ ! -e "${MU300_ROAM_HELD:-/run/mu300/data-roaming-held}" ] || roam_held=1
 
 # ------------------------------------------------------------------- system
 NOW=$(date +%s)
@@ -157,7 +165,7 @@ T_BRD=$(temp_of board-thmzone)
 T_HOT=$(temp_hottest)
 
 # ------------------------------------------------------------------- power
-# Only the U30 Air has a battery. Its fuel gauge is "battery" under 5.4 (the
+# Only the U30 Air has a battery (the F50 and the V50 have none). Its fuel gauge is "battery" under 5.4 (the
 # vendor charger manager) and "sc27xx-fgu" under mainline (UMP9620, FINDINGS
 # 33d); any other supply of type Battery is taken after those. The F50 has
 # none, but the same PMIC: under mainline its fuel gauge appears with made-up
@@ -172,7 +180,7 @@ T_HOT=$(temp_hottest)
 # exposes them, the input voltage and current; mainline: bq256xx-charger (online only).
 PSY=${MU300_POWER_SUPPLY_DIR:-/sys/class/power_supply}
 P_DIR=
-if [ "$(mu300-device 2>/dev/null)" != f50 ]; then
+case $(mu300-device 2>/dev/null) in f50|v50) ;; *)
     for d in "$PSY/battery" "$PSY/sc27xx-fgu" "$PSY"/*; do
         [ -d "$d" ] || continue
         [ "$(rd "$d/present")" = 0 ] && continue
@@ -182,7 +190,7 @@ if [ "$(mu300-device 2>/dev/null)" != f50 ]; then
         esac
         P_DIR=$d; break
     done
-fi
+    ;; esac
 P_PRESENT=0 P_CAP= P_STATUS= P_V= P_I= P_USB= P_IN_V= P_IN_I=
 if [ -n "$P_DIR" ]; then
     P_PRESENT=1
@@ -391,6 +399,12 @@ CAP_DUALBOOT=0; [ -x /opt/mu300/bin/mu300-next-boot ] && CAP_DUALBOOT=1
 BOOT_LOCK=0
 for _d in /mnt/mu300-disk ""; do [ -f "$_d/.mu300/boot-lock" ] && { BOOT_LOCK=1; break; }; done
 
+# A newer release: the note mu300-update keeps (notice, at boot and every 6 hours; this only reads it). Its tag, for
+# the home page's link to System > Update.
+UPDATE_TAG=$(sed -n 's/^mu300-linux \(v[0-9.]*\) is out .*/\1/p' "${MU300_NOTICE:-/run/mu300/update-available}" 2>/dev/null | head -n1)
+# (a release tag, docs/FINDINGS.md 125: vYYYY.MM.DD, and vYYYY.MM.DD.N after v2026.10.27)
+printf '%s\n' "$UPDATE_TAG" | LC_ALL=C grep -Eqx -- 'v[0-9]{4}\.[0-9]{2}\.[0-9]{2}|v[0-9]{4}\.(0[1-9]|1[0-2])\.(0[1-9]|[12][0-9]|3[01])\.[1-9][0-9]?' || UPDATE_TAG=
+
 # ------------------------------------------------------------- data usage
 # mu300-traffic's service writes this summary after each of its readings (RAM, once a minute): today and the
 # billing cycle, against the cap. Numbers and fixed words only; anything else is left out.
@@ -421,12 +435,14 @@ if [ -n "$T_LEVEL" ]; then
 else
     printf '"traffic":null,'
 fi
-printf '"wan":{"up":%d,"uptime":%s,"proto":%s,"apn":%s,"ip4":%s,"ip6":%s,"dns":%s},' \
-    "$wan_up" "$(n_or_null "$wan_uptime")" "$(qs "$wan_proto")" "$(qs "$apn")" "$(qs "$wan_ip4")" "$(qs "$wan6_ip")" "$(qs "$wan_dns")"
+printf '"wan":{"up":%d,"uptime":%s,"proto":%s,"apn":%s,"ip4":%s,"ip6":%s,"dns":%s,"roaming":{"allowed":%d,"held":%d}},' \
+    "$wan_up" "$(n_or_null "$wan_uptime")" "$(qs "$wan_proto")" "$(qs "$apn")" "$(qs "$wan_ip4")" "$(qs "$wan6_ip")" "$(qs "$wan_dns")" \
+    "$roam_allowed" "$roam_held"
 printf '"wifi":{"up":%d,"ssid":%s,"channel":%s,"band":%s,"width":%s,"country":%s,"enc":%s,"hidden":%s,"hostapd":%d,"clients":[%s],"clients_n":%d},' \
     "$W_UP" "$(qs "$W_SSID")" "$(qs "$W_CH")" "$(qs "$W_BAND")" "$(qs "$W_WIDTH")" "$(qs "$W_COUNTRY")" "$(qs "$W_ENC")" "$(n_or_null "$W_HIDDEN")" "$W_HOSTAPD" "${W_CLIST:-}" "$W_CN"
 printf '"lan":{"leases":%s,"ip":%s,"list":[%s]},' "$(n_or_null "$LAN_LEASES")" "$(qs "$LAN_IP")" "${LEASES:-}"
 printf '"modem":{"alive":%d,"atd":%d,"data_paused":%d},' "$MODEM_ALIVE" "$ATD_OK" "$DATA_PAUSED"
 printf '"capabilities":{"vpn":%d,"dualboot":%d,"bootlock":%d},' "$CAP_VPN" "$CAP_DUALBOOT" "$BOOT_LOCK"
+printf '"update":%s,' "$(qs "$UPDATE_TAG")"
 printf '"conns":%s,' "$(n_or_null "$CONNS")"
 printf '"vpn":{"enabled":%d,"engine":%s,"up":%d,"orphaned":%d}}\n' "$VPN_ENABLED" "$(qs "$VPN_ENGINE")" "$VPN_UP" "$VPN_ORPHANED"

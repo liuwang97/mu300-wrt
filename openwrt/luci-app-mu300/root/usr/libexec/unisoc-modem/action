@@ -2,6 +2,7 @@
 # mu300-dash-act -- the dashboard's actions, one op per invocation:
 #   mu300-dash-act radio on|off     radio (airplane) via AT+CFUN / the SFUN dance
 #   mu300-dash-act data up|down     netifd wan interface up/down (no AT in-band)
+#   mu300-dash-act roaming on|off   data roaming of the SIM in use (mobile-data roaming; no AT)
 #   mu300-dash-act wifi on|off      uci wireless disabled flag + wifi up/down
 #   mu300-dash-act modem-reset      the SFUN 5/3/2/4 sequence mobile-data uses for sim-reset
 # radio, modem-reset: under mobile-data's radio lock, or "busy" (lib.sh radio_locked)
@@ -55,6 +56,11 @@ radio_off() {
 
 # The radio ops run under mobile-data's radio lock (lib.sh radio_locked): this script runs itself again inside it.
 # A lock another radio sequence holds is "busy" at once; nothing is sent to the modem.
+# Managed SIM stacks must only be restarted through the card-aware controller.
+case ${1:-} in radio|modem-reset)
+    [ ! -e /run/mu300-radio-freeze ] && [ ! -e /run/mu300/sim-managed ] && [ ! -e /run/mu300/sim-switching ] || { fail "$1" 'Use SIM control or reboot for managed dual-SIM radio'; exit 1; } ;;
+esac
+
 case "${1:-}:${2:-}" in
     radio:on|radio:off|modem-reset:)
         if [ "${MU300_RADIO_LOCKED:-}" != 1 ]; then
@@ -84,6 +90,17 @@ case "${1:-}:${2:-}" in
     data:down)
         ifdown "$DATA_IFACE" 2>/dev/null
         ok "data down"
+        ;;
+    roaming:on|roaming:off)
+        # data roaming of the card in use (mobile-data roaming, docs/FINDINGS.md 120): stored in network.<wan>.roaming
+        # (or roaming_internal); the dial and its watchdog act on it within half a minute
+        if [ ! -x "$MOBILE_DATA" ]; then
+            fail "roaming $2" "Mobile data integration is not provided by this platform"
+        elif out=$(MU300_WAN="$DATA_IFACE" "$MOBILE_DATA" roaming "$2" 2>&1); then
+            ok "roaming $2"
+        else
+            fail "roaming $2" "The data roaming setting could not be saved" "$out"
+        fi
         ;;
     wifi:on|wifi:off)
         # persistent through reboots: the uci flag, not just a runtime wifi down
@@ -141,7 +158,7 @@ case "${1:-}:${2:-}" in
         fi
         ;;
     *)
-        echo "usage: $0 radio on|off | data up|down | wifi on|off | modem-reset | vpn start|stop | reboot | os android|lock|unlock" >&2
+        echo "usage: $0 radio on|off | data up|down | roaming on|off | wifi on|off | modem-reset | vpn start|stop | reboot | os android|lock|unlock" >&2
         printf '{"ok":0,"error":"Unknown op"}\n'
         exit 2
         ;;
