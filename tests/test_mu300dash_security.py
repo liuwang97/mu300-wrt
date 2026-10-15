@@ -287,6 +287,7 @@ class Refusals(Mu300Dash):
         ('act', {'op': 'radio', 'arg': 'on'}, 'arg', 'on'),
         ('act', {'op': 'data', 'arg': 'up'}, 'arg', 'up'),
         ('act', {'op': 'wifi', 'arg': 'off'}, 'arg', 'off'),
+        ('act', {'op': 'roaming', 'arg': 'off'}, 'arg', 'off'),
         ('act', {'op': 'vpn', 'arg': 'start'}, 'arg', 'start'),
         ('act', {'op': 'os', 'arg': 'android'}, 'arg', 'android'),
         ('act', {'op': 'os', 'arg': 'lock'}, 'arg', 'lock'),
@@ -366,6 +367,9 @@ class Refusals(Mu300Dash):
     def test_values_out_of_range_are_refused(self):
         jobs = [
             ('act op unknown', 'act', {'op': 'shell', 'arg': 'on'}),
+            ('act roaming slot', 'act', {'op': 'roaming', 'arg': 'on --slot 1'}),
+            ('act roaming word', 'act', {'op': 'roaming', 'arg': 'yes'}),
+            ('act roaming empty', 'act', {'op': 'roaming', 'arg': ''}),
             ('lock val mode', 'lock_set', {'kind': 'mode', 'val': '5g'}),
             ('lock lte too many', 'lock_set', {'kind': 'lte', 'val': ','.join(['1'] * 33)}),
             ('lock lte four digits', 'lock_set', {'kind': 'lte', 'val': '1000'}),
@@ -481,6 +485,7 @@ class Passthrough(Mu300Dash):
         ('act', {'op': 'reboot', 'arg': None}, [['setsid', 'action', 'reboot', '']]),
         ('act', {'op': 'vpn', 'arg': 'stop'}, [['setsid', 'action', 'vpn', 'stop']]),
         ('act', {'op': 'wifi', 'arg': 'off'}, [['action', 'wifi', 'off']]),
+        ('act', {'op': 'roaming', 'arg': 'on'}, [['action', 'roaming', 'on']]),
         ('act', {'op': 'os', 'arg': 'android'}, [['action', 'os', 'android']]),
         ('act', {'op': 'os', 'arg': 'lock'}, [['action', 'os', 'lock']]),
         ('act', {'op': 'os', 'arg': 'unlock'}, [['action', 'os', 'unlock']]),

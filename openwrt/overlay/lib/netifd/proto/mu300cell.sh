@@ -69,12 +69,23 @@ proto_mu300cell_setup() {
 	out=$(MU300_NETIFD=1 MU300_PDP_TYPE="${pdptype:-IP}" MU300_IPV6="$ipv6" \
 		MU300_APN_AUTH="$auth" MU300_APN_USER="$username" MU300_APN_PASSWORD="$password" \
 		/opt/mu300/bin/mobile-data up "$apn" 2>/tmp/mu300cell.err)
-	if [ $? = 3 ]; then
+	case $? in
+	3)
 		logger -t mu300cell "$(cat /tmp/mu300cell.err)"
 		proto_notify_error "$config" NO_MODEM
 		proto_block_restart "$config"
 		return 1
-	fi
+		;;
+	4)
+		# Data roaming is off (option roaming / roaming_internal '0') and the card is registered as roaming: held
+		# back on purpose (mobile-data logged it once, docs/FINDINGS.md 120). Asked again in a minute - no context is
+		# activated by that, only the registration read - and data comes back by itself at home. ifdown ends it.
+		proto_notify_error "$config" DATA_ROAMING
+		sleep "${MU300_ROAM_RETRY:-60}"
+		proto_setup_failed "$config"
+		return 1
+		;;
+	esac
 	ip=$(echo "$out" | sed -n 's/^IP=//p')
 	if [ -z "$ip" ]; then
 		logger -t mu300cell "attach failed: $(cat /tmp/mu300cell.err)"

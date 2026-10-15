@@ -816,6 +816,9 @@ msgstr "会话时长"
 msgid "Registration"
 msgstr "注册状态"
 
+msgid "Data roaming"
+msgstr "数据漫游"
+
 msgid "Bandwidth"
 msgstr "频宽"
 
@@ -951,6 +954,18 @@ msgstr "打开蜂窝射频"
 msgid "The SFUN power-on sequence will run (up to about 1 minute)."
 msgstr "将执行 SFUN 上电序列（最多约 1 分钟）。"
 
+msgid "Turn data roaming off"
+msgstr "关闭数据漫游"
+
+msgid "While the SIM is registered on a roaming network, mobile data stays off; SMS, calls and the registration are not affected. Some SIMs report roaming at home (an MVNO, national roaming): there, data would stop as well."
+msgstr "当 SIM 卡注册在漫游网络上时，移动数据保持关闭；短信、通话和网络注册不受影响。部分 SIM 卡在本地也会报告漫游（虚拟运营商、国内漫游）：在那里数据同样会停止。"
+
+msgid "Allow data roaming"
+msgstr "允许数据漫游"
+
+msgid "Mobile data is used on roaming networks too, which can cost extra. Some SIMs report roaming at home (an MVNO, national roaming) and need this to have data at all."
+msgstr "移动数据也会在漫游网络上使用，可能产生额外费用。部分 SIM 卡在本地也会报告漫游（虚拟运营商、国内漫游），需要开启此项才能使用数据。"
+
 msgid "Cellular connectivity may stop for 1–2 minutes."
 msgstr "蜂窝连接会中断 1-2 分钟。"
 
@@ -1079,6 +1094,15 @@ msgstr "仅紧急"
 
 msgid "Status %s"
 msgstr "状态 %s"
+
+msgid "Off: data held back while roaming"
+msgstr "关闭：漫游时已暂停数据"
+
+msgid "Allowed"
+msgstr "允许"
+
+msgid "Off"
+msgstr "关"
 
 msgid "LTE anchor"
 msgstr "LTE 锚点"
@@ -1604,9 +1628,6 @@ msgstr "保持不变"
 
 msgid "LTE only (5G off)"
 msgstr "仅 LTE（关闭 5G）"
-
-msgid "Off"
-msgstr "关"
 
 msgid "On"
 msgstr "开"
@@ -3364,6 +3385,12 @@ msgstr "请使用双 SIM 控制页或重启来操作受管理的双卡射频。"
 
 msgid "Radio did not come up"
 msgstr "射频未能开启"
+
+msgid "Mobile data integration is not provided by this platform"
+msgstr "此平台未提供移动数据集成"
+
+msgid "The data roaming setting could not be saved"
+msgstr "无法保存数据漫游设置"
 
 msgid "Expected on or off"
 msgstr "应为 on 或 off"

@@ -272,7 +272,7 @@ class Command(ShellTest):
             self.assertEqual(r.returncode, 0, r.stderr)
             i = json.loads(r.stdout)
             self.assertEqual(i['device'], 'u30air')
-            self.assertEqual(i['mobile_data'], {'service': 'active', 'address': '10.0.0.2/30'})
+            self.assertEqual(i['mobile_data'], {'service': 'active', 'address': '10.0.0.2/30', 'roaming': None})
             self.assertEqual(i['signal']['rat'], 'LTE')
             self.assertEqual(i['signal']['registration'], 'roaming')
             self.assertEqual((i['signal']['rsrp'], i['signal']['rsrq']), (-80, -4.5))
@@ -290,6 +290,18 @@ class Command(ShellTest):
             (self.tmp / 'device').write_text('f50\n')
             self.assertIsNone(json.loads(self.script(shell, CMD, 'info').stdout)['battery'])
             (self.tmp / 'device').write_text('u30air\n')
+
+    def test_info_data_roaming(self):
+        """FINDINGS 120: mobile-data roaming --json as it is; anything else (an older mobile-data's usage text) null."""
+        for shell in self.each_shell():
+            self.stub('mobile-data', '[ "$*" = "roaming --json" ] || exit 2\n'
+                      'echo \'{"allowed":false,"held":true,"slot":0,"per_sim":false,"slots":[false,false]}\'')
+            i = json.loads(self.script(shell, CMD, 'info').stdout)
+            self.assertEqual(i['mobile_data']['roaming'], {'allowed': False, 'held': True, 'slot': 0, 'per_sim': False,
+                                                           'slots': [False, False]})
+            self.stub('mobile-data', 'echo "usage: mobile-data up" >&2; echo \'"x"\'; exit 2')
+            self.assertIsNone(json.loads(self.script(shell, CMD, 'info').stdout)['mobile_data']['roaming'])
+            (self.stubs / 'mobile-data').unlink()
 
     def test_hotspot_set(self):
         conf = self.root / 'etc/mu300/hotspot.conf'

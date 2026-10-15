@@ -5,6 +5,7 @@ import os
 import pty
 import re
 import select
+import shlex
 import shutil
 import stat
 import struct
@@ -1684,6 +1685,303 @@ up() { at UP; }
         self.assertTrue(m, r.stdout + r.stderr)
         self.assertEqual(m.group(1), m.group(2))
         self.assertNotEqual(m.group(1), m.group(3))
+
+
+class DataRoaming(ShellTest):
+    """Data roaming (FINDINGS 120): the setting, the dial's gate, the watchdog's two moves. mobile-data sourced as in
+    MobileData (its lib() and modem); the modem here also answers AT+C5GREG? ($C5GREG) and AT+CGACT? ($CGACT), and
+    `uci` is a stub answering network.wan.roaming / roaming_internal from $T_ROAM0 / $T_ROAM1."""
+    lib = MobileData.lib
+    MODEM = MobileData.MODEM.replace(
+        "        'AT+CFUN?')",
+        "        'AT+C5GREG?') printf '%s\\nOK\\n' \"${C5GREG:-+C5GREG: 2,0}\" ;;\n"
+        "        'AT+CGACT?') printf '%s\\nOK\\n' \"${CGACT:-+CGACT: 1,0}\" ;;\n"
+        "        'AT+CFUN?')")
+    HOME = '+CEREG: 2,1,"1A2B","0123ABCD",7'
+    ROAM = '+CEREG: 2,5,"1A2B","0123ABCD",7'
+
+    def setUp(self):
+        super().setUp()
+        self.stub('uci', 'echo "uci $*" >> "$STUBLOG/uci"\n'
+                  'case "$*" in\n'
+                  '  "-q get network.wan.roaming") [ -n "${T_ROAM0:-}" ] && echo "$T_ROAM0" || exit 1 ;;\n'
+                  '  "-q get network.wan.roaming_internal") [ -n "${T_ROAM1:-}" ] && echo "$T_ROAM1" || exit 1 ;;\n'
+                  'esac')
+        self.stub('logger', 'echo "logger $*" >> "$STUBLOG/logger"')
+        self.stub('ifup', 'echo "ifup $*" >> "$STUBLOG/ifup"')
+        self.stub('ubus', 'echo "{ \\"up\\": false, \\"autostart\\": ${T_AUTOSTART:-true} }"')
+        for n in ('nft', 'sysctl', 'ethtool', 'resolvectl'):
+            self.stub(n, 'exit 0')
+        # the bearer has the context's address (the watchdog's healthy round)
+        self.stub('ip', 'case "$*" in *"-o addr show"*) echo "2: sipa_eth0    inet 10.1.2.3/24 scope global sipa_eth0" ;;\n'
+                  '  *"addr show"*) echo "    inet 10.1.2.3/24 scope global sipa_eth0" ;; esac; exit 0')
+        self.run_dir = self.tmp / 'run'
+        self.held = self.run_dir / 'mu300' / 'data-roaming-held'
+        self.conf = self.tmp / 'mobile-data.conf'
+
+    def dial(self, cereg, **env):
+        e = dict(MU300_NETIFD=1, MU300_AT_DEV='/dev/null', MU300_URC_LOG=self.tmp / 'none', MU300_CFUN_WAIT=0,
+                 CEREG=cereg)
+        e.update(env)
+        r, sent = self.lib('up_locked', **e)
+        return r, [s.split(' ', 1)[1] for s in sent]
+
+    def radio_log(self):
+        p = self.run_dir / 'mu300' / 'radio.log'
+        return p.read_text() if p.exists() else ''
+
+    def test_the_registration_says_home_roaming_or_nothing(self):
+        cases = [('1', '', 'home'), ('5', '', 'roaming'), ('9', '', 'home'), ('10', '', 'roaming'),
+                 ('0', '5', 'roaming'), ('2', '1', 'home'), ('2', '', 'unknown'), ('', '', 'unknown'),
+                 ('8', '0', 'unknown'), ('3', '', 'unknown')]
+        code = '; '.join(f'echo "{a}/{b}=$(roam_classify "{a}" "{b}")"' for a, b, _ in cases)
+        r, _ = self.lib(code)
+        for a, b, want in cases:
+            self.assertIn(f'{a}/{b}={want}\n', r.stdout, r.stderr)
+        # the query forms, as the modem answers them; the 5G registration only when LTE's says neither
+        r, sent = self.lib('roam_state', CEREG=self.ROAM)
+        self.assertEqual(r.stdout.strip(), 'roaming', r.stderr)
+        self.assertEqual([s.split(' ', 1)[1] for s in sent], ['AT+CEREG?'])
+        r, sent = self.lib('roam_state', CEREG='+CEREG: 2,0', C5GREG='+C5GREG: 2,5,"00A1","0000012345",11')
+        self.assertEqual(r.stdout.strip(), 'roaming', r.stderr)
+        self.assertEqual([s.split(' ', 1)[1] for s in sent], ['AT+CEREG?', 'AT+C5GREG?'])
+        r, _ = self.lib('roam_state', CEREG='ERROR', C5GREG='ERROR')
+        self.assertEqual(r.stdout.strip(), 'unknown')
+
+    def test_the_setting_and_its_values(self):
+        words = {'1': '1', 'on': '1', 'yes': '1', 'true': '1', '0': '0', 'off': '0', 'no': '0', 'false': '0',
+                 '': '', 'maybe': '', '0 ; reboot': '', '2': '', 'ON': ''}
+        for v, want in words.items():
+            r, _ = self.lib(f'echo "[$(roaming_word {shlex.quote(v)})]"')
+            self.assertEqual(r.stdout.strip(), f'[{want}]', v)
+        # OpenWrt: one option per card; unset or not a word: allowed
+        r, _ = self.lib('echo "$(roaming_setting 0) $(roaming_setting 1)"', MU300_NETIFD=1, T_ROAM0='0', T_ROAM1='1')
+        self.assertEqual(r.stdout.strip(), '0 1', r.stderr)
+        r, _ = self.lib('echo "$(roaming_setting 0) $(roaming_setting 1)"', MU300_NETIFD=1, T_ROAM1='nonsense')
+        self.assertEqual(r.stdout.strip(), '1 1', r.stderr)
+        # Ubuntu: the settings file, read (quotes, CR, the last line), never executed
+        self.conf.write_text('MU300_APN=internet\nMU300_DATA_ROAMING=1\nMU300_DATA_ROAMING="0"\r\n')
+        r, _ = self.lib('roaming_setting', MU300_NETIFD=0, MU300_CONF=self.conf)
+        self.assertEqual(r.stdout.strip(), '0', r.stderr)
+        self.conf.write_text('MU300_DATA_ROAMING=$(touch "$STUBLOG/ran")\n')
+        r, _ = self.lib('roaming_setting', MU300_NETIFD=0, MU300_CONF=self.conf)
+        self.assertEqual(r.stdout.strip(), '1', r.stderr)
+        self.assertFalse((self.tmp / 'ran').exists())
+        # no file: allowed (the default, today's behaviour)
+        r, _ = self.lib('roaming_setting', MU300_NETIFD=0, MU300_CONF=self.tmp / 'none.conf')
+        self.assertEqual(r.stdout.strip(), '1', r.stderr)
+
+    def test_the_default_dials_a_roaming_sim_as_before(self):
+        """Nothing set: a SIM registered as roaming gets data, and no extra question is sent."""
+        r, cmds = self.dial(self.ROAM)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn('IP=10.1.2.3\n', r.stdout)
+        self.assertIn('AT+CGACT=1,1', cmds)
+        self.assertEqual(cmds.count('AT+CEREG?'), 1, cmds)
+        self.assertNotIn('AT+C5GREG?', cmds)
+        self.assertFalse(self.held.exists())
+
+    def test_roaming_off_holds_the_dial_under_netifd(self):
+        for _ in range(2):
+            r, cmds = self.dial(self.ROAM, T_ROAM0='0')
+            self.assertEqual(r.returncode, 4, r.stderr)
+            self.assertNotIn('IP=', r.stdout)
+            self.assertFalse([c for c in cmds if c.startswith(('AT+CGACT', 'AT+CGDCONT', 'AT+CGDATA', 'sipa-dele'))], cmds)
+            self.assertEqual(self.held.read_text().strip(), '0')
+            self.assertTrue((self.run_dir / 'mu300-mobile-data-down').exists())
+        # said once, not on every retry of netifd
+        self.assertEqual(self.radio_log().count('data roaming is off'), 1, self.radio_log())
+        self.assertEqual((self.tmp / 'logger').read_text().count('data roaming is off'), 1)
+        # at home the same setting dials, and the hold is over
+        r, cmds = self.dial(self.HOME, T_ROAM0='0')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn('AT+CGACT=1,1', cmds)
+        self.assertFalse(self.held.exists())
+        self.assertIn('on the home network, mobile data comes back', self.radio_log())
+
+    def test_the_hold_is_said_once_in_the_journal(self):
+        """By hand the line goes to stderr too; under systemd stderr is the journal, where logger already put it
+        (seen on an F50: the same line twice)."""
+        r, _ = self.dial(self.ROAM, T_ROAM0='0', JOURNAL_STREAM='')   # (a CI runner under systemd has one)
+        self.assertIn('registered on a roaming network and data roaming is off', r.stderr)
+        self.held.unlink()
+        r, _ = self.dial(self.ROAM, T_ROAM0='0', JOURNAL_STREAM='8:12345')
+        self.assertNotIn('registered on a roaming network', r.stderr)
+        self.assertEqual((self.tmp / 'logger').read_text().count('data roaming is off'), 2)
+
+    def test_a_registration_that_cannot_be_read_is_no_dial_with_roaming_off(self):
+        # registered according to the URC log, then the queries say nothing
+        log = self.tmp / 'urc.log'
+        log.write_text('')
+        modem = self.MODEM.replace("'AT+CEREG?') printf '%s\\nOK\\n' \"${CEREG:-+CEREG: 2,2}\" ;;",
+                                   "'AT+CEREG?') printf 'ERROR\\n' ;;")
+        r, sent = self.lib('(sleep 1; echo "+CEREG: 1" >> "$MU300_URC_LOG") & up_locked', modem=modem, MU300_NETIFD=1,
+                           MU300_AT_DEV='/dev/null', MU300_URC_LOG=log, MU300_CFUN_WAIT=0, T_ROAM0='0', C5GREG='ERROR')
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertFalse([s for s in sent if 'AT+CGACT' in s], sent)
+        self.assertFalse(self.held.exists())
+        self.assertIn('could not tell', r.stderr)
+
+    def test_the_second_card_has_its_own_setting(self):
+        """dual SIM: slot 1 reads roaming_internal; the hold names the slot."""
+        r, cmds = self.dial(self.ROAM, MU300_SIM_SLOT='1', T_ROAM0='0', T_ROAM1='1')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn('AT+CGACT=1,1', cmds)
+        self.assertIn('uci -q get network.wan.roaming_internal', (self.tmp / 'uci').read_text())
+        r, cmds = self.dial(self.ROAM, MU300_SIM_SLOT='1', T_ROAM0='1', T_ROAM1='0')
+        self.assertEqual(r.returncode, 4, r.stderr)
+        self.assertEqual(self.held.read_text().strip(), '1')
+
+    def test_the_card_is_asked_on_its_own_channel(self):
+        """FINDINGS 74: each card's dial channel answers for that card; the question carries no AT+SPACTCARD (which
+        the panel's terminal refuses as a command anyway)."""
+        for d in ('mu300-at2', 'mu300-at5'):
+            (self.run_dir / d).mkdir(parents=True, exist_ok=True)
+            if not (self.run_dir / d / 'cmd').exists():
+                os.mkfifo(self.run_dir / d / 'cmd')
+        (self.run_dir / 'mu300-radio-freeze').touch()
+        stubdir = self.tmp / 'chan'
+        stubdir.mkdir(exist_ok=True)
+        (stubdir / 'mu300-at').write_text('#!/bin/sh\n[ "$1" = -t ] && shift 2\n'
+                                          'echo "${MU300_AT_DIR##*/} $1" >> "$STUBLOG/chan.log"\n'
+                                          'echo "+CEREG: 2,5"; echo OK\n')
+        (stubdir / 'mu300-at').chmod(0o755)
+        r, _ = self.lib('unset -f at; . "$STUBLOG/mobile-data.lib"; PATH="$STUBLOG/chan:$PATH"; roam_state',
+                        MU300_SIM_SLOT='1')
+        self.assertEqual(r.stdout.strip().splitlines()[-1], 'roaming', r.stderr)
+        self.assertEqual((self.tmp / 'chan.log').read_text().splitlines(), ['mu300-at5 AT+CEREG?'])
+
+    def test_ubuntu_holds_without_a_failure_and_the_watchdog_brings_data_back(self):
+        self.conf.write_text('MU300_DATA_ROAMING=0\n')
+        env = dict(MU300_NETIFD=0, MU300_CONF=self.conf)
+        r, cmds = self.dial(self.ROAM, **env)
+        self.assertEqual(r.returncode, 0, r.stderr)          # the service stays up: no restart every 30 s
+        self.assertIn('held back', r.stdout)
+        self.assertNotIn('AT+CGACT=1,1', cmds)
+        self.assertTrue(self.held.exists())
+        watch = 'up() { echo up >> "$STUBLOG/ups"; }\nwatch'
+        wenv = dict(env, MU300_AT_DEV='/dev/null', MU300_WATCH_INTERVAL='0', MU300_WATCH_ROUNDS='3')
+        # still roaming: one question a round, no dial, no "mobile data lost"
+        r, sent = self.lib(watch, CEREG=self.ROAM, **wenv)
+        cmds = [s.split(' ', 1)[1] for s in sent]
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(set(cmds), {'AT+CEREG?'}, cmds)
+        self.assertFalse((self.tmp / 'ups').exists())
+        self.assertNotIn('lost', r.stderr)
+        # home again: the hold ends and the watchdog dials, once
+        r, sent = self.lib(watch, CEREG=self.HOME, **wenv)
+        self.assertEqual((self.tmp / 'ups').read_text().split(), ['up'], r.stderr)
+        self.assertFalse(self.held.exists())
+        # or roaming allowed meanwhile, still abroad
+        (self.tmp / 'ups').unlink()
+        self.held.write_text('0\n')
+        self.conf.write_text('MU300_DATA_ROAMING=1\n')
+        r, sent = self.lib(watch, CEREG=self.ROAM, **wenv)
+        self.assertEqual((self.tmp / 'ups').read_text().split(), ['up'], r.stderr)
+        self.assertIn('data roaming: allowed', self.radio_log())
+
+    def test_the_watchdog_takes_data_down_when_the_card_goes_roaming(self):
+        """A live connection, then roaming with data roaming off: down once (no redial loop), and the default does
+        not ask more than before."""
+        wenv = dict(MU300_AT_DEV='/dev/null', MU300_WATCH_INTERVAL='0', MU300_WATCH_ROUNDS='3', CGACT='+CGACT:1,1')
+        # netifd: the wan restarted once, its dial then holds; later rounds leave it to netifd
+        r, sent = self.lib('watch', MU300_NETIFD=1, CEREG=self.ROAM, T_ROAM0='0', **wenv)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual((self.tmp / 'ifup').read_text().splitlines(), ['ifup wan'])
+        self.assertTrue(self.held.exists())
+        self.assertEqual(self.radio_log().count('data roaming is off'), 1)
+        # the wan taken down by hand (netifd's autostart off; its teardown left the marker): the hold ends
+        (self.tmp / 'ifup').unlink()
+        (self.run_dir / 'mu300-mobile-data-down').touch()
+        r, _ = self.lib('watch', MU300_NETIFD=1, CEREG=self.ROAM, T_ROAM0='0', T_AUTOSTART='false', **wenv)
+        self.assertFalse(self.held.exists())
+        self.assertFalse((self.tmp / 'ifup').exists())
+        # Ubuntu: the connection goes down as `mobile-data down` takes it
+        (self.run_dir / 'mu300-mobile-data-down').unlink()
+        self.conf.write_text('MU300_DATA_ROAMING=0\n')
+        r, sent = self.lib('up() { echo up >> "$STUBLOG/ups"; }\nwatch', MU300_NETIFD=0, MU300_CONF=self.conf,
+                           CEREG=self.ROAM, **wenv)
+        cmds = [s.split(' ', 1)[1] for s in sent]
+        self.assertEqual(cmds.count('AT+CGACT=0,1'), 1, cmds)
+        self.assertTrue(self.held.exists())
+        self.assertFalse((self.tmp / 'ups').exists())
+        # the default (nothing set), roaming or not: the round asks what it asked before, and nothing goes down
+        self.held.unlink()
+        (self.run_dir / 'mu300-mobile-data-down').unlink()   # (down's)
+        for cereg in (self.ROAM, self.HOME):
+            (self.tmp / 'ifup').unlink(missing_ok=True)
+            r, sent = self.lib('watch', MU300_NETIFD=1, CEREG=cereg, **dict(wenv, MU300_WATCH_ROUNDS='1'))
+            cmds = [s.split(' ', 1)[1] for s in sent]
+            self.assertEqual(cmds.count('AT+CEREG?'), 1, cmds)
+            self.assertNotIn('AT+C5GREG?', cmds)
+            self.assertFalse((self.tmp / 'ifup').exists(), (cmds, r.stderr))
+            self.assertFalse(self.held.exists())
+
+    def test_the_watchdog_stands_aside_while_suspended_and_held(self):
+        self.held.parent.mkdir(parents=True, exist_ok=True)
+        self.held.write_text('0\n')
+        (self.run_dir / 'mu300-mobile-data.suspend').write_text('off\n')
+        r, sent = self.lib('watch', MU300_NETIFD=0, MU300_AT_DEV='/dev/null', MU300_WATCH_INTERVAL='0',
+                           MU300_WATCH_ROUNDS='2', CEREG=self.HOME)
+        self.assertEqual(sent, [])
+        self.assertTrue(self.held.exists())
+
+    def test_the_test_hook_only_as_a_file_of_ours(self):
+        hook = self.run_dir / 'mu300' / 'roaming-test'
+        hook.parent.mkdir(parents=True, exist_ok=True)
+        r, _ = self.lib('roam_classify 1')
+        self.assertEqual(r.stdout.strip(), 'home')
+        hook.write_text('home-as-roaming\n')
+        r, _ = self.lib('roam_classify 1')
+        self.assertEqual(r.stdout.strip(), 'roaming')
+        hook.write_text('yes\n')
+        r, _ = self.lib('roam_classify 1')
+        self.assertEqual(r.stdout.strip(), 'home')
+        hook.unlink()
+        (self.tmp / 'elsewhere').write_text('home-as-roaming\n')
+        hook.symlink_to(self.tmp / 'elsewhere')
+        r, _ = self.lib('roam_classify 1')
+        self.assertEqual(r.stdout.strip(), 'home')
+
+    def test_the_command_writes_the_setting(self):
+        # Ubuntu: the other lines kept (the APN password among them), root's alone, the old value replaced
+        self.conf.write_text('MU300_APN=internet\nMU300_APN_PASSWORD=s3cret\nMU300_DATA_ROAMING=1\n')
+        self.conf.chmod(0o644)
+        r, _ = self.lib('roaming_cmd off; echo rc=$?', MU300_NETIFD=0, MU300_CONF=self.conf)
+        self.assertIn('rc=0', r.stdout, r.stderr)
+        self.assertEqual(self.conf.read_text(), 'MU300_APN=internet\nMU300_APN_PASSWORD=s3cret\nMU300_DATA_ROAMING=0\n')
+        self.assertEqual(self.conf.stat().st_mode & 0o777, 0o600)
+        r, _ = self.lib('roaming_json', MU300_NETIFD=0, MU300_CONF=self.conf)
+        self.assertEqual(json.loads(r.stdout), {'allowed': False, 'held': False, 'slot': 0, 'per_sim': False,
+                                                'slots': [False, False]})
+        for bad in ('maybe', 'on --slot 1', 'on extra'):
+            r, _ = self.lib(f'rc=0; roaming_cmd {bad} || rc=$?; echo rc=$rc', MU300_NETIFD=0, MU300_CONF=self.conf)
+            self.assertIn('rc=2', r.stdout, bad)
+        self.assertIn('MU300_DATA_ROAMING=0', self.conf.read_text())
+        # a file that is not there yet is made, root's alone
+        new = self.tmp / 'etc' / 'mobile-data.conf'
+        r, _ = self.lib('roaming_cmd on', MU300_NETIFD=0, MU300_CONF=new)
+        self.assertEqual(new.read_text(), 'MU300_DATA_ROAMING=1\n', r.stderr)
+        self.assertEqual(new.stat().st_mode & 0o777, 0o600)
+        # OpenWrt: the card in use, or the one named
+        r, _ = self.lib('roaming_cmd off; roaming_cmd on --slot 1; rc=0; roaming_cmd on --slot 2 || rc=$?; echo rc=$rc',
+                        MU300_NETIFD=1)
+        self.assertIn('rc=2', r.stdout, r.stderr)
+        calls = (self.tmp / 'uci').read_text().splitlines()
+        self.assertIn('uci -q set network.wan.roaming=0', calls)
+        self.assertIn('uci -q set network.wan.roaming_internal=1', calls)
+        self.assertEqual(calls.count('uci -q commit network'), 2)
+        self.assertFalse([c for c in calls if 'slot' in c or '=2' in c], calls)
+
+    def test_an_explicit_down_ends_the_hold_on_ubuntu_only(self):
+        text = (BIN / 'mobile-data').read_text()
+        case = text[text.index('\ncase "${1:-status}" in'):]
+        for netifd, kept in (('0', False), ('1', True)):
+            self.held.parent.mkdir(parents=True, exist_ok=True)
+            self.held.write_text('0\n')
+            r, _ = self.lib('down() { :; }\nmain() { set -- down' + case + '\n}\nmain; echo ok', MU300_NETIFD=netifd)
+            self.assertIn('ok', r.stdout, r.stderr)
+            self.assertEqual(self.held.exists(), kept, netifd)
 
 
 class RadioLocked(ShellTest):

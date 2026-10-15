@@ -233,6 +233,18 @@ exit 0''')
             self.assertIn('proto_block_restart wan', calls)
             self.assertNotIn('sleep 20', calls)
 
+    def test_held_for_roaming_is_retried_a_minute_later_without_a_log_line(self):
+        """FINDINGS 120: exit 4 is data held back for roaming. DATA_ROAMING, netifd tries again after a minute (the
+        way data comes back at home), no restart block, no address, and no log line of its own (mobile-data said it
+        once)."""
+        for shell in self.each_shell():
+            calls = self.run_proto(shell, 'proto_mu300cell_setup', out='', rc=4, err='', ok=1)
+            self.assertIn('proto_notify_error wan DATA_ROAMING', calls)
+            self.assertNotIn('proto_block_restart wan', calls)
+            self.assertIn('sleep 60', calls)
+            self.assertLess(calls.index('sleep 60'), calls.index('proto_setup_failed wan'))
+            self.assertFalse([c for c in calls if c.startswith(('proto_send_update', 'logger', 'proto_init_update'))], calls)
+
     def test_ipv6_bearer_still_adds_extendprefix_interface(self):
         """Without ipv6 'relay' (plain OpenWrt, or the option unset or 'extend'): today's RFC 7278 design, no monitor."""
         for ipv6 in ('', 'extend'):
