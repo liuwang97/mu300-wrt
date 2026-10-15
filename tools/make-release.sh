@@ -195,7 +195,29 @@ done
 rm -rf "$IN"
 # the updater itself: an older mu300-update fetches this one and continues with it
 cp "$TOP/rootfs/overlay/opt/mu300/bin/mu300-update" "$D/mu300-update"
-(cd "$D" && { shasum -a 256 *.tar.gz mu300-update 2>/dev/null || sha256sum *.tar.gz mu300-update; } > SHA256SUMS)
+# mu300-release: the tag, as a file, so that SHA256SUMS - and with it the signature - says which release these
+# checksums are of (mu300-update's tag_sha: a signed SHA256SUMS cannot be handed out as another release's)
+echo "$TAG" > "$D/mu300-release"
+(cd "$D" && { shasum -a 256 *.tar.gz mu300-update mu300-release 2>/dev/null || sha256sum *.tar.gz mu300-update mu300-release; } > SHA256SUMS)
+# The signature of SHA256SUMS (tools/sign-release.sh; mu300-update checks it where the system has the public key,
+# docs/FINDINGS.md 86): made when the release key is here - MU300_RELEASE_KEY, which the Release workflow takes from the
+# repository secret of that name, or MU300_RELEASE_KEY_FILE. The images of this release carry the public key when it
+# is in the tree; devices with it refuse a newer release that is not signed, so such a release is never published
+# without its signature.
+PUB=$TOP/rootfs/overlay/opt/mu300/lib/release.pub
+SIG=
+if [ -n "${MU300_RELEASE_KEY:-}${MU300_RELEASE_KEY_FILE:-}" ]; then
+    if [ -s "$PUB" ]; then sh "$TOP/tools/sign-release.sh" "$D/SHA256SUMS" "$PUB"
+    else
+        echo "signing without $PUB in the tree: no device checks this signature until the public key is committed" >&2
+        sh "$TOP/tools/sign-release.sh" "$D/SHA256SUMS"
+    fi
+    SIG=$D/SHA256SUMS.sig
+elif [ -s "$PUB" ]; then
+    echo "the images carry the release key ($PUB) and there is no MU300_RELEASE_KEY to sign with:" >&2
+    echo "devices would refuse this release. Nothing is published without its signature." >&2
+    [ "$PUBLISH" != --publish ] || exit 1
+fi
 ls -la "$D"
 
 [ "$PUBLISH" = --publish ] || { echo "built release/$TAG (run again with --publish to upload)"; exit 0; }
@@ -237,10 +259,11 @@ Aurora (luci-theme-aurora 1.4.0) from https://github.com/eamonxg/luci-theme-auro
 News and releases: the Telegram channel https://t.me/mu300project
 EOF
 if gh release view "$TAG" -R "$REPO" >/dev/null 2>&1; then
-    gh release upload "$TAG" -R "$REPO" --clobber "$D"/*.tar.gz "$D/mu300-update" "$D/SHA256SUMS"
+    # shellcheck disable=SC2086
+    gh release upload "$TAG" -R "$REPO" --clobber "$D"/*.tar.gz "$D/mu300-update" "$D/mu300-release" "$D/SHA256SUMS" $SIG
 else
     # shellcheck disable=SC2086
     gh release create "$TAG" -R "$REPO" --target "$commit" --title "MU300 Linux $TAG" --notes-file "$notes" $PRERELEASE \
-      "$D"/*.tar.gz "$D/mu300-update" "$D/SHA256SUMS"
+      "$D"/*.tar.gz "$D/mu300-update" "$D/mu300-release" "$D/SHA256SUMS" $SIG
 fi
 rm -f "$notes"

@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 HEAVY = ['test_device_scripts', 'test_panel', 'test_power', 'test_update', 'test_sms_pool', 'test_luci_i18n',
-         'test_installer', 'test_android_install']
+         'test_installer', 'test_android_install', 'test_answers', 'test_gui']
 
 
 def shards(n):

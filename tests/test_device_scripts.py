@@ -3747,3 +3747,53 @@ class EarlyRecorder(ShellTest):
                         p.write_text(data)
                 r = self.sh(shell, m.group(1) + '\necho "$PART"', MU300_RUN=run, MU300_CMDLINE_SRC=cmdline)
                 self.assertEqual((r.stdout.strip(), r.stderr), (f'boot_{want}', ''), (v, cl))
+
+
+class EarlyRecorderNode(ShellTest):
+    """early-recorder writes only into the block device: on OpenWrt procd replaces /dev while it runs, and a dd in that
+    moment made /dev/mmcblk0p38 a plain file in RAM that took every later write, mu300-update's boot image too (U30 Air,
+    FINDINGS 86)."""
+
+    def run_node(self, shell, logdev, sysdir):
+        import re
+        m = re.search(r'# --- node begin\n(.*?)# --- node end', (BIN / 'early-recorder').read_text(), re.S)
+        self.assertIsNotNone(m, 'early-recorder has no node block')
+        log = self.tmp / 'mknod.log'
+        log.unlink(missing_ok=True)
+        code = (f'mknod() {{ echo "$*" >> "{log}"; }}\nLOGDEV="{logdev}" LOGSYS="{sysdir}"\n' + m.group(1)
+                + '\nif node_ok; then echo ok; else echo no; fi')
+        r = self.sh(shell, code)
+        return r.stdout.strip(), (log.read_text() if log.exists() else '')
+
+    def test_node(self):
+        sysdir = self.tmp / 'sys-p38'
+        sysdir.mkdir()
+        dev = self.tmp / 'mmcblk0p38'
+        for shell in self.each_shell():
+            (sysdir / 'dev').write_text('259:30\n')
+            # missing: no write (hotplug makes it), nothing made here
+            self.assertEqual(self.run_node(shell, dev, sysdir), ('no', ''))
+            self.assertFalse(dev.exists())
+            # a plain file in its place: removed, and the node made from sysfs (here mknod is a stand-in)
+            dev.write_bytes(b'x' * 100)
+            self.assertEqual(self.run_node(shell, dev, sysdir), ('no', f'-m 600 {dev} b 259 30\n'))
+            self.assertFalse(dev.exists())
+            # a link, or a sysfs entry that is not MAJOR:MINOR: left alone
+            dev.symlink_to(self.tmp / 'elsewhere')
+            self.assertEqual(self.run_node(shell, dev, sysdir), ('no', ''))
+            self.assertTrue(dev.is_symlink())
+            dev.unlink()
+            dev.write_bytes(b'x')
+            for bad in ('', 'junk\n', '259:\n'):
+                (sysdir / 'dev').write_text(bad)
+                self.assertEqual(self.run_node(shell, dev, sysdir), ('no', ''), bad)
+                self.assertTrue(dev.exists(), bad)
+            dev.unlink()
+
+    def test_every_write_is_behind_node_ok(self):
+        s = (BIN / 'early-recorder').read_text()
+        writes = [line for line in s.splitlines() if 'of="$LOGDEV"' in line]
+        self.assertEqual(len(writes), 1)
+        self.assertTrue(writes[0].strip().startswith('node_ok && dd '), writes[0])
+        after = s[s.index('node_ok && dd '):]
+        self.assertIn('\n    node_ok\n', after)
