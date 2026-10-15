@@ -1454,6 +1454,15 @@ up() { at UP; }
         self.assertEqual(r.returncode, 0, r.stderr)
         return r, [s.split(' ', 1)[1] for s in sent]
 
+    def test_the_openwrt_watchdog_logs(self):
+        # FINDINGS 90 (measured on a U30 Air): procd kept none of the watchdog's stderr, so on OpenWrt nothing it said
+        # ("mobile data lost ... reconnecting", "no answer about the data context") ever reached logread
+        post = (TOP / 'openwrt/overlay/etc/init.d/mu300-post').read_text()
+        inst = post[post.index('procd_open_instance cellwatch'):]
+        inst = inst[:inst.index('procd_close_instance')]
+        self.assertIn('procd_set_param command /opt/mu300/bin/mobile-data watch', inst)
+        self.assertIn('procd_set_param stderr 1', inst)
+
     def test_watch_context_states(self):
         cases = [('+CGACT:1,1\\nOK', 'active'), ('+CGACT: 1,1\\r\\nOK', 'active'),
                  ('+CGACT:1,0\\nOK', 'inactive'), ('OK', 'inactive'),             # a reset modem lists nothing

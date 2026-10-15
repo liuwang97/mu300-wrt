@@ -1238,8 +1238,9 @@ watch() {
         state=$(watch_context)
         if [ "$state" = unknown ]; then
             # A few rounds without an answer are a busy or moving modem: the bearer and the count of failed rounds
-            # are left as they are. A modem that stays silent (MU300_WATCH_UNKNOWN_ROUNDS rounds, 4 = about two
-            # minutes) is treated as before: the radio check, then a reconnect.
+            # are left as they are. A modem that stays silent (MU300_WATCH_UNKNOWN_ROUNDS rounds, 4 = two minutes, or
+            # about 4.5 when the daemon hangs: an unanswered command then takes 35 s) is treated as before: the radio
+            # check, then a reconnect.
             unknown=$((unknown + 1))
             [ "$unknown" -ge "${MU300_WATCH_UNKNOWN_ROUNDS:-4}" ] || continue
             echo "no answer about the data context for $unknown rounds" >&2
