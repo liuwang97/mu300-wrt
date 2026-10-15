@@ -256,6 +256,7 @@ return view.extend({
 				checking ? _('Asking GitHub…') : res.check_age != null ? _('Checked %s ago').format(M.ageText(res.check_age)) : _('Not checked yet') ]) ]));
 		var reinstall = check('mud-upd-reinstall', _('Install the packages I added again after the update (needs the device online at the first start)'), true);
 		var sysBoxes = systems.map(function(s) { return { name: s.name, c: check('mud-upd-sys-' + s.name, s.name + ' · ' + s.release, true) }; });
+		var offered = false;	/* an Update button is on the page: the choices that go with it are shown */
 		var offer = function(rel, pre) {
 			var todo = newer(rel.tag, st.installed) || systems.some(function(s) { return newer(rel.tag, s.release); }) ||
 				(rel.tag === st.installed && kernel.boot !== rel.tag);
@@ -293,6 +294,7 @@ return view.extend({
 				});
 			});
 			box.appendChild(E('div', { 'style': 'margin-top:8px' }, [ ub ]));
+			offered = true;
 			return box;
 		};
 		if (chk && chk.ok === 1 && chk.latest) {
@@ -303,11 +305,11 @@ return view.extend({
 				online.appendChild(betaTick.el);
 				if (this.beta) online.appendChild(offer(chk.beta, true));
 			}
-			if (systems.length > 1) {
+			if (offered && systems.length > 1) {
 				online.appendChild(E('div', { 'class': 'mud-note' }, _('Systems to update:')));
 				sysBoxes.forEach(function(b) { online.appendChild(b.c.el); });
 			}
-			online.appendChild(reinstall.el);
+			if (offered) online.appendChild(reinstall.el);
 		} else if (chk && !checking) {
 			online.appendChild(E('div', { 'id': 'mud-upd-offline', 'style': 'margin:8px 0;color:var(--warning,#f59e0b)' },
 				_('GitHub could not be reached: the device has no internet connection, or GitHub did not answer. Without internet, update from a file below.')));

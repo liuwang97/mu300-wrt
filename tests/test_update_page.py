@@ -457,6 +457,11 @@ class Offline(UpdateBase):
             r = self.up(shell, 'apply_options --no-reinstall --from /x/y.zip openwrt --unsigned --downgrade; '
                                'echo "[$MU300_FROM][$MU300_ALLOW_UNSIGNED][$MU300_ALLOW_DOWNGRADE][$APPLY_ARGS]"')
             self.assertEqual(r.stdout.strip(), '[/x/y.zip][1][1][ --no-reinstall openwrt]', r.stderr)
+            # the owner's word reaches the release's own updater, which apply hands over to with the options taken
+            # out (on the U30 Air "apply --unsigned" was refused by the next release's updater)
+            r = self.up(shell, 'apply_options --unsigned --downgrade; '
+                               'sh -c \'echo "[$MU300_ALLOW_UNSIGNED][$MU300_ALLOW_DOWNGRADE]"\'')
+            self.assertEqual(r.stdout.strip(), '[1][1]', r.stderr)
             r = self.up(shell, 'apply_options ubuntu; echo "[${MU300_FROM:-}][${MU300_ALLOW_UNSIGNED:-}][$APPLY_ARGS]"')
             self.assertEqual(r.stdout.strip(), '[][][ ubuntu]')
             for bad in ('--from', 'openwrt "*"', '"a b"', '--from x "$(echo y)z;"'):
@@ -1936,16 +1941,18 @@ class Page(unittest.TestCase):
         # mu300-update refuses it there and the page has no word to give: it says so instead of an Update button that
         # can only fail (on the U30 Air it was offered, and the task failed with a hint at the network)
         js = '''const root = await open(STATE);
-            return { apply: !!root.find('mud-upd-apply'), note: (root.find('mud-upd-unsigned-online') || {}).textContent || null };'''
+            return { apply: !!root.find('mud-upd-apply'), note: (root.find('mud-upd-unsigned-online') || {}).textContent || null,
+                     reinstall: !!root.find('mud-upd-reinstall') };'''
         st = self.with_(status__signing={'key': 1, 'tool': 'usign'}, check__latest__signed=0)
         r = self.page(js, st)
         self.assertFalse(r['apply'])
         self.assertIn('not signed, and this system checks signatures', r['note'])
+        self.assertFalse(r['reinstall'])      # (the choices of an Update button, without one: seen on the U30 Air)
         # signed, or a system without the key (as before signing): offered
         for change in ({'status__signing': {'key': 1, 'tool': 'usign'}, 'check__latest__signed': 1},
                        {'status__signing': {'key': 0, 'tool': 'usign'}, 'check__latest__signed': 0}):
             r = self.page(js, self.with_(**change))
-            self.assertEqual((r['apply'], r['note']), (True, None), change)
+            self.assertEqual((r['apply'], r['note'], r['reinstall']), (True, None, True), change)
 
     def test_no_form_buttons(self):
         # nothing on the page is a form: LuCI's Save & Apply, Save and Reset did nothing there (seen on the U30 Air)

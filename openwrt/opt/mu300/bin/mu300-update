@@ -2402,8 +2402,8 @@ apply_options() {
         if [ -n "$_ao" ]; then MU300_FROM=$_aa; _ao=; continue; fi
         case $_aa in
             --from) _ao=1 ;;
-            --unsigned) MU300_ALLOW_UNSIGNED=1 ;;
-            --downgrade) MU300_ALLOW_DOWNGRADE=1 ;;
+            --unsigned) MU300_ALLOW_UNSIGNED=1; export MU300_ALLOW_UNSIGNED ;;
+            --downgrade) MU300_ALLOW_DOWNGRADE=1; export MU300_ALLOW_DOWNGRADE ;;
             # (--sha256=HASH: the file is the one with this SHA-256 - the one inspect was shown for - or nothing)
             --sha256=*) MU300_FROM_SHA=${_aa#--sha256=}; sha_ok "$MU300_FROM_SHA" || die "usage: mu300-update apply --from FILE --sha256=HASH" ;;
             # (a system's name or an option: one plain word, so that the list can be passed on as words)
