@@ -12,6 +12,11 @@ Every call is appended to <state.json>.log as one JSON line: {"argv": [...], "ki
 "read" for what only reads, "write" for a device command that would have written (dd of=, rm, a redirection into a
 file, sh of a pushed script), "push", "pull", "reboot", and "unknown" for a command this file has no answer for -
 which a test should treat as a mistake.
+
+With "emmc" set to a directory (tests/fakeemmc.py makes one) the device's storage is real: every command that names
+a block device, sysfs, /proc/mounts or /data/local/tmp runs in a shell against that directory (those paths rewritten
+into it, dd kept from truncating a file it writes into), pushes and pulls copy files there, and the rest is answered
+as above. The make-room path's writes and the resumed installation's checks are then tested on what was written.
 """
 import hashlib
 import json
@@ -50,7 +55,13 @@ DEFAULT = {
     'boot_image_bytes': 4096,    # size of the fake boot image a pull gives
     'linux_json': '',            # what `mu300-device --json` says on a device whose serial is MU300LINUX-...
     'pull': True,                # adb pull works; false: every pull fails, as with a cable that drops out;
-                                 # "gpt": only the two pieces of the partition table can be pulled
+                                 # "gpt": only the two pieces of the partition table can be pulled; "noboot" (with
+                                 # "emmc"): every pull but that of a boot partition works
+    'cid': '15010053454d36344720c1a6b7d2e900',   # the eMMC's CID (sysfs), 32 hex digits
+    'crypto_state': 'encrypted',     # ro.crypto.state (the F50's Android 13: file-based encryption)
+    'crypto_type': 'file',           # ro.crypto.type
+    'data_source': '/dev/block/dm-6',    # what /data is mounted from
+    'emmc': None,                # a directory standing for the device's storage (tests/fakeemmc.py): see above
 }
 T = '/data/local/tmp'
 
@@ -150,12 +161,56 @@ def pending_is_gpt(flag=None):
     return flag
 
 
+def emmc_run(st, cmd):
+    """A device command run for real against the directory st['emmc'] (see the module's docstring); (text, kind)."""
+    import subprocess
+    d = st['emmc']
+    real = cmd
+    for path, there in (('/data/local/tmp', d + '/tmp'), ('/dev/block/', d + '/dev/block/'), ('/sys/', d + '/sys/'),
+                        ('/proc/mounts', d + '/proc/mounts')):
+        real = real.replace(path, there)
+
+    # (dd: tests/fakeemmc.py's bin/dd keeps it from cutting short a file it writes into)
+    env = dict(os.environ, PATH=d + '/bin:' + os.environ.get('PATH', ''), FAKE_EMMC=d)
+    r = subprocess.run(['sh', '-c', real], capture_output=True, env=env)
+    out = r.stdout.decode('utf-8', 'replace').replace(os.path.realpath(d), '').replace(d, '').rstrip('\n')
+    if re.fullmatch(r'cat /dev/block/by-name/boot_[ab] > /data/local/tmp/mu300-pull\.bin', cmd):
+        open(state_path() + '.boot-pending', 'w').close()       # (pull "noboot": this pull is refused)
+    elif '/data/local/tmp/mu300-pull.bin' in cmd and os.path.exists(state_path() + '.boot-pending'):
+        os.remove(state_path() + '.boot-pending')
+    return out, ('write' if re.search(r'\bof=/dev/block/|(?<![0-9])>\s*/dev/(?!null)', cmd) else 'read')
+
+
+def emmc_cmd(cmd):
+    """Whether a command touches the storage that tests/fakeemmc.py makes real."""
+    return any(p in cmd for p in ('/dev/block/', '/sys/', '/proc/mounts', '/data/local/tmp'))
+
+
+def facts(st):
+    """What resume_facts reads (tools/resume.sh, install.ps1's ResumeFacts): userdata's node, first sector and sectors,
+    the eMMC's CID, the crypto properties and what /data is mounted from."""
+    disk, parts, last_end, off, size = geometry(st)
+    names = [n for n, _, _ in parts]
+    i = names.index('userdata')
+    first, last = parts[i][1], parts[i][2]
+    return '\n'.join(['NODE=mmcblk0p%d' % (i + 1), 'CID=' + st['cid'], 'START=%d' % first, 'SIZE=%d' % (last - first + 1),
+                      'STATE=' + st['crypto_state'], 'TYPE=' + st['crypto_type'], 'SOURCE=' + st['data_source'],
+                      'MAGIC=', 'EXT='])
+
+
+FACTS_CMD = 'd=$(readlink -f /dev/block/by-name/userdata);'
+
+
 def su(st, cmd, argv):
     """The answer of the device to `su -c 'cmd'`; (text, kind)."""
+    if st.get('emmc') and emmc_cmd(cmd) and cmd != 'sh %s/android-bootchain.sh check' % T:
+        return emmc_run(st, cmd)
     disk, parts, last_end, off, size = geometry(st)
     sd = st['sd']
     if cmd == 'id -u':
         return '0', 'read'
+    if cmd.startswith(FACTS_CMD):
+        return facts(st), 'read'
     m = re.fullmatch(r'getprop (\S+)', cmd)
     if m:
         return prop(st, m.group(1)), 'read'
@@ -348,6 +403,11 @@ def main(argv):
         return 0
     if cmd == 'push':
         log('push', argv)
+        if st.get('emmc'):
+            import shutil
+            srcs, dst = rest[:-1], rest[-1].replace('/data/local/tmp', st['emmc'] + '/tmp')
+            for src in srcs:
+                shutil.copy(src, os.path.join(dst, os.path.basename(src)) if dst.endswith('/') or os.path.isdir(dst) else dst)
         return 0
     if cmd == 'pull':
         log('pull', argv)
@@ -356,6 +416,17 @@ def main(argv):
         if not st['pull'] or (st['pull'] == 'gpt' and name not in ('gpt.head', 'gpt.tail') and not pending_is_gpt()):
             sys.stderr.write('adb: error: failed to copy: remote object does not exist\n')
             return 1
+        if st.get('emmc'):
+            if st['pull'] == 'noboot' and name == 'mu300-pull.bin' and os.path.exists(state_path() + '.boot-pending'):
+                sys.stderr.write('adb: error: failed to copy: remote object does not exist\n')
+                return 1
+            there = src.replace('/data/local/tmp', st['emmc'] + '/tmp')
+            if not os.path.isfile(there):
+                sys.stderr.write('adb: error: failed to stat remote object\n')
+                return 1
+            with open(there, 'rb') as f, open(dst, 'wb') as g:
+                g.write(f.read())
+            return 0
         if name == 'mu300-pull.bin':
             data = pending(st)
         elif name in ('gpt.head', 'gpt.tail'):

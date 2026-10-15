@@ -37,9 +37,6 @@ Verifying	Doğrulanıyor
 the table on the device does not read back as valid GPT.	cihazdaki tablo geçerli bir GPT olarak geri okunamıyor.
 the table did not take (userdata still ends at {1}). Nothing else was changed.	tablo uygulanmadı (userdata hâlâ {1} sektöründe bitiyor). Başka hiçbir şey değiştirilmedi.
 userdata now ends at sector {1}	userdata artık {1} sektöründe bitiyor
-Done - the device has to reboot before the new layout is visible	Tamamlandı - yeni düzenin görünmesi için cihazın yeniden başlaması gerekiyor
-Android will set up its data partition again on this boot, which takes a few minutes.	Android bu açılışta veri bölümünü yeniden kuracak; bu birkaç dakika sürer.
-When it is back, run this installer again and it will find the free space.	Açıldığında yükleyiciyi tekrar çalıştırın; boş alanı bulacaktır.
 Reboot now? (yes/no)	Şimdi yeniden başlatılsın mı? (evet/hayır)
 Locating free eMMC space after the last partition	Son bölümden sonraki boş eMMC alanı aranıyor
 could not read the partition table from the device (is su granted? try again)	bölüm tablosu cihazdan okunamadı (su izni verildi mi? tekrar deneyin)
@@ -159,7 +156,6 @@ switch systems: mu300-os {1}   back to Android: mu300-next-boot android	sistem d
 back to Linux from Android (with Magisk): su -c mu300-linux	Android'den Linux'a dönüş (Magisk ile): su -c mu300-linux
 Type ERASE to rewrite the partition table and wipe Android's data	Bölüm tablosunu yeniden yazmak ve Android verilerini silmek için ERASE yazın
 The backup copy at the end of the disk was written first, so Android's own repair may still fix this. Do not power off.	Diskin sonundaki yedek kopya önce yazıldı, bu yüzden Android'in kendi onarımı bunu hâlâ düzeltebilir. Cihazı kapatmayın.
-Clearing Android's data filesystem so it is recreated on the next boot	Android'in veri dosya sistemi, bir sonraki açılışta yeniden oluşturulması için temizleniyor
 ERROR:	HATA:
 Python 3 not found (install it from python.org or the Microsoft Store)	Python 3 bulunamadı (python.org'dan ya da Microsoft Store'dan kurun)
 Python 3.8 or newer is required	Python 3.8 ya da daha yenisi gerekiyor
@@ -590,7 +586,6 @@ userdata fills the whole disk, so there is nowhere to put Linux. The installer c
 GiB for Linux:	Linux için GiB:
 Type ERASE:	ERASE yazın:
 Make room now	Şimdi yer aç
-Afterwards the device restarts, Android sets its data up again (a few minutes), and the check finds the free space.	Sonrasında cihaz yeniden başlar, Android verilerini yeniden kurar (birkaç dakika) ve kontrol boş alanı bulur.
 It goes to the installer in a private file that is deleted when the run ends; only its hash reaches the device. It is never written to a log.	Yükleyiciye, çalışma bitince silinen özel bir dosyayla iletilir; cihaza yalnızca özeti (hash) ulaşır. Hiçbir günlüğe yazılmaz.
 Advanced	Gelişmiş
 There is not enough free space for this installation in that folder. Free some, or set MU300_WORK to a folder on another disk before starting.	Bu klasörde bu kurulum için yeterli boş alan yok. Yer açın ya da başlatmadan önce MU300_WORK değişkenini başka bir diskteki bir klasöre ayarlayın.
@@ -600,7 +595,6 @@ The backup stopped: {1}	Yedekleme durdu: {1}
 Copy the log	Günlüğü kopyala
 Save the log…	Günlüğü kaydet…
 Text	Metin
-Room was made. The device restarts and Android sets its data up again (a few minutes). Then press Refresh on the Device page.	Yer açıldı. Cihaz yeniden başlıyor ve Android verilerini yeniden kuruyor (birkaç dakika). Sonra Cihaz sayfasında Yenile'ye basın.
 Open an SSH session	SSH oturumu aç
 The Wi-Fi network the device broadcasts is its hotspot. Then try: sudo mu300-toolkit	Cihazın yayınladığı Wi-Fi ağı onun hotspot'udur. Sonra şunu deneyin: sudo mu300-toolkit
 News and new releases are on the project's Telegram channel; you can follow it.	Haberler ve yeni sürümler projenin Telegram kanalında; takip edebilirsiniz.
@@ -737,7 +731,6 @@ Remove the on-device switch	Cihaz üzerindeki geçiş aracını kaldır
 Done	Tamamlandı
 Copy the boot image and the start of misc	Önyükleme imajını ve misc'in başını kopyala
 Read the partition table	Bölüm tablosunu oku
-Rewrite the partition table and clear Android's data	Bölüm tablosunu yeniden yaz ve Android verilerini temizle
 Where	Nereye
 Default boot	Varsayılan açılış
 Also	Ayrıca
@@ -789,6 +782,54 @@ ZTE V50: EXPERIMENTAL, tested by nobody in this project (kano ported it); mainli
 The ZTE V50 runs a mainline kernel only: install a prebuilt release (without --build)	ZTE V50 yalnızca ana hat (mainline) çekirdekle çalışır: hazır bir sürüm kurun (--build olmadan)
 The ZTE V50 runs a mainline kernel only (6.18 or 7.2).	ZTE V50 yalnızca ana hat (mainline) çekirdekle çalışır (6.18 ya da 7.2).
 The ZTE V50 runs only a mainline kernel of a release that knows it: take the zip for kernel 6.18 or 7.2 (of a newer release if this one has none)	ZTE V50 yalnızca onu tanıyan bir sürümün ana hat (mainline) çekirdeğiyle çalışır: 6.18 ya da 7.2 çekirdeğinin zip dosyasını alın (bu sürümde yoksa daha yeni bir sürümün)
+a prepared installation is waiting (tools/resume.sh): this installer does not update itself until it is done	hazırlanmış bir kurulum bekliyor (tools/resume.sh): bu kurulum programı o bitene kadar kendini güncellemez
+could not read what identifies this device (serial, eMMC CID, userdata)	bu cihazı tanımlayan bilgiler okunamadı (seri numarası, eMMC CID, userdata)
+the partition table and the running kernel disagree about userdata; reboot Android and try again	bölüm tablosu ile çalışan çekirdek userdata konusunda uyuşmuyor; Android'i yeniden başlatıp tekrar deneyin
+encrypted	şifreli
+not encrypted	şifresiz
+unknown	bilinmiyor
+Android's own recovery erases Android's data: the device restarts into it, resets Android (a factory	Android'in verilerini Android'in kendi kurtarma modu (recovery) siler: cihaz ona yeniden başlar, Android'i sıfırlar (fabrika
+reset) and starts Android again, which takes a few minutes and more than one restart. Then set Android up	ayarlarına döndürme) ve Android'i yeniden başlatır; bu birkaç dakika ve birden çok yeniden başlatma sürer. Sonra Android'i
+again, turn USB debugging back on and bring root back (Magisk: install the Magisk app again and let	yeniden kurun, USB hata ayıklamayı tekrar açın ve root'u geri getirin (Magisk: Magisk uygulamasını yeniden kurup
+Shell have root), and run this installer again: it finds what was prepared and continues.	Shell'e root izni verin) ve bu kurulum programını yeniden çalıştırın: hazırlananı bulur ve devam eder.
+What was prepared, and a backup of the partition table, misc, boot and the boot chain, are kept on this	Hazırlananlar ile bölüm tablosunun, misc'in, boot'un ve önyükleme zincirinin yedeği bu
+computer in {1} - the reset erases everything of it on the device.	bilgisayarda {1} içinde tutulur - sıfırlama cihazdaki her şeyi siler.
+Backing up to {1}	{1} konumuna yedekleniyor
+Done - the device restarts into the reset now	Bitti - cihaz şimdi sıfırlamaya yeniden başlıyor
+Android's recovery formats Android's data on the next start; then Android starts as new. Set it up,	Android'in kurtarma modu bir sonraki açılışta Android'in verilerini biçimlendirir; ardından Android sıfırdan açılır. Kurun,
+turn USB debugging on, bring root back (the Magisk app, Shell allowed), and run this installer again.	USB hata ayıklamayı açın, root'u geri getirin (Magisk uygulaması, Shell'e izin), ve bu kurulum programını yeniden çalıştırın.
+transaction: {1}	işlem kaydı: {1}
+OK: the region prepared by making room, checked against its transaction	TAMAM: yer açılarak hazırlanmış alan, işlem kaydıyla karşılaştırıldı
+could not mark {1} as done	{1} tamamlandı olarak işaretlenemedi
+Android's data:       {1} ({2})	Android verileri:     {1} ({2})
+Android's encryption state is unknown ({1}); nothing is changed.	Android'in şifreleme durumu bilinmiyor ({1}); hiçbir şey değiştirilmedi.
+no saved transaction for this device in {1} (--transaction FILE names one)	{1} içinde bu cihaz için kayıtlı bir işlem yok (--transaction DOSYA birini belirtir)
+A prepared installation is waiting: {1}	Hazırlanmış bir kurulum bekliyor: {1}
+EXPERIMENTAL: it continues the installation that made room by resetting Android. --no-resume ignores it.	DENEYSEL: Android'i sıfırlayarak yer açan kurulumu sürdürür. --no-resume onu yok sayar.
+could not read the transaction {1}	{1} işlem kaydı okunamadı
+The prepared installation cannot be continued: {1}	Hazırlanmış kurulum sürdürülemiyor: {1}
+Nothing was written. Keep the device as it is and keep {1}.	Hiçbir şey yazılmadı. Cihazı olduğu gibi bırakın ve {1} dosyasını saklayın.
+Another transaction: --transaction FILE. To install as if nothing had been prepared: --no-resume (the region is then treated as space that holds data).	Başka bir işlem kaydı: --transaction DOSYA. Hiçbir şey hazırlanmamış gibi kurmak için: --no-resume (alan o zaman veri içeren bir alan olarak ele alınır).
+the device, its slot, its partition table, the region, the token and this installer are the ones the transaction was made with	cihaz, yuvası, bölüm tablosu, alan, belirteç ve bu kurulum programı işlem kaydının oluşturulduğu haliyle aynı
+Backing up {1}	{1} yedekleniyor
+the copy of {1} is not what the device holds; nothing was changed	{1} kopyası cihazdakiyle aynı değil; hiçbir şey değiştirilmedi
+could not compute the installer identity	kurulum programının kimliği hesaplanamadı
+could not save the transaction; nothing was changed	işlem kaydı kaydedilemedi; hiçbir şey değiştirilmedi
+transaction saved: {1}	işlem kaydı kaydedildi: {1}
+could not prepare the files to write; nothing was changed	yazılacak dosyalar hazırlanamadı; hiçbir şey değiştirilmedi
+the token did not read back from the device; misc was not changed, Android keeps its data. Run the installer again.	belirteç cihazdan geri okunamadı; misc değiştirilmedi, Android verilerini korur. Kurulum programını yeniden çalıştırın.
+Asking Android's recovery to reset Android's data on the next boot	Android'in kurtarma modundan bir sonraki açılışta Android verilerini sıfırlaması isteniyor
+the request for the reset did not read back from misc. The partition table is changed already: run the installer again, it continues from here.	sıfırlama isteği misc'ten geri okunamadı. Bölüm tablosu zaten değişti: kurulum programını yeniden çalıştırın, buradan devam eder.
+could not save the transaction	işlem kaydı kaydedilemedi
+could not create {1}	{1} oluşturulamadı
+could not copy the partition table into the backup	bölüm tablosu yedeğe kopyalanamadı
+could not make a token	belirteç oluşturulamadı
+First the partition table, misc, boot and the boot chain are backed up to this computer, with a record of what is prepared. Then the device restarts into Android's own recovery, which resets Android - a factory reset, a few minutes and more than one restart. Set Android up again, turn USB debugging on and bring root back (install the Magisk app again, let Shell have root); then Refresh: the installation continues where it was prepared. EXPERIMENTAL (ported from kano's desktop installer).	Önce bölüm tablosu, misc, boot ve önyükleme zinciri, hazırlananın kaydıyla birlikte bu bilgisayara yedeklenir. Sonra cihaz Android'in kendi kurtarma moduna yeniden başlar ve Android'i sıfırlar - fabrika ayarlarına döndürme, birkaç dakika ve birden çok yeniden başlatma. Android'i yeniden kurun, USB hata ayıklamayı açın ve root'u geri getirin (Magisk uygulamasını yeniden kurun, Shell'e root verin); sonra Yenile: kurulum hazırlandığı yerden devam eder. DENEYSEL (kano'nun masaüstü kurulum programından aktarıldı).
+Room was made. The device restarts into Android's recovery, which resets Android (a few minutes, more than one restart). Set Android up again, turn USB debugging on and bring root back (the Magisk app, Shell allowed); then press Refresh on the Device page: the installation continues where it was prepared.	Yer açıldı. Cihaz Android'in kurtarma moduna yeniden başlar ve Android'i sıfırlar (birkaç dakika, birden çok yeniden başlatma). Android'i yeniden kurun, USB hata ayıklamayı açın ve root'u geri getirin (Magisk uygulaması, Shell'e izin); sonra Cihaz sayfasında Yenile'ye basın: kurulum hazırlandığı yerden devam eder.
+A prepared installation waits for this device (EXPERIMENTAL: room was made by resetting Android). Install continues it into the prepared region. Its record: {1}	Bu cihaz için hazırlanmış bir kurulum bekliyor (DENEYSEL: yer, Android sıfırlanarak açıldı). Kur, onu hazırlanan alana sürdürür. Kaydı: {1}
+A prepared installation waits for this device, but it cannot be continued: {1}. Nothing is written. Its record: {2}	Bu cihaz için hazırlanmış bir kurulum bekliyor, ama sürdürülemiyor: {1}. Hiçbir şey yazılmaz. Kaydı: {2}
+Back up the partition table, misc, boot and the boot chain	Bölüm tablosunu, misc'i, boot'u ve önyükleme zincirini yedekle
+Rewrite the partition table and ask Android's recovery for the reset	Bölüm tablosunu yeniden yaz ve Android'in kurtarma modundan sıfırlama iste
 --build builds the systems itself: run it from a copy of the project, not from an unpacked Magisk zip	--build sistemleri kendisi derler: onu açılmış bir Magisk zip'inden değil, projenin bir kopyasından çalıştırın
 Package: {1} with kernel {2}, release {3} (unpacked Magisk zip at {4})	Paket: {1}, {2} çekirdeği, sürüm {3} ({4} konumunda açılmış Magisk zip'i)
 This package installs {1} with kernel {2} (release {3}); nothing is downloaded.	Bu paket {1} ve {2} çekirdeğini kurar (sürüm {3}); hiçbir şey indirilmez.
