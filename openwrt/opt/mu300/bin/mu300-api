@@ -335,7 +335,7 @@ m_hello() {
     _vpn=$(vpn_cmd)
     _sim2=false
     if [ -x "$BIN/mu300-sim" ]; then
-        "$BIN/mu300-sim" status --json 2>/dev/null | grep -Eq '"slot1_supported": *(1|true)' && _sim2=true
+        timed 10 "$BIN/mu300-sim" status --json 2>/dev/null | grep -Eq '"slot1_supported": *(1|true)' && _sim2=true
     fi
     printf '{"ok":1,"api":%d,"system":"%s","device":%s,"release":%s,"methods":%s,"features":{' "$API" "$SYS" \
         "$(js "$DEV")" "$(js "$(release)")" "$(jlist $METHODS)"
