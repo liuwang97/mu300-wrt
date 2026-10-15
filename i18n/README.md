@@ -1,7 +1,7 @@
 # Installer translations
 
-`install.sh` (with `tools/linux-mode.sh` and `tools/self-update.sh`) and `install.ps1` show their messages through
-`t` / `T`, which look them up here: `<lang>.tsv` has one line per message,
+`install.sh` (with the `tools/*.sh` it sources), `install.ps1` (with `tools/*.ps1`) and the graphical installer
+(`gui/`) show their messages through `t` / `T` / `_()`, which look them up here: `<lang>.tsv` has one line per message,
 
     English message with {1}<TAB>translation with {1}
 
@@ -19,3 +19,9 @@ To add a language:
 3. `python3 tools/check-i18n.py` must report nothing missing and no placeholder mismatches.
 
 When a message changes in a script, its old line here turns up as "stale" and the new one as "missing".
+
+The graphical installer's messages are in the same files: the first argument of `_('...')` and `N_('...')` in
+`gui/mu300gui/*.py` (`N_` marks a label of a table that is translated where it is shown). `tools/check-i18n.py` reads
+them with Python's own parser. A new language also goes into `LANGUAGES` in `gui/mu300gui/i18n.py`. The words a user
+types stay as they are there too (`ERASE`, `overwrite`, `internal`); `INSTALL` and `UNINSTALL` are buttons in the
+window.
