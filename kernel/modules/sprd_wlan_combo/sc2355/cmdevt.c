@@ -2644,6 +2644,14 @@ int sprd_xmit_data2cmd_wq(struct sk_buff *skb, struct net_device *ndev)
 			return -EPERM;
 		}
 	}
+	/*
+	 * MU300 (kanoqwq's clean-tf-7.2 149c9d2a): the descriptor is where the fill put it - behind the 5-byte address
+	 * prefix on PCIe - and is found before SDIO's flag goes in front. The vendor read it at skb->data, i.e. the
+	 * prefix on PCIe, so "sta_lut_index" was the descriptor's offset byte (11) and group frames never got the BK
+	 * TID that this is for.
+	 */
+	dscr = (struct tx_msdu_dscr *)(skb->data +
+		(hif->hw_type == SPRD_HW_SC2355_PCIE ? MSDU_DSCR_RSVD : 0));
 	/*alloc five byte for fw 16 byte need
 	 *dscr:11+flag:5 =16
 	 */
@@ -2651,13 +2659,11 @@ int sprd_xmit_data2cmd_wq(struct sk_buff *skb, struct net_device *ndev)
 		skb_push(skb,FLAG_SIZE);
 		memcpy(skb->data,temp_flag,FLAG_SIZE);
 	}
-	    /*send group in BK to avoid FW hang*/
-	    dscr = (struct tx_msdu_dscr *)skb->data;
+	/*send group in BK to avoid FW hang*/
 	if ((vif->mode == SPRD_MODE_AP ||
 	     vif->mode == SPRD_MODE_P2P_GO) && dscr->sta_lut_index < 6) {
 		dscr->buffer_info.msdu_tid = prio_1;
-		pr_info("%s, %d, SOFTAP/GO group go as BK\n", __func__,
-			__LINE__);
+		pr_debug_ratelimited("%s, %d, SOFTAP/GO group go as BK\n", __func__, __LINE__);
 	}
 
 	/*create work queue*/
