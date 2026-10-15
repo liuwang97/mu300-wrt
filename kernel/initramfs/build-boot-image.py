@@ -69,6 +69,46 @@ def lz4_legacy(data):
     return bytes(out)
 
 
+def unlz4_legacy(data):
+    """LZ4 legacy frames (the magic, then blocks of <u32 length><LZ4 block>) back to bytes: the lz4 command, else the
+    lz4 Python module, as lz4_legacy."""
+    try:
+        return subprocess.run(['lz4', '-dc'], input=data, capture_output=True, check=True).stdout
+    except FileNotFoundError:
+        pass
+    except subprocess.CalledProcessError:
+        sys.exit('an appended ramdisk segment does not decompress')
+    try:
+        import lz4.block
+    except ImportError:
+        sys.exit("need the 'lz4' command or the lz4 Python module (pip install lz4)")
+    out, i = bytearray(), 0
+    while i < len(data):
+        if data[i:i + 4] != bytes.fromhex('02214c18'):
+            sys.exit('an appended ramdisk segment is not LZ4 legacy')
+        i += 4
+        while i + 4 <= len(data) and data[i:i + 4] != bytes.fromhex('02214c18'):
+            n = struct.unpack_from('<I', data, i)[0]
+            out += lz4.block.decompress(data[i + 4:i + 4 + n], uncompressed_size=8 << 20)
+            i += 4 + n
+    return bytes(out)
+
+
+def cpio_names(data):
+    """The names of a newc cpio archive (a ramdisk segment, decompressed)."""
+    names, i = set(), 0
+    while i + 110 <= len(data) and data[i:i + 6] == b'070701':
+        size, nlen = int(data[i + 54:i + 62], 16), int(data[i + 94:i + 102], 16)
+        name = data[i + 110:i + 110 + nlen - 1].decode('utf-8', 'replace')
+        if name == 'TRAILER!!!':
+            break
+        names.add(name)
+        i += 110 + nlen
+        i += (-i) % 4
+        i += size + (-size) % 4
+    return names
+
+
 def cpio_archive(dirs, files):
     cpio = bytearray()
     ino = 1
@@ -120,7 +160,8 @@ def main():
     ap.add_argument('--generic-ramdisk', action='store_true',
                     help='write only the device-independent ramdisk segment (init, busybox, modules) to --out, for '
                          'mu300-update to put behind the ramdisk of the boot image already on the device')
-    ap.add_argument('--modules', required=True, type=Path, help='flat directory with the built .ko files')
+    ap.add_argument('--modules', type=Path, help='flat directory with the built .ko files (may be left out with '
+                                                 '--append-ramdisk: that segment brings the modules and their order)')
     ap.add_argument('--module-order', type=Path, default=HERE / 'module-order.txt')
     ap.add_argument('--device-modules', action='append', default=[], metavar='NAME=DIR',
                     help='modules built for another device of this family (u30air=out/u30air): they go to '
@@ -135,8 +176,9 @@ def main():
                     help='for experiments only: reboot SECONDS after switch_root unless /run/stay exists (with a '
                          'one-shot trial, that is back to Android when the kernel boots without USB)')
     ap.add_argument('--init', type=Path, default=HERE / 'init')
-    ap.add_argument('--busybox', required=True, type=Path, help='static arm64 busybox')
-    ap.add_argument('--logdw', required=True, type=Path, help='tools/logdw build (static arm64)')
+    ap.add_argument('--busybox', type=Path, help='static arm64 busybox (may be left out with --append-ramdisk, when '
+                                                'that segment brings one)')
+    ap.add_argument('--logdw', type=Path, help='tools/logdw build (static arm64; may be left out as --busybox)')
     ap.add_argument('--ueventd-perms', required=True, type=Path)
     ap.add_argument('--android-subset', type=Path, help='directory produced by android-vendor/extract-subset.sh')
     ap.add_argument('--append-ramdisk', type=Path,
@@ -147,20 +189,37 @@ def main():
     a = ap.parse_args()
     if not a.generic_ramdisk and not (a.stock_boot and a.misc_head and a.kernel):
         ap.error('--stock-boot, --misc-head and --kernel are required unless --generic-ramdisk is given')
+    # Without the 5.4 bundle (a Magisk zip of a mainline kernel, unpacked on a computer: tools/package.sh) the first
+    # segment carries no busybox, logdw or modules of its own: the kernel's generic segment, unpacked after it, brings
+    # them - and replaces what the first one has of them in any case. So it must bring every one that is left out.
+    missing = [n for n, v in (('modules', a.modules), ('busybox', a.busybox), ('logdw', a.logdw)) if v is None]
+    if missing:
+        if a.generic_ramdisk or not a.append_ramdisk:
+            ap.error('--' + ', --'.join(missing) + ' can be left out only with --append-ramdisk')
+        names = cpio_names(unlz4_legacy(a.append_ramdisk.read_bytes()))
+        want = {'busybox': ['bin/busybox'], 'logdw': ['bin/logdw'], 'modules': ['etc/module-order', 'init']}
+        for n in missing:
+            for f in want[n]:
+                if f not in names:
+                    sys.exit(f'{a.append_ramdisk} has no {f}: --{n} is needed')
 
     def text(path):  # scripts and lists for the device's shell, LF whatever the checkout did (issue #7)
         return path.read_bytes().replace(b'\r\n', b'\n')
 
     files = {
         'init': (text(a.init), stat.S_IFREG | 0o755),
-        'bin/busybox': (a.busybox.read_bytes(), stat.S_IFREG | 0o755),
         'bin/sh': (b'busybox', stat.S_IFLNK | 0o777),
-        'bin/logdw': (a.logdw.read_bytes(), stat.S_IFREG | 0o755),
         'etc/ueventd-perms.sh': (text(a.ueventd_perms), stat.S_IFREG | 0o755),
-        'etc/module-order': (text(a.module_order), stat.S_IFREG | 0o644),
     }
+    if a.busybox:
+        files['bin/busybox'] = (a.busybox.read_bytes(), stat.S_IFREG | 0o755)
+    if a.logdw:
+        files['bin/logdw'] = (a.logdw.read_bytes(), stat.S_IFREG | 0o755)
+    order = a.module_order.read_text().split() if a.modules else []
+    if a.modules:
+        files['etc/module-order'] = (text(a.module_order), stat.S_IFREG | 0o644)
     dirs = {'bin', 'sbin', 'etc', 'proc', 'sys', 'dev', 'run', 'tmp', 'root', 'config', 'linux-modules'}
-    for name in a.module_order.read_text().split():
+    for name in order:
         ko = a.modules / name
         if not ko.exists():
             sys.exit(f'missing module {ko}')
@@ -179,7 +238,7 @@ def main():
             if ko.exists():
                 files[f'linux-modules/{dev}/{name}'] = (ko.read_bytes(), stat.S_IFREG | 0o644)
             elif 'linux-modules/' + name not in files:
-                if not (a.modules / name).exists():
+                if not a.modules or not (a.modules / name).exists():
                     sys.exit(f'missing module {name} for {dev} (neither {ko} nor in --modules)')
                 files['linux-modules/' + name] = ((a.modules / name).read_bytes(), stat.S_IFREG | 0o644)
     if a.trial_guard and a.generic_ramdisk:
@@ -306,7 +365,7 @@ def main():
         'sha256_head48m': hashlib.sha256(image[:PERSIST_LOG_OFFSET]).hexdigest(),
         'kernel_sha256': hashlib.sha256(kern).hexdigest(),
         'ramdisk_size': len(ram),
-        'modules': len(a.module_order.read_text().split()),
+        'modules': len(order),
         'misc_slot_b_trial_hex': linux_b_bc.hex(),
         'misc_slot_a_hex': android_a_bc.hex(),
         'misc_slot_b_hex': android_b_bc.hex(),
