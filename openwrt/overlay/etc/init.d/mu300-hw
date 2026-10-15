@@ -20,7 +20,7 @@ hw_bringup() {
 	/opt/mu300/bin/regdb-load >>/tmp/mu300-wifi-start.log 2>&1
 	/opt/mu300/bin/openwrt-wifi-config >>/tmp/mu300-wifi-start.log 2>&1
 	# a WPA3 hotspot with the U30 SAE offload (opt-in, docs/U30AIR-SAE.md) on a hostapd that does not have it: WPA2,
-	# before the "wifi down; wifi up" below, which is the start that brings the hotspot up (netifd's own, earlier
+	# before the Wi-Fi restart below, which is the start that brings the hotspot up (netifd's own, earlier
 	# one ends AP-DISABLED under the world regulatory domain, or refused by that hostapd)
 	/opt/mu300/bin/openwrt-wifi-sae-guard precheck >>/tmp/mu300-wifi-start.log 2>&1
 	# the U30 Air's NFC tag: the hotspot's name and password, if that is what it holds (see mu300-nfc)
