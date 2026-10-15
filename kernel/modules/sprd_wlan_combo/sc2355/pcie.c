@@ -583,6 +583,36 @@ static int pcie_suspend_resume_handle(int chn, int mode)
 	return -EBUSY;
 }
 
+/*
+ * MU300 (kanoqwq's clean-tf-7.2 149c9d2a): the EDMA channel's pending ring (four slots, three usable) refuses a
+ * submission with -EAGAIN when it is full and takes nothing (wcn_bsp edma_pending_q_buffer). That is backpressure,
+ * not an error: the TX thread keeps the frames, does not count it towards its flush thresholds, and sleeps until the
+ * bus completes a transfer on the channel and calls this (in IRQ context) - armed before the submission, since the
+ * completion can come before the push returns. Before, the refusal was -1, counted like a hard failure (more than
+ * 100 in a row flushed the queued frames), and nothing in particular woke the thread for the retry.
+ */
+static int sc2355_pcie_tx_data_complete(int chn, int timeout)
+{
+	struct sprd_hif *hif = sc2355_pcie_get_hif();
+	struct tx_mgmt *tx_mgmt = hif ? smp_load_acquire((struct tx_mgmt **)&hif->tx_mgmt) : NULL;
+
+	if (!timeout && tx_mgmt && atomic_xchg(&tx_mgmt->pcie_tx_waiting, 0))
+		sc2355_tx_up(tx_mgmt);
+	return 0;
+}
+
+static int sc2355_pcie_tx_data_push(struct sprd_hif *hif, struct mbuf_t *head, struct mbuf_t *tail, int num)
+{
+	struct tx_mgmt *tx_mgmt = hif->tx_mgmt;
+	int ret;
+
+	atomic_set(&tx_mgmt->pcie_tx_waiting, 1);
+	ret = sc2355_pcie_push_link(hif, hif->tx_data_port, head, tail, num, sc2355_pcie_tx_data_pop_list);
+	if (ret != -EAGAIN)
+		atomic_set(&tx_mgmt->pcie_tx_waiting, 0);
+	return ret;
+}
+
 struct mchn_ops_t sc2355_pcie_hif_ops[] = {
 	/* ADD HIF ops config here */
 	/* NOTE: Requested by SDIO team, pool_size MUST be 1 in RX */
@@ -620,10 +650,10 @@ struct mchn_ops_t sc2355_pcie_hif_ops[] = {
 			NULL, NULL, pcie_suspend_resume_handle),
 	INIT_INTF_SC2355(PCIE_TX_DATA_PORT, 1, 1, 0, SPRD_MAX_CMD_TXLEN,
 			300, 0, 0, 0, 1, 32, sc2355_pcie_tx_data_pop_list,
-			NULL, NULL, NULL),
+			NULL, sc2355_pcie_tx_data_complete, NULL),
 	INIT_INTF_SC2355(PCIE_TX_ADDR_DATA_PORT, 1, 1, 0, SPRD_MAX_CMD_TXLEN,
 			300, 0, 0, 0, 1, 4, sc2355_pcie_tx_data_pop_list,
-			NULL, NULL, NULL),
+			NULL, sc2355_pcie_tx_data_complete, NULL),
 };
 
 static void pcie_tx_ba_mgmt(struct sprd_priv *priv, struct sprd_vif *vif,
@@ -976,14 +1006,12 @@ int sc2355_pcie_hif_tx_list(struct sprd_hif *hif,
 		if (hif->mbuf_head) {
 			/*ret = mchn_push_link(9, head, tail, pcie_count);*/
 			/*edma sync function*/
-			ret = sc2355_pcie_push_link(hif, hif->tx_data_port,
-					       (struct mbuf_t *)hif->mbuf_head,
-					       (struct mbuf_t *)hif->mbuf_tail,
-					       hif->mbuf_num,
-					       sc2355_pcie_tx_data_pop_list);
+			ret = sc2355_pcie_tx_data_push(hif, (struct mbuf_t *)hif->mbuf_head,
+						       (struct mbuf_t *)hif->mbuf_tail, hif->mbuf_num);
 			if (ret != 0) {
 				/*pr_err("%s: push link fail\n", __func__); */
-				hif->pushfail_count++;
+				if (ret != -EAGAIN)	/* MU300: a full pending ring is not a failure */
+					hif->pushfail_count++;
 				sprdwl_list_cut_to_send_list(tx_head,
 								 tx_list_tail,
 								 tx_count);
@@ -1044,7 +1072,7 @@ unsigned char sc2355_pcie_find_lut_index(struct sprd_hif *hif, struct sprd_vif *
 		for (i = 0; i < MAX_LUT_NUM; i++) {
 			if ((sc2355_is_group(hif->peer_entry[i].tx.da)) &&
 			    hif->peer_entry[i].ctx_id == vif->ctx_id) {
-				pr_info("%s, %d, group lut_index=%d\n",
+				pr_debug_ratelimited("%s, %d, group lut_index=%d\n",
 					__func__, __LINE__,
 					hif->peer_entry[i].lut_index);
 				return hif->peer_entry[i].lut_index;
@@ -1114,7 +1142,6 @@ int sc2355_pcie_hif_fill_msdu_dscr(struct sprd_vif *vif,
 	struct tx_msdu_dscr *dscr;
 	struct sprd_hif *hif;
 	u8 lut_index;
-	struct sk_buff *temp_skb;
 	unsigned char dscr_rsvd = 0;
 	struct ethhdr *ethhdr = (struct ethhdr *)skb->data;
 	u8 is_special_data = 0;
@@ -1133,28 +1160,30 @@ int sc2355_pcie_hif_fill_msdu_dscr(struct sprd_vif *vif,
 
 	hif = &vif->priv->hif;
 	dscr_rsvd = INTF_IS_PCIE ? MSDU_DSCR_RSVD : 0;
-	if (skb_headroom(skb) < (DSCR_LEN + hif->hif_offset +
-				 MSG_PTR_LEN + dscr_rsvd)) {
-		temp_skb = skb;
-
-		skb = skb_realloc_headroom(skb, (DSCR_LEN + hif->hif_offset +
-						 MSG_PTR_LEN + dscr_rsvd));
-		kfree_skb(temp_skb);
-		if (!skb) {
-			pr_err("%s:%d failed to unshare skbuff: NULL\n",
-			       __func__, __LINE__);
-			return -EPERM;
+	/*
+	 * MU300 (kanoqwq's clean-tf-7.2 149c9d2a): the headroom is made in place. The vendor replaced the skb with
+	 * skb_realloc_headroom() and freed the old one, but only this function's copy of the pointer changed: every
+	 * caller went on with the freed skb (and freed it again when this failed). skb_cow_head() keeps the skb the
+	 * caller holds, also makes a header shared with a clone (a bridge flooding a frame) private before the
+	 * descriptor is written into it, and counts the offset the push below adds; on failure the caller frees.
+	 */
+	if (skb_headroom(skb) < (DSCR_LEN + offset + hif->hif_offset + MSG_PTR_LEN + dscr_rsvd) ||
+	    skb_header_cloned(skb)) {
+		if (skb_cow_head(skb, DSCR_LEN + offset + hif->hif_offset + MSG_PTR_LEN + dscr_rsvd)) {
+			pr_err_ratelimited("%s: no headroom for the descriptor\n", __func__);
+			return -ENOMEM;
 		}
 #if defined(MORE_DEBUG)
 		hif->stats.tx_realloc++;
 #endif
 	}
+	ethhdr = (struct ethhdr *)skb->data;	/* skb_cow_head may have moved the data */
 
 	memcpy(hif->skb_da, skb->data, ETH_ALEN);
 
 	lut_index = sc2355_pcie_find_lut_index(hif, vif);
 	if (lut_index < 6 && (!sc2355_is_group(hif->skb_da))) {
-		pr_err("%s, %d, sta disconn, no data tx!", __func__, __LINE__);
+		pr_debug_ratelimited("%s, %d, sta disconn, no data tx!\n", __func__, __LINE__);
 		return -EPERM;
 	}
 	//skb_push(skb, sizeof(struct tx_msdu_dscr) + offset + dscr_rsvd);

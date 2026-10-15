@@ -1333,8 +1333,27 @@ bounded() {
 
 # The modem firmware occasionally resets itself (modem_control reloads it); it comes back with the radio off and
 # no PDP context, which Android's RIL repairs silently. Check the context every 30 s and reconnect when it is gone.
+#
+# watch_context: what AT+CGACT? says about our context. active; inactive (the modem answered with a final OK and the
+# context is not up: <cid>,0, or no line for it at all, which is what a firmware reset leaves); unknown (no final
+# result code in time, the client lock busy, ERROR). Unknown is not evidence of a lost bearer: a channel can be slow
+# while the modem moves between cells, and taking that for a detach redialled a working connection (the point of
+# kanoqwq's clean-tf-7.2 3cbf37fc; FINDINGS 90).
+watch_context() {
+    local reply
+    reply=$(at "AT+CGACT?" 4 2>/dev/null) || { echo unknown; return 0; }
+    reply=$(printf '%s\n' "$reply" | tr -d '\r')
+    if printf '%s\n' "$reply" | grep -Eq "^\+CGACT: ?$CID,1([^0-9]|$)"; then
+        echo active
+    elif printf '%s\n' "$reply" | grep -Eq '^OK$'; then
+        echo inactive
+    else
+        echo unknown
+    fi
+}
+
 watch() {
-    local fails=0 rounds=0
+    local fails=0 rounds=0 unknown=0 state
     # one watchdog is enough: procd and systemd have both been seen starting a second one
     local wlock=/run/mu300-mobile-data-watch.lock wp=
     while ! mkdir "$wlock" 2>/dev/null; do
@@ -1379,7 +1398,19 @@ watch() {
         [ -s "$SUSPEND" ] && continue   # mu300-power holds the modem down; nothing to restore
         [ -c "$DEV" ] || continue
         tty_setup
-        if at "AT+CGACT?" | grep -q "+CGACT:$CID,1" && ip -4 addr show "$IFACE" 2>/dev/null | grep -q inet; then
+        state=$(watch_context)
+        if [ "$state" = unknown ]; then
+            # A few rounds without an answer are a busy or moving modem: the bearer and the count of failed rounds
+            # are left as they are. A modem that stays silent (MU300_WATCH_UNKNOWN_ROUNDS rounds, 4 = two minutes, or
+            # about 4.5 when the daemon hangs: an unanswered command then takes 35 s) is treated as before: the radio
+            # check, then a reconnect.
+            unknown=$((unknown + 1))
+            [ "$unknown" -ge "${MU300_WATCH_UNKNOWN_ROUNDS:-4}" ] || continue
+            echo "no answer about the data context for $unknown rounds" >&2
+        else
+            unknown=0
+        fi
+        if [ "$state" = active ] && ip -4 addr show "$IFACE" 2>/dev/null | grep -q inet; then
             # An active context is not enough: after the radio or the network dropped the bearer, an LTE modem
             # attaches again by itself and the context comes back with a new address, while the interface keeps
             # the old one - it sends with it and nothing ever comes back (measured: rx 0, the modem on

@@ -212,7 +212,11 @@ class Update(UpdateBase):
         env = dict(MU300_NOTICE=str(note), MU300_MOTD_DIR=str(motd))
         for shell in self.each_shell():
             for installed, latest, noted in (('v2026.10.06', 'v2026.10.08', True), ('v2026.10.08', 'v2026.10.08', False),
-                                             ('v2026.10.09', 'v2026.10.08', False)):   # a test release: no note
+                                             ('v2026.10.09', 'v2026.10.08', False),    # a test release: no note
+                                             # the new names (FINDINGS 125): newer than every three-field tag
+                                             ('v2026.10.27', 'v2026.10.16.1', True), ('v2026.10.16.1', 'v2026.10.27', False),
+                                             ('v2026.10.16.9', 'v2026.10.16.10', True), ('v2026.10.16.10', 'v2026.10.16.9', False),
+                                             ('unknown', 'v2026.10.16.1', True), ('v2026.10.27', 'test-issue-102', False)):
                 r = self.up(shell, f'latest_release() {{ echo {latest}; }}; installed_version() {{ echo {installed}; }}; '
                                    'notice; echo rc=$?', **env)
                 self.assertIn('rc=0', r.stdout, r.stderr)
@@ -226,6 +230,20 @@ class Update(UpdateBase):
             r = self.up(shell, 'latest_release() { :; }; notice; echo rc=$?', **env)
             self.assertIn('rc=1', r.stdout)
             self.assertTrue(note.exists())
+
+    def test_check_and_version_ok_know_the_new_names(self):
+        # vYYYY.MM.DD.N (FINDINGS 125) is newer than every vYYYY.MM.DD: check offers it, a module's requires is met by it
+        for shell in self.each_shell():
+            for installed, latest, says in (('v2026.10.27', 'v2026.10.16.1', 'Run: mu300-update apply'),
+                                            ('v2026.10.16.2', 'v2026.10.16.1', 'newer than the newest release'),
+                                            ('v2026.10.16.9', 'v2026.10.16.10', 'Run: mu300-update apply')):
+                r = self.up(shell, f'latest_release() {{ echo {latest}; }}; installed_version() {{ echo {installed}; }}; check')
+                self.assertIn(says, r.stdout, (installed, latest, r.stderr))
+            for need, have, ok in (('v2026.10.16', 'v2026.10.15.1', True), ('v2026.10.16', 'v2026.10.15', False),
+                                   ('v2026.10.16.2', 'v2026.10.16.10', True), ('v2026.10.16.2', 'v2026.10.16.1', False),
+                                   ('v2026.10.16.1', 'v2026.10.27', False), ('v2026.10.16', 'dev', True), ('', 'v2026.10.27', True)):
+                r = self.up(shell, f'version_ok "{need}" "{have}"; echo "rc=$?"')
+                self.assertIn('rc=0' if ok else 'rc=1', r.stdout, (need, have))
 
     def test_rootfs_asset(self):
         osr = self.disk / 'ubuntu' / 'etc' / 'os-release'
