@@ -227,9 +227,85 @@ class SlotBlocks(Fixtures):
             hdr = (self.tmp / 'boot.img').read_bytes()[:4096]
             self.assertEqual(hdr[44:55], b'loglevel=5\0', extra)
 
+    def test_device_modules_and_the_manifest(self):
+        # every install from a computer passes the U30 Air's set (the 5.4 bundle has it): the manifest's module
+        # count must be the base order's, not trip over the device loop's own order file (2026-10-16, F50-C:
+        # "TypeError: object of type 'PosixPath' has no len()" at "Building the boot image")
+        files = self.image('--device-modules', f'u30air={self.u30}')
+        self.assertIn('etc/module-order-u30air', files)
+        manifest = json.loads((self.tmp / 'boot.json').read_text())
+        self.assertEqual(manifest['modules'], len((BOOT / 'module-order.txt').read_text().split()))
+
     def test_generic_has_no_slot(self):
         r, _ = self.build('--linux-slot', 'a')
         self.assertNotEqual(r.returncode, 0)
+
+
+@unittest.skipIf(not HAVE_LZ4, 'neither the lz4 command nor the lz4 Python module is installed')
+class WithoutTheFirstSegmentsBinaries(Fixtures):
+    """A Magisk zip of a mainline kernel, unpacked on a computer (tools/package.sh), has no 5.4 bundle: the boot image's
+    first segment then carries no busybox, logdw or modules, and the kernel's generic segment - unpacked after it,
+    replacing what the first one has of those anyway - must bring every one of them."""
+
+    def image(self, appended, *drop):
+        fake_stock(self.tmp / 'stock.img')
+        fake_misc(self.tmp / 'misc.bin')
+        (self.tmp / 'Image').write_bytes(b'\x7fkernel' * 100)
+        out = self.tmp / 'boot.img'
+        args = {'--modules': str(self.mods), '--busybox': str(self.tmp / 'busybox'), '--logdw': str(self.tmp / 'logdw')}
+        argv = [sys.executable, str(BOOT / 'build-boot-image.py'), '--stock-boot', str(self.tmp / 'stock.img'),
+                '--misc-head', str(self.tmp / 'misc.bin'), '--kernel', str(self.tmp / 'Image'), '--device', 'f50',
+                '--ueventd-perms', str(TOP / 'android-vendor' / 'ueventd-perms.sh'), '--out', str(out)]
+        for k, v in args.items():
+            if k not in drop:
+                argv += [k, v]
+        if appended:
+            argv += ['--append-ramdisk', str(appended)]
+        return subprocess.run(argv, capture_output=True, text=True), out
+
+    def segment(self, files):
+        """an appended segment holding FILES (names), made with the builder's own functions"""
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('bbi', BOOT / 'build-boot-image.py')
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        seg = self.tmp / 'segment.lz4'
+        seg.write_bytes(mod.lz4_legacy(mod.cpio_archive({'bin', 'etc'}, {n: (b'x', 0o100644) for n in files})))
+        return seg
+
+    def test_the_generic_segment_brings_them(self):
+        r, generic = self.build()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        r, out = self.image(generic, '--modules', '--busybox', '--logdw')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        img = out.read_bytes()
+        ksz, rsz = struct.unpack_from('<II', img, 8)
+        roff = 4096 + (ksz + 4095) // 4096 * 4096
+        ram = img[roff:roff + rsz]
+        first = cpio_files(unlz4_legacy(ram))            # (the first archive: cpio_files stops at its trailer)
+        for f in ('bin/busybox', 'bin/logdw', 'etc/module-order'):
+            self.assertNotIn(f, first)
+        self.assertFalse([f for f in first if f.startswith('linux-modules/') and f.endswith('.ko')])
+        for f in ('init', 'etc/mu300-device', 'etc/mu300-linux-slot', 'etc/misc-bc-slot-b-trial.bin', 'bin/sh'):
+            self.assertIn(f, first)
+        # behind it the generic segment, unchanged, and then this checkout's init
+        self.assertIn(generic.read_bytes(), ram)
+        self.assertEqual(json.loads((self.tmp / 'boot.json').read_text())['modules'], 0)
+
+    def test_what_the_generic_segment_lacks_is_refused(self):
+        for files, drop, word in ((['init', 'etc/module-order', 'bin/busybox'], '--logdw', 'bin/logdw'),
+                                  (['init', 'etc/module-order', 'bin/logdw'], '--busybox', 'bin/busybox'),
+                                  (['init', 'bin/busybox', 'bin/logdw'], '--modules', 'etc/module-order')):
+            r, out = self.image(self.segment(files), drop)
+            self.assertNotEqual(r.returncode, 0, drop)
+            self.assertIn(word, r.stderr)
+            self.assertFalse(out.exists())
+
+    def test_only_with_an_appended_segment(self):
+        for drop in ('--modules', '--busybox', '--logdw'):
+            r, out = self.image(None, drop)
+            self.assertNotEqual(r.returncode, 0, drop)
+            self.assertIn('only with --append-ramdisk', r.stderr)
 
 
 class ModuleOrder(unittest.TestCase):

@@ -84,7 +84,10 @@ class FakeDevice:
         shutil.copy(by / 'boot_a', by / 'boot_b')
         # what misc holds while Android runs from that slot (a valid block: magic and CRC)
         fake_misc(by / 'misc', LIVE_A if slot == '_a' else with_slots(LIVE_A, b'_b\0\0', 0x1e, 0x9f))
-        (r / 'dev/block/mmcblk0').write_bytes(b'')
+        # the eMMC is as large as sysfs says (sparse): a read where nothing was written gives zeros, as on a device -
+        # an empty file gave no answer at all, which the installers now take for a device that does not answer
+        with open(r / 'dev/block/mmcblk0', 'wb') as f:
+            f.truncate(emmc_gib << 30)
         # the boot chain, the same build on both slots (FakeDevice.bootchain changes one)
         for p in ('uboot', 'sml', 'teecfg', 'trustos', 'vbmeta'):
             for s in 'ab':

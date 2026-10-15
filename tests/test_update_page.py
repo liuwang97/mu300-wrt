@@ -418,6 +418,15 @@ class Offline(UpdateBase):
                 self.assertIn('rc=1', r.stdout)
                 r = self.up(shell, 'installed_version() { echo v2026.12.01; }; ' + code, MU300_ALLOW_DOWNGRADE=1)
                 self.assertIn('rc=0', r.stdout)
+            # the new names (FINDINGS 125): every vYYYY.MM.DD.N is newer than every vYYYY.MM.DD, whatever its date
+            (self.disk / 'openwrt-luci/etc/mu300/image-version').write_text('v2026.10.27\n')
+            r = self.up(shell, self.APPLY + asked + 'apply', MU300_RELEASE='v2026.10.16.1')
+            self.assertNotIn('is older', r.stderr)
+            (self.disk / 'openwrt-luci/etc/mu300/image-version').write_text('v2026.10.16.10\n')
+            for older in ('v2026.10.27', 'v2026.10.16.9'):
+                r = self.up(shell, self.APPLY + asked + 'apply', MU300_RELEASE=older)
+                self.assertIn(f'openwrt-luci is v2026.10.16.10 and {older} is older', r.stderr)
+            (self.disk / 'openwrt-luci/etc/mu300/image-version').write_text('v2026.12.01\n')
             src = UPDATE.read_text()
             self.assertLess(src.index('downgrade_ok "$tag" $(apply_targets "$@")'), src.index('exec sh "$STAGE/mu300-update" apply'))
             self.assertIn('boot_downgrade_ok "$t" || exit 1', src)
@@ -931,6 +940,10 @@ class Status(test_update.Lock):
             # without --sizes nothing is added up
             o, _ = self.status(shell)
             self.assertIsNone({s['name']: s for s in o['systems']}['openwrt-luci']['previous']['kb'])
+            # the note of a release with a four-field tag (FINDINGS 125)
+            (self.tmp / 'notice').write_text('mu300-linux v2026.10.16.10 is out (this is v2026.10.25): sudo mu300-update apply\n')
+            self.assertEqual(self.status(shell)[0]['notice'], 'v2026.10.16.10')
+            (self.tmp / 'notice').write_text('mu300-linux v2026.11.02 is out (this is v2026.10.25): sudo mu300-update apply\n')
         self.assertFalse((self.tmp / 'net').exists())
 
     def test_status_of_an_empty_device_is_still_json(self):
@@ -1034,6 +1047,18 @@ class Status(test_update.Lock):
             self.assertEqual((o['latest']['systems'], o['latest']['need_kb']), (0, 1000000))
         self.assertIn('https://api.github.com/repos/dikeckaan/mu300-linux/releases?per_page=10', (self.tmp / 'asked').read_text())
 
+    def test_releases_of_the_new_names(self):
+        # vYYYY.MM.DD.N (FINDINGS 125): newer than every three-field tag, whatever its date; .10 after .9
+        self.fill()
+        rels = [('v2026.10.16.9', True, False, self.ASSETS), ('v2026.10.16.10', True, False, self.ASSETS),
+                ('v2026.10.26', True, False, self.ASSETS), ('v2026.10.16.0', True, False, self.ASSETS),
+                ('v2026.10.27', False, False, self.ASSETS)]
+        for shell in self.each_shell():
+            o, r = self.releases(shell, self.github(True, rels), 'v2026.10.27')
+            self.assertEqual((o['latest']['tag'], o['beta']['tag']), ('v2026.10.27', 'v2026.10.16.10'), r.stderr)
+            o, r = self.releases(shell, self.github(True, rels[:2] + [('v2026.10.17.1', False, False, self.ASSETS)]), 'v2026.10.17.1')
+            self.assertEqual((o['latest']['tag'], o['beta']), ('v2026.10.17.1', None), r.stderr)
+
     def test_without_an_answer_it_says_offline(self):
         self.fill()
         for shell in self.each_shell():
@@ -1108,7 +1133,7 @@ class Status(test_update.Lock):
         block = src[src.index('# ---- for a panel: status'):src.index('# ---- for a panel: end')]
         import re
         self.assertEqual(sorted(re.findall(r'^([a-z_]+)\(\) \{', block, re.M)), sorted([
-            'jv', 'jstr', 'jnum', 'mtime', 'tag_ok', 'newer', 'space_needed', 'source_conf', 'key_state', 'sig_raw', 'sig_state',
+            'jv', 'jstr', 'jnum', 'mtime', 'tag_ok', 'tag_key', 'newer', 'space_needed', 'source_conf', 'key_state', 'sig_raw', 'sig_state',
             'stage_private', 'tag_sha', 'sums_trusted', 'sums_verdict', 'apply_targets', 'downgrade_ok', 'boot_downgrade_ok', 'zip_p', 'man_val', 'from_open', 'from_read', 'payload_is', 'from_close', 'from_member', 'from_fits',
             'from_installed', 'apply_options', 'from_begin', 'from_verified', 'from_handover', 'inspect_json',
             'lock_holder', 'size_kb', 'status_json', 'release_json', 'releases_json', 'progress']))
@@ -1308,6 +1333,9 @@ class Adapter(ShellTest):
             for bad, error in ((dict(ok, confirm=''), 'This needs confirmation'), (dict(ok, confirm='clean'), 'This needs confirmation'),
                                (dict(ok, tag='v2026.11.03'), 'Check for updates first'), (dict(ok, tag=''), 'Invalid update request'),
                                (dict(ok, tag='latest'), 'Invalid update request'), (dict(ok, tag='v2026.11.02;id'), 'Invalid update request'),
+                               # the new names (FINDINGS 125): a release tag, only not the one the check offered
+                               (dict(ok, tag='v2026.10.16.1'), 'Check for updates first'), (dict(ok, tag='v2026.10.16.10'), 'Check for updates first'),
+                               (dict(ok, tag='v2026.10.16.0'), 'Invalid update request'), (dict(ok, tag='v2026.13.01.1'), 'Invalid update request'),
                                (dict(ok, systems='android'), 'Invalid update request'), (dict(ok, systems='--from'), 'Invalid update request'),
                                (dict(ok, flags='force'), 'Invalid update request'), (dict(ok, flags='--unsigned'), 'Invalid update request')):
                 self.assertEqual(self.act(shell, 'apply', **bad), {'ok': 0, 'error': error}, bad)

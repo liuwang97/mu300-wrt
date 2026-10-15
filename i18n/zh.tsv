@@ -37,9 +37,6 @@ Verifying	正在验证
 the table on the device does not read back as valid GPT.	设备上的分区表读回后不是有效的 GPT。
 the table did not take (userdata still ends at {1}). Nothing else was changed.	分区表未生效（userdata 仍结束于 {1}）。未做其他更改。
 userdata now ends at sector {1}	userdata 现在结束于扇区 {1}
-Done - the device has to reboot before the new layout is visible	完成——设备需要重启后新布局才会生效
-Android will set up its data partition again on this boot, which takes a few minutes.	Android 将在本次启动时重新建立数据分区，需要几分钟。
-When it is back, run this installer again and it will find the free space.	启动完成后，请再次运行此安装程序，它会找到空闲空间。
 Reboot now? (yes/no)	现在重启吗？(是/否)
 Locating free eMMC space after the last partition	正在查找最后一个分区之后的空闲 eMMC 空间
 could not read the partition table from the device (is su granted? try again)	无法从设备读取分区表（是否已授予 su 权限？请重试）
@@ -159,7 +156,6 @@ switch systems: mu300-os {1}   back to Android: mu300-next-boot android	切换�
 back to Linux from Android (with Magisk): su -c mu300-linux	从 Android 回到 Linux（需 Magisk）：su -c mu300-linux
 Type ERASE to rewrite the partition table and wipe Android's data	输入 ERASE 以重写分区表并清除 Android 数据
 The backup copy at the end of the disk was written first, so Android's own repair may still fix this. Do not power off.	磁盘末尾的备份副本已先写入，Android 自身的修复仍可能解决此问题。请勿断电。
-Clearing Android's data filesystem so it is recreated on the next boot	正在清除 Android 的数据文件系统，以便下次启动时重新创建
 ERROR:	错误:
 Python 3 not found (install it from python.org or the Microsoft Store)	未找到 Python 3（请从 python.org 或 Microsoft Store 安装）
 Python 3.8 or newer is required	需要 Python 3.8 或更高版本
@@ -597,7 +593,6 @@ userdata fills the whole disk, so there is nowhere to put Linux. The installer c
 GiB for Linux:	分配给 Linux 的 GiB 数：
 Type ERASE:	输入 ERASE：
 Make room now	立即腾出空间
-Afterwards the device restarts, Android sets its data up again (a few minutes), and the check finds the free space.	之后设备会重启，Android 重新建立数据分区（需要几分钟），然后检查就能找到空闲空间。
 It goes to the installer in a private file that is deleted when the run ends; only its hash reaches the device. It is never written to a log.	密码通过一个私有文件传给安装程序，运行结束时该文件即被删除；只有它的哈希会到达设备。密码绝不会写入日志。
 Advanced	高级
 There is not enough free space for this installation in that folder. Free some, or set MU300_WORK to a folder on another disk before starting.	该文件夹中的空闲空间不足以完成本次安装。请腾出一些空间，或在开始前把 MU300_WORK 设为另一块磁盘上的文件夹。
@@ -607,7 +602,6 @@ The backup stopped: {1}	备份已停止：{1}
 Copy the log	复制日志
 Save the log…	保存日志…
 Text	文本
-Room was made. The device restarts and Android sets its data up again (a few minutes). Then press Refresh on the Device page.	空间已腾出。设备会重启，Android 重新建立数据分区（需要几分钟）。之后请在“设备”页面按“刷新”。
 Open an SSH session	打开 SSH 会话
 The Wi-Fi network the device broadcasts is its hotspot. Then try: sudo mu300-toolkit	设备广播的 Wi-Fi 网络就是它的热点。然后可以试试：sudo mu300-toolkit
 News and new releases are on the project's Telegram channel; you can follow it.	新闻和新版本发布在本项目的 Telegram 频道，欢迎关注。
@@ -744,7 +738,6 @@ Remove the on-device switch	移除设备端切换工具
 Done	完成
 Copy the boot image and the start of misc	复制启动镜像和 misc 的开头
 Read the partition table	读取分区表
-Rewrite the partition table and clear Android's data	重写分区表并清除 Android 数据
 Where	位置
 Default boot	默认启动
 Also	另外
@@ -796,3 +789,68 @@ ZTE V50: EXPERIMENTAL, tested by nobody in this project (kano ported it); mainli
 The ZTE V50 runs a mainline kernel only: install a prebuilt release (without --build)	ZTE V50 只能使用主线内核：请安装预编译的版本（不加 --build）
 The ZTE V50 runs a mainline kernel only (6.18 or 7.2).	ZTE V50 只能使用主线内核（6.18 或 7.2）。
 The ZTE V50 runs only a mainline kernel of a release that knows it: take the zip for kernel 6.18 or 7.2 (of a newer release if this one has none)	ZTE V50 只能使用认识它的版本中的主线内核：请选择 6.18 或 7.2 内核的 zip（本版本没有时请用更新的版本）
+a prepared installation is waiting (tools/resume.sh): this installer does not update itself until it is done	有一个已准备的安装正在等待（tools/resume.sh）：在它完成之前，本安装程序不会自我更新
+could not read what identifies this device (serial, eMMC CID, userdata)	无法读取识别本设备的信息（序列号、eMMC CID、userdata）
+the partition table and the running kernel disagree about userdata; reboot Android and try again	分区表与正在运行的内核对 userdata 的认识不一致；请重启 Android 后再试
+encrypted	已加密
+not encrypted	未加密
+unknown	未知
+Android's own recovery erases Android's data: the device restarts into it, resets Android (a factory	Android 的数据由 Android 自带的 recovery 清除：设备会重启进入 recovery，重置 Android（恢复
+reset) and starts Android again, which takes a few minutes and more than one restart. Then set Android up	出厂设置）再重新启动 Android，需要几分钟和不止一次重启。之后请重新设置 Android，
+again, turn USB debugging back on and bring root back (Magisk: install the Magisk app again and let	重新打开 USB 调试并恢复 root（Magisk：重新安装 Magisk 应用，并允许
+Shell have root), and run this installer again: it finds what was prepared and continues.	Shell 获取 root），然后再次运行本安装程序：它会找到已准备的内容并继续。
+What was prepared, and a backup of the partition table, misc, boot and the boot chain, are kept on this	已准备的内容，以及分区表、misc、boot 和启动链的备份，保存在本
+computer in {1} - the reset erases everything of it on the device.	电脑的 {1} 中——重置会清除设备上的所有这些内容。
+Backing up to {1}	正在备份到 {1}
+Done - the device restarts into the reset now	完成——设备现在重启并进行重置
+Android's recovery formats Android's data on the next start; then Android starts as new. Set it up,	下次启动时 Android 的 recovery 会格式化 Android 的数据，然后 Android 作为新设备启动。请完成设置，
+turn USB debugging on, bring root back (the Magisk app, Shell allowed), and run this installer again.	打开 USB 调试，恢复 root（Magisk 应用，允许 Shell），然后再次运行本安装程序。
+transaction: {1}	事务记录：{1}
+OK: the region prepared by making room, checked against its transaction	正常：腾出空间时准备的区域，已与其事务记录核对
+could not mark {1} as done	无法将 {1} 标记为已完成
+Android's data:       {1} ({2})	Android 数据：        {1}（{2}）
+Android's encryption state is unknown ({1}); nothing is changed.	Android 的加密状态未知（{1}）；未做任何更改。
+no saved transaction for this device in {1} (--transaction FILE names one)	{1} 中没有本设备已保存的事务（--transaction FILE 可指定一个）
+A prepared installation is waiting: {1}	有一个已准备的安装正在等待：{1}
+EXPERIMENTAL: it continues the installation that made room by resetting Android. --no-resume ignores it.	实验性功能：继续那次通过重置 Android 腾出空间的安装。--no-resume 会忽略它。
+could not read the transaction {1}	无法读取事务记录 {1}
+The prepared installation cannot be continued: {1}	无法继续已准备的安装：{1}
+Nothing was written. Keep the device as it is and keep {1}.	未写入任何内容。请保持设备现状，并保留 {1}。
+Another transaction: --transaction FILE. To install as if nothing had been prepared: --no-resume (the region is then treated as space that holds data).	使用其他事务记录：--transaction FILE。如同未做任何准备那样安装：--no-resume（届时该区域被视为含有数据的空间）。
+the device, its slot, its partition table, the region, the token and this installer are the ones the transaction was made with	设备、其槽位、分区表、区域、令牌和本安装程序均与创建该事务时一致
+Backing up {1}	正在备份 {1}
+the copy of {1} is not what the device holds; nothing was changed	{1} 的副本与设备上的内容不一致；未做任何更改
+could not compute the installer identity	无法计算安装程序的标识
+could not save the transaction; nothing was changed	无法保存事务记录；未做任何更改
+transaction saved: {1}	事务记录已保存：{1}
+could not prepare the files to write; nothing was changed	无法准备要写入的文件；未做任何更改
+the token did not read back from the device; misc was not changed, Android keeps its data. Run the installer again.	无法从设备读回令牌；misc 未被更改，Android 的数据得以保留。请再次运行安装程序。
+Asking Android's recovery to reset Android's data on the next boot	正在请求 Android 的 recovery 在下次启动时重置 Android 的数据
+the request for the reset did not read back from misc. The partition table is changed already: run the installer again, it continues from here.	无法从 misc 读回重置请求。分区表已经更改：请再次运行安装程序，它会从这里继续。
+could not save the transaction	无法保存事务记录
+could not create {1}	无法创建 {1}
+could not copy the partition table into the backup	无法将分区表复制到备份中
+could not make a token	无法生成令牌
+First the partition table, misc, boot and the boot chain are backed up to this computer, with a record of what is prepared. Then the device restarts into Android's own recovery, which resets Android - a factory reset, a few minutes and more than one restart. Set Android up again, turn USB debugging on and bring root back (install the Magisk app again, let Shell have root); then Refresh: the installation continues where it was prepared. EXPERIMENTAL (ported from kano's desktop installer).	首先把分区表、misc、boot 和启动链连同已准备内容的记录备份到本电脑。然后设备重启进入 Android 自带的 recovery，重置 Android——即恢复出厂设置，需要几分钟和不止一次重启。请重新设置 Android，打开 USB 调试并恢复 root（重新安装 Magisk 应用，允许 Shell 获取 root）；然后刷新：安装会从准备好的地方继续。实验性功能（移植自 kano 的桌面安装器）。
+Room was made. The device restarts into Android's recovery, which resets Android (a few minutes, more than one restart). Set Android up again, turn USB debugging on and bring root back (the Magisk app, Shell allowed); then press Refresh on the Device page: the installation continues where it was prepared.	空间已腾出。设备会重启进入 Android 的 recovery 并重置 Android（几分钟，不止一次重启）。请重新设置 Android，打开 USB 调试并恢复 root（Magisk 应用，允许 Shell）；然后在设备页面点击刷新：安装会从准备好的地方继续。
+A prepared installation waits for this device (EXPERIMENTAL: room was made by resetting Android). Install continues it into the prepared region. Its record: {1}	有一个为本设备准备的安装正在等待（实验性功能：通过重置 Android 腾出了空间）。安装会在准备好的区域中继续。其记录：{1}
+A prepared installation waits for this device, but it cannot be continued: {1}. Nothing is written. Its record: {2}	有一个为本设备准备的安装正在等待，但无法继续：{1}。不会写入任何内容。其记录：{2}
+Back up the partition table, misc, boot and the boot chain	备份分区表、misc、boot 和启动链
+Rewrite the partition table and ask Android's recovery for the reset	重写分区表并请求 Android 的 recovery 进行重置
+--build builds the systems itself: run it from a copy of the project, not from an unpacked Magisk zip	--build 会自行构建系统：请在本项目的副本中运行，而不是在解压的 Magisk zip 中
+Package: {1} with kernel {2}, release {3} (unpacked Magisk zip at {4})	安装包：{1}，内核 {2}，版本 {3}（解压的 Magisk zip 位于 {4}）
+This package installs {1} with kernel {2} (release {3}); nothing is downloaded.	本安装包安装 {1}，内核 {2}（版本 {3}）；不下载任何东西。
+Another system or kernel: the zip of that combination, or ./install.sh of the project.	要安装其他系统或内核：请使用对应组合的 zip，或本项目的 ./install.sh。
+The ZTE V50 runs a mainline kernel only: take the zip for kernel 6.18 or 7.2 of this release	ZTE V50 只能使用主线内核：请使用本版本中 6.18 或 7.2 内核的 zip
+It is not part of this package.	它不包含在本安装包中。
+Checking the files of this package	正在校验本安装包的文件
+no unpacked Magisk zip at {1}	{1} 处没有解压的 Magisk zip
+{1} is not an unpacked Magisk zip of a release (it has no mu300/manifest and mu300/SHA256SUMS)	{1} 不是某个版本解压后的 Magisk zip（缺少 mu300/manifest 和 mu300/SHA256SUMS）
+the package is incomplete or damaged (its manifest is not valid)	安装包不完整或已损坏（其 manifest 无效）
+{1} is missing from the package (payload/)	安装包中缺少 {1}（payload/）
+This package	本安装包
+This window was started from an unpacked Magisk zip: it installs the system and the kernel of that zip, from its own files, and downloads nothing. Another system or kernel: the zip of that combination.	本窗口是从解压的 Magisk zip 启动的：它用该 zip 自带的文件安装其中的系统和内核，不下载任何东西。要安装其他系统或内核，请使用对应组合的 zip。
+{1} is not an unpacked Magisk zip of a release that this installer can read (its mu300/manifest is not valid). Unpack the zip again.	{1} 不是本安装程序能读取的某个版本解压后的 Magisk zip（其 mu300/manifest 无效）。请重新解压该 zip。
+Files	文件
+From	来源
+this unpacked Magisk zip, nothing downloaded: {1}	本解压的 Magisk zip，不下载任何东西：{1}

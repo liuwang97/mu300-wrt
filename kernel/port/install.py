@@ -224,6 +224,15 @@ static bool sdhci_sprd_emmc_pending(struct device_node *self)
 # UMS9620 has the r11p3 controller: the vendor driver programs DLL phase 0x2 (mainline 0x3,
 # which gives data CRC errors on HS400ES writes while reads work)
 t = t.replace('#define  SDHCI_SPRD_DLL_PHASE_INTERNAL\t0x3', '#define  SDHCI_SPRD_DLL_PHASE_INTERNAL\t0x2 /* MU300 r11p3 */')
+# the register accessors with the generic SDHCI ordering: the ADMA descriptors are in memory before the command
+# register starts the transfer (sdhci_order.py, FINDINGS 93)
+sys.path.insert(0, here)
+sys.dont_write_bytecode = True     # no __pycache__ in port/: its subdirectories are copied into the kernel tree
+import sdhci_order
+try:
+    t = sdhci_order.ordered(t)
+except ValueError as e:
+    sys.exit('port: ' + str(e))
 open(sp, 'w').write(t)
 # thermal: UMS9620 on-die sensors (vendor sprd_thermal_r5p0), calibration from eFuse
 append_once('drivers/thermal/Makefile', 'sprd_thermal_r5p0.o', 'obj-$(CONFIG_SPRD_THERMAL_R5P0) += sprd_thermal_r5p0.o\n')

@@ -20,7 +20,21 @@ function row(k, v) {
 }
 function when(s) { return s ? new Date(s * 1000).toLocaleString() : '--'; }
 function kb(n) { return n == null ? '--' : M.fmtBytes(n * 1024); }
-function newer(a, b) { return /^v\d{4}\.\d\d\.\d\d$/.test(a || '') && /^v\d{4}\.\d\d\.\d\d$/.test(b || '') && a > b; }
+// The release tags (docs/FINDINGS.md 125): vYYYY.MM.DD, and from after v2026.10.27 on vYYYY.MM.DD.N (the day of the
+// release, N the release of that day), newer than every three-field tag. The web installer's version.js, word for word.
+function releaseKey(t) {
+	var m = /^v(\d{4})\.(\d\d)\.(\d\d)$/.exec(typeof t === 'string' ? t : '');
+	if (m) return [ 1, +(m[1] + m[2] + m[3]), 0 ];
+	m = /^v(\d{4})\.(0[1-9]|1[0-2])\.(0[1-9]|[12]\d|3[01])\.([1-9]\d?)$/.exec(typeof t === 'string' ? t : '');
+	return m ? [ 2, +(m[1] + m[2] + m[3]), +m[4] ] : null;
+}
+function newerTag(a, b) {
+	var x = releaseKey(a), y = releaseKey(b);
+	if (!x || !y) return false;
+	for (var i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i] > y[i];
+	return false;
+}
+function newer(a, b) { return newerTag(a, b); }
 function check(id, label, on) {
 	var box = E('input', { 'type': 'checkbox', 'id': id });
 	box.checked = !!on;

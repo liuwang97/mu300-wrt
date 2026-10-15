@@ -22,6 +22,9 @@ start_service() {
 	procd_set_param command /opt/mu300/bin/mobile-data watch
 	procd_set_param env MU300_NETIFD=1 PATH="$PATH"
 	procd_set_param respawn 3600 30 0
+	# its messages ("mobile data lost ... reconnecting", "no answer about the data context") go to stderr: into the
+	# system log, as on Ubuntu's journal (procd kept none of them; FINDINGS 90)
+	procd_set_param stderr 1
 	procd_close_instance
 	# the Wi-Fi LED follows hostapd's ubus object, whoever starts or stops the access point (LuCI's wireless page,
 	# the panel, "wifi down", a WCN reset, a hostapd that died): no hook of hostapd's tells mu300-led, and this

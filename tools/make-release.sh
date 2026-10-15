@@ -1,26 +1,72 @@
 #!/bin/sh
 # Maintainer: build the generic release assets used by ./install.sh (prebuilt mode) and optionally publish them.
+#   tools/make-release.sh --next-tag      print the tag of the next release: vYYYY.MM.DD.N for today (UTC), N one
+#                                          more than the highest N of today's releases and tags (1 for the first)
+#   tools/make-release.sh --check-tag TAG  only check TAG as a new release's tag (below); prints it
 #   tools/make-release.sh TAG             build into release/TAG and audit the contents
 #   tools/make-release.sh TAG --publish   also create/update the GitHub release (gh)
 #   tools/make-release.sh TAG --publish --prerelease   create it as a prerelease: never "latest", so mu300-update and
 #                                          the installers do not offer it until it is promoted on GitHub
+#   --any-date                             take a TAG whose day is not today (a build that went on past midnight, a
+#                                          retry of a release made another day); its form is checked all the same
+# The tag of a new release is vYYYY.MM.DD.N: the real day (UTC) it is built, and N = 1, 2, ... for the releases of
+# that day (docs/FINDINGS.md 125; the three-field tags up to v2026.10.27 used the day as a counter and are not made
+# any more). Every four-field tag is newer than every three-field one, for the updater and the installers alike.
 # Needs docker and the kernel outputs in $MU300_KERNEL_OUT (default: out/, from kernel/build-all.sh).
 # The assets must never contain proprietary files or anything from a particular device: the audit below fails the
 # build if firmware, Android userspace, host keys or local settings end up in an image.
 set -eu
-TAG=${1:?usage: tools/make-release.sh TAG [--publish [--prerelease]]}
-shift
-PUBLISH="" PRERELEASE=""
+USAGE='usage: tools/make-release.sh TAG [--publish [--prerelease]] [--any-date] | --next-tag | --check-tag TAG [--any-date]'
+TOP=$(cd "$(dirname "$0")/.." && pwd)
+REPO=${MU300_REPO:-dikeckaan/mu300-linux}
+# tag_ok, tag_key, newer: the release tags (the same block as mu300-update's)
+. "$TOP/tools/releases.sh"
+# today: the day of a release built now, as its tag writes it (MU300_TODAY stands in for the clock in the tests)
+today() { echo "${MU300_TODAY:-$(date -u +%Y.%m.%d)}"; }
+# next_tag: vYYYY.MM.DD.N for today. What counts: GitHub's releases (drafts and prereleases too, as gh lists them to
+# the maintainer) and the tags, here and on origin. Without GitHub's answer there is no next tag: a guess could
+# take the name of a release that exists.
+next_tag() {
+    _day=v$(today)
+    _rel=$(gh release list -R "$REPO" --limit 200 --json tagName -q '.[].tagName') ||
+        { echo "cannot read the releases of $REPO (gh): no tag is guessed" >&2; return 1; }
+    _n=0
+    for _t in $_rel $(git -C "$TOP" tag -l "$_day.*") \
+        $(git -C "$TOP" ls-remote --tags origin "refs/tags/$_day.*" 2>/dev/null | sed -n 's|.*refs/tags/\([^^]*\).*|\1|p'); do
+        case $_t in "$_day".*) tag_ok "$_t" || continue; [ "${_t##*.}" -le "$_n" ] || _n=${_t##*.} ;; esac
+    done
+    [ "$_n" -lt 99 ] || { echo "$_day has 99 releases already" >&2; return 1; }
+    echo "$_day.$((_n + 1))"
+}
+# check_tag TAG: a tag a new release may have - vYYYY.MM.DD.N, and of today unless --any-date
+check_tag() {
+    case $1 in
+        *.*.*.*) tag_ok "$1" || { echo "$1 is not a release tag: vYYYY.MM.DD.N, N = 1..99 without a leading zero (tools/make-release.sh --next-tag)" >&2; return 1; } ;;
+        *) echo "$1 is not a tag for a new release: those are vYYYY.MM.DD.N, the day and its N (tools/make-release.sh --next-tag; docs/FINDINGS.md 125)" >&2; return 1 ;;
+    esac
+    [ -n "$ANY_DATE" ] || [ "${1%.*}" = "v$(today)" ] ||
+        { echo "$1 is not of today (v$(today)): a release is named after the day it is built (--any-date takes it anyway)" >&2; return 1; }
+}
+ARG= PUBLISH="" PRERELEASE="" ANY_DATE="" MODE=build
 for a in "$@"; do
     case $a in
         --publish) PUBLISH=--publish ;;
         --prerelease) PRERELEASE=--prerelease ;;
-        *) echo "unknown option $a (usage: tools/make-release.sh TAG [--publish [--prerelease]])" >&2; exit 1 ;;
+        --any-date) ANY_DATE=1 ;;
+        --next-tag) MODE=next ;;
+        --check-tag) MODE=check ;;
+        -*) echo "unknown option $a ($USAGE)" >&2; exit 1 ;;
+        *) [ -z "$ARG" ] || { echo "$USAGE" >&2; exit 1; }; ARG=$a ;;
     esac
 done
-TOP=$(cd "$(dirname "$0")/.." && pwd)
+case $MODE in
+    next) [ -z "$ARG" ] || { echo "$USAGE" >&2; exit 1; }; next_tag; exit ;;
+    check) [ -n "$ARG" ] || { echo "$USAGE" >&2; exit 1; }; check_tag "$ARG" || exit 1; echo "$ARG"; exit 0 ;;
+esac
+TAG=$ARG
+[ -n "$TAG" ] || { echo "$USAGE" >&2; exit 1; }
+check_tag "$TAG" || exit 1
 KOUT=${MU300_KERNEL_OUT:-$TOP/out}
-REPO=${MU300_REPO:-dikeckaan/mu300-linux}
 D=$TOP/release/$TAG
 IN=$D/inputs
 [ -f "$KOUT/Image" ] && ls "$KOUT"/modules/*.ko >/dev/null 2>&1 || { echo "kernel outputs missing in $KOUT (kernel/build-all.sh)" >&2; exit 1; }
@@ -263,6 +309,7 @@ first with \`./install.sh --check\`.
 | mu300-extra-panel-offline.tar.gz | the same with Cockpit's packages for Ubuntu 24.04 and 26.04, for a device that is not online: \`sudo mu300-extra install panel --from mu300-extra-panel-offline.tar.gz\` |
 | mu300-update | the on-device updater of this release (\`mu300-update apply\` switches to it before it changes anything) |
 | mu300-*-rootfs.manifest.gz | the list of each image's files (type, mode, owner, size, sha256), which the image also carries: an update reads it to tell the image's files from yours, and carries yours over |
+| mu300-magisk-*.zip | attached a few minutes later by the Magisk installers workflow, one per system and kernel. Two ways to use one: install it in **Magisk** on the device (no computer), or **unpack it on a computer** and run \`start.cmd\` / \`sh start.sh\` (\`start-gui\` for the window): the project's installer, with that system and kernel, offline (\`START-HERE.md\` in the zip; adb from Google's platform-tools is not included) |
 | (the VPN) | not part of this release: the VPN toolkit (\`mu300-vpn\`, module v2: the core with hev-socks5-tunnel, and the engines as extras: \`vpn-xray\`, \`vpn-singbox\`, \`vpn-mihomo\`, \`vpn-dae\`) is the module of https://github.com/dikeckaan/mu300-linux-vpn - \`mu300-extra install vpn\` on the device, or the installer's question, takes its latest release with the engines its profiles need; on OpenWrt with the panel the VPN menu drives it |
 
 The images contain **no proprietary files**: the installer pulls the Wi-Fi/Bluetooth firmware and the Android
