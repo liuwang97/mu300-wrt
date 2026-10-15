@@ -226,14 +226,15 @@ def main():
         files['linux-modules/' + name] = (ko.read_bytes(), stat.S_IFREG | 0o644)
     for spec in a.device_modules:
         dev, _, ddir = spec.partition('=')
-        order = HERE / f'module-order-{dev}.txt'
-        files[f'etc/module-order-{dev}'] = (text(order), stat.S_IFREG | 0o644)
+        # its own name: "order" is the base set's list, which the manifest counts at the end
+        dev_order = HERE / f'module-order-{dev}.txt'
+        files[f'etc/module-order-{dev}'] = (text(dev_order), stat.S_IFREG | 0o644)
         dirs.add('linux-modules/' + dev)
         # the kernel these were built for: a mainline kernel's generic segment replaces the modules and the order
         # of the base set, but not these, and init must not load them into a kernel they were not built for
         vermagic = re.search(rb'vermagic=(\S+)', next(Path(ddir).glob('*.ko')).read_bytes()).group(1)
         files[f'linux-modules/{dev}/kernel.release'] = (vermagic + b'\n', stat.S_IFREG | 0o644)
-        for name in order.read_text().split():
+        for name in dev_order.read_text().split():
             ko = Path(ddir) / name
             if ko.exists():
                 files[f'linux-modules/{dev}/{name}'] = (ko.read_bytes(), stat.S_IFREG | 0o644)
