@@ -126,6 +126,38 @@ class Update(UpdateBase):
                 else:
                     self.assertIn(f'PART boot_{now}', r.stderr, (prev, now))
 
+    def test_a_boot_partition_that_is_a_plain_file_is_not_written(self):
+        # on the U30 Air /dev/mmcblk0p38 (boot_b) was once a 50 MB file in RAM, made by the early recorder while procd
+        # replaced /dev: an image written there reads back as written (FINDINGS 86). Neither writer takes it.
+        boot = self.disk / 'boot'
+        boot.mkdir()
+        for name, data in (('prev.body', b'old image'), ('prev.vbmeta', b'v'), ('prev.footer', b'f' * 64)):
+            (boot / name).write_bytes(data)
+        (boot / 'prev.slot').write_text('b\n')
+        (self.root / 'run/mu300/linux-slot').write_text('b\n')
+        fake = self.tmp / 'mmcblk0p38'
+        for shell in self.each_shell():
+            fake.write_bytes(bytes(8192))
+            stub = f'part_dev() {{ echo "{fake}"; }}; '
+            r = self.up(shell, stub + 'boot_dev boot_b; echo "rc=$?"')
+            self.assertIn('rc=1', r.stdout)
+            self.assertIn(f'{fake} is not a block device', r.stderr)
+            r = self.up(shell, stub + 'unlock_for_trial() { :; }; rollback_boot')
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn('nothing was written', r.stderr)
+            self.assertEqual(fake.read_bytes(), bytes(8192))
+            r = self.up(shell, stub + 'boot_update v2026.11.01')
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn('the boot image was not updated', r.stderr)
+            self.assertEqual(fake.read_bytes(), bytes(8192))
+        # a block device is passed on as it is
+        import stat
+        for dev in ('/dev/disk0', '/dev/sda', '/dev/vda', '/dev/loop0'):
+            if os.path.exists(dev) and stat.S_ISBLK(os.stat(dev).st_mode):
+                r = self.up(shell, f'part_dev() {{ echo {dev}; }}; boot_dev boot_b')
+                self.assertEqual(r.stdout, dev + '\n', r.stderr)
+                break
+
     def test_boot_update_keeps_the_slot_of_the_image(self):
         src = (BIN / 'mu300-update').read_text()
         self.assertIn('linux_slot > "$BOOTDIR/prev.slot"', src)

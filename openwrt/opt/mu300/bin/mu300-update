@@ -1465,6 +1465,14 @@ part_dev() {  # part_dev NAME -> /dev/<block device of that partition>; status 1
     done
     return 1
 }
+# boot_dev NAME: part_dev, and only a block device. On OpenWrt the early recorder once wrote its log while procd put
+# a new /dev in place, and so made /dev/<boot partition> a plain file in RAM (U30 Air, FINDINGS 86): a boot image
+# written there reads back as written, and the device would boot the old one under the new one's name.
+boot_dev() {
+    _bd=$(part_dev "$1") || { echo "no $1 partition found" >&2; return 1; }
+    [ -b "$_bd" ] || { echo "$_bd is not a block device (a reboot makes /dev anew): $1 was not touched" >&2; return 1; }
+    echo "$_bd"
+}
 u32() { od -An -tu4 -j "$2" -N4 "$1" | tr -d ' \n'; }                 # u32 FILE OFFSET (little endian)
 be64() { printf '%d' "0x$(od -An -tx1 -j "$2" -N8 "$1" | tr -d ' \n')"; }  # be64 FILE OFFSET
 bytes() {  # bytes VALUE COUNT le|be: the value as raw bytes
@@ -1604,7 +1612,7 @@ kernel_modules_into_systems() {  # kernel_modules_into_systems BUNDLE_DIR (unpac
 
 boot_update() {  # boot_update TAG   (MU300_KERNEL_BUNDLE=FILE uses a local mu300-kernel.tar.gz instead)
     tag=$1 bp=boot_$(linux_slot)
-    dev=$(part_dev "$bp") || { echo "boot: no $bp partition found, boot image not updated" >&2; return 1; }
+    dev=$(boot_dev "$bp") || { echo "boot: the boot image was not updated" >&2; return 1; }
     psize=$(( $(cat "/sys/class/block/${dev##*/}/size") * 512 ))
     tmp=$STAGE/boot
     rm -rf "$tmp"; mkdir -p "$tmp" "$BOOTDIR"
@@ -1754,7 +1762,7 @@ rollback_boot() {
     ps=$(cat "$BOOTDIR/prev.slot" 2>/dev/null || echo b)
     [ "$ps" = "$(linux_slot)" ] ||
         die "the previous boot image was taken from slot $ps, Linux now runs from $(linux_slot); nothing was written"
-    dev=$(part_dev "boot_$(linux_slot)") || die "no boot_$(linux_slot) partition found"
+    dev=$(boot_dev "boot_$(linux_slot)") || die "nothing was written"
     psize=$(( $(cat "/sys/class/block/${dev##*/}/size") * 512 ))
     unlock_for_trial
     write_boot "$dev" "$psize" "$BOOTDIR/prev.body" "$BOOTDIR/prev.vbmeta" "$BOOTDIR/prev.footer" ||
