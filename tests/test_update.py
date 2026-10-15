@@ -126,6 +126,16 @@ class Update(UpdateBase):
                 else:
                     self.assertIn(f'PART boot_{now}', r.stderr, (prev, now))
 
+    def test_a_boot_image_already_in_place_is_named_after_the_release(self):
+        # the kernel did not change between two releases: the image in place is the new release's too, or check and
+        # the Update page offer that release again and again (U30 Air, FINDINGS 86)
+        src = (BIN / 'mu300-update').read_text()
+        bu = src[src.index('boot_update() {'):src.index('\n}\n', src.index('boot_update() {'))]
+        same = bu[bu.index('if [ "$cur" = "$(cat "$BOOTDIR/written.sha256"'):]
+        same = same[:same.index('\n    fi\n')]
+        self.assertIn('echo "$tag" > "$BOOTDIR/installed.tag"', same)
+        self.assertLess(same.index('installed.tag'), same.index('return 0'))
+
     def test_a_boot_partition_that_is_a_plain_file_is_not_written(self):
         # on the U30 Air /dev/mmcblk0p38 (boot_b) was once a 50 MB file in RAM, made by the early recorder while procd
         # replaced /dev: an image written there reads back as written (FINDINGS 86). Neither writer takes it.

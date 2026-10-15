@@ -1673,7 +1673,11 @@ boot_update() {  # boot_update TAG   (MU300_KERNEL_BUNDLE=FILE uses a local mu30
     cur=$(sha256sum < "$tmp/body" | cut -d' ' -f1)
     if [ "$cur" = "$(cat "$BOOTDIR/written.sha256" 2>/dev/null)" ] && [ "$id" = "$(cat "$BOOTDIR/installed.id" 2>/dev/null)" ]; then
         [ -z "$mods" ] || kernel_modules_into_systems "$tmp" || return 1
-        printf 'boot: already up to date (%s)\n' "$(cat "$BOOTDIR/installed.tag" 2>/dev/null || echo "$tag")"
+        # the image in place is this release's as well (the same kernel and ramdisk): written down, or check and the
+        # Update page offer this release again after every update that did not change the kernel (seen on the U30
+        # Air: v2026.10.30 installed, its boot image still called v2026.10.27)
+        echo "$tag" > "$BOOTDIR/installed.tag"
+        printf 'boot: already up to date (%s)\n' "$tag"
         rm -rf "$tmp"; return 0
     fi
     if [ "$cur" != "$(cat "$BOOTDIR/written.sha256" 2>/dev/null)" ] || [ ! -s "$BOOTDIR/device-ramdisk.lz4" ]; then
