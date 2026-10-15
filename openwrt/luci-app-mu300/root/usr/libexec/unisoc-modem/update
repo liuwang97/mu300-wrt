@@ -6,7 +6,10 @@
 # Every reply is one JSON object.
 #   update get [sizes]   {"ok":1,"status":{mu300-update status},"check":{mu300-update releases}|null,"check_age":N,
 #                        "upload":{"present":0|1,"size":N,"inspect":{mu300-update inspect}|null},"report":TEXT|null,
-#                        "job":{...}}
+#                        "report_new":0|1,"job":{...}}
+#                        report: the start of /etc/mu300/update-report, what the last updates carried over, set aside
+#                        or put back (mu300-update's carry block; the newest update first); report_new: it has not been
+#                        looked at with "mu300-update report" yet (the note at login)
 #   update job           {"ok":1,"job":{"kind","state":none|running|done|failed,"started","elapsed","rc","stage",
 #                        "stage_text","file":{"name","have","total"}|null,"changed":0|1,"log":TEXT}}
 #   update act OP TAG SYSTEMS KERNEL SHA256 SIZE FLAGS CONFIRM
@@ -233,17 +236,23 @@ upload_json() {
 }
 
 do_get() {
-    local st age report
+    local st age report report_new
     [ -x "$CMD" ] || error 'Updating is not available on this system'
     st=$("$CMD" status ${1:+--sizes} 2>/dev/null)
     st=$(printf '%s' "$st" | jsonfilter -e '@' 2>/dev/null) || st=
     case $st in '{'*'}') ;; *) error 'The updater gave no valid reply' ;; esac
     age=null
     [ ! -s "$CHECK" ] || age=$(( $(now) - $(num "$(date -r "$CHECK" +%s 2>/dev/null)") ))
-    report=null
-    [ ! -s "$REPORT" ] || [ -L "$REPORT" ] || report=$(json_str "$(head -c 6000 "$REPORT" | LC_ALL=C tr -d '\000-\011\013-\037\177' | redact_log)")
-    printf '{"ok":1,"status":%s,"check":%s,"check_age":%s,"upload":%s,"report":%s,"job":%s}\n' \
-        "$st" "$(json_or_null "$CHECK")" "$age" "$(upload_json)" "$report" "$(job_json)"
+    report=null report_new=0
+    if [ -s "$REPORT" ] && [ ! -L "$REPORT" ]; then
+        # (each update puts its part on top: the start is the newest; a long one is cut, and says where the rest is)
+        report=$(json_str "$( { head -c 6000 "$REPORT"
+            [ "$(fsize "$REPORT")" -le 6000 ] || printf '\n...\n(the whole report: mu300-update report)\n'; } |
+            LC_ALL=C tr -d '\000-\011\013-\037\177' | redact_log)")
+        [ ! -e "$REPORT.new" ] || report_new=1
+    fi
+    printf '{"ok":1,"status":%s,"check":%s,"check_age":%s,"upload":%s,"report":%s,"report_new":%d,"job":%s}\n' \
+        "$st" "$(json_or_null "$CHECK")" "$age" "$(upload_json)" "$report" "$report_new" "$(job_json)"
 }
 
 do_job() { printf '{"ok":1,"job":%s}\n' "$(job_json)"; }

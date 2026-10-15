@@ -634,7 +634,7 @@ stale_config_clean() {
 }
 # --- user-packages end
 # --- carry begin
-# An update keeps everything the user made (docs/FINDINGS.md 85). Until v2026.10.25 it kept a list of places
+# An update keeps everything the user made (docs/FINDINGS.md 85). Until v2026.10.27 it kept a list of places
 # (keep_list) and the image replaced the rest: /etc/wireguard, a unit written by hand, crontabs, /var/lib/docker,
 # /opt, a changed /etc/sysctl.conf were gone from the system after an update. Now the question is asked the other
 # way round: which files of the old system came with its image? Its manifest says (one line per file of the image,
@@ -1401,9 +1401,41 @@ report() {
     rm -f "$_cr.new" "$MOTD_DIR/61-mu300-update-report" 2>/dev/null
     return 0
 }
+# carry_need OS...: KiB the carry block will write for these systems beside the previous ones, for apply's rule of
+# free space (space_needed): what each holds that its image did not bring - its size less its image's files as its
+# manifest has them (in 4 KiB blocks, as the filesystem keeps them) - with the carry's margin (5 %, 32 MB). Nothing
+# for a system whose image's manifest is not here before the new image is (a release before the manifests: the carry
+# block counts it exactly once the new image is unpacked, and stops before anything is changed), for --no-rollback
+# (CARRY_MODE link: nothing is copied) and for MU300_UPDATE_KEEP=list. An estimate before the download; carry_system
+# has the exact figure, and the last word.
+carry_need() {
+    _nt=0
+    if [ "${CARRY_MODE:-copy}" = copy ] && [ "${MU300_UPDATE_KEEP:-all}" != list ]; then
+        for _no in "$@"; do
+            _nd=$DISK/$_no
+            [ -d "$_nd" ] && [ ! -L "$_nd" ] || continue
+            _nw=$(mktemp -d 2>/dev/null) || continue
+            if carry_manifest "$_nd" "$_nd" "$_no" "$(cat "$_nd$VERSION_FILE" 2>/dev/null)" "$_nw/m"; then
+                _ni=$(awk '$1 == "f" { k += int(($5 + 4095) / 4096) * 4 } $1 != "f" { k += 4 } END { printf "%d\n", k }' "$_nw/m")
+                # (one filesystem: what is mounted in a system is not carried; nor what the carry block leaves out)
+                _nz=$( { du -skx "$_nd" 2>/dev/null || du -sk "$_nd"; } | awk 'NR == 1 { print $1 + 0 }')
+                _nx=0
+                for _nn in proc sys dev run tmp var/tmp var/cache; do
+                    [ -d "$_nd/$_nn" ] && [ ! -L "$_nd/$_nn" ] || continue
+                    _nx=$((_nx + $( { du -skx "$_nd/$_nn" 2>/dev/null || du -sk "$_nd/$_nn"; } | awk 'NR == 1 { print $1 + 0 }') ))
+                done
+                _nu=$(( ${_nz:-0} - _nx - ${_ni:-0} ))
+                [ "$_nu" -gt 0 ] || _nu=0
+                _nt=$((_nt + _nu + _nu / 20 + 32768))
+            fi
+            rm -rf "$_nw"
+        done
+    fi
+    echo "$_nt"
+}
 # --- carry end
 
-# The update as it was up to v2026.10.25, which keeps keep_list's places and nothing else of the user's: for a new
+# The update as it was up to v2026.10.27, which keeps keep_list's places and nothing else of the user's: for a new
 # image that does not bring the carry block's parts (one built by hand without mu300-carry), and for
 # MU300_UPDATE_KEEP=list, which asks for it (kept for one release, should the new way fail somewhere).
 # keep_listed_settings before the vendor files are copied, keep_listed_services after; os, old, new: apply_one's.
@@ -1492,7 +1524,7 @@ apply_one() {  # apply_one OS TAG
             3) rm -rf "$new"
                die "$os: nothing was changed. Make room (mu300-update clean deletes the kept previous versions), or update without keeping the previous system for a rollback, which needs no room for your files: mu300-update apply --no-rollback" ;;
             *) rm -rf "$new"
-               die "$os: carrying your files over failed, nothing was changed (MU300_UPDATE_KEEP=list mu300-update apply updates as before v2026.10.26: only the settings an update always kept)" ;;
+               die "$os: carrying your files over failed, nothing was changed (MU300_UPDATE_KEEP=list mu300-update apply updates as before v2026.10.28: only the settings an update always kept)" ;;
         esac
     elif [ "${MU300_UPDATE_KEEP:-all}" != list ]; then
         echo "$os: this image does not bring what carries everything over (mu300-carry): keeping the settings an update always kept"
@@ -2780,8 +2812,10 @@ apply() {
     # unpacking hung there, and a device that reset in the middle of writing its boot image could only start Android.
     clean_broken
     say "downloading $tag"
-    free=$(df -k "$DISK" | awk 'NR==2 {print $4}')
-    [ "$free" -gt $((1000000 + 1000000 * $(echo $todo | wc -w))) ] || die "not enough free space on the Linux partition (about 1 GB, plus 1 GB for every system to update)"
+    # (one rule for this and for the panel's figures: space_needed, with what the carry block copies, carry_need)
+    free=$(df -Pk "$DISK" | awk 'NR==2 {print $4}')
+    need=$(space_needed "$(echo $todo | wc -w)" "$(carry_need $todo)")
+    [ "$free" -gt "$need" ] || die "not enough free space on the Linux partition: $((need / 1024)) MB needed, $((free / 1024)) MB free (about 1 GB, plus 1 GB for every system to update, plus a copy of what you added to it for the previous version kept for a rollback). mu300-update clean deletes the kept previous versions; mu300-update apply --no-rollback keeps none, and needs no room for your files"
     for os in $todo; do
         fetch_verified "$tag" "$(rootfs_asset "$os")" || fetch_stop $?
     done
@@ -2908,8 +2942,10 @@ mtime() { _mt=$(date -r "$1" +%s 2>/dev/null) || _mt=; jnum "$_mt"; }
 tag_ok() { printf '%s\n' "$1" | grep -Eqx 'v[0-9]{4}\.[0-9]{2}\.[0-9]{2}'; }
 # newer A B: release A is newer than B (tags are dates and sort as text); false when either is no release tag
 newer() { tag_ok "$1" && tag_ok "$2" && [ "$1" != "$2" ] && [ "$(printf '%s\n%s\n' "$1" "$2" | sort | tail -n1)" = "$1" ]; }
-# the space an update wants free on the Linux partition, in KiB, for N systems: the rule apply() has
-space_needed() { echo $((1000000 + 1000000 * $1)); }
+# space_needed N [CARRY_KB]: the space an update wants free on the Linux partition, in KiB, for N systems - about
+# 1 GB, and 1 GB for each system's download and image - and CARRY_KB, what the carry block copies beside the previous
+# versions (carry_need). The one rule: apply refuses with it, and the panel shows it.
+space_needed() { echo $((1000000 + 1000000 * $1 + ${2:-0})); }
 
 # /etc/mu300/update-source: another place to take the releases from (a mirror on the LAN, a copy where GitHub cannot
 # be reached), for the command and the panel alike. Root's own regular file, lines NAME=URL with these names only;
@@ -3061,16 +3097,19 @@ apply_targets() {
     echo $_at
 }
 # downgrade_ok TAG OS...: none of these systems is newer than TAG - or going back was asked for in words
-# (MU300_ALLOW_DOWNGRADE=1, apply --downgrade). An old release is a correctly made, correctly signed release with
-# the faults that were fixed since: whoever can hand the device one (a mirror, a file) must not be able to put it
-# back by that alone. For every source, and before the release's own updater is given the run.
+# (MU300_ALLOW_DOWNGRADE=1, apply --downgrade; the one way to say it: the installers' MU300_DOWNGRADE=yes is a
+# setting of the zip, never read here). An old release is a correctly made, correctly signed release with the faults
+# that were fixed since: whoever can hand the device one (a mirror, a file) must not be able to put it back by that
+# alone. And the update is done by that release's own updater and image: one from before the carry block keeps only
+# a list of places (keep_list), and what else the user added would be gone from the system. For every source, and
+# before the release's own updater is given the run.
 downgrade_ok() {
     _dt=$1; shift
     [ -z "${MU300_ALLOW_DOWNGRADE:-}" ] || return 0
     for _do in "$@"; do
         _di=$(cat "$DISK/$_do$VERSION_FILE" 2>/dev/null)
         newer "$_di" "$_dt" || continue
-        echo "$_do is $_di and $_dt is older: going back to an older release needs --downgrade (mu300-update rollback goes back to the kept version without one)" >&2
+        echo "$_do is $_di and $_dt is older: going back to an older release needs --downgrade, as the older release's updater may not carry over everything you added to the system (mu300-update rollback goes back to the kept version without one, with your files as they were then)" >&2
         return 1
     done
     # (an update also writes the release's kernel and boot image: the same rule for what is there now)
@@ -3400,8 +3439,15 @@ status_json() {
     _at=$(cat "$DISK/.mu300/boot-attempts" 2>/dev/null); case $_at in [1-6]) ;; *) _at=5 ;; esac
     printf '},"boot_default":"%s","boot_attempts":%s,"boot_locked":%d,' "$_db" "$_at" "$([ -f "$DISK/.mu300/boot-lock" ] && echo 1 || echo 0)"
     _n=$(echo $(installed_systems) | wc -w | tr -d ' ')
+    # (with --sizes also what the carry block copies: for one system the largest of them, for all of them the sum)
+    _c1=0 _ca=0
+    if [ -n "$STATUS_SIZES" ]; then
+        for _os in $(installed_systems); do
+            _c=$(carry_need "$_os"); _ca=$((_ca + _c)); [ "$_c" -le "$_c1" ] || _c1=$_c
+        done
+    fi
     printf '"disk":{"free_kb":%s,"total_kb":%s,"need_one_kb":%s,"need_all_kb":%s},' "$(jnum "$(df -Pk "$DISK" 2>/dev/null | awk 'NR==2 {print $4}')")" \
-        "$(jnum "$(df -Pk "$DISK" 2>/dev/null | awk 'NR==2 {print $2}')")" "$(space_needed 1)" "$(space_needed "$_n")"
+        "$(jnum "$(df -Pk "$DISK" 2>/dev/null | awk 'NR==2 {print $2}')")" "$(space_needed 1 "$_c1")" "$(space_needed "$_n" "$_ca")"
     _lh=$(lock_holder)
     printf '"lock":{"held":%d,"pid":%s,"command":%s},' "$([ -n "$_lh" ] && echo 1 || echo 0)" "$(jnum "$_lh")" \
         "$([ -n "$_lh" ] && jstr "$({ tr '\0' ' ' < "/proc/$_lh/cmdline"; } 2>/dev/null | sed 's/ *$//')" || printf null)"
@@ -3422,16 +3468,16 @@ status_json() {
 release_json() {
     _rl=$(printf '%s\n' "$RELEASES" | awk -v t="$1" '$1 == "R" && $2 == t { print; exit }')
     _want="$(kernel_asset) mu300-update"
-    _ns=0
+    _ns=0 _nl=
     for _os in $(installed_systems); do
         [ "$(cat "$DISK/$_os$VERSION_FILE" 2>/dev/null)" = "$1" ] && continue
-        _want="$_want $(rootfs_asset "$_os")"; _ns=$((_ns + 1))
+        _want="$_want $(rootfs_asset "$_os")"; _ns=$((_ns + 1)); _nl="$_nl $_os"
     done
     for _x in $(extras_to_fetch "$1"); do _want="$_want $(extra_asset "$_x")"; done
     printf '{"tag":"%s","title":%s,"published":%s,"url":"https://github.com/%s/releases/tag/%s","signed":%d,"systems":%d,"need_kb":%s,"files":[' \
         "$1" "$(jstr "$(printf '%s\n' "$_rl" | cut -d' ' -f6-)")" "$(jstr "$(printf '%s\n' "$_rl" | awk '{print $5}' | cut -c1-10)")" \
         "$(jv "$REPO")" "$1" "$(printf '%s\n' "$RELEASES" | awk -v t="$1" '$1 == "A" && $2 == t && $4 == "SHA256SUMS.sig" { f = 1 } END { print f + 0 }')" \
-        "$_ns" "$(space_needed "$_ns")"
+        "$_ns" "$(space_needed "$_ns" "$(carry_need $_nl)")"
     _sep= _tot=0
     for _f in $_want; do
         _sz=$(printf '%s\n' "$RELEASES" | awk -v t="$1" -v f="$_f" '$1 == "A" && $2 == t && $4 == f { print $3; exit }')

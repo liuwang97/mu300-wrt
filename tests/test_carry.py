@@ -240,7 +240,7 @@ class Helper(unittest.TestCase):
 
 class Tool(unittest.TestCase):
     def test_union_gives_every_release_back(self):
-        # the manifests of the releases before v2026.10.26 ship as one file per image: every distinct line once
+        # the manifests of the releases before v2026.10.28 ship as one file per image: every distinct line once
         sys.path.insert(0, str(TOP / 'tools'))
         try:
             import importlib
@@ -269,7 +269,9 @@ class Tool(unittest.TestCase):
             lines = gzip.open(p, 'rt', errors='surrogateescape').read().split('\n')
             self.assertEqual(lines[0], f'mu300-image-manifests 1 {p.name[:-3]}')
             tags = lines[1].split(' ')[1:]
-            self.assertIn('v2026.10.25', tags)
+            # (every release before the carry block: one published before this is merged must be added, or a device on
+            # it updates the old way - tools/image-manifest.py legacy and union, FINDINGS 85)
+            self.assertIn('v2026.10.27', tags)
             self.assertEqual(tags, sorted(tags))
             body = [l for l in lines[2:] if l]
             self.assertTrue(all(re.match(r'^[0-9,-]+ [fdlcbp] [0-7]+ \d+ \d+ \d+ ([0-9a-f]{64}|-) .', l) for l in body), p.name)
@@ -712,7 +714,7 @@ class Carry(CarryCase):
 
     def test_a_manifest_of_another_release_is_not_used(self):
         # the old system says v1, the manifest in it says another release (a system updated by an updater from
-        # before v2026.10.26 kept the old file): not trusted, and the update goes on as without one
+        # before v2026.10.28 kept the old file): not trusted, and the update goes on as without one
         def user(old):
             m = gzip.decompress((old / 'etc/mu300/image-manifest.gz').read_bytes()).decode().replace(' v1\n', ' v0\n', 1)
             (old / 'etc/mu300/image-manifest.gz').write_bytes(gzip.compress(m.encode()))
@@ -1326,7 +1328,7 @@ class Apply(ShellTest):
 
     def test_the_old_way_stays_reachable(self):
         for shell in self.each_shell():
-            # asked for: only the list of places, as before v2026.10.26
+            # asked for: only the list of places, as before v2026.10.28
             self.fresh()
             r = self.up(shell, 'apply_one ubuntu v2', MU300_UPDATE_KEEP='list')
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
@@ -1378,21 +1380,60 @@ class Apply(ShellTest):
             self.assertFalse((self.disk / 'ubuntu.new').exists())
             self.assertFalse((self.disk / 'ubuntu.old').exists())
 
+    def test_the_room_an_update_wants_counts_what_the_carry_copies(self):
+        # one rule (space_needed) for apply's refusal and the panel's figures, and in it what the carry block copies
+        # beside the kept previous version: the old system less its image's files, as the image's manifest has them
+        self.stub('curl', 'exit 7')
+        self.stub('wget', 'exit 4')
+        (self.old / 'var/lib/app/big').write_bytes(b'x' * (8 << 20))
+        for shell in self.each_shell():
+            r = self.up(shell, 'carry_need ubuntu; CARRY_MODE=link carry_need ubuntu; MU300_UPDATE_KEEP=list carry_need ubuntu; '
+                               'carry_need openwrt; space_needed 2; space_needed 2 5')
+            need, *rest = [int(x) for x in r.stdout.split()]
+            self.assertEqual(rest, [0, 0, 0, 3000000, 3000005], r.stderr)
+            self.assertGreaterEqual(need, 8192 + 32768)                         # the 8 MiB the user added, and the margin
+            self.assertLess(need, 8192 * 21 // 20 + 32768 + 1024)                 # and not the image's own files
+            # apply: with room for the downloads and the images but not for the copy of the user's files, it stops
+            # before anything is fetched; --no-rollback copies nothing and needs no room for them
+            df = 'df() { echo "Filesystem 1K-blocks Used Available Use% Mounted"; echo "/dev/x 9 9 $FREE 9% /"; }; '
+            # (a MB either way: what du says of a file just written changes once the filesystem has placed it)
+            r = self.up(shell, df + 'mounted_disk() { :; }; apply_options; apply $APPLY_ARGS', MU300_RELEASE='v2',
+                        FREE=str(1000000 + 1000000 + need - 1024), MU300_FETCH_DELAY=0)
+            self.assertNotEqual(r.returncode, 0)
+            self.assertRegex(r.stderr, r'not enough free space on the Linux partition: (\d+) MB needed')
+            self.assertAlmostEqual(int(re.search(r'(\d+) MB needed', r.stderr).group(1)), (2000000 + need) // 1024, delta=1)
+            self.assertIn('mu300-update apply --no-rollback', r.stderr)
+            self.assertTrue((self.disk / '.mu300-update/mu300-ubuntu-rootfs.tar.gz').exists())
+            for args, free in (('--no-rollback', 1000000 + 1000000 + 1), ('', 1000000 + 1000000 + need + 1024)):
+                r = self.up(shell, df + f'mounted_disk() {{ :; }}; apply_options {args}; apply $APPLY_ARGS', MU300_RELEASE='v2',
+                            FREE=str(free), MU300_FETCH_DELAY=0)
+                self.assertNotIn('not enough free space', r.stderr, args)
+                self.assertIn('==> downloading v2', r.stdout, args)
+            # without the manifest of the old system's image nothing is known before the new image is here: the
+            # carry block counts it then (test_no_room_stops_before_anything_changes)
+            (self.old / 'etc/mu300/image-manifest.gz').rename(self.tmp / 'manifest.gz')
+            self.assertEqual(self.up(shell, 'carry_need ubuntu').stdout.split(), ['0'])
+            (self.tmp / 'manifest.gz').rename(self.old / 'etc/mu300/image-manifest.gz')
+
     def test_never_back_to_an_older_release_by_itself(self):
         self.stub('curl', 'echo "network used" >&2; exit 7')
         self.stub('wget', 'echo "network used" >&2; exit 7')
         (self.old / 'etc/mu300/image-version').write_text('v2026.10.26\n')
         for shell in self.each_shell():
-            r = self.up(shell, 'mounted_disk() { :; }; apply', MU300_RELEASE='v2026.10.23')
-            self.assertNotEqual(r.returncode, 0)
-            self.assertIn('ubuntu is v2026.10.26, and v2026.10.23 is older', r.stderr)
-            self.assertIn('MU300_DOWNGRADE=1', r.stderr)
-            self.assertNotIn('network used', r.stderr)             # refused before anything is fetched
-            # asked for, a test release, or a system that does not say what it is: not held back here
-            for env, version in (({'MU300_DOWNGRADE': '1'}, 'v2026.10.26\n'), ({}, 'v2026.10.23\n'), ({}, 'dev\n'), ({}, 'v2026.10.20\n')):
+            # (the rule of the panel's update, downgrade_ok: one rule and one word for every source)
+            for env in ({}, {'MU300_DOWNGRADE': '1'}, {'MU300_DOWNGRADE': 'yes'}):     # the zip's setting is no word here
+                r = self.up(shell, 'mounted_disk() { :; }; apply_options; apply $APPLY_ARGS', MU300_RELEASE='v2026.10.23', **env)
+                self.assertNotEqual(r.returncode, 0)
+                self.assertIn('ubuntu is v2026.10.26 and v2026.10.23 is older', r.stderr)
+                self.assertIn('needs --downgrade, as the older release\'s updater may not carry over everything', r.stderr)
+                self.assertIn('nothing was changed', r.stderr)
+                self.assertNotIn('network used', r.stderr)             # refused before anything is fetched
+            # asked for (apply --downgrade), a test release, or a system that does not say what it is: not held back
+            for args, version in (('--downgrade', 'v2026.10.26\n'), ('', 'v2026.10.23\n'), ('', 'dev\n'), ('', 'v2026.10.20\n')):
                 (self.old / 'etc/mu300/image-version').write_text(version)
-                r = self.up(shell, 'mounted_disk() { :; }; apply', MU300_RELEASE='v2026.10.23', MU300_FETCH_DELAY=0, **env)
-                self.assertNotIn('is older', r.stderr, (env, version))
+                r = self.up(shell, f'mounted_disk() {{ :; }}; apply_options {args}; apply $APPLY_ARGS', MU300_RELEASE='v2026.10.23',
+                            MU300_FETCH_DELAY=0)
+                self.assertNotIn('is older', r.stderr, (args, version))
             (self.old / 'etc/mu300/image-version').write_text('v2026.10.26\n')
 
 
@@ -1548,7 +1589,7 @@ class Wiring(unittest.TestCase):
                   'mu300-openwrt-luci-rootfs:opt/mu300/bin/busybox:openwrt-luci'):
             self.assertIn(s, audit)
         self.assertIn('*.manifest.gz mu300-update', rel)                    # in SHA256SUMS
-        self.assertEqual(rel.count('"$D"/*.manifest.gz "$D/mu300-update" "$D/SHA256SUMS"'), 2)     # uploaded
+        self.assertEqual(rel.count('"$D"/*.manifest.gz "$D/mu300-update" "$D/mu300-release" "$D/SHA256SUMS" $SIG'), 2)     # uploaded
         inst = (TOP / 'install.sh').read_text()
         self.assertIn('gcc -O2 -static -o /o/carry/mu300-carry /src/carry/mu300-carry.c', inst)
         self.assertIn('-v "$WORK/tools/carry/mu300-carry":/carry:ro', inst)
