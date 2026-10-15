@@ -789,3 +789,20 @@ ZTE V50: EXPERIMENTAL, tested by nobody in this project (kano ported it); mainli
 The ZTE V50 runs a mainline kernel only: install a prebuilt release (without --build)	ZTE V50 只能使用主线内核：请安装预编译的版本（不加 --build）
 The ZTE V50 runs a mainline kernel only (6.18 or 7.2).	ZTE V50 只能使用主线内核（6.18 或 7.2）。
 The ZTE V50 runs only a mainline kernel of a release that knows it: take the zip for kernel 6.18 or 7.2 (of a newer release if this one has none)	ZTE V50 只能使用认识它的版本中的主线内核：请选择 6.18 或 7.2 内核的 zip（本版本没有时请用更新的版本）
+--build builds the systems itself: run it from a copy of the project, not from an unpacked Magisk zip	--build 会自行构建系统：请在本项目的副本中运行，而不是在解压的 Magisk zip 中
+Package: {1} with kernel {2}, release {3} (unpacked Magisk zip at {4})	安装包：{1}，内核 {2}，版本 {3}（解压的 Magisk zip 位于 {4}）
+This package installs {1} with kernel {2} (release {3}); nothing is downloaded.	本安装包安装 {1}，内核 {2}（版本 {3}）；不下载任何东西。
+Another system or kernel: the zip of that combination, or ./install.sh of the project.	要安装其他系统或内核：请使用对应组合的 zip，或本项目的 ./install.sh。
+The ZTE V50 runs a mainline kernel only: take the zip for kernel 6.18 or 7.2 of this release	ZTE V50 只能使用主线内核：请使用本版本中 6.18 或 7.2 内核的 zip
+It is not part of this package.	它不包含在本安装包中。
+Checking the files of this package	正在校验本安装包的文件
+no unpacked Magisk zip at {1}	{1} 处没有解压的 Magisk zip
+{1} is not an unpacked Magisk zip of a release (it has no mu300/manifest and mu300/SHA256SUMS)	{1} 不是某个版本解压后的 Magisk zip（缺少 mu300/manifest 和 mu300/SHA256SUMS）
+the package is incomplete or damaged (its manifest is not valid)	安装包不完整或已损坏（其 manifest 无效）
+{1} is missing from the package (payload/)	安装包中缺少 {1}（payload/）
+This package	本安装包
+This window was started from an unpacked Magisk zip: it installs the system and the kernel of that zip, from its own files, and downloads nothing. Another system or kernel: the zip of that combination.	本窗口是从解压的 Magisk zip 启动的：它用该 zip 自带的文件安装其中的系统和内核，不下载任何东西。要安装其他系统或内核，请使用对应组合的 zip。
+{1} is not an unpacked Magisk zip of a release that this installer can read (its mu300/manifest is not valid). Unpack the zip again.	{1} 不是本安装程序能读取的某个版本解压后的 Magisk zip（其 mu300/manifest 无效）。请重新解压该 zip。
+Files	文件
+From	来源
+this unpacked Magisk zip, nothing downloaded: {1}	本解压的 Magisk zip，不下载任何东西：{1}

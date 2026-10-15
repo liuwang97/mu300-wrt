@@ -26,6 +26,7 @@ DEFAULT = {
     'serial': '324950664950',
     'model': 'F50',              # ro.product.model; 'U30_Air' for the other device, anything else is unknown
     'device': 'MU300',           # ro.product.device
+    'platform': 'ums9620',       # ro.board.platform (the V50 is told apart by it too)
     'adb_state': 'device',       # device | unauthorized | offline | none (nothing attached)
     'extra_devices': [],         # more lines of `adb devices -l`
     'root': True,                # su works
@@ -115,7 +116,7 @@ def props(st):
         'ro.boot.flash.locked': st['locked'], 'ro.boot.verifiedbootstate': st['verified'],
         'ro.boot.vbmeta.device_state': st['device_state'],
         'ro.boot.slot_suffix': '_' + st['slot'], 'sys.boot_completed': st['boot_completed'],
-        'ro.serialno': st['serial'],
+        'ro.serialno': st['serial'], 'ro.board.platform': st.get('platform', 'ums9620'),
     }
 
 
