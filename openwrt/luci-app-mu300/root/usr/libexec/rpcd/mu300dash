@@ -229,6 +229,7 @@ m_act() {
     case $op in
         radio|wifi)         allowed "$arg" '(on|off)' ;;
         data)               allowed "$arg" '(up|down)' ;;
+        roaming)            allowed "$arg" '(on|off)' ;;
         vpn)                allowed "$arg" '(start|stop)' ;;
         os)                 allowed "$arg" '(android|lock|unlock)' ;;
         modem-reset|reboot) [ -z "$arg" ] ;;
@@ -250,7 +251,7 @@ m_act() {
             ;;
         # os runs inline: arming takes milliseconds and a failure (misc write
         # rejected, tool missing) must reach the page instead of a silent no-op
-        data|wifi|os)
+        data|wifi|os|roaming)
             out=$("$DASH/action" "$op" "$arg" 2>/dev/null)
             reply_obj "$out" 'The action gave no valid reply'
             ;;

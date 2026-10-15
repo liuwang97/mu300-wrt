@@ -137,8 +137,10 @@ while :; do
     sleep 2
 done
 # No verdict on a card whose data nobody was trying to bring up: taken down by hand, switched off in the settings,
-# suspended by mu300-power, or in the middle of a live switch.
+# suspended by mu300-power, in the middle of a live switch, or held back because it is roaming with data roaming
+# off (mobile-data, FINDINGS 120: registered, and no data on purpose).
 if sim_wan_held_down || [[ -s /run/mu300-mobile-data.suspend || -e /run/mu300/sim-switching ]] ||
+   [[ -e /run/mu300/data-roaming-held ]] ||
    [[ "$(uci -q get network.wan.auto 2>/dev/null || true)" == 0 || "$(uci -q get network.wan.disabled 2>/dev/null || true)" == 1 ]]; then
     atomic "$CHECK" kept
     say "SIM2 has no mobile data, but the connection was off: the choice is kept"

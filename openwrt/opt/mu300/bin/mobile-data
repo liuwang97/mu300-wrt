@@ -2,6 +2,8 @@
 # Mobile data without Android RIL: SIM1 nr1/nr2 -> sipa_eth0; SIM2 nr4/nr5 -> sipa_eth8.
 # usage: mobile-data up [APN] | radio-on | down | status | signal | at "CMD" | sim-reset | watch
 #        mobile-data radio-locked CMD [ARG...] | radio-busy
+#        mobile-data roaming [--json] | roaming on|off [--slot 0|1]   (data roaming: allowed by default; with it off,
+#        no data while the SIM is registered as roaming - see roaming_cmd and docs/FINDINGS.md 120)
 #        mobile-data suspend off|lte | resume [nodial]   (mu300-power: modem down or LTE only while nobody uses the
 #        device; nodial: the radio only, the watcher redials). Both end within MU300_SUSPEND_DEADLINE (60 s) whatever
 #        the modem does; on a failure or a timeout the modem is handed back to the watcher (no mode file) and they
@@ -605,6 +607,114 @@ wait_registered() {
     return 1
 }
 
+# --- data roaming (docs/FINDINGS.md 120) ---------------------------------------------------------------------------
+# "Allow data roaming", as Android has it: with it off, no data while the card in use is registered on a roaming
+# network. No switch of the modem's own for it is known (no AT command for it in anything this project has; on
+# Android the decision is the framework's too), so it is a policy of this dial and its watchdog. Allowed by default:
+# that is what every earlier release did, and an update must not take anybody's data away.
+# The setting is read again at every decision, from where `mobile-data roaming on|off` (and every front end) puts it:
+#   OpenWrt: network.wan.roaming for the external card (slot 0), network.wan.roaming_internal for the other one
+#            (slot 1: the F50's internal SIM, the U30 Air's SIM2), as apn and apn_internal
+#   Ubuntu:  MU300_DATA_ROAMING in /etc/mu300/mobile-data.conf (one setting, as Ubuntu has one APN)
+# 1/on/yes/true or 0/off/no/false; anything else counts as unset (allowed), and `mobile-data roaming` says so.
+# Whether the network is a roaming one is the card's own registration, asked on the dial's AT channel, which answers
+# for its card alone (FINDINGS 74): <stat> of AT+CEREG?, and of AT+C5GREG? when LTE's says neither (5G SA). 5 and 10
+# are roaming, 1 and 9 home (3GPP TS 27.007). Some SIMs are "roaming" at home (an MVNO on a host network, national
+# roaming): that is the network's word, and the setting is the user's answer to it.
+# Held back: $ROAM_HELD exists (its line: the slot) while data is down because of this. No context is activated, so
+# no data leaves; the registration, IMS, SMS, USSD and emergency calls are not touched.
+ROAM_HELD=/run/mu300/data-roaming-held
+# Device tests only: a regular file owned by root (this script's user) whose line is "home-as-roaming" makes stat 1
+# and 9 count as roaming, so the held state can be seen with a SIM at home. /run is RAM: it ends with the boot. No
+# front end writes it, and nothing a front end sends reaches its name.
+ROAM_TEST=/run/mu300/roaming-test
+
+# roaming_word VALUE: 1 or 0; nothing for a value that is neither
+roaming_word() {
+    case $1 in 1|on|yes|true) echo 1 ;; 0|off|no|false) echo 0 ;; esac
+}
+# roaming_option SLOT: the card's uci option
+roaming_option() { if [ "$1" = 1 ]; then echo roaming_internal; else echo roaming; fi; }
+# conf_value KEY: the last KEY=VALUE line of Ubuntu's settings file, quotes taken off (read, never executed)
+conf_value() {
+    local v
+    [ -r "$MD_CONF" ] || return 0
+    v=$(sed -n "s/^[[:space:]]*$1=//p" "$MD_CONF" 2>/dev/null | tail -n 1)
+    v=${v%$'\r'}
+    case $v in \"*\") v=${v#\"}; v=${v%\"} ;; \'*\') v=${v#\'}; v=${v%\'} ;; esac
+    printf '%s\n' "$v"
+}
+# roaming_raw [SLOT]: the stored value as it is
+roaming_raw() {
+    if via_netifd; then
+        uci -q get "network.${MU300_WAN:-wan}.$(roaming_option "${1:-$SIM_SLOT}")" 2>/dev/null || true
+    else
+        conf_value MU300_DATA_ROAMING
+    fi
+}
+# roaming_setting [SLOT]: 1 when data may be used while roaming, 0 when not
+roaming_setting() {
+    local v w
+    v=$(roaming_raw "${1:-$SIM_SLOT}")
+    [ -n "$v" ] || { echo 1; return; }
+    w=$(roaming_word "$v")
+    echo "${w:-1}"   # (`mobile-data roaming` says when the value is not one of them)
+}
+roam_test_on() {
+    [ -f "$ROAM_TEST" ] && [ ! -L "$ROAM_TEST" ] && [ -O "$ROAM_TEST" ] &&
+        [ "$(head -c 64 "$ROAM_TEST" 2>/dev/null | tr -d '\r\n')" = home-as-roaming ]
+}
+# roam_classify STAT...: roaming, home or unknown from <stat> values (an empty one says nothing)
+roam_classify() {
+    local s r=unknown t=0
+    if roam_test_on; then t=1; fi
+    for s in "$@"; do
+        case $s in 1|9) [ "$t" = 0 ] || s=5 ;; esac
+        case $s in 5|10) echo roaming; return ;; 1|9) r=home ;; esac
+    done
+    echo "$r"
+}
+# reg_stat CMD: <stat> of the answer's query form, "+C...REG: <n>,<stat>[,...]"
+reg_stat() {
+    { at "$1" 4 2>/dev/null || true; } |
+        awk -F'[:,]' '/^\+C[0-9A-Z]*REG:/ && NF >= 3 { gsub(/[^0-9]/, "", $3); print $3; exit }'
+}
+# roam_state: home, roaming or unknown for the card in use. One question in the usual case (LTE, NSA); the 5G
+# registration only when LTE's says neither.
+roam_state() {
+    local s4 s5=
+    s4=$(reg_stat 'AT+CEREG?')
+    case $s4 in 1|5|9|10) ;; *) s5=$(reg_stat 'AT+C5GREG?') ;; esac
+    roam_classify "$s4" "$s5"
+}
+# roam_hold: data is held back from now on; said once, when it starts (the dial and the watchdog keep coming back)
+roam_hold() {
+    [ ! -e "$ROAM_HELD" ] || return 0
+    local msg="the SIM in use (slot $SIM_SLOT) is registered on a roaming network and data roaming is off: mobile data stays down"
+    mkdir -p "${ROAM_HELD%/*}" 2>/dev/null || true
+    echo "$SIM_SLOT" 2>/dev/null > "$ROAM_HELD" || true
+    radio_say "$msg"
+    logger -t mobile-data "$msg" 2>/dev/null || true
+    echo "mobile-data: $msg" >&2
+}
+# roam_release WHY: the hold is over
+roam_release() {
+    [ -e "$ROAM_HELD" ] || return 0
+    rm -f "$ROAM_HELD"
+    radio_say "data roaming: $1, mobile data comes back"
+    logger -t mobile-data "data roaming: $1, mobile data comes back" 2>/dev/null || true
+}
+# roam_gate: may the card have data now? 0 yes; 1 no (roaming with data roaming off: held); 2 cannot tell (the
+# registration could not be read: with data roaming off that is no dial either, but no hold)
+roam_gate() {
+    if [ "$(roaming_setting)" = 1 ]; then roam_release "allowed"; return 0; fi
+    case $(roam_state) in
+        home) roam_release "on the home network"; return 0 ;;
+        roaming) roam_hold; return 1 ;;
+        *) return 2 ;;
+    esac
+}
+
 # The context's address, within SECONDS real seconds (8 by default): an active context is not an address yet -
 # the fork measured "CGACT up, no address for 40 s" on NR. Leaves the +CGCONTRDP line in rdp. No query starts after
 # the budget and no pause runs past it; only the query in flight can overrun it (by its AT round, at most T + 2 s).
@@ -887,6 +997,24 @@ up_locked() {
     fi
     mark dial-registered
     radio_say "registered"
+    # Data roaming off and the card roaming: no context (FINDINGS 120). Under netifd exit 4: mu300cell reports
+    # DATA_ROAMING and netifd tries again a minute later, which is how data comes back at home. On Ubuntu the dial
+    # has done what it should (exit 0, the service stays up) and the watchdog brings data back. Not knowing is a failed
+    # dial, retried as any other.
+    local roam=0
+    roam_gate || roam=$?
+    if [ "$roam" = 1 ]; then
+        led off
+        touch /run/mu300-mobile-data-down   # data is down on purpose (mu300-traffic reads it so); the watchdog knows
+        [ "${MU300_NETIFD:-0}" != 1 ] || exit 4
+        echo "mobile data held back: roaming, and data roaming is off (mobile-data roaming on allows it)"
+        return 0
+    elif [ "$roam" = 2 ]; then
+        radio_say "the registration could not be read, and data roaming is off: not dialling"
+        led error
+        echo "could not tell whether the network is a roaming one; data roaming is off, so no dial" >&2
+        exit 1
+    fi
     # K47: the IPA delegate (sipa_dele), here and nowhere else. It has to probe once the CP's packet domain exists
     # (sipa-dele-start waits for +CGATT: 1) and before the PDP context makes the SIPA resources active: loaded in the
     # background beside this dial it raced AT+CGACT, and the fork recorded a reproducible CFI panic in the delegate
@@ -1073,6 +1201,34 @@ via_netifd() { [ "${MU300_NETIFD:-}" = 1 ] || { [ -z "${MU300_NETIFD:-}" ] && [ 
 redial() {
     if via_netifd; then bnd "$STEPDL" ifup "${MU300_WAN:-wan}"; else ( _resuming=1; up ); fi
 }
+
+# Data roaming (FINDINGS 120), the watchdog's two moves. roam_take_down: the card went roaming under a live
+# connection with data roaming off. Under netifd the wan is restarted, and its dial holds (exit 4) and is tried again
+# every minute by netifd; on Ubuntu the connection goes down the way `mobile-data down` takes it.
+roam_take_down() {
+    led off
+    if via_netifd; then bnd "$STEPDL" ifup "${MU300_WAN:-wan}" || true
+    else down || true; fi
+}
+# roam_watch_held: a round while data is held back. Under netifd its own dial tries again and brings data back, so
+# nothing is dialled here; a wan somebody took down (netifd's autostart off: ifdown, the panel's button, the data
+# cap) ends the hold. On Ubuntu one question a round, and the dial once the card is home or roaming is allowed. A
+# `mobile-data down` (the service stopped: by hand, the panel, the data cap) has ended the hold already.
+roam_watch_held() {
+    local rc=0
+    if via_netifd; then
+        if ubus call "network.interface.${MU300_WAN:-wan}" status 2>/dev/null | tr -d ' \n\t' |
+            grep -q '"autostart":false'; then
+            rm -f "$ROAM_HELD"
+        fi
+        return 0
+    fi
+    [ -c "$DEV" ] || return 0
+    tty_setup || return 0
+    roam_gate || rc=$?
+    [ "$rc" = 0 ] || return 0
+    ( up ) || echo "reconnect failed, retrying" >&2
+}
 suspend_off_raw() { at 'AT+SFUN=5' 10 >/dev/null || true; }
 suspend_lte_raw() {
     # the user may have EN-DC off already (the read-back is +ENDC: 1 when on): note it, resume must not turn it on
@@ -1212,6 +1368,11 @@ watch() {
             unset MU300_SIM_SLOT
             exec "$0" watch
         fi
+        # data held back for roaming (FINDINGS 120): no reconnect, no "mobile data lost"; only the way back
+        if [ -e "$ROAM_HELD" ]; then
+            [ -s "$SUSPEND" ] || roam_watch_held
+            continue
+        fi
         [ -e /run/mu300-mobile-data-down ] && continue
         [ -s "$SUSPEND" ] && continue   # mu300-power holds the modem down; nothing to restore
         [ -c "$DEV" ] || continue
@@ -1226,6 +1387,13 @@ watch() {
             have=$(ip -4 -o addr show "$IFACE" 2>/dev/null | awk '{ split($4, a, "/"); print a[1]; exit }' || true)
             if [ -z "$want" ] || [ "$want" = "$have" ]; then
                 fails=0
+                # moved onto a roaming network with data roaming off: data goes down (one more question per round,
+                # only with the setting off)
+                if [ "$(roaming_setting)" = 0 ] && [ "$(roam_state)" = roaming ]; then
+                    roam_hold
+                    roam_take_down
+                    continue
+                fi
                 led_up
                 continue
             fi
@@ -1295,6 +1463,71 @@ status() {
     tty_setup
     at 'AT+COPS?'; at 'AT+CSQ'; at 'AT+CEREG?'; at 'AT+CGACT?'
     ip -br addr show "$IFACE"
+    if [ -e "$ROAM_HELD" ]; then echo "roaming: yes, data not allowed while roaming (mobile-data roaming on allows it)"
+    elif [ "$(roaming_setting)" = 0 ]; then echo "data roaming: off"; fi
+}
+
+# mobile-data roaming [--json] | roaming on|off [--slot 0|1]: the data roaming setting (FINDINGS 120).
+#   roaming           the setting of the card in use, whether data is held back, and the network (asks the modem)
+#   roaming --json    {"allowed","held","slot","per_sim","slots":[slot 0, slot 1]}: files only, no modem question
+#   roaming on|off    allow or refuse data while roaming: the card in use, or --slot N (OpenWrt: one setting per
+#                     card; Ubuntu: one for both). Taken up by the dial and the watchdog within half a minute.
+roaming_json() {
+    local held=false per=false s0 s1
+    [ ! -e "$ROAM_HELD" ] || held=true
+    via_netifd && per=true
+    s0=$(roaming_setting 0); s1=$(roaming_setting 1)
+    tf() { if [ "$1" = 1 ]; then echo true; else echo false; fi; }
+    printf '{"allowed":%s,"held":%s,"slot":%d,"per_sim":%s,"slots":[%s,%s]}\n' "$(tf "$(roaming_setting)")" "$held" \
+        "$SIM_SLOT" "$per" "$(tf "$s0")" "$(tf "$s1")"
+}
+# roaming_write 0|1 SLOT: store the setting (uci on OpenWrt; Ubuntu's settings file, root's alone as it may hold the
+# APN password, its other lines kept, a new file renamed over the old one)
+roaming_write() {
+    if via_netifd; then
+        uci -q set "network.${MU300_WAN:-wan}.$(roaming_option "$2")=$1" && uci -q commit network
+        return
+    fi
+    local d=${MD_CONF%/*} t
+    mkdir -p "$d" 2>/dev/null || return 1
+    t=$(umask 077; mktemp "$d/.mobile-data.conf.XXXXXX" 2>/dev/null) || return 1
+    if { if [ -f "$MD_CONF" ]; then grep -v '^[[:space:]]*MU300_DATA_ROAMING=' "$MD_CONF" || true; fi
+         echo "MU300_DATA_ROAMING=$1"; } > "$t" && chmod 600 "$t" && mv -f "$t" "$MD_CONF"; then
+        return 0
+    fi
+    rm -f "$t"
+    return 1
+}
+roaming_cmd() {
+    local v slot=$SIM_SLOT net
+    case ${1:-} in
+        '')
+            if [ "$(roaming_setting)" = 1 ]; then echo "data roaming   allowed"; else echo "data roaming   off"; fi
+            v=$(roaming_raw)
+            if [ -n "$v" ] && [ -z "$(roaming_word "$v")" ]; then
+                echo "               (the stored value is neither 1 nor 0, so it counts as allowed)"
+            fi
+            if modem_stack && [ -c "$DEV" ] && tty_setup; then net=$(roam_state); else net=unknown; fi
+            case $net in
+                roaming) echo "network        roaming (some SIMs report roaming at home: an MVNO, national roaming)" ;;
+                *) echo "network        $net" ;;
+            esac
+            if [ -e "$ROAM_HELD" ]; then echo "mobile data    held back: roaming, and data roaming is off"; fi
+            ;;
+        --json) roaming_json ;;
+        on|off)
+            v=$(roaming_word "$1")
+            if [ "${2:-}" = --slot ]; then
+                case ${3:-} in 0|1) slot=$3 ;; *) echo "usage: $0 roaming on|off [--slot 0|1]" >&2; return 2 ;; esac
+                via_netifd || { echo "Ubuntu has one data roaming setting for both cards: no --slot" >&2; return 2; }
+            elif [ -n "${2:-}" ]; then
+                echo "usage: $0 roaming on|off [--slot 0|1]" >&2; return 2
+            fi
+            roaming_write "$v" "$slot" || { echo "the data roaming setting could not be saved" >&2; return 1; }
+            if via_netifd; then echo "data roaming $1 for the SIM in slot $slot"; else echo "data roaming $1"; fi
+            ;;
+        *) echo "usage: $0 roaming [--json] | roaming on|off [--slot 0|1]" >&2; return 2 ;;
+    esac
 }
 
 # MU300_LIB=1: define the functions only (the tests source this script)
@@ -1314,8 +1547,12 @@ case "${1:-status}" in
     signal) signal ;;
     at) [ -n "${2:-}" ] || { echo "usage: $0 at \"AT+COMMAND\"" >&2; exit 2; }
         tty_setup; at "$2" "${3:-6}" ;;
-    down) down ;;
+    # an explicit down (by hand, the service stopped: the panel, the data cap) also ends a hold for roaming, so the
+    # watchdog does not bring data back that somebody turned off; under netifd it is the teardown of every failed dial
+    # and the hold stays (the watchdog ends it when the wan is taken down)
+    down) via_netifd || rm -f "$ROAM_HELD"; down ;;
     status) status ;;
+    roaming) roaming_cmd "${@:2}" ;;
     sim-reset) sim_reset ;;
     watch) watch ;;
     suspend) bounded suspend "${2:-off}" ;;
@@ -1344,5 +1581,5 @@ case "${1:-status}" in
         lock_owner_alive "$holder" || exit 1
         echo "$holder"
         ;;
-    *) echo "usage: $0 up [APN] | radio-on | down | status | signal | at \"CMD\" | sim-reset | watch | suspend off|lte | resume [nodial] | radio-locked CMD | radio-busy" >&2; exit 2 ;;
+    *) echo "usage: $0 up [APN] | radio-on | down | status | signal | at \"CMD\" | sim-reset | watch | suspend off|lte | resume [nodial] | radio-locked CMD | radio-busy | roaming [--json|on|off]" >&2; exit 2 ;;
 esac

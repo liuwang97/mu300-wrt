@@ -160,6 +160,19 @@ class Info(ShellTest):
         for shell in self.each_shell():
             self.assertEqual(self.info(shell)['wan']['dns'], '10.0.0.1, 10.0.0.2, 2001:db8::53')
 
+    def test_data_roaming(self):
+        """FINDINGS 120: the card's setting (unset or not a "no": allowed, as the dial reads it) and the hold."""
+        held = self.tmp / 'held'
+        for shell in self.each_shell():
+            held.unlink(missing_ok=True)
+            self.stub('uci', 'exit 1')
+            self.assertEqual(self.info(shell, MU300_ROAM_HELD=held)['wan']['roaming'], {'allowed': 1, 'held': 0})
+            self.stub('uci', 'case "$*" in *network.wan.roaming) echo 0 ;; *) exit 1 ;; esac')
+            held.write_text('0\n')
+            self.assertEqual(self.info(shell, MU300_ROAM_HELD=held)['wan']['roaming'], {'allowed': 0, 'held': 1})
+            self.stub('uci', 'case "$*" in *network.wan.roaming) echo "1; x" ;; *) exit 1 ;; esac')
+            self.assertEqual(self.info(shell, MU300_ROAM_HELD=held)['wan']['roaming']['allowed'], 1)
+
     def test_connections(self):
         count, table = self.tmp / 'nf_conntrack_count', self.tmp / 'nf_conntrack'
         for shell in self.each_shell():

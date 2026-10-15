@@ -90,6 +90,14 @@ return network.registerProtocol('mu300cell', {
 		o.depends('sim_slot', '1');
 		o.retain = true;
 
+		/* data roaming, one setting per card (mobile-data, docs/FINDINGS.md 120): unset is allowed, as every release
+		   before it did; the dial and its watchdog read it, so a change applies within half a minute */
+		o = s.taboption('general', form.Flag, 'roaming_internal', _('Internal SIM data roaming'),
+			_('Off: no mobile data while the SIM is registered on a roaming network (SMS and calls are not affected). Some SIMs report roaming at home (an MVNO, national roaming): those need it on.'));
+		o.default = o.enabled;
+		o.depends('sim_slot', '1');
+		o.retain = true;
+
 		o = s.taboption('general', form.Value, 'apn', _('APN'),
 			_('Leave empty unless the carrier needs a specific one. Empty means the modem keeps the context the SIM already defines, which is what most SIMs expect and what this device has been using.'));
 		o.placeholder = _('whatever the SIM defines');
@@ -101,6 +109,14 @@ return network.registerProtocol('mu300cell', {
 		o.value('IP', _('IPv4 only (default)'));
 		o.value('IPV4V6', _('IPv4 and IPv6'));
 		o.default = 'IP';
+		o.depends('sim_slot', '0');
+		o.retain = true;
+
+		/* data roaming, one setting per card (mobile-data, docs/FINDINGS.md 120): unset is allowed, as every release
+		   before it did; the dial and its watchdog read it, so a change applies within half a minute */
+		o = s.taboption('general', form.Flag, 'roaming', _('Data roaming'),
+			_('Off: no mobile data while the SIM is registered on a roaming network (SMS and calls are not affected). Some SIMs report roaming at home (an MVNO, national roaming): those need it on.'));
+		o.default = o.enabled;
 		o.depends('sim_slot', '0');
 		o.retain = true;
 

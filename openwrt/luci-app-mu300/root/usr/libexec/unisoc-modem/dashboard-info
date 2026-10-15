@@ -118,6 +118,13 @@ apn_option=apn
 [ "$SIM_SLOT" != 1 ] || apn_option=apn_internal
 apn=$(t3 uci -q get "network.$DATA_IFACE.$apn_option")
 [ -n "$apn" ] || apn="(SIM default)"
+# data roaming (mobile-data, docs/FINDINGS.md 120): the card's setting - unset or anything but a "no" is allowed, as
+# the dial reads it - and whether data is held back because the card is registered as roaming
+roam_option=roaming
+[ "$SIM_SLOT" != 1 ] || roam_option=roaming_internal
+case $(t3 uci -q get "network.$DATA_IFACE.$roam_option") in 0|off|no|false) roam_allowed=0 ;; *) roam_allowed=1 ;; esac
+roam_held=0
+[ ! -e "${MU300_ROAM_HELD:-/run/mu300/data-roaming-held}" ] || roam_held=1
 
 # ------------------------------------------------------------------- system
 NOW=$(date +%s)
@@ -427,8 +434,9 @@ if [ -n "$T_LEVEL" ]; then
 else
     printf '"traffic":null,'
 fi
-printf '"wan":{"up":%d,"uptime":%s,"proto":%s,"apn":%s,"ip4":%s,"ip6":%s,"dns":%s},' \
-    "$wan_up" "$(n_or_null "$wan_uptime")" "$(qs "$wan_proto")" "$(qs "$apn")" "$(qs "$wan_ip4")" "$(qs "$wan6_ip")" "$(qs "$wan_dns")"
+printf '"wan":{"up":%d,"uptime":%s,"proto":%s,"apn":%s,"ip4":%s,"ip6":%s,"dns":%s,"roaming":{"allowed":%d,"held":%d}},' \
+    "$wan_up" "$(n_or_null "$wan_uptime")" "$(qs "$wan_proto")" "$(qs "$apn")" "$(qs "$wan_ip4")" "$(qs "$wan6_ip")" "$(qs "$wan_dns")" \
+    "$roam_allowed" "$roam_held"
 printf '"wifi":{"up":%d,"ssid":%s,"channel":%s,"band":%s,"width":%s,"country":%s,"enc":%s,"hidden":%s,"hostapd":%d,"clients":[%s],"clients_n":%d},' \
     "$W_UP" "$(qs "$W_SSID")" "$(qs "$W_CH")" "$(qs "$W_BAND")" "$(qs "$W_WIDTH")" "$(qs "$W_COUNTRY")" "$(qs "$W_ENC")" "$(n_or_null "$W_HIDDEN")" "$W_HOSTAPD" "${W_CLIST:-}" "$W_CN"
 printf '"lan":{"leases":%s,"ip":%s,"list":[%s]},' "$(n_or_null "$LAN_LEASES")" "$(qs "$LAN_IP")" "${LEASES:-}"

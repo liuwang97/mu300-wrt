@@ -788,6 +788,27 @@ menu_ttl() {
     done
 }
 
+# Data roaming (mobile-data roaming, docs/FINDINGS.md 120): allowed by default; off keeps mobile data down while the
+# SIM is registered on a roaming network
+menu_roaming() {
+    while :; do
+        title "Data roaming"
+        timeout 20 /opt/mu300/bin/mobile-data roaming 2>&1 | sed 's/^/  /'
+        printf '\n  %sWith data roaming off, mobile data stays down while the SIM is registered on a roaming network;\n' "$D"
+        printf '  SMS and calls keep working. Some SIMs report roaming at home (an MVNO, national roaming): those\n'
+        printf '  need it on. A change applies within half a minute.%s\n\n' "$N"
+        printf '  %s1%s  Allow data roaming (default)\n' "$C" "$N"
+        printf '  %s2%s  Data roaming off\n' "$C" "$N"
+        printf '\n  %s0%s  Back\n\n  > ' "$C" "$N"
+        read -r CHOICE || CHOICE=0
+        case $CHOICE in
+            1) /opt/mu300/bin/mobile-data roaming on >/dev/null || pause ;;
+            2) /opt/mu300/bin/mobile-data roaming off >/dev/null || pause ;;
+            *) return ;;
+        esac
+    done
+}
+
 menu_network() {
     while :; do
         # the VPN item only with the module (vpn_shown); without it TTL moves up to 8
@@ -795,7 +816,7 @@ menu_network() {
         menu "Network" "Live traffic (monitor)" "Interfaces and addresses" "Mobile data: status" \
             "Mobile signal (live, for finding a better spot)" "Mobile data: reconnect" "Mobile data: disconnect" \
             "Wi-Fi (hotspot, or join a network)" ${vpn_item:+"$vpn_item"} \
-            "TTL of mobile data (hide hotspot use)"
+            "TTL of mobile data (hide hotspot use)" "Mobile data: data roaming"
         case $CHOICE in
             1) monitor ;;
             2) title "Interfaces"; { ip -br addr 2>/dev/null || ip addr; } | grep -vE '^(dummy|tunl|gre|erspan|ip_vti|ip6_vti|sit|ip6tnl|ip6gre|sipa_eth[1-9])' | sed 's/^/  /'
@@ -807,7 +828,8 @@ menu_network() {
             6) if is_openwrt; then ifdown wan; else svc stop mu300-mobile-data; fi; pause ;;
             7) menu_wifi ;;
             8) if [ -n "$vpn_item" ]; then menu_vpn; else menu_ttl; fi ;;
-            9) if [ -n "$vpn_item" ]; then menu_ttl; else return 0; fi ;;
+            9) if [ -n "$vpn_item" ]; then menu_ttl; else menu_roaming; fi ;;
+            10) if [ -n "$vpn_item" ]; then menu_roaming; else return 0; fi ;;
             *) return ;;
         esac
     done
