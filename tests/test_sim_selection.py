@@ -118,10 +118,13 @@ esac
         self.assertFalse((self.tmp / 'etc/mu300/sim-migration/mu300-sim-slot.migrated').exists())
 
     def test_selection_refuses_other_devices(self):
+        # (the V50 too, FINDINGS 95: its second SIM is not started, the external card is the only one)
         device = self.tmp / 'mu300-device'
-        device.write_text('#!/bin/sh\necho u30air\n')
-        device.chmod(0o755)
-        for shell in self.each_shell():
+        for shell, name in [(s, n) for s in self.each_shell() for n in ('u30air', 'v50')]:
+            device.write_text(f'#!/bin/sh\necho {name}\n')
+            device.chmod(0o755)
+            self.choice.write_text('0\n')
+            self.state.unlink(missing_ok=True)
             r = self.script(shell, BIN / 'mu300-sim', 'select', 'internal',
                             MU300_SIM_ROOT=self.tmp, MU300_DEVICE_CMD=device)
             self.assertNotEqual(r.returncode, 0)
