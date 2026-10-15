@@ -36,7 +36,7 @@ role_command() {
     if [ -n "$cmd" ]; then
         [ -x "$cmd" ] || error 'USB role adapter is not executable'
         "$cmd" "$1" || error 'USB role adapter failed'
-    elif [ "$(device_name)" = f50 ]; then
+    elif case $(device_name) in f50|v50) true ;; *) false ;; esac; then   # (the V50: the F50's role file, kano's port)
         [ -w "$ROLE_FILE" ] || error 'USB role switch is unavailable'
         printf '%s\n' "$1" > "$ROLE_FILE" || error 'USB role switch failed'
     elif command -v mu300-usb >/dev/null 2>&1; then

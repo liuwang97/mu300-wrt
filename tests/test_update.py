@@ -126,6 +126,48 @@ class Update(UpdateBase):
                 else:
                     self.assertIn(f'PART boot_{now}', r.stderr, (prev, now))
 
+    def test_a_boot_image_already_in_place_is_named_after_the_release(self):
+        # the kernel did not change between two releases: the image in place is the new release's too, or check and
+        # the Update page offer that release again and again (U30 Air, FINDINGS 86)
+        src = (BIN / 'mu300-update').read_text()
+        bu = src[src.index('boot_update() {'):src.index('\n}\n', src.index('boot_update() {'))]
+        same = bu[bu.index('if [ "$cur" = "$(cat "$BOOTDIR/written.sha256"'):]
+        same = same[:same.index('\n    fi\n')]
+        self.assertIn('echo "$tag" > "$BOOTDIR/installed.tag"', same)
+        self.assertLess(same.index('installed.tag'), same.index('return 0'))
+
+    def test_a_boot_partition_that_is_a_plain_file_is_not_written(self):
+        # on the U30 Air /dev/mmcblk0p38 (boot_b) was once a 50 MB file in RAM, made by the early recorder while procd
+        # replaced /dev: an image written there reads back as written (FINDINGS 86). Neither writer takes it.
+        boot = self.disk / 'boot'
+        boot.mkdir()
+        for name, data in (('prev.body', b'old image'), ('prev.vbmeta', b'v'), ('prev.footer', b'f' * 64)):
+            (boot / name).write_bytes(data)
+        (boot / 'prev.slot').write_text('b\n')
+        (self.root / 'run/mu300/linux-slot').write_text('b\n')
+        fake = self.tmp / 'mmcblk0p38'
+        for shell in self.each_shell():
+            fake.write_bytes(bytes(8192))
+            stub = f'part_dev() {{ echo "{fake}"; }}; '
+            r = self.up(shell, stub + 'boot_dev boot_b; echo "rc=$?"')
+            self.assertIn('rc=1', r.stdout)
+            self.assertIn(f'{fake} is not a block device', r.stderr)
+            r = self.up(shell, stub + 'unlock_for_trial() { :; }; rollback_boot')
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn('nothing was written', r.stderr)
+            self.assertEqual(fake.read_bytes(), bytes(8192))
+            r = self.up(shell, stub + 'boot_update v2026.11.01')
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn('the boot image was not updated', r.stderr)
+            self.assertEqual(fake.read_bytes(), bytes(8192))
+        # a block device is passed on as it is
+        import stat
+        for dev in ('/dev/disk0', '/dev/sda', '/dev/vda', '/dev/loop0'):
+            if os.path.exists(dev) and stat.S_ISBLK(os.stat(dev).st_mode):
+                r = self.up(shell, f'part_dev() {{ echo {dev}; }}; boot_dev boot_b')
+                self.assertEqual(r.stdout, dev + '\n', r.stderr)
+                break
+
     def test_boot_update_keeps_the_slot_of_the_image(self):
         src = (BIN / 'mu300-update').read_text()
         self.assertIn('linux_slot > "$BOOTDIR/prev.slot"', src)
@@ -242,6 +284,15 @@ class Update(UpdateBase):
             r = self.up(shell, 'running_os', MU300_ROOT=self.disk / 'openwrt-luci.old')
             self.assertEqual(r.stdout.strip(), 'openwrt-luci')
 
+    def test_running_os_after_rollback_is_the_broken_copy(self):
+        # between rollback and the reboot / is <os>.broken: it was "openwrt" for an openwrt-luci (U30 Air, FINDINGS 86)
+        (self.disk / 'openwrt-luci').mkdir()
+        (self.disk / 'openwrt-luci.broken' / 'etc').mkdir(parents=True)
+        (self.disk / 'openwrt-luci.broken' / 'etc' / 'openwrt_release').write_text('x')
+        for shell in self.each_shell():
+            r = self.up(shell, 'running_os', MU300_ROOT=self.disk / 'openwrt-luci.broken')
+            self.assertEqual(r.stdout.strip(), 'openwrt-luci')
+
     def test_clean_knows_the_third_system(self):
         (self.disk / 'openwrt-luci.old').mkdir()
         for shell in self.each_shell():
@@ -341,8 +392,12 @@ class Update(UpdateBase):
         new = self.bundle('new.tar.gz', 'f50 u30air\n')
         old = self.bundle('old.tar.gz', None)
         f50only = self.bundle('f50.tar.gz', 'f50\n')
+        withv50 = self.bundle('v50.tar.gz', 'f50 u30air v50\n')
+        # the ZTE V50 (FINDINGS 95): only a kernel that names it (a mainline one with its LED driver), never the 5.4
+        # bundle nor one from before; the F50 and the U30 Air take that bundle as any other
         cases = [('f50', new, True), ('f50', old, True), ('u30air', new, True), ('u30air', old, False),
-                 ('u30air', f50only, False)]
+                 ('u30air', f50only, False), ('v50', withv50, True), ('v50', new, False), ('v50', old, False),
+                 ('v50', f50only, False), ('f50', withv50, True), ('u30air', withv50, True)]
         for shell in self.each_shell():
             for dev, b, ok in cases:
                 self.device(dev)

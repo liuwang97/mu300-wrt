@@ -69,7 +69,8 @@ printf '$6$%s$%s\n' "$salt" "$(printf '%s' "$pw" | od -An -tx1 | tr -d ' \n' | c
 
 class FakeDevice:
     # product: ro.product.device; the installer recognises the model from it too, so another model gets another one
-    def __init__(self, tmp, stubs, model='ZTE MU300', slot='_a', emmc_gib=16, region=True, card=None, product=None):
+    def __init__(self, tmp, stubs, model='ZTE MU300', slot='_a', emmc_gib=16, region=True, card=None, product=None,
+                 platform=None):
         self.root = tmp / 'fake'
         r = self.root
         if product is None:
@@ -100,7 +101,7 @@ class FakeDevice:
             (c / 'size').write_text(f'{32 << 21}\n')
             (r / 'dev/block/mmcblk1').write_bytes(card)
         (r / 'props').write_text(f'ro.product.model={model}\nro.product.device={product}\nro.boot.slot_suffix={slot}\n'
-                                 'persist.sys.locale=en-US\n')
+                                 'persist.sys.locale=en-US\n' + (f'ro.board.platform={platform}\n' if platform else ''))
         (r / 'volumes').write_text('private mounted null\n')
         (r / 'mounts').write_text('')
         # /proc/sys/kernel/random/boot_id: the key of the lock a timed-out SD-card stage leaves (FINDINGS 50)

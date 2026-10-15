@@ -201,6 +201,7 @@ return view.extend({
     <div class="mud-op" id="mud-op">--</div>
     <div class="mud-cellline" id="mud-cellline"></div>
     <div class="mud-note" id="mud-stale" style="display:none;margin:4px 0 0;color:var(--warning,#f59e0b)"></div>
+    <a class="mud-note" id="mud-update" href="${L.url('admin/system/mu300-update')}" style="display:none;margin:4px 0 0;color:var(--brand,var(--primary,#2f7bf6))"></a>
   </div>
   <div class="mud-hero-r">
     <div class="mud-rsrp" id="mud-rsrp">--</div>
@@ -656,6 +657,9 @@ return view.extend({
 			this.lastNet = { ts: i.ts, rx: net.rx, tx: net.tx };
 		}
 		this.paintUsage(i.traffic || null);
+		/* a newer release: the updater's own note (mu300-update notice, at boot and every 6 hours), a link to System > Update */
+		M.v('update').style.display = i.update ? '' : 'none';
+		if (i.update) M.set('update', _('Version %s is out: update').format(i.update));
 		var w = i.wan || {};
 		M.v('ip').innerHTML = M.esc(w.ip4 || '--') + (w.ip6 ? '<br>' + M.esc(w.ip6) : '');
 		M.set('dns', w.dns || '--');

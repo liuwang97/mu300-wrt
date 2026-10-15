@@ -19,13 +19,23 @@ from helpers import BIN, TOP, ShellTest
 
 
 class Device(ShellTest):
-    def root(self, device=None, dt_u30=False):
+    # the stock device trees as far as mu300-device looks: the F50's has neither node, the U30 Air's the charger
+    # policy service, the V50's the AW9523B under I2C3 (its parent named soc:ap-ahb or ap-ahb, by kernel)
+    V50_NODE = 'soc/{}/i2c@2270000/aw9523b_led@5b'
+
+    def root(self, device=None, dt_u30=False, dt_v50=None, dt=False):
         r = self.tmp / 'root'
+        shutil.rmtree(r / 'proc', ignore_errors=True)
         (r / 'run' / 'mu300').mkdir(parents=True, exist_ok=True)
         if device is not None:
             (r / 'run' / 'mu300' / 'device').write_text(device + '\n')
+        if dt or dt_u30 or dt_v50:
+            # every board's device tree has an I2C3 (the F50's is empty and disabled)
+            (r / 'proc' / 'device-tree' / 'soc' / 'ap-ahb' / 'i2c@2270000').mkdir(parents=True, exist_ok=True)
         if dt_u30:
             (r / 'proc' / 'device-tree' / 'charger_policy_service').mkdir(parents=True, exist_ok=True)
+        if dt_v50:
+            (r / 'proc' / 'device-tree' / self.V50_NODE.format(dt_v50)).mkdir(parents=True, exist_ok=True)
         return r
 
     def test_mu300_device(self):
@@ -37,6 +47,42 @@ class Device(ShellTest):
                 out = self.script(shell, BIN / 'mu300-device', MU300_SYSROOT=r).stdout.strip()
                 self.assertEqual(out, want, (device, dt))
             (r / 'run' / 'mu300' / 'device').unlink(missing_ok=True)
+
+    def test_mu300_device_three_boards(self):
+        """The V50 (FINDINGS 95) is told by its AW9523B node whatever the label says; the F50 and the U30 Air answer
+        exactly as before, with or without a label, and neither is ever taken for a V50 nor a V50 for either."""
+        cases = [
+            # an F50: its device tree, labelled or not, or labelled v50 by mistake (a backup moved over)
+            (None, dict(dt=True), 'f50'), ('f50', dict(dt=True), 'f50'), ('v50', dict(dt=True), 'f50'),
+            # a U30 Air: the charger policy service; a v50 label is not believed, and the AW9523B never makes a V50
+            # of a U30 Air
+            (None, dict(dt_u30=True), 'u30air'), ('u30air', dict(dt_u30=True), 'u30air'),
+            ('v50', dict(dt_u30=True), 'u30air'), (None, dict(dt_u30=True, dt_v50='ap-ahb'), 'u30air'),
+            ('u30air', dict(dt_v50='ap-ahb'), 'u30air'), ('f50', dict(dt_u30=True, dt_v50='ap-ahb'), 'f50'),
+            # a V50: unlabelled (a mainline boot image of before), labelled v50, or labelled f50 by an older
+            # installer; under either parent name
+            (None, dict(dt_v50='ap-ahb'), 'v50'), (None, dict(dt_v50='soc:ap-ahb'), 'v50'),
+            ('v50', dict(dt_v50='ap-ahb'), 'v50'), ('f50', dict(dt_v50='ap-ahb'), 'v50'),
+            ('f50', dict(dt_v50='soc:ap-ahb'), 'v50'),
+            # no device tree at all (not on a device): the label
+            ('v50', {}, 'v50'), ('f50', {}, 'f50'), ('u30air', {}, 'u30air'), (None, {}, 'f50'),
+        ]
+        for device, dt, want in cases:
+            r = self.root(device, **dt)
+            for shell in self.each_shell():
+                out = self.script(shell, BIN / 'mu300-device', MU300_SYSROOT=r).stdout.strip()
+                self.assertEqual(out, want, (device, dt))
+            (r / 'run' / 'mu300' / 'device').unlink(missing_ok=True)
+
+    def test_device_rule_is_the_one_of_init(self):
+        """boot/init and mu300-device decide alike: the v50 block is the same code in both."""
+        init = (TOP / 'boot' / 'init').read_text()
+        dev = (BIN / 'mu300-device').read_text()
+        a = re.search(r'\nv50_dt\(\) \{.*?\n\}\nv50_fix\(\) \{.*?\n\}\n', init, re.S)
+        b = re.search(r'\nv50_dt\(\) \{.*?\n\}\nv50_fix\(\) \{.*?\n\}\n', dev, re.S)
+        self.assertIsNotNone(a)
+        self.assertIsNotNone(b)
+        self.assertEqual(a.group(0), b.group(0))
 
     def test_json_for_programs(self):
         """mu300-device --json: the contract of docs/ADB-INTERFACE.md, one line a JSON parser takes."""
@@ -100,7 +146,8 @@ class Device(ShellTest):
             self.assertEqual(('openwrt-luci', 'unknown'), (got['system'], got['release']))
 
     def test_lan_ip(self):
-        for device, want in (('f50', '192.168.77.1'), ('u30air', '192.168.78.1'), ('', '192.168.77.1')):
+        for device, want in (('f50', '192.168.77.1'), ('u30air', '192.168.78.1'), ('', '192.168.77.1'),
+                             ('v50', '192.168.79.1')):
             r = self.root(device)
             for shell in self.each_shell():
                 out = self.script(shell, BIN / 'mu300-lan-ip', MU300_SYSROOT=r, MU300_BIN=BIN).stdout.strip()
@@ -2188,6 +2235,55 @@ class Led(ShellTest):
                 lit = 'net_blue' if device == 'u30air' else 'sc27xx:blue'
                 self.assertEqual(self.state()[lit], '255', device)
 
+    def test_v50(self):
+        # the ZTE V50 (FINDINGS 95, kano's mapping): the AW9523B's NET1 lamp is the network LED (blue 4G, white 5G,
+        # red without service), its Wi-Fi lamp white on 5 GHz and blue on 2.4 GHz, NET2 stays dark; the PMIC's LEDs,
+        # which its device tree has as well, are never written, and the lamps go no brighter than the driver allows
+        lamps = {f'v50:{l}:{c}': 80 if c == 'white' else 120 for l in ('net1', 'net2', 'wifi') for c in ('white', 'blue', 'red')}
+        for n, m in lamps.items():
+            d = self.root / 'sys' / 'class' / 'leds' / n
+            d.mkdir(parents=True, exist_ok=True)
+            (d / 'max_brightness').write_text(f'{m}\n')
+            (d / 'trigger').write_text('[none] timer\n')
+
+        def lamp_state():
+            return {n: (self.root / 'sys/class/leds' / n / 'brightness').read_text().strip() for n in lamps}
+        net1 = ('v50:net1:red', 'v50:net1:white', 'v50:net1:blue')
+        for shell in self.each_shell():
+            self.reset()
+            for n in lamps:
+                (self.root / 'sys/class/leds' / n / 'brightness').write_text('0\n')
+            for args in (('power', 'on'), ('wake',), ('sleep',), ('power', 'off')):
+                self.assertEqual(self.led(shell, 'v50', *args).returncode, 0, args)   # no power LED, no timeout
+            self.assertEqual(set(lamp_state().values()), {'0'})
+            for args, lit in ((('data', 'error'), 'v50:net1:red'), (('data', 'on'), 'v50:net1:blue'),
+                              (('data', '5g'), 'v50:net1:white'), (('data', 'on'), 'v50:net1:blue'),
+                              (('data', 'error'), 'v50:net1:red')):
+                self.assertEqual(self.led(shell, 'v50', *args).returncode, 0, args)
+                s = lamp_state()
+                self.assertEqual({n: s[n] for n in net1}, {n: str(lamps[n]) if n == lit else '0' for n in net1}, args)
+            self.led(shell, 'v50', 'data', 'off')
+            self.assertEqual({lamp_state()[n] for n in net1}, {'0'})
+            for iw, lit, dark in (('channel 36 (5180 MHz), width: 80 MHz', 'v50:wifi:white', 'v50:wifi:blue'),
+                                  ('channel 6 (2437 MHz), width: 20 MHz', 'v50:wifi:blue', 'v50:wifi:white')):
+                (self.tmp / 'iw.out').write_text(f'Interface wlan0\n\tssid V50\n\ttype AP\n\t{iw}\n')
+                self.led(shell, 'v50', 'wifi', 'on')
+                s = lamp_state()
+                self.assertEqual((s[lit], s[dark]), (str(lamps[lit]), '0'), iw)
+            self.led(shell, 'v50', 'wifi', 'off')
+            self.assertEqual((lamp_state()['v50:wifi:white'], lamp_state()['v50:wifi:blue']), ('0', '0'))
+            self.assertEqual({lamp_state()[f'v50:net2:{c}'] for c in ('white', 'blue', 'red')}, {'0'})
+            self.assertEqual(set(self.state().values()), {'0'})   # no PMIC LED, nothing of the F50's or U30 Air's
+        # a V50 under 5.4 (no driver: no lamps): every LED is skipped, the PMIC's are still not written
+        for n in lamps:
+            shutil.rmtree(self.root / 'sys' / 'class' / 'leds' / n)
+        for shell in self.each_shell():
+            self.reset()
+            for args in (('data', 'on'), ('data', 'error'), ('wifi', 'on'), ('alarm', 'on')):
+                self.assertEqual(self.led(shell, 'v50', *args).returncode, 0, args)
+            self.led(shell, 'v50', 'alarm', 'off')
+            self.assertEqual(set(self.state().values()), {'0'})
+
     def test_f50(self):
         # ZTE's F50 (read from its Android): one network light on the PMIC's RGB LED - blue on 4G, white (the green
         # channel) on 5G, red without service - and the Wi-Fi light on the keypad backlight sink, at ZTE's 48
@@ -3092,6 +3188,11 @@ elif op.startswith('w'):
             r = self.nfc(shell, 'wifi', device='f50')
             self.assertEqual(r.returncode, 1)
             self.assertIn('only the U30 Air', r.stderr)
+            # the V50's tag is on another reset line: not driven, and the tag is not touched (FINDINGS 95)
+            r = self.nfc(shell, 'wifi', device='v50')
+            self.assertEqual(r.returncode, 1)
+            self.assertIn("the V50's NFC tag is not supported yet", r.stderr)
+            self.assertEqual(self.writes(), [])
             self.assertEqual(self.nfc(shell, 'blink').returncode, 2)
             self.assertEqual(self.nfc(shell, 'url').returncode, 1)
             # no capability container: not written
@@ -3646,3 +3747,53 @@ class EarlyRecorder(ShellTest):
                         p.write_text(data)
                 r = self.sh(shell, m.group(1) + '\necho "$PART"', MU300_RUN=run, MU300_CMDLINE_SRC=cmdline)
                 self.assertEqual((r.stdout.strip(), r.stderr), (f'boot_{want}', ''), (v, cl))
+
+
+class EarlyRecorderNode(ShellTest):
+    """early-recorder writes only into the block device: on OpenWrt procd replaces /dev while it runs, and a dd in that
+    moment made /dev/mmcblk0p38 a plain file in RAM that took every later write, mu300-update's boot image too (U30 Air,
+    FINDINGS 86)."""
+
+    def run_node(self, shell, logdev, sysdir):
+        import re
+        m = re.search(r'# --- node begin\n(.*?)# --- node end', (BIN / 'early-recorder').read_text(), re.S)
+        self.assertIsNotNone(m, 'early-recorder has no node block')
+        log = self.tmp / 'mknod.log'
+        log.unlink(missing_ok=True)
+        code = (f'mknod() {{ echo "$*" >> "{log}"; }}\nLOGDEV="{logdev}" LOGSYS="{sysdir}"\n' + m.group(1)
+                + '\nif node_ok; then echo ok; else echo no; fi')
+        r = self.sh(shell, code)
+        return r.stdout.strip(), (log.read_text() if log.exists() else '')
+
+    def test_node(self):
+        sysdir = self.tmp / 'sys-p38'
+        sysdir.mkdir()
+        dev = self.tmp / 'mmcblk0p38'
+        for shell in self.each_shell():
+            (sysdir / 'dev').write_text('259:30\n')
+            # missing: no write (hotplug makes it), nothing made here
+            self.assertEqual(self.run_node(shell, dev, sysdir), ('no', ''))
+            self.assertFalse(dev.exists())
+            # a plain file in its place: removed, and the node made from sysfs (here mknod is a stand-in)
+            dev.write_bytes(b'x' * 100)
+            self.assertEqual(self.run_node(shell, dev, sysdir), ('no', f'-m 600 {dev} b 259 30\n'))
+            self.assertFalse(dev.exists())
+            # a link, or a sysfs entry that is not MAJOR:MINOR: left alone
+            dev.symlink_to(self.tmp / 'elsewhere')
+            self.assertEqual(self.run_node(shell, dev, sysdir), ('no', ''))
+            self.assertTrue(dev.is_symlink())
+            dev.unlink()
+            dev.write_bytes(b'x')
+            for bad in ('', 'junk\n', '259:\n'):
+                (sysdir / 'dev').write_text(bad)
+                self.assertEqual(self.run_node(shell, dev, sysdir), ('no', ''), bad)
+                self.assertTrue(dev.exists(), bad)
+            dev.unlink()
+
+    def test_every_write_is_behind_node_ok(self):
+        s = (BIN / 'early-recorder').read_text()
+        writes = [line for line in s.splitlines() if 'of="$LOGDEV"' in line]
+        self.assertEqual(len(writes), 1)
+        self.assertTrue(writes[0].strip().startswith('node_ok && dd '), writes[0])
+        after = s[s.index('node_ok && dd '):]
+        self.assertIn('\n    node_ok\n', after)

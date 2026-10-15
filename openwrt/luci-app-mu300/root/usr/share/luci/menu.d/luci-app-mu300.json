@@ -101,6 +101,12 @@
 		"action": { "type": "view", "path": "mu300/device" },
 		"depends": { "acl": [ "luci-app-mu300" ] }
 	},
+	"admin/system/mu300-update": {
+		"title": "Update",
+		"order": 14,
+		"action": { "type": "view", "path": "mu300/update" },
+		"depends": { "acl": [ "luci-app-mu300" ] }
+	},
 	"admin/system/mu300-languages": {
 		"title": "Languages",
 		"order": 15,
