@@ -5,8 +5,12 @@
                                               put the user state below into the installed system ROOT (KIND: ubuntu
                                               or openwrt) and write down what was planted, with every attribute
                                               (--no-mount: nothing is mounted at the planted mount point; --live: on
-                                              a device that is to be used afterwards - no password is changed and
-                                              no package is made up in the package manager's records)
+                                              a device that is to be used afterwards - no password is changed, no
+                                              package is made up in the package manager's records, and nothing the
+                                              device needs is replaced: the hotspot's and the VPN's settings, the
+                                              SSH host keys and login settings, root's crontab and the cron service,
+                                              the panel's saved locks get a line of the user's or are written down
+                                              as they are)
   experiment.py verify ROOT OUT.json [--old-version TAG]
                                               the same paths in the updated system ROOT: one line per item,
                                               "id<TAB>status<TAB>what<TAB>detail"
@@ -94,6 +98,13 @@ class Plant:
         with open(self.p(rel), 'ab') as f:
             f.write(extra)
         return rel
+
+    def mine(self, rel, data, mode=0o644, uid=0, gid=0, comment=b'\n# the user\'s line\n'):
+        """REL with the user's content; with --live a file the device already has only gets a comment line added
+        (its settings stay what they were: the device is used afterwards)"""
+        if self.live and os.path.isfile(self.p(rel)):
+            return self.modify(rel, comment)
+        return self.write(rel, data, mode, uid, gid)
 
     def have(self, *rels):
         """the first of RELS the image has"""
@@ -196,9 +207,9 @@ class Plant:
             self.write('mnt/usb/on-the-stick', 'x')
             self.item('mounted', 'what is on that other filesystem (it stays there)', ['mnt/usb/on-the-stick'],
                       judge='design')
-        self.write('etc/mu300/hotspot.conf', 'SSID=mine\nPSK=secret12\n', 0o600)
-        self.write('etc/mu300/vpn.conf', 'ENABLE=0\n', 0o600)
-        self.item('mu300conf', '/etc/mu300: hotspot and VPN settings', ['etc/mu300/hotspot.conf', 'etc/mu300/vpn.conf'])
+        self.item('mu300conf', '/etc/mu300: hotspot and VPN settings',
+                  [self.mine('etc/mu300/hotspot.conf', 'SSID=mine\nPSK=secret12\n', 0o600),
+                   self.mine('etc/mu300/vpn.conf', 'ENABLE=0\n', 0o600)])
         self.item('hosts', '/etc/hosts with a line added (an image file, modified)', [self.modify('etc/hosts')])
         self.item('project-edit', 'one of the project\'s own programs, edited (/opt/mu300/bin/mu300-wifi): the new '
                                   'release\'s must win, the edited one must not be thrown away',
@@ -245,9 +256,13 @@ class Plant:
         self.item('opt', "software in /opt (/opt/myapp, a program and its data)",
                   [self.write('opt/myapp/bin/run', '#!/bin/sh\n', 0o755), self.write('opt/myapp/data/state.db', os.urandom(4096))])
         self.item('sshd_config', '/etc/ssh/sshd_config with a line changed', [self.modify('etc/ssh/sshd_config', b'\nPermitRootLogin no\n')])
-        self.item('sshd_config.d', '/etc/ssh/sshd_config.d/10-user.conf', [self.write('etc/ssh/sshd_config.d/10-user.conf', 'PasswordAuthentication no\n')])
-        self.item('hostkeys', 'SSH host keys', [self.write('etc/ssh/ssh_host_ed25519_key', 'PRIVATE\n', 0o600),
-                                                self.write('etc/ssh/ssh_host_ed25519_key.pub', 'ssh-ed25519 AAAA\n')])
+        # (--live: a setting that changes nothing, and the device's own host keys written down as they are)
+        self.item('sshd_config.d', '/etc/ssh/sshd_config.d/10-user.conf',
+                  [self.write('etc/ssh/sshd_config.d/10-user.conf', 'LoginGraceTime 2m\n' if self.live else 'PasswordAuthentication no\n')])
+        keys = ['etc/ssh/ssh_host_ed25519_key', 'etc/ssh/ssh_host_ed25519_key.pub']
+        if not (self.live and all(os.path.isfile(self.p(k)) for k in keys)):
+            keys = [self.write(keys[0], 'PRIVATE\n', 0o600), self.write(keys[1], 'ssh-ed25519 AAAA\n')]
+        self.item('hostkeys', 'SSH host keys', keys)
         self.mkdir('home/ubuntu/.ssh', 0o700, U, U)
         self.item('authorized_keys', '~/.ssh/authorized_keys (0600, in a 0700 directory)',
                   [self.write('home/ubuntu/.ssh/authorized_keys', 'ssh-ed25519 AAAA me\n', 0o600, U, U), 'home/ubuntu/.ssh'])
@@ -356,7 +371,7 @@ class Plant:
         self.item('www-modified', "/www/index.html edited (an image file outside /etc: the release's must win, the "
                                   'edit must not be thrown away)', [self.modify('www/index.html', b'<!-- mine -->\n')], judge='project')
         self.mkdir('etc/crontabs')
-        self.item('crontab', '/etc/crontabs/root', [self.write('etc/crontabs/root', '0 4 * * * reboot\n', 0o600)])
+        self.item('crontab', '/etc/crontabs/root', [self.mine('etc/crontabs/root', '0 4 * * * reboot\n', 0o600, comment=b'# the user\'s line\n')])
         self.item('hotplug', '/etc/hotplug.d/iface/99-user', [self.write('etc/hotplug.d/iface/99-user', '#!/bin/sh\n', 0o755)])
         self.item('sysctl.conf', '/etc/sysctl.conf with a line added (an image file, modified)', [self.modify('etc/sysctl.conf', b'net.ipv4.ip_forward=1\n')])
         self.item('sysctl.d', '/etc/sysctl.d/99-user.conf', [self.write('etc/sysctl.d/99-user.conf', 'vm.swappiness=10\n')])
@@ -365,9 +380,11 @@ class Plant:
         os.symlink('../init.d/myservice', self.p('etc/rc.d/S99myservice'))
         self.item('init.d', "an init script of the user's own, enabled (/etc/init.d/myservice, /etc/rc.d/S99myservice)",
                   [init, 'etc/rc.d/S99myservice'])
+        hk = 'etc/dropbear/dropbear_ed25519_host_key'
+        if not (self.live and os.path.isfile(self.p(hk))):
+            hk = self.write(hk, os.urandom(83), 0o600)
         self.item('dropbear', 'SSH host key and authorized_keys (/etc/dropbear)',
-                  [self.write('etc/dropbear/dropbear_ed25519_host_key', os.urandom(83), 0o600),
-                   self.write('etc/dropbear/authorized_keys', 'ssh-ed25519 AAAA me\n', 0o600)])
+                  [hk, self.mine('etc/dropbear/authorized_keys', 'ssh-ed25519 AAAA me\n', 0o600, comment=b'# the user\'s line\n')])
         self.item('root-home', "root's files (/root/.ash_history, /root/notes.txt, /root/.ssh/id_ed25519)",
                   [self.write('root/.ash_history', 'ls\n', 0o600), self.write('root/notes.txt', 'notes\n'),
                    self.write('root/.ssh/id_ed25519', 'KEY\n', 0o600)])
@@ -381,7 +398,14 @@ class Plant:
         self.item('uci-defaults', '/etc/uci-defaults/99-user, /etc/profile.d/x.sh',
                   [self.write('etc/uci-defaults/99-user', 'exit 0\n'), self.write('etc/profile.d/x.sh', 'export X=1\n')])
         self.item('sysupgrade.conf', '/etc/sysupgrade.conf with a line added', [self.modify('etc/sysupgrade.conf', b'/etc/myapp/\n')])
-        self.item('unisoc', "the panel's saved locks (/etc/unisoc-modem/lock-state.d)", [self.write('etc/unisoc-modem/lock-state.d/lte_band', '3,7\n')])
+        # (--live: the locks the device has are written down as they are; a lock of the test's own would be applied
+        # at the next boot)
+        locks = 'etc/unisoc-modem/lock-state.d'
+        saved = sorted(os.listdir(self.p(locks))) if self.live and os.path.isdir(self.p(locks)) else []
+        if saved:
+            self.item('unisoc', "the panel's saved locks (/etc/unisoc-modem/lock-state.d)", [locks + '/' + n for n in saved])
+        elif not self.live:
+            self.item('unisoc', "the panel's saved locks (/etc/unisoc-modem/lock-state.d)", [self.write(locks + '/lte_band', '3,7\n')])
         f = 'etc/banner'
         os.remove(self.p(f))
         self.item('etc-deleted', '/etc/banner deleted (an image file the user removed)', [f], judge='absent')
@@ -400,7 +424,8 @@ class Plant:
         self.item('modules', 'a kernel module built by hand (/lib/modules/6.99.0/hand.ko) and firmware (/lib/firmware/user.bin)',
                   [self.write('lib/modules/6.99.0/hand.ko', os.urandom(4096)), self.write('lib/firmware/user.bin', os.urandom(512))])
         self.item('cert', '/etc/ssl/certs/user.crt', [self.write('etc/ssl/certs/user.crt', 'CERT\n')])
-        link = self.have('etc/rc.d/S50cron', 'etc/rc.d/S11sysctl')
+        # (--live: no image service is disabled: cron runs the device's own jobs, sysctl its forwarding)
+        link = None if self.live else self.have('etc/rc.d/S50cron', 'etc/rc.d/S11sysctl')
         if link:
             os.remove(self.p(link))
             self.item('service-disabled', f'an image service the user disabled (/{link} removed)', [link], judge='absent')
