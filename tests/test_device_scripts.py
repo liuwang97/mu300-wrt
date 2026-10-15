@@ -1802,7 +1802,7 @@ class DataRoaming(ShellTest):
     def test_the_hold_is_said_once_in_the_journal(self):
         """By hand the line goes to stderr too; under systemd stderr is the journal, where logger already put it
         (seen on an F50: the same line twice)."""
-        r, _ = self.dial(self.ROAM, T_ROAM0='0')
+        r, _ = self.dial(self.ROAM, T_ROAM0='0', JOURNAL_STREAM='')   # (a CI runner under systemd has one)
         self.assertIn('registered on a roaming network and data roaming is off', r.stderr)
         self.held.unlink()
         r, _ = self.dial(self.ROAM, T_ROAM0='0', JOURNAL_STREAM='8:12345')
