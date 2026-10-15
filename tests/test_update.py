@@ -392,8 +392,12 @@ class Update(UpdateBase):
         new = self.bundle('new.tar.gz', 'f50 u30air\n')
         old = self.bundle('old.tar.gz', None)
         f50only = self.bundle('f50.tar.gz', 'f50\n')
+        withv50 = self.bundle('v50.tar.gz', 'f50 u30air v50\n')
+        # the ZTE V50 (FINDINGS 95): only a kernel that names it (a mainline one with its LED driver), never the 5.4
+        # bundle nor one from before; the F50 and the U30 Air take that bundle as any other
         cases = [('f50', new, True), ('f50', old, True), ('u30air', new, True), ('u30air', old, False),
-                 ('u30air', f50only, False)]
+                 ('u30air', f50only, False), ('v50', withv50, True), ('v50', new, False), ('v50', old, False),
+                 ('v50', f50only, False), ('f50', withv50, True), ('u30air', withv50, True)]
         for shell in self.each_shell():
             for dev, b, ok in cases:
                 self.device(dev)

@@ -197,7 +197,13 @@ describe() {  # describe HEX: the NDEF message in words (hex on stdin as words)
 }
 
 # --- main -------------------------------------------------------------------------------------------------------
-[ "$(${MU300_BIN:-/opt/mu300/bin}/mu300-device)" = u30air ] || die "only the U30 Air has an NFC tag"
+# the V50 has a tag of the same kind on another reset line (kano: I2C2 0x57, GPIO189; the U30 Air's is GPIO190): not
+# driven here yet (FINDINGS 95)
+case $(${MU300_BIN:-/opt/mu300/bin}/mu300-device) in
+    u30air) ;;
+    v50) die "the V50's NFC tag is not supported yet (docs/FINDINGS.md 95)" ;;
+    *) die "only the U30 Air has an NFC tag" ;;
+esac
 case ${1:-show} in
     show|status|wifi|url|text|clear|sync|on|off) ;;
     *) sed -n '2,10s/^# \{0,1\}//p' "$0" >&2; exit 2 ;;

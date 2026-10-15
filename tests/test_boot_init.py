@@ -473,6 +473,45 @@ class Slot(ShellTest):
             self.assertIn(f'write {self.tmp}/etc/misc-bc-slot-a.bin', log)
 
 
+class Device(ShellTest):
+    """Which device init takes (the device block) and the USB subnet that goes with it: the F50 and the U30 Air as
+    before, labelled or not; the V50 (FINDINGS 95) by its AW9523B node, also under an older installer's f50 label,
+    on 192.168.79.x; nothing ever takes one board for another."""
+    def decide(self, shell, label=None, u30=False, v50=None, dt=True):
+        d = self.tmp / 'dt'
+        shutil.rmtree(d, ignore_errors=True)
+        if dt:
+            (d / 'soc' / 'ap-ahb' / 'i2c@2270000').mkdir(parents=True)
+        if u30:
+            (d / 'charger_policy_service').mkdir(parents=True)
+        if v50:
+            (d / 'soc' / v50 / 'i2c@2270000' / 'aw9523b_led@5b').mkdir(parents=True)
+        f = self.tmp / 'mu300-device'
+        f.unlink(missing_ok=True)
+        if label is not None:
+            f.write_text(label + '\n')
+        m = re.search(r'# --- device begin\n(.*?)# --- device end\n', INIT, re.S)
+        self.assertIsNotNone(m, 'boot/init has no device block')
+        net = re.search(r'^case \$DEVICE in u30air\) NET=.*$', INIT, re.M)
+        self.assertIsNotNone(net)
+        code = m.group(1) + net.group(0) + '\necho "$DEVICE $NET"'
+        return self.sh(shell, code, MU300_DT=str(d), MU300_DEVICE_FILE=str(f)).stdout.strip()
+
+    def test_three_boards(self):
+        cases = [
+            (dict(), 'f50 192.168.77'), (dict(label='f50'), 'f50 192.168.77'), (dict(label='v50'), 'f50 192.168.77'),
+            (dict(u30=True), 'u30air 192.168.78'), (dict(label='u30air', u30=True), 'u30air 192.168.78'),
+            (dict(label='u30air'), 'u30air 192.168.78'), (dict(label='f50', u30=True), 'f50 192.168.77'),
+            (dict(label='v50', u30=True), 'u30air 192.168.78'), (dict(u30=True, v50='ap-ahb'), 'u30air 192.168.78'),
+            (dict(v50='ap-ahb'), 'v50 192.168.79'), (dict(v50='soc:ap-ahb'), 'v50 192.168.79'),
+            (dict(label='v50', v50='ap-ahb'), 'v50 192.168.79'), (dict(label='f50', v50='ap-ahb'), 'v50 192.168.79'),
+            (dict(label='v50', dt=False), 'v50 192.168.79'), (dict(dt=False), 'f50 192.168.77'),
+        ]
+        for shell in self.each_shell():
+            for kw, want in cases:
+                self.assertEqual(self.decide(shell, **kw), want, kw)
+
+
 class UsbId(ShellTest):
     """The gadget's MACs and USB serial: the device's serial number and its eMMC's, so that two devices restored from
     one backup (the same androidboot.serialno) still differ on one computer."""
