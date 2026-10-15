@@ -12,6 +12,8 @@ from pathlib import Path
 from helpers import BIN, TOP, shells
 
 OPENWRT = TOP / 'openwrt' / 'overlay'
+# the PowerShell the installers are made of: the rules of Windows PowerShell 5.1 hold for every file of it
+POWERSHELL = ('install.ps1', 'uninstall.ps1', 'tools/answers.ps1', 'tools/gui-launch.ps1')
 LUCI_OVERLAY = TOP / 'openwrt' / 'luci-overlay'
 
 
@@ -128,7 +130,7 @@ class Rules(unittest.TestCase):
         # Windows PowerShell 5.1 drops the double quotes inside an argument to a native program: `tr -d "\000"`
         # reached the device as tr -d \000 ("delete the character 0"), and every empty region was "not empty".
         # A command for the device (SuDo, adb shell) may therefore contain no `" and no "".
-        for name in ('install.ps1', 'uninstall.ps1'):
+        for name in POWERSHELL:
             for n, line in enumerate((TOP / name).read_text().splitlines(), 1):
                 code = line.split('#', 1)[0] if not line.lstrip().startswith('#') else ''
                 if re.search(r'\bSuDo(ToFile)?\s+"|adb shell\s+"', code) and ('`"' in code or '""' in code):
@@ -143,7 +145,7 @@ class Rules(unittest.TestCase):
 
     def test_powershell_scripts_are_ascii(self):
         # Windows PowerShell 5.1 reads a file without a BOM as ANSI: non-ASCII text in the script is garbled
-        for name in ('install.ps1', 'uninstall.ps1'):
+        for name in POWERSHELL + ('tests/installer.Tests.ps1', 'tests/answers.Tests.ps1'):
             data = (TOP / name).read_bytes()
             bad = [i for i, b in enumerate(data) if b > 127]
             self.assertFalse(bad, f'{name}: non-ASCII byte at offset {bad[:1]}')
@@ -151,7 +153,7 @@ class Rules(unittest.TestCase):
     def test_windows_pushes_text_with_lf(self):
         # a CRLF clone pushed its scripts as they were and Android's sh ran none of them (issue #7): the Windows
         # installers send text files through PushUnix, never a plain adb push
-        for name in ('install.ps1', 'uninstall.ps1'):
+        for name in POWERSHELL:
             for n, line in enumerate((TOP / name).read_text().splitlines(), 1):
                 if 'adb push' in line:
                     self.assertNotRegex(line, r'\.(sh|prop)\b|mu300-linux"|\$f"', f'{name}:{n}')
@@ -369,6 +371,33 @@ class Rules(unittest.TestCase):
         # and the build stops when the edit did not apply
         self.assertIn("'MU300: the eMMC is mmc0', 'WRITE_ONCE(sdhci_sprd_emmc_added, true);'", port)
 
+    def test_mainline_v50_bits_bind_only_on_a_v50(self):
+        """The ZTE V50 (FINDINGS 95, kano's port): its LED driver binds only ZTE's AW9523B node, its eMMC host is kept
+        awake only where that node is, and a kernel bundle names the V50 only when it has the driver. The F50's and
+        the U30 Air's device trees have no such node: there the kernel does what it did."""
+        cfg = (TOP / 'upstream' / 'mu300-mainline.config').read_text()
+        self.assertRegex(cfg, r'(?m)^CONFIG_LEDS_AW9523B=y$')
+        port = (TOP / 'upstream' / 'port' / 'install.py').read_text()
+        self.assertIn("('LEDS_AW9523B', 'leds-aw9523b',", port)
+        drv = (TOP / 'upstream' / 'port' / 'drivers' / 'leds' / 'leds-aw9523b.c').read_text()
+        self.assertEqual(re.findall(r'\.compatible = "([^"]+)"', drv), ['awinic,aw9523b'])
+        for s in ('"aw9523b,led_enable", &enabled) || enabled != 1', '"aw9523b,gpio_enable", &gpio_enabled) || gpio_enabled',
+                  'if (ret != AW_ID_VALUE) {', '"v50:net1:white"', '"v50:wifi:blue"', 'devm_add_action_or_reset(dev, aw9523b_off, chip)'):
+            self.assertIn(s, drv)
+        p17 = (TOP / 'upstream' / 'patches' / '0017-mmc-sdhci-sprd-V50-eMMC-host-kept-awake.patch').read_text()
+        for s in ('+\tif (mmc_card_is_removable(host->mmc))\n+\t\treturn false;',
+                  '+\tnp = of_find_compatible_node(NULL, NULL, "awinic,aw9523b");',
+                  '+\tif (sdhci_sprd_keep_awake(host)) {\n+\t\tpm_runtime_forbid(&pdev->dev);',
+                  '+\tif (sdhci_sprd_keep_awake(host))\n+\t\tpm_runtime_allow(&pdev->dev);\n \tpm_runtime_put_noidle(&pdev->dev);'):
+            self.assertIn(s, p17)
+        # the patch touches nothing else
+        self.assertEqual(re.findall(r'(?m)^\+\+\+ (\S+)', p17), ['b/drivers/mmc/host/sdhci-sprd.c'])
+        bundle = (TOP / 'upstream' / 'make-bundle.sh').read_text()
+        self.assertIn("if grep -qx 'CONFIG_LEDS_AW9523B=y' \"$UO/kernel.config\"; then\n    echo \"f50 u30air v50\"", bundle)
+        self.assertIn('else\n    echo "f50 u30air" > "$W/b/devices"', bundle)
+        # the 5.4 bundle does not name it
+        self.assertIn('echo "f50 u30air" > "$K/devices"', (TOP / 'tools' / 'make-release.sh').read_text())
+
     def test_mainline_drives_the_u30_air_charger(self):
         # Without a driver the charger kept what Android left in it: charging off (CHG_CONFIG 0), 500 mA input, and
         # the battery drained while plugged in. bq256xx drives the vendor node "ti,bq2560x_chg" now.
@@ -430,6 +459,12 @@ class Rules(unittest.TestCase):
                   'info->bq256xx_set_ichg = sgm41513_set_ichg_curr;', 'info->bq256xx_set_iterm = sgm41513_set_term_curr;',
                   'info->bq256xx_set_iprechg = sgm41513_set_prechrg_curr;'):
             self.assertIn(s, p15)
+        # ... but only on a board with a battery (the U30 Air's charger policy service): the F50 has a charger at
+        # 0x1a too, and bound and told to charge it reset the board in a loop on a router's port (issue #225)
+        p16 = (TOP / 'upstream' / 'patches' / '0016-power-bq256xx-SGM41513-only-with-a-battery.patch').read_text()
+        for s in ('of_find_node_by_path("/charger_policy_service")', 'of_node_put(np);',
+                  '+\t\tif (part < 0 && client->addr != SGM41513_I2C_ADDR && battery) {'):
+            self.assertIn(s, p16)
         # the PMIC's charger detection reads the UMP9620's own register (0x239c), not the SC2730's (0x1b9c), and a
         # tree prepared with the old one is corrected
         self.assertIn(r"#define SPRD_UMP9620_CHG_DET\t\t0x239c", port)
@@ -499,10 +534,13 @@ class Rules(unittest.TestCase):
                 # an option given twice must say the same thing both times: merge_config takes the last one silently
                 self.assertEqual(opts.setdefault(k, v), v, k)
         for k in ('CONFIG_VIRTUALIZATION', 'CONFIG_KVM', 'CONFIG_MODULES', 'CONFIG_WIREGUARD', 'CONFIG_NET_SCH_CAKE',
-                  'CONFIG_TUN', 'CONFIG_NF_FLOW_TABLE', 'CONFIG_IKCONFIG_PROC'):
+                  'CONFIG_TUN', 'CONFIG_NF_FLOW_TABLE', 'CONFIG_IKCONFIG_PROC', 'CONFIG_CHECKPOINT_RESTORE',
+                  'CONFIG_MPTCP', 'CONFIG_IP_MROUTE', 'CONFIG_NFSD_V4', 'CONFIG_FS_ENCRYPTION'):
             self.assertEqual(opts.get(k), 'y', k)
         for k in ('CONFIG_VHOST_NET', 'CONFIG_NTFS3_FS', 'CONFIG_DM_CRYPT', 'CONFIG_NET_SCH_HTB', 'CONFIG_USB_NET_CDC_MBIM',
-                  'CONFIG_XFRM_USER', 'CONFIG_BRIDGE_NETFILTER', 'CONFIG_BINFMT_MISC', 'CONFIG_SND_USB_AUDIO'):
+                  'CONFIG_XFRM_USER', 'CONFIG_BRIDGE_NETFILTER', 'CONFIG_BINFMT_MISC', 'CONFIG_SND_USB_AUDIO',
+                  'CONFIG_VIRTIO_FS', 'CONFIG_VHOST_SCSI', 'CONFIG_9P_FS', 'CONFIG_DM_INTEGRITY',
+                  'CONFIG_MPLS_ROUTING', 'CONFIG_USBIP_HOST', 'CONFIG_USB_VIDEO_CLASS'):
             self.assertEqual(opts.get(k), 'm', k)
         mods = (TOP / 'upstream' / 'build-modules.sh').read_text()
         self.assertIn('INSTALL_MOD_STRIP=1 DEPMOD=true modules_install', mods)

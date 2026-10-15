@@ -358,3 +358,441 @@ update:         {1} {2} -> {3}: everything you added to it or changed in it is k
                 packages you installed are installed again at its first boot; what could not stay in place is listed in /etc/mu300/update-report	                你安装的软件包会在首次启动时重新安装；无法留在原位的内容列在 /etc/mu300/update-report 中
                 {1} is the OLDER release (MU300_DOWNGRADE=yes): one from before v2026.10.26 keeps only settings, users and home directories	                {1} 是更旧的版本（MU300_DOWNGRADE=yes）：v2026.10.26 之前的版本只保留设置、用户和主目录
 not touched:    {1}and the extras (the VPN module) stay as they are	不改动：        {1}以及扩展（VPN 模块）保持原样
+A beta is out: {1}, a prerelease for testing, newer than the newest full release {2}.	有新的测试版：{1}，这是供测试的预发布版本，比最新的正式版 {2} 更新。
+Install the beta {1} instead of {2}? (yes/no)	安装测试版 {1} 而不是 {2} 吗？(是/否)
+News and new releases are on the Telegram channel of the project, you can follow it: {1}	新闻和新版本发布在本项目的 Telegram 频道，欢迎关注：{1}
+Copying the boot image of Android (boot_{1}) and the first block of misc to this computer	正在把 Android 的启动镜像（boot_{1}）和 misc 的第一个块复制到这台电脑
+the copy of boot_{1} is not what the device holds; do not rely on it	boot_{1} 的副本与设备上的内容不一致；请不要依赖它
+Not copied, here or during an installation: the NV and calibration partitions (IMEI, radio calibration). The installer never reads or writes them.	这里和安装过程中都不会复制：NV 与校准分区（IMEI、射频校准）。安装程序从不读取或写入它们。
+Nothing was written to the device.	没有向设备写入任何内容。
+Installing on the device	正在设备上安装
+this question has no variable and cannot be answered without a terminal: {1}	这个问题没有对应的变量，没有终端就无法回答：{1}
+no answer to the question "{1}": set {2} (nothing is asked and nothing is assumed in answers mode)	问题“{1}”没有答案：请设置 {2}（应答模式下不提问，也不做任何假设）
+no answer to the question "{1}" on standard input ({2}=@stdin)	标准输入中没有问题“{1}”的答案（{2}=@stdin）
+the answer in {1} was not accepted: {2}	{1} 中的答案未被接受：{2}
+Use the graphical installer (a window with the same steps)? (yes/no)	使用图形安装程序吗（一个包含相同步骤的窗口）？(是/否)
+Python {1} is there ({2}), but without tkinter, which the window is made with.	已找到 Python {1}（{2}），但缺少窗口所需的 tkinter。
+Python {1} is there ({2}), but the window needs Python 3.8 or newer.	已找到 Python {1}（{2}），但窗口需要 Python 3.8 或更新版本。
+No Python 3 was found for the window.	没有找到可用于窗口的 Python 3。
+This command installs it:	这条命令可以安装它：
+Run that command now? (yes/no)	现在运行这条命令吗？(是/否)
+the command failed	命令执行失败
+Install tkinter for it with the package tool of this system (the package is usually called python3-tk).	请用本系统的包管理工具为它安装 tkinter（软件包通常叫 python3-tk）。
+Get it from python.org, or with Homebrew: brew install python-tk	可从 python.org 获取，或用 Homebrew 安装：brew install python-tk
+Continuing with the text installer.	继续使用文本安装程序。
+Starting the graphical installer (Python {1})	正在启动图形安装程序（Python {1}）
+The graphical installer could not start or stopped with an error ({1}).	图形安装程序无法启动，或因错误而停止（{1}）。
+The installers of python.org and winget include it: this one was set up without "tcl/tk and IDLE".	python.org 和 winget 的安装包都包含它：这个 Python 安装时没有勾选“tcl/tk and IDLE”。
+Type the path of a python.exe, or winget to install Python 3.12 with winget, or no for the text installer	请输入 python.exe 的路径；输入 winget 用 winget 安装 Python 3.12；输入 no 使用文本安装程序
+winget is not on this computer. Python is at https://www.python.org/downloads/ (leave "tcl/tk and IDLE" ticked).	这台电脑上没有 winget。Python 可在 https://www.python.org/downloads/ 下载（请保持勾选“tcl/tk and IDLE”）。
+That is not a Python 3.8 or newer with tkinter.	这不是带有 tkinter 的 Python 3.8 或更新版本。
+Python {1} is there ({2}), but its Tk is older than 8.6 and cannot draw the window.	已找到 Python {1}（{2}），但它的 Tk 版本低于 8.6，无法绘制窗口。
+Storage	存储
+What to install	安装内容
+Backup	备份
+Install	安装
+Finish	完成
+Manage	管理
+Help	帮助
+MU300 Linux installer	MU300 Linux 安装程序
+No device	没有设备
+Connect it by USB	请用 USB 连接设备
+The device	设备
+Plug the device into this computer with a USB cable, booted into Android with USB debugging on.	请用 USB 数据线把设备接到这台电脑上，设备需已启动进入 Android 并开启 USB 调试。
+What it is	设备概况
+Root	Root
+Bootloader	引导加载程序
+MU300 Linux	MU300 Linux
+Internal storage (eMMC)	内部存储（eMMC）
+Linux lives in space that belongs to no partition. Android, its data and the partition table stay as they are.	Linux 放在不属于任何分区的空间里。Android、它的数据和分区表都保持原样。
+SD card	SD 卡
+Where should Linux go?	Linux 要放在哪里？
+No free space: making room (experimental)	没有空闲空间：腾出空间（实验性）
+Systems	系统
+One or both. With both, mu300-os switches between them later.	可选一个或两个。两个都装时，之后可用 mu300-os 在它们之间切换。
+The full distribution with apt; about 500 MiB of RAM in use. Needs {1}.	带 apt 的完整发行版；约占用 500 MiB 内存。需要 {1}。
+24.04 LTS: the longest tested, supported until 2029	24.04 LTS：测试时间最长，支持到 2029 年
+26.04 LTS: the newest, supported until 2031; needs kernel 6.18 or 7.2	26.04 LTS：最新版本，支持到 2031 年；需要 6.18 或 7.2 内核
+A router system with the LuCI web interface; about 140 MiB of RAM in use. Needs {1}.	带 LuCI 网页界面的路由器系统；约占用 140 MiB 内存。需要 {1}。
+The standard LuCI web interface	标准的 LuCI 网页界面
+With the MU300 control panel: dashboard, cellular locks, SMS, AT terminal, USB modes	搭配 MU300 控制面板：仪表盘、蜂窝锁定、短信、AT 终端、USB 模式
+It can be changed later on the device: sudo mu300-update kernel 5.4|6.18|7.2	之后可以在设备上更改：sudo mu300-update kernel 5.4|6.18|7.2
+5.4  —  the vendor kernel: the longest tested, everything this project supports	5.4  —  厂商内核：测试时间最长，支持本项目的全部功能
+6.18  —  mainline Linux, long-term release: newer drivers and security fixes; no USB-C video output yet	6.18  —  主线 Linux，长期支持版本：更新的驱动和安全修复；暂不支持 USB-C 视频输出
+7.2  —  the newest stable mainline Linux; tested less than 6.18	7.2  —  最新的稳定版主线 Linux；测试比 6.18 少
+Release	版本
+Starting	启动
+Start Linux by default instead of Android	默认启动 Linux 而不是 Android
+If Linux does not finish starting several times in a row, the device goes back to Android by itself. That is also your way back with no computer at hand: cut the power while it is starting, that many times.	如果 Linux 连续多次没有完成启动，设备会自动回到 Android。这也是手边没有电脑时回到 Android 的方法：在启动过程中断电，连续这么多次。
+Extras	扩展组件
+Copy Android's hotspot name and password to Linux	将 Android 的热点名称和密码复制到 Linux
+Your Wi-Fi keeps its name and password. Kept as it is when updating.	你的 Wi-Fi 保持原来的名称和密码。更新时保持原样。
+The Mali GPU (OpenCL) userspace, about 90 MiB	Mali GPU（OpenCL）用户空间组件，约 90 MiB
+The VPN module (about 40 MB more to download, 120 MB on the device)	VPN 模块（约多下载 40 MB，在设备上占用 120 MB）
+mu300-vpn with Xray and sing-box. A system being replaced whose VPN is on needs it: the installer stops otherwise. It can be added later: sudo mu300-extra install vpn	mu300-vpn，含 Xray 和 sing-box。如果被替换的系统中 VPN 已开启，就需要它：否则安装程序会停止。也可以稍后添加：sudo mu300-extra install vpn
+The web panel for Ubuntu (about 24 MB more to download, 50 MB on the device)	Ubuntu 的网页面板（约多下载 24 MB，在设备上占用 50 MB）
+Cockpit with an MU300 page, on the LAN only. It can be added later: sudo mu300-extra install panel	带 MU300 页面的 Cockpit，仅限局域网。也可以稍后添加：sudo mu300-extra install panel
+Let only this computer in over adb to Linux	只允许这台电脑通过 adb 进入 Linux
+adb to Linux over USB is on and lets every computer in: a root shell without a password for anyone who plugs in a cable. With this, only this computer's adb key (~/.android/adbkey.pub) is let in.	通过 USB 到 Linux 的 adb 默认开启，并且允许任何电脑接入：任何插上数据线的人都能得到无需密码的 root shell。勾选后，只允许这台电脑的 adb 密钥（~/.android/adbkey.pub）接入。
+Password	密码
+For the user "ubuntu" (Ubuntu) and for "root" (OpenWrt): the login over SSH and the web interface. At least 6 characters.	用于用户 "ubuntu"（Ubuntu）和 "root"（OpenWrt）：通过 SSH 和网页界面登录时使用。至少 6 个字符。
+What is copied to this computer before anything is written	写入任何内容之前复制到这台电脑的内容
+Where it goes	保存位置
+The log is on the clipboard (masked).	日志已复制到剪贴板（已打码）。
+Stop	停止
+Stop the run? Nothing has been written to the device yet; what was downloaded is kept for the next time.	要停止本次运行吗？尚未向设备写入任何内容；已下载的文件会保留到下次使用。
+SHA256 verified: {1}	SHA256 校验通过：{1}
+The installer's summary	安装程序的摘要
+How to reach it	如何访问
+On the computer the device is plugged into, over its USB network:	在设备所连接的电脑上，通过它的 USB 网络：
+If it does not start	如果无法启动
+To go back yourself with no computer at hand: cut the power while it is starting, that many times in a row.	手边没有电脑时自行回到 Android：在启动过程中断电，连续这么多次。
+From Linux: sudo mu300-next-boot android && sudo reboot. From Android (with Magisk): su -c mu300-linux starts Linux again.	在 Linux 中：sudo mu300-next-boot android && sudo reboot。在 Android 中（需 Magisk）：su -c mu300-linux 可再次启动 Linux。
+The Manage page does both over the cable, and uninstalls.	“管理”页面可以通过数据线完成这两项操作，也可以卸载。
+News	新闻
+Uninstall MU300 Linux	卸载 MU300 Linux
+How an installation goes	安装过程
+Device: plug it in. The window looks at it without writing anything: the model, root, the bootloader, the storage.	设备：接上设备。窗口只查看而不写入任何内容：型号、root、引导加载程序、存储。
+Storage: Linux goes into free space behind Android's partitions (about 32 GiB on the 64 GB device) or onto an SD card (F50). Android and its data stay.	存储：Linux 放在 Android 分区之后的空闲空间里（64 GB 设备上约 32 GiB），或放在 SD 卡上（F50）。Android 及其数据保持不变。
+What to install: Ubuntu, OpenWrt or both, the kernel, a password.	安装内容：Ubuntu、OpenWrt 或两者，内核，密码。
+Install: the release is downloaded and verified, the device's own Wi-Fi and modem files are added, and the installer shows exactly what it will write. Only after your yes is anything written.	安装：下载并校验版本，加入设备自身的 Wi-Fi 和调制解调器文件，然后安装程序会准确显示它将写入的内容。只有在你确认之后才会写入。
+The device restarts into Linux. If Linux ever fails to start, it goes back to Android by itself.	设备重启进入 Linux。如果 Linux 无法启动，设备会自动回到 Android。
+Read more	了解更多
+Something went wrong?	出了问题？
+A diagnostics report holds what an issue needs: this computer's system and tools, the devices adb lists, what the last check found and the log. Serial numbers, IMEI, IMSI, ICCID, passwords and your home folder's name are masked in it. Read it before you post it.	诊断报告包含提交问题所需的信息：这台电脑的系统和工具、adb 列出的设备、上次检查的结果以及日志。其中的序列号、IMEI、IMSI、ICCID、密码和你的主文件夹名称都已打码。发布之前请先读一遍。
+About	关于
+The report is on the clipboard (masked).	报告已复制到剪贴板（已打码）。
+Continue	继续
+adb not found	未找到 adb
+Android platform-tools are needed	需要 Android platform-tools
+The installer is writing to the device. Wait until it has finished: closing now could leave a write half done.	安装程序正在向设备写入。请等待它完成：现在关闭可能会使写入只完成一半。
+What to check	需要检查的事项
+The device is switched on and has finished starting Android.	设备已开机，并且 Android 已启动完成。
+USB debugging is switched on in Android's developer options.	已在 Android 的开发者选项中开启 USB 调试。
+The cable carries data (some only charge), and it is plugged into this computer directly.	数据线可以传输数据（有些只能充电），并且直接插在这台电脑上。
+On Windows the device needs its adb driver; on Linux your user may need a udev rule for it.	在 Windows 上设备需要 adb 驱动；在 Linux 上你的用户可能需要为它添加 udev 规则。
+Model	型号
+Android build	Android 版本号
+Serial number	序列号
+Runs	当前运行
+USB debugging	USB 调试
+authorised for this computer	已授权这台电脑
+eMMC	eMMC
+Partitions end at	分区结束于
+Free after them	其后的空闲空间
+Internal storage: {1}	内部存储：{1}
+Making room	腾出空间
+Type ERASE (in capitals) to allow it. Nothing was changed.	输入 ERASE（大写）以允许此操作。未做任何更改。
+Shrink userdata to give Linux {1} GiB? Everything in Android is erased, and this cannot be undone.	缩小 userdata，给 Linux 分配 {1} GiB 吗？Android 中的所有数据都会被清除，且无法撤销。
+The newest release: {1}	最新版本：{1}
+The newest release (the installer looks it up)	最新版本（由安装程序查询）
+The beta: {1}	测试版：{1}
+Linux is already installed there	那里已经安装了 Linux
+Copy the boot chain of Android's slot to the Linux slot where they differ	当两个槽位的启动链不同时，将 Android 槽位的启动链复制到 Linux 槽位
+uboot, sml, teecfg, trustos and vbmeta, backed up first; needed after an Android update. Switch it off only if you know why.	uboot、sml、teecfg、trustos 和 vbmeta，会先备份；Android 更新后需要这样做。除非你清楚原因，否则不要关闭。
+Continue although the device is not recognised as an F50 or U30 Air	即使设备未被识别为 F50 或 U30 Air 也继续
+The installer treats it as an F50 and leaves its boot chain alone. On another device this can do damage.	安装程序会把它当作 F50，并且不改动它的启动链。在其他设备上这可能造成损坏。
+Android's boot image (boot_{1})	Android 的启动镜像（boot_{1}）
+The Linux boot image is built from it, and it is what the uninstaller puts back. Compared with the device's by its SHA256.	Linux 启动镜像由它构建，卸载程序恢复的也是它。通过 SHA256 与设备上的镜像比对。
+The first block of misc	misc 的第一个块
+The 32 bytes that say which slot starts are in it.	决定从哪个槽位启动的 32 字节就在其中。
+The boot chain of the Linux slot	Linux 槽位的启动链
+Only when the installer has to replace it (after an Android update): uboot, sml, teecfg, trustos, vbmeta - into work/bootchain, and onto the Linux filesystem.	仅在安装程序必须替换它时（Android 更新之后）：uboot、sml、teecfg、trustos、vbmeta——保存到 work/bootchain，并保存到 Linux 文件系统中。
+The partition table	分区表
+Only on the make-room path, before it is rewritten: into work/gpt.	仅在腾出空间时，在重写之前：保存到 work/gpt。
+Back up now	立即备份
+Backed up	已备份
+Ready	就绪
+This is what you chose. The installer downloads and prepares everything first, then shows exactly what it will write and waits for your yes: nothing is written to the device before that.	这是你的选择。安装程序会先下载并准备好一切，然后准确显示它将写入的内容并等待你确认：在此之前不会向设备写入任何内容。
+Show the installer's own output	显示安装程序自身的输出
+Serial numbers, IMEI, IMSI, ICCID and passwords are masked in the log, on the screen and in what is copied or saved.	在日志、屏幕以及复制或保存的内容中，序列号、IMEI、IMSI、ICCID 和密码都已打码。
+Save the log	保存日志
+SHA256 mismatch: {1}	SHA256 不匹配：{1}
+Stopping is safe now: nothing has been written to the device.	现在停止是安全的：尚未向设备写入任何内容。
+The installer is writing to the device. This cannot be stopped: wait until it has finished.	安装程序正在向设备写入。此过程无法停止：请等待它完成。
+Cancel: write nothing	取消：不写入任何内容
+Linux is installed. The device is restarting into {1}; give it about a minute.	Linux 已安装。设备正在重启进入 {1}；请等待约一分钟。
+Address	地址
+User and password	用户和密码
+{1}, with the password you chose	{1}，密码是你设置的那个
+Nothing to do: after {1} failed starts in a row the device goes back to Android by itself.	无需操作：连续 {1} 次启动失败后，设备会自动回到 Android。
+Android is still the default: Linux starts once, and a start that fails returns to Android.	Android 仍是默认系统：Linux 只启动一次，启动失败就会回到 Android。
+A terminal was opened: {1}	已打开终端：{1}
+Secure: overwrite all of it and verify (a few minutes; your files are really gone)	安全：全部覆盖并校验（需要几分钟；你的文件将彻底消失）
+Quick: erase only the filesystem headers (the files stay readable on the flash)	快速：只清除文件系统头部（文件在闪存上仍然可以读出）
+Keep: leave it in place (it just never starts again)	保留：留在原处（只是不会再启动）
+The wiki: installation, choosing a system, kernels, troubleshooting	Wiki：安装、选择系统、内核、故障排除
+Releases	版本发布
+Report a problem (issues)	报告问题（issues）
+The illustrated guide	图文指南
+Save a diagnostics report	保存诊断报告
+Back	返回
+{1} adb devices	{1} 个 adb 设备
+Choose the F50 or U30 Air	请选择 F50 或 U30 Air
+A run is in progress. Stop it and close?	正在运行中。要停止并关闭吗？
+Choose a device	选择设备
+No adb device	没有 adb 设备
+adb was not found on this computer. It is part of Android's platform-tools: unzip them next to this project (a folder called platform-tools) or put them on PATH, then press Refresh.	这台电脑上没有找到 adb。它是 Android platform-tools 的一部分：请把它解压到本项目旁边（文件夹名为 platform-tools），或加入 PATH，然后按“刷新”。
+No device answers on adb yet.	还没有设备响应 adb。
+More than one adb device is attached, or none of them says it is an F50 or U30 Air. Choose the device above: the installer never picks one by itself, so that it cannot write to a phone or tablet next to it.	连接了多个 adb 设备，或者其中没有一个表明自己是 F50 或 U30 Air。请在上方选择设备：安装程序绝不会自行挑选，以免写入旁边的手机或平板。
+The device has not authorised this computer for USB debugging. Confirm "Allow USB debugging?" on the device, then press Refresh. If no question appears there: unplug the cable and plug it in again, or use "Revoke USB debugging authorisations" in the developer options and try once more.	设备尚未授权这台电脑进行 USB 调试。请在设备上确认“允许 USB 调试吗？”，然后按“刷新”。如果设备上没有出现提示：请拔下数据线再重新插上，或在开发者选项中使用“撤销 USB 调试授权”后再试一次。
+adb sees the device but cannot talk to it ({1}). Unplug the cable, plug it in again and press Refresh.	adb 能看到设备，但无法与它通信（{1}）。请拔下数据线再重新插上，然后按“刷新”。
+This device is running MU300 Linux. Installing, updating from a computer and uninstalling happen from Android: send it back to Android on the Manage page, then come back here.	此设备正在运行 MU300 Linux。安装、从电脑更新和卸载都需在 Android 中进行：请在“管理”页面让它回到 Android，然后再回到这里。
+Android (slot {1}); Linux goes to slot {2}	Android（槽位 {1}）；Linux 将安装到槽位 {2}
+Android	Android
+This does not look like a ZTE F50/MU300 or U30 Air. The installer is made for those two; on anything else it can do damage. (Advanced, on the "What to install" page: continue anyway.)	这看起来不是 ZTE F50/MU300 或 U30 Air。安装程序是为这两款设备制作的；在其他设备上可能造成损坏。（高级选项，在“安装内容”页面：仍然继续。）
+The check stopped: {1}	检查已停止：{1}
+Check again	重新检查
+Check the device	检查设备
+The device has not been checked yet. Go back to "Device".	设备尚未检查。请回到“设备”页面。
+{1}, used by MU300 Linux	{1}，已被 MU300 Linux 使用
+Is it empty?	是否为空？
+Boot chain	启动链
+SD card: {1}	SD 卡：{1}
+SD card: none	SD 卡：无
+The card will be formatted and everything on it is erased. Type ERASE to allow that:	这张卡将被格式化，卡上的所有内容都会被清除。输入 ERASE 以允许此操作：
+Give a number of GiB, like 4 or 2.5.	请输入 GiB 数，例如 4 或 2.5。
+Not with Ubuntu 26.04: its programs use system calls that 5.4 does not have.	不能与 Ubuntu 26.04 搭配：它的程序使用了 5.4 没有的系统调用。
+A prerelease for testing, newer than {1}. It has not been run on a device as long as a full release.	供测试的预发布版本，比 {1} 更新。它在设备上运行的时间不如正式版长。
+Never copied by the installer or this window: the NV and calibration partitions (IMEI, radio calibration). The installer does not read or write them. A copy of those for safekeeping is a separate tool, tools/backup-device.sh, that you run yourself - keep its output private.	安装程序和此窗口都不会复制：NV 与校准分区（IMEI、射频校准）。安装程序不会读取或写入它们。如需留存这些分区的副本，请自行运行单独的工具 tools/backup-device.sh——其输出请妥善保密。
+Start	开始
+Saved: {1}	已保存：{1}
+Starting…	正在启动…
+{1} % of the whole run	整个过程的 {1} %
+about {1} left	大约还剩 {1}
+Nothing has been installed in this session yet.	本次会话中尚未安装任何内容。
+Note	注意
+The U30 Air uses 192.168.78.1; the F50 uses 192.168.77.1.	U30 Air 使用 192.168.78.1；F50 使用 192.168.77.1。
+No terminal could be opened from here. The command is on the clipboard: {1}	无法从这里打开终端。命令已复制到剪贴板：{1}
+No device of this project answers. Connect it and look at the Device page of "Install" for what is missing.	没有本项目的设备响应。请连接设备，并在“安装”的“设备”页面查看缺少什么。
+The device is in Android	设备处于 Android
+Remove Linux	移除 Linux
+Android becomes the only thing that starts again, the Linux slot gets Android's own boot image back, and the Linux filesystem is erased if you say so. Android, its data and the other partitions are not touched.	Android 重新成为唯一启动的系统，Linux 槽位恢复为 Android 自己的启动镜像，如果你同意，Linux 文件系统也会被清除。不会触碰 Android、它的数据和其他分区。
+The device is running MU300 Linux	设备正在运行 MU300 Linux
+Do something on it	在设备上执行操作
+Type ERASE (in capitals) to allow growing userdata, or switch that off.	输入 ERASE（大写）以允许扩大 userdata，或关闭该选项。
+Ubuntu and OpenWrt for the ZTE F50 and U30 Air	适用于 ZTE F50 和 U30 Air 的 Ubuntu 与 OpenWrt
+Language	语言
+Continue to the installation	继续安装
+Not authorised	未授权
+Allow USB debugging on the device	请在设备上允许 USB 调试
+Refresh	刷新
+Show serial numbers	显示序列号
+Open the Manage page	打开“管理”页面
+not recognised	未识别
+unlocked	已解锁
+locked	已锁定
+Checked: {1}	已检查：{1}
+The check only reads: nothing is written to the device.	检查只读取数据：不会向设备写入任何内容。
+{1} sectors	{1} 个扇区
+sector {1}	扇区 {1}
+yes: 16 of 16 samples are empty	是：16 个样本全部为空
+no: {1} of 16 samples hold data	否：16 个样本中有 {1} 个含有数据
+holds a MU300 Linux installation (mu300sd)	已有 MU300 Linux 安装（mu300sd）
+holds another Linux (ext4) filesystem: never formatted	有另一个 Linux（ext4）文件系统：绝不会被格式化
+no Linux filesystem on it	卡上没有 Linux 文件系统
+The card holds an installation, which the device starts first: an installation to internal storage does not start while that card is in the slot. Type internal to install there anyway:	这张卡上已有一个安装，设备会先启动它：只要这张卡还在卡槽中，安装到内部存储的系统就不会启动。输入 internal 以仍然安装到内部存储：
+The free space is not empty: something may be using it. Installing overwrites it. Type overwrite to use it anyway:	空闲空间并非空白：可能有其他东西正在使用它。安装将覆盖它。输入 overwrite 以仍然使用它：
+userdata fills the whole disk, so there is nowhere to put Linux. The installer can shrink userdata - only userdata, the last partition, so nothing else moves. This rewrites the partition table and ERASES everything in Android: apps, photos, accounts, settings. It is experimental.	userdata 占满了整个磁盘，没有地方放 Linux。安装程序可以缩小 userdata——只动 userdata，它是最后一个分区，其他分区不会移动。这会重写分区表并清除 Android 中的所有数据：应用、照片、账户、设置。此功能为实验性功能。
+GiB for Linux:	分配给 Linux 的 GiB 数：
+Type ERASE:	输入 ERASE：
+Make room now	立即腾出空间
+Afterwards the device restarts, Android sets its data up again (a few minutes), and the check finds the free space.	之后设备会重启，Android 重新建立数据分区（需要几分钟），然后检查就能找到空闲空间。
+It goes to the installer in a private file that is deleted when the run ends; only its hash reaches the device. It is never written to a log.	密码通过一个私有文件传给安装程序，运行结束时该文件即被删除；只有它的哈希会到达设备。密码绝不会写入日志。
+Advanced	高级
+There is not enough free space for this installation in that folder. Free some, or set MU300_WORK to a folder on another disk before starting.	该文件夹中的空闲空间不足以完成本次安装。请腾出一些空间，或在开始前把 MU300_WORK 设为另一块磁盘上的文件夹。
+Open the folder	打开文件夹
+The installation makes the same copies by itself. "Back up now" only makes them, and writes nothing to the device.	安装过程会自行制作同样的副本。“立即备份”只制作这些副本，不会向设备写入任何内容。
+The backup stopped: {1}	备份已停止：{1}
+Copy the log	复制日志
+Save the log…	保存日志…
+Text	文本
+Room was made. The device restarts and Android sets its data up again (a few minutes). Then press Refresh on the Device page.	空间已腾出。设备会重启，Android 重新建立数据分区（需要几分钟）。之后请在“设备”页面按“刷新”。
+Open an SSH session	打开 SSH 会话
+The Wi-Fi network the device broadcasts is its hotspot. Then try: sudo mu300-toolkit	设备广播的 Wi-Fi 网络就是它的热点。然后可以试试：sudo mu300-toolkit
+News and new releases are on the project's Telegram channel; you can follow it.	新闻和新版本发布在本项目的 Telegram 频道，欢迎关注。
+Follow on Telegram	在 Telegram 上关注
+Over adb these run at once, as root, with the project's own commands.	通过 adb，这些操作会以 root 身份用本项目自己的命令立即执行。
+adb does not reach this Linux: type these on the device (SSH).	adb 无法连接这个 Linux：请在设备上（通过 SSH）输入这些命令。
+It stopped: {1}	已停止：{1}
+The uninstaller looks at the device first, shows what it will do and waits for your yes.	卸载程序会先查看设备，显示它将要做的事并等待你确认。
+The Linux filesystem on the internal storage	内部存储上的 Linux 文件系统
+The Linux filesystem on the SD card (asked only when a card holds one)	SD 卡上的 Linux 文件系统（仅当卡上有时才询问）
+Erase it (its first 64 MiB are overwritten; no other card is ever touched)	清除它（覆盖其前 64 MiB；绝不会触碰其他卡）
+Keep the card as it is	卡保持原样
+Cancel	取消
+Save a diagnostics report…	保存诊断报告…
+Copy it	复制
+Not ready	未就绪
+Without root nothing can be installed: the installer reads the partition table, copies the device's own Wi-Fi and modem files, and writes the Linux filesystem and the boot image of the unused slot - all of that through su. If the device is rooted, open its root manager and allow "shell" (adb), then press Refresh.	没有 root 就无法安装任何内容：安装程序要读取分区表、复制设备自身的 Wi-Fi 和调制解调器文件，并写入 Linux 文件系统和未使用槽位的启动镜像——这一切都通过 su 完成。如果设备已 root，请打开它的 root 管理器并允许 "shell"（adb），然后按“刷新”。
+Verified boot state	验证启动状态
+A card with a MU300 Linux filesystem always starts first. The boot image starts any card labelled mu300sd, so whoever holds the device can start a system of their own from a card.	带有 MU300 Linux 文件系统的卡总是最先启动。启动镜像会启动任何标签为 mu300sd 的卡，因此任何拿到设备的人都可以用一张卡启动自己的系统。
+userdata fills the disk, and there is not enough to share: {1} in all, of which Android needs at least {2}. Nothing can be changed here; an SD card is the other way (F50).	userdata 占满了磁盘，且可分配的空间不足：总共 {1}，其中 Android 至少需要 {2}。这里无法做任何更改；另一种办法是使用 SD 卡（F50）。
+userdata now	当前 userdata
+To share	可分配空间
+Linux can get	Linux 可获得
+{1} to {2}	{1} 到 {2}
+Android keeps at least	Android 至少保留
+Which one starts first?	先启动哪个系统？
+This place has {1}: both systems together need {2}.	此位置有 {1}：两个系统一共需要 {2}。
+GitHub did not answer (offline, or its rate limit): the installer will look the release up itself.	GitHub 没有响应（离线，或触发了速率限制）：安装程序将自行查询版本。
+To download: {1} in {2} files (checked against the release's SHA256 sums).	需要下载：{2} 个文件，共 {1}（会与该版本的 SHA256 校验和核对）。
+Failed starts in a row before Android (1-6):	回到 Android 前允许的连续启动失败次数（1-6）：
+Update: reinstall the systems and keep settings and data	更新：重新安装系统，保留设置和数据
+/etc/mu300, users and home directories, SSH host keys, OpenWrt's UCI configuration and the hotspot settings are kept.	会保留 /etc/mu300、用户和主目录、SSH 主机密钥、OpenWrt 的 UCI 配置以及热点设置。
+Wipe: erase the Linux filesystem and install from scratch	清除：清除 Linux 文件系统并全新安装
+Another release, by its tag:	其他版本，按标签指定：
+A mirror with the release's files (URL):	存放该版本文件的镜像站（URL）：
+Parallel connections per download:	每个下载的并行连接数：
+Another place for the VPN module (URL):	VPN 模块的其他下载地址（URL）：
+A copy of the VPN module on this computer:	这台电脑上的 VPN 模块副本：
+Folder	文件夹
+Free on that disk	该磁盘的空闲空间
+Needed, about	大约需要
+{1} (the downloads, the device's files, the images built from them)	{1}（下载的文件、设备的文件、由它们构建的镜像）
+It takes about 15 minutes, most of it the download.	大约需要 15 分钟，大部分时间用于下载。
+The Linux filesystem may be partly written, but the boot image and the 32 bytes that arm Linux were not: the device still starts Android.	Linux 文件系统可能已部分写入，但启动镜像和启用 Linux 的 32 字节尚未写入：设备仍会启动 Android。
+The boot image step had begun; the log says what failed. If Linux does not start, the device goes back to Android by itself.	启动镜像步骤已经开始；日志中说明了失败的原因。如果 Linux 无法启动，设备会自动回到 Android。
+This is what will be done	将要执行的操作
+This is what will be written	将要写入的内容
+The uninstaller has looked at the device. It waits for your yes; nothing has been changed yet.	卸载程序已查看设备。它正在等待你确认；尚未做任何更改。
+Everything is downloaded, verified and built. The installer shows its own summary and waits for your yes; nothing has been written to the device yet.	一切都已下载、校验并构建完成。安装程序会显示自己的摘要并等待你确认；尚未向设备写入任何内容。
+If Linux does not start, the device goes back to Android by itself.	如果 Linux 无法启动，设备会自动回到 Android。
+Uninstall now	立即卸载
+Install now	立即安装
+Open {1}	打开 {1}
+macOS does not set up a network interface it has never seen while the screen is locked: keep the Mac unlocked the first time.	屏幕锁定时，macOS 不会配置它从未见过的网络接口：第一次使用时请保持 Mac 处于解锁状态。
+not checked yet	尚未检查
+Start Linux	启动 Linux
+Uninstall…	卸载…
+System	系统
+back to Android	回到 Android
+look for an update	检查更新
+another kernel	其他内核
+the other system	另一个系统
+Linux was removed. The device starts stock Android; restart it once to check.	Linux 已移除。设备将启动原厂 Android；请重启一次以确认。
+Give the space behind userdata back to it (experimental; ERASES Android's data)	把 userdata 之后的空间还给它（实验性；会清除 Android 的数据）
+Only for a device where this installer shrank userdata to make room. On the usual 64 GB device the space behind userdata is free from the factory: leave this off.	仅适用于曾由此安装程序缩小 userdata 来腾出空间的设备。在常见的 64 GB 设备上，userdata 之后的空间出厂时就是空闲的：请保持关闭。
+Type ERASE to allow that:	输入 ERASE 以允许此操作：
+This window	此窗口
+drives install.sh / install.ps1 in their answers mode; it installs nothing by itself	以应答模式驱动 install.sh / install.ps1；它本身不安装任何内容
+Project folder	项目文件夹
+running Linux	正在运行 Linux
+Root (su)	Root（su）
+works	可用
+Provided by	提供者
+Card	卡
+On it	卡上内容
+A card is in the slot, but it is smaller than 700 MiB and is not used.	卡槽中有一张卡，但它小于 700 MiB，不会使用。
+Boot image	启动镜像
+misc	misc
+Back to the choices	返回选项
+installed	已安装
+not found	未找到
+To update or to install another system or kernel from this computer, use "Install": with Linux already there it offers to update and keeps your settings.	如要从这台电脑更新，或安装其他系统或内核，请使用“安装”：已有 Linux 时，它会提供更新选项并保留你的设置。
+adb to Linux	Linux adb
+Open the web interface	打开网页界面
+Back to Android	回到 Android
+Restart	重启
+Look for an update	检查更新
+Update now	立即更新
+Switch to it	切换到它
+Done.	完成。
+running Linux at {1}	正在运行 Linux，地址 {1}
+does not work	不可用
+No SD card in the device (the U30 Air has no slot). Put a card in while the device is switched off.	设备中没有 SD 卡（U30 Air 没有卡槽）。请在设备关机时插入卡。
+The U30 Air has no SD card slot.	U30 Air 没有 SD 卡槽。
+The folder does not exist yet.	该文件夹尚不存在。
+Try again	重试
+Start Linux now? The device restarts. This uses the on-device switch the installer put there (a Magisk module).	现在启动 Linux 吗？设备将重启。这会使用安装程序装在设备上的设备端切换工具（Magisk 模块）。
+Kernel:	内核：
+not an F50 or U30 Air	不是 F50 或 U30 Air
+checking…	正在检查…
+adb lists it, but it does not answer this computer (its adb takes authorised keys only, or it is still starting). Use SSH below.	adb 列出了它，但它不响应这台电脑（它的 adb 只接受已授权的密钥，或者它仍在启动）。请使用下面的 SSH。
+It answers on SSH at {1}, without adb. The commands below are run by you, in a terminal, with the device's password.	它在 {1} 上响应 SSH，但没有 adb。下面的命令需要你自己在终端中用设备密码执行。
+Restart the device into Android?	重启设备进入 Android 吗？
+Restart the device?	重启设备吗？
+Download and install the newest release on the device? Settings and data are kept; it takes a few minutes and needs the device online.	在设备上下载并安装最新版本吗？设置和数据会保留；需要几分钟，并且设备需要联网。
+Install kernel {1} on the device? It restarts into it afterwards only when you restart it.	在设备上安装内核 {1} 吗？之后只有在你重启设备时才会进入新内核。
+in Android	处于 Android
+open to every computer	对所有电脑开放
+authorised keys only	仅限已授权的密钥
+in Android, checked	处于 Android，已检查
+in Android, check failed	处于 Android，检查失败
+Stopped by the user.	已被用户停止。
+OpenWrt with the MU300 control panel	OpenWrt 搭配 MU300 控制面板
+Check the computer and the device	检查电脑和设备
+Find the place for Linux	查找 Linux 的安装位置
+Take the choices	读取所选项
+Read the device's own files	读取设备自身的文件
+Download and verify the release	下载并校验版本
+Add the device's files to the images	将设备的文件加入镜像
+Build the boot image	构建启动镜像
+Show the summary and wait for your yes	显示摘要并等待你确认
+Copy to the device	复制到设备
+Install on the device	在设备上安装
+Write the boot image and arm Linux	写入启动镜像并启用 Linux
+Install the on-device switch	安装设备端切换工具
+Reboot into Linux	重启进入 Linux
+Look for the Linux installation	查找 Linux 安装
+Make Android the boot slot	将 Android 设为启动槽位
+Restore the boot image	恢复启动镜像
+Erase the Linux filesystem	清除 Linux 文件系统
+Erase the SD card's installation	清除 SD 卡上的安装
+Look at userdata	查看 userdata
+Remove the on-device switch	移除设备端切换工具
+Done	完成
+Copy the boot image and the start of misc	复制启动镜像和 misc 的开头
+Read the partition table	读取分区表
+Rewrite the partition table and clear Android's data	重写分区表并清除 Android 数据
+Where	位置
+Default boot	默认启动
+Also	另外
+The installer stopped (exit status {1}).	安装程序已停止（退出状态 {1}）。
+userdata (Android apps and data)	userdata（Android 应用和数据）
+The device has no working root (su).	设备没有可用的 root（su）。
+This is not a ZTE F50/MU300 or U30 Air.	这不是 ZTE F50/MU300 或 U30 Air。
+The device has not been checked yet.	设备尚未检查。
+Choose at least one system.	请至少选择一个系统。
+That choice needs about {1} and the place has {2}.	该选择需要约 {1}，而此位置只有 {2}。
+Ubuntu 26.04 needs a mainline kernel: choose 6.18 or 7.2.	Ubuntu 26.04 需要主线内核：请选择 6.18 或 7.2。
+Choose a kernel.	请选择内核。
+Failed boots before Android: a number from 1 to 6.	回到 Android 前允许的失败启动次数：1 到 6 之间的数字。
+The password needs {1} characters or more.	密码至少需要 {1} 个字符。
+The password cannot hold a line end.	密码不能包含换行符。
+the newest release	最新版本
+internal storage	内部存储
+Existing installation	现有安装
+nothing else	无其他内容
+Android (boot, system, vendor, modem)	Android（boot、system、vendor、modem）
+partitions behind userdata	userdata 之后的分区
+Android partitions	Android 分区
+free: Linux goes here	空闲：Linux 放在这里
+unused	未使用
+There is no usable SD card in the device.	设备中没有可用的 SD 卡。
+There is no free space for Linux on the internal storage.	内部存储上没有可供 Linux 使用的空闲空间。
+The SD card holds an installation, and the device always starts that one first. Type internal to install to internal storage anyway.	SD 卡上已有一个安装，设备总是先启动它。输入 internal 以仍然安装到内部存储。
+The free space is not empty. Type overwrite to use it anyway.	空闲空间并非空白。输入 overwrite 以仍然使用它。
+The two passwords differ.	两次输入的密码不一致。
+update: settings and data are kept	更新：保留设置和数据
+wipe: start from scratch	清除：从头开始
+VPN module	VPN 模块
+web panel for Ubuntu	Ubuntu 的网页面板
+GPU userspace	GPU 用户空间组件
+hotspot name and password from Android	来自 Android 的热点名称和密码
+adb to Linux for this computer only	仅限这台电脑的 Linux adb
+The SD card holds another Linux (ext4) filesystem, and the installer never formats one that is not its own.	SD 卡上有另一个 Linux（ext4）文件系统，安装程序绝不会格式化不属于自己的文件系统。
+Type ERASE to allow a new filesystem on the SD card: everything on it is erased.	输入 ERASE 以允许在 SD 卡上新建文件系统：卡上的所有内容都会被清除。
+boots: {1}	启动：{1}
+The bootloader is locked. Did you patch TrustOS? With a patched TrustOS Linux boots on a locked bootloader; without it the device goes back to Android by itself after the install.	引导加载程序已锁定。你给 TrustOS 打过补丁吗？打过补丁的 TrustOS 可以让 Linux 在锁定的引导加载程序上启动；否则安装后设备会自行回到 Android。
+WARNING: {1}	警告：{1}
+not reported	未报告
+This project does not root, unlock or patch devices and gives no help with it: the device has to come that way.	本项目不负责对设备进行 root、解锁或打补丁，也不提供这方面的帮助：设备本身必须已经具备这些条件。
+You need a ZTE F50 / MU300 or U30 Air that is already rooted and able to boot a modified boot image (an unlocked bootloader, or a locked one with a patched TrustOS), USB debugging on, a USB cable, and adb on this computer.	你需要一台已经 root 并且能够启动修改过的启动镜像的 ZTE F50 / MU300 或 U30 Air（引导加载程序已解锁，或者已锁定但 TrustOS 打过补丁）、已开启的 USB 调试、一根 USB 数据线，以及这台电脑上的 adb。
+A hobby project, with no warranty. A wrong step, a power cut or a bad cable can still leave a device unusable. This project does not root, unlock or patch devices and gives no help with it.	这是一个业余项目，不提供任何保证。错误的操作、断电或劣质数据线仍可能导致设备无法使用。本项目不负责对设备进行 root、解锁或打补丁，也不提供这方面的帮助。
+more than one device runs MU300 Linux and adb could not reboot this one: boot Android yourself (on the device: sudo mu300-next-boot android && sudo reboot), or give its address with MU300_IP	有多台设备正在运行 MU300 Linux，且 adb 无法重启这一台：请自行启动 Android（在设备上执行：sudo mu300-next-boot android && sudo reboot），或用 MU300_IP 指定它的地址
+This looks like a ZTE V50 but is not one this installer knows (model V50, device MU3351, platform ums9620): {1}	这看起来是 ZTE V50，但不是本安装程序认识的 V50（型号 V50、设备 MU3351、平台 ums9620）：{1}
+ZTE V50: EXPERIMENTAL, tested by nobody in this project (kano ported it); mainline kernel only; no second SIM, no NFC; USB network 192.168.79.1	ZTE V50：实验性支持，本项目中无人测试过（由 kano 移植）；只能使用主线内核；不支持第二张 SIM 卡和 NFC；USB 网络 192.168.79.1
+The ZTE V50 runs a mainline kernel only: install a prebuilt release (without --build)	ZTE V50 只能使用主线内核：请安装预编译的版本（不加 --build）
+The ZTE V50 runs a mainline kernel only (6.18 or 7.2).	ZTE V50 只能使用主线内核（6.18 或 7.2）。
+The ZTE V50 runs only a mainline kernel of a release that knows it: take the zip for kernel 6.18 or 7.2 (of a newer release if this one has none)	ZTE V50 只能使用认识它的版本中的主线内核：请选择 6.18 或 7.2 内核的 zip（本版本没有时请用更新的版本）
