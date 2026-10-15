@@ -68,6 +68,19 @@ bounded in time, which the pages poll. Uploads go to `/tmp/mu300-vpn-upload` (a 
 `/tmp` before anything reads them. Without the module the pages show a card that installs it
 (`mu300-extra install vpn`). `tests/fixtures/fake-mu300-vpn` stands in for the CLI to try the pages without a device.
 
+## System update
+
+System > Update updates the device from the browser. It is not an updater of its own: every action is one
+`mu300-update` command (`MU300_UPDATE_CMD`), run by the `unisoc-modem/update` adapter as a task of its own that
+outlives the request, the page, the session and rpcd, and whose log (redacted) the page follows; the updater's own
+lock decides whether a run may start. The page reads `mu300-update status` and `releases` (JSON), and for a device
+without internet takes a release's Magisk zip: uploaded through cgi-io to
+`/mnt/mu300-disk/.mu300-upload/update.zip`, the one path the ACL adds, in a directory only root can enter, looked
+at with `mu300-update inspect` and installed with `mu300-update apply --from`. Reads (`update_get`, `update_job`)
+are in the read grant, every change (`update_act`) in the write grant, and each parameter is a fixed word, a release
+tag, a size or a SHA-256. The design, the trust model for uploaded files and release signatures are in
+docs/FINDINGS.md 86. Without `mu300-update` the page says updating is not available.
+
 ## AT adapters
 
 Configure `/etc/config/unisoc_modem`:

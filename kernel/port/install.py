@@ -314,8 +314,10 @@ if missing:
 print('port installed')
 
 # LEDs of the ZTE U30 Air: its white ones on PMIC LDOs (leds-zte-ldo.c), and its red on the PMIC's keypad backlight
-# sink (leds-sc27xx-kpled.c)
+# sink (leds-sc27xx-kpled.c); the ZTE V50's, an AW9523B with ZTE's binding (leds-aw9523b.c, kano's, FINDINGS 95)
 LED_DRIVERS = (
+    ('LEDS_AW9523B', 'leds-aw9523b', 'AW9523B LEDs with the vendor binding (ZTE V50)', 'LEDS_CLASS && I2C && OF',
+     "The ZTE V50's (MU3351) front LEDs: an AW9523B as ZTE's Android device tree describes it."),
     ('LEDS_ZTE_LDO', 'leds-zte-ldo', 'LEDs on PMIC LDOs (ZTE U30 Air)', 'LEDS_CLASS && REGULATOR && OF',
      "The ZTE U30 Air's white LEDs, powered by three PMIC LDOs."),
     ('LEDS_SC27XX_KPLED', 'leds-sc27xx-kpled', 'Spreadtrum/Unisoc PMIC keypad backlight',
