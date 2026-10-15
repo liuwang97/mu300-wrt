@@ -238,7 +238,11 @@ def su(st, cmd, argv):
             log('unknown', argv, 'READ PAST THE END OF THE eMMC: ' + cmd)
             return '', 'read'
         if not there or skip - base not in (1080, 1144, 1028):
-            return '', 'read'
+            # what a device reads where no superblock is: zeros (od prints them; a label is NULs, which tr drops)
+            n = int(m.group(3))
+            if od == 'x1':
+                return ' ' + ' '.join(['00'] * n), 'read'
+            return (' 0' if od == 'u4' else ''), 'read'
         if skip - base == 1080:
             return ' 53 ef', 'read'
         if skip - base == 1144:
