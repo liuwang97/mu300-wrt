@@ -2433,8 +2433,9 @@ class Os(ShellTest):
 
 
 class Led(ShellTest):
-    # the U30 Air's: power is the battery LED's white (the PMIC's green channel), the network LED blue on 4G
-    # (net_blue), white on 5G (zte-ldo0), red without service (keyboard-backlight); the Wi-Fi LED's colours are LDOs too
+    # the U30 Air's: power is the battery LED's white (the PMIC's green channel), the network LED by the SIM in use
+    # (FINDINGS 154): white for slot 0 (zte-ldo0), blue for slot 1 (net_blue), red without service
+    # (keyboard-backlight); the Wi-Fi LED's colours are LDOs too
     LEDS = ['sc27xx:blue', 'sc27xx:red', 'sc27xx:green', 'net_blue', 'keyboard-backlight', 'zte-ldo0', 'zte-ldo1', 'zte-ldo2']
 
     def setUp(self):
@@ -2475,29 +2476,134 @@ class Led(ShellTest):
         return self.script(shell, BIN / 'mu300-led', *args, MU300_SYSROOT=self.root, MU300_BIN=BIN,
                            MU300_LED_CONF=self.conf)
 
+    def sim(self, slot, openwrt=True):
+        """this boot's SIM slot as mu300-atd pins it; slot 1 exists only on OpenWrt (mu300-sim)"""
+        p = self.root / 'run/mu300/sim-slot'
+        if slot is None:
+            p.unlink(missing_ok=True)
+        else:
+            p.write_text(f'{slot}\n')
+        rel = self.root / 'etc/openwrt_release'
+        if openwrt:
+            rel.parent.mkdir(parents=True, exist_ok=True)
+            rel.write_text('DISTRIB_ID=OpenWrt\n')
+        else:
+            rel.unlink(missing_ok=True)
+
     def test_u30air(self):
+        # as ZTE's firmware (FINDINGS 154): the network LED shows WHICH SIM is in use, whatever 4G or 5G
         for shell in self.each_shell():
             self.reset()
+            self.sim(0)
             self.assertEqual(self.led(shell, 'u30air', 'power', 'on').returncode, 0)
             self.assertEqual(self.led(shell, 'u30air', 'data', 'error').returncode, 0)
             s = self.state()
-            self.assertEqual((s['sc27xx:green'], s['keyboard-backlight'], s['net_blue']), ('255', '255', '0'))
-            self.led(shell, 'u30air', 'data', 'on')
-            s = self.state()
-            self.assertEqual((s['keyboard-backlight'], s['net_blue']), ('0', '255'))
-            self.led(shell, 'u30air', 'data', '5g')
-            s = self.state()
-            self.assertEqual((s['keyboard-backlight'], s['net_blue'], s['zte-ldo0']), ('0', '0', '255'))
-            self.led(shell, 'u30air', 'data', 'on')           # back to 4G
-            s = self.state()
-            self.assertEqual((s['net_blue'], s['zte-ldo0']), ('255', '0'))
-            self.led(shell, 'u30air', 'data', '5g')
+            self.assertEqual((s['sc27xx:green'], s['keyboard-backlight'], s['net_blue'], s['zte-ldo0']),
+                             ('255', '255', '0', '0'))
+            for slot, lit, dark in ((0, 'zte-ldo0', 'net_blue'), (1, 'net_blue', 'zte-ldo0')):
+                self.sim(slot)
+                for tech in ('on', '5g', 'on'):
+                    self.led(shell, 'u30air', 'data', tech)
+                    s = self.state()
+                    self.assertEqual((s['keyboard-backlight'], s[lit], s[dark]), ('0', '255', '0'), (slot, tech))
             self.led(shell, 'u30air', 'data', 'error')
             s = self.state()
             self.assertEqual((s['keyboard-backlight'], s['net_blue'], s['zte-ldo0']), ('255', '0', '0'))
             self.led(shell, 'u30air', 'data', 'off')
-            self.assertEqual(self.state()['net_blue'], '0')
+            s = self.state()
+            self.assertEqual((s['keyboard-backlight'], s['net_blue'], s['zte-ldo0']), ('0', '0', '0'))
             self.assertEqual(self.state()['sc27xx:blue'], '0')  # the F50's LED is not touched
+
+    def test_u30air_sim_slot_sources(self):
+        """The slot is /run/mu300/sim-slot, never created here; slot 1 only where it is supported (OpenWrt)."""
+        for shell in self.each_shell():
+            for slot, openwrt, lit in ((None, True, 'zte-ldo0'),     # not pinned yet: slot 0, and no pin made
+                                       ('1', False, 'zte-ldo0'),    # Ubuntu: slot 1 is ignored, every reader uses 0
+                                       ('junk', True, 'zte-ldo0'),
+                                       ('1', True, 'net_blue')):
+                self.reset()
+                self.sim(slot, openwrt)
+                self.led(shell, 'u30air', 'power', 'on')
+                self.led(shell, 'u30air', 'data', 'on')
+                s = self.state()
+                self.assertEqual((s[lit], s['net_blue' if lit == 'zte-ldo0' else 'zte-ldo0']), ('255', '0'),
+                                 (slot, openwrt))
+                if slot is None:
+                    self.assertFalse((self.root / 'run/mu300/sim-slot').exists())
+
+    def test_u30air_live_sim_switch_blinks_the_target(self):
+        """mu300-sim-u30's live switch: the target card's colour blinks (the timer trigger) through the hang-up the
+        switch causes; the dial on the new card shows it steady; once the switch is over, off/error count again."""
+        for shell in self.each_shell():
+            self.reset()
+            self.sim(0)
+            self.conf.write_text('LED_TIMEOUT=0\n')
+            self.led(shell, 'u30air', 'power', 'on')
+            self.led(shell, 'u30air', 'data', 'on')
+            self.assertEqual(self.state()['zte-ldo0'], '255')
+            marker = self.root / 'run/mu300/sim-switching'
+            marker.touch()
+            self.assertEqual(self.led(shell, 'u30air', 'data', 'switching', '1').returncode, 0)
+            trig = lambda n: (self.root / 'sys/class/leds' / n / 'trigger').read_text().strip()
+            self.assertEqual(trig('net_blue'), 'timer')
+            self.assertEqual((self.root / 'sys/class/leds/net_blue/delay_on').read_text().strip(), '500')
+            s = self.state()
+            self.assertEqual((s['zte-ldo0'], s['keyboard-backlight']), ('0', '0'))
+            # netifd's teardown of the old connection, whenever it comes: the blink stays
+            for st in ('off', 'error'):
+                self.led(shell, 'u30air', 'data', st)
+                self.assertEqual((trig('net_blue'), self.state()['keyboard-backlight']), ('timer', '0'), st)
+            # a sleep and a wake keep the blink
+            self.conf.write_text('LED_TIMEOUT=30\n')
+            self.led(shell, 'u30air', 'sleep')
+            self.assertEqual(trig('net_blue'), 'none')
+            self.led(shell, 'u30air', 'wake')
+            self.assertEqual(trig('net_blue'), 'timer')
+            self.conf.write_text('LED_TIMEOUT=0\n')
+            # published, dialled: steady blue
+            self.sim(1)
+            marker.unlink()
+            self.led(shell, 'u30air', 'data', 'on')
+            s = self.state()
+            self.assertEqual((trig('net_blue'), s['net_blue'], s['zte-ldo0']), ('none', '255', '0'))
+            # a switch that ended without a dial (marker gone): off and error are shown as usual
+            marker.touch()
+            self.led(shell, 'u30air', 'data', 'switching', '0')
+            self.assertEqual(trig('zte-ldo0'), 'timer')
+            marker.unlink()
+            self.led(shell, 'u30air', 'data', 'error')
+            s = self.state()
+            self.assertEqual((trig('zte-ldo0'), s['zte-ldo0'], s['keyboard-backlight']), ('none', '0', '255'))
+            # without the marker a stray announcement does not hold off/error back either
+            self.led(shell, 'u30air', 'data', 'switching', '1')
+            self.led(shell, 'u30air', 'data', 'off')
+            self.assertEqual((trig('net_blue'), self.state()['net_blue']), ('none', '0'))
+            # the slot is checked; other devices ignore the command
+            self.assertEqual(self.led(shell, 'u30air', 'data', 'switching', '2').returncode, 2)
+            self.assertEqual(self.led(shell, 'u30air', 'data', 'switching', '1;x').returncode, 2)
+            self.assertEqual(self.led(shell, 'u30air', 'data', 'switching').returncode, 2)
+            self.reset()
+            self.led(shell, 'f50', 'data', 'on')
+            self.assertEqual(self.led(shell, 'f50', 'data', 'switching', '1').returncode, 0)
+            self.assertEqual(self.state()['sc27xx:blue'], '255')
+
+    def test_u30air_switch_blink_on_5_4_is_steady(self):
+        # ZTE's zte_ldo_leds under 5.4 has no trigger: the target colour is simply on
+        for shell in self.each_shell():
+            self.reset()
+            self.sim(0)
+            shutil.rmtree(self.root / 'sys/class/leds/zte-ldo0')
+            vendor = self.root / 'sys/devices/platform/zte_ldo_leds'
+            vendor.mkdir(parents=True, exist_ok=True)
+            for i in range(3):
+                (vendor / f'vddcama{i}_status').write_text('0\n')
+            self.conf.write_text('LED_TIMEOUT=0\n')
+            (self.root / 'run/mu300/sim-switching').touch()
+            self.led(shell, 'u30air', 'data', 'switching', '0')
+            self.assertEqual((vendor / 'vddcama0_status').read_text().strip(), '1')
+            (self.root / 'run/mu300/sim-switching').unlink()
+            shutil.rmtree(self.root / 'sys/devices')
+            self.setUp_leds()
 
     def test_wifi_colour_follows_the_band(self):
         for shell in self.each_shell():
@@ -2530,7 +2636,7 @@ class Led(ShellTest):
             self.led(shell, 'u30air', 'data', 'on')
             self.uptime(150)
             self.led(shell, 'u30air', 'sleep', '--if-due')    # not yet
-            self.assertEqual(self.state()['net_blue'], '255')
+            self.assertEqual(self.state()['zte-ldo0'], '255')   # slot 0: white
             self.uptime(161)
             self.led(shell, 'u30air', 'sleep', '--if-due')
             self.assertEqual({v for v in self.state().values()}, {'0'})
@@ -2539,7 +2645,7 @@ class Led(ShellTest):
             self.assertEqual(self.state()['keyboard-backlight'], '0')
             self.led(shell, 'u30air', 'wake')
             s = self.state()
-            self.assertEqual((s['sc27xx:green'], s['keyboard-backlight'], s['net_blue']), ('255', '255', '0'))
+            self.assertEqual((s['sc27xx:green'], s['keyboard-backlight'], s['zte-ldo0']), ('255', '255', '0'))
             # and the timeout counts from the wake
             self.uptime(161 + 59)
             self.led(shell, 'u30air', 'sleep', '--if-due')
@@ -2557,11 +2663,13 @@ class Led(ShellTest):
                 self.uptime(100)
                 if timeout:
                     self.conf.write_text(timeout)
+                self.sim(1)                                                # the eSIM: blue
                 self.led(shell, 'u30air', 'power', 'on')
                 self.led(shell, 'u30air', 'data', 'on')
                 self.assertEqual(self.state()['net_blue'], '255')
                 self.assertEqual(self.led(shell, 'u30air', 'idle', 'on').returncode, 0)
                 self.assertEqual((self.state()['sc27xx:green'], self.state()['net_blue']), ('0', '0'))
+                self.sim(0)                                                # (a live switch)
                 self.led(shell, 'u30air', 'data', '5g')                    # remembered, not shown
                 self.led(shell, 'u30air', 'power', 'on')
                 self.assertEqual(set(self.state().values()), {'0'}, timeout)
@@ -2572,6 +2680,7 @@ class Led(ShellTest):
                 self.led(shell, 'u30air', 'wake')
                 s = self.state()
                 self.assertEqual((s['sc27xx:green'], s['zte-ldo0'], s['net_blue']), ('255', '255', '0'), timeout)
+                self.sim(1)
                 self.led(shell, 'u30air', 'data', 'on')                    # a change meanwhile shows too
                 self.assertEqual(self.state()['net_blue'], '255', timeout)
                 self.uptime(200 + lit_for - 1)
@@ -2625,7 +2734,7 @@ class Led(ShellTest):
                 self.led(shell, device, 'data', 'on')
                 self.uptime(100000)
                 self.led(shell, device, 'sleep', '--if-due')
-                lit = 'net_blue' if device == 'u30air' else 'sc27xx:blue'
+                lit = 'zte-ldo0' if device == 'u30air' else 'sc27xx:blue'   # (U30 Air: slot 0, white)
                 self.assertEqual(self.state()[lit], '255', device)
 
     def test_v50(self):

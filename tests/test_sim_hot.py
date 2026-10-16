@@ -173,6 +173,20 @@ esac""")
         self.assertEqual((self.etc / 'uci-slot').read_text(), '1\n')
         self.assertEqual((self.run / 'mu300/sim-slot').read_text(), '1\n')
 
+    def test_the_network_led_blinks_the_target_while_switching(self):
+        # as ZTE's firmware (FINDINGS 154): the target card's colour blinks once the old connection is taken down;
+        # the dial that follows shows the card in use. A missing or failing mu300-led changes nothing.
+        self.stub('mu300-led', 'echo "led $* $(cat "$T_RUN/mu300/sim-switching" >/dev/null 2>&1 && echo marked)" >> "$STUBLOG/net"')
+        r = self.ctl('switch', '1', MU300_LED_CMD=self.stubs / 'mu300-led')
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual((self.tmp / 'net').read_text(), 'down\nled data switching 0 marked\nup\n')
+        self.stub('mu300-led', 'exit 1')
+        r = self.ctl('switch', '2', MU300_LED_CMD=self.stubs / 'mu300-led')
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        r = self.ctl('switch', '1', MU300_LED_CMD=self.tmp / 'no-such-led')
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual((self.run / 'mu300/sim-slot').read_text(), '0\n')
+
     def test_failed_ifup_rolls_back_and_keeps_preference(self):
         result = self.ctl('switch', '1', T_IFUP_FAIL_ONCE=1)
         self.assertNotEqual(result.returncode, 0)

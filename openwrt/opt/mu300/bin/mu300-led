@@ -2,7 +2,9 @@
 # The device's LEDs by what they mean, so the services need not know which device they run on.
 #   mu300-led power on|off      Linux is up (set at boot, which also wakes the LEDs; cleared at shutdown)
 #   mu300-led data on|5g|off|error  mobile data connected (5g: over 5G) / not connected / no service (no SIM, not
-#                               registered)
+#                               registered); U30 Air: the colour is the SIM in use, not 4G/5G (below)
+#   mu300-led data switching 0|1  U30 Air: a live SIM switch to that slot is under way (mu300-sim-u30): its colour
+#                               blinks until the next "data on|5g", or "data off|error" once the switch is over
 #   mu300-led wifi on|off|sync [S]  the Wi-Fi hotspot is up (U30 Air: white on 5 GHz, blue on 2.4 GHz); sync: whatever
 #                               wlan0 is now, and again every 2 s for S seconds (OpenWrt: LuCI or the button)
 #   mu300-led events            OpenWrt: the Wi-Fi LED follows hostapd on ubus as it comes and goes (a service, no
@@ -20,8 +22,10 @@
 #   without service; Wi-Fi = the PMIC's keypad backlight sink ("keyboard-backlight"), at ZTE's 48 of 127, whichever
 #   band. No power LED. ZTE U30 Air (found by lighting each one):
 #   battery  the PMIC's RGB LED: its "green" channel is white (power: Linux is up), red, blue
-#   network  as ZTE's firmware: blue on 4G (a GPIO, net_blue), white on 5G (LDO VDDCAMA0), red without service
-#            (the PMIC's keypad backlight sink, "keyboard-backlight" under 5.4 and mainline)
+#   network  as ZTE's firmware: the SIM in use, not the access technology (FINDINGS 154): white for slot 0, the
+#            nano-SIM (LDO VDDCAMA0), blue for slot 1, the built-in eSIM (a GPIO, net_blue), red without service
+#            (the PMIC's keypad backlight sink, "keyboard-backlight" under 5.4 and mainline); the slot is this boot's
+#            pin, /run/mu300/sim-slot (slot 1 only where it is supported: OpenWrt), so a live switch recolours it
 #   Wi-Fi    as ZTE's firmware: white on 5 GHz (LDO VDDCAMA1), blue on 2.4 GHz (LDO VDDCAMA2) (FINDINGS 152)
 # The LDO ones are zte-ldo0..2 under mainline (leds-zte-ldo) and vddcama0..2_status of ZTE's zte_ldo_leds under
 # 5.4; the other GPIO LEDs in its device tree (net_red, net_green, net_white, pwr_green, wifi_*) light nothing,
@@ -44,9 +48,10 @@ DEVICE=$(${MU300_BIN:-/opt/mu300/bin}/mu300-device)
 #   NET1 is the network LED here, as on the F50 (blue on 4G, white on 5G, red without service); NET2 (the second
 #   SIM's) stays dark; Wi-Fi white on 5 GHz, blue on 2.4 GHz. The PMIC's LEDs exist in its device tree as well, but
 #   are not its front panel: never written here. Under 5.4 the V50 has no driver for them: every LED is skipped.
+BY_SIM=0
 case $DEVICE in
     u30air) POWER=sc27xx:green DATA=net_blue DATA5G=zte-ldo0 NODATA=keyboard-backlight WIFI5=zte-ldo1 WIFI24=zte-ldo2
-            DEFAULT_TIMEOUT=60 ;;
+            DEFAULT_TIMEOUT=60 BY_SIM=1 ;;   # DATA is slot 1's colour here, DATA5G slot 0's (BY_SIM)
     v50)    POWER= DATA=v50:net1:blue DATA5G=v50:net1:white NODATA=v50:net1:red WIFI5=v50:wifi:white
             WIFI24=v50:wifi:blue DEFAULT_TIMEOUT=0 ;;
     *)      POWER= DATA=sc27xx:blue DATA5G=sc27xx:green NODATA=sc27xx:red WIFI5=keyboard-backlight
@@ -80,19 +85,42 @@ has_led() { [ -e "$LEDS/$1" ] || vendor_ldo "$1" >/dev/null; }
 level() {  # level NAME: its brightness when lit (ZTE lights the F50's Wi-Fi LED at 48: a low-current sink)
     case $DEVICE:$1 in f50:keyboard-backlight) echo 48 ;; *) cat "$LEDS/$1/max_brightness" 2>/dev/null ;; esac
 }
-write() {  # write NAME 0|1: the LED itself
+write() {  # write NAME 0|1|blink: the LED itself (blink: the timer trigger, 0.5 s on, 0.5 s off; steady without one)
+    if [ "$2" = blink ]; then
+        if [ -w "$LEDS/$1/trigger" ] && echo timer > "$LEDS/$1/trigger" 2>/dev/null; then
+            echo 500 > "$LEDS/$1/delay_on" 2>/dev/null
+            echo 500 > "$LEDS/$1/delay_off" 2>/dev/null
+            return 0
+        fi
+        set -- "$1" 1   # the 5.4 kernel's LDO switches: on or off
+    fi
     if [ ! -e "$LEDS/$1" ] && f=$(vendor_ldo "$1"); then echo "$2" > "$f" 2>/dev/null; return 0; fi
     [ -w "$LEDS/$1/brightness" ] || return 0
     echo none > "$LEDS/$1/trigger" 2>/dev/null
     if [ "$2" = 1 ]; then level "$1"; else echo 0; fi > "$LEDS/$1/brightness" 2>/dev/null
     return 0
 }
-set_led() {  # set_led NAME 0|1: what it should show; lit only while awake
+set_led() {  # set_led NAME 0|1|blink: what it should show; lit only while awake
     [ -n "$1" ] || return 0
     has_led "$1" || return 0
     mkdir -p "$STATE" 2>/dev/null && echo "$2" > "$STATE/$1" 2>/dev/null
-    if [ "$2" = 1 ] && ! shown; then write "$1" 0; else write "$1" "$2"; fi
+    if [ "$2" != 0 ] && ! shown; then write "$1" 0; else write "$1" "$2"; fi
 }
+# The U30 Air's network LED by the SIM in use (FINDINGS 154). The slot is this boot's pin, the file the AT daemons
+# and mobile-data read too; it is never created here (that would pin a slot before mu300-atd chose one). A 1 counts
+# only where slot 1 is supported (the U30 Air on OpenWrt, as mu300-sim says): anywhere else every reader uses slot 0.
+sim_slot() {
+    s=$(cat "$R/run/mu300/sim-slot" 2>/dev/null)
+    if [ "$s" = 1 ] && [ -e "$R/etc/openwrt_release" ]; then echo 1; else echo 0; fi
+}
+sim_led() { if [ "$1" = 1 ]; then echo "$DATA"; else echo "$DATA5G"; fi; }   # sim_led SLOT: its colour
+network() {  # network NAME|'' VALUE: NAME shows VALUE, the network LED's other colours go dark
+    for l in "$NODATA" "$DATA" "$DATA5G"; do [ "$l" = "$1" ] || set_led "$l" 0; done
+    [ -z "$1" ] || set_led "$1" "$2"
+}
+# a live SIM switch's blink stays through the hang-up it causes (netifd tears the old connection down whenever it
+# gets to it): only while the switch is still under way, and only one that was announced here
+switching() { [ "$BY_SIM" = 1 ] && [ -e "$R/run/mu300/sim-switching" ] && [ -e "$STATE/.switch-to" ]; }
 wifi_band() {  # 5 or 2.4: the channel the hotspot runs on, else (it has none yet, just started) its setting
     ch=$(iw dev wlan0 info 2>/dev/null | sed -n 's/.*channel \([0-9]*\).*/\1/p' | head -n1)
     if [ -n "$ch" ]; then [ "$ch" -gt 14 ] && echo 5 || echo 2.4
@@ -118,10 +146,20 @@ nap() { sleep "$1" 2>/dev/null || sleep 1; }   # (a busybox without fractional s
 case "$1 ${2:-}" in
     "power on")   set_led "$POWER" 1; [ "$TIMEOUT" = 0 ] || idle || exec "$0" wake ;;   # (a boot, not a key)
     "power off")  set_led "$POWER" 0 ;;
-    "data on")    set_led "$NODATA" 0; [ "$DATA5G" = "$DATA" ] || set_led "$DATA5G" 0; set_led "$DATA" 1 ;;
-    "data 5g")    set_led "$NODATA" 0; [ "$DATA5G" = "$DATA" ] || set_led "$DATA" 0; set_led "$DATA5G" 1 ;;
-    "data off")   set_led "$NODATA" 0; set_led "$DATA5G" 0; set_led "$DATA" 0 ;;
-    "data error") set_led "$DATA" 0; set_led "$DATA5G" 0; set_led "$NODATA" 1 ;;
+    "data on"|"data 5g")
+        rm -f "$STATE/.switch-to"
+        if [ "$BY_SIM" = 1 ]; then network "$(sim_led "$(sim_slot)")" 1
+        elif [ "$2" = 5g ]; then network "$DATA5G" 1
+        else network "$DATA" 1; fi ;;
+    "data off"|"data error")
+        switching && exit 0
+        rm -f "$STATE/.switch-to"
+        if [ "$2" = error ]; then network "$NODATA" 1; else network '' 0; fi ;;
+    "data switching")
+        [ "$BY_SIM" = 1 ] || exit 0   # (no other device switches SIMs live)
+        case ${3:-} in 0|1) ;; *) echo "mu300-led data switching: the slot is 0 or 1" >&2; exit 2 ;; esac
+        mkdir -p "$STATE" 2>/dev/null && echo "$3" > "$STATE/.switch-to" 2>/dev/null
+        network "$(sim_led "$3")" blink ;;
     "wifi on")
         if [ "$WIFI5" = "$WIFI24" ]; then set_led "$WIFI5" 1
         elif [ "$(wifi_band)" = 5 ]; then set_led "$WIFI24" 0; set_led "$WIFI5" 1
@@ -225,6 +263,6 @@ case "$1 ${2:-}" in
             old=$(cat "$l/brightness" 2>/dev/null)
             echo "$n"; write "$n" 1; sleep 2; echo "${old:-0}" > "$l/brightness" 2>/dev/null
         done ;;
-    *) sed -n '2,12s/^# \{0,1\}//p' "$0" >&2; exit 2 ;;
+    *) sed -n '2,20s/^# \{0,1\}//p' "$0" >&2; exit 2 ;;
 esac
 exit 0
