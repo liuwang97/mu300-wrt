@@ -625,6 +625,70 @@ class Atd(ShellTest):
             logs, _m = self.start(shell)
             self.assertEqual(logs, ['tty_nr0.log'])
 
+    # ------------------------------------------------------------------ a channel that is not ready yet (#226)
+    # A SIPC tty exists before the modem has started, and opening it fails (ENODEV) until then. Here the tty is a
+    # link to /dev/tty, which a process without a controlling terminal cannot open (ENXIO): a character device whose
+    # open fails, as the modem's does at a cold boot. The link is then turned to a pty: the channel became ready.
+    def start_unready(self, shell, wait):
+        self.run_dir = self.tmp / f'run{len(self.procs)}'
+        self.run_dir.mkdir()
+        self.dir = self.run_dir / 'at'
+        dev = self.run_dir / 'tty_nr1'
+        dev.symlink_to('/dev/tty')
+        e = self.env(MU300_AT_DEV=dev, MU300_AT_DIR=self.dir, MU300_AT_URC_CHANNELS='', MU300_AT_OPEN_WAIT=wait)
+        self.err = self.run_dir / 'atd.err'
+        with self.err.open('w') as err:
+            # a session of its own: no controlling terminal, so /dev/tty does not open
+            p = subprocess.Popen(shell + [str(BIN / 'mu300-atd')], stderr=err, env=e, start_new_session=True)
+        self.procs.append(p)
+        return dev, p
+
+    def wait_for(self, text, timeout=20):
+        end = time.monotonic() + timeout
+        while time.monotonic() < end:
+            if text in self.err.read_text():
+                return True
+            time.sleep(0.05)
+        return False
+
+    def test_a_channel_not_ready_yet_is_waited_for(self):
+        """#226: the first open failed, and with it the shell (a failed `exec` redirection ends dash and ash), so
+        the daemon was gone after one line. Now it waits for the channel, holding the command fifo meanwhile."""
+        for shell in self.each_shell():
+            dev, p = self.start_unready(shell, 60)
+            self.assertTrue(self.wait_for('is not ready'), self.err.read_text())
+            self.assertIsNone(p.poll())                              # still there, waiting
+            self.assertTrue((self.dir / 'cmd').exists())             # clients queue at the daemon, not at the tty
+            master, slave = pty.openpty()
+            self.masters.append(master)
+            self.slave_fds.append(slave)
+            tmp = self.run_dir / 'tty_nr1.new'
+            tmp.symlink_to(os.ttyname(slave))
+            os.replace(tmp, dev)                                     # the modem is up
+            self.assertTrue(self.wait_for('is ours, draining'), self.err.read_text())
+            self.assertRegex(self.err.read_text(), r'ready after \d+ s')
+            self.send(master, 'AT', b'\r\nOK\r\n')
+            self.assertEqual(self.answer, 'OK\n')
+            self.assertNotIn("can't create", self.err.read_text())
+
+    def test_a_channel_that_never_gets_ready_ends_the_wait(self):
+        """The modem never starts (#226's unit: no eMMC, so no modem image): after MU300_AT_OPEN_WAIT seconds one
+        line, exit 1 for the supervisor to start it again, and neither the fifo nor the owner left behind."""
+        for shell in self.each_shell():
+            _dev, p = self.start_unready(shell, 2)
+            self.assertEqual(p.wait(timeout=30), 1)
+            err = self.err.read_text()
+            self.assertEqual(err.count('is not ready'), 1, err)
+            self.assertIn('did not become ready in 2 s', err)
+            self.assertFalse((self.dir / 'cmd').exists())
+            self.assertFalse((self.dir / 'owner').exists())
+
+    def test_every_open_survives_its_failure(self):
+        # the bare form is gone: `exec 3<>"$DEV" || return 1` never reached its return in dash and ash
+        src = (BIN / 'mu300-atd').read_text()
+        self.assertIn('command exec 3<>"$DEV" || return 1', src)
+        self.assertNotRegex(src, r'(?m)^\s*exec 3<>')
+
     # ------------------------------------------------------------------ +CMT frames (direct SMS delivery)
     PDU = '07911326040000F0040B911346610089F60000208062917314480CC8F71D14969741F977FD07'
     SPOOLER = BIN / 'mu300-cmt-spool'
