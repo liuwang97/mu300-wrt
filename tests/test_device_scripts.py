@@ -3500,6 +3500,55 @@ class ThermalGuard(ShellTest):
             self.round(shell, 80000)
             self.assertEqual(self.maxes(), ['1404000'] * 3)
 
+    # --- the backstop: the kernel throttles, but the SoC climbs on (6.18.56's step_wise under 8 awk loops: 98 C in
+    # three minutes with the states at 1-3 of 9, FINDINGS 166)
+    def test_backstop_caps_the_a76_clusters_on_top_of_the_kernel_from_92_c(self):
+        self.stub('logger', 'echo "$*" >> "$STUBLOG/log"')
+        for shell in self.each_shell():
+            self.mainline(91000)
+            (self.tmp / 'log').unlink(missing_ok=True)
+            self.round(shell, 91000)                                              # under the backstop: watching
+            self.assertEqual(self.maxes(), ['2002000'] * 3)
+            self.mainline(93000)
+            (self.tmp / 'log').unlink(missing_ok=True)
+            self.assertEqual(self.round(shell, 93000), ['mu300-led alarm on'])
+            self.assertEqual(self.maxes(), ['2002000', '1404000', '1404000'])     # policy0 (A55) left alone
+            self.assertTrue((self.root / 'run/mu300/thermal-capped').exists())
+            self.assertIn('soc-thmzone does not hold the SoC (93000 mC)', self.log())
+            self.round(shell, 93000)                                              # a step a round, logged once
+            self.assertEqual(self.maxes(), ['2002000', '1105000', '1105000'])
+            self.assertEqual(self.log().count('does not hold'), 1)
+
+    def test_backstop_caps_every_cluster_from_95_c_and_powers_off_at_crit_still(self):
+        for shell in self.each_shell():
+            self.mainline(96000)
+            self.round(shell, 96000)
+            self.assertEqual(self.maxes(), ['1404000'] * 3)
+            self.assertEqual(self.round(shell, 105000), ['poweroff'])
+
+    def heat(self, temp):
+        """every zone at TEMP (round() sets thermal_zone0 only)"""
+        for t in (self.root / 'sys/class/thermal').glob('thermal_zone*/temp'):
+            t.write_text(f'{temp}\n')
+
+    def test_backstop_lifts_its_caps_at_hot_a_step_a_round_never_above_the_ceiling(self):
+        for shell in self.each_shell():
+            self.mainline(96000)
+            (self.root / 'run/mu300/cpu-ceiling').write_text('policy0=1404000\n')
+            self.round(shell, 96000)
+            self.round(shell, 96000)
+            self.assertEqual(self.maxes(), ['1105000', '1105000', '1105000'])
+            self.heat(88000); self.round(shell, 88000)            # between HOT and the backstop: held
+            self.assertEqual(self.maxes(), ['1105000', '1105000', '1105000'])
+            self.heat(85000); self.round(shell, 85000)
+            self.assertEqual(self.maxes(), ['1404000', '1404000', '1404000'])
+            self.assertTrue((self.root / 'run/mu300/thermal-capped').exists())
+            self.heat(84000); self.round(shell, 84000)
+            self.assertEqual(self.maxes(), ['1404000', '2002000', '2002000'])     # the profile's ceiling stays
+            self.assertFalse((self.root / 'run/mu300/thermal-capped').exists())
+            self.heat(84000); self.round(shell, 84000)            # no marker: nothing more
+            self.assertEqual(self.maxes(), ['1404000', '2002000', '2002000'])
+
     def policy(self, name, freqs, cur_max):
         p = self.root / 'sys/devices/system/cpu/cpufreq' / name
         p.mkdir(parents=True, exist_ok=True)
@@ -4424,3 +4473,42 @@ class EarlyRecorderNode(ShellTest):
         self.assertTrue(writes[0].strip().startswith('node_ok && dd '), writes[0])
         after = s[s.index('node_ok && dd '):]
         self.assertIn('\n    node_ok\n', after)
+
+
+class ToolkitStress(ShellTest):
+    """mu300-toolkit's stress test stops itself at 95 C (FINDINGS 166): on 6.18.56 the recommended 10-minute CPU test
+    took the SoC to thermal-guard's 105 C power-off twice, and a hot power-off cost the next boot its eMMC."""
+    def run_stress(self, shell, soc, **env):
+        root = self.tmp / 'root'
+        z = root / 'sys/class/thermal/thermal_zone0'
+        z.mkdir(parents=True, exist_ok=True)
+        (z / 'temp').write_text(f'{soc}\n')
+        self.stub('id', 'echo 0')                       # need_root
+        self.stub('stress-ng', 'exec sleep 30')         # the load, without burning the test machine's CPUs
+        logs = self.tmp / 'logs'
+        logs.mkdir(exist_ok=True)
+        t = time.monotonic()
+        r = self.script(shell, BIN / 'mu300-toolkit', 'stress', 'cpu', '1', MU300_SYSROOT=root,
+                        MU300_STRESS_LOGDIR=logs, TMPDIR=self.tmp, **env)
+        return r, time.monotonic() - t, logs
+
+    def test_stops_at_95_c_with_a_message(self):
+        for shell in self.each_shell():
+            r, took, logs = self.run_stress(shell, 96500)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertLess(took, 20, 'stopped at the first sample, not after the minute')
+            self.assertIn('STOPPED EARLY', r.stdout)
+            self.assertIn('the SoC reached 96 C, the limit is 95 C', r.stdout)
+            saved = list(logs.glob('mu300-stress-*.txt'))
+            self.assertEqual(len(saved), 1)
+            self.assertIn('STOPPED EARLY', saved[0].read_text())
+            self.assertEqual(list(self.tmp.glob('mu300-stress.*')), [], 'its directory is removed')
+            for f in saved:
+                f.unlink()
+
+    def test_the_limit_is_configurable(self):
+        for shell in self.each_shell():
+            r, took, logs = self.run_stress(shell, 91000, MU300_STRESS_LIMIT=90000)
+            self.assertIn('the SoC reached 91 C, the limit is 90 C', r.stdout)
+            for f in logs.glob('mu300-stress-*.txt'):
+                f.unlink()
