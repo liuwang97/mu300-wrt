@@ -4,13 +4,19 @@ set -eo pipefail
 KV=${KV:-6.18.56}
 # where Image, DTB and modules.builtin go: /work/out for 6.18, OUTDIR=out-7.2 keeps another kernel next to it
 OUT=/work/${OUTDIR:-out}
-# the kernel source, fetched once into the volume and checked against kernel.org's checksum list
+# the kernel source, fetched once into the volume and unpacked only after verify-kernel-src.sh passed: the signed
+# sha256sums.asc (kernel.org autosigner) and the releaser's tar.sign, against the keyrings in keys/ (FINDINGS 161).
+# It unpacks beside the tree and is moved into place last, so an interrupted run never leaves a tree that counts
 if [ ! -d /src/linux-$KV ]; then
     base=https://cdn.kernel.org/pub/linux/kernel/v${KV%%.*}.x
-    cd /src
-    curl -fsSLO "$base/linux-$KV.tar.xz"
-    curl -fsSL "$base/sha256sums.asc" | grep " linux-$KV.tar.xz\$" | sha256sum -c - || { rm -f linux-$KV.tar.xz; exit 1; }
-    tar -xJf linux-$KV.tar.xz && rm linux-$KV.tar.xz
+    dl=/src/.download-$KV
+    rm -rf "$dl" && mkdir -p "$dl"
+    for f in linux-$KV.tar.xz linux-$KV.tar.sign sha256sums.asc; do
+        curl -fsSL -o "$dl/$f" "$base/$f" || { rm -rf "$dl"; echo "cannot fetch $base/$f" >&2; exit 1; }
+    done
+    bash /work/verify-kernel-src.sh "$dl" "$KV" || { rm -rf "$dl"; exit 1; }
+    tar -xJf "$dl/linux-$KV.tar.xz" -C "$dl" && mv "$dl/linux-$KV" /src/linux-$KV
+    rm -rf "$dl"
 fi
 cd /src/linux-$KV
 # MU300 patches (idempotent); MU300_PROBE_STAGE=N adds the boot-stage reset probe (debug)
