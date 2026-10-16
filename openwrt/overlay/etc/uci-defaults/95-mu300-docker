@@ -9,7 +9,10 @@
 # (default-address-pools, 172.16.0.0/12): a bridge someone else names br-something, with addresses of its own, is not
 # taken in. Containers go out to wan (masqueraded by Docker), the LAN reaches the ports they publish (Docker's DNAT,
 # then lan -> docker), and nothing comes in from wan: there is no wan -> docker forwarding (add one to publish to the
-# cellular side).
+# cellular side). Containers are other people's software: the router itself is closed to them (input REJECT: no SSH,
+# LuCI, ubus or dnsmasq from a container - their DNS goes through Docker's resolver, which asks from the router's own
+# side), they open nothing on the LAN (no docker -> lan), and one Docker network does not reach another through the
+# router (forward REJECT; containers on one network talk over their bridge, which this does not touch).
 # The names are those of the package's own "/etc/init.d/dockerd uciadd", which its boot() runs whenever dockerd is
 # enabled, and its interface and bridge device are made here as uciadd makes them: uciadd then finds everything in
 # place and changes nothing. When it had to add them, its network reload at that boot took docker0 away from the
@@ -34,9 +37,9 @@ if ! uci -q get firewall.docker >/dev/null; then
 	uci -q batch <<'UCI'
 set firewall.docker=zone
 set firewall.docker.name='docker'
-set firewall.docker.input='ACCEPT'
+set firewall.docker.input='REJECT'
 set firewall.docker.output='ACCEPT'
-set firewall.docker.forward='ACCEPT'
+set firewall.docker.forward='REJECT'
 add_list firewall.docker.network='docker'
 add_list firewall.docker.device='docker0'
 add_list firewall.docker.device='br-+'

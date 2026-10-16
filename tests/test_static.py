@@ -388,6 +388,15 @@ class Rules(unittest.TestCase):
                      "set firewall.lan_docker.src='lan'"):
             self.assertIn(line, zone)
         self.assertNotRegex(zone, r"src='wan'")
+        # containers never reach the router itself, nor the LAN, nor one Docker network another (security review)
+        self.assertIn("set firewall.docker.input='REJECT'", zone)
+        self.assertIn("set firewall.docker.forward='REJECT'", zone)
+        self.assertNotIn("firewall.docker.input='ACCEPT'", zone)
+        self.assertNotRegex(zone, r"src='docker'\nset firewall\.[a-z_]*\.dest='lan'")
+        # Ubuntu: a container opens nothing on the device (the host firewall drops Docker's bridges, never br-lan)
+        fw = (TOP / 'rootfs/overlay/etc/mu300/firewall.nft').read_text()
+        self.assertIn('iifname "docker0" counter drop', fw)
+        self.assertIn('iifname "br-*" iifname != "br-lan" counter drop', fw)
         # the marker is a file of the device, so a zone the user deleted is not made again after an update
         self.assertIn('[ -e /etc/mu300/docker-zone ] && exit 0', zone)
 
