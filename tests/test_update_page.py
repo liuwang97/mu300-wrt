@@ -1112,7 +1112,7 @@ class Status(test_update.Lock):
         # clears those variables before it runs anything)
         conf = self.tmp / 'update-source'
         self.fill()
-        url = 'https://ghfast.top/https://github.com/dikeckaan/mu300-linux/releases/download'
+        url = 'https://proxy.example/https://github.com/dikeckaan/mu300-linux/releases/download'
         for shell in self.each_shell():
             conf.unlink(missing_ok=True)
             o, r = self.status(shell, MU300_SOURCE_CONF=conf)
@@ -1137,7 +1137,7 @@ class Status(test_update.Lock):
         # take it out again - written through the checks source_conf reads the file with, so the next run takes it
         conf = self.tmp / 'update-source'
         self.stub('id', 'echo 0')
-        url = 'https://ghfast.top/https://github.com/dikeckaan/mu300-linux/releases/download'
+        url = 'https://proxy.example/https://github.com/dikeckaan/mu300-linux/releases/download'
         default = ('release files  https://github.com/dikeckaan/mu300-linux/releases/download  (default)\n'
                    'release list   https://api.github.com/repos/dikeckaan/mu300-linux  (default)\n')
         for shell in self.each_shell():
@@ -1176,14 +1176,14 @@ class Status(test_update.Lock):
         # a mirror the device cannot reach: said once, and the rest of that run comes from github.com. An HTTP
         # error is the source's answer, and stops the run as it always did.
         conf = self.tmp / 'update-source'
-        url = 'https://ghfast.top/https://github.com/dikeckaan/mu300-linux/releases/download'
+        url = 'https://proxy.example/https://github.com/dikeckaan/mu300-linux/releases/download'
         field = 'a' * 64
         conf.write_text(f'MU300_DOWNLOAD_URL={url}\n')
         conf.chmod(0o600)
         # the last word of curl's arguments is the URL it was asked for; the mirror is unreachable (7), github answers
         self.stub('curl', 'for u in "$@"; do :; done\n'
                           'printf "%s\\n" "$u" >> "$STUBLOG/urls"\n'
-                          f'case $u in *ghfast.top*) exit 7 ;; *) printf "%s\\n" "{field}  mu300-update"; exit 0 ;; esac')
+                          f'case $u in *proxy.example*) exit 7 ;; *) printf "%s\\n" "{field}  mu300-update"; exit 0 ;; esac')
         self.stub('sleep', ':')     # fetch_verified waits between its tries; the test does not
         code = 'source_conf; fetch_verified v2026.11.02 mu300-update; echo "rc=$?"; echo "mirror: [${MU300_DOWNLOAD_URL:-}]"; echo "api: [${MU300_API_URL:-}]"'
         for shell in self.each_shell():
@@ -1197,7 +1197,7 @@ class Status(test_update.Lock):
             self.assertTrue(urls[0].startswith(url + '/v2026.11.02/'), urls[:2])
             self.assertIn('https://github.com/dikeckaan/mu300-linux/releases/download/v2026.11.02/SHA256SUMS', urls)
         # an HTTP error (22) is not a mirror that is gone: the run stops with the source still in place
-        self.stub('curl', 'for u in "$@"; do :; done\nprintf "%s\\n" "$u" >> "$STUBLOG/urls"\ncase $u in *ghfast.top*) exit 22 ;; *) exit 0 ;; esac')
+        self.stub('curl', 'for u in "$@"; do :; done\nprintf "%s\\n" "$u" >> "$STUBLOG/urls"\ncase $u in *proxy.example*) exit 22 ;; *) exit 0 ;; esac')
         for shell in self.each_shell():
             r = self.up(shell, code, MU300_SOURCE_CONF=conf, MU300_FETCH_DELAY=0)
             self.assertEqual(r.stderr.count('mirror unreachable'), 0, r.stderr)
@@ -1211,28 +1211,59 @@ class Status(test_update.Lock):
     def test_a_slow_mirror_is_not_an_unreachable_one(self):
         # a mirror that answers and then stalls wrote bytes before it died, so the run keeps taking the files from
         # it: the fallback is for a mirror that is not there, not for a slow line - the people who set this field
-        # are often the ones who cannot reach github.com at all
+        # are often the ones who cannot reach github.com at all. A public https mirror, so the fallback would be
+        # allowed if the failure counted.
         conf = self.tmp / 'update-source'
-        url = 'http://mirror.lan/mu300/releases/download'
+        url = 'https://mirror.example/mu300/releases/download'
         field = 'b' * 64
         conf.write_text(f'MU300_DOWNLOAD_URL={url}\n')
         conf.chmod(0o600)
-        # -o FILE gets half a file and then curl's 28 (a transfer cut at --speed-time); the checksums come back fine
-        self.stub('curl', 'for u in "$@"; do :; done\n'
-                          'out=; prev=; for a in "$@"; do [ "$prev" = -o ] && out=$a; prev=$a; done\n'
-                          'printf "%s\\n" "$u" >> "$STUBLOG/urls"\n'
-                          f'case $u in *mirror.lan*SHA256SUMS) printf "%s\\n" "{field}  mu300-update"; exit 0 ;;'
-                          ' *mirror.lan*) [ -z "$out" ] || printf half >> "$out"; exit 28 ;; *) exit 0 ;; esac')
         self.stub('sleep', ':')     # fetch_verified waits between its tries; the test does not
         code = 'source_conf; fetch_verified v2026.11.02 mu300-update; echo "rc=$?"; echo "mirror: [${MU300_DOWNLOAD_URL:-}]"'
+        # -o FILE gets half a file and then curl's 28 (a transfer cut at --speed-time) or 56 (a reset mid-transfer);
+        # the checksums come back fine
+        for rc in (28, 56):
+            self.stub('curl', 'for u in "$@"; do :; done\n'
+                              'out=; prev=; for a in "$@"; do [ "$prev" = -o ] && out=$a; prev=$a; done\n'
+                              'printf "%s\\n" "$u" >> "$STUBLOG/urls"\n'
+                              f'case $u in *mirror.example*SHA256SUMS) printf "%s\\n" "{field}  mu300-update"; exit 0 ;;'
+                              f' *mirror.example*) [ -z "$out" ] || printf half >> "$out"; exit {rc} ;; *) exit 0 ;; esac')
+            for shell in self.each_shell():
+                (self.tmp / 'urls').unlink(missing_ok=True)
+                r = self.up(shell, code, MU300_SOURCE_CONF=conf, MU300_FETCH_DELAY=0)
+                self.assertEqual(r.stderr.count('mirror unreachable'), 0, (rc, r.stderr))
+                self.assertIn(f'mirror: [{url}]', r.stdout)
+                urls = (self.tmp / 'urls').read_text().split()
+                self.assertTrue(all(u.startswith(url) for u in urls), (rc, urls))      # github was never asked
+                self.assertGreaterEqual(urls.count(f'{url}/v2026.11.02/mu300-update'), 2, urls)   # and it was retried
+        # a stall before the first byte (28 with nothing written) is a mirror that is not there: github.com
+        self.stub('curl', 'for u in "$@"; do :; done\n'
+                          'printf "%s\\n" "$u" >> "$STUBLOG/urls"\n'
+                          f'case $u in *mirror.example*SHA256SUMS) printf "%s\\n" "{field}  mu300-update"; exit 0 ;;'
+                          f' *mirror.example*) exit 28 ;; *github.com*SHA256SUMS) printf "%s\\n" "{field}  mu300-update"; exit 0 ;;'
+                          ' *) exit 0 ;; esac')
         for shell in self.each_shell():
             (self.tmp / 'urls').unlink(missing_ok=True)
             r = self.up(shell, code, MU300_SOURCE_CONF=conf, MU300_FETCH_DELAY=0)
-            self.assertEqual(r.stderr.count('mirror unreachable'), 0, r.stderr)
-            self.assertIn(f'mirror: [{url}]', r.stdout)
+            self.assertEqual(r.stderr.count('mirror unreachable: the rest comes from github.com'), 1, r.stderr)
             urls = (self.tmp / 'urls').read_text().split()
-            self.assertTrue(all(u.startswith(url) for u in urls), urls)                 # github was never asked
-            self.assertGreaterEqual(urls.count(f'{url}/v2026.11.02/mu300-update'), 2, urls)   # and it was retried
+            self.assertIn('https://github.com/dikeckaan/mu300-linux/releases/download/v2026.11.02/mu300-update', urls)
+
+    def test_the_fetchers_tell_unreachable_from_an_answer(self):
+        # fetch_unreachable_rc on its own: connect-class codes are "not there", 28/56 only when nothing arrived, an
+        # HTTP error never; and nothing is a mirror's absence when no mirror is set or the run already fell back
+        cases = (('7', '', '9'), ('6', '', '9'), ('35', '', '9'), ('52', '', '9'),
+                 ('28', '', '1'), ('56', '', '1'), ('28', '0', '9'), ('56', '0', '9'), ('28', '1', '1'), ('7', '1', '1'),
+                 ('22', '0', '1'), ('1', '0', '1'))
+        code = '; '.join(f'echo "{rc}/{arr}=$(fetch_unreachable_rc {rc} {arr})"' for rc, arr, _ in cases)
+        for shell in self.each_shell():
+            r = self.up(shell, code, MU300_DOWNLOAD_URL='https://mirror.example/dl')
+            for rc, arr, want in cases:
+                self.assertIn(f'{rc}/{arr}={want}\n', r.stdout, r.stdout)
+            r = self.up(shell, 'echo "[$(fetch_unreachable_rc 7 0)]"')
+            self.assertEqual(r.stdout, '[1]\n')
+            r = self.up(shell, 'SOURCE_FELL_BACK=1; echo "[$(fetch_unreachable_rc 7 0)]"', MU300_DOWNLOAD_URL='https://m.example/dl')
+            self.assertEqual(r.stdout, '[1]\n')
 
     def test_the_fallback_can_be_turned_off(self):
         # MU300_MIRROR_FALLBACK=0: an update the mirror cannot serve fails, as it did before there was a mirror -
@@ -1248,24 +1279,62 @@ class Status(test_update.Lock):
         for shell in self.each_shell():
             (self.tmp / 'urls').unlink(missing_ok=True)
             r = self.up(shell, code, MU300_SOURCE_CONF=conf, MU300_FETCH_DELAY=0)
-            self.assertEqual(r.stderr.count('mirror unreachable'), 0, r.stderr)
+            self.assertEqual(r.stderr.count('the rest comes from github.com'), 0, r.stderr)
+            # said once, with the reason
+            self.assertEqual(r.stderr.count('mirror unreachable: the release is not taken from github.com instead '
+                                            f'(MU300_MIRROR_FALLBACK=0 in {conf})'), 1, r.stderr)
             self.assertIn(f'state: [{url} 0]', r.stdout)
             self.assertIn('cannot download SHA256SUMS of v2026.11.02', r.stderr)
             urls = (self.tmp / 'urls').read_text().split()
             self.assertTrue(all(u.startswith(url) for u in urls), urls)
-        # without the line the fallback is on, and the environment cannot turn it off
-        conf.write_text(f'MU300_DOWNLOAD_URL={url}\n')
+        # without the line a public https mirror falls back, and the environment cannot turn it off
+        self.stub('curl', 'for u in "$@"; do :; done\nprintf "%s\\n" "$u" >> "$STUBLOG/urls"\n'
+                          'case $u in *mirror.example*) exit 7 ;; *) exit 0 ;; esac')
+        conf.write_text('MU300_DOWNLOAD_URL=https://mirror.example/mu300/releases/download\n')
         for shell in self.each_shell():
             r = self.up(shell, code, MU300_SOURCE_CONF=conf, MU300_FETCH_DELAY=0, MU300_MIRROR_FALLBACK='0')
-            self.assertIn('state: [', r.stdout)
-            self.assertIn(' 1]', r.stdout)
+            self.assertIn('state: [ auto]', r.stdout)
             self.assertEqual(r.stderr.count('mirror unreachable: the rest comes from github.com'), 1, r.stderr)
+
+    def test_a_lan_or_plain_http_mirror_does_not_fall_back_by_itself(self):
+        # a copy on the LAN is usually there so the release does not come over a metered SIM: when that box is off,
+        # the run says so and stops instead of quietly taking the release from github.com over the mobile link
+        conf = self.tmp / 'update-source'
+        self.stub('sleep', ':')
+        code = 'source_conf; fetch_verified v2026.11.02 mu300-update; echo "rc=$?"'
+        for url in ('http://mirror.example/dl', 'https://192.168.1.5:8443/dl', 'https://10.0.0.2/dl', 'https://172.20.1.1/dl',
+                    'https://mirror.lan/dl', 'https://nas.local/dl', 'https://nas/dl', 'https://127.0.0.1:8000/dl'):
+            conf.write_text(f'MU300_DOWNLOAD_URL={url}\n')
+            conf.chmod(0o600)
+            self.stub('curl', 'for u in "$@"; do :; done\nprintf "%s\\n" "$u" >> "$STUBLOG/urls"\n'
+                              f'case $u in {url}*) exit 7 ;; *) exit 0 ;; esac')
+            for shell in self.each_shell():
+                (self.tmp / 'urls').unlink(missing_ok=True)
+                r = self.up(shell, code, MU300_SOURCE_CONF=conf, MU300_FETCH_DELAY=0)
+                self.assertNotIn('rc=0', r.stdout, url)
+                self.assertEqual(r.stderr.count('the rest comes from github.com'), 0, (url, r.stderr))
+                self.assertEqual(r.stderr.count('a plain-http or LAN mirror; MU300_MIRROR_FALLBACK=1'), 1, (url, r.stderr))
+                urls = (self.tmp / 'urls').read_text().split()
+                self.assertTrue(all(u.startswith(url) for u in urls), (url, urls))      # github.com never asked
+            # the line in the file allows it
+            conf.write_text(f'MU300_DOWNLOAD_URL={url}\nMU300_MIRROR_FALLBACK=1\n')
+            for shell in self.each_shell():
+                r = self.up(shell, code, MU300_SOURCE_CONF=conf, MU300_FETCH_DELAY=0)
+                self.assertEqual(r.stderr.count('mirror unreachable: the rest comes from github.com'), 1, (url, r.stderr))
+        # which addresses count as local
+        for shell in self.each_shell():
+            for url, want in (('http://mirror.example/x', 0), ('https://mirror.example/x', 1), ('https://MIRROR.LAN/x', 0),
+                              ('https://172.15.0.1/x', 1), ('https://172.32.0.1/x', 1), ('https://172.16.0.1/x', 0),
+                              ('https://169.254.1.1/x', 0), ('https://router.home.arpa/x', 0), ('https://localhost:8000/x', 0),
+                              ('https://192.169.0.1/x', 1), ('https://8.8.8.8/x', 1)):
+                r = self.up(shell, f'mirror_local {url}; echo "rc=$?"')
+                self.assertEqual(r.stdout, f'rc={want}\n', url)
 
     def test_the_fallback_state_goes_with_a_self_update(self):
         # apply execs the updater of the release it carries, in this very environment: it must not read the source
         # file again, wait for the same mirror and say the line a second time
         conf = self.tmp / 'update-source'
-        conf.write_text('MU300_DOWNLOAD_URL=http://mirror.lan/mu300/releases/download\n')
+        conf.write_text('MU300_DOWNLOAD_URL=https://mirror.example/mu300/releases/download\n')
         conf.chmod(0o600)
         for shell in self.each_shell():
             r = self.up(shell, 'source_conf; mirror_fell_back; printf "child: [%s]\\n" "$(sh -c \'echo ${MU300_MIRROR_FELL_BACK:-}\')"',
@@ -1275,6 +1344,17 @@ class Status(test_update.Lock):
                         MU300_SOURCE_CONF=conf, MU300_MIRROR_FELL_BACK=1)
             self.assertIn('mirror: []', r.stdout)
             self.assertIn('base: https://github.com/dikeckaan/mu300-linux/releases/download/v2026.11.02', r.stdout)
+            self.assertEqual(r.stderr.count('mirror unreachable'), 0, r.stderr)
+        # and the whole download of the handed-over updater: not one request to the mirror, nothing said again
+        field = 'c' * 64
+        self.stub('curl', 'for u in "$@"; do :; done\nprintf "%s\\n" "$u" >> "$STUBLOG/urls"\n'
+                          f'case $u in *mirror.example*) exit 7 ;; *SHA256SUMS) printf "%s\\n" "{field}  mu300-update"; exit 0 ;; *) exit 0 ;; esac')
+        for shell in self.each_shell():
+            (self.tmp / 'urls').unlink(missing_ok=True)
+            r = self.up(shell, 'source_conf; fetch_verified v2026.11.02 mu300-update; echo "rc=$?"',
+                        MU300_SOURCE_CONF=conf, MU300_FETCH_DELAY=0, MU300_MIRROR_FELL_BACK=1)
+            urls = (self.tmp / 'urls').read_text().split()
+            self.assertTrue(urls and all(u.startswith('https://github.com/') for u in urls), urls)
             self.assertEqual(r.stderr.count('mirror unreachable'), 0, r.stderr)
 
     def test_the_download_address(self):
@@ -1635,12 +1715,12 @@ class Adapter(ShellTest):
             for wrong in ('', 'apply', 'sourcex'):
                 self.assertEqual(self.act(shell, 'source', url='https://m/dl', confirm=wrong),
                                  {'ok': 0, 'error': 'This needs confirmation'})
-            for bad in ('ftp://m/dl', 'ghfast.top/'):
+            for bad in ('ftp://m/dl', 'proxy.example/'):
                 self.assertEqual(self.act(shell, 'source', url=bad, confirm='source'),
                                  {'ok': 0, 'error': 'Invalid update request'}, bad)
             self.assertEqual(self.calls(), [])
             # a mirror: the updater is asked for exactly that, and the reply is a whole update_get
-            url = 'https://ghfast.top/https://github.com/dikeckaan/mu300-linux/releases/download'
+            url = 'https://proxy.example/https://github.com/dikeckaan/mu300-linux/releases/download'
             r = self.act(shell, 'source', url=url, confirm='source')
             self.assertEqual(r['ok'], 1, r)
             self.assertEqual(r['status']['running'], 'openwrt-luci')
@@ -2044,9 +2124,9 @@ class Page(unittest.TestCase):
             f.value = 'https://m.example/dl';
             await click(root, 'mud-upd-source-save');
             return { before: before, calls: calls, text: root.textContent };''',
-            self.with_(status__source={'files': 'https://ghfast.top/https://github.com/x/y/releases/download', 'from': 'file'}))
+            self.with_(status__source={'files': 'https://proxy.example/https://github.com/x/y/releases/download', 'from': 'file'}))
         self.assertEqual(r['before']['value'], '')                  # nothing was filled in for the user
-        self.assertEqual(r['before']['placeholder'], 'https://ghfast.top/https://github.com/x/y/releases/download')
+        self.assertEqual(r['before']['placeholder'], 'https://proxy.example/https://github.com/x/y/releases/download')
         self.assertTrue(r['before']['save'])
         self.assertEqual(r['before']['calls'], [['update_get', {'sizes': '1'}]])
         self.assertIn(['update_act', {'op': 'source', 'tag': '', 'systems': '', 'kernel': '', 'sha256': '', 'size': '',

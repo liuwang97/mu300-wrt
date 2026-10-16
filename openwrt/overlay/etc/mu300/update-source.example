@@ -18,6 +18,8 @@
 # runs it. A mirror that cannot be reached is said once, and the rest of that run comes from github.com; the
 # setting stays, so the next run tries your mirror again. A mirror that answers and then stalls is not
 # "unreachable": the run keeps taking the files from it.
-# On a metered link the fallback can be the worse answer - the release would come over mobile data. This turns it
-# off: an update your mirror cannot serve then fails, as it did before there was a mirror.
+# On a metered link the fallback can be the worse answer - the release would come over mobile data. So it only
+# happens by itself for an https mirror on a public name: a plain-http mirror, or one on a private address or a
+# LAN-only name (192.168.x.x, 10.x.x.x, nas.lan, ...), stops the update and says so instead. This line decides it
+# for every mirror: 0 never falls back, 1 always may.
 #MU300_MIRROR_FALLBACK=0

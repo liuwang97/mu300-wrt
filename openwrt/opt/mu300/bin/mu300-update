@@ -78,13 +78,17 @@ have() { command -v "$1" >/dev/null 2>&1; }
 # (mirror_fell_back), so the updater of the new release does not wait for the same mirror all over again.
 FETCH_UNREACHABLE=9
 SOURCE_FELL_BACK=
-# 0 when /etc/mu300/update-source says MU300_MIRROR_FALLBACK=0: an update then fails when the mirror cannot be
-# reached instead of taking the release over the mobile link, which on a metered uplink can be the cheaper answer
-# (the file is the only place that says so, never the environment - source_conf)
-MIRROR_FALLBACK=1
+# MU300_MIRROR_FALLBACK in /etc/mu300/update-source (the file is the only place that says so, never the
+# environment - source_conf): 0 never moves a run to github.com, 1 always may, and without the line (auto) only an
+# https mirror on a public name does. A plain-http mirror or one on a private address is almost always a copy on the
+# LAN, set up so the release does not come over the mobile link; when that box is off, a silent move to github.com
+# would take the whole release over a metered SIM. So there the run stops and says why, as it did before there was
+# a mirror, and the line in the file is how to allow it.
+MIRROR_FALLBACK=auto
 # fetch_unreachable_rc RC [ARRIVED]: 9 when RC is a mirror of this run that could not be reached, 1 for every other
 # failure (which is what these two fetchers have always returned). ARRIVED is 0 when the caller knows nothing came
-# back, 1 when it knows bytes did, unset when it cannot tell
+# back, 1 when it knows bytes did, unset when it cannot tell. Whether the run may then move to github.com is
+# mirror_fell_back's decision, in the caller's own process
 fetch_unreachable_rc() {
     [ "${2:-}" != 1 ] || { printf '1\n'; return; }
     case $1 in
@@ -94,12 +98,42 @@ fetch_unreachable_rc() {
     esac
     [ -n "${MU300_RELEASE_URL:-}${MU300_DOWNLOAD_URL:-}" ] || { printf '1\n'; return; }
     [ -z "$SOURCE_FELL_BACK" ] || { printf '1\n'; return; }
-    [ "$MIRROR_FALLBACK" = 1 ] || { printf '1\n'; return; }
     printf '%s\n' "$FETCH_UNREACHABLE"
 }
-# mirror_fell_back: in the caller's own process - say it once, and use github.com for the rest of this run
+# mirror_local URL: true when URL is plain http, or its host is a private, loopback or link-local address or a name
+# only a LAN resolves (no dot; .lan .local .home .home.arpa .internal .localdomain .localhost)
+mirror_local() {
+    case $1 in https://*) ;; *) return 0 ;; esac
+    _mh=${1#https://}; _mh=${_mh%%/*}; _mh=${_mh%:*}
+    _mh=$(printf '%s' "$_mh" | tr 'A-Z' 'a-z')
+    case $_mh in
+        *.*) ;;
+        *) return 0 ;;
+    esac
+    case $_mh in
+        localhost|*.localhost|*.lan|*.local|*.home|*.home.arpa|*.internal|*.localdomain) return 0 ;;
+        10.*|127.*|192.168.*|169.254.*) return 0 ;;
+        172.1[6-9].*|172.2[0-9].*|172.3[01].*) return 0 ;;
+    esac
+    return 1
+}
+# mirror_fell_back: in the caller's own process - say it once, and use github.com for the rest of this run; or,
+# where the fallback is not allowed (MIRROR_FALLBACK), say once why the run stays with the mirror, and fail
 mirror_fell_back() {
     [ -z "$SOURCE_FELL_BACK" ] || return 1
+    _mwhy=
+    case $MIRROR_FALLBACK in
+        0) _mwhy="MU300_MIRROR_FALLBACK=0 in $SOURCE_CONF" ;;
+        1) ;;
+        *) ! mirror_local "${MU300_RELEASE_URL:-${MU300_DOWNLOAD_URL:-}}" ||
+               _mwhy="a plain-http or LAN mirror; MU300_MIRROR_FALLBACK=1 in $SOURCE_CONF allows it" ;;
+    esac
+    if [ -n "$_mwhy" ]; then
+        [ -n "${MIRROR_STAYED:-}" ] ||
+            printf 'mirror unreachable: the release is not taken from github.com instead (%s)\n' "$_mwhy" >&2
+        MIRROR_STAYED=1
+        return 1
+    fi
     SOURCE_FELL_BACK=1
     # apply hands over to the release's own updater in this very environment ("exec sh $STAGE/mu300-update"): it
     # would read the source file again and wait for the same mirror, so the state goes along with it
@@ -3097,7 +3131,7 @@ source_conf() {
                 esac ;;
             # the one line of this file that is not an address: it decides whether a run whose mirror cannot be
             # reached takes the release from github.com (the default) or fails as it did before there was a mirror
-            MU300_MIRROR_FALLBACK) [ "$_sv" != 0 ] || MIRROR_FALLBACK=0 ;;
+            MU300_MIRROR_FALLBACK) case $_sv in 0|1) MIRROR_FALLBACK=$_sv ;; esac ;;
         esac
     done < "$SOURCE_CONF"
 }

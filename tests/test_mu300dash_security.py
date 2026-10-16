@@ -350,7 +350,7 @@ class Refusals(Mu300Dash):
         ('update_act', {'op': 'apply_file', 'confirm': 'apply', 'sha256': 'ab' * 32}, 'flags', 'unsigned downgrade'),
         # (the release source: a plain http(s) URL, empty for GitHub - both reach the adapter, and nothing else does)
         ('update_act', {'op': 'source', 'confirm': 'source'}, 'url', ''),
-        ('update_act', {'op': 'source', 'confirm': 'source'}, 'url', 'https://ghfast.top/https://github.com/x/y/releases/download'),
+        ('update_act', {'op': 'source', 'confirm': 'source'}, 'url', 'https://proxy.example/https://github.com/x/y/releases/download'),
         ('traffic_set', {'op': 'cap', 'value': '1024'}, 'op', 'cap'),
         ('traffic_set', {'op': 'cap', 'value': '1024'}, 'value', '1024'),
         ('traffic_set', {'op': 'reset_day', 'value': '15'}, 'value', '15'),
@@ -563,9 +563,9 @@ class Passthrough(Mu300Dash):
          [['update', 'act', 'rollback', '', 'ubuntu', '', '', '', '', 'rollback', '']]),
         ('update_act', {'op': 'clean', 'confirm': 'clean'}, [['update', 'act', 'clean', '', '', '', '', '', '', 'clean', '']]),
         # (the release source: the address is the last argument, empty for GitHub)
-        ('update_act', {'op': 'source', 'confirm': 'source', 'url': 'https://ghfast.top/https://github.com/x/y/releases/download'},
+        ('update_act', {'op': 'source', 'confirm': 'source', 'url': 'https://proxy.example/https://github.com/x/y/releases/download'},
          [['update', 'act', 'source', '', '', '', '', '', '', 'source',
-           'https://ghfast.top/https://github.com/x/y/releases/download']]),
+           'https://proxy.example/https://github.com/x/y/releases/download']]),
         ('update_act', {'op': 'source', 'confirm': 'source', 'url': ''},
          [['update', 'act', 'source', '', '', '', '', '', '', 'source', '']]),
         ('sim_get', {}, [['sim', 'status', '--json']]),
