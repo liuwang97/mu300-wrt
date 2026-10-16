@@ -2,6 +2,10 @@
 # CPU adapter: mu300-cpu for the panel's CPU page (mu300dash cpu_get, cpu_set). Every reply is one JSON object.
 #   cpu get             {"ok":1,"profile":...,"profiles":[...],"throttling":0|1,"policies":[...]}
 #   cpu set NAME        {"ok":1,...} (the new status), or {"ok":0,"error":...}; NAME checked here again
+#   cpu voltage-get     the CPU voltage offset (EXPERIMENTAL): mu300-cpu voltage status --json
+#   cpu voltage-set set A,B,C WORD | off | stress MINUTES
+#                       the request for the next boot, back to the stock voltages, or the CPU stress test in the
+#                       background; every value checked here again; the reply is the new voltage status
 set -u
 export PATH="$PATH:/opt/mu300/bin:/usr/sbin:/sbin"
 LIB=${0%/*}/../../share/unisoc-modem/lib.sh
@@ -25,8 +29,41 @@ do_set() {
     error 'The CPU profile could not be set'
 }
 
+do_vget() {
+    out=$("$CPU_CMD" voltage status --json 2>/dev/null) || error 'The CPU voltage offset could not be read'
+    case $out in '{'*) printf '%s\n' "$out" ;; *) error 'The CPU voltage offset could not be read' ;; esac
+}
+
+# the reason mu300-cpu gave (its last "mu300-cpu: ..." line), for the detail of a refusal
+why() { printf '%s\n' "$1" | sed -n 's/^mu300-cpu: //p' | tail -n1 | cut -c1-200; }
+
+do_vset() {
+    case ${1:-} in
+        set)
+            printf '%s\n' "${2:-}" | grep -Eqx -- '-?[0-9]{1,6},-?[0-9]{1,6},-?[0-9]{1,6}' || error 'Invalid CPU voltage offset'
+            [ "${3:-}" = EXPERIMENTAL ] || error 'Type the confirmation word to apply a voltage offset'
+            if ! out=$("$CPU_CMD" voltage set "$2" --confirm EXPERIMENTAL 2>&1 >/dev/null); then
+                printf '{"ok":0,"error":"The CPU voltage offset was refused","detail":%s}\n' "$(json_str "$(why "$out")")"
+                exit 0
+            fi ;;
+        off)
+            [ $# = 1 ] || error 'Invalid CPU voltage request'
+            "$CPU_CMD" voltage off >/dev/null 2>&1 || error 'The CPU voltage offset could not be turned off' ;;
+        stress)
+            case ${2:-} in [1-9]|[1-9][0-9]|1[01][0-9]|120) ;; *) error 'Invalid stress test length' ;; esac
+            if ! out=$("$CPU_CMD" voltage stress "$2" --background 2>&1 >/dev/null); then
+                printf '{"ok":0,"error":"The stress test could not be started","detail":%s}\n' "$(json_str "$(why "$out")")"
+                exit 0
+            fi ;;
+        *) error 'Unknown CPU voltage operation' ;;
+    esac
+    do_vget
+}
+
 case ${1:-} in
     get) do_get ;;
     set) do_set "${2:-}" ;;
+    voltage-get) do_vget ;;
+    voltage-set) shift; do_vset "$@" ;;
     *) error 'Unknown CPU operation' ;;
 esac

@@ -572,6 +572,104 @@ pick_root() {
     done
 }
 # --- pick-root end
+# --- cpu-voltage begin
+# The CPU voltage offset (EXPERIMENTAL: it can damage the device for good; docs/FINDINGS.md 133). The mainline cpufreq
+# driver holds DVFS until a value is written to voltage_offset_uv (or 45 s pass), and the firmware applies it once per
+# boot, so this is the only place it can come from: the settings are on the Linux disk. Every boot writes one -
+# 0,0,0 (the stock call) unless an offset was asked for and may run. Never a reason not to boot: anything unclear is
+# 0,0,0. Files in .mu300 on the Linux disk:
+#   cpu-voltage           the offsets asked for (mu300-cpu voltage set), "A,B,C" in uV for domains 0, 1, 2 (CPUs 0-3,
+#                         4-6, 7); none or 0,0,0: off
+#   cpu-voltage-trial     the one trial boot of a new value: written before that boot applies it
+#   cpu-voltage-good      the value whose boot reached the good mark (mu300-cpu voltage mark-good, 10 minutes up)
+#   cpu-voltage-armed     the value of the running boot; only a clean shutdown removes it (mu300-cpu voltage shutdown)
+#   cpu-voltage-rejected  "A,B,C reason": what this block took back by itself, and why (for the panel)
+# A value runs only as its trial boot or once it is good. An armed value at boot means the last boot with an offset
+# ended without a clean shutdown - a crash, a watchdog reset, a power cut: the offset is dropped (back to 0,0,0 and
+# the request cleared). A trial boot that ended cleanly but before the good mark does not get a second try.
+CPUV_SYS=${MU300_CPUV_SYS:-/sys/module/sprd_cpufreq_v2_driver/parameters}
+# the SML (ATF) builds whose DVFS_INIT encoding was read (kano, 3386928: the F50's sml_a/sml_b); any other: 0,0,0
+CPUV_SML_KNOWN=${MU300_CPUV_SML_KNOWN:-ff4782690fd805ff54fe34853ef8ee5c7e51c3259e20077c55373b50a4b259c2}
+cpuv_valid() {  # cpuv_valid A,B,C: three whole 3.125 mV steps within -25000..12500 uV, written plainly
+    case $1 in *[!0-9,-]*|'') return 1 ;; esac
+    _o=$IFS; IFS=,; set -- $1; IFS=$_o
+    [ $# = 3 ] || return 1
+    for _cv; do   # digits only, no leading zero, 6 at most
+        case ${_cv#-} in ''|*[!0-9]*|0?*|???????*) return 1 ;; esac
+        [ "$_cv" != -0 ] || return 1
+        [ "$_cv" -ge -25000 ] && [ "$_cv" -le 12500 ] && [ $((_cv % 3125)) = 0 ] || return 1
+    done
+}
+cpuv_firmware_known() {  # both SML copies are a known build
+    command -v sha256sum >/dev/null 2>&1 || return 1
+    for _s in a b; do
+        _p=$(emmc_part sml_$_s) || return 1
+        _h=$(sha256sum < "$_p" 2>/dev/null) || return 1
+        case " $CPUV_SML_KNOWN " in *" ${_h%% *} "*) ;; *) return 1 ;; esac
+    done
+}
+cpuv_write() {  # cpuv_write A,B,C: hand it to the driver; true once DVFS runs with it (5 s at most)
+    echo "$1" > "$CPUV_SYS/voltage_offset_uv" 2>/dev/null || return 1
+    for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25; do
+        case $(cat "$CPUV_SYS/voltage_state" 2>/dev/null) in applied) return 0 ;; failed) return 1 ;; esac
+        usleep 200000 2>/dev/null || sleep 1
+    done
+    return 1
+}
+cpuv_reject() {  # cpuv_reject DIR VALUE REASON: back to the stock voltages, and the request gone
+    echo "$2 $3" > "$1/cpu-voltage-rejected"
+    echo 0,0,0 > "$1/cpu-voltage"
+    rm -f "$1/cpu-voltage-trial" "$1/cpu-voltage-good" "$1/cpu-voltage-armed"
+    sync
+    log "stage=cpu-voltage-rejected $2 ($3)"
+}
+cpu_voltage_stock() {  # no Linux disk: DVFS at the stock voltages now rather than after the driver's 45 s
+    [ -w "$CPUV_SYS/voltage_offset_uv" ] || return 0
+    [ "$(cat "$CPUV_SYS/voltage_state" 2>/dev/null)" = waiting ] || return 0
+    cpuv_write 0,0,0 && log "stage=cpu-voltage 0,0,0" || log "stage=cpu-voltage-failed 0,0,0"
+}
+cpu_voltage_boot() {  # cpu_voltage_boot DIR: DIR is .mu300 on the mounted Linux disk
+    [ -w "$CPUV_SYS/voltage_offset_uv" ] || return 0         # a kernel without the offset (5.4, an older mainline)
+    [ "$(cat "$CPUV_SYS/voltage_state" 2>/dev/null)" = waiting ] || return 0
+    _d=$1 _want=0,0,0
+    _req=$(head -n1 "$_d/cpu-voltage" 2>/dev/null)
+    [ -n "$_req" ] || _req=0,0,0
+    if [ -e "$_d/cpu-voltage-armed" ]; then
+        cpuv_reject "$_d" "$(head -n1 "$_d/cpu-voltage-armed")" unclean-end
+    elif [ "$_req" = 0,0,0 ]; then
+        rm -f "$_d/cpu-voltage-trial" "$_d/cpu-voltage-good"
+    elif ! cpuv_valid "$_req"; then
+        cpuv_reject "$_d" "$_req" invalid
+    elif ! cpuv_firmware_known; then
+        cpuv_reject "$_d" "$_req" unknown-firmware
+    elif [ "$(head -n1 "$_d/cpu-voltage-good" 2>/dev/null)" = "$_req" ]; then
+        _want=$_req
+    elif [ "$(head -n1 "$_d/cpu-voltage-trial" 2>/dev/null)" = "$_req" ]; then
+        cpuv_reject "$_d" "$_req" no-good-mark
+    elif echo "$_req" > "$_d/cpu-voltage-trial"; then
+        _want=$_req
+    fi
+    if [ "$_want" != 0,0,0 ]; then
+        # on the disk before the firmware sees the value: a crash right after DVFS_INIT still finds the mark
+        echo "$_want" > "$_d/cpu-voltage-armed" 2>/dev/null; sync
+        [ "$(head -n1 "$_d/cpu-voltage-armed" 2>/dev/null)" = "$_want" ] || { rm -f "$_d/cpu-voltage-armed"; _want=0,0,0; }
+    fi
+    if cpuv_write "$_want"; then
+        log "stage=cpu-voltage $_want"
+        return 0
+    fi
+    if [ "$_want" != 0,0,0 ]; then
+        # refused by the kernel (no raise without a known DCDC maximum, ...) or DVFS_INIT failed with it
+        if [ "$(cat "$CPUV_SYS/voltage_state" 2>/dev/null)" = waiting ]; then
+            cpuv_reject "$_d" "$_want" kernel-refused
+            cpuv_write 0,0,0 && { log "stage=cpu-voltage 0,0,0"; return 0; }
+        else
+            cpuv_reject "$_d" "$_want" kernel-failed
+        fi
+    fi
+    log "stage=cpu-voltage-failed $_want state=$(cat "$CPUV_SYS/voltage_state" 2>/dev/null)"
+}
+# --- cpu-voltage end
 mkdir -p /disk /newroot
 EMMC=$(emmc_dev)   # find_partitions has waited for the eMMC's partitions, so its disk is there
 log "stage=emmc dev=$EMMC sd=$(mmc_disks SD | tr '\n' ' ')"
@@ -684,6 +782,8 @@ if [ "$root_mounted" = 1 ] && rootdir=$(pick_root) && [ -n "$rootdir" ]; then
         reboot -f
         sleep 30
     fi
+    # the CPU voltage offset (EXPERIMENTAL): DVFS waits for this; 0,0,0 unless an offset was asked for and may run
+    cpu_voltage_boot /disk/.mu300
 
     # the USB mode this system's panel chose (D12): one rebind before switch_root when it differs
     apply_usb_net "$rootdir"
@@ -746,6 +846,7 @@ if [ "$root_mounted" = 1 ] && rootdir=$(pick_root) && [ -n "$rootdir" ]; then
     exec switch_root /newroot $init
 fi
 log "stage=rootfs-unavailable $(cat /run/rootmount.err)"
+cpu_voltage_stock
 # Locked (mu300-next-boot lock): no system, and still no way to Android by itself - this rescue stays up (telnet)
 # and /run/to-android takes it there by hand. Otherwise Android's slot is restored, and the timer reboots into it.
 if lk_locked; then

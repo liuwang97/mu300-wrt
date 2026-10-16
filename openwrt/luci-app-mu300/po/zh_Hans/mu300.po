@@ -408,6 +408,111 @@ msgstr "触发点"
 msgid "Cooling devices"
 msgstr "冷却设备"
 
+msgid "Stress test started"
+msgstr ""
+
+msgid "Saved: it takes effect at the next reboot"
+msgstr ""
+
+msgid "CPU voltage offset (EXPERIMENTAL)"
+msgstr ""
+
+msgid "Experimental: changing the CPU voltage can make the device unstable, corrupt your data and permanently damage your device. Use it entirely at your own risk."
+msgstr ""
+
+msgid "CPU voltage offset unavailable"
+msgstr ""
+
+msgid "Not available with this kernel (a mainline kernel of this release or later has it)."
+msgstr ""
+
+msgid "Off: the stock voltages"
+msgstr ""
+
+msgid "Changes at the next reboot"
+msgstr ""
+
+msgid "Trial boot: kept once this boot has been up 10 minutes"
+msgstr ""
+
+msgid "Kept: this offset passed its trial boot"
+msgstr ""
+
+msgid "a boot with it ended without a clean shutdown"
+msgstr ""
+
+msgid "its trial boot ended before 10 minutes"
+msgstr ""
+
+msgid "invalid value"
+msgstr ""
+
+msgid "unknown SoC firmware"
+msgstr ""
+
+msgid "refused by the kernel"
+msgstr ""
+
+msgid "the kernel could not start CPU scaling with it"
+msgstr ""
+
+msgid "Offsets in µV for the three CPU domains (cores 0-3, 4-6 and 7), in whole steps. A new offset takes effect at the next reboot, as a trial: it is kept once that boot has been up 10 minutes, and dropped (back to 0) if a boot with it ends in a crash, a watchdog reset or a power cut."
+msgstr ""
+
+msgid "Running now (µV)"
+msgstr ""
+
+msgid "Saved for the next boot (µV)"
+msgstr ""
+
+msgid "State"
+msgstr "状态"
+
+msgid "Taken back automatically: %s µV (%s)"
+msgstr ""
+
+msgid "The SoC firmware of this device is not one whose voltage encoding is known: only the stock voltages are possible."
+msgstr ""
+
+msgid "Domain"
+msgstr ""
+
+msgid "Offset now (µV)"
+msgstr ""
+
+msgid "Highest step"
+msgstr ""
+
+msgid "New offset (µV)"
+msgstr ""
+
+msgid "Limits: %d to %d µV, in steps of %d µV."
+msgstr ""
+
+msgid "Save for the next boot"
+msgstr ""
+
+msgid "Each offset must be a multiple of %d µV between %d and %d."
+msgstr ""
+
+msgid "Type %s to confirm."
+msgstr ""
+
+msgid "Back to the stock voltages"
+msgstr ""
+
+msgid "Type %s to confirm:"
+msgstr ""
+
+msgid "Run a 10-minute CPU stress test"
+msgstr ""
+
+msgid "Test a new offset under load during its trial boot. The device may crash if the voltage is too low; the next boot then runs at the stock voltages."
+msgstr ""
+
+msgid "A stress test is running."
+msgstr ""
+
 msgid "USB role"
 msgstr "USB 角色"
 
@@ -1253,9 +1358,6 @@ msgstr "代码"
 
 msgid "Translated"
 msgstr "翻译范围"
-
-msgid "State"
-msgstr "状态"
 
 msgid "LuCI's own translations come from OpenWrt. This panel's translations other than Turkish and Chinese are machine (AI) translations; corrections are welcome."
 msgstr "LuCI 自身的翻译来自 OpenWrt。本面板除土耳其语和中文以外的翻译均为机器（AI）翻译，欢迎指正。"
@@ -3196,6 +3298,21 @@ msgstr "CPU 适配器未返回有效响应"
 msgid "Invalid CPU profile"
 msgstr "无效的 CPU 配置"
 
+msgid "Unknown CPU voltage operation"
+msgstr ""
+
+msgid "Invalid CPU voltage request"
+msgstr ""
+
+msgid "Invalid CPU voltage offset"
+msgstr ""
+
+msgid "Type the confirmation word to apply a voltage offset"
+msgstr ""
+
+msgid "Invalid stress test length"
+msgstr ""
+
 msgid "The packages adapter gave no valid reply"
 msgstr "软件包适配器没有返回有效回复"
 
@@ -3412,6 +3529,18 @@ msgstr "无法读取 CPU 配置"
 
 msgid "The CPU profile could not be set"
 msgstr "无法设置 CPU 配置"
+
+msgid "The CPU voltage offset could not be read"
+msgstr ""
+
+msgid "The CPU voltage offset was refused"
+msgstr ""
+
+msgid "The CPU voltage offset could not be turned off"
+msgstr ""
+
+msgid "The stress test could not be started"
+msgstr ""
 
 msgid "Unknown CPU operation"
 msgstr "未知的 CPU 操作"

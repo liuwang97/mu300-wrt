@@ -3,7 +3,10 @@
 #define pr_fmt(fmt) "sprd-apcpu-dvfs: " fmt
 
 #include "sprd-cpufreq-v2.h"
+#include "sprd-cpufreq-v2-voltage.h"
+#include <linux/capability.h>
 #include <linux/jiffies.h>
+#include <linux/moduleparam.h>
 #include <linux/nvmem-consumer.h>
 
 #define low_check(temp)		((int)(temp) < (int)DVFS_TEMP_LOW_LIMIT)
@@ -24,6 +27,50 @@ struct cluster_prop {
 static struct device *dev;
 static struct cluster_info *pclusters;
 static unsigned long boot_done_timestamp;
+
+/*
+ * MU300: the CPU voltage offset (EXPERIMENTAL; docs/FINDINGS.md 133, based on kanoqwq/mu300-linux@3386928).
+ *
+ * The firmware applies an offset only inside DVFS_INIT, once per boot, so it cannot be changed at run time and has to
+ * be known before DVFS starts. Persistent settings live on the Linux filesystem, which only the initramfs can read,
+ * so the driver (built in, as before) probes as before and then holds DVFS_INIT and the cpufreq registration until
+ * the initramfs writes voltage_offset_uv - "0,0,0" for the stock call, which is every boot without the setting.
+ * Nothing written within SPRD_VOLT_WAIT_S seconds (an initramfs without this step, a boot without a filesystem): DVFS
+ * starts at the stock voltages by itself. One value per boot, checked whole before anything is applied: inside
+ * -25..+12.5 mV, whole 3.125 mV steps, UMS9620 only, a raise only with a known DCDC maximum (and an OPP whose raised
+ * voltage would go above that maximum is left out of the table). The command line can never set it (the parameter
+ * refuses anything before userspace runs), and only CAP_SYS_ADMIN can write it. Whether an offset is ever written
+ * at all (the boot counter that takes it back after a crash) is the initramfs' decision (boot/init, cpu-voltage).
+ */
+enum sprd_volt_state {
+	SV_PROBING,	/* not probed (yet), or the probe failed */
+	SV_WAITING,	/* probed: DVFS_INIT waits for voltage_offset_uv or the timer */
+	SV_QUEUED,	/* a value was accepted, DVFS_INIT is about to run */
+	SV_APPLIED,	/* DVFS runs with the value written */
+	SV_TIMEOUT,	/* DVFS runs at the stock voltages: nothing was written in time */
+	SV_FAILED,	/* DVFS_INIT or the cpufreq registration failed */
+	SV_DISABLED,	/* androidboot.dvfs_set debug magic: no DVFS at all (vendor behaviour) */
+};
+static const char * const sprd_volt_state_names[] = {
+	"probing", "waiting", "queued", "applied", "timeout", "failed", "disabled",
+};
+static DEFINE_MUTEX(sprd_volt_lock);
+static enum sprd_volt_state sprd_volt_state;
+static int sprd_volt_req[SPRD_VOLT_DOMAINS];
+static int sprd_volt_applied[SPRD_VOLT_DOMAINS];
+static u32 sprd_dvfs_base_flag;
+static int sprd_volt_dcdc_max_uv;	/* lowest regulator-max-microvolt of the CPU DCDCs; 0: unknown, no raise */
+
+static void sprd_volt_start_work(struct work_struct *work);
+static void sprd_volt_dcdc_limit(void);
+static DECLARE_DELAYED_WORK(sprd_volt_work, sprd_volt_start_work);
+
+/* a raised domain: an OPP above the DCDC maximum is never offered to cpufreq */
+static bool sprd_volt_over_limit(struct cluster_info *cluster, u64 vol)
+{
+	return cluster->id < SPRD_VOLT_DOMAINS && READ_ONCE(sprd_volt_applied[cluster->id]) > 0 &&
+	       sprd_volt_dcdc_max_uv > 0 && vol > (u64)sprd_volt_dcdc_max_uv;
+}
 
 /* cluster common interface */
 static struct cluster_info *sprd_cluster_info(u32 cpu_idx)
@@ -263,6 +310,35 @@ static int sprd_policy_table_update(struct cpufreq_policy *policy, struct temp_n
 		if (ret) {
 			dev_err(dev, "%s: get cluster %u index %u pair error\n", __func__, cluster->id, i);
 			return -EINVAL;
+		}
+
+		/*
+		 * MU300: with a raised voltage, the first OPP above the DCDC maximum ends the table (the firmware's index
+		 * is the table's, so only the top can be cut); a stale OPP of an earlier table goes too.
+		 */
+		if (sprd_volt_over_limit(cluster, vol)) {
+			u32 j, kept = i;
+
+			dev_warn(dev, "%s: cluster %u: %lluHz needs %lluuV with the +%duV offset, above the DCDC maximum %duV: not used from here on\n",
+				 __func__, cluster->id, freq, vol, sprd_volt_applied[cluster->id], sprd_volt_dcdc_max_uv);
+			for (j = i; j < cluster->table_entry_num; j++) {
+				struct dev_pm_opp *opp;
+
+				if (cluster->pair_get(cluster->id, j, &freq, NULL))
+					break;
+				opp = dev_pm_opp_find_freq_exact(cpu, freq, true);
+				if (!IS_ERR(opp)) {
+					dev_pm_opp_put(opp);
+					dev_pm_opp_remove(cpu, freq);
+				}
+			}
+			if (!kept) {
+				dev_err(dev, "%s: cluster %u: no OPP left under the DCDC maximum\n", __func__, cluster->id);
+				return -EINVAL;
+			}
+			cluster->table_entry_num = kept;
+			node->temp_table = NULL;	/* built again from the OPPs that are left */
+			break;
 		}
 
 		dev_info(dev, "%s: add %lluHz/%lluuV to opp\n", __func__, freq, vol);
@@ -514,6 +590,53 @@ static int sprd_cpufreq_offline(struct cpufreq_policy *policy)
 	return 0;
 }
 
+/* MU300: read-only views of the firmware's table and of the offset (kanoqwq/mu300-linux@3386928) */
+static ssize_t show_scaling_voltage_table(struct cpufreq_policy *policy, char *buf)
+{
+	struct cluster_info *cluster = policy->driver_data;
+	u64 freq, volt;
+	int i, ret, len = 0;
+
+	if (!cluster || !cluster->pair_get)
+		return -ENODEV;
+	mutex_lock(&cluster->mutex);
+	for (i = 0; i < cluster->table_entry_num && len < PAGE_SIZE - 64; i++) {
+		ret = cluster->pair_get(cluster->id, i, &freq, &volt);
+		if (ret) {
+			len = -EIO;
+			break;
+		}
+		len += sysfs_emit_at(buf, len, "%llu %llu\n", freq / 1000, volt);
+	}
+	mutex_unlock(&cluster->mutex);
+	return len;
+}
+cpufreq_freq_attr_ro(scaling_voltage_table);
+
+static ssize_t show_scaling_voltage_offset(struct cpufreq_policy *policy, char *buf)
+{
+	struct cluster_info *cluster = policy->driver_data;
+
+	if (!cluster)
+		return -ENODEV;
+	return sysfs_emit(buf, "%d\n", cluster->id < SPRD_VOLT_DOMAINS ? READ_ONCE(sprd_volt_applied[cluster->id]) : 0);
+}
+cpufreq_freq_attr_ro(scaling_voltage_offset);
+
+static ssize_t show_scaling_voltage_domain(struct cpufreq_policy *policy, char *buf)
+{
+	struct cluster_info *cluster = policy->driver_data;
+
+	if (!cluster)
+		return -ENODEV;
+	return sysfs_emit(buf, "%u\n", cluster->id);
+}
+cpufreq_freq_attr_ro(scaling_voltage_domain);
+
+static struct freq_attr *sprd_cpufreq_attr[] = {
+	&scaling_voltage_table, &scaling_voltage_offset, &scaling_voltage_domain, NULL,
+};
+
 static struct cpufreq_driver sprd_cpufreq_driver = {
 	.name = "sprd-cpufreq-v2",
 	.flags = CPUFREQ_NEED_INITIAL_FREQ_CHECK |
@@ -529,6 +652,7 @@ static struct cpufreq_driver sprd_cpufreq_driver = {
 	.online = sprd_cpufreq_online,
 	.offline = sprd_cpufreq_offline,
 	.register_em = cpufreq_register_em_with_opp,
+	.attr = sprd_cpufreq_attr,
 };
 
 /* init inerface */
@@ -774,9 +898,14 @@ static int sprd_cpufreq_probe(struct platform_device *pdev)
 
 	dev_info(dev, "%s: probe sprd cpufreq v2 driver\n", __func__);
 
+	/* MU300: DVFS_INIT runs once per boot (see above) */
+	if (READ_ONCE(sprd_volt_state) != SV_PROBING)
+		return -EBUSY;
+
 	flag = sprd_cpufreq_get_debug_flag();
 	if ((flag & 0xFF) == SPRD_DVFS_DEBUG_MAGIC) {
 		dev_info(dev, "%s: disable apcpu dvfs for debug!\n", __func__);
+		WRITE_ONCE(sprd_volt_state, SV_DISABLED);
 		return 0;
 	}
 
@@ -791,6 +920,23 @@ static int sprd_cpufreq_probe(struct platform_device *pdev)
 		dev_err(dev, "%s: init cluster info error\n", __func__);
 		return ret;
 	}
+
+	/* MU300: DVFS_INIT and the registration wait for the initramfs' word, or the timer */
+	sprd_dvfs_base_flag = flag;
+	sprd_volt_dcdc_limit();
+	mutex_lock(&sprd_volt_lock);
+	sprd_volt_state = SV_WAITING;
+	mutex_unlock(&sprd_volt_lock);
+	schedule_delayed_work(&sprd_volt_work, SPRD_VOLT_WAIT_S * HZ);
+	dev_info(dev, "%s: DVFS waits for voltage_offset_uv (stock voltages after %ds)\n", __func__, SPRD_VOLT_WAIT_S);
+
+	return 0;
+}
+
+/* the vendor probe's tail: DVFS_INIT with FLAG, then the cpufreq driver */
+static int sprd_dvfs_start(u32 flag)
+{
+	int ret;
 
 	ret = pclusters->dvfs_init(flag);
 	if (ret) {
@@ -812,6 +958,147 @@ static int sprd_cpufreq_probe(struct platform_device *pdev)
 
 	return ret;
 }
+
+static void sprd_volt_start_work(struct work_struct *work)
+{
+	bool timeout = false;
+	u32 flag;
+	int ret;
+
+	mutex_lock(&sprd_volt_lock);
+	if (sprd_volt_state == SV_WAITING) {
+		memset(sprd_volt_req, 0, sizeof(sprd_volt_req));
+		timeout = true;
+	} else if (sprd_volt_state != SV_QUEUED) {
+		mutex_unlock(&sprd_volt_lock);
+		return;
+	}
+	ret = sprd_volt_flag(sprd_dvfs_base_flag, sprd_volt_req, &flag);
+	if (ret) {	/* cannot happen: checked when written; the stock call then */
+		memset(sprd_volt_req, 0, sizeof(sprd_volt_req));
+		flag = sprd_dvfs_base_flag;
+	}
+	memcpy(sprd_volt_applied, sprd_volt_req, sizeof(sprd_volt_applied));
+	if (timeout)
+		dev_warn(dev, "no voltage_offset_uv within %ds: DVFS starts at the stock voltages\n", SPRD_VOLT_WAIT_S);
+	else
+		dev_info(dev, "DVFS_INIT flag 0x%08x, voltage offsets %d,%d,%d uV%s\n", flag, sprd_volt_req[0],
+			 sprd_volt_req[1], sprd_volt_req[2],
+			 (sprd_volt_req[0] | sprd_volt_req[1] | sprd_volt_req[2]) ? " (EXPERIMENTAL)" : "");
+	ret = sprd_dvfs_start(flag);
+	if (ret)
+		sprd_volt_state = SV_FAILED;
+	else
+		sprd_volt_state = timeout ? SV_TIMEOUT : SV_APPLIED;
+	mutex_unlock(&sprd_volt_lock);
+}
+
+/* the lowest regulator-max-microvolt of the UMP9620 CPU DCDCs in the device tree */
+static void sprd_volt_dcdc_limit(void)
+{
+	static const char * const rails[] = { "DCDC_CPU1", "DCDC_CPU2" };
+	struct device_node *pmic, *np;
+	int i, lim = 0;
+	u32 v;
+
+	pmic = of_find_compatible_node(NULL, NULL, "sprd,ump962x-regulator");
+	for (i = 0; pmic && i < ARRAY_SIZE(rails); i++) {
+		np = of_get_child_by_name(pmic, rails[i]);
+		if (!np)
+			continue;
+		if (!of_property_read_u32(np, "regulator-max-microvolt", &v) && v > 0 && v <= INT_MAX &&
+		    (!lim || (int)v < lim))
+			lim = v;
+		of_node_put(np);
+	}
+	of_node_put(pmic);
+	sprd_volt_dcdc_max_uv = lim;
+	dev_info(dev, "CPU DCDC maximum %duV%s\n", lim, lim ? "" : " (unknown: no voltage raise)");
+}
+
+/*
+ * voltage_offset_uv: "A,B,C" in uV for domains 0..2, once per boot, while DVFS waits. Read: what DVFS runs with.
+ */
+static int sprd_volt_param_set(const char *val, const struct kernel_param *kp)
+{
+	int uv[SPRD_VOLT_DOMAINS], ret, i;
+	bool any = false;
+	u32 flag;
+
+	/* the command line is parsed before userspace runs: never from there, and never without CAP_SYS_ADMIN */
+	if (system_state != SYSTEM_RUNNING || !capable(CAP_SYS_ADMIN))
+		return -EPERM;
+	ret = sprd_volt_parse(val, uv);
+	if (ret)
+		return ret;
+
+	mutex_lock(&sprd_volt_lock);
+	if (sprd_volt_state != SV_WAITING) {
+		ret = -EBUSY;
+		goto out;
+	}
+	ret = sprd_volt_flag(sprd_dvfs_base_flag, uv, &flag);
+	if (ret)
+		goto out;
+	for (i = 0; i < SPRD_VOLT_DOMAINS; i++) {
+		any |= uv[i] != 0;
+		if (uv[i] > 0 && !sprd_volt_dcdc_max_uv)
+			ret = -EOPNOTSUPP;
+	}
+	if (any && !of_machine_is_compatible("sprd,ums9620"))
+		ret = -EOPNOTSUPP;
+	if (ret)
+		goto out;
+	memcpy(sprd_volt_req, uv, sizeof(sprd_volt_req));
+	sprd_volt_state = SV_QUEUED;
+	mod_delayed_work(system_wq, &sprd_volt_work, 0);
+out:
+	mutex_unlock(&sprd_volt_lock);
+	if (ret)
+		pr_warn("voltage_offset_uv %d,%d,%d refused (%d)\n", uv[0], uv[1], uv[2], ret);
+	return ret;
+}
+
+static int sprd_volt_param_get(char *buf, const struct kernel_param *kp)
+{
+	return sysfs_emit(buf, "%d,%d,%d\n", READ_ONCE(sprd_volt_applied[0]), READ_ONCE(sprd_volt_applied[1]),
+			  READ_ONCE(sprd_volt_applied[2]));
+}
+
+static int sprd_volt_param_ro(const char *val, const struct kernel_param *kp)
+{
+	return -EPERM;
+}
+
+static int sprd_volt_state_get(char *buf, const struct kernel_param *kp)
+{
+	return sysfs_emit(buf, "%s\n", sprd_volt_state_names[READ_ONCE(sprd_volt_state)]);
+}
+
+static int sprd_volt_limits_get(char *buf, const struct kernel_param *kp)
+{
+	return sysfs_emit(buf, "min=%d max=%d step=%d dcdc_max=%d wait=%d\n", SPRD_VOLT_MIN_UV, SPRD_VOLT_MAX_UV,
+			  SPRD_VOLT_STEP_UV, sprd_volt_dcdc_max_uv, SPRD_VOLT_WAIT_S);
+}
+
+static const struct kernel_param_ops sprd_volt_offset_ops = {
+	.set = sprd_volt_param_set,
+	.get = sprd_volt_param_get,
+};
+static const struct kernel_param_ops sprd_volt_state_ops = {
+	.set = sprd_volt_param_ro,
+	.get = sprd_volt_state_get,
+};
+static const struct kernel_param_ops sprd_volt_limits_ops = {
+	.set = sprd_volt_param_ro,
+	.get = sprd_volt_limits_get,
+};
+module_param_cb(voltage_offset_uv, &sprd_volt_offset_ops, NULL, 0644);
+MODULE_PARM_DESC(voltage_offset_uv, "EXPERIMENTAL: CPU voltage offsets of domains 0,1,2 in uV, once per boot (the initramfs)");
+module_param_cb(voltage_state, &sprd_volt_state_ops, NULL, 0444);
+MODULE_PARM_DESC(voltage_state, "probing, waiting, queued, applied, timeout, failed or disabled");
+module_param_cb(voltage_limits, &sprd_volt_limits_ops, NULL, 0444);
+MODULE_PARM_DESC(voltage_limits, "what voltage_offset_uv accepts");
 
 /**
  * sprd_cpufreq_update_opp() - returns the max freq of a cpu and update dvfs
@@ -917,6 +1204,7 @@ static struct platform_driver sprd_cpufreq_platform_driver = {
 	.driver = {
 		.name = "sprd-cpufreq-v2",
 		.of_match_table = sprd_cpufreq_of_match,
+		.suppress_bind_attrs = true,	/* MU300: no unbind - DVFS_INIT runs once per boot */
 	},
 	.probe = sprd_cpufreq_probe,
 };

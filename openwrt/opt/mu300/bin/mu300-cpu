@@ -6,6 +6,8 @@
 #                                    kernel's thermal zones too, read only)
 #   mu300-cpu profile [NAME]         apply NAME and save it; no NAME shows the saved one
 #   mu300-cpu apply                  apply the saved profile (the boot service)
+#   mu300-cpu voltage ...            the CPU voltage offset, EXPERIMENTAL (it can damage the device for good):
+#                                    see "the CPU voltage offset" below and docs/FINDINGS.md 133
 # Profiles: saving (cores capped at ~60 % of the maximum, schedutil - cooler, less power), balanced (schedutil over
 # the full range, the stock behaviour), performance (every cluster pinned at its hardware maximum).
 # Why it never fights the rest: mu300-power's idle "eco" drops the big core and caps policy4 to 1.5 GHz and brings
@@ -163,12 +165,268 @@ status_human() {
     [ "$(throttling)" = 1 ] && echo "thermal throttling: active" || echo "thermal throttling: none"
 }
 
+# --- the CPU voltage offset (EXPERIMENTAL: it can damage the device for good; docs/FINDINGS.md 133)
+#   mu300-cpu voltage status [--json]   what DVFS runs with, what is asked for, the trial/good/armed marks, the limits,
+#                                       the firmware check and each domain's frequency/voltage table
+#   mu300-cpu voltage set A,B,C --confirm EXPERIMENTAL
+#                                       offsets in uV for domains 0, 1, 2 (CPUs 0-3, 4-6, 7), from the next boot on
+#   mu300-cpu voltage off               back to 0,0,0 from the next boot on
+#   mu300-cpu voltage stress [MINUTES] [--background]   mu300-toolkit's CPU stress test (10 minutes)
+#   mu300-cpu voltage warning           the warning (English, Turkish, Chinese)
+#   (services) voltage mark-good: 10 minutes after boot; voltage shutdown: a clean shutdown or reboot
+# The firmware applies an offset once per boot, inside DVFS_INIT; the initramfs (boot/init, cpu-voltage) decides at
+# every boot whether the value asked for may run and writes it to the kernel. A new value gets one trial boot; it is
+# kept ("good") once that boot has been up 10 minutes, and dropped - back to 0,0,0, the request cleared - when a boot
+# with an offset ends without a clean shutdown (a crash, a watchdog reset, a power cut) or the trial boot ended before
+# its good mark. The kernel refuses anything outside -25..+12.5 mV or not a whole 3.125 mV step whatever this says.
+CPUV_SYS=$R/sys/module/sprd_cpufreq_v2_driver/parameters
+CPUV_WORD=EXPERIMENTAL
+CPUV_GOOD_MIN=10
+CPUV_WARN=${MU300_CPUV_WARNING:-/opt/mu300/lib/cpu-voltage-warning.txt}
+# the SML (ATF) builds whose DVFS_INIT encoding is known (the same list as boot/init's; a test keeps them equal)
+CPUV_SML_KNOWN=${MU300_CPUV_SML_KNOWN:-ff4782690fd805ff54fe34853ef8ee5c7e51c3259e20077c55373b50a4b259c2}
+
+cpuv_dir() {  # .mu300 on the Linux disk (the same rule as mu300-next-boot)
+    for _d in "${MU300_DISK:-/mnt/mu300-disk}" "$R"; do [ -d "$_d/.mu300" ] && { printf '%s/.mu300' "$_d"; return 0; }; done
+    return 1
+}
+cpuv_is_root() { [ "$(id -u)" = 0 ] || [ -n "${MU300_SYSROOT:-}" ]; }
+cpuv_norm() { printf '%s' "$1" | tr -s ' \t' ',' | sed 's/^,//; s/,$//'; }
+cpuv_valid() {  # the same check as boot/init's: three whole 3.125 mV steps within -25000..12500 uV, written plainly
+    case $1 in *[!0-9,-]*|'') return 1 ;; esac
+    _o=$IFS; IFS=,; set -- $1; IFS=$_o
+    [ $# = 3 ] || return 1
+    for _cv; do   # digits only, no leading zero, 6 at most
+        case ${_cv#-} in ''|*[!0-9]*|0?*|???????*) return 1 ;; esac
+        [ "$_cv" != -0 ] || return 1
+        [ "$_cv" -ge -25000 ] && [ "$_cv" -le 12500 ] && [ $((_cv % 3125)) = 0 ] || return 1
+    done
+}
+cpuv_kernel() { [ -r "$CPUV_SYS/voltage_offset_uv" ] && [ -r "$CPUV_SYS/voltage_state" ]; }
+cpuv_limit() {  # cpuv_limit KEY: a value of the kernel's voltage_limits (min max step dcdc_max wait)
+    tr ' ' '\n' < "$CPUV_SYS/voltage_limits" 2>/dev/null | sed -n "s/^$1=\(-\{0,1\}[0-9]*\)\$/\1/p"
+}
+cpuv_head() { head -n1 "$1" 2>/dev/null | tr -d '\r'; }
+snum() { case ${1#-} in ''|*[!0-9]*) echo 0 ;; *) echo "$1" ;; esac; }   # a signed integer, else 0
+
+# the eMMC's sml_a and sml_b (only the eMMC's: a card can carry the same names), checked against the known builds;
+# known, unknown or unreadable (not root). Cached for the boot: the partitions do not change under a running system.
+cpuv_firmware() {
+    _c=$RUNROOT/mu300/cpu-voltage-firmware
+    [ -s "$_c" ] && { cat "$_c"; return; }
+    _r=unknown _n=0
+    for _b in "$R"/sys/block/mmcblk*; do
+        [ "$(cat "$_b/device/type" 2>/dev/null)" = MMC ] || continue
+        for _u in "$_b"/"${_b##*/}"p*/uevent; do
+            _s=$(sed -n 's/^PARTNAME=sml_\([ab]\)$/\1/p' "$_u" 2>/dev/null)
+            [ -n "$_s" ] || continue
+            _p=${_u%/uevent}; _p=$R/dev/${_p##*/}
+            if ! _h=$(sha256sum < "$_p" 2>/dev/null); then _r=unreadable; break 2; fi
+            case " $CPUV_SML_KNOWN " in *" ${_h%% *} "*) _n=$((_n + 1)) ;; *) _r=unknown; break 2 ;; esac
+        done
+    done
+    [ "$_r" = unknown ] && [ "$_n" = 2 ] && _r=known
+    [ "$_r" = unreadable ] || { mkdir -p "${_c%/*}" 2>/dev/null; echo "$_r" > "$_c" 2>/dev/null; }
+    echo "$_r"
+}
+
+cpuv_arr() {  # "A,B,C" -> [A,B,C]; anything else -> null
+    if cpuv_valid "$1"; then printf '[%s]' "$1"; else printf null; fi
+}
+cpuv_phase() {  # off, pending (the next boot changes it), trial, good, or unsupported
+    _app=$1 _req=$2 _good=$3
+    cpuv_kernel || { echo unsupported; return; }
+    if [ "$_req" != "$_app" ]; then echo pending
+    elif [ "$_app" = 0,0,0 ]; then echo off
+    elif [ "$_good" = "$_app" ]; then echo good
+    else echo trial; fi
+}
+cpuv_stress_running() {
+    _pf=$RUNROOT/mu300/cpu-voltage-stress.pid
+    [ -s "$_pf" ] && kill -0 "$(cat "$_pf")" 2>/dev/null
+}
+
+voltage_status_json() {
+    _d=$(cpuv_dir) || _d=
+    _app=$(cpuv_head "$CPUV_SYS/voltage_offset_uv"); cpuv_valid "$_app" || _app=0,0,0
+    _req=$(cpuv_head "$_d/cpu-voltage"); cpuv_valid "$_req" || _req=0,0,0
+    _good=$(cpuv_head "$_d/cpu-voltage-good"); _trial=$(cpuv_head "$_d/cpu-voltage-trial")
+    _rej=$(cpuv_head "$_d/cpu-voltage-rejected")
+    _kst=$(cpuv_head "$CPUV_SYS/voltage_state")
+    printf '{"ok":1,"kernel":%s,"state":%s,"phase":%s,"applied":%s,"requested":%s,"good":%s,"trial":%s,"armed":%s,' \
+        "$(cpuv_kernel && echo 1 || echo 0)" "$(jstr "${_kst:-none}")" "$(jstr "$(cpuv_phase "$_app" "$_req" "$_good")")" \
+        "$(cpuv_arr "$_app")" "$(cpuv_arr "$_req")" "$(cpuv_arr "$_good")" "$(cpuv_arr "$_trial")" \
+        "$([ -n "$_d" ] && [ -e "$_d/cpu-voltage-armed" ] && echo 1 || echo 0)"
+    if [ -n "$_rej" ]; then
+        printf '"rejected":{"offsets":%s,"reason":%s},' "$(cpuv_arr "${_rej%% *}")" "$(jstr "${_rej#* }")"
+    else
+        printf '"rejected":null,'
+    fi
+    printf '"limits":{"min":%s,"max":%s,"step":%s,"dcdc_max":%s},"firmware":%s,"disk":%s,"confirm":%s,"good_after_min":%s,' \
+        "$(snum "$(cpuv_limit min)")" "$(snum "$(cpuv_limit max)")" "$(snum "$(cpuv_limit step)")" \
+        "$(snum "$(cpuv_limit dcdc_max)")" "$(jstr "$(cpuv_firmware)")" "$([ -n "$_d" ] && echo 1 || echo 0)" \
+        "$(jstr "$CPUV_WORD")" "$CPUV_GOOD_MIN"
+    _last=$(ls -t /var/log/mu300-stress-*.txt 2>/dev/null | head -n1)
+    printf '"stress":{"running":%s,"last":%s},"domains":[' "$(cpuv_stress_running && echo 1 || echo 0)" \
+        "$(jstr "$( [ -n "$_last" ] && head -n 12 "$_last" | cut -c1-160)")"
+    _sep=
+    for pol in $(policies); do
+        [ -r "$pol/scaling_voltage_domain" ] || continue
+        _rel=$(rd "$pol/related_cpus"); _lo=${_rel%% *}; _hi=${_rel##* }
+        printf '%s{"domain":%s,"cpus":%s,"offset":%s,"table":[' "$_sep" "$(num "$(rd "$pol/scaling_voltage_domain")")" \
+            "$(jstr "$_lo-$_hi")" "$(snum "$(rd "$pol/scaling_voltage_offset")")"
+        awk 'NF == 2 && $1 ~ /^[0-9]+$/ && $2 ~ /^[0-9]+$/ { printf "%s[%d,%d]", s, $1, $2; s = "," }' "$pol/scaling_voltage_table" 2>/dev/null
+        printf ']}'
+        _sep=,
+    done
+    printf ']}\n'
+}
+
+voltage_status_human() {
+    if ! cpuv_kernel; then echo "This kernel has no CPU voltage offset (a mainline kernel of this release or later has it)."; return 0; fi
+    _d=$(cpuv_dir) || _d=
+    _app=$(cpuv_head "$CPUV_SYS/voltage_offset_uv"); _req=$(cpuv_head "$_d/cpu-voltage"); [ -n "$_req" ] || _req=0,0,0
+    _good=$(cpuv_head "$_d/cpu-voltage-good")
+    echo "CPU voltage offset (EXPERIMENTAL), uV for domains 0,1,2 (CPUs 0-3, 4-6, 7)"
+    echo "  running now:  $_app ($(cpuv_head "$CPUV_SYS/voltage_state"))"
+    echo "  asked for:    $_req   phase: $(cpuv_phase "$_app" "$_req" "$_good")"
+    [ -n "$_good" ] && echo "  good mark:    $_good"
+    [ -n "$_d" ] && [ -e "$_d/cpu-voltage-armed" ] && echo "  armed:        $(cpuv_head "$_d/cpu-voltage-armed") (a boot that ends without a clean shutdown drops it)"
+    [ -n "$_d" ] && [ -s "$_d/cpu-voltage-rejected" ] && echo "  taken back:   $(cpuv_head "$_d/cpu-voltage-rejected")"
+    echo "  limits:       $(cpuv_head "$CPUV_SYS/voltage_limits")"
+    echo "  firmware:     $(cpuv_firmware)"
+    for pol in $(policies); do
+        [ -r "$pol/scaling_voltage_domain" ] || continue
+        echo "  domain $(rd "$pol/scaling_voltage_domain") (CPUs $(rd "$pol/related_cpus")): offset $(rd "$pol/scaling_voltage_offset") uV"
+        awk 'NF == 2 { printf "    %5d MHz  %7.3f mV\n", $1 / 1000, $2 / 1000 }' "$pol/scaling_voltage_table" 2>/dev/null
+    done
+}
+
+voltage_warning() { cat "$CPUV_WARN" 2>/dev/null || echo "!! EXPERIMENTAL: changing the CPU voltage can PERMANENTLY DAMAGE your device. At your own risk. !!"; }
+
+voltage_write() {  # voltage_write DIR VALUE: the request, atomically; a new value starts without trial or good mark
+    printf '%s\n' "$2" > "$1/cpu-voltage.tmp" && mv "$1/cpu-voltage.tmp" "$1/cpu-voltage" || return 1
+    rm -f "$1/cpu-voltage-trial" "$1/cpu-voltage-good" "$1/cpu-voltage-rejected"
+    sync
+}
+
+voltage_set() {  # voltage_set VALUE [--confirm WORD]
+    cpuv_is_root || { echo "mu300-cpu: the CPU voltage offset is root only" >&2; return 1; }
+    _v=$(cpuv_norm "$1"); _w=
+    [ "${2:-}" = --confirm ] && _w=${3:-}
+    cpuv_valid "$_v" || {
+        echo "mu300-cpu: offsets are three whole 3125 uV steps within -25000..12500 uV, e.g. -6250,-6250,0" >&2; return 2; }
+    [ "$_v" = 0,0,0 ] && { voltage_off; return; }
+    cpuv_kernel || { echo "mu300-cpu: this kernel has no CPU voltage offset" >&2; return 1; }
+    case $(cpuv_head "$CPUV_SYS/voltage_state") in disabled|failed|probing)
+        echo "mu300-cpu: CPU frequency scaling is not running normally on this boot ($(cpuv_head "$CPUV_SYS/voltage_state")); refused" >&2; return 1 ;; esac
+    case $_v in *[1-9]*)
+        _lo=$(cpuv_limit min); _hi=$(cpuv_limit max)
+        _o=$IFS; IFS=,; set -- $_v; IFS=$_o
+        for _x; do
+            { [ -n "$_lo" ] && [ "$_x" -lt "$(snum "$_lo")" ]; } || { [ -n "$_hi" ] && [ "$_x" -gt "$(snum "$_hi")" ]; } && {
+                echo "mu300-cpu: $_x is outside this kernel's limits ($(cpuv_head "$CPUV_SYS/voltage_limits"))" >&2; return 2; }
+            [ "$_x" -gt 0 ] && [ "$(snum "$(cpuv_limit dcdc_max)")" = 0 ] && {
+                echo "mu300-cpu: raising the voltage needs the CPU DCDC maximum from the device tree, and this device's has none; refused" >&2; return 2; }
+        done ;;
+    esac
+    _fw=$(cpuv_firmware)
+    [ "$_fw" = known ] || { echo "mu300-cpu: the SoC firmware (SML) is $_fw: its voltage encoding is not known, refused" >&2; return 1; }
+    if [ "$_w" != "$CPUV_WORD" ]; then
+        voltage_warning >&2
+        echo >&2
+        echo "mu300-cpu: to go ahead, type the confirmation word: mu300-cpu voltage set $_v --confirm $CPUV_WORD" >&2
+        return 2
+    fi
+    _d=$(cpuv_dir) || { echo "mu300-cpu: the Linux disk (.mu300) was not found" >&2; return 1; }
+    voltage_write "$_d" "$_v" || { echo "mu300-cpu: could not write $_d/cpu-voltage" >&2; return 1; }
+    say "CPU voltage offset $_v asked for (EXPERIMENTAL), from the next boot"
+    voltage_warning
+    cat <<EOF
+
+Asked for $_v uV (domains 0,1,2). Nothing changes until the next reboot; then:
+  - that boot is the trial: the offset is kept once it has been up $CPUV_GOOD_MIN minutes;
+  - a boot with the offset that ends in a crash, a watchdog reset or a power cut drops it (back to 0,0,0), and so
+    does a trial boot that ends before its $CPUV_GOOD_MIN minutes;
+  - test it under load during the trial: mu300-cpu voltage stress 10
+Back to the stock voltages at any time: mu300-cpu voltage off (and reboot).
+EOF
+}
+
+voltage_off() {
+    cpuv_is_root || { echo "mu300-cpu: the CPU voltage offset is root only" >&2; return 1; }
+    _d=$(cpuv_dir) || { echo "mu300-cpu: the Linux disk (.mu300) was not found" >&2; return 1; }
+    voltage_write "$_d" 0,0,0 || { echo "mu300-cpu: could not write $_d/cpu-voltage" >&2; return 1; }
+    say "CPU voltage offset off from the next boot"
+    _app=$(cpuv_head "$CPUV_SYS/voltage_offset_uv")
+    if [ -n "$_app" ] && [ "$_app" != 0,0,0 ]; then
+        echo "Off from the next boot. This boot keeps running with $_app until you reboot."
+    else
+        echo "Off: the stock voltages."
+    fi
+}
+
+voltage_mark_good() {  # 10 minutes after boot (mu300-cpu-voltage.timer, the OpenWrt service)
+    _d=$(cpuv_dir) || return 0
+    _a=$(cpuv_head "$_d/cpu-voltage-armed")
+    [ -n "$_a" ] || return 0
+    _k=$(cpuv_head "$CPUV_SYS/voltage_offset_uv")
+    [ "$_a" = "$_k" ] || { say "armed $_a but the kernel runs ${_k:-nothing}: no good mark"; return 0; }
+    _up=$(cut -d. -f1 "$R/proc/uptime" 2>/dev/null)
+    [ "${_up:-0}" -ge $((CPUV_GOOD_MIN * 60)) ] 2>/dev/null || { say "up ${_up:-?} s, the good mark needs $CPUV_GOOD_MIN minutes"; return 1; }
+    [ "$(cpuv_head "$_d/cpu-voltage-good")" = "$_a" ] && return 0
+    echo "$_a" > "$_d/cpu-voltage-good" && rm -f "$_d/cpu-voltage-trial" && sync
+    say "CPU voltage offset $_a: good mark after ${_up} s up"
+}
+
+voltage_shutdown() {  # a clean shutdown or reboot only: the armed mark goes; a stopped service is not a shutdown
+    if [ -z "${MU300_SYSROOT:-}" ] && command -v systemctl >/dev/null 2>&1; then
+        case $(systemctl is-system-running 2>/dev/null) in stopping) ;; *) say "not a shutdown: the armed mark stays"; return 0 ;; esac
+    fi
+    _d=$(cpuv_dir) || return 0
+    [ -e "$_d/cpu-voltage-armed" ] || return 0
+    rm -f "$_d/cpu-voltage-armed" && sync
+    say "clean shutdown: the CPU voltage offset stays for the next boot"
+}
+
+voltage_stress() {  # voltage_stress [MINUTES] [--background]
+    _m=10 _bg=
+    for _a; do case $_a in --background) _bg=1 ;; *) _m=$_a ;; esac; done
+    case $_m in ''|*[!0-9]*) echo "mu300-cpu: minutes: 1 to 120" >&2; return 2 ;; esac
+    [ "$_m" -ge 1 ] && [ "$_m" -le 120 ] || { echo "mu300-cpu: minutes: 1 to 120" >&2; return 2; }
+    cpuv_is_root || { echo "mu300-cpu: the stress test needs root" >&2; return 1; }
+    _tk=${MU300_TOOLKIT:-/opt/mu300/bin/mu300-toolkit}
+    if [ -z "$_bg" ]; then exec "$_tk" stress cpu "$_m"; fi
+    cpuv_stress_running && { echo "mu300-cpu: a stress test is already running" >&2; return 1; }
+    mkdir -p "$RUNROOT/mu300"
+    # its own session, no terminal: mu300-toolkit then runs for the time and writes /var/log/mu300-stress-*.txt
+    setsid "$_tk" stress cpu "$_m" </dev/null >/dev/null 2>&1 &
+    echo $! > "$RUNROOT/mu300/cpu-voltage-stress.pid"
+    echo "CPU stress test started for $_m minutes; the summary goes to /var/log/mu300-stress-*.txt"
+}
+
+voltage_main() {
+    case ${1:-status} in
+        status) if [ "${2:-}" = --json ]; then voltage_status_json; else voltage_status_human; fi ;;
+        set) shift; [ $# -ge 1 ] || { echo "usage: mu300-cpu voltage set A,B,C --confirm $CPUV_WORD" >&2; return 2; }
+             voltage_set "$@" ;;
+        off) voltage_off ;;
+        mark-good) voltage_mark_good ;;
+        shutdown) voltage_shutdown ;;
+        stress) shift; voltage_stress "$@" ;;
+        warning) voltage_warning ;;
+        *) echo "usage: mu300-cpu voltage [status [--json]|set A,B,C --confirm $CPUV_WORD|off|stress [MINUTES] [--background]|warning]" >&2; return 2 ;;
+    esac
+}
+
+
 case ${1:-status} in
     status) if [ "${2:-}" = --json ]; then status_json; else status_human; fi ;;
     profile)
         if [ -z "${2:-}" ]; then echo "$(conf_get PROFILE)"; exit 0; fi
         apply "$2" && conf_set PROFILE "$2" && { [ "${3:-}" = --json ] && status_json || status_human; } ;;
     apply) apply "$(conf_get PROFILE)" ;;
-    -h|--help|help) sed -n '2,8s/^# \{0,1\}//p' "$0" ;;
-    *) echo "usage: mu300-cpu [status [--json]|profile [saving|balanced|performance]|apply]" >&2; exit 2 ;;
+    voltage) shift; voltage_main "$@" ;;
+    -h|--help|help) sed -n '2,10s/^# \{0,1\}//p' "$0" ;;
+    *) echo "usage: mu300-cpu [status [--json]|profile [saving|balanced|performance]|apply|voltage ...]" >&2; exit 2 ;;
 esac
