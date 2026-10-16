@@ -291,6 +291,8 @@ def su(st, cmd, argv):
             return st['pwcheck'], 'read'
         want = pws.get(m.group(1))
         return ('NOUSER' if want is None else 'LOCKED' if want == '!' else 'MATCH' if given == want else 'NOMATCH'), 'read'
+    if cmd == 'chmod 755 %s/mu300-pwcheck %s/mu300-pwbb; true' % (T, T):
+        return '', 'read'       # the check's own tools, pushed (tools/storage.sh's pw_tools_push)
     if 'android-mount-mu300root.sh' in cmd and 'MU300_RO=1' in cmd:
         return st['vpn_on'], 'read'
     # what a pull of the file written on the device will give
