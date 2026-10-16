@@ -642,7 +642,7 @@ class Signature(UpdateBase):
         self.assertIn("RELEASE_PUB=${MU300_RELEASE_PUB:-/opt/mu300/lib/release.pub}", UPDATE.read_text())
         # the release names itself inside what is signed
         self.assertIn('echo "$TAG" > "$D/mu300-release"', rel)
-        self.assertIn('sha256sum *.tar.gz mu300-update mu300-release; } > SHA256SUMS', rel)
+        self.assertIn('sha256sum *.tar.gz *.manifest.gz mu300-update mu300-release; } > SHA256SUMS', rel)      # (and the manifests)
         self.assertEqual(rel.count('"$D/mu300-release" "$D/SHA256SUMS" $SIG'), 2)
 
     @unittest.skipUnless(shutil.which('zip') and shutil.which('unzip'), 'zip and unzip are needed to build the Magisk zips')
@@ -1254,7 +1254,8 @@ class Adapter(ShellTest):
         for shell in self.each_shell():
             self.reset()
             o = self.ad(shell, 'get')
-            self.assertEqual((o['ok'], o['status']['installed'], o['check'], o['check_age'], o['report']), (1, 'v2026.10.25', None, None, None))
+            self.assertEqual((o['ok'], o['status']['installed'], o['check'], o['check_age'], o['report'], o['report_new']),
+                             (1, 'v2026.10.25', None, None, None, 0))
             self.assertEqual(o['upload'], {'present': 0, 'size': 0, 'inspect': None})
             self.assertEqual(o['job'], {'kind': None, 'state': 'none'})
             self.assertEqual(self.ad(shell, 'job'), {'ok': 1, 'job': {'kind': None, 'state': 'none'}})
@@ -1266,6 +1267,40 @@ class Adapter(ShellTest):
             self.assertEqual(self.ad(shell, 'get', MU300_UPDATE_CMD=self.tmp / 'none'),
                              {'ok': 0, 'error': 'Updating is not available on this system'})
             self.assertEqual(self.ad(shell, 'explode'), {'ok': 0, 'error': 'Unknown update operation'})
+
+    def test_the_report_of_the_last_update(self):
+        # what mu300-update's carry block writes (carry_report): the newest update on top, root's alone; the page shows
+        # its start, opened while the note at login is up (update-report.new, until "mu300-update report")
+        report = self.tmp / 'update-report'
+        newest = ('==== openwrt-luci: v2026.10.27 -> v2026.11.02, 2026-11-02 10:00 ====\n'
+                  'Everything you added to the system was carried over: 412 files, 37 MB.\n'
+                  'Yours is in use where the new release has another version (the one of the release: '
+                  '/etc/mu300/update-kept/v2026.10.27/image):\n  /etc/config/firewall\n'
+                  'Packages installed on the device:\n  tcpdump\n\n')
+        for shell in self.each_shell():
+            self.reset()
+            report.write_text(newest + '==== openwrt-luci: v2026.10.20 -> v2026.10.27, 2026-10-27 09:00 ====\nolder\n')
+            report.chmod(0o600)
+            o = self.ad(shell, 'get')
+            self.assertTrue(o['report'].startswith(newest), o['report'])
+            self.assertIn('v2026.10.20 -> v2026.10.27', o['report'])
+            self.assertEqual(o['report_new'], 0)
+            (self.tmp / 'update-report.new').write_text('')
+            self.assertEqual(self.ad(shell, 'get')['report_new'], 1)
+            # a long one: its start, and where the rest is
+            report.write_text(newest + ''.join(f'  /home/user/file{i}\n' for i in range(2000)))
+            rep = self.ad(shell, 'get')['report']
+            self.assertTrue(rep.startswith(newest))
+            self.assertLess(len(rep), 6200)
+            self.assertTrue(rep.endswith('\n...\n(the whole report: mu300-update report)'), rep[-200:])
+            # a link at its place is not followed
+            report.unlink()
+            report.symlink_to(self.tmp / 'elsewhere')
+            (self.tmp / 'elsewhere').write_text('not the report\n')
+            o = self.ad(shell, 'get')
+            self.assertEqual((o['report'], o['report_new']), (None, 0))
+            report.unlink()
+            (self.tmp / 'update-report.new').unlink()
 
     def test_a_check_is_kept_for_the_page(self):
         for shell in self.each_shell():
@@ -1444,9 +1479,10 @@ class Adapter(ShellTest):
                       'progress 100%'):
                 self.assertIn(s, out)
             # the same for the report of the last update
-            (self.tmp / 'update-report').write_text('kept: etc/config\nwifi key=MyWifiPassword1\nIMSI 286011234567890\n')
+            (self.tmp / 'update-report').write_text('==== openwrt-luci: v2026.10.27 -> v2026.11.02 ====\n  /etc/config/wireless\n'
+                                                    'wifi key=MyWifiPassword1\nIMSI 286011234567890\n')
             rep = self.ad(shell, 'get')['report']
-            self.assertIn('kept: etc/config', rep)
+            self.assertIn('/etc/config/wireless', rep)
             self.assertNotIn('MyWifiPassword1', rep)
             self.assertNotIn('286011234567890', rep)
 

@@ -102,8 +102,8 @@ Device	Cihaz
 Kernel	Çekirdek
 enter 1, 2 or 3	1, 2 ya da 3 girin
 A MU300 Linux installation is already on this device.	Bu cihazda zaten bir MU300 Linux kurulumu var.
-update  reinstall the systems and keep settings and data (/etc/mu300, users and home directories,	update  sistemleri yeniden kurar, ayarları ve verileri korur (/etc/mu300, kullanıcılar ve ev dizinleri,
-        SSH host keys, OpenWrt UCI config; the hotspot settings are kept too)	        SSH anahtarları, OpenWrt UCI ayarları; hotspot ayarları da korunur)
+update  install the new release over the systems and keep everything you added or changed in them	update  yeni sürümü sistemlerin üzerine kurar, eklediğiniz ve değiştirdiğiniz her şeyi korur
+        (files, settings, accounts; packages you installed come back at the first boot)	        (dosyalar, ayarlar, hesaplar; kurduğunuz paketler ilk açılışta yeniden kurulur)
 wipe    erase the Linux filesystem and install from scratch	wipe    Linux dosya sistemini siler ve sıfırdan kurar
 update or wipe	update (güncelle) ya da wipe (sil)
 Password for the "ubuntu" user (Ubuntu) and "root" (OpenWrt)	"ubuntu" kullanıcısı (Ubuntu) ve "root" (OpenWrt) için şifre
@@ -138,7 +138,7 @@ Android, Linux on demand	Android, istenince Linux
 filesystem:     {1}	dosya sistemi:  {1}
 CREATE new ext4 (erases the Linux region)	YENİ ext4 OLUŞTUR (Linux alanını siler)
 keep existing	mevcut olan korunur
-update:         settings and user data of the chosen systems are kept, everything else is replaced	güncelleme:     seçilen sistemlerin ayarları ve kullanıcı verileri korunur, geri kalan her şey yenilenir
+update:         everything you added to the chosen systems or changed in them is kept (/etc/mu300/update-report)	güncelleme:     seçilen sistemlere eklediğiniz veya değiştirdiğiniz her şey korunur (/etc/mu300/update-report)
 note:           the chosen systems are installed fresh; their previous files and settings are replaced	not:            seçilen sistemler sıfırdan kurulur; önceki dosyaları ve ayarları değiştirilir
 writes:         Linux region at offset {1}, boot_{2}, 32 bytes of misc (boot_{3}, GPT and userdata are not touched)	yazılacaklar:   {1} konumundaki Linux alanı, boot_{2}, misc'in 32 baytı (boot_{3}, GPT ve userdata'ya dokunulmaz)
 Type INSTALL to continue	Devam etmek için INSTALL yazın
@@ -228,7 +228,6 @@ on, only for the adb key of this computer	açık, yalnızca bu bilgisayarın adb
 on, for every computer: a root shell without a password (on the device: mu300-usb adb auth keys, or mu300-usb adb off)	açık, her bilgisayar için: parolasız root kabuğu (cihazda: mu300-usb adb auth keys ya da mu300-usb adb off)
 asking it over adb ({1})	adb üzerinden isteniyor ({1})
 Android runs from slot {1}; Linux goes to slot {2} (boot_{2})	Android {1} yuvasından çalışıyor; Linux {2} yuvasına kurulacak (boot_{2})
-CREATE new ext4 (erases what is there)	yeni ext4 OLUŞTURULACAK (oradakiler silinir)
 Dry run: nothing was written.	Deneme çalıştırması: hiçbir şey yazılmadı.
 MU300_BOOT_OS={1}, but {1} is not installed	MU300_BOOT_OS={1}, ancak {1} kurulu değil
 Magisk's magiskboot was not found; install this zip with Magisk 26 or newer	Magisk'in magiskboot aracı bulunamadı; bu zip'i Magisk 26 veya daha yenisiyle kurun
@@ -244,7 +243,6 @@ could not mount the existing Linux filesystem	mevcut Linux dosya sistemi bağlan
 could not unpack the kernel bundle	çekirdek paketi açılamadı
 could not unpack the zip	zip açılamadı
 default	varsayılan
-keep: settings and data of {1} are kept	korunuyor: {1} ayarları ve verileri korunur
 misc holds no valid boot control block; nothing was changed	misc geçerli bir açılış denetim bloğu içermiyor; hiçbir şey değiştirilmedi
 mu300-install.conf: MU300_PASSWORD must have at least 6 characters	mu300-install.conf: MU300_PASSWORD en az 6 karakter olmalı
 mu300-install.conf: {1} is not a setting of this installer; ignored	mu300-install.conf: {1} bu yükleyicinin bir ayarı değil; yok sayıldı
@@ -347,6 +345,15 @@ to share by shrinking it: {1} MiB up to sector {2}; needed: {3} MiB ({4} MiB And
 the new partition table did not arrive on the device as it was made; nothing is changed	yeni bölüm tablosu cihaza oluşturulduğu gibi ulaşmadı; hiçbir şey değiştirilmedi
 {1} is not a file that only root can change; nothing was changed	{1} yalnızca root'un değiştirebildiği bir dosya değil; hiçbir şey değiştirilmedi
 on, for {1}	açık, {1} için
+The installed {1} is {2}, and this zip is {3}, an older release. Going back to an older release is not done by itself: the older release may not carry over everything you added to the system.	Kurulu {1} sürümü {2}, bu zip ise {3}: daha eski bir sürüm. Daha eski bir sürüme kendiliğinden dönülmez: eski sürüm sisteme eklediğiniz her şeyi taşımayabilir.
+Nothing was changed. To install it all the same, put MU300_DOWNGRADE=yes into {1} (a release before the first release with a four-field tag then keeps only settings, users and home directories), or MU300_MODE=wipe to start fresh.	Hiçbir şey değiştirilmedi. Yine de kurmak için {1} dosyasına MU300_DOWNGRADE=yes yazın (dört alanlı etiketi olan ilk sürümden önceki bir sürüm o zaman yalnızca ayarları, kullanıcıları ve ev dizinlerini korur) ya da sıfırdan başlamak için MU300_MODE=wipe.
+CREATE new ext4 (erases what is there: every installed system, every file in them, the extras)	yeni ext4 OLUŞTURULACAK (oradakiler silinir: kurulu her sistem, içlerindeki her dosya, ekler)
+keep: nothing is erased	korunuyor: hiçbir şey silinmez
+update:         {1} {2} -> {3}: only settings, users and home directories are kept (MU300_UPDATE_KEEP=list)	güncelleme:     {1} {2} -> {3}: yalnızca ayarlar, kullanıcılar ve ev dizinleri korunur (MU300_UPDATE_KEEP=list)
+update:         {1} {2} -> {3}: everything you added to it or changed in it is kept (files, settings, accounts and passwords);	güncelleme:     {1} {2} -> {3}: eklediğiniz ya da değiştirdiğiniz her şey korunur (dosyalar, ayarlar, hesaplar ve parolalar);
+                packages you installed are installed again at its first boot; what could not stay in place is listed in /etc/mu300/update-report	                kurduğunuz paketler ilk açılışta yeniden kurulur; yerinde kalamayanlar /etc/mu300/update-report içinde listelenir
+                {1} is the OLDER release (MU300_DOWNGRADE=yes): one from before the first release with a four-field tag keeps only settings, users and home directories	                {1} DAHA ESKİ sürüm (MU300_DOWNGRADE=yes): dört alanlı etiketi olan ilk sürümden önceki bir sürüm yalnızca ayarları, kullanıcıları ve ev dizinlerini korur
+not touched:    {1}and the extras (the VPN module) stay as they are	dokunulmaz:     {1}ve ekler (VPN modülü) olduğu gibi kalır
 A beta is out: {1}, a prerelease for testing, newer than the newest full release {2}.	Bir beta yayımlandı: {1}; deneme amaçlı bir ön sürüm, en yeni tam sürüm olan {2} sürümünden daha yeni.
 Install the beta {1} instead of {2}? (yes/no)	{2} yerine {1} betası kurulsun mu? (evet/hayır)
 News and new releases are on the Telegram channel of the project, you can follow it: {1}	Haberler ve yeni sürümler projenin Telegram kanalında, takip edebilirsiniz: {1}
@@ -625,7 +632,7 @@ This place has {1}: both systems together need {2}.	Burada {1} var: iki sistem b
 GitHub did not answer (offline, or its rate limit): the installer will look the release up itself.	GitHub yanıt vermedi (çevrimdışı ya da istek sınırı): yükleyici sürümü kendisi bulacak.
 To download: {1} in {2} files (checked against the release's SHA256 sums).	İndirilecek: {2} dosyada {1} (sürümün SHA256 özetleriyle doğrulanır).
 Failed starts in a row before Android (1-6):	Android'e dönmeden önce arka arkaya başarısız açılış (1-6):
-Update: reinstall the systems and keep settings and data	Güncelle: sistemleri yeniden kur, ayarları ve verileri koru
+Update: install the new release and keep everything you added or changed	Güncelle: yeni sürümü kur, eklediğin ve değiştirdiğin her şeyi koru
 /etc/mu300, users and home directories, SSH host keys, OpenWrt's UCI configuration and the hotspot settings are kept.	/etc/mu300, kullanıcılar ve ev dizinleri, SSH anahtarları, OpenWrt UCI ayarları ve hotspot ayarları korunur.
 Wipe: erase the Linux filesystem and install from scratch	Sil: Linux dosya sistemini sil ve sıfırdan kur
 Another release, by its tag:	Etiketiyle başka bir sürüm:

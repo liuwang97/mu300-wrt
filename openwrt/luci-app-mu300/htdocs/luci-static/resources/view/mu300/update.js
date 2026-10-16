@@ -252,7 +252,8 @@ return view.extend({
 				: st.boot_locked ? _('Linux is locked as the default boot: a failed start does not send the device to Android by itself, except the first starts of a new boot image.')
 				: _('If Linux fails to start %d times in a row, the device starts Android by itself.').format(st.boot_attempts || 5)
 		]));
-		if (res.report) inst.appendChild(E('details', { 'id': 'mud-upd-report', 'style': 'margin-top:8px' }, [
+		/* what the last updates carried over, set aside or put back (/etc/mu300/update-report): open while it is new */
+		if (res.report) inst.appendChild(E('details', { 'id': 'mud-upd-report', 'style': 'margin-top:8px', 'open': res.report_new ? '' : null }, [
 			E('summary', { 'style': 'cursor:pointer' }, _('Report of the last update')),
 			E('pre', { 'style': 'max-height:18em;overflow:auto;white-space:pre-wrap;font-size:.72rem;margin:6px 0 0' }, [ res.report ])
 		]));

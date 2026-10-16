@@ -3,8 +3,11 @@
 #   mu300-update check            what is installed, what is the newest release
 #   mu300-update version          what is installed (no network needed)
 #   mu300-update apply [OS...]    download, unpack and switch (default: every installed system), then the kernel and
-#                                 the boot image (MU300_UBUNTU=24.04|26.04: move Ubuntu to that release). Packages
-#                                 installed on the device are installed again at the first boot (--no-reinstall: not)
+#                                 the boot image (MU300_UBUNTU=24.04|26.04: move Ubuntu to that release). Everything
+#                                 you added to the system or changed in it is carried over; packages installed on the
+#                                 device are installed again at the first boot (--no-reinstall: not). --no-rollback:
+#                                 the previous system is not kept, which needs no room for a copy of your files
+#   mu300-update report           what the last updates carried over, set aside or put back (/etc/mu300/update-report)
 #   mu300-update boot             only the kernel and the boot image
 #   mu300-update rollback [OS]    go back to the previous version kept as <os>.old
 #   mu300-update rollback-boot    go back to the previous boot image
@@ -23,10 +26,11 @@
 # without it or its engines: when they cannot be had, apply stops before it changes anything (MU300_VPN_MODULE=FILE|DIR,
 # or the module's tarballs and SHA256SUMS copied to /mnt/mu300-disk/.mu300-update/vpn/, serve them offline).
 #
-# How it works: the new filesystem is unpacked next to the old one as <os>.new on the Linux partition, your settings
-# and the vendor files are carried over, and only then are the directories swapped (<os> -> <os>.old, <os>.new ->
-# <os>). Renaming the directory a running system boots from is safe - the running processes keep the old one until
-# the next boot - so an interrupted download or unpack can never leave a half-updated system behind.
+# How it works: the new filesystem is unpacked next to the old one as <os>.new on the Linux partition, everything
+# that is yours in the old one (what its image did not bring, or brought and you changed: the carry block) and the
+# vendor files are carried over, and only then are the directories swapped (<os> -> <os>.old, <os>.new -> <os>).
+# Renaming the directory a running system boots from is safe - the running processes keep the old one until the
+# next boot - so an interrupted download or unpack can never leave a half-updated system behind.
 #
 # The kernel and the boot image are updated here too, from releases that carry the generic boot ramdisk segment (see
 # boot_update). An mu300-update from before that installs the new system, which brings the new mu300-update: after
@@ -208,8 +212,9 @@ copy_missing() {
 is_root() { [ -d "$1" ] && [ / -ef "$1" ]; }
 # the directory this system booted from; /etc/openwrt_release alone cannot tell the two OpenWrt systems apart
 running_os() {
-    # between apply and the reboot / is the kept copy: $n.old; between rollback and the reboot, $n.broken (without it
-    # a rolled-back openwrt-luci was "openwrt" here, and the Update page named the wrong system: U30 Air, FINDINGS 86)
+    # between apply and the reboot / is the kept copy: $n.old; between rollback (or apply --no-rollback) and the
+    # reboot, $n.broken (without it a rolled-back openwrt-luci was "openwrt" here, and the Update page named the wrong
+    # system: U30 Air, FINDINGS 86)
     for n in $SYSTEMS; do
         for d in "$DISK/$n" "$DISK/$n.old" "$DISK/$n.broken"; do
             [ -d "$d" ] && [ "${MU300_ROOT:-/}" -ef "$d" ] && { echo "$n"; return; }
@@ -241,6 +246,16 @@ mounted_disk() {
 NOTICE=${MU300_NOTICE:-/run/mu300/update-available}
 MOTD_DIR=${MU300_MOTD_DIR:-/run/motd.d}
 notice() {
+    # an update that set something of the user's aside, or put something back, left a report (carry_report): a line
+    # at login until "mu300-update report" has shown it (OpenWrt: /etc/profile.d/mu300-update.sh looks itself)
+    if [ ! -e /etc/openwrt_release ] || [ -n "${MU300_MOTD_DIR:-}" ]; then
+        if [ -e "${MU300_SYSROOT:-}/etc/mu300/update-report.new" ]; then
+            mkdir -p "$MOTD_DIR" && chmod 755 "$MOTD_DIR" &&
+                echo 'The last update set some of your files aside or put some back: sudo mu300-update report' > "$MOTD_DIR/61-mu300-update-report"
+        else
+            rm -f "$MOTD_DIR/61-mu300-update-report"
+        fi
+    fi
     latest=$(latest_release)
     [ -n "$latest" ] || return 1   # offline: the note stays as it was, the next round asks again
     inst=$(installed_version)
@@ -437,12 +452,12 @@ upk_pending() {
         awk '$1 == "x" { d[$2] = 1; next } NF > 1 && !($2 in d) { print $2 }'
 }
 # What belongs to the new image, not to the device, in the directories an update keeps: its version and package
-# lists in etc/mu300 (an update carried the old ones over: every update then reported the version it replaced), and
+# lists and its manifest in etc/mu300 (the old ones, carried over, made every update report the version it replaced), and
 # the names of its own files in etc/config (never set aside). image_own_save NEW before the settings are copied,
 # image_own_restore NEW after; upk_record removes what they keep in NEW/.mu300-image.
 image_own_save() {
     rm -rf "$1/.mu300-image"; mkdir -p "$1/.mu300-image" || return 1
-    for _uf in image-version image-packages packages.txt; do
+    for _uf in image-version image-packages packages.txt image-manifest.gz; do
         [ ! -f "$1/etc/mu300/$_uf" ] || cp "$1/etc/mu300/$_uf" "$1/.mu300-image/$_uf" || return 1
     done
     for _uf in "$1"/etc/config/*; do [ ! -e "$_uf" ] || echo "${_uf##*/}"; done > "$1/.mu300-image/config"
@@ -450,7 +465,7 @@ image_own_save() {
 image_own_restore() {
     [ -d "$1/.mu300-image" ] || return 0
     mkdir -p "$1/etc/mu300" || return 1
-    for _uf in image-version image-packages packages.txt; do
+    for _uf in image-version image-packages packages.txt image-manifest.gz; do
         if [ -f "$1/.mu300-image/$_uf" ]; then cp "$1/.mu300-image/$_uf" "$1/etc/mu300/$_uf" || return 1
         # a list of the old image would describe the wrong one (the version stays: "unknown" says less)
         elif [ "$_uf" != image-version ]; then rm -f "$1/etc/mu300/$_uf"; fi
@@ -619,24 +634,813 @@ stale_config_clean() {
     rm -f "$1/etc/config/attendedsysupgrade"
 }
 # --- user-packages end
+# --- carry begin
+# An update keeps everything the user made (docs/FINDINGS.md 85). Until v2026.10.27 it kept a list of places
+# (keep_list) and the image replaced the rest: /etc/wireguard, a unit written by hand, crontabs, /var/lib/docker,
+# /opt, a changed /etc/sysctl.conf were gone from the system after an update. Now the question is asked the other
+# way round: which files of the old system came with its image? Its manifest says (one line per file of the image,
+# with type, mode, owner, size and sha256: an image carries its own as etc/mu300/image-manifest.gz, and the ones of
+# the releases before that ship in opt/mu300/lib/image-manifests). Everything else is the user's and goes into the
+# new system; an image file the user changed goes too, by the rules below. What cannot go where it was is set aside
+# under /etc/mu300/update-kept/<old release>/ (user/: the user's version, image/: the release's) and named in
+# /etc/mu300/update-report - nothing is dropped without a line there.
+#   not the image's (made by the user, or by software they installed)
+#       carried to its place. Where the new image has a file of that name: under /etc /var /home /root /srv /usr/local
+#       /opt /mnt /media the user's is used and the release's set aside; elsewhere, and where the release has a
+#       directory, the release's is used and the user's set aside.
+#   the image's, changed by the user
+#       /etc /var /home /root /srv /usr/local /opt /mnt /media: the user's version is used; when the new release
+#       changed that file too, its version is set aside (image/). Elsewhere (/usr, /bin, /lib, /www: programs) the
+#       release's is used and the user's set aside (user/) - as for the project's own programs (opt/mu300,
+#       usr/libexec/unisoc-modem, the mu300-* units and init scripts, the commands in /usr/local/bin), for scripts of
+#       packages in /etc/init.d and /etc/hotplug.d, for /etc/pam.d/common-* (written by pam-auth-update for the
+#       packages that are there) and for the image's own apt sources. Every such case is a line of the report.
+#   never less protected than the user left it
+#       What the user tightened stays in force, whatever the rule above says about the file. Settings are all under
+#       the user's directories (adb, sshd and dropbear, the firewall, the VPN and its kill switch, sudoers, sysctl,
+#       the panel's users and TLS: /etc/mu300, /etc/ssh, /etc/config, ...). A service the user turned off stays off:
+#       an enable link that is gone stays gone (also of the project's own services, and without a manifest: a link
+#       of the new image for a service the old system had and did not enable), and a mask (a link to /dev/null) is
+#       the user's even over the project's own unit. A mode the user narrowed is put on the new image's file even
+#       where the release's content is used. A package the user removed is back with the image, but its services
+#       are not enabled. An account of the image that the old system did not have (the user deleted it, or the
+#       release added it) is locked.
+#   the image's, deleted by the user
+#       under /etc /home /root /srv /usr/local /opt /mnt /media it stays deleted, and so does a service's enable link
+#       (rc.d, *.wants) - unless it is one of the project's own programs, a script in /etc/init.d or /etc/hotplug.d,
+#       went with an upgrade of its package, or its package was removed and is part of the image again: those are
+#       back, and the report says so. A uci-defaults script removes itself when it ran, and must run again in the
+#       new system. Elsewhere the release's file is back.
+#   the package manager's (its databases, the files of packages, /etc/alternatives)
+#       never carried file by file: the packages added on the device are installed again at the first boot
+#       (user-packages above). A package's configuration file is carried as the user's; its data is in no package and
+#       is carried like everything else. A file a package upgrade changed (dpkg's and apk's own sums say so) is not
+#       the user's.
+#   never carried
+#       what is below /proc /sys /dev /run /tmp /var/tmp /var/cache, sockets, what is on another filesystem (a mount
+#       point is carried as the directory it is; mu300-carry never leaves the filesystem), Ubuntu's kernel modules
+#       (they come from the kernel bundle), /etc/ld.so.cache and Python's caches under /usr.
+# Accounts and owners: merge_accounts, and here the system accounts added on the device. A file belongs to an
+# account, not to a number (carry_accounts_plan): the name the old system has for the owner decides, the accounts
+# are settled before a file is carried, and a file never becomes another account's by its number.
+# Without a manifest (an image built by hand, a release from before v2026.09.21): everything the new image does not
+# have is carried, keep_list's places are the user's as before, and of the rest every file that differs from the new
+# image's is set aside (user/) while there is room - which is the old image's own or the user's change cannot be told.
+#
+# One implementation for the three ways to update: this block runs from the NEW image, by its static busybox
+# (carry_run: "busybox sh NEW/opt/mu300/bin/mu300-update carry OLD NEW OS MODE"), on the device and under Android
+# alike, with the image's mu300-carry for the files (tools/carry/mu300-carry.c). MODE copy: OLD stays whole and
+# apart, for a rollback. MODE link: files become second names of OLD's, no data is copied - for an update that does
+# not keep OLD (the installers', and apply --no-rollback). OLD is never written to.
+CARRY_KEPT=etc/mu300/update-kept
+CARRY_REPORT=etc/mu300/update-report
+CARRY_TAB=$(printf '\t')
+carry_bb() {  # carry_bb NEW: the static busybox of the image
+    for _cb in "$1/usr/bin/busybox" "$1/opt/mu300/bin/busybox"; do
+        if [ -f "$_cb" ] && [ ! -L "$_cb" ] && [ -x "$_cb" ]; then echo "$_cb"; return 0; fi
+    done
+    return 1
+}
+# carry_ready NEW: the image brings all of it - this block, mu300-carry and a busybox - and they run here
+carry_ready() {
+    _cb=$(carry_bb "$1") || return 1
+    [ -x "$1/opt/mu300/bin/mu300-carry" ] && grep -q '^# --- carry begin' "$1/opt/mu300/bin/mu300-update" 2>/dev/null || return 1
+    "$_cb" true 2>/dev/null || return 1
+    "$1/opt/mu300/bin/mu300-carry" scan "$1/opt/mu300/lib" >/dev/null 2>&1
+}
+# carry_run OLD NEW OS MODE: 0 done; 3 not enough room (said); anything else failed, and NEW is not to be used.
+# Done is what carry_system says at its very end, with NEW/.mu300-carried: a run that ended without it did not do
+# the work, whatever its status (MU300_LIB in the environment would make the script define its functions and leave).
+carry_run() {
+    rm -f "$2/.mu300-carried"
+    MU300_LIB='' "$(carry_bb "$2")" sh "$2/opt/mu300/bin/mu300-update" carry "$1" "$2" "$3" "$4" || return
+    [ -e "$2/.mu300-carried" ] || return 1
+    rm -f "$2/.mu300-carried"
+}
+# carry_unesc LINE: the path a list line names (a backslash is written \\, a newline \n)
+carry_unesc() { _cu=$(printf '%bx' "$1"); printf '%s' "${_cu%x}"; }
+# carry_image OLD OS: the name of the image a system came from (ubuntu-24.04, ubuntu-26.04, openwrt, openwrt-luci)
+carry_image() {
+    case $2 in
+        ubuntu) echo "ubuntu-$(sed -n 's/^VERSION_ID="\(.*\)"/\1/p' "$1/usr/lib/os-release" 2>/dev/null | head -n 1)" ;;
+        *) echo "$2" ;;
+    esac
+}
+# carry_manifest OLD NEW OS TAG OUT: the manifest of OLD's image into OUT (its lines, without the first); status 1
+# when there is none. TAG is what OLD says it is, read once by the caller: the manifest that is looked for, checked
+# and used is the one of that release and of that image, and no other. The file is copied once into the working
+# directory (root's alone) and only that copy is checked and read - never the file in OLD a second time. OLD's own
+# manifest counts when its first line names this image and TAG; else the one the new image has for them. Every line
+# must be a manifest line with a path that stays in the system: one that is not refuses the whole manifest, and the
+# update goes on as without one.
+carry_manifest() {
+    case $4 in ''|unknown|*[!0-9A-Za-z._-]*) return 1 ;; esac
+    _ci=$(carry_image "$1" "$3")
+    case $_ci in ''|*[!0-9A-Za-z._-]*) return 1 ;; esac
+    rm -f "$5" "$5.gz"
+    _cm=$1/etc/mu300/image-manifest.gz
+    if [ -f "$_cm" ] && [ ! -L "$_cm" ] && cat "$_cm" > "$5.gz" 2>/dev/null && gzip -t "$5.gz" 2>/dev/null &&
+        gzip -dc "$5.gz" | awk -v want="mu300-image-manifest 1 $_ci $4" 'NR == 1 { if ($0 != want) exit 1; next } { print }
+            END { if (NR < 2) exit 1 }' > "$5" && carry_manifest_ok "$5"; then
+        rm -f "$5.gz"
+        return 0
+    fi
+    rm -f "$5" "$5.gz"
+    _cm=$2/opt/mu300/lib/image-manifests/$_ci.gz
+    [ -f "$_cm" ] && [ ! -L "$_cm" ] && cat "$_cm" > "$5.gz" 2>/dev/null && gzip -t "$5.gz" 2>/dev/null || { rm -f "$5.gz"; return 1; }
+    gzip -dc "$5.gz" | awk -v tag="$4" -v image="$_ci" '
+        NR == 1 { if ($1 != "mu300-image-manifests" || $2 != 1 || $3 != image) { bad = 1; exit }; next }
+        NR == 2 { n = -1; for (i = 2; i <= NF; i++) if ($i == tag) n = i - 2; if (n < 0) { bad = 1; exit }; next }
+        {
+            k = split($1, r, ",")
+            for (i = 1; i <= k; i++) {
+                a = r[i]; b = a; d = index(a, "-")
+                if (d > 0) { b = substr(a, d + 1); a = substr(a, 1, d - 1) }
+                if (n >= a + 0 && n <= b + 0) { print substr($0, index($0, " ") + 1); break }
+            }
+        }
+        END { exit (bad || NR < 3) ? 1 : 0 }' > "$5" && carry_manifest_ok "$5" || { rm -f "$5" "$5.gz"; return 1; }
+    rm -f "$5.gz"
+}
+# carry_manifest_ok FILE: every line is "TYPE MODE UID GID SIZE HASH PATH" with a relative path without . or .. parts
+carry_manifest_ok() {
+    [ -s "$1" ] && awk '
+        { p = $0; for (i = 0; i < 6; i++) p = substr(p, index(p, " ") + 1) }
+        NF < 7 || $1 !~ /^[fdlcbp]$/ || $2 !~ /^[0-7]+$/ || $3 !~ /^[0-9]+$/ || $4 !~ /^[0-9]+$/ || $5 !~ /^[0-9]+$/ ||
+            ($6 != "-" && $6 !~ /^[0-9a-f]+$/) || p ~ /^\// || ("/" p "/") ~ /\/\.\.?\// || ("/" p "/") ~ /\/\// { exit 1 }' "$1"
+}
+# carry_pkgdb ROOT KIND O C S: what the package manager of ROOT says, one record per line, tabs between the fields:
+#   O package path      a path of a package (dpkg: info/*.list; apk: the F: and R: lines of its database)
+#   C path              a configuration file of a package (dpkg: Conffiles; apk: packages/*.conffiles, where a name
+#                       with / at its end is everything below)
+#   S algo:sum path     what the package manager installed there (dpkg: md5, apk: Q1 and sha1 in base64)
+# O, C, S: the letters to write (the old and the new system get their own); S "" leaves the sums out.
+carry_pkgdb() {
+    if [ "$2" = ubuntu ]; then
+        [ -d "$1/var/lib/dpkg/info" ] || return 0
+        # dpkg lists /bin/ls where the file is /usr/bin/ls: the top directories that are links (usrmerge)
+        _cm=
+        for _cd in bin sbin lib lib32 lib64 libx32; do [ ! -L "$1/$_cd" ] || _cm="$_cm $_cd"; done
+        for _cx in list md5sums; do
+            [ "$_cx" = list ] || [ -n "$5" ] || continue
+            find "$1/var/lib/dpkg/info" -maxdepth 1 -type f -name "*.$_cx" 2>/dev/null | LC_ALL=C sort > "$CARRY_T/pkg.files"
+            [ -s "$CARRY_T/pkg.files" ] || continue
+            # (xargs: more files than one command line takes)
+            xargs awk -v o="$3" -v s="$5" -v merged="$_cm" -v ext="$_cx" '
+                BEGIN { k = split(merged, m, " "); for (i = 1; i <= k; i++) um[m[i]] = 1 }
+                function real(p,   top) {
+                    sub(/^\.?\//, "", p)
+                    top = p; sub(/\/.*/, "", top)
+                    return (top in um) ? "usr/" p : p
+                }
+                FNR == 1 { pkg = FILENAME; sub(/.*\//, "", pkg); sub(/\.[a-z0-9]*$/, "", pkg); sub(/:.*/, "", pkg) }
+                ext == "list" { if ($0 != "/." && $0 != "") print o "\t" pkg "\t" real($0); next }
+                { print s "\tmd5:" substr($0, 1, 32) "\t" real(substr($0, 35)) }' < "$CARRY_T/pkg.files" || return 1
+        done
+        [ ! -f "$1/var/lib/dpkg/status" ] || awk -v c="$4" -v s="$5" -v merged="$_cm" '
+            BEGIN { k = split(merged, m, " "); for (i = 1; i <= k; i++) um[m[i]] = 1 }
+            function real(p,   top) { sub(/^\//, "", p); top = p; sub(/\/.*/, "", top); return (top in um) ? "usr/" p : p }
+            /^Conffiles:/ { inc = 1; next }
+            inc && /^ / { print c "\t" real($1); if (s != "" && length($2) == 32) print s "\tmd5:" $2 "\t" real($1); next }
+            { inc = 0 }' "$1/var/lib/dpkg/status" || return 1
+        return 0
+    fi
+    [ ! -f "$1/lib/apk/db/installed" ] || awk -v o="$3" -v s="$5" '
+        /^P:/ { pkg = substr($0, 3); next }
+        /^F:/ { dir = substr($0, 3); if (dir != "") print o "\t" pkg "\t" dir; next }
+        /^R:/ { file = (dir == "" ? "" : dir "/") substr($0, 3); print o "\t" pkg "\t" file; next }
+        /^Z:/ { if (s != "" && file != "") print s "\tq1:" substr($0, 3) "\t" file; next }
+        /^$/ { file = "" }' "$1/lib/apk/db/installed" || return 1
+    for _cf in "$1"/lib/apk/packages/*.conffiles "$1"/lib/apk/packages/*.conffiles_static; do
+        [ -f "$_cf" ] || continue
+        sed -n "s|^/\(..*\)|$4$CARRY_TAB\1|p" "$_cf"
+    done
+    return 0
+}
+# carry_pksame OLD < "algo:sum<TAB>path" lines: the paths whose file in OLD is the one the package manager put there
+carry_pksame() {
+    while IFS= read -r _cl; do
+        _cs=${_cl%%"$CARRY_TAB"*}; _cp=${_cl#*"$CARRY_TAB"}
+        _cf=$1/$(carry_unesc "$_cp")
+        [ -f "$_cf" ] && [ ! -L "$_cf" ] || continue
+        case $_cs in
+            md5:*) _ch=$(md5sum < "$_cf" 2>/dev/null | cut -c1-32) ;;
+            q1:*) _ch=Q1$(sha1sum < "$_cf" 2>/dev/null | cut -c1-40 | xxd -r -p 2>/dev/null | base64 2>/dev/null) ;;
+            *) continue ;;
+        esac
+        [ "${_cs#*:}" != "$_ch" ] || printf '%s\n' "$_cp"
+    done
+    return 0
+}
+# The plan. carry_plan PASS: reads the scan of OLD on stdin, and from $CARRY_T what there is of: manifest (OLD's
+# image), pkg (carry_pkgdb of OLD and NEW, and "I package" for those installed in OLD), scan.new, sum.old and sum.new
+# ("HASH PATH", mu300-carry sum), pksame, cmds (the commands the images link into /usr/local/bin).
+#   pass 1 and 2 write what must be hashed before the next one can decide: "O path" (in OLD), "N path" (in NEW),
+#   "K algo:sum path" (is OLD's file the package manager's?);
+#   pass 3 writes the plan, tabs between the fields:
+#     L path           carry it to its place                  H path          set the user's aside (update-kept/user)
+#     S path           set the release's aside first (image)  R path          remove it from NEW first
+#     M mode uid gid path   give NEW's the owner and mode the user gave it
+#     A path           an apt source added on the device (upk_apt_keep decides about it, see carry_system)
+#     n blocks kind    512-byte blocks to be written (kind l, h or s)      c files package-files
+#     r code path      a line of the report (carry_report has the words)
+carry_plan() {
+    awk -v pass="$1" -v T="$CARRY_T" -v kind="$CARRY_KIND" -v keep="$CARRY_KEEP" -v fb="$CARRY_FALLBACK" '
+    function rest(s, n,   i) { for (i = 0; i < n; i++) s = substr(s, index(s, " ") + 1); return s }
+    function f(l, n,   a) { split(l, a, " "); return a[n] }
+    function parent(p) { return match(p, /\/[^\/]*$/) ? substr(p, 1, RSTART - 1) : "" }
+    function under(p, re) { return p ~ ("^(" re ")/") }
+    function never(p) {
+        if (under(p, "proc|sys|dev|run|tmp|var/tmp|var/cache|var/run|var/lock|lost\\+found|mnt/mu300-disk")) return 1
+        if (kind == "ubuntu" && under(p, "usr/lib/modules")) return 1
+        if (p ~ /^usr\/.*\/__pycache__(\/|$)/ && p !~ /^usr\/local\//) return 1
+        return p ~ /^\.mu300-(image|carry)(\/|$)/
+    }
+    # handled by another step of the update, or the state of the package manager: never by this plan
+    function other(p) {
+        if (p ~ /^etc\/(passwd|group|shadow|gshadow|subuid|subgid)-?$/ || p == "etc/.pwd.lock" || p == "etc/ld.so.cache") return 1
+        if (p ~ /^etc\/mu300\/(image-version|image-packages|packages\.txt|image-manifest\.gz|update-report\.new)$/) return 1
+        if (p == "etc/.mu300-accounts-from-image" || p ~ /^etc\/mu300\/user-packages(\/|$)/ || p == "etc/apk/world") return 1
+        return p ~ /^(var\/lib\/dpkg|var\/lib\/apt|var\/lib\/ucf|var\/lib\/pam|etc\/alternatives|lib\/apk|usr\/lib\/opkg)(\/|$)/ ||
+               p ~ /^var\/lib\/systemd\/deb-systemd-(user-)?helper-/
+    }
+    # apt sources: the ones added on the device are kept by upk_apt_keep (on, or off for another Ubuntu release)
+    function aptsrc(p) { return p ~ /^etc\/apt\/sources\.list\.d\/[^\/]*\.(list|sources)$/ }
+    function vendor(p) {
+        return under(p, "opt/mu300/android|lib/firmware|usr/lib/firmware") || (kind == "openwrt" && under(p, "lib/modules"))
+    }
+    function project(p,   b) {
+        if (under(p, "opt/mu300|usr/libexec/unisoc-modem")) return 1
+        if (p ~ /^(etc|usr\/lib|lib)\/systemd\/system\/mu300-[^\/]*$/ || p ~ /^etc\/init\.d\/mu300-[^\/]*$/) return 1
+        if (p ~ /^usr\/local\/bin\/[^\/]*$/) { b = p; sub(/.*\//, "", b); return (b in cmds) }
+        return 0
+    }
+    # programs under /etc: the scripts that start and wire the services
+    function script(p) { return under(p, "etc/init\\.d|etc/hotplug\\.d|etc/hotplug-preinit\\.d|etc/rc\\.button|etc/board\\.d") }
+    # a unit the user masked (a link to /dev/null where its name is looked up first): the user turned it off
+    function ismask(p) { return t == "l" && size == 9 && p ~ /^etc\/systemd\/(system|user)\/[^\/]*$/ }
+    # every permission bit of mode A is one of mode B, and they are not the same: A is the narrower
+    function narrower(a, b,   i, k, x, y) {
+        if (a == b) return 0
+        a = sprintf("%04d", a); b = sprintf("%04d", b)
+        for (i = 1; i <= 4; i++) {
+            x = substr(a, i, 1) + 0; y = substr(b, i, 1) + 0
+            for (k = 4; k >= 1; k = int(k / 2)) if (int(x / k) % 2 > int(y / k) % 2) return 0
+        }
+        return 1
+    }
+    function listed(arr, p,   d) {
+        if (p in arr) return 1
+        for (d = parent(p); d != ""; d = parent(d)) if ((d "/") in arr) return 1
+        return 0
+    }
+    function userarea(p) { return under(p, "etc|var|home|root|srv|mnt|media|usr/local|opt") }
+    # the version of the user is the one in use (else the one of the release is)
+    function wins(p) {
+        if (ismask(p)) return 1
+        if (!userarea(p) || project(p) || aptsrc(p) || p ~ /^etc\/pam\.d\/common-/) return 0
+        # a script of a package (init.d, hotplug.d) is a program, not a setting
+        if (t == "f" && script(p) && (p in owned) && !listed(conf, p) && (!(p in om) || om[p] ~ /^f /)) return 0
+        return 1
+    }
+    function quiet(p) { return under(p, "var") }
+    function enable_link(p) {
+        return p ~ /^etc\/rc\.d\/[SK][^\/]*$/ || p ~ /^etc\/systemd\/(system|user)\/[^\/]*\.(wants|requires)\/[^\/]*$/
+    }
+    function service_file(p) { return p ~ /^((usr\/)?lib|etc)\/systemd\/system\/[^\/]*$/ || p ~ /^etc\/init\.d\/[^\/]*$/ }
+    # the service an enable link is for: the unit of a wants link, the init script of S50cron
+    function service_of(p,   b) { b = p; sub(/.*\//, "", b); if (p ~ /^etc\/rc\.d\//) sub(/^[SK][0-9]*/, "", b); return b }
+    # same: the image file as it came; meta: its content, but another owner or mode; mod: changed; new: not of the image
+    function state(p,   m, ty) {
+        if (!(p in om)) return "new"
+        m = om[p]; ty = (t == "m") ? "d" : t
+        if (f(m, 1) != ty) return "mod"
+        if (ty == "f" && (f(m, 5) != size || !(p in so) || so[p] != f(m, 6))) return "mod"
+        if (ty == "l" && (!(p in so) || so[p] != f(m, 6))) return "mod"
+        if (f(m, 3) != uid || f(m, 4) != gid || (ty != "l" && f(m, 2) != mode)) return "meta"
+        return "same"
+    }
+    function hashable(a, b) { return a == b && (a == "f" || a == "l") }
+    function same_as_new(p) {
+        if (!(p in ns) || f(ns[p], 1) != t) return 0
+        if (t == "f") return f(ns[p], 5) == size && (p in so) && (p in sn) && so[p] == sn[p]
+        if (t == "l") return (p in so) && (p in sn) && so[p] == sn[p]
+        return t != "d"
+    }
+    function new_is_old_image(p,   m) {
+        m = om[p]
+        if (f(m, 1) != f(ns[p], 1)) return 0
+        if (f(m, 1) == "f") return f(m, 5) == f(ns[p], 5) && (p in sn) && sn[p] == f(m, 6)
+        if (f(m, 1) == "l") return (p in sn) && sn[p] == f(m, 6)
+        return 1
+    }
+    function want(code, p) { if (!((code p) in asked)) { asked[code p] = 1; print code "\t" p } }
+    function note(code, p) { print "r\t" code "\t" p }
+    # the number has no name in the old system, and an account of the new one has it
+    function foreign() { return (!(("u" uid) in oldid) && (("u" uid) in newid)) || (!(("g" gid) in oldid) && (("g" gid) in newid)) }
+    function live(p) {
+        if (foreign()) { hold(p, "o"); if (t == "d") block = p; return }
+        print "L\t" p; if (t != "d") { nl += blocks; files++ }
+    }
+    function hold(p, why) {
+        print "H\t" p; nh += blocks
+        if (why != "") note(why, p)
+        # the content is the one of the release; a mode the user narrowed (0600, no execute bit) stays narrowed
+        if (t == "f" && (p in ns) && f(ns[p], 1) == "f" && narrower(mode, f(ns[p], 2)))
+            print "M\t" mode " " f(ns[p], 3) " " f(ns[p], 4) "\t" p
+    }
+    function save(p) { if (f(ns[p], 1) != "d") { print "S\t" p; nsv += f(ns[p], 8) } }
+    # the owner and mode the user gave an image file: theirs in their directories; elsewhere a narrower mode is
+    # kept (never a wider one, never another owner: the release decides who runs its programs)
+    function meta(p) {
+        if (t == "l" || nt != t) return
+        if (wins(p) && !foreign()) print "M\t" mode " " ((("u" uid) in idm) ? idm["u" uid] : uid) " " ((("g" gid) in idm) ? idm["g" gid] : gid) "\t" p
+        else if (narrower(mode, f(ns[p], 2))) print "M\t" mode " " f(ns[p], 3) " " f(ns[p], 4) "\t" p
+        else if (mode != f(ns[p], 2) || uid != f(ns[p], 3) || gid != f(ns[p], 4)) note("m", p)
+    }
+    # no manifest: which file is the own of the old image cannot be told
+    function fallback(   k) {
+        if (aptsrc(p) && !innew) { if (pass == 3) print "A\t" p; return }
+        if (pass == 1) { if (innew && hashable(t, nt) && (t == "l" || f(ns[p], 5) == size)) { want("O", p); want("N", p) }; return }
+        if (pass == 2) { if (innew && t == "f" && (p in psum) && !same_as_new(p)) want("K\t" psum[p], p); return }
+        # the version of the user wins: the places an update always kept, and what protects the device
+        k = ismask(p) || (((keep != "" && p ~ ("^(" keep ")(/|$)")) || p ~ secure) && !project(p) && !script(p) && p !~ /^etc\/pam\.d\/common-/)
+        if (t == "m") t = "d"
+        if (t == "d") {
+            if (innew && nt == "d") return
+            if (innew) { if (k) { print "R\t" p; live(p) } else { block = p; hold(p, "i") }; return }
+            if (p in owned) return
+            if (project(p) && !vendor(p)) { block = p; hold(p, "f"); return }
+            live(p)
+            return
+        }
+        if (!innew) {
+            if (vendor(p)) { live(p); return }
+            if ((p in owned) && !listed(conf, p)) { npkg++; return }
+            if (project(p)) { hold(p, "f"); return }
+            live(p)
+            return
+        }
+        if (same_as_new(p)) {
+            # the same file: a mode the user narrowed stays narrowed
+            if (t == "f" && narrower(mode, f(ns[p], 2))) print "M\t" mode " " f(ns[p], 3) " " f(ns[p], 4) "\t" p
+            return
+        }
+        if (vendor(p) || (p in pksame)) return
+        if (nt == "d") { hold(p, "i"); return }
+        if (k) { live(p); return }
+        hold(p, "f")
+    }
+    BEGIN {
+        secure = "^etc/(config|sudoers|sudoers\\.d|sysctl\\.conf|sysctl\\.d|nftables\\.conf|nftables\\.d|firewall\\.user|security|hosts\\.allow|hosts\\.deny|pam\\.d|modprobe\\.d|ssl/private|uhttpd\\.crt|uhttpd\\.key|rc\\.local|systemd/system|systemd/user|rc\\.d|crontabs|cron\\.d)(/|$)"
+        while ((getline l < (T "/manifest")) > 0) om[rest(l, 6)] = l
+        close(T "/manifest")
+        while ((getline l < (T "/pkg")) > 0) {
+            c = substr(l, 1, 1); l = substr(l, 3)
+            if (c == "C") { conf[l] = 1; continue }
+            if (c == "D") continue
+            if (c == "I") { inst[l] = 1; continue }
+            a = substr(l, 1, index(l, "\t") - 1); l = substr(l, index(l, "\t") + 1)
+            if (c == "O") owned[l] = a; else if (c == "N") nown[l] = a; else if (c == "S") psum[l] = a
+        }
+        close(T "/pkg")
+        while ((getline l < (T "/scan.new")) > 0) ns[rest(l, 8)] = l
+        while ((getline l < (T "/sum.old")) > 0) so[rest(l, 1)] = f(l, 1)
+        while ((getline l < (T "/sum.new")) > 0) sn[rest(l, 1)] = f(l, 1)
+        while ((getline l < (T "/pksame")) > 0) pksame[l] = 1
+        while ((getline l < (T "/cmds")) > 0) cmds[l] = 1
+        while ((getline l < (T "/ids")) > 0) { split(l, q, " "); if (substr(q[1], 1, 1) == "o") oldid[substr(q[1], 2) q[2]] = 1; else newid[substr(q[1], 2) q[2]] = 1 }
+        while ((getline l < (T "/idmap")) > 0) { split(l, q, " "); idm[q[1] q[2]] = q[3] }
+    }
+    {
+        t = $1; mode = $2; uid = $3; gid = $4; size = $5; blocks = $8; p = rest($0, 8)
+        if (p in om) seen[p] = 1
+        if (fb && (enable_link(p) || service_file(p) || p ~ /^etc\/sudoers\.d\//)) had[p] = 1
+        if (block != "") {
+            if (index(p, block "/") == 1) {
+                # below a directory that cannot be there: what is not the image there is set aside
+                if (pass == 3 && t != "s" && !never(p) && !other(p) && !vendor(p) && (fb || state(p) != "same") &&
+                    !(!(p in om) && (p in owned) && !listed(conf, p))) {
+                    if (blocknote != "") { note(blocknote, block); blocknote = "" }
+                    hold(p, "")
+                }
+                next
+            }
+            block = ""; blocknote = ""
+        }
+        if (t == "s" || never(p) || other(p)) next
+        innew = (p in ns); nt = innew ? f(ns[p], 1) : ""
+        if (fb) { fallback(); next }
+        if (pass == 1) {
+            if ((p in om) && hashable(t, f(om[p], 1)) && (t == "l" || f(om[p], 5) == size)) want("O", p)
+            next
+        }
+        st = state(p)
+        if (t == "m") t = "d"
+        if (pass == 2) {
+            if (st == "same" || st == "meta") next
+            if (st == "mod" && (p in psum) && t == "f") want("K\t" psum[p], p)
+            if (!innew) next
+            if (nt == "f" || nt == "l") want("N", p)
+            if (hashable(t, nt) && (t == "l" || f(ns[p], 5) == size)) want("O", p)
+            next
+        }
+        if (t == "d") {
+            mine = (st == "mod" || (st == "new" && !(p in owned)))
+            if (innew && nt != "d") {
+                # the release has a file or a link where the old system has a directory
+                if (mine && wins(p)) { save(p); print "R\t" p; live(p); note("u", p) }
+                else if (mine) { block = p; hold(p, "i") }
+                else { block = p; blocknote = "x" }
+                next
+            }
+            if (mine && !innew) live(p)
+            else if (st == "meta" && innew) meta(p)
+            next
+        }
+        if (st == "same") next
+        if (st == "meta") { if (innew) meta(p); next }
+        if (aptsrc(p)) { if (st == "mod" && !same_as_new(p)) hold(p, "i"); else if (st == "new") print "A\t" p; next }
+        if (st == "new") {
+            if (vendor(p)) { if (!innew) live(p); next }
+            if ((p in owned) && !listed(conf, p)) { npkg++; next }          # comes back with its package
+            if (!innew) { live(p); next }
+            if (same_as_new(p)) next
+            if (nt == "d" || !wins(p)) { hold(p, "i"); next }
+            save(p); live(p); note("u", p)
+            next
+        }
+        # a file of the image, changed by the user
+        if (om[p] ~ /^d /) retyped[p] = 1
+        if (p in pksame) next                                               # changed by the package manager
+        if (vendor(p) || !wins(p)) { if (!innew || !same_as_new(p)) hold(p, "i"); next }
+        if (!innew) { live(p); note("g", p); next }
+        if (same_as_new(p)) next
+        if (nt == "d") {
+            # the user replaced a directory of the image by something else (a link elsewhere): theirs, as it was
+            if (om[p] ~ /^d /) { print "R\t" p; live(p); note("u", p) } else hold(p, "i")
+            next
+        }
+        if (new_is_old_image(p) || quiet(p)) { live(p); next }
+        save(p); live(p); note("u", p)
+    }
+    END {
+        if (pass != 3) exit
+        # what the image had and the old system has not: deleted by the user (or by the system itself)
+        if (!fb) for (p in om) if (!(p in seen)) gone[p] = 1
+        for (p in gone) {
+            d = parent(p)
+            if ((d in gone) || (d in retyped) || !(p in ns) || never(p) || other(p) || vendor(p) || quiet(p)) continue
+            if (p ~ /^etc\/uci-defaults\//) continue                        # they remove themselves when they ran
+            if ((p in nown) && !(nown[p] in inst)) { back[nown[p]] = 1; continue }     # of a package that was removed
+            if (!userarea(p)) continue
+            # Deleted by the user: not one of the programs the system is made of, and not a file that went with an
+            # upgrade of its package (the old system would still list it)
+            if (enable_link(p) || (!project(p) && !aptsrc(p) && !script(p) && (!(p in nown) || (p in owned)))) {
+                print "R\t" p; note("d", p)
+            } else note("k", p)
+        }
+        # a package the user removed is part of the image and back: its services are not enabled
+        nback = 0
+        for (a in back) { note("p", a); nback++ }
+        if (nback) for (p in nown) if ((nown[p] in back) && service_file(p)) { b = p; sub(/.*\//, "", b); svc[b] = 1 }
+        # without a manifest: a service the old system had and did not enable stays off
+        if (fb) for (p in had) if (service_file(p)) { b = p; sub(/.*\//, "", b); known[b] = 1 }
+        for (p in ns) {
+            if (!enable_link(p)) continue
+            b = service_of(p)
+            if (nback && (b in svc)) print "R\t" p
+            else if (fb && !(p in had) && (b in known)) { print "R\t" p; note("e", p) }
+        }
+        # ... and a grant of sudo that the old system did not have is not taken from the new image
+        if (fb) for (p in ns) if (p ~ /^etc\/sudoers\.d\/[^\/]*$/ && !(p in had) && f(ns[p], 1) != "d") { print "R\t" p; note("s", p) }
+        print "n\t" nl + 0 "\tl"; print "n\t" nh + 0 "\th"; print "n\t" nsv + 0 "\ts"
+        print "c\t" files + 0 "\t" npkg + 0
+    }'
+}
+# carry_idmap OLD NEW: "u OLD NEW" and "g OLD NEW" for the accounts both systems have under another number (Ubuntu
+# 24.04 and 26.04 number messagebus, sshd, bluetooth and others differently): what is carried follows the name
+carry_idmap() {
+    for _cf in passwd:u group:g; do
+        [ -f "$1/etc/${_cf%:*}" ] && [ -f "$2/etc/${_cf%:*}" ] || continue
+        awk -F: -v k="${_cf#*:}" 'NR == FNR { old[$1] = $3; next }
+            ($1 in old) && old[$1] != $3 && old[$1] != "" && $3 != "" { print k, old[$1], $3 }' \
+            "$1/etc/${_cf%:*}" "$2/etc/${_cf%:*}" || return 1
+    done
+}
+# carry_accounts_plan OLD NEW, before the plan is made: who owns what in the new system. A file belongs to an account,
+# not to a number: an owner the old system has a name for is carried by that name, under the number the name has in
+# the new system - the new image's when it has the account (carry_idmap), else the old number when the new system
+# does not use it, else a free one (a system account: the highest below 1000; a user: the lowest from 1000 on), all
+# written to idmap for mu300-carry. merge_accounts brings the users from 1000 on and carry_accounts the system
+# accounts added on the device, and carry_accounts then holds the result against this plan. A number the old system
+# has NO name for stays the number - unless an account of the new system has it: such a file would become that
+# account's, so it is set aside instead (carry_plan, with $CARRY_T/ids: "ou"/"og" the numbers the old system names,
+# "nu"/"ng" the numbers taken in the new one). $CARRY_T/acct.group, acct.passwd: the lines of system accounts to add;
+# acct.renum: "passwd|group NAME NUMBER" for the users merge_accounts brings.
+carry_accounts_plan() {
+    for _cf in acct.group acct.passwd acct.renum ids; do : > "$CARRY_T/$_cf" || return 1; done
+    for _cf in group passwd; do [ -f "$1/etc/$_cf" ] && [ -f "$2/etc/$_cf" ] || return 0; done
+    awk -F: -v T="$CARRY_T" '
+        function free(used, sys,   i) {
+            if (sys) { for (i = 999; i >= 100; i--) if (!(i in used)) return i; return "" }
+            for (i = 1000; i < 60000; i++) if (!(i in used)) return i
+            return ""
+        }
+        function line(   i, s) { s = $1; for (i = 2; i <= NF; i++) s = s ":" $i; return s }
+        function one(k, file, names, used,   n, sys) {
+            if ($3 == "") return
+            print "o" k " " $3 >> (T "/ids")
+            if ($1 in names) return
+            n = $3; sys = ($3 < 1000 || $3 >= 60000)
+            if (n in used) {
+                n = free(used, sys)
+                if (n == "") { print "r\ta\t" $1 " (" file " " $3 ")" >> (T "/plan.accounts"); return }
+                print k " " $3 " " n >> (T "/idmap")
+                if (k == "g") gmap[$3] = n
+            }
+            used[n] = 1
+            if (!sys) { print file " " $1 " " n >> (T "/acct.renum"); return }
+            $3 = n
+            if (k == "u" && ($4 in gmap)) $4 = gmap[$4]
+            print line() >> (T "/acct." file)
+        }
+        FILENAME == ARGV[1] { split($0, a, " "); if (a[1] == "g") gmap[a[2]] = a[3]; next }
+        FILENAME == ARGV[2] { gname[$1] = 1; gid[$3] = 1; next }
+        FILENAME == ARGV[3] { uname[$1] = 1; uid[$3] = 1; next }
+        FILENAME == ARGV[4] { one("g", "group", gname, gid); next }
+        { one("u", "passwd", uname, uid) }
+        END { for (i in uid) print "nu " i >> (T "/ids"); for (i in gid) print "ng " i >> (T "/ids") }
+    ' "$CARRY_T/idmap" "$2/etc/group" "$2/etc/passwd" "$1/etc/group" "$1/etc/passwd"
+}
+# carry_accounts OLD NEW, after merge_accounts: the accounts carry_accounts_plan chose, with their shadow entries, and
+# the subordinate ids (subuid, subgid) of the accounts the new system did not have
+carry_accounts() {
+    for _cf in passwd:shadow group:gshadow; do
+        _ca=${_cf%:*}; _cs=${_cf#*:}
+        [ -s "$CARRY_T/acct.$_ca" ] || continue
+        for _cx in "$_ca" "$_cs"; do
+            [ -f "$1/etc/$_cx" ] && [ -f "$2/etc/$_cx" ] || continue
+            # renamed into place, with the owner and mode of the file, as merge_accounts does
+            cp -p "$2/etc/$_cx" "$2/etc/$_cx.mu300-new" && {
+                cat "$2/etc/$_cx"
+                if [ "$_cx" = "$_ca" ]; then cat "$CARRY_T/acct.$_ca"
+                else awk -F: 'NR == FNR { add[$1] = 1; next } ($1 in add)' "$CARRY_T/acct.$_ca" "$1/etc/$_cx"; fi
+            } > "$2/etc/$_cx.mu300-new" && mv -f "$2/etc/$_cx.mu300-new" "$2/etc/$_cx" || { rm -f "$2/etc/$_cx.mu300-new"; return 1; }
+        done
+    done
+    # the users merge_accounts brought: the number the plan gave them, and their group under its number
+    if [ -s "$CARRY_T/acct.renum" ]; then
+        for _cx in passwd group; do
+            [ -f "$2/etc/$_cx" ] || continue
+            awk -F: -v OFS=: -v f="$_cx" 'FILENAME == ARGV[1] { split($0, a, " "); if (a[1] == "g") gmap[a[2]] = a[3]; next }
+                FILENAME == ARGV[2] { split($0, a, " "); if (a[1] == f) num[a[2]] = a[3]; next }
+                ($1 in num) { $3 = num[$1]; if (f == "passwd" && ($4 in gmap)) $4 = gmap[$4] }
+                { print }' "$CARRY_T/idmap" "$CARRY_T/acct.renum" "$2/etc/$_cx" > "$CARRY_T/acct" || return 1
+            cmp -s "$CARRY_T/acct" "$2/etc/$_cx" || {
+                cp -p "$2/etc/$_cx" "$2/etc/$_cx.mu300-new" && cat "$CARRY_T/acct" > "$2/etc/$_cx.mu300-new" &&
+                    mv -f "$2/etc/$_cx.mu300-new" "$2/etc/$_cx" || { rm -f "$2/etc/$_cx.mu300-new"; return 1; }
+            }
+        done
+    fi
+    # The files were carried by the plan: every account of the old system must now have the number the plan says,
+    # and no number may have two names that were two accounts. Anything else is not put in place.
+    for _cf in passwd:u group:g; do
+        [ -f "$1/etc/${_cf%:*}" ] && [ -f "$2/etc/${_cf%:*}" ] || continue
+        awk -F: -v k="${_cf#*:}" 'FILENAME == ARGV[1] { split($0, a, " "); if (a[1] == k) map[a[2]] = a[3]; next }
+            FILENAME == ARGV[2] { if ($3 != "") now[$1] = $3; next }
+            $3 != "" && ($1 in now) && now[$1] != (($3 in map) ? map[$3] : $3) { bad = 1; print "  " $1 ": " now[$1] " in the new system, the plan was " (($3 in map) ? map[$3] : $3) > "/dev/stderr" }
+            END { exit bad }' "$CARRY_T/idmap" "$2/etc/${_cf%:*}" "$1/etc/${_cf%:*}" ||
+            { echo "  the accounts of the new system are not the ones the files were carried for" >&2; return 1; }
+    done
+    for _cx in subuid subgid; do
+        [ -f "$1/etc/$_cx" ] && [ -f "$2/etc/$_cx" ] || continue
+        awk -F: 'NR == FNR { have[$1] = 1; next } !($1 in have)' "$2/etc/$_cx" "$1/etc/$_cx" > "$CARRY_T/acct" || return 1
+        [ ! -s "$CARRY_T/acct" ] || cat "$CARRY_T/acct" >> "$2/etc/$_cx" || return 1
+    done
+    # An account of the image that the old system did not have - the user deleted it, or the release added it - must
+    # not come with the image's well-known password (ubuntu/ubuntu) or with none: it is locked, and said.
+    [ -f "$1/etc/passwd" ] && [ -f "$2/etc/shadow" ] || return 0
+    awk -F: -v OFS=: -v T="$CARRY_T" 'NR == FNR { old[$1] = 1; next }
+        !($1 in old) && $2 !~ /^[!*]/ { print "r\tl\t" $1 >> (T "/plan"); $2 = "!" $2 }
+        { print }' "$1/etc/passwd" "$2/etc/shadow" > "$CARRY_T/acct" || return 1
+    if ! cmp -s "$CARRY_T/acct" "$2/etc/shadow"; then
+        cp -p "$2/etc/shadow" "$2/etc/shadow.mu300-new" && cat "$CARRY_T/acct" > "$2/etc/shadow.mu300-new" &&
+            mv -f "$2/etc/shadow.mu300-new" "$2/etc/shadow" || { rm -f "$2/etc/shadow.mu300-new"; return 1; }
+    fi
+    return 0
+}
+# carry_report NEW OS FROM TO MODE: the plan's lines for people, on stdout and on top of NEW/etc/mu300/update-report
+# (what earlier updates wrote stays below it: the file came along like every file of the user)
+carry_report() {
+    _cr=$1/$CARRY_REPORT
+    {
+        printf '==== %s: %s -> %s, %s ====\n' "$2" "$3" "$4" "$(date '+%Y-%m-%d %H:%M' 2>/dev/null)"
+        awk -F'\t' -v kept="/$CARRY_KEPT/$3" -v fb="$CARRY_FALLBACK" -v mode="$5" -v nohold="$CARRY_NOHOLD" '
+            function list(code, title, pre,   i) {
+                if (!n[code]) return
+                print title
+                for (i = 1; i <= n[code]; i++) print "  " pre item[code, i]
+            }
+            $1 == "c" { files = $2; npkg = $3; next }
+            $1 == "n" && $3 == "l" { mb = int($2 / 2048); next }
+            $1 == "r" { p = $0; sub(/^r\t[^\t]*\t/, "", p); n[$2]++; item[$2, n[$2]] = p }
+            END {
+                printf "Everything you added to the system was carried over: %d files, %d MB%s.\n", files, mb,
+                    mode == "link" ? " (the previous system is not kept)" : ""
+                if (fb) {
+                    print "The image this system came from has no list of its files here, so a file you changed could not be"
+                    print "told from one the old release shipped: where the new release has another file, the new one is in use,"
+                    print "and a file of the image that you had deleted is back."
+                }
+                list("u", "Yours is in use where the new release has another version (the one of the release: " kept "/image):", "/")
+                list("g", "Yours is in use; the new release no longer has this file:", "/")
+                list("i", "The version of the release is in use; yours is in " kept "/user:", "/")
+                if (nohold == "") list("f", "Differed from the new release and were replaced; as they were: " kept "/user:", "/")
+                else list("f", "Differed from the new release and were replaced. There was no room to set them aside: they are in the previous system until mu300-update clean, or the next update:", "/")
+                list("x", "The release has a file or a link where this directory was; what you had in it: " kept "/user:", "/")
+                list("d", "Deleted again, as you had deleted them:", "/")
+                list("k", "Back, though you had deleted them (the system needs them, or it cannot be told):", "/")
+                list("p", "Packages you had removed are part of the image, and back (their services are not enabled):", "")
+                list("e", "Left off, as in the previous system (the new release enables them):", "/")
+                list("s", "Not taken from the new release, as the previous system did not have them (rules of sudo):", "/")
+                list("l", "Accounts of the release that the previous system did not have are locked (passwd NAME sets a password):", "")
+                list("m", "The owner or mode you gave these is the one of the release again:", "/")
+                list("o", "Owned by a number that no account had in the previous system and an account of the new one has: not put in place, but in " kept "/user:", "/")
+                list("q", "Set-user-id and set-group-id bits and capabilities were taken off: the owner has another number in the new system:", "/")
+                list("a", "Accounts that could not be carried over (the files they own keep the number):", "")
+                if (n["v"]) print "Files that were there when the update looked and gone when it came to carry them (the running system removed them): " item["v", 1]
+                if (npkg) printf "%d files of packages are not carried: they come with their packages.\n", npkg
+            }' "$CARRY_T/plan"
+        echo "Packages installed on the device:"
+        cat "$CARRY_T/upk"
+        echo
+    } > "$CARRY_T/report" || return 1
+    cat "$CARRY_T/report"
+    if [ -f "$_cr" ] && [ ! -L "$_cr" ]; then cat "$_cr" >> "$CARRY_T/report" || return 1; fi
+    # root's alone from the moment it is there: it names the user's files, also those under /root and /home
+    rm -f "$_cr" 2>/dev/null; [ ! -e "$_cr" ] && [ ! -L "$_cr" ] || return 1
+    mkdir -p "$1/etc/mu300" && ( umask 077; cat "$CARRY_T/report" > "$_cr" ) && chmod 600 "$_cr" || return 1
+    [ "$(id -u)" != 0 ] || chown 0:0 "$_cr" || return 1
+    # the note at the next login, until "mu300-update report" has shown it (notice, and OpenWrt's profile.d)
+    if grep -q "^r$CARRY_TAB" "$CARRY_T/plan" || [ -n "$CARRY_FALLBACK" ]; then : > "$_cr.new"; else rm -f "$_cr.new"; fi
+}
+# carry_system OLD NEW OS MODE: all of it, between the unpacking of NEW and the switch: the files, the accounts, the
+# packages to install again (upk_record). Status 3: not enough room, and nothing but NEW was touched.
+carry_system() {
+    _co=$1 _cn=$2 _cos=$3 _cmode=${4:-copy}
+    case $_cmode in copy|link) ;; *) return 1 ;; esac
+    [ -d "$_co" ] && [ -d "$_cn" ] || return 1
+    CARRY_KIND=$(os_kind "$_cos") || return 1
+    CARRY_BIN=${MU300_CARRY:-$_cn/opt/mu300/bin/mu300-carry}
+    CARRY_T=$_cn/.mu300-carry
+    _cfrom=$(cat "$_co/etc/mu300/image-version" 2>/dev/null) || _cfrom=
+    case $_cfrom in ''|*[!0-9A-Za-z._-]*) _cfrom=unknown ;; esac
+    _cto=$(cat "$_cn/etc/mu300/image-version" 2>/dev/null) || _cto=unknown
+    image_own_save "$_cn" || return 1
+    # the working directory is root's alone: it holds the lists of the user's files, and the manifest that is used
+    rm -rf "$CARRY_T"; ( umask 077; mkdir "$CARRY_T" ) && chmod 700 "$CARRY_T" || return 1
+    for _cf in manifest pkg sum.old sum.new pksame; do : > "$CARRY_T/$_cf" || return 1; done
+    tr -s ' \n' '\n\n' < "$_cn/opt/mu300/lib/path-commands" > "$CARRY_T/cmds" 2>/dev/null || : > "$CARRY_T/cmds"
+    CARRY_FALLBACK=; CARRY_KEEP=; CARRY_NOHOLD=
+    if ! carry_manifest "$_co" "$_cn" "$_cos" "$_cfrom" "$CARRY_T/manifest" || [ ! -s "$CARRY_T/manifest" ]; then
+        CARRY_FALLBACK=1
+        CARRY_KEEP=$(keep_list "$_cos" | tr ' ' '|')
+        : > "$CARRY_T/manifest"
+        echo "  no list of the files of $_cfrom here: carrying what the new image does not have, and the places an update always kept"
+    fi
+    { carry_pkgdb "$_co" "$CARRY_KIND" O C S && carry_pkgdb "$_cn" "$CARRY_KIND" N D "" &&
+        upk_installed "$_co" "$CARRY_KIND" | sed "s/^/I$CARRY_TAB/"; } > "$CARRY_T/pkg" || return 1
+    "$CARRY_BIN" scan "$_cn" > "$CARRY_T/scan.new" && "$CARRY_BIN" scan "$_co" > "$CARRY_T/scan.old" || return 1
+    for _cp in 1 2; do
+        carry_plan "$_cp" < "$CARRY_T/scan.old" > "$CARRY_T/ask" || return 1
+        sed -n "s/^O$CARRY_TAB//p" "$CARRY_T/ask" | "$CARRY_BIN" sum "$_co" >> "$CARRY_T/sum.old" || return 1
+        sed -n "s/^N$CARRY_TAB//p" "$CARRY_T/ask" | "$CARRY_BIN" sum "$_cn" >> "$CARRY_T/sum.new" || return 1
+        sed -n "s/^K$CARRY_TAB//p" "$CARRY_T/ask" | carry_pksame "$_co" >> "$CARRY_T/pksame" || return 1
+    done
+    # who owns what in the new system is settled before the plan and before a file is carried
+    carry_idmap "$_co" "$_cn" > "$CARRY_T/idmap" && carry_accounts_plan "$_co" "$_cn" || return 1
+    carry_plan 3 < "$CARRY_T/scan.old" > "$CARRY_T/plan" || return 1
+    [ ! -s "$CARRY_T/plan.accounts" ] || cat "$CARRY_T/plan.accounts" >> "$CARRY_T/plan"
+    # room: what is copied (by link a file costs nothing), what is set aside, and a margin (5 % and 32 MB; by link,
+    # where only directories, links and the report are written, 8 MB)
+    _cneed=$(awk -F'\t' -v m="$_cmode" '$1 == "n" && !(m == "link" && $3 != "s") { n += $2 }
+        END { printf "%d\n", n / 2 + n / 40 + (m == "link" ? 8192 : 32768) }' "$CARRY_T/plan")
+    _cfree=$(df -Pk "$_cn" | awk 'NR == 2 { print $4 }')
+    if [ "${_cfree:-0}" -lt "$_cneed" ] && [ -n "$CARRY_FALLBACK" ]; then
+        # without a manifest most of what would be set aside is the old image's own: the update goes on without it
+        _cneed=$(awk -F'\t' -v m="$_cmode" '$1 == "n" && $3 != "h" && !(m == "link" && $3 != "s") { n += $2 }
+            END { printf "%d\n", n / 2 + n / 40 + (m == "link" ? 8192 : 32768) }' "$CARRY_T/plan")
+        CARRY_NOHOLD=1
+    fi
+    if [ "${_cfree:-0}" -lt "$_cneed" ]; then
+        echo "  not enough room to carry your files over beside the previous system: $((_cneed / 1024)) MB needed, $((${_cfree:-0} / 1024)) MB free" >&2
+        rm -rf "$_cn/.mu300-image" "$CARRY_T"
+        return 3
+    fi
+    # the release's versions aside first, then what is in the way goes, then the user's files come
+    _ck=$_cn/$CARRY_KEPT/$_cfrom
+    # (it holds copies of the user's files, some of them not everyone's to read: root's alone, whatever it was when
+    # it came along from an earlier update; each file in it keeps its own owner and mode)
+    if grep -q "^[SH]$CARRY_TAB" "$CARRY_T/plan" || [ -e "$_cn/$CARRY_KEPT" ] || [ -L "$_cn/$CARRY_KEPT" ]; then
+        [ ! -L "$_cn/$CARRY_KEPT" ] || rm -f "$_cn/$CARRY_KEPT"
+        ( umask 077; mkdir -p "$_cn/$CARRY_KEPT" ) && chmod 700 "$_cn/$CARRY_KEPT" || return 1
+        [ "$(id -u)" != 0 ] || chown 0:0 "$_cn/$CARRY_KEPT" || return 1
+        ( umask 077; mkdir -p "$_ck/image" "$_ck/user" ) || return 1
+    fi
+    sed -n "s/^S$CARRY_TAB//p" "$CARRY_T/plan" > "$CARRY_T/list"
+    [ ! -s "$CARRY_T/list" ] || "$CARRY_BIN" copy "$_cn" "$_ck/image" < "$CARRY_T/list" >/dev/null || return 1
+    sed -n "s/^R$CARRY_TAB//p" "$CARRY_T/plan" | while IFS= read -r _cl; do
+        _cp=$(carry_unesc "$_cl")
+        case /$_cp/ in *//*|*/../*|*/./*) echo "  a path that cannot be: $_cl" >&2; exit 1 ;; esac
+        rm -rf "$_cn/$_cp" || exit 1
+    done || return 1
+    sed -n "s/^L$CARRY_TAB//p" "$CARRY_T/plan" > "$CARRY_T/list"
+    : > "$CARRY_T/done"
+    [ ! -s "$CARRY_T/list" ] || "$CARRY_BIN" "$_cmode" "$_co" "$_cn" "$CARRY_T/idmap" < "$CARRY_T/list" > "$CARRY_T/done" || return 1
+    # (a running system removes files of its own while the update looks: they are counted, and said)
+    # (set-id bits and capabilities do not go with a file to another number: mu300-carry took them off, and says)
+    sed -n "s/^! /r${CARRY_TAB}q${CARRY_TAB}/p" "$CARRY_T/done" >> "$CARRY_T/plan"
+    _cgone=$(sed -n 's/.* \([0-9][0-9]*\) gone meanwhile$/\1/p' "$CARRY_T/done")
+    [ "${_cgone:-0}" = 0 ] || printf 'r\tv\t%s\n' "$_cgone" >> "$CARRY_T/plan"
+    sed -n "s/^H$CARRY_TAB//p" "$CARRY_T/plan" > "$CARRY_T/list"
+    if [ -s "$CARRY_T/list" ] && [ -z "$CARRY_NOHOLD" ]; then
+        "$CARRY_BIN" "$_cmode" "$_co" "$_ck/user" "$CARRY_T/idmap" < "$CARRY_T/list" >/dev/null || return 1
+    fi
+    # (again, now that what came along from the old system is in it, with the mode it had there)
+    if [ -d "$_cn/$CARRY_KEPT" ] && [ ! -L "$_cn/$CARRY_KEPT" ]; then
+        chmod 700 "$_cn/$CARRY_KEPT" || return 1
+        [ "$(id -u)" != 0 ] || chown 0:0 "$_cn/$CARRY_KEPT" || return 1
+    fi
+    sed -n "s/^M$CARRY_TAB//p" "$CARRY_T/plan" | while IFS= read -r _cl; do
+        _cp=$_cn/$(carry_unesc "${_cl#*"$CARRY_TAB"}"); _cl=${_cl%%"$CARRY_TAB"*}
+        # shellcheck disable=SC2086
+        set -- $_cl
+        [ -L "$_cp" ] || { chown "$2:$3" "$_cp" && chmod "$1" "$_cp"; } || exit 1
+    done || return 1
+    if [ "$CARRY_KIND" = openwrt ]; then stale_config_clean "$_cn"; fi
+    merge_accounts "$_co" "$_cn" && carry_accounts "$_co" "$_cn" || { echo "  could not carry the accounts over" >&2; return 1; }
+    image_own_restore "$_cn" || return 1
+    # the packages installed on the device: written down, their settings set aside, put back at the first boot
+    upk_record "$_co" "$_cn" "$_cos" > "$CARRY_T/upk" || { cat "$CARRY_T/upk"; echo "  could not write down the packages installed on the device" >&2; return 1; }
+    rm -rf "$_cn/.mu300-image"
+    # an apt source added on the device is upk_apt_keep's to keep (in use, or off for another Ubuntu release): where
+    # it is in use, everything of the file comes along (its owner and times), as for what was carried
+    sed -n "s/^A$CARRY_TAB//p" "$CARRY_T/plan" | while IFS= read -r _cl; do
+        [ ! -f "$_cn/$(carry_unesc "$_cl")" ] || printf '%s\n' "$_cl"
+    done > "$CARRY_T/list"
+    [ ! -s "$CARRY_T/list" ] || "$CARRY_BIN" "$_cmode" "$_co" "$_cn" "$CARRY_T/idmap" < "$CARRY_T/list" >/dev/null || return 1
+    carry_report "$_cn" "$_cos" "$_cfrom" "$_cto" "$_cmode" || return 1
+    rm -rf "$CARRY_T"
+    : > "$_cn/.mu300-carried"       # all of it was done (carry_run looks, and removes it)
+}
+# report: what the last updates wrote, and the note at login goes
+report() {
+    _cr=${MU300_SYSROOT:-}/$CARRY_REPORT
+    [ -s "$_cr" ] || { echo "no update has left a report here"; return 0; }
+    cat "$_cr"
+    rm -f "$_cr.new" "$MOTD_DIR/61-mu300-update-report" 2>/dev/null
+    return 0
+}
+# carry_need OS...: KiB the carry block will write for these systems beside the previous ones, for apply's rule of
+# free space (space_needed): what each holds that its image did not bring - its size less its image's files as its
+# manifest has them (in 4 KiB blocks, as the filesystem keeps them) - with the carry's margin (5 %, 32 MB). Nothing
+# for a system whose image's manifest is not here before the new image is (a release before the manifests: the carry
+# block counts it exactly once the new image is unpacked, and stops before anything is changed), for --no-rollback
+# (CARRY_MODE link: nothing is copied) and for MU300_UPDATE_KEEP=list. An estimate before the download; carry_system
+# has the exact figure, and the last word.
+carry_need() {
+    _nt=0
+    if [ "${CARRY_MODE:-copy}" = copy ] && [ "${MU300_UPDATE_KEEP:-all}" != list ]; then
+        for _no in "$@"; do
+            _nd=$DISK/$_no
+            [ -d "$_nd" ] && [ ! -L "$_nd" ] || continue
+            _nw=$(mktemp -d 2>/dev/null) || continue
+            if carry_manifest "$_nd" "$_nd" "$_no" "$(cat "$_nd$VERSION_FILE" 2>/dev/null)" "$_nw/m"; then
+                _ni=$(awk '$1 == "f" { k += int(($5 + 4095) / 4096) * 4 } $1 != "f" { k += 4 } END { printf "%d\n", k }' "$_nw/m")
+                # (one filesystem: what is mounted in a system is not carried; nor what the carry block leaves out)
+                _nz=$( { du -skx "$_nd" 2>/dev/null || du -sk "$_nd"; } | awk 'NR == 1 { print $1 + 0 }')
+                _nx=0
+                for _nn in proc sys dev run tmp var/tmp var/cache; do
+                    [ -d "$_nd/$_nn" ] && [ ! -L "$_nd/$_nn" ] || continue
+                    _nx=$((_nx + $( { du -skx "$_nd/$_nn" 2>/dev/null || du -sk "$_nd/$_nn"; } | awk 'NR == 1 { print $1 + 0 }') ))
+                done
+                _nu=$(( ${_nz:-0} - _nx - ${_ni:-0} ))
+                [ "$_nu" -gt 0 ] || _nu=0
+                _nt=$((_nt + _nu + _nu / 20 + 32768))
+            fi
+            rm -rf "$_nw"
+        done
+    fi
+    echo "$_nt"
+}
+# --- carry end
 
-apply_one() {  # apply_one OS TAG
-    os=$1 tag=$2
-    old=$DISK/$os
-    new=$DISK/$os.new
-    [ -d "$old" ] || die "$os is not installed"
-    tarball=$(rootfs_asset "$os")
-    tmp=$STAGE
-    # downloaded and checked in apply() already, together with everything else this update needs
-    [ -s "$tmp/$tarball" ] || die "$tarball was not downloaded"
-
-    say "$os: unpacking"
-    rm -rf "$new"; mkdir -p "$new"
-    untar -xzpf "$tmp/$tarball" -C "$new" || { rm -rf "$new" "$tmp/$tarball"; die "unpacking failed, nothing was changed"; }
-    rm -f "$tmp/$tarball"
-    [ -x "$new/sbin/init" ] || [ -L "$new/sbin/init" ] || [ -x "$new/bin/busybox" ] || { rm -rf "$new"; die "the unpacked system looks wrong, nothing was changed"; }
-
-    say "$os: keeping your settings and the vendor files"
+# The update as it was up to v2026.10.27, which keeps keep_list's places and nothing else of the user's: for a new
+# image that does not bring the carry block's parts (one built by hand without mu300-carry), and for
+# MU300_UPDATE_KEEP=list, which asks for it (kept for one release, should the new way fail somewhere).
+# keep_listed_settings before the vendor files are copied, keep_listed_services after; os, old, new: apply_one's.
+keep_listed_settings() {
     # etc/mu300 is kept as a whole (hotspot.conf, vpn.conf, ...), but the version of the image and its package lists
     # belong to the new filesystem: copying the old directory over them made every update report the version it
     # replaced
@@ -660,18 +1464,8 @@ apply_one() {  # apply_one OS TAG
     done
     merge_accounts "$old" "$new" || echo "$os: could not carry the accounts over; the image's default password applies" >&2
     image_own_restore "$new" || { rm -rf "$new"; die "$os: could not write the new image's version, nothing was changed"; }
-    # firmware and the Android userspace come from this device, never from the release
-    # then what only <os>.old still has: the updaters of 2026-09-18 to this fix, run from OpenWrt, left the system
-    # they put in place without them, so on such a device the only copy is in <os>.old, which this update removes
-    # (gaps only, after the main copy; not from <os>.old while it is the running root: that update stops below)
-    for v in $(vendor_list "$os"); do
-        for from in "$old" "$DISK/$os.old"; do
-            [ -d "$from/$v" ] || continue
-            [ "$from" = "$old" ] || ! is_root "$from" || continue
-            mkdir -p "$new/$v"
-            copy_missing "$from/$v" "$new/$v" || { rm -rf "$new"; die "$os: copying the vendor files failed, nothing was changed"; }
-        done
-    done
+}
+keep_listed_services() {
     # services enabled by hand (the links point into the system, so test with -L)
     if [ "$os" = ubuntu ]; then
         for w in "$old"/etc/systemd/system/*.wants; do
@@ -701,15 +1495,74 @@ apply_one() {  # apply_one OS TAG
     say "$os: packages installed on the device"
     upk_record "$old" "$new" "$os" || { rm -rf "$new"; die "$os: could not write down the packages installed on the device, nothing was changed"; }
     rm -rf "$new/.mu300-image"
+}
+
+apply_one() {  # apply_one OS TAG
+    os=$1 tag=$2
+    old=$DISK/$os
+    new=$DISK/$os.new
+    [ -d "$old" ] || die "$os is not installed"
+    tarball=$(rootfs_asset "$os")
+    tmp=$STAGE
+    # downloaded and checked in apply() already, together with everything else this update needs
+    [ -s "$tmp/$tarball" ] || die "$tarball was not downloaded"
+
+    say "$os: unpacking"
+    rm -rf "$new"; mkdir -p "$new"
+    untar -xzpf "$tmp/$tarball" -C "$new" || { rm -rf "$new" "$tmp/$tarball"; die "unpacking failed, nothing was changed"; }
+    rm -f "$tmp/$tarball"
+    [ -x "$new/sbin/init" ] || [ -L "$new/sbin/init" ] || [ -x "$new/bin/busybox" ] || { rm -rf "$new"; die "the unpacked system looks wrong, nothing was changed"; }
+
+    # Everything of the user's goes into the new system (the carry block, run from the new image), with the accounts
+    # and the list of the packages to install again; CARRY_MODE=link (apply --no-rollback) when the old system is not
+    # kept beside the new one.
+    say "$os: carrying your files over, and the vendor files"
+    carried=
+    if [ "${MU300_UPDATE_KEEP:-all}" != list ] && carry_ready "$new"; then
+        carry_run "$old" "$new" "$os" "${CARRY_MODE:-copy}"; r=$?
+        case $r in
+            0) carried=1 ;;
+            3) rm -rf "$new"
+               die "$os: nothing was changed. Make room (mu300-update clean deletes the kept previous versions), or update without keeping the previous system for a rollback, which needs no room for your files: mu300-update apply --no-rollback" ;;
+            *) rm -rf "$new"
+               die "$os: carrying your files over failed, nothing was changed (MU300_UPDATE_KEEP=list mu300-update apply updates as before the first release with a four-field tag: only the settings an update always kept)" ;;
+        esac
+    elif [ "${MU300_UPDATE_KEEP:-all}" != list ]; then
+        echo "$os: this image does not bring what carries everything over (mu300-carry): keeping the settings an update always kept"
+    fi
+    [ -n "$carried" ] || keep_listed_settings
+    # firmware and the Android userspace come from this device, never from the release
+    # then what only <os>.old still has: the updaters of 2026-09-18 to this fix, run from OpenWrt, left the system
+    # they put in place without them, so on such a device the only copy is in <os>.old, which this update removes
+    # (gaps only, after the main copy; not from <os>.old while it is the running root: that update stops below)
+    for v in $(vendor_list "$os"); do
+        for from in "$old" "$DISK/$os.old"; do
+            [ -d "$from/$v" ] || continue
+            [ "$from" = "$old" ] || ! is_root "$from" || continue
+            mkdir -p "$new/$v"
+            copy_missing "$from/$v" "$new/$v" || { rm -rf "$new"; die "$os: copying the vendor files failed, nothing was changed"; }
+        done
+    done
+    [ -n "$carried" ] || keep_listed_services
 
     say "$os: switching over"
     sync
     is_root "$DISK/$os.old" && { rm -rf "$new"; die "$os was updated already and is still running the old copy: reboot first"; }
+    # the old system goes aside as <os>.old, for a rollback. Carried by link (--no-rollback) its files are the new
+    # system's too, so it is no copy to go back to: it goes aside as <os>.broken, which rollback does not offer and
+    # the next apply, or clean, removes once it is not the running system any more
+    aside=$DISK/$os.old
+    if [ -n "$carried" ] && [ "${CARRY_MODE:-copy}" = link ]; then
+        aside=$DISK/$os.broken
+        is_root "$aside" && { rm -rf "$new"; die "$os was updated already and is still running the old copy: reboot first"; }
+        rm -rf "$aside"
+    fi
     rm -rf "$DISK/$os.old"
-    mv "$old" "$DISK/$os.old" || die "could not move the old system aside"
-    mv "$new" "$old" || { mv "$DISK/$os.old" "$old"; die "could not put the new system in place (old one restored)"; }
+    mv "$old" "$aside" || die "could not move the old system aside"
+    mv "$new" "$old" || { mv "$aside" "$old"; die "could not put the new system in place (old one restored)"; }
     sync
-    printf '%s: updated %s -> %s\n' "$os" "$(cat "$DISK/$os.old$VERSION_FILE" 2>/dev/null || echo unknown)" "$(cat "$old$VERSION_FILE" 2>/dev/null || echo unknown)"
+    printf '%s: updated %s -> %s\n' "$os" "$(cat "$aside$VERSION_FILE" 2>/dev/null || echo unknown)" "$(cat "$old$VERSION_FILE" 2>/dev/null || echo unknown)"
+    [ "$aside" = "$DISK/$os.old" ] || NO_ROLLBACK="$NO_ROLLBACK $os"
 }
 
 # ---- extras -----------------------------------------------------------------------------------------------------
@@ -1912,7 +2765,8 @@ apply() {
     [ -z "${MU300_FROM:-}" ] || from_begin
     tag=${MU300_RELEASE:-$(latest_release)}
     [ -n "$tag" ] || { offline_hint; die "could not reach GitHub (is the device online?)"; }
-    # (an older release than what is installed only when asked for, whatever the source: see downgrade_ok)
+    # (an older release than what is installed only when asked for, whatever the source: see downgrade_ok. Before
+    # this run hands over to that release's own updater, which may not carry over everything you added)
     downgrade_ok "$tag" $(apply_targets "$@") || die "nothing was changed"
     # The release's own updater does the update when it differs from this one (releases from v2026.09.28 on
     # carry it): fixes to the update itself then reach a device before the update runs, not one update later.
@@ -1929,12 +2783,15 @@ apply() {
     list=
     for a in "$@"; do
         # the packages installed on the device are not installed again (their settings are set aside all the same)
-        case $a in --no-reinstall) MU300_KEEP_PACKAGES=0 ;; *) list="$list $a" ;; esac
+        # --no-rollback: the previous system is not kept as <os>.old, and your files are not copied but become the
+        # new system's (the carry block's link mode): for a device without the room for both
+        case $a in --no-reinstall) MU300_KEEP_PACKAGES=0 ;; --no-rollback) CARRY_MODE=link ;; *) list="$list $a" ;; esac
     done
     [ -n "$list" ] || list=$(installed_systems)
     [ -z "${FROM_ONLY:-}" ] || list=$FROM_ONLY     # (a Magisk zip holds one system)
     BOOT_CHANGED=
     SYSTEM_CHANGED=
+    NO_ROLLBACK=
     [ "${MU300_UBUNTU:-}" = 26.04 ] && [ "$(kernel_choice)" = 5.4 ] &&
         die "$UBUNTU_2604_KERNEL. Change the kernel first: sudo mu300-update kernel 6.18 (or 7.2)"
     todo=
@@ -1959,8 +2816,10 @@ apply() {
     # unpacking hung there, and a device that reset in the middle of writing its boot image could only start Android.
     clean_broken
     say "downloading $tag"
-    free=$(df -k "$DISK" | awk 'NR==2 {print $4}')
-    [ "$free" -gt $((1000000 + 1000000 * $(echo $todo | wc -w))) ] || die "not enough free space on the Linux partition (about 1 GB, plus 1 GB for every system to update)"
+    # (one rule for this and for the panel's figures: space_needed, with what the carry block copies, carry_need)
+    free=$(df -Pk "$DISK" | awk 'NR==2 {print $4}')
+    need=$(space_needed "$(echo $todo | wc -w)" "$(carry_need $todo)")
+    [ "$free" -gt "$need" ] || die "not enough free space on the Linux partition: $((need / 1024)) MB needed, $((free / 1024)) MB free (about 1 GB, plus 1 GB for every system to update, plus a copy of what you added to it for the previous version kept for a rollback). mu300-update clean deletes the kept previous versions; mu300-update apply --no-rollback keeps none, and needs no room for your files"
     for os in $todo; do
         fetch_verified "$tag" "$(rootfs_asset "$os")" || fetch_stop $?
     done
@@ -2008,10 +2867,14 @@ apply() {
         else printf '\nReboot to start the new kernel. The previous boot image is kept: mu300-update rollback-boot\n'; fi
         return 0
     fi
+    kept='The previous version is kept: mu300-update rollback'
+    [ -z "$NO_ROLLBACK" ] || kept='The previous version is not kept (--no-rollback): there is no rollback of this update'
     case " $list " in
         *" $(running_os) "*)
-            if reboot_goes_to_android; then printf 'The previous version is kept: mu300-update rollback\n'
-            else printf '\nReboot to start the updated %s. The previous version is kept: mu300-update rollback\n' "$(running_os)"; fi ;;
+            if reboot_goes_to_android; then printf '%s\n' "$kept"
+            else printf '\nReboot to start the updated %s. %s\n' "$(running_os)" "$kept"; fi
+            # the new system has your files as they were when this ran
+            printf 'Reboot soon: what changes in the running system from now on stays in the previous one.\n' ;;
         *) reboot_goes_to_android || printf '\nDone. The updated system is used the next time you switch to it.\n' ;;
     esac
 }
@@ -2019,8 +2882,9 @@ apply() {
 # <os>.broken is what a rollback left behind: the system it rolled back from, kept until the reboot because it may
 # be the one running. Once it is not running any more nothing needs it (it was the newer version: apply installs it
 # again), so apply removes it - before counting free space, as it is a whole system (655 MB on the second F50).
+# apply --no-rollback leaves the system it replaced under the same name (apply_one), for the same reason.
 clean_broken() {
-    for os in ubuntu openwrt; do
+    for os in $SYSTEMS; do
         [ -d "$DISK/$os.broken" ] || continue
         is_root "$DISK/$os.broken" && continue
         rm -rf "$DISK/$os.broken" && printf '%s: removed the copy left by a rollback (%s.broken)\n' "$os" "$os"
@@ -2117,8 +2981,10 @@ newer() {
     [ "${_na#0}" -gt "${_nb#0}" ]
 }
 # --- release-tag end
-# the space an update wants free on the Linux partition, in KiB, for N systems: the rule apply() has
-space_needed() { echo $((1000000 + 1000000 * $1)); }
+# space_needed N [CARRY_KB]: the space an update wants free on the Linux partition, in KiB, for N systems - about
+# 1 GB, and 1 GB for each system's download and image - and CARRY_KB, what the carry block copies beside the previous
+# versions (carry_need). The one rule: apply refuses with it, and the panel shows it.
+space_needed() { echo $((1000000 + 1000000 * $1 + ${2:-0})); }
 
 # /etc/mu300/update-source: another place to take the releases from (a mirror on the LAN, a copy where GitHub cannot
 # be reached), for the command and the panel alike. Root's own regular file, lines NAME=URL with these names only;
@@ -2270,16 +3136,19 @@ apply_targets() {
     echo $_at
 }
 # downgrade_ok TAG OS...: none of these systems is newer than TAG - or going back was asked for in words
-# (MU300_ALLOW_DOWNGRADE=1, apply --downgrade). An old release is a correctly made, correctly signed release with
-# the faults that were fixed since: whoever can hand the device one (a mirror, a file) must not be able to put it
-# back by that alone. For every source, and before the release's own updater is given the run.
+# (MU300_ALLOW_DOWNGRADE=1, apply --downgrade; the one way to say it: the installers' MU300_DOWNGRADE=yes is a
+# setting of the zip, never read here). An old release is a correctly made, correctly signed release with the faults
+# that were fixed since: whoever can hand the device one (a mirror, a file) must not be able to put it back by that
+# alone. And the update is done by that release's own updater and image: one from before the carry block keeps only
+# a list of places (keep_list), and what else the user added would be gone from the system. For every source, and
+# before the release's own updater is given the run.
 downgrade_ok() {
     _dt=$1; shift
     [ -z "${MU300_ALLOW_DOWNGRADE:-}" ] || return 0
     for _do in "$@"; do
         _di=$(cat "$DISK/$_do$VERSION_FILE" 2>/dev/null)
         newer "$_di" "$_dt" || continue
-        echo "$_do is $_di and $_dt is older: going back to an older release needs --downgrade (mu300-update rollback goes back to the kept version without one)" >&2
+        echo "$_do is $_di and $_dt is older: going back to an older release needs --downgrade, as the older release's updater may not carry over everything you added to the system (mu300-update rollback goes back to the kept version without one, with your files as they were then)" >&2
         return 1
     done
     # (an update also writes the release's kernel and boot image: the same rule for what is there now)
@@ -2609,8 +3478,15 @@ status_json() {
     _at=$(cat "$DISK/.mu300/boot-attempts" 2>/dev/null); case $_at in [1-6]) ;; *) _at=5 ;; esac
     printf '},"boot_default":"%s","boot_attempts":%s,"boot_locked":%d,' "$_db" "$_at" "$([ -f "$DISK/.mu300/boot-lock" ] && echo 1 || echo 0)"
     _n=$(echo $(installed_systems) | wc -w | tr -d ' ')
+    # (with --sizes also what the carry block copies: for one system the largest of them, for all of them the sum)
+    _c1=0 _ca=0
+    if [ -n "$STATUS_SIZES" ]; then
+        for _os in $(installed_systems); do
+            _c=$(carry_need "$_os"); _ca=$((_ca + _c)); [ "$_c" -le "$_c1" ] || _c1=$_c
+        done
+    fi
     printf '"disk":{"free_kb":%s,"total_kb":%s,"need_one_kb":%s,"need_all_kb":%s},' "$(jnum "$(df -Pk "$DISK" 2>/dev/null | awk 'NR==2 {print $4}')")" \
-        "$(jnum "$(df -Pk "$DISK" 2>/dev/null | awk 'NR==2 {print $2}')")" "$(space_needed 1)" "$(space_needed "$_n")"
+        "$(jnum "$(df -Pk "$DISK" 2>/dev/null | awk 'NR==2 {print $2}')")" "$(space_needed 1 "$_c1")" "$(space_needed "$_n" "$_ca")"
     _lh=$(lock_holder)
     printf '"lock":{"held":%d,"pid":%s,"command":%s},' "$([ -n "$_lh" ] && echo 1 || echo 0)" "$(jnum "$_lh")" \
         "$([ -n "$_lh" ] && jstr "$({ tr '\0' ' ' < "/proc/$_lh/cmdline"; } 2>/dev/null | sed 's/ *$//')" || printf null)"
@@ -2631,16 +3507,16 @@ status_json() {
 release_json() {
     _rl=$(printf '%s\n' "$RELEASES" | awk -v t="$1" '$1 == "R" && $2 == t { print; exit }')
     _want="$(kernel_asset) mu300-update"
-    _ns=0
+    _ns=0 _nl=
     for _os in $(installed_systems); do
         [ "$(cat "$DISK/$_os$VERSION_FILE" 2>/dev/null)" = "$1" ] && continue
-        _want="$_want $(rootfs_asset "$_os")"; _ns=$((_ns + 1))
+        _want="$_want $(rootfs_asset "$_os")"; _ns=$((_ns + 1)); _nl="$_nl $_os"
     done
     for _x in $(extras_to_fetch "$1"); do _want="$_want $(extra_asset "$_x")"; done
     printf '{"tag":"%s","title":%s,"published":%s,"url":"https://github.com/%s/releases/tag/%s","signed":%d,"systems":%d,"need_kb":%s,"files":[' \
         "$1" "$(jstr "$(printf '%s\n' "$_rl" | cut -d' ' -f6-)")" "$(jstr "$(printf '%s\n' "$_rl" | awk '{print $5}' | cut -c1-10)")" \
         "$(jv "$REPO")" "$1" "$(printf '%s\n' "$RELEASES" | awk -v t="$1" '$1 == "A" && $2 == t && $4 == "SHA256SUMS.sig" { f = 1 } END { print f + 0 }')" \
-        "$_ns" "$(space_needed "$_ns")"
+        "$_ns" "$(space_needed "$_ns" "$(carry_need $_nl)")"
     _sep= _tot=0
     for _f in $_want; do
         _sz=$(printf '%s\n' "$RELEASES" | awk -v t="$1" -v f="$_f" '$1 == "A" && $2 == t && $4 == f { print $3; exit }')
@@ -2690,6 +3566,10 @@ progress() { [ -z "${MU300_PROGRESS:-}" ] || printf '%s\n' "$*" >> "$MU300_PROGR
 # tests/ source this file for its functions only (MU300_BIN, MU300_DISK: a fake device)
 [ -z "${MU300_LIB:-}" ] || return 0
 
+# carry OLD NEW OS copy|link: the carry block, as apply_one and the installers run it from the new image (carry_run).
+# It changes NEW only, the run that called it holds the lock, and it is root because that run is.
+case ${1:-} in carry) shift; carry_system "$@"; exit $? ;; esac
+
 [ "$(id -u)" = 0 ] || { echo "run as root" >&2; exit 1; }
 case ${1:-check} in
     apply|boot|kernel|rollback|rollback-boot|clean|accounts)
@@ -2714,6 +3594,7 @@ case ${1:-check} in
     accounts) accounts ;;
     clean) clean ;;
     notice) notice ;;
-    -h|--help|help) sed -n '2,24s/^# \{0,1\}//p' "$0" ;;
-    *) echo "usage: mu300-update check|version|apply [--no-reinstall] [ubuntu|openwrt|openwrt-luci ...]|boot|kernel [5.4|6.18|7.2]|rollback [os]|rollback-boot|clean|notice|status|releases|inspect FILE" >&2; exit 2 ;;
+    report) report ;;
+    -h|--help|help) sed -n '2,27s/^# \{0,1\}//p' "$0" ;;
+    *) echo "usage: mu300-update check|version|apply [--no-reinstall] [--no-rollback] [ubuntu|openwrt|openwrt-luci ...]|boot|kernel [5.4|6.18|7.2]|rollback [os]|rollback-boot|clean|report|notice|status|releases|inspect FILE" >&2; exit 2 ;;
 esac

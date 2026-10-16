@@ -7,6 +7,7 @@
 # Inputs (same as rootfs/assemble.sh, all optional except modules):
 #   out/modules/*.ko  out/modules.builtin*  firmware/  android-subset/  android-gpu-subset/
 #   tools/logdw/logdw  tools/bt-init/mu300-bt-init  tools/keys/mu300-keys  tools/gpu/cltest  busybox (static, full)
+#   tools/carry/mu300-carry (static: an update carries everything of the user's over with it)
 #   upstream/out/modules/*.ko (optional: out-of-tree WCN modules for the mainline 6.18 kernel)
 # openwrt-luci only: MU300_LUCI_THEME_APK, a local copy of the pinned Aurora .apk (offline builds; else downloaded)
 # Optional MU300_SAE_APK_DIR: local hostapd-common + wpad-basic-openssl APKs from build-u30-sae.sh.
@@ -127,7 +128,7 @@ ls "$IN/out/modules"/*.ko >/dev/null 2>&1 || {
 }
 # The optional ones decide whether the image can use the modem, Wi-Fi or the GPU at all. Missing ones
 # used to be skipped silently, which produces an image that boots and then does nothing useful.
-for o in firmware android-subset android-gpu-subset tools/logdw/logdw tools/bt-init/mu300-bt-init tools/keys/mu300-keys tools/adbd/adbd tools/gpu/cltest busybox upstream/out/modules; do
+for o in firmware android-subset android-gpu-subset tools/logdw/logdw tools/bt-init/mu300-bt-init tools/keys/mu300-keys tools/adbd/adbd tools/carry/mu300-carry tools/gpu/cltest busybox upstream/out/modules; do
     [ -e "$IN/$o" ] && echo "  + $o" || echo "  - $o   (missing: the image is built without it)"
 done
 # shellcheck disable=SC2046
@@ -140,8 +141,8 @@ docker run --rm --platform linux/arm64 \
   $(opt out/modules.builtin modules.builtin) $(opt out/modules.builtin.modinfo modules.builtin.modinfo) \
   $(opt firmware firmware) $(opt android-subset android-subset) $(opt android-gpu-subset android-gpu-subset) \
   $(opt tools/logdw/logdw logdw) $(opt tools/bt-init/mu300-bt-init bt-init) $(opt tools/keys/mu300-keys keys) $(opt tools/adbd/adbd adbd) $(opt tools/gpu/cltest cltest) \
-  $(opt busybox busybox) $(opt upstream/out/modules mainline-modules) -v "$TOP/openwrt":/out -v "$REGDB":/in/regdb:ro "$@" \
-  -e KREL=$KREL -e OUT="$(basename "$OUT")" -e MU300_VERSION="${MU300_VERSION:-dev}" mu300-$FLAVOUR-base:$VER /bin/sh -eu -c '
+  $(opt busybox busybox) $(opt upstream/out/modules mainline-modules) $(opt tools/carry/mu300-carry carry) -v "$TOP/openwrt":/out -v "$REGDB":/in/regdb:ro "$@" \
+  -e KREL=$KREL -e OUT="$(basename "$OUT")" -e MU300_VERSION="${MU300_VERSION:-dev}" -e MU300_SYSTEM="$SYSTEM" mu300-$FLAVOUR-base:$VER /bin/sh -eu -c '
 mkdir -p /var/lock /var/run /tmp
 # The packages come from the feed over the network while the image is built, and one connection cut in the middle of
 # one package failed the whole image, and a release with it. update, upgrade and add are tried three times, ten
@@ -302,6 +303,13 @@ fi
 [ -e /in/keys ] && { cp /in/keys $R/opt/mu300/bin/mu300-keys; chmod 755 $R/opt/mu300/bin/mu300-keys; }
 # adb over USB (tools/adbd, static): on unless mu300-usb adb off
 [ -e /in/adbd ] && { cp /in/adbd $R/opt/mu300/bin/adbd; chmod 755 $R/opt/mu300/bin/adbd; }
+# an update carries everything of the user over with it (tools/carry, static; mu300-update, the carry block). Without
+# it an update of this image keeps only the list of places, as before the first release with a four-field tag
+[ -e /in/carry ] && { cp /in/carry $R/opt/mu300/bin/mu300-carry; chmod 755 $R/opt/mu300/bin/mu300-carry; }
+# the manifests of the releases before images carried their own: of this system only (opt/mu300 has all four)
+for m in $R/opt/mu300/lib/image-manifests/*.gz; do
+    [ "$m" = "$R/opt/mu300/lib/image-manifests/$MU300_SYSTEM.gz" ] || rm -f "$m"
+done
 # the VPN engines are not part of the image: they are the vpn extra (mu300-extra install vpn)
 # full static busybox for the tools OpenWrt busybox leaves out (od, timeout, mountpoint, losetup, rfkill, telnetd)
 if [ -e /in/busybox ]; then
@@ -372,6 +380,14 @@ if ls /in/mainline-modules/*.ko >/dev/null 2>&1; then
     # the release the modules were built for (their vermagic), not a version written down here
     krel=$(for f in /in/mainline-modules/*.ko; do tr "\0" "\n" < $f | sed -n "s/^vermagic=\([^ ]*\) .*/\1/p"; break; done)
     [ -n "$krel" ] && mkdir -p $R/lib/modules/$krel && cp /in/mainline-modules/*.ko $R/lib/modules/$krel/
+fi
+# The manifest of the image: every file it holds, with type, mode, owner, size and sha256 (tools/image-manifest.py has
+# the format and makes the same lines from the tarball; make-release.sh holds the two against each other). The next
+# update reads it to tell the files of the image from those of the user. Last, when nothing in $R changes any more.
+if [ -x $R/opt/mu300/bin/mu300-carry ]; then
+    $R/opt/mu300/bin/mu300-carry manifest $R "$MU300_SYSTEM" "${MU300_VERSION:-dev}" | gzip -9n > /tmp/image-manifest.gz
+    [ "$(gzip -dc /tmp/image-manifest.gz | wc -l)" -gt 1000 ] || { echo "the image manifest is not right" >&2; exit 1; }
+    cp /tmp/image-manifest.gz $R/etc/mu300/image-manifest.gz; chmod 644 $R/etc/mu300/image-manifest.gz
 fi
 cd $R && tar -czf /out/$OUT .
 ls -la /out/$OUT'

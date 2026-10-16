@@ -102,8 +102,8 @@ Device	设备
 Kernel	内核
 enter 1, 2 or 3	请输入 1、2 或 3
 A MU300 Linux installation is already on this device.	此设备上已经安装了 MU300 Linux。
-update  reinstall the systems and keep settings and data (/etc/mu300, users and home directories,	update  重新安装系统，保留设置和数据（/etc/mu300、用户和主目录、
-        SSH host keys, OpenWrt UCI config; the hotspot settings are kept too)	        SSH 主机密钥、OpenWrt UCI 配置；热点设置也会保留）
+update  install the new release over the systems and keep everything you added or changed in them	update  在系统上安装新版本，保留你添加或修改的一切
+        (files, settings, accounts; packages you installed come back at the first boot)	        （文件、设置、账户；你安装的软件包会在首次启动时重新安装）
 wipe    erase the Linux filesystem and install from scratch	wipe    清除 Linux 文件系统并全新安装
 update or wipe	update（更新）或 wipe（清除）
 Password for the "ubuntu" user (Ubuntu) and "root" (OpenWrt)	"ubuntu" 用户（Ubuntu）和 "root"（OpenWrt）的密码
@@ -138,7 +138,7 @@ Android, Linux on demand	Android，需要时启动 Linux
 filesystem:     {1}	文件系统：      {1}
 CREATE new ext4 (erases the Linux region)	创建新的 ext4（将清除 Linux 区域）
 keep existing	保留现有的
-update:         settings and user data of the chosen systems are kept, everything else is replaced	更新：          保留所选系统的设置和用户数据，其余全部替换
+update:         everything you added to the chosen systems or changed in them is kept (/etc/mu300/update-report)	更新：          保留你在所选系统中添加或修改的一切（/etc/mu300/update-report）
 note:           the chosen systems are installed fresh; their previous files and settings are replaced	注意：          所选系统将全新安装；原有文件和设置会被替换
 writes:         Linux region at offset {1}, boot_{2}, 32 bytes of misc (boot_{3}, GPT and userdata are not touched)	写入：          偏移 {1} 处的 Linux 区域、boot_{2}、misc 的 32 字节（不会触碰 boot_{3}、GPT 和 userdata）
 Type INSTALL to continue	输入 INSTALL 继续
@@ -228,7 +228,6 @@ on, only for the adb key of this computer	开启，仅限这台电脑的 adb 密
 on, for every computer: a root shell without a password (on the device: mu300-usb adb auth keys, or mu300-usb adb off)	开启，任何电脑均可：无需密码的 root shell（在设备上：mu300-usb adb auth keys，或 mu300-usb adb off）
 asking it over adb ({1})	正在通过 adb 请求（{1}）
 Android runs from slot {1}; Linux goes to slot {2} (boot_{2})	Android 从槽位 {1} 运行；Linux 将安装到槽位 {2}（boot_{2}）
-CREATE new ext4 (erases what is there)	新建 ext4（会清除上面的内容）
 Dry run: nothing was written.	试运行：未写入任何内容。
 MU300_BOOT_OS={1}, but {1} is not installed	MU300_BOOT_OS={1}，但 {1} 未安装
 Magisk's magiskboot was not found; install this zip with Magisk 26 or newer	未找到 Magisk 的 magiskboot；请使用 Magisk 26 或更新版本安装此 zip
@@ -244,7 +243,6 @@ could not mount the existing Linux filesystem	无法挂载现有的 Linux 文件
 could not unpack the kernel bundle	无法解压内核包
 could not unpack the zip	无法解压 zip
 default	默认
-keep: settings and data of {1} are kept	保留：{1} 的设置和数据会保留
 misc holds no valid boot control block; nothing was changed	misc 中没有有效的启动控制块；未做任何更改
 mu300-install.conf: MU300_PASSWORD must have at least 6 characters	mu300-install.conf：MU300_PASSWORD 至少需要 6 个字符
 mu300-install.conf: {1} is not a setting of this installer; ignored	mu300-install.conf：{1} 不是此安装程序的设置；已忽略
@@ -347,6 +345,15 @@ to share by shrinking it: {1} MiB up to sector {2}; needed: {3} MiB ({4} MiB And
 the new partition table did not arrive on the device as it was made; nothing is changed	新的分区表未能原样传到设备上；未做任何更改
 {1} is not a file that only root can change; nothing was changed	{1} 不是只有 root 才能修改的文件；未做任何更改
 on, for {1}	开启，用于 {1}
+The installed {1} is {2}, and this zip is {3}, an older release. Going back to an older release is not done by itself: the older release may not carry over everything you added to the system.	已安装的 {1} 是 {2}，而这个 zip 是 {3}，版本更旧。不会自动退回旧版本：旧版本可能无法保留你添加到系统中的全部内容。
+Nothing was changed. To install it all the same, put MU300_DOWNGRADE=yes into {1} (a release before the first release with a four-field tag then keeps only settings, users and home directories), or MU300_MODE=wipe to start fresh.	没有任何改动。仍要安装，请在 {1} 中写入 MU300_DOWNGRADE=yes（第一个四段式标签版本之前的版本只保留设置、用户和主目录），或用 MU300_MODE=wipe 全新安装。
+CREATE new ext4 (erases what is there: every installed system, every file in them, the extras)	新建 ext4（会清除上面的内容：已安装的每个系统、其中的每个文件、扩展）
+keep: nothing is erased	保留：不清除任何内容
+update:         {1} {2} -> {3}: only settings, users and home directories are kept (MU300_UPDATE_KEEP=list)	更新：          {1} {2} -> {3}：只保留设置、用户和主目录（MU300_UPDATE_KEEP=list）
+update:         {1} {2} -> {3}: everything you added to it or changed in it is kept (files, settings, accounts and passwords);	更新：          {1} {2} -> {3}：你添加或修改的一切都会保留（文件、设置、账户和密码）；
+                packages you installed are installed again at its first boot; what could not stay in place is listed in /etc/mu300/update-report	                你安装的软件包会在首次启动时重新安装；无法留在原位的内容列在 /etc/mu300/update-report 中
+                {1} is the OLDER release (MU300_DOWNGRADE=yes): one from before the first release with a four-field tag keeps only settings, users and home directories	                {1} 是更旧的版本（MU300_DOWNGRADE=yes）：第一个四段式标签版本之前的版本只保留设置、用户和主目录
+not touched:    {1}and the extras (the VPN module) stay as they are	不改动：        {1}以及扩展（VPN 模块）保持原样
 A beta is out: {1}, a prerelease for testing, newer than the newest full release {2}.	有新的测试版：{1}，这是供测试的预发布版本，比最新的正式版 {2} 更新。
 Install the beta {1} instead of {2}? (yes/no)	安装测试版 {1} 而不是 {2} 吗？(是/否)
 News and new releases are on the Telegram channel of the project, you can follow it: {1}	新闻和新版本发布在本项目的 Telegram 频道，欢迎关注：{1}
@@ -625,7 +632,7 @@ This place has {1}: both systems together need {2}.	此位置有 {1}：两个系
 GitHub did not answer (offline, or its rate limit): the installer will look the release up itself.	GitHub 没有响应（离线，或触发了速率限制）：安装程序将自行查询版本。
 To download: {1} in {2} files (checked against the release's SHA256 sums).	需要下载：{2} 个文件，共 {1}（会与该版本的 SHA256 校验和核对）。
 Failed starts in a row before Android (1-6):	回到 Android 前允许的连续启动失败次数（1-6）：
-Update: reinstall the systems and keep settings and data	更新：重新安装系统，保留设置和数据
+Update: install the new release and keep everything you added or changed	更新：安装新版本，保留你添加或修改的一切
 /etc/mu300, users and home directories, SSH host keys, OpenWrt's UCI configuration and the hotspot settings are kept.	会保留 /etc/mu300、用户和主目录、SSH 主机密钥、OpenWrt 的 UCI 配置以及热点设置。
 Wipe: erase the Linux filesystem and install from scratch	清除：清除 Linux 文件系统并全新安装
 Another release, by its tag:	其他版本，按标签指定：
