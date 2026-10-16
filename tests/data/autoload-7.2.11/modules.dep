@@ -1,0 +1,139 @@
+kernel/crypto/aead.ko:
+kernel/crypto/krb5/krb5.ko: kernel/crypto/aead.ko
+kernel/drivers/bluetooth/btbcm.ko:
+kernel/drivers/bluetooth/btintel.ko:
+kernel/drivers/bluetooth/btrtl.ko:
+kernel/drivers/bluetooth/btusb.ko: kernel/drivers/bluetooth/btrtl.ko kernel/drivers/bluetooth/btintel.ko kernel/drivers/bluetooth/btbcm.ko
+kernel/drivers/cdrom/cdrom.ko:
+kernel/drivers/char/tpm/tpm.ko:
+kernel/drivers/md/dm-crypt.ko: kernel/drivers/md/dm-mod.ko kernel/lib/crypto/libmd5.ko kernel/security/keys/encrypted-keys/encrypted-keys.ko kernel/security/keys/trusted-keys/trusted.ko kernel/lib/asn1_encoder.ko kernel/drivers/tee/tee.ko kernel/drivers/char/tpm/tpm.ko kernel/crypto/aead.ko
+kernel/drivers/md/dm-mod.ko:
+kernel/drivers/net/can/can327.ko: kernel/drivers/net/can/dev/can-dev.ko
+kernel/drivers/net/can/dev/can-dev.ko:
+kernel/drivers/net/can/slcan/slcan.ko: kernel/drivers/net/can/dev/can-dev.ko
+kernel/drivers/net/can/usb/gs_usb.ko: kernel/drivers/net/can/dev/can-dev.ko
+kernel/drivers/net/ieee802154/adf7242.ko: kernel/net/mac802154/mac802154.ko kernel/net/ieee802154/ieee802154.ko kernel/crypto/aead.ko
+kernel/drivers/net/ieee802154/at86rf230.ko: kernel/net/mac802154/mac802154.ko kernel/net/ieee802154/ieee802154.ko kernel/crypto/aead.ko
+kernel/drivers/net/ieee802154/atusb.ko: kernel/net/mac802154/mac802154.ko kernel/net/ieee802154/ieee802154.ko kernel/crypto/aead.ko
+kernel/drivers/net/ieee802154/ca8210.ko: kernel/net/mac802154/mac802154.ko kernel/net/ieee802154/ieee802154.ko kernel/crypto/aead.ko
+kernel/drivers/net/ieee802154/cc2520.ko: kernel/net/mac802154/mac802154.ko kernel/net/ieee802154/ieee802154.ko kernel/crypto/aead.ko
+kernel/drivers/net/ieee802154/fakelb.ko: kernel/net/mac802154/mac802154.ko kernel/net/ieee802154/ieee802154.ko kernel/crypto/aead.ko
+kernel/drivers/net/ieee802154/mac802154_hwsim.ko: kernel/net/mac802154/mac802154.ko kernel/net/ieee802154/ieee802154.ko kernel/crypto/aead.ko
+kernel/drivers/net/ieee802154/mcr20a.ko: kernel/net/mac802154/mac802154.ko kernel/net/ieee802154/ieee802154.ko kernel/crypto/aead.ko
+kernel/drivers/net/ieee802154/mrf24j40.ko: kernel/net/mac802154/mac802154.ko kernel/net/ieee802154/ieee802154.ko kernel/crypto/aead.ko
+kernel/drivers/net/macvtap.ko: kernel/drivers/net/tap.ko
+kernel/drivers/net/ppp/ppp_synctty.ko:
+kernel/drivers/net/ppp/pppox.ko:
+kernel/drivers/net/slip/slip.ko:
+kernel/drivers/net/tap.ko:
+kernel/drivers/net/usb/cdc_mbim.ko:
+kernel/drivers/nfc/fdp/fdp.ko: kernel/net/nfc/nci/nci.ko kernel/net/nfc/nfc.ko
+kernel/drivers/nfc/fdp/fdp_i2c.ko: kernel/drivers/nfc/fdp/fdp.ko kernel/net/nfc/nci/nci.ko kernel/net/nfc/nfc.ko
+kernel/drivers/nfc/nfcmrvl/nfcmrvl.ko: kernel/net/nfc/nci/nci.ko kernel/net/nfc/nfc.ko
+kernel/drivers/nfc/nfcmrvl/nfcmrvl_i2c.ko: kernel/drivers/nfc/nfcmrvl/nfcmrvl.ko kernel/net/nfc/nci/nci.ko kernel/net/nfc/nfc.ko
+kernel/drivers/nfc/nfcmrvl/nfcmrvl_spi.ko: kernel/net/nfc/nci/nci_spi.ko kernel/drivers/nfc/nfcmrvl/nfcmrvl.ko kernel/net/nfc/nci/nci.ko kernel/net/nfc/nfc.ko
+kernel/drivers/nfc/nfcmrvl/nfcmrvl_uart.ko: kernel/net/nfc/nci/nci_uart.ko kernel/drivers/nfc/nfcmrvl/nfcmrvl.ko kernel/net/nfc/nci/nci.ko kernel/net/nfc/nfc.ko
+kernel/drivers/nfc/nfcmrvl/nfcmrvl_usb.ko: kernel/drivers/nfc/nfcmrvl/nfcmrvl.ko kernel/net/nfc/nci/nci.ko kernel/net/nfc/nfc.ko
+kernel/drivers/nfc/nfcsim.ko: kernel/net/nfc/nfc_digital.ko kernel/net/nfc/nfc.ko kernel/lib/crc/crc-itu-t.ko
+kernel/drivers/nfc/nxp-nci/nxp-nci.ko: kernel/net/nfc/nci/nci.ko kernel/net/nfc/nfc.ko
+kernel/drivers/nfc/nxp-nci/nxp-nci_i2c.ko: kernel/drivers/nfc/nxp-nci/nxp-nci.ko kernel/net/nfc/nci/nci.ko kernel/net/nfc/nfc.ko
+kernel/drivers/nfc/pn533/pn533.ko: kernel/net/nfc/nfc.ko
+kernel/drivers/nfc/pn533/pn533_i2c.ko: kernel/drivers/nfc/pn533/pn533.ko kernel/net/nfc/nfc.ko
+kernel/drivers/nfc/pn533/pn533_usb.ko: kernel/drivers/nfc/pn533/pn533.ko kernel/net/nfc/nfc.ko
+kernel/drivers/nfc/port100.ko: kernel/net/nfc/nfc_digital.ko kernel/net/nfc/nfc.ko kernel/lib/crc/crc-itu-t.ko
+kernel/drivers/nfc/s3fwrn5/s3fwrn5.ko: kernel/net/nfc/nci/nci.ko kernel/net/nfc/nfc.ko
+kernel/drivers/nfc/s3fwrn5/s3fwrn5_i2c.ko: kernel/drivers/nfc/s3fwrn5/s3fwrn5.ko kernel/net/nfc/nci/nci.ko kernel/net/nfc/nfc.ko
+kernel/drivers/nfc/st-nci/st-nci.ko: kernel/net/nfc/nci/nci.ko kernel/net/nfc/nfc.ko
+kernel/drivers/nfc/st-nci/st-nci_i2c.ko: kernel/drivers/nfc/st-nci/st-nci.ko kernel/net/nfc/nci/nci.ko kernel/net/nfc/nfc.ko
+kernel/drivers/nfc/st-nci/st-nci_spi.ko: kernel/drivers/nfc/st-nci/st-nci.ko kernel/net/nfc/nci/nci.ko kernel/net/nfc/nfc.ko
+kernel/drivers/nfc/st95hf/st95hf.ko: kernel/net/nfc/nfc_digital.ko kernel/net/nfc/nfc.ko kernel/lib/crc/crc-itu-t.ko
+kernel/drivers/nfc/trf7970a.ko: kernel/net/nfc/nfc_digital.ko kernel/net/nfc/nfc.ko kernel/lib/crc/crc-itu-t.ko
+kernel/drivers/nfc/virtual_ncidev.ko: kernel/net/nfc/nci/nci.ko kernel/net/nfc/nfc.ko
+kernel/drivers/pps/clients/pps-ldisc.ko:
+kernel/drivers/tee/tee.ko:
+kernel/drivers/vhost/vhost.ko: kernel/drivers/vhost/vhost_iotlb.ko
+kernel/drivers/vhost/vhost_iotlb.ko:
+kernel/drivers/vhost/vhost_net.ko: kernel/drivers/vhost/vhost.ko kernel/drivers/vhost/vhost_iotlb.ko kernel/drivers/net/tap.ko
+kernel/drivers/vhost/vhost_vsock.ko: kernel/net/vmw_vsock/vmw_vsock_virtio_transport_common.ko kernel/drivers/vhost/vhost.ko kernel/drivers/vhost/vhost_iotlb.ko kernel/net/vmw_vsock/vsock.ko
+kernel/fs/adfs/adfs.ko:
+kernel/fs/affs/affs.ko:
+kernel/fs/befs/befs.ko:
+kernel/fs/bfs/bfs.ko:
+kernel/fs/btrfs/btrfs.ko: kernel/lib/raid/xor/xor.ko kernel/lib/crypto/libblake2b.ko kernel/lib/raid/raid6/raid6_pq.ko kernel/lib/lzo/lzo_compress.ko
+kernel/fs/ceph/ceph.ko: kernel/net/ceph/libceph.ko kernel/crypto/krb5/krb5.ko kernel/fs/netfs/netfs.ko kernel/crypto/aead.ko
+kernel/fs/coda/coda.ko:
+kernel/fs/cramfs/cramfs.ko:
+kernel/fs/efs/efs.ko:
+kernel/fs/fuse/fuse.ko:
+kernel/fs/gfs2/gfs2.ko:
+kernel/fs/hfs/hfs.ko: kernel/drivers/cdrom/cdrom.ko
+kernel/fs/hfsplus/hfsplus.ko: kernel/drivers/cdrom/cdrom.ko
+kernel/fs/hpfs/hpfs.ko:
+kernel/fs/jfs/jfs.ko: kernel/fs/nls/nls_ucs2_utils.ko
+kernel/fs/minix/minix.ko:
+kernel/fs/netfs/netfs.ko:
+kernel/fs/nilfs2/nilfs2.ko:
+kernel/fs/nls/nls_ucs2_utils.ko:
+kernel/fs/ntfs3/ntfs3.ko:
+kernel/fs/ocfs2/cluster/ocfs2_nodemanager.ko:
+kernel/fs/ocfs2/dlmfs/ocfs2_dlmfs.ko: kernel/fs/ocfs2/cluster/ocfs2_nodemanager.ko kernel/fs/ocfs2/ocfs2_stackglue.ko
+kernel/fs/ocfs2/ocfs2.ko: kernel/fs/ocfs2/cluster/ocfs2_nodemanager.ko kernel/fs/ocfs2/ocfs2_stackglue.ko kernel/fs/quota/quota_tree.ko
+kernel/fs/ocfs2/ocfs2_stackglue.ko:
+kernel/fs/omfs/omfs.ko: kernel/lib/crc/crc-itu-t.ko
+kernel/fs/orangefs/orangefs.ko:
+kernel/fs/qnx4/qnx4.ko:
+kernel/fs/qnx6/qnx6.ko:
+kernel/fs/quota/quota_tree.ko:
+kernel/fs/romfs/romfs.ko:
+kernel/fs/ufs/ufs.ko:
+kernel/lib/asn1_encoder.ko:
+kernel/lib/crc/crc-itu-t.ko:
+kernel/lib/crypto/libblake2b.ko:
+kernel/lib/crypto/libmd5.ko:
+kernel/lib/lzo/lzo_compress.ko:
+kernel/lib/raid/raid6/raid6_pq.ko:
+kernel/lib/raid/xor/xor.ko:
+kernel/net/6lowpan/6lowpan.ko:
+kernel/net/bridge/br_netfilter.ko:
+kernel/net/can/can-bcm.ko: kernel/net/can/can.ko
+kernel/net/can/can-gw.ko: kernel/net/can/can.ko
+kernel/net/can/can-isotp.ko: kernel/net/can/can.ko
+kernel/net/can/can-raw.ko: kernel/net/can/can.ko
+kernel/net/can/can.ko:
+kernel/net/can/j1939/can-j1939.ko: kernel/net/can/can.ko
+kernel/net/ceph/libceph.ko: kernel/crypto/krb5/krb5.ko kernel/crypto/aead.ko
+kernel/net/ieee802154/6lowpan/ieee802154_6lowpan.ko: kernel/net/6lowpan/6lowpan.ko kernel/net/ieee802154/ieee802154.ko
+kernel/net/ieee802154/ieee802154.ko:
+kernel/net/ieee802154/ieee802154_socket.ko: kernel/net/ieee802154/ieee802154.ko
+kernel/net/ipv4/esp4.ko: kernel/net/xfrm/xfrm_algo.ko kernel/crypto/aead.ko
+kernel/net/ipv4/netfilter/ip_tables.ko:
+kernel/net/ipv4/netfilter/iptable_nat.ko: kernel/net/ipv4/netfilter/ip_tables.ko
+kernel/net/ipv6/netfilter/ip6_tables.ko:
+kernel/net/l2tp/l2tp_core.ko:
+kernel/net/l2tp/l2tp_ip.ko: kernel/net/l2tp/l2tp_core.ko
+kernel/net/l2tp/l2tp_netlink.ko: kernel/net/l2tp/l2tp_core.ko
+kernel/net/l2tp/l2tp_ppp.ko: kernel/net/l2tp/l2tp_netlink.ko kernel/net/l2tp/l2tp_core.ko kernel/drivers/net/ppp/pppox.ko
+kernel/net/mac802154/mac802154.ko: kernel/net/ieee802154/ieee802154.ko kernel/crypto/aead.ko
+kernel/net/netfilter/xt_addrtype.ko:
+kernel/net/netfilter/xt_nat.ko:
+kernel/net/nfc/hci/hci.ko: kernel/net/nfc/nfc.ko
+kernel/net/nfc/nci/nci.ko: kernel/net/nfc/nfc.ko
+kernel/net/nfc/nci/nci_spi.ko:
+kernel/net/nfc/nci/nci_uart.ko:
+kernel/net/nfc/nfc.ko:
+kernel/net/nfc/nfc_digital.ko: kernel/net/nfc/nfc.ko kernel/lib/crc/crc-itu-t.ko
+kernel/net/sctp/sctp.ko:
+kernel/net/sctp/sctp_diag.ko: kernel/net/sctp/sctp.ko
+kernel/net/tipc/tipc.ko: kernel/crypto/aead.ko
+kernel/net/tipc/tipc_diag.ko: kernel/net/tipc/tipc.ko kernel/crypto/aead.ko
+kernel/net/vmw_vsock/vmw_vsock_virtio_transport_common.ko: kernel/net/vmw_vsock/vsock.ko
+kernel/net/vmw_vsock/vsock.ko:
+kernel/net/xfrm/xfrm_algo.ko: kernel/crypto/aead.ko
+kernel/net/xfrm/xfrm_user.ko: kernel/net/xfrm/xfrm_algo.ko kernel/crypto/aead.ko
+kernel/security/keys/encrypted-keys/encrypted-keys.ko: kernel/security/keys/trusted-keys/trusted.ko kernel/lib/asn1_encoder.ko kernel/drivers/tee/tee.ko kernel/drivers/char/tpm/tpm.ko
+kernel/security/keys/trusted-keys/trusted.ko: kernel/lib/asn1_encoder.ko kernel/drivers/tee/tee.ko kernel/drivers/char/tpm/tpm.ko
+kernel/sound/core/snd-pcm.ko: kernel/sound/core/snd-timer.ko kernel/sound/core/snd.ko kernel/sound/soundcore.ko
+kernel/sound/core/snd-timer.ko: kernel/sound/core/snd.ko kernel/sound/soundcore.ko
+kernel/sound/core/snd.ko: kernel/sound/soundcore.ko
+kernel/sound/drivers/snd-aloop.ko: kernel/sound/core/snd-pcm.ko kernel/sound/core/snd-timer.ko kernel/sound/core/snd.ko kernel/sound/soundcore.ko
+kernel/sound/soundcore.ko:

@@ -84,47 +84,90 @@ class AutoloadGuard(unittest.TestCase):
     GUARD = TOP / 'rootfs/overlay/opt/mu300/bin/mu300-modprobe-guard'
     LIST = TOP / 'rootfs/overlay/opt/mu300/lib/autoload-blocked'
 
-    def run_guard(self, name, allow=False, shell='sh'):
+    SAMPLE = TOP / 'tests/data/autoload-7.2.11'   # a subset of the 7.2.11 build's modules.dep and modules.alias
+
+    def run_guard(self, name, allow=False, shell=('sh',), moddir=None):
         with tempfile.TemporaryDirectory() as d:
             log, kmsg = Path(d) / 'log', Path(d) / 'kmsg'
             fake = Path(d) / 'modprobe'
             fake.write_text('#!/bin/sh\necho "$@" > "%s"\n' % log)
             fake.chmod(0o755)
             env = {'PATH': '/usr/bin:/bin', 'MU300_MODPROBE': str(fake), 'MU300_AUTOLOAD_BLOCKED': str(self.LIST),
-                   'MU300_KMSG': str(kmsg), 'MU300_AUTOLOAD_ALLOW': str(Path(d) / 'allow')}
+                   'MU300_KMSG': str(kmsg), 'MU300_AUTOLOAD_ALLOW': str(Path(d) / 'allow'), 'MU300_KREL': 't',
+                   'MU300_MODDIR': str(moddir or Path(d) / 'none'), 'MU300_GUARD_CACHE': str(Path(d) / 'cache')}
             if allow:
                 (Path(d) / 'allow').write_text('')
-            r = subprocess.run([shell, str(self.GUARD), '-q', '--', name], env=env, capture_output=True, text=True)
+            r = subprocess.run([*shell, str(self.GUARD), '-q', '--', name], env=env, capture_output=True, text=True)
             return r.returncode, log.read_text() if log.exists() else None, kmsg.read_text() if kmsg.exists() else ''
 
-    def test_the_families_of_the_review_are_refused(self):
-        for name in ('net-pf-30', 'net-pf-30-proto-0-type-2', 'net-pf-29', 'net-pf-29-proto-1', 'net-pf-36',
-                     'net-pf-39', 'net-pf-40', 'net-pf-2-proto-132', 'net-pf-10-proto-132-type-1',
-                     'net-pf-16-proto-16-family-TIPCv2', 'net-pf-16-proto-16-family-nfc', 'fs-hfs', 'fs-jfs',
-                     'fs-nilfs2', 'fs-ocfs2', 'fs-gfs2'):
-            rc, called, kmsg = self.run_guard(name)
-            self.assertEqual((rc, called), (1, None), name)
-            self.assertIn('on-demand loading of %s refused' % name, kmsg)
+    def test_the_list_holds_module_names(self):
+        names = [l.split('#')[0].strip() for l in self.LIST.read_text().splitlines()]
+        names = [n for n in names if n]
+        self.assertEqual(len(names), len(set(names)))
+        for n in names:
+            self.assertRegex(n, r'^[a-z0-9_]+$')
+        for n in ('tipc', 'sctp', 'can', 'can_raw', 'can_bcm', 'nfc', 'ieee802154', 'slcan', 'hfs', 'jfs', 'nilfs2'):
+            self.assertIn(n, names)
+        for n in ('l2tp_core', 'vsock', 'vhost_vsock', 'can_dev', 'hfsplus', 'wireguard'):
+            self.assertNotIn(n, names)
 
-    def test_everything_else_reaches_modprobe_unchanged(self):
-        # crypto, netfilter, the filesystems people plug in, the families the system uses, and net-pf-3x neighbours
-        for name in ('crypto-gcm(aes)', 'nft-chain-2-nat', 'fs-ntfs3', 'fs-exfat', 'fs-hfsplus', 'fs-btrfs', 'fs-fuse',
-                     'net-pf-24', 'net-pf-2-proto-115', 'net-pf-10', 'net-pf-3', 'net-pf-300', 'rtnl-link-wireguard',
-                     'tcp-ulp-tls', 'char-major-10-238', 'tipc'):
-            rc, called, _ = self.run_guard(name)
-            self.assertEqual((rc, called), (0, '-q -- %s\n' % name), name)
+    def test_every_spelling_of_a_blocked_module_in_the_build_sample(self):
+        # every alias of every blocked module of the 7.2.11 build, and its name either way, refused; the closure of
+        # their dependants checked; the daily ones (nft, wireguard, overlay, usb-storage, vfat, tun, bridge, veth,
+        # br_netfilter, xt_*, vhost_net, kvm, l2tp...) handed on - under every shell the systems run it with
+        check = load('autoload_check', 'check-autoload-blocked.py')
+        for shell in (['sh'], ['busybox', 'sh'], ['dash']):
+            if not shutil.which(shell[0]):
+                continue
+            with self.subTest(shell=shell[0]):
+                check.check(self.SAMPLE, self.LIST, self.GUARD, shell=shell)
 
-    def test_the_switch_turns_it_off_and_busybox_runs_it(self):
-        self.assertEqual(self.run_guard('net-pf-30', allow=True)[:2], (0, '-q -- net-pf-30\n'))
-        if shutil.which('busybox'):
-            self.assertEqual(self.run_guard('net-pf-30', shell='busybox')[:2], (1, None))
-            self.assertEqual(self.run_guard('fs-ext4', shell='busybox')[:2], (0, '-q -- fs-ext4\n'))
+    def test_a_refusal_is_logged_and_never_reaches_modprobe(self):
+        with tempfile.TemporaryDirectory() as d:
+            moddir = Path(d)
+            (moddir / 'tipc.ko').write_text('')
+            rc, called, kmsg = self.run_guard('tipc', moddir=moddir)
+            self.assertEqual((rc, called), (1, None))
+            self.assertIn('on-demand loading of tipc (tipc) refused (root: modprobe tipc', kmsg)
+            # without a table (no modinfo answer) the names still hold, in either spelling
+            self.assertEqual(self.run_guard('can-raw')[:2], (1, None))
+            self.assertEqual(self.run_guard('wireguard')[:2], (0, '-q -- wireguard\n'))
+
+    def test_the_switch_turns_it_off(self):
+        self.assertEqual(self.run_guard('tipc', allow=True)[:2], (0, '-q -- tipc\n'))
+
+    def test_prepare_makes_the_table_then_takes_over(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            helper = d / 'helper'
+            helper.write_text('/sbin/modprobe\n')
+            (d / 'mods').mkdir()
+            (d / 'mods' / 'tipc.ko').write_bytes(b'\x7fELF\0name=tipc\0alias=net-pf-30\0alias=net-pf-16-proto-16-family-TIPCv2\0')
+            env = {'PATH': '/usr/bin:/bin', 'MU300_AUTOLOAD_BLOCKED': str(self.LIST), 'MU300_KREL': '7.2.11',
+                   'MU300_MODDIR': str(d / 'mods'), 'MU300_GUARD_CACHE': str(d / 'cache'),
+                   'MU300_HELPER_SYSCTL': str(helper), 'MU300_AUTOLOAD_ALLOW': str(d / 'allow')}
+            r = subprocess.run(['sh', str(self.GUARD), '--prepare'], env=env, capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(helper.read_text(), '/opt/mu300/bin/mu300-modprobe-guard\n')
+            table = (d / 'cache' / '7.2.11').read_text().splitlines()
+            self.assertIn('net_pf_30 tipc', table)
+            self.assertIn('net_pf_16_proto_16_family_TIPCv2 tipc', table)
+            self.assertEqual((d / 'cache').stat().st_mode & 0o777, 0o700)
+            # with the switch file the helper stays the system's
+            helper.write_text('/sbin/modprobe\n')
+            (d / 'allow').write_text('')
+            subprocess.run(['sh', str(self.GUARD), '--prepare'], env=env, capture_output=True, text=True)
+            self.assertEqual(helper.read_text(), '/sbin/modprobe\n')
 
     def test_both_systems_install_it(self):
         for system in ('rootfs', 'openwrt'):
             conf = (TOP / system / 'overlay/etc/sysctl.d/98-mu300-modules.conf').read_text()
-            self.assertIn('kernel.modprobe = /opt/mu300/bin/mu300-modprobe-guard', conf)
             self.assertIn('dev.tty.ldisc_autoload = 0', conf)
+        unit = (TOP / 'rootfs/overlay/etc/systemd/system/mu300-modprobe-guard.service').read_text()
+        self.assertIn('ExecStart=/opt/mu300/bin/mu300-modprobe-guard --prepare', unit)
+        self.assertIn('mu300-modprobe-guard.service:sysinit.target', (TOP / 'rootfs/assemble.sh').read_text())
+        hw = (TOP / 'openwrt/overlay/etc/init.d/mu300-hw').read_text()
+        self.assertIn('/opt/mu300/bin/mu300-modprobe-guard --prepare', hw)
         # OpenWrt's image takes /opt/mu300 from the Ubuntu overlay, and both copy their overlay whole
         build = (TOP / 'openwrt/build-rootfs.sh').read_text()
         self.assertIn('rootfs/overlay/opt/mu300":/in/opt-mu300', build)

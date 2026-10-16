@@ -32,6 +32,8 @@ krel=$(cat $O/include/config/kernel.release)
 depmod -b "$O/mod-install" "$krel"
 python3 /work/check-dt-modules.py "$O/mod-install/lib/modules/$krel/modules.alias" /work/dt-compatibles.txt \
     $(sed 's/#.*//' /work/dt-modules-allowed.txt)
+# depmod's index of them, for make-bundle.sh's check of the on-demand guard (check-autoload-blocked.py)
+cp "$O/mod-install/lib/modules/$krel/modules.dep" "$O/mod-install/lib/modules/$krel/modules.alias" $OUT/
 find "$O/mod-install/lib/modules" -name '*.ko' -exec cp {} $OUT/modules/ \;
 extra=
 for m in $mods; do
