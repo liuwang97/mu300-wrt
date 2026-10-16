@@ -28,6 +28,11 @@ if ip link show rndis0 >/dev/null 2>&1; then
     ip link set rndis0 up
 fi
 ip addr replace "$LAN_IP/24" dev br-lan
+# a LAN address changed while the device runs (mu300-api lan.set restarts this service): the old one goes, or br-lan
+# kept both until the next boot (seen on an F50: 192.168.79.1 and 192.168.90.1, then the same after the way back)
+for a in $(ip -4 -o addr show dev br-lan scope global 2>/dev/null | awk '{ print $4 }'); do
+    [ "$a" = "$LAN_IP/24" ] || ip addr del "$a" dev br-lan 2>/dev/null || true
+done
 ip link set br-lan up
 # IPv6: mobile-data puts the network's /64 on br-lan when the carrier gives one (and removes it again), and
 # constructor:br-lan advertises whatever global /64 is there - SLAAC, with DNS by RDNSS and stateless DHCPv6.

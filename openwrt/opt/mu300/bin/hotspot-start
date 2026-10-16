@@ -21,6 +21,8 @@ fi
 # read values literally (never source the file: the passphrase may contain shell metacharacters)
 conf() { sed -n "s/^$1=//p" "$CONF" | head -1; }
 SSID=$(conf SSID); PSK=$(conf PSK); CHANNEL=$(conf CHANNEL); COUNTRY=$(conf COUNTRY); BAND=$(conf BAND)
+# HIDDEN=1: the name is not broadcast (clients join by typing it); the web manager's switch (mu300-api wifi.set)
+HIDE=0; [ "$(conf HIDDEN)" = 1 ] && HIDE=1
 COUNTRY=${COUNTRY:-TR}
 # BAND=5 uses 802.11a/n/ac; this chip supports only one AP at a time, so 2.4 and 5 GHz cannot run together.
 # The firmware offers 5 GHz AP only on the non-DFS channels 36-48 and 149-165, and the driver has no radar detection:
@@ -80,6 +82,7 @@ cat > "$HOSTAPD_CONF" <<C
 interface=wlan0
 driver=nl80211
 ssid=${SSID}
+ignore_broadcast_ssid=${HIDE}
 country_code=${COUNTRY}
 bridge=br-lan
 hw_mode=${HWMODE}

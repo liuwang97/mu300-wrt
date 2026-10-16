@@ -3933,6 +3933,24 @@ class LanStart(ShellTest):
         self.assertLess(settle, join)
         self.assertLess(join, up)
 
+    def test_a_changed_address_replaces_the_old_one(self):
+        """A restart with a new LAN_IP (the device manager's lan.set) takes the old address off the bridge."""
+        if not shutil.which('bash'):
+            self.skipTest('no bash')
+        self.stub('ip', 'echo "ip $*" >> "$STUBLOG/calls"\n'
+                  'case "$*" in "-4 -o addr show dev br-lan scope global")\n'
+                  '  echo "5: br-lan    inet 192.168.79.1/24 brd 192.168.79.255 scope global br-lan\\\\       valid_lft forever"\n'
+                  '  echo "5: br-lan    inet 192.168.90.1/24 brd 192.168.90.255 scope global br-lan\\\\       valid_lft forever" ;;\n'
+                  'esac; exit 0')
+        self.stub('udevadm', 'exit 0')
+        self.stub('dnsmasq', 'echo "dnsmasq" >> "$STUBLOG/calls"')
+        r = self.script(['bash'], BIN / 'lan-start', MU300_LAN_IP='192.168.90.1')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        calls = (self.tmp / 'calls').read_text().splitlines()
+        self.assertIn('ip addr del 192.168.79.1/24 dev br-lan', calls)
+        self.assertNotIn('ip addr del 192.168.90.1/24 dev br-lan', calls)
+        self.assertLess(calls.index('ip addr replace 192.168.90.1/24 dev br-lan'), calls.index('ip addr del 192.168.79.1/24 dev br-lan'))
+
 
 class KmsgForward(ShellTest):
     """kmsg-forward: the first start of a boot forwards the ring buffer from its start (the early call traces came
