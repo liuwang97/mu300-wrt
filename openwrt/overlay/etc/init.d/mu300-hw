@@ -19,10 +19,10 @@ hw_bringup() {
 	# cfg80211 looked for regulatory.db before the rootfs was mounted; load it now so hostapd sees the country rules
 	/opt/mu300/bin/regdb-load >>/tmp/mu300-wifi-start.log 2>&1
 	/opt/mu300/bin/openwrt-wifi-config >>/tmp/mu300-wifi-start.log 2>&1
-	# a WPA3 hotspot with the U30 SAE offload (opt-in, docs/U30AIR-SAE.md) on a hostapd that does not have it: WPA2,
-	# before the Wi-Fi restart below, which is the start that brings the hotspot up (netifd's own, earlier
-	# one ends AP-DISABLED under the world regulatory domain, or refused by that hostapd)
-	/opt/mu300/bin/openwrt-wifi-sae-guard precheck >>/tmp/mu300-wifi-start.log 2>&1
+	# a hotspot set to WPA3/SAE (the U30 Air's SAE offload, now disabled: docs/U30AIR-SAE.md, FINDINGS 80) becomes
+	# WPA2-PSK with the same password, before the Wi-Fi restart below, which is the start that brings the hotspot up
+	# (netifd's own, earlier one ends AP-DISABLED under the world regulatory domain; the wifi-scripts refuse SAE)
+	/opt/mu300/bin/openwrt-wifi-wpa2-only migrate >>/tmp/mu300-wifi-start.log 2>&1
 	# the U30 Air's NFC tag: the hotspot's name and password, if that is what it holds (see mu300-nfc)
 	[ "$(/opt/mu300/bin/mu300-device)" = u30air ] && /opt/mu300/bin/mu300-nfc sync >/tmp/mu300-nfc.log 2>&1
 	# apply the country before netifd starts hostapd, otherwise 5 GHz channels are still NO-IR under world rules

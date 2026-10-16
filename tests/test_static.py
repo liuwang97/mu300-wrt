@@ -749,8 +749,13 @@ class Rules(unittest.TestCase):
         v6 = 'openwrt/luci-overlay/lib/netifd/proto/mu300cell-v6.sh'
         patch = {'openwrt/patches/fw4-sipa-offload.patch': 'x\n',
                  'openwrt/patches/fw4-old-kernel-flowtable.patch': 'x\n',
-                 'openwrt/patches/wifi-scripts-no-dfs.patch': 'x\n'}
+                 'openwrt/patches/wifi-scripts-no-dfs.patch': 'x\n',
+                 'openwrt/patches/wifi-scripts-wpa2-only.patch': 'x\n'}
         for system in ('openwrt', 'openwrt-luci'):
+            with self.subTest(system=system, missing='the WPA2-only patch'):
+                r = run({cell: 'x\n', v6: 'x\n', **{k: v for k, v in patch.items() if 'wpa2' not in k}}, system)
+                self.assertEqual(r.returncode, 1, r.stderr)
+                self.assertIn('wifi-scripts-wpa2-only.patch', r.stderr)
             with self.subTest(system=system, missing='mu300cell.sh'):
                 r = run(patch, system)
                 self.assertEqual(r.returncode, 1, r.stderr)
