@@ -102,8 +102,8 @@ Device	Cihaz
 Kernel	Çekirdek
 enter 1, 2 or 3	1, 2 ya da 3 girin
 A MU300 Linux installation is already on this device.	Bu cihazda zaten bir MU300 Linux kurulumu var.
-update  reinstall the systems and keep settings and data (/etc/mu300, users and home directories,	update  sistemleri yeniden kurar, ayarları ve verileri korur (/etc/mu300, kullanıcılar ve ev dizinleri,
-        SSH host keys, OpenWrt UCI config; the hotspot settings are kept too)	        SSH anahtarları, OpenWrt UCI ayarları; hotspot ayarları da korunur)
+update  install the new release over the systems and keep everything you added or changed in them	update  yeni sürümü sistemlerin üzerine kurar, eklediğiniz ve değiştirdiğiniz her şeyi korur
+        (files, settings, accounts; packages you installed come back at the first boot)	        (dosyalar, ayarlar, hesaplar; kurduğunuz paketler ilk açılışta yeniden kurulur)
 wipe    erase the Linux filesystem and install from scratch	wipe    Linux dosya sistemini siler ve sıfırdan kurar
 update or wipe	update (güncelle) ya da wipe (sil)
 Password for the "ubuntu" user (Ubuntu) and "root" (OpenWrt)	"ubuntu" kullanıcısı (Ubuntu) ve "root" (OpenWrt) için şifre
@@ -138,7 +138,7 @@ Android, Linux on demand	Android, istenince Linux
 filesystem:     {1}	dosya sistemi:  {1}
 CREATE new ext4 (erases the Linux region)	YENİ ext4 OLUŞTUR (Linux alanını siler)
 keep existing	mevcut olan korunur
-update:         settings and user data of the chosen systems are kept, everything else is replaced	güncelleme:     seçilen sistemlerin ayarları ve kullanıcı verileri korunur, geri kalan her şey yenilenir
+update:         everything you added to the chosen systems or changed in them is kept (/etc/mu300/update-report)	güncelleme:     seçilen sistemlere eklediğiniz veya değiştirdiğiniz her şey korunur (/etc/mu300/update-report)
 note:           the chosen systems are installed fresh; their previous files and settings are replaced	not:            seçilen sistemler sıfırdan kurulur; önceki dosyaları ve ayarları değiştirilir
 writes:         Linux region at offset {1}, boot_{2}, 32 bytes of misc (boot_{3}, GPT and userdata are not touched)	yazılacaklar:   {1} konumundaki Linux alanı, boot_{2}, misc'in 32 baytı (boot_{3}, GPT ve userdata'ya dokunulmaz)
 Type INSTALL to continue	Devam etmek için INSTALL yazın
@@ -632,7 +632,7 @@ This place has {1}: both systems together need {2}.	Burada {1} var: iki sistem b
 GitHub did not answer (offline, or its rate limit): the installer will look the release up itself.	GitHub yanıt vermedi (çevrimdışı ya da istek sınırı): yükleyici sürümü kendisi bulacak.
 To download: {1} in {2} files (checked against the release's SHA256 sums).	İndirilecek: {2} dosyada {1} (sürümün SHA256 özetleriyle doğrulanır).
 Failed starts in a row before Android (1-6):	Android'e dönmeden önce arka arkaya başarısız açılış (1-6):
-Update: reinstall the systems and keep settings and data	Güncelle: sistemleri yeniden kur, ayarları ve verileri koru
+Update: install the new release and keep everything you added or changed	Güncelle: yeni sürümü kur, eklediğin ve değiştirdiğin her şeyi koru
 /etc/mu300, users and home directories, SSH host keys, OpenWrt's UCI configuration and the hotspot settings are kept.	/etc/mu300, kullanıcılar ve ev dizinleri, SSH anahtarları, OpenWrt UCI ayarları ve hotspot ayarları korunur.
 Wipe: erase the Linux filesystem and install from scratch	Sil: Linux dosya sistemini sil ve sıfırdan kur
 Another release, by its tag:	Etiketiyle başka bir sürüm:

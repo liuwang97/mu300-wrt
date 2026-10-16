@@ -102,8 +102,8 @@ Device	设备
 Kernel	内核
 enter 1, 2 or 3	请输入 1、2 或 3
 A MU300 Linux installation is already on this device.	此设备上已经安装了 MU300 Linux。
-update  reinstall the systems and keep settings and data (/etc/mu300, users and home directories,	update  重新安装系统，保留设置和数据（/etc/mu300、用户和主目录、
-        SSH host keys, OpenWrt UCI config; the hotspot settings are kept too)	        SSH 主机密钥、OpenWrt UCI 配置；热点设置也会保留）
+update  install the new release over the systems and keep everything you added or changed in them	update  在系统上安装新版本，保留你添加或修改的一切
+        (files, settings, accounts; packages you installed come back at the first boot)	        （文件、设置、账户；你安装的软件包会在首次启动时重新安装）
 wipe    erase the Linux filesystem and install from scratch	wipe    清除 Linux 文件系统并全新安装
 update or wipe	update（更新）或 wipe（清除）
 Password for the "ubuntu" user (Ubuntu) and "root" (OpenWrt)	"ubuntu" 用户（Ubuntu）和 "root"（OpenWrt）的密码
@@ -138,7 +138,7 @@ Android, Linux on demand	Android，需要时启动 Linux
 filesystem:     {1}	文件系统：      {1}
 CREATE new ext4 (erases the Linux region)	创建新的 ext4（将清除 Linux 区域）
 keep existing	保留现有的
-update:         settings and user data of the chosen systems are kept, everything else is replaced	更新：          保留所选系统的设置和用户数据，其余全部替换
+update:         everything you added to the chosen systems or changed in them is kept (/etc/mu300/update-report)	更新：          保留你在所选系统中添加或修改的一切（/etc/mu300/update-report）
 note:           the chosen systems are installed fresh; their previous files and settings are replaced	注意：          所选系统将全新安装；原有文件和设置会被替换
 writes:         Linux region at offset {1}, boot_{2}, 32 bytes of misc (boot_{3}, GPT and userdata are not touched)	写入：          偏移 {1} 处的 Linux 区域、boot_{2}、misc 的 32 字节（不会触碰 boot_{3}、GPT 和 userdata）
 Type INSTALL to continue	输入 INSTALL 继续
@@ -632,7 +632,7 @@ This place has {1}: both systems together need {2}.	此位置有 {1}：两个系
 GitHub did not answer (offline, or its rate limit): the installer will look the release up itself.	GitHub 没有响应（离线，或触发了速率限制）：安装程序将自行查询版本。
 To download: {1} in {2} files (checked against the release's SHA256 sums).	需要下载：{2} 个文件，共 {1}（会与该版本的 SHA256 校验和核对）。
 Failed starts in a row before Android (1-6):	回到 Android 前允许的连续启动失败次数（1-6）：
-Update: reinstall the systems and keep settings and data	更新：重新安装系统，保留设置和数据
+Update: install the new release and keep everything you added or changed	更新：安装新版本，保留你添加或修改的一切
 /etc/mu300, users and home directories, SSH host keys, OpenWrt's UCI configuration and the hotspot settings are kept.	会保留 /etc/mu300、用户和主目录、SSH 主机密钥、OpenWrt 的 UCI 配置以及热点设置。
 Wipe: erase the Linux filesystem and install from scratch	清除：清除 Linux 文件系统并全新安装
 Another release, by its tag:	其他版本，按标签指定：
