@@ -1,7 +1,7 @@
 #!/bin/bash
 # Build mainline for the MU300 inside mu300-mainline-build: Image + DTB. /work = this directory, /src = kernel tree volume
 set -eo pipefail
-KV=${KV:-6.18.56}
+KV=${KV:-6.18.57}
 # where Image, DTB and modules.builtin go: /work/out for 6.18, OUTDIR=out-7.2 keeps another kernel next to it
 OUT=/work/${OUTDIR:-out}
 # the kernel source, fetched once into the volume and checked against kernel.org's checksum list
@@ -38,6 +38,11 @@ if grep -q '^config NFS_V4_1$' fs/nfs/Kconfig; then
     ./scripts/config --file "$O/.config" --enable NFS_V4_1
 fi
 make O=$O ARCH=arm64 olddefconfig >/dev/null
+# every other tristate option this board can use becomes a module (all-modules.py: not allmodconfig - what is built
+# in stays built in, bools only where all-modules.config opens a family, no PCI cards, no debug/test code, nothing
+# that would bind to the vendor device tree); MU300_ALL_MODULES=0 builds the fragment alone
+rm -f $O/all-modules.report
+[ "${MU300_ALL_MODULES:-1}" = 0 ] || python3 /work/all-modules.py . $O
 # options Kconfig did not take; ones known not to exist in this kernel are listed in config-ignored.txt, any
 # other one stops the build (a silently dropped option has cost a working feature before)
 bad=
@@ -60,4 +65,7 @@ mkdir -p $OUT
 cp $O/arch/arm64/boot/Image $O/ums9620-mu300.dtb $OUT/
 # for depmod on the device: modprobe of a built-in driver fails without them
 cp $O/modules.builtin $O/modules.builtin.modinfo $OUT/
+# what all-modules.py added: make-bundle.sh checks the Image against it as against the fragment
+rm -f $OUT/all-modules.report
+[ ! -f $O/all-modules.report ] || cp $O/all-modules.report $OUT/
 ls -la $OUT
