@@ -47,6 +47,14 @@ while IFS= read -r l; do
     [ "$g" = "$v" ] || grep -qx "$k" /work/config-ignored.txt 2>/dev/null || bad="$bad\nNOT SET: $k want $v got ${g:-unset}";; esac
 done < /work/mu300-mainline.config
 [ -z "$bad" ] || { printf "config options not taken:$bad\n" >&2; exit 1; }
+# a test build's extra kernel arguments: mainline forces its own command line (CONFIG_CMDLINE_FORCE), the
+# bootloader's is not read. E.g. MU300_CMDLINE_EXTRA=sdhci_sprd.fail_hs400es=1 (FINDINGS 160). Never for a release.
+if [ -n "${MU300_CMDLINE_EXTRA:-}" ]; then
+    c=$(sed -n 's/^CONFIG_CMDLINE="\(.*\)"$/\1/p' $O/.config)
+    ./scripts/config --file $O/.config --set-str CMDLINE "$c $MU300_CMDLINE_EXTRA"
+    make O=$O ARCH=arm64 olddefconfig >/dev/null
+    grep '^CONFIG_CMDLINE=' $O/.config
+fi
 # on failure show the compiler's own messages: a plain grep for "error" also matches object names like
 # fdt_strerror.o and used to fill the report with those
 make O=$O ARCH=arm64 -j"$(nproc)" Image > $O/build.log 2>&1 || {
