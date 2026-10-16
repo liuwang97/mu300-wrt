@@ -3247,18 +3247,52 @@ class ThermalGuard(ShellTest):
         (self.root / 'proc/sys/kernel').mkdir(parents=True, exist_ok=True)
         (self.root / 'proc/sys/kernel/osrelease').write_text(release + '\n')
 
-    def test_vendor_kernel_only_watches(self):
-        # 5.4 throttles and protects itself (its soc-thmzone has the trips and the clusters): no throttling or
-        # power-off here, but the alarm still works
+    VENDOR = '5.4.254-android12-9-gb50db5b6224c'
+
+    def test_vendor_kernel_is_asked_like_any_other(self):
+        # issue #229: a 5.4 whose sprd_cpu_cooling found no thermal zone ("get thermal zone ank0-thmzone failed" ...)
+        # throttled nothing, and the guard - exempt by the release - only ran the alarm until the unit reset. The
+        # release decides nothing now: a 5.4 without a bound zone is capped and powered off at CRIT like mainline
+        self.stub('logger', 'echo "$*" >> "$STUBLOG/log"')
         for shell in self.each_shell():
-            shutil.rmtree(self.root, ignore_errors=True)
-            self.device('u30air')
-            self.kernel('5.4.254-android12-9-gb50db5b6224c')
-            self.assertEqual(self.round(shell, 110000, trips=True), ['mu300-led alarm on'])
-            shutil.rmtree(self.root, ignore_errors=True)
-            self.device('u30air')
-            self.kernel('7.2.10')
-            self.assertEqual(self.round(shell, 110000), ['poweroff', 'mu300-led alarm on'])   # mainline: critical
+            for release in (self.VENDOR, '7.2.10'):
+                with self.subTest(release=release):
+                    shutil.rmtree(self.root, ignore_errors=True)
+                    (self.tmp / 'log').unlink(missing_ok=True)
+                    self.device('u30air')
+                    self.kernel(release)
+                    self.assertEqual(self.round(shell, 110000, trips=True), ['poweroff', 'mu300-led alarm on'])
+                    self.assertIn(f'no kernel thermal zone throttles the CPUs (kernel {release})', self.log())
+
+    def test_vendor_kernel_without_a_bound_zone_caps(self):
+        for shell in self.each_shell():
+            self.mainline(90000)
+            self.kernel(self.VENDOR)
+            # 5.4's cpufreq cooling devices are "thermal-cpufreq-N"; here none is bound to the zone with the trips
+            shutil.rmtree(self.root / 'sys/class/thermal')
+            for i, cpu in enumerate((0, 4, 7)):
+                self.cooling(i, f'thermal-cpufreq-{i}')
+            self.zone(0, 'soc-thmzone', 90000, [('passive', 70000), ('passive', 85000), ('critical', 110000)])
+            self.assertEqual(self.round(shell, 90000), ['mu300-led alarm on'])
+            self.assertEqual(self.maxes(), ['1404000'] * 3)
+
+    def test_vendor_kernel_with_its_zone_bound_only_watches(self):
+        # where 5.4's sprd_cpu_cooling does bind (the earlier measurement, FINDINGS 18), the kernel throttles: the
+        # guard hands over exactly as on mainline with mu300_thermal; its own power-off at CRIT stays
+        self.stub('logger', 'echo "$*" >> "$STUBLOG/log"')
+        for shell in self.each_shell():
+            self.mainline(90000)
+            self.kernel(self.VENDOR)
+            shutil.rmtree(self.root / 'sys/class/thermal')
+            for i in range(3):
+                self.cooling(i, f'thermal-cpufreq-{i}')
+            self.zone(0, 'soc-thmzone', 90000, [('passive', 70000), ('passive', 85000), ('critical', 110000)],
+                      (0, 1, 2))
+            (self.tmp / 'log').unlink(missing_ok=True)
+            self.assertEqual(self.round(shell, 90000), ['mu300-led alarm on'])
+            self.assertEqual(self.maxes(), ['2002000'] * 3)
+            self.assertIn('soc-thmzone throttles the CPUs: watching only', self.log())
+            self.assertEqual(self.round(shell, 105000), ['poweroff'])
 
     # --- the stock virtual zone on mainline (mu300_thermal): the kernel throttles, this guard only watches
     def cooling(self, n, kind, state=0):
