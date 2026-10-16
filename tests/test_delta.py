@@ -567,6 +567,20 @@ class Installers(ShellTest):
             self.assertEqual(snapshot(self.old), before)
             self.assertEqual(sorted(p.name for p in self.M.iterdir()), ['ubuntu'])
 
+    def test_the_whole_image_when_asked_with_its_room_counted(self):
+        for shell in self.each_shell():
+            self.fresh()
+            r = self.install(shell, MU300_DELTA=0)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertNotIn('not written again', r.stdout)
+            self.assertNotEqual(os.lstat(self.M / 'ubuntu/usr/bin/prog').st_ino, self.inodes['usr/bin/prog'])
+            self.fresh()
+            self.stub('df', 'printf "Filesystem 1024-blocks Used Available Capacity Mounted on\\n/dev/x 900000 899000 1000 99%% /x\\n"')
+            r = self.install(shell, MU300_DELTA=0)
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn('[device] not enough room on the Linux partition', r.stdout)
+            (self.stubs / 'df').unlink()
+
     def test_a_failed_unpack_and_a_cut_off_run_leave_nothing(self):
         for shell in self.each_shell():
             self.fresh(vendor=False)

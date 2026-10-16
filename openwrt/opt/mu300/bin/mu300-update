@@ -1553,7 +1553,6 @@ delta_estimate() {
 # delta_ready WORK OS: the parts delta_tools took out of the new image are all there and run here; WORK/lines is then
 # its manifest (without the first line)
 delta_ready() {
-    [ "${MU300_DELTA:-1}" != 0 ] || return 1
     _dbb=
     for _dx in usr/bin/busybox opt/mu300/bin/busybox; do
         [ -n "$_dbb" ] || { [ -f "$1/root/$_dx" ] && [ ! -L "$1/root/$_dx" ] && _dbb=$1/root/$_dx; }
@@ -1660,11 +1659,13 @@ delta_room() {
         echo none
         return 0
     fi
-    if [ -d "$1" ]; then _dr=delta; delta_plan "$1" "$2/lines" "$2" "$2/carry" > "$2/kb" || return 1
+    # (MU300_DELTA=0: the whole image is unpacked, and the room for that is checked all the same)
+    if [ -d "$1" ] && [ "${MU300_DELTA:-1}" != 0 ]; then _dr=delta; delta_plan "$1" "$2/lines" "$2" "$2/carry" > "$2/kb" || return 1
     else _dr=full; : > "$2/link"; delta_kb "$2/link" "$2/lines" > "$2/kb" || return 1; fi
     _dv=0
     if [ -n "${4:-}" ]; then
-        "$2/busybox" gzip -dc < "$4" | "$2/carry" tarfilter "$1" '*' "$2/vlog" > /dev/null || return 1
+        _dl='*'; [ "$_dr" = delta ] || { _dl=$2/link; : > "$_dl"; }
+        "$2/busybox" gzip -dc < "$4" | "$2/carry" tarfilter "$1" "$_dl" "$2/vlog" > /dev/null || return 1
         _dv=$(sed -n 's/^E [0-9]* \([0-9]*\)$/\1/p' "$2/vlog")
         [ -n "$_dv" ] || return 1
     fi
