@@ -945,6 +945,18 @@ class Adapter(ShellTest):
             self.assertEqual(st['log'][0], {'time': 1791000001, 'id': 'test', 'target': 'telegram', 'result': 'failed',
                                             'detail': 'HTTP 4"01'})
 
+    def test_check_mode_checks_everything_and_writes_nothing(self):
+        # mu300-backup's check of a restore (FINDINGS 155): the same rules, no file written
+        for shell in self.each_shell():
+            self.conf.parent.mkdir(exist_ok=True)
+            self.conf.unlink(missing_ok=True)
+            r = self.adapter(shell, 'set', stdin=json.dumps(self.FULL), MU300_FWD_CHECK='1')
+            self.assertEqual(json.loads(r.stdout), {'ok': 1, 'checked': 1})
+            self.assertFalse(self.conf.exists())
+            r = self.adapter(shell, 'set', stdin=json.dumps(dict(self.FULL, webhook_url='ftp://x')), MU300_FWD_CHECK='1')
+            self.assertEqual(json.loads(r.stdout)['ok'], 0)
+            self.assertFalse(self.conf.exists())
+
     def test_an_empty_secret_keeps_the_saved_one_and_clear_removes_it(self):
         for shell in self.each_shell():
             self.conf.parent.mkdir(exist_ok=True)
