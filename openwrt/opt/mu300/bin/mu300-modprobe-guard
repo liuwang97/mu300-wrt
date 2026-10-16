@@ -1,5 +1,5 @@
 #!/bin/sh
-# The kernel's module helper on Ubuntu and OpenWrt (FINDINGS 130). When code asks the kernel for something a module
+# The kernel's module helper on Ubuntu and OpenWrt (FINDINGS 163). When code asks the kernel for something a module
 # provides - a socket of a protocol family, a filesystem type, a netlink family, a link kind - the kernel runs its
 # helper (sysctl kernel.modprobe) as root: "HELPER -q -- REQUEST". Any user can make it do that
 # (socket(AF_TIPC, ...) is enough), so every installed module would be one any user can load.
@@ -113,7 +113,8 @@ else
     case $req in net_pf_*|fs_*|tty_ldisc_*|rtnl_*) [ -n "$hit" ] || hit="no alias table" ;; esac
 fi
 if [ -n "$hit" ]; then
-    echo "mu300: on-demand loading of $name ($hit) refused (root: modprobe $hit; FINDINGS 130)" \
+    fix=$hit; [ "$hit" = "no alias table" ] && fix=$name
+    echo "mu300: on-demand loading of $name ($hit) refused (root: modprobe $fix; FINDINGS 163)" \
         > "${MU300_KMSG:-/dev/kmsg}" 2>/dev/null
     exit 1
 fi

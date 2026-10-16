@@ -154,7 +154,7 @@ dir drivers/iio/dummy
 # the PMIC's vibrator (the boards have none): udev loaded it on F50-B at boot, though it bound nothing; no other
 # Spreadtrum/Unisoc driver came in with the expansion (SPI_SPRD above), and none may (the rule is general)
 (^|_)(SPRD|SC27XX|UMS9|UNISOC)
-# no realistic use on these devices and a poor security record (security review of #256, FINDINGS 130): not built
+# no realistic use on these devices and a poor security record (security review of #256, FINDINGS 163): not built
 # at all. TIPC, SCTP, CAN, NFC and IEEE 802.15.4 stay, but the kernel does not load them on demand
 # (mu300-modprobe-guard); root loads them by name.
 ^N_GSM$                # GSM 07.10 mux line discipline (CVE-2023-6546 and more); no modem here sits on a tty

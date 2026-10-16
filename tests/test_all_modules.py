@@ -218,7 +218,9 @@ class AutoloadGuard(unittest.TestCase):
             run = lambda req: subprocess.run(['sh', str(self.GUARD), '-q', '--', req], env=env).returncode
             for req in ('net-pf-99', 'net-pf-16-proto-16-family-x', 'fs-foo', 'tty-ldisc-21', 'rtnl-link-x'):
                 self.assertEqual(run(req), 1, req)
-                self.assertIn('on-demand loading of %s (no alias table) refused' % req, kmsg.read_text())
+                # the hint names what root would load (on F50-B it said "root: modprobe no alias table")
+                self.assertIn('on-demand loading of %s (no alias table) refused (root: modprobe %s;' % (req, req),
+                              kmsg.read_text())
             self.assertEqual(run('can-raw'), 1)          # a listed name, still known without a table
             self.assertFalse(log.exists())
             for req in ('crypto-gcm(aes)', 'nft-chain-2-nat', 'char-major-10-200', 'wireguard'):

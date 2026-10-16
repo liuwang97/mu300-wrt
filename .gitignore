@@ -48,3 +48,5 @@ upstream/out-*/
 .mu300-keep
 # a test run with TMPDIR inside the tree
 tests/mu300-test-*/
+# the release smoke test's boards (tools/smoke.py; tools/smoke.example.json is the example)
+/tools/smoke.json

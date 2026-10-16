@@ -9,7 +9,7 @@ export PATH="$PATH:/opt/mu300/busybox-bin"
 boot() {
 	/opt/mu300/bin/mu300-led power on
 	/opt/mu300/bin/mu300-usb boot
-	# the kernel's module helper once its table is made (~2 s; FINDINGS 130)
+	# the kernel's module helper once its table is made (~2 s; FINDINGS 163)
 	/opt/mu300/bin/mu300-modprobe-guard --prepare > /tmp/mu300-modprobe-guard.log 2>&1 &
 	hw_bringup > /tmp/mu300-hw.log 2>&1 &
 }

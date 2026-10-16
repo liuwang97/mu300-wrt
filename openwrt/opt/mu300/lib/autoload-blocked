@@ -1,4 +1,4 @@
-# Modules the kernel does not load on demand (mu300-modprobe-guard; FINDINGS 130). One module name per line, as the
+# Modules the kernel does not load on demand (mu300-modprobe-guard; FINDINGS 163). One module name per line, as the
 # kernel writes it (- as _). The guard refuses a request when it names one of these or matches one of their aliases
 # (the alias= strings of its file), however it is spelled: net-pf-29, can, a genetlink family, an rtnl-link kind, fs-hfs...
 # Every module that depends on one of these is on the list too (make-bundle.sh checks it against the build's modules.dep), so
