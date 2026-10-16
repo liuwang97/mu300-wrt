@@ -14,8 +14,9 @@
 # uptime of the hold) while the user has it off, so neither a wake nor mu300-power's self-check turns it back on; the
 # direction is decided and the marker written before the wake starts, so the wake of the same press cannot undo it.
 # The toggles themselves (hotspot, band) run in the background under a deadline: a later press always shows life.
-# mu300-keys reports the presses; its tick every 5 s lets the LEDs time out. Ubuntu's logind leaves the power key
-# to this script (/etc/systemd/logind.conf.d/mu300-buttons.conf): it used to power the device off at a touch.
+# mu300-keys reports the presses; its tick every 5 s lets the LEDs time out and the U30 Air's battery LED follow the
+# battery. Ubuntu's logind leaves the power key to this script (/etc/systemd/logind.conf.d/mu300-buttons.conf): it
+# used to power the device off at a touch.
 export PATH="$PATH:/opt/mu300/bin:/usr/sbin:/sbin"
 KEY_POWER=116
 KEY_WIFI=138   # "Wifi Switch Key" in the U30 Air's device tree (KEY_HELP's code, as its Android maps it)
@@ -82,8 +83,9 @@ hotspot_set() {  # hotspot_set on|off: the toggle itself
 band_toggle() { mu300-wifi-band toggle | logger -t mu300-buttons 2>/dev/null; }
 
 mu300-keys -l 3000 -t 5 | { while read -r code kind; do
-    # the tick every 5 s is no press: it only lets the LEDs time out
-    if [ "$kind" = tick ]; then mu300-led sleep --if-due; continue; fi
+    # the tick every 5 s is no press: it lets the LEDs time out, and the U30 Air's battery LED follow the charge
+    # (plugged in, unplugged, the 60 % and 10 % marks)
+    if [ "$kind" = tick ]; then mu300-led tick; continue; fi
     mu300-led wake   # first, whatever else this key does or whatever state anything is in
     was_idle=0; s=$(cat "$PST/state" 2>/dev/null); [ -z "$s" ] || [ "$s" = active ] || was_idle=1
     [ ! -e "$LEDIDLE" ] || was_idle=1   # dark on purpose (idle, or someone's mu300-led idle on): this press only wakes
