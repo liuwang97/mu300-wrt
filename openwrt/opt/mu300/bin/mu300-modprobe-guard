@@ -1,0 +1,28 @@
+#!/bin/sh
+# The kernel's module helper (sysctl kernel.modprobe, etc/sysctl.d/98-mu300-modules.conf; FINDINGS 130), Ubuntu and
+# OpenWrt. When code asks the kernel for something a module provides - a socket of a protocol family, a filesystem
+# type, a netlink family - the kernel runs this as root with the module's alias: "GUARD -q -- net-pf-30". Any user
+# can make it do that (socket(AF_TIPC, ...) is enough), so every module of the set is a module anyone can load.
+# The rarely used families with a poor security record are refused here (/opt/mu300/lib/autoload-blocked); the rest
+# goes on to the system's modprobe unchanged. Root loads a refused one deliberately with `modprobe NAME` (that runs
+# /sbin/modprobe, not this), and `touch /etc/mu300/autoload-allow-all` turns the refusal off altogether.
+#   Kept simple on purpose: a fault here would stop every on-demand load (crypto, netfilter, filesystems), so
+#   anything not on the list - and anything at all when the list cannot be read - is handed on untouched.
+LIST=${MU300_AUTOLOAD_BLOCKED:-/opt/mu300/lib/autoload-blocked}
+ALLOW=${MU300_AUTOLOAD_ALLOW:-/etc/mu300/autoload-allow-all}
+MODPROBE=${MU300_MODPROBE:-/sbin/modprobe}
+name=
+for a in "$@"; do name=$a; done
+if [ -n "$name" ] && [ ! -e "$ALLOW" ] && [ -r "$LIST" ]; then
+    while read -r pat _; do
+        case $pat in ''|\#*) continue ;; esac
+        # shellcheck disable=SC2254
+        case $name in
+            $pat)
+                echo "mu300: on-demand loading of $name refused (root: modprobe the module by name; FINDINGS 130)" \
+                    > "${MU300_KMSG:-/dev/kmsg}" 2>/dev/null
+                exit 1 ;;
+        esac
+    done < "$LIST"
+fi
+exec "$MODPROBE" "$@"

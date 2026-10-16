@@ -1,6 +1,7 @@
 """upstream/all-modules.py (every tristate the boards can use, as a module) and check-dt-modules.py (none of them
 may bind to the vendor device tree by itself)."""
 import importlib.util
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -76,6 +77,68 @@ class AllModules(unittest.TestCase):
         m = (UP / 'build-modules.sh').read_text()
         self.assertIn('python3 /work/check-dt-modules.py', m)
         self.assertIn("(out / 'all-modules.report')", (UP / 'audit-bundle.py').read_text())
+
+
+class AutoloadGuard(unittest.TestCase):
+    """The kernel's on-demand loads go through mu300-modprobe-guard on both systems (review of #256)."""
+    GUARD = TOP / 'rootfs/overlay/opt/mu300/bin/mu300-modprobe-guard'
+    LIST = TOP / 'rootfs/overlay/opt/mu300/lib/autoload-blocked'
+
+    def run_guard(self, name, allow=False, shell='sh'):
+        with tempfile.TemporaryDirectory() as d:
+            log, kmsg = Path(d) / 'log', Path(d) / 'kmsg'
+            fake = Path(d) / 'modprobe'
+            fake.write_text('#!/bin/sh\necho "$@" > "%s"\n' % log)
+            fake.chmod(0o755)
+            env = {'PATH': '/usr/bin:/bin', 'MU300_MODPROBE': str(fake), 'MU300_AUTOLOAD_BLOCKED': str(self.LIST),
+                   'MU300_KMSG': str(kmsg), 'MU300_AUTOLOAD_ALLOW': str(Path(d) / 'allow')}
+            if allow:
+                (Path(d) / 'allow').write_text('')
+            r = subprocess.run([shell, str(self.GUARD), '-q', '--', name], env=env, capture_output=True, text=True)
+            return r.returncode, log.read_text() if log.exists() else None, kmsg.read_text() if kmsg.exists() else ''
+
+    def test_the_families_of_the_review_are_refused(self):
+        for name in ('net-pf-30', 'net-pf-30-proto-0-type-2', 'net-pf-29', 'net-pf-29-proto-1', 'net-pf-36',
+                     'net-pf-39', 'net-pf-40', 'net-pf-2-proto-132', 'net-pf-10-proto-132-type-1',
+                     'net-pf-16-proto-16-family-TIPCv2', 'net-pf-16-proto-16-family-nfc', 'fs-hfs', 'fs-jfs',
+                     'fs-nilfs2', 'fs-ocfs2', 'fs-gfs2'):
+            rc, called, kmsg = self.run_guard(name)
+            self.assertEqual((rc, called), (1, None), name)
+            self.assertIn('on-demand loading of %s refused' % name, kmsg)
+
+    def test_everything_else_reaches_modprobe_unchanged(self):
+        # crypto, netfilter, the filesystems people plug in, the families the system uses, and net-pf-3x neighbours
+        for name in ('crypto-gcm(aes)', 'nft-chain-2-nat', 'fs-ntfs3', 'fs-exfat', 'fs-hfsplus', 'fs-btrfs', 'fs-fuse',
+                     'net-pf-24', 'net-pf-2-proto-115', 'net-pf-10', 'net-pf-3', 'net-pf-300', 'rtnl-link-wireguard',
+                     'tcp-ulp-tls', 'char-major-10-238', 'tipc'):
+            rc, called, _ = self.run_guard(name)
+            self.assertEqual((rc, called), (0, '-q -- %s\n' % name), name)
+
+    def test_the_switch_turns_it_off_and_busybox_runs_it(self):
+        self.assertEqual(self.run_guard('net-pf-30', allow=True)[:2], (0, '-q -- net-pf-30\n'))
+        if shutil.which('busybox'):
+            self.assertEqual(self.run_guard('net-pf-30', shell='busybox')[:2], (1, None))
+            self.assertEqual(self.run_guard('fs-ext4', shell='busybox')[:2], (0, '-q -- fs-ext4\n'))
+
+    def test_both_systems_install_it(self):
+        for system in ('rootfs', 'openwrt'):
+            conf = (TOP / system / 'overlay/etc/sysctl.d/98-mu300-modules.conf').read_text()
+            self.assertIn('kernel.modprobe = /opt/mu300/bin/mu300-modprobe-guard', conf)
+            self.assertIn('dev.tty.ldisc_autoload = 0', conf)
+        # OpenWrt's image takes /opt/mu300 from the Ubuntu overlay, and both copy their overlay whole
+        build = (TOP / 'openwrt/build-rootfs.sh').read_text()
+        self.assertIn('rootfs/overlay/opt/mu300":/in/opt-mu300', build)
+        self.assertIn('cp -a /in/overlay/. $R/', build)
+        self.assertTrue(self.GUARD.stat().st_mode & 0o111)
+
+    def test_the_dead_families_are_not_built(self):
+        dirs, keep, pats = allmod.rules()
+        for sym, where in (('N_GSM', 'drivers/tty'), ('N_HDLC', 'drivers/tty'), ('ATM', 'net/atm'),
+                           ('USB_ATM', 'drivers/usb/atm'), ('AX25', 'net/ax25'), ('X25', 'net/x25'),
+                           ('RDS', 'net/rds'), ('AF_RXRPC', 'net/rxrpc'), ('AFS_FS', 'fs/afs'), ('PHONET', 'net/phonet'),
+                           ('ISDN', 'drivers/isdn'), ('PARPORT', 'drivers/parport'), ('AF_KCM', 'net/kcm')):
+            self.assertFalse(allmod.wanted(sym, where, dirs, keep, pats), sym)
+        self.assertNotIn('CONFIG_HAMRADIO=y', (UP / 'all-modules.config').read_text())
 
 
 class DtModules(unittest.TestCase):

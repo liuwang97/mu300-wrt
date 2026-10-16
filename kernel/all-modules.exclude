@@ -154,3 +154,32 @@ dir drivers/iio/dummy
 # the PMIC's vibrator (the boards have none): udev loaded it on F50-B at boot, though it bound nothing; no other
 # Spreadtrum/Unisoc driver came in with the expansion (SPI_SPRD above), and none may (the rule is general)
 (^|_)(SPRD|SC27XX|UMS9|UNISOC)
+# no realistic use on these devices and a poor security record (security review of #256, FINDINGS 130): not built
+# at all. TIPC, SCTP, CAN, NFC and IEEE 802.15.4 stay, but the kernel does not load them on demand
+# (mu300-modprobe-guard); root loads them by name.
+^N_GSM$                # GSM 07.10 mux line discipline (CVE-2023-6546 and more); no modem here sits on a tty
+^N_HDLC$               # synchronous HDLC line discipline (CVE-2017-2636)
+dir net/atm            # ATM and the DSL modems on it
+dir drivers/atm
+dir drivers/usb/atm
+dir drivers/isdn       # ISDN/CAPI
+dir net/ax25           # amateur radio: AX.25, NET/ROM, ROSE and their drivers
+dir net/netrom
+dir net/rose
+dir drivers/net/hamradio
+dir net/x25            # X.25, LAPB and the WAN cards they serve
+dir net/lapb
+dir drivers/net/wan
+dir net/appletalk
+dir net/phonet         # Nokia's phone protocol
+dir net/rds            # RDS (many holes reachable by unprivileged sockets)
+dir net/caif           # ST-Ericsson modems' CAIF
+dir drivers/net/caif
+dir net/kcm            # kernel connection multiplexor
+dir net/smc            # IBM's shared-memory sockets
+dir net/qrtr           # Qualcomm's IPC router (over PCIe MHI)
+dir net/rxrpc          # AF_RXRPC and the AFS client over it
+dir fs/afs
+dir net/dccp
+dir drivers/parport    # legacy buses
+dir drivers/hsi

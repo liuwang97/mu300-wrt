@@ -1,0 +1,57 @@
+# The aliases mu300-modprobe-guard refuses to load on demand (shell patterns, one per line; FINDINGS 130). These are
+# the protocol families and filesystems with no use on these devices unless someone sets them up, and with a record
+# of holes an unprivileged user could reach by opening a socket or trying a mount in a user namespace. The modules
+# are there: root loads one with `modprobe NAME` (tipc, sctp, can-raw, ...), and nothing here stops that.
+# Line disciplines are covered by dev.tty.ldisc_autoload = 0 (the same sysctl file).
+#
+# protocol families: socket(AF_x) asks for net-pf-<x>, net-pf-<x>-proto-<p>, ...-type-<t>
+net-pf-29          # AF_CAN: can, can-raw, can-bcm, can-isotp, can-j1939, can-gw
+net-pf-29-*
+net-pf-30          # AF_TIPC
+net-pf-30-*
+net-pf-36          # AF_IEEE802154 (and 6LoWPAN over it)
+net-pf-36-*
+net-pf-39          # AF_NFC
+net-pf-39-*
+net-pf-40          # AF_VSOCK: the VMs' sockets; vhost_vsock (loaded with QEMU's vhost) brings it along
+net-pf-40-*
+# SCTP over IPv4 and IPv6 (socket(AF_INET, ..., IPPROTO_SCTP))
+net-pf-2-proto-132
+net-pf-2-proto-132-*
+net-pf-10-proto-132
+net-pf-10-proto-132-*
+# their generic netlink families
+net-pf-16-proto-16-family-TIPC*
+net-pf-16-proto-16-family-nfc
+net-pf-16-proto-16-family-nl802154
+net-pf-16-proto-16-family-802.15.4*
+net-pf-16-proto-16-family-j1939*
+# the CAN gateway's netlink (rtnetlink of PF_CAN)
+rtnl-family-29
+# old or rarely used filesystems: a mount attempt (a user namespace is enough) asks for fs-<type>
+fs-adfs
+fs-affs
+fs-befs
+fs-bfs
+fs-coda
+fs-cramfs
+fs-efs
+fs-gfs2
+fs-gfs2meta
+fs-hfs
+fs-hpfs
+fs-jfs
+fs-minix
+fs-nilfs2
+fs-ocfs2
+fs-ocfs2_dlmfs
+fs-omfs
+fs-orangefs
+fs-qnx4
+fs-qnx6
+fs-romfs
+fs-sysv
+fs-v7
+fs-ufs
+fs-vxfs
+fs-ceph
