@@ -18,6 +18,14 @@
  *                                      of one file in the list stay one file; a directory is made, not filled
  *   mu300-carry link SRC DST [IDMAP] < PATHS   the same, but a file becomes a second name of SRC's (no data copied)
  *
+ * The unpack of an update that writes only what changed (docs/FINDINGS.md 131; mu300-update, the delta block):
+ *   mu300-carry same OLD < LINES       for lines of the new image's manifest: "B PATH" (a binary) or "T PATH" (text)
+ *                                      for each file OLD has byte for byte with that mode and owner
+ *   mu300-carry tarfilter OLD LIST LOG   the image's tar stream, stdin to stdout, without the files LIST names that
+ *                                      are OLD's byte for byte (compared as the stream passes) and their hard links
+ *   mu300-carry tarlink OLD NEW < LOG  after tar: those files in NEW as second names of OLD's
+ *   mu300-carry features               the commands this build has
+ *
  * PATHS: one per line, relative to the root, a backslash written \\ and a newline \n, parents before what is in
  * them. IDMAP: lines "u OLD NEW" and "g OLD NEW", owners to change on the way (an account whose id differs in the
  * new system); a file that needs it is copied even by link, and loses its set-id bits and its capability on the
@@ -755,6 +763,673 @@ static int cmd_copy(const char *src, const char *dst, const char *map, int by_li
 	return 0;
 }
 
+/* ---- an update that writes only what changed (docs/FINDINGS.md 131): the new image's files that the installed
+ * system has byte for byte become second names of the installed ones instead of being written again */
+
+/* a set of paths (open addressing); each entry remembers whether its file was really left out of the stream */
+struct pset { char **path; unsigned char *done; size_t cap, n; };
+
+static size_t pset_hash(const char *p)
+{
+	size_t h = 1469598103934665603ULL & (size_t)-1;
+
+	for (; *p; p++)
+		h = (h ^ (unsigned char)*p) * 1099511628211ULL;
+	return h;
+}
+
+static size_t pset_slot(const struct pset *s, const char *p)
+{
+	size_t i = pset_hash(p) & (s->cap - 1);
+
+	while (s->path[i] && strcmp(s->path[i], p))
+		i = (i + 1) & (s->cap - 1);
+	return i;
+}
+
+static void pset_add(struct pset *s, const char *p)
+{
+	size_t i;
+
+	if (2 * (s->n + 1) > s->cap) {
+		struct pset t = { 0 };
+
+		t.cap = s->cap ? 2 * s->cap : 1024;
+		t.path = calloc(t.cap, sizeof(char *));
+		t.done = calloc(t.cap, 1);
+		if (!t.path || !t.done)
+			die("out of memory");
+		for (i = 0; i < s->cap; i++)
+			if (s->path[i]) {
+				size_t j = pset_slot(&t, s->path[i]);
+
+				t.path[j] = s->path[i];
+				t.done[j] = s->done[i];
+			}
+		t.n = s->n;
+		free(s->path);
+		free(s->done);
+		*s = t;
+	}
+	i = pset_slot(s, p);
+	if (!s->path[i]) {
+		s->path[i] = strdup(p);
+		if (!s->path[i])
+			die("out of memory");
+		s->n++;
+	}
+}
+
+/* the slot of P, or -1 */
+static long pset_find(const struct pset *s, const char *p)
+{
+	size_t i;
+
+	if (!s->cap)
+		return -1;
+	i = pset_slot(s, p);
+	return s->path[i] ? (long)i : -1;
+}
+
+/* only an SELinux label (Android puts one on every file it unpacked) and no other extended attribute: a file
+ * unpacked from the image would have none */
+static int plain_attrs(int fd)
+{
+	char names[4096], *n;
+	ssize_t len = flistxattr(fd, names, sizeof(names));
+
+	if (len < 0)
+		return errno == ENOTSUP || errno == ENODATA;
+	for (n = names; n < names + len; n += strlen(n) + 1)
+		if (strcmp(n, "security.selinux"))
+			return 0;
+	return 1;
+}
+
+/* same OLD < LINES: LINES are lines of the new image's manifest ("f MODE UID GID SIZE HASH PATH"). For each one whose
+ * file in OLD is a regular file with that mode, owner, size and content, and no extended attribute but an SELinux
+ * label: "B PATH" when the content has a NUL byte (a binary), "T PATH" when it has none (text). Nothing for the
+ * others: changed, gone, or not a plain file (a link on the way is never followed). */
+static int cmd_same(const char *old)
+{
+	static unsigned char buf[1 << 16];
+	char *line = NULL, h[65];
+	size_t cap = 0;
+	int root = open(old, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+
+	if (root < 0)
+		die("%s: %s", old, strerror(errno));
+	while (getline(&line, &cap, stdin) > 0) {
+		unsigned mode, uid, gid;
+		unsigned long long size;
+		char type, want[80], *path;
+		const char *name;
+		struct stat st;
+		struct sha256 s;
+		int pfd, fd, bin = 0;
+		ssize_t n;
+
+		if (sscanf(line, "%c %o %u %u %llu %79s ", &type, &mode, &uid, &gid, &size, want) != 6 || type != 'f')
+			die("not a manifest line of a file: %s", line);
+		path = unescape((char *)line_path(line));
+		pfd = parent_of(root, path, &name, 0);
+		if (pfd < 0)
+			continue;
+		fd = openat(pfd, name, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK);
+		close(pfd);
+		if (fd < 0)
+			continue;
+		if (fstat(fd, &st) || !S_ISREG(st.st_mode) || (st.st_mode & 07777) != mode || st.st_uid != uid ||
+		    st.st_gid != gid || (unsigned long long)st.st_size != size || !plain_attrs(fd)) {
+			close(fd);
+			continue;
+		}
+		sha256_init(&s);
+		while ((n = read(fd, buf, sizeof(buf))) > 0) {
+			sha256_update(&s, buf, n);
+			if (!bin && memchr(buf, 0, n))
+				bin = 1;
+		}
+		close(fd);
+		if (n < 0)
+			continue;
+		sha256_hex(&s, h);
+		if (strcmp(h, want))
+			continue;
+		printf("%c ", bin ? 'B' : 'T');
+		put_escaped(stdout, path);
+		putchar('\n');
+	}
+	if (fflush(stdout) || ferror(stdout))
+		die("cannot write the list");
+	return 0;
+}
+
+/* ---- tarfilter: a tar stream with the listed files left out */
+static int read_full(int fd, void *b, size_t n)
+{
+	size_t got = 0;
+
+	while (got < n) {
+		ssize_t r = read(fd, (char *)b + got, n - got);
+
+		if (r < 0 && errno == EINTR)
+			continue;
+		if (r < 0)
+			die("reading the archive: %s", strerror(errno));
+		if (r == 0)
+			break;
+		got += r;
+	}
+	return got == n;
+}
+
+static void write_full(int fd, const void *b, size_t n)
+{
+	while (n) {
+		ssize_t w = write(fd, b, n);
+
+		if (w < 0 && errno == EINTR)
+			continue;
+		if (w < 0)
+			die("writing the archive: %s", strerror(errno));
+		b = (const char *)b + w;
+		n -= w;
+	}
+}
+
+/* a number of a tar header: octal (spaces and NULs around it), or base-256 (GNU, first byte 0x80) */
+static unsigned long long tar_num(const unsigned char *p, size_t n)
+{
+	unsigned long long v = 0;
+	size_t i;
+
+	if (p[0] & 0x80) {
+		v = p[0] & 0x3f;
+		for (i = 1; i < n; i++)
+			v = v << 8 | p[i];
+		return v;
+	}
+	for (i = 0; i < n && (p[i] == ' ' || p[i] == 0); i++)
+		;
+	for (; i < n && p[i] >= '0' && p[i] <= '7'; i++)
+		v = v * 8 + (p[i] - '0');
+	return v;
+}
+
+/* a member's name as a path of the lists: no leading ./ or /, no trailing / */
+static void tar_norm(char *p)
+{
+	size_t n;
+
+	for (;;) {
+		if (p[0] == '.' && p[1] == '/')
+			memmove(p, p + 2, strlen(p + 2) + 1);
+		else if (p[0] == '/')
+			memmove(p, p + 1, strlen(p + 1) + 1);
+		else
+			break;
+	}
+	n = strlen(p);
+	while (n && p[n - 1] == '/')
+		p[--n] = 0;
+	if (!strcmp(p, "."))
+		p[0] = 0;
+}
+
+static char *strndup_or_die(const char *p, size_t n)
+{
+	char *s = xmalloc(n + 1);
+
+	memcpy(s, p, n);
+	s[n] = 0;
+	return s;
+}
+
+/* the records of a pax header that matter here: path, linkpath, size, and whether it carries extended attributes */
+static void pax_parse(const char *d, size_t len, char **path, char **link, long long *size, int *xattr)
+{
+	size_t off = 0;
+
+	while (off < len) {
+		char *end;
+		unsigned long rl = strtoul(d + off, &end, 10);
+		const char *kv, *eq, *stop;
+
+		if (end == d + off || *end != ' ' || rl == 0 || off + rl > len)
+			break;
+		kv = end + 1;
+		stop = d + off + rl - 1;	/* the record's newline */
+		eq = memchr(kv, '=', stop - kv);
+		if (eq) {
+			size_t kl = eq - kv;
+
+			if (kl == 4 && !memcmp(kv, "path", 4)) {
+				free(*path);
+				*path = strndup_or_die(eq + 1, stop - eq - 1);
+			} else if (kl == 8 && !memcmp(kv, "linkpath", 8)) {
+				free(*link);
+				*link = strndup_or_die(eq + 1, stop - eq - 1);
+			} else if (kl == 4 && !memcmp(kv, "size", 4)) {
+				*size = strtoll(eq + 1, NULL, 10);
+			} else if ((kl > 13 && !memcmp(kv, "SCHILY.xattr.", 13)) || (kl > 17 && !memcmp(kv, "LIBARCHIVE.xattr.", 17))) {
+				*xattr = 1;
+			}
+		}
+		off += rl;
+	}
+}
+
+/* a member's name that is a plain relative path: no empty, "." or ".." part (one with them is never left out) */
+static int plain_path(const char *p)
+{
+	const char *part;
+
+	if (!*p || *p == '/' || strchr(p, '\n'))
+		return 0;
+	for (part = p; part; part = strchr(part, '/') ? strchr(part, '/') + 1 : NULL) {
+		size_t n = strcspn(part, "/");
+
+		if (n == 0 || (n == 1 && part[0] == '.') || (n == 2 && part[0] == '.' && part[1] == '.'))
+			return 0;
+	}
+	return 1;
+}
+
+/* tarfilter OLD LIST LOG: the tar stream on stdin to stdout, without the regular files LIST names (one path a
+ * line) whose content is OLD's file of that path byte for byte - compared while the stream passes, so that a file
+ * that differs after all is written as it is (its first bytes again from OLD, where they were the same) - and
+ * without a hard link to such a file. LIST "*": every regular file that OLD has byte for byte and that is a binary
+ * (a NUL byte in it; text is written all the same). LOG gets "D PATH" for each file left out, "H PATH" and
+ * "T TARGET" for each hard link left out (tarlink makes them), and at the end of the archive "E LEFT_OUT WRITTEN":
+ * the KiB of the files left out and of those written, in 4 KiB blocks. */
+static int cmd_tarfilter(const char *old, const char *listfile, const char *logfile)
+{
+	static unsigned char buf[1 << 16], obuf[1 << 16];
+	struct pset set = { 0 };
+	int every = !strcmp(listfile, "*");
+	FILE *lf = every ? NULL : fopen(listfile, "r"), *log;
+	char *line = NULL;
+	size_t cap = 0;
+	unsigned char *pend = NULL;
+	size_t npend = 0, pcap = 0;
+	char *pax_path = NULL, *pax_link = NULL, *gnu_name = NULL, *gnu_link = NULL;
+	long long pax_size = -1;
+	int pax_xattr = 0, root = open(old, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+	unsigned long long left_out = 0, written = 0;
+
+	if (root < 0)
+		die("%s: %s", old, strerror(errno));
+	if (!every) {
+		if (!lf)
+			die("%s: %s", listfile, strerror(errno));
+		while (getline(&line, &cap, lf) > 0)
+			pset_add(&set, unescape(line));
+		fclose(lf);
+	}
+	log = fopen(logfile, "w");
+	if (!log)
+		die("%s: %s", logfile, strerror(errno));
+	for (;;) {
+		unsigned char hdr[512];
+		unsigned long long size, blocks;
+		char type, *name, *link;
+		long slot, hslot;
+		int i, zero = 1, cand;
+
+		if (!read_full(0, hdr, 512))
+			die("the archive ends in the middle");
+		for (i = 0; i < 512 && zero; i++)
+			zero = !hdr[i];
+		if (zero) {
+			ssize_t n;
+
+			/* the end of the archive: what follows (the second block, a record's padding) as it is */
+			if (npend)
+				die("the archive ends after a header of an extended name");
+			write_full(1, hdr, 512);
+			while ((n = read(0, buf, sizeof(buf))) > 0)
+				write_full(1, buf, n);
+			if (n < 0)
+				die("reading the archive: %s", strerror(errno));
+			break;
+		}
+		type = hdr[156];
+		size = tar_num(hdr + 124, 12);
+		blocks = (size + 511) / 512;
+		if (type == 'L' || type == 'K' || type == 'x') {
+			/* a header of the next member's: kept back until that member is decided */
+			char *d;
+
+			if (size > (64 << 20))
+				die("an extended header of %llu bytes", size);
+			if (npend + 512 + blocks * 512 > pcap) {
+				pcap = 2 * (npend + 512 + blocks * 512);
+				pend = realloc(pend, pcap);
+				if (!pend)
+					die("out of memory");
+			}
+			memcpy(pend + npend, hdr, 512);
+			d = (char *)pend + npend + 512;
+			if (blocks && !read_full(0, d, blocks * 512))
+				die("the archive ends in the middle");
+			npend += 512 + blocks * 512;
+			if (type == 'L') {
+				free(gnu_name);
+				gnu_name = strndup_or_die(d, strnlen(d, size));
+			} else if (type == 'K') {
+				free(gnu_link);
+				gnu_link = strndup_or_die(d, strnlen(d, size));
+			} else {
+				pax_parse(d, size, &pax_path, &pax_link, &pax_size, &pax_xattr);
+			}
+			continue;
+		}
+		if (type == 'g') {	/* for every member after it: never left out */
+			write_full(1, pend, npend);
+			npend = 0;
+			write_full(1, hdr, 512);
+			while (blocks) {
+				size_t k = blocks * 512 < sizeof(buf) ? blocks * 512 : sizeof(buf);
+
+				if (!read_full(0, buf, k))
+					die("the archive ends in the middle");
+				write_full(1, buf, k);
+				blocks -= k / 512;
+			}
+			continue;
+		}
+		/* the member's name and link target, from the extended headers or the header itself */
+		if (pax_path)
+			name = strdup(pax_path);
+		else if (gnu_name)
+			name = strdup(gnu_name);
+		else if (!memcmp(hdr + 257, "ustar\0", 6) && hdr[345]) {
+			name = xmalloc(260);
+			snprintf(name, 260, "%.155s/%.100s", (char *)hdr + 345, (char *)hdr);
+		} else
+			name = strndup_or_die((char *)hdr, strnlen((char *)hdr, 100));
+		link = pax_link ? strdup(pax_link) : gnu_link ? strdup(gnu_link) : strndup_or_die((char *)hdr + 157, strnlen((char *)hdr + 157, 100));
+		if (!name || !link)
+			die("out of memory");
+		tar_norm(name);
+		tar_norm(link);
+		if (pax_size >= 0)
+			size = pax_size;
+		if (type == '1' || type == '2' || type == '3' || type == '4' || type == '5' || type == '6')
+			size = 0;
+		blocks = (size + 511) / 512;
+		hslot = type == '1' ? pset_find(&set, link) : -1;
+		cand = (type == '0' || type == '\0' || type == '7') && !pax_xattr &&
+		       (every ? plain_path(name) : pset_find(&set, name) >= 0);
+		if (hslot >= 0 && set.done[hslot]) {
+			/* a second name of a file left out: it is made from that one's */
+			fputs("H ", log);
+			put_escaped(log, name);
+			fputs("\nT ", log);
+			put_escaped(log, link);
+			fputc('\n', log);
+			npend = 0;
+		} else if (cand) {
+			const char *fname;
+			int pfd = parent_of(root, name, &fname, 0), fd = -1;
+			unsigned long long pos = 0;
+			struct stat st;
+			int same = 0, nul = 0;
+
+			if (pfd >= 0) {
+				fd = openat(pfd, fname, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK);
+				close(pfd);
+			}
+			if (fd >= 0 && !fstat(fd, &st) && S_ISREG(st.st_mode) && (unsigned long long)st.st_size == size &&
+			    plain_attrs(fd))
+				same = 1;
+			if (!same) {
+				write_full(1, pend, npend);
+				write_full(1, hdr, 512);
+			}
+			/* the data, block by block, against OLD's file; at the first difference everything goes out */
+			while (pos < blocks * 512) {
+				size_t k = blocks * 512 - pos < sizeof(buf) ? blocks * 512 - pos : sizeof(buf);
+				size_t real = pos + k > size ? size - pos : k;
+
+				if (!read_full(0, buf, k))
+					die("the archive ends in the middle");
+				if (same && (pread(fd, obuf, real, pos) != (ssize_t)real || memcmp(buf, obuf, real))) {
+					unsigned long long o = 0;
+
+					same = 0;
+					write_full(1, pend, npend);
+					write_full(1, hdr, 512);
+					/* what passed already was OLD's bytes: from there again */
+					while (o < pos) {
+						size_t m = pos - o < sizeof(obuf) ? pos - o : sizeof(obuf);
+
+						if (pread(fd, obuf, m, o) != (ssize_t)m)
+							die("%s: read: %s", name, strerror(errno));
+						write_full(1, obuf, m);
+						o += m;
+					}
+				}
+				if (same && !nul && memchr(buf, 0, real))
+					nul = 1;
+				if (!same)
+					write_full(1, buf, k);
+				pos += k;
+			}
+			if (same && every && !nul) {
+				/* every file: a text file is written all the same (OLD's bytes, which are the archive's) */
+				unsigned long long o = 0;
+
+				same = 0;
+				write_full(1, pend, npend);
+				write_full(1, hdr, 512);
+				while (o < size) {
+					size_t m = size - o < sizeof(obuf) ? size - o : sizeof(obuf);
+
+					if (pread(fd, obuf, m, o) != (ssize_t)m)
+						die("%s: read: %s", name, strerror(errno));
+					write_full(1, obuf, m);
+					o += m;
+				}
+				memset(obuf, 0, 512);
+				write_full(1, obuf, blocks * 512 - size);
+			}
+			if (fd >= 0)
+				close(fd);
+			if (same) {
+				if (every)
+					pset_add(&set, name);
+				slot = pset_find(&set, name);
+				set.done[slot] = 1;
+				fputs("D ", log);
+				put_escaped(log, name);
+				fputc('\n', log);
+				left_out += (size + 4095) / 4096 * 4;
+			} else {
+				written += (size + 4095) / 4096 * 4;
+			}
+			npend = 0;
+		} else {
+			write_full(1, pend, npend);
+			npend = 0;
+			write_full(1, hdr, 512);
+			while (blocks) {
+				size_t k = blocks * 512 < sizeof(buf) ? blocks * 512 : sizeof(buf);
+
+				if (!read_full(0, buf, k))
+					die("the archive ends in the middle");
+				write_full(1, buf, k);
+				blocks -= k / 512;
+			}
+			if (type == '0' || type == '\0' || type == '7')
+				written += (size + 4095) / 4096 * 4;
+		}
+		free(name);
+		free(link);
+		free(pax_path);
+		free(pax_link);
+		free(gnu_name);
+		free(gnu_link);
+		pax_path = pax_link = gnu_name = gnu_link = NULL;
+		pax_size = -1;
+		pax_xattr = 0;
+	}
+	fprintf(log, "E %llu %llu\n", left_out, written);
+	if (fclose(log))
+		die("%s: %s", logfile, strerror(errno));
+	return 0;
+}
+
+/* tarlink OLD NEW < LOG: what tarfilter left out, made in NEW once tar has unpacked the rest - "D PATH": NEW's PATH
+ * a second name of OLD's (a copy of it, with its owner, mode and times, where a link cannot be: another filesystem,
+ * too many names); "H PATH" "T TARGET": NEW's PATH a second name of NEW's TARGET. The directories they go into get
+ * back the times tar gave them. The log must end with tarfilter's "E": else the stream was not whole. */
+/* what is at DNAME already (an earlier archive put a file there: the later one wins, as with tar) goes; never a
+ * directory */
+static void clear_way(int dfd, const char *dname, const char *path)
+{
+	struct stat st;
+
+	if (fstatat(dfd, dname, &st, AT_SYMLINK_NOFOLLOW))
+		return;
+	if (S_ISDIR(st.st_mode))
+		die("%s: a directory is in the way", path);
+	if (unlinkat(dfd, dname, 0))
+		die("%s: %s", path, strerror(errno));
+}
+
+static int cmd_tarlink(const char *old, const char *new)
+{
+	struct pset dirs = { 0 };
+	struct timespec *dtimes = NULL;
+	char **dorder = NULL;
+	size_t ndir = 0, i;
+	char *line = NULL, *hpath = NULL;
+	size_t cap = 0;
+	unsigned long long linked = 0, copied = 0;
+	int sroot = open(old, O_RDONLY | O_DIRECTORY | O_CLOEXEC), droot = open(new, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+	int ended = 0;
+
+	if (sroot < 0)
+		die("%s: %s", old, strerror(errno));
+	if (droot < 0)
+		die("%s: %s", new, strerror(errno));
+	lax = geteuid() != 0;
+	while (getline(&line, &cap, stdin) > 0) {
+		char kind = line[0], *path, *slash;
+		const char *sname, *dname;
+		int sfd, dfd;
+
+		if (kind == 'E') {
+			ended = 1;
+			continue;
+		}
+		if ((kind != 'D' && kind != 'H' && kind != 'T') || line[1] != ' ')
+			die("not a line of tarfilter's log: %s", line);
+		path = unescape(line + 2);
+		if (kind == 'H') {
+			free(hpath);
+			hpath = strdup(path);
+			if (!hpath)
+				die("out of memory");
+			continue;
+		}
+		if (kind == 'T' && !hpath)
+			die("a target without its link in the log");
+		/* the directory it goes into: its times as tar left them, once */
+		{
+			char *d = strdup(kind == 'T' ? hpath : path);
+
+			if (!d)
+				die("out of memory");
+			slash = strrchr(d, '/');
+			if (slash)
+				*slash = 0;
+			else
+				d[0] = 0;
+			if (pset_find(&dirs, d) < 0) {
+				struct stat ds;
+				int r;
+
+				if (d[0]) {
+					const char *dn;
+					int pf = parent_of(droot, d, &dn, 0);
+
+					r = pf < 0 ? -1 : fstatat(pf, dn, &ds, AT_SYMLINK_NOFOLLOW);
+					if (pf >= 0)
+						close(pf);
+				} else {
+					r = fstat(droot, &ds);
+				}
+				if (r == 0) {
+					pset_add(&dirs, d);
+					dtimes = realloc(dtimes, 2 * (ndir + 1) * sizeof(*dtimes));
+					dorder = realloc(dorder, (ndir + 1) * sizeof(*dorder));
+					if (!dtimes || !dorder)
+						die("out of memory");
+					dtimes[2 * ndir] = ds.st_atim;
+					dtimes[2 * ndir + 1] = ds.st_mtim;
+					dorder[ndir++] = strdup(d);
+				}
+			}
+			free(d);
+		}
+		if (kind == 'T') {
+			sfd = parent_of(droot, path, &sname, 0);
+			if (sfd < 0)
+				die("%s: %s", path, strerror(errno));
+			dfd = parent_of(droot, hpath, &dname, 0);
+			if (dfd < 0)
+				die("%s: its directory is not there in %s", hpath, new);
+			clear_way(dfd, dname, hpath);
+			if (linkat(sfd, sname, dfd, dname, 0))
+				die("%s: %s", hpath, strerror(errno));
+			linked++;
+			free(hpath);
+			hpath = NULL;
+		} else {
+			struct stat st;
+
+			sfd = parent_of(sroot, path, &sname, 0);
+			if (sfd < 0 || fstatat(sfd, sname, &st, AT_SYMLINK_NOFOLLOW) || !S_ISREG(st.st_mode))
+				die("%s: not in %s any more", path, old);
+			dfd = parent_of(droot, path, &dname, 0);
+			if (dfd < 0)
+				die("%s: its directory is not there in %s", path, new);
+			clear_way(dfd, dname, path);
+			if (!linkat(sfd, sname, dfd, dname, 0)) {
+				linked++;
+			} else if (errno == EXDEV || errno == EMLINK || errno == EPERM) {
+				if (copy_data(sfd, sname, dfd, dname, &st, path) == GONE)
+					die("%s: gone from %s", path, old);
+				copy_meta(sfd, sname, dfd, dname, &st, path);
+				copied++;
+			} else {
+				die("%s: %s", path, strerror(errno));
+			}
+		}
+		close(sfd);
+		close(dfd);
+	}
+	if (!ended)
+		die("the log does not end as tarfilter ends it: the archive was not read to its end");
+	for (i = 0; i < ndir; i++) {
+		if (dorder[i][0]) {
+			const char *dn;
+			int pf = parent_of(droot, dorder[i], &dn, 0);
+
+			if (pf < 0 || utimensat(pf, dn, dtimes + 2 * i, AT_SYMLINK_NOFOLLOW))
+				die("%s: times: %s", dorder[i], strerror(errno));
+			close(pf);
+		} else if (futimens(droot, dtimes + 2 * i)) {
+			die("%s: times: %s", new, strerror(errno));
+		}
+	}
+	printf("%llu files linked, %llu copied\n", linked, copied);
+	return 0;
+}
+
 int main(int argc, char **argv)
 {
 	if (argc == 3 && !strcmp(argv[1], "scan"))
@@ -765,7 +1440,19 @@ int main(int argc, char **argv)
 		return cmd_sum(argv[2]);
 	if ((argc == 4 || argc == 5) && (!strcmp(argv[1], "copy") || !strcmp(argv[1], "link")))
 		return cmd_copy(argv[2], argv[3], argc == 5 ? argv[4] : NULL, argv[1][0] == 'l');
+	if (argc == 3 && !strcmp(argv[1], "same"))
+		return cmd_same(argv[2]);
+	if (argc == 5 && !strcmp(argv[1], "tarfilter"))
+		return cmd_tarfilter(argv[2], argv[3], argv[4]);
+	if (argc == 4 && !strcmp(argv[1], "tarlink"))
+		return cmd_tarlink(argv[2], argv[3]);
+	/* what this build can do (an updater asks before it relies on a command) */
+	if (argc == 2 && !strcmp(argv[1], "features")) {
+		puts("scan sum manifest copy link same tarfilter tarlink");
+		return 0;
+	}
 	fprintf(stderr, "usage: mu300-carry scan ROOT | sum ROOT < PATHS | manifest ROOT IMAGE TAG |\n"
-			"       mu300-carry copy|link SRC DST [IDMAP] < PATHS\n");
+			"       mu300-carry copy|link SRC DST [IDMAP] < PATHS | same OLD < MANIFEST-LINES |\n"
+			"       mu300-carry tarfilter OLD LIST LOG < TAR > TAR | tarlink OLD NEW < LOG | features\n");
 	return 2;
 }
