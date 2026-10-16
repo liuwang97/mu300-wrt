@@ -67,6 +67,9 @@ Which OpenWrt?	Hangi OpenWrt?
 2) OpenWrt {1} with the MU300 control panel: dashboard, cellular locks, SMS, AT terminal, USB modes (by kanoqwq)	2) OpenWrt {1} ve MU300 kontrol paneli: pano, hücresel kilitler, SMS, AT terminali, USB kipleri (kanoqwq yapımı)
 MU300_OPENWRT must be plain or luci	MU300_OPENWRT plain ya da luci olmalı
 that choice needs about {1} MiB and this device has {2} MiB of free space	bu seçim yaklaşık {1} MiB gerektiriyor, bu cihazda ise {2} MiB boş alan var
+Choose 2 (OpenWrt) instead: it fits here.	Bunun yerine 2'yi (OpenWrt) seçin: o buraya sığar.
+Choose 1 (Ubuntu) or 2 (OpenWrt) instead: one system fits here.	Bunun yerine 1'i (Ubuntu) ya da 2'yi (OpenWrt) seçin: buraya tek bir sistem sığar.
+An OpenWrt zip of this release fits here.	Bu sürümün bir OpenWrt zip'i buraya sığar.
 Which one should boot ({1})	Hangisi açılsın ({1})
 invalid system	geçersiz sistem
 Boot Linux by default instead of Android (falls back to Android if Linux fails)? (yes/no)	Varsayılan olarak Android yerine Linux açılsın mı (Linux açılamazsa Android'e döner)? (evet/hayır)
@@ -666,6 +669,7 @@ the other system	diğer sistem
 Linux was removed. The device starts stock Android; restart it once to check.	Linux kaldırıldı. Cihaz fabrika Android'ini açar; kontrol etmek için bir kez yeniden başlatın.
 Give the space behind userdata back to it (experimental; ERASES Android's data)	userdata'nın arkasındaki alanı ona geri ver (deneysel; Android verilerini SİLER)
 Only for a device where this installer shrank userdata to make room. On the usual 64 GB device the space behind userdata is free from the factory: leave this off.	Yalnızca bu yükleyicinin yer açmak için userdata'yı küçülttüğü cihazlar içindir. Alışılmış 64 GB'lık cihazda userdata'nın arkasındaki alan fabrikadan boş gelir: bunu kapalı bırakın.
+Leave it off too if Linux may be installed again: the installer then uses this space without touching Android. With it on, a new installation has to make room again, which resets Android once more.	Linux yeniden kurulabilecekse de kapalı bırakın: yükleyici o zaman Android'e dokunmadan bu alanı kullanır. Açıkken yeni bir kurulumun yeniden yer açması gerekir, bu da Android'i bir kez daha sıfırlar.
 Type ERASE to allow that:	Buna izin vermek için ERASE yazın:
 This window	Bu pencere
 drives install.sh / install.ps1 in their answers mode; it installs nothing by itself	install.sh / install.ps1 betiklerini yanıt kipinde yönetir; kendisi hiçbir şey kurmaz
