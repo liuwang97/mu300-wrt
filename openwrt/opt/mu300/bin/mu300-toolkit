@@ -467,6 +467,7 @@ info() {
     [ -n "$xs" ] && printf '%sExtras%s  %s\n' "$B" "$N" "$xs"
     printf '%sLoad%s     %s\n' "$B" "$N" "$(cut -d' ' -f1-3 /proc/loadavg)"
     awk -v b="$B" -v n="$N" '/^MemTotal/{t=$2} /^MemAvailable/{a=$2} END{printf "%sRAM%s      %d MB used of %d MB (%d MB available)\n", b, n, (t-a)/1024, t/1024, a/1024}' /proc/meminfo
+    printf '%sSwap%s     %s\n' "$B" "$N" "$(/opt/mu300/bin/mu300-zram brief 2>/dev/null || echo unknown)"
     printf '%sStorage%s  %s\n' "$B" "$N" "$(df -h / | awk 'NR==2 {print $3 " used of " $2 " (" $5 ")"}')"
     hot=$(cat /sys/class/thermal/thermal_zone*/temp 2>/dev/null | sort -n | tail -n1)
     printf '%sTemp%s     hottest %s C, profile %s\n' "$B" "$N" "$((hot / 1000))" "$(current_profile)"
@@ -883,10 +884,28 @@ menu_update() {
     done
 }
 
+# Compressed swap in RAM (mu300-zram, /etc/mu300/zram.conf): on by default
+menu_zram() {
+    while :; do
+        title "Compressed swap (zram)"
+        /opt/mu300/bin/mu300-zram status 2>&1 | sed 's/^/  /'
+        printf '\n  %s1%s  On (now and at every boot)\n' "$C" "$N"
+        printf '  %s2%s  Off (now and at every boot)\n' "$C" "$N"
+        printf '\n  %sSize, compressor and swappiness: /etc/mu300/zram.conf (see /opt/mu300/lib/zram.conf.example).%s\n' "$D" "$N"
+        printf '\n  %s0%s  Back\n\n  > ' "$C" "$N"
+        read -r c || return
+        case $c in
+            1) /opt/mu300/bin/mu300-zram on >/dev/null || pause ;;
+            2) /opt/mu300/bin/mu300-zram off >/dev/null || pause ;;
+            *) return ;;
+        esac
+    done
+}
+
 menu_system() {
     while :; do
         menu "System" "Summary" "Software update" "Change password (${SUDO_USER:-$(id -un)})" "Hostname" "Timezone" \
-            "Recent warnings and errors" "Storage usage" "Next boot: Android" "Reboot" "Power off"
+            "Recent warnings and errors" "Storage usage" "Compressed swap (zram)" "Next boot: Android" "Reboot" "Power off"
         case $CHOICE in
             1) title "Summary"; info; pause ;;
             2) menu_update ;;
@@ -911,10 +930,11 @@ menu_system() {
                else logread | grep -iE 'warn|err|fail' | tail -n 40 | cut -c1-200; fi
                pause ;;
             7) title "Storage"; df -h 2>/dev/null | grep -vE '^(tmpfs|devtmpfs|none|overlay|cgroup)' | sed 's/^/  /'; pause ;;
-            8) printf '  The next boot starts stock Android (Linux stays installed). Continue? [y/N] '; read -r a
+            8) menu_zram ;;
+            9) printf '  The next boot starts stock Android (Linux stays installed). Continue? [y/N] '; read -r a
                case $a in y|Y) /opt/mu300/bin/mu300-next-boot android; pause ;; esac ;;
-            9) printf '  Reboot now? [y/N] '; read -r a; case $a in y|Y) reboot ;; esac ;;
-            10) printf '  Power off now? (needs a replug to start again) [y/N] '; read -r a; case $a in y|Y) poweroff ;; esac ;;
+            10) printf '  Reboot now? [y/N] '; read -r a; case $a in y|Y) reboot ;; esac ;;
+            11) printf '  Power off now? (needs a replug to start again) [y/N] '; read -r a; case $a in y|Y) poweroff ;; esac ;;
             *) return ;;
         esac
     done
