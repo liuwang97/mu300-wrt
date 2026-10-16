@@ -1591,11 +1591,7 @@ update_need() {
     stage_private || return 1
     _uw=$STAGE/.need
     rm -rf "$_uw"; ( umask 077; mkdir -p "$_uw" ) || return 1
-    # the kernel (bundles are 20 to 30 MB), the installed extras that follow the release, the VPN module (its
-    # engines are 15 to 25 MB each), and 16 MB for what is not counted
-    _un=$(( 16384 + $(asset_kb "$_ut" "$(kernel_asset)" || echo 65536) ))
-    for _ux in $(extras_to_fetch "$_ut"); do _un=$((_un + $(asset_kb "$_ut" "$(extra_asset "$_ux")" || echo 16384) )); done
-    [ ! -d "$EXTRA/vpn" ] || _un=$((_un + 65536))
+    _un=0
     for _uo in "$@"; do
         _ua=$(rootfs_asset "$_uo"); _um=${_ua%.tar.gz}.manifest.gz
         if ! { fetch_verified "$_ut" "$_um" >/dev/null 2>&1 && cat "$STAGE/$_um" > "$_uw/m.gz"; }; then
@@ -1609,22 +1605,31 @@ update_need() {
         if [ "${MU300_DELTA:-1}" != 0 ]; then _ue=$(delta_estimate "$DISK/$_uo" "$_uw/lines" "$_uw") || { rm -rf "$_uw"; return 1; }
         else : > "$_uw/link"; _ue=$(delta_kb "$_uw/link" "$_uw/lines"); fi
         _uk=${_ue% *}
-        # the image's download: its size where the release lists it (an image is already in the staging directory
-        # from a file), else half the image
-        if [ -s "$STAGE/$_ua" ]; then _us=0
-        else _us=$(asset_kb "$_ut" "$_ua") || _us=$(( (_uk + ${_ue#* }) / 2 )); fi
+        # the image's download: its size where the release lists it, else half the image
+        _us=$(asset_kb "$_ut" "$_ua") || _us=$(( (_uk + ${_ue#* }) / 2 ))
         _un=$(( _un + $(delta_margin "$_uk") + _us + $(carry_need "$_uo") ))
     done
     rm -rf "$_uw"
+    # the kernel (bundles are 20 to 30 MB), the installed extras that follow the release, the VPN module (its
+    # engines are 15 to 25 MB each), and 16 MB for what is not counted
+    _un=$(( _un + 16384 + $(asset_kb "$_ut" "$(kernel_asset)" || echo 65536) ))
+    for _ux in $(extras_to_fetch "$_ut"); do _un=$((_un + $(asset_kb "$_ut" "$(extra_asset "$_ux")" || echo 16384) )); done
+    [ ! -d "$EXTRA/vpn" ] || _un=$((_un + 65536))
     echo "$_un"
 }
-# asset_kb TAG NAME: the size of a release file in KiB: from a file or a directory (apply --from) what it holds; else
-# as GitHub's list of the release's files says it (asked once), else as the server answers a HEAD request (a mirror)
+# asset_kb TAG NAME: the KiB the download of a release file takes: nothing when it is in the staging directory
+# already; from a file or a directory (apply --from) what it holds; else as GitHub's list of the release's files says
+# it (asked once, never again when it did not answer), else as the server answers a HEAD request (a mirror)
 asset_kb() {
+    [ ! -s "$STAGE/$2" ] || { echo 0; return 0; }
     if [ -n "${MU300_FROM:-}" ]; then
         _as=$(from_member "$2" 2>/dev/null | wc -c | tr -d ' ')
     else
-        [ -n "${ASSET_JSON+x}" ] || ASSET_JSON=$(fetch_stdout "${MU300_API_URL:-https://api.github.com/repos/$REPO}/releases/tags/$1" 2>/dev/null) || ASSET_JSON=
+        if [ -z "${ASSET_JSON+x}" ]; then
+            _aa=${MU300_API_URL:-https://api.github.com/repos/$REPO}/releases/tags/$1
+            if have curl; then ASSET_JSON=$(curl -fsSL --connect-timeout 15 --max-time 30 "$_aa" 2>/dev/null) || ASSET_JSON=
+            else ASSET_JSON=$(wget -T 30 -qO- "$_aa" 2>/dev/null) || ASSET_JSON=; fi
+        fi
         _as=$(printf '%s\n' "$ASSET_JSON" | awk -v f="$2" '
             function val(s) { sub(/^[^:]*:[ \t]*/, "", s); sub(/[ \t]*,?[ \t\r]*$/, "", s); gsub(/^"|"$/, "", s); return s }
             { gsub(/,"/, ",\n\""); gsub(/\{"/, "{\n\""); n = split($0, L, "\n")
