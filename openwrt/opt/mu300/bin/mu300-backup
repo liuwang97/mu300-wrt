@@ -335,14 +335,15 @@ do_export() {
 SCHEMA_JQ='
 # every key known, every value of its kind and size: a file that says anything else is refused whole
 def s($n): type == "string" and (utf8bytelength <= $n);
+# (patterns: \\A and \\z, the ends of the value; ^ and $ are the ends of any line in the regular expressions of jq)
 # one line: no control character at all (a configuration and the forwarding texts are s, the rest l)
 def l($n): s($n) and (test("[[:cntrl:]]") | not);
 def keysin($k): type == "object" and ((keys - $k) | length) == 0;
 def err($m): if . then empty else $m end;
 def flags: type == "boolean";
 def profile: keysin(["name", "type", "config", "options"]) and (.name | l(128))
-    and (.type | l(16) and test("^[a-z0-9-]+$")) and (.config | s(1048576))
-    and ((.options // {}) | type == "object" and length <= 16 and all(keys[]; test("^[A-Z][A-Z0-9_]{0,31}$"))
+    and (.type | l(16) and test("\\A[a-z0-9][a-z0-9-]*\\z")) and (.config | s(1048576))
+    and ((.options // {}) | type == "object" and length <= 16 and all(keys[]; test("\\A[A-Z][A-Z0-9_]{0,31}\\z"))
          and all(.[]; l(512)));
 def subscription: keysin(["name", "url", "type", "interval", "insecure"]) and (.name | l(128)) and (.url | l(2048))
     and ((.type // "auto") | IN("auto", "links", "mihomo", "dae"))
@@ -355,7 +356,7 @@ elif .version != 1 then "a backup format this version does not know (\(.version)
 else
   ( (keysin(["format", "version", "created", "source", "sections"])) | err("unknown keys") ),
   ( (.created | type == "number") | err("created") ),
-  ( (.source | keysin(["device", "system", "release", "hostname"]) and (.device | l(16) and test("^[a-z0-9]+$"))
+  ( (.source | keysin(["device", "system", "release", "hostname"]) and (.device | l(16) and test("\\A[a-z0-9]+\\z"))
        and (.system | IN("ubuntu", "openwrt", "openwrt-luci")) and (.release | l(64)) and (.hostname | l(64)))
     | err("source") ),
   ( .sections | if type != "object" then "sections" else
@@ -567,8 +568,19 @@ vpn_setting_ok() {
 }
 # config_ok: a configuration on stdin: text (tabs, newlines, UTF-8), no other control character, 1 MiB at most
 config_ok() { [ "$(LC_ALL=C tr -d '\011\012\015\040-\176\200-\377' | wc -c)" -eq 0 ]; }
-field() { printf '%s' "$ST" | jq -r "$1"; }
+field() { printf '%s' "$ST" | jq -r "$1"; }   # (for messages and fixed words only)
 fieldc() { printf '%s' "$ST" | jq -c "$1"; }
+# getv VAR FILTER: the step's value exactly (no trailing newline taken off, as $(...) would)
+getv() { _gv=$(printf '%s' "$ST" | jq -j "$2"; printf x); _gv=${_gv%x}; eval "$1=\$_gv"; }
+# arg VAR FILTER: a value that goes onto a command line: one line, no control character, never starting with "-"
+# (a tool would take it for an option: "--insecure", "--json"), else false (the security review of #285)
+arg() {
+    getv "$1" "$2"
+    eval "_av=\$$1"
+    [ -n "$_av" ] || return 1
+    case $_av in -*) return 1 ;; esac
+    [ "$(printf '%s' "$_av" | LC_ALL=C tr -d '\040-\176\200-\377' | wc -c)" -eq 0 ]
+}
 # check_step: the step in $ST passes the rules of what will apply it (CHK_WHY when not; CHK_SKIP when this system
 # cannot take it)
 check_step() {
@@ -590,35 +602,44 @@ check_step() {
                 CHK_WHY="mu300-api cannot check $_m"; return 1
             fi ;;
         lock) api_call lock.set "$(printf '%s' "$ST" | jq -c '{kind, val}')" check || { CHK_WHY=$(ans_error); return 1; }
+              # (an empty band list is "automatic": the lock tool takes it as an empty argument)
+              arg _k .kind && { getv _v .val; [ -z "$_v" ] || arg _v .val; } || { CHK_WHY="a lock value"; return 1; }
               [ -x "$LOCKTOOL" ] || CHK_SKIP="no lock tool here" ;;
         lock-reset) [ -x "$LOCKTOOL" ] || CHK_SKIP="no lock tool here" ;;
         keys) for _k in $(printf '%s' "$ST" | jq -r '.keys | to_entries[] | .key'); do
                   key_ok "$(printf '%s' "$ST" | jq -r --argjson i "$_k" '.keys[$i]')" || { CHK_WHY="SSH key $((_k + 1)) is not an OpenSSH public key"; return 1; }
               done ;;
-        password) hash_ok "$(field .hash)" || { CHK_WHY="not a password hash this system takes"; return 1; } ;;
+        password) arg _h .hash && hash_ok "$_h" || { CHK_WHY="not a password hash this system takes"; return 1; } ;;
         forward)
             [ -x "$FWDA" ] || { CHK_SKIP="no SMS forwarding here"; return 0; }
             _r=$(printf '%s' "$ST" | jq -c .data | MU300_FWD_CHECK=1 timed 30 "$FWDA" set 2>/dev/null)
             [ "$(printf '%s' "$_r" | jq -r .checked 2>/dev/null)" = 1 ] ||
                 { CHK_WHY=$(printf '%s' "$_r" | jq -r '.error // "refused"' 2>/dev/null); return 1; } ;;
         vpn-add|vpn-edit|vpn-options)
-            vpn_name_ok "$(field .name)" || { CHK_WHY="a VPN profile name"; return 1; }
-            allowed "$(field .type)" '[a-z0-9-]{1,16}' || { CHK_WHY="a VPN profile type"; return 1; }
+            arg _nm .name && vpn_name_ok "$_nm" || { CHK_WHY="a VPN profile name"; return 1; }
+            arg _t .type && allowed "$_t" '[a-z0-9][a-z0-9-]{0,15}' || { CHK_WHY="a VPN profile type"; return 1; }
             if [ "$(field .do)" != vpn-options ]; then
                 printf '%s' "$ST" | jq -j .config | config_ok || { CHK_WHY="VPN profile $(field '.name | @json'): not a text configuration"; return 1; }
                 [ -n "$(field .config)" ] || { CHK_WHY="VPN profile $(field '.name | @json'): no configuration"; return 1; }
             fi
-            for _k in $(printf '%s' "$ST" | jq -r '(.options // {}) | keys[]'); do
+            # by index: a key is never split by the shell into words
+            _i=0 _nk=$(printf '%s' "$ST" | jq '(.options // {}) | length')
+            while [ "$_i" -lt "$_nk" ]; do
+                getv _k "(.options // {}) | keys[$_i]"
                 allowed "$_k" '[A-Z][A-Z0-9_]{0,31}' || { CHK_WHY="a VPN profile option"; return 1; }
-                text_ok "$(printf '%s' "$ST" | K=$_k jq -r '.options[env.K]')" 512 || { CHK_WHY="VPN option $_k"; return 1; }
+                arg _v "(.options // {}) | .[keys[$_i]]" && text_ok "$_v" 512 || { CHK_WHY="VPN option $_k"; return 1; }
+                _i=$((_i + 1))
             done ;;
         vpn-sub)
-            vpn_name_ok "$(field .name)" || { CHK_WHY="a VPN subscription name"; return 1; }
-            _u=$(field .url); [ "${#_u}" -le 2048 ] && allowed "$_u" "$VPN_URL_ERE" || { CHK_WHY="VPN subscription $(field '.name | @json'): not an https:// address"; return 1; }
-            _u= ;;
-        vpn-setting) vpn_setting_ok "$(field .key)" "$(field .value)" || { CHK_WHY="VPN setting $(field .key)"; return 1; } ;;
-        vpn-use) vpn_name_ok "$(field .name)" || { CHK_WHY="a VPN profile name"; return 1; } ;;
-        vpn-power) allowed "$(field .state)" 'on|off' || { CHK_WHY="the VPN switch"; return 1; } ;;
+            arg _nm .name && vpn_name_ok "$_nm" || { CHK_WHY="a VPN subscription name"; return 1; }
+            getv _u .url; [ "${#_u}" -le 2048 ] && allowed "$_u" "$VPN_URL_ERE" || { CHK_WHY="VPN subscription $(field '.name | @json'): not an https:// address"; return 1; }
+            _u=
+            arg _t .type && allowed "$_t" 'auto|links|mihomo|dae' || { CHK_WHY="a VPN subscription type"; return 1; }
+            getv _iv .interval; allowed "$_iv" 'null|0|[1-9][0-9]{0,2}' && { [ "$_iv" = null ] || [ "$_iv" -le 720 ]; } ||
+                { CHK_WHY="a VPN subscription interval"; return 1; } ;;
+        vpn-setting) arg _k .key && arg _v .value && vpn_setting_ok "$_k" "$_v" || { CHK_WHY="VPN setting $(field .key)"; return 1; } ;;
+        vpn-use) arg _nm .name && vpn_name_ok "$_nm" || { CHK_WHY="a VPN profile name"; return 1; } ;;
+        vpn-power) arg _s .state && allowed "$_s" 'on|off' || { CHK_WHY="the VPN switch"; return 1; } ;;
         *) CHK_WHY="no such step"; return 1 ;;
     esac
     return 0
@@ -627,14 +648,19 @@ check_step() {
 # vpn_id NAME [TYPE]: the id of this device's profile of that name (and type)
 vpn_id() {
     timed 30 "$VPN" profile list --json 2>/dev/null |
-        N=$1 T=${2:-} jq -r '[.[]? | select(.name == env.N and (env.T == "" or .type == env.T)) | .id] | first // empty'
+        N=$1 T=${2:-} jq -r '[.[]? | select(.name == env.N and (env.T == "" or .type == env.T)) | .id] | first // empty' |
+        grep -x '[a-z0-9][a-z0-9-]\{0,31\}'
 }
 vpn_options() {   # vpn_options ID: the step's options set on profile ID (OpenVPN's user and password into auth.txt)
-    _t=$(field .type)
-    for _k in $(printf '%s' "$ST" | jq -r '(.options // {}) | keys[]'); do
+    arg _t .type || return 1
+    _i=0 _nk=$(printf '%s' "$ST" | jq '(.options // {}) | length')
+    while [ "$_i" -lt "$_nk" ]; do
+        getv _k "(.options // {}) | keys[$_i]"; _i=$((_i + 1))
+        allowed "$_k" '[A-Z][A-Z0-9_]{0,31}' || return 1
         case $_t:$_k in openvpn:OVPN_USER|openvpn:OVPN_PASS) continue ;; esac
         case $_k in *PASS*|*SECRET*|*KEY) say "  (VPN option $_k is a secret the module takes on its command line only: left out)"; continue ;; esac
-        timed 30 "$VPN" profile set "$1" "$_k" "$(printf '%s' "$ST" | K=$_k jq -r '.options[env.K]')" </dev/null >/dev/null 2>&1 || return 1
+        arg _v "(.options // {}) | .[keys[$((_i - 1))]]" || return 1
+        timed 30 "$VPN" profile set "$1" "$_k" "$_v" </dev/null >/dev/null 2>&1 || return 1
     done
     if [ "$_t" = openvpn ] && [ "$(printf '%s' "$ST" | jq -r '.options | has("OVPN_USER") or has("OVPN_PASS")')" = true ]; then
         _d=$VPN_STORE/profiles/$1
@@ -660,43 +686,55 @@ add_keys() {
 }
 set_password() {
     if is_openwrt && [ -x "$BIN/busybox" ]; then set -- "$BIN/busybox" chpasswd -e; else set -- chpasswd -e; fi
-    printf '%s:%s\n' "$USR" "$(field .hash)" | timed 20 "$@" >/dev/null 2>&1
+    arg _h .hash && hash_ok "$_h" || return 1
+    case $USR in root|ubuntu) ;; *) return 1 ;; esac
+    printf '%s:%s\n' "$USR" "$_h" | timed 20 "$@" >/dev/null 2>&1
 }
 # apply_step: the step in $ST done
 apply_step() {
     case $(field .do) in
         note) return 0 ;;
         api) api_call "$(field .method)" "$(fieldc .req)" || { APPLY_WHY=$(ans_error); return 1; } ;;
-        lock) timed 120 "$LOCKTOOL" apply "$(field .kind)" "$(field .val)" </dev/null >/dev/null 2>&1 ;;
+        lock) arg _k .kind || return 1; getv _v .val; [ -z "$_v" ] || arg _v .val || return 1
+              timed 120 "$LOCKTOOL" apply "$_k" "$_v" </dev/null >/dev/null 2>&1 ;;
         lock-reset) timed 180 "$LOCKTOOL" reset </dev/null >/dev/null 2>&1 ;;
         keys) add_keys ;;
         password) set_password ;;
         forward) _r=$(printf '%s' "$ST" | jq -c .data | timed 30 "$FWDA" set 2>/dev/null)
                  [ "$(printf '%s' "$_r" | jq -r .ok 2>/dev/null)" = 1 ] || { APPLY_WHY=$(printf '%s' "$_r" | jq -r '.error // empty' 2>/dev/null); return 1; } ;;
         vpn-add)
-            _id=$(printf '%s' "$ST" | jq -j .config | timed 60 "$VPN" profile add "$(field .type)" "$(field .name)" - 2>"$WORK/vpn.err" | tail -n 1)
-            case $_id in ''|*[!a-z0-9-]*) APPLY_WHY=$(tail -n 1 "$WORK/vpn.err" | sanitize); return 1 ;; esac
+            arg _t .type && arg _nm .name || return 1
+            _id=$(printf '%s' "$ST" | jq -j .config | timed 60 "$VPN" profile add "$_t" "$_nm" - 2>"$WORK/vpn.err" | tail -n 1)
+            case $_id in ''|-*|*[!a-z0-9-]*) APPLY_WHY=$(tail -n 1 "$WORK/vpn.err" | sanitize); return 1 ;; esac
             vpn_options "$_id" ;;
         vpn-edit)
-            _id=$(vpn_id "$(field .name)" "$(field .type)"); [ -n "$_id" ] || return 1
+            arg _nm .name && arg _t .type || return 1
+            _id=$(vpn_id "$_nm" "$_t"); [ -n "$_id" ] || return 1
             printf '%s' "$ST" | jq -j .config | timed 60 "$VPN" profile edit "$_id" - >/dev/null 2>"$WORK/vpn.err" ||
                 { APPLY_WHY=$(tail -n 1 "$WORK/vpn.err" | sanitize); return 1; } ;;
-        vpn-options) _id=$(vpn_id "$(field .name)" "$(field .type)"); [ -n "$_id" ] || return 1; vpn_options "$_id" ;;
+        vpn-options) arg _nm .name && arg _t .type || return 1
+                     _id=$(vpn_id "$_nm" "$_t"); [ -n "$_id" ] || return 1; vpn_options "$_id" ;;
         vpn-sub)
-            set -- subscription add "$(field .name)" - --type "$(field .type)"
-            case $(field .interval) in null|'') ;; *) set -- "$@" --interval "$(field .interval)" ;; esac
+            arg _nm .name && arg _t .type || return 1
+            allowed "$_t" 'auto|links|mihomo|dae' || return 1
+            set -- subscription add "$_nm" - --type "$_t"
+            getv _iv .interval
+            case $_iv in null|'') ;; *) allowed "$_iv" '0|[1-9][0-9]{0,2}' || return 1; set -- "$@" --interval "$_iv" ;; esac
             [ "$(field .insecure)" != true ] || set -- "$@" --insecure
             field .url | timed 180 "$VPN" "$@" >/dev/null 2>"$WORK/vpn.err" || { APPLY_WHY=$(tail -n 1 "$WORK/vpn.err" | sanitize); return 1; } ;;
         vpn-setting)
-            if [ "$(field .key)" = KILL_SWITCH ]; then
-                case $(field .value) in 1) _v=on ;; *) _v=off ;; esac
+            arg _k .key && arg _v .value && vpn_setting_ok "$_k" "$_v" || return 1
+            if [ "$_k" = KILL_SWITCH ]; then
+                case $_v in 1) _v=on ;; *) _v=off ;; esac
                 timed 30 "$VPN" killswitch "$_v" </dev/null >/dev/null 2>"$WORK/vpn.err"
             else
-                timed 30 "$VPN" settings set "$(field .key)" "$(field .value)" </dev/null >/dev/null 2>"$WORK/vpn.err"
+                timed 30 "$VPN" settings set "$_k" "$_v" </dev/null >/dev/null 2>"$WORK/vpn.err"
             fi || { APPLY_WHY=$(tail -n 1 "$WORK/vpn.err" | sanitize); return 1; } ;;
-        vpn-use) _id=$(vpn_id "$(field .name)"); [ -n "$_id" ] || { APPLY_WHY="no profile of that name"; return 1; }
+        vpn-use) arg _nm .name || return 1
+                 _id=$(vpn_id "$_nm"); [ -n "$_id" ] || { APPLY_WHY="no profile of that name"; return 1; }
                  timed 60 "$VPN" profile use "$_id" </dev/null >/dev/null 2>"$WORK/vpn.err" || { APPLY_WHY=$(tail -n 1 "$WORK/vpn.err" | sanitize); return 1; } ;;
-        vpn-power) timed 120 "$VPN" "$(field .state)" </dev/null >/dev/null 2>"$WORK/vpn.err" || { APPLY_WHY=$(tail -n 1 "$WORK/vpn.err" | sanitize); return 1; } ;;
+        vpn-power) arg _s .state && allowed "$_s" 'on|off' || return 1
+                   timed 120 "$VPN" "$_s" </dev/null >/dev/null 2>"$WORK/vpn.err" || { APPLY_WHY=$(tail -n 1 "$WORK/vpn.err" | sanitize); return 1; } ;;
         *) return 1 ;;
     esac
 }

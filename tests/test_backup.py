@@ -392,6 +392,16 @@ class Hostile(BackupCase):
                         json.dumps(self.doc({'sim': {'default': 3}})),
                         json.dumps(self.doc({'vpn': {'settings': {'XRAY': '/tmp/evil'}}})),
                         json.dumps(self.doc({'vpn': {'profiles': [{'name': 'a', 'type': '../x', 'config': 'c'}]}})),
+                        # the security review of #285: a value that would be an option, a line break inside a
+                        # value or a key (jq's ^ and $ are line anchors), a second shadow line after the hash
+                        json.dumps(self.doc({'vpn': {'profiles': [{'name': 'a', 'type': '--json', 'config': 'c'}]}})),
+                        json.dumps(self.doc({'vpn': {'profiles': [{'name': 'a', 'type': 'xray\n--json', 'config': 'c'}]}})),
+                        json.dumps(self.doc({'vpn': {'profiles': [{'name': 'a', 'type': 'xray', 'config': 'c',
+                                                                   'options': {'A\nB': 'x'}}]}})),
+                        json.dumps(self.doc({'password': {'hash': HASH + '\nroot:' + HASH}})),
+                        json.dumps(self.doc({'password': {'hash': HASH + '\n'}})),
+                        json.dumps(self.doc({'locks': {'lte': '1\n--help'}})),
+                        json.dumps(dict(self.doc(good), source={'device': 'f50\nx', 'system': 'ubuntu', 'release': '', 'hostname': ''})),
                         json.dumps(self.doc({'vpn': {'subscriptions': [{'name': 'a', 'url': 'u', 'interval': 9999}]}})),
                         json.dumps(dict(self.doc(good), source={'device': 'f50; reboot', 'system': 'ubuntu', 'release': '', 'hostname': ''})),
                         '{"format":"mu300-backup","version":1,"created":1,"source":"x","sections":{}}'):
@@ -428,7 +438,11 @@ class Hostile(BackupCase):
                              ({'subscriptions': [{'name': 'ok', 'url': 'http://plain.example.com/x'}]}, 'not an https:// address'),
                              ({'subscriptions': [{'name': 'ok', 'url': 'https://a.example.com/x y'}]}, 'not an https:// address'),
                              ({'settings': {'REMOTE_DNS': '1.1.1.1; reboot'}}, 'VPN setting REMOTE_DNS'),
-                             ({'settings': {'LAN_CIDRS': '*'}}, 'VPN setting LAN_CIDRS')):
+                             ({'settings': {'LAN_CIDRS': '*'}}, 'VPN setting LAN_CIDRS'),
+                             # never an option on the module's command line
+                             ({'profiles': [{'name': 'ok', 'type': 'xray', 'config': VLESS, 'options': {'UPSTREAM_HTTP_PROXY': '--insecure'}}]}, 'VPN option UPSTREAM_HTTP_PROXY'),
+                             ({'subscriptions': [{'name': '--json', 'url': SUB_URL}]}, 'a VPN subscription name'),
+                             ({'active': '-x'}, 'a VPN profile name')):
                 r = self.assert_refused(shell, self.doc({'lan': {'ip': '192.168.60.1'}, 'vpn': vpn}), code=1)
                 self.assertIn(why, r.stdout, (vpn, r.stdout))
                 self.assertEqual(json.loads((self.tmp / 'vpn.json').read_text())['profiles'], [])
@@ -531,11 +545,14 @@ class Luci(BackupCase):
             self.assertEqual(calls, [['lock', 'reset'], ['lock', 'apply', 'lte', '1,3'], ['lock', 'apply', 'cell', 'lte:100,69']])
             self.assertEqual(self.fwdconf.read_text(), saved)
             self.assertNotIn('hooksecret', self.argv_text() + r.stdout + r.stderr)
-            # a lock value the API's rules refuse
-            f = self.write(self.doc({'locks': {'cell': 'lte:1;reboot'}}, system='openwrt-luci'))
-            r = self.backup(shell, 'import', f)
-            self.assertEqual(r.returncode, 1)
-            self.assertIn('bad-value: val', r.stdout)
+            # a lock value the API's rules refuse; one that would be an option of the lock tool
+            for locks in ({'cell': 'lte:1;reboot'}, {'lte': '--help'}, {'mode': '-x'}):
+                f = self.write(self.doc({'locks': locks}, system='openwrt-luci'))
+                self.clear_calls()
+                r = self.backup(shell, 'import', f)
+                self.assertEqual(r.returncode, 1, (locks, r.stdout))
+                self.assertIn('bad-value: val', r.stdout)
+                self.assertEqual(self.calls('lock'), [])
             # a forwarding setting the adapter refuses: nothing written
             before = self.fwdconf.read_text()
             f = self.write(self.doc({'sms_forward': dict(fw, webhook_url='ftp://x')}, system='openwrt-luci'))
