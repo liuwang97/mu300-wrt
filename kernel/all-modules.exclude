@@ -183,3 +183,4 @@ dir fs/afs
 dir net/dccp
 dir drivers/parport    # legacy buses
 dir drivers/hsi
+^LLC2$                 # AF_LLC (net-pf-26), LLC type 2; the bridge needs only llc, which is built in

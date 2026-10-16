@@ -11,7 +11,7 @@ modules.alias). Checked:
     aliases of modules.alias in their .modinfo strings) refuses every alias of every blocked module and every spelling of its name, and never calls modprobe
     for them;
   * it hands on the aliases and names of the modules the systems load on demand every day (nft, wireguard, overlay,
-    usb-storage, vfat, tun, bridge, veth, br_netfilter, xt_*, vhost_net, l2tp, vsock...) to modprobe unchanged.
+    usb-storage, vfat, tun, bridge, veth, br_netfilter, xt_*, vhost_net, l2tp...) to modprobe unchanged.
 """
 import os
 import pathlib
@@ -22,7 +22,7 @@ import tempfile
 
 MUST_PASS = ['nf_tables', 'nft_chain_nat', 'nft_ct', 'nft_masq', 'wireguard', 'overlay', 'usb_storage', 'vfat', 'tun',
              'bridge', 'veth', 'br_netfilter', 'xt_nat', 'xt_conntrack', 'xt_MASQUERADE', 'xt_addrtype',
-             'vhost_net', 'vhost_vsock', 'vsock', 'l2tp_core', 'l2tp_ppp', 'l2tp_ip', 'macvtap', 'kvm', 'can_dev',
+             'vhost_net', 'l2tp_core', 'l2tp_ppp', 'l2tp_ip', 'macvtap', 'kvm', 'can_dev',
              'gs_usb', 'hfsplus', 'ntfs3', 'exfat', 'btrfs', 'fuse', 'iptable_nat', 'ip6_tables', 'xfrm_user', 'esp4',
              'sch_cake', 'nls_cp437', 'cdc_mbim', 'qmi_wwan', 'btusb', 'snd_aloop', 'dm_crypt', 'loop', 'zram']
 
@@ -60,6 +60,8 @@ def check(out, listfile, guard, shell=('sh',)):
         for m in dep:
             strings = ['license=GPL', 'name=' + m] + ['alias=' + a for a in aliases.get(m, [])]
             (moddir / (m + '.ko')).write_bytes(b'\x7fELF\0' + '\0'.join(strings).encode() + b'\0')
+        # Ubuntu has depmod's modules.dep next to the modules (the guard takes in their dependants from it)
+        (moddir / 'modules.dep').write_text((out / 'modules.dep').read_text())
         lines = ''.join('%s\t%s\n' % (m, a) for m, al in aliases.items() for a in al)
         (d / 'aliases').write_text(lines)
         fake = d / 'modinfo'

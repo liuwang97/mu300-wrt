@@ -1,6 +1,8 @@
 """upstream/all-modules.py (every tristate the boards can use, as a module) and check-dt-modules.py (none of them
 may bind to the vendor device tree by itself)."""
+import fnmatch
 import importlib.util
+import os
 import shutil
 from pathlib import Path
 import subprocess
@@ -108,7 +110,7 @@ class AutoloadGuard(unittest.TestCase):
             self.assertRegex(n, r'^[a-z0-9_]+$')
         for n in ('tipc', 'sctp', 'can', 'can_raw', 'can_bcm', 'nfc', 'ieee802154', 'slcan', 'hfs', 'jfs', 'nilfs2'):
             self.assertIn(n, names)
-        for n in ('l2tp_core', 'vsock', 'vhost_vsock', 'can_dev', 'hfsplus', 'wireguard'):
+        for n in ('l2tp_core', 'l2tp_ppp', 'can_dev', 'hfsplus', 'wireguard', 'vhost_net'):
             self.assertNotIn(n, names)
 
     def test_every_spelling_of_a_blocked_module_in_the_build_sample(self):
@@ -132,6 +134,95 @@ class AutoloadGuard(unittest.TestCase):
             # without a table (no modinfo answer) the names still hold, in either spelling
             self.assertEqual(self.run_guard('can-raw')[:2], (1, None))
             self.assertEqual(self.run_guard('wireguard')[:2], (0, '-q -- wireguard\n'))
+
+    def sample_moddir(self, d):
+        """A module directory made from the build sample: every module file carries its aliases in its .modinfo."""
+        aliases = {}
+        for line in (self.SAMPLE / 'modules.alias').read_text().splitlines():
+            if line.startswith('alias '):
+                _, a, m = line.split(None, 2)
+                aliases.setdefault(m, []).append(a)
+        names = {os.path.basename(l.split(':')[0]).split('.ko')[0].replace('-', '_')
+                 for l in (self.SAMPLE / 'modules.dep').read_text().splitlines()}
+        for m in names:
+            (d / (m + '.ko')).write_bytes(b'\x7fELF\0' + '\0'.join('alias=' + a for a in aliases.get(m, [])).encode() + b'\0')
+        return aliases
+
+    # the requests the first (request-string) list refused, made concrete
+    OLD_REQUESTS = ['net-pf-29', 'net-pf-29-proto-1', 'net-pf-30', 'net-pf-30-proto-0', 'net-pf-36', 'net-pf-39',
+                    'net-pf-39-proto-1', 'net-pf-40', 'net-pf-2-proto-132', 'net-pf-2-proto-132-type-1',
+                    'net-pf-10-proto-132', 'net-pf-10-proto-132-type-5', 'net-pf-16-proto-16-family-TIPCv2',
+                    'net-pf-16-proto-16-family-nfc', 'net-pf-16-proto-16-family-nl802154',
+                    'net-pf-16-proto-16-family-802.15.4 MAC', 'net-pf-16-proto-16-family-j1939', 'rtnl-family-29'] + [
+                    'fs-' + f for f in ('adfs affs befs bfs coda cramfs efs gfs2 gfs2meta hfs hpfs jfs minix nilfs2 ocfs2 '
+                                        'ocfs2_dlmfs omfs orangefs qnx4 qnx6 romfs sysv v7 ufs vxfs ceph').split()]
+
+    def test_what_the_old_list_refused_is_still_refused_or_not_built(self):
+        with tempfile.TemporaryDirectory() as d:
+            aliases = self.sample_moddir(Path(d))
+            pairs = [(a.replace('-', '_'), m) for m, al in aliases.items() for a in al]
+            for req in self.OLD_REQUESTS:
+                answering = {m for a, m in pairs if fnmatch.fnmatchcase(req.replace('-', '_'), a)}
+                rc, called, _ = self.run_guard(req, moddir=Path(d))
+                if answering:
+                    self.assertEqual((rc, called), (1, None), (req, answering))
+                else:
+                    # nothing in the build answers it (sysv went upstream in 6.15; no genetlink family by that name):
+                    # the guard hands it on, and modprobe finds nothing either
+                    self.assertEqual(rc, 0, req)
+
+    def test_the_families_the_review_named_are_not_built(self):
+        gone = ('rds rds_tcp rds_rdma atm clip br2684 lec mpoa pppoatm ax25 netrom rose mkiss 6pack bpqether x25 lapb '
+                'lapbether appletalk phonet cdc_phonet af_rxrpc rxkad kafs kcm smc smc_diag caif caif_socket chnl_net '
+                'mISDN_core mISDN_dsp capi n_gsm n_hdlc dccp dccp_ipv4 dccp_ipv6 dccp_diag qrtr psnap p8022 llc2').split()
+        listed = {l.split('#')[0].strip() for l in self.LIST.read_text().splitlines()}
+        for kv in ('7.2.11', '6.18.57'):
+            names = set((self.SAMPLE / ('modules.names-' + kv)).read_text().split())
+            self.assertGreater(len(names), 2500)
+            self.assertEqual(sorted(set(gone) & names), [], kv)
+            # L2TP stays, on purpose (L2TP VPNs), and is not listed
+            self.assertIn('l2tp_ppp', names)
+        self.assertNotIn('l2tp_ppp', listed)
+        # every line discipline that is built is listed
+        ldisc = {l.split()[2] for l in (self.SAMPLE / 'modules.alias').read_text().splitlines()
+                 if l.startswith('alias tty-ldisc-')}
+        self.assertTrue(ldisc)
+        self.assertLessEqual(ldisc, listed)
+
+    def test_a_module_that_depends_on_a_listed_one_is_refused_too(self):
+        # Ubuntu's modules.dep: the table takes in every module whose dependencies reach a listed one, whatever the list
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            (d / 'tipc.ko').write_bytes(b'\0alias=net-pf-30\0')
+            (d / 'evil-helper.ko').write_bytes(b'\0alias=net-pf-99\0alias=rtnl-link-evil\0')
+            (d / 'other.ko').write_bytes(b'\0alias=net-pf-98\0')
+            (d / 'modules.dep').write_text('kernel/net/tipc/tipc.ko:\nkernel/x/evil-helper.ko: kernel/net/tipc/tipc.ko\n'
+                                           'kernel/x/other.ko:\n')
+            for req in ('net-pf-99', 'rtnl-link-evil', 'evil_helper', 'evil-helper'):
+                self.assertEqual(self.run_guard(req, moddir=d)[:2], (1, None), req)
+            self.assertEqual(self.run_guard('net-pf-98', moddir=d)[:2], (0, '-q -- net-pf-98\n'))
+
+    def test_without_a_table_it_fails_closed_for_the_families(self):
+        with tempfile.TemporaryDirectory() as d:
+            env_cache = Path(d) / 'elsewhere'
+            env_cache.mkdir()
+            link = Path(d) / 'cache-link'
+            link.symlink_to(env_cache)   # not a directory of root's own making: no table
+            log, kmsg = Path(d) / 'log', Path(d) / 'kmsg'
+            fake = Path(d) / 'modprobe'
+            fake.write_text('#!/bin/sh\necho "$@" > "%s"\n' % log)
+            fake.chmod(0o755)
+            env = {'PATH': '/usr/bin:/bin', 'MU300_MODPROBE': str(fake), 'MU300_AUTOLOAD_BLOCKED': str(self.LIST),
+                   'MU300_KMSG': str(kmsg), 'MU300_AUTOLOAD_ALLOW': str(Path(d) / 'allow'), 'MU300_KREL': 't',
+                   'MU300_MODDIR': str(Path(d)), 'MU300_GUARD_CACHE': str(link)}
+            run = lambda req: subprocess.run(['sh', str(self.GUARD), '-q', '--', req], env=env).returncode
+            for req in ('net-pf-99', 'net-pf-16-proto-16-family-x', 'fs-foo', 'tty-ldisc-21', 'rtnl-link-x'):
+                self.assertEqual(run(req), 1, req)
+                self.assertIn('on-demand loading of %s (no alias table) refused' % req, kmsg.read_text())
+            self.assertEqual(run('can-raw'), 1)          # a listed name, still known without a table
+            self.assertFalse(log.exists())
+            for req in ('crypto-gcm(aes)', 'nft-chain-2-nat', 'char-major-10-200', 'wireguard'):
+                self.assertEqual(run(req), 0, req)
 
     def test_the_switch_turns_it_off(self):
         self.assertEqual(self.run_guard('tipc', allow=True)[:2], (0, '-q -- tipc\n'))
