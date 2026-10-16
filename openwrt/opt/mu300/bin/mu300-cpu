@@ -204,7 +204,8 @@ cpuv_valid() {  # the same check as boot/init's: three whole 3.125 mV steps with
 }
 cpuv_kernel() { [ -r "$CPUV_SYS/voltage_offset_uv" ] && [ -r "$CPUV_SYS/voltage_state" ]; }
 cpuv_limit() {  # cpuv_limit KEY: a value of the kernel's voltage_limits (min max step dcdc_max wait)
-    tr ' ' '\n' < "$CPUV_SYS/voltage_limits" 2>/dev/null | sed -n "s/^$1=\(-\{0,1\}[0-9]*\)\$/\1/p"
+    # braces: a failed "<" is reported before a 2>/dev/null after it takes effect (a kernel without the offset)
+    { tr ' ' '\n' < "$CPUV_SYS/voltage_limits"; } 2>/dev/null | sed -n "s/^$1=\(-\{0,1\}[0-9]*\)\$/\1/p"
 }
 cpuv_head() { head -n1 "$1" 2>/dev/null | tr -d '\r'; }
 snum() { case ${1#-} in ''|*[!0-9]*) echo 0 ;; *) echo "$1" ;; esac; }   # a signed integer, else 0

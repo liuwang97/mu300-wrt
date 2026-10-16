@@ -483,6 +483,19 @@ class Cli(ShellTest):
             shutil.move(self.tmp / 'state', self.p / 'voltage_state')
             self.assertIsNone(self.f('cpu-voltage'))
 
+    def test_status_without_the_driver_is_quiet(self):
+        """A kernel without the offset (5.4, an older mainline: no parameters at all) is "unsupported", with nothing on
+        stderr: on F50-C's 6.18.56 status --json printed "can't open .../voltage_limits" four times (the "<" failed
+        before the 2>/dev/null after it applied)."""
+        shutil.rmtree(self.root / 'sys/module')
+        for shell in self.each_shell():
+            r = self.cpu(shell, 'status --json')
+            self.assertEqual(r.returncode, 0)
+            self.assertEqual(r.stderr, '')
+            s = json.loads(r.stdout)
+            self.assertEqual((s['kernel'], s['phase']), (0, 'unsupported'))
+            self.assertEqual(s['limits'], {'min': 0, 'max': 0, 'step': 0, 'dcdc_max': 0})
+
     def test_off_needs_no_word(self):
         for shell in self.each_shell():
             self.clear()
