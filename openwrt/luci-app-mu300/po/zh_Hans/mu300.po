@@ -409,109 +409,109 @@ msgid "Cooling devices"
 msgstr "冷却设备"
 
 msgid "Stress test started"
-msgstr ""
+msgstr "压力测试已开始"
 
 msgid "Saved: it takes effect at the next reboot"
-msgstr ""
+msgstr "已保存：将在下次重启时生效"
 
 msgid "CPU voltage offset (EXPERIMENTAL)"
-msgstr ""
+msgstr "CPU 电压偏移（实验性）"
 
 msgid "Experimental: changing the CPU voltage can make the device unstable, corrupt your data and permanently damage your device. Use it entirely at your own risk."
-msgstr ""
+msgstr "实验性功能：修改 CPU 电压可能导致设备不稳定、损坏您的数据，并可能对您的设备造成永久性损坏。风险完全由您自行承担。"
 
 msgid "CPU voltage offset unavailable"
-msgstr ""
+msgstr "CPU 电压偏移不可用"
 
 msgid "Not available with this kernel (a mainline kernel of this release or later has it)."
-msgstr ""
+msgstr "此内核不支持（本版本或更新版本的主线内核支持）。"
 
 msgid "Off: the stock voltages"
-msgstr ""
+msgstr "关闭：出厂电压"
 
 msgid "Changes at the next reboot"
-msgstr ""
+msgstr "将在下次重启时更改"
 
 msgid "Trial boot: kept once this boot has been up 10 minutes"
-msgstr ""
+msgstr "试用启动：本次启动运行满 10 分钟后保留"
 
 msgid "Kept: this offset passed its trial boot"
-msgstr ""
+msgstr "已保留：此偏移已通过试用启动"
 
 msgid "a boot with it ended without a clean shutdown"
-msgstr ""
+msgstr "使用该偏移的一次启动未正常关机就结束了"
 
 msgid "its trial boot ended before 10 minutes"
-msgstr ""
+msgstr "其试用启动在 10 分钟内结束"
 
 msgid "invalid value"
-msgstr ""
+msgstr "无效值"
 
 msgid "unknown SoC firmware"
-msgstr ""
+msgstr "未知的 SoC 固件"
 
 msgid "refused by the kernel"
-msgstr ""
+msgstr "被内核拒绝"
 
 msgid "the kernel could not start CPU scaling with it"
-msgstr ""
+msgstr "内核无法以此偏移启动 CPU 调频"
 
 msgid "Offsets in µV for the three CPU domains (cores 0-3, 4-6 and 7), in whole steps. A new offset takes effect at the next reboot, as a trial: it is kept once that boot has been up 10 minutes, and dropped (back to 0) if a boot with it ends in a crash, a watchdog reset or a power cut."
-msgstr ""
+msgstr "三个 CPU 电压域（核心 0-3、4-6 和 7）的偏移，单位 µV，须为整数步长。新的偏移在下次重启时以试用方式生效：该次启动运行满 10 分钟后保留；若使用它的启动以崩溃、看门狗复位或断电结束，则丢弃（恢复为 0）。"
 
 msgid "Running now (µV)"
-msgstr ""
+msgstr "当前运行（µV）"
 
 msgid "Saved for the next boot (µV)"
-msgstr ""
+msgstr "已保存，下次启动生效（µV）"
 
 msgid "State"
 msgstr "状态"
 
 msgid "Taken back automatically: %s µV (%s)"
-msgstr ""
+msgstr "已自动撤销：%s µV（%s）"
 
 msgid "The SoC firmware of this device is not one whose voltage encoding is known: only the stock voltages are possible."
-msgstr ""
+msgstr "此设备的 SoC 固件不在已知电压编码的版本之列：只能使用出厂电压。"
 
 msgid "Domain"
-msgstr ""
+msgstr "电压域"
 
 msgid "Offset now (µV)"
-msgstr ""
+msgstr "当前偏移（µV）"
 
 msgid "Highest step"
-msgstr ""
+msgstr "最高档位"
 
 msgid "New offset (µV)"
-msgstr ""
+msgstr "新偏移（µV）"
 
 msgid "Limits: %d to %d µV, in steps of %d µV."
-msgstr ""
+msgstr "范围：%d 至 %d µV，步长 %d µV。"
 
 msgid "Save for the next boot"
-msgstr ""
+msgstr "保存，下次启动生效"
 
 msgid "Each offset must be a multiple of %d µV between %d and %d."
-msgstr ""
+msgstr "每个偏移必须是 %d µV 的整数倍，且介于 %d 和 %d 之间。"
 
 msgid "Type %s to confirm."
-msgstr ""
+msgstr "输入 %s 以确认。"
 
 msgid "Back to the stock voltages"
-msgstr ""
+msgstr "恢复出厂电压"
 
 msgid "Type %s to confirm:"
-msgstr ""
+msgstr "输入 %s 以确认："
 
 msgid "Run a 10-minute CPU stress test"
-msgstr ""
+msgstr "运行 10 分钟 CPU 压力测试"
 
 msgid "Test a new offset under load during its trial boot. The device may crash if the voltage is too low; the next boot then runs at the stock voltages."
-msgstr ""
+msgstr "在试用启动期间于负载下测试新的偏移。电压过低时设备可能崩溃；之后的下次启动将使用出厂电压。"
 
 msgid "A stress test is running."
-msgstr ""
+msgstr "压力测试正在运行。"
 
 msgid "USB role"
 msgstr "USB 角色"
@@ -3299,19 +3299,19 @@ msgid "Invalid CPU profile"
 msgstr "无效的 CPU 配置"
 
 msgid "Unknown CPU voltage operation"
-msgstr ""
+msgstr "未知的 CPU 电压操作"
 
 msgid "Invalid CPU voltage request"
-msgstr ""
+msgstr "无效的 CPU 电压请求"
 
 msgid "Invalid CPU voltage offset"
-msgstr ""
+msgstr "无效的 CPU 电压偏移"
 
 msgid "Type the confirmation word to apply a voltage offset"
-msgstr ""
+msgstr "输入确认词以应用电压偏移"
 
 msgid "Invalid stress test length"
-msgstr ""
+msgstr "无效的压力测试时长"
 
 msgid "The packages adapter gave no valid reply"
 msgstr "软件包适配器没有返回有效回复"
@@ -3531,16 +3531,16 @@ msgid "The CPU profile could not be set"
 msgstr "无法设置 CPU 配置"
 
 msgid "The CPU voltage offset could not be read"
-msgstr ""
+msgstr "无法读取 CPU 电压偏移"
 
 msgid "The CPU voltage offset was refused"
-msgstr ""
+msgstr "CPU 电压偏移被拒绝"
 
 msgid "The CPU voltage offset could not be turned off"
-msgstr ""
+msgstr "无法关闭 CPU 电压偏移"
 
 msgid "The stress test could not be started"
-msgstr ""
+msgstr "无法启动压力测试"
 
 msgid "Unknown CPU operation"
 msgstr "未知的 CPU 操作"

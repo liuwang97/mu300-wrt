@@ -94,6 +94,7 @@ DEFAULTS = {
     'lock': '{"ok":1,"mode":{"label":"auto"}}', 'device-usb': '{"ok":1}', 'at': 'OK', 'sms': 'sent (12)',
     'languages': '{"ok":1}', 'power': '{"ok":1}', 'ttl': '{"ok":1}', 'traffic': '{"ok":1}', 'forward': '{"ok":1}',
     'packages': '{"ok":1}', 'sim': '{"ok":1,"hot":1,"available":1,"busy":0}', 'update': '{"ok":1}',
+    'cpu': '{"ok":1}',
 }
 
 # The methods that start something with setsid (in the background of mu300dash)
@@ -247,7 +248,8 @@ class Inventory(Mu300Dash):
     METHODS = {'sysinfo', 'status', 'signal', 'act', 'at', 'at_job', 'at_history', 'ops_log', 'lock_get', 'lock_set', 'sms_list',
                'sms_show', 'sms_send', 'sms_job', 'sms_delete', 'sms_sync', 'usb_get', 'usb_set', 'usb_net_list', 'usb_net_add',
                'lang_get', 'lang_set', 'power_get', 'power_set',
-               'ttl_get', 'ttl_set', 'cpu_get', 'cpu_set', 'forward_get', 'forward_set', 'forward_test',
+               'ttl_get', 'ttl_set', 'cpu_get', 'cpu_set', 'cpu_voltage_get', 'cpu_voltage_set', 'forward_get',
+               'forward_set', 'forward_test',
                'forward_log_clear', 'traffic_get', 'traffic_set', 'packages_get', 'packages_act', 'sim_get', 'sim_set',
                'update_get', 'update_job', 'update_act'}
 
@@ -353,6 +355,12 @@ class Refusals(Mu300Dash):
         ('traffic_set', {'op': 'reset_day', 'value': '15'}, 'value', '15'),
         ('traffic_set', {'op': 'cut', 'value': 'on'}, 'value', 'on'),
         ('traffic_set', {'op': 'clear', 'value': 'yes'}, 'value', 'yes'),
+        # the CPU voltage offset (EXPERIMENTAL): three signed numbers, the confirmation word, the minutes
+        ('cpu_voltage_set', {'op': 'set', 'offsets': '-3125,0,0', 'confirm': 'EXPERIMENTAL'}, 'op', 'set'),
+        ('cpu_voltage_set', {'op': 'set', 'offsets': '-3125,0,0', 'confirm': 'EXPERIMENTAL'}, 'offsets', '-3125,0,0'),
+        ('cpu_voltage_set', {'op': 'set', 'offsets': '-3125,0,0', 'confirm': 'EXPERIMENTAL'}, 'confirm', 'EXPERIMENTAL'),
+        ('cpu_voltage_set', {'op': 'stress', 'minutes': '10'}, 'minutes', '10'),
+        ('cpu_voltage_set', {'op': 'off'}, 'op', 'off'),
     ]
 
     def test_hostile_values_are_refused(self):
@@ -434,6 +442,26 @@ class Refusals(Mu300Dash):
             ('cpu unknown profile', 'cpu_set', {'profile': 'turbo'}),
             ('cpu profile chained', 'cpu_set', {'profile': 'saving; reboot'}),
             ('cpu profile empty', 'cpu_set', {'profile': ''}),
+            ('cpuv op unknown', 'cpu_voltage_set', {'op': 'apply', 'offsets': '-3125,0,0', 'confirm': 'EXPERIMENTAL'}),
+            ('cpuv op empty', 'cpu_voltage_set', {'op': ''}),
+            ('cpuv set no word', 'cpu_voltage_set', {'op': 'set', 'offsets': '-3125,0,0'}),
+            ('cpuv set word lowercase', 'cpu_voltage_set', {'op': 'set', 'offsets': '-3125,0,0', 'confirm': 'experimental'}),
+            ('cpuv set word other', 'cpu_voltage_set', {'op': 'set', 'offsets': '-3125,0,0', 'confirm': 'yes'}),
+            ('cpuv offsets two', 'cpu_voltage_set', {'op': 'set', 'offsets': '-3125,0', 'confirm': 'EXPERIMENTAL'}),
+            ('cpuv offsets four', 'cpu_voltage_set', {'op': 'set', 'offsets': '0,0,0,0', 'confirm': 'EXPERIMENTAL'}),
+            ('cpuv offsets blanks', 'cpu_voltage_set', {'op': 'set', 'offsets': '-3125 0 0', 'confirm': 'EXPERIMENTAL'}),
+            ('cpuv offsets hex', 'cpu_voltage_set', {'op': 'set', 'offsets': '0x10,0,0', 'confirm': 'EXPERIMENTAL'}),
+            ('cpuv offsets seven digits', 'cpu_voltage_set', {'op': 'set', 'offsets': '1234567,0,0', 'confirm': 'EXPERIMENTAL'}),
+            ('cpuv offsets option', 'cpu_voltage_set', {'op': 'set', 'offsets': '--confirm', 'confirm': 'EXPERIMENTAL'}),
+            ('cpuv zero with word', 'cpu_voltage_set', {'op': 'set', 'offsets': '0,0,0', 'confirm': 'EXPERIMENTAL'}),
+            ('cpuv set with minutes', 'cpu_voltage_set', {'op': 'set', 'offsets': '-3125,0,0', 'confirm': 'EXPERIMENTAL', 'minutes': '5'}),
+            ('cpuv off with offsets', 'cpu_voltage_set', {'op': 'off', 'offsets': '-3125,0,0'}),
+            ('cpuv off with word', 'cpu_voltage_set', {'op': 'off', 'confirm': 'EXPERIMENTAL'}),
+            ('cpuv stress 0', 'cpu_voltage_set', {'op': 'stress', 'minutes': '0'}),
+            ('cpuv stress 121', 'cpu_voltage_set', {'op': 'stress', 'minutes': '121'}),
+            ('cpuv stress leading zero', 'cpu_voltage_set', {'op': 'stress', 'minutes': '010'}),
+            ('cpuv stress empty', 'cpu_voltage_set', {'op': 'stress'}),
+            ('cpuv stress with offsets', 'cpu_voltage_set', {'op': 'stress', 'minutes': '10', 'offsets': '0,0,0'}),
             ('packages unknown op', 'packages_act', {'op': 'skip'}),
             ('packages dash form', 'packages_act', {'op': 'repair-dns'}),
             ('packages op chained', 'packages_act', {'op': 'retry; reboot'}),
@@ -533,6 +561,12 @@ class Passthrough(Mu300Dash):
         ('power_set', {'op': 'wake'}, [['power', 'wake']]),
         ('power_set', {'op': 'idle'}, [['power', 'idle']]),
         ('ttl_get', {}, [['ttl', 'get']]),
+        ('cpu_voltage_get', {}, [['cpu', 'voltage-get']]),
+        ('cpu_voltage_set', {'op': 'set', 'offsets': '-6250,-3125,0', 'confirm': 'EXPERIMENTAL'},
+         [['cpu', 'voltage-set', 'set', '-6250,-3125,0', 'EXPERIMENTAL']]),
+        ('cpu_voltage_set', {'op': 'set', 'offsets': '0,0,0'}, [['cpu', 'voltage-set', 'off']]),
+        ('cpu_voltage_set', {'op': 'off'}, [['cpu', 'voltage-set', 'off']]),
+        ('cpu_voltage_set', {'op': 'stress', 'minutes': '120'}, [['cpu', 'voltage-set', 'stress', '120']]),
         ('packages_get', {}, [['packages', 'get']]),
         ('packages_act', {'op': 'retry'}, [['packages', 'act', 'retry']]),
         ('packages_act', {'op': 'repair_dns'}, [['packages', 'act', 'repair_dns']]),
@@ -1014,9 +1048,9 @@ class TrafficAdapter(ShellTest):
 class Acl(unittest.TestCase):
     # SMS bodies (one-time codes) and the AT history (AT+CPIN PINs) are not for read-only users (ruling R14)
     READ = {'sysinfo', 'status', 'signal', 'lock_get', 'usb_get', 'usb_net_list', 'lang_get', 'power_get', 'ttl_get',
-            'cpu_get', 'traffic_get', 'ops_log', 'packages_get', 'sim_get', 'update_get', 'update_job'}
+            'cpu_get', 'cpu_voltage_get', 'traffic_get', 'ops_log', 'packages_get', 'sim_get', 'update_get', 'update_job'}
     WRITE = {'act', 'at', 'at_job', 'at_history', 'lock_set', 'sms_list', 'sms_show', 'sms_send', 'sms_job', 'sms_delete', 'sms_sync',
-             'usb_set', 'usb_net_add', 'lang_set', 'power_set', 'ttl_set', 'cpu_set', 'forward_get',
+             'usb_set', 'usb_net_add', 'lang_set', 'power_set', 'ttl_set', 'cpu_set', 'cpu_voltage_set', 'forward_get',
              'forward_set', 'forward_test', 'forward_log_clear', 'traffic_set', 'packages_act', 'sim_set', 'update_act'}
 
     def test_actions_need_write_access(self):

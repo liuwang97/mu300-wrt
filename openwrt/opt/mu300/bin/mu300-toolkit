@@ -496,13 +496,14 @@ menu_performance() {
         printf '  %s1%s  eco          cores capped at ~60 %% of max, GPU at lowest step (cooler, less power)\n' "$C" "$N"
         printf '  %s2%s  balanced     schedutil across the full hardware range (stock behaviour)\n' "$C" "$N"
         printf '  %s3%s  performance  all cores and GPU pinned at their hardware maximum\n' "$C" "$N"
-        printf '\n  %sThis SoC cannot be overclocked beyond its frequency table: the voltage steps are fixed by the\n' "$D"
-        printf '  firmware. "performance" is the fastest safe setting; the kernel still throttles at 85 C and the\n'
-        printf '  passively cooled case reaches that within minutes under full load.%s\n' "$N"
+        printf '  %s4%s  %sCPU voltage offset (EXPERIMENTAL - can permanently damage the device)%s\n' "$C" "$N" "$R" "$N"
+        printf '\n  %sThis SoC cannot be overclocked beyond its frequency table. "performance" is the fastest safe\n' "$D"
+        printf '  setting; the kernel still throttles at 85 C and the passively cooled case reaches that within\n'
+        printf '  minutes under full load.%s\n' "$N"
         printf '\n  %s0%s  Back\n\n  > ' "$C" "$N"
         read -r c || return
         case $c in
-            1) p=eco ;; 2) p=balanced ;; 3) p=performance ;; *) return ;;
+            1) p=eco ;; 2) p=balanced ;; 3) p=performance ;; 4) menu_voltage; continue ;; *) return ;;
         esac
         profile_apply "$p" && conf_set CPU_PROFILE "$p"
     done
@@ -878,6 +879,31 @@ menu_update() {
             1) title "Software update"; /opt/mu300/bin/mu300-update apply 2>&1 | sed 's/^/  /'; pause ;;
             2) title "Rollback"; /opt/mu300/bin/mu300-update rollback 2>&1 | sed 's/^/  /'; pause ;;
             3) title "Clean up"; /opt/mu300/bin/mu300-update clean 2>&1 | sed 's/^/  /'; pause ;;
+            *) return ;;
+        esac
+    done
+}
+
+# The CPU voltage offset (EXPERIMENTAL): mu300-cpu voltage does the work and the checks; this asks, shows the warning
+# in three languages and wants the confirmation word typed. Nothing changes before the next reboot.
+menu_voltage() {
+    while :; do
+        title "CPU voltage offset (EXPERIMENTAL)"
+        printf '%s' "$R$B"; /opt/mu300/bin/mu300-cpu voltage warning | sed 's/^/  /'; printf '%s\n' "$N"
+        /opt/mu300/bin/mu300-cpu voltage status | sed 's/^/  /'
+        printf '\n  %s1%s  Set offsets for the next boot (uV, domains 0,1,2: CPUs 0-3, 4-6, 7)\n' "$C" "$N"
+        printf '  %s2%s  Back to the stock voltages (from the next boot)\n' "$C" "$N"
+        printf '  %s3%s  CPU stress test (10 minutes) - run it during the trial boot of a new offset\n' "$C" "$N"
+        printf '\n  %s0%s  Back\n\n  > ' "$C" "$N"
+        read -r c || return
+        case $c in
+            1) printf '  Offsets in uV, e.g. -6250,-3125,0 (steps of 3125, -25000..12500): '; read -r v
+               [ -n "$v" ] || continue
+               printf '\n  %sThis can PERMANENTLY DAMAGE the device. Type EXPERIMENTAL to go ahead:%s ' "$R$B" "$N"; read -r w
+               /opt/mu300/bin/mu300-cpu voltage set "$v" --confirm "$w"
+               pause ;;
+            2) /opt/mu300/bin/mu300-cpu voltage off; pause ;;
+            3) /opt/mu300/bin/mu300-cpu voltage stress 10; pause ;;
             *) return ;;
         esac
     done
