@@ -492,6 +492,31 @@ class Block(ShellTest):
             r = self.up(shell, f'delta_manifest "{w}/m.gz" v3 ubuntu "{w}/x" || echo refused; delta_manifest "{w}/m.gz" v2 openwrt "{w}/x" || echo refused')
             self.assertEqual(r.stdout, 'refused\nrefused\n')
 
+    def test_the_device_files_are_not_counted_as_a_copy(self):
+        # carry_need: what a rollback copy of the user's files takes - the device's own files (firmware, Android's
+        # userspace, OpenWrt's modules) are second names now, never copied (205 MiB on an F50)
+        old = build(self.disk / 'openwrt', {'sbin/init': ('f', '#!/bin/sh\n', 0o755), 'etc/mu300/image-version': ('f', 'v1\n', 0o644)})
+        m = carry('manifest', old, 'openwrt', 'v1')
+        (old / 'etc/mu300/image-manifest.gz').write_bytes(gzip.compress(m.stdout.encode()))
+        build(old, {'opt/mu300/android/vendor.bin': ('f', elf('v', 4 << 20), 0o644), 'lib/firmware/fw.bin': ('f', elf('f', 2 << 20), 0o644),
+                    'root/mine.bin': ('f', elf('m', 1 << 20), 0o644)})
+        for shell in self.each_shell():
+            r = self.sh(shell, f'. "{BIN}/mu300-update"; carry_need openwrt', MU300_LIB=1, MU300_DISK=self.disk, MU300_BIN=BIN)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            kb = int(r.stdout)
+            self.assertGreater(kb, 32768 + 1024)
+            self.assertLess(kb, 32768 + 1024 + 300)
+
+    def test_the_size_of_a_download(self):
+        # asset_kb: from a directory (apply --from) the file itself; from a mirror the server's answer to a HEAD
+        src = build(self.tmp / 'src', {'mu300-kernel.tar.gz': ('f', b'x' * 300000, 0o644)})
+        for shell in self.each_shell():
+            r = self.up(shell, f'MU300_FROM="{src}"; FROM_KIND=dir; asset_kb v2 mu300-kernel.tar.gz')
+            self.assertEqual(r.stdout.strip(), str(300000 // 1024 + 1), r.stderr)
+            self.stub('curl', 'printf "HTTP/1.1 302 Found\\r\\nContent-Length: 0\\r\\n\\r\\nHTTP/1.1 200 OK\\r\\nContent-Length: 20267807\\r\\n\\r\\n"')
+            r = self.up(shell, 'ASSET_JSON=; asset_kb v2 mu300-kernel-6.18.tar.gz', MU300_RELEASE_URL='http://mirror/v2')
+            self.assertEqual(r.stdout.strip(), str(20267807 // 1024 + 1), r.stderr)
+
     def test_modules_are_never_written_into(self):
         src = (BIN / 'mu300-update').read_text()
         fn = src[src.index('kernel_modules_into_systems() {'):src.index('boot_update() {')]

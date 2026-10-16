@@ -1425,11 +1425,15 @@ carry_need() {
             [ -d "$_nd" ] && [ ! -L "$_nd" ] || continue
             _nw=$(mktemp -d 2>/dev/null) || continue
             if carry_manifest "$_nd" "$_nd" "$_no" "$(cat "$_nd$VERSION_FILE" 2>/dev/null)" "$_nw/m"; then
-                _ni=$(awk '$1 == "f" { k += int(($5 + 4095) / 4096) * 4 } $1 != "f" { k += 4 } END { printf "%d\n", k }' "$_nw/m")
+                # (the device's own files are second names, never a copy: neither they nor the image's files there
+                # count, see live in carry_plan)
+                _nv=$(vendor_list "$_no" | tr ' ' '|')
+                _ni=$(awk -v v="^(${_nv:-/})/" '{ p = $0; for (i = 0; i < 6; i++) p = substr(p, index(p, " ") + 1) }
+                    p ~ v { next } $1 == "f" { k += int(($5 + 4095) / 4096) * 4; next } { k += 4 } END { printf "%d\n", k }' "$_nw/m")
                 # (one filesystem: what is mounted in a system is not carried; nor what the carry block leaves out)
                 _nz=$( { du -skx "$_nd" 2>/dev/null || du -sk "$_nd"; } | awk 'NR == 1 { print $1 + 0 }')
                 _nx=0
-                for _nn in proc sys dev run tmp var/tmp var/cache; do
+                for _nn in proc sys dev run tmp var/tmp var/cache $(vendor_list "$_no"); do
                     [ -d "$_nd/$_nn" ] && [ ! -L "$_nd/$_nn" ] || continue
                     _nx=$((_nx + $( { du -skx "$_nd/$_nn" 2>/dev/null || du -sk "$_nd/$_nn"; } | awk 'NR == 1 { print $1 + 0 }') ))
                 done
@@ -1581,13 +1585,17 @@ delta_clean() {
 # apply): for each system the download of its image, what unpacking it writes (the new image's manifest, the
 # release's mu300-*-rootfs.manifest.gz or, from a file, the image's own, against the installed system:
 # delta_estimate) and the copy of the user's files for the rollback (carry_need); then the kernel, the extras and
-# the VPN module (128 MB). Status 1 when a manifest cannot be had (a release before them): space_needed's rule then.
+# the VPN module. Status 1 when a manifest cannot be had (a release before them): space_needed's rule then.
 update_need() {
     _ut=$1; shift
     stage_private || return 1
     _uw=$STAGE/.need
     rm -rf "$_uw"; ( umask 077; mkdir -p "$_uw" ) || return 1
-    _un=131072
+    # the kernel (bundles are 20 to 30 MB), the installed extras that follow the release, the VPN module (its
+    # engines are 15 to 25 MB each), and 16 MB for what is not counted
+    _un=$(( 16384 + $(asset_kb "$_ut" "$(kernel_asset)" || echo 65536) ))
+    for _ux in $(extras_to_fetch "$_ut"); do _un=$((_un + $(asset_kb "$_ut" "$(extra_asset "$_ux")" || echo 16384) )); done
+    [ ! -d "$EXTRA/vpn" ] || _un=$((_un + 65536))
     for _uo in "$@"; do
         _ua=$(rootfs_asset "$_uo"); _um=${_ua%.tar.gz}.manifest.gz
         if ! { fetch_verified "$_ut" "$_um" >/dev/null 2>&1 && cat "$STAGE/$_um" > "$_uw/m.gz"; }; then
@@ -1610,17 +1618,31 @@ update_need() {
     rm -rf "$_uw"
     echo "$_un"
 }
-# asset_kb TAG NAME: the size of a release file in KiB, as GitHub's list of the release's files says it (asked once)
+# asset_kb TAG NAME: the size of a release file in KiB: from a file or a directory (apply --from) what it holds; else
+# as GitHub's list of the release's files says it (asked once), else as the server answers a HEAD request (a mirror)
 asset_kb() {
-    [ -n "${ASSET_JSON+x}" ] || ASSET_JSON=$(fetch_stdout "${MU300_API_URL:-https://api.github.com/repos/$REPO}/releases/tags/$1" 2>/dev/null) || ASSET_JSON=
-    _as=$(printf '%s\n' "$ASSET_JSON" | awk -v f="$2" '
-        function val(s) { sub(/^[^:]*:[ \t]*/, "", s); sub(/[ \t]*,?[ \t\r]*$/, "", s); gsub(/^"|"$/, "", s); return s }
-        { gsub(/,"/, ",\n\""); gsub(/\{"/, "{\n\""); n = split($0, L, "\n")
-          for (i = 1; i <= n; i++) {
-              if (L[i] ~ /^[ \t]*"name":/) an = val(L[i])
-              else if (L[i] ~ /^[ \t]*"size":/ && an == f) { print val(L[i]); exit }
-          } }')
-    case $_as in ''|*[!0-9]*) return 1 ;; esac
+    if [ -n "${MU300_FROM:-}" ]; then
+        _as=$(from_member "$2" 2>/dev/null | wc -c | tr -d ' ')
+    else
+        [ -n "${ASSET_JSON+x}" ] || ASSET_JSON=$(fetch_stdout "${MU300_API_URL:-https://api.github.com/repos/$REPO}/releases/tags/$1" 2>/dev/null) || ASSET_JSON=
+        _as=$(printf '%s\n' "$ASSET_JSON" | awk -v f="$2" '
+            function val(s) { sub(/^[^:]*:[ \t]*/, "", s); sub(/[ \t]*,?[ \t\r]*$/, "", s); gsub(/^"|"$/, "", s); return s }
+            { gsub(/,"/, ",\n\""); gsub(/\{"/, "{\n\""); n = split($0, L, "\n")
+              for (i = 1; i <= n; i++) {
+                  if (L[i] ~ /^[ \t]*"name":/) an = val(L[i])
+                  else if (L[i] ~ /^[ \t]*"size":/ && an == f) { print val(L[i]); exit }
+              } }')
+        if [ -z "$_as" ]; then
+            _au=${MU300_RELEASE_URL:-${MU300_DOWNLOAD_URL:-https://github.com/$REPO/releases/download}/$1}/$2
+            # (OpenWrt's wget, uclient-fetch, does not print the headers: the image's busybox does)
+            _ab=${MU300_BIN:-/opt/mu300/bin}/busybox
+            if have curl; then _as=$(curl -fsIL --connect-timeout 30 --max-time 60 "$_au" 2>/dev/null)
+            elif [ -x "$_ab" ]; then _as=$("$_ab" wget -S --spider -T 60 "$_au" 2>&1)
+            else _as=$(wget -S --spider -T 60 "$_au" 2>&1); fi
+            _as=$(printf '%s\n' "$_as" | tr -d '\r' | awk 'tolower($1) == "content-length:" { n = $2 } END { print n }')
+        fi
+    fi
+    case $_as in ''|0|*[!0-9]*) return 1 ;; esac
     echo $((_as / 1024 + 1))
 }
 # unpack_abort: an apply that ends before its switch - an error, ^C, a kill - leaves no half-made system behind
