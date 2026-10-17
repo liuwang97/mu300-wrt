@@ -300,5 +300,45 @@ class Portability(unittest.TestCase):
             self.assertEqual(log.read_text().split('\n')[:2], ['sleep 1', 'sleep 1'])
 
 
+class DspClock(unittest.TestCase):
+    """FINDINGS 24d: the voice back end's IIS port 1 has no clock on this board unless the VBC makes one; without
+    it the DSP takes no modem frame and the far end hears silence. Bluetooth brings its own clock."""
+
+    @staticmethod
+    def func(src, name):
+        # these functions carry a usage comment on their first line, which shell_function does not expect
+        m = re.search(r'(?ms)^%s\(\) \{[^\n]*\n.*?\n\}\n' % re.escape(name), src)
+        assert m, name
+        return m.group(0)
+
+    def run_routes(self, out):
+        src = VOICE.read_text()
+        script = ('put() { echo "$1=$2"; }\nbt_rate() { :; }\n' + shell_function(src, 'dsp_clock') +
+                  self.func(src, 'routes') + 'routes %s\n' % out)
+        lines = subprocess.run(['sh', '-c', script], capture_output=True, text=True, check=True).stdout.splitlines()
+        return dict(l.split('=', 1) for l in lines)
+
+    def test_dsp_output_clocks_iis_port_1(self):
+        c = self.run_routes('dsp')
+        self.assertEqual(c['VBC_IIS_MASTER_ENALBE'], 'enable')
+        self.assertEqual(c['VBC_IIS_MST_SEL_1_TYPE'], 'VBC_MASTER_INTERNAL')
+        self.assertEqual(c['VBC_IIS_MST_SEL_0_TYPE'], 'VBC_MASTER_INTERNAL')
+
+    def test_bluetooth_keeps_the_controllers_clock(self):
+        c = self.run_routes('bt')
+        self.assertNotIn('VBC_IIS_MASTER_ENALBE', c)
+        self.assertNotIn('VBC_IIS_MST_SEL_1_TYPE', c)
+
+    def test_clock_goes_through_the_undo_log(self):
+        # put() records the old value, so "audio stop" puts the VBC back to slave mode
+        body = shell_function(VOICE.read_text(), 'dsp_clock')
+        self.assertNotIn('amixer', body)
+        self.assertEqual(body.count('put '), 3)
+
+    def test_clock_reapplied_after_the_scene_starts(self):
+        body = self.func(VOICE.read_text(), 'audio_start')
+        self.assertLess(body.index('pcmhost'), body.index('dsp_clock'))
+
+
 if __name__ == '__main__':
     unittest.main()
