@@ -648,6 +648,21 @@ return [t, document.getElementById('mu-job').textContent];""", out)
         self.assertIn(('job.status', {'from': 0}), self.api_calls(r))
         self.assertIn('installed', r['result'][1])
 
+    def test_sim_radio_and_voice(self):
+        out = dict(self.OUT, hello=dict(self.OUT['hello'], methods=self.METHODS + ['radio.get', 'radio.set', 'voice.get', 'voice.set']))
+        out['radio.get'] = {'ok': 1, 'radio': {'enabled': [True, False], 'all_off': False, 'active': 0, 'slot1_supported': 1}}
+        out['radio.set'] = {'ok': 1, 'text': ''}
+        out['voice.get'] = {'ok': 1, 'voice': {'slot': 0, 'slots': [{'volte': True, 'vonr': None}, {'volte': False, 'vonr': True}], 'live': None}}
+        out['voice.set'] = {'ok': 1, 'text': ''}
+        r = self.run_page(r"""
+window.MU300.show('mobile'); await flush(8);
+btn(ids['mu-radio'], 'All radios off (airplane mode)').click(); await flush();
+all(ids['mu-radio'], (n) => n.tag === 'button' && n.textContent === 'Turn on')[0].click(); await flush();
+all(ids['mu-voice'], (n) => n.tag === 'button' && n.textContent === 'Turn on')[0].click(); await flush();
+return null;""", out)
+        self.assertEqual([q for m, q in self.api_calls(r, 'radio.set')], [{'slot': 'all', 'state': 'off'}, {'slot': 2, 'state': 'on'}])
+        self.assertEqual([q for m, q in self.api_calls(r, 'voice.set')], [{'slot': 1, 'kind': 'vonr', 'state': 'on'}])
+
     def test_errors_are_worded(self):
         out = self.run_page(r"""
 const M = window.MU300;
