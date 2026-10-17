@@ -884,3 +884,12 @@ Current password	当前密码
 The installer checks it on the device before anything is written, and stops when it is not the current one. Leave it empty when there is none (OpenWrt's root as it ships). The new password below is then needed only for a system the update installs new.	安装程序在写入任何内容之前会在设备上核对它，不是当前密码时就停止。没有密码时留空（OpenWrt 出厂时的 root）。这样下面的新密码只用于更新新装的系统。
 kept: the current one is checked on the device	保留：在设备上核对当前密码
 the new one	新密码
+Linux partition: the GPT partition named mu300root, made by another installer, {1} at offset {2}; Linux goes there, the partition table is not changed	Linux 分区：另一个安装程序创建的名为 mu300root 的 GPT 分区，{1}，偏移 {2}；Linux 安装到这里，分区表不会被修改
+WARNING: the partition named mu300root is not empty, and it holds no Linux filesystem of this project. Installing overwrites it	警告：名为 mu300root 的分区不为空，且其中没有本项目的 Linux 文件系统。安装会覆盖它
+Note: the Android data partition holds a Linux image file from another installer (/data/mu300linux/openwrt.ext4). This installer cannot update that layout, and after this installation the device starts the new system, not that one. The file is left as it is: delete it in Android to free its space.	注意：Android 的数据分区中有另一个安装程序留下的 Linux 镜像文件（/data/mu300linux/openwrt.ext4）。本安装程序无法更新这种布局，本次安装后设备启动的是新系统，而不是那个。该文件保持原样：如需释放空间，请在 Android 中删除它。
+The eMMC has {1} partitions named mu300root, and which one holds Linux cannot be told. Nothing was changed: remove the one that is not used (with the installer that made it) and try again.	eMMC 上有 {1} 个名为 mu300root 的分区，无法判断 Linux 在哪一个里。未做任何更改：请（用创建它的安装程序）删除不用的那个，然后重试。
+The partition named mu300root holds another Linux (ext4) filesystem, not labelled mu300root, and the installer never formats one that is not its own. Nothing was changed.	名为 mu300root 的分区中有另一个未标记为 mu300root 的 Linux（ext4）文件系统，安装程序绝不会格式化不属于自己的文件系统。未做任何更改。
+Linux goes into the GPT partition named mu300root ({1}), which another installer made; the partition table is not changed	Linux 安装到另一个安装程序创建的名为 mu300root 的 GPT 分区（{1}）；分区表不会被修改
+The partition named mu300root is not empty ({1} of 16 samples hold data), and it holds no Linux filesystem of this project. To use it anyway, put MU300_STORAGE=internal and MU300_REGION_OVERWRITE=yes into {2}, a file only root can change.	名为 mu300root 的分区不为空（16 个采样中有 {1} 个含有数据），且其中没有本项目的 Linux 文件系统。如仍要使用，请把 MU300_STORAGE=internal 和 MU300_REGION_OVERWRITE=yes 写入只有 root 能修改的文件 {2}。
+storage:        internal, the GPT partition mu300root at offset {1}, {2} ({3})	存储：          内部，GPT 分区 mu300root，偏移 {1}，{2}（{3}）
+the partition mu300root	mu300root 分区
