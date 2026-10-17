@@ -1622,7 +1622,7 @@ carry_need() {
 #     scripts, anything an editor opens - is written as before (on Ubuntu 24.04 74 of its 302 MiB of such files).
 # What the update itself does to the new system after the unpack never writes into such a file: the carry block
 # makes or replaces whole files (mu300-carry unlinks what is in the way), the accounts and the report are renamed
-# into place, and modules go into lib/modules as new files (kernel_modules_into_systems removes before it copies).
+# into place, and modules go into lib/modules as new files (kernel_modules_into_systems removes before it links).
 # The previous system kept for rollback (<os>.old) is then as whole as before; rollback, clean and the swap only
 # rename and unlink. A system that changes such a file in place afterwards changes both (a user's cp over a program
 # of the image, a chmod of one): the report of the update says how many files the two share.
@@ -1735,13 +1735,15 @@ delta_clean() {
 # apply): for each system the download of its image, what unpacking it writes (the new image's manifest, the
 # release's mu300-*-rootfs.manifest.gz or, from a file, the image's own, against the installed system:
 # delta_estimate) and the copy of the user's files for the rollback (carry_need); then the kernel, the extras and
-# the VPN module. Status 1 when a manifest cannot be had (a release before them): space_needed's rule then.
+# the VPN module. The images' downloads are gone when the kernel step comes (apply_one removes each once unpacked):
+# the kernel counts with its download beside them, or with its own step (kernel_need_kb), whichever is more.
+# Status 1 when a manifest cannot be had (a release before them): space_needed's rule then.
 update_need() {
     _ut=$1; shift
     stage_private || return 1
     _uw=$STAGE/.need
     rm -rf "$_uw"; ( umask 077; mkdir -p "$_uw" ) || return 1
-    _un=0
+    _un=0 _ud=0
     for _uo in "$@"; do
         _ua=$(rootfs_asset "$_uo"); _um=${_ua%.tar.gz}.manifest.gz
         if ! { fetch_verified "$_ut" "$_um" >/dev/null 2>&1 && cat "$STAGE/$_um" > "$_uw/m.gz"; }; then
@@ -1757,12 +1759,13 @@ update_need() {
         _uk=${_ue% *}
         # the image's download: its size where the release lists it, else half the image
         _us=$(asset_kb "$_ut" "$_ua") || _us=$(( (_uk + ${_ue#* }) / 2 ))
-        _un=$(( _un + $(delta_margin "$_uk") + _us + $(carry_need "$_uo") ))
+        _un=$(( _un + $(delta_margin "$_uk") + $(carry_need "$_uo") )) _ud=$((_ud + _us))
     done
     rm -rf "$_uw"
-    # the kernel (bundles are 20 to 30 MB), the installed extras that follow the release, the VPN module (its
+    # the kernel (bundles are 20 to 55 MB), the installed extras that follow the release, the VPN module (its
     # engines are 15 to 25 MB each), and 16 MB for what is not counted
-    _un=$(( _un + 16384 + $(asset_kb "$_ut" "$(kernel_asset)" || echo 65536) ))
+    _ud=$(( _ud + $(asset_kb "$_ut" "$(kernel_asset)" || echo 65536) )); _uk=$(kernel_need_kb "$_ut")
+    _un=$(( _un + 16384 + (_uk > _ud ? _uk : _ud) ))
     for _ux in $(extras_to_fetch "$_ut"); do _un=$((_un + $(asset_kb "$_ut" "$(extra_asset "$_ux")" || echo 16384) )); done
     [ ! -d "$EXTRA/vpn" ] || _un=$((_un + 65536))
     echo "$_un"
@@ -1808,6 +1811,7 @@ unpack_abort() {
         case $_ua in "$DISK"/*.new|"$DISK"/.mu300-delta-*) rm -rf "$_ua" ;; esac
     done
     UNPACKING=
+    boot_abort
 }
 # delta_unpack TARBALL OLD NEW WORK: the image into NEW (made here), the files WORK/link names as second names of
 # OLD's. tar is the system's (GNU tar on Ubuntu), else the image's busybox: GNU tar of 26.04 cannot unpack on 5.4
@@ -2789,18 +2793,28 @@ head_sha() { dd if="$1" bs=4096 count=$(( ($2 + 4095) / 4096 )) 2>/dev/null | he
 
 # write BODY (from offset 0), VBMETA right behind it and FOOTER into the last 64 bytes of the boot partition, then
 # read it back
+# BODY is whole pages (bootimg_assemble pads it, a kept image is read in pages): VBMETA is written behind it by a second
+# dd, not from a copy of the two joined - that copy was one more image's worth of room on the Linux partition during
+# a kernel update (docs/FINDINGS.md 176). A body that is not whole pages is joined as before.
 write_boot() {  # write_boot DEV PSIZE BODY VBMETA FOOTER
-    cat "$3" "$4" > "$3.all"
-    dd if="$3.all" of="$1" bs=4096 conv=notrunc 2>/dev/null && sync || return 1
+    _wb=$(fsize "$3")
+    if [ $((_wb % 4096)) = 0 ]; then
+        dd if="$3" of="$1" bs=4096 conv=notrunc 2>/dev/null &&
+            dd if="$4" of="$1" bs=4096 seek=$((_wb / 4096)) conv=notrunc 2>/dev/null && sync || return 1
+    else
+        cat "$3" "$4" > "$3.all" && dd if="$3.all" of="$1" bs=4096 conv=notrunc 2>/dev/null && sync ||
+            { rm -f "$3.all"; return 1; }
+        rm -f "$3.all"
+    fi
     dd if="$5" of="$1" bs=64 seek=$(($2 / 64 - 1)) conv=notrunc 2>/dev/null && sync || return 1
     echo 3 > /proc/sys/vm/drop_caches 2>/dev/null
-    [ "$(head_sha "$1" "$(fsize "$3.all")")" = "$(sha256sum < "$3.all" | cut -d' ' -f1)" ] || return 1
+    [ "$(head_sha "$1" $((_wb + $(fsize "$4"))))" = "$(cat "$3" "$4" | sha256sum | cut -d' ' -f1)" ] || return 1
     [ "$(dd if="$1" bs=64 skip=$(($2 / 64 - 1)) count=1 2>/dev/null | sha256sum | cut -d' ' -f1)" = \
       "$(sha256sum < "$5" | cut -d' ' -f1)" ] || return 1
-    rm -f "$3.all"
 }
 
 part_size() { blockdev --getsize64 "$1" 2>/dev/null || fsize "$1"; }   # part_size DEV: bytes (a file in tests)
+part_bytes() { echo $(( $(cat "/sys/class/block/${1##*/}/size") * 512 )); }   # part_bytes DEV: as the kernel lists it
 
 # The part of a new boot image both builders share. DIR/new holds the header page (the caller has set what is its
 # own: the command line, the signature size), DIR/footer the footer to copy. This puts the kernel's and the ramdisks'
@@ -2861,27 +2875,52 @@ modules_dir() { case $1 in ubuntu) echo "$DISK/$1/lib/modules/$2/extra" ;; *) ec
 # releases) share the directory, and a kernel with the other build's modules does not come up (the one-boot fallback
 # takes the device back to Android). So the set in place is kept with the previous image, and goes back with it -
 # in rollback-boot, and when writing the new image fails.
-prev_modules_save() {  # prev_modules_save BUNDLE_DIR (unpacked; a bundle without kernel.release keeps nothing)
-    rm -rf "$BOOTDIR/prev.modules"
+#
+# Room (docs/FINDINGS.md 176): since every module is built (FINDINGS 163) a set is some 2950 files, 120 MB,
+# and copies of it - kept beside the new set, put into each system - made a kernel update want 500 MB free at once,
+# more than F50-C's 804 MiB region had. Sets are never copied now: the kept set, the sets in the systems and the
+# unpacked bundle are all on the Linux partition, so a set is given more names (ln) and a name is removed, never a
+# file written into (the delta block's second names, see kernel_modules_into_systems). cp only where a link cannot be
+# made (another filesystem: a bundle unpacked elsewhere by an installer).
+# mod_link FROM TO: the *.ko of FROM into TO (where none of those names is), as second names
+mod_link() {
+    ls "$1"/*.ko >/dev/null 2>&1 || return 0
+    ln "$1"/*.ko "$2/" 2>/dev/null && return 0
+    rm -f "$2"/*.ko
+    cp "$1"/*.ko "$2/"
+}
+# prev_modules_save BUNDLE_DIR (unpacked; a bundle without kernel.release keeps nothing): the set in place now of the
+# bundle's release, into prev.modules.new; the kept set of the image before it (prev.modules) stays until the new one
+# is taken (prev_modules_commit), so an update that stops before its image is written leaves both as they were
+prev_modules_save() {
+    _pm=$BOOTDIR/prev.modules.new
+    rm -rf "$_pm"
     _krel=$(cat "$1/kernel.release" 2>/dev/null) || return 0
     case $_krel in ''|*/*|.*) return 0 ;; esac
-    mkdir -p "$BOOTDIR/prev.modules" && echo "$_krel" > "$BOOTDIR/prev.modules/kernel.release" || return 1
+    mkdir -p "$_pm" && echo "$_krel" > "$_pm/kernel.release" || return 1
     for _os in $(installed_systems); do
         _d=$(modules_dir "$_os" "$_krel")
         ls "$_d"/*.ko >/dev/null 2>&1 || continue
-        mkdir -p "$BOOTDIR/prev.modules/$_os" && cp "$_d"/*.ko "$BOOTDIR/prev.modules/$_os/" || return 1
+        mkdir -p "$_pm/$_os" && mod_link "$_d" "$_pm/$_os" || { rm -rf "$_pm"; return 1; }
     done
 }
+# prev_modules_commit: the set prev_modules_save kept becomes the one of the previous image (with prev.body)
+prev_modules_commit() {
+    rm -rf "$BOOTDIR/prev.modules"
+    [ ! -d "$BOOTDIR/prev.modules.new" ] || mv "$BOOTDIR/prev.modules.new" "$BOOTDIR/prev.modules"
+}
+# prev_modules_restore [DIR]: the kept set (DIR: prev.modules) back into the systems; it stays kept
 prev_modules_restore() {
-    _krel=$(cat "$BOOTDIR/prev.modules/kernel.release" 2>/dev/null) || return 0
+    _pm=${1:-$BOOTDIR/prev.modules}
+    _krel=$(cat "$_pm/kernel.release" 2>/dev/null) || return 0
     case $_krel in ''|*/*|.*) return 0 ;; esac
     for _os in $(installed_systems); do
         _d=$(modules_dir "$_os" "$_krel")
         [ -d "$_d" ] || continue
         rm -f "$_d"/*.ko
         # a system that had no set of this release then gets none now (the kernel back is another release)
-        [ -d "$BOOTDIR/prev.modules/$_os" ] || continue
-        cp "$BOOTDIR/prev.modules/$_os"/*.ko "$_d/" || { echo "boot: the previous modules of $_os did not go back" >&2; return 1; }
+        [ -d "$_pm/$_os" ] || continue
+        mod_link "$_pm/$_os" "$_d" || { echo "boot: the previous modules of $_os did not go back" >&2; return 1; }
         if [ "$_os" = ubuntu ] && [ -z "${MU300_NO_DEPMOD:-}" ] && command -v depmod >/dev/null; then
             depmod -b "$DISK/$_os" "$_krel" 2>/dev/null || true
         fi
@@ -2895,8 +2934,8 @@ kernel_modules_into_systems() {  # kernel_modules_into_systems BUNDLE_DIR (unpac
     for _os in $(installed_systems); do
         _d=$(modules_dir "$_os" "$_krel")
         # the set of the bundle replaces the one of an earlier bundle of this release: a module it no longer has
-        # would otherwise stay loadable (and the set is some 360 modules, 20 MiB, since FINDINGS 31o)
-        mkdir -p "$_d" && rm -f "$_d"/*.ko && cp "$1"/modules/*.ko "$_d/" ||
+        # would otherwise stay loadable. Removed, then linked: never written into (the delta block)
+        mkdir -p "$_d" && rm -f "$_d"/*.ko && mod_link "$1/modules" "$_d" ||
             { echo "boot: installing the modules into $_os failed" >&2; return 1; }
         if [ "$_os" = ubuntu ]; then
             # what the kernel has built in (bundles from v2026.09.29 on): modprobe of a built-in driver then
@@ -2910,57 +2949,147 @@ kernel_modules_into_systems() {  # kernel_modules_into_systems BUNDLE_DIR (unpac
     printf 'boot: %s modules for %s installed into: %s\n' "$(ls "$1/modules" | wc -l | tr -d ' ')" "$_krel" "$(installed_systems)"
 }
 
+# The room the kernel step takes on the Linux partition (docs/FINDINGS.md 176): the bundle (20 to 55 MB) until it is
+# unpacked, what is unpacked from it (a mainline bundle: some 150 MB, 120 MB of it modules, that stay as the systems'
+# set), and the image in the slot now beside the new one (kept as prev.body, 25 to 30 MB each). The bundle is removed
+# once unpacked, so the peak is what is unpacked and the larger of the bundle and the two images.
+BOOT_IMAGES_KB=65536    # two boot images, before the one in the slot is read
+# kernel_need_kb TAG: the KiB free the kernel step wants before its bundle is downloaded (unpacked: three times the
+# bundle; the release's are 2.4 to 2.9). A bundle in $STAGE already takes its room: only what it adds is counted.
+kernel_need_kb() {
+    _ka=$(kernel_asset)
+    if [ -s "$STAGE/$_ka" ]; then
+        _kd=$(( $(fsize "$STAGE/$_ka") / 1024 + 1 ))
+        _ki=$(( BOOT_IMAGES_KB > _kd ? BOOT_IMAGES_KB - _kd : 0 ))
+    else
+        _kd=$(asset_kb "$1" "$_ka") || _kd=65536
+        _ki=$(( BOOT_IMAGES_KB > _kd ? BOOT_IMAGES_KB : _kd ))
+    fi
+    echo $(( 3 * _kd + _ki + 16384 ))
+}
+# What the room is spent on between updates (docs/FINDINGS.md 176), and what of it an update may take back:
+#   * the boot image kept for rollback-boot - the one before the image in place - with its set of modules (120 MB of
+#     files of its own once a kernel update has replaced that set). An update replaces both anyway once it has
+#     written its image, and the device runs the image in place either way, so when the room is short they are given
+#     up first, together (rollback-boot then says none is kept; it never puts back an image without its modules).
+#   * module sets of kernels no boot image here runs: each kernel release a bundle brought left its set behind (6.18.56
+#     beside 6.18.57 on F50-C), 120 MB each since every module is built. A set is needed by the image in the slot, the
+#     kept image and the running kernel only - a switch to another kernel brings its own set - so the others go.
+#     Sets of the vendor kernel (5.4.*) are the systems' own and never touched, and so is a directory without modules.
+# image_krel IMAGE: the release of the kernel in a boot image (a partition, or a kept image): its banner
+image_krel() {
+    _iz=$(u32 "$1" 8)
+    case $_iz in ''|0|*[!0-9]*) return 1 ;; esac
+    dd if="$1" bs=4096 skip=1 count=$(( (_iz + 4095) / 4096 )) 2>/dev/null |
+        grep -a -o -m 1 'Linux version [0-9][^ ]*' | cut -d' ' -f3
+}
+# kernel_sets KREL...: the module sets (OS:KREL) in the systems of releases other than these
+kernel_sets() {
+    _kp=" $* "
+    for _os in $(installed_systems); do
+        for _kd in "$DISK/$_os"/lib/modules/*; do
+            [ -d "$_kd" ] && [ ! -L "$_kd" ] || continue
+            _kn=${_kd##*/}
+            case $_kn in 5.4.*|.*) continue ;; esac
+            case $_kp in *" $_kn "*) continue ;; esac
+            ls "$(modules_dir "$_os" "$_kn")"/*.ko >/dev/null 2>&1 && printf '%s:%s\n' "$_os" "$_kn"
+        done
+    done
+}
+# kernel_sets_kb OS:KREL...: the KiB removing them frees
+kernel_sets_kb() {
+    [ $# -gt 0 ] || { echo 0; return; }
+    for _ks in "$@"; do echo "$DISK/${_ks%%:*}/lib/modules/${_ks#*:}"; done | xargs du -sk 2>/dev/null |
+        awk '{ k += $1 } END { print k + 0 }'
+}
+kernel_sets_remove() {  # kernel_sets_remove OS:KREL...
+    [ $# -gt 0 ] || return 0
+    for _ks in "$@"; do rm -rf "${DISK:?}/${_ks%%:*}/lib/modules/${_ks#*:}"; done
+    printf 'boot: modules of kernels no boot image here runs removed: %s\n' "$*"
+}
+# BOOT_SLOT_KREL BOOT_KEPT_KREL: the releases of the image in the slot and of the kept image (boot_update_run reads
+# them; empty: not known, and then no set is removed)
+BOOT_SLOT_KREL= BOOT_KEPT_KREL=
+boot_sets_stale() {  # boot_sets_stale [NEW_KREL]: the sets no image needs, with the kept image's (set 0) or without
+    [ -n "$BOOT_SLOT_KREL" ] || return 0
+    if [ -s "$BOOTDIR/prev.body" ]; then
+        [ -n "$BOOT_KEPT_KREL" ] || return 0
+        kernel_sets "$BOOT_SLOT_KREL" "$BOOT_KEPT_KREL" "$(uname -r)" $1
+    else
+        kernel_sets "$BOOT_SLOT_KREL" "$(uname -r)" $1
+    fi
+}
+# boot_kept_kb [NEW_KREL]: the KiB giving the kept image up frees: the image, the files of its set that have no other
+# name (one a rollback-boot put back into the systems is theirs too), and its release's sets in the systems when no
+# other image needs them
+boot_kept_kb() {
+    _kk=0
+    [ ! -f "$BOOTDIR/prev.body" ] || _kk=$(( $(fsize "$BOOTDIR/prev.body") / 1024 ))
+    [ ! -d "$BOOTDIR/prev.modules" ] ||
+        _kk=$(( _kk + $(ls -lnR "$BOOTDIR/prev.modules" 2>/dev/null | awk '$1 ~ /^-/ && $2 == 1 { k += int(($5 + 4095) / 4096) * 4 } END { print k + 0 }') ))
+    if [ -s "$BOOTDIR/prev.body" ] && [ -n "$BOOT_SLOT_KREL" ] && [ -n "$BOOT_KEPT_KREL" ]; then
+        _kk=$(( _kk + $(kernel_sets_kb $(kernel_sets "$BOOT_SLOT_KREL" "$(uname -r)" $1 | grep ":$BOOT_KEPT_KREL\$")) ))
+    fi
+    echo "$_kk"
+}
+boot_kept_drop() {  # boot_kept_drop [NEW_KREL]
+    printf 'boot: the room is short: the boot image kept from before the one in place (%s) and its modules are given up\n' \
+        "$(cat "$BOOTDIR/prev.tag" 2>/dev/null || echo unknown)"
+    rm -rf "${BOOTDIR:?}/prev.modules" "$BOOTDIR/prev.body" "$BOOTDIR/prev.vbmeta" "$BOOTDIR/prev.footer" \
+        "$BOOTDIR/prev.slot" "$BOOTDIR/prev.tag" "$BOOTDIR/prev.kernel"
+    kernel_sets_remove $(boot_sets_stale $1)
+}
+# boot_room BUNDLE LIST IMAGES_KB: whether the partition has the KiB unpacking BUNDLE (in place already) and making the
+# image want free - its tar stream (the files and their headers), a block's slack for each file, and IMAGES_KB less
+# the bundle that is removed once unpacked - giving up the kept image when that makes it; status 1, with the numbers
+# said, when it has less
+boot_room() {
+    _bt=$(gzip -dc < "$1" 2>/dev/null | wc -c | tr -d ' ')
+    case $_bt in ''|0|*[!0-9]*) return 0 ;; esac
+    _bu=$(( _bt / 1024 + 4 * $(wc -l < "$2") ))
+    _bd=$(( $(fsize "$1") / 1024 ))
+    _bn=$(( _bu + ($3 > _bd ? $3 - _bd : 0) + 8192 ))
+    _bf=$(df -Pk "$DISK" | awk 'NR == 2 { print $4 }')
+    [ "${_bf:-0}" -ge "$_bn" ] && return 0
+    _br=$(untar -xzOf "$1" ./kernel.release 2>/dev/null)
+    _bk=$(boot_kept_kb $_br)
+    if [ $(( ${_bf:-0} + _bk )) -ge "$_bn" ]; then boot_kept_drop $_br; return 0; fi
+    echo "boot: not enough free space on the Linux partition for the kernel: $((_bn / 1024)) MB needed (the unpacked kernel bundle, $((_bu / 1024)) MB with its modules, and the boot images), $((${_bf:-0} / 1024)) MB free and $((_bk / 1024)) MB in the boot image kept for rollback-boot. Nothing was changed (the download was removed). mu300-update clean deletes the kept previous versions of the systems" >&2
+    return 1
+}
+
+# boot_update TAG: the kernel step. However it ends, nothing of it stays on the partition but what it put in place:
+# the unpacked bundle and the images being made go, a set of modules kept for an image that was not written goes, and
+# so does the bundle it downloaded when it did not finish (a kernel update that failed for want of room left 200 MB of
+# these behind, FINDINGS 176). MU300_KERNEL_BUNDLE, a file of the caller's, is never removed.
 boot_update() {  # boot_update TAG   (MU300_KERNEL_BUNDLE=FILE uses a local mu300-kernel.tar.gz instead)
+    BOOT_BUNDLE=
+    boot_update_run "$@"; _bur=$?
+    rm -rf "${STAGE:?}/boot" "${BOOTDIR:?}/prev.modules.new"
+    [ "$_bur" = 0 ] || [ -z "$BOOT_BUNDLE" ] || [ -n "${MU300_KERNEL_BUNDLE:-}" ] || rm -f "$BOOT_BUNDLE"
+    BOOT_MODS_PENDING=
+    return "$_bur"
+}
+# (from the EXIT trap, unpack_abort: a run stopped between the new modules and the image puts the set in place back)
+BOOT_MODS_PENDING=
+boot_abort() {
+    [ -n "${BOOT_MODS_PENDING:-}" ] && [ -d "${BOOTDIR:?}/prev.modules.new" ] &&
+        prev_modules_restore "$BOOTDIR/prev.modules.new" >/dev/null 2>&1
+    BOOT_MODS_PENDING=
+    rm -rf "${STAGE:?}/boot" "${BOOTDIR:?}/prev.modules.new" 2>/dev/null
+    return 0
+}
+
+boot_update_run() {
     tag=$1 bp=boot_$(linux_slot)
     dev=$(boot_dev "$bp") || { echo "boot: the boot image was not updated" >&2; return 1; }
-    psize=$(( $(cat "/sys/class/block/${dev##*/}/size") * 512 ))
-    tmp=$STAGE/boot
-    rm -rf "$tmp"; mkdir -p "$tmp" "$BOOTDIR"
+    psize=$(part_bytes "$dev")
+    tmp=${STAGE:?}/boot
+    rm -rf "$tmp" "${BOOTDIR:?}/prev.modules.new"; mkdir -p "$tmp" "$BOOTDIR"
 
     say "boot: kernel and boot image"
-    bundle=${MU300_KERNEL_BUNDLE:-}
-    if [ -z "$bundle" ]; then
-        # apply() has fetched it already; for "boot" and "kernel" this is the download
-        asset=$(kernel_asset)
-        fetch_verified "$tag" "$asset" || { echo "boot: no verified $asset of $tag (kernel $(kernel_choice)), nothing was changed" >&2; return 1; }
-        bundle=$STAGE/$asset
-    fi
-    [ -s "$bundle" ] || { echo "boot: $bundle not found" >&2; return 1; }
-    tar -tzf "$bundle" > "$tmp/list" 2>/dev/null || { echo "boot: $bundle is not a readable tar.gz" >&2; return 1; }
-    if ! grep -qx './ramdisk-generic.lz4' "$tmp/list"; then
-        printf 'boot: release %s predates on-device boot updates; the boot image is unchanged\n' "$tag"
-        rm -rf "$tmp"; return 0
-    fi
-    # A bundle names the devices it runs on (./devices). One without that file is from before the U30 Air: its 5.4
-    # ramdisk does not load the U30 Air's modules and its mainline kernel does not bring up its USB (FINDINGS 33,
-    # 33c) - on a U30 Air either one boots to a device with no USB at all.
-    if ! bundle_runs_here "$bundle" "$tmp/list" "$tmp"; then
-        printf 'boot: the kernel of %s does not support the %s; the boot image is unchanged\n' "$tag" "$(this_device)" >&2
-        rm -rf "$tmp"; return 1
-    fi
-    if root_on_sd && ! bundle_has_sd "$bundle" "$tmp/list"; then
-        echo "boot: this kernel bundle cannot read the SD card, and this system runs from it; nothing was changed" >&2
-        rm -rf "$tmp"; return 1
-    fi
-    if ! bundle_fits_slot "$bundle" "$tmp/list"; then
-        echo "boot: this kernel bundle's init runs only from slot b, and Linux is on $bp; nothing was changed" >&2
-        rm -rf "$tmp"; return 1
-    fi
-    untar -xzf "$bundle" -C "$tmp" ./Image ./ramdisk-generic.lz4 || { echo "boot: unpacking $bundle failed" >&2; return 1; }
-    [ -s "$tmp/Image" ] && [ -s "$tmp/ramdisk-generic.lz4" ] || { echo "boot: no kernel in the bundle" >&2; return 1; }
-    # the modules of a kernel the systems were not built with (mainline): they go in below, before the boot image
-    # changes, and also when the image is up to date (a system the update just replaced has none yet)
-    mods=
-    if grep -qx './kernel.release' "$tmp/list"; then
-        untar -xzf "$bundle" -C "$tmp" ./kernel.release ./modules || { echo "boot: unpacking the modules failed" >&2; return 1; }
-        for f in modules.builtin modules.builtin.modinfo; do
-            if grep -qx "./$f" "$tmp/list"; then untar -xzf "$bundle" -C "$tmp" "./$f" || true; fi
-        done
-        mods=1
-    fi
-    id=$(cat "$tmp/Image" "$tmp/ramdisk-generic.lz4" | sha256sum | cut -d' ' -f1)
-
-    # the image in the Linux slot now: stock header page, kernel, ramdisk; AVB footer in the last 64 bytes
+    # the image in the Linux slot now: stock header page, kernel, ramdisk; AVB footer in the last 64 bytes (read
+    # first: its size is part of the room the step wants, and its kernel says which module sets are still needed)
     dd if="$dev" of="$tmp/hdr" bs=4096 count=1 2>/dev/null
     dd if="$dev" of="$tmp/footer" bs=64 skip=$((psize / 64 - 1)) count=1 2>/dev/null
     [ "$(head -c 8 "$tmp/hdr")" = ANDROID! ] && [ "$(u32 "$tmp/hdr" 40)" = 4 ] ||
@@ -2968,6 +3097,61 @@ boot_update() {  # boot_update TAG   (MU300_KERNEL_BUNDLE=FILE uses a local mu30
     [ "$(head -c 4 "$tmp/footer")" = AVBf ] || { echo "boot: $bp has no AVB footer, not touching it" >&2; return 1; }
     ksz=$(u32 "$tmp/hdr" 8); rsz=$(u32 "$tmp/hdr" 12)
     osize=$(be64 "$tmp/footer" 12); vbs=$(be64 "$tmp/footer" 28)
+    BOOT_SLOT_KREL=$(image_krel "$dev") BOOT_KEPT_KREL=
+    [ ! -s "$BOOTDIR/prev.body" ] || BOOT_KEPT_KREL=$(image_krel "$BOOTDIR/prev.body")
+    kernel_sets_remove $(boot_sets_stale)
+
+    bundle=${MU300_KERNEL_BUNDLE:-}
+    if [ -z "$bundle" ]; then
+        # apply() has fetched it already; for "boot" and "kernel" this is the download, after a look at the room
+        asset=$(kernel_asset)
+        bundle=$STAGE/$asset
+        if [ ! -s "$bundle" ]; then
+            _bn=$(kernel_need_kb "$tag"); _bf=$(df -Pk "$DISK" | awk 'NR == 2 { print $4 }'); _bk=$(boot_kept_kb)
+            [ $(( ${_bf:-0} + _bk )) -ge "$_bn" ] || { echo "boot: not enough free space on the Linux partition for the kernel: about $((_bn / 1024)) MB needed (its download, the unpacked bundle with its modules, and the boot images), $((${_bf:-0} / 1024)) MB free and $((_bk / 1024)) MB in the boot image kept for rollback-boot. Nothing was changed. mu300-update clean deletes the kept previous versions of the systems" >&2; return 1; }
+        fi
+        BOOT_BUNDLE=$bundle
+        fetch_verified "$tag" "$asset" || { echo "boot: no verified $asset of $tag (kernel $(kernel_choice)), nothing was changed" >&2; return 1; }
+    fi
+    [ -s "$bundle" ] || { echo "boot: $bundle not found" >&2; return 1; }
+    tar -tzf "$bundle" > "$tmp/list" 2>/dev/null || { echo "boot: $bundle is not a readable tar.gz" >&2; return 1; }
+    if ! grep -qx './ramdisk-generic.lz4' "$tmp/list"; then
+        printf 'boot: release %s predates on-device boot updates; the boot image is unchanged\n' "$tag"
+        return 0
+    fi
+    # A bundle names the devices it runs on (./devices). One without that file is from before the U30 Air: its 5.4
+    # ramdisk does not load the U30 Air's modules and its mainline kernel does not bring up its USB (FINDINGS 33,
+    # 33c) - on a U30 Air either one boots to a device with no USB at all.
+    if ! bundle_runs_here "$bundle" "$tmp/list" "$tmp"; then
+        printf 'boot: the kernel of %s does not support the %s; the boot image is unchanged\n' "$tag" "$(this_device)" >&2
+        return 1
+    fi
+    if root_on_sd && ! bundle_has_sd "$bundle" "$tmp/list"; then
+        echo "boot: this kernel bundle cannot read the SD card, and this system runs from it; nothing was changed" >&2
+        return 1
+    fi
+    if ! bundle_fits_slot "$bundle" "$tmp/list"; then
+        echo "boot: this kernel bundle's init runs only from slot b, and Linux is on $bp; nothing was changed" >&2
+        return 1
+    fi
+
+    boot_room "$bundle" "$tmp/list" $(( 2 * (osize / 1024 + 4) )) || return 1
+
+    # one pass over the bundle for what the step uses: kernel, generic ramdisk and - a kernel the systems were not
+    # built with (mainline) - its release and modules, which go in below, before the boot image changes, and also when
+    # the image is up to date (a system the update just replaced has none yet)
+    mods= _bx="./Image ./ramdisk-generic.lz4"
+    if grep -qx './kernel.release' "$tmp/list"; then
+        mods=1 _bx="$_bx ./kernel.release ./modules"
+        for f in modules.builtin modules.builtin.modinfo; do ! grep -qx "./$f" "$tmp/list" || _bx="$_bx ./$f"; done
+    fi
+    untar -xzf "$bundle" -C "$tmp" $_bx || { echo "boot: unpacking $bundle failed; nothing was changed" >&2; return 1; }
+    [ -s "$tmp/Image" ] && [ -s "$tmp/ramdisk-generic.lz4" ] || { echo "boot: no kernel in the bundle" >&2; return 1; }
+    [ -z "$mods" ] || [ -s "$tmp/kernel.release" ] || { echo "boot: unpacking the modules failed; nothing was changed" >&2; return 1; }
+    # unpacked and checked: the download has done its part (a bundle of the caller's stays)
+    [ -n "${MU300_KERNEL_BUNDLE:-}" ] || rm -f "$bundle"
+    id=$(cat "$tmp/Image" "$tmp/ramdisk-generic.lz4" | sha256sum | cut -d' ' -f1)
+
     dd if="$dev" of="$tmp/body" bs=4096 count=$((osize / 4096)) 2>/dev/null
     dd if="$dev" bs=4096 skip=$((osize / 4096)) count=$(( (vbs + 4095) / 4096 )) 2>/dev/null | head -c "$vbs" > "$tmp/vbmeta"
     cur=$(sha256sum < "$tmp/body" | cut -d' ' -f1)
@@ -2978,7 +3162,7 @@ boot_update() {  # boot_update TAG   (MU300_KERNEL_BUNDLE=FILE uses a local mu30
         # Air: v2026.10.30 installed, its boot image still called v2026.10.27)
         echo "$tag" > "$BOOTDIR/installed.tag"
         printf 'boot: already up to date (%s)\n' "$tag"
-        rm -rf "$tmp"; return 0
+        return 0
     fi
     if [ "$cur" != "$(cat "$BOOTDIR/written.sha256" 2>/dev/null)" ] || [ ! -s "$BOOTDIR/device-ramdisk.lz4" ]; then
         # the image comes from an installer: its whole ramdisk becomes the device segment (its generic files are
@@ -2996,13 +3180,21 @@ boot_update() {  # boot_update TAG   (MU300_KERNEL_BUNDLE=FILE uses a local mu30
     cp "$tmp/hdr" "$tmp/new"
     bootimg_assemble "$tmp" "$vbs" "$tmp/Image" "$BOOTDIR/device-ramdisk.lz4" "$tmp/ramdisk-generic.lz4" ||
         { echo "boot: not touching $bp" >&2; return 1; }
+    rm -f "$tmp/Image"      # in the new image now
 
-    # keep the current image and the module set it runs with for rollback-boot, then the new modules, then write
+    # keep the current image and the module set it runs with for rollback-boot, then the new modules, then write.
+    # Until the image is kept (prev_modules_commit with prev.body) a failure puts the set in place back and leaves
+    # the kept image and its set as they were.
     prev_modules_save "$tmp" || { echo "boot: keeping the modules in place failed; nothing was changed" >&2; return 1; }
+    BOOT_MODS_PENDING=1
     if [ -n "$mods" ] && ! kernel_modules_into_systems "$tmp"; then
-        prev_modules_restore >/dev/null; echo "boot: the boot image is unchanged" >&2; return 1
+        prev_modules_restore "$BOOTDIR/prev.modules.new" >/dev/null; BOOT_MODS_PENDING=
+        echo "boot: the boot image is unchanged" >&2; return 1
     fi
-    cp "$tmp/body" "$BOOTDIR/prev.body"; cp "$tmp/vbmeta" "$BOOTDIR/prev.vbmeta"; cp "$tmp/footer" "$BOOTDIR/prev.footer"
+    # the image read from the slot is the one kept: moved, not copied
+    prev_modules_commit
+    mv -f "$tmp/body" "$BOOTDIR/prev.body"; cp "$tmp/vbmeta" "$BOOTDIR/prev.vbmeta"; cp "$tmp/footer" "$BOOTDIR/prev.footer"
+    BOOT_MODS_PENDING=
     linux_slot > "$BOOTDIR/prev.slot"     # rollback-boot puts it back only on the slot it came from
     unlock_for_trial
     cat "$BOOTDIR/installed.tag" > "$BOOTDIR/prev.tag" 2>/dev/null || echo installer > "$BOOTDIR/prev.tag"
@@ -3019,9 +3211,11 @@ boot_update() {  # boot_update TAG   (MU300_KERNEL_BUNDLE=FILE uses a local mu30
     echo "$id" > "$BOOTDIR/installed.id"
     echo "$tag" > "$BOOTDIR/installed.tag"
     kernel_choice > "$BOOTDIR/installed.kernel"
+    # the image that was in the slot is the kept one now: the sets neither image needs go (the one the image kept
+    # until now ran with, unless it is still needed)
+    BOOT_KEPT_KREL=$BOOT_SLOT_KREL BOOT_SLOT_KREL=$(cat "$tmp/kernel.release" 2>/dev/null || image_krel "$dev")
+    kernel_sets_remove $(boot_sets_stale)
     sync
-    rm -rf "$tmp"
-    [ -n "${MU300_KERNEL_BUNDLE:-}" ] || rm -f "$bundle"
     printf 'boot: updated to %s (kernel %s bytes, ramdisk %s bytes). If it does not start, the device falls back\n' "$tag" "$nksz" "$nrsz"
     printf '      to Android by itself; mu300-update rollback-boot restores the previous image.\n'
     BOOT_CHANGED=1
@@ -3067,7 +3261,7 @@ rollback_boot() {
     [ "$ps" = "$(linux_slot)" ] ||
         die "the previous boot image was taken from slot $ps, Linux now runs from $(linux_slot); nothing was written"
     dev=$(boot_dev "boot_$(linux_slot)") || die "nothing was written"
-    psize=$(( $(cat "/sys/class/block/${dev##*/}/size") * 512 ))
+    psize=$(part_bytes "$dev")
     unlock_for_trial
     write_boot "$dev" "$psize" "$BOOTDIR/prev.body" "$BOOTDIR/prev.vbmeta" "$BOOTDIR/prev.footer" ||
         die "writing the previous boot image failed verification"
@@ -3267,8 +3461,15 @@ apply() {
     # systems as they are (update_need, the delta block) - and a copy of what the user added for the rollback
     # (carry_need). A release without the manifests of its images: space_needed's rule, as before.
     free=$(df -Pk "$DISK" | awk 'NR==2 {print $4}')
-    if [ -n "$todo" ] && need=$(update_need "$tag" $todo); then
-        [ "$free" -gt "$need" ] || { rm -rf "$STAGE"; die "not enough free space on the Linux partition: $((need / 1024)) MB needed, $((free / 1024)) MB free (the download, the new release's files that are not in the installed system as they are, and a copy of what you added to it for the previous version kept for a rollback). Nothing was changed. mu300-update clean deletes the kept previous versions; mu300-update apply --no-rollback keeps none, and needs no room for your files"; }
+    # (the boot image kept for rollback-boot is given up when the kernel step is short of room: boot_kept_kb)
+    kfree=$(boot_kept_kb)
+    if [ -z "$todo" ]; then
+        # only the kernel and the extras: what the kernel step wants (space_needed's 1 GB for a whole system refused
+        # it on a device that had the room for it, FINDINGS 176)
+        need=$(kernel_need_kb "$tag")
+        [ $((free + kfree)) -gt "$need" ] || { rm -rf "${STAGE:?}"; die "not enough free space on the Linux partition for the kernel: about $((need / 1024)) MB needed (its download, the unpacked bundle with its modules, and the boot images), $((free / 1024)) MB free. Nothing was changed. mu300-update clean deletes the kept previous versions of the systems"; }
+    elif need=$(update_need "$tag" $todo); then
+        [ $((free + kfree)) -gt "$need" ] || { rm -rf "$STAGE"; die "not enough free space on the Linux partition: $((need / 1024)) MB needed, $((free / 1024)) MB free (the download, the new release's files that are not in the installed system as they are, and a copy of what you added to it for the previous version kept for a rollback). Nothing was changed. mu300-update clean deletes the kept previous versions; mu300-update apply --no-rollback keeps none, and needs no room for your files"; }
     else
         need=$(space_needed "$(echo $todo | wc -w)" "$(carry_need $todo)")
         [ "$free" -gt "$need" ] || die "not enough free space on the Linux partition: $((need / 1024)) MB needed, $((free / 1024)) MB free (about 1 GB, plus 1 GB for every system to update, plus a copy of what you added to it for the previous version kept for a rollback). mu300-update clean deletes the kept previous versions; mu300-update apply --no-rollback keeps none, and needs no room for your files"
