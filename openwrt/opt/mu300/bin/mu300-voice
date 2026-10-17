@@ -209,8 +209,23 @@ routes() {   # routes OUTPUT
             # VOICE_CAPTURE_DOWNLINK: the capture tap records the far end, not the absent microphone
             put VBC_DSP_VOICE_CAPTURE_TYPE "${MU300_VOICE_CAPTURE_TYPE:-0}"
             # VOICE_PCM_PLAY_UPLINK_ONLY: the far end hears what is played, not a mix with the absent microphone
-            put VBC_DSP_VOICE_PCM_PLAY_MODE "${MU300_VOICE_PLAY_MODE:-1}" ;;
+            put VBC_DSP_VOICE_PCM_PLAY_MODE "${MU300_VOICE_PLAY_MODE:-1}"
+            dsp_clock ;;
     esac
+}
+# The voice back end's IIS port needs a clock, and on this board nothing outside the VBC gives it one: no codec in
+# use, no Bluetooth SCO. The voice DAC1/ADC2 sit on IIS port 1, so the VBC is made master on its internal clock for
+# that port (and port 0). Without it the DSP never runs the call scene: the modem sends its downlink frames into
+# MCDT channel 6 every 20 ms, the DSP takes none and returns no uplink (the CP log reads mcdt_recv read_cnt=0 for
+# the whole call), FE_ST_VOICE_PCM_P stalls at its first buffer, and the far end hears silence. With it the modem
+# reads 200 bytes of uplink every 20 ms and the tap plays in real time (docs/FINDINGS.md 24d). Port 1 is the one
+# that matters; MST_SEL_0 alone, the setting tried before, moves nothing in the voice scene.
+# The capture tap (FE_ST_VOICE_C) still gets only every other 20 ms downlink frame at this clock; VBC_SRC_DAC1/ADC2
+# set to 16000 paces it right but carries zeros, so the default stays (FINDINGS 24d: open).
+dsp_clock() {
+    put VBC_IIS_MASTER_ENALBE enable
+    put VBC_IIS_MST_SEL_0_TYPE VBC_MASTER_INTERNAL
+    put VBC_IIS_MST_SEL_1_TYPE VBC_MASTER_INTERNAL
 }
 mute_dl() { put VBC_DL_MUTE enable; put 'VBC DAC1 DSP MDG Set' 1,1024; }
 unmute_dl() { put 'VBC DAC1 DSP MDG Set' 0,1024; put VBC_DL_MUTE disable; log "downlink unmuted"; }
@@ -239,6 +254,8 @@ audio_start() {   # audio_start OUTPUT
     # only takes after the scene is RUNNING (kanoqwq/e5-linux FINDINGS 59: set before, the BT side ran 3x slow)
     profiles "$out"
     [ "$out" = bt ] && bt_rate
+    # and the clock again once the scene runs, the order the call that was heard used (it is idempotent)
+    [ "$out" = bt ] || dsp_clock
     unmute_dl
     log "VOICE-RUNNING hw:$card,$VOICE both directions, ${RATE} Hz, output $out"
 }
