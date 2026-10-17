@@ -430,6 +430,26 @@ class Rules(unittest.TestCase):
         # the marker is a file of the device, so a zone the user deleted is not made again after an update
         self.assertIn('[ -e /etc/mu300/docker-zone ] && exit 0', zone)
 
+    def test_e2fsck_is_pinned_and_everywhere(self):
+        # tools/e2fsck/build.sh: a pinned e2fsprogs (its signed SHA-256) in a pinned image (FINDINGS 182), and every
+        # path that builds a boot ramdisk hands it over
+        text = (TOP / 'tools' / 'e2fsck' / 'build.sh').read_text()
+        self.assertRegex(text, r'(?m)^VER=1\.47\.4$')
+        self.assertRegex(text, r'(?m)^SHA=[0-9a-f]{64}$')
+        self.assertRegex(text, r'(?m)^IMG=alpine:[0-9.]+@sha256:[0-9a-f]{64}$')
+        self.assertIn('sha256sum -c', text)
+        for f, s in (('tools/make-release.sh', '--e2fsck "$IN/tools/e2fsck/e2fsck"'),
+                     ('tools/make-release.sh', 'has no sbin/e2fsck'),
+                     ('upstream/make-bundle.sh', '--e2fsck "$W/e2fsck"'),
+                     ('install.sh', '${E2FSCK:+--e2fsck "$E2FSCK"}'),
+                     ('install.ps1', "'--e2fsck', \"$REL\\kernel\\e2fsck\"")):
+            self.assertIn(s, (TOP / f).read_text(), f)
+        # init: before every mount of the root, and never a gate (root_fsck always returns 0)
+        init = (TOP / 'boot' / 'init').read_text()
+        self.assertEqual(3, init.count('root_fsck "$'))
+        block = re.search(r'# --- fsck begin\n(.*?)# --- fsck end', init, re.S).group(1)
+        self.assertNotRegex(block, r'return [1-9]')
+
     def test_init_finds_partitions_after_the_modules(self):
         # the eMMC driver is one of the vendor modules: misc and boot_b cannot be found before they are loaded
         init = (TOP / 'boot' / 'init').read_text()

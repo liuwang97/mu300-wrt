@@ -3,7 +3,7 @@
 # mu300-kernel.tar.gz so that mu300-update can install it:
 #   upstream/make-bundle.sh OUT.tar.gz [KERNEL_BUNDLE_5.4]
 #     ./Image                LK-loadable kernel (wrap-image.py: LK copies it to 0x80080000)
-#     ./ramdisk-generic.lz4  boot/init, busybox, logdw and the modules of upstream/module-order.txt
+#     ./ramdisk-generic.lz4  boot/init, busybox, logdw, e2fsck and the modules of upstream/module-order.txt
 #     ./modules/*.ko         every module - the kernel's own (=m) and the vendor ones - flat, for /lib/modules/<release>
 #                            on the root filesystem (Ubuntu: extra/, indexed by depmod; OpenWrt: flat, for kmodloader)
 #     ./kernel.release       the kernel's release string (uname -r)
@@ -40,10 +40,14 @@ done
 W=$(mktemp -d)
 trap 'rm -rf "$W"' EXIT
 tar -xzf "$REF" -C "$W" ./busybox ./logdw
+# init's e2fsck (FINDINGS 182), from 5.4 bundles since it came; an older one: the ramdisk boots without it (the
+# release audit refuses such a bundle)
+tar -xzf "$REF" -C "$W" ./e2fsck 2>/dev/null || echo "warning: $REF has no e2fsck; this ramdisk will not check its root filesystem" >&2
 mkdir "$W/b" "$W/b/modules"
 python3 "$U/wrap-image.py" "$UO/Image" "$W/b/Image"
 python3 "$TOP/boot/build-boot-image.py" --generic-ramdisk --modules "$UO/modules" \
     --module-order "$U/module-order.txt" --busybox "$W/busybox" --logdw "$W/logdw" \
+    $([ -f "$W/e2fsck" ] && echo --e2fsck "$W/e2fsck") \
     --ueventd-perms "$TOP/android-vendor/ueventd-perms.sh" --out "$W/b/ramdisk-generic.lz4" >/dev/null
 cp "$UO"/modules/*.ko "$W/b/modules/"
 for f in modules.builtin modules.builtin.modinfo; do [ ! -f "$UO/$f" ] || cp "$UO/$f" "$W/b/"; done
