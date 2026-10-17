@@ -351,6 +351,85 @@ class Rules(unittest.TestCase):
         ci = (TOP / '.github/workflows/tests.yml').read_text()
         self.assertIn('jq', re.search(r'sudo apt-get install -y -qq ([^>]*)>', ci).group(1).split())
 
+    def test_images_carry_docker(self):
+        # FINDINGS 130: Docker in every image - Ubuntu's own packages, OpenWrt's feed; neither starts dockerd at boot,
+        # both keep its data on the Linux partition beside the systems (an update never copies it) and use Docker's
+        # nftables backend (no iptables-nft translation, no xt_addrtype that the 5.4 kernel lacks)
+        def words(block):
+            return block.replace('\\\n', ' ').split()
+        docker = (TOP / 'rootfs/Dockerfile').read_text()
+        apt = words(re.search(r'apt-get install -y --no-install-recommends(.*?)&&', docker, re.S).group(1))
+        self.assertIn('docker.io', apt)
+        self.assertIn('docker-compose-v2', apt)
+        self.assertNotIn('docker-ce', apt)
+        self.assertIn('usermod -aG sudo,docker ubuntu', docker)
+        # by its socket, not at boot
+        self.assertIn('systemctl disable docker.service containerd.service', docker)
+        self.assertIn('systemctl is-enabled docker.socket', docker)
+        for f in ('/usr/bin/containerd-stress', '/usr/bin/ctr', '/usr/libexec/docker/cli-plugins/docker-trust'):
+            self.assertIn('path-exclude=' + f, docker)
+        conf = json.loads((TOP / 'rootfs/overlay/etc/docker/daemon.json').read_text())
+        self.assertEqual(conf['data-root'], '/mnt/mu300-disk/docker/ubuntu')
+        self.assertEqual(conf['storage-driver'], 'overlay2')
+        self.assertEqual(conf['firewall-backend'], 'nftables')
+        self.assertIs(conf['features']['containerd-snapshotter'], False)
+        # Docker must not refuse to start while the system forwards nothing (no uplink yet)
+        self.assertIs(conf['ip-forward'], False)
+
+        owrt = (TOP / 'openwrt/build-rootfs.sh').read_text()
+        # OpenWrt: in the image with MU300_DOCKER=1, ready to install (its settings and zone only) by default - 190 MB,
+        # twice over during an update, do not fit OpenWrt's smallest region (800 MiB)
+        self.assertIn('case ${MU300_DOCKER:-0} in', owrt)
+        self.assertIn('-e MU300_DOCKER="$DOCKER"', owrt)
+        block = owrt[owrt.index('if [ "$MU300_DOCKER" = 1 ]; then'):]
+        block = block[:block.index('\nfi\n')]
+        self.assertIn('\n    apk add dockerd docker docker-compose >/dev/null\n', block)
+        # the panel's page for it only on openwrt-luci, before the loop that adds the translations of the luci-apps
+        self.assertIn('[ -d /in/luci-plugin ] && apk add luci-app-dockerman >/dev/null', block)
+        self.assertLess(owrt.index('apk add luci-app-dockerman'), owrt.index('for c in base $(apk list --installed'))
+        # what its kmods put in /etc/modules.d goes; it does not start at boot
+        self.assertLess(block.index('ls /etc/modules.d /etc/modules-boot.d > /tmp/modules.before'),
+                        block.index('apk add dockerd'))
+        self.assertIn('/etc/rc.d/S*dockerd', block)
+        self.assertIn('echo "dockerd starts at boot"', owrt)
+        self.assertIn('rm -f $R/etc/uhttpd.key $R/etc/uhttpd.crt', owrt)
+        # the build script is one single-quoted sh -c argument: no apostrophe may be in it
+        start = "mu300-$FLAVOUR-base:$VER /bin/sh -eu -c '"
+        body = owrt[owrt.index(start) + len(start):owrt.rindex("ls -la /out/$OUT'")]
+        self.assertNotIn("'", body)
+        # the package reads Docker's own file (alt_config_file), which an apk add on the device leaves as it is
+        cfg = (OPENWRT / 'etc/config/dockerd').read_text()
+        self.assertIn("\toption alt_config_file '/etc/docker/daemon.json'\n", cfg)
+        conf = json.loads((OPENWRT / 'etc/docker/daemon.json').read_text())
+        self.assertEqual(conf['data-root'], '/mnt/mu300-disk/docker/openwrt')
+        self.assertIn('/mnt/mu300-disk/docker/$MU300_SYSTEM', owrt)
+        self.assertEqual(conf['firewall-backend'], 'nftables')
+        self.assertEqual(conf['storage-driver'], 'overlay2')
+        self.assertIs(conf['features']['containerd-snapshotter'], False)
+        self.assertEqual(conf['default-address-pools'], [{'base': '172.16.0.0/12', 'size': 20}])
+        sysctl = (OPENWRT / 'etc/sysctl.d/13-mu300-docker.conf').read_text()
+        self.assertIn('net.bridge.bridge-nf-call-iptables=0', sysctl)
+        # the firewall: the docker zone covers only Docker's range, never br-lan; out to wan, in from the LAN only
+        zone = (OPENWRT / 'etc/uci-defaults/95-mu300-docker').read_text()
+        self.assertTrue(os.access(OPENWRT / 'etc/uci-defaults/95-mu300-docker', os.X_OK))
+        for line in ("set network.docker.device='docker0'", "set network.@device[-1].name='docker0'",
+                     "add_list firewall.docker.network='docker'", "add_list firewall.docker.device='br-+'", "add_list firewall.docker.device='!br-lan'",
+                     "add_list firewall.docker.subnet='172.16.0.0/12'", "set firewall.docker_wan.dest='wan'",
+                     "set firewall.lan_docker.src='lan'"):
+            self.assertIn(line, zone)
+        self.assertNotRegex(zone, r"src='wan'")
+        # containers never reach the router itself, nor the LAN, nor one Docker network another (security review)
+        self.assertIn("set firewall.docker.input='REJECT'", zone)
+        self.assertIn("set firewall.docker.forward='REJECT'", zone)
+        self.assertNotIn("firewall.docker.input='ACCEPT'", zone)
+        self.assertNotRegex(zone, r"src='docker'\nset firewall\.[a-z_]*\.dest='lan'")
+        # Ubuntu: a container opens nothing on the device (the host firewall drops Docker's bridges, never br-lan)
+        fw = (TOP / 'rootfs/overlay/etc/mu300/firewall.nft').read_text()
+        self.assertIn('iifname "docker0" counter drop', fw)
+        self.assertIn('iifname "br-*" iifname != "br-lan" counter drop', fw)
+        # the marker is a file of the device, so a zone the user deleted is not made again after an update
+        self.assertIn('[ -e /etc/mu300/docker-zone ] && exit 0', zone)
+
     def test_init_finds_partitions_after_the_modules(self):
         # the eMMC driver is one of the vendor modules: misc and boot_b cannot be found before they are loaded
         init = (TOP / 'boot' / 'init').read_text()
