@@ -86,7 +86,7 @@ proto_mu300cell_setup() {
 		return 1
 		;;
 	7)
-		# The SIM's radio is switched off in its settings (mu300-sim-radio, docs/FINDINGS.md 182): no dial until it is
+		# The SIM's radio is switched off in its settings (mu300-sim-radio, docs/FINDINGS.md 185): no dial until it is
 		# switched on, and no retry meanwhile; mu300-sim-radio set ... on (mobile-data rf-apply) brings the WAN up.
 		proto_notify_error "$config" SIM_RADIO_DISABLED
 		proto_block_restart "$config"

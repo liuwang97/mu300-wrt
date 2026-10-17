@@ -246,7 +246,7 @@ exit 0''')
             self.assertFalse([c for c in calls if c.startswith(('proto_send_update', 'logger', 'proto_init_update'))], calls)
 
     def test_a_sim_radio_switched_off_is_not_retried(self):
-        """FINDINGS 182: exit 7 is the SIM's radio switched off in its settings: SIM_RADIO_DISABLED, no retry (the
+        """FINDINGS 185: exit 7 is the SIM's radio switched off in its settings: SIM_RADIO_DISABLED, no retry (the
         restart is blocked until mu300-sim-radio switches it on and brings the WAN up), no address."""
         for shell in self.each_shell():
             calls = self.run_proto(shell, 'proto_mu300cell_setup', out='', rc=7, err='', ok=1)

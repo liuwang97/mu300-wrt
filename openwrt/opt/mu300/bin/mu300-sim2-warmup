@@ -37,7 +37,7 @@ SIM_CONFIG_U30=1
 SLOT=$(cat /run/mu300/sim-slot 2>/dev/null || echo 1)
 case "$SLOT" in 0|1) ;; *) SLOT=1 ;; esac
 say() { logger -t mu300-sim "$*" 2>/dev/null || true; }
-# The chosen card's radio is switched off in its settings (mu300-sim-radio, FINDINGS 182): no cold start now, and no
+# The chosen card's radio is switched off in its settings (mu300-sim-radio, FINDINGS 185): no cold start now, and no
 # verdict on the card. The boot is the one the user asked for, so the pending marker goes (left, it would make the next
 # boot a SIM1 boot), and the cold start runs when the radio is switched on (mobile-data rf-apply runs this script
 # again with --deferred: the same cold start, without the first-data trial).

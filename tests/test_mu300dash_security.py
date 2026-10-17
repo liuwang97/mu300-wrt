@@ -519,7 +519,7 @@ class Refusals(Mu300Dash):
 
 
 class SimCard(Mu300Dash):
-    """Cellular > SIM settings (FINDINGS 181): mobile-data voice with the fixed words only, the slot 0/1."""
+    """Cellular > SIM settings (FINDINGS 184): mobile-data voice with the fixed words only, the slot 0/1."""
 
     def test_get_and_set(self):
         md = self.adapters / 'mobile-data'
@@ -1607,7 +1607,7 @@ class RadioLock(Mu300Dash):
         return p
 
     def test_the_radio_button_is_the_sim_in_uses_setting(self):
-        """FINDINGS 182: radio on|off is mu300-sim-radio set <the card in use> on|off (persistent, per SIM), which takes
+        """FINDINGS 185: radio on|off is mu300-sim-radio set <the card in use> on|off (persistent, per SIM), which takes
         the radio lock itself (mobile-data rf-apply): no AT from here, no radio-locked around it."""
         for shell in self.each_shell():
             sr = self.sim_radio()

@@ -714,7 +714,7 @@ m_sim_select() {
     tool 60 "$BIN/mu300-sim" default "$V" </dev/null || refuse failed "$ERR"
     ok "\"sim\":$(jcheck "$OUT"),\"text\":$(js "$OUT")"
 }
-# VoLTE and VoNR per card (mobile-data voice, FINDINGS 181): the saved choices, and what the card in use says now
+# VoLTE and VoNR per card (mobile-data voice, FINDINGS 184): the saved choices, and what the card in use says now
 m_voice_get() {
     only
     [ -x "$BIN/mobile-data" ] || refuse unsupported mobile-data
@@ -732,7 +732,7 @@ m_voice_set() {
     tool 30 "$BIN/mobile-data" voice "$_k" "$V" --slot "$((_sl - 1))" </dev/null || refuse failed "$ERR"
     ok "\"text\":$(js "$OUT")"
 }
-# each SIM's radio on or off, kept across reboots (mu300-sim-radio, FINDINGS 182); slot 1, 2 or "all" (airplane mode)
+# each SIM's radio on or off, kept across reboots (mu300-sim-radio, FINDINGS 185); slot 1, 2 or "all" (airplane mode)
 m_radio_get() {
     only
     [ -x "$BIN/mu300-sim-radio" ] || refuse unsupported mu300-sim-radio

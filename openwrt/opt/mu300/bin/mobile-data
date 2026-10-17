@@ -5,8 +5,8 @@
 #        mobile-data roaming [--json] | roaming on|off [--slot 0|1]   (data roaming: allowed by default; with it off,
 #        no data while the SIM is registered as roaming - see roaming_cmd and docs/FINDINGS.md 120)
 #        mobile-data voice [--json [--read]] | voice volte|vonr on|off [--slot 0|1]   (VoLTE/VoNR per card, replayed
-#        at every bring-up: voice_cmd and docs/FINDINGS.md 181)
-#        mobile-data rf-apply   (the radio of the card in use as mu300-sim-radio says now: FINDINGS 182)
+#        at every bring-up: voice_cmd and docs/FINDINGS.md 184)
+#        mobile-data rf-apply   (the radio of the card in use as mu300-sim-radio says now: FINDINGS 185)
 #        mobile-data suspend off|lte | resume [nodial]   (mu300-power: modem down or LTE only while nobody uses the
 #        device; nodial: the radio only, the watcher redials). Both end within MU300_SUSPEND_DEADLINE (60 s) whatever
 #        the modem does; on a failure or a timeout the modem is handed back to the watcher (no mode file) and they
@@ -402,7 +402,7 @@ v6_relay_ra() {
 # Every decision goes to radio.log. Returns 1 when this round cannot switch the radio on; the caller retries later
 # (netifd's next attempt, systemd's restart, the watchdog).
 PLUGIN_LOCK=${MU300_PLUGIN_LOCK:-/usr/libexec/unisoc-modem/lock}
-# --- each SIM's radio on or off, kept across reboots (mu300-sim-radio, docs/FINDINGS.md 182) --------------------------
+# --- each SIM's radio on or off, kept across reboots (mu300-sim-radio, docs/FINDINGS.md 185) --------------------------
 # rf_allowed: the card in use may have its radio on (no mu300-sim-radio, or an unreadable setting: yes). Asked by every
 # radio-on path here: the dial, the early warm-up, the watchdog, mu300-power's resume (radio_on), the modem reset.
 # While it says no, $RF_HELD exists: the dial ends at once (netifd: exit 7, SIM_RADIO_DISABLED, no retry; Ubuntu: exit
@@ -1018,7 +1018,7 @@ up_locked() {
     # a VPN with the kill switch has it up before there is a bearer to leak through (mu300-vpn run, which puts it
     # up too, only starts after this)
     "${MU300_VPN_CMD:-/opt/mu300/bin/mu300-vpn}" guard >/dev/null 2>&1 || true
-    # the SIM's radio is switched off in its settings (FINDINGS 182): no radio, no dial. Under netifd exit 7: mu300cell
+    # the SIM's radio is switched off in its settings (FINDINGS 185): no radio, no dial. Under netifd exit 7: mu300cell
     # reports SIM_RADIO_DISABLED and does not retry; rf-apply brings the WAN back when it is switched on.
     if ! rf_allowed; then
         rf_hold
@@ -1048,7 +1048,7 @@ up_locked() {
     fi
     mark dial-radio-on-done
     # K58: the IMS bearer SMS uses, which Android's RIL switches on, and VoNR when the user chose it (voice_replay,
-    # FINDINGS 181). Idempotent, and nothing here waits for IMS.
+    # FINDINGS 184). Idempotent, and nothing here waits for IMS.
     voice_replay
     # A modem reset during this wait is not repaired inside this attempt (the old loop re-ran radio_on every 10 s;
     # the fork dropped that). The attempt fails after MU300_REGISTER_WAIT, and the next one - netifd after 20 s,
@@ -1627,7 +1627,7 @@ watch() {
             [ -s "$SUSPEND" ] || roam_watch_held
             continue
         fi
-        # the SIM's radio switched off in its settings (FINDINGS 182): nothing to restore; switched on again (the
+        # the SIM's radio switched off in its settings (FINDINGS 185): nothing to restore; switched on again (the
         # setting edited by hand, or rf-apply that did not get through): the radio and the dial come back here
         if ! rf_allowed; then continue; fi
         if [ -e "$RF_HELD" ] && [ ! -s "$SUSPEND" ]; then
@@ -1811,7 +1811,7 @@ roaming_cmd() {
     esac
 }
 
-# --- VoLTE and VoNR, per card (FINDINGS 181; after kanoqwq's per-SIM voice switches, 5f4732e and 53ef7b1) ----------
+# --- VoLTE and VoNR, per card (FINDINGS 184; after kanoqwq's per-SIM voice switches, 5f4732e and 53ef7b1) ----------
 # The user's choice per card in $VOICE_CONF, one KEY=VALUE line each: volte0, vonr0 (slot 0), volte1, vonr1 (slot 1),
 # value 1 or 0; the file is read, never executed, on both systems. Replayed at every bring-up of the card, after the
 # radio is on (voice_replay), where the dial has always sent AT+CAVIMS=1:
@@ -1929,7 +1929,7 @@ voice_cmd() {
             old=$(voice_saved "$kind" "$slot")
             if [ "$slot" = "$SIM_SLOT" ] && voice_live && [ "$(at 'AT' 3 2>/dev/null | tail -n 1)" = OK ]; then
                 # what the modem has now: put back when it does not read back the new value (it may answer OK and
-                # still read back the old one: FINDINGS 181, VoNR on an F50); the file is unchanged then
+                # still read back the old one: FINDINGS 184, VoNR on an F50); the file is unchanged then
                 before=$(voice_read "$kind" || true)
                 if ! voice_send "$kind" "$bit"; then
                     [ -z "$before" ] || voice_send "$kind" "$before" || true
@@ -1999,7 +1999,7 @@ case "${1:-status}" in
         tty_setup
         mark radio-warmup-enter
         rc=0; radio_on || rc=$?
-        # switched off in the SIM's settings: nothing more to do, and that is no failure (FINDINGS 182)
+        # switched off in the SIM's settings: nothing more to do, and that is no failure (FINDINGS 185)
         [ "$rc" != 7 ] || { mark radio-warmup-done; exit 0; }
         [ "$rc" = 0 ] || exit "$rc"
         voice_replay

@@ -268,7 +268,7 @@ do_get() {
 sfun_restart() {
     local phase=${1:-late}
     # the SIM's radio is switched off in its settings: the stack is not restarted (that would switch the radio on);
-    # the setting is in the modem and takes effect when the radio is switched on (FINDINGS 182)
+    # the setting is in the modem and takes effect when the radio is switched on (FINDINGS 185)
     if ! rf_allowed; then
         say "the radio of this SIM is switched off in its settings: no stack restart, the setting applies when it is on"
         return 0

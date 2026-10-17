@@ -551,7 +551,7 @@ class MobileData(ApiCase):
             self.assertEqual(self.calls('later')[0][-2:], ['stop', 'mu300-mobile-data.service'])
 
     def test_voice(self):
-        """FINDINGS 181: voice.get is mobile-data voice --json --read; voice.set the fixed words, the slot 1/2 as 0/1."""
+        """FINDINGS 184: voice.get is mobile-data voice --json --read; voice.set the fixed words, the slot 1/2 as 0/1."""
         for shell in self.each_shell():
             self.refused(shell, 'voice.get', {}, 'unsupported', 'mobile-data')
             self.tool('mobile-data')
@@ -572,7 +572,7 @@ class MobileData(ApiCase):
             (self.bin / 'mobile-data').unlink()
 
     def test_radio(self):
-        """FINDINGS 182: radio.get is mu300-sim-radio status --json; radio.set slot 1/2/"all" as 0/1/all."""
+        """FINDINGS 185: radio.get is mu300-sim-radio status --json; radio.set slot 1/2/"all" as 0/1/all."""
         for shell in self.each_shell():
             self.refused(shell, 'radio.get', {}, 'unsupported', 'mu300-sim-radio')
             self.tool('mu300-sim-radio')

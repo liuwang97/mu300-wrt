@@ -1890,7 +1890,7 @@ up() { at UP; }
 
 
 class SimVoice(ShellTest):
-    """VoLTE and VoNR per card (FINDINGS 181, after kanoqwq 5f4732e/53ef7b1): `mobile-data voice`, the saved choices
+    """VoLTE and VoNR per card (FINDINGS 184, after kanoqwq 5f4732e/53ef7b1): `mobile-data voice`, the saved choices
     and their replay at every bring-up. mobile-data sourced as in MobileData; the modem keeps the two settings in
     $STUBLOG/m-volte and m-vonr, answers $VOICE_REFUSE ("volte"/"vonr": that set is ignored) and says nothing when
     $VOICE_SILENT is set."""
@@ -1988,7 +1988,7 @@ at() {
 
 
 class SimRadio(ShellTest):
-    """Each SIM's radio on or off, kept across reboots (FINDINGS 182, after kanoqwq's mu300-sim-radio): the setting
+    """Each SIM's radio on or off, kept across reboots (FINDINGS 185, after kanoqwq's mu300-sim-radio): the setting
     tool, and mobile-data's radio-on paths asking it (mobile-data sourced as in MobileData). The modem keeps its CFUN in
     $STUBLOG/cfun (0 cold, 1 on, 4 flight mode)."""
     lib = MobileData.lib

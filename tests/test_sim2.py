@@ -281,7 +281,7 @@ echo OK
         return self.stubs / 'sim-radio'
 
     def test_a_card_whose_radio_is_off_is_not_started_until_it_is_on(self):
-        """FINDINGS 182: the chosen card's radio is switched off in its settings. The cold start is put off - nothing
+        """FINDINGS 185: the chosen card's radio is switched off in its settings. The cold start is put off - nothing
         sent, the boot confirmed (no fallback next boot), no trial - and runs with --deferred once it is on."""
         rf = self.rf_stub()
         (self.tmp / 'rf-off').write_text('1')

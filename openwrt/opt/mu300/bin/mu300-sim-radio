@@ -1,5 +1,5 @@
 #!/bin/sh
-# Each SIM's radio on or off, kept across reboots (Ubuntu and OpenWrt; F50, U30 Air). docs/FINDINGS.md 182; after
+# Each SIM's radio on or off, kept across reboots (Ubuntu and OpenWrt; F50, U30 Air). docs/FINDINGS.md 185; after
 # kanoqwq's mu300-sim-radio and mu300-radio-allowed (his fork's unpublished image), rewritten for this tree.
 #
 #   mu300-sim-radio status [--json]        the setting of both cards, the card in use, whether a change is running

@@ -103,6 +103,16 @@ class GenericRamdisk(Fixtures):
         self.assertEqual(files['etc/mu300-trial-guard'][1], b'')
         self.assertFalse([f for f in files if f.startswith('linux-modules/u30air/')])
 
+    def test_e2fsck(self):
+        # init's e2fsck for a root filesystem whose superblock records an error (FINDINGS 182); none without it
+        self.assertNotIn('sbin/e2fsck', cpio_files(unlz4_legacy(self.build()[1].read_bytes())))
+        (self.tmp / 'e2fsck').write_bytes(b'\x7fELF e2fsck')
+        r, out = self.build('--e2fsck', str(self.tmp / 'e2fsck'))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        files = cpio_files(unlz4_legacy(out.read_bytes()))
+        self.assertEqual(files['sbin/e2fsck'][1], b'\x7fELF e2fsck')
+        self.assertTrue(files['sbin/e2fsck'][0] & 0o111, 'e2fsck is not executable')
+
     def test_device_modules(self):
         r, out = self.build('--device-modules', f'u30air={self.u30}')
         self.assertEqual(r.returncode, 0, r.stderr)

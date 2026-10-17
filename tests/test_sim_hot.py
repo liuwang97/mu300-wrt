@@ -297,7 +297,7 @@ esac""")
         self.assertEqual((self.tmp / 'net').read_text(), 'down\nup\n')
 
     def test_a_target_whose_radio_is_off_is_refused(self):
-        """FINDINGS 182: the target's radio is switched off in its settings: refused before anything is sent."""
+        """FINDINGS 185: the target's radio is switched off in its settings: refused before anything is sent."""
         self.stub('sim-radio', '[ "$1" = allowed ] || exit 2; case " ${T_RF_OFF:-} " in *" $2 "*) exit 1 ;; esac; exit 0')
         r = self.ctl('switch', '1', MU300_SIM_RADIO_BIN=self.stubs / 'sim-radio', T_RF_OFF='0')
         self.assertEqual(r.returncode, 1)
@@ -307,7 +307,7 @@ esac""")
         self.assertEqual((self.etc / 'uci-slot').read_text(), '1\n')
 
     def test_the_card_in_use_in_flight_mode_by_its_setting_still_switches(self):
-        """FINDINGS 182: the card in use is in flight mode (CFUN 4) because its radio is off in its settings: a known
+        """FINDINGS 185: the card in use is in flight mode (CFUN 4) because its radio is off in its settings: a known
         state, switched off the same way; a CFUN 4 without that setting is still an unexpected state."""
         self.stub('sim-radio', '[ "$1" = allowed ] || exit 2; case " ${T_RF_OFF:-} " in *" $2 "*) exit 1 ;; esac; exit 0')
         (self.tmp / 'radio1').write_text('4')

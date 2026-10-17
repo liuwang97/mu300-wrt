@@ -16,7 +16,7 @@ DEVICE=/opt/mu300/bin/mu300-device
 REBOOT=${MU300_REBOOT_CMD:-reboot}
 LED=${MU300_LED_CMD:-/opt/mu300/bin/mu300-led}
 SIM_RADIO=${MU300_SIM_RADIO_BIN:-/opt/mu300/bin/mu300-sim-radio}
-# rf_allowed SLOT: that card's radio may be on (mu300-sim-radio, FINDINGS 182; without the tool: yes)
+# rf_allowed SLOT: that card's radio may be on (mu300-sim-radio, FINDINGS 185; without the tool: yes)
 rf_allowed() { [ ! -x "$SIM_RADIO" ] || "$SIM_RADIO" allowed "$1" 2>/dev/null; }
 supported() { [ -e /etc/openwrt_release ] && [ "$("$DEVICE" 2>/dev/null)" = u30air ]; }
 supported || { printf '{"ok":0,"supported":0,"error":"Dual SIM control is only for the U30 Air on OpenWrt"}\n'; exit 1; }

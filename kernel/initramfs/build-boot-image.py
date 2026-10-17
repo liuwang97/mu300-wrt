@@ -179,6 +179,9 @@ def main():
     ap.add_argument('--busybox', type=Path, help='static arm64 busybox (may be left out with --append-ramdisk, when '
                                                 'that segment brings one)')
     ap.add_argument('--logdw', type=Path, help='tools/logdw build (static arm64; may be left out as --busybox)')
+    ap.add_argument('--e2fsck', type=Path,
+                    help='tools/e2fsck/build.sh build (static arm64): /sbin/e2fsck, which init runs on a root '
+                         'filesystem whose superblock records an error; without it init boots such a one as it is')
     ap.add_argument('--ueventd-perms', required=True, type=Path)
     ap.add_argument('--android-subset', type=Path, help='directory produced by android-vendor/extract-subset.sh')
     ap.add_argument('--append-ramdisk', type=Path,
@@ -215,6 +218,8 @@ def main():
         files['bin/busybox'] = (a.busybox.read_bytes(), stat.S_IFREG | 0o755)
     if a.logdw:
         files['bin/logdw'] = (a.logdw.read_bytes(), stat.S_IFREG | 0o755)
+    if a.e2fsck:
+        files['sbin/e2fsck'] = (a.e2fsck.read_bytes(), stat.S_IFREG | 0o755)
     order = a.module_order.read_text().split() if a.modules else []
     if a.modules:
         files['etc/module-order'] = (text(a.module_order), stat.S_IFREG | 0o644)
