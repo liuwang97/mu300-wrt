@@ -36,6 +36,9 @@
 #                     mu300-sms-forward); the settings go to the adapter on stdin, as sent: they hold secrets, never
 #                     an argument. forward_log_clear empties the delivery log and takes nothing.
 #   cpu_get, cpu_set profile  the CPU performance profile (unisoc-modem/cpu, mu300-cpu); saving|balanced|performance
+#   cpu_voltage_get, cpu_voltage_set op [offsets confirm | minutes]  the CPU voltage offset, EXPERIMENTAL (unisoc-modem/
+#                     cpu, mu300-cpu voltage); op set (offsets "A,B,C" in uV; confirm: the word, for anything but 0,0,0),
+#                     off, or stress (minutes 1-120: the CPU stress test, in the background)
 #   packages_get, packages_act op  the packages installed before an update, installed again (unisoc-modem/packages,
 #                     mu300-user-packages); op retry|repair_dns|dismiss
 #   backup_export, backup_import, backup_job  System > Backup of settings: mu300-api's backup.export, backup.import
@@ -842,6 +845,38 @@ m_cpu_set() {
     allowed "$profile" '(saving|balanced|performance)' || { refuse 'Invalid CPU profile'; return; }
     reply_obj "$("$CPUA" set "$profile" 2>/dev/null)" 'The CPU adapter gave no valid reply'
 }
+# The CPU voltage offset (EXPERIMENTAL: it can damage the device for good). Only the shape is checked here - three
+# signed numbers, the confirmation word, the minutes; the adapter checks them again and mu300-cpu and the kernel check
+# the limits. Nothing changes before the next boot, and the initramfs drops a value that does not prove itself.
+m_cpu_voltage_get() { reply_obj "$("$CPUA" voltage-get 2>/dev/null)" 'The CPU adapter gave no valid reply'; }
+m_cpu_voltage_set() {
+    local op offsets confirm minutes out
+    inp '@.op'; op=$V
+    inp '@.offsets'; offsets=$V
+    inp '@.confirm'; confirm=$V
+    inp '@.minutes'; minutes=$V
+    allowed "$op" '(set|off|stress)' || { refuse 'Unknown CPU voltage operation'; return; }
+    case $op in
+        set)
+            [ -z "$minutes" ] || { refuse 'Invalid CPU voltage request'; return; }
+            allowed "$offsets" '-?[0-9]{1,6},-?[0-9]{1,6},-?[0-9]{1,6}' || { refuse 'Invalid CPU voltage offset'; return; }
+            if [ "$offsets" = 0,0,0 ]; then
+                [ -z "$confirm" ] || { refuse 'Invalid CPU voltage request'; return; }
+                out=$("$CPUA" voltage-set off 2>/dev/null)
+            else
+                [ "$confirm" = EXPERIMENTAL ] || { refuse 'Type the confirmation word to apply a voltage offset'; return; }
+                out=$("$CPUA" voltage-set set "$offsets" EXPERIMENTAL 2>/dev/null)
+            fi ;;
+        off)
+            [ -z "$offsets$confirm$minutes" ] || { refuse 'Invalid CPU voltage request'; return; }
+            out=$("$CPUA" voltage-set off 2>/dev/null) ;;
+        stress)
+            [ -z "$offsets$confirm" ] || { refuse 'Invalid CPU voltage request'; return; }
+            allowed "$minutes" '([1-9]|[1-9][0-9]|1[01][0-9]|120)' || { refuse 'Invalid stress test length'; return; }
+            out=$("$CPUA" voltage-set stress "$minutes" 2>/dev/null) ;;
+    esac
+    reply_obj "$out" 'The CPU adapter gave no valid reply'
+}
 
 # The Settings page's card of the packages installed before an update: mu300-user-packages through the adapter,
 # which checks the operation again and starts retry and repair-dns in the background itself
@@ -938,6 +973,8 @@ do_list() {
 	"forward_log_clear": { },
 	"cpu_get": { },
 	"cpu_set": { "profile": "String" },
+	"cpu_voltage_get": { },
+	"cpu_voltage_set": { "op": "String", "offsets": "String", "confirm": "String", "minutes": "String" },
 	"packages_get": { },
 	"packages_act": { "op": "String" },
 	"update_get": { "sizes": "String" },
@@ -1029,6 +1066,7 @@ ops_detail() {
         lock_set) inp '@.kind'; allowed "$V" '[a-z_]{1,16}' && printf '%s\n' "$V" ;;
         lock_get) inp '@.fresh'; [ "$V" = 1 ] && echo fresh ;;
         update_act) inp '@.op'; allowed "$V" '[a-z_]{1,16}' && printf '%s\n' "$V" ;;
+        cpu_voltage_set) inp '@.op'; allowed "$V" '[a-z]{1,8}' && printf '%s\n' "$V" ;;
     esac
 }
 
@@ -1170,6 +1208,8 @@ call)
         forward_log_clear) run_m forward_log_clear m_forward_log_clear ;;
         cpu_get)      run_m cpu_get      m_cpu_get ;;
         cpu_set)      run_m cpu_set      m_cpu_set ;;
+        cpu_voltage_get) run_m cpu_voltage_get m_cpu_voltage_get ;;
+        cpu_voltage_set) run_m cpu_voltage_set m_cpu_voltage_set ;;
         packages_get) run_m packages_get m_packages_get ;;
         packages_act) run_m packages_act m_packages_act ;;
         update_get)   run_m update_get   m_update_get ;;
