@@ -124,5 +124,9 @@ return view.extend({
 				head.appendChild(E('div', { 'class': 'mud-note', 'style': 'color:#b45309' }, [ _('The setting is saved, but the radio did not follow it yet.') ]));
 		}
 		dom.content(this.root, [ head ].concat(cards));
-	}
+	},
+
+	handleSaveApply: null,
+	handleSave: null,
+	handleReset: null
 });
