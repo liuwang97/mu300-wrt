@@ -639,9 +639,14 @@ class Luci(ApiCase):
                 self.refused(shell, 'sms.send', {'number': num, 'text': 'x'}, 'bad-value', 'number')
             self.refused(shell, 'sms.send', {'number': '1', 'text': 'x' * 481}, 'bad-value', 'text')
             self.refused(shell, 'sms.send', {'number': '1', 'text': ''}, 'bad-value', 'text')
-            # an answer of the backend that is not JSON is a failure, never pasted in
-            self.out('mu300dash', 'garbage\n')
+            # forwarding: the panel's adapter itself; an answer that is not JSON is a failure, never pasted in
+            self.refused(shell, 'sms.forward', {}, 'unsupported')
+            ad = self.root / 'usr/libexec/unisoc-modem'
+            ad.mkdir(parents=True, exist_ok=True)
+            (ad / 'forward').write_text('#!/bin/sh\necho garbage\n')
+            (ad / 'forward').chmod(0o755)
             self.refused(shell, 'sms.forward', {}, 'failed')
+            (ad / 'forward').unlink()
 
 
 class Sms(ApiCase):
@@ -895,6 +900,168 @@ class Static(unittest.TestCase):
         for m in methods:
             self.assertIn(f'    {m}) m_{m.replace(".", "_")} ;;', dispatch, m)
         self.assertTrue(os.access(API, os.X_OK))
+
+
+class PanelAdapters(ApiCase):
+    """Ubuntu has the control panel's lock and forwarding programs too (FINDINGS 189): lock.get/lock.set and the
+    sms.forward methods call them directly; the AT terminal's history, the card's state, the USB network mode."""
+
+    def setUp(self):
+        super().setUp()
+        self.dash = self.tmp / 'dash'
+        self.dash.mkdir()
+        self.tool('lock', '{ printf "lock"; for a in "$@"; do printf "\037%s" "$a"; done; printf "\n"; } >> "$STUBLOG/calls"\n'
+                          'case "$1 $2" in "get cached") cat "$STUBLOG/lockout" ;; esac')
+        (self.tmp / 'lockout').write_text('{"auto_apply":1,"ts":1,"mode":{"label":"auto"},"lte":{"locked":""},"nr":{"locked":"78"},'
+                                          '"cell":"","cells":[],"caps":{"nr":"1,78","lte":"1,3"}}\n')
+        # the forwarding adapter: what it was asked and its stdin (and MU300_FWD_CHECK), then the answer in fwdout
+        self.tool('forward', '{ printf "forward"; for a in "$@"; do printf "\037%s" "$a"; done; printf "\n"; } >> "$STUBLOG/calls"\n'
+                             'cat > "$STUBLOG/stdin.forward"; echo "${MU300_FWD_CHECK:-}" > "$STUBLOG/fwdcheck"\n'
+                             'cat "$STUBLOG/fwdout"')
+        (self.tmp / 'fwdout').write_text('{"ok":1}\n')
+
+    def env(self, **extra):
+        e = super().env(**extra)
+        e.update(MU300_LOCK_BIN=str(self.bin / 'lock'), MU300_FWD_ADAPTER=str(self.bin / 'forward'),
+                 MU300_DASH_DIR=str(self.dash), MU300_API_LOCK_WAIT='2')
+        e.update({k: str(v) for k, v in extra.items()})
+        return e
+
+    def test_hello_has_them(self):
+        for shell in self.each_shell():
+            f = self.ok(shell, 'hello')['features']
+            self.assertEqual((f['locks'], f['forward'], f['usb_net']), (True, True, True))
+            for m in ('sim.state', 'sms.forward_set', 'sms.forward_test', 'sms.forward_log_clear', 'usb.net', 'at.history'):
+                self.assertIn(m, self.ok(shell, 'hello')['methods'])
+
+    def test_locks_through_the_lock_program(self):
+        for shell in self.each_shell():
+            (self.dash / 'lock.json').write_text('{}')
+            o = self.ok(shell, 'lock.get')
+            self.assertEqual(o['data']['nr']['locked'], '78')
+            self.assertEqual(self.calls('lock')[-1], ['lock', 'get', 'cached'])
+            self.assertEqual(self.calls('later'), [])
+            # fresh: a reading in the background first (the cache is served when it does not come in time)
+            self.ok(shell, 'lock.get', {'fresh': True})
+            self.assertEqual(self.calls('later')[-1][1:], [str(self.bin / 'lock'), 'refresh'])
+            for kind, val in (('mode', '4g'), ('lte', '1,3'), ('nr', ''), ('cell', 'nr:627264,393'), ('auto_apply', 'off'),
+                              ('endc', 'on')):
+                self.clear_calls()
+                o = self.ok(shell, 'lock.set', {'kind': kind, 'val': val})
+                self.assertEqual((o['data']['started'], o['data']['queued']), (1, 0))
+                self.assertEqual(self.calls('later')[-1][1:], [str(self.bin / 'lock'), 'apply', kind, val])
+            self.clear_calls()
+            self.ok(shell, 'lock.set', {'kind': 'reset', 'val': 'auto'})
+            self.assertEqual(self.calls('later')[-1][1:], [str(self.bin / 'lock'), 'reset'])
+            for kind, val in (('mode', 'lte'), ('lte', '1;3'), ('cell', 'nr:1,'), ('auto_apply', 'maybe'), ('nope', 'x'),
+                              ('lte', '-1'), ('cell', '--help')):
+                self.refused(shell, 'lock.set', {'kind': kind, 'val': val}, 'bad-value')
+            self.refused(shell, 'lock.set', {'kind': 'mode'}, 'missing', 'val')
+            # checked only (a backup's restore): nothing applied
+            self.clear_calls()
+            rc, o, _ = self.call(shell, 'lock.set', {'kind': 'mode', 'val': 'sa'}, MU300_API_CHECK='1')
+            self.assertEqual(o, {'ok': 1, 'checked': True})
+            self.assertEqual(self.calls('later'), [])
+            (self.dash / 'lock.json').unlink()
+
+    def test_forwarding_settings_on_stdin_only(self):
+        req = {'enabled': True, 'template': '{text}\n-- {sender}', 'allow': 'BANK*\n+90555', 'webhook': True,
+               'webhook_url': 'https://hook.example.com/s3cret', 'webhook_headers': 'Authorization: Bearer hdrsecret',
+               'webhook_format': 'json', 'webhook_expect': 'errcode=0', 'telegram': False, 'telegram_token': '123456:' + 'A' * 30,
+               'email': False, 'email_password': 'mailsecret', 'sms': False, 'clear': 'telegram_token'}
+        for shell in self.each_shell():
+            self.assertEqual(self.ok(shell, 'sms.forward')['data'], {'ok': 1})
+            self.assertEqual(self.calls('forward')[-1], ['forward', 'get'])
+            self.ok(shell, 'sms.forward_set', req)
+            self.assertEqual(self.calls('forward')[-1], ['forward', 'set'])
+            sent = json.loads((self.tmp / 'stdin.forward').read_text())
+            self.assertEqual((sent['enabled'], sent['webhook'], sent['telegram'], sent['email'], sent['sms']), ('1', '1', '0', '0', '0'))
+            for k in ('template', 'allow', 'webhook_url', 'webhook_headers', 'telegram_token', 'email_password', 'clear'):
+                self.assertEqual(sent[k], req[k], k)
+            self.assertEqual((self.tmp / 'fwdcheck').read_text().strip(), '')
+            # no secret in an argument list, and no request file left behind
+            for c in self.calls():
+                self.assertFalse(any(x in '\x1f'.join(c) for x in ('s3cret', 'hdrsecret', 'mailsecret', 'AAAAAAAAAA')), c)
+            self.assertEqual([f.name for f in self.run_dir.iterdir() if f.name.startswith('fwd.')], [])
+            # the adapter's refusal is the answer's detail
+            (self.tmp / 'fwdout').write_text('{"ok":0,"error":"Invalid Telegram bot token"}\n')
+            self.refused(shell, 'sms.forward_set', {'telegram': True}, 'failed', 'Invalid Telegram bot token')
+            (self.tmp / 'fwdout').write_text('{"ok":1,"checked":1}\n')
+            rc, o, _ = self.call(shell, 'sms.forward_set', req, MU300_API_CHECK='1')
+            self.assertEqual(o, {'ok': 1, 'checked': True})
+            self.assertEqual((self.tmp / 'fwdcheck').read_text().strip(), '1')
+            (self.tmp / 'fwdout').write_text('{"ok":1}\n')
+            self.refused(shell, 'sms.forward_set', {'nope': '1'}, 'unknown-field', 'nope')
+            self.refused(shell, 'sms.forward_set', {'enabled': 'yes'}, 'bad-value', 'enabled')
+            self.refused(shell, 'sms.forward_set', {'template': 5}, 'bad-value', 'template')
+            # a control character is refused when the request is read (json.awk)
+            self.refused(shell, 'sms.forward_set', {'template': 'a\u007fb'}, 'bad-request')
+            self.refused(shell, 'sms.forward_set', {'webhook_body': 'x' * 4097}, 'bad-value', 'webhook_body')
+            (self.tmp / 'fwdout').write_text('{"ok":1,"started":1}\n')
+            self.assertEqual(self.ok(shell, 'sms.forward_test'), {'ok': 1, 'started': True})
+            self.assertEqual(self.calls('forward')[-1], ['forward', 'test'])
+            (self.tmp / 'fwdout').write_text('{"ok":1}\n')
+            self.ok(shell, 'sms.forward_log_clear')
+            self.assertEqual(self.calls('forward')[-1], ['forward', 'logclear'])
+
+    def test_at_history(self):
+        for shell in self.each_shell():
+            self.out('mu300-at', 'OK\n')
+            for c in ('AT+CSQ', 'at+cpin="1234"', 'AT+CGAUTH=1,1,"user","pw"', 'ATI'):
+                self.ok(shell, 'at.send', {'command': c})
+            h = self.ok(shell, 'at.history')['history']
+            self.assertEqual([x['command'] for x in h], ['ATI', 'AT+CGAUTH=...', 'at+cpin=...', 'AT+CSQ'])
+            self.assertRegex(h[0]['time'], r'^[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}$')
+            self.assertNotIn('1234', (self.dash / 'at-history').read_text())
+            for _ in range(45):
+                self.ok(shell, 'at.send', {'command': 'AT'})
+            self.assertEqual(len(self.ok(shell, 'at.history')['history']), 40)
+            (self.dash / 'at-history').unlink()
+            self.assertEqual(self.ok(shell, 'at.history')['history'], [])
+
+    def test_sim_state(self):
+        self.tool('mu300-sim-state', 'echo "$1" >> "$STUBLOG/simstate"; case $1 in get) cat "$STUBLOG/kept" 2>/dev/null ;; check) echo absent ;; esac')
+        self.out('mu300-sim', '0\n')
+        for shell in self.each_shell():
+            (self.tmp / 'simstate').unlink(missing_ok=True)
+            (self.tmp / 'kept').write_text('ready\n')
+            self.assertEqual(self.ok(shell, 'sim.state'), {'ok': 1, 'state': 'ready', 'slot': 1})
+            self.assertEqual((self.tmp / 'simstate').read_text().split(), ['get'])
+            (self.tmp / 'kept').unlink()
+            self.assertEqual(self.ok(shell, 'sim.state')['state'], 'absent')
+            self.assertEqual((self.tmp / 'simstate').read_text().split(), ['get', 'get', 'check'])
+            (self.tmp / 'kept').write_text('ready\n')
+            self.assertEqual(self.ok(shell, 'sim.state', {'fresh': True})['state'], 'absent')
+            self.assertEqual((self.tmp / 'simstate').read_text().split()[-1], 'check')
+        (self.bin / 'mu300-sim-state').unlink()
+        for shell in self.each_shell():
+            self.refused(shell, 'sim.state', {}, 'unsupported')
+
+    def test_usb_network_mode(self):
+        (self.bin / 'mu300-usb').write_text((BIN / 'mu300-usb').read_text())
+        for shell in self.each_shell():
+            for f in ('usb-net', 'usb-net.once'):
+                (self.root / 'etc/mu300' / f).unlink(missing_ok=True)
+            self.assertEqual(self.ok(shell, 'usb.net'), {'ok': 1, 'mode': 'default', 'once': False, 'now': None})
+            self.assertEqual(self.ok(shell, 'usb.net', {'mode': 'ecm', 'scope': 'once'})['mode'], 'ecm')
+            self.assertEqual((self.root / 'etc/mu300/usb-net').read_text(), 'ecm\n')
+            self.assertTrue((self.root / 'etc/mu300/usb-net.once').exists())
+            (self.root / 'run/mu300').mkdir(parents=True, exist_ok=True)
+            (self.root / 'run/mu300/usb-net-applied').write_text('ecm\n')
+            self.assertEqual(self.ok(shell, 'usb.net'), {'ok': 1, 'mode': 'ecm', 'once': True, 'now': 'ecm'})
+            # at the next boot the one-boot choice is used up (mu300-usb boot, mu300-fixups)
+            r = self.script(shell, self.bin / 'mu300-usb', 'boot', MU300_SYSROOT=self.root, PATH=f'{self.bin}:{self.env()["PATH"]}')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertFalse((self.root / 'etc/mu300/usb-net').exists())
+            self.assertFalse((self.root / 'etc/mu300/usb-net.once').exists())
+            self.ok(shell, 'usb.net', {'mode': 'rndis'})
+            self.assertEqual(self.ok(shell, 'usb.net')['mode'], 'rndis')
+            self.assertFalse((self.root / 'etc/mu300/usb-net.once').exists())
+            self.ok(shell, 'usb.net', {'mode': 'default'})
+            self.assertFalse((self.root / 'etc/mu300/usb-net').exists())
+            for bad in ({'mode': 'ppp'}, {'mode': 'ncm', 'scope': 'twice'}, {'mode': '-x'}):
+                self.refused(shell, 'usb.net', bad, 'bad-value')
+            (self.root / 'run/mu300/usb-net-applied').unlink()
 
 
 class ModemTools(ApiCase):

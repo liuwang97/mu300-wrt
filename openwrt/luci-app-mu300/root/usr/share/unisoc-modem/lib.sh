@@ -35,6 +35,26 @@ json_num() {
     esac
 }
 
+# jfilter [-i FILE] -e EXPR: jsonfilter where there is one (OpenWrt); elsewhere (Ubuntu, which runs the lock and
+# forwarding adapters too) the few expressions the adapters use, through jq: @.a.b (a string as it is, anything else
+# as compact JSON, nothing for null or a missing key) and @.a[*] (each element on its own line). Any other expression
+# matches nothing. The input is stdin unless -i names a file.
+jfilter() {
+    if command -v jsonfilter >/dev/null 2>&1; then jsonfilter "$@"; return; fi
+    _jf_i= _jf_e=
+    while [ $# -gt 0 ]; do
+        case $1 in -i) _jf_i=${2:-}; shift 2 ;; -e) _jf_e=${2:-}; shift 2 ;; *) shift ;; esac
+    done
+    case $_jf_e in @.?*) ;; *) return 1 ;; esac
+    _jf_q=${_jf_e#@}
+    case $_jf_q in *'[*]') _jf_q="${_jf_q%'[*]'}[]" ;; esac
+    # names of letters, digits and _ only: nothing else of an expression reaches jq
+    case $_jf_q in *[!A-Za-z0-9_.\[\]]*|*..*) return 1 ;; esac
+    command -v jq >/dev/null 2>&1 || return 1
+    if [ -n "$_jf_i" ]; then jq -rc "$_jf_q | select(. != null)" "$_jf_i" 2>/dev/null
+    else jq -rc "$_jf_q | select(. != null)" 2>/dev/null; fi
+}
+
 # ---------------------------------------------------------- uci allow-lists
 # uci_get OPTION: unisoc_modem.main.OPTION ('' when unset)
 uci_get() { uci -q get "unisoc_modem.main.$1" 2>/dev/null || true; }

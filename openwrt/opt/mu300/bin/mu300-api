@@ -15,8 +15,9 @@
 # passwords, VPN links, the login password: "password_set" says whether there is one), and nothing is logged.
 # The work is the device's own tools': hotspot.conf and mu300-wifi-band (Ubuntu) or UCI (OpenWrt) for the hotspot,
 # wifi-client, mobile-data's settings, mu300-sim, mu300-vpn (the VPN module), sms, mu300-usb, mu300-next-boot,
-# mu300-os, mu300-update, mu300-extra; on openwrt-luci the control panel's backend (mu300dash, called as rpcd calls
-# it) for what only the panel has: the band and cell locks, the SMS pool, SMS forwarding.
+# mu300-os, mu300-update, mu300-extra; the control panel's adapters for the band and cell locks and SMS forwarding
+# (/usr/libexec/unisoc-modem/lock and forward: openwrt-luci's, and the same programs on Ubuntu); on openwrt-luci the
+# control panel's backend (mu300dash, called as rpcd calls it) for what only the panel has: the SMS pool.
 #
 # Long work (an update, a kernel, an extra, a VPN download, joining a Wi-Fi network) runs as the one background job,
 # in its own session: it goes on when the caller goes (a closed browser tab, a cable pulled), and job.status follows
@@ -25,7 +26,8 @@
 # Error codes: bad-request (not one JSON object of plain values, or too large), unknown-method, unknown-field (detail:
 # the field), bad-value (detail: the field), missing (detail: the field), not-root, unsupported (detail: what), busy
 # (another job runs), not-installed (the VPN module), failed (detail: the tool's last line).
-# (MU300_SYSROOT, MU300_BIN, MU300_LIBDIR, MU300_DISK, MU300_API_RUN, MU300_DASH_RPC are for tests/)
+# (MU300_SYSROOT, MU300_BIN, MU300_LIBDIR, MU300_DISK, MU300_API_RUN, MU300_DASH_RPC, MU300_LOCK_BIN, MU300_FWD_ADAPTER,
+# MU300_DASH_DIR are for tests/)
 set -u
 umask 077
 export PATH="$PATH:/opt/mu300/bin:/opt/mu300/busybox-bin:/usr/sbin:/sbin"
@@ -40,6 +42,11 @@ DISK=${MU300_DISK:-/mnt/mu300-disk}
 RUN=${MU300_API_RUN:-/run/mu300-api}
 JOB=$RUN/job
 DASH_RPC=${MU300_DASH_RPC:-$R/usr/libexec/rpcd/mu300dash}
+# the control panel's adapters (openwrt-luci; Ubuntu has the same programs) and their runtime directory: the lock
+# reading's cache, the AT terminal's history (root's only, in RAM)
+LOCKBIN=${MU300_LOCK_BIN:-$R/usr/libexec/unisoc-modem/lock}
+FWDA=${MU300_FWD_ADAPTER:-$R/usr/libexec/unisoc-modem/forward}
+DASHDIR=${MU300_DASH_DIR:-$R/var/run/unisoc-modem}
 HOTSPOT=$R/etc/mu300/hotspot.conf
 MDCONF=$R/etc/mu300/mobile-data.conf
 LANCONF=$R/etc/mu300/lan.conf
@@ -51,15 +58,15 @@ TAB=$(printf '\t')
 # ------------------------------------------------------------------ the methods
 METHODS='hello overview
 wifi.get wifi.set wifi.power wificlient.status wificlient.scan wificlient.join wificlient.leave
-data.get data.set data.power sim.get sim.select voice.get voice.set radio.get radio.set lock.get lock.set
+data.get data.set data.power sim.get sim.select sim.state voice.get voice.set radio.get radio.set lock.get lock.set
 vpn.status vpn.profiles vpn.subs vpn.settings vpn.service vpn.killswitch vpn.use vpn.add vpn.add_url vpn.rename
 vpn.remove vpn.setting vpn.sub_add vpn.sub_refresh vpn.sub_remove vpn.logs vpn.install vpn.engine_install vpn.engines
-sms.list sms.read sms.send sms.job sms.delete sms.forward
-lan.get lan.set usb.role adb.auth
+sms.list sms.read sms.send sms.job sms.delete sms.forward sms.forward_set sms.forward_test sms.forward_log_clear
+lan.get lan.set usb.role usb.net adb.auth
 system.get system.hostname system.timezone system.password system.ssh system.reboot system.boot system.bootos
 update.check update.apply kernel.set extra.list extra.install extra.remove logs
 backup.export backup.import
-at.send ussd.send ussd.cancel modem.restart ttl.get ttl.set traffic.get traffic.set
+at.send at.history ussd.send ussd.cancel modem.restart ttl.get ttl.set traffic.get traffic.set
 power.get power.set led.get led.set zram.get zram.set cpu.get cpu.profile cpu.voltage
 update.status update.source packages.get packages.act docker.status
 job.status job.cancel job.clear'
@@ -362,10 +369,10 @@ m_hello() {
         "$([ -n "$_vpn" ] && echo true || echo false)" "$([ -x "$BIN/mu300-extra" ] && echo true || echo false)" \
         "$([ -x "$BIN/wifi-client" ] && echo true || echo false)" \
         "$(if is_luci; then js pool; elif [ -x "$BIN/sms" ]; then js cli; else js ''; fi)" \
-        "$(is_luci && echo true || echo false)" "$(is_luci && echo true || echo false)" "$_sim2"
-    printf '"battery":%s,"usb_role":%s,"wpa3":false,"luci":%s},"job":%s}\n' \
+        "$(have_locks && echo true || echo false)" "$(have_forward && echo true || echo false)" "$_sim2"
+    printf '"battery":%s,"usb_role":%s,"usb_net":%s,"wpa3":false,"luci":%s},"job":%s}\n' \
         "$([ "$DEV" = u30air ] && echo true || echo false)" "$([ "$DEV" = u30air ] && echo true || echo false)" \
-        "$(is_luci && echo true || echo false)" "$(job_brief)"
+        "$(usbnet_ok && echo true || echo false)" "$(is_luci && echo true || echo false)" "$(job_brief)"
     exit 0
 }
 
@@ -717,6 +724,22 @@ m_sim_select() {
     tool 60 "$BIN/mu300-sim" default "$V" </dev/null || refuse failed "$ERR"
     ok "\"sim\":$(jcheck "$OUT"),\"text\":$(js "$OUT")"
 }
+# what the card in use says of itself (mu300-sim-state, FINDINGS 186): ready, locked (a PIN or PUK) or absent; the
+# answer kept for this boot, or the card asked (AT+CPIN?, one command) when there is none or "fresh" says so
+m_sim_state() {
+    only fresh
+    flag fresh; _f=${V:-0}
+    _b=$BIN/mu300-sim-state
+    [ -x "$_b" ] || refuse unsupported mu300-sim-state
+    _st=
+    [ "$_f" = 1 ] || { tool 10 "$_b" get </dev/null; _st=$(printf '%s\n' "$OUT" | head -n 1 | tr -cd 'a-z'); }
+    if [ -z "$_st" ]; then tool 20 "$_b" check </dev/null; _st=$(printf '%s\n' "$OUT" | head -n 1 | tr -cd 'a-z'); fi
+    case $_st in absent|ready|locked) ;; *) _st= ;; esac
+    _sl=
+    [ -x "$BIN/mu300-sim" ] && _sl=$(timed 10 "$BIN/mu300-sim" active 2>/dev/null | head -n 1)
+    case $_sl in 0|1) _sl=$((_sl + 1)) ;; *) _sl= ;; esac
+    ok "\"state\":$([ -n "$_st" ] && js "$_st" || printf null),\"slot\":$(jn "$_sl")"
+}
 # VoLTE and VoNR per card (mobile-data voice, FINDINGS 184): the saved choices, and what the card in use says now
 m_voice_get() {
     only
@@ -754,20 +777,57 @@ m_radio_set() {
     case $RC in 0) ;; 75) refuse busy "$ERR" ;; *) refuse failed "$ERR" ;; esac
     ok "\"text\":$(js "$OUT")"
 }
-m_lock_get() { only; dash lock_get '{"fresh":0}'; }
+# The network, band and cell locks (unisoc-modem/lock): openwrt-luci's panel backend, or the same lock program on
+# Ubuntu (mu300-lock-replay.service sends the saved ones again at boot). A reading is eight AT commands, never made
+# inside a request: the cache is served, and a missing one (or fresh) starts a reading in the background, waited for
+# up to 12 s. A setting is applied in the background too: it restarts the protocol stack (half a minute without
+# cellular); the answer says it started, and "queued" when another apply or a SIM switch runs first.
+have_locks() { is_luci || [ -x "$LOCKBIN" ]; }
+lock_reading() {
+    _p=$(cat "$DASHDIR/lock-read.lck/pid" 2>/dev/null)
+    [ -n "$_p" ] && [ -d "/proc/$_p" ] && { tr '\0' ' ' < "/proc/$_p/cmdline"; } 2>/dev/null | grep -q '/unisoc-modem/lock'
+}
+lock_busy() { [ -d /run/unisoc-modem-lock-apply ] || [ -e /run/mu300/sim-switching ] || [ -e /run/mu300/sim-active-unknown ]; }
+m_lock_get() {
+    only fresh
+    flag fresh; _f=${V:-0}
+    is_luci && dash lock_get "{\"fresh\":\"$_f\"}"
+    [ -x "$LOCKBIN" ] || refuse unsupported locks
+    _lf=$DASHDIR/lock.json
+    if [ "$_f" = 1 ] || [ ! -s "$_lf" ]; then
+        _before=$(date -r "$_lf" +%s 2>/dev/null || echo 0)
+        setsid "$LOCKBIN" refresh </dev/null >/dev/null 2>&1 &
+        _end=$(( $(date +%s) + ${MU300_API_LOCK_WAIT:-12} ))
+        sleep 1
+        while [ "$(date +%s)" -lt "$_end" ] && lock_reading; do
+            [ "$(date -r "$_lf" +%s 2>/dev/null || echo 0)" -gt "$_before" ] && break
+            sleep 1
+        done
+    fi
+    if [ ! -s "$_lf" ] && lock_reading; then ok '"data":{"busy":1}'; fi
+    tool 20 "$LOCKBIN" get cached </dev/null
+    _j=$(jcheck "$OUT") || refuse failed "the lock program gave no answer"
+    ok "\"data\":$_j"
+}
 m_lock_set() {
     only kind val
-    word kind 'mode|endc|lte|nr|cell|reset'; need kind; _k=$V
+    word kind 'mode|endc|lte|nr|cell|reset|auto_apply'; need kind; _k=$V
     case $_k in
         mode)    word val 'auto|4g|sa|nsa' ;;
-        endc)    word val 'on|off' ;;
+        endc|auto_apply) word val 'on|off' ;;
         lte|nr)  word val '([0-9]{1,3}(,[0-9]{1,3}){0,31})?' ;;
         cell)    word val 'auto|off|off-nr|off-lte|(nr|lte):[0-9]{1,7},[0-9]{1,4}' ;;
         reset)   word val 'auto' ;;
     esac || V=
     [ -n "$V" ] || [ "$_k" = lte ] || [ "$_k" = nr ] || refuse missing val
     checked
-    dash lock_set "{\"kind\":\"$_k\",\"val\":$(js "$V")}"
+    is_luci && dash lock_set "{\"kind\":\"$_k\",\"val\":$(js "$V")}"
+    [ -x "$LOCKBIN" ] || refuse unsupported locks
+    _q=0; lock_busy && _q=1
+    if [ "$_k" = reset ]; then setsid "$LOCKBIN" reset </dev/null >/dev/null 2>&1 &
+    else setsid "$LOCKBIN" apply "$_k" "$V" </dev/null >/dev/null 2>&1 &
+    fi
+    ok "\"data\":{\"ok\":1,\"started\":1,\"queued\":$_q,\"op\":$(js "lock $_k=$V")}"
 }
 
 # ------------------------------------------------------------------ VPN (the module's machine-readable CLI)
@@ -973,7 +1033,53 @@ m_sms_delete() {
     tool 60 "$BIN/sms" delete "$_id" </dev/null || refuse failed "$ERR"
     ok
 }
-m_sms_forward() { only; dash forward_get '{}'; }
+# SMS forwarding (unisoc-modem/forward, mu300-sms-forward; openwrt-luci, and Ubuntu with mu300-sms-forward.service):
+# the settings go to the adapter on its stdin, never as arguments (they hold the webhook address and headers, the bot
+# token, the mail password), which checks every field by its own rules and never gives a secret back
+have_forward() { [ -x "$FWDA" ]; }
+need_forward() { have_forward || refuse unsupported "SMS forwarding"; }
+# fwd_answer: the adapter's answer (OUT) as data, its error as the refusal
+fwd_answer() {
+    _j=$(jcheck "$OUT") || refuse failed "the forwarding adapter gave no answer"
+    case $_j in *'"ok":1'*) ;; *) refuse failed "$(printf '%s' "$_j" | sed -n 's/.*"error":"\([^"]*\)".*/\1/p')" ;; esac
+}
+m_sms_forward() {
+    only
+    need_forward
+    tool 30 "$FWDA" get </dev/null
+    fwd_answer
+    ok "\"data\":$_j"
+}
+FWD_FLAGS='enabled webhook telegram email sms'
+FWD_TEXTS='template allow deny keywords clear webhook_url webhook_format webhook_headers webhook_body webhook_expect
+telegram_token telegram_chat email_host email_port email_tls email_user email_password email_from email_to sms_number'
+m_sms_forward_set() {
+    only $FWD_FLAGS $FWD_TEXTS
+    need_forward
+    _req='{'
+    for _k in $FWD_FLAGS; do flag "$_k"; _req="$_req\"$_k\":\"${V:-0}\","; done
+    for _k in $FWD_TEXTS; do
+        fget "$_k" || continue
+        case $FT in z) continue ;; s) ;; *) refuse bad-value "$_k" ;; esac
+        # the adapter has the exact rules; here only text of a sane size
+        [ "$(bytes "$FV")" -le 4096 ] && [ "$(printf '%s' "$FV" | LC_ALL=C tr -d '\011\012\040-\176\200-\377'; echo x)" = x ] ||
+            refuse bad-value "$_k"
+        _req="$_req\"$_k\":$(js "$FV"),"
+    done
+    _req="${_req%,}}"
+    # the request holds secrets: a root-only file in RAM, read by the adapter on its stdin, removed at once
+    _in=$RUN/fwd.$$.json
+    printf '%s' "$_req" > "$_in"; _req=
+    if [ -n "${MU300_API_CHECK:-}" ]; then
+        MU300_FWD_CHECK=1 tool 30 "$FWDA" set < "$_in"; rm -f "$_in"
+        fwd_answer; ok '"checked":true'
+    fi
+    tool 30 "$FWDA" set < "$_in"; rm -f "$_in"
+    fwd_answer
+    ok
+}
+m_sms_forward_test() { only; need_forward; tool 20 "$FWDA" test </dev/null; fwd_answer; ok '"started":true'; }
+m_sms_forward_log_clear() { only; need_forward; tool 20 "$FWDA" logclear </dev/null; fwd_answer; ok; }
 
 # ------------------------------------------------------------------ USB, the LAN, adb
 adb_state() { _a=$(first "$R/etc/mu300/adb"); echo "${_a:-on}"; }
@@ -1014,6 +1120,46 @@ m_usb_role() {
     [ "$DEV" = u30air ] && [ -x "$BIN/mu300-usb" ] || refuse unsupported "usb role"
     later "$BIN/mu300-usb" "$V"
     ok
+}
+# The USB network to a computer (NCM, ECM or RNDIS) from the next boot on, for good or for one boot: mu300-usb net
+# (Ubuntu, OpenWrt), the control panel's Device page on openwrt-luci (its backend, which keeps it in UCI). boot/init
+# reads the choice from the system it boots; without a request field this only reads it.
+USB_ADAPTER=$R/usr/libexec/unisoc-modem/device-usb
+usbnet_ok() { if is_luci; then [ -x "$USB_ADAPTER" ]; else [ -x "$BIN/mu300-usb" ]; fi; }
+m_usb_net() {
+    only mode scope
+    word mode 'ncm|ecm|rndis|default' && _m=$V || _m=
+    word scope 'once|permanent' && _s=$V || _s=permanent
+    usbnet_ok || refuse unsupported "USB network mode"
+    _a=$(head -n 1 "$R/run/mu300/usb-net-applied" 2>/dev/null | tr -cd 'a-z')
+    case $_a in ncm|ecm|rndis) ;; *) _a= ;; esac
+    if is_luci; then
+        # the panel's own adapter (device-usb, as mu300dash calls it): the choice in UCI, "auto" whether it is used
+        if [ -n "$_m" ]; then
+            checked
+            if [ "$_m" = default ]; then tool 20 "$USB_ADAPTER" set-net ncm permanent 0 </dev/null
+            else tool 20 "$USB_ADAPTER" set-net "$_m" "$_s" 1 </dev/null; fi
+            case $OUT in *'"ok":1'*) ;; *) refuse failed "$(printf '%s' "$OUT" | sed -n 's/.*"error":"\([^"]*\)".*/\1/p')" ;; esac
+        fi
+        tool 20 "$USB_ADAPTER" get </dev/null
+        _n=$(printf '%s' "$OUT" | sed -n 's/.*"net_mode":"\([a-z]*\)".*/\1/p')
+        _sc=$(printf '%s' "$OUT" | sed -n 's/.*"net_scope":"\([a-z]*\)".*/\1/p')
+        case $OUT in *'"net_auto":1'*) ;; *) _n=default ;; esac
+        _o=false; [ "$_n" != default ] && [ "$_sc" = once ] && _o=true
+        case $_n in ncm|ecm|rndis|default) ;; *) _n=default ;; esac
+        ok "\"mode\":\"$_n\",\"once\":$_o,\"now\":$([ -n "$_a" ] && js "$_a" || printf null)"
+    fi
+    if [ -n "$_m" ]; then
+        checked
+        if [ "$_m" = default ]; then tool 20 "$BIN/mu300-usb" net default </dev/null || refuse failed "$ERR"
+        elif [ "$_s" = once ]; then tool 20 "$BIN/mu300-usb" net "$_m" once </dev/null || refuse failed "$ERR"
+        else tool 20 "$BIN/mu300-usb" net "$_m" </dev/null || refuse failed "$ERR"; fi
+    fi
+    tool 20 "$BIN/mu300-usb" net </dev/null || refuse failed "$ERR"
+    _n=$(printf '%s\n' "$OUT" | sed -n 's/^USB network from the next boot: //p' | head -n 1)
+    _o=false; case $_n in *' once') _o=true; _n=${_n% once} ;; esac
+    case $_n in ncm|ecm|rndis|default) ;; *) _n=default ;; esac
+    ok "\"mode\":\"$_n\",\"once\":$_o,\"now\":$([ -n "$_a" ] && js "$_a" || printf null)"
 }
 # an adb public key as adb writes it (~/.android/adbkey.pub): base64 of the RSA key (524 characters for 2048 bits),
 # then a name (the length is checked apart: POSIX regular expressions count to 255 at most)
@@ -1196,7 +1342,37 @@ m_at_send() {
 $_c
 EOT
     _rc=$RC
+    at_history_add "$_c"
     ok "\"rc\":$_rc,\"text\":$(js "$(printf '%s\n' "$OUT" | tr -d '\r' | sanitize)")"
+}
+# The AT terminal's history: the last 40 commands of this boot, "MM-DD HH:MM:SS COMMAND", in the control panel's file
+# (openwrt-luci's AT terminal keeps the same one), root's only, in RAM. A command that carries a PIN or a password
+# (CPIN, CPWD, CLCK, CGAUTH) is kept without its arguments.
+AT_HIST=$DASHDIR/at-history
+at_history_add() {
+    (umask 077; mkdir -p "$DASHDIR") 2>/dev/null
+    [ -d "$DASHDIR" ] && [ ! -L "$DASHDIR" ] && [ -O "$DASHDIR" ] || return 0
+    _hc=$1
+    case $(printf '%s' "$_hc" | tr 'a-z' 'A-Z') in
+        AT+CPIN=*|AT+CPWD=*|AT+CLCK=*|AT+CGAUTH=*|AT\$QCPDPP=*) _hc="${_hc%%=*}=..." ;;
+    esac
+    printf '%s %s\n' "$(date '+%m-%d %H:%M:%S')" "$_hc" >> "$AT_HIST"
+    tail -n 40 "$AT_HIST" > "$AT_HIST.t" 2>/dev/null && mv "$AT_HIST.t" "$AT_HIST"
+}
+m_at_history() {
+    only
+    _l=$(tail -n 40 "$AT_HIST" 2>/dev/null | LC_ALL=C tr -d '\000-\010\013-\037\177')
+    printf '{"ok":1,"history":['
+    _f=1
+    printf '%s\n' "$_l" | sed '1!G;h;$!d' | while IFS= read -r _h; do
+        [ -n "$_h" ] || continue
+        _t=$(printf '%s' "$_h" | cut -d' ' -f1-2); _c=$(printf '%s' "$_h" | cut -d' ' -f3-)
+        [ -n "$_f" ] || printf ','
+        _f=
+        printf '{"time":%s,"command":%s}' "$(js "$_t")" "$(js "$_c")"
+    done
+    printf ']}\n'
+    exit 0
 }
 # USSD (mu300-ussd): a code (*100#), an answer in an open session (1), or the session dropped
 m_ussd_send() {
@@ -1649,6 +1825,7 @@ case $METHOD in
     data.power) m_data_power ;;
     sim.get) m_sim_get ;;
     sim.select) m_sim_select ;;
+    sim.state) m_sim_state ;;
     voice.get) m_voice_get ;;
     voice.set) m_voice_set ;;
     radio.get) m_radio_get ;;
@@ -1680,9 +1857,13 @@ case $METHOD in
     sms.job) m_sms_job ;;
     sms.delete) m_sms_delete ;;
     sms.forward) m_sms_forward ;;
+    sms.forward_set) m_sms_forward_set ;;
+    sms.forward_test) m_sms_forward_test ;;
+    sms.forward_log_clear) m_sms_forward_log_clear ;;
     lan.get) m_lan_get ;;
     lan.set) m_lan_set ;;
     usb.role) m_usb_role ;;
+    usb.net) m_usb_net ;;
     adb.auth) m_adb_auth ;;
     system.get) m_system_get ;;
     system.hostname) m_system_hostname ;;
@@ -1702,6 +1883,7 @@ case $METHOD in
     backup.export) m_backup_export ;;
     backup.import) m_backup_import ;;
     at.send) m_at_send ;;
+    at.history) m_at_history ;;
     ussd.send) m_ussd_send ;;
     ussd.cancel) m_ussd_cancel ;;
     modem.restart) m_modem_restart ;;

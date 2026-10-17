@@ -174,6 +174,19 @@ class Rules(unittest.TestCase):
                                         f'{name}:{m + 1}: an apostrophe inside the script of line {n + 1}')
                         break
 
+    def test_ubuntu_has_the_panels_lock_and_forwarding_programs(self):
+        # Ubuntu runs openwrt-luci's lock and forwarding adapters as they are (FINDINGS 189): the same bytes, executable
+        for f in ('usr/libexec/unisoc-modem/lock', 'usr/libexec/unisoc-modem/at', 'usr/libexec/unisoc-modem/boot-replay',
+                  'usr/libexec/unisoc-modem/forward', 'usr/share/unisoc-modem/lib.sh'):
+            with self.subTest(file=f):
+                ours, luci = TOP / 'rootfs/overlay' / f, TOP / 'openwrt/luci-app-mu300/root' / f
+                self.assertEqual(ours.read_bytes(), luci.read_bytes(), f'{f}: copy openwrt/luci-app-mu300/root/{f} over it')
+                if f.startswith('usr/libexec'):
+                    self.assertTrue(os.access(ours, os.X_OK), f)
+        units = (TOP / 'rootfs/assemble.sh').read_text()
+        for u in ('mu300-lock-replay.service:multi-user.target', 'mu300-sms-forward.service:multi-user.target'):
+            self.assertIn(u, units)
+
     def test_every_tool_that_mounts_the_filesystem_knows_the_card(self):
         for f in ('uninstall.sh', 'uninstall.ps1', 'tools/reset-password.sh', 'tools/android-import-hotspot.sh'):
             self.assertIn('mu300sd', (TOP / f).read_text(), f)

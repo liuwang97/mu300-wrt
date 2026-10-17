@@ -29,6 +29,7 @@ LIB=${0%/*}/../../share/unisoc-modem/lib.sh
 
 FWD=${MU300_FWD_BIN:-/opt/mu300/bin/mu300-sms-forward}
 CONF=${MU300_FWD_CONF:-/etc/mu300/sms-forward.conf}
+FWD_UNIT=${MU300_FWD_UNIT:-/etc/systemd/system/mu300-sms-forward.service}
 NL='
 '
 
@@ -38,7 +39,7 @@ error() { printf '{"ok":0,"error":%s}\n' "$(json_str "$1")"; exit 0; }
 INPUT=
 # inp KEY: the request's KEY in $V, exactly as sent ('' when missing or null)
 inp() {
-    V=$(printf '%s' "$INPUT" | jsonfilter -e "@.$1" 2>/dev/null | tr '\000' '\001'; printf x)
+    V=$(printf '%s' "$INPUT" | jfilter -e "@.$1" 2>/dev/null | tr '\000' '\001'; printf x)
     V=${V%x}; V=${V%"$NL"}
     case $V in null) V= ;; esac
 }
@@ -237,6 +238,12 @@ do_set() {
     ) || error 'The forwarding settings could not be saved'
     # turned off: what still waited is not sent later
     [ "$was" = 1 ] && [ "$en" = 0 ] && "$FWD" clear >/dev/null 2>&1
+    # Ubuntu: the service that reads new messages from the SIM for this (sms watch, forward-feed) runs only while
+    # forwarding is on; OpenWrt's pool hands its messages over by itself
+    if [ -f "$FWD_UNIT" ] && command -v systemctl >/dev/null 2>&1; then
+        if [ "$en" = 1 ]; then systemctl --no-block start mu300-sms-forward.service >/dev/null 2>&1
+        else systemctl --no-block stop mu300-sms-forward.service >/dev/null 2>&1; fi
+    fi
     echo '{"ok":1}'
 }
 

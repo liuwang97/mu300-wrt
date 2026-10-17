@@ -14,6 +14,11 @@
 #                         an OTG adapter or a USB device: host with 5 V out; a PD dock with its charger: charging, and
 #                         "mu300-usb host" asks it for the host role (a data role swap). Kept across reboots
 #                         (/etc/mu300/usb-pd). With it on, host/device ask the port controller instead.
+#   mu300-usb net [ncm|ecm|rndis [once]|default]   the USB network to a computer from the next boot on (both
+#                         devices; /etc/mu300/usb-net, which boot/init reads): NCM, the default (Windows 10 2004+/11,
+#                         macOS, Linux); ECM (macOS, Linux; no Windows driver); RNDIS (older Windows; no macOS
+#                         driver). "once": for the next boot only, then NCM again. Without an argument: the choice and
+#                         what this boot made. (openwrt-luci: its control panel's Device page keeps this.)
 #   mu300-usb adb on|off  adb over USB to this Linux (F50 and U30 Air): adbd in the USB gadget (mu300-adbd). On by
 #                         default; "off" stays off across reboots and updates (/etc/mu300/adb).
 #   mu300-usb adb auth open|keys   whom adb lets in (/etc/mu300/adb_auth). open, the default: every computer, no key
@@ -194,7 +199,42 @@ if [ "${1:-}" = adb ]; then
     esac
     exit 0
 fi
+# The USB network mode (D12): the choice in USBNET_FILE, read by boot/init from the system it boots, which rebinds the
+# gadget once when it differs and says what it made in USBNET_APPLIED; USBNET_ONCE marks a choice for one boot only.
+USBNET_FILE=$R/etc/mu300/usb-net
+USBNET_ONCE=$R/etc/mu300/usb-net.once
+USBNET_APPLIED=${MU300_USBNET_APPLIED:-$R/run/mu300/usb-net-applied}
+if [ "${1:-}" = net ]; then
+    [ ! -e "$R/usr/libexec/unisoc-modem/device-usb" ] || die "the control panel's Device page keeps the USB network mode here"
+    case ${2:-} in
+        '')
+            m=$(sed -n 1p "$USBNET_FILE" 2>/dev/null)
+            case $m in ncm|ecm|rndis) ;; *) m=default ;; esac
+            [ "$m" = default ] || [ ! -e "$USBNET_ONCE" ] || m="$m once"
+            echo "USB network from the next boot: $m"
+            a=$(sed -n 1p "$USBNET_APPLIED" 2>/dev/null | tr -cd 'a-z')
+            echo "this boot: ${a:-ncm (the default)}" ;;
+        ncm|ecm|rndis|default)
+            [ "$(id -u)" = 0 ] || [ -n "$R" ] || die "run as root (sudo mu300-usb net $2)"
+            case ${3:-} in ''|once) ;; *) die "usage: mu300-usb net ncm|ecm|rndis [once] | default" ;; esac
+            if [ "$2" = default ]; then
+                rm -f "$USBNET_FILE" "$USBNET_ONCE"
+                echo "USB network: NCM (the default) from the next boot"
+            else
+                adb_write "$USBNET_FILE" "$2" || die "cannot write $USBNET_FILE"
+                if [ "${3:-}" = once ]; then : > "$USBNET_ONCE" || die "cannot write $USBNET_ONCE"; else rm -f "$USBNET_ONCE"; fi
+                echo "USB network: $(echo "$2" | tr a-z A-Z) from the next boot${3:+ (that boot only)}; the USB connection to the computer comes back with it"
+            fi ;;
+        *) die "usage: mu300-usb net [ncm|ecm|rndis [once]|default]" ;;
+    esac
+    exit 0
+fi
 if [ "${1:-}" = boot ]; then
+    # a one-boot USB network mode is used up once boot/init has made it (it says so in USBNET_APPLIED)
+    if [ -e "$USBNET_ONCE" ] && [ -s "$USBNET_APPLIED" ]; then
+        rm -f "$USBNET_FILE" "$USBNET_ONCE"
+        echo "mu300-usb: the USB network mode for one boot was used: NCM (the default) from the next boot"
+    fi
     # quietly, on whatever kernel: the 5.4 one has its own charger driver and no I2C device node for this
     [ "$(mu300-device)" = u30air ] || exit 0
     # (a bound port controller owns the boost: what is on is its own source role)
@@ -326,5 +366,5 @@ case ${1:-status} in
         watchdog_on                       # watchdog back (40 s): the chip returns to its own defaults
         sleep 1   # the role switch works in the background
         echo "USB device: the USB network and serial console are back" ;;
-    *) sed -n '2,23s/^# \{0,1\}//p' "$0" >&2; exit 2 ;;
+    *) sed -n '2,28s/^# \{0,1\}//p' "$0" >&2; exit 2 ;;
 esac

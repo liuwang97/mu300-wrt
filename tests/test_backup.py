@@ -354,7 +354,7 @@ class ImportUbuntu(BackupCase):
             r = self.backup(shell, 'import', f)
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
             self.assertIn('note: from openwrt-luci, taken on ubuntu', r.stdout)
-            self.assertIn('skip  network lock: lte "1,3" (on OpenWrt with the control panel only)', r.stdout)
+            self.assertIn('skip  network lock: lte "1,3" (no network locks on this system)', r.stdout)
             self.assertIn('skip  SMS forwarding', r.stdout)
 
 

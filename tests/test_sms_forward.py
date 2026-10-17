@@ -16,7 +16,7 @@ import unittest
 from helpers import TOP, ShellTest
 from test_mu300dash_security import JSONFILTER
 
-FWD = TOP / 'openwrt' / 'luci-overlay' / 'opt' / 'mu300' / 'bin' / 'mu300-sms-forward'
+FWD = TOP / 'rootfs' / 'overlay' / 'opt' / 'mu300' / 'bin' / 'mu300-sms-forward'
 HTTP_UC = TOP / 'openwrt' / 'luci-overlay' / 'opt' / 'mu300' / 'lib' / 'sms-forward-http.uc'
 ADAPTER = TOP / 'openwrt' / 'luci-app-mu300' / 'root' / 'usr' / 'libexec' / 'unisoc-modem' / 'forward'
 DASH = TOP / 'openwrt' / 'luci-app-mu300' / 'root' / 'usr' / 'libexec' / 'rpcd' / 'mu300dash'
