@@ -608,5 +608,13 @@ class ApiMethods(BackupCase):
                 self.assertNotIn(secret, written)
 
 
+
+class Wiring(unittest.TestCase):
+    def test_on_the_path(self):
+        # the wiki and FINDINGS 155 say "mu300-backup export": a command on PATH on both systems (path-commands)
+        self.assertIn('mu300-backup', (BIN.parent / 'lib' / 'path-commands').read_text().split())
+        self.assertTrue(os.access(BIN / 'mu300-backup', os.X_OK))
+
+
 if __name__ == '__main__':
     unittest.main()
