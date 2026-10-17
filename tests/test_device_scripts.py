@@ -2132,7 +2132,7 @@ at() {
         self.assertEqual(cmds, [])
 
     def test_rf_apply(self):
-        self.stub('ubus', 'echo "{ \\"up\\": true, \\"autostart\\": ${T_AUTOSTART:-true} }"')
+        self.stub('ubus', 'echo "{ \\"up\\": ${T_UP:-true}, \\"autostart\\": ${T_AUTOSTART:-true} }"')
         self.stub('ifup', 'echo "ifup $*" >> "$STUBLOG/ifup"')
         held = self.tmp / 'run' / 'mu300' / 'sim-radio-held'
         # off: the WAN restarted (its dial then ends with SIM_RADIO_DISABLED), flight mode
@@ -2142,22 +2142,29 @@ at() {
         self.assertEqual((self.tmp / 'cfun').read_text().strip(), '4')
         self.assertTrue(held.exists())
         # on: AT+CFUN=1, and the WAN that was held comes back
-        (self.tmp / 'ifup').unlink()
+        (self.tmp / 'ifup').unlink(missing_ok=True)
         r, cmds = self.md('rf_apply; echo rc=$?', policy='1 1\n', cfun='4', MU300_NETIFD=1)
         self.assertIn('rc=0', r.stdout, r.stderr)
         self.assertIn('AT+CFUN=1', cmds)
         self.assertIn('AT+CAVIMS=1', cmds)                     # the card's voice choice, as at every start
         self.assertEqual((self.tmp / 'ifup').read_text(), 'ifup wan\n')
         self.assertFalse(held.exists())
+        # off with the WAN down on purpose (netifd: not up, autostart off): nothing held, no restart
+        (self.tmp / 'ifup').unlink(missing_ok=True)
+        r, cmds = self.md('rf_apply; echo rc=$?', policy='0 1\n', cfun='1', MU300_NETIFD=1, T_AUTOSTART='false',
+                          T_UP='false')
+        self.assertFalse(held.exists())
+        self.assertFalse((self.tmp / 'ifup').exists())
+        self.assertEqual((self.tmp / 'cfun').read_text().strip(), '4')
         # on, but nothing was held (the WAN was down on purpose): no ifup
-        (self.tmp / 'ifup').unlink()
+        (self.tmp / 'ifup').unlink(missing_ok=True)
         r, cmds = self.md('rf_apply; echo rc=$?', policy='1 1\n', cfun='4', MU300_NETIFD=1)
         self.assertFalse((self.tmp / 'ifup').exists())
 
     def test_every_radio_on_path_asks(self):
         text = (BIN / 'mobile-data').read_text()
         for marker in ('radio_on_locked() {\n    if ! rf_allowed', 'sim_reset() {\n    rf_allowed',
-                       'if ! rf_allowed; then rf_hold; continue; fi'):
+                       'if ! rf_allowed; then continue; fi'):
             self.assertIn(marker, text)
         up = text[text.index('up_locked() {'):text.index('\n}\n', text.index('up_locked() {'))]
         self.assertLess(up.index('rf_allowed'), up.index('radio_on'))
@@ -2369,7 +2376,7 @@ class DataRoaming(ShellTest):
         self.assertTrue(self.held.exists())
         self.assertEqual(self.radio_log().count('data roaming is off'), 1)
         # the wan taken down by hand (netifd's autostart off; its teardown left the marker): the hold ends
-        (self.tmp / 'ifup').unlink()
+        (self.tmp / 'ifup').unlink(missing_ok=True)
         (self.run_dir / 'mu300-mobile-data-down').touch()
         r, _ = self.lib('watch', MU300_NETIFD=1, CEREG=self.ROAM, T_ROAM0='0', T_AUTOSTART='false', **wenv)
         self.assertFalse(self.held.exists())

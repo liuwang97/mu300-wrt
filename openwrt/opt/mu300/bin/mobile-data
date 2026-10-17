@@ -1629,7 +1629,7 @@ watch() {
         fi
         # the SIM's radio switched off in its settings (FINDINGS 182): nothing to restore; switched on again (the
         # setting edited by hand, or rf-apply that did not get through): the radio and the dial come back here
-        if ! rf_allowed; then rf_hold; continue; fi
+        if ! rf_allowed; then continue; fi
         if [ -e "$RF_HELD" ] && [ ! -s "$SUSPEND" ]; then
             rm -f "$RF_HELD"
             echo "the radio of the SIM in use is switched on in its settings again" >&2
@@ -1955,12 +1955,13 @@ rf_apply() {
     modem_stack || { echo "no modem stack in this kernel" >&2; return 3; }
     local wan=${MU300_WAN:-wan} st
     if ! rf_allowed; then
-        rf_hold
         led off
+        # the hold marker only for data that was meant to be up: switched on again, that data comes back
         if via_netifd; then
             st=$(ubus call "network.interface.$wan" status 2>/dev/null | tr -d ' \n\t' || true)
-            case $st in *'"autostart":true'*|*'"up":true'*) bnd "$STEPDL" ifup "$wan" || true ;; esac
+            case $st in *'"autostart":true'*|*'"up":true'*) rf_hold; bnd "$STEPDL" ifup "$wan" || true ;; esac
         elif [ ! -e /run/mu300-mobile-data-down ]; then
+            rf_hold
             bnd "$STEPDL" down || true
             rm -f /run/mu300-mobile-data-down   # down on account of the radio, not the user's: on again, data again
         fi
@@ -1973,12 +1974,14 @@ rf_apply() {
         under_radio_lock rf_on_locked || return 1
         voice_replay
     fi
+    # the data that was held for the radio (the hold marker: its dial ended on the setting - netifd has blocked
+    # its restart, which also shows as autostart false - or rf-apply took it down) comes back; data somebody took down
+    # (the panel's button, ifdown, the data cap, a stopped service) left no marker and stays down
     if [ -e "$RF_HELD" ]; then
         rm -f "$RF_HELD"
         if via_netifd; then
-            st=$(ubus call "network.interface.$wan" status 2>/dev/null | tr -d ' \n\t' || true)
-            case $st in *'"autostart":false'*) ;; *) bnd "$STEPDL" ifup "$wan" || true ;; esac
-        else
+            bnd "$STEPDL" ifup "$wan" || true
+        elif [ ! -e /run/mu300-mobile-data-down ]; then
             ( setsid "$0" up </dev/null >/dev/null 2>&1 & ) || true
         fi
     fi
@@ -2008,7 +2011,9 @@ case "${1:-status}" in
     # an explicit down (by hand, the service stopped: the panel, the data cap) also ends a hold for roaming, so the
     # watchdog does not bring data back that somebody turned off; under netifd it is the teardown of every failed dial
     # and the hold stays (the watchdog ends it when the wan is taken down)
-    down) via_netifd || rm -f "$ROAM_HELD"; down ;;
+    # (and the hold for a SIM radio switched off: every down ends it - netifd's teardown too, which an ifdown runs; the
+    # restart rf-apply asks for runs the dial again after it, which holds once more)
+    down) via_netifd || rm -f "$ROAM_HELD"; rm -f "$RF_HELD"; down ;;
     status) status ;;
     roaming) roaming_cmd "${@:2}" ;;
     voice) voice_cmd "${@:2}" ;;
