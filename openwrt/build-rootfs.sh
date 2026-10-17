@@ -52,6 +52,14 @@ FW4FTPATCH=$TOP/openwrt/patches/fw4-old-kernel-flowtable.patch
 # never an access point on a DFS channel: the SC2355 driver has no radar detection (FINDINGS 42)
 NODFSPATCH=$TOP/openwrt/patches/wifi-scripts-no-dfs.patch
 [ -s "$NODFSPATCH" ] || { echo "missing $NODFSPATCH" >&2; exit 1; }
+# Docker (FINDINGS 130): in the image (MU300_DOCKER=1) or ready to install with apk (0, the default: the image carries
+# its settings and firewall zone only). In the image, its 190 MB are there twice while an update unpacks the new system
+# beside the old one, and an update by zip or installer no longer fits the smallest region OpenWrt is installed in
+# (800 MiB: "No space left on device", measured on an F50).
+case ${MU300_DOCKER:-0} in
+    0|1) DOCKER=${MU300_DOCKER:-0} ;;
+    *) echo "MU300_DOCKER is 0 or 1" >&2; exit 1 ;;
+esac
 # the docker mounts of the panel system, as the positional parameters (OUT is read above): each path stays one
 # argument, spaces and all
 set --
@@ -142,7 +150,7 @@ docker run --rm --platform linux/arm64 \
   $(opt firmware firmware) $(opt android-subset android-subset) $(opt android-gpu-subset android-gpu-subset) \
   $(opt tools/logdw/logdw logdw) $(opt tools/bt-init/mu300-bt-init bt-init) $(opt tools/keys/mu300-keys keys) $(opt tools/adbd/adbd adbd) $(opt tools/gpu/cltest cltest) \
   $(opt busybox busybox) $(opt upstream/out/modules mainline-modules) $(opt tools/carry/mu300-carry carry) -v "$TOP/openwrt":/out -v "$REGDB":/in/regdb:ro "$@" \
-  -e KREL=$KREL -e OUT="$(basename "$OUT")" -e MU300_VERSION="${MU300_VERSION:-dev}" -e MU300_SYSTEM="$SYSTEM" mu300-$FLAVOUR-base:$VER /bin/sh -eu -c '
+  -e KREL=$KREL -e OUT="$(basename "$OUT")" -e MU300_VERSION="${MU300_VERSION:-dev}" -e MU300_SYSTEM="$SYSTEM" -e MU300_DOCKER="$DOCKER" mu300-$FLAVOUR-base:$VER /bin/sh -eu -c '
 mkdir -p /var/lock /var/run /tmp
 # The packages come from the feed over the network while the image is built, and one connection cut in the middle of
 # one package failed the whole image, and a release with it. update, upgrade and add are tried three times, ten
@@ -185,6 +193,27 @@ apk add wifi-scripts iwinfo wireless-regdb iw bash flock ip-full coreutils-stty 
 # has some of them only
 apk add wireguard-tools luci-proto-wireguard ppp-mod-pptp xl2tpd 6in4 6rd ds-lite gre luci-proto-gre vxlan \
     luci-proto-vxlan ipset sqm-scripts luci-app-sqm >/dev/null
+# Docker (MU300_DOCKER=1, FINDINGS 130): the engine, its command and compose, from the feed (Docker 29). Their kmod-*
+# dependencies are the 6.12 modules of the feed, removed below like every other kmod; what they add to /etc/modules.d
+# and /etc/modules-boot.d goes here, or ubox would load br_netfilter, the legacy iptables tables, btrfs and raid6 at
+# every boot of a mainline kernel that has them as modules (overlay/etc/sysctl.d/13-mu300-docker.conf keeps the LAN
+# bridge out of the firewall when br_netfilter is loaded all the same: an apk add on the device). The nftables backend
+# of Docker needs none of them. The stress tool and the command line of containerd (ctr) are not used by docker: 39 MB
+# less. dockerd does not start at boot (the enable link apk made goes).
+if [ "$MU300_DOCKER" = 1 ]; then
+    ls /etc/modules.d /etc/modules-boot.d > /tmp/modules.before 2>/dev/null || true
+    apk add dockerd docker docker-compose >/dev/null
+    for d in /etc/modules.d /etc/modules-boot.d; do
+        for m in $(ls $d 2>/dev/null); do grep -qx "$m" /tmp/modules.before || rm -f "$d/$m"; done
+    done
+    rm -f /usr/bin/containerd-stress /usr/bin/ctr /etc/rc.d/S*dockerd /etc/rc.d/K*dockerd
+    # (the data of Docker is not in /opt/docker, the default of the package: etc/docker/daemon.json)
+    rmdir /opt/docker 2>/dev/null || true
+    [ -x /usr/bin/dockerd ] && [ -x /usr/bin/docker ] && [ -x /usr/lib/docker/cli-plugins/docker-compose ] ||
+        { echo "Docker is not complete" >&2; exit 1; }
+    # LuCI > Docker (panel system only): containers, images, networks and volumes (luci-app-dockerman, 200 KB)
+    [ -d /in/luci-plugin ] && apk add luci-app-dockerman >/dev/null
+fi
 # the pinned Aurora theme
 [ -d /in/luci-plugin ] && apk add --allow-untrusted /in/luci-theme-aurora.apk >/dev/null
 # relay mode (panel system only): ra-deprecate sends its router advertisement through a raw ICMPv6 socket (#87)
@@ -242,6 +271,12 @@ grep -q drop_old_flowtable $R/sbin/fw4 || { echo "fw4 flowtable patch not applie
 # DFS channel - hostapd fails start_dfs_cac and the hotspot stays down otherwise (FINDINGS 42)
 patch --batch --fuzz=0 -d $R -p1 -i /in/wifi-scripts-no-dfs.patch
 grep -q "device_no_dfs(config);" $R/usr/share/ucode/wifi/hostapd.uc || { echo "wifi-scripts DFS patch not applied" >&2; exit 1; }
+# Docker keeps its images and containers on the Linux partition beside the systems, a directory for each system
+# (/mnt/mu300-disk/docker/openwrt or openwrt-luci); the package reads etc/docker/daemon.json (alt_config_file)
+sed -i "s|\"/mnt/mu300-disk/docker/openwrt\"|\"/mnt/mu300-disk/docker/$MU300_SYSTEM\"|" $R/etc/docker/daemon.json
+grep -q "\"data-root\": \"/mnt/mu300-disk/docker/$MU300_SYSTEM\"," $R/etc/docker/daemon.json || { echo "Docker data-root not set" >&2; exit 1; }
+grep -q "^.option alt_config_file ./etc/docker/daemon.json.$" $R/etc/config/dockerd || { echo "dockerd does not read etc/docker/daemon.json" >&2; exit 1; }
+! ls $R/etc/rc.d/*dockerd >/dev/null 2>&1 || { echo "dockerd starts at boot" >&2; exit 1; }
 apk del patch >/dev/null   # out of packages.txt below, which lists what the image has
 if [ -d /in/luci-plugin ]; then
     [ -d /in/luci-overlay ] && cp -a /in/luci-overlay/. $R/
