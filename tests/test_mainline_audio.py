@@ -81,6 +81,38 @@ class Build(unittest.TestCase):
         self.assertIn('memblock_reserve(base, size)', patch)
 
 
+class Hardening(unittest.TestCase):
+    """FINDINGS 188: what userspace can hand the vendor code."""
+
+    def test_the_kernel_checks_every_control_write(self):
+        self.assertIn('CONFIG_SND_CTL_INPUT_VALIDATION=y\n', (UP / 'mu300-mainline.config').read_text())
+
+    def test_enum_puts_check_the_value_they_use(self):
+        for p in MOD.rglob('*.c'):
+            src = p.read_text(errors='replace')
+            self.assertNotRegex(src, r'value\.integer\.value\[0\] >= [\w>-]*items', p)
+
+    def test_no_control_declares_a_maximum_below_zero(self):
+        dai = (MOD / 'sprd' / 'dai' / 'vbc' / 'v4' / 'vbc_dai' / 'vbc-dai.c').read_text()
+        self.assertIn('#define MAX_32_BIT (0x7fffffff)', dai)
+        self.assertIn('#define VBC_PROFILE_CNT_MAX 0x7fffffff',
+                      (MOD / 'sprd' / 'dai' / 'vbc' / 'v4' / 'vbc_dai' / 'vbc-phy-v4.h').read_text())
+
+    def test_profiles_are_stored_checked(self):
+        dai = (MOD / 'sprd' / 'dai' / 'vbc' / 'v4' / 'vbc_dai' / 'vbc-dai.c').read_text()
+        store = c_function(dai, 'vbc_profile_store')
+        for check in ('size < sizeof(hdr)', 'check_mul_overflow', 'VBC_PROFILE_MAX_BYTES', 'kfree(p_profile_setting->data'):
+            self.assertIn(check, store)
+        for user in ('vbc_turning_profile_loading', 'vbc_profile_loading'):
+            self.assertIn('vbc_profile_store(', c_function(dai, user))
+        self.assertIn('mode_offset >= p_profile_setting->hdr[profile_id].num_mode', c_function(dai, 'vbc_profile_try_apply'))
+
+    def test_offload_is_off_unless_asked_for(self):
+        compr = (MOD / 'sprd' / 'platform' / 'compr_2stage_dma' / 'sprd-compr-2stage-dma.c').read_text()
+        self.assertIn('static bool allow_offload;', compr)
+        self.assertIn('if (!allow_offload)\n\t\treturn -EPERM;', c_function(compr, 'sprd_cc_open'))
+
+
 class DmaRestart(unittest.TestCase):
     """FINDINGS 24e: a stream prepared and started again after an xrun submitted the same descriptor twice."""
 
