@@ -273,6 +273,7 @@ monitor() {
         case $key in q|Q) break ;; esac
         [ -n "$MON_STOP" ] && break
         [ -n "${MON_UNTIL:-}" ] && [ "$(date +%s)" -ge "$MON_UNTIL" ] && break
+        stress_hot && break
     done
     stty "$old" 2>/dev/null; printf '\033[?25h\033[2J\033[H'; rm -f "$state"
     trap - INT TERM
@@ -329,13 +330,28 @@ stress_net() {
     ( while [ ! -e "$STRESS_DIR/stop" ]; do net_once >> "$STRESS_DIR/net.log"; sleep 2; done ) & echo $! >> "$STRESS_DIR/pids"
 }
 
-# every 2 s: time, hottest sensor, active cooling devices, cur freq per policy, max freq per policy
+# The test stops itself when the hottest sensor reaches STRESS_LIMIT, well before thermal-guard's power-off at 105 C:
+# a device whose cooling cannot hold the load (mainline's step_wise could not, FINDINGS 166) must not be switched off
+# by the test that is recommended to check it, and a hot power-off can cost the next boot its eMMC.
+STRESS_LIMIT=${MU300_STRESS_LIMIT:-95000}
+
+# every 2 s: time, hottest sensor, active cooling devices, cur freq per policy, max freq per policy; at STRESS_LIMIT
+# the reading goes to $STRESS_DIR/hot and the sampler ends (stress_run then stops the load)
 stress_sampler() {
     ( while [ ! -e "$STRESS_DIR/stop" ]; do
-          hot=$(cat /sys/class/thermal/thermal_zone*/temp 2>/dev/null | sort -n | tail -n1)
+          hot=$(cat "${MU300_SYSROOT:-}"/sys/class/thermal/thermal_zone*/temp 2>/dev/null | sort -n | tail -n1)
           echo "$(date +%s) $hot $(throttle_state | wc -w) $(cat "$CPUFREQ"/policy*/scaling_cur_freq | tr '\n' ' ')$(cat "$CPUFREQ"/policy*/scaling_max_freq | tr '\n' ' ')"
+          [ "${hot:-0}" -ge "$STRESS_LIMIT" ] 2>/dev/null && { echo "$hot" > "$STRESS_DIR/hot"; break; }
           sleep 2
       done > "$STRESS_DIR/samples" ) & echo $! >> "$STRESS_DIR/pids"
+}
+stress_hot() { [ -n "${STRESS_DIR:-}" ] && [ -e "$STRESS_DIR/hot" ]; }
+stress_hot_message() {  # why the test ended early, at the top of the summary
+    stress_hot || return 0
+    printf 'STOPPED EARLY after %s: the SoC reached %s C, the limit is %s C. The load was stopped so that the\n' \
+        "$(fmt_dur $(( $(date +%s) - STRESS_START )))" "$(( $(cat "$STRESS_DIR/hot") / 1000 ))" "$((STRESS_LIMIT / 1000))"
+    printf 'device does not power itself off (thermal-guard does at 105 C). Its cooling did not hold this load: let\n'
+    printf 'it cool down, check that nothing covers it, and report it with this summary.\n\n'
 }
 
 stress_status() {
@@ -409,14 +425,14 @@ stress_run() {  # stress_run WHAT(cpu,gpu,net|all) SECONDS
     if [ -t 0 ] && [ -t 1 ]; then
         monitor 2
     else
-        while [ -z "$MON_UNTIL" ] || [ "$(date +%s)" -lt "$MON_UNTIL" ]; do sleep 5; done
+        while { [ -z "$MON_UNTIL" ] || [ "$(date +%s)" -lt "$MON_UNTIL" ]; } && ! stress_hot; do sleep 1; done
     fi
     MON_UNTIL=
     touch "$STRESS_DIR/stop"
     for pid in $(cat "$STRESS_DIR/pids"); do kill_tree "$pid"; done
     wait 2>/dev/null
-    out=/var/log/mu300-stress-$(date +%Y%m%d-%H%M%S).txt
-    stress_summary | tee "$out"
+    out=${MU300_STRESS_LOGDIR:-/var/log}/mu300-stress-$(date +%Y%m%d-%H%M%S).txt
+    { stress_hot_message; stress_summary; } | tee "$out"
     printf '\nsaved to %s\n' "$out"
     rm -rf "$STRESS_DIR"; STRESS_DIR=
 }

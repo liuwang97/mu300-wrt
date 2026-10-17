@@ -18,11 +18,14 @@ try: fcntl.flock(int(sys.argv[1]), fcntl.LOCK_EX | (fcntl.LOCK_NB if sys.argv[2]
 except OSError: sys.exit(1)' "$1" "$nb"
 '''
 # netifd's wan: up with an address on the pinned card's bearer, unless the test says T_WAN=0 (never) or
-# T_NODATA_SLOT=<slot> (not while that card is the pinned one)
+# T_NODATA_SLOT=<slot> (not while that card is the pinned one). T_HELD=1: somebody took it down (the panel's button,
+# ifdown, the data cap) and it stays down until an ifup: netifd's autostart is false.
 UBUS = r'''
 case "$*" in *network.interface.wan*)
     slot=$(cat "$STUBLOG/run/mu300/sim-slot")
-    if [ "${T_WAN:-1}" = 1 ] && [ "${T_NODATA_SLOT:-none}" != "$slot" ]; then printf '{ "up": true, "l3_device": "%s", "ipv4-address": [ { "address": "10.0.0.2" } ] }\n' "${T_BEARER:-sipa_eth$(( slot * 8 ))}"
+    if [ "${T_HELD:-0}" = 1 ] && ! grep -qx up "$STUBLOG/net" 2>/dev/null; then
+        printf '{ "up": false, "pending": false, "autostart": false, "ipv4-address": [ ] }\n'
+    elif [ "${T_WAN:-1}" = 1 ] && [ "${T_NODATA_SLOT:-none}" != "$slot" ]; then printf '{ "up": true, "l3_device": "%s", "ipv4-address": [ { "address": "10.0.0.2" } ] }\n' "${T_BEARER:-sipa_eth$(( slot * 8 ))}"
     else printf '{ "up": false, "ipv4-address": [ ] }\n'; fi ;;
 esac
 '''
@@ -225,6 +228,59 @@ esac""")
         self.assertEqual(r.returncode,0,r.stdout)
         self.assertEqual((self.etc/'uci-slot').read_text(),'0\n')
         self.assertEqual(self.status()['result'],'switched')
+
+    def test_mobile_data_switched_off_stays_off(self):
+        # (after kanoqwq's clean-tf-7.2 2d3b6f3f; FINDINGS 104) the user turned mobile data off, then switches cards:
+        # the switch is done and saved, and nothing brings the data back - no ifup, and mobile-data's marker that
+        # keeps its watchdog from dialling stays where its `down` put it
+        marker = self.run / 'mu300-mobile-data-down'
+        marker.touch()
+        r = self.ctl('switch', '1', T_HELD='1')
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual((self.tmp / 'net').read_text(), 'down\n', 'never brought up')
+        self.assertTrue(marker.exists(), "the watchdog's marker stays")
+        self.assertEqual((self.run / 'mu300/sim-slot').read_text(), '0\n')
+        self.assertEqual((self.etc / 'uci-slot').read_text(), '0\n', "the user's choice is the boot default")
+        s = self.status(T_HELD='1')
+        self.assertEqual(s['active'], 1); self.assertEqual(s['default'], 1)
+        self.assertEqual(s['result'], 'switched'); self.assertEqual(s['phase'], 'idle')
+        self.assertFalse((self.etc / 'mu300/sim-data-seen').exists(), 'no data was seen on it')
+        self.assertEqual(self.calls().count('0 AT+SFUN=4'), 1)
+        # and back: the same, and still no ifup
+        self.assertEqual(self.ctl('switch', '2', T_HELD='1').returncode, 0)
+        self.assertEqual((self.tmp / 'net').read_text(), 'down\ndown\n')
+        self.assertTrue(marker.exists())
+        self.assertEqual((self.etc / 'uci-slot').read_text(), '1\n')
+
+    def test_mobile_data_off_and_a_failed_switch_leave_it_off(self):
+        marker = self.run / 'mu300-mobile-data-down'
+        marker.touch()
+        r = self.ctl('switch', '1', T_HELD='1', T_FAIL_ONCE='1')
+        self.assertNotEqual(r.returncode, 0)
+        self.assertEqual(self.status(T_HELD='1')['result'], 'rolled_back')
+        self.assertEqual((self.tmp / 'net').read_text(), 'down\n')
+        self.assertTrue(marker.exists())
+        self.assertEqual((self.etc / 'uci-slot').read_text(), '1\n')
+        r = self.ctl('switch', '1', T_HELD='1', T_BUSY_FIRST='1')
+        self.assertNotEqual(r.returncode, 0)
+        self.assertEqual((self.tmp / 'net').read_text(), 'down\ndown\n')
+        self.assertTrue(marker.exists())
+
+    def test_mobile_data_off_the_card_in_use_is_saved_without_data(self):
+        (self.etc / 'uci-slot').write_text('0\n')
+        r = self.ctl('switch', '2', T_HELD='1')
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual((self.etc / 'uci-slot').read_text(), '1\n')
+        self.assertFalse((self.tmp / 'at').exists())
+        self.assertFalse((self.tmp / 'net').exists())
+
+    def test_mobile_data_on_a_switch_still_removes_the_marker_and_dials(self):
+        # the teardown of the switch's own ifdown leaves the marker (mobile-data down): an ifup goes with removing it
+        marker = self.run / 'mu300-mobile-data-down'
+        marker.touch()
+        self.assertEqual(self.ctl('switch', '1').returncode, 0)
+        self.assertFalse(marker.exists())
+        self.assertEqual((self.tmp / 'net').read_text(), 'down\nup\n')
 
     def test_same_card_sends_no_commands(self):
         self.assertEqual(self.ctl('switch','2').returncode,0)
