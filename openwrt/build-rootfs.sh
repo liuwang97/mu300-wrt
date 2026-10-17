@@ -360,10 +360,13 @@ printf "%s\n" "${MU300_VERSION:-dev}" > $R/etc/mu300/image-version
 # enable the services (rc.common "enable" needs ubus, which is not running in the build container)
 # accounts still those of the image until an installer or mu300-update puts the device ones in place
 : > $R/etc/.mu300-accounts-from-image
-for s in mu300-accounts mu300-vendor mu300-hw mu300-post mu300-toolkit mu300-cpu mu300-atd mu300-modem-log mu300-wifi-client mu300-buttons mu300-power mu300-traffic mu300-user-packages mu300-adbd; do
+for s in mu300-accounts mu300-vendor mu300-hw mu300-post mu300-toolkit mu300-cpu mu300-cpu-voltage mu300-atd mu300-modem-log mu300-wifi-client mu300-buttons mu300-power mu300-traffic mu300-user-packages mu300-adbd; do
     n=$(sed -n "s/^START=//p" $R/etc/init.d/$s)
     ln -sf ../init.d/$s $R/etc/rc.d/S$n$s
 done
+# the CPU voltage offset (EXPERIMENTAL): its K link is the clean shutdown that keeps an offset for the next boot
+n=$(sed -n "s/^STOP=//p" $R/etc/init.d/mu300-cpu-voltage)
+ln -sf ../init.d/mu300-cpu-voltage $R/etc/rc.d/K${n}mu300-cpu-voltage
 if [ -d /in/luci-plugin ]; then
     n=$(sed -n "s/^START=//p" $R/etc/init.d/unisoc-modem-ui)
     ln -sf ../init.d/unisoc-modem-ui $R/etc/rc.d/S${n}unisoc-modem-ui
