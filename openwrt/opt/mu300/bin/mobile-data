@@ -86,7 +86,8 @@ export MU300_SIM_SLOT="$SIM_SLOT"
 # must never decide that.
 # led on|5g|off|error: see mu300-led (which LED that is depends on the device)
 led() { bnd "${MU300_LED_DEADLINE:-10}" /opt/mu300/bin/mu300-led data "$1" </dev/null >/dev/null 2>&1 || true; }
-# data is up: the LED tells 4G from 5G as ZTE's firmware does (the U30 Air: blue on 4G, white on 5G). The access
+# data is up: the LED tells 4G from 5G as ZTE's firmware does on the F50 (the U30 Air's shows the SIM in use instead,
+# FINDINGS 154: mu300-led takes either word for the same colour there). The access
 # technology changes under a live connection, so the watchdog asks again on every round. AT+CEREG? is a short
 # local status read; AT+COPS? took about two seconds on weak service and held the AT channel on every round.
 # +CEREG: <n>,<stat>[,<tac>,<ci>,<AcT>[,...]]: the AcT is the fifth field (with <n> 4 or 5 more fields follow it).

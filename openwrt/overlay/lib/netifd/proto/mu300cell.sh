@@ -178,7 +178,8 @@ proto_mu300cell_setup() {
 		[ -w "/proc/sys/net/ipv6/conf/$ifname/disable_ipv6" ] &&
 			echo 1 > "/proc/sys/net/ipv6/conf/$ifname/disable_ipv6"
 	fi
-	# (the LED: mobile-data up has set it, blue on 4G and white on 5G; "data on" here turned 5G blue)
+	# (the LED: mobile-data up has set it - blue on 4G and white on 5G, on the U30 Air the SIM in use; "data on" here
+	# turned 5G blue)
 	logger -t mu300cell "connected: $ip/${prefix:-32} on $ifname"
 }
 

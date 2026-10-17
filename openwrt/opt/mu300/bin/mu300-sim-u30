@@ -14,6 +14,7 @@ AT=/opt/mu300/bin/mu300-at
 MD=/opt/mu300/bin/mobile-data
 DEVICE=/opt/mu300/bin/mu300-device
 REBOOT=${MU300_REBOOT_CMD:-reboot}
+LED=${MU300_LED_CMD:-/opt/mu300/bin/mu300-led}
 supported() { [ -e /etc/openwrt_release ] && [ "$("$DEVICE" 2>/dev/null)" = u30air ]; }
 supported || { printf '{"ok":0,"supported":0,"error":"Dual SIM control is only for the U30 Air on OpenWrt"}\n'; exit 1; }
 SIM_CONFIG_U30=1
@@ -322,6 +323,9 @@ live_switch() {
     trap 'atomic "$R/sim-phase" idle; rm -f "$R/sim-sequence" "$R/sim-switching"; if [ "$(cat "$R/sim-result")" = switching ]; then unknown_radio; fi' EXIT
     trap interrupt_switch INT TERM
     ifdown wan || { atomic "$R/sim-result" failed; fail 'Cannot stop WAN'; return 1; }
+    # the network LED blinks the target card's colour, as ZTE's firmware does while it switches (FINDINGS 154);
+    # the next dial's "data on" shows the card that ends up in use, a rollback's too. Cosmetic: never a failure.
+    "$LED" data switching "$target" </dev/null >/dev/null 2>&1 || true
     # Serialize the whole protocol-stack transaction against radio-on and manual resets.
     run_sequence "$target" || rc=$?
     if [ "$rc" = 75 ]; then
