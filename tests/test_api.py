@@ -69,6 +69,19 @@ elif args[0] == 'batch':
             k, _, v = w[1].partition('=')
             c, s, o = resolve(k)
             db.setdefault(c, {}).setdefault(s, {})[o] = v
+        elif w[0] == 'delete':
+            c, s, o = resolve(w[1])
+            if o not in db.get(c, {}).get(s, {}):
+                sys.exit(1)
+            del db[c][s][o]
+        elif w[0] == 'del_list':
+            k, _, v = w[1].partition('=')
+            c, s, o = resolve(k)
+            items = db.get(c, {}).get(s, {}).get(o, '').split()
+            if v not in items:
+                sys.exit(1)
+            items.remove(v)
+            db[c][s][o] = ' '.join(items)
         elif w[0] == 'commit':
             pass
         else:
@@ -435,6 +448,37 @@ class HotspotOpenWrt(ApiCase):
             self.assertEqual(self.calls('mu300-wifi-band'), [['mu300-wifi-band', '2.4']])
             self.assertEqual(self.ucidb()['wireless']['radio0']['channel'], '11')
             self.assertEqual(self.calls('later')[-1][-2:], ['wifi', 'reload'])
+
+    def test_a_hotspot_left_on_sae_becomes_wpa2(self):
+        """WPA3/SAE is disabled on this chip (FINDINGS 80): any change through the API puts a hotspot still set to
+        it on WPA2-PSK (CCMP), with its password or the new one, and restarts Wi-Fi fully; never SAE, never open"""
+        start = self.ucidb()
+        for shell in self.each_shell():
+            for enc in ('sae', 'sae-mixed', 'psk3'):
+                db = json.loads(json.dumps(start))
+                db['wireless']['default_radio0'].update({'encryption': enc, 'ieee80211w': '2', 'sae_pwe': '0',
+                                                         'hostapd_bss_options': 'max_listen_interval=10 u30_sae_offload=1'})
+                self.uci(db)
+                self.assertEqual(self.ok(shell, 'wifi.get')['security'], 'wpa2-wpa3' if enc == 'sae-mixed' else 'wpa3')
+                self.clear_calls()
+                self.ok(shell, 'wifi.set', {'hidden': True})
+                w = self.ucidb()['wireless']['default_radio0']
+                self.assertEqual((w['encryption'], w['key'], w['hostapd_bss_options']),
+                                 ('psk2+ccmp', 'wrtsecret99', 'max_listen_interval=10'))
+                self.assertNotIn('ieee80211w', w)
+                self.assertNotIn('sae_pwe', w)
+                self.assertEqual(self.calls('later')[-1][-1], 'wifi down; sleep 1; wifi up')
+                self.assertEqual(self.ok(shell, 'wifi.get')['security'], 'wpa2')
+            # without a password it has, and none given: refused, nothing changed
+            db = json.loads(json.dumps(start))
+            db['wireless']['default_radio0'].update({'encryption': 'sae'})
+            del db['wireless']['default_radio0']['key']
+            self.uci(db)
+            self.refused(shell, 'wifi.set', {'hidden': True}, 'missing', 'password')
+            self.assertEqual(self.ucidb(), db)
+            self.ok(shell, 'wifi.set', {'password': 'a-new-password'})
+            w = self.ucidb()['wireless']['default_radio0']
+            self.assertEqual((w['encryption'], w['key']), ('psk2+ccmp', 'a-new-password'))
 
 
 class MobileData(ApiCase):
