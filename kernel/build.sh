@@ -1,16 +1,22 @@
 #!/bin/bash
 # Build mainline for the MU300 inside mu300-mainline-build: Image + DTB. /work = this directory, /src = kernel tree volume
 set -eo pipefail
-KV=${KV:-6.18.56}
+KV=${KV:-6.18.57}
 # where Image, DTB and modules.builtin go: /work/out for 6.18, OUTDIR=out-7.2 keeps another kernel next to it
 OUT=/work/${OUTDIR:-out}
-# the kernel source, fetched once into the volume and checked against kernel.org's checksum list
+# the kernel source, fetched once into the volume and unpacked only after verify-kernel-src.sh passed: the signed
+# sha256sums.asc (kernel.org autosigner) and the releaser's tar.sign, against the keyrings in keys/ (FINDINGS 161).
+# It unpacks beside the tree and is moved into place last, so an interrupted run never leaves a tree that counts
 if [ ! -d /src/linux-$KV ]; then
     base=https://cdn.kernel.org/pub/linux/kernel/v${KV%%.*}.x
-    cd /src
-    curl -fsSLO "$base/linux-$KV.tar.xz"
-    curl -fsSL "$base/sha256sums.asc" | grep " linux-$KV.tar.xz\$" | sha256sum -c - || { rm -f linux-$KV.tar.xz; exit 1; }
-    tar -xJf linux-$KV.tar.xz && rm linux-$KV.tar.xz
+    dl=/src/.download-$KV
+    rm -rf "$dl" && mkdir -p "$dl"
+    for f in linux-$KV.tar.xz linux-$KV.tar.sign sha256sums.asc; do
+        curl -fsSL -o "$dl/$f" "$base/$f" || { rm -rf "$dl"; echo "cannot fetch $base/$f" >&2; exit 1; }
+    done
+    bash /work/verify-kernel-src.sh "$dl" "$KV" || { rm -rf "$dl"; exit 1; }
+    tar -xJf "$dl/linux-$KV.tar.xz" -C "$dl" && mv "$dl/linux-$KV" /src/linux-$KV
+    rm -rf "$dl"
 fi
 cd /src/linux-$KV
 # MU300 patches (idempotent); MU300_PROBE_STAGE=N adds the boot-stage reset probe (debug)
@@ -38,6 +44,11 @@ if grep -q '^config NFS_V4_1$' fs/nfs/Kconfig; then
     ./scripts/config --file "$O/.config" --enable NFS_V4_1
 fi
 make O=$O ARCH=arm64 olddefconfig >/dev/null
+# every other tristate option this board can use becomes a module (all-modules.py: not allmodconfig - what is built
+# in stays built in, bools only where all-modules.config opens a family, no PCI cards, no debug/test code, nothing
+# that would bind to the vendor device tree); MU300_ALL_MODULES=0 builds the fragment alone
+rm -f $O/all-modules.report
+[ "${MU300_ALL_MODULES:-1}" = 0 ] || python3 /work/all-modules.py . $O
 # options Kconfig did not take; ones known not to exist in this kernel are listed in config-ignored.txt, any
 # other one stops the build (a silently dropped option has cost a working feature before)
 bad=
@@ -68,4 +79,7 @@ mkdir -p $OUT
 cp $O/arch/arm64/boot/Image $O/ums9620-mu300.dtb $OUT/
 # for depmod on the device: modprobe of a built-in driver fails without them
 cp $O/modules.builtin $O/modules.builtin.modinfo $OUT/
+# what all-modules.py added: make-bundle.sh checks the Image against it as against the fragment
+rm -f $OUT/all-modules.report
+[ ! -f $O/all-modules.report ] || cp $O/all-modules.report $OUT/
 ls -la $OUT
