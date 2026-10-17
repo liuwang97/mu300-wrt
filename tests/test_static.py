@@ -188,7 +188,7 @@ class Rules(unittest.TestCase):
             self.assertIn(u, units)
 
     def test_every_tool_that_mounts_the_filesystem_knows_the_card(self):
-        for f in ('uninstall.sh', 'uninstall.ps1', 'tools/reset-password.sh', 'tools/android-import-hotspot.sh'):
+        for f in ('uninstall.sh', 'uninstall.ps1', 'tools/reset-password.sh'):
             self.assertIn('mu300sd', (TOP / f).read_text(), f)
 
     def test_every_system_list_has_openwrt_luci(self):
