@@ -24,7 +24,7 @@
 #          capture   hw:<card>,FE_ST_DUMP          what they said: the VBC's dump of DAC1 (switched on here), 48 kHz
 #                                                  on two equal channels. FE_ST_VOICE_C, the DSP's own downlink tap,
 #                                                  gets only every other 20 ms frame on this board (FINDINGS 24e)
-#        which is what tone, echo and a SIP bridge (sipserver, mu300 build) use.
+#        which is what tone, echo and a SIP bridge use.
 #
 # How a call is started is from the Rongyue E5's working port of the same DSP (kanoqwq/e5-linux@402fde1,
 # @8e9b8a4, @2c726fc - its downlink was heard on the receiver and speaker): the call scene is the hostless
