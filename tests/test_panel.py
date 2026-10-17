@@ -122,7 +122,8 @@ class PanelExtra(ExtrasBase):
             self.assertIn('LoginTo = false', conf.read_text())
             self.assertIn('IdleTimeout = 15', conf.read_text())
             self.assertEqual([l for l in drop.read_text().splitlines() if not l.startswith('#')],
-                             ['[Socket]', 'ListenStream=', 'ListenStream=192.168.77.1:9090', 'FreeBind=yes'])
+                             ['[Socket]', 'ListenStream=', 'ListenStream=192.168.77.1:9090', 'FreeBind=yes',
+                              'IPAddressDeny=any', 'IPAddressAllow=localhost 192.168.77.0/24'])
             self.assertTrue((self.links / 'mu300-panel').is_symlink())
             self.assertIn('--no-block restart cockpit.socket', self.log('systemctl'))
 
@@ -230,7 +231,8 @@ class PanelExtra(ExtrasBase):
             self.log('systemctl')
             self.assertEqual(self.ex(shell, 'link').returncode, 0)
             body = [l for l in drop.read_text().splitlines() if not l.startswith('#')]
-            self.assertEqual(body, ['[Socket]', 'ListenStream=', 'ListenStream=192.168.90.1:9090', 'FreeBind=yes'])
+            self.assertEqual(body, ['[Socket]', 'ListenStream=', 'ListenStream=192.168.90.1:9090', 'FreeBind=yes',
+                                   'IPAddressDeny=any', 'IPAddressAllow=localhost 192.168.90.0/24'])
             self.assertNotIn('BindToDevice', drop.read_text())
             sc = self.log('systemctl').splitlines()
             self.assertEqual(sc[0], 'systemctl daemon-reload')
@@ -240,6 +242,16 @@ class PanelExtra(ExtrasBase):
             (self.root / 'etc/mu300/lan.conf').write_text('LAN_IP=$(reboot)\n')
             self.ex(shell, 'link')
             self.assertIn('ListenStream=192.168.77.1:9090', drop.read_text())
+            # never a wildcard: a lan.conf without LAN_IP, or none at all, is the default too
+            for conf in ('LAN_IP=\n', None):
+                if conf is None:
+                    (self.root / 'etc/mu300/lan.conf').unlink()
+                else:
+                    (self.root / 'etc/mu300/lan.conf').write_text(conf)
+                self.ex(shell, 'link')
+                listen = [l for l in drop.read_text().splitlines() if l.startswith('ListenStream=')]
+                self.assertEqual(listen, ['ListenStream=', 'ListenStream=192.168.77.1:9090'])
+            (self.root / 'etc/mu300/lan.conf').write_text('LAN_IP=192.168.77.1\n')
             (self.root / 'etc/mu300/lan.conf').unlink()
 
     def test_update_rewrites_the_drop_in_of_the_new_system(self):
@@ -260,7 +272,8 @@ class PanelExtra(ExtrasBase):
             drop.write_text('[Socket]\nListenStream=\nListenStream=9090\nBindToDevice=br-lan\n')
             r = self.up(shell, 'panel_configure "ubuntu openwrt"; echo "rc=$?"')
             self.assertIn('rc=0', r.stdout, r.stderr)
-            self.assertIn('ListenStream=192.168.78.1:9090\nFreeBind=yes', drop.read_text())
+            self.assertIn('ListenStream=192.168.78.1:9090\nFreeBind=yes\nIPAddressDeny=any\n'
+                          'IPAddressAllow=localhost 192.168.78.0/24', drop.read_text())
             self.assertNotIn('BindToDevice', drop.read_text())
             self.assertFalse((self.disk / 'openwrt/etc/systemd').exists())
             self.assertEqual(self.log('systemctl'), '')             # files only: the running system is not touched
@@ -394,7 +407,8 @@ class Static(unittest.TestCase):
         # and Cockpit listens on the LAN address only - from the start of the boot (FreeBind), never bound to br-lan
         # (BindToDevice makes the socket wait for the device, which comes after basic.target: a 90 s stall)
         cmd = CMD.read_text()
-        self.assertIn("printf '[Socket]\\nListenStream=\\nListenStream=%s:9090\\nFreeBind=yes\\n' \"$(lan_ip)\"", cmd)
+        self.assertIn("printf '[Socket]\\nListenStream=\\nListenStream=%s:9090\\nFreeBind=yes\\n' \"$_ip\"", cmd)
+        self.assertIn("printf 'IPAddressDeny=any\\nIPAddressAllow=localhost %s.0/24\\n'", cmd)
         self.assertFalse([l for l in cmd.splitlines() if 'BindToDevice=' in l and not l.lstrip().startswith('#')])
         # a LAN address changed while the device runs moves the socket along
         lan = (BIN / 'lan-start').read_text()
