@@ -174,13 +174,13 @@ fetch_stdout() {  # fetch_stdout URL (exit 9: the mirror of this run could not b
 fetch_file() {  # fetch_file URL OUT (resumes a partial OUT; exit 9: the mirror of this run could not be reached)
     # what the file holds before the attempt: a transfer that arrived and then failed wrote bytes, and that is a
     # source that answered - the loop resumes it here rather than moving the run to github.com
-    _had=$(wc -c < "$2" 2>/dev/null || printf '0\n')
+    _had=$(wc -c 2>/dev/null < "$2" || printf '0\n')
     if have curl; then
         curl -fL --retry 5 --retry-delay 5 --connect-timeout 30 --speed-limit 1024 --speed-time 60 -C - -o "$2" "$1"
         _rc=$?
     else wget -c -T 60 -O "$2" "$1"; _rc=$?; fi
     [ "$_rc" = 0 ] && return 0
-    _now=$(wc -c < "$2" 2>/dev/null || printf '0\n')
+    _now=$(wc -c 2>/dev/null < "$2" || printf '0\n')
     if [ "$_now" -gt "$_had" ]; then return 1; fi
     return "$(fetch_unreachable_rc "$_rc" 0)"
 }
