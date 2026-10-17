@@ -106,11 +106,26 @@ var PLMN_CN = {
 	'46015': _('China Broadnet'), '46020': _('China Tietong')
 };
 
-/* COPS gives a name (shown through the catalogs, so a known English name is translated) or a numeric PLMN */
+/* The same carriers by the name the modem gives, whatever its case and spacing ("CHINA BROADNET", "China  Mobile"): a
+ * catalog key matches only exactly, and the modems give these names in capitals (#231). */
+var CARRIER_NAMES = {
+	'china mobile': _('China Mobile'), 'china unicom': _('China Unicom'), 'china telecom': _('China Telecom'),
+	'china broadnet': _('China Broadnet'), 'china tietong': _('China Tietong')
+};
+
+/* COPS gives a name (shown through the catalogs, so a known English name is translated) or a numeric PLMN. A name the
+ * catalog does not have exactly is looked up without case, then by its PLMN; one that is in neither is shown as the
+ * modem gave it (#231) */
 function carrierName(carrier) {
 	if (!carrier) return '--';
-	if (carrier.name) return _(carrier.name);
-	return PLMN_CN[carrier.plmn] || carrier.plmn || '--';
+	var name = carrier.name ? String(carrier.name) : '';
+	if (name) {
+		var t = _(carrier.name);
+		if (t !== name) return t;
+		var key = name.replace(/\s+/g, ' ').trim().toLowerCase();
+		if (Object.prototype.hasOwnProperty.call(CARRIER_NAMES, key)) return CARRIER_NAMES[key];
+	}
+	return PLMN_CN[carrier.plmn] || name || carrier.plmn || '--';
 }
 
 /* Signal quality grade (thresholds from ufi_tools' SignalQuality.kt) as a level key: 'excellent', 'good', 'fair',
