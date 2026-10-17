@@ -67,6 +67,9 @@ Which OpenWrt?	Hangi OpenWrt?
 2) OpenWrt {1} with the MU300 control panel: dashboard, cellular locks, SMS, AT terminal, USB modes (by kanoqwq)	2) OpenWrt {1} ve MU300 kontrol paneli: pano, hücresel kilitler, SMS, AT terminali, USB kipleri (kanoqwq yapımı)
 MU300_OPENWRT must be plain or luci	MU300_OPENWRT plain ya da luci olmalı
 that choice needs about {1} MiB and this device has {2} MiB of free space	bu seçim yaklaşık {1} MiB gerektiriyor, bu cihazda ise {2} MiB boş alan var
+Choose 2 (OpenWrt) instead: it fits here.	Bunun yerine 2'yi (OpenWrt) seçin: o buraya sığar.
+Choose 1 (Ubuntu) or 2 (OpenWrt) instead: one system fits here.	Bunun yerine 1'i (Ubuntu) ya da 2'yi (OpenWrt) seçin: buraya tek bir sistem sığar.
+An OpenWrt zip of this release fits here.	Bu sürümün bir OpenWrt zip'i buraya sığar.
 Which one should boot ({1})	Hangisi açılsın ({1})
 invalid system	geçersiz sistem
 Boot Linux by default instead of Android (falls back to Android if Linux fails)? (yes/no)	Varsayılan olarak Android yerine Linux açılsın mı (Linux açılamazsa Android'e döner)? (evet/hayır)
@@ -317,7 +320,6 @@ password for root: none yet - set one with passwd, or in LuCI (System > Administ
 could not write {1}; nothing was installed	{1} yazılamadı; hiçbir şey kurulmadı
 used by this installation and removed from {1}:{2}	bu kurulumda kullanıldı ve {1} dosyasından kaldırıldı:{2}
 could not remove{1} from {2}; remove it by hand	{2} dosyasından kaldırılamadı:{1}; elle kaldırın
-password:       kept: the accounts and passwords of the installed system are not changed ({1} in {2} sets a new one)	parola:         korunuyor: kurulu sistemin hesapları ve parolaları değişmez (yenisi için {2} dosyasına {1})
 password for {1}: unchanged (the one this system had)	{1} için parola: değişmedi (bu sistemin önceki parolası)
 The web panel for Ubuntu (Cockpit with an MU300 page: signal, SMS, VPN, Wi-Fi, updates, a terminal; on the LAN only) is optional. It can also be added later on the device:	Ubuntu için web paneli (MU300 sayfalı Cockpit: sinyal, SMS, VPN, Wi-Fi, güncellemeler, terminal; yalnızca LAN üzerinden) isteğe bağlıdır. Daha sonra cihazda da eklenebilir:
 Install the web panel for Ubuntu (about 24 MB more to download, 50 MB on the device)? (yes/no)	Ubuntu için web paneli kurulsun mu (yaklaşık 24 MB ek indirme, cihazda 50 MB)? (yes/no)
@@ -667,6 +669,7 @@ the other system	diğer sistem
 Linux was removed. The device starts stock Android; restart it once to check.	Linux kaldırıldı. Cihaz fabrika Android'ini açar; kontrol etmek için bir kez yeniden başlatın.
 Give the space behind userdata back to it (experimental; ERASES Android's data)	userdata'nın arkasındaki alanı ona geri ver (deneysel; Android verilerini SİLER)
 Only for a device where this installer shrank userdata to make room. On the usual 64 GB device the space behind userdata is free from the factory: leave this off.	Yalnızca bu yükleyicinin yer açmak için userdata'yı küçülttüğü cihazlar içindir. Alışılmış 64 GB'lık cihazda userdata'nın arkasındaki alan fabrikadan boş gelir: bunu kapalı bırakın.
+Leave it off too if Linux may be installed again: the installer then uses this space without touching Android. With it on, a new installation has to make room again, which resets Android once more.	Linux yeniden kurulabilecekse de kapalı bırakın: yükleyici o zaman Android'e dokunmadan bu alanı kullanır. Açıkken yeni bir kurulumun yeniden yer açması gerekir, bu da Android'i bir kez daha sıfırlar.
 Type ERASE to allow that:	Buna izin vermek için ERASE yazın:
 This window	Bu pencere
 drives install.sh / install.ps1 in their answers mode; it installs nothing by itself	install.sh / install.ps1 betiklerini yanıt kipinde yönetir; kendisi hiçbir şey kurmaz
@@ -854,3 +857,30 @@ This window was started from an unpacked Magisk zip: it installs the system and 
 Files	Dosyalar
 From	Kaynak
 this unpacked Magisk zip, nothing downloaded: {1}	bu açılmış Magisk zip'i, hiçbir şey indirilmeden: {1}
+The installed {1} has a login password of its own.	Kurulu {1} sisteminin kendi giriş parolası var.
+yes  keep it: the current password is asked once and checked on the device	evet  korunsun: mevcut parola bir kez sorulur ve cihazda doğrulanır
+no   set a new password	hayır  yeni bir parola belirlensin
+Keep the current password? (yes/no)	Mevcut parola korunsun mu? (evet/hayır)
+Current password of "{1}" in the installed {2} (only Enter if it has none)	Kurulu {2} sistemindeki "{1}" kullanıcısının mevcut parolası (parolası yoksa yalnızca Enter)
+confirmed: the password of {1} stays as it is	doğrulandı: {1} sisteminin parolası olduğu gibi kalıyor
+that is not the current password of "{1}" in {2}	bu, {2} sistemindeki "{1}" kullanıcısının mevcut parolası değil
+"{1}" in the installed {2} has no password login, so there is none to confirm. Nothing was changed: run the installer again and answer no to set a new password.	Kurulu {2} sistemindeki "{1}" için parolayla giriş kapalı, doğrulanacak bir parola yok. Hiçbir şey değiştirilmedi: yükleyiciyi yeniden çalıştırın ve yeni bir parola için hayır deyin.
+the current password of "{1}" in the installed {2} could not be checked on the device ({3}). Nothing was changed: run the installer again and answer no to set a new password.	kurulu {2} sistemindeki "{1}" kullanıcısının mevcut parolası cihazda doğrulanamadı ({3}). Hiçbir şey değiştirilmedi: yükleyiciyi yeniden çalıştırın ve yeni bir parola için hayır deyin.
+the current password of "{1}" in the installed {2} was not confirmed. Nothing was changed: run the installer again and answer no to set a new password.	kurulu {2} sistemindeki "{1}" kullanıcısının mevcut parolası doğrulanmadı. Hiçbir şey değiştirilmedi: yükleyiciyi yeniden çalıştırın ve yeni bir parola için hayır deyin.
+password:       kept as it is in {1} (confirmed){2}	parola:         {1} içinde olduğu gibi korunuyor (doğrulandı){2}
+the new one in {1}	{1} içinde yenisi
+mu300-install.conf: {1} is taken only from a mu300-install.conf inside the zip; ignored in {2}	mu300-install.conf: {1} yalnızca zip içindeki bir mu300-install.conf dosyasından alınır; {2} içinde yok sayıldı
+an update sets a password only from a mu300-install.conf inside the zip: {1} in {2} is not used	güncelleme parolayı yalnızca zip içindeki bir mu300-install.conf dosyasından belirler: {2} içindeki {1} kullanılmadı
+mu300-install.conf: MU300_KEEP_PASSWORD=yes and a new password (MU300_PASSWORD or MU300_PASSWORD_RESET) do not go together; nothing was changed	mu300-install.conf: MU300_KEEP_PASSWORD=yes ile yeni bir parola (MU300_PASSWORD ya da MU300_PASSWORD_RESET) birlikte olmaz; hiçbir şey değiştirilmedi
+MU300_CURRENT_PASSWORD in {1} is not the current password of "{2}" in the installed {3}. Nothing was changed. Correct it (no such line: no password), or set a new one with MU300_KEEP_PASSWORD=no and MU300_PASSWORD, or remove MU300_KEEP_PASSWORD to keep the password without a check.	{1} içindeki MU300_CURRENT_PASSWORD, kurulu {3} sistemindeki "{2}" kullanıcısının mevcut parolası değil. Hiçbir şey değiştirilmedi. Düzeltin (bu satır yoksa: parola yok), ya da MU300_KEEP_PASSWORD=no ve MU300_PASSWORD ile yenisini belirleyin, ya da parolayı doğrulamadan korumak için MU300_KEEP_PASSWORD satırını kaldırın.
+"{1}" in the installed {2} has no password login, so there is none to confirm. Nothing was changed. Set a new one with MU300_KEEP_PASSWORD=no and MU300_PASSWORD, or remove MU300_KEEP_PASSWORD to keep the account as it is.	Kurulu {2} sistemindeki "{1}" için parolayla giriş kapalı, doğrulanacak bir parola yok. Hiçbir şey değiştirilmedi. MU300_KEEP_PASSWORD=no ve MU300_PASSWORD ile yenisini belirleyin, ya da hesabı olduğu gibi korumak için MU300_KEEP_PASSWORD satırını kaldırın.
+the current password of "{1}" in the installed {2} could not be checked on the device ({3}). Nothing was changed. Set a new one with MU300_KEEP_PASSWORD=no and MU300_PASSWORD, or remove MU300_KEEP_PASSWORD to keep the password without a check.	kurulu {2} sistemindeki "{1}" kullanıcısının mevcut parolası cihazda doğrulanamadı ({3}). Hiçbir şey değiştirilmedi. MU300_KEEP_PASSWORD=no ve MU300_PASSWORD ile yenisini belirleyin, ya da parolayı doğrulamadan korumak için MU300_KEEP_PASSWORD satırını kaldırın.
+MU300_KEEP_PASSWORD: the installed {1} has no password of its own to keep; the password below is used	MU300_KEEP_PASSWORD: kurulu {1} sisteminin korunacak kendi parolası yok; aşağıdaki parola kullanılıyor
+password:       kept: the accounts and passwords of the installed system are not changed; the current password was checked ({1})	parola:         korunuyor: kurulu sistemin hesapları ve parolaları değişmez; mevcut parola doğrulandı ({1})
+password:       kept, not checked: the accounts and passwords of the installed system are not changed (a mu300-install.conf inside the zip can check it or set a new one: {1})	parola:         korunuyor, doğrulanmadı: kurulu sistemin hesapları ve parolaları değişmez (zip içindeki bir mu300-install.conf onu doğrulatabilir ya da yenisini belirleyebilir: {1})
+(not checked: a mu300-install.conf inside the zip can check it or set a new one, see {1})	(doğrulanmadı: zip içindeki bir mu300-install.conf onu doğrulatabilir ya da yenisini belirleyebilir, bkz. {1})
+Keep the current password	Mevcut parola korunsun
+Current password	Mevcut parola
+The installer checks it on the device before anything is written, and stops when it is not the current one. Leave it empty when there is none (OpenWrt's root as it ships). The new password below is then needed only for a system the update installs new.	Yükleyici, hiçbir şey yazılmadan önce onu cihazda doğrular; mevcut parola değilse durur. Parola yoksa boş bırakın (OpenWrt'nin root'u ilk geldiği gibi). Aşağıdaki yeni parola o zaman yalnızca güncellemenin yeni kurduğu bir sistem için gerekir.
+kept: the current one is checked on the device	korunuyor: mevcut parola cihazda doğrulanır
+the new one	yenisi
