@@ -209,19 +209,40 @@ system_release() {
     case $v in v[0-9]*) echo "$v" ;; esac
 }
 
+# dae_kernel_ok: the running kernel can run dae - 5.17 or newer with BTF (/sys/kernel/btf/vmlinux) - as the VPN
+# module's own check (mu300-vpn, dae_kernel_ok) has it; else the reason on stdout and 1. (MU300_KREL, MU300_BTF: tests/)
+dae_kernel_ok() {
+    _kr=${MU300_KREL:-$(uname -r 2>/dev/null)}
+    _maj=${_kr%%.*}; _min=${_kr#*.}; _min=${_min%%[!0-9]*}
+    case $_maj in ''|*[!0-9]*) _maj=0 ;; esac
+    case $_min in ''|*[!0-9]*) _min=0 ;; esac
+    if [ "$_maj" -lt 5 ] || { [ "$_maj" -eq 5 ] && [ "$_min" -lt 17 ]; }; then
+        echo "dae needs Linux 5.17 or newer with BTF, and this kernel is $_kr (the 5.4 vendor kernel cannot run it: mu300-update kernel 6.18, reboot, then install it)"
+        return 1
+    fi
+    [ -r "${MU300_BTF:-/sys/kernel/btf/vmlinux}" ] && return 0
+    echo "dae needs a kernel with BTF (/sys/kernel/btf/vmlinux), and kernel $_kr has none"
+    return 1
+}
+
 # install vpn|vpn-ENGINE [FROM]: the module, from FROM (a file, or a directory with SHA256SUMS) or its latest release.
 # vpn is the core with the engines the device needs (vpn_module_get): the engines first, the core last, and nothing
 # of the core changes when an engine cannot be had or installed.
 do_install_module() {
     name=$1
     from=${2:-${MU300_VPN_MODULE:-}}
+    # dae is 33 MB of program and 25 MB of geodata that the 5.4 vendor kernel, and any kernel without BTF, cannot run:
+    # said before anything is downloaded (MU300_DAE_ANY_KERNEL=1: for a kernel this device is about to boot)
+    if [ "$name" = vpn-dae ] && [ "${MU300_DAE_ANY_KERNEL:-}" != 1 ] && ! why_=$(dae_kernel_ok); then
+        die "vpn-dae was not installed: $why_ (MU300_DAE_ANY_KERNEL=1 installs it anyway, for a kernel this device is about to boot)"
+    fi
     if [ "$name" != vpn ]; then
         [ -n "$from" ] || say "downloading $(module_asset "$name") from $VPN_URL"
         module_get "$name" "$STAGE" "$from"; r=$?
         case $r in
             0) set_="$name $MODULE_FILE $MODULE_SHA" ;;
             3) set_= ;;
-            1) rm -rf "$STAGE"; die "$name was not installed: the VPN module could not be downloaded (is the device online? Offline: mu300-extra install $name --from FILE)" ;;
+            1) rm -rf "$STAGE"; die "$name was not installed: the VPN module could not be downloaded ($(offline_why); offline: mu300-extra install $name --from DIR, a directory with $(module_asset "$name") and the release's SHA256SUMS copied onto the device)" ;;
             *) rm -rf "$STAGE"; die "$name was not installed" ;;
         esac
     else
@@ -229,7 +250,7 @@ do_install_module() {
         vpn_module_get "$STAGE" "$from"; r=$?
         case $r in
             0) set_=$VPN_SET ;;
-            1) rm -rf "$STAGE"; die "vpn was not installed: the VPN module could not be downloaded (is the device online? Offline: mu300-extra install vpn --from DIR, a directory with the module's tarballs and SHA256SUMS)" ;;
+            1) rm -rf "$STAGE"; die "vpn was not installed: the VPN module could not be downloaded ($(offline_why); offline: mu300-extra install vpn --from DIR, a directory with the module's tarballs and SHA256SUMS)" ;;
             4) rm -rf "$STAGE"; die "vpn was not installed, and nothing was changed: the engines this device runs on must come with it (see above; offline: the engine tarballs, or mu300-linux-vpn.tar.gz, next to the core)" ;;
             *) rm -rf "$STAGE"; die "vpn was not installed" ;;
         esac
@@ -303,7 +324,7 @@ do_install() {
     else
         tag=${MU300_RELEASE:-$(system_release)}
         [ -n "$tag" ] || tag=$(latest_release)
-        [ -n "$tag" ] || die "could not reach GitHub (is the device online?)"
+        [ -n "$tag" ] || die "could not reach GitHub ($(offline_why))"
         asset=$(extra_asset "$name")
         say "downloading $asset of $tag"
         fetch_verified "$tag" "$asset"; r=$?
@@ -316,7 +337,7 @@ do_install() {
                 fetch_verified "$tag" "$asset"; r=$?
             fi
         fi
-        [ "$r" = 0 ] || { rm -rf "$STAGE"; die "$name was not installed (no verified $asset of $tag)"; }
+        [ "$r" = 0 ] || { rm -rf "$STAGE"; _w=; [ "$r" != 1 ] || ! vpn_ks_blocks || _w=": the download was $(offline_why)"; die "$name was not installed (no verified $asset of $tag)$_w"; }
         extra_unpack "$name" "$STAGE/$asset" || { rm -rf "$STAGE"; die "$name was not installed"; }
         rm -rf "$STAGE"
     fi
