@@ -2229,9 +2229,21 @@ static int sprd_compress_new(struct snd_soc_component *component, struct snd_soc
 	return 0;
 }
 
+/*
+ * MU300: compressed offload (the DSP decoding MP3/AAC) is off unless asked for. Nothing on these boards uses it -
+ * the call path and every PCM go through sprd-dmaengine-pcm - but the card's FE_OFFLOAD link needs this component to
+ * register, so it stays. Its copy/set_params code is the vendor's, unaudited against hostile lengths: with the open
+ * refused, none of it is reachable from userspace (docs/FINDINGS.md 188).
+ */
+static bool allow_offload;
+module_param(allow_offload, bool, 0444);
+MODULE_PARM_DESC(allow_offload, "let userspace open the compressed-offload stream (unaudited vendor code)");
+
 /* MU300: the 5.4 snd_compr_ops became snd_compress_ops, which take the component first */
 static int sprd_cc_open(struct snd_soc_component *c, struct snd_compr_stream *s)
 {
+	if (!allow_offload)
+		return -EPERM;
 	return sprd_platform_compr_open(s);
 }
 

@@ -3946,7 +3946,7 @@ static int sprd_codec_dac_lrclk_sel_put(struct snd_kcontrol *kcontrol,
 	struct soc_enum *texts = (struct soc_enum *)kcontrol->private_value;
 	unsigned int val;
 
-	if (ucontrol->value.integer.value[0] >= texts->items) {
+	if (ucontrol->value.enumerated.item[0] >= texts->items) {
 		pr_err("%s index outof bounds error\n", __func__);
 		return -EINVAL;
 	}
@@ -3993,7 +3993,7 @@ static int sprd_codec_adc_lrclk_sel_put(struct snd_kcontrol *kcontrol,
 	unsigned int val;
 	int ret;
 
-	if (ucontrol->value.integer.value[0] >= texts->items) {
+	if (ucontrol->value.enumerated.item[0] >= texts->items) {
 		pr_err("%s index outof bounds error\n", __func__);
 		return -EINVAL;
 	}
@@ -4041,7 +4041,7 @@ static int sprd_codec_adc1_lrclk_sel_put(struct snd_kcontrol *kcontrol,
 	unsigned int val;
 	int ret;
 
-	if (ucontrol->value.integer.value[0] >= texts->items) {
+	if (ucontrol->value.enumerated.item[0] >= texts->items) {
 		pr_err("%s index outof bounds error\n", __func__);
 		return -EINVAL;
 	}
@@ -4196,7 +4196,7 @@ static int sprd_codec_das_input_mux_put(struct snd_kcontrol *kcontrol,
 	struct sprd_codec_priv *sprd_codec = snd_soc_component_get_drvdata(codec);
 	struct soc_enum *texts = (struct soc_enum *)kcontrol->private_value;
 
-	if (ucontrol->value.integer.value[0] >= texts->items ||
+	if (ucontrol->value.enumerated.item[0] >= texts->items ||
 	    ucontrol->value.integer.value[0] < 0) {
 		pr_err("%s index outof bounds error\n", __func__);
 		return -EINVAL;
@@ -4283,7 +4283,7 @@ static int sprd_codec_clk_26m_in_sel_put(struct snd_kcontrol *kcontrol,
 	struct sprd_codec_priv *sprd_codec = snd_soc_component_get_drvdata(codec);
 	struct soc_enum *texts = (struct soc_enum *)kcontrol->private_value;
 
-	if (ucontrol->value.integer.value[0] >= texts->items ||
+	if (ucontrol->value.enumerated.item[0] >= texts->items ||
 	    ucontrol->value.integer.value[0] < 0) {
 		pr_err("%s index outof bounds error\n", __func__);
 		return -EINVAL;
@@ -4346,7 +4346,7 @@ static int sprd_codec_daaol_buf_dccal_put(struct snd_kcontrol *kcontrol,
 	struct sprd_codec_priv *sprd_codec = snd_soc_component_get_drvdata(codec);
 	struct soc_enum *texts = (struct soc_enum *)kcontrol->private_value;
 
-	if (ucontrol->value.integer.value[0] >= texts->items ||
+	if (ucontrol->value.enumerated.item[0] >= texts->items ||
 	    ucontrol->value.integer.value[0] < 0) {
 		pr_err("%s index outof bounds error\n", __func__);
 		return -EINVAL;
@@ -4378,7 +4378,7 @@ static int sprd_codec_daaor_buf_dccal_put(struct snd_kcontrol *kcontrol,
 	struct sprd_codec_priv *sprd_codec = snd_soc_component_get_drvdata(codec);
 	struct soc_enum *texts = (struct soc_enum *)kcontrol->private_value;
 
-	if (ucontrol->value.integer.value[0] >= texts->items ||
+	if (ucontrol->value.enumerated.item[0] >= texts->items ||
 	    ucontrol->value.integer.value[0] < 0) {
 		pr_err("%s index outof bounds error\n", __func__);
 		return -EINVAL;
@@ -4410,7 +4410,7 @@ static int sprd_codec_dahp_os_inv_put(struct snd_kcontrol *kcontrol,
 	struct sprd_codec_priv *sprd_codec = snd_soc_component_get_drvdata(codec);
 	struct soc_enum *texts = (struct soc_enum *)kcontrol->private_value;
 
-	if (ucontrol->value.integer.value[0] >= texts->items ||
+	if (ucontrol->value.enumerated.item[0] >= texts->items ||
 	    ucontrol->value.integer.value[0] < 0) {
 		pr_err("%s index outof bounds error\n", __func__);
 		return -EINVAL;
@@ -4473,7 +4473,7 @@ static int sprd_codec_dahpl_buf_dccal_put(struct snd_kcontrol *kcontrol,
 	struct sprd_codec_priv *sprd_codec = snd_soc_component_get_drvdata(codec);
 	struct soc_enum *texts = (struct soc_enum *)kcontrol->private_value;
 
-	if (ucontrol->value.integer.value[0] >= texts->items ||
+	if (ucontrol->value.enumerated.item[0] >= texts->items ||
 	    ucontrol->value.integer.value[0] < 0) {
 		pr_err("%s index outof bounds error\n", __func__);
 		return -EINVAL;
@@ -4505,7 +4505,7 @@ static int sprd_codec_dahpr_buf_dccal_put(struct snd_kcontrol *kcontrol,
 	struct sprd_codec_priv *sprd_codec = snd_soc_component_get_drvdata(codec);
 	struct soc_enum *texts = (struct soc_enum *)kcontrol->private_value;
 
-	if (ucontrol->value.integer.value[0] >= texts->items ||
+	if (ucontrol->value.enumerated.item[0] >= texts->items ||
 	    ucontrol->value.integer.value[0] < 0) {
 		pr_err("%s index outof bounds error\n", __func__);
 		return -EINVAL;
@@ -4620,7 +4620,7 @@ static int sprd_codec_hp_chn_type_put(struct snd_kcontrol *kcontrol,
 	struct sprd_codec_priv *sprd_codec = snd_soc_component_get_drvdata(codec);
 	struct soc_enum *texts = (struct soc_enum *)kcontrol->private_value;
 
-	if (ucontrol->value.integer.value[0] >= texts->items ||
+	if (ucontrol->value.enumerated.item[0] >= texts->items ||
 	    ucontrol->value.integer.value[0] < 0) {
 		pr_err("%s index outof bounds error\n", __func__);
 		return -EINVAL;
@@ -4653,7 +4653,7 @@ static int sprd_codec_add0_data_sel_put(struct snd_kcontrol *kcontrol,
 	struct soc_enum *texts = (struct soc_enum *)kcontrol->private_value;
 	u32 val;
 
-	if (ucontrol->value.integer.value[0] >= texts->items ||
+	if (ucontrol->value.enumerated.item[0] >= texts->items ||
 	    ucontrol->value.integer.value[0] < 0) {
 		pr_err("%s index outof bounds error\n", __func__);
 		return -EINVAL;

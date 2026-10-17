@@ -1420,7 +1420,12 @@ struct aud_pm_vbc {
 /* FIRMWARE */
 #define VBC_PROFILE_FIRMWARE_MAGIC_LEN 16
 #define VBC_PROFILE_FIRMWARE_MAGIC_ID ("audio_profile")
-#define VBC_PROFILE_CNT_MAX 0x0fffffff
+/*
+ * MU300: was 0x0fffffff, but the value is (mode << 24) | (param id << 16) | dsp case and modes go to 66: every
+ * mode from 16 up (the Bluetooth ones included) was over the declared maximum, which amixer clamps and the
+ * kernel's input validation refuses. vbc_profile_put() checks the mode against the loaded profile.
+ */
+#define VBC_PROFILE_CNT_MAX 0x7fffffff
 #define AUD_FIRMWARE_PATHNAME_LEN_MAX 256
 
 /* header of the data */

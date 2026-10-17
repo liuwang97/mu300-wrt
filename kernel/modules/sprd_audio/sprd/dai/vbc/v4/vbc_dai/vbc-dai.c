@@ -296,7 +296,12 @@ static int get_ivsense_adc_id(void)
 #define MIXERDG_MAX_VAL (0xffff)
 #define MIXERDG_STP_MAX_VAL (0xffff)
 #define OFFLOAD_DG_MAX (4096)
-#define MAX_32_BIT (0xffffffff)
+/*
+ * MU300: was 0xffffffff, which a control's int max holds as -1: below its min of 0, so the kernel's input
+ * validation (CONFIG_SND_CTL_INPUT_VALIDATION, upstream/mu300-mainline.config) refused every value, and without it
+ * the range told userspace nothing. The largest value a control can declare.
+ */
+#define MAX_32_BIT (0x7fffffff)
 #define MAX_12_BIT (0xfff)
 #define SRC_MAX_VAL (48000)
 
@@ -1159,7 +1164,7 @@ static int vbc_dmic_chn_sel_put(struct snd_kcontrol *kcontrol,
 	struct snd_soc_component *codec = snd_soc_kcontrol_component(kcontrol);
 	struct vbc_codec_priv *vbc_codec = snd_soc_component_get_drvdata(codec);
 
-	if (ucontrol->value.integer.value[0] >= texts->items) {
+	if (ucontrol->value.enumerated.item[0] >= texts->items) {
 		pr_err("set dmic_chn_sel, index outof bounds error\n");
 		return -EINVAL;
 	}
@@ -2071,7 +2076,7 @@ static int vbc_adder_put(struct snd_kcontrol *kcontrol,
 	u32 id = e->reg;
 	int val;
 
-	if (ucontrol->value.integer.value[0] >= texts->items) {
+	if (ucontrol->value.enumerated.item[0] >= texts->items) {
 		pr_err("ERR: %s,index outof bounds error\n", __func__);
 		return -EINVAL;
 	}
@@ -2152,7 +2157,7 @@ static int vbc_dp_en_put(struct snd_kcontrol *kcontrol,
 	struct soc_enum *e = (struct soc_enum *)kcontrol->private_value;
 	u32 id = e->reg;
 
-	if (ucontrol->value.integer.value[0] >= texts->items) {
+	if (ucontrol->value.enumerated.item[0] >= texts->items) {
 		pr_err("ERR: %s,index outof bounds error\n", __func__);
 		return -EINVAL;
 	}
@@ -2203,7 +2208,7 @@ static int vbc_call_mute_put(struct snd_kcontrol *kcontrol,
 	struct soc_enum *e = (struct soc_enum *)kcontrol->private_value;
 	u32 id = e->reg;
 
-	if (ucontrol->value.integer.value[0] >= texts->items) {
+	if (ucontrol->value.enumerated.item[0] >= texts->items) {
 		pr_err("ERR: %s,index outof bounds error\n", __func__);
 		return -EINVAL;
 	}
@@ -2243,7 +2248,7 @@ static int vbc_fm_mute_put(struct snd_kcontrol *kcontrol,
 	struct soc_enum *e = (struct soc_enum *)kcontrol->private_value;
 	u32 id = e->reg;
 
-	if (ucontrol->value.integer.value[0] >= texts->items) {
+	if (ucontrol->value.enumerated.item[0] >= texts->items) {
 		pr_err("ERR: %s,index outof bounds error\n", __func__);
 		return -EINVAL;
 	}
@@ -2320,7 +2325,7 @@ static int vbc_put_iis_tx_width_sel(struct snd_kcontrol *kcontrol,
 	struct soc_enum *e = (struct soc_enum *)kcontrol->private_value;
 	u32 id = e->reg;
 
-	if (ucontrol->value.integer.value[0] >= texts->items) {
+	if (ucontrol->value.enumerated.item[0] >= texts->items) {
 		pr_err("ERR: %s,index outof bounds error\n", __func__);
 		return -EINVAL;
 	}
@@ -2370,7 +2375,7 @@ static int vbc_put_iis_tx_lr_mod_sel(struct snd_kcontrol *kcontrol,
 	struct soc_enum *e = (struct soc_enum *)kcontrol->private_value;
 	u32 id = e->reg;
 
-	if (ucontrol->value.integer.value[0] >= texts->items) {
+	if (ucontrol->value.enumerated.item[0] >= texts->items) {
 		pr_err("ERR: %s,index outof bounds error\n", __func__);
 		return -EINVAL;
 	}
@@ -2415,7 +2420,7 @@ static int vbc_put_iis_rx_width_sel(struct snd_kcontrol *kcontrol,
 	struct soc_enum *e = (struct soc_enum *)kcontrol->private_value;
 	u32 id = e->reg;
 
-	if (ucontrol->value.integer.value[0] >= texts->items) {
+	if (ucontrol->value.enumerated.item[0] >= texts->items) {
 		pr_err("ERR: %s,index outof bounds error\n", __func__);
 		return -EINVAL;
 	}
@@ -2449,7 +2454,7 @@ static int dsp_aux_mic2_sel_put(struct snd_kcontrol *kcontrol,
 	struct snd_soc_component *codec = snd_soc_kcontrol_component(kcontrol);
 	struct vbc_codec_priv *vbc_codec = snd_soc_component_get_drvdata(codec);
 
-	if (ucontrol->value.integer.value[0] >= texts->items) {
+	if (ucontrol->value.enumerated.item[0] >= texts->items) {
 		pr_err("ERR: %s,index outof bounds error\n", __func__);
 		return -EINVAL;
 	}
@@ -2483,7 +2488,7 @@ static int dsp_smartamp_iv_exchange_put(struct snd_kcontrol *kcontrol,
 	struct snd_soc_component *codec = snd_soc_kcontrol_component(kcontrol);
 	struct vbc_codec_priv *vbc_codec = snd_soc_component_get_drvdata(codec);
 
-	if (ucontrol->value.integer.value[0] >= texts->items) {
+	if (ucontrol->value.enumerated.item[0] >= texts->items) {
 		pr_err("ERR: %s,index outof bounds error\n", __func__);
 		return -EINVAL;
 	}
@@ -2517,7 +2522,7 @@ static int dsp_dac0_lr_exchange_put(struct snd_kcontrol *kcontrol,
 	struct snd_soc_component *codec = snd_soc_kcontrol_component(kcontrol);
 	struct vbc_codec_priv *vbc_codec = snd_soc_component_get_drvdata(codec);
 
-	if (ucontrol->value.integer.value[0] >= texts->items) {
+	if (ucontrol->value.enumerated.item[0] >= texts->items) {
 		pr_err("ERR: %s,index outof bounds error\n", __func__);
 		return -EINVAL;
 	}
@@ -2552,7 +2557,7 @@ static int vbc_custm_dev_change_put(struct snd_kcontrol *kcontrol,
 	struct snd_soc_component *codec = snd_soc_kcontrol_component(kcontrol);
 	struct vbc_codec_priv *vbc_codec = snd_soc_component_get_drvdata(codec);
 
-	if (ucontrol->value.integer.value[0] >= texts->items) {
+	if (ucontrol->value.enumerated.item[0] >= texts->items) {
 		pr_err("ERR: %s,index outof bounds error\n", __func__);
 		return -EINVAL;
 	}
@@ -2590,7 +2595,7 @@ static int vbc_system_dev_change_put(struct snd_kcontrol *kcontrol,
 	struct snd_soc_component *codec = snd_soc_kcontrol_component(kcontrol);
 	struct vbc_codec_priv *vbc_codec = snd_soc_component_get_drvdata(codec);
 
-	if (ucontrol->value.integer.value[0] >= texts->items) {
+	if (ucontrol->value.enumerated.item[0] >= texts->items) {
 		pr_err("ERR: %s,index outof bounds error\n", __func__);
 		return -EINVAL;
 	}
@@ -2630,7 +2635,7 @@ static int vbc_custm_vol_change_put(struct snd_kcontrol *kcontrol,
 	struct snd_soc_component *codec = snd_soc_kcontrol_component(kcontrol);
 	struct vbc_codec_priv *vbc_codec = snd_soc_component_get_drvdata(codec);
 
-	if (ucontrol->value.integer.value[0] >= texts->items) {
+	if (ucontrol->value.enumerated.item[0] >= texts->items) {
 		pr_err("ERR: %s,index outof bounds error\n", __func__);
 		return -EINVAL;
 	}
@@ -2680,7 +2685,7 @@ static int vbc_put_iis_rx_lr_mod_sel(struct snd_kcontrol *kcontrol,
 	struct soc_enum *e = (struct soc_enum *)kcontrol->private_value;
 	u32 id = e->reg;
 
-	if (ucontrol->value.integer.value[0] >= texts->items) {
+	if (ucontrol->value.enumerated.item[0] >= texts->items) {
 		pr_err("ERR: %s,index outof bounds error\n", __func__);
 		return -EINVAL;
 	}
@@ -2767,7 +2772,7 @@ static int vbc_put_iis_master_en(struct snd_kcontrol *kcontrol,
 	struct snd_soc_component *codec = snd_soc_kcontrol_component(kcontrol);
 	struct vbc_codec_priv *vbc_codec = snd_soc_component_get_drvdata(codec);
 
-	if (ucontrol->value.integer.value[0] >= texts->items) {
+	if (ucontrol->value.enumerated.item[0] >= texts->items) {
 		pr_err("ERR: %s,index outof bounds error\n", __func__);
 		return -EINVAL;
 	}
@@ -2803,7 +2808,7 @@ static int vbc_put_iis_master_width(struct snd_kcontrol *kcontrol,
 	struct snd_soc_component *codec = snd_soc_kcontrol_component(kcontrol);
 	struct vbc_codec_priv *vbc_codec = snd_soc_component_get_drvdata(codec);
 
-	if (ucontrol->value.integer.value[0] >= texts->items) {
+	if (ucontrol->value.enumerated.item[0] >= texts->items) {
 		pr_err("ERR: %s,index outof bounds error\n", __func__);
 		return -EINVAL;
 	}
@@ -2881,7 +2886,7 @@ static int vbc_put_ivsence_func(struct snd_kcontrol *kcontrol,
 	struct vbc_codec_priv *vbc_codec = snd_soc_component_get_drvdata(codec);
 	int iv_adc_id;
 
-	if (ucontrol->value.integer.value[0] >= texts->items) {
+	if (ucontrol->value.enumerated.item[0] >= texts->items) {
 		pr_err("ERR: %s,index outof bounds error\n", __func__);
 		return -EINVAL;
 	}
@@ -2893,6 +2898,44 @@ static int vbc_put_ivsence_func(struct snd_kcontrol *kcontrol,
 	dsp_ivsence_func(enable, iv_adc_id);
 
 	return 1;
+}
+
+/*
+ * MU300: store a profile blob (vendor header + num_mode * len_mode bytes) with every size checked. The 5.4 code
+ * trusted the header: it read it from a buffer that could be shorter than it, kept the data buffer of an earlier,
+ * smaller profile and copied a larger one into it (a heap overflow, reachable from /dev/vbc_turningN and from a
+ * replaced /lib/firmware blob), and later read mode N of the new header out of the old buffer (an out-of-bounds read
+ * from the "... Profile Select" controls). Now the data buffer always has exactly the size its header says, a short
+ * blob leaves the rest zeroed, and a bad blob changes nothing. The caller holds vbc_codec->load_mutex.
+ */
+#define VBC_PROFILE_MAX_BYTES	(4 << 20)
+static int vbc_profile_store(struct vbc_profile *p_profile_setting, int profile_id,
+			     const u8 *blob, size_t size)
+{
+	struct vbc_fw_header hdr;
+	size_t len, have;
+	void *data;
+
+	if (profile_id < 0 || profile_id >= SND_VBC_PROFILE_MAX)
+		return -EINVAL;
+	if (!blob || size < sizeof(hdr))
+		return -EINVAL;
+	memcpy(&hdr, blob, sizeof(hdr));
+	if (strncmp(hdr.magic, VBC_PROFILE_FIRMWARE_MAGIC_ID, VBC_PROFILE_FIRMWARE_MAGIC_LEN))
+		return -EINVAL;
+	if (!hdr.num_mode || !hdr.len_mode || hdr.num_mode > 256 ||
+	    check_mul_overflow((size_t)hdr.num_mode, (size_t)hdr.len_mode, &len) ||
+	    len > VBC_PROFILE_MAX_BYTES)
+		return -EINVAL;
+	data = kzalloc(len, GFP_KERNEL);
+	if (!data)
+		return -ENOMEM;
+	have = min(len, size - sizeof(hdr));
+	memcpy(data, blob + sizeof(hdr), have);
+	kfree(p_profile_setting->data[profile_id]);
+	p_profile_setting->data[profile_id] = data;
+	p_profile_setting->hdr[profile_id] = hdr;
+	return 0;
 }
 
 static int vbc_profile_set(struct snd_soc_component *codec, void *data,
@@ -2925,6 +2968,12 @@ static void vbc_profile_try_apply(struct snd_soc_component *codec,
 	mode_offset =
 		(p_profile_setting->now_mode[profile_id] >> 24) & 0xff;
 	mutex_lock(&vbc_codec->load_mutex);
+	/* MU300: the mode chosen earlier may be beyond a profile loaded since */
+	if (!p_profile_setting->data[profile_id] ||
+	    mode_offset >= p_profile_setting->hdr[profile_id].num_mode) {
+		mutex_unlock(&vbc_codec->load_mutex);
+		return;
+	}
 	/* get profile data wanted */
 	data = (void *)((u8 *)(p_profile_setting->data[profile_id])
 			+ p_profile_setting->hdr[profile_id].len_mode *
@@ -2948,63 +2997,43 @@ struct vbc_codec_priv *g_vbc_codec;
 
 static int vbc_turning_profile_loading(const u8 *profile_data, size_t profile_size, struct snd_soc_component *codec, int profile_id)
 {
-	const u8 *fw_data;
-	int offset = 0;
-	size_t len = 0;
-	int ret = 0;
 	struct vbc_codec_priv *vbc_codec = snd_soc_component_get_drvdata(codec);
-	struct vbc_profile *p_profile_setting = &vbc_codec->vbc_profile_setting;
+	int ret;
 
-	fw_data = profile_data;
-	unalign_memcpy(&p_profile_setting->hdr[profile_id], fw_data,
-						sizeof(p_profile_setting->hdr[profile_id]));
-	sp_asoc_pr_dbg("%s, &p_profile_setting->hdr[profile_id(%d)]", __func__, profile_id);
-	sp_asoc_pr_dbg(" =%#lx,phys=%#lx\n", (unsigned long)&p_profile_setting->hdr[profile_id],
-					(unsigned long)virt_to_phys(&p_profile_setting->hdr[profile_id]));
-
-	if (strncmp(p_profile_setting->hdr[profile_id].magic,
-			VBC_PROFILE_FIRMWARE_MAGIC_ID, VBC_PROFILE_FIRMWARE_MAGIC_LEN)) {
-		pr_err("%s,ERR: %s magic error!\n", __func__, vbc_get_profile_name(profile_id));
-		ret = -EINVAL;
-		goto profile_out;
-	}
-
-	offset = sizeof(struct vbc_fw_header);
-	len = (size_t)(p_profile_setting->hdr[profile_id].num_mode) * p_profile_setting->hdr[profile_id].len_mode;
-	if (p_profile_setting->data[profile_id] == NULL) {
-		p_profile_setting->data[profile_id] = kzalloc(len, GFP_KERNEL);
-		if (p_profile_setting->data[profile_id] == NULL) {
-			pr_err("%s, ERR:alloc %s data failed!\n", __func__, vbc_get_profile_name(profile_id));
-			ret = -ENOMEM;
-			goto profile_out;
-		}
-	}
-
-	if (len > (profile_size - offset))
-		len = profile_size - offset;
-	unalign_memcpy(p_profile_setting->data[profile_id], fw_data + offset, len);
-	sp_asoc_pr_dbg("p_profile_setting->data[profile_id (%d)]", profile_id);
-
-	sp_asoc_pr_dbg(" =%#lx,phys=%#lx\n", (unsigned long)p_profile_setting->data[profile_id],
-					(unsigned long)virt_to_phys(p_profile_setting->data[profile_id]));
-	ret = 0;
-	goto profile_out;
-
-profile_out:
-	sp_asoc_pr_info("%s, return %i\n", __func__, ret);
+	/* MU300: checked and under the lock the apply path takes (vbc_profile_store) */
+	mutex_lock(&vbc_codec->load_mutex);
+	ret = vbc_profile_store(&vbc_codec->vbc_profile_setting, profile_id, profile_data, profile_size);
+	mutex_unlock(&vbc_codec->load_mutex);
+	if (ret)
+		pr_err("%s, ERR: %s rejected (%d)\n", __func__, vbc_get_profile_name(profile_id), ret);
 	return ret;
 }
+
+static int vbc_turning_profile_get_locked(u8 *fw_data, size_t profile_size,
+					  struct vbc_profile *p_profile_setting, int profile_id);
 
 static int vbc_turning_profile_get(u8 *profile_data, size_t profile_size, struct snd_soc_component *codec, int profile_id)
 {
 	u8 *fw_data;
-	int offset = 0;
-	size_t len = 0;
-	int ret = 0;
+	int ret;
 	struct vbc_codec_priv *vbc_codec = snd_soc_component_get_drvdata(codec);
 	struct vbc_profile *p_profile_setting = &vbc_codec->vbc_profile_setting;
 
 	fw_data = profile_data;
+	/* MU300: under the lock vbc_profile_store() replaces the data with */
+	mutex_lock(&vbc_codec->load_mutex);
+	ret = vbc_turning_profile_get_locked(fw_data, profile_size, p_profile_setting, profile_id);
+	mutex_unlock(&vbc_codec->load_mutex);
+	return ret;
+}
+
+static int vbc_turning_profile_get_locked(u8 *fw_data, size_t profile_size,
+					  struct vbc_profile *p_profile_setting, int profile_id)
+{
+	int offset = 0;
+	size_t len = 0;
+	int ret = 0;
+
 	if (profile_size <= sizeof(p_profile_setting->hdr[profile_id])) {
 		unalign_memcpy(fw_data, &p_profile_setting->hdr[profile_id], profile_size);
 		pr_info("%s, only get profile %s party header! size=%d\n", __func__, vbc_get_profile_name(profile_id), profile_size);
@@ -3063,7 +3092,10 @@ static ssize_t vbc_turning_ndp_write(struct file *file, const char __user *data_
 	}
 
 	pr_info("%s, eq turning data_p = %p, size =%ld, profile id = %d\n", __func__, data_p, data_size, profile_id);
-	buf_p = vmalloc(data_size);
+	/* MU300: bounded, and zeroed: a read used to copy data_size bytes of it whatever the profile filled */
+	if (data_size > VBC_PROFILE_MAX_BYTES + sizeof(struct vbc_fw_header))
+		return -EINVAL;
+	buf_p = vzalloc(data_size);
 	if (NULL == buf_p) {
 		pr_err("%s, Error: vmalloc eq data buffer failed, size is %ld\n", __func__, data_size);
 		return -ENOMEM;
@@ -3108,7 +3140,10 @@ static ssize_t vbc_turning_ndp_read(struct file *file, char __user *data_p, size
 	}
 
 	pr_info("%s, eq turning data_p = %p, size =%ld, profile id = %d\n", __func__, data_p, data_size, profile_id);
-	buf_p = vmalloc(data_size);
+	/* MU300: bounded, and zeroed: a read used to copy data_size bytes of it whatever the profile filled */
+	if (data_size > VBC_PROFILE_MAX_BYTES + sizeof(struct vbc_fw_header))
+		return -EINVAL;
+	buf_p = vzalloc(data_size);
 	if (NULL == buf_p) {
 		pr_err("%s, Error: vmalloc eq data buffer failed, size is %ld\n", __func__, data_size);
 		return -ENOMEM;
@@ -3121,7 +3156,7 @@ static ssize_t vbc_turning_ndp_read(struct file *file, char __user *data_p, size
 		return ret;
 	}
 
-	if (copy_to_user(data_p, buf_p, data_size)) {
+	if (copy_to_user(data_p, buf_p, ret)) {
 		pr_err("%s: Error: arg protection error\n", __func__);
 		vfree(buf_p);
 		return -EACCES;
@@ -3418,47 +3453,10 @@ int vbc_profile_loading(struct snd_soc_component *codec, int profile_id)
 	}
 
 	fw_data = fw->data;
-	unalign_memcpy(&p_profile_setting->hdr[profile_id], fw_data,
-		       sizeof(p_profile_setting->hdr[profile_id]));
-	sp_asoc_pr_dbg("&p_profile_setting->hdr[profile_id(%d)]",
-		       profile_id);
-	sp_asoc_pr_dbg(" =%#lx,phys=%#lx\n",
-		       (unsigned long)&p_profile_setting->hdr[profile_id],
-		       (unsigned long)
-		       virt_to_phys(&p_profile_setting->hdr[profile_id]));
-	if (strncmp
-	    (p_profile_setting->hdr[profile_id].magic,
-	     VBC_PROFILE_FIRMWARE_MAGIC_ID,
-	     VBC_PROFILE_FIRMWARE_MAGIC_LEN)) {
-		pr_err("ERR:Firmware %s magic error!\n",
-		       vbc_get_profile_name(profile_id));
-		ret = -EINVAL;
-		goto profile_out;
-	}
-
-	offset = sizeof(struct vbc_fw_header);
-	len = p_profile_setting->hdr[profile_id].num_mode *
-		p_profile_setting->hdr[profile_id].len_mode;
-	if (p_profile_setting->data[profile_id] == NULL) {
-		p_profile_setting->data[profile_id] = kzalloc(len, GFP_KERNEL);
-		if (p_profile_setting->data[profile_id] == NULL) {
-			ret = -ENOMEM;
-			goto profile_out;
-		}
-	}
-
-	if (len > (fw->size - offset))
-		 len = fw->size - offset;
-	unalign_memcpy(p_profile_setting->data[profile_id],
-		       fw_data + offset, len);
-	sp_asoc_pr_dbg("p_profile_setting->data[profile_id (%d)]",
-		       profile_id);
-
-	sp_asoc_pr_dbg(" =%#lx,phys=%#lx\n",
-		       (unsigned long)p_profile_setting->data[profile_id],
-		       (unsigned long)
-		       virt_to_phys(p_profile_setting->data[profile_id]));
-	ret = 0;
+	/* MU300: checked (vbc_profile_store) */
+	ret = vbc_profile_store(p_profile_setting, profile_id, fw_data, fw->size);
+	if (ret)
+		pr_err("ERR:Firmware %s rejected (%d)\n", vbc_get_profile_name(profile_id), ret);
 	goto profile_out;
 
 profile_out:
@@ -3648,7 +3646,7 @@ static int vbc_put_aud_iis_clock(struct snd_kcontrol *kcontrol,
 	struct snd_soc_component *codec = snd_soc_kcontrol_component(kcontrol);
 	struct vbc_codec_priv *vbc_codec = snd_soc_component_get_drvdata(codec);
 
-	if (ucontrol->value.integer.value[0] >= texts->items) {
+	if (ucontrol->value.enumerated.item[0] >= texts->items) {
 		pr_err("ERR: %s,index outof bounds error\n", __func__);
 		return -EINVAL;
 	}
@@ -3722,7 +3720,7 @@ static int vbc_loopback_type_put(struct snd_kcontrol *kcontrol,
 	struct snd_soc_component *codec = snd_soc_kcontrol_component(kcontrol);
 	struct vbc_codec_priv *vbc_codec = snd_soc_component_get_drvdata(codec);
 
-	if (ucontrol->value.integer.value[0] >= texts->items) {
+	if (ucontrol->value.enumerated.item[0] >= texts->items) {
 		pr_err("ERR: %s,index outof bounds error\n", __func__);
 		return -EINVAL;
 	}
@@ -3843,7 +3841,7 @@ static int sys_iis_sel_put(struct snd_kcontrol *kcontrol,
 	char buf[128] = {0};
 	u32 id = e->reg;
 
-	if (ucontrol->value.integer.value[0] >= texts->items) {
+	if (ucontrol->value.enumerated.item[0] >= texts->items) {
 		pr_err("ERR: %s,index outof bounds error\n", __func__);
 		return -EINVAL;
 	}
@@ -3891,7 +3889,7 @@ static int vbc_put_ag_iis_ext_sel(struct snd_kcontrol *kcontrol,
 	struct soc_enum *e = (struct soc_enum *)kcontrol->private_value;
 	u32 ag_iis_num = e->reg;
 
-	if (ucontrol->value.integer.value[0] >= texts->items) {
+	if (ucontrol->value.enumerated.item[0] >= texts->items) {
 		pr_err("ERR: %s,index outof bounds error\n", __func__);
 		return -EINVAL;
 	}
@@ -3929,7 +3927,7 @@ static int vbc_put_ag_iis_ext_sel_v1(struct snd_kcontrol *kcontrol,
 	struct soc_enum *e = (struct soc_enum *)kcontrol->private_value;
 	u32 ag_iis_num = e->reg;
 
-	if (ucontrol->value.integer.value[0] >= texts->items) {
+	if (ucontrol->value.enumerated.item[0] >= texts->items) {
 		pr_err("ERR: %s,index outof bounds error\n", __func__);
 		return -EINVAL;
 	}
@@ -3967,7 +3965,7 @@ static int vbc_put_ag_iis_ext_sel_v2(struct snd_kcontrol *kcontrol,
 	struct soc_enum *e = (struct soc_enum *)kcontrol->private_value;
 	u32 ag_iis_num = e->reg;
 
-	if (ucontrol->value.integer.value[0] >= texts->items) {
+	if (ucontrol->value.enumerated.item[0] >= texts->items) {
 		pr_err("ERR: %s,index outof bounds error\n", __func__);
 		return -EINVAL;
 	}
@@ -4270,7 +4268,7 @@ static int vbc_iis_inf_sys_sel_put(struct snd_kcontrol *kcontrol,
 	struct vbc_codec_priv *vbc_codec = snd_soc_component_get_drvdata(codec);
 	char buf[128] = {0};
 
-	if (ucontrol->value.integer.value[0] >= texts->items) {
+	if (ucontrol->value.enumerated.item[0] >= texts->items) {
 		pr_err("ERR: %s,index outof bounds error\n", __func__);
 		return -EINVAL;
 	}
@@ -4312,7 +4310,7 @@ static int vbc_voice_capture_type_put(struct snd_kcontrol *kcontrol,
 	struct snd_soc_component *codec = snd_soc_kcontrol_component(kcontrol);
 	struct vbc_codec_priv *vbc_codec = snd_soc_component_get_drvdata(codec);
 
-	if (ucontrol->value.integer.value[0] >= texts->items) {
+	if (ucontrol->value.enumerated.item[0] >= texts->items) {
 		pr_err("ERR: %s,index outof bounds error\n", __func__);
 		return -EINVAL;
 	}
@@ -4344,7 +4342,7 @@ static int vbc_voice_pcm_play_mode_put(struct snd_kcontrol *kcontrol,
 	struct snd_soc_component *codec = snd_soc_kcontrol_component(kcontrol);
 	struct vbc_codec_priv *vbc_codec = snd_soc_component_get_drvdata(codec);
 
-	if (ucontrol->value.integer.value[0] >= texts->items) {
+	if (ucontrol->value.enumerated.item[0] >= texts->items) {
 		pr_err("ERR: %s,index outof bounds error\n", __func__);
 		return -EINVAL;
 	}
@@ -4387,7 +4385,7 @@ static int vad_din_ad_sel_put(struct snd_kcontrol *kcontrol,
 	u16 value;
 	int ret;
 
-	if (ucontrol->value.integer.value[0] >= texts->items) {
+	if (ucontrol->value.enumerated.item[0] >= texts->items) {
 		pr_err("%s, index outof bounds error\n", __func__);
 		return -EINVAL;
 	}
