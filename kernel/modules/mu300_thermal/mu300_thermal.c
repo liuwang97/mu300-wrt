@@ -14,7 +14,9 @@
  * soc-thmzone from the device tree with its trips and polling delays, binds the cpufreq cooling devices through the
  * cooling maps (the maps to the vendor cooling nodes are ignored, nothing registers them), and the step_wise
  * governor throttles the clusters at 85 C; the critical trip powers the device off at 110 C through the thermal
- * core. thermal-guard notices the bound zone and hands frequency control over (docs/FINDINGS.md 48).
+ * core. thermal-guard notices the bound zone and hands frequency control over (docs/FINDINGS.md 48). The trend
+ * step_wise steps by is this driver's (get_trend, mu300_trend.h): with the core's own, reading against reading, the
+ * sensors' noise kept the cooling at a step or two and the SoC passed 98 C under a full CPU load (FINDINGS 166).
  *
  * After kanoqwq's mu300_thermal (github.com/kanoqwq/mu300-linux, branch clean-tf-7.2, commit 5c8c2f9), GPL-2.0.
  *
@@ -26,13 +28,21 @@
  * plain pointers to them are kept. Only the UMS9620 is accepted.
  */
 #include <linux/err.h>
+#include <linux/jiffies.h>
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <linux/thermal.h>
 
+#include "mu300_trend.h"
+
+#define MU300_WINDOW		HZ		/* the slope is taken over about this long */
+#define MU300_SPAN		(HZ / 2)	/* the readings of this long are averaged at either end of the window */
+#define MU300_DROP_EVERY	HZ		/* in the throttling band, one step back at most this often */
+
 struct mu300_virtual {
+	struct mu300_history hist;	/* written by get_temp, read by get_trend: both under the zone's lock */
 	unsigned int count;
 	struct thermal_zone_device *zone[];
 };
@@ -56,11 +66,40 @@ static int mu300_virtual_get_temp(struct thermal_zone_device *tz, int *temp)
 	if (!read)
 		return err;
 	*temp = hottest;
+	mu300_record(&v->hist, jiffies, hottest);
+	return 0;
+}
+
+/*
+ * The trend step_wise throttles by, from the slope over about a second (mu300_trend.h, docs/FINDINGS.md 166): the
+ * core's own (each reading against the one 100 ms before) follows the sensors' noise, and step_wise steps the
+ * cooling down on every falling reading, so it never held the SoC under a full CPU load.
+ */
+static int mu300_virtual_get_trend(struct thermal_zone_device *tz, const struct thermal_trip *trip,
+				   enum thermal_trend *trend)
+{
+	struct mu300_virtual *v = thermal_zone_device_priv(tz);
+	long slope;
+	int now;
+
+	if (mu300_slope(&v->hist, HZ, MU300_WINDOW, MU300_SPAN, &now, &slope))
+		return -ENODATA;	/* the core's own trend: this reading against the last */
+	switch (mu300_trend(&v->hist, now, slope, trip->temperature, trip->hysteresis, jiffies, MU300_DROP_EVERY)) {
+	case MU300_RAISING:
+		*trend = THERMAL_TREND_RAISING;
+		break;
+	case MU300_DROPPING:
+		*trend = THERMAL_TREND_DROPPING;
+		break;
+	default:
+		*trend = THERMAL_TREND_STABLE;
+	}
 	return 0;
 }
 
 static const struct thermal_zone_device_ops mu300_virtual_ops = {
 	.get_temp = mu300_virtual_get_temp,
+	.get_trend = mu300_virtual_get_trend,
 };
 
 static int mu300_virtual_probe(struct platform_device *pdev)

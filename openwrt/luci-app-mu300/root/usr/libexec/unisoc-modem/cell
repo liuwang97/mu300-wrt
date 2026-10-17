@@ -31,7 +31,8 @@
 #
 # SIM/module identity (IMEI/IMSI/ICCID/model/firmware) changes only when the SIM
 # or the firmware changes, so it lives in the configured state directory and is re-read
-# at most every 6 hours - not on every round, and never inside a page request.
+# at most every 6 hours once complete (a partial read: every minute) - not on every
+# round, and never inside a page request.
 
 # Two rounds share this script:
 #   mu300-dash-cell          full: everything below, ~11 commands, neighbours included
@@ -60,6 +61,7 @@ IDENT_DIR=${MU300_DASH_IDENT_DIR:-${STATE_DIR%/lock-state.d}}
 IDENT=$IDENT_DIR/sim.json
 AT=${MU300_AT:-/usr/libexec/unisoc-modem/at}
 IDENT_MAXAGE=21600   # seconds; a SIM change goes through a reboot, 6 h is plenty
+IDENT_RETRY=60       # seconds a partial identity (modem or SIM not ready) is shown before it is asked again
 
 # a runtime directory someone else made is refused (lib.sh): write nothing
 private_dir "$DIR" || exit 1
@@ -126,6 +128,30 @@ at() {
 now() { date +%s; }
 n_or_null() { case "$1" in ''|*[!0-9]*) echo null ;; *) echo "$1" ;; esac; }
 qs() { json_str_or_null "$1"; }
+
+# ------------------------------------------------------------- identity
+# ident_token REPLY ERE: the first line of an identity answer that is the value alone, after an optional "+CGSN: "-like
+# prefix and quotes; an error line ("+CME ERROR: 10") is never a value.
+ident_token() {
+    printf '%s\n' "$1" | tr -d '\r"' | grep -v -i 'error' | sed 's/^[+^][A-Za-z]*: *//; s/^ *//; s/ *$//' |
+        grep -E -x "$2" | head -n1
+}
+# iccid_value ICCID: upper case; the F that pads a 19-digit ICCID to 20 nibbles is dropped, the letters of an ICCID
+# that has them (some eSIM profiles and operators use A-F) are kept.
+iccid_value() {
+    local v
+    v=$(printf '%s' "$1" | tr 'abcdef' 'ABCDEF')
+    case "$v" in
+        *[!0-9F]*) ;;
+        *[0-9]F) v=${v%F}; [ "${#v}" -ge 18 ] || v= ;;
+    esac
+    printf '%s' "$v"
+}
+# ident_complete FILE: the identity cache holds IMEI, IMSI and ICCID
+ident_complete() {
+    grep -q '"imei":"[0-9]' "$1" && grep -q '"imsi":"[0-9]' "$1" && grep -q '"iccid":"[0-9A-F]' "$1"
+}
+file_age() { echo $(( $(now) - $(date -r "$1" +%s 2>/dev/null || echo 0) )); }
 
 # ------------------------------------------------------------- own number
 # cnum_number: the first number of an AT+CNUM answer, +CNUM: "alpha","number",type[,...]: digits (spaces, dashes and
@@ -496,22 +522,40 @@ if [ "$MODE" = full ]; then
         SP_NRNB=$(at 'AT+SPQ5GNCELLEX' 2 | sed -n 's/^+SPQ5GNCELLEX: *//p' | head -n1)
         QOS=$(at 'AT+CGEQOSRDP=1' 2 | sed -n 's/^+CGEQOSRDP: *//p' | head -n1)
     fi
-    IDENT_AGE=999999
-    [ -s "$IDENT" ] && IDENT_AGE=$(( $(now) - $(date -r "$IDENT" +%s 2>/dev/null || echo 0) ))
-    if [ "$IDENT_AGE" -le "$IDENT_MAXAGE" ]; then
-        IDENT_JSON=$(cat "$IDENT" 2>/dev/null || echo null)
-    else
+    # The 6 h cache on flash holds a complete identity only: IMEI, IMSI and ICCID all read. A round where the modem
+    # was not ready (AT+CGSN or AT+CIMI timed out while AT+CCID answered) used to cache imei:null for 6 h; now such a
+    # partial read is shown for this round and kept in the runtime directory for a minute, then asked again, and it
+    # never replaces a complete cache (an expired complete one is served meanwhile). No SIM, or a SIM still locked
+    # by its PIN, is the same partial case: re-read every minute, so a SIM that becomes ready shows up within one.
+    IDENT_PART=$DIR/${IDENT##*/}.partial     # per SIM slot, like the cache
+    IDENT_JSON=
+    if [ -s "$IDENT" ] && ident_complete "$IDENT" &&
+       [ "$(file_age "$IDENT")" -le "$IDENT_MAXAGE" ]; then
+        IDENT_JSON=$(cat "$IDENT" 2>/dev/null)
+    elif [ -s "$IDENT_PART" ] && [ "$(file_age "$IDENT_PART")" -le "$IDENT_RETRY" ]; then
+        IDENT_JSON=$(cat "$IDENT_PART" 2>/dev/null)
+    fi
+    if [ -z "$IDENT_JSON" ]; then
         i_mfg=$(at 'AT+CGMI' 2 | grep -v '^OK' | head -n1)
         i_model=$(at 'AT+CGMM' 2 | grep -v '^OK' | head -n1)
         i_fw=$(at 'AT+CGMR' 2 | grep -v '^OK' | head -n1)
-        i_imei=$(at 'AT+CGSN' 2 | tr -cd '0-9' | cut -c1-15)
-        i_imsi=$(at 'AT+CIMI' 2 | tr -cd '0-9' | cut -c1-15)
-        i_iccid=$(at 'AT+CCID' 2 | tr -cd '0-9' | cut -c1-20)
-        if [ -n "$i_imei$i_imsi$i_iccid" ]; then
-            IDENT_JSON=$(printf '{"ts":%d,"mfg":%s,"model":%s,"fw":%s,"imei":%s,"imsi":%s,"iccid":%s}' \
-                "$(now)" "$(qs "$i_mfg")" "$(qs "$i_model")" "$(qs "$i_fw")" "$(qs "$i_imei")" "$(qs "$i_imsi")" "$(qs "$i_iccid")")
+        i_imei=$(ident_token "$(at 'AT+CGSN' 2)" '[0-9]{15,17}' | cut -c1-15)
+        i_imsi=$(ident_token "$(at 'AT+CIMI' 2)" '[0-9]{6,15}')
+        i_iccid=$(iccid_value "$(ident_token "$(at 'AT+CCID' 2)" '[0-9A-Fa-f]{18,22}')")
+        IDENT_JSON=$(printf '{"ts":%d,"mfg":%s,"model":%s,"fw":%s,"imei":%s,"imsi":%s,"iccid":%s}' \
+            "$(now)" "$(qs "$i_mfg")" "$(qs "$i_model")" "$(qs "$i_fw")" "$(qs "$i_imei")" "$(qs "$i_imsi")" "$(qs "$i_iccid")")
+        if [ -n "$i_imei" ] && [ -n "$i_imsi" ] && [ -n "$i_iccid" ]; then
             printf '%s\n' "$IDENT_JSON" > "$IDENT.part" 2>/dev/null && mv "$IDENT.part" "$IDENT"
-        elif [ -s "$IDENT" ]; then IDENT_JSON=$(cat "$IDENT"); fi
+            rm -f "$IDENT_PART"
+        else
+            # an earlier complete identity (expired) stays what is shown and stays on flash; else this partial one
+            if [ -s "$IDENT" ] && ident_complete "$IDENT"; then
+                IDENT_JSON=$(cat "$IDENT" 2>/dev/null)
+            elif [ -z "$i_imei$i_imsi$i_iccid" ]; then
+                IDENT_JSON=null
+            fi
+            printf '%s\n' "$IDENT_JSON" > "$IDENT_PART.part" 2>/dev/null && mv "$IDENT_PART.part" "$IDENT_PART"
+        fi
     fi
     # The SIM's own number (MSISDN): AT+CNUM, else the IMS public identity, which the operator provisions and the
     # modem has only once IMS is registered - later than the SIM is read. So an empty answer is asked again on every

@@ -6,6 +6,8 @@ import sys
 
 
 def audit(out, fragment):
+    """fragment: mu300-mainline.config; all-modules.report next to the Image (what all-modules.py added) is checked
+    the same way when the build left one."""
     image = (out / 'Image').read_bytes()
     start = image.find(b'IKCFG_ST')
     end = image.find(b'IKCFG_ED', start + 8)
@@ -13,7 +15,10 @@ def audit(out, fragment):
         raise ValueError('Image has no embedded kernel config')
     config = gzip.decompress(image[start + 8:end]).decode()
     actual = dict(line.split('=', 1) for line in config.splitlines() if line.startswith('CONFIG_'))
-    for line in fragment.read_text().splitlines():
+    wanted = fragment.read_text().splitlines()
+    if (out / 'all-modules.report').is_file():
+        wanted += (out / 'all-modules.report').read_text().splitlines()
+    for line in wanted:
         if not line.startswith('CONFIG_'):
             continue
         key, value = line.split('=', 1)
