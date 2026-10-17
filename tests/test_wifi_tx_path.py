@@ -73,5 +73,38 @@ class WifiTxPath(unittest.TestCase):
         self.assertIn('\tatomic_t pcie_tx_waiting;\n', (WLAN / 'tx.h').read_text())
 
 
+class WifiCommandNotSent(unittest.TestCase):
+    """FINDINGS 106 (after kanoqwq's clean-tf-7.2 0e19fe32): a command the driver does not send is an error, with
+    nothing in the caller's reply buffer; get_station's reply starts zeroed. The 5.4 driver gets the same change as
+    kernel/patches/wlan_combo-unsent-cmd-error.patch."""
+
+    def test_unsent_commands_return_an_error_and_no_reply(self):
+        b = body((WLAN / 'cmdevt.c').read_text(), 'int sc2355_send_cmd_recv_rsp(')
+        self.assertIn('if (!ret && cmdevt_lock_cmd(cmd, hif))\n\t\tret = -EIO;', b)
+        self.assertNotIn('if (ret || cmdevt_lock_cmd(cmd, hif))', b)
+        # both blocked windows: the lock released, the reply length 0, -EBUSY, before the common exit
+        for marker in ('need block cmd after close', 'need block cmd while change iface'):
+            with self.subTest(window=marker):
+                w = b[b.index(marker):]
+                w = w[:w.index('goto out;')]
+                self.assertIn('cmdevt_unlock_cmd(cmd, hif);', w)
+                self.assertIn('*rlen = 0;', w)
+                self.assertIn('ret = -EBUSY;', w)
+        # nothing between the checks and the send can fall through with ret still 0 and nothing sent
+        self.assertLess(b.index('ret = -EBUSY;'), b.index('ret = cmdevt_send_cmd(priv, msg);'))
+
+    def test_get_station_reply_is_zeroed(self):
+        b = body((WLAN / 'cmdevt.c').read_text(), 'int sc2355_get_station(')
+        self.assertIn('struct cmd_get_station get_sta = {};', b)
+
+    def test_the_vendor_kernel_gets_the_same_change(self):
+        p = (TOP / 'kernel' / 'patches' / 'wlan_combo-unsent-cmd-error.patch').read_text()
+        self.assertIn('--- a/sc2355/cmdevt.c\n+++ b/sc2355/cmdevt.c\n', p)
+        for s in ('+\tif (!ret && cmdevt_lock_cmd(cmd, hif))\n+\t\tret = -EIO;', '+\t\t\tret = -EBUSY;',
+                  '+\tstruct cmd_get_station get_sta = {};'):
+            self.assertIn(s, p)
+        self.assertEqual(p.count('+\t\t\tret = -EBUSY;'), 2)
+
+
 if __name__ == '__main__':
     unittest.main()

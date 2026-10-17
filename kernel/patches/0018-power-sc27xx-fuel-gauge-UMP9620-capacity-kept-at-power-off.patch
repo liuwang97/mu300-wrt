@@ -1,0 +1,110 @@
+power: supply: sc27xx_fuel_gauge: UMP9620's capacity kept at a power-off, and the user area always written
+
+After kanoqwq's clean-tf-7.2 2af101f8 (his 0017, "retain live soc before reset"); rewritten here (FINDINGS 105).
+
+- The capacity a boot starts from (this one's or Android's) is the one in the FGU's always-on user area, and 0011
+  writes it when somebody reads the capacity and its whole percent has changed: the panel, mu300-power. A device
+  powered off or rebooted after the capacity moved and before the next read starts from an older one. A shutdown
+  callback now reads it once more while the PMIC still answers, writes it, and writes the boot mode (normal power-on)
+  with it. Only on UMP9620 with a battery present: the F50 and the V50 have none, and the SC2731 path is mainline's.
+- The user area is written through a CLEAR and a SET register, a sequence that the datasheet's comments describe as
+  clear, set, release. regmap_update_bits() reads each register first and skips the write when the bits already
+  read back as wanted. What these two registers read back is not documented; kano found that a skipped step loses
+  the value ("retained SET/CLEAR registers require unconditional writes even when their readback is unchanged"; not
+  measured here). regmap_write_bits() writes every time; the values written are the same as before.
+
+--- a/drivers/power/supply/sc27xx_fuel_gauge.c
++++ b/drivers/power/supply/sc27xx_fuel_gauge.c
+@@ -233,7 +233,7 @@
+ {
+ 	int ret;
+ 
+-	ret = regmap_update_bits(data->regmap,
++	ret = regmap_write_bits(data->regmap,
+ 				 data->base + SC27XX_FGU_USER_AREA_CLEAR,
+ 				 SC27XX_FGU_MODE_AREA_MASK,
+ 				 SC27XX_FGU_MODE_AREA_MASK);
+@@ -248,7 +248,7 @@
+ 	 */
+ 	udelay(200);
+ 
+-	ret = regmap_update_bits(data->regmap,
++	ret = regmap_write_bits(data->regmap,
+ 				 data->base + SC27XX_FGU_USER_AREA_SET,
+ 				 SC27XX_FGU_MODE_AREA_MASK,
+ 				 boot_mode << SC27XX_FGU_MODE_AREA_SHIFT);
+@@ -268,7 +268,7 @@
+ 	 * make the user area data available, otherwise we can not save the user
+ 	 * area data.
+ 	 */
+-	return regmap_update_bits(data->regmap,
++	return regmap_write_bits(data->regmap,
+ 				  data->base + SC27XX_FGU_USER_AREA_CLEAR,
+ 				  SC27XX_FGU_MODE_AREA_MASK, 0);
+ }
+@@ -277,7 +277,7 @@
+ {
+ 	int ret;
+ 
+-	ret = regmap_update_bits(data->regmap,
++	ret = regmap_write_bits(data->regmap,
+ 				 data->base + SC27XX_FGU_USER_AREA_CLEAR,
+ 				 SC27XX_FGU_CAP_AREA_MASK,
+ 				 SC27XX_FGU_CAP_AREA_MASK);
+@@ -296,7 +296,7 @@
+ 	if (data->var == &ump9620_info)
+ 		cap = clamp(cap, 0, 100);
+ 
+-	ret = regmap_update_bits(data->regmap,
++	ret = regmap_write_bits(data->regmap,
+ 				 data->base + SC27XX_FGU_USER_AREA_SET,
+ 				 SC27XX_FGU_CAP_AREA_MASK, cap);
+ 	if (ret)
+@@ -315,7 +315,7 @@
+ 	 * make the user area data available, otherwise we can not save the user
+ 	 * area data.
+ 	 */
+-	ret = regmap_update_bits(data->regmap,
++	ret = regmap_write_bits(data->regmap,
+ 				 data->base + SC27XX_FGU_USER_AREA_CLEAR,
+ 				 SC27XX_FGU_CAP_AREA_MASK, 0);
+ 	if (!ret)
+@@ -1551,6 +1551,30 @@
+ }
+ #endif
+ 
++/*
++ * UMP9620: the capacity the next boot starts from (Android's or this one's) is the one in the user area, and it is
++ * written when somebody reads the capacity and its whole percent has changed. Nothing has to read it before a
++ * power-off: read it once more here, while the PMIC still answers, and keep it, and the boot mode with it.
++ */
++static void sc27xx_fgu_shutdown(struct platform_device *pdev)
++{
++	struct sc27xx_fgu_data *data = platform_get_drvdata(pdev);
++	int cap, ret;
++
++	if (!data || data->var != &ump9620_info || !data->bat_present)
++		return;
++
++	mutex_lock(&data->lock);
++	ret = sc27xx_fgu_get_capacity(data, &cap);
++	if (!ret)
++		ret = sc27xx_fgu_save_last_cap(data, clamp(cap, 0, 100));
++	if (!ret)
++		ret = sc27xx_fgu_save_boot_mode(data, SC27XX_FGU_NORMAIL_POWERTON);
++	mutex_unlock(&data->lock);
++	if (ret)
++		dev_warn(data->dev, "battery capacity not kept for the next boot: %d\n", ret);
++}
++
+ static const struct dev_pm_ops sc27xx_fgu_pm_ops = {
+ 	SET_SYSTEM_SLEEP_PM_OPS(sc27xx_fgu_suspend, sc27xx_fgu_resume)
+ };
+@@ -1564,6 +1588,7 @@
+ 
+ static struct platform_driver sc27xx_fgu_driver = {
+ 	.probe = sc27xx_fgu_probe,
++	.shutdown = sc27xx_fgu_shutdown,
+ 	.driver = {
+ 		.name = "sc27xx-fgu",
+ 		.of_match_table = sc27xx_fgu_of_match,
