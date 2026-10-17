@@ -1,0 +1,2 @@
+# modules that may bind to a node of the vendor device tree (check-dt-modules.py): none so far - the drivers the
+# boards need are built in or the vendor modules, which are not checked
