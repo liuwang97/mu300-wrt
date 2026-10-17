@@ -44,6 +44,8 @@ var callPowerGet = rpc.declare({ object: 'mu300dash', method: 'power_get', expec
 var callPowerSet = rpc.declare({ object: 'mu300dash', method: 'power_set', params: [ 'op', 'key', 'value' ], expect: { '': {} }, nobatch: true });
 var callSimGet = rpc.declare({ object: 'mu300dash', method: 'sim_get', expect: { '': {} }, nobatch: true });
 var callSimSet = rpc.declare({ object: 'mu300dash', method: 'sim_set', params: [ 'op', 'value' ], expect: { '': {} }, nobatch: true });
+var callSimcardGet = rpc.declare({ object: 'mu300dash', method: 'simcard_get', expect: { '': {} }, nobatch: true });
+var callSimcardSet = rpc.declare({ object: 'mu300dash', method: 'simcard_set', params: [ 'kind', 'slot', 'state' ], expect: { '': {} }, nobatch: true });
 var callTtlGet = rpc.declare({ object: 'mu300dash', method: 'ttl_get', expect: { '': {} }, nobatch: true });
 var callTtlSet = rpc.declare({ object: 'mu300dash', method: 'ttl_set', params: [ 'value' ], expect: { '': {} }, nobatch: true });
 var callFwdGet = rpc.declare({ object: 'mu300dash', method: 'forward_get', expect: { '': {} }, nobatch: true });
@@ -728,7 +730,7 @@ return baseclass.extend({
 	callUsbNetList: callUsbNetList, callUsbNetAdd: callUsbNetAdd,
 	callLangGet: callLangGet, callLangSet: callLangSet,
 	callPowerGet: callPowerGet, callPowerSet: callPowerSet,
-	callSimGet: callSimGet, callSimSet: callSimSet,
+	callSimGet: callSimGet, callSimSet: callSimSet, callSimcardGet: callSimcardGet, callSimcardSet: callSimcardSet,
 	callTtlGet: callTtlGet, callTtlSet: callTtlSet,
 	callFwdGet: callFwdGet, callFwdSet: callFwdSet, callFwdTest: callFwdTest, callFwdLogClear: callFwdLogClear,
 	callCpuGet: callCpuGet, callCpuSet: callCpuSet, callCpuVoltageGet: callCpuVoltageGet, callCpuVoltageSet: callCpuVoltageSet,

@@ -1,7 +1,7 @@
 #!/bin/sh
 # mu300-api: the device's settings and state for a program, one method per call (Ubuntu and OpenWrt; F50, U30 Air,
 # V50). The web installer's device manager uses it over adb (docs/ADB-INTERFACE.md, FINDINGS 110); Cockpit's MU300
-# page (the panel extra, FINDINGS 184) has no other backend.
+# page (the panel extra, FINDINGS 185) has no other backend.
 #
 #   mu300-api METHOD < REQUEST      REQUEST: one JSON object (at least {}), on stdin, never on the command line: it may
 #                                   hold a password. The answer: one JSON object on stdout, {"ok":1,...} or
@@ -51,7 +51,7 @@ TAB=$(printf '\t')
 # ------------------------------------------------------------------ the methods
 METHODS='hello overview
 wifi.get wifi.set wifi.power wificlient.status wificlient.scan wificlient.join wificlient.leave
-data.get data.set data.power sim.get sim.select lock.get lock.set
+data.get data.set data.power sim.get sim.select voice.get voice.set lock.get lock.set
 vpn.status vpn.profiles vpn.subs vpn.settings vpn.service vpn.killswitch vpn.use vpn.add vpn.add_url vpn.rename
 vpn.remove vpn.setting vpn.sub_add vpn.sub_refresh vpn.sub_remove vpn.logs vpn.install vpn.engine_install vpn.engines
 sms.list sms.read sms.send sms.job sms.delete sms.forward
@@ -716,6 +716,24 @@ m_sim_select() {
     checked
     tool 60 "$BIN/mu300-sim" default "$V" </dev/null || refuse failed "$ERR"
     ok "\"sim\":$(jcheck "$OUT"),\"text\":$(js "$OUT")"
+}
+# VoLTE and VoNR per card (mobile-data voice, FINDINGS 184): the saved choices, and what the card in use says now
+m_voice_get() {
+    only
+    [ -x "$BIN/mobile-data" ] || refuse unsupported mobile-data
+    tool 20 "$BIN/mobile-data" voice --json --read </dev/null
+    _j=$(jcheck "$OUT") || refuse failed "$ERR"
+    ok "\"voice\":$_j"
+}
+m_voice_set() {
+    only slot kind state
+    int slot 1 2; need slot; _sl=$V
+    word kind 'volte|vonr'; need kind; _k=$V
+    word state 'on|off'; need state
+    [ -x "$BIN/mobile-data" ] || refuse unsupported mobile-data
+    checked
+    tool 30 "$BIN/mobile-data" voice "$_k" "$V" --slot "$((_sl - 1))" </dev/null || refuse failed "$ERR"
+    ok "\"text\":$(js "$OUT")"
 }
 m_lock_get() { only; dash lock_get '{"fresh":0}'; }
 m_lock_set() {
@@ -1612,6 +1630,8 @@ case $METHOD in
     data.power) m_data_power ;;
     sim.get) m_sim_get ;;
     sim.select) m_sim_select ;;
+    voice.get) m_voice_get ;;
+    voice.set) m_voice_set ;;
     lock.get) m_lock_get ;;
     lock.set) m_lock_set ;;
     vpn.status) m_vpn_status ;;

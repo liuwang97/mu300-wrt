@@ -550,6 +550,27 @@ class MobileData(ApiCase):
             self.ok(shell, 'data.power', {'state': 'off'})
             self.assertEqual(self.calls('later')[0][-2:], ['stop', 'mu300-mobile-data.service'])
 
+    def test_voice(self):
+        """FINDINGS 184: voice.get is mobile-data voice --json --read; voice.set the fixed words, the slot 1/2 as 0/1."""
+        for shell in self.each_shell():
+            self.refused(shell, 'voice.get', {}, 'unsupported', 'mobile-data')
+            self.tool('mobile-data')
+            self.out('mobile-data', '{"slot":0,"slots":[{"volte":true,"vonr":null},{"volte":true,"vonr":null}],"live":null}\n')
+            o = self.ok(shell, 'voice.get')
+            self.assertEqual(o['voice']['slots'][0], {'volte': True, 'vonr': None})
+            self.assertEqual(self.calls('mobile-data')[-1], ['mobile-data', 'voice', '--json', '--read'])
+            for bad in ({'slot': 3, 'kind': 'volte', 'state': 'on'}, {'slot': 1, 'kind': 'ims', 'state': 'on'},
+                        {'slot': 1, 'kind': 'volte', 'state': '-x'}):
+                self.refused(shell, 'voice.set', bad, 'bad-value')
+            self.refused(shell, 'voice.set', {'slot': 1, 'kind': 'volte'}, 'missing', 'state')
+            self.out('mobile-data', 'vonr off for the SIM in slot 1 (saved; sent when that card\'s radio next starts)\n')
+            o = self.ok(shell, 'voice.set', {'slot': 2, 'kind': 'vonr', 'state': 'off'})
+            self.assertEqual(self.calls('mobile-data')[-1], ['mobile-data', 'voice', 'vonr', 'off', '--slot', '1'])
+            self.out('mobile-data', '', rc=1, err='the modem did not take volte off; nothing was saved')
+            self.refused(shell, 'voice.set', {'slot': 1, 'kind': 'volte', 'state': 'off'}, 'failed',
+                         'the modem did not take volte off; nothing was saved')
+            (self.bin / 'mobile-data').unlink()
+
     def test_locks_are_the_panels_alone(self):
         for shell in self.each_shell():
             self.refused(shell, 'lock.get', {}, 'unsupported')
