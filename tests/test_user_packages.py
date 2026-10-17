@@ -792,7 +792,7 @@ class Service(ShellTest):
             self.assertEqual(self.rec('done'), 'htop\n')
             self.assertIn('ppa-thing E: Unable to locate package ppa-thing', self.rec('failed'))
             # offline must fail the update: apt-get returns 0 without --error-on=any
-            self.assertIn('apt-get update -q --error-on=any -o Acquire::http::Timeout=30', (self.tmp / 'pm.log').read_text())
+            self.assertIn('apt-get update -q --error-on=any -o Acquire::http::Timeout=10', (self.tmp / 'pm.log').read_text())
             self.assertIn('apt-get install -y -q -o Dpkg::Options::=--force-confold htop ppa-thing',
                           (self.tmp / 'pm.log').read_text())
             self.assertIn('could not be installed again', (self.tmp / 'motd/61-mu300-packages').read_text())

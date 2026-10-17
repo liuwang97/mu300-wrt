@@ -173,13 +173,13 @@ class PanelExtra(ExtrasBase):
             apt = self.log('apt').splitlines()
             # bounded: offline, an apt-get update without limits waited more than 10 minutes
             self.assertTrue(apt[0].startswith('apt-get update '), apt)
-            for o in ('Acquire::http::Timeout=30', 'Acquire::https::Timeout=30', 'Acquire::Retries=1'):
+            for o in ('Acquire::http::Timeout=10', 'Acquire::https::Timeout=10', 'Acquire::Retries=0'):
                 self.assertIn(o, apt[0])
             # downloaded into the extra, installed from there, and kept for the restore after an update
             self.assertIn('--download-only', apt[1])
             self.assertIn('Dir::Cache::archives=', apt[1])
             self.assertIn('/disk/extra/panel/.debs-new -o', apt[1])
-            self.assertIn('Acquire::http::Timeout=30', apt[1])
+            self.assertIn('Acquire::http::Timeout=10', apt[1])
             self.assertTrue(apt[2].endswith('/disk/extra/panel/.debs-new/cockpit-ws_314-1_arm64.deb'), apt)
             self.assertTrue((self.panel() / 'debs/24.04/cockpit-ws_314-1_arm64.deb').is_file())
             self.assertFalse((self.panel() / '.debs-new').exists())
