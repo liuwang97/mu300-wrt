@@ -640,25 +640,32 @@ class Rules(unittest.TestCase):
         self.assertIn(r"'\t.charger_det = SPRD_SC2730_CHG_DET,\n};\n', UMP9620_DATA)", port)
         self.assertIn("'.charger_det = SPRD_UMP9620_CHG_DET,'", port)
         # Android's last capacity in the FGU's user area is whole percent in bits 7:0 and tenths in bits 11:8 (575 =
-        # 0x23f = 63.2 %), not 0.1 %; mainline writes whole percent; an ambiguous or invalid value goes to the OCV; the
-        # charger's Full (from a charger driver) means 100 %; the capacity is saved as it changes and stays 0-100
+        # 0x23f = 63.2 %), not 0.1 %; mainline writes whole percent; a valid value is taken as it is, only an invalid
+        # one goes to the OCV (FINDINGS 181: no migration guess); the charger's Full (from a charger driver) means 100 %
+        # with the battery current within the node's fullbatt-current, no OCV percentage or voltage (the 4.146 V of a
+        # real Full is below fullbatt-voltage); the capacity is saved as it changes and stays 0-100
         patches = TOP / 'upstream' / 'patches'
         self.assertFalse((patches / '0011-power-sc27xx-fuel-gauge-UMP9620-capacity-in-tenths.patch').exists())
         p11 = (patches / '0011-power-sc27xx-fuel-gauge-UMP9620-saved-capacity-and-full.patch').read_text()
         for s in ('+#define UMP9620_FGU_CAP_INTEGER_MASK\tGENMASK(7, 0)', '+#define UMP9620_FGU_CAP_DECIMAL_MASK\tGENMASK(11, 8)',
                   '+\t\tcap = clamp(cap, 0, 100);', '+\tvalid = whole <= 100 && tenths <= 9 && !(whole == 100 && tenths);',
-                  '+\tambiguous = tenths && value <= 1000 && !(value % 10);',
-                  '+\tif (valid && (!ambiguous || abs(cur) >= UMP9620_FGU_RELAXED_MA)) {',
+                  '+\tif (valid) {',
                   '+\t*cap = power_supply_ocv2cap_simple(data->cap_table, data->table_len, ocv);',
                   '+\tif (!is_first_poweron && data->var == &ump9620_info)',
                   '+\tif (data->var == &ump9620_info && chg_sts == POWER_SUPPLY_STATUS_FULL && cap != 100 &&',
-                  '+\t    sc27xx_fgu_has_charger() &&', '+\t\tsc27xx_fgu_adjust_cap(data, 100);',
+                  '+\t    sc27xx_fgu_has_charger() && ump9620_fgu_full_current(data)) {',
+                  '+\treturn abs(cur) <= (int)(data->full_current_ua / 1000);',
+                  '+\t\t\tof_property_read_u32(bat, "fullbatt-current", &data->full_current_ua);',
+                  '+\t\tsc27xx_fgu_adjust_cap(data, 100);',
                   '+\t\tif (*cap != data->saved_cap && sc27xx_fgu_save_last_cap(data, *cap))',
                   '+\t\tval->intval = clamp(value, 0, 100);'):
             self.assertIn(s, p11)
         self.assertNotIn('* 10;', p11)
+        for s in ('ambiguous', 'UMP9620_FGU_RELAXED_MA', 'UMP9620_FGU_FULL_MIN_CAP', 'fullbatt-voltage"'):
+            self.assertNotIn(s, ''.join(l for l in p11.splitlines(True) if l.startswith('+')))
         # (FINDINGS 105, after kanoqwq's 2af101f8) the capacity is read and kept once more at a power-off, on UMP9620
-        # with a battery only; the user area's CLEAR/SET steps are always written, never skipped on a read-back
+        # with a battery only; the user area's steps stay regmap_update_bits() as in Unisoc's driver and the U30 Air's
+        # stock module (FINDINGS 181), with its 200 us wait after the release too
         p18 = (patches / '0018-power-sc27xx-fuel-gauge-UMP9620-capacity-kept-at-power-off.patch').read_text()
         for s in ('+static void sc27xx_fgu_shutdown(struct platform_device *pdev)',
                   '+\tif (!data || data->var != &ump9620_info || !data->bat_present)',
@@ -666,8 +673,8 @@ class Rules(unittest.TestCase):
                   '+\t\tret = sc27xx_fgu_save_boot_mode(data, SC27XX_FGU_NORMAIL_POWERTON);',
                   '+\t.shutdown = sc27xx_fgu_shutdown,'):
             self.assertIn(s, p18)
-        self.assertEqual(p18.count('+\tret = regmap_write_bits(data->regmap,') + p18.count('+\treturn regmap_write_bits(data->regmap,'), 6)
-        self.assertEqual(p18.count('-\tret = regmap_update_bits(data->regmap,') + p18.count('-\treturn regmap_update_bits(data->regmap,'), 6)
+        self.assertNotIn('regmap_write_bits(data', p18)
+        self.assertEqual(p18.count('+\tif (!ret && data->var == &ump9620_info)\n+\t\tudelay(200);'), 2)
         # mu300-usb reaches the chip past the driver and leaves its watchdog off then
         usb = (BIN / 'mu300-usb').read_text()
         self.assertIn('[ -e "$R/sys/bus/i2c/devices/$BUS-006b/driver" ] && FORCE=-f', usb)
@@ -1174,6 +1181,30 @@ class Rules(unittest.TestCase):
         tx = (wlan / 'tx.c').read_text()
         self.assertNotIn('pr_err("%s, %d: _fc_ no credit!\\n"', tx)
         self.assertIn('pr_debug_ratelimited("%s, %d: _fc_ no credit!\\n"', tx)
+
+    def test_wifi_ap_get_station_answers_for_its_stations_only(self):
+        # FINDINGS 180 (after kanoqwq's f59a296): on an access point get_station handed out the interface's own
+        # counters and the station side's GET_STATION for any address; now -ENOENT unless the address is one of this
+        # interface's peers, and nothing filled in for one (the firmware has no per-client figures); dump_station
+        # refuses a negative index; get_channel answers for link 0 only. The 5.4 patch adds the same code
+        mainline = (TOP / 'upstream' / 'modules' / 'sprd_wlan_combo' / 'common' / 'cfg80211.c').read_text()
+        patch = (TOP / 'kernel' / 'patches' / 'wlan_combo-ap-stats-scope.patch').read_text()
+        lines = ('static bool sprd_ap_has_peer(struct sprd_vif *vif, const u8 *mac)',
+                 '\tif (!is_valid_ether_addr(mac) || ether_addr_equal(mac, vif->ndev->dev_addr))',
+                 '\t\tif (READ_ONCE(hif->peer_entry[i].ctx_id) == vif->ctx_id &&',
+                 '\tif (vif->wdev.iftype == NL80211_IFTYPE_AP || vif->wdev.iftype == NL80211_IFTYPE_P2P_GO) {',
+                 '\t\tif (!sprd_ap_has_peer(vif, mac))\n\t\t\treturn -ENOENT;\n\t\tsinfo->filled = 0;\n\t\treturn 0;',
+                 '\tif (idx < 0 || (vif->wdev.iftype != NL80211_IFTYPE_AP && vif->wdev.iftype != NL80211_IFTYPE_P2P_GO))',
+                 '\tif (link_id || (wdev->iftype != NL80211_IFTYPE_AP && wdev->iftype != NL80211_IFTYPE_P2P_GO) ||',
+                 '\t*chandef = wdev->links[0].ap.chandef;')
+        added = '\n'.join(l[1:] if l[:1] in '+ ' else l for l in patch.splitlines())
+        for s in lines:
+            self.assertIn(s, mainline)
+            self.assertIn(s, added)
+        self.assertNotIn('links[link_id]', mainline)
+        # the AP branch comes before anything of the station side's is filled in
+        f = mainline[mainline.index('int sprd_cfg80211_get_station('):]
+        self.assertLess(f.index('sprd_ap_has_peer(vif, mac)'), f.index('sinfo->tx_bytes = ndev->stats.tx_bytes;'))
 
     def test_wifi_routine_events_are_not_logged_as_errors(self):
         # issue #140: the vendor printed per-poll survey data, the multicast default of the peer lookup, the
