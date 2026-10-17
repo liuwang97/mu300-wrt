@@ -246,6 +246,16 @@ exit 0''')
             self.assertLess(calls.index('sleep 60'), calls.index('proto_setup_failed wan'))
             self.assertFalse([c for c in calls if c.startswith(('proto_send_update', 'logger', 'proto_init_update'))], calls)
 
+    def test_an_empty_slot_is_not_redialled(self):
+        """FINDINGS 186: exit 6 is no card in the slot in use: SIM_MISSING, no retry every 20 s (unavailable; the card's event brings
+        the WAN up when one answers)."""
+        for shell in self.each_shell():
+            calls = self.run_proto(shell, 'proto_mu300cell_setup', out='', rc=6, err='', ok=1)
+            self.assertIn('proto_notify_error wan SIM_MISSING', calls)
+            self.assertIn('proto_set_available wan 0', calls)
+            self.assertNotIn('proto_block_restart wan', calls)
+            self.assertNotIn('sleep 20', calls)
+
     def test_a_sim_radio_switched_off_is_not_retried(self):
         """FINDINGS 185: exit 7 is the SIM's radio switched off in its settings: SIM_RADIO_DISABLED, no retry (the
         interface is unavailable until mu300-sim-radio switches it on and brings the WAN up), no address."""
