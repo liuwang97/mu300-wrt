@@ -213,6 +213,8 @@ do_set() {
     fi
     [ "$sm" = 0 ] || [ -n "$num" ] || error 'SMS forwarding needs a phone number'
 
+    # MU300_FWD_CHECK=1: every field checked as above, nothing written (mu300-backup checks a restore first, FINDINGS 155)
+    [ -z "${MU300_FWD_CHECK:-}" ] || { echo '{"ok":1,"checked":1}'; exit 0; }
     was=$(saved enabled)
     dir=${CONF%/*}
     mkdir -p "$dir" 2>/dev/null

@@ -55,14 +55,24 @@ var callFwdTest = rpc.declare({ object: 'mu300dash', method: 'forward_test', exp
 var callFwdLogClear = rpc.declare({ object: 'mu300dash', method: 'forward_log_clear', expect: { '': {} }, nobatch: true });
 var callCpuGet = rpc.declare({ object: 'mu300dash', method: 'cpu_get', expect: { '': {} }, nobatch: true });
 var callCpuSet = rpc.declare({ object: 'mu300dash', method: 'cpu_set', params: [ 'profile' ], expect: { '': {} }, nobatch: true });
+/* the CPU voltage offset, EXPERIMENTAL (op set|off|stress; the backend checks every field again) */
+var callCpuVoltageGet = rpc.declare({ object: 'mu300dash', method: 'cpu_voltage_get', expect: { '': {} }, nobatch: true });
+var callCpuVoltageSet = rpc.declare({ object: 'mu300dash', method: 'cpu_voltage_set',
+	params: [ 'op', 'offsets', 'confirm', 'minutes' ], expect: { '': {} }, nobatch: true });
 var callPackagesGet = rpc.declare({ object: 'mu300dash', method: 'packages_get', expect: { '': {} }, nobatch: true });
 var callPackagesAct = rpc.declare({ object: 'mu300dash', method: 'packages_act', params: [ 'op' ], expect: { '': {} }, nobatch: true });
 /* System > Update: what is installed and offered, the one update task, and every action (each parameter a fixed word,
  * a release tag, a size or a SHA-256; the backend checks them again) */
 var callUpdateGet = rpc.declare({ object: 'mu300dash', method: 'update_get', params: [ 'sizes' ], expect: { '': {} }, nobatch: true });
+/* System > Backup of settings (mu300-api backup.export / backup.import, FINDINGS 155) */
+var callBackupExport = rpc.declare({ object: 'mu300dash', method: 'backup_export', params: [ 'passphrase', 'with_password' ],
+	expect: { '': {} }, nobatch: true });
+var callBackupImport = rpc.declare({ object: 'mu300dash', method: 'backup_import',
+	params: [ 'file', 'passphrase', 'dry_run', 'force', 'skip' ], expect: { '': {} }, nobatch: true });
+var callBackupJob = rpc.declare({ object: 'mu300dash', method: 'backup_job', expect: { '': {} }, nobatch: true });
 var callUpdateJob = rpc.declare({ object: 'mu300dash', method: 'update_job', expect: { '': {} }, nobatch: true });
 var callUpdateAct = rpc.declare({ object: 'mu300dash', method: 'update_act',
-	params: [ 'op', 'tag', 'systems', 'kernel', 'sha256', 'size', 'flags', 'confirm' ], expect: { '': {} }, nobatch: true });
+	params: [ 'op', 'tag', 'systems', 'kernel', 'sha256', 'size', 'flags', 'confirm', 'url' ], expect: { '': {} }, nobatch: true });
 var callTrafficGet = rpc.declare({ object: 'mu300dash', method: 'traffic_get', expect: { '': {} }, nobatch: true });
 var callTrafficSet = rpc.declare({ object: 'mu300dash', method: 'traffic_set', params: [ 'op', 'value' ], expect: { '': {} }, nobatch: true });
 /* System > Terminal: a one-time token for ttyd (rpcd mu300term, ACL luci-app-mu300-terminal) */
@@ -285,6 +295,7 @@ html.mud-bootstrap-theme{--surface:var(--background-color-high);--surface-sunken
 .mud-btn[disabled]{opacity:.4;pointer-events:none}
 .mud-ctl{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:7px}
 .mud-note{font-size:.72rem;color:var(--text-subtle,var(--text-light,#999));margin-top:7px}
+.mud-danger{border:2px solid var(--danger,#E25555);border-radius:var(--radius-base,.5rem);padding:9px 12px;margin:8px 0;color:var(--danger,#E25555);font-weight:600;font-size:.84rem;background:color-mix(in oklab,var(--danger,#E25555) 8%,transparent)}
 .mud-table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums;font-size:.8rem}
 .mud-table th{font-weight:500;color:var(--text-muted,var(--text-light,#777));text-align:right;padding:1px 4px;border-bottom:1px solid var(--hairline,var(--border,#ddd));font-size:.72rem;position:sticky;top:0;background:var(--surface,var(--background-alt,var(--background,#fff)))}
 .mud-table td{text-align:right;padding:3px 6px;border-bottom:1px dashed color-mix(in oklab,var(--hairline,var(--border,#ddd)) 5%,transparent)}
@@ -720,9 +731,10 @@ return baseclass.extend({
 	callSimGet: callSimGet, callSimSet: callSimSet,
 	callTtlGet: callTtlGet, callTtlSet: callTtlSet,
 	callFwdGet: callFwdGet, callFwdSet: callFwdSet, callFwdTest: callFwdTest, callFwdLogClear: callFwdLogClear,
-	callCpuGet: callCpuGet, callCpuSet: callCpuSet,
+	callCpuGet: callCpuGet, callCpuSet: callCpuSet, callCpuVoltageGet: callCpuVoltageGet, callCpuVoltageSet: callCpuVoltageSet,
 	callPackagesGet: callPackagesGet, callPackagesAct: callPackagesAct,
 	callUpdateGet: callUpdateGet, callUpdateJob: callUpdateJob, callUpdateAct: callUpdateAct,
+	callBackupExport: callBackupExport, callBackupImport: callBackupImport, callBackupJob: callBackupJob,
 	callTrafficGet: callTrafficGet, callTrafficSet: callTrafficSet, callNetDev: callNetDev, netDev: netDev,
 	callTermToken: callTermToken,
 	carrierName: carrierName, qLevel: qLevel, qLevelLabel: qLevelLabel, qLabel: qLabel, qCol: qCol, qScore: qScore,
