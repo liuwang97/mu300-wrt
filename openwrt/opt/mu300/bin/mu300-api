@@ -441,7 +441,7 @@ m_wifi_get() {
         case $(uci_q get "$_rd.band") in 2g) _band=2.4 ;; *) _band=5 ;; esac
         _ch=$(uci_q get "$_rd.channel"); [ -n "$_ch" ] || _ch=auto
         _enc=$(uci_q get "$_if.encryption")
-        case $_enc in psk2*|psk-mixed*) _sec=wpa2 ;; sae-mixed*) _sec=wpa2-wpa3 ;; sae*) _sec=wpa3 ;; none|'') _sec=open ;; *) _sec=other ;; esac
+        case $_enc in psk2*|psk-mixed*) _sec=wpa2 ;; sae-mixed*|sae-compat*|psk3-mixed*) _sec=wpa2-wpa3 ;; sae*|psk3*) _sec=wpa3 ;; none|'') _sec=open ;; *) _sec=other ;; esac
         _hidden=$(uci_q get "$_if.hidden")
         _pw=$([ -n "$(uci_q get "$_if.key")" ] && echo true || echo false)
         _on=$({ [ "$(uci_q get "$_rd.disabled")" = 1 ] || [ "$(uci_q get "$_if.disabled")" = 1 ]; } && echo false || echo true)
@@ -505,12 +505,23 @@ m_wifi_set() {
     if is_openwrt; then
         _rd=$(wifi_radio); _if=$(wifi_iface)
         _enc=$(uci_q get "$_if.encryption")
+        # WPA3/SAE is disabled on this Wi-Fi chip (the U30 Air's SAE offload, FINDINGS 80; the wifi-scripts refuse
+        # it): a hotspot still set to it becomes WPA2-PSK (CCMP) here, with its password or the one given
+        _sae=
+        case ${_enc%%+*} in sae|sae-mixed|sae-compat|psk3|psk3-mixed) _sae=1 ;; esac
+        [ -z "$_sae" ] || [ -n "$PSK" ] || psk_ok "$(uci_q get "$_if.key")" || refuse missing password
         {
             [ -z "$SSID" ] || printf 'set %s.ssid=%s\n' "$_if" "$(uq "$SSID")"
             if [ -n "$PSK" ]; then
                 printf 'set %s.key=%s\n' "$_if" "$(uq "$PSK")"
-                # an open hotspot gets WPA2 with its first password; WPA3 (FINDINGS 80) is never switched on here
+                # an open hotspot gets WPA2 with its first password; WPA3 is never switched on here
                 case $_enc in none|'') printf 'set %s.encryption=psk2\n' "$_if" ;; esac
+            fi
+            if [ -n "$_sae" ]; then
+                printf 'set %s.encryption=psk2+ccmp\n' "$_if"
+                for _o in ieee80211w sae_pwe; do [ -z "$(uci_q get "$_if.$_o")" ] || printf 'delete %s.%s\n' "$_if" "$_o"; done
+                uci_q get "$_if.hostapd_bss_options" | grep -q 'u30_sae_offload=1' &&
+                    printf 'del_list %s.hostapd_bss_options=u30_sae_offload=1\n' "$_if"
             fi
             [ -z "$HIDDEN" ] || printf 'set %s.hidden=%s\n' "$_if" "$HIDDEN"
             [ -z "$CHAN" ] || [ -n "$BAND" ] || uci_channel "$_rd"
@@ -525,7 +536,8 @@ m_wifi_set() {
                 later wifi reload
             fi
         else
-            case $_enc in sae*) later sh -c 'wifi down; sleep 1; wifi up' ;; *) later wifi reload ;; esac
+            # out of SAE: a full restart (the access point the wifi-scripts refused is not there to reload)
+            if [ -n "$_sae" ]; then later sh -c 'wifi down; sleep 1; wifi up'; else later wifi reload; fi
         fi
     else
         [ -f "$HOTSPOT" ] || refuse unsupported "hotspot.conf (the hotspot has not run yet)"
