@@ -2768,6 +2768,19 @@ extras_install() {
     return 0
 }
 
+# panel_configure "OS...": the panel's files in the updated Ubuntu systems that use it (the user's, carried: Cockpit's
+# listen drop-in of an older panel bound the socket to br-lan, which held every boot up 90 s), written by the extra's
+# own mu300-panel (configure: files only), so the first boot already listens as this release's panel says. That
+# boot's mu300-extra link does the same again; a panel extra that cannot (an older one) leaves it to that.
+panel_configure() {
+    [ -f "$EXTRA/panel/bin/mu300-panel" ] || return 0
+    for _o in $1; do
+        [ -f "$DISK/$_o/etc/systemd/system/cockpit.socket.d/mu300-listen.conf" ] || continue
+        MU300_SYSROOT=$DISK/$_o sh "$EXTRA/panel/bin/mu300-panel" configure >/dev/null 2>&1 || true
+    done
+    return 0
+}
+
 # ---- the kernel and the boot image ------------------------------------------------------------------------------
 # The boot image in the Linux slot's boot partition (boot_b, or boot_a when Android runs from b) is the stock header
 # and AVB tail of this device, the kernel, and a ramdisk that holds this device's own Android files next to the
@@ -3593,6 +3606,7 @@ apply() {
     done
     modules_link "$todo"
     extras_install "$tag" "$extras"
+    panel_configure "$todo"
     # the kernel goes with the modules of the systems just installed, so it follows them
     boot_ok=1
     boot_update "$tag" || { boot_ok=; printf '\nThe boot image was not updated (see above)%s.\n' "${SYSTEM_CHANGED:+; the systems were}"; }
