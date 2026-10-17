@@ -2497,7 +2497,8 @@ class Os(ShellTest):
 
 
 class Led(ShellTest):
-    # the U30 Air's: power is the battery LED's white (the PMIC's green channel), the network LED blue on 4G
+    # the U30 Air's: the battery LED (the PMIC's RGB, its green channel white) shows the battery as ZTE's firmware
+    # does (FINDINGS 151: white at 120 of 255 from 60 %, blue 200 from 10 %, red 150 below), the network LED blue on 4G
     # (net_blue), white on 5G (zte-ldo0), red without service (keyboard-backlight); the Wi-Fi LED's colours are LDOs too
     LEDS = ['sc27xx:blue', 'sc27xx:red', 'sc27xx:green', 'net_blue', 'keyboard-backlight', 'zte-ldo0', 'zte-ldo1', 'zte-ldo2']
 
@@ -2510,6 +2511,16 @@ class Led(ShellTest):
         self.conf = self.tmp / 'led.conf'
         self.uptime(100)
         self.stub('iw', 'cat "$STUBLOG/iw.out" 2>/dev/null')
+        self.battery()
+
+    def battery(self, capacity=80, status='Discharging', online=0):
+        """the fuel gauge and the charger as mainline has them (sc27xx-fgu, bq256xx-charger)"""
+        ps = self.root / 'sys/class/power_supply'
+        (ps / 'sc27xx-fgu').mkdir(parents=True, exist_ok=True)
+        (ps / 'bq256xx-charger').mkdir(parents=True, exist_ok=True)
+        (ps / 'sc27xx-fgu/capacity').write_text(f'{capacity}\n')
+        (ps / 'sc27xx-fgu/status').write_text(f'{status}\n')
+        (ps / 'bq256xx-charger/online').write_text(f'{online}\n')
 
     def setUp_leds(self):
         for n in self.LEDS:
@@ -2527,9 +2538,10 @@ class Led(ShellTest):
             (self.root / 'sys/class/leds' / n / 'brightness').write_text('0\n')
         for f in (self.root / 'run/mu300').glob('led/*'):
             f.unlink()
-        for f in (self.root / 'run/mu300').glob('led/.awake-until'):
+        for f in (self.root / 'run/mu300').glob('led/.*'):
             f.unlink()
         self.conf.unlink(missing_ok=True)
+        self.battery()
 
     def state(self):
         return {n: (self.root / 'sys/class/leds' / n / 'brightness').read_text().strip() for n in self.LEDS}
@@ -2545,7 +2557,7 @@ class Led(ShellTest):
             self.assertEqual(self.led(shell, 'u30air', 'power', 'on').returncode, 0)
             self.assertEqual(self.led(shell, 'u30air', 'data', 'error').returncode, 0)
             s = self.state()
-            self.assertEqual((s['sc27xx:green'], s['keyboard-backlight'], s['net_blue']), ('255', '255', '0'))
+            self.assertEqual((s['sc27xx:green'], s['keyboard-backlight'], s['net_blue']), ('120', '255', '0'))
             self.led(shell, 'u30air', 'data', 'on')
             s = self.state()
             self.assertEqual((s['keyboard-backlight'], s['net_blue']), ('0', '255'))
@@ -2567,8 +2579,9 @@ class Led(ShellTest):
         for shell in self.each_shell():
             self.reset()
             self.led(shell, 'u30air', 'power', 'on')
-            for iw, lit, dark in (('channel 36 (5180 MHz), width: 80 MHz', 'zte-ldo2', 'zte-ldo1'),
-                                  ('channel 6 (2437 MHz), width: 20 MHz', 'zte-ldo1', 'zte-ldo2')):
+            # as ZTE's firmware (FINDINGS 152): white (VDDCAMA1) on 5 GHz, blue (VDDCAMA2) on 2.4 GHz
+            for iw, lit, dark in (('channel 36 (5180 MHz), width: 80 MHz', 'zte-ldo1', 'zte-ldo2'),
+                                  ('channel 6 (2437 MHz), width: 20 MHz', 'zte-ldo2', 'zte-ldo1')):
                 (self.tmp / 'iw.out').write_text(f'Interface wlan0\n\ttype AP\n\t{iw}\n')
                 self.led(shell, 'u30air', 'wifi', 'on')
                 s = self.state()
@@ -2578,7 +2591,7 @@ class Led(ShellTest):
             # the hotspot just started and has no channel yet: its setting decides
             (self.tmp / 'iw.out').write_text('Interface wlan0\n\ttype AP\n')
             conf = self.tmp / 'hotspot.conf'
-            for band, lit in (('2.4', 'zte-ldo1'), ('5', 'zte-ldo2')):
+            for band, lit in (('2.4', 'zte-ldo2'), ('5', 'zte-ldo1')):
                 conf.write_text(f'SSID=x\nPSK=12345678\nBAND={band}\n')
                 (self.root / 'run/mu300/device').write_text('u30air\n')
                 self.script(shell, BIN / 'mu300-led', 'wifi', 'on', MU300_SYSROOT=self.root, MU300_BIN=BIN,
@@ -2602,11 +2615,11 @@ class Led(ShellTest):
             self.assertEqual(self.state()['keyboard-backlight'], '0')
             self.led(shell, 'u30air', 'wake')
             s = self.state()
-            self.assertEqual((s['sc27xx:green'], s['keyboard-backlight'], s['net_blue']), ('255', '255', '0'))
+            self.assertEqual((s['sc27xx:green'], s['keyboard-backlight'], s['net_blue']), ('120', '255', '0'))
             # and the timeout counts from the wake
             self.uptime(161 + 59)
             self.led(shell, 'u30air', 'sleep', '--if-due')
-            self.assertEqual(self.state()['sc27xx:green'], '255')
+            self.assertEqual(self.state()['sc27xx:green'], '120')
             self.uptime(161 + 61)
             self.led(shell, 'u30air', 'sleep', '--if-due')
             self.assertEqual(self.state()['sc27xx:green'], '0')
@@ -2634,12 +2647,12 @@ class Led(ShellTest):
                 self.uptime(200)
                 self.led(shell, 'u30air', 'wake')
                 s = self.state()
-                self.assertEqual((s['sc27xx:green'], s['zte-ldo0'], s['net_blue']), ('255', '255', '0'), timeout)
+                self.assertEqual((s['sc27xx:green'], s['zte-ldo0'], s['net_blue']), ('120', '255', '0'), timeout)
                 self.led(shell, 'u30air', 'data', 'on')                    # a change meanwhile shows too
                 self.assertEqual(self.state()['net_blue'], '255', timeout)
                 self.uptime(200 + lit_for - 1)
                 self.led(shell, 'u30air', 'sleep', '--if-due')
-                self.assertEqual(self.state()['sc27xx:green'], '255', timeout)
+                self.assertEqual(self.state()['sc27xx:green'], '120', timeout)
                 self.uptime(200 + lit_for + 1)
                 self.led(shell, 'u30air', 'sleep', '--if-due')
                 self.assertEqual(set(self.state().values()), {'0'}, timeout)   # still idle: dark again
@@ -2649,7 +2662,7 @@ class Led(ShellTest):
                 self.led(shell, 'u30air', 'wake')
                 self.led(shell, 'u30air', 'idle', 'off')
                 s = self.state()
-                self.assertEqual((s['sc27xx:green'], s['net_blue']), ('255', '255'), timeout)
+                self.assertEqual((s['sc27xx:green'], s['net_blue']), ('120', '255'), timeout)
 
     def test_idle_off_after_the_timeout_stays_dark(self):
         for shell in self.each_shell():
@@ -2661,19 +2674,130 @@ class Led(ShellTest):
             self.led(shell, 'u30air', 'idle', 'off')
             self.assertEqual(set(self.state().values()), {'0'})
             self.led(shell, 'u30air', 'wake')
-            self.assertEqual(self.state()['sc27xx:green'], '255')
+            self.assertEqual(self.state()['sc27xx:green'], '120')
 
-    def test_charge_blinks_the_power_led(self):
+    # --- the U30 Air's battery LED as ZTE's firmware (FINDINGS 151)
+    def rgb(self):
+        s = self.state()
+        return s['sc27xx:red'], s['sc27xx:green'], s['sc27xx:blue']
+
+    def test_battery_colour_by_level(self):
+        for shell in self.each_shell():
+            for cap, want in ((100, ('0', '120', '0')), (60, ('0', '120', '0')), (59, ('0', '0', '200')),
+                              (10, ('0', '0', '200')), (9, ('150', '0', '0'))):
+                self.reset()
+                self.conf.write_text('LED_TIMEOUT=0\n')
+                self.battery(cap)
+                self.led(shell, 'u30air', 'power', 'on')
+                self.assertEqual(self.rgb(), want, cap)
+                self.assertEqual((self.root / 'sys/class/leds/sc27xx:green/trigger').read_text().strip(), 'none')
+                # the F50: the same PMIC LED is its network light, never the battery's
+                self.reset()
+                self.battery(cap)
+                self.led(shell, 'f50', 'battery')
+                self.assertEqual(self.rgb(), ('0', '0', '0'), cap)
+
+    def test_charging_breathes_on_the_pmic_curve_and_is_not_restarted(self):
         for shell in self.each_shell():
             self.reset()
-            d = self.root / 'sys/class/leds/sc27xx:green'
+            self.conf.write_text('LED_TIMEOUT=0\n')
+            blue = self.root / 'sys/class/leds/sc27xx:blue'
+            (blue / 'trigger').write_text('[none] timer pattern\n')
+            self.battery(40, 'Charging', 1)
+            self.led(shell, 'u30air', 'battery')
+            self.assertEqual((blue / 'trigger').read_text().strip(), 'pattern')
+            self.assertEqual((blue / 'repeat').read_text().strip(), '-1')
+            self.assertEqual((blue / 'hw_pattern').read_text().strip(), '200 320 200 480 200 480 200 720')
+            # the next tick finds nothing changed: the curve is not written again (it would restart)
+            (blue / 'hw_pattern').write_text('untouched\n')
+            self.led(shell, 'u30air', 'tick')
+            self.assertEqual((blue / 'hw_pattern').read_text().strip(), 'untouched')
+            # full on the charger: steady white
+            self.battery(100, 'Full', 1)
+            self.led(shell, 'u30air', 'battery')
+            self.assertEqual(self.rgb()[1:], ('120', '0'))
+            self.assertEqual((self.root / 'sys/class/leds/sc27xx:green/trigger').read_text().strip(), 'none')
+            # the gauge still says Charging after an unplug: the charger's online flag decides
+            self.battery(40, 'Charging', 0)
+            self.led(shell, 'u30air', 'battery')
+            self.assertEqual(self.rgb(), ('0', '0', '200'))
+            self.assertEqual((blue / 'trigger').read_text().strip(), 'none')
+            (blue / 'trigger').write_text('[none] timer\n')
+
+    def test_outside_power_keeps_the_leds_lit_and_an_unplug_restarts_the_timeout(self):
+        for shell in self.each_shell():
+            self.reset()
+            self.uptime(100)
+            self.led(shell, 'u30air', 'power', 'on')
+            self.led(shell, 'u30air', 'data', 'on')
+            self.battery(70, 'Charging', 1)
+            self.led(shell, 'u30air', 'tick')
+            self.uptime(10000)                                   # long past the timeout: on the charger, lit
+            self.led(shell, 'u30air', 'tick')
+            self.assertEqual(self.state()['net_blue'], '255')
+            self.assertNotEqual(self.rgb(), ('0', '0', '0'))
+            self.battery(70, 'Discharging', 0)                    # unplugged: 60 s from now
+            self.led(shell, 'u30air', 'tick')
+            self.assertEqual((self.root / 'run/mu300/led/.awake-until').read_text().strip(), '10060')
+            self.assertEqual(self.rgb(), ('0', '120', '0'))
+            self.uptime(10059)
+            self.led(shell, 'u30air', 'tick')
+            self.assertEqual(self.state()['net_blue'], '255')
+            self.uptime(10061)
+            self.led(shell, 'u30air', 'tick')
+            self.assertEqual(set(self.state().values()), {'0'})
+            # plugged in again: everything back at once
+            self.battery(70, 'Charging', 1)
+            self.led(shell, 'u30air', 'tick')
+            self.assertEqual(self.state()['net_blue'], '255')
+
+    def test_low_battery_red_does_not_time_out(self):
+        for shell in self.each_shell():
+            self.reset()
+            self.uptime(100)
+            self.battery(8)
+            self.led(shell, 'u30air', 'power', 'on')
+            self.led(shell, 'u30air', 'data', 'on')
+            self.uptime(200)
+            self.led(shell, 'u30air', 'tick')
+            s = self.state()
+            self.assertEqual((s['net_blue'], s['sc27xx:red']), ('0', '150'))   # the rest dark, the red still lit
+            # shutdown: dark, and no tick lights it again
+            self.led(shell, 'u30air', 'power', 'off')
+            self.assertEqual(self.rgb(), ('0', '0', '0'))
+            self.led(shell, 'u30air', 'tick')
+            self.assertEqual(self.rgb(), ('0', '0', '0'))
+
+    def test_the_heat_alarm_goes_over_the_battery_led(self):
+        for shell in self.each_shell():
+            self.reset()
+            self.conf.write_text('LED_TIMEOUT=0\n')
+            self.battery(40)
+            self.led(shell, 'u30air', 'power', 'on')
+            pid = self.root / 'run/mu300/led-siren.pid'
+            try:
+                self.led(shell, 'u30air', 'alarm', 'on')
+                time.sleep(0.6)
+                self.battery(90)
+                self.led(shell, 'u30air', 'battery')               # a tick meanwhile writes nothing
+                self.assertTrue(pid.exists())
+            finally:
+                self.led(shell, 'u30air', 'alarm', 'off')
+            time.sleep(0.4)
+            self.assertEqual(self.rgb(), ('0', '120', '0'))        # the battery as it is now
+
+    def test_charging_boot_shows_the_charge(self):
+        # the charging boot: the U30 Air's battery LED breathes in the battery's colour, as whenever it charges
+        for shell in self.each_shell():
+            self.reset()
+            self.battery(40, 'Charging', 1)
+            d = self.root / 'sys/class/leds/sc27xx:blue'
             self.assertEqual(self.led(shell, 'u30air', 'charge', 'on').returncode, 0)
-            self.assertEqual((d / 'trigger').read_text().strip(), 'timer')
-            self.assertEqual((d / 'delay_on').read_text().strip(), '1000')
-            self.assertEqual((d / 'delay_off').read_text().strip(), '1000')
+            self.assertEqual((d / 'trigger').read_text().strip(), 'timer')     # no pattern trigger here
+            self.assertEqual(((d / 'delay_on').read_text().strip(), (d / 'delay_off').read_text().strip()),
+                             ('800', '1200'))
             self.assertEqual(self.led(shell, 'u30air', 'charge', 'off').returncode, 0)
-            self.assertEqual((d / 'trigger').read_text().strip(), 'none')
-            self.assertEqual(self.state()['sc27xx:green'], '0')
+            self.assertEqual(self.state()['sc27xx:blue'], '200')
             # a device without a power LED: nothing to blink, no error
             self.assertEqual(self.led(shell, 'f50', 'charge', 'on').returncode, 0)
 
@@ -2788,7 +2912,7 @@ class Led(ShellTest):
     def test_wifi_sync(self):
         # OpenWrt has no hook when LuCI turns Wi-Fi off or on: "wifi sync" reads whether wlan0 is a running AP
         for shell in self.each_shell():
-            for device, lit, level in (('f50', 'keyboard-backlight', '48'), ('u30air', 'zte-ldo2', '255')):
+            for device, lit, level in (('f50', 'keyboard-backlight', '48'), ('u30air', 'zte-ldo1', '255')):
                 self.reset()
                 self.conf.write_text('LED_TIMEOUT=0\n')
                 (self.tmp / 'iw.out').write_text('Interface wlan0\n\tssid F50\n\ttype AP\n'
@@ -2876,8 +3000,8 @@ esac''')
             self.led(shell, 'u30air', 'power', 'on')
             self.led(shell, 'u30air', 'data', '5g')
             (self.tmp / 'iw.out').write_text('Interface wlan0\n\ttype AP\n\tchannel 36 (5180 MHz)\n')
-            self.led(shell, 'u30air', 'wifi', 'on')
-            self.assertEqual([(vendor / f'vddcama{i}_status').read_text().strip() for i in range(3)], ['1', '0', '1'])
+            self.led(shell, 'u30air', 'wifi', 'on')   # 5G: vddcama0; a 5 GHz hotspot: vddcama1 (white)
+            self.assertEqual([(vendor / f'vddcama{i}_status').read_text().strip() for i in range(3)], ['1', '1', '0'])
             self.led(shell, 'u30air', 'sleep')
             self.assertEqual([(vendor / f'vddcama{i}_status').read_text().strip() for i in range(3)], ['0', '0', '0'])
             shutil.rmtree(self.root / 'sys/devices')
@@ -2911,9 +3035,9 @@ esac''')
                 time.sleep(0.4)                                   # a killed siren writes no more
                 s = self.state()
                 self.assertEqual(s['sc27xx:red'], '0')
-                # the F50's RGB LED is its network light: blue (4G) again; the U30 Air's white is its power LED
+                # the F50's RGB LED is its network light: blue (4G) again; the U30 Air's is its battery LED (80 %: white)
                 self.assertEqual(s['sc27xx:blue'], '255' if device == 'f50' else '0', device)
-                self.assertEqual(s['sc27xx:green'], '255' if device == 'u30air' else '0', device)
+                self.assertEqual(s['sc27xx:green'], '120' if device == 'u30air' else '0', device)
                 self.assertEqual(self.led(shell, device, 'alarm', 'off').returncode, 0)   # off twice
 
     def test_missing_leds_and_bad_usage(self):
@@ -2973,7 +3097,7 @@ class Buttons(ShellTest):
         cases = [('116 short', [WP]),
                  ('138 short', [WW, 'mu300-wifi-band toggle']),
                  ('138 long', [WW, 'systemctl is-active --quiet mu300-hotspot', 'systemctl start mu300-hotspot']),
-                 ('0 tick', None),   # a tick is no press: it must not wake, only let the LEDs time out
+                 ('0 tick', None),   # a tick is no press: it must not wake, only let the LEDs time out (and the battery LED follow)
                  # held power: no mu300-power wake (the radios would come back on the way down); the shutdown marker
                  ('116 long', ['systemctl poweroff']),
                  ('115 short', [WP])]
@@ -2988,7 +3112,7 @@ class Buttons(ShellTest):
                 calls = (self.tmp / 'calls').read_text().splitlines() if (self.tmp / 'calls').exists() else []
                 calls = [c for c in calls if not c.startswith('logger')]
                 if want is None:
-                    self.assertEqual(calls, ['mu300-led sleep --if-due'], event)
+                    self.assertEqual(calls, ['mu300-led tick'], event)
                 else:
                     self.assertEqual(calls[0], 'mu300-led wake', event)
                     self.assertEqual(sorted(calls[1:]), sorted(want), event)
