@@ -81,6 +81,13 @@ pd_module() { [ -d "$R/sys/module/$PD_MOD" ] || find "$R/lib/modules/$(uname -r)
 pd_load() {  # the module with enable=1 (reloaded when it is there without), and a few seconds for it to bind
     rmmod "$PD_MOD" 2>/dev/null
     modprobe "$PD_MOD" enable=1 || return 1
+    # OpenWrt's modprobe (kmodloader) loads the dependencies but drops the options: the module came up with enable=N
+    # and its probe said "off". Again by its path with insmod, which passes them on (seen on the U30 Air, FINDINGS 150)
+    if [ "$(cat "$R/sys/module/$PD_MOD/parameters/enable" 2>/dev/null)" = N ]; then
+        rmmod "$PD_MOD" 2>/dev/null
+        f=$(find "$R/lib/modules/$(uname -r)" -name 'ump9620[-_]tcpc.ko*' 2>/dev/null | head -n1)
+        [ -n "$f" ] && insmod "$f" enable=1 || return 1
+    fi
     n=0; until pd_port >/dev/null; do n=$((n + 1)); [ $n -le 10 ] || return 1; sleep 0.5 2>/dev/null || sleep 1; done
 }
 

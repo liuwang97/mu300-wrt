@@ -4037,6 +4037,28 @@ class Usb(ShellTest):
             self.assertIn('rmmod ump9620_tcpc', (self.tmp / 'mod').read_text())
             self.assertFalse((self.root / 'sys/class/typec/port0').exists())
 
+    def test_pd_on_where_modprobe_drops_the_options(self):
+        # OpenWrt's kmodloader: modprobe loads the module (and its dependencies) but without enable=1, so its probe
+        # only says it is off; mu300-usb loads it again by its path with insmod, which takes the option
+        for shell in self.each_shell():
+            port = self.pd_setup()
+            r = self.root
+            ko = r / 'lib/modules/test/ump9620-tcpc.ko'
+            self.stub('modprobe', f'echo "modprobe $*" >> "$STUBLOG/mod"; mkdir -p {r}/sys/module/ump9620_tcpc/parameters'
+                                  f' && echo N > {r}/sys/module/ump9620_tcpc/parameters/enable')
+            bind = (f'mkdir -p {port} && ln -sfn {r}/pd-dev {port}/device && mkdir -p {r}/pd-dev && '
+                    f'ln -sfn {r}/sys/bus/platform/drivers/ump9620-tcpc {r}/pd-dev/driver && '
+                    f'printf "host [device]\\n" > {port}/data_role && printf "source [sink]\\n" > {port}/power_role')
+            self.stub('insmod', f'echo "insmod $*" >> "$STUBLOG/mod"; [ "$2" = enable=1 ] && {bind}')
+            (self.tmp / 'usb-pd').unlink(missing_ok=True)
+            r = self.usb_pd(shell, 'pd', 'on')
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            calls = (self.tmp / 'mod').read_text().splitlines()
+            self.assertEqual(calls, ['rmmod ump9620_tcpc', 'modprobe ump9620_tcpc enable=1', 'rmmod ump9620_tcpc',
+                                     f'insmod {ko} enable=1'])
+            self.assertIn('data role: device', self.usb_pd(shell, 'pd', 'status').stdout)
+            shutil.rmtree(self.root / 'sys/class/typec')
+
     def test_pd_on_needs_the_module_and_the_u30_air(self):
         for shell in self.each_shell():
             self.stub('uname', 'echo test')
