@@ -109,6 +109,36 @@ return view.extend({
 			preset.value = '';
 		});
 
+		/* the body a chat service takes (#259): a preset fills the custom body in, sets the type to JSON and, when the
+		 * answer check is empty, the check that service's answer needs (the services answer HTTP 200 to a body they
+		 * refuse). Nothing else: the body stays the user's to edit. The placeholder is no service's format in
+		 * particular (it was Feishu's, which WeCom refuses with errcode 40008 behind an HTTP 200). */
+		var format = E('select', { 'class': 'cbi-input-select', 'id': 'mud-fwd-webhook_format' }, [
+			E('option', { 'value': 'json', 'selected': fmt === 'json' ? '' : null }, [ 'JSON' ]),
+			E('option', { 'value': 'form', 'selected': fmt === 'form' ? '' : null }, [ _('Form (URL-encoded)') ]),
+			E('option', { 'value': 'text', 'selected': fmt === 'text' ? '' : null }, [ _('Plain text') ])
+		]);
+		var body = this.area('webhook_body', st.webhook_body, 4, '{"text":"{message}"}');
+		var BODIES = {
+			wecom: [ '{"msgtype":"text","text":{"content":"{message}"}}', 'errcode=0' ],
+			feishu: [ '{"msg_type":"text","content":{"text":"{message}"}}', 'code=0' ]
+		};
+		var bodyPreset = E('select', { 'class': 'cbi-input-select', 'id': 'mud-fwd-webhook_body_preset',
+			'style': 'display:block;margin-top:4px' }, [
+			E('option', { 'value': '' }, [ _('Presets') ]),
+			E('option', { 'value': 'wecom' }, [ 'WeCom, DingTalk' ]),
+			E('option', { 'value': 'feishu' }, [ 'Feishu, Lark' ])
+		]);
+		bodyPreset.addEventListener('change', function() {
+			var b = Object.prototype.hasOwnProperty.call(BODIES, bodyPreset.value) ? BODIES[bodyPreset.value] : null;
+			if (b) {
+				body.value = b[0];
+				format.value = 'json';
+				if (!expect.value.trim()) expect.value = b[1];
+			}
+			bodyPreset.value = '';
+		});
+
 		var general = E('section', { 'class': 'mud-card', 'id': 'mud-fwd-card-general' }, [
 			E('h3', {}, _('SMS forwarding')),
 			E('div', { 'class': 'mud-note' }, [ _('Received messages are sent on as they reach the SMS pool. A failed delivery is retried after 30 s, then after twice as long each time (an hour at most), ten times in all.') ]),
@@ -127,14 +157,9 @@ return view.extend({
 			this.check('webhook', st.webhook, _('Enabled')),
 			this.secret('webhook_url', st.webhook_url_set, st.webhook_url_hint, _('Address (http:// or https://)'),
 				{ placeholder: 'https://example.com/sms' }),
-			this.field(_('Body'), E('select', { 'class': 'cbi-input-select', 'id': 'mud-fwd-webhook_format' }, [
-				E('option', { 'value': 'json', 'selected': fmt === 'json' ? '' : null }, [ 'JSON' ]),
-				E('option', { 'value': 'form', 'selected': fmt === 'form' ? '' : null }, [ _('Form (URL-encoded)') ]),
-				E('option', { 'value': 'text', 'selected': fmt === 'text' ? '' : null }, [ _('Plain text') ])
-			]), _('Fields: sender, time, text, device, message (the template filled in)')),
+			this.field(_('Body'), format, _('Fields: sender, time, text, device, message (the template filled in)')),
 			/* the device fills this in (mu300-sms-forward fill): a template, not a secret, so it comes back */
-			this.field(_('Custom body'), this.area('webhook_body', st.webhook_body, 4,
-				'{"msg_type":"text","content":{"text":"{message}"}}'),
+			this.field(_('Custom body'), E('div', {}, [ body, bodyPreset ]),
 				_('Empty: the standard fields (plain text: the message). Placeholders: {sender}, {time}, {text}, {device}, {message}. Each value is escaped for the chosen type. This body is shown again here: keep secrets in the address or a header.')),
 			this.secret('webhook_headers', st.webhook_headers_set, st.webhook_header_names,
 				_('Extra headers (one "Name: value" per line)'), { area: true, placeholder: 'Authorization: Bearer ...' }),
