@@ -689,6 +689,60 @@ cpu_voltage_boot() {  # cpu_voltage_boot DIR: DIR is .mu300 on the mounted Linux
     log "stage=cpu-voltage-failed $_want state=$(cat "$CPUV_SYS/voltage_state" 2>/dev/null)"
 }
 # --- cpu-voltage end
+# --- fsck begin
+# The root filesystem's own record of errors, read before it is mounted (FINDINGS 182; kanoqwq's desktop init did it
+# first): ext4 sets ERROR_FS (bit 1 of s_state, superblock byte 58) when it finds corruption, and nothing on the
+# device ever cleared it - every later boot mounted the damaged filesystem as it was. One byte is read on a clean
+# filesystem; only with the bit set does the ramdisk's static e2fsck (tools/e2fsck/build.sh) run, -fy, on the
+# unmounted device - the loop over the region, the GPT partition, the card. Never a reason not to boot: whatever
+# e2fsck says, or when it takes longer than FSCK_TIMEOUT seconds (it is stopped then, TERM first: e2fsck cancels at a
+# safe point), the boot goes on with the filesystem as it is. Every outcome is a stage line; exit codes 4 and up
+# (errors left, operational error, cancelled) are stage=fsck-FAILED. Its output: /run/mu300/fsck.log in the system.
+# MU300_FSCK on the kernel command line: force (check even a clean filesystem) or off.
+FSCK=${MU300_FSCK_BIN:-/sbin/e2fsck}
+FSCK_TIMEOUT=${MU300_FSCK_TIMEOUT:-120}
+root_fsck() {  # root_fsck DEV: always true
+    [ "${MU300_FSCK:-}" != off ] || return 0
+    _st=$(dd if="$1" bs=1 skip=1082 count=1 2>/dev/null | od -An -tu1 | tr -d ' \n')
+    case $_st in ''|*[!0-9]*) return 0 ;; esac
+    [ $((_st & 2)) != 0 ] || [ "${MU300_FSCK:-}" = force ] || return 0
+    # s_error_count (superblock byte 404, little-endian), for the log only
+    _ec=$(dd if="$1" bs=1 skip=1428 count=4 2>/dev/null | od -An -tu1 | awk 'NF { print $1 + $2 * 256 + $3 * 65536 + $4 * 16777216; exit }')
+    if [ ! -x "$FSCK" ]; then
+        log "stage=fsck-unavailable dev=$1 state=$_st errors=$_ec (no e2fsck in this ramdisk; booting as it is)"
+        return 0
+    fi
+    log "stage=fsck-start dev=$1 state=$_st errors=$_ec timeout=${FSCK_TIMEOUT}s"
+    mkdir -p /run/mu300
+    # the device's clock may be anywhere before NTP: no "last mount time in the future" repairs because of it
+    printf '[options]\n\tbroken_system_clock = 1\n' > /run/e2fsck.conf
+    _t0=$(cut -d' ' -f1 /proc/uptime)
+    E2FSCK_CONFIG=/run/e2fsck.conf "$FSCK" -fy "$1" > /run/mu300/fsck.log 2>&1 </dev/null &
+    _fp=$!
+    rm -f /run/fsck.done
+    ( sleep "$FSCK_TIMEOUT"; [ -e /run/fsck.done ] && exit 0
+      log "stage=fsck-TIMEOUT dev=$1 after ${FSCK_TIMEOUT}s (stopping it; booting as it is)"
+      kill -TERM "$_fp" 2>/dev/null; sleep 15; [ -e /run/fsck.done ] || kill -KILL "$_fp" 2>/dev/null ) &
+    _fw=$!
+    wait "$_fp"; _rc=$?
+    : > /run/fsck.done
+    kill "$_fw" 2>/dev/null
+    _s=$(awk -v a="$_t0" '{printf "%.1f", $1 - a}' /proc/uptime)
+    # the summary line ("mu300root: 12/16384 files ...") or the last thing it said
+    _last=$(grep -v '^$' /run/mu300/fsck.log | tail -n 1)
+    case $_rc in
+        0) log "stage=fsck-done dev=$1 rc=0 (no errors) ${_s}s: $_last" ;;
+        1|2|3) log "stage=fsck-done dev=$1 rc=$_rc (errors corrected) ${_s}s: $_last" ;;
+        *) if [ "$_rc" -ge 128 ]; then _why="killed by signal $((_rc - 128))"
+           elif [ $((_rc & 32)) != 0 ]; then _why=cancelled
+           elif [ $((_rc & 8)) != 0 ]; then _why="operational error"
+           elif [ $((_rc & 4)) != 0 ]; then _why="errors left uncorrected"
+           else _why="usage or library error"; fi
+           log "stage=fsck-FAILED dev=$1 rc=$_rc ($_why; booting anyway) ${_s}s: $_last" ;;
+    esac
+    return 0
+}
+# --- fsck end
 mkdir -p /disk /newroot
 EMMC=$(emmc_dev)   # find_partitions has waited for the eMMC's partitions, so its disk is there
 log "stage=emmc dev=$EMMC sd=$(mmc_disks SD | tr '\n' ' ')"
@@ -701,6 +755,7 @@ mount_internal() {  # the mu300root region on the eMMC; busybox mount sets up a 
     elif gp=$(gpt_root); then
         # a partition of its own: mounted as it is, no loop. root-dev keeps the "<eMMC>@" of an internal system
         rootloop=
+        root_fsck "$gp"
         if mount -t ext4 -o noatime "$gp" /disk 2>>/run/rootmount.err; then
             log "stage=root-part dev=$gp"
             echo "${EMMC##*/}@mu300root" > /run/mu300-root-dev && diskdev=$gp
@@ -715,10 +770,12 @@ mount_internal() {  # the mu300root region on the eMMC; busybox mount sets up a 
     [ -n "$rootloop" ] && losetup -o $ROOT_OFFSET "$rootloop" "$EMMC" 2>>/run/rootmount.err \
        && [ "$(cat /sys/block/${rootloop#/dev/}/loop/offset)" = "$ROOT_OFFSET" ] \
        && [ "$(dd if="$rootloop" bs=1 skip=1080 count=2 2>/dev/null | od -An -tx1 | tr -d ' ')" = 53ef ] \
+       && root_fsck "$rootloop" \
        && mount -t ext4 -o noatime "$rootloop" /disk 2>>/run/rootmount.err \
        && echo "${EMMC##*/}@$ROOT_OFFSET" > /run/mu300-root-dev && diskdev=$rootloop
 }
 mount_sd() {  # mount_sd DEV: the card, a block device of its own - no loop
+    root_fsck "$1"
     mount -t ext4 -o noatime "$1" /disk 2>>/run/rootmount.err || return 1
     if [ -z "$(pick_root)" ]; then
         # the label without a system inside: an installation that was interrupted. Not a reason to give up on
