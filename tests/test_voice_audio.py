@@ -257,5 +257,48 @@ class Hfp(unittest.TestCase):
             self.assertIn(', 0 failed', r.stdout)
 
 
+class Portability(unittest.TestCase):
+    """The F50's card names the CVS selector "NXP Profile Select", and OpenWrt's busybox sleep takes no fractions."""
+
+    def run_cvs_select(self, controls):
+        src = VOICE.read_text()
+        # a stand-in amixer that knows only the given controls
+        fake = 'amixer() { case "$*" in %s) echo "  : values=5" ;; esac; }\n' % (
+            '|'.join('*"name=%s"*' % c for c in controls) or '__none__')
+        script = 'card=0\n' + fake + shell_function(src, 'cget') + shell_function(src, 'cvs_select') + 'cvs_select\n'
+        return subprocess.run(['sh', '-c', script], capture_output=True, text=True, check=True).stdout.strip()
+
+    def test_cvs_select_picks_the_name_the_card_has(self):
+        self.assertEqual(self.run_cvs_select(['NXP Profile Select']), 'NXP Profile Select')
+        self.assertEqual(self.run_cvs_select(['CVS Profile Select']), 'CVS Profile Select')
+        self.assertEqual(self.run_cvs_select([]), 'CVS Profile Select')
+
+    def test_profiles_use_the_selector_found(self):
+        src = VOICE.read_text()
+        body = src[src.index('profiles() {'):src.index('bt_rate() {')]
+        self.assertIn('"$(cvs_select)"', body)
+        self.assertNotIn("'CVS Profile Select'", body)
+
+    def test_no_fractional_sleep(self):
+        src = VOICE.read_text()
+        code = '\n'.join(l for l in src.splitlines() if not l.lstrip().startswith('#'))
+        # every fractional wait goes through nap; only nap itself may hand sleep a fraction
+        self.assertNotRegex(code.replace('if sleep 0.01 2>/dev/null', ''), r'\bsleep +"?[0-9]*\.[0-9]')
+        self.assertIn('nap 0.1', code)
+
+    def test_nap_falls_back_to_whole_seconds(self):
+        src = VOICE.read_text()
+        start = src.index('if sleep 0.01 2>/dev/null; then')
+        block = src[start:src.index('\nfi\n', start) + 4]
+        with tempfile.TemporaryDirectory() as d:
+            # a sleep like OpenWrt's: whole seconds only, records what it was asked for
+            log = Path(d) / 'log'
+            script = ('sleep() { case "$1" in *.*) echo "sleep: invalid number" >&2; return 1 ;; esac; '
+                      'echo "sleep $1" >> %s; }\n' % log + 'PATH=/nonexistent\n' + block + 'nap 0.1\nnap 0.5\n')
+            subprocess.run(['/bin/sh', '-c', 'awk() { %s "$@"; }\n' % shutil.which('awk') + script],
+                           capture_output=True, text=True, check=True)
+            self.assertEqual(log.read_text().split('\n')[:2], ['sleep 1', 'sleep 1'])
+
+
 if __name__ == '__main__':
     unittest.main()
