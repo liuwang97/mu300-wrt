@@ -58,6 +58,7 @@ sms.list sms.read sms.send sms.job sms.delete sms.forward
 lan.get lan.set usb.role adb.auth
 system.get system.hostname system.timezone system.password system.ssh system.reboot system.boot system.bootos
 update.check update.apply kernel.set extra.list extra.install extra.remove logs
+backup.export backup.import
 job.status job.cancel job.clear'
 
 # ------------------------------------------------------------------ JSON out
@@ -89,6 +90,9 @@ refuse() {
 # sanitize: control characters out, and an address's path and query (a subscription's token) replaced by "..."
 sanitize() { LC_ALL=C tr -d '\000-\010\013-\037\177' | sed -E 's#((https?|wss?|vless|vmess|trojan|ss|hysteria2|hy2|tuic|wg|wireguard)://)[^ "]*#\1...#g'; }
 ok() { printf '{"ok":1%s}\n' "${1:+,$1}"; exit 0; }
+# checked: MU300_API_CHECK=1 stops a setter here, after every field passed its rules and before anything changes
+# ({"ok":1,"checked":true}); mu300-backup checks a whole restore this way before it changes anything (FINDINGS 155)
+checked() { [ -z "${MU300_API_CHECK:-}" ] || ok '"checked":true'; }
 lastline() { printf '%s\n' "$1" | sed '/^[[:space:]]*$/d' | tail -n 1; }
 # lastmsg TEXT: the last message of a tool's stderr, with the indented lines that continue it (the CLIs here write
 # "prog: first line" and indent the rest), on one line. Seen on an F50: "wifi-client scan" with the hotspot on ends
@@ -496,6 +500,8 @@ uci_channel() {
 m_wifi_set() {
     only ssid password band channel hidden
     hotspot_check
+    is_openwrt || [ -f "$HOTSPOT" ] || refuse unsupported "hotspot.conf (the hotspot has not run yet)"
+    checked
     if is_openwrt; then
         _rd=$(wifi_radio); _if=$(wifi_iface)
         _enc=$(uci_q get "$_if.encryption")
@@ -551,6 +557,7 @@ m_wifi_set() {
 m_wifi_power() {
     only state
     word state 'on|off'; need state
+    checked
     if is_openwrt; then
         _d=1; [ "$V" = on ] && _d=0
         printf 'set %s.disabled=%s\ncommit wireless\n' "$(wifi_radio)" "$_d" | uci_batch || refuse failed uci
@@ -650,6 +657,8 @@ m_data_set() {
     if flag roaming; then
         if [ "$V" = 1 ]; then _roam=on; else _roam=off; fi
     fi
+    [ "$_apn$_pdp$_auth$_user$_pw$_roam" != ------ ] || refuse missing apn
+    checked
     if [ "$_roam" != - ]; then
         [ -x "$BIN/mobile-data" ] || refuse unsupported roaming
         tool 15 "$BIN/mobile-data" roaming "$_roam"
@@ -701,6 +710,7 @@ m_sim_select() {
     only slot
     int slot 1 2; need slot
     [ -x "$BIN/mu300-sim" ] || refuse unsupported mu300-sim
+    checked
     tool 60 "$BIN/mu300-sim" default "$V" </dev/null || refuse failed "$ERR"
     ok "\"sim\":$(jcheck "$OUT"),\"text\":$(js "$OUT")"
 }
@@ -716,6 +726,7 @@ m_lock_set() {
         reset)   word val 'auto' ;;
     esac || V=
     [ -n "$V" ] || [ "$_k" = lte ] || [ "$_k" = nr ] || refuse missing val
+    checked
     dash lock_set "{\"kind\":\"$_k\",\"val\":$(js "$V")}"
 }
 
@@ -945,6 +956,7 @@ m_lan_set() {
     only ip
     # a private /24 with the device at .1 (DHCP hands out .2-.200 of it)
     word ip "(10\\.$OCTET\\.$OCTET|172\\.(1[6-9]|2[0-9]|3[01])\\.$OCTET|192\\.168\\.$OCTET)\\.1"; need ip
+    checked
     if is_openwrt; then
         printf 'set network.lan.ipaddr=%s\ncommit network\n' "$V" | uci_batch || refuse failed uci
         later /etc/init.d/network reload
@@ -1005,6 +1017,7 @@ m_system_get() {
 m_system_hostname() {
     only name
     word name '[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?'; need name
+    checked
     if is_openwrt; then
         printf 'set system.@system[0].hostname=%s\ncommit system\n' "$V" | uci_batch || refuse failed uci
         later /etc/init.d/system reload
@@ -1025,11 +1038,13 @@ m_system_timezone() {
         elif [ -f "$_zf" ]; then _tz=$(tail -n 1 "$_zf")
         else refuse unsupported "zoneinfo for $_z"; fi
         allowed "$_tz" '[A-Za-z0-9<>+,./:-]{1,64}' || refuse unsupported "zoneinfo for $_z"
+        checked
         printf 'set system.@system[0].zonename=%s\nset system.@system[0].timezone=%s\ncommit system\n' "$(uq "$_z")" "$(uq "$_tz")" |
             uci_batch || refuse failed uci
         later /etc/init.d/system reload
     else
         [ -f "$_zf" ] || refuse bad-value zone
+        checked
         if command -v timedatectl >/dev/null 2>&1; then tool 20 timedatectl set-timezone "$_z" </dev/null || refuse failed "$ERR"
         else ln -sf "/usr/share/zoneinfo/$_z" "$R/etc/localtime" || refuse failed localtime; fi
     fi
@@ -1051,8 +1066,9 @@ EOF
 m_system_ssh() {
     only state
     word state 'on|off'; need state
+    ! is_openwrt || [ -x "$R/etc/init.d/dropbear" ] || refuse unsupported dropbear
+    checked
     if is_openwrt; then
-        [ -x "$R/etc/init.d/dropbear" ] || refuse unsupported dropbear
         if [ "$V" = on ]; then "$R/etc/init.d/dropbear" enable; "$R/etc/init.d/dropbear" start
         else "$R/etc/init.d/dropbear" stop; "$R/etc/init.d/dropbear" disable; fi >/dev/null 2>&1
     elif [ "$V" = on ]; then
@@ -1208,6 +1224,64 @@ m_job_clear() {
     ok
 }
 
+# ------------------------------------------------------------------ the settings as one file (mu300-backup, FINDINGS 155)
+BACKUP=${MU300_BACKUP:-${SELF%/*}/mu300-backup}
+SECTION_LIST='(wifi|data|sim|locks|vpn|sms_forward|lan|system|ssh_keys|password)(,(wifi|data|sim|locks|vpn|sms_forward|lan|system|ssh_keys|password)){0,9}'
+# pass_field: PASS the passphrase of the request (8-256 characters on one line), or empty
+pass_field() {
+    PASS=
+    text passphrase 256 && [ -n "$V" ] || return 0
+    [ "$(bytes "$V")" -ge 8 ] || refuse bad-value passphrase
+    PASS=$V
+}
+# backup.export {passphrase, with_password}: {"file": the backup as text, "name", "encrypted"} - the one reply that
+# carries secrets on purpose: the file is what the caller asked to keep. Sealed when a passphrase is given.
+m_backup_export() {
+    only passphrase with_password
+    [ -r "$BACKUP" ] || refuse unsupported mu300-backup
+    pass_field
+    flag with_password; _wp=${V:-0}
+    set -- sh "$BACKUP" export -o -
+    [ "$_wp" = 0 ] || set -- "$@" --with-password
+    [ -z "$PASS" ] || set -- "$@" --passphrase-stdin
+    _o=$RUN/backup.$$.out _e=$RUN/backup.$$.err
+    printf '%s\n' "$PASS" | timed 300 "$@" > "$_o" 2> "$_e"; RC=$?
+    if [ "$RC" != 0 ]; then
+        ERR=$(lastmsg "$(cat "$_e" 2>/dev/null)"); rm -f "$_o" "$_e"; refuse failed "$ERR"
+    fi
+    _ext=json; [ -z "$PASS" ] || _ext=enc
+    _name=mu300-backup-$(uname -n | tr -cd 'A-Za-z0-9-' | head -c 40)-$(date +%Y%m%d-%H%M%S).$_ext
+    printf '{"ok":1,"name":%s,"encrypted":%s,"file":%s}\n' "$(js "$_name")" "$([ -n "$PASS" ] && echo true || echo false)" \
+        "$(LC_ALL=C awk -v mode=str -f "$JAWK" < "$_o" | tr -d '\n')"
+    rm -f "$_o" "$_e"
+    exit 0
+}
+# backup.import {file, passphrase, dry_run, force, only, skip}: dry_run answers at once ({"valid", "text": what would
+# change, or why the file is refused}); otherwise the restore runs as the job (job.status follows it). The file and
+# the passphrase reach mu300-backup on its stdin only.
+m_backup_import() {
+    only file passphrase dry_run force only skip
+    [ -r "$BACKUP" ] || refuse unsupported mu300-backup
+    fget file && [ "$FT" = s ] && [ -n "$FV" ] || refuse missing file
+    _file=$FV
+    pass_field
+    set -- sh "$BACKUP" import -
+    [ -z "$PASS" ] || set -- "$@" --passphrase-stdin
+    flag force; [ "${V:-0}" = 0 ] || set -- "$@" --force
+    word only "$SECTION_LIST" && set -- "$@" --only "$V"
+    word skip "$SECTION_LIST" && set -- "$@" --skip "$V"
+    if [ -n "$PASS" ]; then _in="$PASS$NL$_file"; else _in=$_file; fi
+    flag dry_run
+    if [ "${V:-0}" = 1 ]; then
+        _o=$RUN/backup.$$.out
+        printf '%s' "$_in" | timed 300 "$@" --dry-run > "$_o" 2>&1; RC=$?
+        _in=
+        _t=$(tail -c 65536 "$_o" | sanitize); rm -f "$_o"
+        ok "\"valid\":$([ "$RC" = 0 ] && echo true || echo false),\"text\":$(js "$_t")"
+    fi
+    job_start backup-import 1800 "$_in" "$@"
+}
+
 # ------------------------------------------------------------------ main
 [ -z "${MU300_LIB:-}" ] || return 0 2>/dev/null || exit 0
 case ${1:-} in
@@ -1220,9 +1294,11 @@ case " $(echo $METHODS) " in *" $METHOD "*) ;; *) refuse unknown-method ;; esac
 [ $# = 1 ] || refuse bad-request "arguments: the request is a JSON object on stdin"
 need_root
 [ -r "$JAWK" ] || refuse unsupported "json.awk"
+# a backup to restore may be larger than any other request (VPN configurations): 6 MiB, a 4 MiB file escaped
+[ "$METHOD" != backup.import ] || INPUT_MAX=6291456
 INPUT=$(head -c $((INPUT_MAX + 1)); printf x)
 INPUT=${INPUT%x}
-[ "$(bytes "$INPUT")" -le "$INPUT_MAX" ] || refuse bad-request "larger than 64 KiB"
+[ "$(bytes "$INPUT")" -le "$INPUT_MAX" ] || refuse bad-request "larger than $((INPUT_MAX / 1024)) KiB"
 # nothing at all (a person at a shell, stdin closed) is the empty request
 [ -n "$(printf '%s' "$INPUT" | tr -d ' \t\r\n')" ] || INPUT='{}'
 FIELDS=$(printf '%s' "$INPUT" | LC_ALL=C awk -v mode=flat -f "$JAWK") || refuse bad-request
@@ -1289,6 +1365,8 @@ case $METHOD in
     extra.install) m_extra_install ;;
     extra.remove) m_extra_remove ;;
     logs) m_logs ;;
+    backup.export) m_backup_export ;;
+    backup.import) m_backup_import ;;
     job.status) m_job_status ;;
     job.cancel) m_job_cancel ;;
     job.clear) m_job_clear ;;
