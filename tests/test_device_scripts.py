@@ -2497,8 +2497,10 @@ class Os(ShellTest):
 
 
 class Led(ShellTest):
-    # the U30 Air's: power is the battery LED's white (the PMIC's green channel), the network LED blue on 4G
-    # (net_blue), white on 5G (zte-ldo0), red without service (keyboard-backlight); the Wi-Fi LED's colours are LDOs too
+    # the U30 Air's: the battery LED (the PMIC's RGB, its green channel white) shows the battery as ZTE's firmware
+    # does (FINDINGS 151: white at 120 of 255 from 60 %, blue 200 from 10 %, red 150 below), the network LED by the SIM
+    # in use (FINDINGS 154): white for slot 0 (zte-ldo0), blue for slot 1 (net_blue), red without service
+    # (keyboard-backlight); the Wi-Fi LED's colours are LDOs too
     LEDS = ['sc27xx:blue', 'sc27xx:red', 'sc27xx:green', 'net_blue', 'keyboard-backlight', 'zte-ldo0', 'zte-ldo1', 'zte-ldo2']
 
     def setUp(self):
@@ -2510,6 +2512,16 @@ class Led(ShellTest):
         self.conf = self.tmp / 'led.conf'
         self.uptime(100)
         self.stub('iw', 'cat "$STUBLOG/iw.out" 2>/dev/null')
+        self.battery()
+
+    def battery(self, capacity=80, status='Discharging', online=0):
+        """the fuel gauge and the charger as mainline has them (sc27xx-fgu, bq256xx-charger)"""
+        ps = self.root / 'sys/class/power_supply'
+        (ps / 'sc27xx-fgu').mkdir(parents=True, exist_ok=True)
+        (ps / 'bq256xx-charger').mkdir(parents=True, exist_ok=True)
+        (ps / 'sc27xx-fgu/capacity').write_text(f'{capacity}\n')
+        (ps / 'sc27xx-fgu/status').write_text(f'{status}\n')
+        (ps / 'bq256xx-charger/online').write_text(f'{online}\n')
 
     def setUp_leds(self):
         for n in self.LEDS:
@@ -2527,9 +2539,10 @@ class Led(ShellTest):
             (self.root / 'sys/class/leds' / n / 'brightness').write_text('0\n')
         for f in (self.root / 'run/mu300').glob('led/*'):
             f.unlink()
-        for f in (self.root / 'run/mu300').glob('led/.awake-until'):
+        for f in (self.root / 'run/mu300').glob('led/.*'):
             f.unlink()
         self.conf.unlink(missing_ok=True)
+        self.battery()
 
     def state(self):
         return {n: (self.root / 'sys/class/leds' / n / 'brightness').read_text().strip() for n in self.LEDS}
@@ -2539,36 +2552,142 @@ class Led(ShellTest):
         return self.script(shell, BIN / 'mu300-led', *args, MU300_SYSROOT=self.root, MU300_BIN=BIN,
                            MU300_LED_CONF=self.conf)
 
+    def sim(self, slot, openwrt=True):
+        """this boot's SIM slot as mu300-atd pins it; slot 1 exists only on OpenWrt (mu300-sim)"""
+        p = self.root / 'run/mu300/sim-slot'
+        if slot is None:
+            p.unlink(missing_ok=True)
+        else:
+            p.write_text(f'{slot}\n')
+        rel = self.root / 'etc/openwrt_release'
+        if openwrt:
+            rel.parent.mkdir(parents=True, exist_ok=True)
+            rel.write_text('DISTRIB_ID=OpenWrt\n')
+        else:
+            rel.unlink(missing_ok=True)
+
     def test_u30air(self):
+        # as ZTE's firmware (FINDINGS 154): the network LED shows WHICH SIM is in use, whatever 4G or 5G
         for shell in self.each_shell():
             self.reset()
+            self.sim(0)
             self.assertEqual(self.led(shell, 'u30air', 'power', 'on').returncode, 0)
             self.assertEqual(self.led(shell, 'u30air', 'data', 'error').returncode, 0)
             s = self.state()
-            self.assertEqual((s['sc27xx:green'], s['keyboard-backlight'], s['net_blue']), ('255', '255', '0'))
-            self.led(shell, 'u30air', 'data', 'on')
-            s = self.state()
-            self.assertEqual((s['keyboard-backlight'], s['net_blue']), ('0', '255'))
-            self.led(shell, 'u30air', 'data', '5g')
-            s = self.state()
-            self.assertEqual((s['keyboard-backlight'], s['net_blue'], s['zte-ldo0']), ('0', '0', '255'))
-            self.led(shell, 'u30air', 'data', 'on')           # back to 4G
-            s = self.state()
-            self.assertEqual((s['net_blue'], s['zte-ldo0']), ('255', '0'))
-            self.led(shell, 'u30air', 'data', '5g')
+            self.assertEqual((s['sc27xx:green'], s['keyboard-backlight'], s['net_blue'], s['zte-ldo0']),
+                             ('120', '255', '0', '0'))
+            for slot, lit, dark in ((0, 'zte-ldo0', 'net_blue'), (1, 'net_blue', 'zte-ldo0')):
+                self.sim(slot)
+                for tech in ('on', '5g', 'on'):
+                    self.led(shell, 'u30air', 'data', tech)
+                    s = self.state()
+                    self.assertEqual((s['keyboard-backlight'], s[lit], s[dark]), ('0', '255', '0'), (slot, tech))
             self.led(shell, 'u30air', 'data', 'error')
             s = self.state()
             self.assertEqual((s['keyboard-backlight'], s['net_blue'], s['zte-ldo0']), ('255', '0', '0'))
             self.led(shell, 'u30air', 'data', 'off')
-            self.assertEqual(self.state()['net_blue'], '0')
+            s = self.state()
+            self.assertEqual((s['keyboard-backlight'], s['net_blue'], s['zte-ldo0']), ('0', '0', '0'))
             self.assertEqual(self.state()['sc27xx:blue'], '0')  # the F50's LED is not touched
+
+    def test_u30air_sim_slot_sources(self):
+        """The slot is /run/mu300/sim-slot, never created here; slot 1 only where it is supported (OpenWrt)."""
+        for shell in self.each_shell():
+            for slot, openwrt, lit in ((None, True, 'zte-ldo0'),     # not pinned yet: slot 0, and no pin made
+                                       ('1', False, 'zte-ldo0'),    # Ubuntu: slot 1 is ignored, every reader uses 0
+                                       ('junk', True, 'zte-ldo0'),
+                                       ('1', True, 'net_blue')):
+                self.reset()
+                self.sim(slot, openwrt)
+                self.led(shell, 'u30air', 'power', 'on')
+                self.led(shell, 'u30air', 'data', 'on')
+                s = self.state()
+                self.assertEqual((s[lit], s['net_blue' if lit == 'zte-ldo0' else 'zte-ldo0']), ('255', '0'),
+                                 (slot, openwrt))
+                if slot is None:
+                    self.assertFalse((self.root / 'run/mu300/sim-slot').exists())
+
+    def test_u30air_live_sim_switch_blinks_the_target(self):
+        """mu300-sim-u30's live switch: the target card's colour blinks (the timer trigger) through the hang-up the
+        switch causes; the dial on the new card shows it steady; once the switch is over, off/error count again."""
+        for shell in self.each_shell():
+            self.reset()
+            self.sim(0)
+            self.conf.write_text('LED_TIMEOUT=0\n')
+            self.led(shell, 'u30air', 'power', 'on')
+            self.led(shell, 'u30air', 'data', 'on')
+            self.assertEqual(self.state()['zte-ldo0'], '255')
+            marker = self.root / 'run/mu300/sim-switching'
+            marker.touch()
+            self.assertEqual(self.led(shell, 'u30air', 'data', 'switching', '1').returncode, 0)
+            trig = lambda n: (self.root / 'sys/class/leds' / n / 'trigger').read_text().strip()
+            self.assertEqual(trig('net_blue'), 'timer')
+            self.assertEqual((self.root / 'sys/class/leds/net_blue/delay_on').read_text().strip(), '500')
+            s = self.state()
+            self.assertEqual((s['zte-ldo0'], s['keyboard-backlight']), ('0', '0'))
+            # netifd's teardown of the old connection, whenever it comes: the blink stays
+            for st in ('off', 'error'):
+                self.led(shell, 'u30air', 'data', st)
+                self.assertEqual((trig('net_blue'), self.state()['keyboard-backlight']), ('timer', '0'), st)
+            # a sleep and a wake keep the blink
+            self.conf.write_text('LED_TIMEOUT=30\n')
+            self.led(shell, 'u30air', 'sleep')
+            self.assertEqual(trig('net_blue'), 'none')
+            self.led(shell, 'u30air', 'wake')
+            self.assertEqual(trig('net_blue'), 'timer')
+            self.conf.write_text('LED_TIMEOUT=0\n')
+            # published, dialled: steady blue
+            self.sim(1)
+            marker.unlink()
+            self.led(shell, 'u30air', 'data', 'on')
+            s = self.state()
+            self.assertEqual((trig('net_blue'), s['net_blue'], s['zte-ldo0']), ('none', '255', '0'))
+            # a switch that ended without a dial (marker gone): off and error are shown as usual
+            marker.touch()
+            self.led(shell, 'u30air', 'data', 'switching', '0')
+            self.assertEqual(trig('zte-ldo0'), 'timer')
+            marker.unlink()
+            self.led(shell, 'u30air', 'data', 'error')
+            s = self.state()
+            self.assertEqual((trig('zte-ldo0'), s['zte-ldo0'], s['keyboard-backlight']), ('none', '0', '255'))
+            # without the marker a stray announcement does not hold off/error back either
+            self.led(shell, 'u30air', 'data', 'switching', '1')
+            self.led(shell, 'u30air', 'data', 'off')
+            self.assertEqual((trig('net_blue'), self.state()['net_blue']), ('none', '0'))
+            # the slot is checked; other devices ignore the command
+            self.assertEqual(self.led(shell, 'u30air', 'data', 'switching', '2').returncode, 2)
+            self.assertEqual(self.led(shell, 'u30air', 'data', 'switching', '1;x').returncode, 2)
+            self.assertEqual(self.led(shell, 'u30air', 'data', 'switching').returncode, 2)
+            self.reset()
+            self.led(shell, 'f50', 'data', 'on')
+            self.assertEqual(self.led(shell, 'f50', 'data', 'switching', '1').returncode, 0)
+            self.assertEqual(self.state()['sc27xx:blue'], '255')
+
+    def test_u30air_switch_blink_on_5_4_is_steady(self):
+        # ZTE's zte_ldo_leds under 5.4 has no trigger: the target colour is simply on
+        for shell in self.each_shell():
+            self.reset()
+            self.sim(0)
+            shutil.rmtree(self.root / 'sys/class/leds/zte-ldo0')
+            vendor = self.root / 'sys/devices/platform/zte_ldo_leds'
+            vendor.mkdir(parents=True, exist_ok=True)
+            for i in range(3):
+                (vendor / f'vddcama{i}_status').write_text('0\n')
+            self.conf.write_text('LED_TIMEOUT=0\n')
+            (self.root / 'run/mu300/sim-switching').touch()
+            self.led(shell, 'u30air', 'data', 'switching', '0')
+            self.assertEqual((vendor / 'vddcama0_status').read_text().strip(), '1')
+            (self.root / 'run/mu300/sim-switching').unlink()
+            shutil.rmtree(self.root / 'sys/devices')
+            self.setUp_leds()
 
     def test_wifi_colour_follows_the_band(self):
         for shell in self.each_shell():
             self.reset()
             self.led(shell, 'u30air', 'power', 'on')
-            for iw, lit, dark in (('channel 36 (5180 MHz), width: 80 MHz', 'zte-ldo2', 'zte-ldo1'),
-                                  ('channel 6 (2437 MHz), width: 20 MHz', 'zte-ldo1', 'zte-ldo2')):
+            # as ZTE's firmware (FINDINGS 152): white (VDDCAMA1) on 5 GHz, blue (VDDCAMA2) on 2.4 GHz
+            for iw, lit, dark in (('channel 36 (5180 MHz), width: 80 MHz', 'zte-ldo1', 'zte-ldo2'),
+                                  ('channel 6 (2437 MHz), width: 20 MHz', 'zte-ldo2', 'zte-ldo1')):
                 (self.tmp / 'iw.out').write_text(f'Interface wlan0\n\ttype AP\n\t{iw}\n')
                 self.led(shell, 'u30air', 'wifi', 'on')
                 s = self.state()
@@ -2578,7 +2697,7 @@ class Led(ShellTest):
             # the hotspot just started and has no channel yet: its setting decides
             (self.tmp / 'iw.out').write_text('Interface wlan0\n\ttype AP\n')
             conf = self.tmp / 'hotspot.conf'
-            for band, lit in (('2.4', 'zte-ldo1'), ('5', 'zte-ldo2')):
+            for band, lit in (('2.4', 'zte-ldo2'), ('5', 'zte-ldo1')):
                 conf.write_text(f'SSID=x\nPSK=12345678\nBAND={band}\n')
                 (self.root / 'run/mu300/device').write_text('u30air\n')
                 self.script(shell, BIN / 'mu300-led', 'wifi', 'on', MU300_SYSROOT=self.root, MU300_BIN=BIN,
@@ -2593,7 +2712,7 @@ class Led(ShellTest):
             self.led(shell, 'u30air', 'data', 'on')
             self.uptime(150)
             self.led(shell, 'u30air', 'sleep', '--if-due')    # not yet
-            self.assertEqual(self.state()['net_blue'], '255')
+            self.assertEqual(self.state()['zte-ldo0'], '255')   # slot 0: white
             self.uptime(161)
             self.led(shell, 'u30air', 'sleep', '--if-due')
             self.assertEqual({v for v in self.state().values()}, {'0'})
@@ -2602,11 +2721,11 @@ class Led(ShellTest):
             self.assertEqual(self.state()['keyboard-backlight'], '0')
             self.led(shell, 'u30air', 'wake')
             s = self.state()
-            self.assertEqual((s['sc27xx:green'], s['keyboard-backlight'], s['net_blue']), ('255', '255', '0'))
+            self.assertEqual((s['sc27xx:green'], s['keyboard-backlight'], s['zte-ldo0']), ('120', '255', '0'))
             # and the timeout counts from the wake
             self.uptime(161 + 59)
             self.led(shell, 'u30air', 'sleep', '--if-due')
-            self.assertEqual(self.state()['sc27xx:green'], '255')
+            self.assertEqual(self.state()['sc27xx:green'], '120')
             self.uptime(161 + 61)
             self.led(shell, 'u30air', 'sleep', '--if-due')
             self.assertEqual(self.state()['sc27xx:green'], '0')
@@ -2620,11 +2739,13 @@ class Led(ShellTest):
                 self.uptime(100)
                 if timeout:
                     self.conf.write_text(timeout)
+                self.sim(1)                                                # the eSIM: blue
                 self.led(shell, 'u30air', 'power', 'on')
                 self.led(shell, 'u30air', 'data', 'on')
                 self.assertEqual(self.state()['net_blue'], '255')
                 self.assertEqual(self.led(shell, 'u30air', 'idle', 'on').returncode, 0)
                 self.assertEqual((self.state()['sc27xx:green'], self.state()['net_blue']), ('0', '0'))
+                self.sim(0)                                                # (a live switch)
                 self.led(shell, 'u30air', 'data', '5g')                    # remembered, not shown
                 self.led(shell, 'u30air', 'power', 'on')
                 self.assertEqual(set(self.state().values()), {'0'}, timeout)
@@ -2634,12 +2755,13 @@ class Led(ShellTest):
                 self.uptime(200)
                 self.led(shell, 'u30air', 'wake')
                 s = self.state()
-                self.assertEqual((s['sc27xx:green'], s['zte-ldo0'], s['net_blue']), ('255', '255', '0'), timeout)
+                self.assertEqual((s['sc27xx:green'], s['zte-ldo0'], s['net_blue']), ('120', '255', '0'), timeout)
+                self.sim(1)
                 self.led(shell, 'u30air', 'data', 'on')                    # a change meanwhile shows too
                 self.assertEqual(self.state()['net_blue'], '255', timeout)
                 self.uptime(200 + lit_for - 1)
                 self.led(shell, 'u30air', 'sleep', '--if-due')
-                self.assertEqual(self.state()['sc27xx:green'], '255', timeout)
+                self.assertEqual(self.state()['sc27xx:green'], '120', timeout)
                 self.uptime(200 + lit_for + 1)
                 self.led(shell, 'u30air', 'sleep', '--if-due')
                 self.assertEqual(set(self.state().values()), {'0'}, timeout)   # still idle: dark again
@@ -2649,7 +2771,7 @@ class Led(ShellTest):
                 self.led(shell, 'u30air', 'wake')
                 self.led(shell, 'u30air', 'idle', 'off')
                 s = self.state()
-                self.assertEqual((s['sc27xx:green'], s['net_blue']), ('255', '255'), timeout)
+                self.assertEqual((s['sc27xx:green'], s['net_blue']), ('120', '255'), timeout)
 
     def test_idle_off_after_the_timeout_stays_dark(self):
         for shell in self.each_shell():
@@ -2661,19 +2783,130 @@ class Led(ShellTest):
             self.led(shell, 'u30air', 'idle', 'off')
             self.assertEqual(set(self.state().values()), {'0'})
             self.led(shell, 'u30air', 'wake')
-            self.assertEqual(self.state()['sc27xx:green'], '255')
+            self.assertEqual(self.state()['sc27xx:green'], '120')
 
-    def test_charge_blinks_the_power_led(self):
+    # --- the U30 Air's battery LED as ZTE's firmware (FINDINGS 151)
+    def rgb(self):
+        s = self.state()
+        return s['sc27xx:red'], s['sc27xx:green'], s['sc27xx:blue']
+
+    def test_battery_colour_by_level(self):
+        for shell in self.each_shell():
+            for cap, want in ((100, ('0', '120', '0')), (60, ('0', '120', '0')), (59, ('0', '0', '200')),
+                              (10, ('0', '0', '200')), (9, ('150', '0', '0'))):
+                self.reset()
+                self.conf.write_text('LED_TIMEOUT=0\n')
+                self.battery(cap)
+                self.led(shell, 'u30air', 'power', 'on')
+                self.assertEqual(self.rgb(), want, cap)
+                self.assertEqual((self.root / 'sys/class/leds/sc27xx:green/trigger').read_text().strip(), 'none')
+                # the F50: the same PMIC LED is its network light, never the battery's
+                self.reset()
+                self.battery(cap)
+                self.led(shell, 'f50', 'battery')
+                self.assertEqual(self.rgb(), ('0', '0', '0'), cap)
+
+    def test_charging_breathes_on_the_pmic_curve_and_is_not_restarted(self):
         for shell in self.each_shell():
             self.reset()
-            d = self.root / 'sys/class/leds/sc27xx:green'
+            self.conf.write_text('LED_TIMEOUT=0\n')
+            blue = self.root / 'sys/class/leds/sc27xx:blue'
+            (blue / 'trigger').write_text('[none] timer pattern\n')
+            self.battery(40, 'Charging', 1)
+            self.led(shell, 'u30air', 'battery')
+            self.assertEqual((blue / 'trigger').read_text().strip(), 'pattern')
+            self.assertEqual((blue / 'repeat').read_text().strip(), '-1')
+            self.assertEqual((blue / 'hw_pattern').read_text().strip(), '200 320 200 480 200 480 200 720')
+            # the next tick finds nothing changed: the curve is not written again (it would restart)
+            (blue / 'hw_pattern').write_text('untouched\n')
+            self.led(shell, 'u30air', 'tick')
+            self.assertEqual((blue / 'hw_pattern').read_text().strip(), 'untouched')
+            # full on the charger: steady white
+            self.battery(100, 'Full', 1)
+            self.led(shell, 'u30air', 'battery')
+            self.assertEqual(self.rgb()[1:], ('120', '0'))
+            self.assertEqual((self.root / 'sys/class/leds/sc27xx:green/trigger').read_text().strip(), 'none')
+            # the gauge still says Charging after an unplug: the charger's online flag decides
+            self.battery(40, 'Charging', 0)
+            self.led(shell, 'u30air', 'battery')
+            self.assertEqual(self.rgb(), ('0', '0', '200'))
+            self.assertEqual((blue / 'trigger').read_text().strip(), 'none')
+            (blue / 'trigger').write_text('[none] timer\n')
+
+    def test_outside_power_keeps_the_leds_lit_and_an_unplug_restarts_the_timeout(self):
+        for shell in self.each_shell():
+            self.reset()
+            self.uptime(100)
+            self.led(shell, 'u30air', 'power', 'on')
+            self.led(shell, 'u30air', 'data', 'on')                 # slot 0: white (zte-ldo0, FINDINGS 154)
+            self.battery(70, 'Charging', 1)
+            self.led(shell, 'u30air', 'tick')
+            self.uptime(10000)                                   # long past the timeout: on the charger, lit
+            self.led(shell, 'u30air', 'tick')
+            self.assertEqual(self.state()['zte-ldo0'], '255')
+            self.assertNotEqual(self.rgb(), ('0', '0', '0'))
+            self.battery(70, 'Discharging', 0)                    # unplugged: 60 s from now
+            self.led(shell, 'u30air', 'tick')
+            self.assertEqual((self.root / 'run/mu300/led/.awake-until').read_text().strip(), '10060')
+            self.assertEqual(self.rgb(), ('0', '120', '0'))
+            self.uptime(10059)
+            self.led(shell, 'u30air', 'tick')
+            self.assertEqual(self.state()['zte-ldo0'], '255')
+            self.uptime(10061)
+            self.led(shell, 'u30air', 'tick')
+            self.assertEqual(set(self.state().values()), {'0'})
+            # plugged in again: everything back at once
+            self.battery(70, 'Charging', 1)
+            self.led(shell, 'u30air', 'tick')
+            self.assertEqual(self.state()['zte-ldo0'], '255')
+
+    def test_low_battery_red_does_not_time_out(self):
+        for shell in self.each_shell():
+            self.reset()
+            self.uptime(100)
+            self.battery(8)
+            self.led(shell, 'u30air', 'power', 'on')
+            self.led(shell, 'u30air', 'data', 'on')
+            self.uptime(200)
+            self.led(shell, 'u30air', 'tick')
+            s = self.state()
+            self.assertEqual((s['net_blue'], s['sc27xx:red']), ('0', '150'))   # the rest dark, the red still lit
+            # shutdown: dark, and no tick lights it again
+            self.led(shell, 'u30air', 'power', 'off')
+            self.assertEqual(self.rgb(), ('0', '0', '0'))
+            self.led(shell, 'u30air', 'tick')
+            self.assertEqual(self.rgb(), ('0', '0', '0'))
+
+    def test_the_heat_alarm_goes_over_the_battery_led(self):
+        for shell in self.each_shell():
+            self.reset()
+            self.conf.write_text('LED_TIMEOUT=0\n')
+            self.battery(40)
+            self.led(shell, 'u30air', 'power', 'on')
+            pid = self.root / 'run/mu300/led-siren.pid'
+            try:
+                self.led(shell, 'u30air', 'alarm', 'on')
+                time.sleep(0.6)
+                self.battery(90)
+                self.led(shell, 'u30air', 'battery')               # a tick meanwhile writes nothing
+                self.assertTrue(pid.exists())
+            finally:
+                self.led(shell, 'u30air', 'alarm', 'off')
+            time.sleep(0.4)
+            self.assertEqual(self.rgb(), ('0', '120', '0'))        # the battery as it is now
+
+    def test_charging_boot_shows_the_charge(self):
+        # the charging boot: the U30 Air's battery LED breathes in the battery's colour, as whenever it charges
+        for shell in self.each_shell():
+            self.reset()
+            self.battery(40, 'Charging', 1)
+            d = self.root / 'sys/class/leds/sc27xx:blue'
             self.assertEqual(self.led(shell, 'u30air', 'charge', 'on').returncode, 0)
-            self.assertEqual((d / 'trigger').read_text().strip(), 'timer')
-            self.assertEqual((d / 'delay_on').read_text().strip(), '1000')
-            self.assertEqual((d / 'delay_off').read_text().strip(), '1000')
+            self.assertEqual((d / 'trigger').read_text().strip(), 'timer')     # no pattern trigger here
+            self.assertEqual(((d / 'delay_on').read_text().strip(), (d / 'delay_off').read_text().strip()),
+                             ('800', '1200'))
             self.assertEqual(self.led(shell, 'u30air', 'charge', 'off').returncode, 0)
-            self.assertEqual((d / 'trigger').read_text().strip(), 'none')
-            self.assertEqual(self.state()['sc27xx:green'], '0')
+            self.assertEqual(self.state()['sc27xx:blue'], '200')
             # a device without a power LED: nothing to blink, no error
             self.assertEqual(self.led(shell, 'f50', 'charge', 'on').returncode, 0)
 
@@ -2688,7 +2921,7 @@ class Led(ShellTest):
                 self.led(shell, device, 'data', 'on')
                 self.uptime(100000)
                 self.led(shell, device, 'sleep', '--if-due')
-                lit = 'net_blue' if device == 'u30air' else 'sc27xx:blue'
+                lit = 'zte-ldo0' if device == 'u30air' else 'sc27xx:blue'   # (U30 Air: slot 0, white)
                 self.assertEqual(self.state()[lit], '255', device)
 
     def test_v50(self):
@@ -2788,7 +3021,7 @@ class Led(ShellTest):
     def test_wifi_sync(self):
         # OpenWrt has no hook when LuCI turns Wi-Fi off or on: "wifi sync" reads whether wlan0 is a running AP
         for shell in self.each_shell():
-            for device, lit, level in (('f50', 'keyboard-backlight', '48'), ('u30air', 'zte-ldo2', '255')):
+            for device, lit, level in (('f50', 'keyboard-backlight', '48'), ('u30air', 'zte-ldo1', '255')):
                 self.reset()
                 self.conf.write_text('LED_TIMEOUT=0\n')
                 (self.tmp / 'iw.out').write_text('Interface wlan0\n\tssid F50\n\ttype AP\n'
@@ -2876,8 +3109,8 @@ esac''')
             self.led(shell, 'u30air', 'power', 'on')
             self.led(shell, 'u30air', 'data', '5g')
             (self.tmp / 'iw.out').write_text('Interface wlan0\n\ttype AP\n\tchannel 36 (5180 MHz)\n')
-            self.led(shell, 'u30air', 'wifi', 'on')
-            self.assertEqual([(vendor / f'vddcama{i}_status').read_text().strip() for i in range(3)], ['1', '0', '1'])
+            self.led(shell, 'u30air', 'wifi', 'on')   # 5G: vddcama0; a 5 GHz hotspot: vddcama1 (white)
+            self.assertEqual([(vendor / f'vddcama{i}_status').read_text().strip() for i in range(3)], ['1', '1', '0'])
             self.led(shell, 'u30air', 'sleep')
             self.assertEqual([(vendor / f'vddcama{i}_status').read_text().strip() for i in range(3)], ['0', '0', '0'])
             shutil.rmtree(self.root / 'sys/devices')
@@ -2911,9 +3144,9 @@ esac''')
                 time.sleep(0.4)                                   # a killed siren writes no more
                 s = self.state()
                 self.assertEqual(s['sc27xx:red'], '0')
-                # the F50's RGB LED is its network light: blue (4G) again; the U30 Air's white is its power LED
+                # the F50's RGB LED is its network light: blue (4G) again; the U30 Air's is its battery LED (80 %: white)
                 self.assertEqual(s['sc27xx:blue'], '255' if device == 'f50' else '0', device)
-                self.assertEqual(s['sc27xx:green'], '255' if device == 'u30air' else '0', device)
+                self.assertEqual(s['sc27xx:green'], '120' if device == 'u30air' else '0', device)
                 self.assertEqual(self.led(shell, device, 'alarm', 'off').returncode, 0)   # off twice
 
     def test_missing_leds_and_bad_usage(self):
@@ -2973,7 +3206,7 @@ class Buttons(ShellTest):
         cases = [('116 short', [WP]),
                  ('138 short', [WW, 'mu300-wifi-band toggle']),
                  ('138 long', [WW, 'systemctl is-active --quiet mu300-hotspot', 'systemctl start mu300-hotspot']),
-                 ('0 tick', None),   # a tick is no press: it must not wake, only let the LEDs time out
+                 ('0 tick', None),   # a tick is no press: it must not wake, only let the LEDs time out (and the battery LED follow)
                  # held power: no mu300-power wake (the radios would come back on the way down); the shutdown marker
                  ('116 long', ['systemctl poweroff']),
                  ('115 short', [WP])]
@@ -2988,7 +3221,7 @@ class Buttons(ShellTest):
                 calls = (self.tmp / 'calls').read_text().splitlines() if (self.tmp / 'calls').exists() else []
                 calls = [c for c in calls if not c.startswith('logger')]
                 if want is None:
-                    self.assertEqual(calls, ['mu300-led sleep --if-due'], event)
+                    self.assertEqual(calls, ['mu300-led tick'], event)
                 else:
                     self.assertEqual(calls[0], 'mu300-led wake', event)
                     self.assertEqual(sorted(calls[1:]), sorted(want), event)
@@ -3991,6 +4224,142 @@ class Usb(ShellTest):
             (self.tmp / 'flags').unlink(missing_ok=True)
             self.usb(shell, 'boot')
             self.assertNotIn('-f', (self.tmp / 'flags').read_text().split())
+
+    # --- USB-C power delivery (FINDINGS 150): the ump9620-tcpc module, experimental and off by default
+    def pd_setup(self, bound=False):
+        """A kernel with the module; modprobe binds a fake Type-C port (driver ump9620-tcpc), rmmod unbinds it."""
+        r = self.root
+        (r / 'lib/modules/test').mkdir(parents=True, exist_ok=True)
+        (r / 'lib/modules/test/ump9620-tcpc.ko').write_text('')
+        drv = r / 'sys/bus/platform/drivers/ump9620-tcpc'
+        drv.mkdir(parents=True, exist_ok=True)
+        self.stub('uname', 'echo test')
+        port = r / 'sys/class/typec/port0'
+        bind = (f'mkdir -p {port} && ln -sfn {r}/pd-dev {port}/device && mkdir -p {r}/pd-dev && '
+                f'ln -sfn {drv} {r}/pd-dev/driver && '
+                f'printf "host [device]\\n" > {port}/data_role && printf "source [sink]\\n" > {port}/power_role && '
+                f'mkdir -p {r}/sys/module/ump9620_tcpc')
+        self.stub('modprobe', f'echo "modprobe $*" >> "$STUBLOG/mod"; {bind}')
+        self.stub('rmmod', f'echo "rmmod $*" >> "$STUBLOG/mod"; rm -rf {port} {r}/sys/module/ump9620_tcpc')
+        (self.tmp / 'mod').unlink(missing_ok=True)
+        if bound:
+            subprocess.run(['sh', '-c', bind], check=True)
+        return port
+
+    def usb_pd(self, shell, *args):
+        return self.script(shell, BIN / 'mu300-usb', *args, MU300_SYSROOT=self.root,
+                           MU300_USB_PD_CONF=self.tmp / 'usb-pd', PATH=f'{self.stubs}:{BIN}:/usr/bin:/bin')
+
+    def test_pd_on_loads_the_module_with_enable_and_off_unloads_it(self):
+        for shell in self.each_shell():
+            self.pd_setup()
+            (self.tmp / 'usb-pd').unlink(missing_ok=True)
+            r = self.usb_pd(shell, 'pd', 'status')
+            self.assertIn('USB-C power delivery: off', r.stdout)
+            r = self.usb_pd(shell, 'pd', 'on')
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn('EXPERIMENTAL', r.stdout)
+            self.assertEqual((self.tmp / 'usb-pd').read_text(), 'on\n')
+            self.assertIn('modprobe ump9620_tcpc enable=1', (self.tmp / 'mod').read_text())
+            r = self.usb_pd(shell, 'pd', 'status')
+            self.assertIn('data role: device', r.stdout)
+            self.assertIn('power role: sink', r.stdout)
+            r = self.usb_pd(shell, 'pd', 'off')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual((self.tmp / 'usb-pd').read_text(), 'off\n')
+            self.assertIn('rmmod ump9620_tcpc', (self.tmp / 'mod').read_text())
+            self.assertFalse((self.root / 'sys/class/typec/port0').exists())
+
+    def test_pd_on_where_modprobe_drops_the_options(self):
+        # OpenWrt's kmodloader: modprobe loads the module (and its dependencies) but without enable=1, so its probe
+        # only says it is off; mu300-usb loads it again by its path with insmod, which takes the option
+        for shell in self.each_shell():
+            port = self.pd_setup()
+            r = self.root
+            ko = r / 'lib/modules/test/ump9620-tcpc.ko'
+            self.stub('modprobe', f'echo "modprobe $*" >> "$STUBLOG/mod"; mkdir -p {r}/sys/module/ump9620_tcpc/parameters'
+                                  f' && echo N > {r}/sys/module/ump9620_tcpc/parameters/enable')
+            bind = (f'mkdir -p {port} && ln -sfn {r}/pd-dev {port}/device && mkdir -p {r}/pd-dev && '
+                    f'ln -sfn {r}/sys/bus/platform/drivers/ump9620-tcpc {r}/pd-dev/driver && '
+                    f'printf "host [device]\\n" > {port}/data_role && printf "source [sink]\\n" > {port}/power_role')
+            self.stub('insmod', f'echo "insmod $*" >> "$STUBLOG/mod"; [ "$2" = enable=1 ] && {bind}')
+            (self.tmp / 'usb-pd').unlink(missing_ok=True)
+            r = self.usb_pd(shell, 'pd', 'on')
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            calls = (self.tmp / 'mod').read_text().splitlines()
+            self.assertEqual(calls, ['rmmod ump9620_tcpc', 'modprobe ump9620_tcpc enable=1', 'rmmod ump9620_tcpc',
+                                     f'insmod {ko} enable=1'])
+            self.assertIn('data role: device', self.usb_pd(shell, 'pd', 'status').stdout)
+            shutil.rmtree(self.root / 'sys/class/typec')
+
+    def test_pd_on_needs_the_module_and_the_u30_air(self):
+        for shell in self.each_shell():
+            self.stub('uname', 'echo test')
+            shutil.rmtree(self.root / 'lib', ignore_errors=True)
+            r = self.usb_pd(shell, 'pd', 'on')
+            self.assertEqual(r.returncode, 1)
+            self.assertIn('no ump9620-tcpc module', r.stderr)
+            self.assertFalse((self.tmp / 'usb-pd').exists())
+            (self.root / 'run/mu300/device').write_text('f50\n')
+            r = self.usb_pd(shell, 'pd', 'on')
+            self.assertEqual(r.returncode, 1)
+            self.assertIn('only the U30 Air', r.stderr)
+            (self.root / 'run/mu300/device').write_text('u30air\n')
+
+    def test_boot_loads_power_delivery_only_when_it_is_on(self):
+        for shell in self.each_shell():
+            self.pd_setup()
+            self.regs(r01='0x1a', r05='0x87')
+            (self.tmp / 'usb-pd').write_text('off\n')
+            self.assertEqual(self.usb_pd(shell, 'boot').returncode, 0)
+            self.assertFalse((self.tmp / 'mod').exists())
+            (self.tmp / 'usb-pd').write_text('on\n')
+            self.regs(r01='0x3a')      # a boost left on from before the reboot: off first, then the module
+            r = self.usb_pd(shell, 'boot')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(self.reg('0x01'), 0x1a)
+            self.assertIn('modprobe ump9620_tcpc enable=1', (self.tmp / 'mod').read_text())
+            # bound already: the port controller owns the boost, nothing is written, nothing loaded again
+            (self.tmp / 'mod').unlink()
+            (self.tmp / 'writes').unlink(missing_ok=True)
+            self.regs(r01='0x3a')
+            self.assertEqual(self.usb_pd(shell, 'boot').returncode, 0)
+            self.assertFalse((self.tmp / 'writes').exists())
+            self.assertFalse((self.tmp / 'mod').exists())
+            shutil.rmtree(self.root / 'sys/class/typec')
+
+    def test_host_and_device_ask_the_port_controller_and_write_no_charger_register(self):
+        for shell in self.each_shell():
+            port = self.pd_setup(bound=True)
+            self.regs(r01='0x1a', r05='0x87', r08='0x00')
+            (self.tmp / 'writes').unlink(missing_ok=True)
+            r = self.usb_pd(shell, 'host')
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn('data role swap', r.stdout)
+            self.assertEqual((port / 'data_role').read_text().strip(), 'host')
+            self.assertFalse((self.tmp / 'writes').exists())
+            r = self.usb_pd(shell, 'status')
+            self.assertIn('USB-C power delivery: on', r.stdout)
+            # a partner that refuses the swap (or no PD): host on outside power only, still no register written
+            (port / 'data_role').write_text('host [device]\n')
+            (port / 'data_role').chmod(0o444)
+            r = self.usb_pd(shell, 'host')
+            self.assertEqual(r.returncode, 1)
+            self.assertIn('nothing to swap roles with', r.stderr)
+            self.regs(r08='0x24')
+            r = self.usb_pd(shell, 'host')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn('outside power', r.stdout)
+            self.assertEqual(self.role(), 'host')
+            self.assertFalse((self.tmp / 'writes').exists())
+            # the port powers what is plugged in: device is refused (unplugging it is the way back)
+            (port / 'power_role').write_text('[source] sink\n')
+            r = self.usb_pd(shell, 'device')
+            self.assertEqual(r.returncode, 1)
+            self.assertIn('unplug it', r.stderr)
+            (port / 'data_role').chmod(0o644)
+            (self.root / 'sys/class/usb_role/25100000.dwc3-role-switch/role').write_text('device\n')
+            shutil.rmtree(self.root / 'sys/class/typec')
 
     def test_f50(self):
         for shell in self.each_shell():

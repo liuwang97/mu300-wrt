@@ -249,7 +249,7 @@ class Inventory(Mu300Dash):
                'lang_get', 'lang_set', 'power_get', 'power_set',
                'ttl_get', 'ttl_set', 'cpu_get', 'cpu_set', 'forward_get', 'forward_set', 'forward_test',
                'forward_log_clear', 'traffic_get', 'traffic_set', 'packages_get', 'packages_act', 'sim_get', 'sim_set',
-               'update_get', 'update_job', 'update_act'}
+               'update_get', 'update_job', 'update_act', 'backup_export', 'backup_import', 'backup_job'}
 
     def test_list_declares_every_method(self):
         for shell in self.each_shell():
@@ -348,6 +348,9 @@ class Refusals(Mu300Dash):
         ('update_act', {'op': 'upload_begin'}, 'size', '52428800'),
         ('update_act', {'op': 'apply_file', 'confirm': 'apply'}, 'sha256', 'ab' * 32),
         ('update_act', {'op': 'apply_file', 'confirm': 'apply', 'sha256': 'ab' * 32}, 'flags', 'unsigned downgrade'),
+        # (the release source: a plain http(s) URL, empty for GitHub - both reach the adapter, and nothing else does)
+        ('update_act', {'op': 'source', 'confirm': 'source'}, 'url', ''),
+        ('update_act', {'op': 'source', 'confirm': 'source'}, 'url', 'https://proxy.example/https://github.com/x/y/releases/download'),
         ('traffic_set', {'op': 'cap', 'value': '1024'}, 'op', 'cap'),
         ('traffic_set', {'op': 'cap', 'value': '1024'}, 'value', '1024'),
         ('traffic_set', {'op': 'reset_day', 'value': '15'}, 'value', '15'),
@@ -363,6 +366,8 @@ class Refusals(Mu300Dash):
                     continue
                 if field == 'iface' and name == 'leading dash after eth1':
                     continue   # eth1-rf is a valid interface name, and not an option
+                if field == 'url' and name.startswith('leading dash after '):
+                    continue   # .../download-rf is still a URL, and the updater's own rule takes it
                 jobs.append((f'{method}.{field}={name}', method, dict(base, **{field: bad})))
         for shell in self.each_shell():
             self.assert_refused(shell, jobs)
@@ -542,21 +547,27 @@ class Passthrough(Mu300Dash):
         ('update_get', {'sizes': '1'}, [['update', 'get', '1']]),
         ('update_job', {}, [['update', 'job']]),
         ('update_job', {'op': 'clean', 'confirm': 'clean'}, [['update', 'job']]),
-        ('update_act', {'op': 'check'}, [['update', 'act', 'check', '', '', '', '', '', '', '']]),
+        ('update_act', {'op': 'check'}, [['update', 'act', 'check', '', '', '', '', '', '', '', '']]),
         ('update_act', {'op': 'apply', 'tag': 'v2026.10.25', 'systems': 'openwrt-luci ubuntu', 'flags': 'no_reinstall',
                         'confirm': 'apply'},
-         [['update', 'act', 'apply', 'v2026.10.25', 'openwrt-luci ubuntu', '', '', '', 'no_reinstall', 'apply']]),
+         [['update', 'act', 'apply', 'v2026.10.25', 'openwrt-luci ubuntu', '', '', '', 'no_reinstall', 'apply', '']]),
         ('update_act', {'op': 'apply', 'tag': 'v2026.10.16.12', 'confirm': 'apply'},
-         [['update', 'act', 'apply', 'v2026.10.16.12', '', '', '', '', '', 'apply']]),
+         [['update', 'act', 'apply', 'v2026.10.16.12', '', '', '', '', '', 'apply', '']]),
         ('update_act', {'op': 'kernel', 'kernel': '7.2', 'confirm': 'kernel'},
-         [['update', 'act', 'kernel', '', '', '7.2', '', '', '', 'kernel']]),
+         [['update', 'act', 'kernel', '', '', '7.2', '', '', '', 'kernel', '']]),
         ('update_act', {'op': 'upload_begin', 'size': '52428800'},
-         [['update', 'act', 'upload_begin', '', '', '', '', '52428800', '', '']]),
+         [['update', 'act', 'upload_begin', '', '', '', '', '52428800', '', '', '']]),
         ('update_act', {'op': 'apply_file', 'sha256': 'ab' * 32, 'flags': 'unsigned downgrade', 'confirm': 'apply'},
-         [['update', 'act', 'apply_file', '', '', '', 'ab' * 32, '', 'unsigned downgrade', 'apply']]),
+         [['update', 'act', 'apply_file', '', '', '', 'ab' * 32, '', 'unsigned downgrade', 'apply', '']]),
         ('update_act', {'op': 'rollback', 'systems': 'ubuntu', 'confirm': 'rollback'},
-         [['update', 'act', 'rollback', '', 'ubuntu', '', '', '', '', 'rollback']]),
-        ('update_act', {'op': 'clean', 'confirm': 'clean'}, [['update', 'act', 'clean', '', '', '', '', '', '', 'clean']]),
+         [['update', 'act', 'rollback', '', 'ubuntu', '', '', '', '', 'rollback', '']]),
+        ('update_act', {'op': 'clean', 'confirm': 'clean'}, [['update', 'act', 'clean', '', '', '', '', '', '', 'clean', '']]),
+        # (the release source: the address is the last argument, empty for GitHub)
+        ('update_act', {'op': 'source', 'confirm': 'source', 'url': 'https://proxy.example/https://github.com/x/y/releases/download'},
+         [['update', 'act', 'source', '', '', '', '', '', '', 'source',
+           'https://proxy.example/https://github.com/x/y/releases/download']]),
+        ('update_act', {'op': 'source', 'confirm': 'source', 'url': ''},
+         [['update', 'act', 'source', '', '', '', '', '', '', 'source', '']]),
         ('sim_get', {}, [['sim', 'status', '--json']]),
         ('sim_set', {'op':'default','value':'2'}, [['sim','default','2']]),
         ('sim_set', {'op':'hot','value':'1'}, [['sim','hot','1']]),
@@ -1011,13 +1022,43 @@ class TrafficAdapter(ShellTest):
                              {'ok': 0, 'error': 'Data usage is not available on this system'})
 
 
+class Backup(Mu300Dash):
+    """System > Backup of settings (FINDINGS 155): the request goes on to mu300-api as it came; the reply (the file, or
+    what a restore changes) is never kept in the call log."""
+
+    def test_passed_to_the_api_and_never_logged(self):
+        api = self.tmp / 'api'
+        api.write_text('#!/bin/sh\necho "$1" >> "$STUBLOG/api.args"; cat > "$STUBLOG/api.in"\n'
+                       'printf \'{"ok":1,"name":"b.json","encrypted":false,"file":"wifi secret hotspotsecret1"}\\n\'\n')
+        api.chmod(0o755)
+        for shell in self.each_shell():
+            (self.tmp / 'api.args').unlink(missing_ok=True)
+            r, calls, _ = self.call(shell, 'backup_export', {'passphrase': 'correct horse battery'}, MU300_DASH_API=api)
+            self.assertEqual(json.loads(r.stdout)['file'], 'wifi secret hotspotsecret1')
+            self.assertEqual(json.loads((self.tmp / 'api.in').read_text()), {'passphrase': 'correct horse battery'})
+            big = {'file': 'x' * 100000, 'dry_run': True}
+            r, _, _ = self.call(shell, 'backup_import', big, MU300_DASH_API=api)
+            self.assertEqual(json.loads(r.stdout)['ok'], 1)
+            self.assertEqual(json.loads((self.tmp / 'api.in').read_text()), big)
+            self.call(shell, 'backup_job', {}, MU300_DASH_API=api)
+            self.assertEqual((self.tmp / 'api.args').read_text().split(), ['backup.export', 'backup.import', 'job.status'])
+            for log in self.tmp.glob('run*/dash/*'):
+                if log.is_file():
+                    self.assertNotIn('hotspotsecret1', log.read_text(errors='replace'), log)
+                    self.assertNotIn('correct horse', log.read_text(errors='replace'), log)
+            # another method's request stays limited to 16 KiB
+            r, _, _ = self.call(shell, 'forward_set', {'template': 'x' * 20000}, MU300_DASH_API=api)
+            self.assertIn('Request too large', r.stdout)
+
+
 class Acl(unittest.TestCase):
     # SMS bodies (one-time codes) and the AT history (AT+CPIN PINs) are not for read-only users (ruling R14)
     READ = {'sysinfo', 'status', 'signal', 'lock_get', 'usb_get', 'usb_net_list', 'lang_get', 'power_get', 'ttl_get',
             'cpu_get', 'traffic_get', 'ops_log', 'packages_get', 'sim_get', 'update_get', 'update_job'}
     WRITE = {'act', 'at', 'at_job', 'at_history', 'lock_set', 'sms_list', 'sms_show', 'sms_send', 'sms_job', 'sms_delete', 'sms_sync',
              'usb_set', 'usb_net_add', 'lang_set', 'power_set', 'ttl_set', 'cpu_set', 'forward_get',
-             'forward_set', 'forward_test', 'forward_log_clear', 'traffic_set', 'packages_act', 'sim_set', 'update_act'}
+             'forward_set', 'forward_test', 'forward_log_clear', 'traffic_set', 'packages_act', 'sim_set', 'update_act',
+             'backup_export', 'backup_import', 'backup_job'}
 
     def test_actions_need_write_access(self):
         acl = json.loads(ACL.read_text())['luci-app-mu300']

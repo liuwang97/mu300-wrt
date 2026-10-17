@@ -10,7 +10,12 @@
 #   tools/carry/mu300-carry (static: an update carries everything of the user's over with it)
 #   upstream/out/modules/*.ko (optional: out-of-tree WCN modules for the mainline 6.18 kernel)
 # openwrt-luci only: MU300_LUCI_THEME_APK, a local copy of the pinned Aurora .apk (offline builds; else downloaded)
-# Optional MU300_SAE_APK_DIR: local hostapd-common + wpad-basic-openssl APKs from build-u30-sae.sh.
+# (MU300_SAE_APK_DIR, a hand-built hostapd for the U30 Air's firmware SAE offload, is gone: the offload is
+# disabled, docs/U30AIR-SAE.md, FINDINGS 80. The build refuses it rather than ignore it.)
+[ -z "${MU300_SAE_APK_DIR:-}" ] || {
+    echo "MU300_SAE_APK_DIR: the U30 Air SAE offload is disabled and its hostapd is not built into images (docs/U30AIR-SAE.md)" >&2
+    exit 1
+}
 set -eu
 FLAVOUR=${MU300_FLAVOUR:-openwrt}
 case $FLAVOUR in
@@ -60,6 +65,10 @@ case ${MU300_DOCKER:-0} in
     0|1) DOCKER=${MU300_DOCKER:-0} ;;
     *) echo "MU300_DOCKER is 0 or 1" >&2; exit 1 ;;
 esac
+# an access point is WPA2-PSK only: SAE (WPA3-Personal, its mixed and compatibility modes) is refused on the SC2355
+# (the U30 Air's firmware SAE offload is disabled, FINDINGS 80)
+WPA2PATCH=$TOP/openwrt/patches/wifi-scripts-wpa2-only.patch
+[ -s "$WPA2PATCH" ] || { echo "missing $WPA2PATCH" >&2; exit 1; }
 # the docker mounts of the panel system, as the positional parameters (OUT is read above): each path stays one
 # argument, spaces and all
 set --
@@ -99,18 +108,6 @@ if [ "$SYSTEM" = openwrt-luci ]; then
         -v "$TOP/openwrt/luci-overlay:/in/luci-overlay:ro" -v "$CAT:/in/catalogs:ro"
 fi
 TARBALL=$FLAVOUR-$VER-armsr-armv8-rootfs.tar.gz
-if [ -n "${MU300_SAE_APK_DIR:-}" ]; then
-    [ "$FLAVOUR:$VER" = openwrt:25.12.5 ] || {
-        echo "U30 SAE packages require OpenWrt 25.12.5" >&2; exit 1;
-    }
-    SAE_APKS=$(cd "$MU300_SAE_APK_DIR" && pwd)
-    for name in hostapd-common wpad-basic-openssl; do
-        count=0
-        for package in "$SAE_APKS"/"$name"-*.apk; do [ ! -s "$package" ] || count=$((count + 1)); done
-        [ "$count" = 1 ] || { echo "expected exactly one $name APK in $SAE_APKS" >&2; exit 1; }
-    done
-    set -- "$@" -v "$SAE_APKS:/in/u30-sae:ro"
-fi
 URL=$BASEURL/$VER/targets/armsr/armv8
 
 cd "$TOP"
@@ -145,6 +142,7 @@ docker run --rm --platform linux/arm64 \
   -v "$FW4PATCH":/in/fw4-sipa-offload.patch:ro \
   -v "$FW4FTPATCH":/in/fw4-old-kernel-flowtable.patch:ro \
   -v "$NODFSPATCH":/in/wifi-scripts-no-dfs.patch:ro \
+  -v "$WPA2PATCH":/in/wifi-scripts-wpa2-only.patch:ro \
   -v "$TOP/boot/module-order.txt":/in/module-order.txt:ro -v "$IN/out/modules":/in/modules:ro \
   $(opt out/modules.builtin modules.builtin) $(opt out/modules.builtin.modinfo modules.builtin.modinfo) \
   $(opt firmware firmware) $(opt android-subset android-subset) $(opt android-gpu-subset android-gpu-subset) \
@@ -180,13 +178,11 @@ apk upgrade >/dev/null
 # with it to pin, for links that ask for allowInsecure;
 # i2c-tools, gpiod-tools: mu300-usb (the charger of the U30 Air) and mu300-nfc (its NFC tag);
 # jq: the VPN module reads vmess links and raw Xray/sing-box configs with it, and rewrites those configs at every start
-if [ -d /in/u30-sae ]; then
-    apk add --allow-untrusted /in/u30-sae/hostapd-common-*.apk /in/u30-sae/wpad-basic-openssl-*.apk >/dev/null
-else
-    apk add wpad-basic-mbedtls >/dev/null
-fi
-apk add wifi-scripts iwinfo wireless-regdb iw bash flock ip-full coreutils-stty openssl-util \
-    i2c-tools gpiod-tools jq >/dev/null
+# curl: mu300-update fetches with it where it is (and tells "the mirror cannot be reached" from "the source
+# answered" by its exit codes, which the wget family does not distinguish); the Ubuntu image has it too, so both
+# systems behave the same
+apk add wpad-basic-mbedtls wifi-scripts iwinfo wireless-regdb iw bash flock ip-full coreutils-stty openssl-util \
+    i2c-tools gpiod-tools jq curl >/dev/null
 # the router protocols LuCI offers, with their tools: WireGuard, PPTP/L2TP (PPPoE is in the base), 6in4/6rd/DS-Lite,
 # GRE and VXLAN, ipset, and SQM (cake). Their kmod-* dependencies install the 6.12 modules of the feed, removed below like
 # every other kmod: the mainline kernels have them built in or as modules of their own (mu300-mainline.config), 5.4
@@ -277,6 +273,10 @@ sed -i "s|\"/mnt/mu300-disk/docker/openwrt\"|\"/mnt/mu300-disk/docker/$MU300_SYS
 grep -q "\"data-root\": \"/mnt/mu300-disk/docker/$MU300_SYSTEM\"," $R/etc/docker/daemon.json || { echo "Docker data-root not set" >&2; exit 1; }
 grep -q "^.option alt_config_file ./etc/docker/daemon.json.$" $R/etc/config/dockerd || { echo "dockerd does not read etc/docker/daemon.json" >&2; exit 1; }
 ! ls $R/etc/rc.d/*dockerd >/dev/null 2>&1 || { echo "dockerd starts at boot" >&2; exit 1; }
+# wifi-scripts: an access point that asks for SAE (sae, sae-mixed, sae-compat, psk3) is not started, with a line that
+# says WPA2-PSK only - the U30 Air firmware SAE offload is disabled (FINDINGS 80), and plain SAE never worked here
+patch --batch --fuzz=0 -d $R -p1 -i /in/wifi-scripts-wpa2-only.patch
+grep -q "mu300_sae_refused(k, interface.config)" $R/usr/share/ucode/wifi/hostapd.uc || { echo "wifi-scripts WPA2-only patch not applied" >&2; exit 1; }
 apk del patch >/dev/null   # out of packages.txt below, which lists what the image has
 if [ -d /in/luci-plugin ]; then
     [ -d /in/luci-overlay ] && cp -a /in/luci-overlay/. $R/

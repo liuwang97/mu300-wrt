@@ -21,3 +21,5 @@ mu300-cpu
 mu300-traffic
 mu300-user-packages
 mu300-api
+mu300-zram
+mu300-backup

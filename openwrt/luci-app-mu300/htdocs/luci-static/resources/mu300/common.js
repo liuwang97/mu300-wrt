@@ -60,9 +60,15 @@ var callPackagesAct = rpc.declare({ object: 'mu300dash', method: 'packages_act',
 /* System > Update: what is installed and offered, the one update task, and every action (each parameter a fixed word,
  * a release tag, a size or a SHA-256; the backend checks them again) */
 var callUpdateGet = rpc.declare({ object: 'mu300dash', method: 'update_get', params: [ 'sizes' ], expect: { '': {} }, nobatch: true });
+/* System > Backup of settings (mu300-api backup.export / backup.import, FINDINGS 155) */
+var callBackupExport = rpc.declare({ object: 'mu300dash', method: 'backup_export', params: [ 'passphrase', 'with_password' ],
+	expect: { '': {} }, nobatch: true });
+var callBackupImport = rpc.declare({ object: 'mu300dash', method: 'backup_import',
+	params: [ 'file', 'passphrase', 'dry_run', 'force', 'skip' ], expect: { '': {} }, nobatch: true });
+var callBackupJob = rpc.declare({ object: 'mu300dash', method: 'backup_job', expect: { '': {} }, nobatch: true });
 var callUpdateJob = rpc.declare({ object: 'mu300dash', method: 'update_job', expect: { '': {} }, nobatch: true });
 var callUpdateAct = rpc.declare({ object: 'mu300dash', method: 'update_act',
-	params: [ 'op', 'tag', 'systems', 'kernel', 'sha256', 'size', 'flags', 'confirm' ], expect: { '': {} }, nobatch: true });
+	params: [ 'op', 'tag', 'systems', 'kernel', 'sha256', 'size', 'flags', 'confirm', 'url' ], expect: { '': {} }, nobatch: true });
 var callTrafficGet = rpc.declare({ object: 'mu300dash', method: 'traffic_get', expect: { '': {} }, nobatch: true });
 var callTrafficSet = rpc.declare({ object: 'mu300dash', method: 'traffic_set', params: [ 'op', 'value' ], expect: { '': {} }, nobatch: true });
 /* System > Terminal: a one-time token for ttyd (rpcd mu300term, ACL luci-app-mu300-terminal) */
@@ -106,11 +112,26 @@ var PLMN_CN = {
 	'46015': _('China Broadnet'), '46020': _('China Tietong')
 };
 
-/* COPS gives a name (shown through the catalogs, so a known English name is translated) or a numeric PLMN */
+/* The same carriers by the name the modem gives, whatever its case and spacing ("CHINA BROADNET", "China  Mobile"): a
+ * catalog key matches only exactly, and the modems give these names in capitals (#231). */
+var CARRIER_NAMES = {
+	'china mobile': _('China Mobile'), 'china unicom': _('China Unicom'), 'china telecom': _('China Telecom'),
+	'china broadnet': _('China Broadnet'), 'china tietong': _('China Tietong')
+};
+
+/* COPS gives a name (shown through the catalogs, so a known English name is translated) or a numeric PLMN. A name the
+ * catalog does not have exactly is looked up without case, then by its PLMN; one that is in neither is shown as the
+ * modem gave it (#231) */
 function carrierName(carrier) {
 	if (!carrier) return '--';
-	if (carrier.name) return _(carrier.name);
-	return PLMN_CN[carrier.plmn] || carrier.plmn || '--';
+	var name = carrier.name ? String(carrier.name) : '';
+	if (name) {
+		var t = _(carrier.name);
+		if (t !== name) return t;
+		var key = name.replace(/\s+/g, ' ').trim().toLowerCase();
+		if (Object.prototype.hasOwnProperty.call(CARRIER_NAMES, key)) return CARRIER_NAMES[key];
+	}
+	return PLMN_CN[carrier.plmn] || name || carrier.plmn || '--';
 }
 
 /* Signal quality grade (thresholds from ufi_tools' SignalQuality.kt) as a level key: 'excellent', 'good', 'fair',
@@ -708,6 +729,7 @@ return baseclass.extend({
 	callCpuGet: callCpuGet, callCpuSet: callCpuSet,
 	callPackagesGet: callPackagesGet, callPackagesAct: callPackagesAct,
 	callUpdateGet: callUpdateGet, callUpdateJob: callUpdateJob, callUpdateAct: callUpdateAct,
+	callBackupExport: callBackupExport, callBackupImport: callBackupImport, callBackupJob: callBackupJob,
 	callTrafficGet: callTrafficGet, callTrafficSet: callTrafficSet, callNetDev: callNetDev, netDev: netDev,
 	callTermToken: callTermToken,
 	carrierName: carrierName, qLevel: qLevel, qLevelLabel: qLevelLabel, qLabel: qLabel, qCol: qCol, qScore: qScore,

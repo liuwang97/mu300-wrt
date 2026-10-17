@@ -263,6 +263,34 @@ class Forwarder(ShellTest):
                 self.assertNotIn('Merhaba', (self.tmp / f).read_text())
             self.assertNotIn('Merhaba', (self.run_dir / 'log').read_text())
 
+    def test_the_pages_body_presets_are_what_the_services_take(self):
+        """Issue #259: the placeholder was Feishu's body, which WeCom refuses (errcode 40008) behind an HTTP 200. The
+        page's body presets: WeCom/DingTalk and Feishu/Lark, each a JSON body the forwarder fills into one valid
+        document of that service's shape, with the answer check that service needs (one of the check presets)."""
+        import re
+        view = (TOP / 'openwrt/luci-app-mu300/htdocs/luci-static/resources/view/mu300/forward.js').read_text()
+        bodies = dict(re.findall(r"(\w+): \[ '(\{[^']*\})', '[^']*' \]", view))
+        checks = dict(re.findall(r"(\w+): \[ '\{[^']*\}', '([^']*)' \]", view))
+        self.assertEqual(set(bodies), {'wecom', 'feishu'})
+        presets = re.findall(r"E\('option', \{ 'value': '([^']*=[^']*)' \}", view)
+        self.assertEqual(checks, {'wecom': 'errcode=0', 'feishu': 'code=0'})
+        self.assertTrue(set(checks.values()) <= set(presets))
+        self.assertIn("E('option', { 'value': 'wecom' }, [ 'WeCom, DingTalk' ])", view)
+        self.assertIn("E('option', { 'value': 'feishu' }, [ 'Feishu, Lark' ])", view)
+        self.assertNotIn('\'{"msg_type":"text","content":{"text":"{message}"}}\')', view)   # not the placeholder
+        self.assertIn("format.value = 'json';", view)
+        self.assertIn('if (!expect.value.trim()) expect.value = b[1];', view)   # a check of the user's is kept
+        pool_msg(self.pool, 8, self.HOSTILE_SENDER, self.HOSTILE_TEXT)
+        message = f'{self.HOSTILE_SENDER}: {self.HOSTILE_TEXT}'
+        want = {'wecom': {'msgtype': 'text', 'text': {'content': message}},
+                'feishu': {'msg_type': 'text', 'content': {'text': message}}}
+        for shell in self.each_shell():
+            for name, body in bodies.items():
+                with self.subTest(preset=name):
+                    [(_url, headers, sent)] = self.deliver_one(shell, webhook_body=body, webhook_format='json')
+                    self.assertEqual(headers['Content-Type'], 'application/json; charset=utf-8')
+                    self.assertEqual(json.loads(sent), want[name])
+
     def test_custom_form_and_text_bodies(self):
         from urllib.parse import parse_qs
         pool_msg(self.pool, 8, self.HOSTILE_SENDER, self.HOSTILE_TEXT)
@@ -944,6 +972,18 @@ class Adapter(ShellTest):
             self.assertEqual((st['queued'], st['running'], st['email_available']), (2, 1, 0))
             self.assertEqual(st['log'][0], {'time': 1791000001, 'id': 'test', 'target': 'telegram', 'result': 'failed',
                                             'detail': 'HTTP 4"01'})
+
+    def test_check_mode_checks_everything_and_writes_nothing(self):
+        # mu300-backup's check of a restore (FINDINGS 155): the same rules, no file written
+        for shell in self.each_shell():
+            self.conf.parent.mkdir(exist_ok=True)
+            self.conf.unlink(missing_ok=True)
+            r = self.adapter(shell, 'set', stdin=json.dumps(self.FULL), MU300_FWD_CHECK='1')
+            self.assertEqual(json.loads(r.stdout), {'ok': 1, 'checked': 1})
+            self.assertFalse(self.conf.exists())
+            r = self.adapter(shell, 'set', stdin=json.dumps(dict(self.FULL, webhook_url='ftp://x')), MU300_FWD_CHECK='1')
+            self.assertEqual(json.loads(r.stdout)['ok'], 0)
+            self.assertFalse(self.conf.exists())
 
     def test_an_empty_secret_keeps_the_saved_one_and_clear_removes_it(self):
         for shell in self.each_shell():
