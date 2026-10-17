@@ -4,6 +4,8 @@
 #        mobile-data radio-locked CMD [ARG...] | radio-busy
 #        mobile-data roaming [--json] | roaming on|off [--slot 0|1]   (data roaming: allowed by default; with it off,
 #        no data while the SIM is registered as roaming - see roaming_cmd and docs/FINDINGS.md 120)
+#        mobile-data voice [--json [--read]] | voice volte|vonr on|off [--slot 0|1]   (VoLTE/VoNR per card, replayed
+#        at every bring-up: voice_cmd and docs/FINDINGS.md 181)
 #        mobile-data suspend off|lte | resume [nodial]   (mu300-power: modem down or LTE only while nobody uses the
 #        device; nodial: the radio only, the watcher redials). Both end within MU300_SUSPEND_DEADLINE (60 s) whatever
 #        the modem does; on a failure or a timeout the modem is handed back to the watcher (no mode file) and they
@@ -985,8 +987,9 @@ up_locked() {
         exit 1
     fi
     mark dial-radio-on-done
-    # K58: the IMS bearer SMS uses, which Android's RIL switches on. Idempotent, and nothing here waits for IMS.
-    at 'AT+CAVIMS=1' 5 >/dev/null || true
+    # K58: the IMS bearer SMS uses, which Android's RIL switches on, and VoNR when the user chose it (voice_replay,
+    # FINDINGS 181). Idempotent, and nothing here waits for IMS.
+    voice_replay
     # A modem reset during this wait is not repaired inside this attempt (the old loop re-ran radio_on every 10 s;
     # the fork dropped that). The attempt fails after MU300_REGISTER_WAIT, and the next one - netifd after 20 s,
     # systemd after 30 s, or the watchdog - starts with radio_on, which brings the radio back. Switching the radio
@@ -1737,6 +1740,141 @@ roaming_cmd() {
     esac
 }
 
+# --- VoLTE and VoNR, per card (FINDINGS 181; after kanoqwq's per-SIM voice switches, 5f4732e and 53ef7b1) ----------
+# The user's choice per card in $VOICE_CONF, one KEY=VALUE line each: volte0, vonr0 (slot 0), volte1, vonr1 (slot 1),
+# value 1 or 0; the file is read, never executed, on both systems. Replayed at every bring-up of the card, after the
+# radio is on (voice_replay), where the dial has always sent AT+CAVIMS=1:
+#   VoLTE  AT+CAVIMS=<0|1>, read back with AT+CAVIMS?. No line: on, as every release before this one did (the IMS
+#          bearer is also what SMS over IMS uses).
+#   VoNR   AT+SP5GCMDS="set nr param",45,<0|1>, read back with AT+SP5GCMDS="get nr synch_param",42 (its third field).
+#          No line: nothing is sent, the modem keeps its own setting.
+# Neither restarts the radio or redials. `mobile-data voice volte|vonr on|off [--slot N]` saves the choice; for the
+# card in use, with the modem answering, it is sent at once and read back, and a modem that does not read back what
+# was asked for leaves the saved choice as it was (exit 1). For the other card it waits for that card's next start.
+VOICE_CONF=${MU300_VOICE_CONF:-/etc/mu300/sim-voice}
+# voice_saved KIND SLOT: 1 or 0 as saved, nothing when there is no valid line
+voice_saved() {
+    local v
+    [ -r "$VOICE_CONF" ] || return 0
+    v=$(sed -n "s/^[[:space:]]*$1$2=//p" "$VOICE_CONF" 2>/dev/null | tail -n 1 | tr -d ' \r\t') || return 0
+    case $v in 0|1) echo "$v" ;; esac
+}
+# voice_read KIND: what the card in use says now, 1 or 0; status 1 when it does not answer that clearly
+voice_read() {
+    local out v
+    case $1 in
+        volte) out=$(at 'AT+CAVIMS?' 4 2>/dev/null | tr -d '\r') || return 1
+               v=$(printf '%s\n' "$out" | sed -n 's/^+CAVIMS: *\([01]\) *$/\1/p' | head -n 1) ;;
+        vonr)  out=$(at 'AT+SP5GCMDS="get nr synch_param",42' 4 2>/dev/null | tr -d '\r') || return 1
+               v=$(printf '%s\n' "$out" | sed -n 's/^+SP5GCMDS: *//p' | head -n 1 | tr -d ' "' |
+                   awk -F, '$1 == "getnrsynch_param" && $2 == 42 && ($3 == "0" || $3 == "1") { print $3; exit }') ;;
+        *) return 1 ;;
+    esac
+    printf '%s\n' "$out" | grep -x OK >/dev/null || return 1
+    case $v in 0|1) echo "$v" ;; *) return 1 ;; esac
+}
+# voice_send KIND 0|1: the command, and the read-back; status 1 unless the modem now says what was asked for
+voice_send() {
+    case $1 in
+        volte) at "AT+CAVIMS=$2" 5 >/dev/null 2>&1 || true ;;
+        vonr) at "AT+SP5GCMDS=\"set nr param\",45,$2" 5 >/dev/null 2>&1 || true ;;
+        *) return 1 ;;
+    esac
+    [ "$(voice_read "$1" || true)" = "$2" ]
+}
+# voice_replay: the card in use's choice, at its bring-up. Never fails the bring-up: a refusal is logged.
+voice_replay() {
+    local v
+    v=$(voice_saved volte "$SIM_SLOT")
+    at "AT+CAVIMS=${v:-1}" 5 >/dev/null 2>&1 || true
+    v=$(voice_saved vonr "$SIM_SLOT")
+    [ -n "$v" ] || return 0
+    at "AT+SP5GCMDS=\"set nr param\",45,$v" 5 >/dev/null 2>&1 || true
+    [ "$(voice_read vonr || true)" = "$v" ] || radio_say "VoNR: the modem did not read back $v for slot $SIM_SLOT"
+}
+# voice_write KIND SLOT 0|1|-: the line replaced (- removes it); the other lines kept, a new file renamed over the old
+voice_write() {
+    local d=${VOICE_CONF%/*} t
+    mkdir -p "$d" 2>/dev/null || return 1
+    t=$(umask 022; mktemp "$d/.sim-voice.XXXXXX" 2>/dev/null) || return 1
+    if { if [ -f "$VOICE_CONF" ]; then grep -v "^[[:space:]]*$1$2=" "$VOICE_CONF" || true; fi
+         [ "$3" = - ] || echo "$1$2=$3"; } > "$t" && chmod 644 "$t" && mv -f "$t" "$VOICE_CONF"; then
+        return 0
+    fi
+    rm -f "$t"
+    return 1
+}
+# voice_live: the modem can be asked (the card in use, its channel up, the radio not held by a SIM switch)
+voice_live() {
+    modem_stack && [ ! -e /run/mu300/sim-switching ] && [ ! -e /run/mu300/sim-active-unknown ] && tty_setup 2>/dev/null
+}
+# mobile-data voice [--json [--read]] | voice volte|vonr on|off [--slot 0|1]
+#   --json   {"slot":<in use>,"slots":[{"volte":true|false,"vonr":true|false|null}, ...]}: the saved choices (VoLTE
+#            unset is on, VoNR unset is null: the modem's own), files only; --read adds "live":{"volte","vonr"} with
+#            what the card in use says now (null where it does not answer)
+voice_json() {
+    local tf s v l=
+    tf() { case $1 in 1) echo true ;; 0) echo false ;; *) echo null ;; esac; }
+    printf '{"slot":%d,"slots":[' "$SIM_SLOT"
+    for s in 0 1; do
+        v=$(voice_saved volte "$s")
+        printf '%s{"volte":%s,"vonr":%s}' "$([ "$s" = 0 ] || echo ,)" "$(tf "${v:-1}")" "$(tf "$(voice_saved vonr "$s")")"
+    done
+    printf ']'
+    if [ "${1:-}" = --read ]; then
+        if voice_live; then
+            printf ',"live":{"volte":%s,"vonr":%s}' "$(tf "$(voice_read volte || true)")" "$(tf "$(voice_read vonr || true)")"
+        else
+            printf ',"live":null'
+        fi
+    fi
+    printf '}\n'
+}
+voice_cmd() {
+    local kind slot=$SIM_SLOT bit old before
+    case ${1:-} in
+        '')
+            for kind in volte vonr; do
+                old=$(voice_saved "$kind" "$slot")
+                case $old in
+                    1) old=on ;; 0) old=off ;;
+                    *) if [ "$kind" = volte ]; then old='on (default)'; else old='not set (the modem keeps its own)'; fi ;;
+                esac
+                printf '%-6s saved %s' "$kind" "$old"
+                if voice_live && bit=$(voice_read "$kind"); then
+                    printf ', the modem says %s' "$([ "$bit" = 1 ] && echo on || echo off)"
+                fi
+                echo
+            done ;;
+        --json) voice_json "${2:-}" ;;
+        volte|vonr)
+            kind=$1
+            case ${2:-} in on) bit=1 ;; off) bit=0 ;; *) echo "usage: $0 voice volte|vonr on|off [--slot 0|1]" >&2; return 2 ;; esac
+            if [ "${3:-}" = --slot ]; then
+                case ${4:-} in 0|1) slot=$4 ;; *) echo "usage: $0 voice volte|vonr on|off [--slot 0|1]" >&2; return 2 ;; esac
+            elif [ -n "${3:-}" ]; then
+                echo "usage: $0 voice volte|vonr on|off [--slot 0|1]" >&2; return 2
+            fi
+            old=$(voice_saved "$kind" "$slot")
+            if [ "$slot" = "$SIM_SLOT" ] && voice_live && [ "$(at 'AT' 3 2>/dev/null | tail -n 1)" = OK ]; then
+                # what the modem has now: put back when it does not read back the new value (it may answer OK and
+                # still read back the old one: FINDINGS 181, VoNR on an F50); the file is unchanged then
+                before=$(voice_read "$kind" || true)
+                if ! voice_send "$kind" "$bit"; then
+                    [ -z "$before" ] || voice_send "$kind" "$before" || true
+                    echo "the modem did not take $kind $2; nothing was saved" >&2
+                    return 1
+                fi
+                voice_write "$kind" "$slot" "$bit" || { echo "the $kind setting could not be saved" >&2; return 1; }
+                echo "$kind $2 for the SIM in slot $slot (sent and read back)"
+            else
+                voice_write "$kind" "$slot" "$bit" || { echo "the $kind setting could not be saved" >&2; return 1; }
+                echo "$kind $2 for the SIM in slot $slot (saved; sent when that card's radio next starts)"
+            fi ;;
+        *) echo "usage: $0 voice [--json [--read]] | voice volte|vonr on|off [--slot 0|1]" >&2; return 2 ;;
+    esac
+}
+
 # MU300_LIB=1: define the functions only (the tests source this script)
 [ -z "${MU300_LIB:-}" ] || return 0
 
@@ -1748,7 +1886,7 @@ case "${1:-status}" in
         tty_setup
         mark radio-warmup-enter
         radio_on
-        at 'AT+CAVIMS=1' 5 >/dev/null || true
+        voice_replay
         mark radio-warmup-done
         ;;
     signal) signal ;;
@@ -1760,6 +1898,7 @@ case "${1:-status}" in
     down) via_netifd || rm -f "$ROAM_HELD"; down ;;
     status) status ;;
     roaming) roaming_cmd "${@:2}" ;;
+    voice) voice_cmd "${@:2}" ;;
     sim-reset) sim_reset ;;
     watch) watch ;;
     suspend) bounded suspend "${2:-off}" ;;
@@ -1788,5 +1927,5 @@ case "${1:-status}" in
         lock_owner_alive "$holder" || exit 1
         echo "$holder"
         ;;
-    *) echo "usage: $0 up [APN] | radio-on | down | status | signal | at \"CMD\" | sim-reset | watch | suspend off|lte | resume [nodial] | radio-locked CMD | radio-busy | roaming [--json|on|off]" >&2; exit 2 ;;
+    *) echo "usage: $0 up [APN] | radio-on | down | status | signal | at \"CMD\" | sim-reset | watch | suspend off|lte | resume [nodial] | radio-locked CMD | radio-busy | roaming [--json|on|off] | voice [--json|volte|vonr]" >&2; exit 2 ;;
 esac

@@ -29,6 +29,13 @@
 		"depends": { "acl": [ "luci-app-mu300" ] }
 	},
 
+	"admin/modem/simcard": {
+		"title": "SIM settings",
+		"order": 0,
+		"action": { "type": "view", "path": "mu300/simcard" },
+		"depends": { "acl": [ "luci-app-mu300" ] }
+	},
+
 	"admin/modem/locks": {
 		"title": "Network locks",
 		"order": 1,

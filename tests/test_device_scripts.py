@@ -1888,6 +1888,104 @@ up() { at UP; }
         self.assertNotEqual(m.group(1), m.group(3))
 
 
+
+class SimVoice(ShellTest):
+    """VoLTE and VoNR per card (FINDINGS 181, after kanoqwq 5f4732e/53ef7b1): `mobile-data voice`, the saved choices
+    and their replay at every bring-up. mobile-data sourced as in MobileData; the modem keeps the two settings in
+    $STUBLOG/m-volte and m-vonr, answers $VOICE_REFUSE ("volte"/"vonr": that set is ignored) and says nothing when
+    $VOICE_SILENT is set."""
+    lib = MobileData.lib
+    MODEM = r"""
+at() {
+    echo "$SECONDS $1" >> "$STUBLOG/at"
+    [ -z "${VOICE_SILENT:-}" ] || return 1
+    case $1 in
+        AT) printf 'OK\n' ;;
+        'AT+CAVIMS?') printf '+CAVIMS: %s\nOK\n' "$(cat "$STUBLOG/m-volte" 2>/dev/null || echo 1)" ;;
+        AT+CAVIMS=[01]) [ "${VOICE_REFUSE:-}" = volte ] || echo "${1#AT+CAVIMS=}" > "$STUBLOG/m-volte"; printf 'OK\n' ;;
+        'AT+SP5GCMDS="get nr synch_param",42') printf '+SP5GCMDS: "get nr synch_param",42,%s\nOK\n' "$(cat "$STUBLOG/m-vonr" 2>/dev/null || echo 1)" ;;
+        'AT+SP5GCMDS="set nr param",45,'[01]) [ "${VOICE_REFUSE:-}" = vonr ] || echo "${1##*,}" > "$STUBLOG/m-vonr"; printf 'OK\n' ;;
+        *) printf 'OK\n' ;;
+    esac
+}
+"""
+
+    def setUp(self):
+        super().setUp()
+        self.conf = self.tmp / 'etc' / 'sim-voice'
+
+    def run_md(self, code, **env):
+        e = dict(MU300_VOICE_CONF=self.conf, MU300_AT_DEV='/dev/null')
+        e.update(env)
+        # the stack is there and the channel answers (modem_stack, tty_setup)
+        return self.lib('modem_stack() { :; }; tty_setup() { :; }\n' + code, **e)
+
+    def sent(self, sent):
+        return [s.split(' ', 1)[1] for s in sent if s.split(' ', 1)[1] != 'AT']
+
+    def test_replay_defaults_and_choices(self):
+        # nothing saved: VoLTE on, as every release before; VoNR untouched
+        r, sent = self.run_md('voice_replay')
+        self.assertEqual(self.sent(sent), ['AT+CAVIMS=1'], r.stderr)
+        # the card in use's lines only
+        self.conf.parent.mkdir(parents=True)
+        self.conf.write_text('volte0=0\nvonr0=1\nvolte1=1\nvonr1=0\n')
+        r, sent = self.run_md('voice_replay')
+        self.assertEqual(self.sent(sent), ['AT+CAVIMS=0', 'AT+SP5GCMDS="set nr param",45,1',
+                                           'AT+SP5GCMDS="get nr synch_param",42'], r.stderr)
+        r, sent = self.run_md('SIM_SLOT=1; voice_replay')
+        self.assertEqual(self.sent(sent)[:2], ['AT+CAVIMS=1', 'AT+SP5GCMDS="set nr param",45,0'], r.stderr)
+        # a value that is neither is no choice
+        self.conf.write_text('volte0=yes; reboot\nvonr0=2\n')
+        r, sent = self.run_md('voice_replay')
+        self.assertEqual(self.sent(sent), ['AT+CAVIMS=1'], r.stderr)
+
+    def test_the_dial_and_the_warmup_replay(self):
+        text = (BIN / 'mobile-data').read_text()
+        self.assertNotIn("at 'AT+CAVIMS=1'", text)
+        # the dial (up_locked) and the early warm-up (radio-on)
+        self.assertEqual([l.strip() for l in text.splitlines()].count('voice_replay'), 2)
+
+    def test_set_on_the_card_in_use(self):
+        r, sent = self.run_md('voice_cmd volte off; voice_cmd vonr off; voice_json --read')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.conf.read_text(), 'volte0=0\nvonr0=0\n')
+        self.assertEqual((self.tmp / 'm-volte').read_text().strip(), '0')
+        self.assertEqual((self.tmp / 'm-vonr').read_text().strip(), '0')
+        out = json.loads(r.stdout.strip().splitlines()[-1])
+        self.assertEqual(out, {'slot': 0, 'slots': [{'volte': False, 'vonr': False}, {'volte': True, 'vonr': None}],
+                               'live': {'volte': False, 'vonr': False}})
+        self.assertEqual(self.conf.stat().st_mode & 0o777, 0o644)
+
+    def test_a_modem_that_does_not_take_it_saves_nothing(self):
+        for kind in ('volte', 'vonr'):
+            with self.subTest(kind=kind):
+                self.conf.unlink(missing_ok=True)
+                r, _ = self.run_md(f'voice_cmd {kind} off', VOICE_REFUSE=kind)
+                self.assertEqual(r.returncode, 1)
+                self.assertIn('nothing was saved', r.stderr)
+                self.assertFalse(self.conf.exists())
+
+    def test_the_other_card_or_a_silent_modem_is_saved_for_later(self):
+        r, sent = self.run_md('voice_cmd vonr on --slot 1')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.sent(sent), [])
+        self.assertEqual(self.conf.read_text(), 'vonr1=1\n')
+        r, sent = self.run_md('voice_cmd volte off', VOICE_SILENT=1)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn('saved; sent when', r.stdout)
+        self.assertEqual(self.conf.read_text(), 'vonr1=1\nvolte0=0\n')
+        r, _ = self.run_md('voice_json')
+        self.assertEqual(json.loads(r.stdout), {'slot': 0, 'slots': [{'volte': False, 'vonr': None},
+                                                                     {'volte': True, 'vonr': True}]})
+
+    def test_arguments(self):
+        for args in ('volte maybe', 'ims on', 'volte on --slot 2', 'volte on extra', 'vonr on --slot'):
+            with self.subTest(args=args):
+                r, sent = self.run_md(f'voice_cmd {args}')
+                self.assertEqual(r.returncode, 2, r.stdout)
+                self.assertFalse(self.conf.exists())
+
 class DataRoaming(ShellTest):
     """Data roaming (FINDINGS 120): the setting, the dial's gate, the watchdog's two moves. mobile-data sourced as in
     MobileData (its lib() and modem); the modem here also answers AT+C5GREG? ($C5GREG) and AT+CGACT? ($CGACT), and

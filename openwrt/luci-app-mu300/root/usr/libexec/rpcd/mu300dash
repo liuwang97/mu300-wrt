@@ -957,6 +957,8 @@ do_list() {
 	"power_set": { "op": "String", "key": "String", "value": "String" },
 	"sim_get": { },
 	"sim_set": { "op": "String", "value": "String" },
+	"simcard_get": { },
+	"simcard_set": { "kind": "String", "slot": "String", "state": "String" },
 	"ttl_get": { },
 	"ttl_set": { "value": "String" },
 	"traffic_get": { },
@@ -994,6 +996,33 @@ APIB=${MU300_DASH_API:-/opt/mu300/bin/mu300-api}
 m_backup_export() { reply_obj "$(printf '%s' "$INPUT" | "$APIB" backup.export 2>/dev/null)" 'The backup tool gave no valid reply'; }
 m_backup_import() { reply_obj "$(printf '%s' "$INPUT" | "$APIB" backup.import 2>/dev/null)" 'The backup tool gave no valid reply'; }
 m_backup_job() { reply_obj "$(printf '{"from":0}' | "$APIB" job.status 2>/dev/null)" 'The backup tool gave no valid reply'; }
+
+# Cellular > SIM settings: per card, VoLTE and VoNR (mobile-data voice, FINDINGS 181). get asks the card in use what
+# it has now (two short reads); set sends the choice to the card in use and reads it back, or saves it for the other
+# card's next start. Nothing a caller sends reaches the command but the fixed words checked here.
+m_simcard_get() {
+    local v s1
+    [ -x "$MOBILE_DATA" ] || { refuse 'Mobile data integration is not provided by this platform'; return; }
+    v=$(json_obj "$("$MOBILE_DATA" voice --json --read 2>/dev/null)") || { refuse 'The SIM settings could not be read'; return; }
+    # whether this device has a second card at all (the selector's own account, files only)
+    s1=0
+    [ "$(printf '%s' "$("$SIMCTL" status --json 2>/dev/null)" | jsonfilter -e '@.slot1_supported' 2>/dev/null)" != 1 ] || s1=1
+    printf '{"ok":1,"slot1_supported":%d,"voice":%s}\n' "$s1" "$v"
+}
+m_simcard_set() {
+    local kind slot state out
+    inp '@.kind'; kind=$V
+    inp '@.slot'; slot=$V
+    inp '@.state'; state=$V
+    case $kind:$slot:$state in volte:[01]:on|volte:[01]:off|vonr:[01]:on|vonr:[01]:off) ;;
+        *) refuse 'Invalid SIM setting'; return ;; esac
+    [ -x "$MOBILE_DATA" ] || { refuse 'Mobile data integration is not provided by this platform'; return; }
+    if out=$("$MOBILE_DATA" voice "$kind" "$state" --slot "$slot" 2>&1); then
+        printf '{"ok":1,"text":%s}\n' "$(json_str "$out")"
+    else
+        refuse 'The modem did not take the setting; nothing was saved' "$out"
+    fi
+}
 
 SIMCTL=${MU300_DASH_SIM:-/opt/mu300/bin/mu300-sim}
 m_sim_get() { reply_obj "$("$SIMCTL" status --json 2>/dev/null)" 'SIM control unavailable'; }
@@ -1198,6 +1227,8 @@ call)
         power_set)    run_m power_set    m_power_set ;;
         sim_get)      run_m sim_get m_sim_get ;;
         sim_set)      run_m sim_set m_sim_set ;;
+        simcard_get)  run_m simcard_get  m_simcard_get ;;
+        simcard_set)  run_m simcard_set  m_simcard_set ;;
         ttl_get)      run_m ttl_get      m_ttl_get ;;
         ttl_set)      run_m ttl_set      m_ttl_set ;;
         traffic_get)  run_m traffic_get  m_traffic_get ;;
