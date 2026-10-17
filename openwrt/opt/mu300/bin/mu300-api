@@ -1,7 +1,7 @@
 #!/bin/sh
 # mu300-api: the device's settings and state for a program, one method per call (Ubuntu and OpenWrt; F50, U30 Air,
 # V50). The web installer's device manager uses it over adb (docs/ADB-INTERFACE.md, FINDINGS 110); Cockpit's MU300
-# page asks it for the overview and the hotspot (mu300-panel info / hotspot-set).
+# page (the panel extra, FINDINGS 183) has no other backend.
 #
 #   mu300-api METHOD < REQUEST      REQUEST: one JSON object (at least {}), on stdin, never on the command line: it may
 #                                   hold a password. The answer: one JSON object on stdout, {"ok":1,...} or
@@ -53,12 +53,15 @@ METHODS='hello overview
 wifi.get wifi.set wifi.power wificlient.status wificlient.scan wificlient.join wificlient.leave
 data.get data.set data.power sim.get sim.select lock.get lock.set
 vpn.status vpn.profiles vpn.subs vpn.settings vpn.service vpn.killswitch vpn.use vpn.add vpn.add_url vpn.rename
-vpn.remove vpn.setting vpn.sub_add vpn.sub_refresh vpn.sub_remove vpn.logs vpn.install vpn.engine_install
+vpn.remove vpn.setting vpn.sub_add vpn.sub_refresh vpn.sub_remove vpn.logs vpn.install vpn.engine_install vpn.engines
 sms.list sms.read sms.send sms.job sms.delete sms.forward
 lan.get lan.set usb.role adb.auth
 system.get system.hostname system.timezone system.password system.ssh system.reboot system.boot system.bootos
 update.check update.apply kernel.set extra.list extra.install extra.remove logs
 backup.export backup.import
+at.send ussd.send ussd.cancel modem.restart ttl.get ttl.set traffic.get traffic.set
+power.get power.set led.get led.set zram.get zram.set cpu.get cpu.profile cpu.voltage
+update.status update.source packages.get packages.act docker.status
 job.status job.cancel job.clear'
 
 # ------------------------------------------------------------------ JSON out
@@ -879,6 +882,8 @@ m_vpn_install() {
     [ -x "$BIN/mu300-extra" ] || refuse unsupported mu300-extra
     job_start vpn-install 1200 "" "$BIN/mu300-extra" install vpn
 }
+# vpn.engines: every engine, installed or not, and how to get it (mu300-vpn engines --json)
+m_vpn_engines() { only; need_vpn; vpn_json engines engines --json; }
 m_vpn_engine_install() {
     only name
     word name 'xray|sing-box|mihomo|dae'; need name
@@ -1140,6 +1145,293 @@ m_logs() {
     ok "\"text\":$(js "$_t")"
 }
 
+# ------------------------------------------------------------------ the modem's own tools (Cockpit's MU300 page)
+# The AT terminal: one command, on mu300-at's stdin (it may carry a secret: an APN password), as LuCI's AT terminal
+# sends it; whatever the modem answers comes back as text
+m_at_send() {
+    only command timeout
+    fget command && [ "$FT" = s ] || refuse missing command
+    _c=$(printf '%s' "$FV" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+    [ -n "$_c" ] && [ "$(bytes "$_c")" -le 512 ] && allowed "$_c" '[Aa][Tt][ -~]*' || refuse bad-value command
+    int timeout 1 60; _t=${V:-10}
+    [ -x "$BIN/mu300-at" ] || refuse unsupported mu300-at
+    tool $((_t + 10)) "$BIN/mu300-at" -t "$_t" - <<EOT
+$_c
+EOT
+    _rc=$RC
+    ok "\"rc\":$_rc,\"text\":$(js "$(printf '%s\n' "$OUT" | tr -d '\r' | sanitize)")"
+}
+# USSD (mu300-ussd): a code (*100#), an answer in an open session (1), or the session dropped
+m_ussd_send() {
+    only code
+    word code '[0-9*#+]{1,40}'; need code
+    [ -x "$BIN/mu300-ussd" ] || refuse unsupported mu300-ussd
+    tool 70 "$BIN/mu300-ussd" -t 45 "$V" </dev/null || refuse failed "$ERR"
+    ok "\"text\":$(js "$(printf '%s\n' "$OUT" | sanitize)")"
+}
+m_ussd_cancel() {
+    only
+    [ -x "$BIN/mu300-ussd" ] || refuse unsupported mu300-ussd
+    tool 30 "$BIN/mu300-ussd" --cancel </dev/null || refuse failed "$ERR"
+    ok
+}
+# network recovery: the dial again, from the radio up (Ubuntu: the mobile-data service; OpenWrt: the WAN)
+m_modem_restart() {
+    only
+    checked
+    if is_openwrt; then later sh -c 'ifdown wan; sleep 3; ifup wan'
+    else later systemctl restart mu300-mobile-data.service; fi
+    ok
+}
+
+# ------------------------------------------------------------------ TTL, data usage
+m_ttl_get() {
+    only
+    [ -x "$BIN/mu300-ttl" ] || refuse unsupported mu300-ttl
+    tool 20 "$BIN/mu300-ttl" state </dev/null || refuse failed "$ERR"
+    _v=$(printf '%s\n' "$OUT" | sed -n 's/^TTL=//p' | head -n 1)
+    _b=$(printf '%s\n' "$OUT" | sed -n 's/^BACKEND=//p' | head -n 1)
+    case $_b in tc|nft) ;; *) _b=none ;; esac
+    allowed "$_v" '[1-9][0-9]{0,2}' && [ "$_v" -le 255 ] || _v=
+    ok "\"enabled\":$([ -n "$_v" ] && echo true || echo false),\"value\":$(jn "$_v"),\"backend\":\"$_b\""
+}
+m_ttl_set() {
+    only value
+    word value 'off|[1-9][0-9]{0,2}'; need value
+    [ "$V" = off ] || [ "$V" -le 255 ] || refuse bad-value value
+    [ -x "$BIN/mu300-ttl" ] || refuse unsupported mu300-ttl
+    checked
+    if [ "$V" = off ]; then tool 30 "$BIN/mu300-ttl" off </dev/null; else tool 30 "$BIN/mu300-ttl" set "$V" </dev/null; fi ||
+        refuse failed "$ERR"
+    ok
+}
+m_traffic_get() {
+    only
+    [ -x "$BIN/mu300-traffic" ] || refuse unsupported mu300-traffic
+    tool 20 "$BIN/mu300-traffic" json </dev/null || refuse failed "$ERR"
+    _j=$(jcheck "$OUT") || refuse failed "mu300-traffic gave no JSON"
+    ok "\"traffic\":$_j"
+}
+# traffic.set {key, value}: reset_day 1-31, cap bytes (0: none), warn 1-100, cut on|off, used bytes, clear "yes"
+m_traffic_set() {
+    only key value
+    word key 'reset_day|cap|warn|cut|used|clear'; need key; _k=$V
+    case $_k in
+        reset_day) int value 1 31 ;;
+        warn) int value 1 100 ;;
+        cut) word value 'on|off' ;;
+        clear) word value 'yes' ;;
+        cap|used) word value '0|[1-9][0-9]{0,15}' ;;
+    esac
+    need value
+    [ -x "$BIN/mu300-traffic" ] || refuse unsupported mu300-traffic
+    checked
+    case $_k in
+        reset_day) set -- set reset-day "$V" ;;
+        cap) if [ "$V" = 0 ]; then set -- set cap off; else set -- set cap "$V"; fi ;;
+        warn|cut) set -- set "$_k" "$V" ;;
+        used) set -- used "$V" ;;
+        clear) set -- clear --yes ;;
+    esac
+    tool 30 "$BIN/mu300-traffic" "$@" </dev/null || refuse failed "$ERR"
+    ok
+}
+
+# ------------------------------------------------------------------ power, LEDs, zram, CPU
+# power.get: mu300-power status, as one object (the reading of LuCI's power adapter): the state, the battery and the
+# charger, and the knobs of the three profiles
+power_knobs() {
+    _l=$(printf '%s\n' "$_pst" | sed -n "s/^$1: //p")
+    _w=$(echo "$_l" | sed -n 's/.*WIFI_IDLE=\([0-9]*\).*/\1/p'); _r=$(echo "$_l" | sed -n 's/.*RADIO_IDLE=\([a-z0-9]*\).*/\1/p')
+    _d=$(echo "$_l" | sed -n 's/.*LEDS_IDLE=\([a-z0-9]*\).*/\1/p'); _c=$(echo "$_l" | sed -n 's/.*CPU=\([a-z0-9]*\).*/\1/p')
+    printf '{"WIFI_IDLE":%s,"RADIO_IDLE":%s,"LEDS_IDLE":%s,"CPU":%s}' "$(jn "$_w")" "$(js "$_r")" "$(js "$_d")" "$(js "$_c")"
+}
+milli() { case ${1:-} in ''|-|*[!0-9-]*|?*-*) ;; *) echo $(( $1 / 1000 )) ;; esac; }
+m_power_get() {
+    only
+    [ -x "$BIN/mu300-power" ] || refuse unsupported mu300-power
+    tool 20 "$BIN/mu300-power" status </dev/null
+    _pst=$OUT
+    _prof=$(echo "$_pst" | sed -n 's/^profile: \([a-z]*\) (.*)$/\1/p'); _why=$(echo "$_pst" | sed -n 's/^profile: [a-z]* (\(.*\))$/\1/p')
+    _state=$(echo "$_pst" | sed -n 's/^state: //p' | head -n 1); _supply=$(echo "$_pst" | sed -n 's/^supply: //p' | head -n 1)
+    _sb=$(echo "$_pst" | sed -n 's/^SAVER_BELOW=\([0-9]*\) .*/\1/p'); _ct=$(echo "$_pst" | sed -n 's/.*CHARGE_TO=\([0-9]*\)$/\1/p')
+    _bat=null
+    if ! echo "$_pst" | grep -qx 'battery: none'; then
+        for _d in "$R"/sys/class/power_supply/*; do
+            [ "$(cat "$_d/type" 2>/dev/null)" = Battery ] || continue
+            [ ! -f "$_d/present" ] || [ "$(cat "$_d/present" 2>/dev/null)" = 1 ] || continue
+            _bat=$(printf '{"capacity":%s,"status":%s,"mv":%s,"ma":%s,"temp":%s}' "$(jn "$(cat "$_d/capacity" 2>/dev/null)")" \
+                "$(js "$(cat "$_d/status" 2>/dev/null | tr 'A-Z' 'a-z')")" "$(jn "$(milli "$(cat "$_d/voltage_now" 2>/dev/null)")")" \
+                "$(jn "$(milli "$(cat "$_d/current_now" 2>/dev/null)")")" "$(jn "$(cat "$_d/temp" 2>/dev/null)")")
+            break
+        done
+    fi
+    _conf=$(sed -n 's/^PROFILE=\(.*\)$/\1/p' "$R/etc/mu300/power.conf" 2>/dev/null | tail -n 1)
+    case $_conf in auto|plugged|battery|saver) ;; *) _conf=auto ;; esac
+    printf '{"ok":1,"state":%s,"profile":%s,"why":%s,"supply":%s,"battery":%s,"charge_off":%s,' \
+        "$(js "${_state:-active}")" "$(js "$_prof")" "$(js "$_why")" "$(js "$_supply")" "$_bat" \
+        "$(js "$(first "$R/run/mu300/power/charge-off")")"
+    printf '"conf":{"PROFILE":"%s","SAVER_BELOW":%s,"CHARGE_TO":%s,"plugged":%s,"battery":%s,"saver":%s},"text":%s}\n' \
+        "$_conf" "$(jn "$_sb")" "$(jn "$_ct")" "$(power_knobs plugged)" "$(power_knobs battery)" "$(power_knobs saver)" \
+        "$(js "$_pst")"
+    exit 0
+}
+# power.set {key, value}: as mu300-power set takes them (it checks the value again): PROFILE, SAVER_BELOW, CHARGE_TO,
+# PROFILE.KNOB
+m_power_set() {
+    only key value
+    word key 'PROFILE|SAVER_BELOW|CHARGE_TO|(plugged|battery|saver)\.(WIFI_IDLE|RADIO_IDLE|LEDS_IDLE|CPU)'; need key; _k=$V
+    case $_k in
+        PROFILE) word value 'auto|plugged|battery|saver' ;;
+        SAVER_BELOW|CHARGE_TO) int value 0 100 ;;
+        *.WIFI_IDLE) int value 0 1440 ;;
+        *.RADIO_IDLE) word value 'keep|lte|off' ;;
+        *.LEDS_IDLE) word value 'on|off' ;;
+        *.CPU) word value 'full|eco' ;;
+    esac
+    need value
+    [ -x "$BIN/mu300-power" ] || refuse unsupported mu300-power
+    checked
+    if [ "$_k" = PROFILE ]; then tool 30 "$BIN/mu300-power" profile "$V" </dev/null
+    else tool 30 "$BIN/mu300-power" set "$_k" "$V" </dev/null; fi || refuse failed "$ERR"
+    ok
+}
+LEDCONF=$R/etc/mu300/led.conf
+m_led_get() {
+    only
+    _t=$(sed -n 's/^LED_TIMEOUT=\([0-9][0-9]*\)$/\1/p' "$LEDCONF" 2>/dev/null | tail -n 1)
+    ok "\"timeout\":$(jn "$_t"),\"device\":$(js "$DEV")"
+}
+# led.set {timeout}: seconds the LEDs stay on after a key or a change (0: always on); led.set {test:true}: each LED in
+# turn, 2 s each (to tell which one is where)
+m_led_set() {
+    only timeout test
+    int timeout 0 86400; _t=$V
+    flag test; _test=${V:-0}
+    [ -n "$_t" ] || [ "$_test" = 1 ] || refuse missing timeout
+    [ -x "$BIN/mu300-led" ] || refuse unsupported mu300-led
+    checked
+    if [ -n "$_t" ]; then
+        conf_put "$LEDCONF" 644 "LED_TIMEOUT=$_t" || refuse failed "could not write led.conf"
+        later "$BIN/mu300-led" wake
+    fi
+    [ "$_test" = 0 ] || later "$BIN/mu300-led" test
+    ok
+}
+m_zram_get() {
+    only
+    [ -x "$BIN/mu300-zram" ] || refuse unsupported mu300-zram
+    tool 20 "$BIN/mu300-zram" status </dev/null || refuse failed "$ERR"
+    _l=$(printf '%s\n' "$OUT" | head -n 1)
+    case $_l in *'swap: on'*) _a=true ;; *) _a=false ;; esac
+    case $_l in *'ZRAM_ENABLE=0'*) _e=false ;; *) _e=true ;; esac
+    ok "\"active\":$_a,\"enabled\":$_e,\"text\":$(js "$OUT")"
+}
+m_zram_set() {
+    only state
+    word state 'on|off'; need state
+    [ -x "$BIN/mu300-zram" ] || refuse unsupported mu300-zram
+    checked
+    tool 60 "$BIN/mu300-zram" "$V" </dev/null || refuse failed "$ERR"
+    ok "\"text\":$(js "$OUT")"
+}
+# cpu.get: the profile (mu300-cpu status --json) and the CPU voltage offset (EXPERIMENTAL: voltage status --json)
+m_cpu_get() {
+    only
+    [ -x "$BIN/mu300-cpu" ] || refuse unsupported mu300-cpu
+    tool 20 "$BIN/mu300-cpu" status --json </dev/null || refuse failed "$ERR"
+    _cj=$(jcheck "$OUT") || refuse failed "mu300-cpu gave no JSON"
+    tool 20 "$BIN/mu300-cpu" voltage status --json </dev/null
+    _v=$(jcheck "$OUT") || _v=null
+    ok "\"cpu\":$_cj,\"voltage\":$_v"
+}
+m_cpu_profile() {
+    only name
+    word name 'saving|balanced|performance'; need name
+    [ -x "$BIN/mu300-cpu" ] || refuse unsupported mu300-cpu
+    checked
+    tool 30 "$BIN/mu300-cpu" profile "$V" </dev/null || refuse failed "$ERR"
+    ok
+}
+# cpu.voltage {op: set, offsets "A,B,C", confirm "EXPERIMENTAL"} | {op: off} | {op: stress, minutes 1-120}: the
+# request for the next boot (it can damage the device for good: the word is mu300-cpu's own confirmation), back to
+# the stock voltages, or the stress test in the background
+m_cpu_voltage() {
+    only op offsets confirm minutes
+    word op 'set|off|stress'; need op; _op=$V
+    [ -x "$BIN/mu300-cpu" ] || refuse unsupported mu300-cpu
+    case $_op in
+        set)
+            word offsets '-?[0-9]{1,6},-?[0-9]{1,6},-?[0-9]{1,6}'; need offsets; _o=$V
+            word confirm 'EXPERIMENTAL' || refuse missing confirm
+            checked
+            tool 30 "$BIN/mu300-cpu" voltage set "$_o" --confirm EXPERIMENTAL </dev/null ;;
+        off) checked; tool 30 "$BIN/mu300-cpu" voltage off </dev/null ;;
+        stress)
+            int minutes 1 120; _m=${V:-10}
+            checked
+            tool 30 "$BIN/mu300-cpu" voltage stress "$_m" --background </dev/null ;;
+    esac || refuse failed "$ERR"
+    ok
+}
+
+# ------------------------------------------------------------------ updates, packages, Docker
+# update.status: mu300-update status (JSON: the systems, their releases, the kernel, free space) and where the release
+# files come from (mu300-update source); no network
+m_update_status() {
+    only
+    [ -x "$BIN/mu300-update" ] || refuse unsupported mu300-update
+    tool 60 "$BIN/mu300-update" status </dev/null
+    _uj=$(jcheck "$OUT") || _uj=null
+    tool 20 "$BIN/mu300-update" source </dev/null
+    _src=$OUT
+    tool 20 "$BIN/mu300-update" version </dev/null
+    ok "\"status\":$_uj,\"source\":$(js "$(printf '%s\n' "$_src" | sanitize_keep_url)"),\"version\":$(js "$OUT")"
+}
+# a mirror's address is the user's own setting and carries no token: shown as it is (control characters out)
+sanitize_keep_url() { LC_ALL=C tr -d '\000-\010\013-\037\177'; }
+m_update_source() {
+    only url
+    fget url && [ "$FT" = s ] || refuse missing url
+    _u=$FV
+    if [ "$_u" != off ]; then
+        [ "${#_u}" -le 512 ] && allowed "$_u" 'https?://[A-Za-z0-9.-]{1,253}(:[0-9]{1,5})?(/[!-~]*)?' || refuse bad-value url
+    fi
+    [ -x "$BIN/mu300-update" ] || refuse unsupported mu300-update
+    checked
+    tool 30 "$BIN/mu300-update" source "$_u" </dev/null || refuse failed "$ERR"
+    ok "\"source\":$(js "$OUT")"
+}
+# packages.get: what mu300-user-packages put back after the last update (its status, as text)
+m_packages_get() {
+    only
+    [ -x "$BIN/mu300-user-packages" ] || refuse unsupported mu300-user-packages
+    tool 20 "$BIN/mu300-user-packages" status </dev/null
+    ok "\"text\":$(js "$(printf '%s\n' "$OUT" | sanitize)")"
+}
+m_packages_act() {
+    only op
+    word op 'retry|skip|dismiss'; need op
+    [ -x "$BIN/mu300-user-packages" ] || refuse unsupported mu300-user-packages
+    [ "$V" != retry ] || job_start packages-retry 3600 "" "$BIN/mu300-user-packages" retry
+    tool 30 "$BIN/mu300-user-packages" "$V" </dev/null || refuse failed "$ERR"
+    ok
+}
+# docker.status: whether Docker is here and running, and its containers (name, image, state, status); read only
+m_docker_status() {
+    only
+    command -v docker >/dev/null 2>&1 || ok '"installed":false'
+    _act=$(systemctl is-active docker 2>/dev/null) || true
+    # only a running Docker is asked: a "docker ps" would start one that is socket-activated
+    _c=
+    [ "$_act" != active ] || _c=$(timed 15 docker ps -a --format '{{.Names}}\t{{.Image}}\t{{.State}}\t{{.Status}}' 2>/dev/null | head -n 100)
+    _list=$(printf '%s\n' "$_c" | while IFS="$TAB" read -r _n _i _s _st; do
+        [ -n "$_n" ] || continue
+        printf ',{"name":%s,"image":%s,"state":%s,"status":%s}' "$(js "$_n")" "$(js "$_i")" "$(js "$_s")" "$(js "$_st")"
+    done)
+    ok "\"installed\":true,\"active\":$(js "${_act:-unknown}"),\"containers\":[${_list#,}]"
+}
+
 # ------------------------------------------------------------------ the background job
 # $JOB: kind, state (running, done), pid (the session's leader), started, ended, rc, log. One at a time; it outlives
 # the call that started it and the caller (setsid). A secret for it (a password, a URL with a token) is written into
@@ -1340,6 +1632,7 @@ case $METHOD in
     vpn.logs) m_vpn_logs ;;
     vpn.install) m_vpn_install ;;
     vpn.engine_install) m_vpn_engine_install ;;
+    vpn.engines) m_vpn_engines ;;
     sms.list) m_sms_list ;;
     sms.read) m_sms_read ;;
     sms.send) m_sms_send ;;
@@ -1367,6 +1660,28 @@ case $METHOD in
     logs) m_logs ;;
     backup.export) m_backup_export ;;
     backup.import) m_backup_import ;;
+    at.send) m_at_send ;;
+    ussd.send) m_ussd_send ;;
+    ussd.cancel) m_ussd_cancel ;;
+    modem.restart) m_modem_restart ;;
+    ttl.get) m_ttl_get ;;
+    ttl.set) m_ttl_set ;;
+    traffic.get) m_traffic_get ;;
+    traffic.set) m_traffic_set ;;
+    power.get) m_power_get ;;
+    power.set) m_power_set ;;
+    led.get) m_led_get ;;
+    led.set) m_led_set ;;
+    zram.get) m_zram_get ;;
+    zram.set) m_zram_set ;;
+    cpu.get) m_cpu_get ;;
+    cpu.profile) m_cpu_profile ;;
+    cpu.voltage) m_cpu_voltage ;;
+    update.status) m_update_status ;;
+    update.source) m_update_source ;;
+    packages.get) m_packages_get ;;
+    packages.act) m_packages_act ;;
+    docker.status) m_docker_status ;;
     job.status) m_job_status ;;
     job.cancel) m_job_cancel ;;
     job.clear) m_job_clear ;;
