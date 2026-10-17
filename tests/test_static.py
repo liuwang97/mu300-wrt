@@ -488,6 +488,17 @@ class Rules(unittest.TestCase):
                   '+\t\tval->intval = clamp(value, 0, 100);'):
             self.assertIn(s, p11)
         self.assertNotIn('* 10;', p11)
+        # (FINDINGS 105, after kanoqwq's 2af101f8) the capacity is read and kept once more at a power-off, on UMP9620
+        # with a battery only; the user area's CLEAR/SET steps are always written, never skipped on a read-back
+        p18 = (patches / '0018-power-sc27xx-fuel-gauge-UMP9620-capacity-kept-at-power-off.patch').read_text()
+        for s in ('+static void sc27xx_fgu_shutdown(struct platform_device *pdev)',
+                  '+\tif (!data || data->var != &ump9620_info || !data->bat_present)',
+                  '+\t\tret = sc27xx_fgu_save_last_cap(data, clamp(cap, 0, 100));',
+                  '+\t\tret = sc27xx_fgu_save_boot_mode(data, SC27XX_FGU_NORMAIL_POWERTON);',
+                  '+\t.shutdown = sc27xx_fgu_shutdown,'):
+            self.assertIn(s, p18)
+        self.assertEqual(p18.count('+\tret = regmap_write_bits(data->regmap,') + p18.count('+\treturn regmap_write_bits(data->regmap,'), 6)
+        self.assertEqual(p18.count('-\tret = regmap_update_bits(data->regmap,') + p18.count('-\treturn regmap_update_bits(data->regmap,'), 6)
         # mu300-usb reaches the chip past the driver and leaves its watchdog off then
         usb = (BIN / 'mu300-usb').read_text()
         self.assertIn('[ -e "$R/sys/bus/i2c/devices/$BUS-006b/driver" ] && FORCE=-f', usb)

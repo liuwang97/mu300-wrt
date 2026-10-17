@@ -49,6 +49,35 @@ say() { printf '\n==> %s\n' "$*"; }
 die() { [ -z "${MODULE_VDIR:-}" ] || rm -rf "$MODULE_VDIR"; printf '\nERROR: %s\n' "$*" >&2; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
 
+# Why a download could not connect, for the line that says it failed. The VPN's kill switch (mu300-vpn, nft table
+# inet mu300_vpn) lets nothing of this device out on an uplink while its tunnel is down: the device's own downloads
+# are no exception, and that is the promise (FINDINGS 170). uclient-fetch, OpenWrt's wget, then prints "Failed to send
+# request: Operation not permitted" - its connect error code (1) passed to strerror, which it prints for every
+# connection that could not be made - and "is the device online?" sent people looking for a dead modem.
+# vpn_ks_blocks: the kill switch is up and this device's own traffic is not routed into a tunnel (it would leave on
+# the cellular interface or the Wi-Fi client, or there is no route at all). (MU300_KS_ROUTE: tests/, ip route get's
+# answer in its place; MU300_WIFI_IFACE as for mu300-vpn)
+vpn_ks_blocks() {
+    have nft || return 1
+    _kt=$(nft list table inet mu300_vpn 2>/dev/null) || return 1
+    # (mu300-vpn's download window, its own engine download: the release hosts are let out, so not this)
+    case $_kt in *"set fetch4"*) return 1 ;; esac
+    if [ -n "${MU300_KS_ROUTE+x}" ]; then _kr=$MU300_KS_ROUTE; else _kr=$(ip -4 route get 1.1.1.1 2>/dev/null) || _kr=; fi
+    case " $_kr " in
+        *" dev sipa_eth"*|*" dev ${MU300_WIFI_IFACE:-wlan0} "*|"  ") return 0 ;;
+    esac
+    return 1
+}
+# offline_why: the reason, in the words of the line it ends
+offline_why() {
+    if vpn_ks_blocks; then
+        echo "blocked by the VPN kill switch: the VPN is on and its tunnel is not up, and nothing leaves this device" \
+            "outside it - see mu300-vpn status, and try again once the tunnel is up"
+    else
+        echo "is the device online?"
+    fi
+}
+
 # A transfer that stalls is cut off and retried rather than waited for: with older boot images the IPA's downlink
 # can die in the middle of one (docs/FINDINGS.md 32), and without a timeout the update hung for good.
 # A network error is tried again a few times (MU300_FETCH_DELAY s apart): right after boot the VPN comes up some
@@ -66,6 +95,8 @@ fetch_stdout() {  # fetch_stdout URL
         fi
         [ "$_rc" = 0 ] && { printf '%s\n' "$_out"; return 0; }
         [ "$_try" -ge 4 ] && return 1
+        # behind the kill switch with the tunnel down, three more rounds are three more minutes of the same
+        ! vpn_ks_blocks || return 1
         _try=$((_try + 1))
         sleep "${MU300_FETCH_DELAY:-4}"
     done
@@ -291,7 +322,7 @@ installed_systems_versions() {
 check() {
     mounted_disk
     latest=$(latest_release)
-    [ -n "$latest" ] || die "could not reach GitHub (is the device online?)"
+    [ -n "$latest" ] || die "could not reach GitHub ($(offline_why))"
     printf 'installed image   %s\n' "$(installed_version)"
     printf 'newest release    %s\n' "$latest"
     printf 'systems on disk   %s\n' "$(installed_systems)"
@@ -940,6 +971,10 @@ carry_plan() {
     function foreign() { return (!(("u" uid) in oldid) && (("u" uid) in newid)) || (!(("g" gid) in oldid) && (("g" gid) in newid)) }
     function live(p) {
         if (foreign()) { hold(p, "o"); if (t == "d") block = p; return }
+        # the files of the device itself (firmware, the userspace of Android) are not of the user and nothing
+        # writes them in place: second names of the files of the old system in every mode, never a copy (205 MiB
+        # on an F50)
+        if (t == "f" && vendor(p)) { print "V\t" p; files++; return }
         print "L\t" p; if (t != "d") { nl += blocks; files++ }
     }
     function hold(p, why) {
@@ -1358,6 +1393,10 @@ carry_system() {
     sed -n "s/^L$CARRY_TAB//p" "$CARRY_T/plan" > "$CARRY_T/list"
     : > "$CARRY_T/done"
     [ ! -s "$CARRY_T/list" ] || "$CARRY_BIN" "$_cmode" "$_co" "$_cn" "$CARRY_T/idmap" < "$CARRY_T/list" > "$CARRY_T/done" || return 1
+    # (the device's files: by link whatever the mode, see live in carry_plan)
+    sed -n "s/^V$CARRY_TAB//p" "$CARRY_T/plan" > "$CARRY_T/list"
+    [ ! -s "$CARRY_T/list" ] || "$CARRY_BIN" link "$_co" "$_cn" "$CARRY_T/idmap" < "$CARRY_T/list" > "$CARRY_T/done.v" || return 1
+    [ ! -s "$CARRY_T/done.v" ] || grep '^! ' "$CARRY_T/done.v" >> "$CARRY_T/done" || :
     # (a running system removes files of its own while the update looks: they are counted, and said)
     # (set-id bits and capabilities do not go with a file to another number: mu300-carry took them off, and says)
     sed -n "s/^! /r${CARRY_TAB}q${CARRY_TAB}/p" "$CARRY_T/done" >> "$CARRY_T/plan"
@@ -1417,11 +1456,15 @@ carry_need() {
             [ -d "$_nd" ] && [ ! -L "$_nd" ] || continue
             _nw=$(mktemp -d 2>/dev/null) || continue
             if carry_manifest "$_nd" "$_nd" "$_no" "$(cat "$_nd$VERSION_FILE" 2>/dev/null)" "$_nw/m"; then
-                _ni=$(awk '$1 == "f" { k += int(($5 + 4095) / 4096) * 4 } $1 != "f" { k += 4 } END { printf "%d\n", k }' "$_nw/m")
+                # (the device's own files are second names, never a copy: neither they nor the image's files there
+                # count, see live in carry_plan)
+                _nv=$(vendor_list "$_no" | tr ' ' '|')
+                _ni=$(awk -v v="^(${_nv:-/})/" '{ p = $0; for (i = 0; i < 6; i++) p = substr(p, index(p, " ") + 1) }
+                    p ~ v { next } $1 == "f" { k += int(($5 + 4095) / 4096) * 4; next } { k += 4 } END { printf "%d\n", k }' "$_nw/m")
                 # (one filesystem: what is mounted in a system is not carried; nor what the carry block leaves out)
                 _nz=$( { du -skx "$_nd" 2>/dev/null || du -sk "$_nd"; } | awk 'NR == 1 { print $1 + 0 }')
                 _nx=0
-                for _nn in proc sys dev run tmp var/tmp var/cache; do
+                for _nn in proc sys dev run tmp var/tmp var/cache $(vendor_list "$_no"); do
                     [ -d "$_nd/$_nn" ] && [ ! -L "$_nd/$_nn" ] || continue
                     _nx=$((_nx + $( { du -skx "$_nd/$_nn" 2>/dev/null || du -sk "$_nd/$_nn"; } | awk 'NR == 1 { print $1 + 0 }') ))
                 done
@@ -1435,6 +1478,258 @@ carry_need() {
     echo "$_nt"
 }
 # --- carry end
+
+# --- delta begin
+# An update writes only what changed (docs/FINDINGS.md 131). Unpacking the whole new image beside the running system
+# needed room for a second copy of it: an OpenWrt with Docker in it (472 of 775 MiB) could not be updated in an
+# 804 MiB region at all. Now a file of the new image that the installed system has byte for byte - same type, mode,
+# owner, size and content, no extended attribute but Android's SELinux label - is not written again: it becomes a
+# second name (a hard link) of the installed one. Only what changed takes room. The new image's manifest
+# (etc/mu300/image-manifest.gz, published as mu300-*-rootfs.manifest.gz) says what its files are; mu300-carry same
+# hashes the installed ones; the room needed is counted from that before anything is written; mu300-carry tarfilter
+# leaves the linked files out of the tar stream on its way to tar - comparing each with the installed file byte for
+# byte as it passes, so a file that changed after it was looked at is written after all - and mu300-carry tarlink
+# makes the links once tar is done.
+#
+# Two names of one file are one file: what is done to the file through one name - written into, truncated, given
+# another mode or owner - is done to the other system's too. Package managers never do that (dpkg and apk unpack
+# beside the file and rename it over), but an editor does (nano and busybox vi write into the file; vim does for a
+# file with two names), and so do "cp FILE EXISTING", ">>" and chmod. So what is linked is limited to what nothing
+# edits (delta_candidates):
+#   * the trees of programs and libraries: usr (but usr/local), bin, sbin, lib*, opt/mu300 - never etc, var, root,
+#     home, srv, www, usr/local, opt/<other>: what the user and the system change. Not lib/apk and usr/lib/opkg
+#     (package databases) and not usr/lib/locale/locale-archive (localedef adds to it in place);
+#   * binaries only: a file with a NUL byte in it. Text - scripts, units, Python and Perl modules, the project's own
+#     scripts, anything an editor opens - is written as before (on Ubuntu 24.04 74 of its 302 MiB of such files).
+# What the update itself does to the new system after the unpack never writes into such a file: the carry block
+# makes or replaces whole files (mu300-carry unlinks what is in the way), the accounts and the report are renamed
+# into place, and modules go into lib/modules as new files (kernel_modules_into_systems removes before it copies).
+# The previous system kept for rollback (<os>.old) is then as whole as before; rollback, clean and the swap only
+# rename and unlink. A system that changes such a file in place afterwards changes both (a user's cp over a program
+# of the image, a chmod of one): the report of the update says how many files the two share.
+#
+# A release without manifests, or an image without mu300-carry tarfilter: the whole image is unpacked, as before.
+# MU300_DELTA=0 asks for that too.
+DELTA_TOOLS="opt/mu300/bin/mu300-carry opt/mu300/bin/mu300-update usr/bin/busybox opt/mu300/bin/busybox etc/mu300/image-manifest.gz etc/mu300/image-version"
+# delta_tools TARBALL WORK: those parts of the new image out of its tarball into WORK/root (root's alone): a pass over
+# the image that writes a few MB. Status 1 when the image has not even mu300-carry. (tools/android-install.sh does the
+# same with Android's tar.)
+delta_tools() {
+    rm -rf "$2" && ( umask 077; mkdir -p "$2/root" ) || return 1
+    _dm=; for _dx in $DELTA_TOOLS; do _dm="$_dm ./$_dx"; done
+    # (a member the image does not have - Ubuntu has no opt/mu300/bin/busybox - makes tar fail at the end: what it
+    # found is there all the same)
+    # shellcheck disable=SC2086
+    tar -xzf "$1" -C "$2/root" $_dm 2>/dev/null
+    # shellcheck disable=SC2086
+    [ -f "$2/root/opt/mu300/bin/mu300-carry" ] || busybox tar -xzf "$1" -C "$2/root" $_dm 2>/dev/null
+    [ -f "$2/root/opt/mu300/bin/mu300-carry" ]
+}
+# delta_candidates < MANIFEST-LINES: the lines of files that may be linked (the trees above)
+delta_candidates() {
+    awk '$1 != "f" { next }
+        { p = $0; for (i = 0; i < 6; i++) p = substr(p, index(p, " ") + 1) }
+        p !~ /^(usr|bin|sbin|lib|lib32|lib64|libx32)\// && p !~ /^opt\/mu300\// { next }
+        p ~ /^usr\/local\// || p ~ /^lib\/apk\// || p ~ /^usr\/lib\/opkg\// || p == "usr/lib/locale/locale-archive" { next }
+        { print }'
+}
+# delta_kb < MANIFEST-LINES with LINK (the paths that are linked) as the first file: the KiB that unpacking the
+# image writes - each file not linked in 4 KiB blocks, a block for each directory and for each link whose target does
+# not fit into its inode (ext4: 60 bytes)
+delta_kb() {
+    awk 'FILENAME == ARGV[1] { l[$0] = 1; next }
+        { p = $0; for (i = 0; i < 6; i++) p = substr(p, index(p, " ") + 1) }
+        $1 == "f" && !(p in l) { k += int(($5 + 4095) / 4096) * 4; next }
+        $1 == "f" { s += int(($5 + 4095) / 4096) * 4; next }
+        $1 == "d" || ($1 == "l" && $5 > 59) { k += 4 }
+        END { printf "%d %d\n", k, s }' "$@"
+}
+# delta_margin KB: what an unpack of KB wants free (the directories' own blocks, the journal: 2 % and 16 MB)
+delta_margin() { echo $(($1 + $1 / 50 + 16384)); }
+# delta_manifest MANIFEST.gz TAG OS OUT: its lines without the first into OUT, when it is the manifest of OS's image
+# of release TAG and every line is one; else status 1
+delta_manifest() {
+    case $2 in ''|unknown|*[!0-9A-Za-z._-]*) return 1 ;; esac
+    case $3 in ubuntu) _dk='ubuntu-[0-9][0-9].[0-9][0-9]' ;; openwrt|openwrt-luci) _dk=$3 ;; *) return 1 ;; esac
+    [ -f "$1" ] && [ ! -L "$1" ] && gzip -t < "$1" 2>/dev/null || return 1
+    _dl=$(gzip -dc < "$1" | head -n 1)
+    # shellcheck disable=SC2254
+    case $_dl in "mu300-image-manifest 1 "$_dk" $2") ;; *) return 1 ;; esac
+    gzip -dc < "$1" | sed 1d > "$4" && carry_manifest_ok "$4" || { rm -f "$4"; return 1; }
+}
+# delta_plan OLD MANIFEST-LINES WORK HELPER: WORK/link, the files to link, and "KB LINKED_KB" on stdout - what the
+# unpack writes, and what it does not write. HELPER: an mu300-carry that has "same".
+delta_plan() {
+    delta_candidates < "$2" | "$4" same "$1" > "$3/same" || return 1
+    sed -n 's/^B //p' "$3/same" > "$3/link" || return 1
+    delta_kb "$3/link" "$2"
+}
+# delta_estimate OLD MANIFEST-LINES WORK: the same figure before anything is downloaded, with the mu300-carry of the
+# running system: exact where it has "same"; with only "sum" (the releases before this) every file it has byte for
+# byte counts as linked, text too (what the new image's own helper decides after the download is the last word); no
+# helper at all: the whole image
+delta_estimate() {
+    _dh=${MU300_BIN:-/opt/mu300/bin}/mu300-carry
+    if [ -x "$_dh" ] && "$_dh" features 2>/dev/null | grep -qw same; then
+        delta_plan "$1" "$2" "$3" "$_dh"
+        return
+    fi
+    if [ -x "$_dh" ] && "$_dh" sum "$1" < /dev/null >/dev/null 2>&1; then
+        delta_candidates < "$2" > "$3/cand" &&
+            awk '{ p = $0; for (i = 0; i < 6; i++) p = substr(p, index(p, " ") + 1); print p }' "$3/cand" |
+            "$_dh" sum "$1" > "$3/sum" || return 1
+        awk 'FILENAME == ARGV[1] { p = $0; for (i = 0; i < 6; i++) p = substr(p, index(p, " ") + 1); h[p] = $6; next }
+            { p = substr($0, index($0, " ") + 1); if ((p in h) && h[p] == $1) print p }' "$3/cand" "$3/sum" > "$3/link" || return 1
+    else
+        : > "$3/link"
+    fi
+    delta_kb "$3/link" "$2"
+}
+# delta_ready WORK OS: the parts delta_tools took out of the new image are all there and run here; WORK/lines is then
+# its manifest (without the first line)
+delta_ready() {
+    _dbb=
+    for _dx in usr/bin/busybox opt/mu300/bin/busybox; do
+        [ -n "$_dbb" ] || { [ -f "$1/root/$_dx" ] && [ ! -L "$1/root/$_dx" ] && _dbb=$1/root/$_dx; }
+    done
+    [ -n "$_dbb" ] && "$_dbb" true 2>/dev/null || return 1
+    _dc=$1/root/opt/mu300/bin/mu300-carry
+    [ -f "$_dc" ] && [ ! -L "$_dc" ] && "$_dc" features 2>/dev/null | grep -qw tarfilter || return 1
+    grep -q '^# --- delta begin' "$1/root/opt/mu300/bin/mu300-update" 2>/dev/null || return 1
+    delta_manifest "$1/root/etc/mu300/image-manifest.gz" "$(head -n 1 "$1/root/etc/mu300/image-version" 2>/dev/null)" "$2" "$1/lines" || return 1
+    ln -sf "$_dbb" "$1/busybox" && ln -sf "$_dc" "$1/carry"
+}
+# delta_clean DIR: what an update that was cut off left on the Linux partition DIR - a new system half unpacked
+# (<os>.new, a whole system's worth of room: 98 % of F50-C's region), the work directories of this block, the
+# installers' log - so that the room it took is free before the room is counted. Never a running system's.
+delta_clean() {
+    for _dx in $SYSTEMS; do
+        for _dd in "$1/$_dx.new" "$1/.mu300-delta-$_dx" "$1/$_dx.new.carry-log"; do
+            [ -e "$_dd" ] || [ -L "$_dd" ] || continue
+            [ ! -d "$_dd" ] || ! [ / -ef "$_dd" ] || continue
+            rm -rf "$_dd" && printf '%s: removed %s, left by an update that did not finish\n' "$_dx" "${_dd##*/}"
+        done
+    done
+    return 0
+}
+# update_need TAG OS...: the KiB apply wants free before it downloads anything (one rule with space_needed's place in
+# apply): for each system the download of its image, what unpacking it writes (the new image's manifest, the
+# release's mu300-*-rootfs.manifest.gz or, from a file, the image's own, against the installed system:
+# delta_estimate) and the copy of the user's files for the rollback (carry_need); then the kernel, the extras and
+# the VPN module. Status 1 when a manifest cannot be had (a release before them): space_needed's rule then.
+update_need() {
+    _ut=$1; shift
+    stage_private || return 1
+    _uw=$STAGE/.need
+    rm -rf "$_uw"; ( umask 077; mkdir -p "$_uw" ) || return 1
+    _un=0
+    for _uo in "$@"; do
+        _ua=$(rootfs_asset "$_uo"); _um=${_ua%.tar.gz}.manifest.gz
+        if ! { fetch_verified "$_ut" "$_um" >/dev/null 2>&1 && cat "$STAGE/$_um" > "$_uw/m.gz"; }; then
+            # from a file (a Magisk zip has no manifest of its own): the one in the image, read without unpacking it
+            [ -n "${MU300_FROM:-}" ] && from_verified "$_ut" "$_ua" >/dev/null 2>&1 &&
+                untar -xzOf "$STAGE/$_ua" ./etc/mu300/image-manifest.gz > "$_uw/m.gz" 2>/dev/null ||
+                { rm -rf "$_uw"; return 1; }
+        fi
+        rm -f "$STAGE/$_um"
+        delta_manifest "$_uw/m.gz" "$_ut" "$_uo" "$_uw/lines" || { rm -rf "$_uw"; return 1; }
+        if [ "${MU300_DELTA:-1}" != 0 ]; then _ue=$(delta_estimate "$DISK/$_uo" "$_uw/lines" "$_uw") || { rm -rf "$_uw"; return 1; }
+        else : > "$_uw/link"; _ue=$(delta_kb "$_uw/link" "$_uw/lines"); fi
+        _uk=${_ue% *}
+        # the image's download: its size where the release lists it, else half the image
+        _us=$(asset_kb "$_ut" "$_ua") || _us=$(( (_uk + ${_ue#* }) / 2 ))
+        _un=$(( _un + $(delta_margin "$_uk") + _us + $(carry_need "$_uo") ))
+    done
+    rm -rf "$_uw"
+    # the kernel (bundles are 20 to 30 MB), the installed extras that follow the release, the VPN module (its
+    # engines are 15 to 25 MB each), and 16 MB for what is not counted
+    _un=$(( _un + 16384 + $(asset_kb "$_ut" "$(kernel_asset)" || echo 65536) ))
+    for _ux in $(extras_to_fetch "$_ut"); do _un=$((_un + $(asset_kb "$_ut" "$(extra_asset "$_ux")" || echo 16384) )); done
+    [ ! -d "$EXTRA/vpn" ] || _un=$((_un + 65536))
+    echo "$_un"
+}
+# asset_kb TAG NAME: the KiB the download of a release file takes: nothing when it is in the staging directory
+# already; from a file or a directory (apply --from) what it holds; else as GitHub's list of the release's files says
+# it (asked once, never again when it did not answer), else as the server answers a HEAD request (a mirror)
+asset_kb() {
+    [ ! -s "$STAGE/$2" ] || { echo 0; return 0; }
+    if [ -n "${MU300_FROM:-}" ]; then
+        _as=$(from_member "$2" 2>/dev/null | wc -c | tr -d ' ')
+    else
+        if [ -z "${ASSET_JSON+x}" ]; then
+            _aa=${MU300_API_URL:-https://api.github.com/repos/$REPO}/releases/tags/$1
+            if have curl; then ASSET_JSON=$(curl -fsSL --connect-timeout 15 --max-time 30 "$_aa" 2>/dev/null) || ASSET_JSON=
+            else ASSET_JSON=$(wget -T 30 -qO- "$_aa" 2>/dev/null) || ASSET_JSON=; fi
+        fi
+        _as=$(printf '%s\n' "$ASSET_JSON" | awk -v f="$2" '
+            function val(s) { sub(/^[^:]*:[ \t]*/, "", s); sub(/[ \t]*,?[ \t\r]*$/, "", s); gsub(/^"|"$/, "", s); return s }
+            { gsub(/,"/, ",\n\""); gsub(/\{"/, "{\n\""); n = split($0, L, "\n")
+              for (i = 1; i <= n; i++) {
+                  if (L[i] ~ /^[ \t]*"name":/) an = val(L[i])
+                  else if (L[i] ~ /^[ \t]*"size":/ && an == f) { print val(L[i]); exit }
+              } }')
+        if [ -z "$_as" ]; then
+            _au=${MU300_RELEASE_URL:-${MU300_DOWNLOAD_URL:-https://github.com/$REPO/releases/download}/$1}/$2
+            # (OpenWrt's wget, uclient-fetch, does not print the headers: the image's busybox does)
+            _ab=${MU300_BIN:-/opt/mu300/bin}/busybox
+            if have curl; then _as=$(curl -fsIL --connect-timeout 30 --max-time 60 "$_au" 2>/dev/null)
+            elif [ -x "$_ab" ]; then _as=$("$_ab" wget -S --spider -T 60 "$_au" 2>&1)
+            else _as=$(wget -S --spider -T 60 "$_au" 2>&1); fi
+            _as=$(printf '%s\n' "$_as" | tr -d '\r' | awk 'tolower($1) == "content-length:" { n = $2 } END { print n }')
+        fi
+    fi
+    case $_as in ''|0|*[!0-9]*) return 1 ;; esac
+    echo $((_as / 1024 + 1))
+}
+# unpack_abort: an apply that ends before its switch - an error, ^C, a kill - leaves no half-made system behind
+# (UNPACKING, set by apply_one: the new system and the work directory)
+UNPACKING=
+unpack_abort() {
+    for _ua in $UNPACKING; do
+        case $_ua in "$DISK"/*.new|"$DISK"/.mu300-delta-*) rm -rf "$_ua" ;; esac
+    done
+    UNPACKING=
+}
+# delta_unpack TARBALL OLD NEW WORK: the image into NEW (made here), the files WORK/link names as second names of
+# OLD's. tar is the system's (GNU tar on Ubuntu), else the image's busybox: GNU tar of 26.04 cannot unpack on 5.4
+# (untar). The unpack must reach the end of the archive, which tarfilter writes into its log.
+delta_unpack() {
+    for _dx in tar bb; do
+        rm -rf "$3" && mkdir -p "$3" || return 1
+        rm -f "$4/log"
+        if [ "$_dx" = tar ]; then
+            "$4/busybox" gzip -dc < "$1" | "$4/carry" tarfilter "$2" "$4/link" "$4/log" | tar -xpf - -C "$3" 2>/dev/null &&
+                grep -q '^E ' "$4/log" && break
+        else
+            "$4/busybox" gzip -dc < "$1" | "$4/carry" tarfilter "$2" "$4/link" "$4/log" | "$4/busybox" tar -xpf - -C "$3" &&
+                grep -q '^E ' "$4/log" || return 1
+        fi
+    done
+    "$4/carry" tarlink "$2" "$3" < "$4/log" > "$4/linked" || return 1
+}
+# delta_room OLD WORK OS [VENDOR]: for the installers (tools/android-install.sh), run from the new image by its busybox
+# once the parts are in WORK/root: one line, "delta KB LINKED_KB VENDOR_KB" (WORK/link: the files to link) or "full
+# KB 0 VENDOR_KB" (no system to link from, or MU300_DELTA=0; KB from the image's manifest), or "none" (an image
+# without these parts: unpacked whole, as before). VENDOR: the device's own files as the installers pack them
+# (mu300-vendor-OS.tar.gz), counted by a pass through tarfilter: their binaries that OLD has byte for byte are linked.
+delta_room() {
+    if ! delta_ready "$2" "$3"; then
+        echo none
+        return 0
+    fi
+    # (MU300_DELTA=0: the whole image is unpacked, and the room for that is checked all the same)
+    if [ -d "$1" ] && [ "${MU300_DELTA:-1}" != 0 ]; then _dr=delta; delta_plan "$1" "$2/lines" "$2" "$2/carry" > "$2/kb" || return 1
+    else _dr=full; : > "$2/link"; delta_kb "$2/link" "$2/lines" > "$2/kb" || return 1; fi
+    _dv=0
+    if [ -n "${4:-}" ]; then
+        _dl='*'; [ "$_dr" = delta ] || { _dl=$2/link; : > "$_dl"; }
+        "$2/busybox" gzip -dc < "$4" | "$2/carry" tarfilter "$1" "$_dl" "$2/vlog" > /dev/null || return 1
+        _dv=$(sed -n 's/^E [0-9]* \([0-9]*\)$/\1/p' "$2/vlog")
+        [ -n "$_dv" ] || return 1
+    fi
+    echo "$_dr $(cat "$2/kb") $_dv"
+}
+# --- delta end
 
 # The update as it was up to v2026.10.27, which keeps keep_list's places and nothing else of the user's: for a new
 # image that does not bring the carry block's parts (one built by hand without mu300-carry), and for
@@ -1508,8 +1803,31 @@ apply_one() {  # apply_one OS TAG
     [ -s "$tmp/$tarball" ] || die "$tarball was not downloaded"
 
     say "$os: unpacking"
-    rm -rf "$new"; mkdir -p "$new"
-    untar -xzpf "$tmp/$tarball" -C "$new" || { rm -rf "$new" "$tmp/$tarball"; die "unpacking failed, nothing was changed"; }
+    # (what is being made goes when the run ends before the switch, however it ends: unpack_abort, the EXIT trap)
+    work=$DISK/.mu300-delta-$os
+    UNPACKING="$new $work"
+    rm -rf "$new" "$work"
+    # Only what changed is written (the delta block): the files of the new image that this system has byte for byte
+    # become second names of its own. The room it takes is known before anything is written, and checked again here
+    # with the new image's own helper (apply counted with this system's before the download).
+    delta=
+    if [ "${MU300_DELTA:-1}" != 0 ] && delta_tools "$tmp/$tarball" "$work" && delta_ready "$work" "$os"; then
+        _dp=$(delta_plan "$old" "$work/lines" "$work" "$work/carry") || { rm -rf "$work"; die "$os: could not compare the new image with the installed system, nothing was changed"; }
+        _dk=${_dp% *}; _dl=${_dp#* }
+        _dneed=$(( $(delta_margin "$_dk") + $(carry_need "$os") ))
+        _dfree=$(df -Pk "$DISK" | awk 'NR == 2 { print $4 }')
+        if [ "${_dfree:-0}" -lt "$_dneed" ]; then
+            rm -rf "$work" "$STAGE"
+            die "$os: not enough free space on the Linux partition: $((_dneed / 1024)) MB needed ($((_dk / 1024)) MB of the new release's files that are not in the installed system as they are, the rest a copy of what you added for the previous version kept for a rollback), $((${_dfree:-0} / 1024)) MB free. Nothing was changed (the downloaded files were removed). mu300-update clean deletes the kept previous versions; mu300-update apply --no-rollback keeps none, and needs no room for your files"
+        fi
+        delta=1
+        echo "$os: $((_dl / 1024)) MB of the new release are in this system as they are and are not written again; $((_dk / 1024)) MB are written"
+        delta_unpack "$tmp/$tarball" "$old" "$new" "$work" || { rm -rf "$new" "$work" "$tmp/$tarball"; die "unpacking failed, nothing was changed"; }
+    else
+        rm -rf "$work"; mkdir -p "$new"
+        untar -xzpf "$tmp/$tarball" -C "$new" || { rm -rf "$new" "$tmp/$tarball"; die "unpacking failed, nothing was changed"; }
+    fi
+    rm -rf "$work"
     rm -f "$tmp/$tarball"
     [ -x "$new/sbin/init" ] || [ -L "$new/sbin/init" ] || [ -x "$new/bin/busybox" ] || { rm -rf "$new"; die "the unpacked system looks wrong, nothing was changed"; }
 
@@ -1560,8 +1878,12 @@ apply_one() {  # apply_one OS TAG
     rm -rf "$DISK/$os.old"
     mv "$old" "$aside" || die "could not move the old system aside"
     mv "$new" "$old" || { mv "$aside" "$old"; die "could not put the new system in place (old one restored)"; }
+    UNPACKING=
     sync
     printf '%s: updated %s -> %s\n' "$os" "$(cat "$aside$VERSION_FILE" 2>/dev/null || echo unknown)" "$(cat "$old$VERSION_FILE" 2>/dev/null || echo unknown)"
+    # (two names of one file are one file: what changes one of these in place changes both, the delta block)
+    [ -z "$delta" ] || [ "$aside" != "$DISK/$os.old" ] ||
+        echo "$os: the previous version ($os.old) shares $((_dl / 1024)) MB of programs and libraries that did not change with the new one: replace such a file, never write into it, while the previous version is kept"
     [ "$aside" = "$DISK/$os.old" ] || NO_ROLLBACK="$NO_ROLLBACK $os"
 }
 
@@ -2459,8 +2781,9 @@ kernel_modules_into_systems() {  # kernel_modules_into_systems BUNDLE_DIR (unpac
             { echo "boot: installing the modules into $_os failed" >&2; return 1; }
         if [ "$_os" = ubuntu ]; then
             # what the kernel has built in (bundles from v2026.09.29 on): modprobe of a built-in driver then
-            # succeeds, and depmod stops warning
-            for _f in modules.builtin modules.builtin.modinfo; do [ ! -f "$1/$_f" ] || cp "$1/$_f" "$DISK/$_os/lib/modules/$_krel/"; done
+            # succeeds, and depmod stops warning (removed first, never written into: the image's file may be a
+            # second name of the previous version's, the delta block)
+            for _f in modules.builtin modules.builtin.modinfo; do [ ! -f "$1/$_f" ] || { rm -f "$DISK/$_os/lib/modules/$_krel/$_f"; cp "$1/$_f" "$DISK/$_os/lib/modules/$_krel/"; }; done
             [ -e "$DISK/$_os/lib/modules/$_krel/modules.order" ] || : > "$DISK/$_os/lib/modules/$_krel/modules.order"
             if [ -z "${MU300_NO_DEPMOD:-}" ] && command -v depmod >/dev/null; then depmod -b "$DISK/$_os" "$_krel" 2>/dev/null || true; fi
         fi
@@ -2604,7 +2927,7 @@ kernel_cmd() {  # kernel [5.4|6.18|7.2]: show or change the kernel, and install 
     old=$(kernel_choice)
     echo "$1" > "$KERNEL_CHOICE"
     t=${MU300_RELEASE:-$(latest_release)}
-    [ -n "$t" ] || { echo "$old" > "$KERNEL_CHOICE"; die "could not reach GitHub (is the device online?)"; }
+    [ -n "$t" ] || { echo "$old" > "$KERNEL_CHOICE"; die "could not reach GitHub ($(offline_why))"; }
     boot_downgrade_ok "$t" || { echo "$old" > "$KERNEL_CHOICE"; die "the $1 kernel was not installed; staying on $old"; }
     if ! boot_update "$t"; then
         echo "$old" > "$KERNEL_CHOICE"
@@ -2735,6 +3058,8 @@ keepalive_start() {
 }
 keepalive_stop() { [ -n "${KEEPALIVE:-}" ] && kill "$KEEPALIVE" 2>/dev/null; KEEPALIVE=; }
 offline_hint() {
+    # (behind the kill switch the modem is not what is wrong)
+    ! vpn_ks_blocks || return 0
     printf 'If this device ran for a while without traffic, older boot images can lose mobile data\n' >&2
     printf 'until the next boot: reboot, then run mu300-update apply right away.\n' >&2
 }
@@ -2742,6 +3067,7 @@ offline_hint() {
 # and its log should not send the owner looking for a network fault (seen on the U30 Air, an unsigned release).
 fetch_stop() {
     [ "$1" != 3 ] || die "nothing was changed"
+    ! vpn_ks_blocks || die "nothing was changed: the download was $(offline_why)"
     offline_hint; die "nothing was changed; run mu300-update apply again to continue the download"
 }
 
@@ -2764,7 +3090,7 @@ apply() {
     # (apply --from: the source is checked and names the release, see from_begin)
     [ -z "${MU300_FROM:-}" ] || from_begin
     tag=${MU300_RELEASE:-$(latest_release)}
-    [ -n "$tag" ] || { offline_hint; die "could not reach GitHub (is the device online?)"; }
+    [ -n "$tag" ] || { offline_hint; die "could not reach GitHub ($(offline_why))"; }
     # (an older release than what is installed only when asked for, whatever the source: see downgrade_ok. Before
     # this run hands over to that release's own updater, which may not carry over everything you added)
     downgrade_ok "$tag" $(apply_targets "$@") || die "nothing was changed"
@@ -2815,11 +3141,19 @@ apply() {
     # the mobile downlink after two quiet minutes (docs/FINDINGS.md 32): a download that followed the minutes of
     # unpacking hung there, and a device that reset in the middle of writing its boot image could only start Android.
     clean_broken
+    # (what an update that was cut off left - a half-unpacked <os>.new - would count against the room below)
+    delta_clean "$DISK"
     say "downloading $tag"
-    # (one rule for this and for the panel's figures: space_needed, with what the carry block copies, carry_need)
+    # The room: the download, what unpacking the new images writes - only the files that are not in the installed
+    # systems as they are (update_need, the delta block) - and a copy of what the user added for the rollback
+    # (carry_need). A release without the manifests of its images: space_needed's rule, as before.
     free=$(df -Pk "$DISK" | awk 'NR==2 {print $4}')
-    need=$(space_needed "$(echo $todo | wc -w)" "$(carry_need $todo)")
-    [ "$free" -gt "$need" ] || die "not enough free space on the Linux partition: $((need / 1024)) MB needed, $((free / 1024)) MB free (about 1 GB, plus 1 GB for every system to update, plus a copy of what you added to it for the previous version kept for a rollback). mu300-update clean deletes the kept previous versions; mu300-update apply --no-rollback keeps none, and needs no room for your files"
+    if [ -n "$todo" ] && need=$(update_need "$tag" $todo); then
+        [ "$free" -gt "$need" ] || { rm -rf "$STAGE"; die "not enough free space on the Linux partition: $((need / 1024)) MB needed, $((free / 1024)) MB free (the download, the new release's files that are not in the installed system as they are, and a copy of what you added to it for the previous version kept for a rollback). Nothing was changed. mu300-update clean deletes the kept previous versions; mu300-update apply --no-rollback keeps none, and needs no room for your files"; }
+    else
+        need=$(space_needed "$(echo $todo | wc -w)" "$(carry_need $todo)")
+        [ "$free" -gt "$need" ] || die "not enough free space on the Linux partition: $((need / 1024)) MB needed, $((free / 1024)) MB free (about 1 GB, plus 1 GB for every system to update, plus a copy of what you added to it for the previous version kept for a rollback). mu300-update clean deletes the kept previous versions; mu300-update apply --no-rollback keeps none, and needs no room for your files"
+    fi
     for os in $todo; do
         fetch_verified "$tag" "$(rootfs_asset "$os")" || fetch_stop $?
     done
@@ -3568,12 +3902,16 @@ progress() { [ -z "${MU300_PROGRESS:-}" ] || printf '%s\n' "$*" >> "$MU300_PROGR
 
 # carry OLD NEW OS copy|link: the carry block, as apply_one and the installers run it from the new image (carry_run).
 # It changes NEW only, the run that called it holds the lock, and it is root because that run is.
-case ${1:-} in carry) shift; carry_system "$@"; exit $? ;; esac
+case ${1:-} in
+    carry) shift; carry_system "$@"; exit $? ;;
+    # delta-room OLD WORK OS [VENDOR]: the installers' count of what an update writes (the delta block); it only reads
+    delta-room) shift; delta_room "$@"; exit $? ;;
+esac
 
 [ "$(id -u)" = 0 ] || { echo "run as root" >&2; exit 1; }
 case ${1:-check} in
     apply|boot|kernel|rollback|rollback-boot|clean|accounts)
-        lock_take; trap 'keepalive_stop; resume_data; lock_drop' EXIT; trap 'exit 130' INT TERM HUP ;;
+        lock_take; trap 'unpack_abort; keepalive_stop; resume_data; lock_drop' EXIT; trap 'exit 130' INT TERM HUP ;;
 esac
 source_conf
 case ${1:-check} in apply|boot|kernel) keepalive_start ;; esac
@@ -3585,7 +3923,7 @@ case ${1:-check} in
     status) shift; status_json "$@" ;;
     releases) mounted_disk; releases_json ;;
     inspect) mounted_disk; inspect_json "${2:-}" ;;
-    boot) mounted_disk; t=${MU300_RELEASE:-$(latest_release)}; [ -n "$t" ] || die "could not reach GitHub (is the device online?)"
+    boot) mounted_disk; t=${MU300_RELEASE:-$(latest_release)}; [ -n "$t" ] || die "could not reach GitHub ($(offline_why))"
           boot_downgrade_ok "$t" || exit 1
           boot_update "$t" || exit 1; rm -rf "$STAGE"; [ -n "${BOOT_CHANGED:-}" ] && { printf '\n'; reboot_goes_to_android || printf 'Reboot to start the new kernel.\n'; } ;;
     rollback) shift; rollback "$@" ;;

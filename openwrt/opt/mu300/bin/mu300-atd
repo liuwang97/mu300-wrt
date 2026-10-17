@@ -127,11 +127,34 @@ mkfifo -m 600 "$CMD"
 open_tty() {
     # the redirection is scoped to this one close: on a bare `exec` it would send every later log line to /dev/null
     { exec 3<&-; } 2>/dev/null || true
-    exec 3<>"$DEV" || return 1
+    # `command exec`: a failed redirection on a bare `exec` (a special built-in) ends a POSIX shell - dash and ash
+    # exited right here, and the `|| return 1` never ran (#226: "can't create /dev/stty_nr2: No such device", and
+    # the daemon gone). Through `command` it is an ordinary failure the caller can act on.
+    command exec 3<>"$DEV" || return 1
     # on fd 3, not "stty -F $DEV": the -F form opens and closes the tty a second time
     stty raw -echo <&3 2>/dev/null || true
 }
-open_tty || { echo "mu300-atd: cannot open $DEV" >&2; exit 1; }
+# The node is there before the channel works: until the modem has started (its sbuf ready) the open fails with ENODEV
+# - at a cold boot for longer than the init scripts wait for the node (#226), and for good when the modem never
+# starts. So the first open is tried again, every 2 s for up to MU300_AT_OPEN_WAIT seconds (240), with one line when
+# the wait starts and one when it ends; meanwhile the command fifo exists, so clients queue here and never take the
+# direct path to the tty. A failed open was never seen to harm a channel (the releases before this one opened every
+# 10 s under procd's respawn, #170, and the modem answered once it was up); closing an open one is what loses it.
+# Given up: the supervisor starts this daemon again (procd's respawn, systemd's Restart=always), one line per round.
+OPEN_WAIT=${MU300_AT_OPEN_WAIT:-240}
+case $OPEN_WAIT in ''|*[!0-9]*) OPEN_WAIT=240 ;; esac
+open_waited=0
+until open_tty 2>/dev/null; do
+    [ "$open_waited" = 0 ] && echo "mu300-atd: $DEV is not ready (the modem has not started its AT channels); waiting up to ${OPEN_WAIT} s" >&2
+    if [ "$open_waited" -ge "$OPEN_WAIT" ]; then
+        echo "mu300-atd: $DEV did not become ready in ${OPEN_WAIT} s: the modem has not started (see dmesg and /run/mu300/radio.log)" >&2
+        rm -f "$CMD"; [ "$(cat "$LOCK/pid" 2>/dev/null)" = $$ ] && rm -rf "$LOCK"
+        exit 1
+    fi
+    sleep 2
+    open_waited=$((open_waited + 2))
+done
+[ "$open_waited" = 0 ] || echo "mu300-atd: $DEV ready after ${open_waited} s" >&2
 
 # Keep the other AT channels drained, the way Android's RIL does - it holds nr0-nr5 open and reads all six.
 # /dev/stty_nr0 carries the modem's unsolicited output (+SIND, +ECIND, +SPERRLOG, ...), and each stty_nr<n> is
@@ -332,6 +355,13 @@ while :; do
                 drain 1
                 printf '%s\r' "$cmd" >&3
                 reply=$(collect "$t") && clean=1
+            else
+                # as it always ended (the bare exec took the shell with it): the supervisor starts a new daemon,
+                # whose first open waits for the channel. This client gets its empty answer first.
+                echo "mu300-atd: cannot reopen $DEV; exiting for a fresh start" >&2
+                [ -z "$answer" ] || { ( umask 077; : > "$answer.part" ) 2>/dev/null && mv "$answer.part" "$answer" 2>/dev/null; }
+                kill $drainers 2>/dev/null; rm -f "$CMD"; [ "$(cat "$LOCK/pid" 2>/dev/null)" = $$ ] && rm -rf "$LOCK"
+                exit 1
             fi
         fi
     else

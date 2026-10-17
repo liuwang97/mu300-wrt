@@ -326,6 +326,27 @@ return {
 
     LEVELS = ('excellent', 'good', 'fair', 'poor', 'unknown')
 
+    def test_carrier_name_whatever_its_case(self):
+        # issue #231: the modem gives "CHINA BROADNET" (+COPS: 0,0,"CHINA BROADNET",11) and the catalog has
+        # "China Broadnet": a catalog key matches only exactly, so the name stayed English. Now a name the catalog
+        # does not have exactly is looked up without case and spacing, then by its PLMN; an unknown name is shown as
+        # the modem gave it, and only with neither does the PLMN or -- stand
+        body = r'''
+const cases = [ { name: 'CHINA BROADNET', plmn: '46015' }, { name: 'CHINA BROADNET' }, { name: 'china  mobile ' },
+    { name: 'China Unicom', plmn: '46001' }, { name: 'CHN-CT', plmn: '46011' }, { name: 'vodafone TR', plmn: '28602' },
+    { name: 'constructor' }, { plmn: '46000' }, { plmn: '28602' }, {}, null ];
+return cases.map((c) => M.carrierName(c));'''
+        want = {
+            None: ['China Broadnet', 'China Broadnet', 'China Mobile', 'China Unicom', 'China Telecom', 'vodafone TR',
+                   'constructor', 'China Mobile', '28602', '--', '--'],
+            'zh_Hans': ['中国广电', '中国广电', '中国移动',
+                        '中国联通', '中国电信', 'vodafone TR', 'constructor',
+                        '中国移动', '28602', '--', '--'],
+        }
+        for lang, names in want.items():
+            with self.subTest(lang=lang):
+                self.assertEqual(self.run_js(lang, body)['result'], names)
+
     def test_quality_colour_is_the_same_in_every_language(self):
         # qCol takes a level key, never a translated label: a page that grades by itself (home.js: the Wi-Fi
         # clients, the temperatures, no modem answer) gets the same colour in every language, and qLabel/qLevel
