@@ -68,6 +68,13 @@ jobs:
           docker run --rm -e KV="$KV" -v mu300-mainline:/src -v "$PWD/upstream":/work \
             mu300-mainline-build bash /work/build-modules.sh > /dev/null
           ls upstream/out/modules/*.ko | wc -l
+      # every module of the boards is built now (FINDINGS 163): the tree and its objects take ~7 GB per kernel; the
+      # arm64 runner has had ~108 GB free on / (release run 37658534103), and this shows what is left
+      - name: Disk
+        if: always()
+        run: |
+          df -h / | tail -1
+          sudo du -sh /var/lib/docker/volumes/mu300-mainline 2>/dev/null || docker system df
       - name: Build logs
         if: failure()
         run: tail -n 60 upstream/out/modules/*.log 2>/dev/null || true

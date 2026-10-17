@@ -164,6 +164,12 @@ jobs:
         with:
           path: upstream/out-7.2
           key: kernel-${{ steps.kv.outputs.kv72 }}-${{ steps.kv.outputs.treeup }}
+      # both mainline trees with every module (FINDINGS 163) share one volume, ~14 GB; the runner had ~108 GB free
+      - name: Disk after the kernels
+        if: always()
+        run: |
+          df -h / | tail -1
+          sudo du -sh /var/lib/docker/volumes/mu300-mainline 2>/dev/null || true
       - name: Build logs
         if: failure()
         run: tail -n 60 upstream/out/modules/*.log upstream/out-7.2/modules/*.log 2>/dev/null || true

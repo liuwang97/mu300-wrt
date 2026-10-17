@@ -22,6 +22,9 @@ REF=${2:-$(ls -t "$TOP"/release/*/mu300-kernel.tar.gz 2>/dev/null | head -1)}
 [ -f "$REF" ] || { echo "no 5.4 kernel bundle for busybox/logdw (give one as the second argument)" >&2; exit 1; }
 
 python3 "$U/audit-bundle.py" "$UO" "$U/mu300-mainline.config"
+# the modules the devices' guard keeps from on-demand loading, against this build (FINDINGS 163)
+python3 "$U/check-autoload-blocked.py" "$UO" "$TOP/rootfs/overlay/opt/mu300/lib/autoload-blocked" \
+    "$TOP/rootfs/overlay/opt/mu300/bin/mu300-modprobe-guard"
 
 krel=$(strings "$UO/Image" | sed -n 's/^Linux version \([^ ]*\) .*/\1/p' | head -1)
 [ -n "$krel" ] || { echo "cannot read the kernel release from upstream/out/Image" >&2; exit 1; }
