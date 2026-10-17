@@ -471,6 +471,10 @@ class HotspotVerify(ShellTest):
 
     def setUp(self):
         super().setUp()
+        # Ubuntu's /bin/sh runs it (dash); busybox sh would run its own sleep and touch, not the stubs
+        self.shells = [s for s in self.shells if 'busybox' not in ' '.join(s)]
+        if not self.shells:
+            self.skipTest('no dash or bash')
         self.stub('sleep', 'echo x >> "$STUBLOG/sleeps"')
         self.stub('systemctl', 'echo "$*" >> "$STUBLOG/systemctl"')
         self.stub('touch', 'exit 0')
