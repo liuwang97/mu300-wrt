@@ -1250,5 +1250,16 @@ class ApkRetry(unittest.TestCase):
             self.assertEqual((r.returncode, r.stdout.strip()), (0, 'done'), r.stderr)
 
 
+
+class SelfUpdateCopies(unittest.TestCase):
+    def test_a_git_worktree_is_a_git_copy(self):
+        # in a worktree .git is a file: taken for a downloaded copy, the uncommitted work in it was overwritten with
+        # GitHub's main by the installer's self-update (2026-10-17, FINDINGS 179); install.ps1's Test-Path sees both
+        su = (TOP / 'tools' / 'self-update.sh').read_text()
+        self.assertIn('if [ -e "$TOP/.git" ] && command -v git >/dev/null; then', su)
+        self.assertNotIn('-d "$TOP/.git"', su)
+        self.assertIn("(Test-Path (Join-Path $Top '.git'))", (TOP / 'install.ps1').read_text())
+
+
 if __name__ == '__main__':
     unittest.main()
