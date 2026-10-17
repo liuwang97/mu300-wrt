@@ -1607,7 +1607,9 @@ class Wiring(unittest.TestCase):
         self.assertIn('[ -e "$2/.mu300-carried" ] || return 1', upd)
         # carry runs without the root check and without the lock, which the run that called it holds
         main = upd[upd.index('[ -z "${MU300_LIB:-}" ] || return 0'):]
-        self.assertLess(main.index('case ${1:-} in carry)'), main.index('[ "$(id -u)" = 0 ]'))
+        self.assertLess(main.index('    carry) shift; carry_system "$@"; exit $? ;;'), main.index('[ "$(id -u)" = 0 ]'))
+        # (and so does the installers' count of what an update writes, docs/FINDINGS.md 131)
+        self.assertLess(main.index('    delta-room) shift; delta_room "$@"; exit $? ;;'), main.index('[ "$(id -u)" = 0 ]'))
         self.assertNotIn('carry', main[main.index('apply|boot|kernel|rollback'):main.index('lock_take')])
 
 

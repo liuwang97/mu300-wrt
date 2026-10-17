@@ -4,7 +4,7 @@
 #                               Air's battery LED comes on with it and goes off at shutdown
 #   mu300-led data on|5g|off|error  mobile data connected (5g: over 5G) / not connected / no service (no SIM, not
 #                               registered)
-#   mu300-led wifi on|off|sync [S]  the Wi-Fi hotspot is up (U30 Air: blue on 5 GHz, white on 2.4 GHz); sync: whatever
+#   mu300-led wifi on|off|sync [S]  the Wi-Fi hotspot is up (U30 Air: white on 5 GHz, blue on 2.4 GHz); sync: whatever
 #                               wlan0 is now, and again every 2 s for S seconds (OpenWrt: LuCI or the button)
 #   mu300-led events            OpenWrt: the Wi-Fi LED follows hostapd on ubus as it comes and goes (a service, no
 #                               polling: wifi down/up, LuCI, the panel, a WCN reset, a hostapd that died)
@@ -29,7 +29,7 @@
 #            10 % on the battery the red one does not either. The heat alarm goes over it.
 #   network  as ZTE's firmware: blue on 4G (a GPIO, net_blue), white on 5G (LDO VDDCAMA0), red without service
 #            (the PMIC's keypad backlight sink, "keyboard-backlight" under 5.4 and mainline)
-#   Wi-Fi    white: LDO VDDCAMA1 (2.4 GHz); blue: LDO VDDCAMA2 (5 GHz)
+#   Wi-Fi    as ZTE's firmware: white on 5 GHz (LDO VDDCAMA1), blue on 2.4 GHz (LDO VDDCAMA2) (FINDINGS 152)
 # The LDO ones are zte-ldo0..2 under mainline (leds-zte-ldo) and vddcama0..2_status of ZTE's zte_ldo_leds under
 # 5.4; the other GPIO LEDs in its device tree (net_red, net_green, net_white, pwr_green, wifi_*) light nothing,
 # under Android too.
@@ -52,7 +52,7 @@ DEVICE=$(${MU300_BIN:-/opt/mu300/bin}/mu300-device)
 #   SIM's) stays dark; Wi-Fi white on 5 GHz, blue on 2.4 GHz. The PMIC's LEDs exist in its device tree as well, but
 #   are not its front panel: never written here. Under 5.4 the V50 has no driver for them: every LED is skipped.
 case $DEVICE in
-    u30air) POWER=sc27xx:green DATA=net_blue DATA5G=zte-ldo0 NODATA=keyboard-backlight WIFI5=zte-ldo2 WIFI24=zte-ldo1
+    u30air) POWER=sc27xx:green DATA=net_blue DATA5G=zte-ldo0 NODATA=keyboard-backlight WIFI5=zte-ldo1 WIFI24=zte-ldo2
             DEFAULT_TIMEOUT=60 ;;
     v50)    POWER= DATA=v50:net1:blue DATA5G=v50:net1:white NODATA=v50:net1:red WIFI5=v50:wifi:white
             WIFI24=v50:wifi:blue DEFAULT_TIMEOUT=0 ;;

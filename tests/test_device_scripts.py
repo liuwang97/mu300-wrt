@@ -625,6 +625,70 @@ class Atd(ShellTest):
             logs, _m = self.start(shell)
             self.assertEqual(logs, ['tty_nr0.log'])
 
+    # ------------------------------------------------------------------ a channel that is not ready yet (#226)
+    # A SIPC tty exists before the modem has started, and opening it fails (ENODEV) until then. Here the tty is a
+    # link to /dev/tty, which a process without a controlling terminal cannot open (ENXIO): a character device whose
+    # open fails, as the modem's does at a cold boot. The link is then turned to a pty: the channel became ready.
+    def start_unready(self, shell, wait):
+        self.run_dir = self.tmp / f'run{len(self.procs)}'
+        self.run_dir.mkdir()
+        self.dir = self.run_dir / 'at'
+        dev = self.run_dir / 'tty_nr1'
+        dev.symlink_to('/dev/tty')
+        e = self.env(MU300_AT_DEV=dev, MU300_AT_DIR=self.dir, MU300_AT_URC_CHANNELS='', MU300_AT_OPEN_WAIT=wait)
+        self.err = self.run_dir / 'atd.err'
+        with self.err.open('w') as err:
+            # a session of its own: no controlling terminal, so /dev/tty does not open
+            p = subprocess.Popen(shell + [str(BIN / 'mu300-atd')], stderr=err, env=e, start_new_session=True)
+        self.procs.append(p)
+        return dev, p
+
+    def wait_for(self, text, timeout=20):
+        end = time.monotonic() + timeout
+        while time.monotonic() < end:
+            if text in self.err.read_text():
+                return True
+            time.sleep(0.05)
+        return False
+
+    def test_a_channel_not_ready_yet_is_waited_for(self):
+        """#226: the first open failed, and with it the shell (a failed `exec` redirection ends dash and ash), so
+        the daemon was gone after one line. Now it waits for the channel, holding the command fifo meanwhile."""
+        for shell in self.each_shell():
+            dev, p = self.start_unready(shell, 60)
+            self.assertTrue(self.wait_for('is not ready'), self.err.read_text())
+            self.assertIsNone(p.poll())                              # still there, waiting
+            self.assertTrue((self.dir / 'cmd').exists())             # clients queue at the daemon, not at the tty
+            master, slave = pty.openpty()
+            self.masters.append(master)
+            self.slave_fds.append(slave)
+            tmp = self.run_dir / 'tty_nr1.new'
+            tmp.symlink_to(os.ttyname(slave))
+            os.replace(tmp, dev)                                     # the modem is up
+            self.assertTrue(self.wait_for('is ours, draining'), self.err.read_text())
+            self.assertRegex(self.err.read_text(), r'ready after \d+ s')
+            self.send(master, 'AT', b'\r\nOK\r\n')
+            self.assertEqual(self.answer, 'OK\n')
+            self.assertNotIn("can't create", self.err.read_text())
+
+    def test_a_channel_that_never_gets_ready_ends_the_wait(self):
+        """The modem never starts (#226's unit: no eMMC, so no modem image): after MU300_AT_OPEN_WAIT seconds one
+        line, exit 1 for the supervisor to start it again, and neither the fifo nor the owner left behind."""
+        for shell in self.each_shell():
+            _dev, p = self.start_unready(shell, 2)
+            self.assertEqual(p.wait(timeout=30), 1)
+            err = self.err.read_text()
+            self.assertEqual(err.count('is not ready'), 1, err)
+            self.assertIn('did not become ready in 2 s', err)
+            self.assertFalse((self.dir / 'cmd').exists())
+            self.assertFalse((self.dir / 'owner').exists())
+
+    def test_every_open_survives_its_failure(self):
+        # the bare form is gone: `exec 3<>"$DEV" || return 1` never reached its return in dash and ash
+        src = (BIN / 'mu300-atd').read_text()
+        self.assertIn('command exec 3<>"$DEV" || return 1', src)
+        self.assertNotRegex(src, r'(?m)^\s*exec 3<>')
+
     # ------------------------------------------------------------------ +CMT frames (direct SMS delivery)
     PDU = '07911326040000F0040B911346610089F60000208062917314480CC8F71D14969741F977FD07'
     SPOOLER = BIN / 'mu300-cmt-spool'
@@ -2515,8 +2579,9 @@ class Led(ShellTest):
         for shell in self.each_shell():
             self.reset()
             self.led(shell, 'u30air', 'power', 'on')
-            for iw, lit, dark in (('channel 36 (5180 MHz), width: 80 MHz', 'zte-ldo2', 'zte-ldo1'),
-                                  ('channel 6 (2437 MHz), width: 20 MHz', 'zte-ldo1', 'zte-ldo2')):
+            # as ZTE's firmware (FINDINGS 152): white (VDDCAMA1) on 5 GHz, blue (VDDCAMA2) on 2.4 GHz
+            for iw, lit, dark in (('channel 36 (5180 MHz), width: 80 MHz', 'zte-ldo1', 'zte-ldo2'),
+                                  ('channel 6 (2437 MHz), width: 20 MHz', 'zte-ldo2', 'zte-ldo1')):
                 (self.tmp / 'iw.out').write_text(f'Interface wlan0\n\ttype AP\n\t{iw}\n')
                 self.led(shell, 'u30air', 'wifi', 'on')
                 s = self.state()
@@ -2526,7 +2591,7 @@ class Led(ShellTest):
             # the hotspot just started and has no channel yet: its setting decides
             (self.tmp / 'iw.out').write_text('Interface wlan0\n\ttype AP\n')
             conf = self.tmp / 'hotspot.conf'
-            for band, lit in (('2.4', 'zte-ldo1'), ('5', 'zte-ldo2')):
+            for band, lit in (('2.4', 'zte-ldo2'), ('5', 'zte-ldo1')):
                 conf.write_text(f'SSID=x\nPSK=12345678\nBAND={band}\n')
                 (self.root / 'run/mu300/device').write_text('u30air\n')
                 self.script(shell, BIN / 'mu300-led', 'wifi', 'on', MU300_SYSROOT=self.root, MU300_BIN=BIN,
@@ -2847,7 +2912,7 @@ class Led(ShellTest):
     def test_wifi_sync(self):
         # OpenWrt has no hook when LuCI turns Wi-Fi off or on: "wifi sync" reads whether wlan0 is a running AP
         for shell in self.each_shell():
-            for device, lit, level in (('f50', 'keyboard-backlight', '48'), ('u30air', 'zte-ldo2', '255')):
+            for device, lit, level in (('f50', 'keyboard-backlight', '48'), ('u30air', 'zte-ldo1', '255')):
                 self.reset()
                 self.conf.write_text('LED_TIMEOUT=0\n')
                 (self.tmp / 'iw.out').write_text('Interface wlan0\n\tssid F50\n\ttype AP\n'
@@ -2935,8 +3000,8 @@ esac''')
             self.led(shell, 'u30air', 'power', 'on')
             self.led(shell, 'u30air', 'data', '5g')
             (self.tmp / 'iw.out').write_text('Interface wlan0\n\ttype AP\n\tchannel 36 (5180 MHz)\n')
-            self.led(shell, 'u30air', 'wifi', 'on')
-            self.assertEqual([(vendor / f'vddcama{i}_status').read_text().strip() for i in range(3)], ['1', '0', '1'])
+            self.led(shell, 'u30air', 'wifi', 'on')   # 5G: vddcama0; a 5 GHz hotspot: vddcama1 (white)
+            self.assertEqual([(vendor / f'vddcama{i}_status').read_text().strip() for i in range(3)], ['1', '1', '0'])
             self.led(shell, 'u30air', 'sleep')
             self.assertEqual([(vendor / f'vddcama{i}_status').read_text().strip() for i in range(3)], ['0', '0', '0'])
             shutil.rmtree(self.root / 'sys/devices')
@@ -3370,18 +3435,52 @@ class ThermalGuard(ShellTest):
         (self.root / 'proc/sys/kernel').mkdir(parents=True, exist_ok=True)
         (self.root / 'proc/sys/kernel/osrelease').write_text(release + '\n')
 
-    def test_vendor_kernel_only_watches(self):
-        # 5.4 throttles and protects itself (its soc-thmzone has the trips and the clusters): no throttling or
-        # power-off here, but the alarm still works
+    VENDOR = '5.4.254-android12-9-gb50db5b6224c'
+
+    def test_vendor_kernel_is_asked_like_any_other(self):
+        # issue #229: a 5.4 whose sprd_cpu_cooling found no thermal zone ("get thermal zone ank0-thmzone failed" ...)
+        # throttled nothing, and the guard - exempt by the release - only ran the alarm until the unit reset. The
+        # release decides nothing now: a 5.4 without a bound zone is capped and powered off at CRIT like mainline
+        self.stub('logger', 'echo "$*" >> "$STUBLOG/log"')
         for shell in self.each_shell():
-            shutil.rmtree(self.root, ignore_errors=True)
-            self.device('u30air')
-            self.kernel('5.4.254-android12-9-gb50db5b6224c')
-            self.assertEqual(self.round(shell, 110000, trips=True), ['mu300-led alarm on'])
-            shutil.rmtree(self.root, ignore_errors=True)
-            self.device('u30air')
-            self.kernel('7.2.10')
-            self.assertEqual(self.round(shell, 110000), ['poweroff', 'mu300-led alarm on'])   # mainline: critical
+            for release in (self.VENDOR, '7.2.10'):
+                with self.subTest(release=release):
+                    shutil.rmtree(self.root, ignore_errors=True)
+                    (self.tmp / 'log').unlink(missing_ok=True)
+                    self.device('u30air')
+                    self.kernel(release)
+                    self.assertEqual(self.round(shell, 110000, trips=True), ['poweroff', 'mu300-led alarm on'])
+                    self.assertIn(f'no kernel thermal zone throttles the CPUs (kernel {release})', self.log())
+
+    def test_vendor_kernel_without_a_bound_zone_caps(self):
+        for shell in self.each_shell():
+            self.mainline(90000)
+            self.kernel(self.VENDOR)
+            # 5.4's cpufreq cooling devices are "thermal-cpufreq-N"; here none is bound to the zone with the trips
+            shutil.rmtree(self.root / 'sys/class/thermal')
+            for i, cpu in enumerate((0, 4, 7)):
+                self.cooling(i, f'thermal-cpufreq-{i}')
+            self.zone(0, 'soc-thmzone', 90000, [('passive', 70000), ('passive', 85000), ('critical', 110000)])
+            self.assertEqual(self.round(shell, 90000), ['mu300-led alarm on'])
+            self.assertEqual(self.maxes(), ['1404000'] * 3)
+
+    def test_vendor_kernel_with_its_zone_bound_only_watches(self):
+        # where 5.4's sprd_cpu_cooling does bind (the earlier measurement, FINDINGS 18), the kernel throttles: the
+        # guard hands over exactly as on mainline with mu300_thermal; its own power-off at CRIT stays
+        self.stub('logger', 'echo "$*" >> "$STUBLOG/log"')
+        for shell in self.each_shell():
+            self.mainline(90000)
+            self.kernel(self.VENDOR)
+            shutil.rmtree(self.root / 'sys/class/thermal')
+            for i in range(3):
+                self.cooling(i, f'thermal-cpufreq-{i}')
+            self.zone(0, 'soc-thmzone', 90000, [('passive', 70000), ('passive', 85000), ('critical', 110000)],
+                      (0, 1, 2))
+            (self.tmp / 'log').unlink(missing_ok=True)
+            self.assertEqual(self.round(shell, 90000), ['mu300-led alarm on'])
+            self.assertEqual(self.maxes(), ['2002000'] * 3)
+            self.assertIn('soc-thmzone throttles the CPUs: watching only', self.log())
+            self.assertEqual(self.round(shell, 105000), ['poweroff'])
 
     # --- the stock virtual zone on mainline (mu300_thermal): the kernel throttles, this guard only watches
     def cooling(self, n, kind, state=0):
@@ -3524,6 +3623,55 @@ class ThermalGuard(ShellTest):
                 (p / 'scaling_max_freq').write_text('1404000\n')
             self.round(shell, 80000)
             self.assertEqual(self.maxes(), ['1404000'] * 3)
+
+    # --- the backstop: the kernel throttles, but the SoC climbs on (6.18.56's step_wise under 8 awk loops: 98 C in
+    # three minutes with the states at 1-3 of 9, FINDINGS 166)
+    def test_backstop_caps_the_a76_clusters_on_top_of_the_kernel_from_92_c(self):
+        self.stub('logger', 'echo "$*" >> "$STUBLOG/log"')
+        for shell in self.each_shell():
+            self.mainline(91000)
+            (self.tmp / 'log').unlink(missing_ok=True)
+            self.round(shell, 91000)                                              # under the backstop: watching
+            self.assertEqual(self.maxes(), ['2002000'] * 3)
+            self.mainline(93000)
+            (self.tmp / 'log').unlink(missing_ok=True)
+            self.assertEqual(self.round(shell, 93000), ['mu300-led alarm on'])
+            self.assertEqual(self.maxes(), ['2002000', '1404000', '1404000'])     # policy0 (A55) left alone
+            self.assertTrue((self.root / 'run/mu300/thermal-capped').exists())
+            self.assertIn('soc-thmzone does not hold the SoC (93000 mC)', self.log())
+            self.round(shell, 93000)                                              # a step a round, logged once
+            self.assertEqual(self.maxes(), ['2002000', '1105000', '1105000'])
+            self.assertEqual(self.log().count('does not hold'), 1)
+
+    def test_backstop_caps_every_cluster_from_95_c_and_powers_off_at_crit_still(self):
+        for shell in self.each_shell():
+            self.mainline(96000)
+            self.round(shell, 96000)
+            self.assertEqual(self.maxes(), ['1404000'] * 3)
+            self.assertEqual(self.round(shell, 105000), ['poweroff'])
+
+    def heat(self, temp):
+        """every zone at TEMP (round() sets thermal_zone0 only)"""
+        for t in (self.root / 'sys/class/thermal').glob('thermal_zone*/temp'):
+            t.write_text(f'{temp}\n')
+
+    def test_backstop_lifts_its_caps_at_hot_a_step_a_round_never_above_the_ceiling(self):
+        for shell in self.each_shell():
+            self.mainline(96000)
+            (self.root / 'run/mu300/cpu-ceiling').write_text('policy0=1404000\n')
+            self.round(shell, 96000)
+            self.round(shell, 96000)
+            self.assertEqual(self.maxes(), ['1105000', '1105000', '1105000'])
+            self.heat(88000); self.round(shell, 88000)            # between HOT and the backstop: held
+            self.assertEqual(self.maxes(), ['1105000', '1105000', '1105000'])
+            self.heat(85000); self.round(shell, 85000)
+            self.assertEqual(self.maxes(), ['1404000', '1404000', '1404000'])
+            self.assertTrue((self.root / 'run/mu300/thermal-capped').exists())
+            self.heat(84000); self.round(shell, 84000)
+            self.assertEqual(self.maxes(), ['1404000', '2002000', '2002000'])     # the profile's ceiling stays
+            self.assertFalse((self.root / 'run/mu300/thermal-capped').exists())
+            self.heat(84000); self.round(shell, 84000)            # no marker: nothing more
+            self.assertEqual(self.maxes(), ['1404000', '2002000', '2002000'])
 
     def policy(self, name, freqs, cur_max):
         p = self.root / 'sys/devices/system/cpu/cpufreq' / name
@@ -4449,3 +4597,42 @@ class EarlyRecorderNode(ShellTest):
         self.assertTrue(writes[0].strip().startswith('node_ok && dd '), writes[0])
         after = s[s.index('node_ok && dd '):]
         self.assertIn('\n    node_ok\n', after)
+
+
+class ToolkitStress(ShellTest):
+    """mu300-toolkit's stress test stops itself at 95 C (FINDINGS 166): on 6.18.56 the recommended 10-minute CPU test
+    took the SoC to thermal-guard's 105 C power-off twice, and a hot power-off cost the next boot its eMMC."""
+    def run_stress(self, shell, soc, **env):
+        root = self.tmp / 'root'
+        z = root / 'sys/class/thermal/thermal_zone0'
+        z.mkdir(parents=True, exist_ok=True)
+        (z / 'temp').write_text(f'{soc}\n')
+        self.stub('id', 'echo 0')                       # need_root
+        self.stub('stress-ng', 'exec sleep 30')         # the load, without burning the test machine's CPUs
+        logs = self.tmp / 'logs'
+        logs.mkdir(exist_ok=True)
+        t = time.monotonic()
+        r = self.script(shell, BIN / 'mu300-toolkit', 'stress', 'cpu', '1', MU300_SYSROOT=root,
+                        MU300_STRESS_LOGDIR=logs, TMPDIR=self.tmp, **env)
+        return r, time.monotonic() - t, logs
+
+    def test_stops_at_95_c_with_a_message(self):
+        for shell in self.each_shell():
+            r, took, logs = self.run_stress(shell, 96500)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertLess(took, 20, 'stopped at the first sample, not after the minute')
+            self.assertIn('STOPPED EARLY', r.stdout)
+            self.assertIn('the SoC reached 96 C, the limit is 95 C', r.stdout)
+            saved = list(logs.glob('mu300-stress-*.txt'))
+            self.assertEqual(len(saved), 1)
+            self.assertIn('STOPPED EARLY', saved[0].read_text())
+            self.assertEqual(list(self.tmp.glob('mu300-stress.*')), [], 'its directory is removed')
+            for f in saved:
+                f.unlink()
+
+    def test_the_limit_is_configurable(self):
+        for shell in self.each_shell():
+            r, took, logs = self.run_stress(shell, 91000, MU300_STRESS_LIMIT=90000)
+            self.assertIn('the SoC reached 91 C, the limit is 90 C', r.stdout)
+            for f in logs.glob('mu300-stress-*.txt'):
+                f.unlink()

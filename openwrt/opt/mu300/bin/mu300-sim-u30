@@ -278,8 +278,17 @@ roll_back() {
     unknown_radio
     return 1
 }
+# wan_back: the wan as the user left it before the switch. One taken down on purpose (the panel's button, ifdown, the
+# data cap: netifd's autostart is off then, sim_wan_held_down) stays down, and so does the marker mobile-data's
+# `down` left (/run/mu300-mobile-data-down), which keeps its watchdog from dialling again; only a wan that was meant
+# to be up is brought up. (After kanoqwq's clean-tf-7.2 2d3b6f3f; FINDINGS 104.)
+wan_back() {
+    [ "$held" = 0 ] || return 0
+    rm -f /run/mu300-mobile-data-down
+    ifup wan
+}
 live_switch() {
-    local target=$1 old had_data=0 rc=0
+    local target=$1 old had_data=0 rc=0 held=0
     old=$(active); case "$old" in 0|1) ;; *) fail 'Unknown active SIM; reboot first'; return 1;; esac
     [ ! -e "$R/sim-switching" ] || { fail 'Interrupted switch; reboot first'; return 1; }
     [ ! -e "$R/sim-active-unknown" ] || { fail 'Unknown radio state; reboot first'; return 1; }
@@ -287,10 +296,13 @@ live_switch() {
     available || { fail 'Persistent dual-SIM brokers unavailable; reboot first'; return 1; }
     [ ! -e /run/mu300-mobile-data.suspend ] || { fail 'Resume the modem before switching'; return 1; }
     [ ! -d /run/unisoc-modem-lock-apply ] || { fail 'Network locks are being applied'; return 1; }
+    # Mobile data switched off on purpose? Then it stays off, whichever card ends up in use, and there is no bearer
+    # to wait for before the choice is saved.
+    if sim_wan_held_down; then held=1; fi
     if [ "$old" = "$target" ]; then
-        wan_wait || { atomic "$R/sim-result" no_data; fail 'Active SIM has no data; use default for next-boot selection'; return 1; }
+        [ "$held" = 1 ] || wan_wait || { atomic "$R/sim-result" no_data; fail 'Active SIM has no data; use default for next-boot selection'; return 1; }
         sim_cfg_save_default "$target" || return 1
-        sim_seen_add "$target" || true
+        [ "$held" = 1 ] || sim_seen_add "$target" || true
         atomic "$R/sim-result" switched
         rm -f "$FALLBACK"; status; return 0
     fi
@@ -315,15 +327,15 @@ live_switch() {
     if [ "$rc" = 75 ]; then
         # nothing was sent: the radio lock or the AT channel stayed busy. The previous card is as it was.
         atomic "$R/sim-result" failed
-        rm -f "$R/sim-switching" /run/mu300-mobile-data-down
-        ifup wan || true
+        rm -f "$R/sim-switching"
+        wan_back || true
         fail 'The modem is busy; nothing was changed, try again'; return 1
     fi
     if [ "$rc" != 0 ]; then
         if roll_back "$old"; then
             atomic "$R/sim-result" rolled_back
-            rm -f "$R/sim-switching" /run/mu300-mobile-data-down
-            ifup wan || { fail 'Previous SIM restored but WAN could not be started'; return 1; }
+            rm -f "$R/sim-switching"
+            wan_back || { fail 'Previous SIM restored but WAN could not be started'; return 1; }
             fail 'Switch failed; previous SIM restored'; return 1
         fi
         fail 'Switch failed; radio state unknown, reboot required'; return 1
@@ -331,9 +343,19 @@ live_switch() {
     # The target card is up: let netifd dial it, and keep the boot default where it was until the bearer is
     # there. The published slot is this boot's; the saved one is tomorrow's.
     publish "$target"
-    rm -f "$R/sim-switching" /run/mu300-mobile-data-down
+    rm -f "$R/sim-switching"
+    # Mobile data off: the card is in use and, as the user chose it, the boot default. Nothing proves it has data, as
+    # nothing would at the next boot either: a second card whose connection was off is kept there (mu300-sim2-warmup).
+    if [ "$held" = 1 ]; then
+        sim_cfg_save_default "$target" || {
+            atomic "$R/sim-result" failed; fail 'SIM switched but the boot default could not be saved'; return 1; }
+        rm -f "$FALLBACK"
+        atomic "$R/sim-result" switched
+        atomic "$R/sim-phase" idle
+        status; return 0
+    fi
     atomic "$R/sim-phase" waiting_for_data
-    if ifup wan && wan_wait; then
+    if wan_back && wan_wait; then
         if ! sim_cfg_save_default "$target"; then
             atomic "$R/sim-result" failed
             fail 'SIM switched but the boot default could not be saved'; return 1
@@ -358,8 +380,8 @@ live_switch() {
     ifdown wan || true
     if roll_back "$old"; then
         atomic "$R/sim-result" no_data
-        rm -f "$R/sim-switching" /run/mu300-mobile-data-down
-        ifup wan || { fail 'Target SIM got no data; previous SIM restored but WAN could not be started'; return 1; }
+        rm -f "$R/sim-switching"
+        wan_back || { fail 'Target SIM got no data; previous SIM restored but WAN could not be started'; return 1; }
         fail 'Target SIM got no data within the time; previous SIM restored'; return 1
     fi
     fail 'Target SIM got no data and the previous one could not be restored; reboot required'; return 1
