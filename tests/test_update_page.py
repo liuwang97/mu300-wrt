@@ -1321,6 +1321,20 @@ class Status(test_update.Lock):
             for shell in self.each_shell():
                 r = self.up(shell, code, MU300_SOURCE_CONF=conf, MU300_FETCH_DELAY=0)
                 self.assertEqual(r.stderr.count('mirror unreachable: the rest comes from github.com'), 1, (url, r.stderr))
+        # apply's first fetch is its self-update check, with its stderr thrown away: the line is said there all the
+        # same (fd 7, the run's stderr), once, and the run's next fetch does not say it again (F50-B, 2026-10-17)
+        url = 'http://192.168.79.22:8799'
+        two = ('source_conf; fetch_verified v2026.11.02 mu300-update 2>/dev/null; '
+               'fetch_verified v2026.11.02 mu300-ubuntu-rootfs.tar.gz; echo "rc=$?"')
+        self.stub('curl', 'exit 7')
+        for extra, line in (('', 'a plain-http or LAN mirror; MU300_MIRROR_FALLBACK=1'),
+                            ('MU300_MIRROR_FALLBACK=1\n', 'mirror unreachable: the rest comes from github.com')):
+            conf.write_text(f'MU300_DOWNLOAD_URL={url}\n' + extra)
+            conf.chmod(0o600)
+            for shell in self.each_shell():
+                r = self.up(shell, two, MU300_SOURCE_CONF=conf, MU300_FETCH_DELAY=0)
+                self.assertNotIn('rc=0', r.stdout)
+                self.assertEqual(r.stderr.count(line), 1, (extra, r.stderr))
         # which addresses count as local
         for shell in self.each_shell():
             for url, want in (('http://mirror.example/x', 0), ('https://mirror.example/x', 1), ('https://MIRROR.LAN/x', 0),

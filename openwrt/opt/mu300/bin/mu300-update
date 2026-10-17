@@ -78,6 +78,10 @@ have() { command -v "$1" >/dev/null 2>&1; }
 # (mirror_fell_back), so the updater of the new release does not wait for the same mirror all over again.
 FETCH_UNREACHABLE=9
 SOURCE_FELL_BACK=
+# The "said once" lines of mirror_fell_back go to the run's own stderr, kept here as fd 7: apply's first fetch (its
+# self-update check, "fetch_verified TAG mu300-update 2>/dev/null") is where a mirror is usually found unreachable,
+# and the line said there went to /dev/null - the run then fell back, or stopped, without a word (F50-B, 2026-10-17)
+exec 7>&2
 # MU300_MIRROR_FALLBACK in /etc/mu300/update-source (the file is the only place that says so, never the
 # environment - source_conf): 0 never moves a run to github.com, 1 always may, and without the line (auto) only an
 # https mirror on a public name does. A plain-http mirror or one on a private address is almost always a copy on the
@@ -117,6 +121,8 @@ mirror_local() {
     esac
     return 1
 }
+# say_run FORMAT ARGS: printf to the run's stderr (fd 7), whatever the caller did with its own; stderr without fd 7
+say_run() { { printf "$@" >&7; } 2>/dev/null || printf "$@" >&2; }
 # mirror_fell_back: in the caller's own process - say it once, and use github.com for the rest of this run; or,
 # where the fallback is not allowed (MIRROR_FALLBACK), say once why the run stays with the mirror, and fail
 mirror_fell_back() {
@@ -130,7 +136,7 @@ mirror_fell_back() {
     esac
     if [ -n "$_mwhy" ]; then
         [ -n "${MIRROR_STAYED:-}" ] ||
-            printf 'mirror unreachable: the release is not taken from github.com instead (%s)\n' "$_mwhy" >&2
+            say_run 'mirror unreachable: the release is not taken from github.com instead (%s)\n' "$_mwhy"
         MIRROR_STAYED=1
         return 1
     fi
@@ -142,7 +148,7 @@ mirror_fell_back() {
     # listing too (a device that named an API mirror would otherwise still ask it)
     MU300_RELEASE_URL= MU300_DOWNLOAD_URL= MU300_API_URL=
     SUMS_FETCHED= SUMS_OK= SUMS_PIN=
-    printf 'mirror unreachable: the rest comes from github.com\n' >&2
+    say_run 'mirror unreachable: the rest comes from github.com\n'
     return 0
 }
 # fetch_base TAG: the directory this run takes release TAG's files from (MU300_RELEASE_URL is the whole base, the
