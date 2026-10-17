@@ -1132,6 +1132,8 @@ NFT
     led_up
     echo "mobile data up on $IFACE ($ip4/$prefix)"
     operator_log
+    # a VPN that started before this bearer was up is started again (FINDINGS 176; OpenWrt: its ifup hotplug)
+    ( "${MU300_VPN_UPLINK:-/opt/mu300/bin/mu300-vpn-uplink}" "$IFACE" ) </dev/null >/dev/null 2>&1 &
 }
 
 # The operator's name is one more AT round trip (about 2 s measured) and decides nothing: it goes to radio.log in
@@ -1353,6 +1355,172 @@ watch_context() {
     fi
 }
 
+# A context that is up, with the right address, and still no downlink (FINDINGS 176). Measured on the U30 Air: the
+# PDP context active, sipa_eth0 on the context's address, packets leaving and TX errors growing, and rx_packets
+# standing still for minutes - every check above passed, so this watchdog never acted, and only a reboot brought data
+# back. The interface's own counters tell it: packets leave and nothing at all comes back. Nothing is sent to find
+# out (the VPN's kill switch stays whole): only what the device sends anyway counts, and an idle link (nothing
+# leaving) is never taken for a dead one.
+#
+# downlink_stalled: rx_packets grew by at most MU300_DL_RX_ALLOW (2: a stray router advertisement) since the
+# reference while tx_packets grew by MU300_DL_STALL_TX (20) or more, for MU300_DL_STALL_SECS (90) or longer. Any more
+# received is a working downlink and a new reference; counters that went backwards (a new interface) are one too.
+SYS_NET=${MU300_SYS_NET:-/sys/class/net}
+DL_LOG=/run/mu300/downlink.log
+dl_rx= dl_tx= dl_t=0 dl_level=0 dl_next=0 dl_backoff=0 dl_last=0
+dl_count() {
+    local v
+    v=$(cat "$SYS_NET/$IFACE/statistics/$1" 2>/dev/null) || return 1
+    case $v in ''|*[!0-9]*) return 1 ;; esac
+    echo "$v"
+}
+downlink_stalled() {
+    local rx tx
+    { rx=$(dl_count rx_packets) && tx=$(dl_count tx_packets); } || { dl_rx=; return 1; }
+    if [ -z "$dl_rx" ] || [ "$rx" -lt "$dl_rx" ] || [ "$tx" -lt "$dl_tx" ] ||
+        [ $((rx - dl_rx)) -gt "${MU300_DL_RX_ALLOW:-2}" ]; then
+        if [ "$dl_last" -gt 0 ] && [ -n "$dl_rx" ] && [ "$rx" -gt "$dl_rx" ]; then
+            echo "the downlink is back: $IFACE received $((rx - dl_rx)) packets (after step $dl_last)" >&2
+            radio_say "downlink back after step $dl_last"
+            dl_level=0 dl_backoff=0 dl_last=0 dl_next=0
+        fi
+        dl_rx=$rx dl_tx=$tx dl_t=$SECONDS
+        dl_reboots_clear
+        return 1
+    fi
+    [ $((SECONDS - dl_t)) -ge "${MU300_DL_STALL_SECS:-90}" ] && [ $((tx - dl_tx)) -ge "${MU300_DL_STALL_TX:-20}" ]
+}
+# what the modem and the IPA said at the moment of the stall, for the next look (kept small, /run is RAM; no
+# identities: the context's state and address, the registration, the counters and the delegate's last lines)
+downlink_evidence() {
+    mkdir -p "${DL_LOG%/*}" 2>/dev/null || true
+    if [ "$(fsize "$DL_LOG")" -gt 32768 ]; then : 2>/dev/null > "$DL_LOG" || true; fi
+    {
+        echo "== t=$(cut -d' ' -f1 /proc/uptime 2>/dev/null || true) step $dl_level: $IFACE rx_packets $(dl_count rx_packets || true)" \
+            "tx_packets $(dl_count tx_packets || true) tx_errors $(dl_count tx_errors || true)," \
+            "$(( $(dl_count rx_packets || echo 0) - ${dl_rx:-0} )) in / $(( $(dl_count tx_packets || echo 0) - ${dl_tx:-0} )) out in $((SECONDS - dl_t)) s"
+        at "AT+CGACT?" 4 2>/dev/null | tr -d '\r' | grep '^+CGACT' || true
+        at "AT+CGPADDR=$CID" 4 2>/dev/null | tr -d '\r' | grep '^+CGPADDR' || true
+        at 'AT+CEREG?' 4 2>/dev/null | tr -d '\r' | grep '^+CEREG' || true
+        dmesg 2>/dev/null | grep -E 'sipa_dele|sipa_rm: SIPA_RM_RES_(PROD|CONS_WWAN)' | tail -n 8 || true
+    } >> "$DL_LOG" 2>/dev/null || true
+}
+# The way back, one step per stall; each step gets a new reference, so the next one comes MU300_DL_STALL_SECS after
+# it at the earliest. A step that does not apply here is passed over in the same round:
+#   1  the VPN started again, when one is on (`mu300-vpn restart`; the kill switch stays up). This is what the dead
+#      boots measured in FINDINGS 176 needed: the engine had started a moment before the bearer was up, and nothing
+#      came back until it was restarted (mu300-vpn-uplink now does it at every bearer ifup; this is the safety net).
+#   2  the data context again: netifd's restart of the wan (its teardown is `mobile-data down`: AT+CGACT=0 and the
+#      interface down; then the dial), on Ubuntu the same by hand. This is what a lost or stale context needs (13g).
+#   3  the radio off and on, then the dial (`suspend off` and `resume`, mu300-power's own path): the modem builds its
+#      packet domain again. Not on a managed or native dual-SIM radio, which refuse it.
+#   4  a reboot, only when nothing came back on this interface in the whole boot (rx_packets below
+#      MU300_DL_REBOOT_RX, 200) and at most MU300_DL_REBOOT_MAX times (3) in a row until a boot has a downlink again
+#      (counted in DL_REBOOTS, which survives the reboot). Off with `option dl_reboot '0'` on the wan (OpenWrt) or
+#      MU300_DL_REBOOT=0 in mobile-data.conf (Ubuntu).
+# Then MU300_DL_BACKOFF seconds (600) until the next round of steps, doubled each time up to an hour: a link whose far
+# end is gone (a VPN server down, after a boot that had a downlink) reads the same, and redialling it every few
+# minutes would only churn.
+DL_REBOOTS=${MU300_DL_REBOOTS:-/etc/mu300/downlink-reboots}
+dl_reboot_setting() {
+    local v=${MU300_DL_REBOOT:-}
+    if [ -z "$v" ]; then
+        if via_netifd; then v=$(uci -q get "network.${MU300_WAN:-wan}.dl_reboot" 2>/dev/null || true)
+        else v=$(conf_value MU300_DL_REBOOT); fi
+    fi
+    case $v in 0|off|no|false) echo 0 ;; *) echo 1 ;; esac
+}
+# a boot with a real downlink ends the count of reboots in a row
+dl_reboots_clear() {
+    [ -e "$DL_REBOOTS" ] || return 0
+    [ "$(dl_count rx_packets || echo 0)" -ge "${MU300_DL_GOOD_RX:-1000}" ] || return 0
+    rm -f "$DL_REBOOTS" 2>/dev/null || true
+}
+# dl_reboot_allowed: may step 4 reboot now? Says why not on stderr.
+dl_reboot_allowed() {
+    local n rx
+    [ "$(dl_reboot_setting)" = 1 ] || { echo "step 4 (a reboot) is switched off" >&2; return 1; }
+    rx=$(dl_count rx_packets || echo 0)
+    [ "$rx" -lt "${MU300_DL_REBOOT_RX:-200}" ] ||
+        { echo "no reboot: $IFACE has had a downlink in this boot ($rx packets received)" >&2; return 1; }
+    n=$(cat "$DL_REBOOTS" 2>/dev/null || echo 0)
+    case $n in ''|*[!0-9]*) n=0 ;; esac
+    [ "$n" -lt "${MU300_DL_REBOOT_MAX:-3}" ] ||
+        { echo "no reboot: $n reboots in a row did not bring the downlink back; waiting for one that has it" >&2; return 1; }
+}
+dl_reboot() {
+    local n
+    dl_reboot_allowed || return 1
+    n=$(cat "$DL_REBOOTS" 2>/dev/null || echo 0)
+    case $n in ''|*[!0-9]*) n=0 ;; esac
+    mkdir -p "${DL_REBOOTS%/*}" 2>/dev/null || true
+    echo $((n + 1)) > "$DL_REBOOTS" 2>/dev/null || { echo "no reboot: cannot count it in $DL_REBOOTS" >&2; return 1; }
+    cp "$DL_LOG" "${DL_REBOOTS}.log" 2>/dev/null || true   # the evidence, past the reboot
+    echo "step 4: rebooting (reboot $((n + 1)) of at most ${MU300_DL_REBOOT_MAX:-3} in a row; evidence in ${DL_REBOOTS}.log)" >&2
+    radio_say "downlink stalled, step 4: reboot $((n + 1))"
+    sync
+    ${MU300_REBOOT_CMD:-reboot}
+}
+dl_vpn_on() { [ "$("${MU300_VPN_CMD:-/opt/mu300/bin/mu300-vpn}" enabled 2>/dev/null)" = 1 ]; }
+downlink_recover() {
+    [ "$SECONDS" -ge "$dl_next" ] || return 0
+    local msg="downlink stalled: $IFACE sent $(( $(dl_count tx_packets || echo 0) - ${dl_tx:-0} )) packets in $((SECONDS - dl_t)) s and received $(( $(dl_count rx_packets || echo 0) - ${dl_rx:-0} ))"
+    local acted=
+    dl_level=$((dl_level + 1))
+    downlink_evidence
+    while [ -z "$acted" ]; do
+        dl_last=$dl_level
+        case $dl_level in
+            1)
+                if dl_vpn_on; then
+                    echo "$msg; step 1: the VPN again" >&2
+                    radio_say "downlink stalled, step 1: the VPN again"
+                    bnd 60 "${MU300_VPN_CMD:-/opt/mu300/bin/mu300-vpn}" restart >/dev/null 2>&1 ||
+                        echo "mu300-vpn restart failed" >&2
+                    acted=1
+                fi
+                ;;
+            2)
+                echo "$msg; step 2: the data context again" >&2
+                radio_say "downlink stalled, step 2: the data context again"
+                led off
+                if via_netifd; then
+                    bnd "$STEPDL" ifup "${MU300_WAN:-wan}" || true
+                else
+                    at "AT+CGACT=0,$CID" 10 >/dev/null || true
+                    ip link set "$IFACE" down 2>/dev/null || true
+                    ( up ) || echo "reconnect failed, retrying" >&2
+                fi
+                acted=1
+                ;;
+            3)
+                if [ -e /run/mu300/sim-managed ] || [ "$SIM_NATIVE" = 1 ]; then
+                    echo "$msg; step 3 (the radio off and on) is not possible on this dual-SIM radio" >&2
+                else
+                    echo "$msg; step 3: the radio off and on, then the dial" >&2
+                    radio_say "downlink stalled, step 3: the radio off and on"
+                    ( bounded suspend off ) || true
+                    ( bounded resume ) || echo "the radio did not come back, the watcher retries" >&2
+                    acted=1
+                fi
+                ;;
+            *)
+                echo "$msg after every step" >&2
+                dl_reboot || true
+                dl_backoff=$(( dl_backoff ? dl_backoff * 2 : ${MU300_DL_BACKOFF:-600} ))
+                [ "$dl_backoff" -le 3600 ] || dl_backoff=3600
+                echo "the downlink is still stalled; the next round of steps in $dl_backoff s" >&2
+                radio_say "downlink still stalled after every step; next round in $dl_backoff s"
+                dl_level=0
+                dl_next=$((SECONDS + dl_backoff))
+                acted=1
+                ;;
+        esac
+        [ -n "$acted" ] || dl_level=$((dl_level + 1))
+    done
+    dl_rx=   # a new reference once the step is through
+}
+
 watch() {
     local fails=0 rounds=0 unknown=0 state
     # one watchdog is enough: procd and systemd have both been seen starting a second one
@@ -1428,6 +1596,10 @@ watch() {
                     roam_take_down
                     continue
                 fi
+                if downlink_stalled; then
+                    downlink_recover
+                    continue
+                fi
                 led_up
                 continue
             fi
@@ -1447,6 +1619,7 @@ watch() {
             ( up ) || echo "reconnect failed, retrying" >&2
         fi
         fails=0
+        dl_rx=   # a new reference once the dial is through
     done
 }
 
