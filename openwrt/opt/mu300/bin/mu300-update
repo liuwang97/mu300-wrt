@@ -481,7 +481,7 @@ version() {
     printf 'installed image   %s\n' "$(installed_version)"
     printf 'systems on disk   %s\n' "$(installed_systems_versions)"
     printf 'running now       %s\n' "$(running_os)"
-    _xs=; for x in $(extra_installed); do _xs="$_xs $x ($(extra_release "$x"))"; done
+    _xs=; for x in $(extra_installed); do extra_known "$x" && _xs="$_xs $x ($(extra_release "$x"))"; done
     printf 'extras           %s\n' "${_xs:- none (mu300-extra list)}"
     printf 'kernel            %s (boot image: %s; kernel choice %s)\n' "$(uname -r)" "$(cat "$BOOTDIR/installed.tag" 2>/dev/null || echo "from the installer")" "$(kernel_choice)"
 }
@@ -499,7 +499,7 @@ check() {
     printf 'newest release    %s\n' "$latest"
     printf 'systems on disk   %s\n' "$(installed_systems)"
     printf 'running now       %s\n' "$(running_os)"
-    _xs=; for x in $(extra_installed); do _xs="$_xs $x ($(extra_release "$x"))"; done
+    _xs=; for x in $(extra_installed); do extra_known "$x" && _xs="$_xs $x ($(extra_release "$x"))"; done
     printf 'extras           %s\n' "${_xs:- none (mu300-extra list)}"
     printf 'kernel            %s (boot image: %s; kernel choice %s)\n' "$(uname -r)" "$(cat "$BOOTDIR/installed.tag" 2>/dev/null || echo "from the installer")" "$(kernel_choice)"
     _up=${MU300_BIN:-/opt/mu300/bin}/mu300-user-packages
@@ -2110,6 +2110,16 @@ module_asset() {
     esac
 }
 extra_known() { case " $EXTRAS " in *" $1 "*) return 0 ;; esac; return 1; }
+# extra_own NAME: NAME can be an extra of the user's own - one that is not in this list, installed from a file the user
+# copied onto the device (mu300-extra install NAME --from FILE). It is never downloaded, never updated by mu300-update,
+# and never listed: list, status and version show the extras of the releases, an own extra only when asked by name
+# (mu300-extra status NAME). Its tree is a module's (plain names, four levels), it must carry ./manifest, and its
+# hooks/link and hooks/unlink run for every system like the VPN module's.
+extra_own() {
+    extra_known "$1" && return 1
+    case $1 in ''|-*|vpn-*|*[!a-z0-9-]*) return 1 ;; esac
+    [ ${#1} -le 32 ]
+}
 extra_installed() {
     for d in "$EXTRA"/*; do
         { [ -d "$d/bin" ] || [ -d "$d/i18n" ]; } && printf '%s ' "${d##*/}"
@@ -2171,7 +2181,7 @@ extra_tree_ok() {
     [ -z "$(printf '%s\n' "$_t" | awk '$2 != 1')" ] || return 1
     _t=$(cd "$2" && find .) || return 1
     # the VPN module: plain names, four levels at most (bin/, lib/vpn/, service/systemd/, hooks/, ...)
-    if extra_is_module "$1"; then
+    if extra_is_module "$1" || extra_own "$1"; then
         ! printf '%s\n' "$_t" | LC_ALL=C grep -Evxq -- "$MODULE_ENTRY"
         return
     fi
@@ -2192,12 +2202,12 @@ extra_tree_ok() {
     [ -z "$_t" ]
 }
 # extra_manifest_ok NAME DIR: ./manifest (sha256sum lines, "HASH  ./path") lists every plain file of the tree but
-# itself, and each one has that hash. The lang extra must carry one; for the others it is checked when there is one
-# (extras from before it have none). With a download the manifest is covered by the release's SHA256SUMS, which
+# itself, and each one has that hash. The lang extra and an own extra (extra_own) must carry one; for the others it
+# is checked when there is one (extras from before it have none). With a download the manifest is covered by the release's SHA256SUMS, which
 # the whole tarball was checked against.
 extra_manifest_ok() {
     _m=$2/manifest
-    [ -f "$_m" ] || { [ "$1" != lang ]; return; }
+    [ -f "$_m" ] || { [ "$1" != lang ] && ! extra_own "$1"; return; }
     ! LC_ALL=C grep -Evxq -- '[0-9a-f]{64}  \./[A-Za-z0-9._+/-]+' "$_m" || return 1
     _want=$(cut -c67- "$_m" | LC_ALL=C sort) || return 1
     _have=$(cd "$2" && find . -type f ! -path ./manifest | LC_ALL=C sort) || return 1
