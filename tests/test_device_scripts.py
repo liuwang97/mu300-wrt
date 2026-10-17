@@ -4225,6 +4225,142 @@ class Usb(ShellTest):
             self.usb(shell, 'boot')
             self.assertNotIn('-f', (self.tmp / 'flags').read_text().split())
 
+    # --- USB-C power delivery (FINDINGS 150): the ump9620-tcpc module, experimental and off by default
+    def pd_setup(self, bound=False):
+        """A kernel with the module; modprobe binds a fake Type-C port (driver ump9620-tcpc), rmmod unbinds it."""
+        r = self.root
+        (r / 'lib/modules/test').mkdir(parents=True, exist_ok=True)
+        (r / 'lib/modules/test/ump9620-tcpc.ko').write_text('')
+        drv = r / 'sys/bus/platform/drivers/ump9620-tcpc'
+        drv.mkdir(parents=True, exist_ok=True)
+        self.stub('uname', 'echo test')
+        port = r / 'sys/class/typec/port0'
+        bind = (f'mkdir -p {port} && ln -sfn {r}/pd-dev {port}/device && mkdir -p {r}/pd-dev && '
+                f'ln -sfn {drv} {r}/pd-dev/driver && '
+                f'printf "host [device]\\n" > {port}/data_role && printf "source [sink]\\n" > {port}/power_role && '
+                f'mkdir -p {r}/sys/module/ump9620_tcpc')
+        self.stub('modprobe', f'echo "modprobe $*" >> "$STUBLOG/mod"; {bind}')
+        self.stub('rmmod', f'echo "rmmod $*" >> "$STUBLOG/mod"; rm -rf {port} {r}/sys/module/ump9620_tcpc')
+        (self.tmp / 'mod').unlink(missing_ok=True)
+        if bound:
+            subprocess.run(['sh', '-c', bind], check=True)
+        return port
+
+    def usb_pd(self, shell, *args):
+        return self.script(shell, BIN / 'mu300-usb', *args, MU300_SYSROOT=self.root,
+                           MU300_USB_PD_CONF=self.tmp / 'usb-pd', PATH=f'{self.stubs}:{BIN}:/usr/bin:/bin')
+
+    def test_pd_on_loads_the_module_with_enable_and_off_unloads_it(self):
+        for shell in self.each_shell():
+            self.pd_setup()
+            (self.tmp / 'usb-pd').unlink(missing_ok=True)
+            r = self.usb_pd(shell, 'pd', 'status')
+            self.assertIn('USB-C power delivery: off', r.stdout)
+            r = self.usb_pd(shell, 'pd', 'on')
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn('EXPERIMENTAL', r.stdout)
+            self.assertEqual((self.tmp / 'usb-pd').read_text(), 'on\n')
+            self.assertIn('modprobe ump9620_tcpc enable=1', (self.tmp / 'mod').read_text())
+            r = self.usb_pd(shell, 'pd', 'status')
+            self.assertIn('data role: device', r.stdout)
+            self.assertIn('power role: sink', r.stdout)
+            r = self.usb_pd(shell, 'pd', 'off')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual((self.tmp / 'usb-pd').read_text(), 'off\n')
+            self.assertIn('rmmod ump9620_tcpc', (self.tmp / 'mod').read_text())
+            self.assertFalse((self.root / 'sys/class/typec/port0').exists())
+
+    def test_pd_on_where_modprobe_drops_the_options(self):
+        # OpenWrt's kmodloader: modprobe loads the module (and its dependencies) but without enable=1, so its probe
+        # only says it is off; mu300-usb loads it again by its path with insmod, which takes the option
+        for shell in self.each_shell():
+            port = self.pd_setup()
+            r = self.root
+            ko = r / 'lib/modules/test/ump9620-tcpc.ko'
+            self.stub('modprobe', f'echo "modprobe $*" >> "$STUBLOG/mod"; mkdir -p {r}/sys/module/ump9620_tcpc/parameters'
+                                  f' && echo N > {r}/sys/module/ump9620_tcpc/parameters/enable')
+            bind = (f'mkdir -p {port} && ln -sfn {r}/pd-dev {port}/device && mkdir -p {r}/pd-dev && '
+                    f'ln -sfn {r}/sys/bus/platform/drivers/ump9620-tcpc {r}/pd-dev/driver && '
+                    f'printf "host [device]\\n" > {port}/data_role && printf "source [sink]\\n" > {port}/power_role')
+            self.stub('insmod', f'echo "insmod $*" >> "$STUBLOG/mod"; [ "$2" = enable=1 ] && {bind}')
+            (self.tmp / 'usb-pd').unlink(missing_ok=True)
+            r = self.usb_pd(shell, 'pd', 'on')
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            calls = (self.tmp / 'mod').read_text().splitlines()
+            self.assertEqual(calls, ['rmmod ump9620_tcpc', 'modprobe ump9620_tcpc enable=1', 'rmmod ump9620_tcpc',
+                                     f'insmod {ko} enable=1'])
+            self.assertIn('data role: device', self.usb_pd(shell, 'pd', 'status').stdout)
+            shutil.rmtree(self.root / 'sys/class/typec')
+
+    def test_pd_on_needs_the_module_and_the_u30_air(self):
+        for shell in self.each_shell():
+            self.stub('uname', 'echo test')
+            shutil.rmtree(self.root / 'lib', ignore_errors=True)
+            r = self.usb_pd(shell, 'pd', 'on')
+            self.assertEqual(r.returncode, 1)
+            self.assertIn('no ump9620-tcpc module', r.stderr)
+            self.assertFalse((self.tmp / 'usb-pd').exists())
+            (self.root / 'run/mu300/device').write_text('f50\n')
+            r = self.usb_pd(shell, 'pd', 'on')
+            self.assertEqual(r.returncode, 1)
+            self.assertIn('only the U30 Air', r.stderr)
+            (self.root / 'run/mu300/device').write_text('u30air\n')
+
+    def test_boot_loads_power_delivery_only_when_it_is_on(self):
+        for shell in self.each_shell():
+            self.pd_setup()
+            self.regs(r01='0x1a', r05='0x87')
+            (self.tmp / 'usb-pd').write_text('off\n')
+            self.assertEqual(self.usb_pd(shell, 'boot').returncode, 0)
+            self.assertFalse((self.tmp / 'mod').exists())
+            (self.tmp / 'usb-pd').write_text('on\n')
+            self.regs(r01='0x3a')      # a boost left on from before the reboot: off first, then the module
+            r = self.usb_pd(shell, 'boot')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(self.reg('0x01'), 0x1a)
+            self.assertIn('modprobe ump9620_tcpc enable=1', (self.tmp / 'mod').read_text())
+            # bound already: the port controller owns the boost, nothing is written, nothing loaded again
+            (self.tmp / 'mod').unlink()
+            (self.tmp / 'writes').unlink(missing_ok=True)
+            self.regs(r01='0x3a')
+            self.assertEqual(self.usb_pd(shell, 'boot').returncode, 0)
+            self.assertFalse((self.tmp / 'writes').exists())
+            self.assertFalse((self.tmp / 'mod').exists())
+            shutil.rmtree(self.root / 'sys/class/typec')
+
+    def test_host_and_device_ask_the_port_controller_and_write_no_charger_register(self):
+        for shell in self.each_shell():
+            port = self.pd_setup(bound=True)
+            self.regs(r01='0x1a', r05='0x87', r08='0x00')
+            (self.tmp / 'writes').unlink(missing_ok=True)
+            r = self.usb_pd(shell, 'host')
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn('data role swap', r.stdout)
+            self.assertEqual((port / 'data_role').read_text().strip(), 'host')
+            self.assertFalse((self.tmp / 'writes').exists())
+            r = self.usb_pd(shell, 'status')
+            self.assertIn('USB-C power delivery: on', r.stdout)
+            # a partner that refuses the swap (or no PD): host on outside power only, still no register written
+            (port / 'data_role').write_text('host [device]\n')
+            (port / 'data_role').chmod(0o444)
+            r = self.usb_pd(shell, 'host')
+            self.assertEqual(r.returncode, 1)
+            self.assertIn('nothing to swap roles with', r.stderr)
+            self.regs(r08='0x24')
+            r = self.usb_pd(shell, 'host')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn('outside power', r.stdout)
+            self.assertEqual(self.role(), 'host')
+            self.assertFalse((self.tmp / 'writes').exists())
+            # the port powers what is plugged in: device is refused (unplugging it is the way back)
+            (port / 'power_role').write_text('[source] sink\n')
+            r = self.usb_pd(shell, 'device')
+            self.assertEqual(r.returncode, 1)
+            self.assertIn('unplug it', r.stderr)
+            (port / 'data_role').chmod(0o644)
+            (self.root / 'sys/class/usb_role/25100000.dwc3-role-switch/role').write_text('device\n')
+            shutil.rmtree(self.root / 'sys/class/typec')
+
     def test_f50(self):
         for shell in self.each_shell():
             (self.root / 'run/mu300/device').write_text('f50\n')
