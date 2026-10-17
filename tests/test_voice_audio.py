@@ -313,7 +313,7 @@ class DspClock(unittest.TestCase):
 
     def run_routes(self, out):
         src = VOICE.read_text()
-        script = ('put() { echo "$1=$2"; }\nbt_rate() { :; }\n' + shell_function(src, 'dsp_clock') +
+        script = ('put() { echo "$1=$2"; }\nbt_rate() { :; }\ndump_tap() { :; }\n' + shell_function(src, 'dsp_clock') +
                   self.func(src, 'routes') + 'routes %s\n' % out)
         lines = subprocess.run(['sh', '-c', script], capture_output=True, text=True, check=True).stdout.splitlines()
         return dict(l.split('=', 1) for l in lines)
