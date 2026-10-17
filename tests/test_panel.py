@@ -42,6 +42,9 @@ def panel_tarball(path, release='v2026.10.20', debs=(), extra=(), name='panel'):
 
 # apt-get: records its arguments; an install "installs" Cockpit (cockpit-ws appears in the fake system)
 APT = ('echo "apt-get $*" >> "$STUBLOG/apt"; '
+       # --download-only: one package into the Dir::Cache::archives given (unless APT_FAIL), nothing installed
+       'case " $* " in *" --download-only "*) [ -z "$APT_FAIL" ] || exit 1; '
+       'd=$(printf "%s\\n" "$@" | sed -n "s/^Dir::Cache::archives=//p"); : > "$d/cockpit-ws_314-1_arm64.deb"; exit 0 ;; esac; '
        'case " $* " in *" install "*) mkdir -p "$MU300_SYSROOT/usr/lib/cockpit" && : > "$MU300_SYSROOT/usr/lib/cockpit/cockpit-ws" '
        '&& chmod 755 "$MU300_SYSROOT/usr/lib/cockpit/cockpit-ws" ;; *" purge "*) rm -f "$MU300_SYSROOT/usr/lib/cockpit/cockpit-ws" ;; esac; '
        '[ -z "$APT_FAIL" ]')
@@ -168,9 +171,18 @@ class PanelExtra(ExtrasBase):
             r = self.ex(shell, 'install', 'panel')
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
             apt = self.log('apt').splitlines()
-            self.assertEqual(apt[0], 'apt-get update -q')
-            self.assertTrue(apt[1].endswith('install -y -q --no-install-recommends -o Dpkg::Options::=--force-confold '
-                                            'cockpit-ws cockpit-system cockpit-bridge'), apt)
+            # bounded: offline, an apt-get update without limits waited more than 10 minutes
+            self.assertTrue(apt[0].startswith('apt-get update '), apt)
+            for o in ('Acquire::http::Timeout=30', 'Acquire::https::Timeout=30', 'Acquire::Retries=1'):
+                self.assertIn(o, apt[0])
+            # downloaded into the extra, installed from there, and kept for the restore after an update
+            self.assertIn('--download-only', apt[1])
+            self.assertIn('Dir::Cache::archives=', apt[1])
+            self.assertIn('/disk/extra/panel/.debs-new -o', apt[1])
+            self.assertIn('Acquire::http::Timeout=30', apt[1])
+            self.assertTrue(apt[2].endswith('/disk/extra/panel/.debs-new/cockpit-ws_314-1_arm64.deb'), apt)
+            self.assertTrue((self.panel() / 'debs/24.04/cockpit-ws_314-1_arm64.deb').is_file())
+            self.assertFalse((self.panel() / '.debs-new').exists())
             # the configuration was in place before the packages (their postinst starts the socket)
             self.assertTrue(self.installed_files()[2].is_file())
 
@@ -294,6 +306,33 @@ class PanelExtra(ExtrasBase):
             self.assertEqual(self.log('systemctl'), '')             # files only: the running system is not touched
             self.assertFalse((self.root / 'etc/systemd').exists())
 
+    def test_after_an_update_offline_cockpit_comes_from_the_kept_packages(self):
+        # online install (packages kept), then an update: the release's online extra (no debs) replaces the extra and
+        # a new system has no Cockpit; offline, the restore installs it from the kept packages without the archive
+        self.serve('v2026.10.20', assets={'mu300-extra-panel.tar.gz': panel_tarball(self.tmp / 'on.tar.gz')})
+        self.versions('v2026.10.20')
+        new = panel_tarball(self.tmp / 'new.tar.gz', release='v2026.10.21')
+        for shell in self.each_shell():
+            self.reset(shell)
+            self.assertEqual(self.ex(shell, 'install', 'panel').returncode, 0)
+            self.up(shell, f'extra_unpack panel "{new}"')
+            self.assertEqual((self.panel() / 'release').read_text().strip(), 'v2026.10.21')
+            self.assertTrue((self.panel() / 'debs/24.04/cockpit-ws_314-1_arm64.deb').is_file())
+            self.assertFalse((self.disk / 'extra/.panel.old').exists())
+            shutil.rmtree(self.root / 'usr', ignore_errors=True)
+            self.log('apt')
+            env = dict(MU300_SYSROOT=self.root, MU300_PANEL_DIR=self.panel(), MU300_RUN=self.tmp / 'run',
+                       MU300_PANEL_RETRY=0, MU300_PANEL_TRIES=2)
+            r = self.script(shell, CMD, 'restore', **env)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            apt = self.log('apt')
+            self.assertIn('/disk/extra/panel/debs/24.04/cockpit-ws_314-1_arm64.deb', apt)
+            self.assertNotIn('update', apt)
+            # an offline extra brings its own packages: those win over the kept ones
+            off = panel_tarball(self.tmp / 'off.tar.gz', debs=[('24.04', 'cockpit-ws_360-1_arm64.deb')])
+            self.up(shell, f'extra_unpack panel "{off}"')
+            self.assertEqual(sorted(x.name for x in (self.panel() / 'debs/24.04').iterdir()), ['cockpit-ws_360-1_arm64.deb'])
+
     def test_restore_installs_and_stops_trying(self):
         off = panel_tarball(self.tmp / 'p.tar.gz')
         for shell in self.each_shell():
@@ -304,6 +343,9 @@ class PanelExtra(ExtrasBase):
             r = self.script(shell, CMD, 'restore', APT_FAIL=1, **env)
             self.assertNotEqual(r.returncode, 0)
             self.assertEqual(self.log('apt').count('update'), 3)
+            # what to do instead, said plainly
+            self.assertIn('mu300-extra install panel --from FILE', r.stderr)
+            self.assertIn('offline', r.stderr)
             r = self.script(shell, CMD, 'restore', **env)
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertTrue((self.root / 'usr/lib/cockpit/cockpit-ws').exists())
