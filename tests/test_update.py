@@ -848,7 +848,7 @@ class FromStock(UpdateBase):
 
 
 class KernelStep(UpdateBase):
-    """boot_update as a whole against a boot partition that is a file (FINDINGS 176): since every module is built a
+    """boot_update as a whole against a boot partition that is a file (FINDINGS 177): since every module is built a
     kernel update wanted 500 MB free at once and left its unpacked bundle behind when it failed. The step now unpacks
     once, removes the bundle once unpacked, gives module sets more names instead of copying them, keeps the image it
     read by moving it, and leaves nothing of itself behind however it ends - with the one-boot fallback's needs kept:

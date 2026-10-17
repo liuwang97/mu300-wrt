@@ -2795,7 +2795,7 @@ head_sha() { dd if="$1" bs=4096 count=$(( ($2 + 4095) / 4096 )) 2>/dev/null | he
 # read it back
 # BODY is whole pages (bootimg_assemble pads it, a kept image is read in pages): VBMETA is written behind it by a second
 # dd, not from a copy of the two joined - that copy was one more image's worth of room on the Linux partition during
-# a kernel update (docs/FINDINGS.md 176). A body that is not whole pages is joined as before.
+# a kernel update (docs/FINDINGS.md 177). A body that is not whole pages is joined as before.
 write_boot() {  # write_boot DEV PSIZE BODY VBMETA FOOTER
     _wb=$(fsize "$3")
     if [ $((_wb % 4096)) = 0 ]; then
@@ -2876,7 +2876,7 @@ modules_dir() { case $1 in ubuntu) echo "$DISK/$1/lib/modules/$2/extra" ;; *) ec
 # takes the device back to Android). So the set in place is kept with the previous image, and goes back with it -
 # in rollback-boot, and when writing the new image fails.
 #
-# Room (docs/FINDINGS.md 176): since every module is built (FINDINGS 163) a set is some 2950 files, 120 MB,
+# Room (docs/FINDINGS.md 177): since every module is built (FINDINGS 163) a set is some 2950 files, 120 MB,
 # and copies of it - kept beside the new set, put into each system - made a kernel update want 500 MB free at once,
 # more than F50-C's 804 MiB region had. Sets are never copied now: the kept set, the sets in the systems and the
 # unpacked bundle are all on the Linux partition, so a set is given more names (ln) and a name is removed, never a
@@ -2949,7 +2949,7 @@ kernel_modules_into_systems() {  # kernel_modules_into_systems BUNDLE_DIR (unpac
     printf 'boot: %s modules for %s installed into: %s\n' "$(ls "$1/modules" | wc -l | tr -d ' ')" "$_krel" "$(installed_systems)"
 }
 
-# The room the kernel step takes on the Linux partition (docs/FINDINGS.md 176): the bundle (20 to 55 MB) until it is
+# The room the kernel step takes on the Linux partition (docs/FINDINGS.md 177): the bundle (20 to 55 MB) until it is
 # unpacked, what is unpacked from it (a mainline bundle: some 150 MB, 120 MB of it modules, that stay as the systems'
 # set), and the image in the slot now beside the new one (kept as prev.body, 25 to 30 MB each). The bundle is removed
 # once unpacked, so the peak is what is unpacked and the larger of the bundle and the two images.
@@ -2967,7 +2967,7 @@ kernel_need_kb() {
     fi
     echo $(( 3 * _kd + _ki + 16384 ))
 }
-# What the room is spent on between updates (docs/FINDINGS.md 176), and what of it an update may take back:
+# What the room is spent on between updates (docs/FINDINGS.md 177), and what of it an update may take back:
 #   * the boot image kept for rollback-boot - the one before the image in place - with its set of modules (120 MB of
 #     files of its own once a kernel update has replaced that set). An update replaces both anyway once it has
 #     written its image, and the device runs the image in place either way, so when the room is short they are given
@@ -3061,7 +3061,7 @@ boot_room() {
 # boot_update TAG: the kernel step. However it ends, nothing of it stays on the partition but what it put in place:
 # the unpacked bundle and the images being made go, a set of modules kept for an image that was not written goes, and
 # so does the bundle it downloaded when it did not finish (a kernel update that failed for want of room left 200 MB of
-# these behind, FINDINGS 176). MU300_KERNEL_BUNDLE, a file of the caller's, is never removed.
+# these behind, FINDINGS 177). MU300_KERNEL_BUNDLE, a file of the caller's, is never removed.
 boot_update() {  # boot_update TAG   (MU300_KERNEL_BUNDLE=FILE uses a local mu300-kernel.tar.gz instead)
     BOOT_BUNDLE=
     boot_update_run "$@"; _bur=$?
@@ -3465,7 +3465,7 @@ apply() {
     kfree=$(boot_kept_kb)
     if [ -z "$todo" ]; then
         # only the kernel and the extras: what the kernel step wants (space_needed's 1 GB for a whole system refused
-        # it on a device that had the room for it, FINDINGS 176)
+        # it on a device that had the room for it, FINDINGS 177)
         need=$(kernel_need_kb "$tag")
         [ $((free + kfree)) -gt "$need" ] || { rm -rf "${STAGE:?}"; die "not enough free space on the Linux partition for the kernel: about $((need / 1024)) MB needed (its download, the unpacked bundle with its modules, and the boot images), $((free / 1024)) MB free. Nothing was changed. mu300-update clean deletes the kept previous versions of the systems"; }
     elif need=$(update_need "$tag" $todo); then
