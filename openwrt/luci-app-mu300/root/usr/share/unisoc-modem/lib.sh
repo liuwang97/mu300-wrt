@@ -49,6 +49,17 @@ safe_iface() {
     esac
 }
 
+# data_cid DEVICE SLOT: the PDP context behind a SIPA data device of SIM slot SLOT (each card has eight: sipa_eth0-7
+# are slot 0's CID 1-8, sipa_eth8-15 slot 1's CID 1-8, as mobile-data names them); nothing, and status 1, for any
+# other name or another card's device. Never guessed: the dashboard asks the modem about this CID's bearer.
+data_cid() {
+    case $2:$1 in
+        0:sipa_eth[0-7]) echo $(( ${1#sipa_eth} + 1 )) ;;
+        1:sipa_eth[89]|1:sipa_eth1[0-5]) echo $(( ${1#sipa_eth} - 7 )) ;;
+        *) return 1 ;;
+    esac
+}
+
 # safe_state_dir PATH DEFAULT: a directory under /etc/unisoc-modem or
 # /etc/mu300 (no component starting with a dot, so no ".."), else DEFAULT
 safe_state_dir() {

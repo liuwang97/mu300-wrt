@@ -22,7 +22,7 @@
 #   AT+SPENGMD=0,14,1   NR serving cell (band/ARFCN/PCI/RSRP/RSRQ/SINR/MCS/BLER)
 #   AT+SPENGMD=0,6,6    LTE neighbour slots (8 x 12 fields, first 4 per slot are the reading)
 #   AT+SPQ5GNCELLEX     NR neighbour table with real per-cell SINR
-#   AT+CGEQOSRDP=1      QCI + up/down AMBR of the active bearer
+#   AT+CGEQOSRDP=<cid>  QCI + up/down AMBR of the bearer the WAN uses now (its CID from netifd's live device)
 #   AT+CNUM             the SIM's own number (full rounds only, until one is found; see "own number" below)
 #   AT+SPPAURI?         the IMS public identity, when the SIM has no number
 # AT+SPENGMD=0,1,0 is NEVER sent: it switches the AT port into streaming mode and
@@ -481,6 +481,34 @@ cesq_fragment() {  # "+CESQ: 24,99,55,255,36,98"
           printf "{\"rsrp\":%s,\"rsrq\":%s}", rsrp, rsrq }'
 }
 
+# wan_status: netifd's account of the data interface (2 s at most), nothing when there is none
+wan_status() {
+    ubus -t 2 call "network.interface.$(safe_iface "$(uci_get data_interface)" wan)" status 2>/dev/null
+}
+# wan_field JSON KEY: a scalar field of ubus's pretty-printed status (the first match: these appear once)
+wan_field() { printf '%s' "$1" | sed -n "s/.*\"$2\": *\"\{0,1\}\([^,\"}]*\).*/\1/p" | head -n1; }
+# bearer_qos: the +CGEQOSRDP line of the bearer the WAN is on now, or nothing. The CID comes from netifd's live device
+# (data_cid: sipa_eth<n> is a CID of this card), never a fixed 1: AT+CGEQOSRDP=1 described context 1 whatever the WAN
+# used, and an old bearer's QoS while the WAN was down. The answer must be for that CID, and afterwards the WAN must
+# still be the same connection - up, on the same device, its uptime not started over (netifd restarts it on every
+# redial, also on the same device) - or the previous bearer's numbers would be shown for the new one.
+bearer_qos() {
+    local st dev cid age reply st2
+    st=$(wan_status) || return 0
+    [ "$(wan_field "$st" up)" = true ] || return 0
+    dev=$(safe_iface "$(wan_field "$st" l3_device)" '')
+    cid=$(data_cid "$dev" "$SIM_SLOT") || return 0
+    age=$(wan_field "$st" uptime)
+    case $age in ''|*[!0-9]*) return 0 ;; esac
+    reply=$(at "AT+CGEQOSRDP=$cid" 2 | sed -n 's/^+CGEQOSRDP: *//p' | head -n1)
+    case ${reply%%,*} in "$cid"|" $cid"|"$cid ") ;; *) return 0 ;; esac
+    st2=$(wan_status) || return 0
+    [ "$(wan_field "$st2" up)" = true ] && [ "$(wan_field "$st2" l3_device)" = "$dev" ] || return 0
+    case $(wan_field "$st2" uptime) in ''|*[!0-9]*) return 0 ;; esac
+    [ "$(wan_field "$st2" uptime)" -ge "$age" ] || return 0
+    printf '%s\n' "$reply"
+}
+
 qos_fragment() {  # "+CGEQOSRDP: 1,9,..OK" (this modem glues OK onto the line)
     [ -n "$1" ] || { echo null; return; }
     printf '%s\n' "$1" | sed 's/OK$//; s/^+CGEQOSRDP: *//' | awk -F',' '
@@ -520,7 +548,7 @@ if [ "$MODE" = full ]; then
     if [ "$REGISTERED" = 1 ]; then
         SP_LN=$(at 'AT+SPENGMD=0,6,6' 2 | grep -v '^AT' | grep -- '-' | head -n1)
         SP_NRNB=$(at 'AT+SPQ5GNCELLEX' 2 | sed -n 's/^+SPQ5GNCELLEX: *//p' | head -n1)
-        QOS=$(at 'AT+CGEQOSRDP=1' 2 | sed -n 's/^+CGEQOSRDP: *//p' | head -n1)
+        QOS=$(bearer_qos)
     fi
     # The 6 h cache on flash holds a complete identity only: IMEI, IMSI and ICCID all read. A round where the modem
     # was not ready (AT+CGSN or AT+CIMI timed out while AT+CCID answered) used to cache imei:null for 6 h; now such a

@@ -573,3 +573,92 @@ process.stdout.write(JSON.stringify({ shown: row.style.display !== 'none', value
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class LiveBearer(ShellTest):
+    """The data device and the bearer's QoS follow netifd's live WAN (after kanoqwq's dashboard-network.sh): the
+    counters are read from the WAN's l3_device before a configured data_device, and AT+CGEQOSRDP asks the CID behind
+    that device - sipa_eth<n> of the card in use - never a fixed 1, and nothing while the WAN is down."""
+
+    def setUp(self):
+        super().setUp()
+        self.stub('fake-at', r"""printf '%s\n' "$*" >> "$STUBLOG/at-commands"
+case "$*" in
+  *AT+CFUN?*)       printf '+CFUN: 1\nOK\n' ;;
+  *AT+CEREG?*)      printf '+CEREG: 2,1,"1A2B","01234567",7\nOK\n' ;;
+  *AT+CGEQOSRDP=*)  cat "$STUBLOG/qos" ;;
+  *)                printf 'OK\n' ;;
+esac""")
+        # ubus: the WAN's status, a second file for the second call when there is one (the connection changed)
+        self.stub('ubus', 'n=$(cat "$STUBLOG/ubus-n" 2>/dev/null || echo 0); n=$((n + 1)); echo $n > "$STUBLOG/ubus-n"; '
+                          'if [ -f "$STUBLOG/wan.$n" ]; then cat "$STUBLOG/wan.$n"; else cat "$STUBLOG/wan.1"; fi')
+        self.stub('uci', 'exit 1')
+
+    def wan(self, n, up=True, device='sipa_eth0', uptime=100):
+        dev = f'\t"l3_device": "{device}",\n' if device else ''
+        (self.tmp / f'wan.{n}').write_text(f'{{\n\t"up": {"true" if up else "false"},\n\t"uptime": {uptime},\n{dev}'
+                                          f'\t"proto": "mu300cell"\n}}\n')
+
+    def round(self, shell, qos):
+        for f in ('at-commands', 'ubus-n', 'wan.2'):
+            (self.tmp / f).unlink(missing_ok=True)
+        (self.tmp / 'qos').write_text(qos)
+        run = self.tmp / f'run{self.id()}{len(list(self.tmp.iterdir()))}'
+        r = self.script(shell, CELL, 'full', MU300_AT=self.stubs / 'fake-at', MU300_DASH_DIR=run,
+                        MU300_DASH_IDENT_DIR=run / 'ident', MU300_DASH_POOL_DIR=run / 'pool')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        log = (self.tmp / 'at-commands').read_text()
+        return json.loads((run / 'cell.json').read_text())['qos'], [l for l in log.split('\n') if 'CGEQOSRDP' in l]
+
+    def test_the_cid_of_the_live_device(self):
+        for shell in self.each_shell():
+            self.wan(1, device='sipa_eth2')
+            qos, asked = self.round(shell, '+CGEQOSRDP: 3,9,0,0,0,0,100000,50000\nOK\n')
+            self.assertEqual(qos, {'qci': 9, 'dl': 100.0, 'ul': 50.0})
+            self.assertEqual(len(asked), 1)
+            self.assertTrue(asked[0].endswith('AT+CGEQOSRDP=3'), asked)
+
+    def test_nothing_while_the_wan_is_down_or_on_a_foreign_device(self):
+        for shell in self.each_shell():
+            for kw in (dict(up=False), dict(device=''), dict(device='sipa_eth8'), dict(device='wwan0')):
+                with self.subTest(**kw):
+                    self.wan(1, **kw)
+                    qos, asked = self.round(shell, '+CGEQOSRDP: 1,9,0,0,0,0,1000,1000\nOK\n')
+                    self.assertIsNone(qos)
+                    self.assertEqual(asked, [])
+
+    def test_another_cids_answer_or_a_new_connection_is_not_shown(self):
+        for shell in self.each_shell():
+            self.wan(1)
+            qos, _ = self.round(shell, '+CGEQOSRDP: 2,9,0,0,0,0,1000,1000\nOK\n')
+            self.assertIsNone(qos)
+            for second in (dict(uptime=3), dict(device='sipa_eth1'), dict(up=False)):
+                with self.subTest(**second):
+                    self.wan(1)
+                    self.round(shell, '')            # (clears the second file)
+                    self.wan(1)
+                    (self.tmp / 'qos').write_text('+CGEQOSRDP: 1,9,0,0,0,0,1000,1000\nOK\n')
+                    self.wan(2, **{**dict(up=True, device='sipa_eth0', uptime=100), **second})
+                    run = self.tmp / f'run-second-{len(list(self.tmp.iterdir()))}'
+                    (self.tmp / 'ubus-n').unlink(missing_ok=True)
+                    r = self.script(shell, CELL, 'full', MU300_AT=self.stubs / 'fake-at', MU300_DASH_DIR=run,
+                                    MU300_DASH_IDENT_DIR=run / 'ident', MU300_DASH_POOL_DIR=run / 'pool')
+                    self.assertEqual(r.returncode, 0, r.stderr)
+                    self.assertIsNone(json.loads((run / 'cell.json').read_text())['qos'])
+
+    def test_the_counters_follow_the_live_device(self):
+        info = Info('test_dns_from_multiline_status')
+        info.setUp()
+        try:
+            for shell in info.each_shell():
+                # a configured data_device does not win over the WAN's live one
+                info.stub('uci', 'case "$*" in *unisoc_modem.main.data_device) echo sipa_eth9 ;; *) exit 1 ;; esac')
+                self.assertEqual(info.info(shell)['data_device'], 'sipa_eth0')
+                # a WAN without a device: the configured one; a name that is no interface name: the default
+                (info.tmp / 'wan.json').write_text('{\n\t"up": false\n}')
+                self.assertEqual(info.info(shell)['data_device'], 'sipa_eth9')
+                info.stub('uci', 'case "$*" in *unisoc_modem.main.data_device) echo "../x" ;; *) exit 1 ;; esac')
+                self.assertEqual(info.info(shell)['data_device'], 'sipa_eth0')
+                (info.tmp / 'wan.json').write_text(WAN)
+        finally:
+            info.tearDown()
