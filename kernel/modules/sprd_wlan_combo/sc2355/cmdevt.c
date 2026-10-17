@@ -678,13 +678,22 @@ int sc2355_send_cmd_recv_rsp(struct sprd_priv *priv, struct sprd_msg *msg, u8 *r
 		return -EIO;
 	}
 
+	/*
+	 * MU300: a command that is not sent is not a success. The lock refused (the driver going away) and the two
+	 * blocked windows below returned 0 with nothing sent and, for the blocked ones, *rlen as the caller set it: the
+	 * caller then read its own uninitialised reply buffer as the firmware's answer (sc2355_get_station: a station's
+	 * signal and rates from the kernel stack, to any user's nl80211 request), and every setting "succeeded" that the
+	 * firmware never saw. After kanoqwq's clean-tf-7.2 0e19fe32; FINDINGS 106.
+	 */
 	ret = sc2355_api_version_available_check(priv, msg);
-	if (ret || cmdevt_lock_cmd(cmd, hif)) {
+	if (!ret && cmdevt_lock_cmd(cmd, hif))
+		ret = -EIO;
+	if (ret) {
 		sprd_chip_free_msg(&priv->chip, msg);
 		kfree(msg->tran_data);
 		if (rlen)
 			*rlen = 0;
-		if (ret)
+		if (ret != -EIO)
 			pr_err("API check fail, return!!\n");
 		goto out;
 	}
@@ -699,6 +708,9 @@ int sc2355_send_cmd_recv_rsp(struct sprd_priv *priv, struct sprd_msg *msg, u8 *r
 			sprd_chip_free_msg(&priv->chip, msg);
 			kfree(msg->tran_data);
 			cmdevt_unlock_cmd(cmd, hif);
+			if (rlen)
+				*rlen = 0;
+			ret = -EBUSY;
 			goto out;
 		}
 	}
@@ -710,6 +722,9 @@ int sc2355_send_cmd_recv_rsp(struct sprd_priv *priv, struct sprd_msg *msg, u8 *r
 			sprd_chip_free_msg(&priv->chip, msg);
 			kfree(msg->tran_data);
 			cmdevt_unlock_cmd(cmd, hif);
+			if (rlen)
+				*rlen = 0;
+			ret = -EBUSY;
 			goto out;
 		}
 	}
@@ -1929,7 +1944,8 @@ int sc2355_get_station(struct sprd_priv *priv, struct sprd_vif *vif,
 		       struct sprd_sta_info *sta)
 {
 	struct sprd_msg *msg;
-	struct cmd_get_station get_sta;
+	/* zeroed: a reply shorter than the structure (or none) must not hand on the stack's bytes */
+	struct cmd_get_station get_sta = {};
 	u8 *r_buf = (u8 *)&get_sta;
 	u16 r_len = sizeof(get_sta);
 	int ret;
