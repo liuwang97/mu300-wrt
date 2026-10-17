@@ -80,9 +80,14 @@ until [ -p "$ATDIR/cmd" ]; do
     sleep 5
 done
 
+# A slot with no card (mu300-sim-state, FINDINGS 186) is asked nothing - no CPIN, CNMI, CMGL or CNMA - until a card
+# answers there; then the setup below runs as at the start.
+SIM_STATE=${MU300_SIM_STATE_BIN:-/opt/mu300/bin/mu300-sim-state}
+sim_absent() { [ -x "$SIM_STATE" ] && [ "$("$SIM_STATE" get 2>/dev/null)" = absent ]; }
+
 # the SIM needs its time after a boot; a modem that never says READY still gets the periodic syncs below
 n=0
-until mu300-at -t 4 'AT+CPIN?' 2>/dev/null | grep -q READY; do
+until sim_absent || mu300-at -t 4 'AT+CPIN?' 2>/dev/null | grep -q READY; do
     n=$((n + 1))
     [ "$n" -gt 60 ] && { echo "mu300-smsd: the SIM never became ready, syncing anyway" >&2; break; }
     sleep 10
@@ -109,9 +114,17 @@ direct_off() {
 
 # What is on the SIM first (a message the modem stored before this started), and in the mode it is announced in;
 # then direct delivery, which a refusal of any of its commands leaves exactly as it was.
-at_ok "$STORED_CNMI" || true
-"$SMS" sync || echo "mu300-smsd: the first sync failed, retrying later" >&2
-direct_on || direct_off "the modem did not take direct delivery (or MU300_SMS_DIRECT=0)"
+setup() {
+    at_ok "$STORED_CNMI" || true
+    "$SMS" sync || echo "mu300-smsd: the first sync failed, retrying later" >&2
+    direct_on || direct_off "the modem did not take direct delivery (or MU300_SMS_DIRECT=0)"
+}
+configured=0
+if sim_absent; then
+    echo "mu300-smsd: no card in the SIM slot in use; nothing is asked until one answers" >&2
+else
+    setup; configured=1
+fi
 
 # process_spool: every spooled PDU into the pool, oldest first, each acknowledged only once the pool has it. False
 # as soon as one import or acknowledgement fails: the file stays, and the modem is holding the message until the
@@ -144,6 +157,14 @@ failures=0
 echo "mu300-smsd: pooling into $POOL (a look every ${POLL} s, a full sync every ${SYNC_INTERVAL} s)" >&2
 while :; do
     sleep "$POLL"
+    if sim_absent; then
+        configured=0; direct=0; rm -f "$DIRECT_FLAG"
+        continue
+    fi
+    if [ "$configured" = 0 ]; then
+        setup; configured=1; last=$(signature); elapsed=0
+        continue
+    fi
     # the spool, whatever the mode: a frame the modem sent anyway is pooled and acknowledged like any other
     if process_spool; then
         failures=0
