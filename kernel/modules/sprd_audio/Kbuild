@@ -1,0 +1,57 @@
+# MU300: Unisoc's call-audio stack (the AGDSP audio DSP, VBC v4, MCDT, the UMP9620 codec and the sound card
+# sprdphone-sc2730) from the realme unisoc-5.4 kernel_modules tree that kernel/build-audio.sh builds for 5.4, with
+# the same patches (kernel/patches/audio-*.patch, mcdt-enable-clock, sprd-card-dummy-on-defer), ported to the
+# mainline kernels; and the vendor AGCP DMA driver (dma/sprd-dma.c, from Enceka/linux-lts-e5, the 6.18 port of
+# Unisoc's 5.15 driver). docs/FINDINGS.md 24-24e and 188.
+#
+# Module names are the 5.4 ones, which mu300-audio-dsp loads by name. None carries a MODULE_DEVICE_TABLE: udev
+# must never load them by themselves, without the parameters audio_mem and the card need (FINDINGS 24b).
+# The DMA driver compiles the kernel's own virt-dma.c into itself: build-modules.sh copies virt-dma.[ch] and
+# dmaengine.h from the tree it builds against, because DMA_VIRTUAL_CHANNELS is not a symbol one can switch on.
+A := $(src)
+MU300_AUDIO_INC := -I$(A)/kinclude -I$(A)/../sprd_modem/kinclude -I$(A)/../wcn_bsp/kinclude \
+	-I$(A)/sprd_audio/include -I$(A)/sprd_audio/agdsp_access -I$(A)/sprd_audio/audiomem \
+	-I$(A)/sprd_audio/audiosipc -I$(A)/sprd_audio/mcdt -I$(A)/sprd_audio/mcdt/mcdt_r2p0 \
+	-I$(A)/sprd_audio/audiodspdump -I$(A)/sprd_audio/audiodvfs \
+	-I$(A)/sprd/include -I$(A)/sprd/platform/include -I$(A)/sprd/platform/platform_routing \
+	-I$(A)/sprd/platform/dmaengine_pcm -I$(A)/sprd/platform/compr_2stage_dma \
+	-I$(A)/sprd/dai/vbc/v4/vbc_dai -I$(A)/sprd/dai/vbc/v4/fe_dai \
+	-I$(A)/sprd/codec/sprd -I$(A)/sprd/codec/sprd/ump9620/include -I$(A)/sprd/codec/sprd/ump9620/codec \
+	-I$(A)/sprd/codec/sprd/ump9620/power -I$(A)/dma \
+	-DCONFIG_SND_SOC_UNISOC_CODEC_UMP9620 -include $(A)/kinclude/mu300_audio_compat.h \
+	-Wno-missing-prototypes -Wno-missing-declarations -Wno-unused-function -Wno-unused-variable \
+	-Wno-unused-but-set-variable
+ccflags-y += $(MU300_AUDIO_INC)
+subdir-ccflags-y += $(MU300_AUDIO_INC)
+
+obj-m += sprd-dma.o
+sprd-dma-y := dma/sprd-dma.o dma/virt-dma.o
+
+obj-m += audio_mem.o agdsp_access.o audio_sipc.o sprd_audcp_boot.o sprd_audcp_dvfs.o audio-dsp-dump.o \
+	audio-pipe.o sprd_apipe.o mcdt_hw_r2p0.o
+audio_mem-y := sprd_audio/audiomem/audio_mem.o
+agdsp_access-y := sprd_audio/agdsp_access/agdsp_access.o
+audio_sipc-y := sprd_audio/audiosipc/audio-sipc.o sprd_audio/audiosipc/audio-smsg.o
+sprd_audcp_boot-y := sprd_audio/audiocpboot/sprd_audcp_boot.o
+sprd_audcp_dvfs-y := sprd_audio/audiodvfs/sprd_audcp_dvfs.o
+audio-dsp-dump-y := sprd_audio/audiodspdump/audio_dsp_dump.o sprd_audio/audiodspdump/audio_sblock.o
+audio-pipe-y := sprd_audio/audiopipe/audio-pipe.o
+sprd_apipe-y := sprd_audio/audio_pipe/sprd_apipe.o
+mcdt_hw_r2p0-y := sprd_audio/mcdt/mcdt_r2p0/mcdt_hw_r2p0.o
+
+obj-m += sprd-dmaengine-pcm.o sprd-platform-pcm-routing.o sprd-compr-2stage-dma.o snd-soc-sprd-vbc-v4.o \
+	snd-soc-sprd-vbc-fe.o snd-soc-sprd-codec-ump9620-power.o snd-soc-sprd-codec-ump9620-power-dev.o \
+	snd-soc-sprd-codec-ump9620.o snd-soc-sprd-dummy-codec.o snd-soc-sprd-card.o
+sprd-dmaengine-pcm-y := sprd/platform/dmaengine_pcm/sprd-dmaengine-pcm.o
+sprd-platform-pcm-routing-y := sprd/platform/platform_routing/sprd-platform-pcm-routing.o
+sprd-compr-2stage-dma-y := sprd/platform/compr_2stage_dma/sprd-compr-2stage-dma.o
+snd-soc-sprd-vbc-v4-y := sprd/dai/vbc/v4/vbc_dai/vbc-dai.o sprd/dai/vbc/v4/vbc_dai/vbc-phy-v4.o
+snd-soc-sprd-vbc-fe-y := sprd/dai/vbc/v4/fe_dai/sprd-fe-dai.o
+snd-soc-sprd-codec-ump9620-power-y := sprd/codec/sprd/ump9620/power/sprd-audio-power.o
+snd-soc-sprd-codec-ump9620-power-dev-y := sprd/codec/sprd/ump9620/power_dev/sprd-audio-power-dev.o
+snd-soc-sprd-codec-ump9620-y := sprd/codec/sprd/ump9620/codec/sprd-codec.o \
+	sprd/codec/sprd/ump9620/codec/sprd-headset-ump9620.o
+snd-soc-sprd-dummy-codec-y := sprd/codec/dummy-codec/dummy-codec.o
+snd-soc-sprd-card-y := sprd/machine/sprd_card/vbc-rxpx-codec-sc27xx.o sprd/machine/sprd_card/sprd-asoc-common.o \
+	sprd/machine/sprd_card/sprd-asoc-card-utils.o sprd/machine/sprd_card/sprd-asoc-card-utils-hook.o \
+	sprd/machine/sprd_card/sprd-asoc-card-utils-legacy.o
