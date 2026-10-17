@@ -458,7 +458,7 @@ class Rules(unittest.TestCase):
         self.assertIn("'MU300: only the eMMC and the card slot', 'MU300: CD GPIO deferred', "
                       "'of_remove_property(pdev->dev.of_node, cd)'", port)
         self.assertRegex((TOP / 'upstream' / 'make-bundle.sh').read_text(),
-                         r"printf 'sdcard\\nlinux-slot\\n' > \"\$W/b/features\"")
+                         r"printf 'sdcard\\nlinux-slot\\ngpt-root\\n' > \"\$W/b/features\"")
 
     def test_mainline_keeps_the_emmc_at_mmc0(self):
         # Both hosts probe asynchronously and the stock DT has no mmc aliases, so the card slot could take mmc0 and
@@ -748,12 +748,14 @@ class Rules(unittest.TestCase):
         # 5.4 reads the card as well (FINDINGS 31j): its bundle says so, and the release audit fails when any of the
         # three bundles does not (mu300-update refuses such a bundle for a system on the card)
         mr = (TOP / 'tools' / 'make-release.sh').read_text()
-        self.assertIn("printf 'sdcard\\nlinux-slot\\n' > \"$K/features\"", mr)
+        self.assertIn("printf 'sdcard\\nlinux-slot\\ngpt-root\\n' > \"$K/features\"", mr)
         self.assertLess(mr.index('$K/features'), mr.index('tar -C "$K" -czf "$D/mu300-kernel.tar.gz" .'))
         self.assertIn('for a in mu300-kernel mu300-kernel-6.18 mu300-kernel-7.2; do\n'
                       '    tar -xzOf "$D/$a.tar.gz" ./features 2>/dev/null | grep -qx sdcard', mr)
         # and that its init works with Linux on either slot (mu300-update refuses one without it on slot a)
         self.assertIn('    tar -xzOf "$D/$a.tar.gz" ./features 2>/dev/null | grep -qx linux-slot', mr)
+        # and that its init finds a system in a GPT partition named mu300root (FINDINGS 178; mu300-update asks)
+        self.assertIn('    tar -xzOf "$D/$a.tar.gz" ./features 2>/dev/null | grep -qx gpt-root', mr)
 
     def test_release_can_be_a_prerelease(self):
         # a release is published as a prerelease first and promoted to "latest" only after a board ran it: the
