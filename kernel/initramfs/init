@@ -525,6 +525,14 @@ find_root_offset() {
     done
     return 1
 }
+# No region, but the eMMC's GPT partition named mu300root holding that filesystem: where kanoqwq's desktop installer
+# puts the system ("independent internal partition"). His boot image's init finds it there; ours did not, and a device
+# updated from his system with mu300-update found no system and went back to Android (issue #290, FINDINGS 178).
+gpt_root() {
+    _gp=$(emmc_part mu300root) || return 1
+    [ "$(dd if="$_gp" bs=1 skip=1080 count=2 2>/dev/null | od -An -tx1 | tr -d ' \n')" = 53ef ] &&
+    [ "$(dd if="$_gp" bs=1 skip=1144 count=9 2>/dev/null)" = mu300root ] && echo "$_gp"
+}
 # --- region end
 # --- usb-net begin
 # The USB network mode the panel's Device page chose (D12): a file of the system that boots, etc/mu300/usb-net,
@@ -690,6 +698,16 @@ mount_internal() {  # the mu300root region on the eMMC; busybox mount sets up a 
     if found=$(find_root_offset); then
         [ "$found" = "$ROOT_OFFSET" ] || log "stage=root-offset found=$found (default $ROOT_OFFSET)"
         ROOT_OFFSET=$found
+    elif gp=$(gpt_root); then
+        # a partition of its own: mounted as it is, no loop. root-dev keeps the "<eMMC>@" of an internal system
+        rootloop=
+        if mount -t ext4 -o noatime "$gp" /disk 2>>/run/rootmount.err; then
+            log "stage=root-part dev=$gp"
+            echo "${EMMC##*/}@mu300root" > /run/mu300-root-dev && diskdev=$gp
+            return 0
+        fi
+        log "stage=root-part-failed dev=$gp"
+        return 1
     else
         log "stage=root-offset not-found (trying the default $ROOT_OFFSET)"
     fi

@@ -105,8 +105,9 @@ cp -R "$KOUT/modules-u30air" "$K/modules-u30air"
 # this project (kano's) ran mainline, and its LED driver is mainline only (upstream/make-bundle.sh, FINDINGS 95)
 echo "f50 u30air" > "$K/devices"
 # what it can do that older bundles could not: 5.4 reads the SD card (FINDINGS 31j), so a system on the card may get
-# it; its init runs from either slot, so a Linux on slot a may get it (mu300-update checks both)
-printf 'sdcard\nlinux-slot\n' > "$K/features"
+# it; its init runs from either slot, so a Linux on slot a may get it (mu300-update checks both); the same init finds a
+# system in a GPT partition named mu300root (gpt-root, FINDINGS 178)
+printf 'sdcard\nlinux-slot\ngpt-root\n' > "$K/features"
 cp "$KOUT/Image" "$KOUT/modules.builtin" "$KOUT/modules.builtin.modinfo" "$IN/busybox" "$IN/tools/logdw/logdw" "$K/"
 # beside busybox for the installers' password check (the Magisk zips take both from here; FINDINGS 126)
 cp "$IN/tools/pwcheck/mu300-pwcheck" "$K/"
