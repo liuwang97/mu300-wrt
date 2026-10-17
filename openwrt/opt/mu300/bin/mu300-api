@@ -51,7 +51,7 @@ TAB=$(printf '\t')
 # ------------------------------------------------------------------ the methods
 METHODS='hello overview
 wifi.get wifi.set wifi.power wificlient.status wificlient.scan wificlient.join wificlient.leave
-data.get data.set data.power sim.get sim.select voice.get voice.set lock.get lock.set
+data.get data.set data.power sim.get sim.select voice.get voice.set radio.get radio.set lock.get lock.set
 vpn.status vpn.profiles vpn.subs vpn.settings vpn.service vpn.killswitch vpn.use vpn.add vpn.add_url vpn.rename
 vpn.remove vpn.setting vpn.sub_add vpn.sub_refresh vpn.sub_remove vpn.logs vpn.install vpn.engine_install
 sms.list sms.read sms.send sms.job sms.delete sms.forward
@@ -732,6 +732,25 @@ m_voice_set() {
     tool 30 "$BIN/mobile-data" voice "$_k" "$V" --slot "$((_sl - 1))" </dev/null || refuse failed "$ERR"
     ok "\"text\":$(js "$OUT")"
 }
+# each SIM's radio on or off, kept across reboots (mu300-sim-radio, FINDINGS 182); slot 1, 2 or "all" (airplane mode)
+m_radio_get() {
+    only
+    [ -x "$BIN/mu300-sim-radio" ] || refuse unsupported mu300-sim-radio
+    tool 15 "$BIN/mu300-sim-radio" status --json </dev/null
+    _j=$(jcheck "$OUT") || refuse failed "$ERR"
+    ok "\"radio\":$_j"
+}
+m_radio_set() {
+    only slot state
+    fget slot || refuse missing slot
+    case $FT:$FV in n:1|s:1) _sl=0 ;; n:2|s:2) _sl=1 ;; s:all) _sl=all ;; *) refuse bad-value slot ;; esac
+    word state 'on|off'; need state
+    [ -x "$BIN/mu300-sim-radio" ] || refuse unsupported mu300-sim-radio
+    checked
+    tool 150 "$BIN/mu300-sim-radio" set "$_sl" "$V" </dev/null
+    case $RC in 0) ;; 75) refuse busy "$ERR" ;; *) refuse failed "$ERR" ;; esac
+    ok "\"text\":$(js "$OUT")"
+}
 m_lock_get() { only; dash lock_get '{"fresh":0}'; }
 m_lock_set() {
     only kind val
@@ -1340,6 +1359,8 @@ case $METHOD in
     sim.select) m_sim_select ;;
     voice.get) m_voice_get ;;
     voice.set) m_voice_set ;;
+    radio.get) m_radio_get ;;
+    radio.set) m_radio_set ;;
     lock.get) m_lock_get ;;
     lock.set) m_lock_set ;;
     vpn.status) m_vpn_status ;;

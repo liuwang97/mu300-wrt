@@ -267,6 +267,12 @@ do_get() {
 # ------------------------------------------------------------------ apply
 sfun_restart() {
     local phase=${1:-late}
+    # the SIM's radio is switched off in its settings: the stack is not restarted (that would switch the radio on);
+    # the setting is in the modem and takes effect when the radio is switched on (FINDINGS 182)
+    if ! rf_allowed; then
+        say "the radio of this SIM is switched off in its settings: no stack restart, the setting applies when it is on"
+        return 0
+    fi
     # SFUN 5 -> 4 itself takes 1-2 seconds. The old code waited here for the radio
     # and registration to come back (up to 70 s of polling) - completely unnecessary:
     # mobile-data's watch redials automatically and the watchdog handles a dead radio.

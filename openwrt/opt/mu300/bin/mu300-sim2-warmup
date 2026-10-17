@@ -37,6 +37,21 @@ SIM_CONFIG_U30=1
 SLOT=$(cat /run/mu300/sim-slot 2>/dev/null || echo 1)
 case "$SLOT" in 0|1) ;; *) SLOT=1 ;; esac
 say() { logger -t mu300-sim "$*" 2>/dev/null || true; }
+# The chosen card's radio is switched off in its settings (mu300-sim-radio, FINDINGS 182): no cold start now, and no
+# verdict on the card. The boot is the one the user asked for, so the pending marker goes (left, it would make the next
+# boot a SIM1 boot), and the cold start runs when the radio is switched on (mobile-data rf-apply runs this script
+# again with --deferred: the same cold start, without the first-data trial).
+DEFERRED=0
+[[ ${1:-} != --deferred ]] || DEFERRED=1
+SIM_RADIO=${MU300_SIM_RADIO_BIN:-/opt/mu300/bin/mu300-sim-radio}
+rf_off() { [[ -x $SIM_RADIO ]] && ! "$SIM_RADIO" allowed "$SLOT" 2>/dev/null; }
+put_off() {
+    rm -f "$PENDING"
+    atomic "$CHECK" kept
+    say "SIM$((SLOT+1)): its radio is switched off in its settings; the cold start waits until it is switched on"
+    exit 0
+}
+if [[ $DEFERRED == 1 && -e /run/mu300/sim-radio-ready ]]; then exit 0; fi
 # A second run in one boot is the AT service restarted by hand: the owners were closed and opened again, and the
 # cold start cannot be repeated. Nothing is concluded from it and no setting is changed.
 if [[ -e /run/mu300/sim2-cold-start.attempted ]]; then
@@ -48,6 +63,10 @@ MU300_EXPECT_CCID=$(cat /etc/mu300/sim$((SLOT+1))-iccid 2>/dev/null || true)
 export MU300_EXPECT_CCID
 atomic() { local t; t=$(mktemp "$1.XXXXXX") && printf '%s\n' "$2" > "$t" && mv -f "$t" "$1"; }
 uptime_s() { cut -d. -f1 /proc/uptime 2>/dev/null || date +%s; }
+if rf_off; then
+    [[ $DEFERRED == 0 ]] || { echo "SIM$((SLOT+1)): its radio is still switched off in its settings" >&2; exit 1; }
+    put_off
+fi
 broker_ready() {
     local directory=$1 owner
     [[ -p "$directory/cmd" && -s "$directory/owner/pid" ]] || return 1
@@ -110,11 +129,21 @@ done
 [[ $ready == 1 ]] || fallback brokers-missing
 # (the radio lock is waited for: netifd's first dial takes it for a moment at about the same time, only to find
 # the radio not ready, and "busy" here would be a cold start that never ran)
-if ! MU300_RADIO_LOCK_WAIT=30 "$MD" radio-locked /bin/bash /opt/mu300/bin/mu300-sim2-start --cold-start; then
+start_rc=0
+MU300_RADIO_LOCK_WAIT=30 "$MD" radio-locked /bin/bash /opt/mu300/bin/mu300-sim2-start --cold-start || start_rc=$?
+# 7: the radio was switched off meanwhile (mu300-sim2-start sent nothing)
+if [[ $start_rc == 7 ]]; then
+    [[ $DEFERRED == 0 ]] || exit 1
+    put_off
+fi
+if [[ $start_rc != 0 ]]; then
     reason=$(head -c 40 /run/mu300/sim2-cold-start.reason 2>/dev/null | tr -cd 'a-z0-9-')
     fallback "${reason:-cold-start-failed}"
 fi
 rm -f "$PENDING" /run/mu300/sim-active-unknown
+# put off at boot and started now: the trial for a first data is not run (the device is not restarted under a user
+# who has just switched the radio on)
+[[ $DEFERRED == 0 ]] || { atomic "$CHECK" kept; exit 0; }
 
 # 3. the second card's first data
 [[ "$SLOT" == 1 ]] || exit 0

@@ -1986,6 +1986,185 @@ at() {
                 self.assertEqual(r.returncode, 2, r.stdout)
                 self.assertFalse(self.conf.exists())
 
+
+class SimRadio(ShellTest):
+    """Each SIM's radio on or off, kept across reboots (FINDINGS 182, after kanoqwq's mu300-sim-radio): the setting
+    tool, and mobile-data's radio-on paths asking it (mobile-data sourced as in MobileData). The modem keeps its CFUN in
+    $STUBLOG/cfun (0 cold, 1 on, 4 flight mode)."""
+    lib = MobileData.lib
+    TOOL = BIN / 'mu300-sim-radio'
+    MODEM = r"""
+at() {
+    echo "$SECONDS $1" >> "$STUBLOG/at"
+    case $1 in
+        'AT+CFUN?') printf '+CFUN: %s\nOK\n' "$(cat "$STUBLOG/cfun" 2>/dev/null || echo 0)" ;;
+        'AT+CFUN=4') echo 4 > "$STUBLOG/cfun"; printf 'OK\n' ;;
+        'AT+CFUN=1') echo 1 > "$STUBLOG/cfun"; printf 'OK\n' ;;
+        'AT+SFUN=4') echo 1 > "$STUBLOG/cfun"; printf 'OK\n' ;;
+        *) printf 'OK\n' ;;
+    esac
+}
+"""
+
+    def setUp(self):
+        super().setUp()
+        self.policy = self.tmp / 'etc' / 'sim-radio'
+        self.run_dir = self.tmp / 'rundir'
+        self.stub('mu300-sim', 'case $1 in active) echo "${T_ACTIVE:-0}" ;; status) echo \'{"slot1_supported": 1}\' ;; esac')
+        self.stub('fake-md', 'echo "md $*" >> "$STUBLOG/md"; exit "${T_MD_RC:-0}"')
+        self.stub('logger', 'exit 0')
+
+    def tool(self, *args, **env):
+        e = dict(MU300_SIM_RADIO=self.policy, MU300_SIM_BIN=self.stubs / 'mu300-sim', MU300_MOBILE_DATA=self.stubs / 'fake-md',
+                 MU300_RUN=self.run_dir)
+        e.update(env)
+        return self.script(self.shell, self.TOOL, *args, **e)
+
+    # --- the setting tool, under every shell
+    def test_setting(self):
+        for self.shell in self.each_shell():
+            self.policy.unlink(missing_ok=True)
+            (self.tmp / 'md').unlink(missing_ok=True)
+            # no file: both on, as every release before
+            self.assertEqual(self.tool('allowed', '0').returncode, 0)
+            self.assertEqual(self.tool('allowed', '1').returncode, 0)
+            o = json.loads(self.tool('status', '--json').stdout)
+            self.assertEqual((o['enabled'], o['all_off'], o['active'], o['slot1_supported'], o['busy']),
+                             ([True, True], False, 0, 1, False))
+            # the other card: saved, nothing applied
+            r = self.tool('set', '1', 'off')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(self.policy.read_text(), '1 0\n')
+            self.assertFalse((self.tmp / 'md').exists())
+            self.assertEqual(self.tool('allowed', '1').returncode, 1)
+            self.assertEqual(self.tool('allowed').returncode, 0)          # the card in use (slot 0)
+            # the card in use: saved and applied
+            r = self.tool('set', '0', 'off')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(self.policy.read_text(), '0 0\n')
+            self.assertEqual((self.tmp / 'md').read_text(), 'md rf-apply\n')
+            self.assertTrue(json.loads(self.tool('status', '--json').stdout)['all_off'])
+            self.assertEqual(self.policy.stat().st_mode & 0o777, 0o644)
+            # all on; the card in use is slot 1
+            r = self.tool('set', 'all', 'on', T_ACTIVE=1)
+            self.assertEqual(self.policy.read_text(), '1 1\n')
+            # the radio did not follow: saved all the same, exit 1, the result for the page
+            r = self.tool('set', '0', 'off', T_MD_RC=1)
+            self.assertEqual(r.returncode, 1)
+            self.assertEqual(self.policy.read_text(), '0 1\n')
+            self.assertEqual(json.loads(self.tool('status', '--json').stdout)['result'], 'failed')
+
+    def test_a_broken_file_is_both_on(self):
+        for self.shell in self.each_shell():
+            for text in ('0', '0 0 0\n', 'x y\n', '', '; reboot\n'):
+                self.policy.parent.mkdir(exist_ok=True)
+                self.policy.write_text(text)
+                r = self.tool('allowed', '0')
+                self.assertEqual(r.returncode, 0, text)
+                self.assertIn('count as on', r.stderr)
+
+    def test_arguments_and_busy(self):
+        for self.shell in self.each_shell():
+            self.policy.unlink(missing_ok=True)
+            shutil.rmtree(self.run_dir, ignore_errors=True)
+            for args in (('set', '2', 'on'), ('set', '0', 'maybe'), ('set', 'all'), ('allowed', '3'), ('nonsense',)):
+                self.assertEqual(self.tool(*args).returncode, 2, args)
+            self.assertFalse(self.policy.exists())
+            # a change running (a live holder of the lock) or a SIM switch: refused, nothing saved
+            (self.run_dir / 'sim-radio.lock').mkdir(parents=True)
+            (self.run_dir / 'sim-radio.lock' / 'pid').write_text(f'{os.getpid()}\n')
+            self.assertEqual(self.tool('set', '0', 'off').returncode, 75)
+            self.assertTrue(json.loads(self.tool('status', '--json').stdout)['busy'])
+            (self.run_dir / 'sim-radio.lock' / 'pid').write_text('999999\n')    # its holder is gone
+            self.assertEqual(self.tool('set', '1', 'off').returncode, 0)
+            (self.run_dir / 'sim-switching').touch()
+            self.assertEqual(self.tool('set', '1', 'on').returncode, 75)
+            self.assertEqual(self.policy.read_text(), '1 0\n')
+            (self.run_dir / 'sim-switching').unlink()
+
+    # --- mobile-data (bash)
+    def md(self, code, policy=None, cfun=None, **env):
+        if policy is not None:
+            self.policy.parent.mkdir(exist_ok=True)
+            self.policy.write_text(policy)
+        (self.tmp / 'cfun').unlink(missing_ok=True)
+        if cfun is not None:
+            (self.tmp / 'cfun').write_text(cfun)
+        e = dict(MU300_SIM_RADIO_BIN=self.TOOL, MU300_SIM_RADIO=self.policy, MU300_SIM_BIN=self.stubs / 'mu300-sim',
+                 MU300_RUN=self.run_dir, MU300_URC_LOG=self.tmp / 'none', MU300_CFUN_WAIT=0, MU300_AT_DEV='/dev/null',
+                 MU300_PLUGIN_LOCK=self.tmp / 'no-plugin')
+        e.update(env)
+        r, sent = self.lib('modem_stack() { :; }\n' + code, modem=self.MODEM, **e)
+        return r, [x.split(' ', 1)[1] for x in sent]
+
+    def test_radio_on_is_refused_while_off(self):
+        (self.tmp / 'run' / 'mu300-ril-handshake').parent.mkdir(exist_ok=True)
+        # cold radio: stays at 0, no SFUN; rc 7; the hold marker
+        r, cmds = self.md('rc=0; radio_on || rc=$?; echo rc=$rc', policy='0 1\n', cfun='0')
+        self.assertIn('rc=7', r.stdout, r.stderr)
+        self.assertNotIn('AT+SFUN=4', cmds)
+        self.assertEqual((self.tmp / 'cfun').read_text().strip(), '0')
+        self.assertTrue((self.tmp / 'run' / 'mu300' / 'sim-radio-held').exists())
+        # a radio that is on goes into flight mode
+        r, cmds = self.md('rc=0; radio_on || rc=$?; echo rc=$rc', policy='0 1\n', cfun='1')
+        self.assertIn('rc=7', r.stdout, r.stderr)
+        self.assertIn('AT+CFUN=4', cmds)
+        self.assertEqual((self.tmp / 'cfun').read_text().strip(), '4')
+        # the other card off does not matter to this one; flight mode with the setting on is switched back on
+        r, cmds = self.md('rc=0; radio_on || rc=$?; echo rc=$rc', policy='1 0\n', cfun='4')
+        self.assertIn('rc=0', r.stdout, r.stderr)
+        self.assertIn('AT+CFUN=1', cmds)
+        r, cmds = self.md('rc=0; radio_on || rc=$?; echo rc=$rc', policy='1 0\n', cfun='0')
+        self.assertIn('rc=0', r.stdout, r.stderr)
+        self.assertIn('AT+SFUN=4', cmds)
+
+    def test_the_dial_and_the_reset(self):
+        r, cmds = self.md('rc=0; (up_locked) || rc=$?; echo rc=$rc', policy='0 0\n', MU300_NETIFD=1)
+        self.assertIn('rc=7', r.stdout, r.stderr)
+        self.assertEqual(cmds, [])
+        # Ubuntu: no dial, no failure (the service stays up)
+        r, cmds = self.md('rc=0; (up_locked) || rc=$?; echo rc=$rc', policy='0 0\n', MU300_NETIFD=0)
+        self.assertIn('rc=0', r.stdout, r.stderr)
+        self.assertIn('radio of SIM1 is off', r.stdout)
+        self.assertEqual(cmds, [])
+        r, cmds = self.md('rc=0; sim_reset || rc=$?; echo rc=$rc', policy='0 1\n', cfun='1')
+        self.assertIn('rc=1', r.stdout)
+        self.assertEqual(cmds, [])
+
+    def test_rf_apply(self):
+        self.stub('ubus', 'echo "{ \\"up\\": true, \\"autostart\\": ${T_AUTOSTART:-true} }"')
+        self.stub('ifup', 'echo "ifup $*" >> "$STUBLOG/ifup"')
+        held = self.tmp / 'run' / 'mu300' / 'sim-radio-held'
+        # off: the WAN restarted (its dial then ends with SIM_RADIO_DISABLED), flight mode
+        r, cmds = self.md('rf_apply; echo rc=$?', policy='0 1\n', cfun='1', MU300_NETIFD=1)
+        self.assertIn('rc=0', r.stdout, r.stderr)
+        self.assertEqual((self.tmp / 'ifup').read_text(), 'ifup wan\n')
+        self.assertEqual((self.tmp / 'cfun').read_text().strip(), '4')
+        self.assertTrue(held.exists())
+        # on: AT+CFUN=1, and the WAN that was held comes back
+        (self.tmp / 'ifup').unlink()
+        r, cmds = self.md('rf_apply; echo rc=$?', policy='1 1\n', cfun='4', MU300_NETIFD=1)
+        self.assertIn('rc=0', r.stdout, r.stderr)
+        self.assertIn('AT+CFUN=1', cmds)
+        self.assertIn('AT+CAVIMS=1', cmds)                     # the card's voice choice, as at every start
+        self.assertEqual((self.tmp / 'ifup').read_text(), 'ifup wan\n')
+        self.assertFalse(held.exists())
+        # on, but nothing was held (the WAN was down on purpose): no ifup
+        (self.tmp / 'ifup').unlink()
+        r, cmds = self.md('rf_apply; echo rc=$?', policy='1 1\n', cfun='4', MU300_NETIFD=1)
+        self.assertFalse((self.tmp / 'ifup').exists())
+
+    def test_every_radio_on_path_asks(self):
+        text = (BIN / 'mobile-data').read_text()
+        for marker in ('radio_on_locked() {\n    if ! rf_allowed', 'sim_reset() {\n    rf_allowed',
+                       'if ! rf_allowed; then rf_hold; continue; fi'):
+            self.assertIn(marker, text)
+        up = text[text.index('up_locked() {'):text.index('\n}\n', text.index('up_locked() {'))]
+        self.assertLess(up.index('rf_allowed'), up.index('radio_on'))
+        for name in ('mu300-sim-u30', 'mu300-sim2-start', 'mu300-sim2-warmup'):
+            self.assertIn('allowed', (BIN / name).read_text(), name)
+        self.assertIn('mu300-sim-radio', (TOP / 'rootfs/overlay/opt/mu300/lib/path-commands').read_text().split())
+
 class DataRoaming(ShellTest):
     """Data roaming (FINDINGS 120): the setting, the dial's gate, the watchdog's two moves. mobile-data sourced as in
     MobileData (its lib() and modem); the modem here also answers AT+C5GREG? ($C5GREG) and AT+CGACT? ($CGACT), and

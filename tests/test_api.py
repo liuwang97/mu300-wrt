@@ -571,6 +571,25 @@ class MobileData(ApiCase):
                          'the modem did not take volte off; nothing was saved')
             (self.bin / 'mobile-data').unlink()
 
+    def test_radio(self):
+        """FINDINGS 182: radio.get is mu300-sim-radio status --json; radio.set slot 1/2/"all" as 0/1/all."""
+        for shell in self.each_shell():
+            self.refused(shell, 'radio.get', {}, 'unsupported', 'mu300-sim-radio')
+            self.tool('mu300-sim-radio')
+            self.out('mu300-sim-radio', '{"ok":1,"enabled":[true,false],"all_off":false,"active":0}\n')
+            o = self.ok(shell, 'radio.get')
+            self.assertEqual(o['radio']['enabled'], [True, False])
+            for bad in ({'slot': 3, 'state': 'on'}, {'slot': 'both', 'state': 'on'}, {'slot': 1, 'state': 'maybe'}):
+                self.refused(shell, 'radio.set', bad, 'bad-value')
+            self.refused(shell, 'radio.set', {'state': 'on'}, 'missing', 'slot')
+            self.out('mu300-sim-radio', 'SIM1 radio off (saved)\n')
+            for slot, arg in ((1, '0'), (2, '1'), ('all', 'all')):
+                o = self.ok(shell, 'radio.set', {'slot': slot, 'state': 'off'})
+                self.assertEqual(self.calls('mu300-sim-radio')[-1], ['mu300-sim-radio', 'set', arg, 'off'])
+            self.out('mu300-sim-radio', '', rc=75, err='mu300-sim-radio: a radio change is already running')
+            self.refused(shell, 'radio.set', {'slot': 1, 'state': 'on'}, 'busy')
+            (self.bin / 'mu300-sim-radio').unlink()
+
     def test_locks_are_the_panels_alone(self):
         for shell in self.each_shell():
             self.refused(shell, 'lock.get', {}, 'unsupported')
