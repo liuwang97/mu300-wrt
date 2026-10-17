@@ -1174,6 +1174,26 @@ int sprd_cfg80211_mgmt_tx(struct wiphy *wiphy, struct wireless_dev *wdev,
 	static u64 mgmt_index;
 	int ret = 0;
 
+	/* MU300 (from PR #237, oswaldxdd): nl80211 lets an access point send a management frame on its own channel
+	 * without naming a frequency, and the vendor code dereferenced params->chan regardless (an oops at
+	 * mgmt_tx+0x60). Without a channel: the access point's own, never an off-channel one.
+	 */
+	if (!chan) {
+		if (params->offchan ||
+		    (wdev->iftype != NL80211_IFTYPE_AP && wdev->iftype != NL80211_IFTYPE_P2P_GO))
+			return -EINVAL;
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0))
+		/* one non-MLO link on this chip */
+		if (wdev->valid_links || params->link_id > 0)
+			return -EINVAL;
+		chan = wdev->links[0].ap.chandef.chan;
+#else
+		chan = wdev->chandef.chan;
+#endif
+		if (!chan)
+			return -ENODATA;
+	}
+
 	*cookie = ++mgmt_index;
 	netdev_info(wdev->netdev, "%s cookie %lld\n", __func__, *cookie);
 
