@@ -92,6 +92,8 @@ docker run --rm -v "$TOP/tools":/src:ro -v "$IN/tools":/o mu300-kbuild sh -c '
 H='$y$j9T$yozuPAQ4fDSQH5fJzaFQd/$Z6UKqnHQMcZqZNJ18QIV5mTrJ7raj2y7MDipRg8bUj.'
 [ "$(printf '%s\n%s\n' 'old secret 1' "$H" | docker run --rm -i -v "$IN/tools/pwcheck":/p:ro mu300-kbuild /p/mu300-pwcheck)" = MATCH ] ||
     { echo "mu300-pwcheck does not check a yescrypt hash" >&2; exit 1; }
+# e2fsck for the boot ramdisk: init runs it on a root filesystem whose superblock records an error (FINDINGS 182)
+sh "$TOP/tools/e2fsck/build.sh" "$IN/tools/e2fsck/e2fsck" >/dev/null
 # adbd (adb over USB to Linux): static aarch64, from AOSP's sources (tools/adbd/build.sh)
 sh "$TOP/tools/adbd/build.sh" "$IN/tools/adbd/adbd" >/dev/null
 # cltest links against Android's libraries at build time only; use a local build when there is one
@@ -111,11 +113,13 @@ printf 'sdcard\nlinux-slot\ngpt-root\n' > "$K/features"
 cp "$KOUT/Image" "$KOUT/modules.builtin" "$KOUT/modules.builtin.modinfo" "$IN/busybox" "$IN/tools/logdw/logdw" "$K/"
 # beside busybox for the installers' password check (the Magisk zips take both from here; FINDINGS 126)
 cp "$IN/tools/pwcheck/mu300-pwcheck" "$K/"
+# beside busybox for every boot ramdisk built from this bundle (install.sh, install.ps1, upstream/make-bundle.sh)
+cp "$IN/tools/e2fsck/e2fsck" "$K/"
 # the device-independent part of the boot ramdisk, which mu300-update puts behind the device's own ramdisk to update
 # the kernel and the boot image without a computer (same builder and file list as install.sh)
 python3 "$TOP/boot/build-boot-image.py" --generic-ramdisk --modules "$IN/out/modules" --busybox "$IN/busybox" \
   --device-modules "u30air=$KOUT/modules-u30air" \
-  --logdw "$IN/tools/logdw/logdw" --ueventd-perms "$TOP/android-vendor/ueventd-perms.sh" \
+  --logdw "$IN/tools/logdw/logdw" --e2fsck "$IN/tools/e2fsck/e2fsck" --ueventd-perms "$TOP/android-vendor/ueventd-perms.sh" \
   --out "$K/ramdisk-generic.lz4" >/dev/null
 tar -C "$K" -czf "$D/mu300-kernel.tar.gz" .
 rm -rf "$K"
@@ -259,6 +263,16 @@ for a in mu300-kernel mu300-kernel-6.18 mu300-kernel-7.2; do
     tar -xzOf "$D/$a.tar.gz" ./features 2>/dev/null | grep -qx linux-slot || { echo "$a does not list linux-slot in ./features"; fail=1; }
     tar -xzOf "$D/$a.tar.gz" ./features 2>/dev/null | grep -qx gpt-root || { echo "$a does not list gpt-root in ./features"; fail=1; }
 done
+# every generic ramdisk segment brings init's e2fsck: a root filesystem with recorded errors is checked before it is
+# mounted (FINDINGS 182)
+for a in mu300-kernel mu300-kernel-6.18 mu300-kernel-7.2; do
+    tar -xzOf "$D/$a.tar.gz" ./ramdisk-generic.lz4 > "$D/ramdisk.check" 2>/dev/null &&
+    python3 -c 'import importlib.util as u, sys
+s = u.spec_from_file_location("b", sys.argv[1]); b = u.module_from_spec(s); s.loader.exec_module(b)
+sys.exit("sbin/e2fsck" not in b.cpio_names(b.unlz4_legacy(open(sys.argv[2], "rb").read())))' \
+        "$TOP/boot/build-boot-image.py" "$D/ramdisk.check" || { echo "$a: its ramdisk-generic.lz4 has no sbin/e2fsck"; fail=1; }
+    rm -f "$D/ramdisk.check"
+done
 # a mainline bundle carries the kernel's own modules next to the vendor ones (upstream/build-modules.sh): one of each
 # kind - qdisc, filesystem, device mapper, USB modem, vhost - and the vendor Wi-Fi
 for a in mu300-kernel-6.18 mu300-kernel-7.2; do
@@ -307,7 +321,7 @@ first with \`./install.sh --check\`.
 
 | file | contents |
 |---|---|
-| mu300-kernel.tar.gz | Linux 5.4.254 \`Image\` and modules (with the U30 Air's own in \`modules-u30air/\`), with the patches of \`kernel/patches\` (among them: no panic when a network namespace goes away, #103, and the Wi-Fi driver's routine lines no longer at error level, #140), static busybox and logdw for the boot image, the installers' static password checker \`mu300-pwcheck\`, and the generic boot ramdisk segment \`mu300-update\` uses |
+| mu300-kernel.tar.gz | Linux 5.4.254 \`Image\` and modules (with the U30 Air's own in \`modules-u30air/\`), with the patches of \`kernel/patches\` (among them: no panic when a network namespace goes away, #103, and the Wi-Fi driver's routine lines no longer at error level, #140), static busybox, logdw and e2fsck for the boot image, the installers' static password checker \`mu300-pwcheck\`, and the generic boot ramdisk segment \`mu300-update\` uses |
 | mu300-kernel-6.18.tar.gz | mainline Linux 6.18 (longterm) for \`mu300-update kernel 6.18\`: \`Image\`, modules, generic boot ramdisk segment; with BTF and the BPF JIT (so the VPN module's dae engine runs), FunctionFS (for adb) and card detect for the F50's SD slot (an empty slot is no longer polled, #181) |
 | mu300-kernel-7.2.tar.gz | mainline Linux 7.2 (newest stable) for \`mu300-update kernel 7.2\`: the same parts |
 | mu300-ubuntu-rootfs.tar.gz | Ubuntu 24.04 LTS root filesystem |

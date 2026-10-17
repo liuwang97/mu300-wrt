@@ -263,6 +263,7 @@ find_sd_root() { [ "$CARD_NOW" = 1 ] && { echo /dev/mmcblk1p1; return 0; }; retu
 wait_sd_root() { echo "wait $*" >> "$T/log"; [ "$CARD_LATE" = 1 ] && { echo /dev/mmcblk1p1; return 0; }; return 1; }
 find_root_offset() { [ "$INTERNAL" = 1 ] && { echo 4096; return 0; }; return 1; }
 gpt_root() { [ "$PART" = 1 ] && { echo /dev/mmcblk0p60; return 0; }; return 1; }
+root_fsck() { echo "fsck $1" >> "$T/log"; }
 losetup() { case $1 in -f) echo /dev/loop0 ;; -d) echo "detach $2" >> "$T/log" ;; -o) echo "attach $4" >> "$T/log" ;; esac; }
 cat() { case $1 in /sys/*) echo "$ROOT_OFFSET" ;; *) command cat "$@" ;; esac; }
 dd() { [ "$INTERNAL" = 1 ] && printf '\123\357'; }
@@ -334,7 +335,7 @@ class RootSelect(ShellTest):
             out, dev, log = self.select(shell, marker=True, INTERNAL=1, CARD_LATE=1)
             self.assertEqual('mounted=1 on=card disk-dev=/dev/mmcblk1p1', out)
             self.assertEqual('/dev/mmcblk1p1', dev)
-            self.assertIn('wait 8 30\ndetach /dev/loop0\nstage=sd-root dev=/dev/mmcblk1p1', log)
+            self.assertIn('wait 8 30\ndetach /dev/loop0\nfsck /dev/mmcblk1p1\nstage=sd-root dev=/dev/mmcblk1p1', log)
 
     def test_marker_and_no_card(self):
         for shell in self.each_shell():
@@ -409,6 +410,16 @@ class RootSelect(ShellTest):
             self.assertEqual('mounted=0 on= disk-dev=', out)
             self.assertEqual('', dev)
             self.assertIn('stage=root-part-failed dev=/dev/mmcblk0p60', log)
+
+    def test_fsck_before_every_mount(self):
+        # the unmounted device is what e2fsck gets: the loop, the GPT partition, the card
+        for shell in self.each_shell():
+            _, _, log = self.select(shell, INTERNAL=1)
+            self.assertIn('attach /dev/mmcblk0\nfsck /dev/loop0', log)
+            _, _, log = self.select(shell, INTERNAL=0, PART=1)
+            self.assertIn('fsck /dev/mmcblk0p60\nstage=root-part dev=/dev/mmcblk0p60', log)
+            _, _, log = self.select(shell, CARD_NOW=1, INTERNAL=0)
+            self.assertIn('fsck /dev/mmcblk1p1\nstage=sd-root dev=/dev/mmcblk1p1', log)
 
     def test_no_internal_and_late_card(self):
         for shell in self.each_shell():
@@ -1125,3 +1136,125 @@ class BootTries(ShellTest):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class Fsck(ShellTest):
+    """root_fsck: e2fsck only when the superblock records an error, and never a reason not to boot."""
+
+    def code(self):
+        m = re.search(r'# --- fsck begin\n(.*?)# --- fsck end', INIT, re.S)
+        self.assertIsNotNone(m, 'boot/init has no fsck block')
+        code = m.group(1)
+        for path in ('/run/', '/proc/uptime'):
+            self.assertIn(path, code)
+        (self.tmp / 'run').mkdir(exist_ok=True)
+        (self.tmp / 'uptime').write_text('100.00 50.00\n')
+        return code.replace('/run/', '$T/run/').replace('/proc/uptime', '$T/uptime')
+
+    def dev(self, state=1, errors=0):
+        d = bytearray(4096)
+        d[1080:1082] = b'\x53\xef'
+        d[1082:1084] = state.to_bytes(2, 'little')
+        d[1428:1432] = errors.to_bytes(4, 'little')
+        (self.tmp / 'disk').write_bytes(bytes(d))
+        return self.tmp / 'disk'
+
+    def fsck_stub(self, body):
+        f = self.tmp / 'e2fsck'
+        f.write_text('#!/bin/sh\necho "$*" >> "$T/args"\n' + body + '\n')
+        f.chmod(0o755)
+        return f
+
+    def run_fsck(self, shell, timeout=20, **env):
+        for f in ('log', 'args'):
+            (self.tmp / f).unlink(missing_ok=True)
+        code = 'log() { echo "$*" >> "$T/log"; }\n' + self.code() + '\nroot_fsck "$DEV"; echo "rc=$?"'
+        env.setdefault('MU300_FSCK_BIN', str(self.tmp / 'e2fsck'))
+        r = self.sh(shell, code, T=self.tmp, DEV=self.tmp / 'disk', MU300_FSCK_TIMEOUT=str(timeout), **env)
+        log = self.tmp / 'log'
+        args = self.tmp / 'args'
+        return (r.stdout.strip(), log.read_text() if log.exists() else '',
+                args.read_text() if args.exists() else '')
+
+    def test_clean_filesystem_runs_nothing(self):
+        self.dev(state=1)
+        self.fsck_stub('exit 0')
+        for shell in self.each_shell():
+            self.assertEqual(('rc=0', '', ''), self.run_fsck(shell))
+
+    def test_error_bit_runs_e2fsck(self):
+        self.dev(state=3, errors=258)
+        self.fsck_stub('echo "mu300root: 12/16384 files (0.0% non-contiguous), 9545/65536 blocks"; exit 1')
+        for shell in self.each_shell():
+            out, log, args = self.run_fsck(shell)
+            self.assertEqual('rc=0', out)
+            self.assertEqual(f'-fy {self.tmp}/disk\n', args)
+            self.assertIn(f'stage=fsck-start dev={self.tmp}/disk state=3 errors=258 timeout=20s', log)
+            self.assertIn('stage=fsck-done', log)
+            self.assertIn('rc=1 (errors corrected)', log)
+            self.assertIn('9545/65536 blocks', log)
+            self.assertIn('broken_system_clock = 1', (self.tmp / 'run' / 'e2fsck.conf').read_text())
+
+    def test_failure_still_boots(self):
+        self.dev(state=2)
+        for rc, why in ((4, 'errors left uncorrected'), (8, 'operational error'), (12, 'operational error'),
+                        (32, 'cancelled'), (16, 'usage or library error')):
+            self.fsck_stub(f'exit {rc}')
+            for shell in self.each_shell():
+                out, log, _ = self.run_fsck(shell)
+                self.assertEqual('rc=0', out)
+                self.assertIn(f'stage=fsck-FAILED dev={self.tmp}/disk rc={rc} ({why}; booting anyway)', log)
+
+    def test_timeout_stops_it_and_boots(self):
+        self.dev(state=2)
+        self.fsck_stub('exec sleep 30')
+        for shell in self.each_shell():
+            out, log, _ = self.run_fsck(shell, timeout=1)
+            self.assertEqual('rc=0', out)
+            self.assertIn('stage=fsck-TIMEOUT', log)
+            self.assertIn('rc=143 (killed by signal 15; booting anyway)', log)
+
+    def test_no_e2fsck_in_the_ramdisk(self):
+        self.dev(state=2)
+        for shell in self.each_shell():
+            out, log, _ = self.run_fsck(shell, MU300_FSCK_BIN=str(self.tmp / 'none'))
+            self.assertEqual('rc=0', out)
+            self.assertIn('stage=fsck-unavailable', log)
+
+    def test_force_and_off(self):
+        self.fsck_stub('exit 0')
+        for shell in self.each_shell():
+            self.dev(state=1)
+            out, log, args = self.run_fsck(shell, MU300_FSCK='force')
+            self.assertIn('rc=0 (no errors)', log)
+            self.dev(state=2)
+            self.assertEqual(('rc=0', '', ''), self.run_fsck(shell, MU300_FSCK='off'))
+
+    def test_not_an_ext4_read_error(self):
+        (self.tmp / 'disk').unlink(missing_ok=True)
+        self.fsck_stub('exit 0')
+        for shell in self.each_shell():
+            self.assertEqual(('rc=0', '', ''), self.run_fsck(shell))
+
+    @unittest.skipUnless(shutil.which('mkfs.ext4') and shutil.which('debugfs') and shutil.which('e2fsck'),
+                         'e2fsprogs is not installed')
+    def test_real_e2fsck_clears_the_error(self):
+        import subprocess
+        img = self.tmp / 'disk'
+        img.unlink(missing_ok=True)
+        with open(img, 'wb') as f:
+            f.truncate(16 << 20)
+        subprocess.run(['mkfs.ext4', '-q', '-F', '-L', 'mu300root', str(img)], check=True)
+        subprocess.run(['debugfs', '-w', '-R', 'ssv state 3', str(img)], check=True, capture_output=True)
+        subprocess.run(['debugfs', '-w', '-R', 'ssv error_count 5', str(img)], check=True, capture_output=True)
+        shell = self.shells[0]
+        out, log, _ = self.run_fsck(shell, MU300_FSCK_BIN=shutil.which('e2fsck'))
+        self.assertEqual('rc=0', out)
+        self.assertIn('state=3 errors=5', log)
+        self.assertIn('stage=fsck-done', log)
+        data = img.read_bytes()[:4096]
+        self.assertEqual(0, data[1082] & 2)
+        self.assertEqual(b'\0\0\0\0', data[1428:1432])
+        # the next boot reads one byte and runs nothing
+        out, log, _ = self.run_fsck(shell, MU300_FSCK_BIN=shutil.which('e2fsck'))
+        self.assertEqual(('rc=0', ''), (out, log))
