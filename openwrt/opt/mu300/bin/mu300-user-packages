@@ -51,7 +51,11 @@ count() { [ -s "$1" ] && awk 'NF' "$1" | wc -l | tr -d ' ' || echo 0; }
 # ---- the package managers --------------------------------------------------------------------------------------
 # offline is a failure: apk says so, apt-get only with --error-on=any (else it warns and returns 0)
 pm_update() {
-    if [ "$KIND" = openwrt ]; then apk_update; else apt-get update -q --error-on=any; fi
+    # bounded: offline, a plain apt-get update waited on its connections for more than 10 minutes
+    if [ "$KIND" = openwrt ]; then apk_update
+    elif command -v timeout >/dev/null 2>&1; then
+        timeout "${MU300_PKG_APT_TIMEOUT:-300}" apt-get update -q --error-on=any -o Acquire::http::Timeout=10 -o Acquire::https::Timeout=10 -o Acquire::Retries=0
+    else apt-get update -q --error-on=any -o Acquire::http::Timeout=10 -o Acquire::https::Timeout=10 -o Acquire::Retries=0; fi
 }
 # apk_update: apk update, online when at least one of the configured feeds answered. apk fails the whole update for
 # one feed that does not (a user's own feed that is gone, "N unavailable"), and the reinstall then waited for an

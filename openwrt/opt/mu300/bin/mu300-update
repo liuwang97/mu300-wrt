@@ -2135,6 +2135,12 @@ extra_put() {
         [ -d "$EXTRA/.$1.old" ] && mv "$EXTRA/.$1.old" "$EXTRA/$1"
         return 1
     fi
+    # the panel: Cockpit's packages the old extra kept (an offline install, or what an online one downloaded) go
+    # along to a new one that brings none (the release's online extra, which every update installs): without them a
+    # device that is offline after an update had no Cockpit until it was online again
+    if [ "$1" = panel ] && [ -d "$EXTRA/.$1.old/debs" ] && [ ! -e "$EXTRA/$1/debs" ]; then
+        mv "$EXTRA/.$1.old/debs" "$EXTRA/$1/debs" || echo "extra panel: Cockpit's packages of the previous extra were not kept" >&2
+    fi
     rm -rf "$EXTRA/.$1.old"
     sync
 }
