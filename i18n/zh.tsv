@@ -67,6 +67,9 @@ Which OpenWrt?	要哪个 OpenWrt？
 2) OpenWrt {1} with the MU300 control panel: dashboard, cellular locks, SMS, AT terminal, USB modes (by kanoqwq)	2) OpenWrt {1} 搭配 MU300 控制面板：仪表盘、蜂窝锁定、短信、AT 终端、USB 模式（kanoqwq 制作）
 MU300_OPENWRT must be plain or luci	MU300_OPENWRT 必须是 plain 或 luci
 that choice needs about {1} MiB and this device has {2} MiB of free space	该选择需要约 {1} MiB，而此设备只有 {2} MiB 空闲空间
+Choose 2 (OpenWrt) instead: it fits here.	请改选 2（OpenWrt）：它装得下。
+Choose 1 (Ubuntu) or 2 (OpenWrt) instead: one system fits here.	请改选 1（Ubuntu）或 2（OpenWrt）：这里只装得下一个系统。
+An OpenWrt zip of this release fits here.	本版本的 OpenWrt zip 装得下。
 Which one should boot ({1})	启动哪个系统（{1}）
 invalid system	无效的系统
 Boot Linux by default instead of Android (falls back to Android if Linux fails)? (yes/no)	默认启动 Linux 而不是 Android 吗（Linux 启动失败时会回到 Android）？(是/否)
@@ -666,6 +669,7 @@ the other system	另一个系统
 Linux was removed. The device starts stock Android; restart it once to check.	Linux 已移除。设备将启动原厂 Android；请重启一次以确认。
 Give the space behind userdata back to it (experimental; ERASES Android's data)	把 userdata 之后的空间还给它（实验性；会清除 Android 的数据）
 Only for a device where this installer shrank userdata to make room. On the usual 64 GB device the space behind userdata is free from the factory: leave this off.	仅适用于曾由此安装程序缩小 userdata 来腾出空间的设备。在常见的 64 GB 设备上，userdata 之后的空间出厂时就是空闲的：请保持关闭。
+Leave it off too if Linux may be installed again: the installer then uses this space without touching Android. With it on, a new installation has to make room again, which resets Android once more.	如果以后可能再次安装 Linux，也请保持关闭：安装程序会直接使用这块空间，不会动 Android。打开后，新的安装必须重新腾出空间，这会再次重置 Android。
 Type ERASE to allow that:	输入 ERASE 以允许此操作：
 This window	此窗口
 drives install.sh / install.ps1 in their answers mode; it installs nothing by itself	以应答模式驱动 install.sh / install.ps1；它本身不安装任何内容
