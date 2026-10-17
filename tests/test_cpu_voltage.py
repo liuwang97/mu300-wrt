@@ -220,6 +220,8 @@ class InitDecision(ShellTest):
             self.assertEqual(self.written(), '0,0,0')
             self.assertIn('LOG stage=cpu-voltage 0,0,0', out)
             self.assertIsNone(self.f('cpu-voltage-armed'))
+            # handed over, not waited for (the fake driver 'applies' only on a wait): no boot pays for DVFS starting
+            self.assertEqual((self.sys / 'voltage_state').read_text().strip(), 'waiting')
 
     def test_a_new_value_gets_one_trial_boot_then_the_good_mark_keeps_it(self):
         for shell in self.each_shell():

@@ -616,6 +616,11 @@ cpuv_write() {  # cpuv_write A,B,C: hand it to the driver; true once DVFS runs w
     done
     return 1
 }
+cpuv_stock() {  # the stock call (0,0,0), handed over without waiting: true when the driver took it. DVFS_INIT and the
+    # cpufreq registration then run in the driver's work while the boot goes on - waiting for "applied" held every boot
+    # for about 1.4 s (F50-B, 7.2.11: the registration's 0.4 s and a second of stalled forks after it)
+    echo 0,0,0 > "$CPUV_SYS/voltage_offset_uv" 2>/dev/null
+}
 cpuv_reject() {  # cpuv_reject DIR VALUE REASON: back to the stock voltages, and the request gone
     echo "$2 $3" > "$1/cpu-voltage-rejected"
     echo 0,0,0 > "$1/cpu-voltage"
@@ -626,7 +631,7 @@ cpuv_reject() {  # cpuv_reject DIR VALUE REASON: back to the stock voltages, and
 cpu_voltage_stock() {  # no Linux disk: DVFS at the stock voltages now rather than after the driver's 45 s
     [ -w "$CPUV_SYS/voltage_offset_uv" ] || return 0
     [ "$(cat "$CPUV_SYS/voltage_state" 2>/dev/null)" = waiting ] || return 0
-    cpuv_write 0,0,0 && log "stage=cpu-voltage 0,0,0" || log "stage=cpu-voltage-failed 0,0,0"
+    cpuv_stock && log "stage=cpu-voltage 0,0,0" || log "stage=cpu-voltage-failed 0,0,0"
 }
 cpu_voltage_boot() {  # cpu_voltage_boot DIR: DIR is .mu300 on the mounted Linux disk
     [ -w "$CPUV_SYS/voltage_offset_uv" ] || return 0         # a kernel without the offset (5.4, an older mainline)
@@ -654,6 +659,12 @@ cpu_voltage_boot() {  # cpu_voltage_boot DIR: DIR is .mu300 on the mounted Linux
         echo "$_want" > "$_d/cpu-voltage-armed" 2>/dev/null; sync
         [ "$(head -n1 "$_d/cpu-voltage-armed" 2>/dev/null)" = "$_want" ] || { rm -f "$_d/cpu-voltage-armed"; _want=0,0,0; }
     fi
+    if [ "$_want" = 0,0,0 ]; then
+        cpuv_stock && { log "stage=cpu-voltage 0,0,0"; return 0; }
+        log "stage=cpu-voltage-failed 0,0,0 state=$(cat "$CPUV_SYS/voltage_state" 2>/dev/null)"
+        return 0
+    fi
+    # an offset: waited for, so that a DVFS_INIT that fails with it is taken back before this boot goes on
     if cpuv_write "$_want"; then
         log "stage=cpu-voltage $_want"
         return 0
@@ -662,7 +673,7 @@ cpu_voltage_boot() {  # cpu_voltage_boot DIR: DIR is .mu300 on the mounted Linux
         # refused by the kernel (no raise without a known DCDC maximum, ...) or DVFS_INIT failed with it
         if [ "$(cat "$CPUV_SYS/voltage_state" 2>/dev/null)" = waiting ]; then
             cpuv_reject "$_d" "$_want" kernel-refused
-            cpuv_write 0,0,0 && { log "stage=cpu-voltage 0,0,0"; return 0; }
+            cpuv_stock && { log "stage=cpu-voltage 0,0,0"; return 0; }
         else
             cpuv_reject "$_d" "$_want" kernel-failed
         fi
