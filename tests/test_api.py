@@ -1023,7 +1023,9 @@ class ModemTools(ApiCase):
             self.assertEqual(o['containers'][1], {'name': 'db "x"', 'image': 'pg', 'state': 'exited', 'status': 'Exited (0)'})
             self.assertEqual((o['installed'], o['active'], len(o['containers'])), (True, 'active', 2))
             (self.stubs / 'docker').unlink()
-            self.assertEqual(self.ok(shell, 'docker.status', PATH=f'{self.stubs}:/usr/bin:/bin'), {'ok': 1, 'installed': False})
+            # without Docker (a machine that has one of its own on /usr/bin cannot show this)
+            if not shutil.which('docker', path='/usr/bin:/bin'):
+                self.assertEqual(self.ok(shell, 'docker.status', PATH=f'{self.stubs}:/usr/bin:/bin'), {'ok': 1, 'installed': False})
             (self.stubs / 'docker').write_text(RECORD)
             (self.stubs / 'docker').chmod(0o755)
 
