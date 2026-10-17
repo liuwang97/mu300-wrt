@@ -8,7 +8,7 @@
 #                            on the root filesystem (Ubuntu: extra/, indexed by depmod; OpenWrt: flat, for kmodloader)
 #     ./kernel.release       the kernel's release string (uname -r)
 #     ./devices              the devices it runs on (f50 u30air, and v50 when the kernel has its LED driver)
-#     ./features             what it can do that older bundles could not (sdcard, linux-slot)
+#     ./features             what it can do that older bundles could not (sdcard, linux-slot, gpt-root)
 #     ./modules.builtin*     what the kernel has built in, for depmod/modprobe
 # busybox and logdw are the static helpers of the 5.4 bundle (default: the newest one under release/).
 set -eu
@@ -60,7 +60,8 @@ else
 fi
 # what this kernel can do that an older bundle could not; mu300-update reads it before it replaces a kernel
 # (sdcard: the card slot's host is probed, so a system on the SD card can boot with it; linux-slot: its init runs
-# from slot a as well, when Android is on b)
-printf 'sdcard\nlinux-slot\n' > "$W/b/features"
+# from slot a as well, when Android is on b; gpt-root: its init also boots a system in a GPT partition named mu300root,
+# another installer's layout, FINDINGS 178)
+printf 'sdcard\nlinux-slot\ngpt-root\n' > "$W/b/features"
 tar -C "$W/b" -czf "$OUT" .
 echo "$OUT: kernel $krel, $(ls "$W/b/modules" | wc -l | tr -d ' ') modules ($(du -sk "$W/b/modules" | cut -f1) KiB), ramdisk segment $(wc -c < "$W/b/ramdisk-generic.lz4" | tr -d ' ') bytes"

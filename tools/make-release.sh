@@ -105,8 +105,9 @@ cp -R "$KOUT/modules-u30air" "$K/modules-u30air"
 # this project (kano's) ran mainline, and its LED driver is mainline only (upstream/make-bundle.sh, FINDINGS 95)
 echo "f50 u30air" > "$K/devices"
 # what it can do that older bundles could not: 5.4 reads the SD card (FINDINGS 31j), so a system on the card may get
-# it; its init runs from either slot, so a Linux on slot a may get it (mu300-update checks both)
-printf 'sdcard\nlinux-slot\n' > "$K/features"
+# it; its init runs from either slot, so a Linux on slot a may get it (mu300-update checks both); the same init finds a
+# system in a GPT partition named mu300root (gpt-root, FINDINGS 178)
+printf 'sdcard\nlinux-slot\ngpt-root\n' > "$K/features"
 cp "$KOUT/Image" "$KOUT/modules.builtin" "$KOUT/modules.builtin.modinfo" "$IN/busybox" "$IN/tools/logdw/logdw" "$K/"
 # beside busybox for the installers' password check (the Magisk zips take both from here; FINDINGS 126)
 cp "$IN/tools/pwcheck/mu300-pwcheck" "$K/"
@@ -256,6 +257,7 @@ done
 for a in mu300-kernel mu300-kernel-6.18 mu300-kernel-7.2; do
     tar -xzOf "$D/$a.tar.gz" ./features 2>/dev/null | grep -qx sdcard || { echo "$a does not list sdcard in ./features"; fail=1; }
     tar -xzOf "$D/$a.tar.gz" ./features 2>/dev/null | grep -qx linux-slot || { echo "$a does not list linux-slot in ./features"; fail=1; }
+    tar -xzOf "$D/$a.tar.gz" ./features 2>/dev/null | grep -qx gpt-root || { echo "$a does not list gpt-root in ./features"; fail=1; }
 done
 # a mainline bundle carries the kernel's own modules next to the vendor ones (upstream/build-modules.sh): one of each
 # kind - qdisc, filesystem, device mapper, USB modem, vhost - and the vendor Wi-Fi

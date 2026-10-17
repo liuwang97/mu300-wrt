@@ -225,6 +225,28 @@ class Region(ShellTest):
         for shell in self.each_shell():
             self.assertEqual(f'{2 << 20}\nrc=0', self.find(shell, emmc, 3 << 20).strip())
 
+    def test_gpt_partition_named_mu300root(self):
+        # kanoqwq's desktop installer: the system in a GPT partition of that name, no region (#290). Found on the
+        # eMMC only, and only with the mu300root filesystem in it
+        e = re.search(r'# --- emmc begin\n(.*?)# --- emmc end', INIT, re.S).group(1)
+        sysd, dev = self.tmp / 'sys', self.tmp / 'dev'
+        dev.mkdir()
+        for disk, typ, parts in (('mmcblk0', 'MMC', {'p5': 'cache', 'p60': 'mu300root'}),
+                                 ('mmcblk1', 'SD', {'p1': 'mu300root'})):
+            (sysd / 'block' / disk / 'device').mkdir(parents=True)
+            (sysd / 'block' / disk / 'device' / 'type').write_text(typ + '\n')
+            for suffix, name in parts.items():
+                (sysd / 'block' / disk / (disk + suffix)).mkdir()
+                (sysd / 'block' / disk / (disk + suffix) / 'uevent').write_text(f'DEVTYPE=partition\nPARTNAME={name}\n')
+        fake_ext4(dev / 'mmcblk1p1', 'mu300root')
+        code = e + self.block() + f'\nMU300_SYS={sysd}; MU300_DEV={dev}; gpt_root; echo "rc=$?"'
+        for shell in self.each_shell():
+            for label, want in (('mu300root', f'{dev}/mmcblk0p60\nrc=0'), ('mu300sd', 'rc=1'), (None, 'rc=1')):
+                (dev / 'mmcblk0p60').unlink(missing_ok=True)
+                if label:
+                    fake_ext4(dev / 'mmcblk0p60', label)
+                self.assertEqual(want, self.sh(shell, code).stdout.strip(), label)
+
     def test_never_reads_past_the_end(self):
         # the default offset lies beyond this disk: skipped, not read up to (busybox dd would read the whole disk)
         emmc = self.setup_disk('mmcblk1', 100, 4 << 20)
@@ -240,17 +262,19 @@ log() { echo "$*" >> "$T/log"; }
 find_sd_root() { [ "$CARD_NOW" = 1 ] && { echo /dev/mmcblk1p1; return 0; }; return 1; }
 wait_sd_root() { echo "wait $*" >> "$T/log"; [ "$CARD_LATE" = 1 ] && { echo /dev/mmcblk1p1; return 0; }; return 1; }
 find_root_offset() { [ "$INTERNAL" = 1 ] && { echo 4096; return 0; }; return 1; }
+gpt_root() { [ "$PART" = 1 ] && { echo /dev/mmcblk0p60; return 0; }; return 1; }
 losetup() { case $1 in -f) echo /dev/loop0 ;; -d) echo "detach $2" >> "$T/log" ;; -o) echo "attach $4" >> "$T/log" ;; esac; }
 cat() { case $1 in /sys/*) echo "$ROOT_OFFSET" ;; *) command cat "$@" ;; esac; }
 dd() { [ "$INTERNAL" = 1 ] && printf '\123\357'; }
 mount() {
     case $5 in
         /dev/loop*) [ "$INTERNAL" = 1 ] || return 1; ON=internal ;;
+        /dev/mmcblk0p*) [ "$PART_MOUNTS" = 0 ] && return 1; ON=part ;;
         *) [ "$CARD_MOUNTS" = 0 ] && return 1; ON=card ;;
     esac
 }
 umount() { ON=; }
-pick_root() { case $ON in internal) echo /disk/ubuntu ;; card) [ "$CARD_EMPTY" = 1 ] || echo /disk/openwrt ;; esac; }
+pick_root() { case $ON in internal) echo /disk/ubuntu ;; part) echo /disk/openwrt ;; card) [ "$CARD_EMPTY" = 1 ] || echo /disk/openwrt ;; esac; }
 ON=
 ROOT_OFFSET=27762098176
 EMMC=${EMMC:-/dev/mmcblk0}
@@ -356,6 +380,35 @@ class RootSelect(ShellTest):
             self.assertEqual('mounted=1 on=internal disk-dev=/dev/loop0', out)
             self.assertEqual('mmcblk1@4096', dev)
             self.assertIn('attach /dev/mmcblk1', log)
+
+    def test_gpt_partition_when_there_is_no_region(self):
+        # #290: another installer's partition named mu300root, mounted as it is; root-dev says internal ("@")
+        for shell in self.each_shell():
+            out, dev, log = self.select(shell, INTERNAL=0, PART=1)
+            self.assertEqual('mounted=1 on=part disk-dev=/dev/mmcblk0p60', out)
+            self.assertEqual('mmcblk0@mu300root', dev)
+            self.assertIn('stage=root-part dev=/dev/mmcblk0p60', log)
+            self.assertNotIn('attach', log)
+            self.assertNotIn('wait', log)
+
+    def test_region_wins_over_a_gpt_partition(self):
+        for shell in self.each_shell():
+            out, dev, log = self.select(shell, INTERNAL=1, PART=1)
+            self.assertEqual('mounted=1 on=internal disk-dev=/dev/loop0', out)
+            self.assertEqual('mmcblk0@4096', dev)
+            self.assertNotIn('root-part', log)
+
+    def test_card_wins_over_a_gpt_partition(self):
+        for shell in self.each_shell():
+            out, dev, log = self.select(shell, CARD_NOW=1, INTERNAL=0, PART=1)
+            self.assertEqual('mounted=1 on=card disk-dev=/dev/mmcblk1p1', out)
+
+    def test_gpt_partition_that_does_not_mount(self):
+        for shell in self.each_shell():
+            out, dev, log = self.select(shell, INTERNAL=0, PART=1, PART_MOUNTS=0)
+            self.assertEqual('mounted=0 on= disk-dev=', out)
+            self.assertEqual('', dev)
+            self.assertIn('stage=root-part-failed dev=/dev/mmcblk0p60', log)
 
     def test_no_internal_and_late_card(self):
         for shell in self.each_shell():
