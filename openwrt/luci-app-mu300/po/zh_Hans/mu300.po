@@ -39,6 +39,9 @@ msgstr "设备管理"
 msgid "Update"
 msgstr "更新"
 
+msgid "Backup of settings"
+msgstr "设置备份"
+
 msgid "Languages"
 msgstr "语言"
 
@@ -317,6 +320,75 @@ msgstr "调用失败"
 
 msgid "(empty)"
 msgstr "（空）"
+
+msgid "Passphrase (8 characters or more)"
+msgstr "口令（至少 8 个字符）"
+
+msgid "The passphrase again"
+msgstr "再次输入口令"
+
+msgid "Download the backup"
+msgstr "下载备份"
+
+msgid "Back up the settings"
+msgstr "备份设置"
+
+msgid "One file with the hotspot, mobile data and the APN, the network locks, the VPN profiles and settings, SMS forwarding, the LAN address, the host name, the time zone and the SSH keys. It holds passwords: with a passphrase it is encrypted, and only that passphrase opens it again."
+msgstr "一个文件包含热点、移动数据和 APN、网络锁定、VPN 配置和设置、短信转发、LAN 地址、主机名、时区和 SSH 密钥。文件中有密码：设置口令后会被加密，只有该口令才能再次打开。"
+
+msgid "Include the login password"
+msgstr "包含登录密码"
+
+msgid "Passphrase, if the file is encrypted"
+msgstr "口令（如果文件已加密）"
+
+msgid "Show what would change"
+msgstr "显示将要更改的内容"
+
+msgid "Restore"
+msgstr "恢复"
+
+msgid "The file is larger than 4 MiB"
+msgstr "文件大于 4 MiB"
+
+msgid "The settings of the file replace these. The hotspot, mobile data or the LAN may restart, and this page may lose its connection for a moment."
+msgstr "文件中的设置将替换当前设置。热点、移动数据或 LAN 可能会重启，本页面可能会暂时断开连接。"
+
+msgid "Restore from a backup"
+msgstr "从备份恢复"
+
+msgid "Every value of the file is checked first; one that is refused and nothing is changed. What is the same is left alone, and no VPN profile, subscription or SSH key of this device is removed."
+msgstr "文件中的每个值都会先经过检查；只要有一个被拒绝，就不会做任何更改。相同的设置保持不变，本设备的 VPN 配置、订阅和 SSH 密钥都不会被删除。"
+
+msgid "Keep this device's login password"
+msgstr "保留本设备的登录密码"
+
+msgid "Take a file of another device model"
+msgstr "接受其他设备型号的文件"
+
+msgid "The two passphrases differ"
+msgstr "两次输入的口令不同"
+
+msgid "The passphrase needs 8 characters or more"
+msgstr "口令至少需要 8 个字符"
+
+msgid "Saved (encrypted)"
+msgstr "已保存（已加密）"
+
+msgid "Saved. The file is not encrypted: it holds passwords, keep it safe."
+msgstr "已保存。文件未加密：其中含有密码，请妥善保管。"
+
+msgid "Choose a backup file first"
+msgstr "请先选择备份文件"
+
+msgid "Restoring…"
+msgstr "正在恢复…"
+
+msgid "Restored"
+msgstr "已恢复"
+
+msgid "The restore did not finish: see the lines above"
+msgstr "恢复未完成：请查看上面的内容"
 
 msgid "Loading…"
 msgstr "加载中…"
@@ -3336,6 +3408,9 @@ msgstr "未知的更新操作"
 
 msgid "Invalid update request"
 msgstr "无效的更新请求"
+
+msgid "The backup tool gave no valid reply"
+msgstr "备份工具没有给出有效的回复"
 
 # Dual SIM controls.
 msgid "Invalid SIM setting"

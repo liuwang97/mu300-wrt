@@ -64,6 +64,12 @@ var callPackagesAct = rpc.declare({ object: 'mu300dash', method: 'packages_act',
 /* System > Update: what is installed and offered, the one update task, and every action (each parameter a fixed word,
  * a release tag, a size or a SHA-256; the backend checks them again) */
 var callUpdateGet = rpc.declare({ object: 'mu300dash', method: 'update_get', params: [ 'sizes' ], expect: { '': {} }, nobatch: true });
+/* System > Backup of settings (mu300-api backup.export / backup.import, FINDINGS 155) */
+var callBackupExport = rpc.declare({ object: 'mu300dash', method: 'backup_export', params: [ 'passphrase', 'with_password' ],
+	expect: { '': {} }, nobatch: true });
+var callBackupImport = rpc.declare({ object: 'mu300dash', method: 'backup_import',
+	params: [ 'file', 'passphrase', 'dry_run', 'force', 'skip' ], expect: { '': {} }, nobatch: true });
+var callBackupJob = rpc.declare({ object: 'mu300dash', method: 'backup_job', expect: { '': {} }, nobatch: true });
 var callUpdateJob = rpc.declare({ object: 'mu300dash', method: 'update_job', expect: { '': {} }, nobatch: true });
 var callUpdateAct = rpc.declare({ object: 'mu300dash', method: 'update_act',
 	params: [ 'op', 'tag', 'systems', 'kernel', 'sha256', 'size', 'flags', 'confirm', 'url' ], expect: { '': {} }, nobatch: true });
@@ -728,6 +734,7 @@ return baseclass.extend({
 	callCpuGet: callCpuGet, callCpuSet: callCpuSet, callCpuVoltageGet: callCpuVoltageGet, callCpuVoltageSet: callCpuVoltageSet,
 	callPackagesGet: callPackagesGet, callPackagesAct: callPackagesAct,
 	callUpdateGet: callUpdateGet, callUpdateJob: callUpdateJob, callUpdateAct: callUpdateAct,
+	callBackupExport: callBackupExport, callBackupImport: callBackupImport, callBackupJob: callBackupJob,
 	callTrafficGet: callTrafficGet, callTrafficSet: callTrafficSet, callNetDev: callNetDev, netDev: netDev,
 	callTermToken: callTermToken,
 	carrierName: carrierName, qLevel: qLevel, qLevelLabel: qLevelLabel, qLabel: qLabel, qCol: qCol, qScore: qScore,

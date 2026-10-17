@@ -41,6 +41,8 @@
 #                     off, or stress (minutes 1-120: the CPU stress test, in the background)
 #   packages_get, packages_act op  the packages installed before an update, installed again (unisoc-modem/packages,
 #                     mu300-user-packages); op retry|repair_dns|dismiss
+#   backup_export, backup_import, backup_job  System > Backup of settings: mu300-api's backup.export, backup.import
+#                     and job.status (mu300-backup, FINDINGS 155); their replies are never kept in the call log
 #   update_get [sizes], update_job, update_act op ...  the System > Update page (unisoc-modem/update, mu300-update):
 #                     what is installed and what is kept, the releases, the one update task and its log, and the
 #                     release source in force; update_act starts a check, an update, a rollback, a kernel change,
@@ -977,11 +979,21 @@ do_list() {
 	"packages_act": { "op": "String" },
 	"update_get": { "sizes": "String" },
 	"update_job": { },
+	"backup_export": { "passphrase": "String", "with_password": "Boolean" },
+	"backup_import": { "file": "String", "passphrase": "String", "dry_run": "Boolean", "force": "Boolean", "skip": "String" },
+	"backup_job": { },
 	"update_act": { "op": "String", "tag": "String", "systems": "String", "kernel": "String", "sha256": "String",
 		"size": "String", "flags": "String", "confirm": "String", "url": "String" }
 }
 EOF
 }
+
+# System > Backup of settings: the request goes on to mu300-api as it came, which checks every field (and refuses any
+# other); the reply carries the backup (export) or what a restore would change (import), so run_m does not keep it
+APIB=${MU300_DASH_API:-/opt/mu300/bin/mu300-api}
+m_backup_export() { reply_obj "$(printf '%s' "$INPUT" | "$APIB" backup.export 2>/dev/null)" 'The backup tool gave no valid reply'; }
+m_backup_import() { reply_obj "$(printf '%s' "$INPUT" | "$APIB" backup.import 2>/dev/null)" 'The backup tool gave no valid reply'; }
+m_backup_job() { reply_obj "$(printf '{"from":0}' | "$APIB" job.status 2>/dev/null)" 'The backup tool gave no valid reply'; }
 
 SIMCTL=${MU300_DASH_SIM:-/opt/mu300/bin/mu300-sim}
 m_sim_get() { reply_obj "$("$SIMCTL" status --json 2>/dev/null)" 'SIM control unavailable'; }
@@ -1106,7 +1118,7 @@ m_ops_log() {
 }
 
 run_m() {  # run_m LABEL FUNCTION: the method's reply, logged
-    local out t0 dt how stamp detail head
+    local out t0 dt how stamp detail head kept
     t0=$(ticks)
     stamp="$(date '+%m-%d %H:%M:%S') $1"
     detail=$(ops_detail "$1")
@@ -1114,7 +1126,9 @@ run_m() {  # run_m LABEL FUNCTION: the method's reply, logged
     # the marker a killed call leaves behind (ops_reap)
     printf '%s\n' "$stamp" > "$DIR/ops.run.$$" 2>/dev/null
     out=$("$2" 2>/dev/null)
-    printf '=== %s %s len=%s\n%s\n' "$(date '+%m-%d %H:%M:%S')" "$1" "${#out}" "$out" >> "$LASTLOG" 2>/dev/null
+    # (a backup's reply is the file with its passwords, or what a restore changes: its length only)
+    case $1 in backup_*) kept='(a backup: not kept)' ;; *) kept=$out ;; esac
+    printf '=== %s %s len=%s\n%s\n' "$(date '+%m-%d %H:%M:%S')" "$1" "${#out}" "$kept" >> "$LASTLOG" 2>/dev/null
     tail -n 400 "$LASTLOG" > "$LASTLOG.t" 2>/dev/null && mv "$LASTLOG.t" "$LASTLOG"
     printf '%s\n' "$out"
     dt=$(( $(ticks) - t0 ))
@@ -1134,7 +1148,7 @@ run_m() {  # run_m LABEL FUNCTION: the method's reply, logged
     # or failed is.
     case $1 in
         # (the send's job logs its own result once it is in; the polls that ask after it are not worth a line each)
-        ops_log|sms_job|update_job) return ;;
+        ops_log|sms_job|update_job|backup_job) return ;;
         sysinfo|status|signal|at_job|at_history|sms_list|sms_show|*_get|usb_net_list)
             [ "$how" != ok ] || [ "$dt" -ge 200 ] || [ -n "$detail" ] || return ;;
     esac
@@ -1146,6 +1160,8 @@ list)
     do_list
     ;;
 call)
+    # a backup to restore is larger than any other request (6 MiB: a 4 MiB file, escaped)
+    [ "${2:-}" != backup_import ] || INPUT_MAX=6291456
     INPUT=$(cat 2>/dev/null)
     if input_too_large; then
         refuse 'Request too large'
@@ -1199,6 +1215,9 @@ call)
         update_get)   run_m update_get   m_update_get ;;
         update_job)   run_m update_job   m_update_job ;;
         update_act)   run_m update_act   m_update_act ;;
+        backup_export) run_m backup_export m_backup_export ;;
+        backup_import) run_m backup_import m_backup_import ;;
+        backup_job)   run_m backup_job   m_backup_job ;;
         *)           refuse 'No such method' ;;
     esac
     ;;
