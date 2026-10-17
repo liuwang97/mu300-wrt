@@ -104,8 +104,10 @@ class ExtrasBase(ShellTest):
         return self.sh(shell, f'. "{BIN}/mu300-update"; {code}', **e)
 
     def ex(self, shell, *args, **env):
+        # (a kernel that runs dae: the check before vpn-dae is downloaded reads these, not the test host's)
         e = dict(MU300_DISK=self.disk, MU300_BIN=BIN, MU300_SYSROOT=self.root, MU300_LINKDIR=self.links,
-                 MU300_OPT=BIN.parent, MU300_FETCH_DELAY=0, MU300_VPN_UNVERIFIED=1)
+                 MU300_OPT=BIN.parent, MU300_FETCH_DELAY=0, MU300_VPN_UNVERIFIED=1, MU300_KREL='6.18.56',
+                 MU300_BTF=BIN / 'mu300-extra')
         e.update(env)
         return self.script(shell, BIN / 'mu300-extra', *args, **e)
 
@@ -1384,6 +1386,63 @@ class EngineExtras(EngineExtrasBase):
             r = self.ex(shell, 'install', 'vpn-xray', '--from', d)
             self.assertNotEqual(r.returncode, 0)
             self.assertIn('does not match its SHA256SUMS', r.stderr)
+
+    def test_vpn_dae_is_refused_before_the_download_on_a_kernel_that_cannot_run_it(self):
+        for shell in self.each_shell():
+            self.reset()
+            self.serve_release()
+            for krel, btf, why in (('5.4.254', BIN / 'mu300-extra', 'Linux 5.17 or newer'),
+                                   ('6.18.56', self.tmp / 'no-btf', 'has none')):
+                r = self.ex(shell, 'install', 'vpn-dae', MU300_VPN_URL=VPN_URL, MU300_KREL=krel, MU300_BTF=btf)
+                self.assertEqual(r.returncode, 1)
+                self.assertIn(why, r.stderr)
+                self.assertIn('vpn-dae was not installed', r.stderr)
+                self.assertEqual(self.urls(), '')                      # nothing was downloaded
+                self.assertFalse((self.disk / 'extra/vpn-dae').exists())
+            r = self.ex(shell, 'install', 'vpn-dae', MU300_VPN_URL=VPN_URL, MU300_KREL='5.4.254',
+                        MU300_DAE_ANY_KERNEL='1')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertTrue((self.disk / 'extra/vpn-dae/bin/dae').exists())
+
+    def test_a_download_the_kill_switch_drops_says_so(self):
+        """uclient-fetch's "Operation not permitted" is any connection it could not make; behind the VPN's kill switch
+        with the tunnel down the line that ends the install names the kill switch, not the modem"""
+        for shell in self.each_shell():
+            self.reset()
+            self.offline()
+            r = self.ex(shell, 'install', 'vpn-dae', MU300_VPN_URL=VPN_URL)
+            self.assertEqual(r.returncode, 1)
+            self.assertIn('is the device online?', r.stderr)
+            self.assertNotIn('kill switch', r.stderr)
+            # the kill switch's table is there, and this device's own traffic leaves on the uplink (or has no route)
+            self.stub('nft', '[ "$*" = "list table inet mu300_vpn" ]')
+            for route in ('1.1.1.1 via 10.64.0.1 dev sipa_eth0 src 10.64.0.2 uid 0', '',
+                          '1.1.1.1 via 192.168.1.1 dev wlan0 src 192.168.1.5 uid 0'):
+                r = self.ex(shell, 'install', 'vpn-dae', MU300_VPN_URL=VPN_URL, MU300_KS_ROUTE=route)
+                self.assertEqual(r.returncode, 1)
+                self.assertIn('blocked by the VPN kill switch', r.stderr)
+                self.assertIn('--from DIR', r.stderr)
+                self.assertNotIn('is the device online?', r.stderr)
+            # one try, not four: the kill switch drops the next ones the same way
+            self.urls()
+            self.ex(shell, 'install', 'vpn-dae', MU300_VPN_URL=VPN_URL, MU300_KS_ROUTE='')
+            self.assertEqual(self.urls().count('SHA256SUMS'), 1)
+            # mu300-vpn's own download window (its engine fetch) lets the release hosts out: not the kill switch
+            self.stub('nft', '[ "$*" = "list table inet mu300_vpn" ] && echo "set fetch4 {"')
+            r = self.ex(shell, 'install', 'vpn-dae', MU300_VPN_URL=VPN_URL, MU300_KS_ROUTE='')
+            self.assertIn('is the device online?', r.stderr)
+            self.assertEqual(self.urls().count('SHA256SUMS'), 4)
+            self.stub('nft', '[ "$*" = "list table inet mu300_vpn" ]')
+            # into a tunnel: then it is not the kill switch
+            r = self.ex(shell, 'install', 'vpn-dae', MU300_VPN_URL=VPN_URL,
+                        MU300_KS_ROUTE='1.1.1.1 via 172.19.0.2 dev sbtun table 2022 src 172.19.0.1 uid 0')
+            self.assertIn('is the device online?', r.stderr)
+            # mu300-update's own lines
+            r = self.up(shell, 'offline_why', MU300_KS_ROUTE='1.1.1.1 dev sipa_eth0 src 10.0.0.2')
+            self.assertIn('blocked by the VPN kill switch', r.stdout)
+            (self.stubs / 'nft').unlink()
+            r = self.up(shell, 'offline_why', MU300_KS_ROUTE='1.1.1.1 dev sipa_eth0 src 10.0.0.2')
+            self.assertEqual(r.stdout.strip(), 'is the device online?')
 
     def test_remove_an_engine_the_vpn_runs_on(self):
         for shell in self.each_shell():
