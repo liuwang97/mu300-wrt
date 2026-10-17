@@ -24,6 +24,17 @@ SSID=$(conf SSID); PSK=$(conf PSK); CHANNEL=$(conf CHANNEL); COUNTRY=$(conf COUN
 # HIDDEN=1: the name is not broadcast (clients join by typing it); the web manager's switch (mu300-api wifi.set)
 HIDE=0; [ "$(conf HIDDEN)" = 1 ] && HIDE=1
 COUNTRY=${COUNTRY:-TR}
+# WPA2-PSK only. WPA3/SAE is disabled on this Wi-Fi chip (the SC2355 of the F50, U30 Air and V50; the U30 Air's firmware
+# SAE offload could let a client in without the password, docs/U30AIR-SAE.md, FINDINGS 80): a hotspot.conf that asks
+# for it is refused, and the hotspot comes up as WPA2-PSK (CCMP) with its password
+for k in ENCRYPTION SECURITY KEY_MGMT; do
+    v=$(conf "$k")
+    case $(printf '%s' "$v" | tr 'A-Z' 'a-z') in
+        *sae*|*wpa3*|*psk3*)
+            m="hotspot.conf: $k=$v refused: WPA3/SAE is disabled on this Wi-Fi chip (FINDINGS 80); the hotspot is WPA2-PSK only"
+            echo "$m" >&2; logger -t mu300-hotspot -p daemon.warn "$m" 2>/dev/null || true ;;
+    esac
+done
 # BAND=5 uses 802.11a/n/ac; this chip supports only one AP at a time, so 2.4 and 5 GHz cannot run together.
 # The firmware offers 5 GHz AP only on the non-DFS channels 36-48 and 149-165, and the driver has no radar detection:
 # a DFS channel, or one the country does not allow, is replaced by the country's default (one line says so), and

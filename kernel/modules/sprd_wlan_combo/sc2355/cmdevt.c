@@ -3369,9 +3369,24 @@ static void cmdevt_report_remain_on_channel_evt(struct sprd_vif *vif, u8 *data,
 static void cmdevt_report_new_station_evt(struct sprd_vif *vif, u8 *data, u16 len)
 {
 	struct evt_new_station *sta = (struct evt_new_station *)data;
+	u16 ie_len;
 
-	sprd_report_softap(vif, sta->is_connect, sta->mac, sta->ie,
-			   sta->ie_len);
+	/* MU300 (from PR #237, oswaldxdd): the event's own length bounds what is read. A station that left needs
+	 * only the flag and the address (its ie_len is not used); a new one hands cfg80211 at most the bytes the
+	 * event carries, never what ie_len claims beyond them.
+	 */
+	if (len < sizeof(sta->is_connect) + sizeof(sta->mac))
+		return;
+	if (!sta->is_connect) {
+		sprd_report_softap(vif, 0, sta->mac, NULL, 0);
+		return;
+	}
+	if (len < sizeof(*sta))
+		return;
+	ie_len = le16_to_cpu(sta->ie_len);
+	if (ie_len > len - sizeof(*sta))
+		return;
+	sprd_report_softap(vif, sta->is_connect, sta->mac, sta->ie, ie_len);
 }
 
 /* @flag: 1 for data, 0 for event */
