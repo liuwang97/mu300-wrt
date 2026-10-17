@@ -31,7 +31,7 @@
 
 	"admin/modem/simcard": {
 		"title": "SIM settings",
-		"order": 0,
+		"order": 9,
 		"action": { "type": "view", "path": "mu300/simcard" },
 		"depends": { "acl": [ "luci-app-mu300" ] }
 	},
