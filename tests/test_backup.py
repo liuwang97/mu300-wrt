@@ -8,6 +8,7 @@ another C library cannot read, a tampered seal. Secrets never on a command line 
 shell, on the fake device of test_api."""
 import json
 import os
+import shutil
 import stat
 import subprocess
 import unittest
@@ -607,6 +608,26 @@ class ApiMethods(BackupCase):
             for secret in ('correct horse battery', 'hotspotsecret1', 'apnsecret7'):
                 self.assertNotIn(secret, written)
 
+
+
+# OpenWrt's jq is built without Oniguruma: test/capture/gsub/sub/match/scan/splits fail there ("jq was compiled
+# without ONIGURUMA regex library"), and every file was refused as "a value of the wrong kind" (F50-C, 2026-10-17).
+# A jq that refuses any program using them, in front of the real one: the OpenWrt and panel paths run through it.
+NO_REGEX_JQ = ('for a in "$@"; do case $a in *test\\(*|*capture\\(*|*sub\\(*|*match\\(*|*scan\\(*|*splits\\(*) '
+               'echo "jq: error: jq was compiled without ONIGURUMA regex library." >&2; exit 5 ;; esac; done\n'
+               f'exec "{shutil.which("jq")}" "$@"')
+
+
+class OpenWrtJqWithoutRegex(OpenWrt):
+    def setUp(self):
+        super().setUp()
+        self.stub('jq', NO_REGEX_JQ)
+
+
+class LuciJqWithoutRegex(Luci):
+    def setUp(self):
+        super().setUp()
+        self.stub('jq', NO_REGEX_JQ)
 
 
 class Wiring(unittest.TestCase):

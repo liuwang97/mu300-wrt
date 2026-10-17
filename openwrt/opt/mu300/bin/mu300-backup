@@ -217,8 +217,13 @@ FWD_CONF=$R/etc/mu300/sms-forward.conf
 sec_sms_forward() {
     is_luci && [ -f "$FWD_CONF" ] || return 1
     jq -R -s '
-        def unesc: gsub("\\\\(?<c>.)"; if .c == "n" then "\n" else .c end);
-        (split("\n") | map(select(length > 0) | capture("^(?<k>[a-z_]+)=(?<v>.*)$")? )) as $l
+        # (no regular expressions: the jq of OpenWrt is built without them, and test/capture/gsub fail there)
+        def unesc: explode | reduce .[] as $c ({o: [], e: false};
+            if .e then .o += [if $c == 110 then 10 else $c end] | .e = false
+            elif $c == 92 then .e = true else .o += [$c] end) | (.o + (if .e then [92] else [] end)) | implode;
+        def kv: index("=") as $i | if $i != null and $i > 0 and (.[:$i] | explode | all((. >= 97 and . <= 122) or . == 95))
+            then {k: .[:$i], v: .[$i + 1:]} else empty end;
+        (split("\n") | map(select(length > 0) | kv)) as $l
         | def one($k): ([$l[] | select(.k == $k) | .v] | first // "");
           def many($k): ([$l[] | select(.k == $k) | .v] | join("\n"));
           def on($k): one($k) == "1";
@@ -335,15 +340,22 @@ do_export() {
 SCHEMA_JQ='
 # every key known, every value of its kind and size: a file that says anything else is refused whole
 def s($n): type == "string" and (utf8bytelength <= $n);
-# (patterns: \\A and \\z, the ends of the value; ^ and $ are the ends of any line in the regular expressions of jq)
-# one line: no control character at all (a configuration and the forwarding texts are s, the rest l)
-def l($n): s($n) and (test("[[:cntrl:]]") | not);
+# No regular expressions anywhere in here: the jq of OpenWrt is built without them (test/capture/gsub fail there,
+# and every file was refused as "a value of the wrong kind", F50-C 2026-10-17). Characters are checked by code point.
+# one line: no control character at all - C0, DEL and C1 (a configuration and the forwarding texts are s, the rest l)
+def l($n): s($n) and (explode | all(. >= 32 and (. < 127 or . > 159)));
+def az09: (. >= 97 and . <= 122) or (. >= 48 and . <= 57);
+def AZ: . >= 65 and . <= 90;
+# [a-z0-9][a-z0-9-]*, [A-Z][A-Z0-9_]{0,31} and [a-z0-9]+, whole values
+def word: explode | length > 0 and (.[0] | az09) and all(.[]; az09 or . == 45);
+def optkey: explode | length > 0 and length <= 32 and (.[0] | AZ) and all(.[]; AZ or (. >= 48 and . <= 57) or . == 95);
+def lowalnum: explode | length > 0 and all(.[]; az09);
 def keysin($k): type == "object" and ((keys - $k) | length) == 0;
 def err($m): if . then empty else $m end;
 def flags: type == "boolean";
 def profile: keysin(["name", "type", "config", "options"]) and (.name | l(128))
-    and (.type | l(16) and test("\\A[a-z0-9][a-z0-9-]*\\z")) and (.config | s(1048576))
-    and ((.options // {}) | type == "object" and length <= 16 and all(keys[]; test("\\A[A-Z][A-Z0-9_]{0,31}\\z"))
+    and (.type | l(16) and word) and (.config | s(1048576))
+    and ((.options // {}) | type == "object" and length <= 16 and all(keys[]; optkey)
          and all(.[]; l(512)));
 def subscription: keysin(["name", "url", "type", "interval", "insecure"]) and (.name | l(128)) and (.url | l(2048))
     and ((.type // "auto") | IN("auto", "links", "mihomo", "dae"))
@@ -356,7 +368,7 @@ elif .version != 1 then "a backup format this version does not know (\(.version)
 else
   ( (keysin(["format", "version", "created", "source", "sections"])) | err("unknown keys") ),
   ( (.created | type == "number") | err("created") ),
-  ( (.source | keysin(["device", "system", "release", "hostname"]) and (.device | l(16) and test("\\A[a-z0-9]+\\z"))
+  ( (.source | keysin(["device", "system", "release", "hostname"]) and (.device | l(16) and lowalnum)
        and (.system | IN("ubuntu", "openwrt", "openwrt-luci")) and (.release | l(64)) and (.hostname | l(64)))
     | err("source") ),
   ( .sections | if type != "object" then "sections" else
