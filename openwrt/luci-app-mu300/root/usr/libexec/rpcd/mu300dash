@@ -997,7 +997,7 @@ m_backup_export() { reply_obj "$(printf '%s' "$INPUT" | "$APIB" backup.export 2>
 m_backup_import() { reply_obj "$(printf '%s' "$INPUT" | "$APIB" backup.import 2>/dev/null)" 'The backup tool gave no valid reply'; }
 m_backup_job() { reply_obj "$(printf '{"from":0}' | "$APIB" job.status 2>/dev/null)" 'The backup tool gave no valid reply'; }
 
-# Cellular > SIM settings: per card, VoLTE and VoNR (mobile-data voice, FINDINGS 181). get asks the card in use what
+# Cellular > SIM settings: per card, VoLTE and VoNR (mobile-data voice, FINDINGS 184). get asks the card in use what
 # it has now (two short reads); set sends the choice to the card in use and reads it back, or saves it for the other
 # card's next start. Nothing a caller sends reaches the command but the fixed words checked here.
 m_simcard_get() {

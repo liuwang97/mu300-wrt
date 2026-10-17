@@ -5,7 +5,7 @@
 
 /* Every value from the backend goes into E() inside an array: LuCI's E() takes a lone string as HTML, an array's
  * strings as text. */
-/* Cellular > SIM settings: per card, VoLTE and VoNR (mobile-data voice, docs/FINDINGS.md 181; after kanoqwq's
+/* Cellular > SIM settings: per card, VoLTE and VoNR (mobile-data voice, docs/FINDINGS.md 184; after kanoqwq's
  * per-SIM voice switches). The backend is mu300dash simcard_get/simcard_set. A choice for the card in use is sent at
  * once and read back (a modem that does not take it saves nothing); one for the other card waits for its next start.
  * Every bring-up of a card sends its choice again: VoLTE is on unless switched off, VoNR is the modem's own until set. */

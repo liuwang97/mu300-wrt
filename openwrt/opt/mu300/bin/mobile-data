@@ -5,7 +5,7 @@
 #        mobile-data roaming [--json] | roaming on|off [--slot 0|1]   (data roaming: allowed by default; with it off,
 #        no data while the SIM is registered as roaming - see roaming_cmd and docs/FINDINGS.md 120)
 #        mobile-data voice [--json [--read]] | voice volte|vonr on|off [--slot 0|1]   (VoLTE/VoNR per card, replayed
-#        at every bring-up: voice_cmd and docs/FINDINGS.md 181)
+#        at every bring-up: voice_cmd and docs/FINDINGS.md 184)
 #        mobile-data suspend off|lte | resume [nodial]   (mu300-power: modem down or LTE only while nobody uses the
 #        device; nodial: the radio only, the watcher redials). Both end within MU300_SUSPEND_DEADLINE (60 s) whatever
 #        the modem does; on a failure or a timeout the modem is handed back to the watcher (no mode file) and they
@@ -988,7 +988,7 @@ up_locked() {
     fi
     mark dial-radio-on-done
     # K58: the IMS bearer SMS uses, which Android's RIL switches on, and VoNR when the user chose it (voice_replay,
-    # FINDINGS 181). Idempotent, and nothing here waits for IMS.
+    # FINDINGS 184). Idempotent, and nothing here waits for IMS.
     voice_replay
     # A modem reset during this wait is not repaired inside this attempt (the old loop re-ran radio_on every 10 s;
     # the fork dropped that). The attempt fails after MU300_REGISTER_WAIT, and the next one - netifd after 20 s,
@@ -1740,7 +1740,7 @@ roaming_cmd() {
     esac
 }
 
-# --- VoLTE and VoNR, per card (FINDINGS 181; after kanoqwq's per-SIM voice switches, 5f4732e and 53ef7b1) ----------
+# --- VoLTE and VoNR, per card (FINDINGS 184; after kanoqwq's per-SIM voice switches, 5f4732e and 53ef7b1) ----------
 # The user's choice per card in $VOICE_CONF, one KEY=VALUE line each: volte0, vonr0 (slot 0), volte1, vonr1 (slot 1),
 # value 1 or 0; the file is read, never executed, on both systems. Replayed at every bring-up of the card, after the
 # radio is on (voice_replay), where the dial has always sent AT+CAVIMS=1:
@@ -1858,7 +1858,7 @@ voice_cmd() {
             old=$(voice_saved "$kind" "$slot")
             if [ "$slot" = "$SIM_SLOT" ] && voice_live && [ "$(at 'AT' 3 2>/dev/null | tail -n 1)" = OK ]; then
                 # what the modem has now: put back when it does not read back the new value (it may answer OK and
-                # still read back the old one: FINDINGS 181, VoNR on an F50); the file is unchanged then
+                # still read back the old one: FINDINGS 184, VoNR on an F50); the file is unchanged then
                 before=$(voice_read "$kind" || true)
                 if ! voice_send "$kind" "$bit"; then
                     [ -z "$before" ] || voice_send "$kind" "$before" || true

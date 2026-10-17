@@ -714,7 +714,7 @@ m_sim_select() {
     tool 60 "$BIN/mu300-sim" default "$V" </dev/null || refuse failed "$ERR"
     ok "\"sim\":$(jcheck "$OUT"),\"text\":$(js "$OUT")"
 }
-# VoLTE and VoNR per card (mobile-data voice, FINDINGS 181): the saved choices, and what the card in use says now
+# VoLTE and VoNR per card (mobile-data voice, FINDINGS 184): the saved choices, and what the card in use says now
 m_voice_get() {
     only
     [ -x "$BIN/mobile-data" ] || refuse unsupported mobile-data

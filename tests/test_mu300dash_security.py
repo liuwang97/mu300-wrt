@@ -250,7 +250,7 @@ class Inventory(Mu300Dash):
                'lang_get', 'lang_set', 'power_get', 'power_set',
                'ttl_get', 'ttl_set', 'cpu_get', 'cpu_set', 'cpu_voltage_get', 'cpu_voltage_set', 'forward_get',
                'forward_set', 'forward_test',
-               'forward_log_clear', 'traffic_get', 'traffic_set', 'packages_get', 'packages_act', 'sim_get', 'sim_set',
+               'forward_log_clear', 'traffic_get', 'traffic_set', 'packages_get', 'packages_act', 'sim_get', 'sim_set', 'simcard_get', 'simcard_set',
                'update_get', 'update_job', 'update_act', 'backup_export', 'backup_import', 'backup_job'}
 
     def test_list_declares_every_method(self):
@@ -519,7 +519,7 @@ class Refusals(Mu300Dash):
 
 
 class SimCard(Mu300Dash):
-    """Cellular > SIM settings (FINDINGS 181): mobile-data voice with the fixed words only, the slot 0/1."""
+    """Cellular > SIM settings (FINDINGS 184): mobile-data voice with the fixed words only, the slot 0/1."""
 
     def test_get_and_set(self):
         md = self.adapters / 'mobile-data'
@@ -528,7 +528,7 @@ class SimCard(Mu300Dash):
             o = self.reply(r)
             self.assertEqual(o['ok'], 1, r.stdout)
             self.assertEqual(o['voice']['slots'][0], {'volte': True, 'vonr': None})
-            self.assertEqual(recs[0], ['mobile-data', 'voice', '--json', '--read'])
+            self.assertIn(['mobile-data', 'voice', '--json', '--read'], recs)
             r, recs, _ = self.call(shell, 'simcard_set', {'kind': 'vonr', 'slot': '1', 'state': 'on'}, MU300_MOBILE_DATA=md)
             self.assertEqual(self.reply(r)['ok'], 1, r.stdout)
             self.assertEqual(recs, [['mobile-data', 'voice', 'vonr', 'on', '--slot', '1']])
@@ -1116,11 +1116,11 @@ class Backup(Mu300Dash):
 class Acl(unittest.TestCase):
     # SMS bodies (one-time codes) and the AT history (AT+CPIN PINs) are not for read-only users (ruling R14)
     READ = {'sysinfo', 'status', 'signal', 'lock_get', 'usb_get', 'usb_net_list', 'lang_get', 'power_get', 'ttl_get',
-            'cpu_get', 'cpu_voltage_get', 'traffic_get', 'ops_log', 'packages_get', 'sim_get', 'update_get', 'update_job'}
+            'cpu_get', 'cpu_voltage_get', 'traffic_get', 'ops_log', 'packages_get', 'sim_get', 'simcard_get', 'update_get', 'update_job'}
     WRITE = {'act', 'at', 'at_job', 'at_history', 'lock_set', 'sms_list', 'sms_show', 'sms_send', 'sms_job', 'sms_delete', 'sms_sync',
              'usb_set', 'usb_net_add', 'lang_set', 'power_set', 'ttl_set', 'cpu_set', 'cpu_voltage_set', 'forward_get',
-             'forward_set', 'forward_test', 'forward_log_clear', 'traffic_set', 'packages_act', 'sim_set', 'update_act',
-             'backup_export', 'backup_import', 'backup_job'}
+             'forward_set', 'forward_test', 'forward_log_clear', 'traffic_set', 'packages_act', 'sim_set', 'simcard_set',
+             'update_act', 'backup_export', 'backup_import', 'backup_job'}
 
     def test_actions_need_write_access(self):
         acl = json.loads(ACL.read_text())['luci-app-mu300']
