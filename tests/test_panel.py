@@ -1,7 +1,7 @@
 """The web panel for Ubuntu, the panel extra (rootfs/panel): Cockpit and the MU300 page. mu300-update's checks of the
 extra's tarball, mu300-extra install (online from the release, offline --from), remove and link against a fake
 partition and a fake system (MU300_SYSROOT) with apt-get, systemctl and systemd-run stubbed; mu300-panel itself (its
-configuration: the LAN bridge only; info's JSON; the hotspot, its password on stdin); the firewall that keeps port
+configuration: the LAN address only, never waiting for br-lan; info's JSON; the hotspot, its password on stdin); the firewall that keeps port
 9090 off the uplink; the page's manifest and translations; the page's JavaScript under Node against stub command
 outputs (argument arrays, secrets on stdin, text never as HTML); and `sms json`."""
 import io
@@ -137,9 +137,10 @@ class PanelExtra(ExtrasBase):
             self.assertIn('LoginTo = false', conf.read_text())
             self.assertIn('IdleTimeout = 15', conf.read_text())
             self.assertEqual([l for l in drop.read_text().splitlines() if not l.startswith('#')],
-                             ['[Socket]', 'ListenStream=', 'ListenStream=9090', 'BindToDevice=br-lan'])
+                             ['[Socket]', 'ListenStream=', 'ListenStream=192.168.77.1:9090', 'FreeBind=yes',
+                              'IPAddressDeny=any', 'IPAddressAllow=localhost 192.168.77.0/24'])
             self.assertTrue((self.links / 'mu300-panel').is_symlink())
-            self.assertIn('restart cockpit.socket', self.log('systemctl'))
+            self.assertIn('--no-block restart cockpit.socket', self.log('systemctl'))
 
     def test_offline_copies_are_checked(self):
         d = self.tmp / 'dir'
@@ -229,6 +230,69 @@ class PanelExtra(ExtrasBase):
             self.assertEqual(self.log('apt'), '')                  # the boot never runs apt itself
             page, conf, drop = self.installed_files()
             self.assertTrue(page.is_dir() and conf.is_file() and drop.is_file())
+
+    def test_link_moves_an_old_device_bound_socket_to_the_lan_address(self):
+        # the panel of v2026.10.17.3 bound the socket to br-lan (BindToDevice): systemd made it wait for the device,
+        # which mu300-lan creates only after basic.target - 90 s at every boot, then the socket failed (F50, 7.2.11)
+        off = panel_tarball(self.tmp / 'p.tar.gz', debs=[('24.04', 'cockpit-ws_314-1_arm64.deb')])
+        old = '# mu300-panel (the panel extra)\n[Socket]\nListenStream=\nListenStream=9090\nBindToDevice=br-lan\n'
+        for shell in self.each_shell():
+            self.reset(shell)
+            self.ex(shell, 'install', 'panel', '--from', off)
+            drop = self.installed_files()[2]
+            drop.write_text(old)
+            (self.root / 'etc/mu300').mkdir(parents=True, exist_ok=True)
+            (self.root / 'etc/mu300/lan.conf').write_text('LAN_IP="192.168.90.1"\n')
+            self.log('systemctl')
+            self.assertEqual(self.ex(shell, 'link').returncode, 0)
+            body = [l for l in drop.read_text().splitlines() if not l.startswith('#')]
+            self.assertEqual(body, ['[Socket]', 'ListenStream=', 'ListenStream=192.168.90.1:9090', 'FreeBind=yes',
+                                   'IPAddressDeny=any', 'IPAddressAllow=localhost 192.168.90.0/24'])
+            self.assertNotIn('BindToDevice', drop.read_text())
+            sc = self.log('systemctl').splitlines()
+            self.assertEqual(sc[0], 'systemctl daemon-reload')
+            # never waits for the socket: link runs in mu300-fixups, before sysinit.target, and the socket after it
+            self.assertIn('systemctl --no-block restart cockpit.socket', sc)
+            # a LAN_IP that is no address: the device's default, as lan-start would refuse it
+            (self.root / 'etc/mu300/lan.conf').write_text('LAN_IP=$(reboot)\n')
+            self.ex(shell, 'link')
+            self.assertIn('ListenStream=192.168.77.1:9090', drop.read_text())
+            # never a wildcard: a lan.conf without LAN_IP, or none at all, is the default too
+            for conf in ('LAN_IP=\n', None):
+                if conf is None:
+                    (self.root / 'etc/mu300/lan.conf').unlink()
+                else:
+                    (self.root / 'etc/mu300/lan.conf').write_text(conf)
+                self.ex(shell, 'link')
+                listen = [l for l in drop.read_text().splitlines() if l.startswith('ListenStream=')]
+                self.assertEqual(listen, ['ListenStream=', 'ListenStream=192.168.77.1:9090'])
+            (self.root / 'etc/mu300/lan.conf').write_text('LAN_IP=192.168.77.1\n')
+            (self.root / 'etc/mu300/lan.conf').unlink()
+
+    def test_update_rewrites_the_drop_in_of_the_new_system(self):
+        # mu300-update apply, after the systems and extras are in place: the carried drop-in of an older panel is
+        # rewritten in the new Ubuntu, so its first boot does not wait for br-lan; a system without the panel is left
+        off = panel_tarball(self.tmp / 'p.tar.gz')
+        ub = self.disk / 'ubuntu'
+        (ub / 'etc/os-release').write_text('ID=ubuntu\nVERSION_ID="24.04"\n')
+        (ub / 'opt/mu300/bin').mkdir(parents=True)
+        shutil.copy(BIN / 'mu300-lan-ip', ub / 'opt/mu300/bin/mu300-lan-ip')
+        (ub / 'opt/mu300/bin/mu300-device').write_text('#!/bin/sh\necho u30air\n')
+        (ub / 'opt/mu300/bin/mu300-device').chmod(0o755)
+        drop = ub / 'etc/systemd/system/cockpit.socket.d/mu300-listen.conf'
+        for shell in self.each_shell():
+            self.reset(shell)
+            self.up(shell, f'extra_unpack panel "{off}"')
+            drop.parent.mkdir(parents=True, exist_ok=True)
+            drop.write_text('[Socket]\nListenStream=\nListenStream=9090\nBindToDevice=br-lan\n')
+            r = self.up(shell, 'panel_configure "ubuntu openwrt"; echo "rc=$?"')
+            self.assertIn('rc=0', r.stdout, r.stderr)
+            self.assertIn('ListenStream=192.168.78.1:9090\nFreeBind=yes\nIPAddressDeny=any\n'
+                          'IPAddressAllow=localhost 192.168.78.0/24', drop.read_text())
+            self.assertNotIn('BindToDevice', drop.read_text())
+            self.assertFalse((self.disk / 'openwrt/etc/systemd').exists())
+            self.assertEqual(self.log('systemctl'), '')             # files only: the running system is not touched
+            self.assertFalse((self.root / 'etc/systemd').exists())
 
     def test_restore_installs_and_stops_trying(self):
         off = panel_tarball(self.tmp / 'p.tar.gz')
@@ -355,9 +419,18 @@ class Static(unittest.TestCase):
         self.assertNotIn('9090', FIREWALL.read_text())
         # the Wi-Fi uplink is closed the same way
         self.assertIn('iifname "%s" counter drop', (BIN / 'wifi-client').read_text())
-        # and Cockpit listens on the LAN bridge only
+        # and Cockpit listens on the LAN address only - from the start of the boot (FreeBind), never bound to br-lan
+        # (BindToDevice makes the socket wait for the device, which comes after basic.target: a 90 s stall)
         cmd = CMD.read_text()
-        self.assertIn("printf '[Socket]\\nListenStream=\\nListenStream=9090\\nBindToDevice=br-lan\\n'", cmd)
+        self.assertIn("printf '[Socket]\\nListenStream=\\nListenStream=%s:9090\\nFreeBind=yes\\n' \"$_ip\"", cmd)
+        self.assertIn("printf 'IPAddressDeny=any\\nIPAddressAllow=localhost %s.0/24\\n'", cmd)
+        self.assertFalse([l for l in cmd.splitlines() if 'BindToDevice=' in l and not l.lstrip().startswith('#')])
+        # a LAN address changed while the device runs moves the socket along
+        lan = (BIN / 'lan-start').read_text()
+        self.assertIn('grep -qx "ListenStream=$LAN_IP:9090" "$CP"', lan)
+        self.assertIn('mu300-panel link', lan)
+        # an update rewrites it in the new systems
+        self.assertIn('panel_configure "$todo"', (BIN / 'mu300-update').read_text())
 
     def test_manifest_and_page(self):
         m = json.loads((PAGE / 'manifest.json').read_text())
