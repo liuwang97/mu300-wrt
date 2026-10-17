@@ -87,8 +87,12 @@ if [ -x "$SIMBIN" ]; then
         [12][12][01]) SIM_JSON="{\"slot\":$((sim_active - 1)),\"wanted\":$((sim_wanted - 1)),\"slot1_supported\":$sim_s1}" ;;
     esac
 fi
-DATA_DEVICE=$(safe_iface "$(cfg data_device)" '')
-[ -n "$DATA_DEVICE" ] || DATA_DEVICE=$(safe_iface "$(jval "$WANJSON" l3_device)" sipa_eth$((SIM_SLOT * 8)))
+# The mobile data device: the one netifd's WAN uses now (its l3_device) first, the configured one (data_device) while the
+# WAN has none, the slot's CID 1 bearer last. A configured name used to win over the live one, so a WAN on another
+# device (another CID, the other card's bearer after a live switch) was counted on the wrong interface.
+DATA_DEVICE=$(safe_iface "$(jval "$WANJSON" l3_device)" '')
+[ -n "$DATA_DEVICE" ] || DATA_DEVICE=$(safe_iface "$(cfg data_device)" '')
+[ -n "$DATA_DEVICE" ] || DATA_DEVICE=sipa_eth$((SIM_SLOT * 8))
 LAN_DEVICE=$(safe_iface "$(cfg lan_device)" br-lan)
 WIFI_DEVICE=$(safe_iface "$(cfg wifi_device)" wlan0)
 USB_DEVICE=$(safe_iface "$(cfg usb_device)" usb0)
@@ -222,6 +226,8 @@ P_IN_V=$(power_v "$P_IN_V"); P_IN_I=$(power_i "$P_IN_I")
 
 # ------------------------------------------------------- interface counters
 net_obj() {  # net_obj IFACE -> {"rx":N,"tx":N,"up":0|1} or null
+    # an interface name by safe_iface's rule, or nothing is read: the name becomes a /sys path
+    [ -n "$1" ] && [ "$(safe_iface "$1" '')" = "$1" ] || { echo null; return; }
     local d=/sys/class/net/$1
     [ -d "$d" ] || { echo null; return; }
     local rx tx up
