@@ -183,6 +183,7 @@ chmod 700 "$URCDIR"
 # either way, and the spooler takes nothing but hexadecimal. A reply never carries the frame either (a client parsing
 # a listing would take the PDU line for one of its own). Never an argument: argv is public.
 CMT_SPOOL=${MU300_CMT_SPOOL_BIN:-/opt/mu300/bin/mu300-cmt-spool}
+SIM_STATE=${MU300_SIM_STATE_BIN:-/opt/mu300/bin/mu300-sim-state}
 cmt_frame() {  # cmt_frame HEADER FD LOG: the line after a +CMT header, from FD, with the header to the spooler
     _pdu=
     # the PDU is the next line, written with the header; an empty line (the frame's own CRLF) is skipped once
@@ -212,6 +213,12 @@ for n in ${MU300_AT_URC_CHANNELS-$((SIM_SLOT * 3))}; do
             urc=${urc%"$CR"}
             case $urc in '+CMT:'*) cmt_frame "$urc" 0 "$log"; continue ;; esac
             printf '%s\n' "$urc" >> "$log"
+            # a SIM-status change on the card's event channel (nr0 slot 0, nr3 slot 1): mu300-sim-state asks the card
+            # in the background whether one is there (FINDINGS 186); every other line costs nothing more
+            case $urc in
+                '+ECIND: 3,'*|'+ECIND:3,'*)
+                    [ ! -x "$SIM_STATE" ] || "$SIM_STATE" event "$((n / 3))" "$urc" </dev/null >/dev/null 2>&1 ;;
+            esac
             # cheap cap: start over rather than grow without end, /run is RAM
             [ "$(wc -c < "$log" 2>/dev/null || echo 0)" -gt "$URCMAX" ] && : > "$log"
         done < "$other"

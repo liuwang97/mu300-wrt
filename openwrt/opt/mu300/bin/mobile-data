@@ -420,6 +420,21 @@ wan_available() {
             ubus call "network.interface.$wan" notify_proto '{"action":5,"available":true}' >/dev/null 2>&1 || true ;;
     esac
 }
+# --- a slot with no card (mu300-sim-state, docs/FINDINGS.md 186) ---------------------------------------------------
+# The dial asks the card once its radio is on (AT+CPIN?). No card: the dial stops there and leaves $SIM_HELD (netifd:
+# exit 6, SIM_MISSING, no retry - it used to fail after its 60 s registration wait and start over every 20 s for
+# ever; Ubuntu: exit 0). The card's +ECIND (mu300-atd -> mu300-sim-state event) or the watchdog's look every five
+# minutes dials again once a card answers. Without the tool: as before.
+SIM_STATE_BIN=${MU300_SIM_STATE_BIN:-/opt/mu300/bin/mu300-sim-state}
+SIM_HELD=/run/mu300/sim-missing-held
+sim_state() { [ ! -x "$SIM_STATE_BIN" ] || MU300_SIM_SLOT=$SIM_SLOT "$SIM_STATE_BIN" "$@" 2>/dev/null || true; }
+sim_hold() {
+    [ ! -e "$SIM_HELD" ] || return 0
+    mkdir -p "${SIM_HELD%/*}" 2>/dev/null || true
+    echo "$SIM_SLOT" 2>/dev/null > "$SIM_HELD" || true
+    radio_say "no card in the SIM slot in use (slot $SIM_SLOT): no dial until one answers"
+    logger -t mobile-data "SIM$((SIM_SLOT + 1)): no card; mobile data waits for one" 2>/dev/null || true
+}
 rf_hold() {
     [ ! -e "$RF_HELD" ] || return 0
     mkdir -p "${RF_HELD%/*}" 2>/dev/null || true
@@ -657,6 +672,8 @@ wait_registered() {
             radio_say "a SIM switch began: this dial ends"
             return 1
         fi
+        # the card went away meanwhile (its +ECIND, checked by mu300-sim-state): no point waiting
+        [ "$(sim_state get)" != absent ] || return 1
         size=$(fsize "$URCLOG")
         [ "$size" -lt "$seen" ] && seen=0   # mu300-atd started the log over at its size cap
         if [ "$size" -gt "$seen" ] && tail -c +"$((seen + 1))" "$URCLOG" 2>/dev/null | is_registered urc; then
@@ -1057,6 +1074,16 @@ up_locked() {
         exit 1
     fi
     mark dial-radio-on-done
+    # an empty slot: no dial over and over (FINDINGS 186)
+    # (asked twice, 3 s apart: a card still starting must not count as none)
+    if [ "$(sim_state check)" = absent ] && { nap 3; [ "$(sim_state check)" = absent ]; }; then
+        sim_hold
+        led error
+        [ "${MU300_NETIFD:-0}" != 1 ] || exit 6
+        echo "mobile data waits: no card in SIM$((SIM_SLOT + 1))"
+        return 0
+    fi
+    rm -f "$SIM_HELD"
     # K58: the IMS bearer SMS uses, which Android's RIL switches on, and VoNR when the user chose it (voice_replay,
     # FINDINGS 184). Idempotent, and nothing here waits for IMS.
     voice_replay
@@ -1640,6 +1667,13 @@ watch() {
         # the SIM's radio switched off in its settings (FINDINGS 185): nothing to restore; switched on again (the
         # setting edited by hand, or rf-apply that did not get through): the radio and the dial come back here
         if ! rf_allowed; then continue; fi
+        # no card in the slot (FINDINGS 186): nothing to restore; every tenth round (five minutes) the card is asked
+        # again, for an insertion whose event was missed - mu300-sim-state dials when one answers
+        if [ -e "$SIM_HELD" ] || [ "$(sim_state get)" = absent ]; then
+            sim_rounds=$(( ${sim_rounds:-0} + 1 ))
+            [ $((sim_rounds % 10)) != 0 ] || sim_state check >/dev/null
+            continue
+        fi
         if [ -e "$RF_HELD" ] && [ ! -s "$SUSPEND" ]; then
             rm -f "$RF_HELD"
             echo "the radio of the SIM in use is switched on in its settings again" >&2
@@ -2022,7 +2056,7 @@ case "${1:-status}" in
     # and the hold stays (the watchdog ends it when the wan is taken down)
     # (and the hold for a SIM radio switched off: every down ends it - netifd's teardown too, which an ifdown runs; the
     # restart rf-apply asks for runs the dial again after it, which holds once more)
-    down) via_netifd || rm -f "$ROAM_HELD"; rm -f "$RF_HELD"; down ;;
+    down) via_netifd || rm -f "$ROAM_HELD"; rm -f "$RF_HELD" "$SIM_HELD"; down ;;
     status) status ;;
     roaming) roaming_cmd "${@:2}" ;;
     voice) voice_cmd "${@:2}" ;;

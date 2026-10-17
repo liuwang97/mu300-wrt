@@ -2175,6 +2175,124 @@ at() {
             self.assertIn('allowed', (BIN / name).read_text(), name)
         self.assertIn('mu300-sim-radio', (TOP / 'rootfs/overlay/opt/mu300/lib/path-commands').read_text().split())
 
+
+class SimState(ShellTest):
+    """A slot with no card (FINDINGS 186, after kanoqwq's SIM-state events f59a296/ab26e79): mu300-sim-state's check and
+    event filter, mobile-data's dial stopping on an empty slot, mu300-atd's hook."""
+    TOOL = BIN / 'mu300-sim-state'
+
+    def setUp(self):
+        super().setUp()
+        self.run_dir = self.tmp / 'rundir'
+        # the card's answer to AT+CPIN? from $STUBLOG/cpin
+        self.stub('fake-at', 'echo "$*" >> "$STUBLOG/at"; cat "$STUBLOG/cpin"')
+        self.stub('mu300-sim', 'echo "${T_ACTIVE:-0}"')
+        self.stub('logger', 'exit 0')
+        self.stub('setsid', 'echo "setsid $*" >> "$STUBLOG/setsid"')
+
+    def tool(self, *args, **env):
+        e = dict(MU300_RUN=self.run_dir, MU300_AT_BIN=self.stubs / 'fake-at', MU300_SIM_BIN=self.stubs / 'mu300-sim',
+                 MU300_MOBILE_DATA='/md')
+        e.update(env)
+        return self.script(self.shell, self.TOOL, *args, **e)
+
+    def test_check(self):
+        cases = [('+CPIN: READY\nOK\n', 'ready'), ('+CPIN: SIM PIN\nOK\n', 'locked'), ('+CPIN: SIM PUK\nOK\n', 'locked'),
+                 ('+CME ERROR: 10\n', 'absent'), ('+CPIN: NOT INSERTED\nOK\n', 'absent'),
+                 ('+CME ERROR: SIM not inserted\n', 'absent')]
+        for self.shell in self.each_shell():
+            for answer, want in cases:
+                with self.subTest(answer=answer):
+                    shutil.rmtree(self.run_dir, ignore_errors=True)
+                    (self.tmp / 'cpin').write_text(answer)
+                    r = self.tool('check')
+                    self.assertEqual(r.stdout.strip(), want, r.stderr)
+                    self.assertEqual(self.tool('get').stdout.strip(), want)
+            # an answer that says nothing about the card (busy, no answer) keeps what was known
+            for answer in ('+CME ERROR: 14\n', '', 'mu300-at: busy\n'):
+                (self.tmp / 'cpin').write_text(answer)
+                self.assertEqual(self.tool('check').stdout.strip(), 'absent')
+            # the other card is never asked
+            (self.tmp / 'at').unlink(missing_ok=True)
+            self.assertEqual(self.tool('check', '1').stdout, '')
+            self.assertFalse((self.tmp / 'at').exists())
+            self.assertEqual(self.tool('check', '7').returncode, 2)
+
+    def test_a_card_back_dials_again(self):
+        for self.shell in self.each_shell():
+            shutil.rmtree(self.run_dir, ignore_errors=True)
+            (self.tmp / 'setsid').unlink(missing_ok=True)
+            self.run_dir.mkdir()
+            (self.run_dir / 'sim-missing-held').write_text('0\n')
+            (self.tmp / 'cpin').write_text('+CME ERROR: 10\n')
+            self.tool('check')
+            self.assertTrue((self.run_dir / 'sim-missing-held').exists())
+            self.assertFalse((self.tmp / 'setsid').exists())
+            (self.tmp / 'cpin').write_text('+CPIN: READY\nOK\n')
+            self.assertEqual(self.tool('check').stdout.strip(), 'ready')
+            self.assertFalse((self.run_dir / 'sim-missing-held').exists())
+            for _ in range(50):
+                if (self.tmp / 'setsid').exists():
+                    break
+                time.sleep(0.1)
+            self.assertEqual((self.tmp / 'setsid').read_text(), 'setsid /md up\n')
+            # OpenWrt: no held marker needed (netifd's teardown runs `down`); a card back after "absent" makes the
+            # WAN mu300cell made unavailable available again
+            root = self.tmp / 'root'
+            (root / 'etc').mkdir(parents=True, exist_ok=True)
+            (root / 'etc' / 'openwrt_release').write_text('')
+            self.stub('ubus', 'echo "$*" >> "$STUBLOG/ubus"; echo "{ \\"available\\": false }"')
+            (self.tmp / 'ubus').unlink(missing_ok=True)
+            (self.tmp / 'cpin').write_text('+CME ERROR: 10\n')
+            self.tool('check', MU300_SYSROOT=root)
+            self.assertFalse((self.tmp / 'ubus').exists())
+            (self.tmp / 'cpin').write_text('+CPIN: READY\nOK\n')
+            self.tool('check', MU300_SYSROOT=root)
+            self.assertIn('notify_proto {"action":5,"available":true}', (self.tmp / 'ubus').read_text())
+
+    def test_event_filter(self):
+        hint = ['+ECIND: 3,0', '+ECIND: 3,2,5', '+ECIND:3,100', '+ECIND: 3,1,34', '+ECIND: 3,4,0']
+        other = ['+ECIND: 1,0', '+ECIND: 3,1,3', '+ECIND: 3,0,x', '+ECIND: 3,0,1,2', '+ECIND: 3,9', '+CEREG: 1',
+                 '+ECIND: 3,0;reboot']
+        self.shell = self.shells[0]   # the event's check waits 2 s: one shell is enough
+        if True:
+            for urc in hint + other:
+                with self.subTest(urc=urc):
+                    shutil.rmtree(self.run_dir, ignore_errors=True)
+                    (self.tmp / 'at').unlink(missing_ok=True)
+                    (self.tmp / 'cpin').write_text('+CPIN: READY\nOK\n')
+                    r = self.tool('event', '0', urc)
+                    self.assertEqual(r.returncode, 0, r.stderr)
+                    state = self.run_dir / 'sim0.state'
+                    for _ in range(60 if urc in hint else 30):   # a check starts 2 s after its event
+                        if state.exists():
+                            break
+                        time.sleep(0.1)
+                    self.assertEqual(state.exists(), urc in hint, urc)
+
+    def test_the_dial_stops_on_an_empty_slot(self):
+        md = MobileData('test_registered_from_urc')
+        md.setUp()
+        try:
+            st = md.tmp / 'sim-state'
+            st.write_text('#!/bin/sh\necho "state $*" >> "$STUBLOG/state"\n[ "$1" = check ] && echo "${T_STATE:-ready}"\nexit 0\n')
+            st.chmod(0o755)
+            for f in ('nft', 'sysctl', 'ethtool', 'resolvectl', 'logger'):
+                md.stub(f, 'exit 0')
+            r, sent = md.lib('rc=0; (up_locked) || rc=$?; echo rc=$rc', MU300_NETIFD=1, MU300_SIM_STATE_BIN=st,
+                             T_STATE='absent', MU300_AT_DEV='/dev/null', MU300_URC_LOG=md.tmp / 'none', MU300_CFUN_WAIT=0)
+            self.assertIn('rc=6', r.stdout, r.stderr)
+            self.assertEqual((md.tmp / 'state').read_text().split('\n').count('state check'), 2)
+            self.assertFalse([x for x in sent if 'CEREG' in x or 'CGACT' in x], sent)
+            self.assertTrue((md.tmp / 'run' / 'mu300' / 'sim-missing-held').exists())
+            text = (BIN / 'mobile-data').read_text()
+            self.assertIn('rm -f "$RF_HELD" "$SIM_HELD"; down ;;', text)
+            atd = (BIN / 'mu300-atd').read_text()
+            self.assertIn('"$SIM_STATE" event "$((n / 3))" "$urc"', atd)
+            self.assertIn('mu300-sim-state', (TOP / 'rootfs/overlay/opt/mu300/lib/path-commands').read_text().split())
+        finally:
+            md.tearDown()
+
 class DataRoaming(ShellTest):
     """Data roaming (FINDINGS 120): the setting, the dial's gate, the watchdog's two moves. mobile-data sourced as in
     MobileData (its lib() and modem); the modem here also answers AT+C5GREG? ($C5GREG) and AT+CGACT? ($CGACT), and
