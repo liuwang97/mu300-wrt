@@ -428,6 +428,46 @@ class Rules(unittest.TestCase):
         # the 5.4 bundle does not name it
         self.assertIn('echo "f50 u30air" > "$K/devices"', (TOP / 'tools' / 'make-release.sh').read_text())
 
+    def test_mainline_emmc_timing_falls_back(self):
+        """FINDINGS 160 (issue #226): an eMMC whose HS400ES selection fails at a cold boot is initialised again at
+        HS200, then HS/DDR52, then HS, instead of being given up after mmc_rescan's attempts at HS400ES; a boot whose
+        HS400ES works drops nothing. The test hook in sdhci-sprd is off by default and touches only CMD13 while a new
+        card is set up at HS400ES; a test build sets it through build.sh's MU300_CMDLINE_EXTRA, never a release."""
+        p = (TOP / 'upstream' / 'patches' / '0021-mmc-HS400ES-failure-falls-back-to-HS200.patch').read_text()
+        self.assertEqual(re.findall(r'(?m)^\+\+\+ (\S+)', p), ['b/drivers/mmc/core/mmc.c', 'b/drivers/mmc/host/sdhci-sprd.c'])
+        core = p[p.index('+++ b/drivers/mmc/core/mmc.c'):p.index('--- a/drivers/mmc/host/sdhci-sprd.c')]
+        # the ladder: HS400ES drops HS400 with it, then HS200, then DDR52; a removed card drops nothing
+        for s in ('+\tif (err == -ENOMEDIUM)\n+\t\treturn;',
+                  '+\tif (card->mmc_avail_type & EXT_CSD_CARD_TYPE_HS400ES) {\n'
+                  '+\t\thost->caps2 &= ~(MMC_CAP2_HS400_ES | MMC_CAP2_HS400);',
+                  '+\t\thost->caps2 &= ~(MMC_CAP2_HS200 | MMC_CAP2_HS400);',
+                  '+\t} else if (card->mmc_avail_type & EXT_CSD_CARD_TYPE_DDR_52) {\n+\t\thost->caps &= ~MMC_CAP_DDR;',
+                  '+\tpr_warn("%s: %s failed (%d), the next initialisation uses %s\\n",',
+                  '+timing_failed:\n+\tmmc_timing_fallback(card, err);\n free_card:'):
+            self.assertIn(s, core)
+        # exactly the four failures of the timing selection go through it, nothing before or after
+        self.assertEqual(len(re.findall(r'(?m)^-\t+goto free_card;$', core)), 4)
+        self.assertEqual(len(re.findall(r'(?m)^\+\t+goto timing_failed;$', core)), 4)
+        self.assertEqual(core.count('goto timing_failed;'), 4)
+        # the card type is chosen again from the host caps at every initialisation, also of a known card: what the
+        # caps drop relies on (kept in the context of the patch would be too far; the header says it)
+        self.assertIn('"since host caps could have been changed when debugging"', p)
+        hook = p[p.index('+++ b/drivers/mmc/host/sdhci-sprd.c'):]
+        for s in ('+static unsigned int fail_hs400es;\n+module_param(fail_hs400es, uint, 0644);',
+                  '+\tif (unlikely(sprd_host->fail_hs400es) && mmc->ios.enhanced_strobe &&\n'
+                  '+\t    !mmc->card && mrq->cmd->opcode == MMC_SEND_STATUS) {\n+\t\tmrq->cmd->error = -EILSEQ;',
+                  '+\tsprd_host->fail_hs400es = fail_hs400es > 0;'):
+            self.assertIn(s, hook)
+        self.assertNotRegex(hook, r'(?m)^\+static unsigned int fail_hs400es\s*=')
+        build = (TOP / 'upstream' / 'build.sh').read_text()
+        self.assertIn('--set-str CMDLINE "$c $MU300_CMDLINE_EXTRA"', build)
+        # after the check of the config file (which would refuse a changed CMDLINE), before the build
+        self.assertLess(build.index('config options not taken'), build.index('MU300_CMDLINE_EXTRA'))
+        self.assertLess(build.index('MU300_CMDLINE_EXTRA'), build.index('make O=$O ARCH=arm64 -j"$(nproc)" Image'))
+        for wf in ('release.yml', 'mainline.yml'):
+            self.assertNotIn('MU300_CMDLINE_EXTRA', (TOP / '.github' / 'workflows' / wf).read_text())
+        self.assertNotIn('fail_hs400es', (TOP / 'upstream' / 'mu300-mainline.config').read_text())
+
     def test_mainline_drives_the_u30_air_charger(self):
         # Without a driver the charger kept what Android left in it: charging off (CHG_CONFIG 0), 500 mA input, and
         # the battery drained while plugged in. bq256xx drives the vendor node "ti,bq2560x_chg" now.
@@ -790,8 +830,13 @@ class Rules(unittest.TestCase):
         v6 = 'openwrt/luci-overlay/lib/netifd/proto/mu300cell-v6.sh'
         patch = {'openwrt/patches/fw4-sipa-offload.patch': 'x\n',
                  'openwrt/patches/fw4-old-kernel-flowtable.patch': 'x\n',
-                 'openwrt/patches/wifi-scripts-no-dfs.patch': 'x\n'}
+                 'openwrt/patches/wifi-scripts-no-dfs.patch': 'x\n',
+                 'openwrt/patches/wifi-scripts-wpa2-only.patch': 'x\n'}
         for system in ('openwrt', 'openwrt-luci'):
+            with self.subTest(system=system, missing='the WPA2-only patch'):
+                r = run({cell: 'x\n', v6: 'x\n', **{k: v for k, v in patch.items() if 'wpa2' not in k}}, system)
+                self.assertEqual(r.returncode, 1, r.stderr)
+                self.assertIn('wifi-scripts-wpa2-only.patch', r.stderr)
             with self.subTest(system=system, missing='mu300cell.sh'):
                 r = run(patch, system)
                 self.assertEqual(r.returncode, 1, r.stderr)
