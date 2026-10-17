@@ -521,7 +521,10 @@ class Block(ShellTest):
         src = (BIN / 'mu300-update').read_text()
         fn = src[src.index('kernel_modules_into_systems() {'):src.index('boot_update() {')]
         self.assertIn('rm -f "$DISK/$_os/lib/modules/$_krel/$_f"; cp "$1/$_f"', fn)
-        self.assertIn('rm -f "$_d"/*.ko && cp "$1"/modules/*.ko', fn)
+        self.assertIn('rm -f "$_d"/*.ko && mod_link "$1/modules" "$_d"', fn)
+        # a set gets more names, never a file written into: removed first wherever a link or a copy goes
+        ml = src[src.index('mod_link() {'):src.index('\n}\n', src.index('mod_link() {'))]
+        self.assertLess(ml.index('rm -f "$2"/*.ko'), ml.index('cp "$1"/*.ko'))
 
 
 @unittest.skipUnless(CC and LINUX and BUSYBOX, 'needs a C compiler and busybox on Linux')
