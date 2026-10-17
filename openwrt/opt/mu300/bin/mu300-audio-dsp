@@ -2,7 +2,7 @@
 # Bring up the Unisoc audio DSP, which is what real call audio needs.
 #
 #   mu300-audio-dsp status     what is loaded, and whether the DSP wakes
-#   mu300-audio-dsp load       load the 23 drivers and bind the card
+#   mu300-audio-dsp load       load the drivers and bind the card
 #   mu300-audio-dsp start      load, write the firmware, start the DSP and open the audio routes
 #   mu300-audio-dsp routes     just the routes (see set_routes below)
 #   mu300-audio-dsp profiles [MODE]  load the DSP parameter blobs and select a call mode (default 7)
@@ -29,7 +29,17 @@
 set -u
 export PATH="$PATH:/opt/mu300/bin:/opt/mu300/busybox-bin:/usr/sbin:/sbin"
 
-A=/lib/modules/$(uname -r)/audio
+# Where the drivers are. On 5.4 they are the private stack's 23 modules in .../audio (kernel/build-audio.sh). On
+# the mainline kernels (6.18, 7.2) they are part of the release, out of upstream/modules/sprd_audio, flat with the
+# other modules: extra/ on Ubuntu, the release directory itself on OpenWrt (docs/FINDINGS.md 188).
+K=/lib/modules/$(uname -r)
+audio_dir() {
+    for d in "$K/audio" "$K/extra" "$K"; do
+        [ -f "$d/sprd_audcp_boot.ko" ] && { echo "$d"; return 0; }
+    done
+    return 1
+}
+A=$(audio_dir) || A=$K/audio
 BOOT=/sys/devices/platform/audiocp_boot
 FW=${MU300_AGDSP_FW:-/lib/firmware/agdsp.bin}
 # the sha256 of the image "install" put there, kept on the device only
@@ -55,7 +65,11 @@ DSPBIN=${MU300_AGDSP_DSPBIN:-0xafa00000,0x600000}
 # and nothing else pulls it in, so /sys/class/dma is empty, sprd-pcm-audio defers for want of a channel, its
 # component never registers, and snd_soc_register_card gives up with "failed to init link FE_NORMAL_AP01:
 # -517". Loading them brings up two controllers with sixty channels and the card follows.
+# On mainline the stack brings its own sprd-dma (the vendor driver, with the kernel's virt-dma compiled in), and the
+# ASoC core and the compress layer are the kernel's own modules: modprobe finds those (they are not blocked by the
+# on-demand guard), insmod the rest.
 DMA_MODULES="virt-dma sprd-dma"
+CORE_MODULES="snd-soc-core snd-compress"
 MODULES="audio_mem agdsp_access audio_sipc sprd_audcp_boot sprd_audcp_dvfs
 audio-dsp-dump audio-pipe sprd_apipe mcdt_hw_r2p0 saudio
 sprd-dmaengine-pcm sprd-platform-pcm-routing sprd-compr-2stage-dma
@@ -68,12 +82,21 @@ loaded() { grep -q "^$(echo "$1" | tr '-' '_') " /proc/modules; }
 # Most of these are [permanent] in /proc/modules: rmmod cannot touch them, so a rebuilt driver only takes
 # effect after a reboot. A reload that seems to do nothing is this, not a bad build.
 
+# the stack's modules that exist for this kernel: the 23 of 5.4, or the 19 mainline needs (no saudio, sprd_dai,
+# vaudio, ucp1301: nothing on these boards uses them)
+present() { for m in $MODULES; do [ -f "$A/$m.ko" ] && echo "$m"; done; }
+
 load_all() {
-    [ -d "$A" ] || { echo "no audio drivers in $A - run kernel/build-audio.sh and install them" >&2; return 1; }
-    K=/lib/modules/$(uname -r)
+    [ -f "$A/sprd_audcp_boot.ko" ] ||
+        { echo "no audio drivers for $(uname -r) (looked in $K/audio, $K/extra, $K)" >&2; return 1; }
+    for m in $CORE_MODULES; do
+        loaded "$m" || modprobe "$m" 2>/dev/null
+    done
     for m in $DMA_MODULES; do
         loaded "$m" && continue
-        [ -f "$K/$m.ko" ] && insmod "$K/$m.ko" 2>/dev/null
+        if [ -f "$A/$m.ko" ]; then insmod "$A/$m.ko" 2>/dev/null
+        elif [ -f "$K/$m.ko" ]; then insmod "$K/$m.ko" 2>/dev/null
+        fi
     done
     n=0
     for pass in 1 2; do
@@ -89,7 +112,7 @@ load_all() {
             insmod "$A/$m.ko" $args 2>/dev/null && n=$((n + 1))
         done
     done
-    echo "audio drivers: $(for m in $MODULES; do loaded "$m" && echo x; done | wc -l)/$(echo $MODULES | wc -w) loaded"
+    echo "audio drivers: $(for m in $(present); do loaded "$m" && echo x; done | wc -l)/$(present | wc -l) loaded"
     bind_card
 }
 
@@ -204,6 +227,16 @@ start)
         exit 0
     fi
     dsp_running && { echo "the DSP is already running"; exit 0; }
+    # The AGDSP power domain is held up for the whole load and start (agdsp_access_en). The reset that "start"
+    # pulses only reaches a powered domain: with it asleep every step reports success and the DSP runs on with
+    # whatever it ran before - after a reboot that is the previous kernel's image, which never answers the new
+    # kernel (SIPC "channel 0 not opened", dsp_ready 0). That is the "start is once per boot" of FINDINGS 24, and
+    # on F50-B (6.18.57 after 7.2.11) it was every start after a warm reboot (docs/FINDINGS.md 188).
+    hold=
+    if command -v amixer >/dev/null 2>&1; then
+        hcard=$(awk '/sprdphone/ {print $1; exit}' /proc/asound/cards 2>/dev/null)
+        [ -n "$hcard" ] && amixer -c "$hcard" cset name=agdsp_access_en 1 >/dev/null 2>&1 && hold=1
+    fi
     echo 1 > "$BOOT/stop" 2>/dev/null
     # one write, not a loop: the driver tracks its own offset across writes, and dd with a large block size
     # keeps the chunking to what the driver expects.
@@ -212,6 +245,9 @@ start)
     # board it reads 0xafa00000 / 0x600000, which is the image exactly.
     if dd if="$FW" of="$BOOT/agdsp" bs=4096 2>/dev/null; then
         echo 1 > "$BOOT/start" 2>/dev/null
+        # the image sets itself up before it answers; then the domain may sleep again
+        sleep 2
+        [ -z "$hold" ] || amixer -c "$hcard" cset name=agdsp_access_en 0 >/dev/null 2>&1
         set_routes
         # Not "dsp_running" - see dsp_wakes. An idle AGDSP reads powered off whether or not it ever loaded.
         dsp_wakes; w=$?
@@ -231,6 +267,7 @@ start)
         echo "cards:"; sed 's/^/  /' /proc/asound/cards
         echo "voice endpoint: $(grep -i VOICE_PCM /proc/asound/pcm 2>/dev/null | head -1)"
     else
+        [ -z "$hold" ] || amixer -c "$hcard" cset name=agdsp_access_en 0 >/dev/null 2>&1
         echo "could not write $FW to $BOOT/agdsp" >&2; exit 1
     fi
     ;;
@@ -241,7 +278,7 @@ stop)
     ;;
 
 status)
-    echo "drivers:  $(for m in $MODULES; do loaded "$m" && echo x; done | wc -l)/$(echo $MODULES | wc -w) loaded"
+    echo "drivers:  $(for m in $(present); do loaded "$m" && echo x; done | wc -l)/$(present | wc -l) loaded ($A)"
     echo "firmware: $([ -f "$FW" ] && echo "$FW ($(wc -c < "$FW") bytes)" || echo "not present at $FW")"
     if [ -d "$BOOT" ]; then
         set -- $(od -An -tu4 -N12 "$BOOT/status" 2>/dev/null)

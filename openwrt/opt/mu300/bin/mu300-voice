@@ -70,10 +70,14 @@ run_dir_take "$TMP" "${MU300_VOICE_RUN_UID:-0}" mu300-voice || exit 1
 chmod 700 "$TMP" 2>/dev/null
 
 card=$(awk '/sprdphone/ {print $1; exit}' /proc/asound/cards 2>/dev/null)
-# on a kernel without the audio drivers (every mainline one, and 5.4 as released) there is nothing to load
-if [ -z "$card" ] && [ ! -d "/lib/modules/$(uname -r)/audio" ]; then
-    echo "mu300-voice: no call audio on this kernel ($(uname -r)): the audio drivers are for 5.4 and not in the releases (kernel/build-audio.sh)" >&2
-    exit 1
+# the audio drivers: the private stack's on 5.4 (.../audio), the release's own on mainline (extra/ on Ubuntu, flat on
+# OpenWrt; docs/FINDINGS.md 188). On a kernel with neither (5.4 as released) there is nothing to load.
+if [ -z "$card" ]; then
+    _k=/lib/modules/$(uname -r)
+    if [ ! -f "$_k/audio/sprd_audcp_boot.ko" ] && [ ! -f "$_k/extra/sprd_audcp_boot.ko" ] && [ ! -f "$_k/sprd_audcp_boot.ko" ]; then
+        echo "mu300-voice: no call audio on this kernel ($(uname -r)): no audio drivers (5.4 needs the private stack, kernel/build-audio.sh)" >&2
+        exit 1
+    fi
 fi
 [ -n "$card" ] || { echo "mu300-voice: the sound card is not registered; run mu300-audio-dsp load" >&2; exit 1; }
 # by name, not number: the device numbers are not the same on every build of the card
@@ -441,16 +445,26 @@ tone() {
 # Record a slice and hand it straight back, for ever. The caller hears themselves one slice late, which is the
 # clearest proof there is that both directions of the call carry audio: uplink and downlink at once, from one
 # test, with no second device involved.
+# alsa-lib's plug with its slave pinned to what the uplink tap consumes: 16 kHz mono (FINDINGS 24e). "plughw:"
+# alone opens the tap at the client's own 48 kHz stereo - the tap takes any rate it is offered - and the DSP then
+# plays it at a third of the speed, every frame twice: the "slow motion, crackly" echo of the first call that ran
+# it (docs/FINDINGS.md 188). A configuration of our own on top of the system's, for this one device name.
+uplink_conf() {
+    printf '</usr/share/alsa/alsa.conf>\npcm.mu300_uplink {\n\ttype plug\n\tslave { pcm "%s" rate %s channels 1 format S16_LE }\n}\n' \
+        "$PLAY" "$PLAY_RATE" > "$TMP/uplink.conf"
+}
+
 echo_loop() {
     secs=${1:-5}
     echo "echoing every ${secs}s - ^C to stop" >&2
+    uplink_conf
     while :; do
-        # the downlink from the dump (48 kHz, two equal channels), played back through alsa-lib's plug, which
-        # converts it to the uplink tap's 16 kHz mono
+        # the downlink from the dump (48 kHz, two equal channels), converted by plug to the uplink's 16 kHz mono
         arecord -D "$CAP" -f S16_LE -r 48000 -c 2 -d "$secs" -q \
                 --period-size=960 --buffer-size=3840 "$TMP/echo.raw" 2>"$TMP/cap.err" || {
             echo "mu300-voice: capture failed: $(head -1 "$TMP/cap.err")" >&2; return 1; }
-        aplay -D "plug$PLAY" -f S16_LE -r 48000 -c 2 -q "$TMP/echo.raw" 2>"$TMP/play.err" || {
+        ALSA_CONFIG_PATH=$TMP/uplink.conf aplay -D mu300_uplink -f S16_LE -r 48000 -c 2 -q \
+                --period-time=20000 --buffer-time=120000 "$TMP/echo.raw" 2>"$TMP/play.err" || {
             echo "mu300-voice: playback failed: $(head -1 "$TMP/play.err")" >&2; return 1; }
     done
 }
