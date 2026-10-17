@@ -274,10 +274,16 @@ sys.exit("sbin/e2fsck" not in b.cpio_names(b.unlz4_legacy(open(sys.argv[2], "rb"
     rm -f "$D/ramdisk.check"
 done
 # a mainline bundle carries the kernel's own modules next to the vendor ones (upstream/build-modules.sh): one of each
-# kind - qdisc, filesystem, device mapper, USB modem, vhost - and the vendor Wi-Fi
+# kind - qdisc, filesystem, device mapper, USB modem, vhost - and the vendor Wi-Fi; and every module of the out-of-tree
+# call audio stack, as upstream/modules/sprd_audio/Kbuild lists them (#315: without one of them the DSP stays silent)
+audio=$(python3 -c 'import re, sys
+t = open(sys.argv[1]).read().replace("\\\n", " ")
+print(" ".join(o[:-2] + ".ko" for l in t.splitlines() if re.match(r"obj-m\s*\+?=", l)
+               for o in l.split("=", 1)[1].split() if o.endswith(".o")))' "$TOP/upstream/modules/sprd_audio/Kbuild")
+[ -n "$audio" ] || { echo "upstream/modules/sprd_audio/Kbuild lists no modules"; fail=1; }
 for a in mu300-kernel-6.18 mu300-kernel-7.2; do
     l=$(tar -tzf "$D/$a.tar.gz")
-    for m in sch_htb.ko ntfs3.ko dm-crypt.ko cdc_mbim.ko vhost_net.ko sprd_wlan_combo.ko; do
+    for m in sch_htb.ko ntfs3.ko dm-crypt.ko cdc_mbim.ko vhost_net.ko sprd_wlan_combo.ko $audio; do
         printf '%s\n' "$l" | grep -qx "./modules/$m" || { echo "$a lacks modules/$m"; fail=1; }
     done
 done

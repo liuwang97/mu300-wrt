@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -429,6 +430,19 @@ class Rules(unittest.TestCase):
         self.assertIn('iifname "br-*" iifname != "br-lan" counter drop', fw)
         # the marker is a file of the device, so a zone the user deleted is not made again after an update
         self.assertIn('[ -e /etc/mu300/docker-zone ] && exit 0', zone)
+
+    def test_release_audit_wants_the_audio_stack(self):
+        # make-release.sh: both mainline bundles must carry every module upstream/modules/sprd_audio/Kbuild lists
+        # (#315); its own reader of the Kbuild, run here against the real one
+        rel = (TOP / 'tools' / 'make-release.sh').read_text()
+        code = re.search(r"audio=\$\(python3 -c '(.*?)' \"\$TOP/upstream/modules/sprd_audio/Kbuild\"\)", rel, re.S).group(1)
+        self.assertIn('sprd_wlan_combo.ko $audio; do', rel)
+        r = subprocess.run([sys.executable, '-c', code, str(TOP / 'upstream/modules/sprd_audio/Kbuild')],
+                           capture_output=True, text=True, check=True)
+        mods = r.stdout.split()
+        self.assertEqual(20, len(mods), mods)
+        for m in ('sprd-dma.ko', 'audio_mem.ko', 'sprd_audcp_boot.ko', 'mcdt_hw_r2p0.ko', 'snd-soc-sprd-card.ko'):
+            self.assertIn(m, mods)
 
     def test_e2fsck_is_pinned_and_everywhere(self):
         # tools/e2fsck/build.sh: a pinned e2fsprogs (its signed SHA-256) in a pinned image (FINDINGS 182), and every
