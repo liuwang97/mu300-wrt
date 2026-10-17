@@ -20,9 +20,11 @@
 #        Set BT_HEADSET=<address> in /etc/mu300/voice.conf. This is the route the F50's own Android carries call
 #        audio on with the community module (docs/FINDINGS.md 24).
 #   dsp  nothing physical: the call's two ends are reachable from the AP instead -
-#          playback  hw:<card>,FE_ST_VOICE_PCM_P   what the other side hears
-#          capture   hw:<card>,FE_ST_VOICE_C       what they said
-#        which is what tone, echo and a SIP bridge use.
+#          playback  hw:<card>,FE_ST_VOICE_PCM_P   what the other side hears; 16 kHz mono, whatever it is opened at
+#          capture   hw:<card>,FE_ST_DUMP          what they said: the VBC's dump of DAC1 (switched on here), 48 kHz
+#                                                  on two equal channels. FE_ST_VOICE_C, the DSP's own downlink tap,
+#                                                  gets only every other 20 ms frame on this board (FINDINGS 24e)
+#        which is what tone, echo and a SIP bridge (sipserver, mu300 build) use.
 #
 # How a call is started is from the Rongyue E5's working port of the same DSP (kanoqwq/e5-linux@402fde1,
 # @8e9b8a4, @2c726fc - its downlink was heard on the receiver and speaker): the call scene is the hostless
@@ -45,6 +47,8 @@ VOLUME=6
 # shellcheck disable=SC1090
 [ -r "$CONF" ] && . "$CONF"
 RATE=${MU300_VOICE_RATE:-8000}
+# FE_ST_VOICE_PCM_P is consumed at 16 kHz: 8 kHz into it reaches the far end at twice the speed (FINDINGS 24e)
+PLAY_RATE=${MU300_VOICE_PLAY_RATE:-16000}
 DIR=${MU300_AT_DIR:-/run/mu300-at}
 SIM_SLOT=0
 if [ -x /opt/mu300/bin/mu300-sim ]; then
@@ -76,9 +80,9 @@ fi
 pcmdev() { awk -F': ' -v n="$1 " 'index($2, n) == 1 { split($1, a, "-"); print a[2] + 0; exit }' /proc/asound/pcm; }
 VOICE=$(pcmdev FE_ST_VOICE); VOICE=${VOICE:-5}
 PLAY=hw:$card,$(pcmdev FE_ST_VOICE_PCM_P || true)
-CAP=hw:$card,$(pcmdev FE_ST_VOICE_C || true)
+CAP=hw:$card,$(pcmdev FE_ST_DUMP || true)
 [ "$PLAY" = "hw:$card," ] && PLAY=hw:$card,53
-[ "$CAP" = "hw:$card," ] && CAP=hw:$card,9
+[ "$CAP" = "hw:$card," ] && CAP=hw:$card,16
 
 # A short wait. OpenWrt's busybox sleep takes whole seconds only ("sleep 0.1" is an error there and returns at
 # once, which turned every wait loop below into a busy loop): fractions where sleep takes them, else usleep, else
@@ -210,7 +214,8 @@ routes() {   # routes OUTPUT
             put VBC_DSP_VOICE_CAPTURE_TYPE "${MU300_VOICE_CAPTURE_TYPE:-0}"
             # VOICE_PCM_PLAY_UPLINK_ONLY: the far end hears what is played, not a mix with the absent microphone
             put VBC_DSP_VOICE_PCM_PLAY_MODE "${MU300_VOICE_PLAY_MODE:-1}"
-            dsp_clock ;;
+            dsp_clock
+            dump_tap ;;
     esac
 }
 # The voice back end's IIS port needs a clock, and on this board nothing outside the VBC gives it one: no codec in
@@ -220,12 +225,21 @@ routes() {   # routes OUTPUT
 # the whole call), FE_ST_VOICE_PCM_P stalls at its first buffer, and the far end hears silence. With it the modem
 # reads 200 bytes of uplink every 20 ms and the tap plays in real time (docs/FINDINGS.md 24d). Port 1 is the one
 # that matters; MST_SEL_0 alone, the setting tried before, moves nothing in the voice scene.
-# The capture tap (FE_ST_VOICE_C) still gets only every other 20 ms downlink frame at this clock; VBC_SRC_DAC1/ADC2
-# set to 16000 paces it right but carries zeros, so the default stays (FINDINGS 24d: open).
+# The DSP's capture tap (FE_ST_VOICE_C) still gets only every other 20 ms downlink frame at this clock, whatever its
+# rate, framing or VBC_SRC; the downlink is read from the VBC dump instead (dump_tap, FINDINGS 24e).
 dsp_clock() {
     put VBC_IIS_MASTER_ENALBE enable
     put VBC_IIS_MST_SEL_0_TYPE VBC_MASTER_INTERNAL
     put VBC_IIS_MST_SEL_1_TYPE VBC_MASTER_INTERNAL
+}
+# The far end's voice, whole. FE_ST_VOICE_C (the DSP's downlink tap) gets only every other 20 ms frame on this
+# board, whatever its rate, framing or the port's SRC (docs/FINDINGS.md 24d, 24e). The VBC's own dump of what DAC1
+# sends to the IIS1 port carries the same downlink without a gap: FE_ST_DUMP at 48 kHz, two equal channels, with the
+# dump switched on at DUMP_POS_DAC1_E. On by default for the dsp route; MU300_VOICE_DUMP_TAP=0 leaves it off.
+dump_tap() {
+    [ "${MU300_VOICE_DUMP_TAP:-1}" = 1 ] || return 0
+    put VBC_DUMP_POS DUMP_POS_DAC1_E
+    put 'S_VBC_DUMP SWITCH' on
 }
 mute_dl() { put VBC_DL_MUTE enable; put 'VBC DAC1 DSP MDG Set' 1,1024; }
 unmute_dl() { put 'VBC DAC1 DSP MDG Set' 0,1024; put VBC_DL_MUTE disable; log "downlink unmuted"; }
@@ -360,11 +374,11 @@ watch() {
 }
 
 # --- the AP's taps on a call (output dsp) ----------------------------------------------------------------------
-# A melody, as raw S16_LE mono at $RATE. Two voices and a slow decay, so it sounds like something rather than
+# A melody, as raw S16_LE mono at $PLAY_RATE. Two voices and a slow decay, so it sounds like something rather than
 # a test tone - the point is for a human on the other end to recognise it instantly as "the device is playing
 # me music", not to be pretty.
 melody() {
-    awk -v rate="$RATE" 'BEGIN {
+    awk -v rate="$PLAY_RATE" 'BEGIN {
         n = split("523,0.4 659,0.4 784,0.4 1047,0.8 784,0.4 659,0.4 523,0.8 587,0.4 " \
                   "698,0.4 880,0.4 1175,0.8 880,0.4 698,0.4 587,0.8", notes, " ")
         pi = 3.14159265358979
@@ -398,11 +412,11 @@ voice_play() {   # voice_play FILE -> play it into the call, trying each framing
     for p in $PERIODS; do
         ps=${p%,*}; bs=${p#*,}
         if [ "$ps" = 0 ]; then
-            err=$(aplay -D "$PLAY" -f S16_LE -r "$RATE" -c 1 -q "$f" 2>&1)
+            err=$(aplay -D "$PLAY" -f S16_LE -r "$PLAY_RATE" -c 1 -q "$f" 2>&1)
         else
             # scale the framing if the rate is not the 8k these numbers were written for
-            ps=$((ps * RATE / 8000)); bs=$((bs * RATE / 8000))
-            err=$(aplay -D "$PLAY" -f S16_LE -r "$RATE" -c 1 -q \
+            ps=$((ps * PLAY_RATE / 8000)); bs=$((bs * PLAY_RATE / 8000))
+            err=$(aplay -D "$PLAY" -f S16_LE -r "$PLAY_RATE" -c 1 -q \
                   --period-size="$ps" --buffer-size="$bs" "$f" 2>&1)
         fi
         [ -z "$err" ] && { echo "$ps,$bs" > "$TMP/framing"; return 0; }
@@ -431,11 +445,13 @@ echo_loop() {
     secs=${1:-5}
     echo "echoing every ${secs}s - ^C to stop" >&2
     while :; do
-        arecord -D "$CAP" -f S16_LE -r "$RATE" -c 1 -d "$secs" -q \
-                --period-size=$((160 * RATE / 8000)) --buffer-size=$((960 * RATE / 8000)) \
-                "$TMP/echo.raw" 2>"$TMP/cap.err" || {
+        # the downlink from the dump (48 kHz, two equal channels), played back through alsa-lib's plug, which
+        # converts it to the uplink tap's 16 kHz mono
+        arecord -D "$CAP" -f S16_LE -r 48000 -c 2 -d "$secs" -q \
+                --period-size=960 --buffer-size=3840 "$TMP/echo.raw" 2>"$TMP/cap.err" || {
             echo "mu300-voice: capture failed: $(head -1 "$TMP/cap.err")" >&2; return 1; }
-        voice_play "$TMP/echo.raw" || return 1
+        aplay -D "plug$PLAY" -f S16_LE -r 48000 -c 2 -q "$TMP/echo.raw" 2>"$TMP/play.err" || {
+            echo "mu300-voice: playback failed: $(head -1 "$TMP/play.err")" >&2; return 1; }
     done
 }
 
@@ -501,7 +517,7 @@ status)
     echo "call:     $(at 'AT+CLCC' 8 | tr '\n' ' ' | mask)"
     echo "scene:    $(scene_running && echo "running, output $(cat "$TMP/output")" || echo "not running") (hw:$card,$VOICE)"
     echo "playback: $PLAY (FE_ST_VOICE_PCM_P)"
-    echo "capture:  $CAP (FE_ST_VOICE_C)"
+    echo "capture:  $CAP (FE_ST_DUMP of DAC1)"
     echo "headset:  ${BT_HEADSET:-none set in $CONF}$(hfp_up && echo ', connected')"
     mu300-audio-dsp status 2>/dev/null | sed -n 's/^dsp:/dsp:     /p' ;;
 
