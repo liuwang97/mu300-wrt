@@ -34,6 +34,12 @@ for a in $(ip -4 -o addr show dev br-lan scope global 2>/dev/null | awk '{ print
     [ "$a" = "$LAN_IP/24" ] || ip addr del "$a" dev br-lan 2>/dev/null || true
 done
 ip link set br-lan up
+# the panel extra's Cockpit listens on the LAN address (mu300-panel: ListenStream=ADDRESS:9090, not on the uplink):
+# a changed address moves it along. Only then - at an ordinary boot the drop-in has this address already.
+CP=/etc/systemd/system/cockpit.socket.d/mu300-listen.conf
+if [ -f "$CP" ] && ! grep -qx "ListenStream=$LAN_IP:9090" "$CP" && command -v mu300-panel >/dev/null 2>&1; then
+    mu300-panel link || true
+fi
 # IPv6: mobile-data puts the network's /64 on br-lan when the carrier gives one (and removes it again), and
 # constructor:br-lan advertises whatever global /64 is there - SLAAC, with DNS by RDNSS and stateless DHCPv6.
 # Nothing is advertised while br-lan has no global address. bind-dynamic rather than bind-interfaces, so DNS also
