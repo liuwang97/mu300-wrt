@@ -131,6 +131,10 @@ private_dir() {
 # the boot warm-up: K57); the panel's own radio sequences take the same lock through it (mobile-data radio-locked),
 # never a copy of its locking. A platform without it runs them unlocked, as before. MU300_MOBILE_DATA: the tests.
 MOBILE_DATA=${MU300_MOBILE_DATA:-/opt/mu300/bin/mobile-data}
+# SIM_RADIO: each SIM's radio on or off, kept across reboots (mu300-sim-radio, docs/FINDINGS.md 185). rf_allowed: the
+# card in use's radio may be on (yes without the tool). A sequence that would switch the radio on asks it first.
+SIM_RADIO=${MU300_SIM_RADIO_BIN:-/opt/mu300/bin/mu300-sim-radio}
+rf_allowed() { [ ! -x "$SIM_RADIO" ] || "$SIM_RADIO" allowed 2>/dev/null; }
 # radio_busy: a live process holds the radio lock (the panel answers "busy" instead of starting a sequence)
 radio_busy() { [ -x "$MOBILE_DATA" ] && "$MOBILE_DATA" radio-busy >/dev/null 2>&1; }
 # radio_locked CMD...: CMD under the radio lock, waiting MU300_RADIO_LOCK_WAIT seconds (0 by default) for a holder;

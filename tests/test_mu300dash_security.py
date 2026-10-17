@@ -98,7 +98,7 @@ DEFAULTS = {
 }
 
 # The methods that start something with setsid (in the background of mu300dash)
-DETACHED = {'act', 'at', 'lock_get', 'lock_set', 'sms_send', 'sms_sync', 'status', 'sim_set'}
+DETACHED = {'act', 'at', 'lock_get', 'lock_set', 'sms_send', 'sms_sync', 'status', 'sim_set', 'simcard_set'}
 
 # Hostile values: each is refused by every field that takes a fixed set, a number or a name. The NUL cases: the
 # stand-in jsonfilter passes the NUL on (the backend maps it to \001 and refuses); the real jsonfilter prints strings
@@ -537,6 +537,23 @@ class SimCard(Mu300Dash):
                 r, recs, _ = self.call(shell, 'simcard_set', bad, MU300_MOBILE_DATA=md)
                 self.assertEqual(self.reply(r)['ok'], 0, bad)
                 self.assertEqual(recs, [])
+            # the radio: started in the background (mu300-sim-radio set), 0, 1 or all; refused while one runs
+            sr = self.adapters / 'sim-radio'
+            sr.write_text(RECORDER.format(name='sim-radio', default='{"ok":1,"busy":false}'))
+            sr.chmod(0o755)
+            for slot in ('0', '1', 'all'):
+                r, recs, _ = self.call(shell, 'simcard_set', {'kind': 'radio', 'slot': slot, 'state': 'off'},
+                                       MU300_MOBILE_DATA=md, MU300_SIM_RADIO_BIN=sr)
+                self.assertEqual(self.reply(r), {'ok': 1, 'started': 1}, r.stdout)
+                self.assertIn(['setsid', 'sim-radio', 'set', slot, 'off'], recs)
+            self.output('sim-radio', '{"ok":1,"busy":true}')
+            r, recs, _ = self.call(shell, 'simcard_set', {'kind': 'radio', 'slot': '0', 'state': 'on'},
+                                   MU300_MOBILE_DATA=md, MU300_SIM_RADIO_BIN=sr)
+            self.assertEqual(self.reply(r)['error'], 'A SIM radio change is already running')
+            self.assertFalse([c for c in recs if c[0] == 'setsid'])
+            r, recs, _ = self.call(shell, 'simcard_get', {}, MU300_MOBILE_DATA=md, MU300_SIM_RADIO_BIN=sr)
+            self.assertEqual(self.reply(r)['radio'], {'ok': 1, 'busy': True})
+            (self.out / 'sim-radio').unlink()
             self.output('mobile-data.rc', '1')
             r, recs, _ = self.call(shell, 'simcard_set', {'kind': 'volte', 'slot': '0', 'state': 'off'}, MU300_MOBILE_DATA=md)
             self.assertEqual(self.reply(r)['error'], 'The modem did not take the setting; nothing was saved')
@@ -1581,37 +1598,50 @@ class RadioLock(Mu300Dash):
         e.update(env)
         return self.script(shell, ADAPTERS / 'action', *args, **e)
 
-    def test_radio_ops_run_under_the_lock(self):
+    def sim_radio(self, rc=0):
+        p = self.tmp / 'sim-radio'
+        p.write_text(f'#!/bin/sh\necho "sim-radio $* wan=$MU300_WAN" >> "$STUBLOG/sr"\n'
+                     '[ "$1" != allowed ] || exit "${T_RF_OFF:-0}"\n'
+                     f'echo "SIM1 radio $3 (saved)"; exit {rc}\n')
+        p.chmod(0o755)
+        return p
+
+    def test_the_radio_button_is_the_sim_in_uses_setting(self):
+        """FINDINGS 185: radio on|off is mu300-sim-radio set <the card in use> on|off (persistent, per SIM), which takes
+        the radio lock itself (mobile-data rf-apply): no AT from here, no radio-locked around it."""
         for shell in self.each_shell():
-            for args, op, sent in ((('radio', 'off'), 'radio off', ['at -t 6 AT+CFUN=0 locked=1']),
-                                   (('radio', 'on'), 'radio on', ['at -t 20 AT+SFUN=4 locked=1',
-                                                                  'at -t 4 AT+CFUN? locked=1'])):
-                with self.subTest(op=op):
-                    r = self.action(shell, *args)
-                    self.assertEqual(json.loads(r.stdout), {'ok': 1, 'op': op}, r.stderr)
-                    self.assertEqual(self.log('md'), [f'md radio-locked {ADAPTERS / "action"} {" ".join(args)} '
-                                                      'wait= locked=1'])
-                    self.assertEqual(self.log('at.log'), sent)
-            r = self.action(shell, 'modem-reset')
+            sr = self.sim_radio()
+            self.log('sr')
+            for arg in ('off', 'on'):
+                with self.subTest(arg=arg):
+                    r = self.action(shell, 'radio', arg, MU300_SIM_RADIO_BIN=sr)
+                    self.assertEqual(json.loads(r.stdout), {'ok': 1, 'op': f'radio {arg}'}, r.stderr)
+                    self.assertEqual(self.log('sr'), [f'sim-radio set 0 {arg} wan=wan'])
+                    self.assertEqual(self.log('md'), [])
+                    self.assertEqual(self.log('at.log'), [])
+            r = self.action(shell, 'radio', 'off', MU300_SIM_RADIO_BIN=self.sim_radio(rc=1))
+            self.assertEqual(json.loads(r.stdout)['error'], 'The radio did not follow its setting')
+            r = self.action(shell, 'radio', 'off', MU300_SIM_RADIO_BIN=self.tmp / 'none')
+            self.assertEqual(json.loads(r.stdout)['error'], 'Radio control is not provided by this platform')
+
+    def test_the_modem_reset_runs_under_the_lock(self):
+        for shell in self.each_shell():
+            r = self.action(shell, 'modem-reset', MU300_SIM_RADIO_BIN=self.sim_radio())
             self.assertEqual(json.loads(r.stdout), {'ok': 1, 'op': 'modem-reset'}, r.stderr)
             self.assertEqual(self.log('md'), [f'md radio-locked {ADAPTERS / "action"} modem-reset wait= locked=1',
                                               'md sim-reset wait= locked=1'])
+            # refused while the SIM's radio is switched off in its settings
+            self.log('sr')
+            r = self.action(shell, 'modem-reset', MU300_SIM_RADIO_BIN=self.sim_radio(), T_RF_OFF=1)
+            self.assertEqual(json.loads(r.stdout)['error'], 'The radio of this SIM is switched off in its settings')
+            self.assertEqual(self.log('md'), [])
 
     def test_a_busy_radio_is_answered_busy_and_nothing_is_sent(self):
         for shell in self.each_shell():
-            for args, op in ((('radio', 'on'), 'radio on'), (('radio', 'off'), 'radio off'),
-                             (('modem-reset',), 'modem-reset')):
-                with self.subTest(op=op):
-                    r = self.action(shell, *args, MD_BUSY=1)
-                    self.assertEqual(json.loads(r.stdout), {'ok': 0, 'op': op, 'error': BUSY_RADIO})
-                    self.assertEqual(self.log('at.log'), [])
-                    self.assertEqual([l.split()[1] for l in self.log('md')], ['radio-locked'])
-
-    def test_without_mobile_data_the_ops_run_as_before(self):
-        for shell in self.each_shell():
-            r = self.action(shell, 'radio', 'off', MU300_MOBILE_DATA=self.tmp / 'none')
-            self.assertEqual(json.loads(r.stdout), {'ok': 1, 'op': 'radio off'}, r.stderr)
-            self.assertEqual(self.log('at.log'), ['at -t 6 AT+CFUN=0 locked=1'])
+            r = self.action(shell, 'modem-reset', MD_BUSY=1, MU300_SIM_RADIO_BIN=self.tmp / 'none')
+            self.assertEqual(json.loads(r.stdout), {'ok': 0, 'op': 'modem-reset', 'error': BUSY_RADIO})
+            self.assertEqual(self.log('at.log'), [])
+            self.assertEqual([l.split()[1] for l in self.log('md')], ['radio-locked'])
 
     def test_the_backend_says_busy_before_starting_anything(self):
         known = set(subprocess.run([sys.executable, str(TOP / 'tools' / 'luci-i18n.py'), 'extract'], check=True,

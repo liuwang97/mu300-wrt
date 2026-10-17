@@ -6,6 +6,7 @@
 #        no data while the SIM is registered as roaming - see roaming_cmd and docs/FINDINGS.md 120)
 #        mobile-data voice [--json [--read]] | voice volte|vonr on|off [--slot 0|1]   (VoLTE/VoNR per card, replayed
 #        at every bring-up: voice_cmd and docs/FINDINGS.md 184)
+#        mobile-data rf-apply   (the radio of the card in use as mu300-sim-radio says now: FINDINGS 185)
 #        mobile-data suspend off|lte | resume [nodial]   (mu300-power: modem down or LTE only while nobody uses the
 #        device; nodial: the radio only, the watcher redials). Both end within MU300_SUSPEND_DEADLINE (60 s) whatever
 #        the modem does; on a failure or a timeout the modem is handed back to the watcher (no mode file) and they
@@ -401,8 +402,58 @@ v6_relay_ra() {
 # Every decision goes to radio.log. Returns 1 when this round cannot switch the radio on; the caller retries later
 # (netifd's next attempt, systemd's restart, the watchdog).
 PLUGIN_LOCK=${MU300_PLUGIN_LOCK:-/usr/libexec/unisoc-modem/lock}
+# --- each SIM's radio on or off, kept across reboots (mu300-sim-radio, docs/FINDINGS.md 185) --------------------------
+# rf_allowed: the card in use may have its radio on (no mu300-sim-radio, or an unreadable setting: yes). Asked by every
+# radio-on path here: the dial, the early warm-up, the watchdog, mu300-power's resume (radio_on), the modem reset.
+# While it says no, $RF_HELD exists: the dial ends at once (netifd: exit 7, SIM_RADIO_DISABLED, no retry; Ubuntu: exit
+# 0, the service stays up) and the watchdog leaves the radio alone; rf-apply or the watchdog ends it when it says yes.
+SIM_RADIO_BIN=${MU300_SIM_RADIO_BIN:-/opt/mu300/bin/mu300-sim-radio}
+RF_HELD=/run/mu300/sim-radio-held
+rf_allowed() { [ ! -x "$SIM_RADIO_BIN" ] || "$SIM_RADIO_BIN" allowed "$SIM_SLOT" 2>/dev/null; }
+# wan_available: netifd's WAN made available again where mu300cell made it unavailable (a SIM radio switched off, an
+# empty slot: exit 7 or 6). netifd then starts it by itself - unless somebody took it down (ifdown: autostart off),
+# which is how the user's own choice stays as it was.
+wan_available() {
+    local wan=${MU300_WAN:-wan}
+    case $(ubus call "network.interface.$wan" status 2>/dev/null | tr -d ' \n\t' || true) in
+        *'"available":false'*)
+            ubus call "network.interface.$wan" notify_proto '{"action":5,"available":true}' >/dev/null 2>&1 || true ;;
+    esac
+}
+rf_hold() {
+    [ ! -e "$RF_HELD" ] || return 0
+    mkdir -p "${RF_HELD%/*}" 2>/dev/null || true
+    echo "$SIM_SLOT" 2>/dev/null > "$RF_HELD" || true
+    radio_say "the radio of the SIM in use (slot $SIM_SLOT) is switched off in its settings: no radio, no dial"
+    logger -t mobile-data "SIM$((SIM_SLOT + 1)) radio is off (mu300-sim-radio): mobile data stays down" 2>/dev/null || true
+}
+# rf_cfun: the card in use's CFUN (0, 1 or 4), nothing when it does not answer
+rf_cfun() { at 'AT+CFUN?' 4 2>/dev/null | tr -d '\r' | sed -n 's/^+CFUN: *\([014]\)$/\1/p' | head -n 1 || true; }
+# rf_off_locked: flight mode on the card's own channel (AT+CFUN=4: the SIM stays powered), read back. A radio still at
+# its cold 0 is off already. Under the radio lock.
+rf_off_locked() {
+    case $(rf_cfun) in 0|4) return 0 ;; esac
+    at 'AT+CFUN=4' 30 >/dev/null 2>&1 || true
+    case $(rf_cfun) in 0|4) radio_say "radio off (AT+CFUN=4): switched off in the SIM's settings"; return 0 ;; esac
+    radio_say "AT+CFUN=4 was not read back"
+    return 1
+}
+# rf_on_locked: the radio back: from flight mode AT+CFUN=1, from the cold 0 the ordinary bring-up. Under the radio lock.
+rf_on_locked() {
+    local t
+    case $(rf_cfun) in
+        1) return 0 ;;
+        4) at 'AT+CFUN=1' 30 >/dev/null 2>&1 || true
+           for t in 1 2 3 4 5 6 7 8 9 10; do [ "$(rf_cfun)" = 1 ] && { radio_say "radio on (AT+CFUN=1)"; return 0; }; sleep 2; done
+           return 1 ;;
+        *) radio_on_locked ;;
+    esac
+}
 [ "$SIM_NATIVE" = 1 ] && PLUGIN_LOCK=/nonexistent
 radio_on_locked() {
+    if ! rf_allowed && { [ -e /run/mu300/sim-managed ] || [ "$SIM_NATIVE" = 1 ]; }; then
+        rf_hold; rf_off_locked || true; return 7
+    fi
     if [ -e /run/mu300/sim-managed ]; then
         [ -e /run/mu300/sim-radio-ready ] && [ ! -e /run/mu300/sim-active-unknown ] || return 1
         at 'AT+CFUN?' 4 | tr -d '\r' | grep -E '^\+CFUN: *1$' >/dev/null
@@ -449,9 +500,19 @@ radio_on_locked() {
         esac
     fi
     out=$(at 'AT+CFUN?' 4 2>&1 || true)
+    # switched off in the SIM's settings: off it stays (the cold 0 as it is, a radio on put into flight mode)
+    if ! rf_allowed; then
+        rf_hold
+        case $out in *"+CFUN: 1"*) rf_off_locked || true ;; esac
+        return 7
+    fi
     case $out in
         *"+CFUN: 1"*) return 0 ;;
         *"+CFUN: 0"*) ;;
+        *"+CFUN: 4"*)
+            # flight mode with the setting on (left by an earlier boot's panel, or set by hand): back on
+            radio_say "the radio is in flight mode (CFUN 4) and its setting is on: AT+CFUN=1"
+            rf_on_locked; return $? ;;
         *)
             radio_say "no answer to AT+CFUN?, ending this round without AT+SFUN: $(echo "${out:-nothing}" | tr -s '\n' ' ')"
             return 1 ;;
@@ -967,6 +1028,15 @@ up_locked() {
     # a VPN with the kill switch has it up before there is a bearer to leak through (mu300-vpn run, which puts it
     # up too, only starts after this)
     "${MU300_VPN_CMD:-/opt/mu300/bin/mu300-vpn}" guard >/dev/null 2>&1 || true
+    # the SIM's radio is switched off in its settings (FINDINGS 185): no radio, no dial. Under netifd exit 7: mu300cell
+    # reports SIM_RADIO_DISABLED and does not retry; rf-apply brings the WAN back when it is switched on.
+    if ! rf_allowed; then
+        rf_hold
+        led off
+        [ "${MU300_NETIFD:-0}" != 1 ] || exit 7
+        echo "mobile data stays down: the radio of SIM$((SIM_SLOT + 1)) is off in its settings (mu300-sim-radio set $SIM_SLOT on)"
+        return 0
+    fi
     rm -f /run/mu300-mobile-data-down
     # The U30 Air's dual-SIM boot: its cold start (mu300-sim2-warmup) brings the radio up, about 20 s into the boot,
     # and netifd's first dial comes before that - before the owners even have their command fifos (tty_setup below
@@ -1170,6 +1240,7 @@ down() {
 }
 
 sim_reset() {
+    rf_allowed || { echo "The radio of this SIM is switched off in its settings (mu300-sim-radio)" >&2; return 1; }
     [ ! -e /run/mu300/sim-managed ] || { echo "Use SIM control or reboot for a managed dual-SIM radio" >&2; return 1; }
     [ "$SIM_NATIVE" != 1 ] || { echo "Native dual SIM requires a Linux reboot, not a live modem reset" >&2; return 1; }
     tty_setup
@@ -1566,6 +1637,16 @@ watch() {
             [ -s "$SUSPEND" ] || roam_watch_held
             continue
         fi
+        # the SIM's radio switched off in its settings (FINDINGS 185): nothing to restore; switched on again (the
+        # setting edited by hand, or rf-apply that did not get through): the radio and the dial come back here
+        if ! rf_allowed; then continue; fi
+        if [ -e "$RF_HELD" ] && [ ! -s "$SUSPEND" ]; then
+            rm -f "$RF_HELD"
+            echo "the radio of the SIM in use is switched on in its settings again" >&2
+            radio_on || true
+            redial || echo "reconnect failed, retrying" >&2
+            continue
+        fi
         [ -e /run/mu300-mobile-data-down ] && continue
         [ -s "$SUSPEND" ] && continue   # mu300-power holds the modem down; nothing to restore
         [ -c "$DEV" ] || continue
@@ -1875,6 +1956,47 @@ voice_cmd() {
     esac
 }
 
+# rf_apply: make the card in use's radio and its mobile data what mu300-sim-radio says, now (mu300-sim-radio set runs
+# it). Off: data down first (netifd restarts the WAN, whose dial then ends with SIM_RADIO_DISABLED; on Ubuntu the
+# connection goes down the way `down` takes it), then flight mode. On: the radio back - on the U30 Air's dual-SIM
+# boot whose cold start was put off because the card was off at boot, that cold start now (mu300-sim2-warmup
+# --deferred) - then the dial, but only where the WAN was held for this (a WAN somebody took down stays down).
+rf_apply() {
+    modem_stack || { echo "no modem stack in this kernel" >&2; return 3; }
+    local wan=${MU300_WAN:-wan} st
+    if ! rf_allowed; then
+        led off
+        # the hold marker only for data that was meant to be up: switched on again, that data comes back
+        if via_netifd; then
+            st=$(ubus call "network.interface.$wan" status 2>/dev/null | tr -d ' \n\t' || true)
+            case $st in *'"autostart":true'*|*'"up":true'*) rf_hold; bnd "$STEPDL" ifup "$wan" || true ;; esac
+        elif [ ! -e /run/mu300-mobile-data-down ]; then
+            rf_hold
+            bnd "$STEPDL" down || true
+            rm -f /run/mu300-mobile-data-down   # down on account of the radio, not the user's: on again, data again
+        fi
+        under_radio_lock rf_off_locked
+        return
+    fi
+    if [ "$SIM_NATIVE" = 1 ] && [ ! -e /run/mu300/sim-radio-ready ]; then
+        bash "${MU300_SIM2_WARMUP:-/opt/mu300/bin/mu300-sim2-warmup}" --deferred || return 1
+    else
+        under_radio_lock rf_on_locked || return 1
+        voice_replay
+    fi
+    # the data that was held for the radio comes back: under netifd the WAN mu300cell made unavailable (netifd starts
+    # it unless somebody took it down: ifdown, the panel's button, the data cap); on Ubuntu the connection the hold
+    # marker names (a stopped service left none)
+    if via_netifd; then
+        rm -f "$RF_HELD"
+        wan_available
+    elif [ -e "$RF_HELD" ]; then
+        rm -f "$RF_HELD"
+        [ -e /run/mu300-mobile-data-down ] || ( setsid "$0" up </dev/null >/dev/null 2>&1 & ) || true
+    fi
+    return 0
+}
+
 # MU300_LIB=1: define the functions only (the tests source this script)
 [ -z "${MU300_LIB:-}" ] || return 0
 
@@ -1885,7 +2007,10 @@ case "${1:-status}" in
         modem_stack || { echo "no modem stack in this kernel ($(uname -r))" >&2; exit 3; }
         tty_setup
         mark radio-warmup-enter
-        radio_on
+        rc=0; radio_on || rc=$?
+        # switched off in the SIM's settings: nothing more to do, and that is no failure (FINDINGS 185)
+        [ "$rc" != 7 ] || { mark radio-warmup-done; exit 0; }
+        [ "$rc" = 0 ] || exit "$rc"
         voice_replay
         mark radio-warmup-done
         ;;
@@ -1895,10 +2020,13 @@ case "${1:-status}" in
     # an explicit down (by hand, the service stopped: the panel, the data cap) also ends a hold for roaming, so the
     # watchdog does not bring data back that somebody turned off; under netifd it is the teardown of every failed dial
     # and the hold stays (the watchdog ends it when the wan is taken down)
-    down) via_netifd || rm -f "$ROAM_HELD"; down ;;
+    # (and the hold for a SIM radio switched off: every down ends it - netifd's teardown too, which an ifdown runs; the
+    # restart rf-apply asks for runs the dial again after it, which holds once more)
+    down) via_netifd || rm -f "$ROAM_HELD"; rm -f "$RF_HELD"; down ;;
     status) status ;;
     roaming) roaming_cmd "${@:2}" ;;
     voice) voice_cmd "${@:2}" ;;
+    rf-apply) rf_apply ;;
     sim-reset) sim_reset ;;
     watch) watch ;;
     suspend) bounded suspend "${2:-off}" ;;
@@ -1927,5 +2055,5 @@ case "${1:-status}" in
         lock_owner_alive "$holder" || exit 1
         echo "$holder"
         ;;
-    *) echo "usage: $0 up [APN] | radio-on | down | status | signal | at \"CMD\" | sim-reset | watch | suspend off|lte | resume [nodial] | radio-locked CMD | radio-busy | roaming [--json|on|off] | voice [--json|volte|vonr]" >&2; exit 2 ;;
+    *) echo "usage: $0 up [APN] | radio-on | down | status | signal | at \"CMD\" | sim-reset | watch | suspend off|lte | resume [nodial] | radio-locked CMD | radio-busy | roaming [--json|on|off] | voice [--json|volte|vonr] | rf-apply" >&2; exit 2 ;;
 esac

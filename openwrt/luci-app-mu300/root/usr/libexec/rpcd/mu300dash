@@ -997,17 +997,20 @@ m_backup_export() { reply_obj "$(printf '%s' "$INPUT" | "$APIB" backup.export 2>
 m_backup_import() { reply_obj "$(printf '%s' "$INPUT" | "$APIB" backup.import 2>/dev/null)" 'The backup tool gave no valid reply'; }
 m_backup_job() { reply_obj "$(printf '{"from":0}' | "$APIB" job.status 2>/dev/null)" 'The backup tool gave no valid reply'; }
 
-# Cellular > SIM settings: per card, VoLTE and VoNR (mobile-data voice, FINDINGS 184). get asks the card in use what
+# Cellular > SIM settings: per card, the radio on or off (mu300-sim-radio, FINDINGS 185) and VoLTE and VoNR
+# (mobile-data voice, FINDINGS 184). get asks the card in use what
 # it has now (two short reads); set sends the choice to the card in use and reads it back, or saves it for the other
 # card's next start. Nothing a caller sends reaches the command but the fixed words checked here.
 m_simcard_get() {
-    local v s1
+    local v s1 r
     [ -x "$MOBILE_DATA" ] || { refuse 'Mobile data integration is not provided by this platform'; return; }
     v=$(json_obj "$("$MOBILE_DATA" voice --json --read 2>/dev/null)") || { refuse 'The SIM settings could not be read'; return; }
     # whether this device has a second card at all (the selector's own account, files only)
     s1=0
     [ "$(printf '%s' "$("$SIMCTL" status --json 2>/dev/null)" | jsonfilter -e '@.slot1_supported' 2>/dev/null)" != 1 ] || s1=1
-    printf '{"ok":1,"slot1_supported":%d,"voice":%s}\n' "$s1" "$v"
+    r=null
+    [ ! -x "$SIM_RADIO" ] || r=$(json_obj "$("$SIM_RADIO" status --json 2>/dev/null)") || r=null
+    printf '{"ok":1,"slot1_supported":%d,"voice":%s,"radio":%s}\n' "$s1" "$v" "$r"
 }
 m_simcard_set() {
     local kind slot state out
@@ -1015,6 +1018,16 @@ m_simcard_set() {
     inp '@.slot'; slot=$V
     inp '@.state'; state=$V
     case $kind:$slot:$state in volte:[01]:on|volte:[01]:off|vonr:[01]:on|vonr:[01]:off) ;;
+        radio:[01]:on|radio:[01]:off|radio:all:on|radio:all:off)
+            # the radio can take half a minute (the cold start on a U30 Air's second card more): never in the request;
+            # the page follows it with simcard_get (radio.busy, radio.result)
+            [ -x "$SIM_RADIO" ] || { refuse 'Radio control is not provided by this platform'; return; }
+            if [ "$(printf '%s' "$("$SIM_RADIO" status --json 2>/dev/null)" | jsonfilter -e '@.busy' 2>/dev/null)" = true ]; then
+                refuse 'A SIM radio change is already running'; return
+            fi
+            setsid "$SIM_RADIO" set "$slot" "$state" </dev/null >/dev/null 2>&1 &
+            printf '{"ok":1,"started":1}\n'
+            return ;;
         *) refuse 'Invalid SIM setting'; return ;; esac
     [ -x "$MOBILE_DATA" ] || { refuse 'Mobile data integration is not provided by this platform'; return; }
     if out=$("$MOBILE_DATA" voice "$kind" "$state" --slot "$slot" 2>&1); then
