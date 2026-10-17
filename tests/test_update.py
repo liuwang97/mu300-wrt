@@ -1073,6 +1073,43 @@ class KernelStep(UpdateBase):
                 for d in (u, o):
                     shutil.rmtree(d)
 
+    def test_a_system_just_replaced_gets_the_set_of_the_image_in_the_slot(self):
+        # Ubuntu's sets are never carried over by a system update: after "apply" replaced Ubuntu, the image in the
+        # slot - kept for rollback-boot once the new one is written - had no modules in the new system, and
+        # rollback-boot brought it back without them (F50-B, 2026-10-17). The previous system ran with it: its set
+        # is taken over, as second names.
+        old = {'a.ko': b'old a', 'b.ko': b'old b'}
+        for shell in self.each_shell():
+            for krel in (self.KREL, '7.2.11'):
+                self.old_image(self.KREL)
+                self.systems(old)
+                shutil.rmtree(self.disk / 'ubuntu.old', ignore_errors=True)
+                (self.disk / 'ubuntu').rename(self.disk / 'ubuntu.old')
+                (self.disk / 'ubuntu/etc').mkdir(parents=True)
+                (self.disk / f'ubuntu.old/lib/modules/{self.KREL}/modules.builtin').write_text('kernel/x.ko\n')
+                self.make_bundle({'a.ko': b'new a'}, krel=krel)
+                r = self.run_step(shell)
+                self.assertIn('rc=0', r.stdout, r.stderr)
+                self.assertIn(f'the modules of {self.KREL} (the image in the slot) taken over from ubuntu.old into ubuntu',
+                              r.stdout)
+                u = self.disk / f'ubuntu/lib/modules/{self.KREL}/extra'
+                if krel == self.KREL:
+                    # the kept set is the old system's, and rollback-boot puts it back
+                    self.assertEqual(self.ko(self.disk / 'boot/prev.modules/ubuntu'), old)
+                    self.assertEqual(self.ko(u), {'a.ko': b'new a'})
+                    r = self.up(shell, (self.STUBS % self.PSIZE) + 'rollback_boot; echo "rc=$?"', PART=self.part,
+                                MU300_NO_DEPMOD=1)
+                    self.assertIn('rc=0', r.stdout, r.stderr)
+                    self.assertEqual(self.ko(u), old)
+                else:
+                    # another release: the slot image's set stays in the new system for a rollback-boot
+                    self.assertEqual(self.ko(u), old)
+                    self.assertEqual((u / 'a.ko').stat().st_ino,
+                                     (self.disk / f'ubuntu.old/lib/modules/{self.KREL}/extra/a.ko').stat().st_ino)
+                    self.assertTrue((u.parent / 'modules.builtin').exists())
+                    self.assertEqual(self.ko(self.disk / 'ubuntu/lib/modules/7.2.11/extra'), {'a.ko': b'new a'})
+                shutil.rmtree(self.disk / 'ubuntu.old')
+
     def test_the_kept_set_counts_only_its_own_files(self):
         # after a rollback-boot the systems' set is the kept set's files: giving it up frees nothing of those
         pm = self.disk / 'boot/prev.modules/openwrt'
