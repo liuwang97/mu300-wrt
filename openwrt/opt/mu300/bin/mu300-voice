@@ -80,6 +80,17 @@ CAP=hw:$card,$(pcmdev FE_ST_VOICE_C || true)
 [ "$PLAY" = "hw:$card," ] && PLAY=hw:$card,53
 [ "$CAP" = "hw:$card," ] && CAP=hw:$card,9
 
+# A short wait. OpenWrt's busybox sleep takes whole seconds only ("sleep 0.1" is an error there and returns at
+# once, which turned every wait loop below into a busy loop): fractions where sleep takes them, else usleep, else
+# a whole second (the loops then wait longer, never shorter).
+if sleep 0.01 2>/dev/null; then
+    nap() { sleep "$1"; }
+elif command -v usleep >/dev/null 2>&1; then
+    nap() { usleep "$(awk -v s="$1" 'BEGIN { printf "%d", s * 1000000 }')"; }
+else
+    nap() { sleep "$(awk -v s="$1" 'BEGIN { n = int(s); if (n < s) n++; print n }')"; }
+fi
+
 at() { mu300-at -t "${2:-10}" "$1" 2>&1; }
 # Phone numbers never reach a log in full: every run of five or more digits (with its +) keeps the two digits after
 # a + and its last two, the rest becomes * (+905321234540 -> +90********40). Call history is not kept at all.
@@ -131,6 +142,16 @@ restore() {
     rm -f "$SAVED"
 }
 
+# The CVS profile's selector has two names: "CVS Profile Select" on some builds of the driver, "NXP Profile Select"
+# on the F50's sprdphone-sc2730 (and the E5's: kanoqwq/e5-linux FINDINGS). Whichever the card has; its update
+# control is "CVS Profile Update" on both.
+cvs_select() {
+    for n in 'CVS Profile Select' 'NXP Profile Select'; do
+        [ -n "$(cget "$n")" ] && { echo "$n"; return 0; }
+    done
+    echo 'CVS Profile Select'
+}
+
 # --- the call scene ------------------------------------------------------------------------------------------
 # Profile mode by output and bandwidth (audio_structure.xml's order: Handset, Handsfree, Headset4P, Headset3P,
 # BTHS, ... each NB1 NB2 WB1 WB2 SWB1 FB1 VOIP1), NB1/WB1/SWB1/FB1 picked by the DSP's bandwidth message.
@@ -154,7 +175,7 @@ profiles() {   # profiles OUTPUT
     band=$(cat "$TMP/band" 2>/dev/null || echo 0)
     mode=$(mode_for "$1" "$band")
     word=$(( (mode << 24) | (mode << 16) | 5 ))
-    for p in 'DSP VBC Profile Select' 'Audio Structure Profile Select' 'CVS Profile Select'; do put "$p" "$word"; done
+    for p in 'DSP VBC Profile Select' 'Audio Structure Profile Select' "$(cvs_select)"; do put "$p" "$word"; done
     # the voice volume + 1, which is what the vendor HAL writes
     put VBC_VOLUME $(( ${VOLUME:-6} + 1 ))
     log "profiles: mode $mode (band $band) = $(printf '%#x' "$word"), VBC_VOLUME $(( ${VOLUME:-6} + 1 ))"
@@ -212,7 +233,7 @@ audio_start() {   # audio_start OUTPUT
     while ! grep -q '^started' "$TMP/scene.log" 2>/dev/null; do
         scene_running || { log "the call scene did not start: $(tail -1 "$TMP/scene.log")" >&2; audio_stop; return 1; }
         n=$((n + 1)); [ "$n" -gt 50 ] && { log "the call scene did not start in 5 s" >&2; audio_stop; return 1; }
-        sleep 0.1
+        nap 0.1
     done
     # the vendor applies the parameters again once both directions run - and the Bluetooth rate again too, which
     # only takes after the scene is RUNNING (kanoqwq/e5-linux FINDINGS 59: set before, the BT side ran 3x slow)
@@ -224,7 +245,7 @@ audio_start() {   # audio_start OUTPUT
 audio_stop() {
     if [ -f "$SCENE_PID" ]; then
         kill "$(cat "$SCENE_PID")" 2>/dev/null
-        n=0; while scene_running && [ "$n" -lt 30 ]; do sleep 0.1; n=$((n + 1)); done
+        n=0; while scene_running && [ "$n" -lt 30 ]; do nap 0.1; n=$((n + 1)); done
         rm -f "$SCENE_PID"
     fi
     restore
@@ -269,13 +290,13 @@ hfp_connect() {
     while ! grep -q 'service level connection up' "$TMP/hfp.log" 2>/dev/null; do
         kill -0 "$(cat "$HFP_PID")" 2>/dev/null || { log "headset $BT_HEADSET: $(tail -1 "$TMP/hfp.log")"; rm -f "$HFP_PID"; return 1; }
         n=$((n + 1)); [ "$n" -gt 100 ] && { log "headset $BT_HEADSET: no service level connection in 10 s"; hfp_disconnect; return 1; }
-        sleep 0.1
+        nap 0.1
     done
     log "headset $BT_HEADSET connected"
 }
 hfp_disconnect() {
     [ -f "$HFP_PID" ] || return 0
-    hfp quit 2>/dev/null; sleep 0.5
+    hfp quit 2>/dev/null; nap 0.5
     kill "$(cat "$HFP_PID")" 2>/dev/null; rm -f "$HFP_PID"
 }
 
@@ -317,7 +338,7 @@ watch() {
                 fi ;;
         esac
         last=$stat
-        sleep "${MU300_VOICE_POLL:-1}"
+        nap "${MU300_VOICE_POLL:-1}"
     done
 }
 
