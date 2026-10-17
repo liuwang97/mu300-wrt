@@ -170,8 +170,11 @@ apk upgrade >/dev/null
 # with it to pin, for links that ask for allowInsecure;
 # i2c-tools, gpiod-tools: mu300-usb (the charger of the U30 Air) and mu300-nfc (its NFC tag);
 # jq: the VPN module reads vmess links and raw Xray/sing-box configs with it, and rewrites those configs at every start
+# curl: mu300-update fetches with it where it is (and tells "the mirror cannot be reached" from "the source
+# answered" by its exit codes, which the wget family does not distinguish); the Ubuntu image has it too, so both
+# systems behave the same
 apk add wpad-basic-mbedtls wifi-scripts iwinfo wireless-regdb iw bash flock ip-full coreutils-stty openssl-util \
-    i2c-tools gpiod-tools jq >/dev/null
+    i2c-tools gpiod-tools jq curl >/dev/null
 # the router protocols LuCI offers, with their tools: WireGuard, PPTP/L2TP (PPPoE is in the base), 6in4/6rd/DS-Lite,
 # GRE and VXLAN, ipset, and SQM (cake). Their kmod-* dependencies install the 6.12 modules of the feed, removed below like
 # every other kmod: the mainline kernels have them built in or as modules of their own (mu300-mainline.config), 5.4
