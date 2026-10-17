@@ -450,6 +450,64 @@ class Update(UpdateBase):
             self.assertEqual(run('mmcblk1@27762098176', plain), 'OK')
             self.assertEqual(run(None, plain), 'OK')
 
+    def test_a_disk_another_installer_put_elsewhere_keeps_the_boot_image(self):
+        # issue #290: a V50 installed with kanoqwq's desktop installer ran from a GPT partition named mu300root (or
+        # from an image file in userdata); the release's boot image went in, its init found no system, waited 5 minutes
+        # in the rescue shell and went back to Android. That init leaves no /run/mu300-root-dev, only
+        # /run/mu300/disk-dev
+        rootdev = self.tmp / 'root-dev'
+        plain = self.bundle('plain.tar.gz', 'f50\n', 'sdcard\nlinux-slot\n')
+        gpt = self.bundle('gpt.tar.gz', 'f50\n', 'sdcard\nlinux-slot\ngpt-root\n')
+        sysb = self.root / 'sys/class/block'
+        for name, uevent in (('mmcblk0p60', 'PARTNAME=mu300root'), ('mmcblk0p5', 'PARTNAME=cache'),
+                             ('mmcblk1p1', '')):
+            (sysb / name).mkdir(parents=True, exist_ok=True)
+            (sysb / name / 'uevent').write_text(f'DEVTYPE=partition\n{uevent}\n')
+        for name, backing in (('loop0', '/dev/mmcblk0'), ('loop1', '/mu300-data/mu300linux/openwrt.ext4'),
+                              ('loop2', '')):
+            (sysb / name / 'loop').mkdir(parents=True, exist_ok=True)
+            if backing:
+                (sysb / name / 'loop/backing_file').write_text(backing + '\n')
+        diskdev = self.root / 'run/mu300/disk-dev'
+        for shell in self.each_shell():
+            def run(root_dev, disk_dev, b):
+                rootdev.unlink(missing_ok=True)
+                diskdev.unlink(missing_ok=True)
+                if root_dev:
+                    rootdev.write_text(root_dev + '\n')
+                if disk_dev:
+                    diskdev.write_text(disk_dev + '\n')
+                d = self.tmp / 'x'
+                d.mkdir(exist_ok=True)
+                r = self.up(shell, f'MU300_ROOT_DEV_FILE="{rootdev}"; tar -tzf "{b}" > "{d}/list"; '
+                                   f'printf "%s " "$(root_layout)"; '
+                                   f'if bundle_finds_root "{b}" "{d}/list"; then echo OK; else echo REFUSE; fi')
+                self.assertEqual(r.stderr, '', (root_dev, disk_dev))
+                return r.stdout.strip()
+            # this project's init says where: always found as before
+            self.assertEqual(run('mmcblk0@27762098176', '/dev/loop0', plain), 'region OK')
+            self.assertEqual(run('/dev/mmcblk1p1', '/dev/mmcblk1p1', plain), 'sd OK')
+            self.assertEqual(run('mmcblk0@mu300root', '/dev/mmcblk0p60', plain), 'part REFUSE')
+            self.assertEqual(run('mmcblk0@mu300root', '/dev/mmcblk0p60', gpt), 'part OK')
+            # another init: only the device it mounted
+            self.assertEqual(run(None, '/dev/mmcblk0p60', plain), 'part REFUSE')
+            self.assertEqual(run(None, '/dev/mmcblk0p60', gpt), 'part OK')
+            self.assertEqual(run(None, '/dev/loop1', plain), 'image REFUSE')
+            self.assertEqual(run(None, '/dev/loop1', gpt), 'image REFUSE')
+            self.assertEqual(run(None, '/dev/loop0', plain), 'region OK')
+            # what cannot be told stays as before: never a refusal on a guess
+            self.assertEqual(run(None, '/dev/loop2', plain), 'unknown OK')
+            self.assertEqual(run(None, '/dev/mmcblk0p5', plain), 'unknown OK')
+            self.assertEqual(run(None, '/dev/mmcblk1p1', plain), 'unknown OK')
+            self.assertEqual(run(None, None, plain), 'unknown OK')
+        src = (BIN / 'mu300-update').read_text()
+        # boot_update refuses before it writes, and apply before it changes a system
+        bu = src[src.index('boot_update_run() {'):src.index('\n}\n', src.index('boot_update_run() {'))]
+        self.assertLess(bu.index('bundle_finds_root'), bu.index('write_boot'))
+        ap = src[src.index('\napply() {'):src.index('\n}\n', src.index('\napply() {'))]
+        self.assertLess(ap.index('bundle_finds_root'), ap.index('all files are here'))
+        self.assertLess(ap.index('all files are here'), ap.index('apply_one'))
+
 
 # Update's setUp, device() and up() live in UpdateBase, which has no tests; Update and FromStock both derive from it
 # (deriving from Update would run its tests twice).
@@ -743,6 +801,45 @@ class FromStock(UpdateBase):
                         MU300_DISK=self.disk, MU300_SYSROOT=self.root)
             self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(set((self.tmp / 'nb.log').read_text().split()), {'--trial'})
+
+    def test_a_next_boot_from_before_the_trial_hands_it_to_the_new_system(self):
+        # issue #290: an update from a system whose mu300-next-boot has no --trial (usage, exit 2) wrote the boot image
+        # unarmed. The copy in the system the update has just installed arms it instead
+        nb = self.tmp / 'nb'
+        nb.mkdir(parents=True, exist_ok=True)
+        old = nb / 'mu300-next-boot'
+        old.write_text(f'#!/bin/sh\necho "old $@" >> "{self.tmp}/nb.log"\n'
+                       'echo "usage: $0 linux|android|attempts [N]|status" >&2\nexit 2\n')
+        old.chmod(0o755)
+        new = self.disk / 'openwrt/opt/mu300/bin/mu300-next-boot'
+        new.parent.mkdir(parents=True, exist_ok=True)
+        for shell in self.each_shell():
+            for new_knows, want_err in ((True, ''), (False, 'could not arm the Linux slot')):
+                (self.tmp / 'nb.log').unlink(missing_ok=True)
+                if new_knows:
+                    new.write_text(f'#!/bin/sh\necho "new $@" >> "{self.tmp}/nb.log"\nexit 0\n')
+                else:
+                    new.write_text(old.read_text())
+                new.chmod(0o755)
+                r = self.sh(shell, f'. "{BIN}/mu300-update"; unlock_for_trial; echo "rc=$?"', MU300_LIB=1, MU300_BIN=nb,
+                            MU300_DISK=self.disk, MU300_SYSROOT=self.root)
+                self.assertIn('rc=0', r.stdout)
+                log = (self.tmp / 'nb.log').read_text().splitlines()
+                if new_knows:
+                    self.assertEqual(log, ['old --trial', 'new --trial'])
+                    self.assertEqual(r.stderr, '')
+                else:
+                    self.assertIn(want_err, r.stderr)
+                    self.assertIn('usage:', r.stderr)
+        # a running mu300-next-boot that knows --trial is the only one asked
+        (self.tmp / 'nb.log').unlink(missing_ok=True)
+        old.write_text(f'#!/bin/sh\necho "running $@" >> "{self.tmp}/nb.log"\nexit 0\n')
+        new.write_text(f'#!/bin/sh\necho "new $@" >> "{self.tmp}/nb.log"\nexit 0\n')
+        for shell in self.each_shell():
+            r = self.sh(shell, f'. "{BIN}/mu300-update"; unlock_for_trial', MU300_LIB=1, MU300_BIN=nb,
+                        MU300_DISK=self.disk, MU300_SYSROOT=self.root)
+            self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(set((self.tmp / 'nb.log').read_text().splitlines()), {'running --trial'})
 
     def test_the_trial_arming_says_what_it_could_not_do(self):
         # a boot image written while Android is the default boot is not tried at all, and one whose slot block cannot

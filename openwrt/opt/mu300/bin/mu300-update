@@ -297,10 +297,20 @@ this_device() { "${MU300_BIN:-/opt/mu300/bin}/mu300-device"; }
 # not tried at all and a reboot goes there (exit 3), or this slot's block cannot be rebuilt, so the image gets one
 # boot instead of N (any other failure, and mu300-next-boot's own line is passed on). Quiet when it was armed.
 # Never fails the update: the boot image is written either way, and a warning is no reason to roll it back.
+# The running system's mu300-next-boot first. One from before --trial (an older release, or another installer's
+# system: issue #290) answers with its usage line and exit 2; then the copy in the system this update has just
+# installed does it - the running system's first, then the others - as the new boot image's own tool.
 unlock_for_trial() {
-    _nb=${MU300_BIN:-/opt/mu300/bin}/mu300-next-boot
-    [ -x "$_nb" ] || return 0
-    _rc=0; _out=$("$_nb" --trial 2>&1) || _rc=$?
+    _found= _rc=0 _out=
+    for _nb in "${MU300_BIN:-/opt/mu300/bin}/mu300-next-boot" "$DISK/$(running_os)/opt/mu300/bin/mu300-next-boot" \
+               $(for _o in $(installed_systems); do printf '%s ' "$DISK/$_o/opt/mu300/bin/mu300-next-boot"; done); do
+        [ -x "$_nb" ] || continue
+        _found=1 _rc=0
+        _out=$("$_nb" --trial 2>&1) || _rc=$?
+        if [ "$_rc" = 2 ]; then case $_out in *usage:*) continue ;; esac; fi
+        break
+    done
+    [ -n "$_found" ] || return 0
     case $_rc in
         0) ;;
         3) echo "boot: the default boot is Android, so this boot image gets no trial: only a boot from Android" >&2
@@ -334,6 +344,49 @@ bundle_runs_here() {
 root_on_sd() { d=$(cat "${MU300_ROOT_DEV_FILE:-/run/mu300-root-dev}" 2>/dev/null); [ -n "$d" ] && case $d in *@*) return 1 ;; esac; }
 # bundle_has BUNDLE LIST FEATURE: does the bundle (LIST: its file list) list FEATURE in ./features?
 bundle_has() { grep -qx './features' "$2" && untar -xzOf "$1" ./features 2>/dev/null | grep -qx "$3"; }
+# root_layout: where the running system's disk is, as the init of a boot image has to find it. region: the area
+# after the eMMC's last partition; sd: the card; part: a GPT partition named mu300root; image: a file inside a
+# filesystem (Android's userdata); unknown. This project's init writes where in /run/mu300-root-dev. The init of
+# another installer - kanoqwq's desktop installer, whose "independent partition" and "userdata image" are part and
+# image - leaves only /run/mu300/disk-dev, the device it mounted (issue #290).
+root_layout() {
+    _rd=$(cat "${MU300_ROOT_DEV_FILE:-/run/mu300-root-dev}" 2>/dev/null)
+    case $_rd in
+        '') ;;
+        *@mu300root) echo part; return ;;
+        *@*) echo region; return ;;
+        *) echo sd; return ;;
+    esac
+    _dd=$(cat "${MU300_SYSROOT:-}/run/mu300/disk-dev" 2>/dev/null); _dd=${_dd##*/}
+    _sb=${MU300_SYSROOT:-}/sys/class/block/$_dd
+    case $_dd in
+        '') echo unknown ;;
+        loop*) case $(cat "$_sb/loop/backing_file" 2>/dev/null) in
+                   '') echo unknown ;;
+                   /dev/*) echo region ;;
+                   *) echo image ;;
+               esac ;;
+        *) if grep -qx 'PARTNAME=mu300root' "$_sb/uevent" 2>/dev/null; then echo part; else echo unknown; fi ;;
+    esac
+}
+# bundle_finds_root BUNDLE LIST: can the init of this bundle find the running system's disk? Not in a file (no init
+# of ours mounts Android's userdata), and in a GPT partition only when the bundle says so (gpt-root in ./features).
+# Without this, such a device got the new boot image, found no system, waited 5 minutes in the rescue shell and went
+# back to Android (issue #290: a V50 installed with kanoqwq's desktop installer).
+bundle_finds_root() {
+    case $(root_layout) in
+        image) return 1 ;;
+        part) bundle_has "$1" "$2" gpt-root ;;
+        *) return 0 ;;
+    esac
+}
+root_not_found_msg() {
+    case $(root_layout) in
+        image) _w='in an image file inside Android'"'"'s userdata' ;;
+        *) _w='in the GPT partition mu300root' ;;
+    esac
+    printf 'this system runs from %s (an installation by another installer), and the init of this kernel bundle cannot find it there: the device would wait 5 minutes in the rescue shell and go back to Android (issue #290)' "$_w"
+}
 # bundle_has_sd BUNDLE LIST: does the bundle say it has the SD host?
 bundle_has_sd() { bundle_has "$1" "$2" sdcard; }
 # bundle_fits_slot BUNDLE LIST: can its init run from the slot Linux is on? One from before linux-slot knows only b:
@@ -3155,6 +3208,10 @@ boot_update_run() {
         echo "boot: this kernel bundle's init runs only from slot b, and Linux is on $bp; nothing was changed" >&2
         return 1
     fi
+    if ! bundle_finds_root "$bundle" "$tmp/list"; then
+        echo "boot: $(root_not_found_msg); nothing was changed" >&2
+        return 1
+    fi
 
     boot_room "$bundle" "$tmp/list" $(( 2 * (osize / 1024 + 4) )) || return 1
 
@@ -3516,6 +3573,15 @@ apply() {
         # a release without this bundle leaves the boot image alone (boot_update says so); anything else stops here
         [ "$r" = 0 ] || [ "$r" = 2 ] || fetch_stop "$r"
     fi
+    # the boot image comes last, after the systems: a bundle whose init cannot find this disk stops the whole update
+    # here, before anything is changed (#290), not after the systems were replaced
+    _ab=${MU300_KERNEL_BUNDLE:-${boot_asset:+$STAGE/$boot_asset}}
+    if [ -n "$_ab" ] && [ -s "$_ab" ] && tar -tzf "$_ab" > "$STAGE/kernel.list" 2>/dev/null &&
+        grep -qx './ramdisk-generic.lz4' "$STAGE/kernel.list" && ! bundle_finds_root "$_ab" "$STAGE/kernel.list"; then
+        rm -f "$STAGE/kernel.list"
+        die "$(root_not_found_msg). Nothing was changed"
+    fi
+    rm -f "$STAGE/kernel.list"
     echo "all files are here and verified; from now on the network is not needed"
 
     pause_data
