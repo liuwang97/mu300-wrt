@@ -1943,8 +1943,8 @@ at() {
     def test_the_dial_and_the_warmup_replay(self):
         text = (BIN / 'mobile-data').read_text()
         self.assertNotIn("at 'AT+CAVIMS=1'", text)
-        # the dial (up_locked) and the early warm-up (radio-on)
-        self.assertEqual([l.strip() for l in text.splitlines()].count('voice_replay'), 2)
+        # the dial (up_locked), the early warm-up (radio-on) and a radio switched back on (rf_apply, FINDINGS 185)
+        self.assertEqual([l.strip() for l in text.splitlines()].count('voice_replay'), 3)
 
     def test_set_on_the_card_in_use(self):
         r, sent = self.run_md('voice_cmd volte off; voice_cmd vonr off; voice_json --read')
