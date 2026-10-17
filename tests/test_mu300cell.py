@@ -38,6 +38,7 @@ proto_config_add_boolean() { rec proto_config_add_boolean "$@"; }
 proto_config_add_array() { rec proto_config_add_array "$@"; }
 proto_notify_error() { rec proto_notify_error "$@"; }
 proto_block_restart() { rec proto_block_restart "$@"; }
+proto_set_available() { rec proto_set_available "$@"; }
 proto_setup_failed() { rec proto_setup_failed "$@"; }
 proto_add_dynamic_defaults() { rec proto_add_dynamic_defaults; }
 json_get_vars() { apn=$T_APN; pdptype=$T_PDPTYPE; peerdns=$T_PEERDNS; ipv6=$T_IPV6; apn_internal=${T_APN_INTERNAL:-}; pdptype_internal=${T_PDPTYPE_INTERNAL:-}
@@ -244,6 +245,17 @@ exit 0''')
             self.assertIn('sleep 60', calls)
             self.assertLess(calls.index('sleep 60'), calls.index('proto_setup_failed wan'))
             self.assertFalse([c for c in calls if c.startswith(('proto_send_update', 'logger', 'proto_init_update'))], calls)
+
+    def test_a_sim_radio_switched_off_is_not_retried(self):
+        """FINDINGS 185: exit 7 is the SIM's radio switched off in its settings: SIM_RADIO_DISABLED, no retry (the
+        interface is unavailable until mu300-sim-radio switches it on and brings the WAN up), no address."""
+        for shell in self.each_shell():
+            calls = self.run_proto(shell, 'proto_mu300cell_setup', out='', rc=7, err='', ok=1)
+            self.assertIn('proto_notify_error wan SIM_RADIO_DISABLED', calls)
+            self.assertIn('proto_set_available wan 0', calls)
+            self.assertNotIn('proto_block_restart wan', calls)
+            self.assertNotIn('sleep 20', calls)
+            self.assertFalse([c for c in calls if c.startswith(('proto_send_update', 'proto_init_update'))], calls)
 
     def test_ipv6_bearer_still_adds_extendprefix_interface(self):
         """Without ipv6 'relay' (plain OpenWrt, or the option unset or 'extend'): today's RFC 7278 design, no monitor."""

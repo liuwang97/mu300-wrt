@@ -15,6 +15,9 @@ MD=/opt/mu300/bin/mobile-data
 DEVICE=/opt/mu300/bin/mu300-device
 REBOOT=${MU300_REBOOT_CMD:-reboot}
 LED=${MU300_LED_CMD:-/opt/mu300/bin/mu300-led}
+SIM_RADIO=${MU300_SIM_RADIO_BIN:-/opt/mu300/bin/mu300-sim-radio}
+# rf_allowed SLOT: that card's radio may be on (mu300-sim-radio, FINDINGS 185; without the tool: yes)
+rf_allowed() { [ ! -x "$SIM_RADIO" ] || "$SIM_RADIO" allowed "$1" 2>/dev/null; }
 supported() { [ -e /etc/openwrt_release ] && [ "$("$DEVICE" 2>/dev/null)" = u30air ]; }
 supported || { printf '{"ok":0,"supported":0,"error":"Dual SIM control is only for the U30 Air on OpenWrt"}\n'; exit 1; }
 SIM_CONFIG_U30=1
@@ -297,6 +300,9 @@ live_switch() {
     available || { fail 'Persistent dual-SIM brokers unavailable; reboot first'; return 1; }
     [ ! -e /run/mu300-mobile-data.suspend ] || { fail 'Resume the modem before switching'; return 1; }
     [ ! -d /run/unisoc-modem-lock-apply ] || { fail 'Network locks are being applied'; return 1; }
+    # the target card's radio is switched off in its settings: it stays off, so there is nothing to switch to
+    rf_allowed "$target" || { fail 'The target SIM radio is switched off in its settings; switch it on first'; return 1; }
+    [ ! -d "$R/sim-radio.lock" ] || { fail 'A SIM radio change is running; try again'; return 1; }
     # Mobile data switched off on purpose? Then it stays off, whichever card ends up in use, and there is no bearer
     # to wait for before the choice is saved.
     if sim_wan_held_down; then held=1; fi
@@ -309,7 +315,10 @@ live_switch() {
     fi
     # A card whose SIM power is off answers CME ERROR 10 whatever is in its position: the starting RF state is
     # validated here, the card itself only once its power is on (preflight).
-    check "$old" 1 && check "$target" 0 || { fail 'Unexpected radio state; reboot first'; return 1; }
+    # The card in use is on (1), or in flight mode because its radio is switched off in its settings (4: a known
+    # state, from which the sequence below switches it off the same way).
+    { check "$old" 1 || { ! rf_allowed "$old" && check "$old" 4; }; } && check "$target" 0 ||
+        { fail 'Unexpected radio state; reboot first'; return 1; }
     local refusal
     refusal=$(preflight "$target") || { fail "$refusal"; return 1; }
     # Did the card in use have data? It decides what a target without data means, below.

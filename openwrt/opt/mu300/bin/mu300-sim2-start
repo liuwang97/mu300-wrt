@@ -47,6 +47,13 @@ expect_ok() {
     [[ $(printf '%s\n' "$output" | tr -d '\r' | tail -n 1) == OK ]] || { say "FAILED $1 $2 (modem rejected command)"; return 1; }
 }
 
+# The card's radio is switched off in its settings (mu300-sim-radio, FINDINGS 185): nothing is sent, and the cold start
+# stays possible later in this boot (mu300-sim2-warmup --deferred, when it is switched on). 7: put off, not failed.
+SIM_RADIO=${MU300_SIM_RADIO_BIN:-/opt/mu300/bin/mu300-sim-radio}
+if [[ -x $SIM_RADIO ]] && ! "$SIM_RADIO" allowed "$SLOT" 2>/dev/null; then
+    say "SIM$((SLOT+1)): its radio is switched off in its settings; cold start put off"
+    exit 7
+fi
 [[ ! -e /run/mu300/sim2-cold-start.attempted ]] || { say 'Refusing a second attempt in this boot'; exit 2; }
 : > /run/mu300/sim2-cold-start.attempted
 rm -f "$REASON"

@@ -276,6 +276,47 @@ echo OK
         p = self.run / 'mu300/sim-boot-check'
         return p.read_text().split()[0] if p.exists() else None
 
+    def rf_stub(self):
+        self.stub('sim-radio', '[ "$1" = allowed ] || exit 2; case " $(cat "$STUBLOG/rf-off" 2>/dev/null) " in *" $2 "*) exit 1 ;; esac; exit 0')
+        return self.stubs / 'sim-radio'
+
+    def test_a_card_whose_radio_is_off_is_not_started_until_it_is_on(self):
+        """FINDINGS 185: the chosen card's radio is switched off in its settings. The cold start is put off - nothing
+        sent, the boot confirmed (no fallback next boot), no trial - and runs with --deferred once it is on."""
+        rf = self.rf_stub()
+        (self.tmp / 'rf-off').write_text('1')
+        r = self.warmup(MU300_SIM_RADIO_BIN=rf)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.calls(), [])
+        self.assertEqual(self.settings(), ('1\n', '1\n', False, None))
+        self.assertEqual(self.check(), 'kept')
+        self.assertFalse((self.run / 'mu300/sim2-cold-start.attempted').exists())
+        self.assertFalse((self.tmp / 'reboot').exists())
+        # still off: --deferred refuses and sends nothing
+        r = self.script(['bash'], self.tmp / 'mu300-sim2-warmup', '--deferred', MU300_SIM_RADIO_BIN=rf)
+        self.assertEqual(r.returncode, 1)
+        self.assertEqual(self.calls(), [])
+        # switched on: the same cold start, and no trial for a first data
+        (self.tmp / 'rf-off').write_text('')
+        r = self.script(['bash'], self.tmp / 'mu300-sim2-warmup', '--deferred', MU300_SIM_RADIO_BIN=rf)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn('mu300-at5 AT+SFUN=4', self.calls())
+        self.assertTrue((self.run / 'mu300/sim-radio-ready').exists())
+        self.assertEqual(self.check(), 'kept')
+        self.assertFalse((self.tmp / 'reboot').exists())
+        # a second --deferred finds the radio ready and does nothing
+        n = len(self.calls())
+        self.assertEqual(self.script(['bash'], self.tmp / 'mu300-sim2-warmup', '--deferred', MU300_SIM_RADIO_BIN=rf).returncode, 0)
+        self.assertEqual(len(self.calls()), n)
+
+    def test_the_cold_start_itself_sends_nothing_for_a_card_whose_radio_is_off(self):
+        (self.run / 'mu300/sim-slot').write_text('1\n')
+        (self.tmp / 'rf-off').write_text('1')
+        r = self.boot(MU300_SIM_RADIO_BIN=self.rf_stub())
+        self.assertEqual(r.returncode, 7)
+        self.assertEqual(self.calls(), [])
+        self.assertFalse((self.run / 'mu300/sim2-cold-start.attempted').exists())
+
     def test_warmup_confirms_the_boot(self):
         (self.tmp / 'wan-up').write_text('sipa_eth8')
         r = self.warmup()

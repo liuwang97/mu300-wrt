@@ -371,8 +371,8 @@ return view.extend({
 			var on = self.lastCell && self.lastCell.cfun === 1;
 			var btn = this;
 			(on
-				? M.confirmBox(_('Turn off cellular radio'), _('Cellular connectivity will be interrupted.'), { danger: true })
-				: M.confirmBox(_('Turn on cellular radio'), _('The SFUN power-on sequence will run (up to about 1 minute).'))
+				? M.confirmBox(_('Turn off cellular radio'), _('This SIM will have no calls, SMS or data, and its radio stays off after a reboot until you turn it on again.'), { danger: true })
+				: M.confirmBox(_('Turn on cellular radio'), _('The radio of the SIM in use comes on and stays on after a reboot (up to about 1 minute).'))
 			).then(function(go) { if (go) act('radio', on ? 'off' : 'on', null, btn); });
 		};
 		/* data roaming of the SIM in use (mobile-data, FINDINGS 120): off keeps data down while the SIM is registered
@@ -612,7 +612,7 @@ return view.extend({
 			else if (lte) {
 				var act = (c.operator && c.operator.act) || (c.reg && c.reg.act);
 				rat = (act == 13) ? '5G NSA' : (act == 11 || act == 18 || act == 19) ? '5G' : (act == 7 || act == 10) ? '4G' : (act >= 2 && act <= 6) ? '3G' : '4G';
-			} else if (c.cfun === 0) rat = _('Radio off');
+			} else if (c.cfun === 0 || c.cfun === 4) rat = _('Radio off');
 		}
 		if (c && c.error) { rat = _('No response'); col = M.qCol('poor'); }
 		var ratEl = M.v('rat');
