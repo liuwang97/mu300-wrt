@@ -1587,6 +1587,143 @@ up() { at UP; }
         r, sent = self.watch(2)
         self.assertNotIn('UP', sent)
 
+    # FINDINGS 176: a context that is up with the right address, and no downlink. The interface's counters live in
+    # $MU300_SYS_NET; every AT+CGACT? (one per round) adds $TXSTEP sent and $RXSTEP received packets. bounded (the
+    # radio off and on) and the reboot only log.
+    def dl_watch(self, rounds, rx=0, tx=0, **env):
+        stats = self.tmp / 'sysnet' / 'sipa_eth0' / 'statistics'
+        stats.mkdir(parents=True, exist_ok=True)
+        (stats / 'rx_packets').write_text(f'{rx}\n')
+        (stats / 'tx_packets').write_text(f'{tx}\n')
+        (stats / 'tx_errors').write_text('0\n')
+        modem = self.WATCH_MODEM.replace(
+            "        'AT+CGACT?')\n",
+            "        'AT+CGACT?')\n"
+            "            s=$MU300_SYS_NET/sipa_eth0/statistics\n"
+            "            echo $(( $(cat $s/tx_packets) + ${TXSTEP:-10} )) > $s/tx_packets\n"
+            "            q=$(( $(cat $STUBLOG/q 2>/dev/null || echo 0) + 1 )); echo $q > $STUBLOG/q\n"
+            "            [ -z \"${RXFROM:-}\" ] || [ $q -lt \"$RXFROM\" ] || RXSTEP=5\n"
+            "            echo $(( $(cat $s/rx_packets) + ${RXSTEP:-0} )) > $s/rx_packets\n") + \
+            'bounded() { at "BOUNDED $*"; }\n'
+        (self.tmp / 'q').unlink(missing_ok=True)
+        self.stub('ip', '[ -n "$NOADDR" ] || echo "2: sipa_eth0    inet 10.1.2.3/24 scope global sipa_eth0"')
+        self.stub('ifup', 'echo "$SECONDS IFUP $*" >> "$STUBLOG/at"')
+        self.stub('fakereboot', 'echo "$SECONDS REBOOT" >> "$STUBLOG/at"')
+        self.stub('fakevpn', 'case $1 in enabled) echo "${VPN_ON:-0}" ;; restart) echo "$SECONDS VPN_RESTART" >> "$STUBLOG/at" ;; esac')
+        env.setdefault('MU300_VPN_CMD', 'fakevpn')
+        env.setdefault('MU300_DL_STALL_SECS', '0')
+        env.setdefault('MU300_DL_REBOOTS', str(self.tmp / 'reboots'))
+        r, sent = self.lib('watch', modem=modem, MU300_AT_DEV='/dev/null', MU300_WATCH_INTERVAL='0',
+                           MU300_WATCH_ROUNDS=str(rounds), MU300_SYS_NET=self.tmp / 'sysnet',
+                           MU300_REBOOT_CMD='fakereboot', NOADDR='', **env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return r, [s.split(' ', 1)[1] for s in sent]
+
+    @staticmethod
+    def dl_steps(sent):
+        return [c for c in sent if c in ('VPN_RESTART', 'IFUP wan', 'UP', 'BOUNDED suspend off', 'BOUNDED resume', 'REBOOT',
+                                         'AT+CGACT=0,1')]
+
+    def test_a_stalled_downlink_climbs_the_steps_under_netifd(self):
+        """Sent and nothing received, round after round: the VPN again (when one is on), the context, the radio,
+        then (nothing received in this whole boot) the reboot, each once."""
+        r, sent = self.dl_watch(14, MU300_NETIFD='1', VPN_ON='1')
+        self.assertEqual(self.dl_steps(sent), ['VPN_RESTART', 'IFUP wan', 'BOUNDED suspend off', 'BOUNDED resume',
+                                               'REBOOT'], r.stderr)
+        self.assertIn('step 1: the VPN again', r.stderr)
+        self.assertIn('after every step', r.stderr)
+        # without a VPN the first step is the context
+        (self.tmp / 'reboots').unlink()
+        r, sent = self.dl_watch(12, MU300_NETIFD='1')
+        self.assertEqual(self.dl_steps(sent), ['IFUP wan', 'BOUNDED suspend off', 'BOUNDED resume', 'REBOOT'],
+                         r.stderr)
+        self.assertIn('downlink stalled: sipa_eth0 sent', r.stderr)
+        self.assertIn('step 2: the data context again', r.stderr)
+        self.assertIn('step 4: rebooting (reboot 1 of at most 3 in a row', r.stderr)
+        self.assertEqual((self.tmp / 'reboots').read_text().strip(), '1')
+        # the evidence went with it: the context, its address and the counters at each step
+        log = (self.tmp / 'reboots.log').read_text()
+        self.assertIn('sipa_eth0 rx_packets 0', log)
+        self.assertIn('+CGPADDR: 1,"10.1.2.3"', log)
+        # then the backoff: nothing more in this run
+        self.assertIn('the next round of steps in 600 s', r.stderr)
+
+    def test_a_stalled_downlink_on_ubuntu_takes_the_context_down_and_dials(self):
+        r, sent = self.dl_watch(3)
+        self.assertEqual(self.dl_steps(sent)[:2], ['AT+CGACT=0,1', 'UP'], r.stderr)
+
+    def test_a_working_or_idle_downlink_is_left_alone(self):
+        # packets come back: nothing
+        r, sent = self.dl_watch(10, RXSTEP='3', MU300_NETIFD='1')
+        self.assertEqual(self.dl_steps(sent), [], r.stderr)
+        # nothing leaves and nothing comes: an idle link, not a dead one
+        r, sent = self.dl_watch(10, TXSTEP='0', MU300_NETIFD='1')
+        self.assertEqual(self.dl_steps(sent), [], r.stderr)
+        # a packet a round is a downlink too: the third one is past the allowance (two, for a stray router
+        # advertisement) before 20 packets have left, and the reference moves on
+        r, sent = self.dl_watch(10, RXSTEP='1', TXSTEP='7', MU300_NETIFD='1')
+        self.assertEqual(self.dl_steps(sent), [], r.stderr)
+        # under the threshold: 20 packets sent in the window are needed
+        r, sent = self.dl_watch(1, TXSTEP='5', MU300_NETIFD='1')
+        self.assertEqual(self.dl_steps(sent), [], r.stderr)
+
+    def test_the_stall_needs_its_time(self):
+        r, sent = self.dl_watch(6, MU300_NETIFD='1', MU300_DL_STALL_SECS='3600')
+        self.assertEqual(self.dl_steps(sent), [], r.stderr)
+
+    def test_no_reboot_after_a_boot_that_had_a_downlink_or_when_switched_off(self):
+        # 5000 packets received earlier in this boot: the far end may be gone (a VPN server); steps 1 and 2 only
+        r, sent = self.dl_watch(12, rx=5000, MU300_NETIFD='1')
+        self.assertEqual(self.dl_steps(sent), ['IFUP wan', 'BOUNDED suspend off', 'BOUNDED resume'], r.stderr)
+        self.assertIn('no reboot: sipa_eth0 has had a downlink in this boot (5000 packets received)', r.stderr)
+        self.assertFalse((self.tmp / 'reboots').exists())
+        # the setting: off
+        r, sent = self.dl_watch(12, MU300_NETIFD='1', MU300_DL_REBOOT='0')
+        self.assertEqual(self.dl_steps(sent), ['IFUP wan', 'BOUNDED suspend off', 'BOUNDED resume'], r.stderr)
+        self.assertIn('step 4 (a reboot) is switched off', r.stderr)
+        # three reboots in a row already: no fourth
+        (self.tmp / 'reboots').write_text('3\n')
+        r, sent = self.dl_watch(12, MU300_NETIFD='1')
+        self.assertNotIn('REBOOT', sent, r.stderr)
+        self.assertIn('no reboot: 3 reboots in a row', r.stderr)
+
+    def test_a_managed_dual_sim_radio_is_not_switched_off_and_on(self):
+        (self.tmp / 'run' / 'mu300').mkdir(parents=True, exist_ok=True)
+        (self.tmp / 'run' / 'mu300' / 'sim-managed').touch()
+        r, sent = self.dl_watch(12, rx=5000, MU300_NETIFD='1')
+        self.assertEqual(self.dl_steps(sent), ['IFUP wan'], r.stderr)
+        self.assertIn('step 3 (the radio off and on) is not possible on this dual-SIM radio', r.stderr)
+        self.assertIn('the next round of steps in 600 s', r.stderr)
+
+    def test_the_reboot_setting_is_read_from_openwrt_and_ubuntu(self):
+        self.stub('uci', 'echo "${UCI_DL:-}"')
+        for env, want in (({'MU300_NETIFD': '1', 'UCI_DL': '0'}, '0'), ({'MU300_NETIFD': '1'}, '1')):
+            r, _ = self.lib('dl_reboot_setting', modem=self.WATCH_MODEM, **env)
+            self.assertEqual(r.stdout.strip(), want, (env, r.stderr))
+        conf = self.tmp / 'md.conf'
+        conf.write_text('MU300_DL_REBOOT=0\n')
+        r, _ = self.lib('dl_reboot_setting', modem=self.WATCH_MODEM, MU300_NETIFD='0', MU300_CONF=conf)
+        self.assertEqual(r.stdout.strip(), '0', r.stderr)
+
+    def test_a_boot_with_a_downlink_ends_the_count_of_reboots(self):
+        (self.tmp / 'reboots').write_text('2\n')
+        r, sent = self.dl_watch(2, rx=1000, RXSTEP='5', MU300_NETIFD='1')
+        self.assertFalse((self.tmp / 'reboots').exists(), r.stderr)
+        # a few packets are not a downlink: the count stays
+        (self.tmp / 'reboots').write_text('2\n')
+        r, sent = self.dl_watch(2, rx=10, RXSTEP='5', MU300_NETIFD='1')
+        self.assertTrue((self.tmp / 'reboots').exists(), r.stderr)
+
+    def test_the_downlink_back_after_a_step_is_said_and_the_steps_start_over(self):
+        # stalled for three rounds (step 1 in the third), packets from the fourth round on: no step 2
+        r, sent = self.dl_watch(8, RXFROM='4', MU300_NETIFD='1')
+        self.assertEqual(self.dl_steps(sent), ['IFUP wan'], r.stderr)
+        self.assertIn('the downlink is back: sipa_eth0 received 5 packets (after step 2)', r.stderr)
+        # with a VPN on, its restart is the step that brings it back
+        r, sent = self.dl_watch(8, RXFROM='4', MU300_NETIFD='1', VPN_ON='1')
+        self.assertEqual(self.dl_steps(sent), ['VPN_RESTART'], r.stderr)
+        self.assertIn('(after step 1)', r.stderr)
+
     # 2026-10-07: `mobile-data suspend off` after `suspend lte` never returned on the U30 Air, and the device stayed dark
     # for hours. suspend/resume now end within MU300_SUSPEND_DEADLINE whatever the modem does. Here the real at() talks
     # to an nr2 daemon whose client never answers (a mu300-at that sleeps): the whole command must come back in time,
@@ -4499,6 +4636,67 @@ class KmsgForward(ShellTest):
                     self.assertNotIn('--notime', c)                     # the kernel's timestamps stay
                     self.assertIn('--level=emerg,alert,crit,err,warn', c)
                 self.assertIn('[    1.234567] early trace', (self.tmp / 'journal').read_text())
+
+
+class VpnUplink(ShellTest):
+    """mu300-vpn-uplink (FINDINGS 176): at the bearer's ifup, a VPN whose current run started before it is restarted;
+    one that started after it, a VPN that is off, or no run at all is left alone. mu300-vpn and logger are stubs."""
+
+    def run_uplink(self, shell, since, enabled='1', began=None):
+        run = self.tmp / 'vpnrun'
+        run.mkdir(exist_ok=True)
+        for f in ('since', 'engine'):
+            (run / f).unlink(missing_ok=True)
+        if since is not None:
+            (run / 'since').write_text(f'{since}\n')
+        if began is not None:
+            (run / 'engine').write_text('sing-box\n')
+            os.utime(run / 'engine', (began, began))
+        (self.tmp / 'calls').unlink(missing_ok=True)
+        self.stub('fakevpn', f'case $1 in enabled) echo {enabled} ;; *) echo "vpn $*" >> "$STUBLOG/calls" ;; esac')
+        self.stub('logger', 'echo "logger $*" >> "$STUBLOG/calls"')
+        env = dict(MU300_VPN_CMD='fakevpn', MU300_VPN_RUN=run, MU300_UPLINK_DIR=self.tmp / 'state',
+                   MU300_UPLINK_SETTLE='0', MU300_UPLINK_RUN_WAIT='0')
+        r = self.script(shell, BIN / 'mu300-vpn-uplink', 'sipa_eth0', **env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        calls = (self.tmp / 'calls').read_text() if (self.tmp / 'calls').exists() else ''
+        return r, calls
+
+    def test_a_vpn_started_before_the_bearer_is_restarted(self):
+        import time
+        now = int(time.time())
+        for shell in self.each_shell():
+            r, calls = self.run_uplink(shell, now - 2)
+            self.assertIn('vpn restart', calls, (shell, r.stderr))
+            self.assertIn('the VPN started before sipa_eth0 was up (2 s): restarting it', calls)
+            # the same second counts as before
+            r, calls = self.run_uplink(shell, int(time.time()))
+            self.assertIn('vpn restart', calls, (shell, r.stderr))
+            # a run that began before the bearer (its engine file) and reached its engine after it: restarted too
+            r, calls = self.run_uplink(shell, int(time.time()) + 20, began=int(time.time()) - 3)
+            self.assertIn('vpn restart', calls, (shell, r.stderr))
+            self.assertIn('(3 s)', calls)
+            self.assertTrue((self.tmp / 'state' / 'uplink-up').exists())
+            self.assertFalse((self.tmp / 'state' / 'vpn-uplink.lock').exists())
+
+    def test_left_alone_after_the_bearer_off_or_without_a_run(self):
+        import time
+        for shell in self.each_shell():
+            now = int(time.time())
+            for since, enabled, began in ((now + 30, '1', None), (now + 30, '1', now + 25), (now - 5, '0', None),
+                                          (None, '1', now - 5)):
+                r, calls = self.run_uplink(shell, since, enabled, began)
+                self.assertNotIn('vpn restart', calls, (shell, since, enabled, began, r.stderr))
+
+    def test_the_openwrt_hook_runs_it_for_the_bearer_only(self):
+        hook = (TOP / 'openwrt/overlay/etc/hotplug.d/iface/96-mu300-vpn-uplink').read_text()
+        self.assertIn('[ "$ACTION" = ifup ] || exit 0', hook)
+        self.assertIn('sipa_eth*) ;;', hook)
+        self.assertRegex(hook, r'/opt/mu300/bin/mu300-vpn-uplink "\$DEVICE" .*&\n')
+        # and Ubuntu's dial calls it in the background once the bearer is configured
+        md = (BIN / 'mobile-data').read_text()
+        up = md[md.index('    echo "mobile data up on $IFACE'):]
+        self.assertIn('mu300-vpn-uplink}" "$IFACE" ) </dev/null >/dev/null 2>&1 &', up[:600])
 
 
 if __name__ == '__main__':
