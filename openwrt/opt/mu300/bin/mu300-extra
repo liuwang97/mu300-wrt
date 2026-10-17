@@ -1,7 +1,7 @@
 #!/bin/sh
 # Optional parts that are not in the images, downloaded when you want them (Ubuntu and OpenWrt).
 #   mu300-extra list              what there is, and what is installed
-#   mu300-extra status            the installed extras: release, size, commands
+#   mu300-extra status [NAME]     the installed extras: release, size, commands
 #   mu300-extra install NAME      download it, check it against its release's SHA256SUMS, install it and put its
 #                                 commands on the PATH (lang: from the release of this system; vpn and its engines
 #                                 vpn-xray, vpn-singbox, vpn-mihomo, vpn-dae: the latest release of the VPN module,
@@ -11,6 +11,12 @@
 #                                 directory with the tarballs and their SHA256SUMS (then they are verified)
 #   mu300-extra install panel --from FILE|DIR   offline: mu300-extra-panel-offline.tar.gz of the release (Cockpit's
 #                                 packages for Ubuntu 24.04 and 26.04 in it), or a directory with it and SHA256SUMS
+#   mu300-extra install NAME --from FILE|DIR   an extra of your own (any other NAME): a tarball copied onto the device
+#                                 with ./name (NAME), ./release, ./manifest (sha256sum lines of every other file) and
+#                                 programs in ./bin; its hooks/link and hooks/unlink (optional) run for every system, as
+#                                 the VPN module's do. DIR: a directory with NAME.tar.gz and a SHA256SUMS that lists it.
+#                                 Never downloaded, never updated, and not listed: list and status show the extras of
+#                                 the releases (mu300-extra status NAME shows one of yours)
 #   mu300-extra remove NAME [--force]   (--force: the vpn extra, or an engine, even while the VPN is on with it)
 #   mu300-extra link              put the system's commands and the extras' on the PATH, and link the VPN module
 #                                 into this system (its hooks/link; run at every boot)
@@ -98,7 +104,7 @@ do_link_commands() {
 # the VPN module into this system: a new image has none of it (the boot after an update or a reinstall)
 do_link_modules() {
     for x in $(extra_installed); do
-        extra_is_module "$x" || continue
+        extra_is_module "$x" || extra_own "$x" || continue
         module_hook_fits "$x" link "$SYSROOT" "$(system_release)" || true
     done
     return 0
@@ -303,8 +309,40 @@ panel_from() {
     PANEL_FILE=$1
 }
 
+# own_from NAME FILE|DIR: OWN_FILE, an extra of the user's own. A directory must hold NAME.tar.gz and a SHA256SUMS that
+# lists it; a file is checked against a SHA256SUMS next to it when that lists it (else it is the user's own choice).
+own_from() {
+    OWN_FILE=
+    if [ -d "$2" ]; then
+        _w=$(sums_want "$2/SHA256SUMS" "$1.tar.gz")
+        [ -s "$2/$1.tar.gz" ] || { echo "no $1.tar.gz in $2" >&2; return 1; }
+        [ -n "$_w" ] || { echo "$2/SHA256SUMS is missing or does not list $1.tar.gz: not installed unverified" >&2; return 1; }
+        [ "$(sha_of "$2/$1.tar.gz")" = "$_w" ] || { echo "$2/$1.tar.gz does not match its SHA256SUMS" >&2; return 1; }
+        OWN_FILE=$2/$1.tar.gz
+        return 0
+    fi
+    [ -s "$2" ] || { echo "$2 not found" >&2; return 1; }
+    _w=$(sums_want "$(dirname "$2")/SHA256SUMS" "${2##*/}")
+    [ -z "$_w" ] || [ "$(sha_of "$2")" = "$_w" ] || { echo "$2 does not match $(dirname "$2")/SHA256SUMS" >&2; return 1; }
+    OWN_FILE=$2
+}
+
+# install_own NAME FILE|DIR: an extra of the user's own (extra_own), from a file on this device only
+install_own() {
+    own_from "$1" "$2" || die "$1 was not installed"
+    extra_unpack "$1" "$OWN_FILE" "$(system_release)" || die "$1 was not installed"
+    rm -f "$EXTRA/.$1.sha256"
+    do_link_commands
+    module_hook_all "$1" link || echo "$1: a system it could not be linked into gets it at its next boot (mu300-extra link)" >&2
+    printf '%s %s installed in %s\n' "$1" "$(extra_release "$1")" "$EXTRA/$1"
+}
+
 do_install() {
     name=$1
+    if ! extra_known "$name"; then
+        install_own "$name" "${2:-${MU300_EXTRA_FILE:-}}"
+        return
+    fi
     [ "$name" != lang ] || is_openwrt || die "the lang extra is LuCI's languages, for OpenWrt only: install it from an OpenWrt system"
     if extra_is_module "$name" && [ -z "${MU300_EXTRA_FILE:-}" ]; then
         do_install_module "$name" "${2:-}"
@@ -385,7 +423,7 @@ do_remove() {
     # panel: Cockpit out of this system first (its packages, configuration and page)
     if [ "$1" = panel ] && [ -f "$EXTRA/panel/bin/mu300-panel" ]; then sh "$EXTRA/panel/bin/mu300-panel" remove || true; fi
     # the module out of every system first (its hooks are part of it): what an older image had comes back
-    extra_is_module "$1" && module_hook_all "$1" unlink
+    { extra_is_module "$1" || extra_own "$1"; } && module_hook_all "$1" unlink
     rm -rf "$EXTRA/$1" "$EXTRA/.$1.new" "$EXTRA/.$1.old" "$EXTRA/.$1.sha256"
     [ "$1" != lang ] || rm -f "$LANGS_ON"
     sync
@@ -409,7 +447,13 @@ do_list() {
 
 do_status() {
     any=
-    for x in $(extra_installed); do
+    if [ -n "${1:-}" ]; then
+        [ -d "$EXTRA/$1/bin" ] || [ -d "$EXTRA/$1/i18n" ] || { echo "$1 is not installed"; return 1; }
+        _which=$1
+    else
+        _which=; for x in $(extra_installed); do extra_known "$x" && _which="$_which $x"; done
+    fi
+    for x in $_which; do
         any=1
         printf '%s\n  release   %s\n  size      %s\n' "$x" "$(extra_release "$x")" "$(du -sh "$EXTRA/$x" 2>/dev/null | cut -f1)"
         if [ "$x" = lang ]; then
@@ -430,16 +474,20 @@ do_status() {
 
 case ${1:-list} in
     list) do_list ;;
-    status) do_status ;;
-    install) [ -n "${2:-}" ] || die "usage: mu300-extra install NAME [--from FILE|DIR]"; known "$2"; from=
+    status) [ -z "${2:-}" ] || extra_known "$2" || extra_own "$2" || die "there is no extra called '$2' (mu300-extra list)"
+            do_status "${2:-}" ;;
+    install) [ -n "${2:-}" ] || die "usage: mu300-extra install NAME [--from FILE|DIR]"; from=
              case ${3:-} in '') ;; --from) [ -n "${4:-}" ] || die "usage: mu300-extra install $2 --from FILE|DIR"; from=$4 ;;
                  *) die "usage: mu300-extra install NAME [--from FILE|DIR]" ;; esac
+             # an extra of the user's own comes from a file only: without one the name is just unknown
+             extra_own "$2" && [ -n "$from${MU300_EXTRA_FILE:-}" ] || known "$2"
              need_root install; need_disk; do_install "$2" "$from" ;;
-    remove) [ -n "${2:-}" ] || die "usage: mu300-extra remove NAME"; known "$2"; need_root remove; need_disk; do_remove "$2" "${3:-}" ;;
+    remove) [ -n "${2:-}" ] || die "usage: mu300-extra remove NAME"
+            { extra_own "$2" && [ -d "$EXTRA/$2" ]; } || known "$2"; need_root remove; need_disk; do_remove "$2" "${3:-}" ;;
     link) need_root link; do_link ;;
     # gone: the VPN module carries its engines (an older mu300-vpn asks for it, then installs the extra)
     adopt) echo "nothing to adopt: the VPN module carries its own engines (mu300-extra install vpn)" >&2; exit 1 ;;
     lang) shift; do_lang "$@" ;;
-    -h|--help|help) sed -n '2,39s/^# \{0,1\}//p' "$0" ;;
+    -h|--help|help) sed -n '2,45s/^# \{0,1\}//p' "$0" ;;
     *) echo "usage: mu300-extra list|status|install NAME [--from FILE|DIR]|remove NAME|link|lang ..." >&2; exit 2 ;;
 esac

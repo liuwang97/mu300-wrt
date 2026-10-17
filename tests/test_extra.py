@@ -1658,3 +1658,113 @@ class ModuleIntegrity(EngineExtrasBase):
                 self.up(shell, 'modules_fetch v2026.10.21 ""; modules_install v2026.10.21', MU300_VPN_URL=VPN_URL)
                 self.assertEqual((self.disk / 'extra/vpn-xray/VERSION').read_text().strip(), 'v1.0.0', case)
             self.stubs.joinpath('sha256sum').unlink(missing_ok=True)
+
+
+def own_tarball(path, name='mytool', release='1.2.3', manifest=True, hooks=True, extra=(), bad_hash=False):
+    """an extra of the user's own: ./name ./release ./manifest, programs in ./bin, hooks/ and files of its own"""
+    files = [('./name', name + '\n', 0o644), ('./release', release + '\n', 0o644),
+             ('./bin/mytool', '#!/bin/sh\necho mytool\n', 0o755),
+             ('./lib/mytool/web/index.html', '<p>x</p>\n', 0o644)]
+    if hooks:
+        files += [('./hooks/link', 'echo "own link [$1] $MU300_EXTRA_DIR" >> "$STUBLOG/hooks"\n', 0o755),
+                  ('./hooks/unlink', 'echo "own unlink [$1]" >> "$STUBLOG/hooks"\n', 0o755)]
+    files += list(extra)
+    if manifest:
+        lines = ''.join(f'{hashlib.sha256(d.encode()).hexdigest() if not bad_hash else "0" * 64}  {fn}\n'
+                        for fn, d, _ in files)
+        files.append(('./manifest', lines, 0o644))
+    with tarfile.open(path, 'w:gz') as t:
+        for fn, data, mode in files:
+            data = data.encode()
+            ti = tarfile.TarInfo(fn)
+            ti.size, ti.mode = len(data), mode
+            t.addfile(ti, io.BytesIO(data))
+    return path
+
+
+class OwnExtraTest(ExtrasBase):
+    """an extra of the user's own: installed from a file by its name, hooked into every system, never listed"""
+
+    def own(self):
+        return self.disk / 'extra' / 'mytool'
+
+    def test_install_from_a_file_links_status_by_name_only_and_remove(self):
+        f = own_tarball(self.tmp / 'mytool.tar.gz')
+        for shell in self.each_shell():
+            self.versions('v2026.10.17')
+            self.hooks()
+            r = self.ex(shell, 'install', 'mytool', '--from', f)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn('mytool 1.2.3 installed', r.stdout)
+            self.assertTrue((self.own() / 'lib/mytool/web/index.html').exists())
+            self.assertTrue(os.path.islink(self.links / 'mytool'))
+            hooks = self.hooks()
+            for os_ in ('ubuntu', 'openwrt'):
+                self.assertIn(f'own link [{self.disk}/{os_}] {self.own()}', hooks)
+            # not in the list, not in the status of all extras, not in mu300-update's version line
+            r = self.ex(shell, 'list')
+            self.assertNotIn('mytool', r.stdout)
+            r = self.ex(shell, 'status')
+            self.assertNotIn('mytool', r.stdout)
+            r = self.up(shell, 'version', MU300_LIB=1)
+            self.assertNotIn('mytool', r.stdout)
+            # by name it is there
+            r = self.ex(shell, 'status', 'mytool')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn('1.2.3', r.stdout)
+            # every boot: its hook for the running system
+            r = self.ex(shell, 'link')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(self.hooks(), [f'own link [{self.root}] {self.own()}'])
+            r = self.ex(shell, 'remove', 'mytool')
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertFalse(self.own().exists())
+            self.assertFalse(os.path.lexists(self.links / 'mytool'))
+            self.assertIn(f'own unlink [{self.disk}/openwrt]', self.hooks())
+
+    def test_without_a_file_the_name_is_unknown(self):
+        for shell in self.each_shell():
+            r = self.ex(shell, 'install', 'mytool')
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn("no extra called 'mytool'", r.stderr)
+            r = self.ex(shell, 'remove', 'mytool')
+            self.assertNotEqual(r.returncode, 0)
+            self.assertFalse(self.own().exists())
+
+    def test_refused_without_a_manifest_with_a_wrong_one_or_odd_names(self):
+        cases = {
+            'no manifest': own_tarball(self.tmp / 'a.tar.gz', manifest=False),
+            'bad hash': own_tarball(self.tmp / 'b.tar.gz', bad_hash=True),
+            'other name': own_tarball(self.tmp / 'c.tar.gz', name='other'),
+            'odd name': own_tarball(self.tmp / 'd.tar.gz', extra=[('./lib/a b', 'x', 0o644)]),
+            'too deep': own_tarball(self.tmp / 'e.tar.gz', extra=[('./a/b/c/d/e', 'x', 0o644)]),
+        }
+        for shell in self.each_shell():
+            for case, f in cases.items():
+                r = self.ex(shell, 'install', 'mytool', '--from', f)
+                self.assertNotEqual(r.returncode, 0, case)
+                self.assertFalse(self.own().exists(), case)
+            # a name of a release extra, or one that is not a name, is never an own one
+            for name in ('vpn-foo', 'My', '-x', 'a/b'):
+                r = self.ex(shell, 'install', name, '--from', cases['no manifest'])
+                self.assertNotEqual(r.returncode, 0, name)
+
+    def test_from_a_directory_needs_its_sha256sums(self):
+        d = self.tmp / 'stick'
+        d.mkdir()
+        own_tarball(d / 'mytool.tar.gz')
+        for shell in self.each_shell():
+            (d / 'SHA256SUMS').unlink(missing_ok=True)
+            r = self.ex(shell, 'install', 'mytool', '--from', d)
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn('not installed unverified', r.stderr)
+            sums(d, 'mytool.tar.gz')
+            r = self.ex(shell, 'install', 'mytool', '--from', d)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            # a file next to a SHA256SUMS that lists it with another hash is refused
+            (d / 'SHA256SUMS').write_text('0' * 64 + '  mytool.tar.gz\n')
+            r = self.ex(shell, 'install', 'mytool', '--from', d / 'mytool.tar.gz')
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn('does not match', r.stderr)
+            self.assertTrue(self.own().exists())
+            shutil.rmtree(self.own())
