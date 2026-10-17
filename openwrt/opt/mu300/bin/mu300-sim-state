@@ -65,11 +65,16 @@ check() {
         logger -t mu300-sim-state "SIM$((slot + 1)): ${old:-unknown} -> $new" 2>/dev/null || true
     fi
     rm -rf "$lock"
-    # a card back where the dial stopped for its absence: the dial again (netifd's, or the Ubuntu service's)
-    if [ -n "$new" ] && [ "$new" != absent ] && [ -e "$HELD" ]; then
+    # a card back where the dial stopped for its absence: the dial again. OpenWrt: the WAN mu300cell made unavailable
+    # is made available, and netifd starts it unless somebody took it down (ifdown); Ubuntu: the service's dial.
+    if [ -n "$new" ] && [ "$new" != absent ] && { [ -e "$HELD" ] || [ "$old" = absent ]; }; then
         rm -f "$HELD"
-        if [ -e /etc/openwrt_release ]; then
-            ifup "${MU300_WAN:-wan}" </dev/null >/dev/null 2>&1 || true
+        if [ -e "${MU300_SYSROOT:-}/etc/openwrt_release" ]; then
+            case $(ubus call "network.interface.${MU300_WAN:-wan}" status 2>/dev/null | tr -d ' \n\t') in
+                *'"available":false'*)
+                    ubus call "network.interface.${MU300_WAN:-wan}" notify_proto '{"action":5,"available":true}' \
+                        </dev/null >/dev/null 2>&1 || true ;;
+            esac
         elif [ ! -e /run/mu300-mobile-data-down ]; then
             ( setsid "$MD" up </dev/null >/dev/null 2>&1 & ) || true
         fi

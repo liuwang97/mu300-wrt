@@ -410,6 +410,16 @@ PLUGIN_LOCK=${MU300_PLUGIN_LOCK:-/usr/libexec/unisoc-modem/lock}
 SIM_RADIO_BIN=${MU300_SIM_RADIO_BIN:-/opt/mu300/bin/mu300-sim-radio}
 RF_HELD=/run/mu300/sim-radio-held
 rf_allowed() { [ ! -x "$SIM_RADIO_BIN" ] || "$SIM_RADIO_BIN" allowed "$SIM_SLOT" 2>/dev/null; }
+# wan_available: netifd's WAN made available again where mu300cell made it unavailable (a SIM radio switched off, an
+# empty slot: exit 7 or 6). netifd then starts it by itself - unless somebody took it down (ifdown: autostart off),
+# which is how the user's own choice stays as it was.
+wan_available() {
+    local wan=${MU300_WAN:-wan}
+    case $(ubus call "network.interface.$wan" status 2>/dev/null | tr -d ' \n\t' || true) in
+        *'"available":false'*)
+            ubus call "network.interface.$wan" notify_proto '{"action":5,"available":true}' >/dev/null 2>&1 || true ;;
+    esac
+}
 # --- a slot with no card (mu300-sim-state, docs/FINDINGS.md 186) ---------------------------------------------------
 # The dial asks the card once its radio is on (AT+CPIN?). No card: the dial stops there and leaves $SIM_HELD (netifd:
 # exit 6, SIM_MISSING, no retry - it used to fail after its 60 s registration wait and start over every 20 s for
@@ -1659,7 +1669,7 @@ watch() {
         if ! rf_allowed; then continue; fi
         # no card in the slot (FINDINGS 186): nothing to restore; every tenth round (five minutes) the card is asked
         # again, for an insertion whose event was missed - mu300-sim-state dials when one answers
-        if [ -e "$SIM_HELD" ]; then
+        if [ -e "$SIM_HELD" ] || [ "$(sim_state get)" = absent ]; then
             sim_rounds=$(( ${sim_rounds:-0} + 1 ))
             [ $((sim_rounds % 10)) != 0 ] || sim_state check >/dev/null
             continue
@@ -2008,16 +2018,15 @@ rf_apply() {
         under_radio_lock rf_on_locked || return 1
         voice_replay
     fi
-    # the data that was held for the radio (the hold marker: its dial ended on the setting - netifd has blocked
-    # its restart, which also shows as autostart false - or rf-apply took it down) comes back; data somebody took down
-    # (the panel's button, ifdown, the data cap, a stopped service) left no marker and stays down
-    if [ -e "$RF_HELD" ]; then
+    # the data that was held for the radio comes back: under netifd the WAN mu300cell made unavailable (netifd starts
+    # it unless somebody took it down: ifdown, the panel's button, the data cap); on Ubuntu the connection the hold
+    # marker names (a stopped service left none)
+    if via_netifd; then
         rm -f "$RF_HELD"
-        if via_netifd; then
-            bnd "$STEPDL" ifup "$wan" || true
-        elif [ ! -e /run/mu300-mobile-data-down ]; then
-            ( setsid "$0" up </dev/null >/dev/null 2>&1 & ) || true
-        fi
+        wan_available
+    elif [ -e "$RF_HELD" ]; then
+        rm -f "$RF_HELD"
+        [ -e /run/mu300-mobile-data-down ] || ( setsid "$0" up </dev/null >/dev/null 2>&1 & ) || true
     fi
     return 0
 }

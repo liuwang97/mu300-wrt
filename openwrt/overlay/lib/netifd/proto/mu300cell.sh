@@ -86,17 +86,19 @@ proto_mu300cell_setup() {
 		return 1
 		;;
 	6)
-		# No card in the SIM slot in use (mu300-sim-state, docs/FINDINGS.md 186): no retry every 20 s; the card's
-		# event (or mobile-data's watchdog) brings the WAN up when one answers. ifup tries again at once.
+		# No card in the SIM slot in use (mu300-sim-state, docs/FINDINGS.md 186): the interface is unavailable, so no
+		# retry every 20 s; the card's event (or mobile-data's watchdog) makes it available again when one answers,
+		# and netifd starts it then - unless somebody took it down (ifdown: autostart off).
 		proto_notify_error "$config" SIM_MISSING
-		proto_block_restart "$config"
+		proto_set_available "$config" 0
 		return 1
 		;;
 	7)
 		# The SIM's radio is switched off in its settings (mu300-sim-radio, docs/FINDINGS.md 185): no dial until it is
-		# switched on, and no retry meanwhile; mu300-sim-radio set ... on (mobile-data rf-apply) brings the WAN up.
+		# switched on, and no retry meanwhile (the interface unavailable); mu300-sim-radio set ... on (mobile-data
+		# rf-apply) makes it available again, and netifd starts it unless somebody took it down (ifdown).
 		proto_notify_error "$config" SIM_RADIO_DISABLED
-		proto_block_restart "$config"
+		proto_set_available "$config" 0
 		return 1
 		;;
 	esac

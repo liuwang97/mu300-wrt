@@ -2132,7 +2132,7 @@ at() {
         self.assertEqual(cmds, [])
 
     def test_rf_apply(self):
-        self.stub('ubus', 'echo "{ \\"up\\": ${T_UP:-true}, \\"autostart\\": ${T_AUTOSTART:-true} }"')
+        self.stub('ubus', 'echo "$*" >> "$STUBLOG/ubus"; echo "{ \\"up\\": ${T_UP:-true}, \\"autostart\\": ${T_AUTOSTART:-true}, \\"available\\": ${T_AVAILABLE:-true} }"')
         self.stub('ifup', 'echo "ifup $*" >> "$STUBLOG/ifup"')
         held = self.tmp / 'run' / 'mu300' / 'sim-radio-held'
         # off: the WAN restarted (its dial then ends with SIM_RADIO_DISABLED), flight mode
@@ -2141,13 +2141,15 @@ at() {
         self.assertEqual((self.tmp / 'ifup').read_text(), 'ifup wan\n')
         self.assertEqual((self.tmp / 'cfun').read_text().strip(), '4')
         self.assertTrue(held.exists())
-        # on: AT+CFUN=1, and the WAN that was held comes back
+        # on: AT+CFUN=1, and the WAN mu300cell made unavailable is made available again (netifd starts it then,
+        # unless somebody took it down)
         (self.tmp / 'ifup').unlink(missing_ok=True)
-        r, cmds = self.md('rf_apply; echo rc=$?', policy='1 1\n', cfun='4', MU300_NETIFD=1)
+        r, cmds = self.md('rf_apply; echo rc=$?', policy='1 1\n', cfun='4', MU300_NETIFD=1, T_AVAILABLE='false')
         self.assertIn('rc=0', r.stdout, r.stderr)
         self.assertIn('AT+CFUN=1', cmds)
         self.assertIn('AT+CAVIMS=1', cmds)                     # the card's voice choice, as at every start
-        self.assertEqual((self.tmp / 'ifup').read_text(), 'ifup wan\n')
+        self.assertFalse((self.tmp / 'ifup').exists())
+        self.assertIn('notify_proto {"action":5,"available":true}', (self.tmp / 'ubus').read_text())
         self.assertFalse(held.exists())
         # off with the WAN down on purpose (netifd: not up, autostart off): nothing held, no restart
         (self.tmp / 'ifup').unlink(missing_ok=True)
@@ -2156,10 +2158,11 @@ at() {
         self.assertFalse(held.exists())
         self.assertFalse((self.tmp / 'ifup').exists())
         self.assertEqual((self.tmp / 'cfun').read_text().strip(), '4')
-        # on, but nothing was held (the WAN was down on purpose): no ifup
-        (self.tmp / 'ifup').unlink(missing_ok=True)
+        # on, and the WAN is available (nothing was made unavailable): nothing asked of netifd
+        (self.tmp / 'ubus').unlink(missing_ok=True)
         r, cmds = self.md('rf_apply; echo rc=$?', policy='1 1\n', cfun='4', MU300_NETIFD=1)
         self.assertFalse((self.tmp / 'ifup').exists())
+        self.assertNotIn('notify_proto', (self.tmp / 'ubus').read_text())
 
     def test_every_radio_on_path_asks(self):
         text = (BIN / 'mobile-data').read_text()
@@ -2233,6 +2236,19 @@ class SimState(ShellTest):
                     break
                 time.sleep(0.1)
             self.assertEqual((self.tmp / 'setsid').read_text(), 'setsid /md up\n')
+            # OpenWrt: no held marker needed (netifd's teardown runs `down`); a card back after "absent" makes the
+            # WAN mu300cell made unavailable available again
+            root = self.tmp / 'root'
+            (root / 'etc').mkdir(parents=True, exist_ok=True)
+            (root / 'etc' / 'openwrt_release').write_text('')
+            self.stub('ubus', 'echo "$*" >> "$STUBLOG/ubus"; echo "{ \\"available\\": false }"')
+            (self.tmp / 'ubus').unlink(missing_ok=True)
+            (self.tmp / 'cpin').write_text('+CME ERROR: 10\n')
+            self.tool('check', MU300_SYSROOT=root)
+            self.assertFalse((self.tmp / 'ubus').exists())
+            (self.tmp / 'cpin').write_text('+CPIN: READY\nOK\n')
+            self.tool('check', MU300_SYSROOT=root)
+            self.assertIn('notify_proto {"action":5,"available":true}', (self.tmp / 'ubus').read_text())
 
     def test_event_filter(self):
         hint = ['+ECIND: 3,0', '+ECIND: 3,2,5', '+ECIND:3,100', '+ECIND: 3,1,34', '+ECIND: 3,4,0']
