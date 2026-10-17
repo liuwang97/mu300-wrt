@@ -2776,7 +2776,7 @@ panel_configure() {
     [ -f "$EXTRA/panel/bin/mu300-panel" ] || return 0
     for _o in $1; do
         [ -f "$DISK/$_o/etc/systemd/system/cockpit.socket.d/mu300-listen.conf" ] || continue
-        MU300_SYSROOT=$DISK/$_o sh "$EXTRA/panel/bin/mu300-panel" configure >/dev/null 2>&1 || true
+        MU300_LIB= MU300_SYSROOT=$DISK/$_o sh "$EXTRA/panel/bin/mu300-panel" configure >/dev/null 2>&1 || true
     done
     return 0
 }
