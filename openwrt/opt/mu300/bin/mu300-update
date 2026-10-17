@@ -2983,6 +2983,26 @@ image_krel() {
     dd if="$1" bs=4096 skip=1 count=$(( (_iz + 4095) / 4096 )) 2>/dev/null |
         grep -a -o -m 1 'Linux version [0-9][^ ]*' | cut -d' ' -f3
 }
+# kernel_set_from_old KREL: a system an update just replaced has no set of a bundle's yet when Ubuntu is updated (its
+# lib/modules is never carried over: the sets come from the bundles), so the image in the slot - kept for rollback-boot
+# once the new one is written - would come back without its modules. The previous system kept beside it (<os>.old)
+# ran with that image: its set is given to the new system (second names, no room). OpenWrt carries its sets.
+kernel_set_from_old() {
+    case $1 in ''|*/*|.*) return 0 ;; esac
+    for _os in $(installed_systems); do
+        _d=$(modules_dir "$_os" "$1"); _o=$DISK/$_os.old/${_d#"$DISK/$_os/"}
+        ! ls "$_d"/*.ko >/dev/null 2>&1 && ls "$_o"/*.ko >/dev/null 2>&1 || continue
+        mkdir -p "$_d" && mod_link "$_o" "$_d" || { echo "boot: the modules of $1 did not go from $_os.old into $_os" >&2; continue; }
+        if [ "$_os" = ubuntu ]; then
+            for _f in modules.builtin modules.builtin.modinfo modules.order; do
+                [ ! -f "$DISK/$_os.old/lib/modules/$1/$_f" ] || [ -e "$DISK/$_os/lib/modules/$1/$_f" ] ||
+                    cp "$DISK/$_os.old/lib/modules/$1/$_f" "$DISK/$_os/lib/modules/$1/"
+            done
+            if [ -z "${MU300_NO_DEPMOD:-}" ] && command -v depmod >/dev/null; then depmod -b "$DISK/$_os" "$1" 2>/dev/null || true; fi
+        fi
+        printf 'boot: the modules of %s (the image in the slot) taken over from %s.old into %s\n' "$1" "$_os" "$_os"
+    done
+}
 # kernel_sets KREL...: the module sets (OS:KREL) in the systems of releases other than these
 kernel_sets() {
     _kp=" $* "
@@ -3099,6 +3119,7 @@ boot_update_run() {
     osize=$(be64 "$tmp/footer" 12); vbs=$(be64 "$tmp/footer" 28)
     BOOT_SLOT_KREL=$(image_krel "$dev") BOOT_KEPT_KREL=
     [ ! -s "$BOOTDIR/prev.body" ] || BOOT_KEPT_KREL=$(image_krel "$BOOTDIR/prev.body")
+    kernel_set_from_old "$BOOT_SLOT_KREL"
     kernel_sets_remove $(boot_sets_stale)
 
     bundle=${MU300_KERNEL_BUNDLE:-}
