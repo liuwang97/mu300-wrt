@@ -449,6 +449,14 @@ class Update(UpdateBase):
             # the internal region on an eMMC that came up as mmcblk1 (FINDINGS 31l)
             self.assertEqual(run('mmcblk1@27762098176', plain), 'OK')
             self.assertEqual(run(None, plain), 'OK')
+            # another installer's init on the card names only the device it mounted (kanoqwq's 5161859d)
+            (self.root / 'run/mu300').mkdir(parents=True, exist_ok=True)
+            (self.root / 'run/mu300/disk-dev').write_text('/dev/mmcblk1p1\n')
+            (self.root / 'sys/class/block/mmcblk1/device').mkdir(parents=True, exist_ok=True)
+            (self.root / 'sys/class/block/mmcblk1/device/type').write_text('SD\n')
+            self.assertEqual(run(None, plain), 'REFUSE')
+            self.assertEqual(run(None, sd), 'OK')
+            (self.root / 'run/mu300/disk-dev').unlink()
 
     def test_a_disk_another_installer_put_elsewhere_keeps_the_boot_image(self):
         # issue #290: a V50 installed with kanoqwq's desktop installer ran from a GPT partition named mu300root (or
@@ -500,6 +508,11 @@ class Update(UpdateBase):
             self.assertEqual(run(None, '/dev/mmcblk0p5', plain), 'unknown OK')
             self.assertEqual(run(None, '/dev/mmcblk1p1', plain), 'unknown OK')
             self.assertEqual(run(None, None, plain), 'unknown OK')
+            # another init's TF installation: a device of a disk the kernel calls an SD card (kanoqwq's 5161859d)
+            (sysb / 'mmcblk1/device').mkdir(parents=True, exist_ok=True)
+            (sysb / 'mmcblk1/device/type').write_text('SD\n')
+            self.assertEqual(run(None, '/dev/mmcblk1p1', plain), 'sd OK')
+            (sysb / 'mmcblk1/device/type').unlink()
         src = (BIN / 'mu300-update').read_text()
         # boot_update refuses before it writes, and apply before it changes a system
         bu = src[src.index('boot_update_run() {'):src.index('\n}\n', src.index('boot_update_run() {'))]

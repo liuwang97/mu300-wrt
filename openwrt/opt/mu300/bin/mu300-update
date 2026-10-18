@@ -339,16 +339,18 @@ bundle_runs_here() {
     untar -xzf "$1" -C "$3" ./devices && grep -qw "$_me" "$3/devices"
 }
 # A system on the SD card boots only with a kernel that has the SD host (the bundle says so in ./features). Installing
-# an older bundle there would leave a device that cannot find its own root filesystem. A missing /run/mu300-root-dev
-# means "not on the card"; the internal region is "<eMMC>@<offset>", and the eMMC is not always mmcblk0 (31l).
-root_on_sd() { d=$(cat "${MU300_ROOT_DEV_FILE:-/run/mu300-root-dev}" 2>/dev/null); [ -n "$d" ] && case $d in *@*) return 1 ;; esac; }
+# an older bundle there would leave a device that cannot find its own root filesystem. Where the system is comes from
+# root_layout: /run/mu300-root-dev, the internal region being "<eMMC>@<offset>" (the eMMC is not always mmcblk0,
+# 31l), or for another installer's init the card that /run/mu300/disk-dev names.
+root_on_sd() { [ "$(root_layout)" = sd ]; }
 # bundle_has BUNDLE LIST FEATURE: does the bundle (LIST: its file list) list FEATURE in ./features?
 bundle_has() { grep -qx './features' "$2" && untar -xzOf "$1" ./features 2>/dev/null | grep -qx "$3"; }
 # root_layout: where the running system's disk is, as the init of a boot image has to find it. region: the area
 # after the eMMC's last partition; sd: the card; part: a GPT partition named mu300root; image: a file inside a
 # filesystem (Android's userdata); unknown. This project's init writes where in /run/mu300-root-dev. The init of
 # another installer - kanoqwq's desktop installer, whose "independent partition" and "userdata image" are part and
-# image - leaves only /run/mu300/disk-dev, the device it mounted (issue #290).
+# image - leaves only /run/mu300/disk-dev, the device it mounted (issue #290); a device of a disk the kernel calls
+# an SD card is his TF installation (from kanoqwq's 5161859d).
 root_layout() {
     _rd=$(cat "${MU300_ROOT_DEV_FILE:-/run/mu300-root-dev}" 2>/dev/null)
     case $_rd in
@@ -366,7 +368,9 @@ root_layout() {
                    /dev/*) echo region ;;
                    *) echo image ;;
                esac ;;
-        *) if grep -qx 'PARTNAME=mu300root' "$_sb/uevent" 2>/dev/null; then echo part; else echo unknown; fi ;;
+        *) if grep -qx 'PARTNAME=mu300root' "$_sb/uevent" 2>/dev/null; then echo part
+           elif [ "$(cat "${MU300_SYSROOT:-}/sys/class/block/${_dd%p[0-9]*}/device/type" 2>/dev/null)" = SD ]; then echo sd
+           else echo unknown; fi ;;
     esac
 }
 # bundle_finds_root BUNDLE LIST: can the init of this bundle find the running system's disk? Not in a file (no init
