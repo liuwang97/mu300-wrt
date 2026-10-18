@@ -241,7 +241,9 @@ class Region(ShellTest):
         fake_ext4(dev / 'mmcblk1p1', 'mu300root')
         code = e + self.block() + f'\nMU300_SYS={sysd}; MU300_DEV={dev}; gpt_root; echo "rc=$?"'
         for shell in self.each_shell():
-            for label, want in (('mu300root', f'{dev}/mmcblk0p60\nrc=0'), ('mu300sd', 'rc=1'), (None, 'rc=1')):
+            # the whole label: one that only starts with mu300root is not it (kanoqwq's 5161859d)
+            for label, want in (('mu300root', f'{dev}/mmcblk0p60\nrc=0'), ('mu300sd', 'rc=1'), (None, 'rc=1'),
+                                ('mu300rootfs', 'rc=1')):
                 (dev / 'mmcblk0p60').unlink(missing_ok=True)
                 if label:
                     fake_ext4(dev / 'mmcblk0p60', label)
@@ -291,17 +293,20 @@ class RootSelect(ShellTest):
         code = m.group(1)
         # the device paths are only redirected here, never changed in init
         for path, repl in (('/run/mu300-root-dev', '$T/root-dev'), ('/run/rootmount.err', '$T/err'),
-                           ('/disk/.mu300/root-on-sd', '$T/root-on-sd')):
+                           ('/disk/.mu300/root-on-sd', '$T/root-on-sd'),
+                           ('/etc/mu300-desktop-root-mode', '$T/desktop-mode')):
             self.assertIn(path, code)
             code = code.replace(path, repl)
         return code
 
-    def select(self, shell, marker=False, **scenario):
-        for f in ('log', 'root-dev', 'root-on-sd'):
+    def select(self, shell, marker=False, desktop_mode=None, **scenario):
+        for f in ('log', 'root-dev', 'root-on-sd', 'desktop-mode'):
             (self.tmp / f).unlink(missing_ok=True)
         (self.tmp / 'log').touch()
         if marker:
             (self.tmp / 'root-on-sd').touch()
+        if desktop_mode is not None:
+            (self.tmp / 'desktop-mode').write_text(desktop_mode + '\n')
         code = STUBS + self.region() + '\necho "mounted=$root_mounted on=$ON disk-dev=$diskdev"'
         r = self.sh(shell, code, T=self.tmp, **scenario)
         self.assertEqual('', r.stderr)
@@ -403,6 +408,34 @@ class RootSelect(ShellTest):
         for shell in self.each_shell():
             out, dev, log = self.select(shell, CARD_NOW=1, INTERNAL=0, PART=1)
             self.assertEqual('mounted=1 on=card disk-dev=/dev/mmcblk1p1', out)
+
+    def test_desktop_partition_choice_comes_first(self):
+        # kanoqwq's desktop installer: the owner chose the partition (part in the device segment, kept by updates).
+        # It boots before a card and a region (from his 5161859d)
+        for shell in self.each_shell():
+            out, dev, log = self.select(shell, desktop_mode='part', CARD_NOW=1, INTERNAL=1, PART=1)
+            self.assertEqual('mounted=1 on=part disk-dev=/dev/mmcblk0p60', out)
+            self.assertEqual('mmcblk0@mu300root', dev)
+            self.assertIn('stage=root-part dev=/dev/mmcblk0p60\nstage=root-part-chosen', log)
+            self.assertNotIn('sd-root', log)
+            # any other mode, or none: the usual order
+            for mode in ('sd', 'legacy', ''):
+                out, _, _ = self.select(shell, desktop_mode=mode, CARD_NOW=1, INTERNAL=1, PART=1)
+                self.assertEqual('mounted=1 on=card disk-dev=/dev/mmcblk1p1', out, mode)
+
+    def test_desktop_partition_choice_is_not_a_gate(self):
+        # bootability first: a chosen partition that is missing or does not mount leaves the usual order, and a
+        # partition that failed is not mounted a second time
+        for shell in self.each_shell():
+            out, _, log = self.select(shell, desktop_mode='part', CARD_NOW=1, INTERNAL=1, PART=0)
+            self.assertEqual('mounted=1 on=card disk-dev=/dev/mmcblk1p1', out)
+            out, dev, log = self.select(shell, desktop_mode='part', INTERNAL=1, PART=1, PART_MOUNTS=0)
+            self.assertEqual('mounted=1 on=internal disk-dev=/dev/loop0', out)
+            self.assertEqual('mmcblk0@4096', dev)
+            self.assertEqual(1, log.count('root-part-failed'))
+            out, dev, log = self.select(shell, desktop_mode='part', INTERNAL=0, PART=1, PART_MOUNTS=0)
+            self.assertEqual('mounted=0 on= disk-dev=', out)
+            self.assertEqual(1, log.count('root-part-failed'))
 
     def test_gpt_partition_that_does_not_mount(self):
         for shell in self.each_shell():
