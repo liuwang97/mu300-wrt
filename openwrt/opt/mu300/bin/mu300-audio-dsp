@@ -29,7 +29,8 @@
 set -u
 export PATH="$PATH:/opt/mu300/bin:/opt/mu300/busybox-bin:/usr/sbin:/sbin"
 
-# Where the drivers are. On 5.4 they are the private stack's 23 modules in .../audio (kernel/build-audio.sh). On
+# Where the drivers are. On 5.4 they are the 23 modules in .../audio that https://github.com/dikeckaan/mu300-audio installs
+# (built by kernel/build-audio.sh). On
 # the mainline kernels (6.18, 7.2) they are part of the release, out of upstream/modules/sprd_audio, flat with the
 # other modules: extra/ on Ubuntu, the release directory itself on OpenWrt (docs/FINDINGS.md 188).
 K=/lib/modules/$(uname -r)
