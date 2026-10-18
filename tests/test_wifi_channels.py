@@ -465,5 +465,69 @@ done
             self.assertIn('no other 5 GHz channel is allowed', text)
 
 
+class HotspotVerify(ShellTest):
+    """hotspot-verify: a refused CMD_START_AP sends the hotspot to 2.4 GHz; a good start (the mainline driver prints no
+    answer for it) ends as soon as iw shows the access point's SSID instead of after 20 s (it held every boot)."""
+
+    def setUp(self):
+        super().setUp()
+        # Ubuntu's /bin/sh runs it (dash); busybox sh would run its own sleep and touch, not the stubs
+        self.shells = [s for s in self.shells if 'busybox' not in ' '.join(s)]
+        if not self.shells:
+            self.skipTest('no dash or bash')
+        self.stub('sleep', 'echo x >> "$STUBLOG/sleeps"')
+        self.stub('systemctl', 'echo "$*" >> "$STUBLOG/systemctl"')
+        self.stub('touch', 'exit 0')
+        self.stub('dmesg', 'cat "$STUBLOG/dmesg" 2>/dev/null; exit 0')
+        # iw: no SSID for the first FAKE_UP calls, then the access point's
+        self.stub('iw', 'n=$(cat "$STUBLOG/iwn" 2>/dev/null || echo 0); n=$((n + 1)); echo $n > "$STUBLOG/iwn"; '
+                        'echo "Interface wlan0"; [ $n -le ${FAKE_UP:-0} ] || printf "\tssid F50_2\n\ttype AP\n"')
+
+    def run_verify(self, shell, dmesg='', **env):
+        for f in ('sleeps', 'systemctl', 'iwn'):
+            (self.tmp / f).unlink(missing_ok=True)
+        (self.tmp / 'dmesg').write_text(dmesg)
+        env.setdefault('MAINPID', '')
+        r = self.script(shell, BIN / 'hotspot-verify', **env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        sleeps = len((self.tmp / 'sleeps').read_text().split()) if (self.tmp / 'sleeps').exists() else 0
+        sc = (self.tmp / 'systemctl').read_text() if (self.tmp / 'systemctl').exists() else ''
+        return sleeps, sc, r.stderr
+
+    def test_a_good_start_ends_when_the_ssid_is_up(self):
+        for shell in self.each_shell():
+            sleeps, sc, _ = self.run_verify(shell, FAKE_UP=3)
+            self.assertEqual(sleeps, 4)
+            self.assertEqual(sc, '')
+
+    def test_never_up_waits_its_20_seconds(self):
+        for shell in self.each_shell():
+            sleeps, sc, _ = self.run_verify(shell, FAKE_UP=1000)
+            self.assertEqual(sleeps, 40)
+            self.assertEqual(sc, '')
+
+    def test_a_refused_start_goes_to_2g(self):
+        line = '[   27.5] sprd-wlan: sc2355_rx_rsp_process ctx_id 0 recv rsp[CMD_START_AP] status[SPRD_CMD_STATUS_NOT_SUPPORT]\n'
+        for shell in self.each_shell():
+            # the refusal is printed before the access point shows up, or in the same moment
+            for up in (0, 1000):
+                sleeps, sc, err = self.run_verify(shell, dmesg=line, FAKE_UP=up)
+                self.assertIn('restart mu300-hotspot.service', sc)
+                self.assertIn('falling back to 2.4 GHz', err)
+                self.assertEqual(sleeps, 1)
+
+    @unittest.skipUnless(Path('/proc/self/comm').exists(), 'needs /proc')
+    def test_an_ssid_before_hostapd_runs_is_not_this_start(self):
+        # $MAINPID still hotspot-start (here: a process that is not hostapd): an SSID left from before does not count
+        p = subprocess.Popen(['sleep', '30'])
+        try:
+            for shell in self.each_shell():
+                sleeps, sc, _ = self.run_verify(shell, FAKE_UP=0, MAINPID=p.pid)
+                self.assertEqual(sleeps, 40)
+        finally:
+            p.kill()
+            p.wait()
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -69,12 +69,11 @@ esac
 /opt/mu300/bin/regdb-load >/dev/null 2>&1 || true
 iw reg set "$COUNTRY" 2>/dev/null || true
 for n in $(seq 1 15); do iw reg get 2>/dev/null | grep -q "country $COUNTRY:" && break; sleep 1; done
-sleep 1
 # the channel as the kernel has it now: an AP may use it unless it is NO-IR, disabled or radar (DFS)
 # newer kernels report a frequency offset, so iw prints "5180.0 MHz"
 ch_ok() { iw list 2>/dev/null | grep -E "\* [0-9.]+ MHz \[${1:-$CHANNEL}\]" | grep -vqE "no IR|disabled|radar"; }
 # the channel flags follow the country change with a delay (seconds on the mainline kernel)
-if [ "$HWMODE" = a ]; then for n in $(seq 1 10); do ch_ok && break; sleep 1; done; fi
+if [ "$HWMODE" = a ]; then for n in $(seq 1 20); do ch_ok && break; sleep 0.5; done; fi
 if [ "$HWMODE" = a ] && ! ch_ok; then
     # another channel of the country that the kernel allows, else 2.4 GHz
     want=$CHANNEL; CHANNEL=
@@ -113,10 +112,13 @@ for n in $(seq 1 60); do [ -e /sys/class/net/wlan0 ] && break; sleep 1; done
 for n in $(seq 1 30); do ip link show br-lan >/dev/null 2>&1 && break; sleep 1; done
 ip addr flush dev wlan0 2>/dev/null || true
 # cfg80211 refuses to bridge a station-mode interface (EOPNOTSUPP); switch to AP first so hostapd can add it
-# the WCN chip can still be busy right after boot (Bluetooth power-cycles the same chip): retry the switch
+# the WCN chip can still be busy right after boot (Bluetooth power-cycles the same chip): retry the switch.
+# On a down interface the sprd driver records the AP type but answers EINVAL (its firmware close fails: the interface
+# is closed already); the type is then AP, so that counts as done (it cost a 2 s retry on every boot).
 for n in 1 2 3 4 5 6; do
     ip link set wlan0 down
     iw dev wlan0 set type __ap 2>/dev/null && break
+    iw dev wlan0 info 2>/dev/null | grep -q 'type AP$' && break
     sleep 2
 done
 ip link set wlan0 up
