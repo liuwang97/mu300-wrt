@@ -8,6 +8,8 @@
 #   mu300-audio-dsp profiles [MODE]  load the DSP parameter blobs and select a call mode (default 7)
 #   mu300-audio-dsp stop       stop the DSP (the modules stay)
 #   mu300-audio-dsp install FILE   check an AGDSP image you supply and put it where "start" reads it
+#   mu300-audio-dsp install --download   fetch the measured image (the owner's own copy, FW_URL) and install it if
+#                              its sha256 is exactly FW_URL_SHA256; anything else is refused
 #   mu300-audio-dsp uninstall  take it out again (the previous file, if there was one, comes back)
 #
 # "start" used to reboot this device and the note here used to say so, blaming the card not being registered.
@@ -362,7 +364,22 @@ install)
     # F50). This takes one you have yourself - from your own phone of the same SoC, or its official firmware
     # package - checks that it is plausibly one, and puts it at $FW for "start". docs/FINDINGS.md 24 has which
     # image has been measured to run here.
-    src=${2:?usage: mu300-audio-dsp install FILE}
+    src=${2:?usage: mu300-audio-dsp install FILE | --download}
+    if [ "$src" = --download ]; then
+        # the image the owner published himself, pinned to its sha256: a different file is never installed
+        FW_URL=https://github.com/dikeckaan/mu300-audio-firmware/releases/download/v1.0/agdsp.bin
+        FW_URL_SHA256=378ceea78dbf013e10625e71efd6fab487d727e371884ae8daf078da2828b937
+        dl=$(umask 077; mktemp -d) || exit 1
+        trap 'rm -rf "$dl"' EXIT INT TERM
+        echo "downloading $FW_URL"
+        if command -v curl >/dev/null 2>&1; then curl -fsSL --proto '=https' -o "$dl/agdsp.bin" "$FW_URL"
+        elif command -v uclient-fetch >/dev/null 2>&1; then uclient-fetch -q -O "$dl/agdsp.bin" "$FW_URL"
+        else wget -q -O "$dl/agdsp.bin" "$FW_URL"; fi || { echo "download failed (internet on the device?)" >&2; exit 1; }
+        got=$(sha256sum "$dl/agdsp.bin" | cut -d' ' -f1)
+        [ "$got" = "$FW_URL_SHA256" ] ||
+            { echo "the download's sha256 is $got, not the pinned $FW_URL_SHA256: refused, nothing installed" >&2; exit 1; }
+        src=$dl/agdsp.bin
+    fi
     [ -f "$src" ] || { echo "no file $src" >&2; exit 1; }
     size=$(wc -c < "$src")
     # room for it: ldinfo's size when sprd_audcp_boot is up, else the reserved region this board uses
@@ -398,6 +415,6 @@ uninstall)
     ;;
 
 *)
-    sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
     exit 2 ;;
 esac
