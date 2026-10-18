@@ -207,6 +207,24 @@ class Userspace(unittest.TestCase):
         self.assertIn('</usr/share/alsa/alsa.conf>', out)
         self.assertRegex(out, r'slave \{ pcm "hw:1,53" rate 16000 channels 1 format S16_LE \}')
 
+    def test_ubuntu_leaves_the_card_state_alone(self):
+        # alsa-utils restored every control when the card appeared, before the DSP was started: each DSP control
+        # failed with -5, each codec read waited for the power domain, and on 5.4 mu300-audio ran past its timeout
+        # and was killed in its start (FINDINGS 193). The image masks the service and the udev rule; run its lines.
+        src = (TOP / 'rootfs' / 'assemble.sh').read_text()
+        lines = [l for l in src.splitlines()
+                 if ('alsa' in l or l == 'mkdir -p $R/etc/udev/rules.d') and not l.lstrip().startswith('#')]
+        self.assertEqual(len(lines), 4)
+        r = self.tmp / 'root'
+        subprocess.run(['sh', '-ec', 'mkdir -p $R/etc/systemd/system\n' + '\n'.join(lines)],
+                       env={'R': str(r), 'PATH': '/usr/bin:/bin'}, check=True)
+        for f in ('etc/systemd/system/alsa-restore.service', 'etc/systemd/system/alsa-state.service',
+                  'etc/udev/rules.d/90-alsa-restore.rules'):
+            self.assertTrue((r / f).is_symlink(), f)
+            self.assertEqual(str((r / f).readlink()), '/dev/null', f)
+        # after the tarball is made, nothing would carry them
+        self.assertLess(src.index('90-alsa-restore.rules'), src.index('tar --numeric-owner'))
+
     def test_the_guard_never_blocks_what_the_stack_needs(self):
         blocked = {l.split('#')[0].strip() for l in
                    (TOP / 'rootfs' / 'overlay' / 'opt' / 'mu300' / 'lib' / 'autoload-blocked').read_text().splitlines()}
