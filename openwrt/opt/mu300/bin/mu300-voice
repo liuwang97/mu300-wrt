@@ -84,10 +84,13 @@ fi
 # by name, not number: the device numbers are not the same on every build of the card
 pcmdev() { awk -F': ' -v n="$1 " 'index($2, n) == 1 { split($1, a, "-"); print a[2] + 0; exit }' /proc/asound/pcm; }
 VOICE=$(pcmdev FE_ST_VOICE); VOICE=${VOICE:-5}
-PLAY=hw:$card,$(pcmdev FE_ST_VOICE_PCM_P || true)
-CAP=hw:$card,$(pcmdev FE_ST_DUMP || true)
-[ "$PLAY" = "hw:$card," ] && PLAY=hw:$card,53
-[ "$CAP" = "hw:$card," ] && CAP=hw:$card,16
+PLAY_DEV=$(pcmdev FE_ST_VOICE_PCM_P || true); PLAY_DEV=${PLAY_DEV:-53}
+CAP_DEV=$(pcmdev FE_ST_DUMP || true); CAP_DEV=${CAP_DEV:-16}
+PLAY=hw:$card,$PLAY_DEV
+CAP=hw:$card,$CAP_DEV
+# the device nodes behind them, to find who holds one that is busy
+PLAY_NODE=/dev/snd/pcmC${card}D${PLAY_DEV}p
+CAP_NODE=/dev/snd/pcmC${card}D${CAP_DEV}c
 
 # A short wait. OpenWrt's busybox sleep takes whole seconds only ("sleep 0.1" is an error there and returns at
 # once, which turned every wait loop below into a busy loop): fractions where sleep takes them, else usleep, else
@@ -117,6 +120,105 @@ mask() {
     }'
 }
 log() { echo "mu300-voice: $*" | mask; }
+
+# --- the programs this run starts, and nothing left behind ----------------------------------------------------
+# A melody or an echo is an aplay/arecord holding a voice PCM. Run in the foreground, a TERM to this script (or its
+# ^C) ended the script and left the aplay running on its own: the next "mu300-voice call" then failed with "audio
+# open error: Resource busy", for the melody and the echo (docs/FINDINGS.md 188). And a shell runs its trap only
+# after the foreground command returns, so a trap alone would not have helped. Every such program is started in
+# the background and waited for (child), which a signal interrupts at once; the trap then ends each one and waits
+# until it has gone, so its PCM is closed before the script exits.
+# Ending one is only a close of the PCM (drop and free), never a PREPARE + START on a stream that stopped: on 5.4 a
+# voice stream restarted after an xrun panics the kernel (docs/FINDINGS.md 24e), and nothing here restarts one.
+CHILDREN=
+SCENE_STARTING=
+alive() {   # alive PID: running, not a zombie that is only waiting to be reaped
+    kill -0 "$1" 2>/dev/null || return 1
+    [ -r "/proc/$1/stat" ] || return 0
+    case $(sed 's/^.*) //' "/proc/$1/stat" 2>/dev/null | cut -c1) in Z|X|'') return 1 ;; esac
+    return 0
+}
+reap() {   # reap PID: TERM, up to 3 s to close its PCM and go, then KILL
+    kill "$1" 2>/dev/null
+    _n=0
+    while alive "$1" && [ "$_n" -lt 30 ]; do nap 0.1; _n=$((_n + 1)); done
+    alive "$1" && kill -9 "$1" 2>/dev/null
+    return 0
+}
+child() {   # child COMMAND... - run it as a child this script ends when it is ended
+    "$@" &
+    _c=$!
+    CHILDREN="$CHILDREN $_c"
+    wait "$_c"; _rc=$?
+    CHILDREN=$(echo "$CHILDREN" | sed "s/ $_c\$//; s/ $_c / /")
+    return "$_rc"
+}
+cleanup() {
+    for _p in $CHILDREN; do reap "$_p"; wait "$_p" 2>/dev/null; done
+    CHILDREN=
+    # a call scene this run was still starting: stopped, its controls put back. One that started is the call's
+    # and stays (audio stop, hangup), as it always has.
+    if [ -n "$SCENE_STARTING" ]; then SCENE_STARTING=; audio_stop >/dev/null 2>&1; fi
+}
+on_signal() { trap - EXIT; cleanup; exit "$1"; }
+guard_children() {
+    trap cleanup EXIT
+    trap 'on_signal 129' HUP
+    trap 'on_signal 130' INT
+    trap 'on_signal 143' TERM
+}
+
+# Who holds a PCM node: pids with an open descriptor on it, from /proc (one ls, no fuser on OpenWrt's busybox).
+pcm_holders() {
+    ls -l /proc/[0-9]*/fd 2>/dev/null | awk -v n="$1" '
+        /^\/proc\/[0-9]+\/fd:$/ { split($0, a, "/"); pid = a[3]; next }
+        $NF == n && pid != "" { print pid }' | sort -u
+}
+# A PCM that is busy: say who has it. An aplay/arecord playing or recording one of this script's own files is left
+# over from a mu300-voice that was killed before this one cleaned up after itself, and is ended; anything else is
+# only reported. 0 when something was ended (worth one more try).
+pcm_busy() {   # pcm_busy NODE
+    _freed=1
+    for _p in $(pcm_holders "$1"); do
+        [ "$_p" = "$$" ] && continue
+        _comm=$(cat "/proc/$_p/comm" 2>/dev/null)
+        _cmd=$(tr '\0' ' ' < "/proc/$_p/cmdline" 2>/dev/null)
+        case "$_comm:$_cmd" in
+            aplay:*"$TMP/"*|arecord:*"$TMP/"*)
+                echo "mu300-voice: $1 is held by pid $_p ($_comm), left over from an earlier mu300-voice: ending it" >&2
+                reap "$_p"; _freed=0 ;;
+            *)
+                echo "mu300-voice: $1 is held by pid $_p (${_comm:-?}); stop it, or run mu300-voice audio stop" >&2 ;;
+        esac
+    done
+    return "$_freed"
+}
+# pcm_run ERRFILE NODE COMMAND... - an aplay/arecord on a voice PCM, as a child, its errors in ERRFILE. One more
+# try, and only for an open that failed (a fresh open: hw_params, prepare and start of a new stream, never a restart
+# of a stopped one):
+#   * busy, and pcm_busy ended a leftover of ours;
+#   * EIO: the stream's STARTUP failed in the driver, which read DSP replies nobody had waited for as the answer to
+#     it ("Haven't got right cmd(0x4), got cmd(0x9)"): every play into FE_ST_VOICE_PCM_P leaves two, and five fail
+#     the next FE_ST_DUMP open. Each try reads five, so the next open works. The driver now drops such replies
+#     itself (audio-sipc, docs/FINDINGS.md 188); this covers a kernel without that.
+pcm_run() {
+    _err=$1; _node=$2; shift 2
+    _try=0
+    while :; do
+        child "$@" 2>"$_err" && return 0
+        _rc=$?
+        [ "$_try" = 0 ] || return "$_rc"
+        _try=1
+        if grep -q 'audio open error:.*[Bb]usy' "$_err" 2>/dev/null; then
+            pcm_busy "$_node" || return "$_rc"
+        elif grep -q 'audio open error: Input/output error' "$_err" 2>/dev/null; then
+            echo "mu300-voice: $_node: the DSP refused the open (EIO), trying once more" >&2
+        else
+            return "$_rc"
+        fi
+        nap 0.5
+    done
+}
 
 # --- mixer, with an undo log ---------------------------------------------------------------------------------
 # Every control the call touches is read before its first write and put back by "audio stop", so a call leaves
@@ -261,14 +363,16 @@ audio_start() {   # audio_start OUTPUT
     routes "$out"
     mute_dl
     # both directions of the hostless scene, prepared together and then started (pcmhost does that order)
+    SCENE_STARTING=1
     pcmhost "/dev/snd/pcmC${card}D${VOICE}p,/dev/snd/pcmC${card}D${VOICE}c" "$RATE" 1 0 > "$TMP/scene.log" 2>&1 &
     echo $! > "$SCENE_PID"
     n=0
     while ! grep -q '^started' "$TMP/scene.log" 2>/dev/null; do
-        scene_running || { log "the call scene did not start: $(tail -1 "$TMP/scene.log")" >&2; audio_stop; return 1; }
-        n=$((n + 1)); [ "$n" -gt 50 ] && { log "the call scene did not start in 5 s" >&2; audio_stop; return 1; }
+        scene_running || { log "the call scene did not start: $(tail -1 "$TMP/scene.log")" >&2; SCENE_STARTING=; audio_stop; return 1; }
+        n=$((n + 1)); [ "$n" -gt 50 ] && { log "the call scene did not start in 5 s" >&2; SCENE_STARTING=; audio_stop; return 1; }
         nap 0.1
     done
+    SCENE_STARTING=
     # the vendor applies the parameters again once both directions run - and the Bluetooth rate again too, which
     # only takes after the scene is RUNNING (kanoqwq/e5-linux FINDINGS 59: set before, the BT side ran 3x slow)
     profiles "$out"
@@ -417,13 +521,14 @@ voice_play() {   # voice_play FILE -> play it into the call, trying each framing
     for p in $PERIODS; do
         ps=${p%,*}; bs=${p#*,}
         if [ "$ps" = 0 ]; then
-            err=$(aplay -D "$PLAY" -f S16_LE -r "$PLAY_RATE" -c 1 -q "$f" 2>&1)
+            pcm_run "$TMP/play.err" "$PLAY_NODE" aplay -D "$PLAY" -f S16_LE -r "$PLAY_RATE" -c 1 -q "$f"
         else
             # scale the framing if the rate is not the 8k these numbers were written for
             ps=$((ps * PLAY_RATE / 8000)); bs=$((bs * PLAY_RATE / 8000))
-            err=$(aplay -D "$PLAY" -f S16_LE -r "$PLAY_RATE" -c 1 -q \
-                  --period-size="$ps" --buffer-size="$bs" "$f" 2>&1)
+            pcm_run "$TMP/play.err" "$PLAY_NODE" aplay -D "$PLAY" -f S16_LE -r "$PLAY_RATE" -c 1 -q \
+                  --period-size="$ps" --buffer-size="$bs" "$f"
         fi
+        err=$(cat "$TMP/play.err" 2>/dev/null)
         [ -z "$err" ] && { echo "$ps,$bs" > "$TMP/framing"; return 0; }
         last=$err
     done
@@ -461,11 +566,11 @@ echo_loop() {
     uplink_conf
     while :; do
         # the downlink from the dump (48 kHz, two equal channels), converted by plug to the uplink's 16 kHz mono
-        arecord -D "$CAP" -f S16_LE -r 48000 -c 2 -d "$secs" -q \
-                --period-size=960 --buffer-size=3840 "$TMP/echo.raw" 2>"$TMP/cap.err" || {
+        pcm_run "$TMP/cap.err" "$CAP_NODE" arecord -D "$CAP" -f S16_LE -r 48000 -c 2 -d "$secs" -q \
+                --period-size=960 --buffer-size=3840 "$TMP/echo.raw" || {
             echo "mu300-voice: capture failed: $(head -1 "$TMP/cap.err")" >&2; return 1; }
-        ALSA_CONFIG_PATH=$TMP/uplink.conf aplay -D mu300_uplink -f S16_LE -r 48000 -c 2 -q \
-                --period-time=20000 --buffer-time=120000 "$TMP/echo.raw" 2>"$TMP/play.err" || {
+        pcm_run "$TMP/play.err" "$PLAY_NODE" env ALSA_CONFIG_PATH="$TMP/uplink.conf" aplay -D mu300_uplink \
+                -f S16_LE -r 48000 -c 2 -q --period-time=20000 --buffer-time=120000 "$TMP/echo.raw" || {
             echo "mu300-voice: playback failed: $(head -1 "$TMP/play.err")" >&2; return 1; }
     done
 }
@@ -479,6 +584,10 @@ demo() {
     echo "now echoing you back every ${1:-5}s"
     echo_loop "${1:-5}"
 }
+
+case "${1:-status}" in
+answer|call|demo|tone|echo|audio) guard_children ;;
+esac
 
 case "${1:-status}" in
 audio)
