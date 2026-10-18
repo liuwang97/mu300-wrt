@@ -359,7 +359,8 @@ class Dtmf(unittest.TestCase):
         self.assertEqual(sent, ['AT+VTS="1"', 'AT+VTS="A"', 'AT+VTS="*"', 'AT+VTS="#"', 'AT+VTS="9"', 'AT+VTS="D"'])
 
     def test_nothing_sent_for_a_bad_key_without_a_call_or_without_the_scene(self):
-        for keys in ("'12x'", "''", "'1 2'", "'E'"):
+        for keys in ("'12x'", "''", "'1 2'", "'E'", "'e'", "'1\"'", "'1;AT+CHUP'", "'$(id)'", "'1\n2'", "'\uff11'",
+                     "'1\\'", "'1,2'"):
             with self.subTest(keys=keys):
                 rc, sent = self.run_dtmf(keys)
                 self.assertEqual((rc, sent), (2, []))
