@@ -126,6 +126,74 @@ class Children(unittest.TestCase):
         self.assertNotIn('Input/output error\'"', body.replace("'audio open error: Input/output error'", ''))
 
 
+class EchoEndsWithTheCall(unittest.TestCase):
+    """The owner's 7.2 test call (2026-10-18): after the hangup `mu300-voice call` kept echoing, for ever."""
+
+    def run_loop(self, scene_slices, call_slices=None):
+        # scene_running/in_call answer from a counter: they turn false after that many slices
+        with tempfile.TemporaryDirectory() as d:
+            script = ('TMP=%s\nPLAY=hw:1,53\nPLAY_RATE=16000\nCAP=hw:1,16\n' % d +
+                      'n=0\nscene_running() { [ "$n" -lt %d ]; }\n' % scene_slices +
+                      'in_call() { [ "$n" -lt %d ]; }\n' % (call_slices if call_slices is not None else 99) +
+                      'pcm_run() { n=$((n + 1)); echo "$*" >> "$TMP/runs"; }\n' +
+                      'nap() { sleep 30 </dev/null >/dev/null 2>&1; }\nCHILDREN=\n' +   # the watcher sleeps through these
+                      func(VOICE.read_text(), 'uplink_conf') + func(VOICE.read_text(), 'echo_loop') +
+                      ('ECHO_UNTIL_HANGUP=1 ' if call_slices is not None else '') +
+                      'echo_loop 1\necho "rc=$?"\nkill $CHILDREN 2>/dev/null\n')
+            r = subprocess.run(['sh', '-c', script], capture_output=True, text=True, timeout=10)
+            runs = (Path(d) / 'runs').read_text().count('arecord') if (Path(d) / 'runs').exists() else 0
+            return r, runs
+
+    def test_a_stopped_scene_ends_it(self):
+        r, runs = self.run_loop(scene_slices=4)
+        self.assertIn('rc=0', r.stdout)
+        self.assertIn('the call scene stopped', r.stderr)
+        self.assertEqual(runs, 2)   # each slice is one capture and one playback
+
+    def test_a_call_that_ended_ends_it(self):
+        r, runs = self.run_loop(scene_slices=99, call_slices=2)
+        self.assertIn('rc=0', r.stdout)
+        self.assertIn('the call ended', r.stderr)
+        self.assertEqual(runs, 1)
+
+    def test_without_a_call_of_its_own_only_the_scene_counts(self):
+        # `mu300-voice echo` on its own does not ask the modem: it runs as long as the scene does
+        r, runs = self.run_loop(scene_slices=6)
+        self.assertEqual(runs, 3)
+
+    def test_a_blocked_player_is_ended_by_the_watcher(self):
+        # the F50-C case: the player blocks once the call is gone, so the loop never gets back to its own check
+        with tempfile.TemporaryDirectory() as d:
+            scene = Path(d) / 'scene'
+            scene.touch()
+            pidf = Path(d) / 'player.pid'
+            script = ('TMP=%s\nCHILDREN=\nSCENE_STARTING=\nPLAY=hw:1,53\nPLAY_RATE=16000\nCAP=hw:1,16\n' % d +
+                      voice_lib(*CHILD_FUNCS) + func(VOICE.read_text(), 'uplink_conf') +
+                      func(VOICE.read_text(), 'echo_loop') +
+                      'scene_running() { [ -f "$TMP/scene" ]; }\n'
+                      'pcm_run() { child sh -c \'echo $$ > "$0"; exec sleep 60\' "%s"; }\n' % pidf +
+                      'guard_children\necho_loop 1\n')
+            p = subprocess.Popen(['sh', '-c', script], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            for _ in range(50):
+                if pidf.exists() and pidf.read_text().strip():
+                    break
+                time.sleep(0.1)
+            player = int(pidf.read_text())
+            scene.unlink()
+            out, err = p.communicate(timeout=15)
+            self.assertEqual(p.returncode, 0, err)
+            self.assertIn('the call is over', err)
+            for _ in range(30):
+                if gone(player):
+                    break
+                time.sleep(0.1)
+            self.assertTrue(gone(player))
+
+    def test_call_and_answer_bind_it_to_the_call(self):
+        src = VOICE.read_text()
+        self.assertEqual(src.count('ECHO_UNTIL_HANGUP=1 demo'), 2)
+
+
 class Retry(unittest.TestCase):
     def run_pcm_run(self, errors, busy_frees=False):
         """errors: what each try of the fake player prints (empty: success)."""
