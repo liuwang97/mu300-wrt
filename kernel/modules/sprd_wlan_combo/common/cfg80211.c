@@ -648,7 +648,7 @@ int sprd_cfg80211_change_beacon(struct wiphy *wiphy, struct net_device *ndev,
 {
 	struct sprd_vif *vif = netdev_priv(ndev);
 
-	netdev_info(ndev, "%s\n", __func__);
+	netdev_dbg(ndev, "%s\n", __func__);
 
 	return cfg80211_set_beacon_ies(vif, &info->beacon);
 }

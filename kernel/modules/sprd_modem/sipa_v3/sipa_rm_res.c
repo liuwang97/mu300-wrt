@@ -128,9 +128,9 @@ int sipa_rm_resource_producer_request_work(struct sipa_rm_res_prod *prod)
 {
 	int driver_result;
 
-	pr_info("calling driver CB\n");
+	pr_debug("calling driver CB\n");
 	driver_result = prod->request_resource(prod->user_data);
-	pr_info("driver CB returned with %d\n", driver_result);
+	pr_debug("driver CB returned with %d\n", driver_result);
 
 	return driver_result;
 }
@@ -261,12 +261,12 @@ int sipa_rm_resource_producer_request(struct sipa_rm_res_prod *producer,
 
 bail:
 	if (prev_state != producer->resource.state)
-		pr_info("%s state changed %d->%d\n",
+		pr_debug("%s state changed %d->%d\n",
 			sipa_rm_res_str(producer->resource.name),
 			prev_state,
 			producer->resource.state);
 
-	pr_info("EXIT with %d\n", result);
+	pr_debug("EXIT with %d\n", result);
 
 	return result;
 }
@@ -312,7 +312,7 @@ int sipa_rm_resource_producer_release(struct sipa_rm_res_prod *prod,
 
 bail:
 	if (save_state != prod->resource.state)
-		pr_info("%s state changed %d->%d\n",
+		pr_debug("%s state changed %d->%d\n",
 			sipa_rm_res_str(prod->resource.name),
 			save_state,
 			prod->resource.state);
@@ -813,7 +813,7 @@ int sipa_rm_resource_delete_dependency(struct sipa_rm_resource *consumer,
 				sipa_rm_resource_consumer_enter_granted(cons);
 
 			if (prev_state != consumer->state)
-				pr_info("%s state changed %d->%d\n",
+				pr_debug("%s state changed %d->%d\n",
 					sipa_rm_res_str(consumer->name),
 					prev_state,
 					consumer->state);
@@ -871,7 +871,7 @@ int sipa_rm_resource_consumer_request(struct sipa_rm_res_cons *cons)
 	}
 bail:
 	if (state != cons->resource.state)
-		pr_info("%s state changed %d->%d\n",
+		pr_debug("%s state changed %d->%d\n",
 			sipa_rm_res_str(cons->resource.name),
 			state,
 			cons->resource.state);
@@ -917,7 +917,7 @@ int sipa_rm_resource_consumer_release(struct sipa_rm_res_cons *cons)
 
 bail:
 	if (state != cons->resource.state)
-		pr_info("%s state changed %d->%d\n",
+		pr_debug("%s state changed %d->%d\n",
 			sipa_rm_res_str(cons->resource.name),
 			state,
 			cons->resource.state);
@@ -967,7 +967,7 @@ static void sipa_rm_resource_consumer_handle_cb(struct sipa_rm_res_cons *cons,
 	}
 
 	if (prev_state != cons->resource.state)
-		pr_info("%s state changed %d->%d\n",
+		pr_debug("%s state changed %d->%d\n",
 			sipa_rm_res_str(cons->resource.name),
 			prev_state,
 			cons->resource.state);
@@ -1040,7 +1040,7 @@ cons:
 	return;
 bail:
 	if (save_state != prod->resource.state)
-		pr_info("%s state changed %d->%d\n",
+		pr_debug("%s state changed %d->%d\n",
 			sipa_rm_res_str(prod->resource.name),
 			save_state,
 			prod->resource.state);

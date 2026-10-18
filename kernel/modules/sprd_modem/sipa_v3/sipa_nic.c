@@ -651,6 +651,9 @@ int sipa_nic_trigger_flow_ctrl_work(enum sipa_nic_id nic_id, int err)
 		ipa->sender->free_notify_net = true;
 		schedule_work(&ipa->flow_ctrl_work);
 		break;
+	case -EINPROGRESS:
+		/* MU300: the IPA is resuming; its SIPA_LEAVE_FLOWCTRL wakes the queue, nothing to do here */
+		break;
 	default:
 		dev_warn(ipa->dev, "don't have this flow ctrl err type\n");
 		break;

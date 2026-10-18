@@ -402,7 +402,7 @@ static int sipa_resume_work(struct device *dev)
 	// wake_up_process(ipa->set_rps_thread);
 	// hrtimer_start(&ipa->daemon_timer, ms_to_ktime(0),
 		     // HRTIMER_MODE_REL);
-	pr_info("sipa resume hrtimer start\n");
+	pr_debug("sipa resume hrtimer start\n");
 
 	sipa_rm_notify_completion(SIPA_RM_EVT_GRANTED,
 				  SIPA_RM_RES_PROD_IPA);
@@ -593,7 +593,7 @@ static int sipa_prepare_suspend(struct device *dev)
 		// sipa_single_little_core(SIPA_USER_RECOVERY);
 		sipa_set_enabled(false);
 		ipa->suspend_stage |= SIPA_EB_SUSPEND;
-		dev_info(dev, "sipa ready to suspend and change to single\n");
+		dev_dbg(dev, "sipa ready to suspend and change to single\n");
 	}
 
 	if (!(ipa->suspend_stage & SIPA_FORCE_SUSPEND)) {
@@ -603,7 +603,7 @@ static int sipa_prepare_suspend(struct device *dev)
 
 	ipa->suspend_stage |= SIPA_ACTION_SUSPEND;
 
-	dev_info(dev, "sipa prepare suspend finished\n");
+	dev_dbg(dev, "sipa prepare suspend finished\n");
 
 	return 0;
 }

@@ -14,6 +14,7 @@ from helpers import TOP
 SRC = TOP / 'upstream/modules/sprd_modem/sipa_v3/sipa_eth.c'
 
 HARNESS = r'''
+#include <errno.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -39,6 +40,7 @@ enum { CHECKSUM_NONE = 0, CHECKSUM_PARTIAL = 3 };
 #define pr_err(...) ((void)0)
 #define pr_err_ratelimited(...) ((void)0)
 #define pr_info(...) ((void)0)
+#define pr_debug(...) ((void)0)
 
 struct sk_buff { unsigned char *head, *data; unsigned int len; int mac_header, network_header, transport_header;
                  int ip_summed; __be16 protocol; int freed; };

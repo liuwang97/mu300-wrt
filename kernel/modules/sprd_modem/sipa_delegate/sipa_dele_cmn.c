@@ -63,7 +63,7 @@ static int conn_thread(void *data)
 			continue;
 		}
 
-		pr_info("smsg_recv, smsg_cnt=%d, dst=%d, chan=%d, type=%d, flag=0x%x, value=0x%08x\n",
+		pr_debug("smsg_recv, smsg_cnt=%d, dst=%d, chan=%d, type=%d, flag=0x%x, value=0x%08x\n",
 			delegator->smsg_cnt++,
 			delegator->dst, delegator->chan,
 			mrecv.type, mrecv.flag, mrecv.value);
@@ -122,7 +122,7 @@ static void sipa_dele_wq_handler(struct work_struct *work)
 			     struct sipa_dele_smsg_work_type,
 			     work);
 
-	pr_info("smsg_send, dst=%d chan=%d type=%d flag=%d\n",
+	pr_debug("smsg_send, dst=%d chan=%d type=%d flag=%d\n",
 		smsg_work->delegator->dst,
 		smsg_work->msg.channel,
 		smsg_work->msg.type,

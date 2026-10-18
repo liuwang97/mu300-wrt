@@ -36,7 +36,7 @@ static void cp_dele_on_commad(void *priv, u16 flag, u32 data)
 	struct sipa_delegator *delegator = priv;
 	int ret;
 
-	pr_info("prod_id:%d, on_cmd, flag = %d\n", delegator->prod_id, flag);
+	pr_debug("prod_id:%d, on_cmd, flag = %d\n", delegator->prod_id, flag);
 
 	switch (flag) {
 	case SMSG_FLG_DELE_ENABLE:
@@ -63,7 +63,7 @@ static void cp_dele_on_commad(void *priv, u16 flag, u32 data)
 		sipa_dele_start_done_work(delegator,
 					  SMSG_FLG_DELE_ENABLE,
 					  SMSG_VAL_DELE_REQ_SUCCESS);
-		pr_info("sipa_dele get pd success ret = %d\n", ret);
+		pr_debug("sipa_dele get pd success ret = %d\n", ret);
 
 		break;
 	case SMSG_FLG_DELE_DISABLE:
@@ -78,7 +78,7 @@ static void cp_dele_on_commad(void *priv, u16 flag, u32 data)
 		break;
 	}
 
-	pr_info("sipa pd_eb_flag = %d, pd_get_flag = %d\n",
+	pr_debug("sipa pd_eb_flag = %d, pd_get_flag = %d\n",
 		delegator->pd_eb_flag, delegator->pd_get_flag);
 
 	/* do default operations */
