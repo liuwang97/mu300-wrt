@@ -9,6 +9,8 @@
 #   mu300-voice demo                  on a call that is already up: play the melody, then echo
 #   mu300-voice tone [SECONDS]        play the melody into the call
 #   mu300-voice echo [SECONDS]        record that many seconds and play them back, for ever
+#   mu300-voice dtmf KEYS             send keys (0-9 * # A-D) on the call that is up, as the network's DTMF; the
+#                                     call's audio has to be running (audio start)
 #   mu300-voice status                what a call and the audio path are doing
 #   mu300-voice hangup
 #
@@ -24,7 +26,7 @@
 #          capture   hw:<card>,FE_ST_DUMP          what they said: the VBC's dump of DAC1 (switched on here), 48 kHz
 #                                                  on two equal channels. FE_ST_VOICE_C, the DSP's own downlink tap,
 #                                                  gets only every other 20 ms frame on this board (FINDINGS 24e)
-#        which is what tone, echo and a SIP bridge use.
+#        which is what tone, echo and any program that bridges the call use.
 #
 # How a call is started is from the Rongyue E5's working port of the same DSP (kanoqwq/e5-linux@402fde1,
 # @8e9b8a4, @2c726fc - its downlink was heard on the receiver and speaker): the call scene is the hostless
@@ -577,6 +579,31 @@ echo_loop() {
 
 in_call() { at 'AT+CLCC' 8 | grep -q '^+CLCC:'; }
 
+# The call scene, whoever started it (audio start here, or another program that runs it itself): the hostless
+# FE_ST_VOICE is running in either direction.
+voice_running() {
+    grep -qs RUNNING "/proc/asound/card$card/pcm${VOICE}c/sub0/status" "/proc/asound/card$card/pcm${VOICE}p/sub0/status"
+}
+
+# DTMF goes out as the network's: the modem sends each key as an RTP telephone event (RFC 4733), one AT+VTS per key.
+# But only while the audio DSP is in the call: with the call scene down the modem answers every AT+VTS with OK and
+# the far end gets nothing; with it running, all twelve keys reached it (docs/FINDINGS.md 24d). mu300-at prints the
+# modem's ERROR and still exits 0: the OK is the answer. The keys are checked against the list one by one (no
+# ranges, which a locale can widen) before anything reaches the modem, so nothing else ends up in the AT command.
+# This neither starts nor stops the scene and runs no child of its own: nothing is left behind when it is ended.
+dtmf() {   # dtmf KEYS
+    keys=$1
+    case $keys in ''|*[!0123456789ABCDabcd*#]*) echo "usage: mu300-voice dtmf KEYS (0-9 * # A-D)" >&2; return 2 ;; esac
+    in_call || { echo "mu300-voice: no call to send DTMF on" >&2; return 1; }
+    voice_running || {
+        echo "mu300-voice: the call's audio is not running (mu300-voice audio start); without it the keys are not sent" >&2
+        return 1; }
+    while [ -n "$keys" ]; do
+        rest=${keys#?}; key=$(printf '%s' "${keys%"$rest"}" | tr abcd ABCD); keys=$rest
+        at "AT+VTS=\"$key\"" 5 | grep -q '^OK' || { echo "mu300-voice: the modem did not send DTMF $key" >&2; return 1; }
+    done
+}
+
 demo() {
     scene_running || audio_start dsp
     echo "playing the melody..."
@@ -636,6 +663,8 @@ demo)   demo "${2:-5}" ;;
 tone)   scene_running || audio_start dsp; tone "${2:-1}" ;;
 echo)   scene_running || audio_start dsp; echo_loop "${2:-5}" ;;
 hangup) at 'AT+CHUP' 10; audio_stop ;;
+dtmf)   [ "$#" -le 2 ] || { echo "usage: mu300-voice dtmf KEYS (0-9 * # A-D)" >&2; exit 2; }
+        dtmf "${2:-}" ;;
 
 status)
     echo "call:     $(at 'AT+CLCC' 8 | tr '\n' ' ' | mask)"
@@ -646,6 +675,6 @@ status)
     mu300-audio-dsp status 2>/dev/null | sed -n 's/^dsp:/dsp:     /p' ;;
 
 *)
-    sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
     exit 2 ;;
 esac
