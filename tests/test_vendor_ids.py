@@ -6,7 +6,9 @@ mu300vnd (uid 1000 only where there is no account at all), nothing is writable b
 group's, the daemons start as mu300vnd, and the images (and updated systems) have the account.
 """
 import fnmatch
+import os
 import re
+import shutil
 import subprocess
 import sys
 
@@ -209,11 +211,18 @@ class Generated(ShellTest):
             self.assertEqual(self.ids(shell, 'mu300vndx:x:5:5::/:/bin/false\n', 'mu300vndx:x:5:\n'), '1000 1000 0')
 
 
+# util-linux's setpriv (its --help names --reuid), and busybox's applet, which has no --reuid (OpenWrt, issue #314)
+UTIL_LINUX_SETPRIV = ('case $1 in --help) printf " --reuid <uid|user>  set real and effective uid\\n"; exit 0 ;; esac\n'
+                      'echo "setpriv $*" >> "$STUBLOG/calls"')
+BUSYBOX_SETPRIV = ('case $1 in --help) printf "Usage: setpriv [OPTIONS] PROG ARGS\\n\\t--nnp\\n\\t--inh-caps\\n" >&2; '
+                   'exit 1 ;; esac\necho "setpriv: unrecognized option $1" >&2; exit 1')
+
+
 class DaemonsStartAsTheAccount(ShellTest):
     def setUp(self):
         super().setUp()
         self.stub('mountpoint', 'exit 0')
-        self.stub('setpriv', 'echo "setpriv $*" >> "$STUBLOG/calls"')
+        self.stub('setpriv', UTIL_LINUX_SETPRIV)
         self.stub('chroot', 'echo "chroot $*" >> "$STUBLOG/calls"')
         self.etc = self.tmp / 'etc'
         self.etc.mkdir()
@@ -261,13 +270,14 @@ class Account(ShellTest):
 
     def test_made_where_it_is_missing(self):
         self.stub('useradd', 'echo "useradd $*" >> "$STUBLOG/calls"')
+        self.stub('setpriv', UTIL_LINUX_SETPRIV)
         etc = self.tmp / 'etc'
         etc.mkdir()
         calls = self.tmp / 'calls'
         for shell in self.each_shell():
             calls.unlink(missing_ok=True)
             (etc / 'passwd').write_text('ubuntu:x:1000:1000::/home/ubuntu:/bin/bash\n')
-            r = self.sh(shell, 'set -e\n' + self.block(), MU300_ETC=etc)
+            r = self.sh(shell, 'set -e\n' + self.block(), MU300_ETC=etc, MU300_ANDROID_RUN=BIN / 'android-run')
             self.assertEqual(r.returncode, 0, r.stderr)
             call = calls.read_text()
             for opt in ('--system', '--user-group', '--no-create-home', '--home-dir /nonexistent', 'mu300vnd\n'):
@@ -276,16 +286,19 @@ class Account(ShellTest):
             # there already: nothing
             calls.unlink()
             (etc / 'passwd').write_text('mu300vnd:x:991:988::/nonexistent:/usr/sbin/nologin\n')
-            self.assertEqual(self.sh(shell, 'set -e\n' + self.block(), MU300_ETC=etc).returncode, 0)
+            self.assertEqual(self.sh(shell, 'set -e\n' + self.block(), MU300_ETC=etc,
+                                     MU300_ANDROID_RUN=BIN / 'android-run').returncode, 0)
             self.assertFalse(calls.exists())
 
     def test_a_failed_useradd_does_not_stop_the_modem(self):
         self.stub('useradd', 'exit 1')
+        self.stub('setpriv', UTIL_LINUX_SETPRIV)
         etc = self.tmp / 'etc'
         etc.mkdir()
         (etc / 'passwd').write_text('ubuntu:x:1000:1000::/home/ubuntu:/bin/bash\n')
         for shell in self.each_shell():
-            r = self.sh(shell, 'set -e\n' + self.block() + 'echo went-on', MU300_ETC=etc)
+            r = self.sh(shell, 'set -e\n' + self.block() + 'echo went-on', MU300_ETC=etc,
+                        MU300_ANDROID_RUN=BIN / 'android-run')
             self.assertEqual(r.stdout.strip(), 'went-on', (shell, r.stderr))
             self.assertIn('uid 1000', r.stderr)
 
@@ -327,3 +340,107 @@ class Account(ShellTest):
             self.assertIn('mu300vnd:', (new / 'etc' / 'shadow').read_text())
             for f in ('passwd', 'group', 'shadow', 'gshadow'):
                 (new / 'etc' / f).write_text((self.tmp / f).read_text())
+
+
+class OneDecision(ShellTest):
+    """Issue #314: on OpenWrt with shadow-useradd installed, android-vendor-start made mu300vnd and ueventd-perms.sh
+    gave it the modem's nodes (uid 999), but android-run had no setpriv that can switch users (OpenWrt has none;
+    busybox's applet has no --reuid), so it ran chroot as root and the daemons switched to uid 1000 themselves:
+    EACCES on /dev/modem, the modem never started. The account the nodes go to and the uid the daemons run as now
+    come from one decision, android-run's, for every combination of account, useradd and setpriv."""
+
+    SETPRIVS = {'util-linux': UTIL_LINUX_SETPRIV, 'busybox': BUSYBOX_SETPRIV, 'none': None}
+
+    def setUp(self):
+        super().setUp()
+        # a PATH with only what the scripts need here, so a setpriv or useradd of this machine never answers
+        self.path = self.tmp / 'path'
+        self.path.mkdir()
+        for tool in ('grep', 'sed', 'cat', 'seq', 'tr', 'sh', 'echo', 'printf'):
+            w = shutil.which(tool)
+            if w:
+                (self.path / tool).symlink_to(w)
+        self.stub('mountpoint', 'exit 0')
+        self.stub('chroot', 'echo "chroot $*" >> "$STUBLOG/calls"')
+        self.etc = self.tmp / 'etc'
+        self.etc.mkdir()
+        text = (BIN / 'android-vendor-start').read_text()
+        self.block = re.search(r'# --- account begin\n(.*?)# --- account end', text, re.S).group(1)
+        perms = OUTPUTS[1].read_text()
+        self.header = perms[:perms.index('\nfor n in ')]
+
+    def setup(self, account, useradd, setpriv):
+        for f in self.stubs.iterdir():
+            if f.name in ('setpriv', 'useradd'):
+                f.unlink()
+        if self.SETPRIVS[setpriv]:
+            self.stub('setpriv', self.SETPRIVS[setpriv])
+        if useradd:
+            # what shadow-useradd does: the account at 999, its group at 999
+            self.stub('useradd', 'echo "mu300vnd:x:999:999::/nonexistent:/bin/false" >> "$ETC/passwd"; '
+                                 'echo "mu300vnd:x:999:" >> "$ETC/group"')
+        pw = 'root:x:0:0:root:/root:/bin/ash\nnetwork:x:101:101::/var:/bin/false\n'
+        gr = 'root:x:0:\nnetwork:x:101:\n'
+        if account:
+            pw += 'mu300vnd:x:999:999::/nonexistent:/bin/false\n'
+            gr += 'mu300vnd:x:999:\n'
+        (self.etc / 'passwd').write_text(pw)
+        (self.etc / 'group').write_text(gr)
+
+    def run_env(self):
+        return dict(MU300_ETC=self.etc, ETC=self.etc, MU300_ANDROID_RUN=BIN / 'android-run',
+                    MU300_ANDROID=self.tmp / 'a', PATH=f'{self.stubs}{os.pathsep}{self.path}')
+
+    def node_owner(self, shell):
+        """the uid:gid ueventd-perms.sh gives the modem's nodes after android-vendor-start's account block"""
+        r = self.sh(shell, 'set -e\n' + self.block + self.header + '\necho "$V:$VG"', **self.run_env())
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return r.stdout.strip().splitlines()[-1]
+
+    def daemon_uid(self, shell):
+        """the uid modem_control ends up as: the account setpriv starts it as, else 1000 (its own setuid)"""
+        calls = self.tmp / 'calls'
+        calls.unlink(missing_ok=True)
+        r = self.script(shell, BIN / 'android-run', 'modem_control', **self.run_env())
+        self.assertEqual(r.returncode, 0, r.stderr)
+        call = calls.read_text().strip()
+        if call.startswith('setpriv '):
+            self.assertIn('--reuid=mu300vnd', call)
+            uid = next(l.split(':')[2] for l in (self.etc / 'passwd').read_text().splitlines()
+                       if l.startswith('mu300vnd:'))
+            return uid
+        self.assertTrue(call.startswith('chroot '), call)
+        return '1000'
+
+    def test_nodes_and_daemons_agree(self):
+        for shell in self.each_shell():
+            for account in (False, True):
+                for useradd in (False, True):
+                    for setpriv in self.SETPRIVS:
+                        with self.subTest(account=account, useradd=useradd, setpriv=setpriv):
+                            self.setup(account, useradd, setpriv)
+                            owner = self.node_owner(shell)
+                            uid = self.daemon_uid(shell)
+                            self.assertEqual(owner.split(':')[0], uid)
+                            # the vendor account only where setpriv can switch to it, uid 1000 everywhere else
+                            vendor = setpriv == 'util-linux' and (account or useradd)
+                            self.assertEqual(owner, '999:999' if vendor else '1000:1000')
+                            # no account made that nothing would run as (OpenWrt with shadow-useradd)
+                            if not account and setpriv != 'util-linux':
+                                self.assertNotIn('mu300vnd', (self.etc / 'passwd').read_text())
+
+    def test_the_reporters_device(self):
+        # OpenWrt 25.12.5 with shadow-useradd, and mu300vnd already made by an earlier boot: no setpriv
+        self.setup(account=True, useradd=True, setpriv='none')
+        for shell in self.each_shell():
+            r = self.script(shell, BIN / 'android-run', '--user', **self.run_env())
+            self.assertEqual((r.returncode, r.stdout), (0, ''))
+            self.assertEqual(self.node_owner(shell), '1000:1000')
+            self.assertEqual(self.daemon_uid(shell), '1000')
+
+    def test_without_the_variable_the_script_is_as_before(self):
+        # ueventd-perms.sh run by itself (the initramfs' copy) still looks the account up by name
+        self.setup(account=True, useradd=False, setpriv='none')
+        for shell in self.each_shell():
+            r = self.sh(shell, self.header + '\necho "$V:$VG"', MU300_ETC=self.etc)
+            self.assertEqual(r.stdout.strip(), '999:999')

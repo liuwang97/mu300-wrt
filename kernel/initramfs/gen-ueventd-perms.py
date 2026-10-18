@@ -48,15 +48,18 @@ BY_NUMBER = ('/dev/block/mmcblk', '/dev/mmcblk')
 # The Linux ids, looked up when the script runs: in /etc itself (no getent: the initramfs and OpenWrt have no NSS,
 # and the accounts here are local system accounts).
 HEADER = r'''# The vendor daemons' account (android-run starts them as it); without one (OpenWrt, the initramfs) the uid and gid
-# 1000 they switch to themselves. The GPU's group: video, else root.
+# 1000 they switch to themselves. MU300_VENDOR_USER: the account android-run says it starts them as (android-vendor-
+# start sets it; empty: none, uid 1000 even where mu300vnd exists - issue #314). The GPU's group: video, else root.
 id_of() {  # id_of NAME FILE: the id (third field) of NAME in FILE (passwd or group format), nothing if none
     [ -r "$2" ] || return 0
     while IFS=: read -r n _ i _ || [ -n "$n" ]; do [ "$n" = "$1" ] && { echo "$i"; return 0; }; done < "$2"
     return 0
 }
 E=${MU300_ETC:-/etc}
-V=$(id_of mu300vnd "$E/passwd"); V=${V:-1000}
-VG=$(id_of mu300vnd "$E/group"); VG=${VG:-1000}
+VU=${MU300_VENDOR_USER-mu300vnd}
+V=; VG=
+[ -z "$VU" ] || { V=$(id_of "$VU" "$E/passwd"); VG=$(id_of "$VU" "$E/group"); }
+V=${V:-1000}; VG=${VG:-1000}
 GPU=$(id_of video "$E/group"); GPU=${GPU:-0}'''
 
 
