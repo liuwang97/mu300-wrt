@@ -340,5 +340,51 @@ class DspClock(unittest.TestCase):
         self.assertLess(body.index('pcmhost'), body.index('dsp_clock'))
 
 
+class Dtmf(unittest.TestCase):
+    """FINDINGS 24d: DTMF goes out as RTP events, one AT+VTS per key, and only while the call's audio is running: with
+    the scene down the modem answers OK and sends nothing."""
+
+    def run_dtmf(self, keys, call=True, scene=True, answer='OK'):
+        # a stand-in modem: a call is up or not, the scene runs or not, and every AT+VTS gets the given answer; the
+        # commands are logged
+        script = ('in_call() { %s; }\nvoice_running() { %s; }\nat() { echo "$1" >&3; echo "%s"; }\n'
+                  % ('true' if call else 'false', 'true' if scene else 'false', answer) +
+                  DspClock.func(VOICE.read_text(), 'dtmf') + 'dtmf %s 3>&1 1>/dev/null\n' % keys)
+        r = subprocess.run(['sh', '-c', script], capture_output=True, text=True)
+        return r.returncode, r.stdout.splitlines()
+
+    def test_one_vts_per_key_in_order(self):
+        rc, sent = self.run_dtmf("'1a*#9D'")
+        self.assertEqual(rc, 0)
+        self.assertEqual(sent, ['AT+VTS="1"', 'AT+VTS="A"', 'AT+VTS="*"', 'AT+VTS="#"', 'AT+VTS="9"', 'AT+VTS="D"'])
+
+    def test_nothing_sent_for_a_bad_key_without_a_call_or_without_the_scene(self):
+        for keys in ("'12x'", "''", "'1 2'", "'E'"):
+            with self.subTest(keys=keys):
+                rc, sent = self.run_dtmf(keys)
+                self.assertEqual((rc, sent), (2, []))
+        self.assertEqual(self.run_dtmf("'5'", call=False), (1, []))
+        self.assertEqual(self.run_dtmf("'5'", scene=False), (1, []))
+
+    def test_a_refused_key_stops_the_rest(self):
+        # mu300-at exits 0 on the modem's ERROR too: only the OK counts
+        self.assertEqual(self.run_dtmf("'123'", answer='ERROR'), (1, ['AT+VTS="1"']))
+
+    def test_the_scene_is_the_voice_pcm_running_in_either_direction(self):
+        fn = shell_function(VOICE.read_text(), 'voice_running')
+        with tempfile.TemporaryDirectory() as d:
+            for c, p, running in (('', '', False), ('state: PREPARED', '', False), ('state: RUNNING', '', True),
+                                  ('', 'state: RUNNING', True), ('closed', 'closed', False)):
+                with self.subTest(capture=c, playback=p):
+                    for sub, text in (('pcm4c', c), ('pcm4p', p)):
+                        f = Path(d, 'card0', sub, 'sub0', 'status')
+                        f.parent.mkdir(parents=True, exist_ok=True)
+                        f.unlink(missing_ok=True)
+                        if text:
+                            f.write_text(text + '\n')
+                    r = subprocess.run(['sh', '-c', 'card=0 VOICE=4\n' + fn.replace('/proc/asound', d) + 'voice_running'])
+                    self.assertEqual(r.returncode == 0, running)
+
+
 if __name__ == '__main__':
     unittest.main()

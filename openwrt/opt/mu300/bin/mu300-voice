@@ -9,6 +9,8 @@
 #   mu300-voice demo                  on a call that is already up: play the melody, then echo
 #   mu300-voice tone [SECONDS]        play the melody into the call
 #   mu300-voice echo [SECONDS]        record that many seconds and play them back, for ever
+#   mu300-voice dtmf KEYS             send keys (0-9 * # A-D) on the call that is up, as the network's DTMF; the
+#                                     call's audio has to be running (audio start)
 #   mu300-voice status                what a call and the audio path are doing
 #   mu300-voice hangup
 #
@@ -577,6 +579,28 @@ echo_loop() {
 
 in_call() { at 'AT+CLCC' 8 | grep -q '^+CLCC:'; }
 
+# The call scene, whoever started it (audio start here, or a SIP bridge's own): the hostless FE_ST_VOICE is running.
+voice_running() {
+    grep -qs RUNNING "/proc/asound/card$card/pcm${VOICE}c/sub0/status" "/proc/asound/card$card/pcm${VOICE}p/sub0/status"
+}
+
+# DTMF goes out as the network's: the modem sends each key as an RTP telephone event (RFC 4733), one AT+VTS per key
+# as a SIP bridge sends them. But only while the audio DSP is in the call: with the call scene down the modem answers
+# every AT+VTS with OK and the far end gets nothing; with it running, all twelve keys reached it (docs/FINDINGS.md
+# 24d). mu300-at prints the modem's ERROR and still exits 0: the OK is the answer.
+dtmf() {   # dtmf KEYS
+    keys=$1
+    case $keys in ''|*[!0-9A-Da-d*#]*) echo "usage: mu300-voice dtmf KEYS (0-9 * # A-D)" >&2; return 2 ;; esac
+    in_call || { echo "mu300-voice: no call to send DTMF on" >&2; return 1; }
+    voice_running || {
+        echo "mu300-voice: the call's audio is not running (mu300-voice audio start); without it the keys are not sent" >&2
+        return 1; }
+    while [ -n "$keys" ]; do
+        rest=${keys#?}; key=$(echo "${keys%"$rest"}" | tr a-d A-D); keys=$rest
+        at "AT+VTS=\"$key\"" 5 | grep -q '^OK' || { echo "mu300-voice: the modem did not send DTMF $key" >&2; return 1; }
+    done
+}
+
 demo() {
     scene_running || audio_start dsp
     echo "playing the melody..."
@@ -636,6 +660,7 @@ demo)   demo "${2:-5}" ;;
 tone)   scene_running || audio_start dsp; tone "${2:-1}" ;;
 echo)   scene_running || audio_start dsp; echo_loop "${2:-5}" ;;
 hangup) at 'AT+CHUP' 10; audio_stop ;;
+dtmf)   dtmf "${2:-}" ;;
 
 status)
     echo "call:     $(at 'AT+CLCC' 8 | tr '\n' ' ' | mask)"
@@ -646,6 +671,6 @@ status)
     mu300-audio-dsp status 2>/dev/null | sed -n 's/^dsp:/dsp:     /p' ;;
 
 *)
-    sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
     exit 2 ;;
 esac
