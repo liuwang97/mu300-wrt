@@ -182,7 +182,7 @@ pcm_busy() {   # pcm_busy NODE
     for _p in $(pcm_holders "$1"); do
         [ "$_p" = "$$" ] && continue
         _comm=$(cat "/proc/$_p/comm" 2>/dev/null)
-        _cmd=$(tr '\0' ' ' < "/proc/$_p/cmdline" 2>/dev/null)
+        _cmd=$({ tr '\0' ' ' < "/proc/$_p/cmdline"; } 2>/dev/null)
         case "$_comm:$_cmd" in
             aplay:*"$TMP/"*|arecord:*"$TMP/"*)
                 echo "mu300-voice: $1 is held by pid $_p ($_comm), left over from an earlier mu300-voice: ending it" >&2
