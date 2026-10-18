@@ -944,6 +944,42 @@ class FromStock(UpdateBase):
         self.assertLess(rb.index('write_boot'), rb.index('prev_modules_restore'))
 
 
+class KernelSetOptionalArgs(UpdateBase):
+    def test_optional_release_under_nounset(self):
+        boot = self.disk / 'boot'
+        boot.mkdir()
+        args = self.tmp / 'args'
+        self.stub('uname', 'echo 7.2.10')
+        for shell in self.each_shell():
+            for kept in (False, True):
+                for new in ('', '7.2.11'):
+                    prev = boot / 'prev.body'
+                    prev.unlink(missing_ok=True)
+                    args.unlink(missing_ok=True)
+                    if kept:
+                        prev.write_bytes(b'kept image')
+                    r = self.up(shell, f"""set -u
+BOOTDIR=\"$T_BOOT\"
+BOOT_SLOT_KREL=7.2.10 BOOT_KEPT_KREL=7.2.9
+fsize() {{ echo 1024; }}
+kernel_sets() {{ printf 'call' >> \"$T_ARGS\"; printf ' <%s>' \"$@\" >> \"$T_ARGS\"; echo >> \"$T_ARGS\"; }}
+kernel_sets_kb() {{ echo 0; }}
+kernel_sets_remove() {{ :; }}
+boot_sets_stale {new}
+n=$(boot_kept_kb {new})
+[ \"$n\" = {1 if kept else 0} ] || exit 90
+boot_kept_drop {new}
+""", T_BOOT=boot, T_ARGS=args)
+                    self.assertEqual(r.returncode, 0, r.stderr)
+                    self.assertEqual(r.stderr, '')
+                    tail = ['7.2.10'] + ([new] if new else [])
+                    calls = [['7.2.10'] + (['7.2.9'] if kept else []) + tail]
+                    if kept:
+                        calls.append(['7.2.10'] + tail)
+                    calls.append(['7.2.10'] + tail)
+                    self.assertEqual(args.read_text().splitlines(), ['call' + ''.join(f' <{a}>' for a in c) for c in calls])
+
+
 class KernelStep(UpdateBase):
     """boot_update as a whole against a boot partition that is a file (FINDINGS 177): since every module is built a
     kernel update wanted 500 MB free at once and left its unpacked bundle behind when it failed. The step now unpacks
