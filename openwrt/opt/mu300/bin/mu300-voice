@@ -168,6 +168,7 @@ guard_children() {
     trap 'on_signal 129' HUP
     trap 'on_signal 130' INT
     trap 'on_signal 143' TERM
+    trap 'on_signal 0' USR1     # the echo's watcher: the call is over, a normal end
 }
 
 # Who holds a PCM node: pids with an open descriptor on it, from /proc (one ls, no fuser on OpenWrt's busybox).
@@ -566,7 +567,22 @@ echo_loop() {
     secs=${1:-5}
     echo "echoing every ${secs}s - ^C to stop" >&2
     uplink_conf
+    # A player can block for good once the call is gone (the DSP stops taking the uplink), so the check in the
+    # loop alone is not enough: a watcher ends this script, players and all, when the scene stops or the call ends.
+    (
+        while nap 2; do
+            scene_running || break
+            [ -z "${ECHO_UNTIL_HANGUP:-}" ] || in_call || break
+        done
+        echo "mu300-voice: the call is over, echo ends" >&2
+        kill -USR1 $$ 2>/dev/null
+    ) &
+    CHILDREN="$CHILDREN $!"
     while :; do
+        # the loop ends with the call: a hangup (here or at the other end) stops the scene, and on a call this
+        # script placed or answered the modem's call list empties - without this the echo outlived the call
+        scene_running || { echo "mu300-voice: the call scene stopped, echo ends" >&2; return 0; }
+        [ -z "${ECHO_UNTIL_HANGUP:-}" ] || in_call || { echo "mu300-voice: the call ended, echo ends" >&2; return 0; }
         # the downlink from the dump (48 kHz, two equal channels), converted by plug to the uplink's 16 kHz mono
         pcm_run "$TMP/cap.err" "$CAP_NODE" arecord -D "$CAP" -f S16_LE -r 48000 -c 2 -d "$secs" -q \
                 --period-size=960 --buffer-size=3840 "$TMP/echo.raw" || {
@@ -643,7 +659,7 @@ answer)
             in_call || { echo "mu300-voice: the call did not connect" >&2; exit 1; }
             echo "answered"
             audio_start dsp
-            demo "${4:-5}"
+            ECHO_UNTIL_HANGUP=1 demo "${4:-5}"
             exit 0
         fi
         sleep 1
@@ -657,7 +673,7 @@ call)
     sleep 5
     in_call || { echo "mu300-voice: the call did not connect" >&2; exit 1; }
     audio_start dsp
-    demo "${3:-5}" ;;
+    ECHO_UNTIL_HANGUP=1 demo "${3:-5}" ;;
 
 demo)   demo "${2:-5}" ;;
 tone)   scene_running || audio_start dsp; tone "${2:-1}" ;;
