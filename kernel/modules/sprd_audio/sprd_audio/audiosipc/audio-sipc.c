@@ -23,6 +23,7 @@
 #include <linux/firmware.h>
 #include <linux/init.h>
 #include <linux/io.h>
+#include <linux/jiffies.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/of.h>
@@ -519,41 +520,65 @@ int aud_ipc_ch_close(uint16_t channel)
 }
 EXPORT_SYMBOL(aud_ipc_ch_close);
 
+/*
+ * Replies on a channel are read in order, and some are never waited for: the voice PCM tap's trigger and shutdown
+ * send a KCTL_SET (cmd 9) with aud_send_cmd_no_wait_param() and the DSP answers each anyway, and a sender whose
+ * wait was interrupted leaves its reply too. They stay in the channel's cache. The drain before a send stopped at
+ * the first reply for another command, and each of the 4 tries of the wait read one more, so with 5 of them
+ * queued a STARTUP (cmd 4) failed with "Haven't got right cmd(0x4), got cmd(0x9)" and -EIO, and so did the PCM
+ * open behind it: FE_ST_DUMP right after a few plays into FE_ST_VOICE_PCM_P. A reply for another command is now
+ * dropped and the wait goes on for the right one, within the same timeout; with timeout 0 (the drain) it reads on
+ * until the cache is empty.
+ */
 int aud_recv_cmd(u16 channel, u32 cmd, struct aud_smsg *result,
 		 int32_t timeout)
 {
 	int ret = 0;
+	int dropped = 0;
+	unsigned long deadline = jiffies + (timeout > 0 ? timeout : 0);
 	struct aud_smsg mrecv = { 0 };
 
-	aud_smsg_set(&mrecv, channel, cmd, 0, 0, 0, 0);
+	for (;;) {
+		int32_t wait = timeout;
 
-	ret = aud_smsg_recv(AUD_IPC_AGDSP, &mrecv, timeout);
-	if (ret < 0) {
-		if (-ENODATA == ret) {
-			pr_warn("%s channel =%u cmd=%u ENODATA\n",
-				__func__, channel, cmd);
-			return ret;
+		if (timeout > 0) {
+			long left = (long)(deadline - jiffies);
+
+			/* never 0, which would mean "do not wait" to aud_smsg_recv */
+			wait = left > 0 ? (int32_t)left : 1;
 		}
-		pr_err("%s, Failed to recv channel =%d cmd(0x%x),ret(%d)\n",
-		       __func__, channel, cmd, ret);
-		return -EIO;
-	}
-	sp_asoc_pr_dbg("%s, chan: 0x%x, cmd: 0x%x, value0: 0x%x, value1: 0x%x,",
-		       __func__, mrecv.channel, mrecv.command,
-		mrecv.parameter0, mrecv.parameter1);
-	sp_asoc_pr_dbg(" value2: 0x%x, value3: 0x%x, timeout: %d\n",
-		       mrecv.parameter2, mrecv.parameter3, timeout);
+		aud_smsg_set(&mrecv, channel, cmd, 0, 0, 0, 0);
 
-	if (cmd == mrecv.command && mrecv.channel == channel && result) {
-		*result = mrecv;
-		return 0;
-	}
-	pr_err("%s, Haven't got right cmd(0x%x), got cmd(0x%x)",
-	       __func__, cmd, mrecv.command);
-	pr_err(" got chan(0x%x)\n",
-	       mrecv.channel);
+		ret = aud_smsg_recv(AUD_IPC_AGDSP, &mrecv, wait);
+		if (ret < 0) {
+			if (-ENODATA == ret) {
+				pr_warn("%s channel =%u cmd=%u ENODATA\n",
+					__func__, channel, cmd);
+				return ret;
+			}
+			pr_err("%s, Failed to recv channel =%d cmd(0x%x),ret(%d)\n",
+			       __func__, channel, cmd, ret);
+			return -EIO;
+		}
+		sp_asoc_pr_dbg("%s, chan: 0x%x, cmd: 0x%x, value0: 0x%x, value1: 0x%x,",
+			       __func__, mrecv.channel, mrecv.command,
+			mrecv.parameter0, mrecv.parameter1);
+		sp_asoc_pr_dbg(" value2: 0x%x, value3: 0x%x, timeout: %d\n",
+			       mrecv.parameter2, mrecv.parameter3, timeout);
 
-	return -EIO;
+		if (cmd == mrecv.command && mrecv.channel == channel) {
+			if (result)
+				*result = mrecv;
+			return 0;
+		}
+		pr_warn("%s, dropped a stale reply: cmd(0x%x) chan(0x%x) while waiting for cmd(0x%x)\n",
+			__func__, mrecv.command, mrecv.channel, cmd);
+		if (++dropped >= SMSG_CACHE_NR) {
+			pr_err("%s, Haven't got right cmd(0x%x) in %d replies\n",
+			       __func__, cmd, dropped);
+			return -EIO;
+		}
+	}
 }
 
 static int aud_send_msg(u16 channel, u32 cmd, u32 value0,
