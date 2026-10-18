@@ -110,14 +110,21 @@ done
 # The vendor daemons' own account, before the nodes are handed to it (ueventd-perms.sh) and the daemons start as it
 # (android-run): Android's system user is uid 1000, and that is the first human account on a distribution. The image
 # has it; this makes it on a system that does not (an image from before it, or useradd's run in the build failed).
-# Only where useradd is (not OpenWrt, which has no account at 1000); a failure leaves the daemons at uid 1000.
+# Only where useradd is and android-run can start the daemons as it (setpriv with --reuid: not OpenWrt, which has no
+# account at 1000, even with shadow-useradd installed - issue #314); a failure leaves the daemons at uid 1000.
 # --- account begin
-if ! grep -q '^mu300vnd:' "${MU300_ETC:-/etc}/passwd" 2>/dev/null && command -v useradd >/dev/null 2>&1; then
+AR=${MU300_ANDROID_RUN:-/opt/mu300/bin/android-run}
+if ! grep -q '^mu300vnd:' "${MU300_ETC:-/etc}/passwd" 2>/dev/null && command -v useradd >/dev/null 2>&1 &&
+    sh "$AR" --switches; then
     nologin=/usr/sbin/nologin; [ -x $nologin ] || nologin=/usr/bin/nologin
     useradd --system --user-group --no-create-home --home-dir /nonexistent --shell $nologin \
         --comment 'MU300 Android vendor daemons' mu300vnd ||
         echo "android-vendor-start: could not create the mu300vnd account; the vendor daemons run as uid 1000" >&2
 fi
+# the nodes go to the account android-run will start the daemons as - and to uid 1000 when that is not the vendor
+# account (no setpriv to switch to it), whether or not the account exists
+MU300_VENDOR_USER=$(sh "$AR" --user) || MU300_VENDOR_USER=
+export MU300_VENDOR_USER
 # --- account end
 sh /opt/mu300/bin/ueventd-perms.sh
 mark vendor-perms
