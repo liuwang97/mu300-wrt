@@ -13,9 +13,9 @@
 #       file follows it). Without either, --encrypt and an encrypted file ask on the terminal. 8-256 characters.
 #
 # Sections: wifi (the hotspot: name, password, band, channel, hidden, on), data (APN, PDP type, authentication, user,
-# password, data roaming), sim (the boot SIM), locks (band, mode, EN-DC and cell locks; OpenWrt with the panel),
-# vpn (the VPN module's own profiles, subscriptions, settings, the active one, on/off), sms_forward (OpenWrt with the
-# panel), lan (the device's address), system (host name, time zone, SSH on/off), ssh_keys (the login user's
+# password, data roaming), sim (the boot SIM), locks (band, mode, EN-DC and cell locks; OpenWrt with the panel and
+# Ubuntu), vpn (the VPN module's own profiles, subscriptions, settings, the active one, on/off), sms_forward (OpenWrt
+# with the panel and Ubuntu), lan (the device's address), system (host name, time zone, SSH on/off), ssh_keys (the login user's
 # authorized keys), password (with --with-password).
 #
 # The file holds secrets (the hotspot's and the APN's passwords, VPN configurations, tokens): it is written 0600,
@@ -170,7 +170,7 @@ lock_dir() {
 }
 LOCK_KINDS='mode endc lte nr cell'
 sec_locks() {
-    is_luci || return 1
+    [ -x "$LOCKTOOL" ] || return 1
     _d=$(lock_dir)
     for _k in $LOCK_KINDS; do
         [ -f "$_d/$_k" ] || continue
@@ -215,7 +215,7 @@ sec_vpn() {
 }
 FWD_CONF=$R/etc/mu300/sms-forward.conf
 sec_sms_forward() {
-    is_luci && [ -f "$FWD_CONF" ] || return 1
+    [ -x "$FWDA" ] && [ -f "$FWD_CONF" ] || return 1
     jq -R -s '
         # (no regular expressions: the jq of OpenWrt is built without them, and test/capture/gsub fail there)
         def unesc: explode | reduce .[] as $c ({o: [], e: false};
@@ -554,7 +554,8 @@ def q: tostring | @json;
 # what this system cannot take (SECTION: why), else nothing
 not_here() {
     case $1 in
-        locks|sms_forward) is_luci || echo "on OpenWrt with the control panel only" ;;
+        locks) [ -x "$LOCKTOOL" ] || echo "no network locks on this system" ;;
+        sms_forward) [ -x "$FWDA" ] || echo "no SMS forwarding on this system" ;;
         vpn) [ -n "$(vpn_cmd)" ] || echo "the VPN module is not installed (mu300-extra install vpn)" ;;
         sim) [ -x "$BIN/mu300-sim" ] || echo "no SIM selection on this system" ;;
     esac

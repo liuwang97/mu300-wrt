@@ -705,6 +705,106 @@ return null;""", out)
         self.assertEqual([q for m, q in self.api_calls(r, 'radio.set')], [{'slot': 'all', 'state': 'off'}, {'slot': 2, 'state': 'on'}])
         self.assertEqual([q for m, q in self.api_calls(r, 'voice.set')], [{'slot': 1, 'kind': 'vonr', 'state': 'on'}])
 
+    LOCKS = {'ok': 1, 'data': {'auto_apply': 1, 'ts': 1700000000, 'mode': {'label': 'auto'}, 'endc': '1',
+                               'lte': {'locked': ''}, 'nr': {'locked': '78'}, 'cell': '', 'cells': ['nr:627264,393'],
+                               'caps': {'nr': '1,5,6,8,28,41,78', 'lte': '1,3,5,8,34,38,39,40,41'}}}
+
+    def parity(self):
+        out = dict(self.OUT, hello=dict(self.OUT['hello'], methods=self.METHODS + [
+            'lock.get', 'lock.set', 'sim.state', 'sms.forward', 'sms.forward_set', 'sms.forward_test', 'sms.forward_log_clear',
+            'at.history', 'usb.net', 'lan.get'], features={'locks': True, 'forward': True, 'usb_net': True}))
+        out['lock.get'] = self.LOCKS
+        out['lock.set'] = {'ok': 1, 'data': {'ok': 1, 'started': 1, 'queued': 0}}
+        out['sim.state'] = {'ok': 1, 'state': 'absent', 'slot': 2}
+        out['sms.forward'] = {'ok': 1, 'data': {'ok': 1, 'enabled': 1, 'template': '{text}', 'webhook': 1, 'webhook_url_set': 1,
+                                                'webhook_url_hint': 'https://hook.example.com/...', 'webhook_format': 'json',
+                                                'telegram_token_set': 1, 'telegram_token_hint': '123:...', 'email_available': 0,
+                                                'queued': 2, 'log': [{'time': 1, 'id': '7', 'target': 'webhook', 'result': 'sent',
+                                                                      'detail': '<i>HTTP 200</i>'}]}}
+        out['sms.forward_set'] = {'ok': 1}
+        out['sms.forward_test'] = {'ok': 1, 'started': True}
+        out['sms.forward_log_clear'] = {'ok': 1}
+        out['at.history'] = {'ok': 1, 'history': [{'time': '10-18 01:00:00', 'command': 'AT+COPS?'}]}
+        out['usb.net'] = {'ok': 1, 'mode': 'ecm', 'once': True, 'now': 'ncm'}
+        out['lan.get'] = {'ok': 1, 'ip': '192.168.79.1', 'usb_role_switch': False, 'adb': {'state': 'on', 'auth': 'open'}}
+        out['system.get'] = {'ok': 1, 'release': 'v1'}
+        out['data.get'] = dict(self.OUT['data.get'], sim={'active': 2, 'default': 2, 'slot1_supported': 1})
+        return out
+
+    def test_locks(self):
+        r = self.run_page(r"""
+window.MU300.show('mobile'); await flush(10);
+const t = ids['mu-locks'].textContent;
+ids['mu-lock-mode'].value = '4g'; btn(ids['mu-locks'], 'Apply').click(); await flush();
+ids['mu-lock-nr-41'].checked = true; btn(ids['mu-locks'], 'Apply NR bands').click(); await flush();
+btn(ids['mu-locks'], 'Apply LTE bands').click(); await flush();
+ids['mu-lock-arfcn'].value = '627264'; ids['mu-lock-pci'].value = '393'; btn(ids['mu-locks'], 'Lock this cell').click(); await flush();
+ids['mu-lock-arfcn'].value = '62x'; btn(ids['mu-locks'], 'Lock this cell').click(); await flush();
+btn(ids['mu-locks'], 'Turn EN-DC off').click(); await flush();
+btn(ids['mu-locks'], 'Do not apply at startup').click(); await flush();
+btn(ids['mu-locks'], 'Reset all to automatic').click(); await flush();
+return t;""", self.parity())
+        self.assertIn('n78', r['result'])
+        self.assertIn('NR ARFCN 627264, PCI 393', r['result'])
+        self.assertIn(('lock.get', {}), self.api_calls(r))
+        self.assertEqual([q for m, q in self.api_calls(r, 'lock.set')], [
+            {'kind': 'mode', 'val': '4g'}, {'kind': 'nr', 'val': '41,78'}, {'kind': 'lte', 'val': ''},
+            {'kind': 'cell', 'val': 'nr:627264,393'}, {'kind': 'endc', 'val': 'off'}, {'kind': 'auto_apply', 'val': 'off'},
+            {'kind': 'reset', 'val': 'auto'}])
+
+    def test_sim_card_state(self):
+        r = self.run_page(r"""
+window.MU300.show('mobile'); await flush(10);
+const t = ids['mu-sim'].textContent;
+btn(ids['mu-sim'], 'Ask the card').click(); await flush(6);
+return t;""", self.parity())
+        self.assertIn('Card (SIM 2)No card in this slot', r['result'])
+        self.assertEqual([q for m, q in self.api_calls(r, 'sim.state')], [{}, {'fresh': True}])
+
+    def test_forwarding(self):
+        r = self.run_page(r"""
+window.MU300.show('sms'); await flush(10);
+const t = ids['mu-sms-forward'].textContent + ids['mu-sms-forward-log'].textContent;
+ids['mu-fwd-body-preset'].value = 'wecom'; (ids['mu-fwd-body-preset'].on.change || []).forEach((f) => f({}));
+ids['mu-fwd-telegram_token'].value = '987:' + 'B'.repeat(30); ids['mu-fwd-webhook_url-clear'].checked = true;
+btn(ids['mu-sms-forward'], 'Save').click(); await flush(8);
+btn(ids['mu-sms-forward'], 'Send a test').click(); await flush();
+btn(ids['mu-sms-forward-log'], 'Clear the log').click(); await flush();
+return t;""", self.parity())
+        self.assertIn('Saved: https://hook.example.com/...', r['result'])
+        self.assertIn('<i>HTTP 200</i>', r['result'])
+        sets = [q for m, q in self.api_calls(r, 'sms.forward_set')]
+        self.assertEqual(len(sets), 1)
+        q = sets[0]
+        self.assertEqual((q['enabled'], q['webhook'], q['telegram']), (True, True, False))
+        self.assertEqual(q['webhook_body'], '{"msgtype":"text","text":{"content":"{message}"}}')
+        self.assertEqual((q['webhook_expect'], q['webhook_format']), ('errcode=0', 'json'))
+        self.assertEqual(q['telegram_token'], '987:' + 'B' * 30)
+        self.assertEqual(q['clear'], 'webhook_url')
+        self.assertEqual(q['webhook_url'], '')
+        self.assertIn(('sms.forward_test', {}), self.api_calls(r))
+        self.assertIn(('sms.forward_log_clear', {}), self.api_calls(r))
+        for c in r['calls']:
+            self.assertNotIn('BBBBBBBB', ' '.join(c['argv']))
+
+    def test_at_history_and_usb_network(self):
+        r = self.run_page(r"""
+window.MU300.show('at'); await flush(8);
+const h = ids['mu-at-history'].textContent;
+btn(ids['mu-at-history'], 'AT+COPS?').click();
+const v = ids['mu-at-cmd'].value;
+window.MU300.show('system'); await flush(10);
+const u = ids['mu-usbnet'].textContent;
+ids['mu-usbnet-mode'].value = 'rndis'; ids['mu-usbnet-scope'].value = 'once';
+btn(ids['mu-usbnet'], 'Save (used at the next boot)').click(); await flush();
+ids['mu-usbnet-mode'].value = 'default';
+btn(ids['mu-usbnet'], 'Save (used at the next boot)').click(); await flush();
+return [h, v, u];""", self.parity())
+        self.assertIn('10-18 01:00:00', r['result'][0])
+        self.assertEqual(r['result'][1], 'AT+COPS?')
+        self.assertIn('ECM (that boot only)', r['result'][2])
+        self.assertEqual([q for m, q in self.api_calls(r, 'usb.net') if q], [{'mode': 'rndis', 'scope': 'once'}, {'mode': 'default'}])
+
     def test_errors_are_worded(self):
         out = self.run_page(r"""
 const M = window.MU300;

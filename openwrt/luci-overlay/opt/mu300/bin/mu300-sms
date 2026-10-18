@@ -5,7 +5,8 @@
 #   mu300-sms list [PAGE]              newest first, MU300_SMS_PAGE per page (default 10)
 #   mu300-sms show ID                  the whole message (marks a received one read)
 #   mu300-sms send NUMBER TEXT...      send one, and keep it in the pool
-#   mu300-sms send --stdin NUMBER      the same, with the text read from stdin (what the panel uses)
+#   mu300-sms send --stdin [NUMBER]    the same, with the text read from stdin (what the panel uses); without NUMBER the
+#                                      number is stdin's first line (nothing of the message in the arguments)
 #   mu300-sms delete ID|all [--sim]    from the pool; --sim also deletes the matching message on the SIM
 #   mu300-sms mark ID read|unread
 #   mu300-sms sync                     move every message on the SIM into the pool
@@ -745,7 +746,8 @@ cmd_mark() {
 cmd_send() {
     _stdin=0
     [ "${1:-}" = --stdin ] && { _stdin=1; shift; }
-    _num=${1:-}
+    # --stdin without a number: the number is stdin's first line (nothing of the message in the arguments)
+    if [ "$_stdin" = 1 ] && [ $# -eq 0 ]; then IFS= read -r _num || :; else _num=${1:-}; fi
     [ $# -gt 0 ] && shift
     case $_num in
         +*) _digits=${_num#+} ;;
@@ -764,11 +766,8 @@ cmd_send() {
     [ -n "$_text" ] || die "the message is empty"
     need_atd
     [ -f "$AWK" ] || die "$AWK is missing"
-    # awk -v reads escapes in what it is given: double every backslash and write a newline as \n
-    _esc=$(printf '%s\n' "$_text" | LC_ALL=C awk '
-        { n = split($0, p, "\\"); s = p[1]; for (i = 2; i <= n; i++) s = s "\\\\" p[i]; out = out (NR > 1 ? "\\n" : "") s }
-        END { printf "%s", out }')
-    _enc=$(awk -v mode=encode -v number="$_num" -v text="$_esc" -f "$AWK" </dev/null)
+    # the number and the text reach the encoder in its environment, never in its arguments (anyone may list those)
+    _enc=$(MU300_PDU_NUMBER=$_num MU300_PDU_TEXT=$_text awk -v mode=encode -f "$AWK" </dev/null)
     _len=${_enc%% *}; _pdu=${_enc#* }
     case $_len in ''|*[!0-9]*) die "could not build the message" ;; esac
     # 00 SMSC, then 11 00 LL TT <number, LL digits in semi-octets> 00 DCS AA UDL: the coding and the length
@@ -863,7 +862,7 @@ tombstone() {
 }
 
 usage() {
-    sed -n '5,12p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '5,13p' "$0" | sed 's/^# \{0,1\}//'
     echo "pool: $POOL (MU300_SMS_POOL to move it)"
 }
 

@@ -79,7 +79,7 @@ filter_bands() {  # filter_bands "1,5,79" "1,5,6,..." -> "1,5"
 }
 nr_sup() {
     local s
-    s=$(jsonfilter -i "$LOCKCACHE" -e '@.caps.nr' 2>/dev/null)
+    s=$(jfilter -i "$LOCKCACHE" -e '@.caps.nr' 2>/dev/null)
     printf '%s' "${s:-$NR_SUP_FALLBACK}"
 }
 # Boot replay only needs to deliver writes; several vendor setters apply the
@@ -345,7 +345,7 @@ cell_state_seed() {
     [ -e "$f" ] && return
     : > "$f"
     [ -s "$LOCKCACHE" ] || return
-    jsonfilter -i "$LOCKCACHE" -e '@.cells[*]' 2>/dev/null |
+    jfilter -i "$LOCKCACHE" -e '@.cells[*]' 2>/dev/null |
         grep -E '^(nr|lte):[0-9]+,[0-9]+$' > "$f" 2>/dev/null || true
 }
 
@@ -464,13 +464,13 @@ do_apply() {  # do_apply KIND VALUE
                     ;;
                 auto)  # lock whatever the current serving cell is
                     c=$(cat "$RUNDIR/cell.json" 2>/dev/null) || c=
-                    fr=$(printf '%s' "$c" | jsonfilter -e '@.nr.arfcn' 2>/dev/null)
-                    pc=$(printf '%s' "$c" | jsonfilter -e '@.nr.pci' 2>/dev/null)
+                    fr=$(printf '%s' "$c" | jfilter -e '@.nr.arfcn' 2>/dev/null)
+                    pc=$(printf '%s' "$c" | jfilter -e '@.nr.pci' 2>/dev/null)
                     if [ -n "$fr" ] && [ "$fr" != null ] && [ "$fr" -gt 0 ] 2>/dev/null; then
                         val="nr:$fr,$pc"
                     else
-                        fr=$(printf '%s' "$c" | jsonfilter -e '@.lte.earfcn' 2>/dev/null)
-                        pc=$(printf '%s' "$c" | jsonfilter -e '@.lte.pci' 2>/dev/null)
+                        fr=$(printf '%s' "$c" | jfilter -e '@.lte.earfcn' 2>/dev/null)
+                        pc=$(printf '%s' "$c" | jfilter -e '@.lte.pci' 2>/dev/null)
                         if [ -n "$fr" ] && [ "$fr" != null ] && [ "$fr" -gt 0 ] 2>/dev/null; then
                             val="lte:$fr,$pc"
                         else

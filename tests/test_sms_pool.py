@@ -1454,6 +1454,24 @@ class Send(ShellTest):
                     self.assertFalse((self.atdir / 'lock').exists())
             self.answer('CMGS', '+CMGS: 12\nOK\n')
 
+    def test_stdin_and_the_encoder_never_see_the_message_in_arguments(self):
+        # send --stdin: the number on the first line, the text after it; the PDU encoder gets both in its environment
+        # (an awk -v argument is visible to anyone who lists the processes), so a backslash stays a backslash
+        self.stub('awk', 'printf "%s\\n" "$*" >> "$STUBLOG/awk-argv.log"; exec ' + shutil.which('awk') + ' "$@"')
+        for shell in self.each_shell():
+            (self.tmp / 'awk-argv.log').unlink(missing_ok=True)
+            r = self.script(shell, self.SMS_CMD, 'send', '--stdin', stdin='+905551112233\nKod 4321 a\\nb\nsatır',
+                            MU300_SMS_AWK=AWK, MU300_SMS_STATE=self.tmp / 'state', MU300_AT_DIR=self.atdir)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            argv = (self.tmp / 'awk-argv.log').read_text()
+            self.assertNotIn('4321', argv)
+            self.assertNotIn('905551112233', argv)
+            enc = subprocess.run(['awk', '-v', 'mode=encode', '-f', str(AWK)], capture_output=True, text=True,
+                                 stdin=subprocess.DEVNULL, env=dict(os.environ, LC_ALL='C', MU300_PDU_NUMBER='+905551112233',
+                                                                    MU300_PDU_TEXT='Kod 4321 a\\nb\nsatır')).stdout.split()
+            self.assertEqual(self.at_log()[-1], f'AT+CMGS={enc[0]}^{enc[1]}~')
+            self.assertEqual(self.send(shell, '--stdin', '123', stdin='x').returncode, 2)
+
     def test_a_smsc_the_modem_does_not_give_is_left_alone(self):
         # nothing is written when the SMSC cannot be read as "address",type; a write the modem refuses does not stop
         # the send; the character set is never touched
