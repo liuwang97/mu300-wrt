@@ -3090,7 +3090,14 @@ class Led(ShellTest):
         return {n: (self.root / 'sys/class/leds' / n / 'brightness').read_text().strip() for n in self.LEDS}
 
     def led(self, shell, device, *args):
-        (self.root / 'run/mu300/device').write_text(device + '\n')
+        # replaced, not rewritten in place: a siren that the call before started ("alarm on") is a new mu300-led that
+        # asks mu300-device for the device, and write_text truncates first - a siren that read the file empty in
+        # between took the device for an F50 and lit the PMIC's LED on a V50 (CI, 2026-10-18). On a device the file
+        # is written once, at boot.
+        dev = self.root / 'run/mu300/device'
+        new = dev.with_name('device.new')
+        new.write_text(device + '\n')
+        os.replace(new, dev)
         return self.script(shell, BIN / 'mu300-led', *args, MU300_SYSROOT=self.root, MU300_BIN=BIN,
                            MU300_LED_CONF=self.conf)
 
