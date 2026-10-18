@@ -3116,9 +3116,9 @@ boot_sets_stale() {  # boot_sets_stale [NEW_KREL]: the sets no image needs, with
     [ -n "$BOOT_SLOT_KREL" ] || return 0
     if [ -s "$BOOTDIR/prev.body" ]; then
         [ -n "$BOOT_KEPT_KREL" ] || return 0
-        kernel_sets "$BOOT_SLOT_KREL" "$BOOT_KEPT_KREL" "$(uname -r)" $1
+        kernel_sets "$BOOT_SLOT_KREL" "$BOOT_KEPT_KREL" "$(uname -r)" "$@"
     else
-        kernel_sets "$BOOT_SLOT_KREL" "$(uname -r)" $1
+        kernel_sets "$BOOT_SLOT_KREL" "$(uname -r)" "$@"
     fi
 }
 # boot_kept_kb [NEW_KREL]: the KiB giving the kept image up frees: the image, the files of its set that have no other
@@ -3130,7 +3130,7 @@ boot_kept_kb() {
     [ ! -d "$BOOTDIR/prev.modules" ] ||
         _kk=$(( _kk + $(ls -lnR "$BOOTDIR/prev.modules" 2>/dev/null | awk '$1 ~ /^-/ && $2 == 1 { k += int(($5 + 4095) / 4096) * 4 } END { print k + 0 }') ))
     if [ -s "$BOOTDIR/prev.body" ] && [ -n "$BOOT_SLOT_KREL" ] && [ -n "$BOOT_KEPT_KREL" ]; then
-        _kk=$(( _kk + $(kernel_sets_kb $(kernel_sets "$BOOT_SLOT_KREL" "$(uname -r)" $1 | grep ":$BOOT_KEPT_KREL\$")) ))
+        _kk=$(( _kk + $(kernel_sets_kb $(kernel_sets "$BOOT_SLOT_KREL" "$(uname -r)" "$@" | grep ":$BOOT_KEPT_KREL\$")) ))
     fi
     echo "$_kk"
 }
@@ -3139,7 +3139,7 @@ boot_kept_drop() {  # boot_kept_drop [NEW_KREL]
         "$(cat "$BOOTDIR/prev.tag" 2>/dev/null || echo unknown)"
     rm -rf "${BOOTDIR:?}/prev.modules" "$BOOTDIR/prev.body" "$BOOTDIR/prev.vbmeta" "$BOOTDIR/prev.footer" \
         "$BOOTDIR/prev.slot" "$BOOTDIR/prev.tag" "$BOOTDIR/prev.kernel"
-    kernel_sets_remove $(boot_sets_stale $1)
+    kernel_sets_remove $(boot_sets_stale "$@")
 }
 # boot_room BUNDLE LIST IMAGES_KB: whether the partition has the KiB unpacking BUNDLE (in place already) and making the
 # image want free - its tar stream (the files and their headers), a block's slack for each file, and IMAGES_KB less
