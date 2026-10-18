@@ -70,12 +70,13 @@ run_dir_take "$TMP" "${MU300_VOICE_RUN_UID:-0}" mu300-voice || exit 1
 chmod 700 "$TMP" 2>/dev/null
 
 card=$(awk '/sprdphone/ {print $1; exit}' /proc/asound/cards 2>/dev/null)
-# the audio drivers: the private stack's on 5.4 (.../audio), the release's own on mainline (extra/ on Ubuntu, flat on
-# OpenWrt; docs/FINDINGS.md 188). On a kernel with neither (5.4 as released) there is nothing to load.
+# the audio drivers: on 5.4 those of mu300-audio (.../audio; https://github.com/dikeckaan/mu300-audio), the release's own on mainline
+# (extra/ on Ubuntu, flat on OpenWrt; docs/FINDINGS.md 188). On a kernel with neither (5.4 as released) there is
+# nothing to load.
 if [ -z "$card" ]; then
     _k=/lib/modules/$(uname -r)
     if [ ! -f "$_k/audio/sprd_audcp_boot.ko" ] && [ ! -f "$_k/extra/sprd_audcp_boot.ko" ] && [ ! -f "$_k/sprd_audcp_boot.ko" ]; then
-        echo "mu300-voice: no call audio on this kernel ($(uname -r)): no audio drivers (5.4 needs the private stack, kernel/build-audio.sh)" >&2
+        echo "mu300-voice: no call audio on this kernel ($(uname -r)): no audio drivers (on 5.4 install them from https://github.com/dikeckaan/mu300-audio)" >&2
         exit 1
     fi
 fi
@@ -101,7 +102,7 @@ fi
 
 at() { mu300-at -t "${2:-10}" "$1" 2>&1; }
 # Phone numbers never reach a log in full: every run of five or more digits (with its +) keeps the two digits after
-# a + and its last two, the rest becomes * (+905321234540 -> +90********40). Call history is not kept at all.
+# a + and its last two, the rest becomes * (+447700900140 -> +44********40). Call history is not kept at all.
 mask() {
     awk '{
         out = ""

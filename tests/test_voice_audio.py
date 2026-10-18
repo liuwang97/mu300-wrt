@@ -22,7 +22,7 @@ def shell_function(src, name):
 
 
 class Masking(unittest.TestCase):
-    NUMBERS = ['+905321234540', '05321234540', '5321234540', '+441632960961', '112233']
+    NUMBERS = ['+447700900140', '07700900140', '7700900140', '+441632960961', '112233']
 
     def run_log(self, *lines):
         src = VOICE.read_text()
@@ -31,13 +31,13 @@ class Masking(unittest.TestCase):
         return subprocess.run(['sh', '-c', script], capture_output=True, text=True, check=True).stdout
 
     def test_numbers_masked(self):
-        out = self.run_log('call state: 4 (+905321234540)',
-                           '+CLCC: 1,1,4,0,0,"05321234540",129',
+        out = self.run_log('call state: 4 (+447700900140)',
+                           '+CLCC: 1,1,4,0,0,"07700900140",129',
                            'RING +CLIP: "+441632960961",145,,,"",0',
-                           'dial 5321234540 now', 'short 112233')
+                           'dial 7700900140 now', 'short 112233')
         for n in self.NUMBERS:
             self.assertNotIn(n, out)
-        self.assertIn('+90********40', out)
+        self.assertIn('+44********40', out)
         self.assertIn('"*********40"', out)
         self.assertIn('+44********61', out)
         self.assertIn('****33', out)

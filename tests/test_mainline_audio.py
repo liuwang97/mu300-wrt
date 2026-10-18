@@ -159,7 +159,7 @@ class Userspace(unittest.TestCase):
         return r.returncode, r.stdout.strip().replace(str(k), 'K')
 
     def test_the_drivers_are_found_where_each_kernel_has_them(self):
-        self.assertEqual(self.audio_dir(['audio/sprd_audcp_boot.ko']), (0, 'K/audio'))      # 5.4, private stack
+        self.assertEqual(self.audio_dir(['audio/sprd_audcp_boot.ko']), (0, 'K/audio'))      # 5.4, mu300-audio
         self.assertEqual(self.audio_dir(['extra/sprd_audcp_boot.ko']), (0, 'K/extra'))      # mainline, Ubuntu
         self.assertEqual(self.audio_dir(['sprd_audcp_boot.ko']), (0, 'K'))                  # mainline, OpenWrt
 
