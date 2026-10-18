@@ -133,8 +133,15 @@ lock() {  # lock NAME [WAIT]: 0 when taken
 }
 unlock() { rm -rf "$RUN/$1.lock"; }
 
+# the RAM directory and the state on flash are ours alone (0700): never one someone else made or a link to one (the
+# log, the retries, the mail password's file and an HTTP request's body are written there)
 state_init() {
     mkdir -p "$RUN" "$STATE" 2>/dev/null
+    for _d in "$RUN" "$STATE"; do
+        if [ -L "$_d" ] || [ ! -d "$_d" ] || [ ! -O "$_d" ]; then
+            say "refusing $_d: not a directory of our own"; exit 1
+        fi
+    done
     chmod 700 "$RUN" "$STATE" 2>/dev/null
 }
 
@@ -527,10 +534,11 @@ deliver() {
         # never back to the number it came from: two devices forwarding to each other would never stop
         if [ "$(norm "$_from")" = "$(norm "$c_sms_number")" ]; then d_detail='the sender is the forwarding number'; return 2; fi
         if [ -x "$SMS" ]; then
-            _out=$(one_sms "$_msg" | MU300_SMS_POOL=$POOL "$SMS" send --stdin "$c_sms_number" 2>&1)
+            # the number on stdin's first line, the text after it: neither in an argument
+            _out=$({ printf '%s\n' "$c_sms_number"; one_sms "$_msg"; } | MU300_SMS_POOL=$POOL "$SMS" send --stdin 2>&1)
         elif command -v sms >/dev/null 2>&1; then
-            # Ubuntu: the sms command (no pool); the text as its argument, as the panel's own send gives it
-            _out=$(sms send "$c_sms_number" "$(one_sms "$_msg")" 2>&1 </dev/null)
+            # Ubuntu: the sms command (no pool); the number and the text on its stdin, never in an argument
+            _out=$({ printf '%s\n' "$c_sms_number"; one_sms "$_msg"; } | sms send --stdin 2>&1)
         else
             d_detail='no SMS command'; return 2
         fi

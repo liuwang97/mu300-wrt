@@ -6,7 +6,8 @@
 #   sms json                       the same as one JSON object (the web panel): {"store", "messages": [{"index": [N...],
 #                                  "sender", "time", "parts", "have", "text"}]}
 #   sms read INDEX                 one message in full
-#   sms send NUMBER TEXT...        send one (Turkish and emoji included; it picks the encoding)
+#   sms send NUMBER TEXT...        send one (Turkish and emoji included; it picks the encoding); sms send --stdin:
+#                                  the number on the first line of stdin, the text after it (nothing in the arguments)
 #   sms delete INDEX | read | all  remove messages from the SIM
 #   sms watch [COMMAND]            wait for new messages, run COMMAND for each (MU300_SMS_WATCH_FROM_NOW=1: what the
 #                                  SIM holds when it starts counts as seen, only what comes after is new)
@@ -222,11 +223,18 @@ read)
     ;;
 
 send)
-    num=${1:-}
-    [ $# -gt 0 ] && shift
-    text=$*
+    if [ "${1:-}" = --stdin ]; then
+        [ $# -eq 1 ] || { echo "usage: sms send --stdin  (the number on the first line, the text after it)" >&2; exit 2; }
+        IFS= read -r num || :
+        text=$(cat)
+    else
+        num=${1:-}
+        [ $# -gt 0 ] && shift
+        text=$*
+    fi
     [ -n "$num" ] && [ -n "$text" ] || { echo "usage: sms send NUMBER TEXT..." >&2; exit 2; }
-    out=$(LC_ALL=C awk -v mode=encode -v number="$num" -v text="$text" -f "$AWK" </dev/null)
+    # the number and the text reach the encoder in its environment, never in its arguments (anyone may list those)
+    out=$(MU300_PDU_NUMBER=$num MU300_PDU_TEXT=$text LC_ALL=C awk -v mode=encode -f "$AWK" </dev/null)
     len=${out%% *}; pdu=${out#* }
     [ -n "$len" ] && [ -n "$pdu" ] || { echo "sms: could not build the message" >&2; exit 1; }
     # The whole conversation with the modem under one AT client lock (at_lock): the SMSC refresh, PDU mode and the
@@ -313,6 +321,6 @@ watch)
     ;;
 
 *)
-    sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'
     exit 2 ;;
 esac

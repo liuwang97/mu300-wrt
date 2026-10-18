@@ -13,7 +13,9 @@
 # one long one. See docs/FINDINGS.md.
 #
 #   decode: awk -v mode=decode -f sms-pdu.awk        (one PDU per line, "index<TAB>pdu")
-#   encode: awk -v mode=encode -v number=... -v text=... -f sms-pdu.awk
+#   encode: MU300_PDU_NUMBER=... MU300_PDU_TEXT=... awk -v mode=encode -f sms-pdu.awk (from the environment, as it is:
+#           an awk -v argument would show the recipient and the message to anyone who lists the processes; -v number=
+#           and -v text= are still read when the environment has none)
 #   group:  awk -v mode=group [-v known=FILE] -f sms-pdu.awk    (decode's records in, the same with a key added)
 #   near:   awk -v mode=near -v a=TIMESTAMP -v b=TIMESTAMP -f sms-pdu.awk   (exit 0: within GROUP_WINDOW seconds)
 #
@@ -313,6 +315,8 @@ BEGIN {
         exit
     }
     if (mode == "encode") {
+        if ("MU300_PDU_TEXT" in ENVIRON) text = ENVIRON["MU300_PDU_TEXT"]
+        if ("MU300_PDU_NUMBER" in ENVIRON) number = ENVIRON["MU300_PDU_NUMBER"]
         n = utf8_points(text, cp)
         if (gsm7_encodable(cp, n)) { ud = gsm7_pack(cp, n); dcs = "00"; udl = SEPTETS }
         else                       { ud = ucs2_pack(cp, n); dcs = "08"; udl = UNITS }

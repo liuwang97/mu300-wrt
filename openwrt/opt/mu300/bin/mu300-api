@@ -1019,8 +1019,11 @@ m_sms_send() {
     _t=$FV
     is_luci && dash sms_send "{\"num\":\"$_n\",\"text\":$(js "$_t")}"
     need_sms
-    # sms takes the text as its arguments (the message is not a secret; it is the user's own outgoing text)
-    tool 90 "$BIN/sms" send "$_n" "$_t" </dev/null || refuse failed "$ERR"
+    # the number and the text on sms's stdin (send --stdin), never in its arguments: anyone may list those
+    _in=$RUN/sms.$$.txt
+    printf '%s\n%s' "$_n" "$_t" > "$_in"
+    tool 90 "$BIN/sms" send --stdin < "$_in"; _rc=$RC; rm -f "$_in"
+    [ "$_rc" = 0 ] || refuse failed "$ERR"
     ok "\"text\":$(js "$OUT")"
 }
 m_sms_job() { only; dash sms_job '{}'; }

@@ -172,7 +172,7 @@ class ApiCase(ShellTest):
         e = super().env(**extra)
         e.update(MU300_SYSROOT=str(self.root), MU300_BIN=str(self.bin), MU300_LIBDIR=str(LIB), MU300_DISK=str(self.disk),
                  MU300_API_RUN=str(self.run_dir), MU300_API_NOROOT='1', MU300_DASH_RPC=str(self.tmp / 'mu300dash'),
-                 STUB_STDIN='mu300-vpn chpasswd mu300-usb busybox wifi-client mu300dash mu300-at')
+                 STUB_STDIN='mu300-vpn chpasswd mu300-usb busybox wifi-client mu300dash mu300-at sms')
         e.update({k: str(v) for k, v in extra.items()})
         return e
 
@@ -655,7 +655,10 @@ class Sms(ApiCase):
         for shell in self.each_shell():
             self.assertEqual(self.ok(shell, 'sms.list')['data']['messages'][0]['index'], [3, 4])
             self.ok(shell, 'sms.send', {'number': '+90555', 'text': '-x $(id)'})
-            self.assertEqual(self.calls('sms')[-1], ['sms', 'send', '+90555', '-x $(id)'])
+            # the number and the text on sms's stdin, never in its arguments
+            self.assertEqual(self.calls('sms')[-1], ['sms', 'send', '--stdin'])
+            self.assertEqual((self.tmp / 'stdin.sms').read_text(), '+90555\n-x $(id)')
+            self.assertEqual([f.name for f in self.run_dir.iterdir() if f.name.startswith('sms.')], [])
             self.ok(shell, 'sms.delete', {'id': '3'})
             self.assertEqual(self.calls('sms')[-1], ['sms', 'delete', '3'])
             self.refused(shell, 'sms.delete', {'id': '3 4'}, 'bad-value', 'id')
