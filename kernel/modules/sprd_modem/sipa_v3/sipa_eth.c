@@ -62,7 +62,7 @@ static void sipa_eth_flowctrl_handler(void *priv, int flowctrl)
 		spin_lock_irqsave(&queue_lock, flags);
 		netif_wake_queue(dev);
 		spin_unlock_irqrestore(&queue_lock, flags);
-		pr_info("wakeup queue on dev %s\n", dev->name);
+		pr_debug("wakeup queue on dev %s\n", dev->name);
 	}
 }
 
@@ -73,7 +73,7 @@ static void sipa_eth_notify_cb(void *priv, enum sipa_evt_type evt,
 
 	switch (evt) {
 	case SIPA_LEAVE_FLOWCTRL:
-		pr_info("dev %s SIPA LEAVE FLOWCTRL\n", sipa_eth->netdev->name);
+		pr_debug("dev %s SIPA LEAVE FLOWCTRL\n", sipa_eth->netdev->name);
 		sipa_eth_flowctrl_handler(priv, 0);
 		break;
 	/* following cases may be deprecated */
@@ -160,12 +160,17 @@ static netdev_tx_t sipa_eth_start_xmit(struct sk_buff *skb,
 			__skb_pull(skb, ETH_HLEN);
 		if (csum)
 			*csum = csum_seed;
-		pr_err_ratelimited("fail to send, ret %d\n", ret);
+		/* -EINPROGRESS: the IPA is resuming and SIPA_LEAVE_FLOWCTRL wakes the queue (MU300: not an error, and
+		 * it came several times a minute, every time the idle IPA was woken by a packet) */
+		if (ret == -EINPROGRESS)
+			pr_debug("fail to send, ret %d\n", ret);
+		else
+			pr_err_ratelimited("fail to send, ret %d\n", ret);
 		stats->tx_errors++;
 		spin_lock_irqsave(&queue_lock, flags);
 		if (sipa_nic_check_flow_ctrl(sipa_eth->nic_id)) {
 			netif_stop_queue(dev);
-			pr_info("stop queue on dev %s\n", dev->name);
+			pr_debug("stop queue on dev %s\n", dev->name);
 		}
 		spin_unlock_irqrestore(&queue_lock, flags);
 		sipa_nic_trigger_flow_ctrl_work(sipa_eth->nic_id, ret);

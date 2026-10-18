@@ -51,7 +51,7 @@ static void sipa_usb_notify_cb(void *priv, enum sipa_evt_type evt,
 {
 	switch (evt) {
 	case SIPA_LEAVE_FLOWCTRL:
-		pr_info("SIPA LEAVE FLOWCTRL\n");
+		pr_debug("SIPA LEAVE FLOWCTRL\n");
 		sipa_usb_flowctrl_handler(priv, 0);
 		break;
 	/* following cases may be deprecated */

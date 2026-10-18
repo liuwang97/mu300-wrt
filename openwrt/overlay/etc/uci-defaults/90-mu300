@@ -14,7 +14,8 @@
 # the one default the releases before the marker did not set (the flowtable), and the marker.
 #
 # Every run: wan is the modem's, the LAN bridge does not wait for a missing member, the USB host's pinned lease when
-# there is none (K25), the early USB path's firewall zone (K26), and the USB serial console in the fresh inittab.
+# there is none (K25), the early USB path's firewall zone (K26), logd's 1 MiB buffer over a stock size, and the USB
+# serial console in the fresh inittab.
 # /etc/config/network can hold a password (the APN's, FINDINGS 65; a PPPoE or WireGuard one): root's alone from the
 # first boot on, before anybody types one in. uci keeps the mode of a file it rewrites. (No link is followed.)
 [ -f /etc/config/network ] && [ ! -L /etc/config/network ] && chmod 600 /etc/config/network 2>/dev/null
@@ -139,6 +140,11 @@ set luci.mu300.lang='1'
 UCI
 	uci commit luci
 fi
+# logd's ring buffer (FINDINGS 191): OpenWrt's 128 KiB held only the last two minutes of an F50's log, so what the
+# services said at boot was gone before anybody looked. A boot alone writes about 500 KiB; 1 MiB of the 1.5 GB RAM
+# keeps all of it and more than an hour after. From the next start of logd (this runs before it at boot). Every
+# run, but only over the stock sizes (none, 64, 128): a size the user set stays.
+case $(uci -q get system.@system[0].log_size) in ''|64|128) uci -q set system.@system[0].log_size='1024' ;; esac
 # network last: a first run cut short before its commit has no wan proto mu300cell yet, and runs again as a first
 # install, in full
 uci commit system

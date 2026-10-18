@@ -1802,7 +1802,7 @@ int edma_tp_count(int chn, void *head, void *tail, int num)
 		bytecount += mbuf->len;
 		dt = time_sub_us(&start_time, &time);
 		if (dt >= 5000000) {
-			WCN_INFO("edma-tp:%d/%d (byte/us)\n",
+			WCN_DBG("edma-tp:%d/%d (byte/us)\n",
 				 bytecount, dt);
 			bytecount = 0;
 		}
