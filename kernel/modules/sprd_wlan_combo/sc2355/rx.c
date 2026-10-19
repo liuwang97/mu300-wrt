@@ -14,6 +14,7 @@
 #include <net/ip.h>
 #include <net/ip6_checksum.h>
 #include <linux/rcupdate.h>
+#include <linux/moduleparam.h>
 
 #include "cmdevt.h"
 #include "common/common.h"
@@ -491,11 +492,20 @@ void sc2355_rx_process(struct rx_mgmt *rx_mgmt, struct sk_buff *pskb)
  * (IRQ context): a refill waiting for that is released at once. Only that wait: an allocation failure, a hard
  * error or an attempt with nothing pending keeps its timer, and nothing polls.
  */
+static bool refill_bus_resume;
+module_param(refill_bus_resume, bool, 0644);
+MODULE_PARM_DESC(refill_bus_resume,
+		 "Resume an RX refill refused by a full EDMA ring on the bus completion (experimental, default off)");
+
 void sc2355_rx_bus_complete(struct sprd_hif *hif)
 {
-	struct rx_mgmt *rx_mgmt = smp_load_acquire(&hif->rx_mgmt);
+	struct rx_mgmt *rx_mgmt;
 	unsigned long flags;
 
+	/* MU300: off by default until measured on a board (FINDINGS 195); off, the refill keeps its back-off timer */
+	if (!READ_ONCE(refill_bus_resume))
+		return;
+	rx_mgmt = smp_load_acquire(&hif->rx_mgmt);
 	if (!rx_mgmt)
 		return;
 

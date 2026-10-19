@@ -331,14 +331,15 @@ int main(void) {
 
 
 class RxRefillResume(unittest.TestCase):
-    def code(self, baseline=False):
+    def code(self, baseline=False, off=False):
         rx, pcie = (WLAN / 'rx.c').read_text(), (WLAN / 'pcie.c').read_text()
         if baseline:
             # the completion hook taken out again: the long back-off comes back (the regression this catches)
             self.assertEqual(pcie.count('sc2355_rx_bus_complete(hif);'), 1)
             pcie = pcie.replace('sc2355_rx_bus_complete(hif);', '(void)hif;')
         constants = '\n'.join(s for s in rx.splitlines() if s.startswith('#define SPRD_REFILL_BACKOFF_'))
-        return (HARNESS + '\n' + constants + '\n' + function(rx, 'sc2355_rx_bus_complete') + '\n' +
+        return (HARNESS + '\n' + constants + '\nstatic bool refill_bus_resume = ' + ('false' if off else 'true') +
+                ';\n' + function(rx, 'sc2355_rx_bus_complete') + '\n' +
                 function(rx, 'rx_refill_retry') + '\n' + function(rx, 'sc2355_mm_fill_buffer') + '\n' +
                 function(pcie, 'sc2355_pcie_tx_data_complete') + '\n' + CASES)
 
@@ -349,6 +350,14 @@ class RxRefillResume(unittest.TestCase):
 
     def test_without_the_completion_hook_the_old_delay_returns(self):
         r = run_c(self, self.code(baseline=True))
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn('rx.refill_retry.delay==0', r.stderr)
+
+    def test_off_by_default_the_back_off_stays(self):
+        # experimental until measured on a board: the module parameter is off, and off is the old timer
+        rx = (WLAN / 'rx.c').read_text()
+        self.assertIn('static bool refill_bus_resume;\nmodule_param(refill_bus_resume, bool, 0644);', rx)
+        r = run_c(self, self.code(off=True))
         self.assertNotEqual(r.returncode, 0)
         self.assertIn('rx.refill_retry.delay==0', r.stderr)
 
