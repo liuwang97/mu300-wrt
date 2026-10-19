@@ -1,7 +1,7 @@
 #!/bin/sh
 # Select one SIM for the whole boot. Reopening SIPC channels is not a hot switch.
 # OpenWrt: network.wan.sim_slot; other systems: /etc/mu300/sim-slot.
-# The ZTE V50 also chooses one of its cards (FINDINGS 194): `card N` saves the card and the slot it is on, and
+# The ZTE V50 also chooses one of its cards (FINDINGS 206): `card N` saves the card and the slot it is on, and
 # `v50-boot` (android-vendor-start, before the modem's CP starts) sets the board's SIM switch for it.
 # Shared boot preferences are saved here; live modem operations dispatch only to the gated U30 backend.
 set -eu
@@ -38,7 +38,7 @@ ensure_f50() {
         return 1
     }
 }
-# the V50 boots either of the modem's two SIM interfaces as the F50 does (FINDINGS 194): the same modem, the same
+# the V50 boots either of the modem's two SIM interfaces as the F50 does (FINDINGS 206): the same modem, the same
 # second channel set (nr3/nr4/nr5, sipa_eth8)
 slot1_supported() {
     local device
@@ -46,7 +46,7 @@ slot1_supported() {
     case $device in f50|v50) return 0;; esac
     u30_supported
 }
-# --- the ZTE V50's cards (FINDINGS 194) ---
+# --- the ZTE V50's cards (FINDINGS 206) ---
 v50_lib=${MU300_V50_CARD_LIB:-/opt/mu300/lib/v50-card.sh}
 is_v50() { [ "$(device_name)" = v50 ]; }
 card_name() {

@@ -551,7 +551,7 @@ class MobileData(ApiCase):
             self.assertEqual(self.calls('later')[0][-2:], ['stop', 'mu300-mobile-data.service'])
 
     def test_sim_card(self):
-        """FINDINGS 194: the ZTE V50's card, 0-3 or "none", passed to mu300-sim card; anything else refused here."""
+        """FINDINGS 206: the ZTE V50's card, 0-3 or "none", passed to mu300-sim card; anything else refused here."""
         for shell in self.each_shell():
             self.refused(shell, 'sim.card', {'card': 4}, 'bad-value', 'card')
             self.refused(shell, 'sim.card', {'card': '1;x'}, 'bad-value', 'card')

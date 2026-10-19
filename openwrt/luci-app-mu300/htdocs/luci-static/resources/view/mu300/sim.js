@@ -88,7 +88,7 @@ return view.extend({
 		});
 		dom.content(this.root, st.v50 ? [ this.v50(st.v50), card ] : card);
 	},
-	/* The ZTE V50's cards (mu300-sim card, docs/FINDINGS.md 194): ZTE's card IDs, two of them behind a switch on one
+	/* The ZTE V50's cards (mu300-sim card, docs/FINDINGS.md 206): ZTE's card IDs, two of them behind a switch on one
 	   of the modem's two SIM interfaces. The choice is switched in before the modem starts, at the next boot. */
 	v50: function(v) {
 		var self = this;

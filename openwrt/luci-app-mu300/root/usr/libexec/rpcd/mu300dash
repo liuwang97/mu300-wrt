@@ -1045,7 +1045,7 @@ m_sim_set() {
     inp '@.value'; value=$V
     case $op:$value in default:1|default:2|hot:0|hot:1|switch:1|switch:2|card:0|card:1|card:2|card:3|card:none) ;;
         *) refuse 'Invalid SIM setting'; return;; esac
-    # the ZTE V50's card for the next boot (mu300-sim card, FINDINGS 194): its words when refused, else the status
+    # the ZTE V50's card for the next boot (mu300-sim card, FINDINGS 206): its words when refused, else the status
     if [ "$op" = card ]; then
         local err
         err=$("$SIMCTL" card "$value" 2>&1 >/dev/null) || { refuse 'SIM control failed' "$err"; return; }

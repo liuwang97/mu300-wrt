@@ -118,7 +118,7 @@ esac
         self.assertFalse((self.tmp / 'etc/mu300/sim-migration/mu300-sim-slot.migrated').exists())
 
     def test_selection_refuses_other_devices(self):
-        # (the U30 Air outside OpenWrt's native backend; the V50 boots SIM2 as the F50 does since FINDINGS 194,
+        # (the U30 Air outside OpenWrt's native backend; the V50 boots SIM2 as the F50 does since FINDINGS 206,
         # tests/test_v50_sim.py)
         device = self.tmp / 'mu300-device'
         for shell, name in [(s, n) for s in self.each_shell() for n in ('u30air',)]:

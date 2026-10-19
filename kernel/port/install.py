@@ -20,7 +20,7 @@ def append_once(path, marker, text):
     if marker not in s:
         open(p, 'w').write(s.rstrip('\n') + '\n' + text)
 
-# the ZTE V50's SIM switches (drivers/misc/zte-v50-sim.c, FINDINGS 194; kanoqwq's binding)
+# the ZTE V50's SIM switches (drivers/misc/zte-v50-sim.c, FINDINGS 206; kanoqwq's binding)
 append_once('drivers/misc/Makefile', 'zte-v50-sim.o', 'obj-$(CONFIG_ZTE_V50_SIM) += zte-v50-sim.o\n')
 append_once('drivers/misc/Kconfig', 'config ZTE_V50_SIM',
             '\nconfig ZTE_V50_SIM\n\ttristate "ZTE V50 SIM multiplexer"\n'
