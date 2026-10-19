@@ -94,10 +94,16 @@ led() { bnd "${MU300_LED_DEADLINE:-10}" /opt/mu300/bin/mu300-led data "$1" </dev
 # technology changes under a live connection, so the watchdog asks again on every round. AT+CEREG? is a short
 # local status read; AT+COPS? took about two seconds on weak service and held the AT channel on every round.
 # +CEREG: <n>,<stat>[,<tac>,<ci>,<AcT>[,...]]: the AcT is the fifth field (with <n> 4 or 5 more fields follow it).
+# A 5G SA registration is in the NR domain alone: LTE's CEREG then says not registered (or keeps an old LTE AcT), so
+# when CEREG names no NR access technology, AT+C5GREG? decides (registered, home or roaming: 5G). From kanoqwq's
+# network-led.sh (FINDINGS 199); a read that fails leaves the 4G colour, as before.
 led_up() {
     [ ! -e /run/mu300/sim-switching ] && [ ! -e /run/mu300/sim-active-unknown ] || { echo "SIM control is busy or requires a reboot" >&2; return 1; }
     case $(at 'AT+CEREG?' 4 2>/dev/null | awk -F, '/^\+CEREG:/ { gsub(/[" ]/, "", $5); print $5; exit }' || true) in
-        11|12|13|15) led 5g ;;
+        11|12|13|15) led 5g; return 0 ;;
+    esac
+    case $(at 'AT+C5GREG?' 4 2>/dev/null | awk -F, '/^\+C5GREG:/ { gsub(/[" \r]/, "", $2); print $2; exit }' || true) in
+        1|5) led 5g ;;
         *) led on ;;
     esac
 }
