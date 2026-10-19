@@ -36,6 +36,8 @@ class ColdBoot(ShellTest):
         self.stub('mu300-device', 'echo "${DEVICE:-u30air}"')
         self.stub('mountpoint', 'exit 1')
         self.stub('mount', 'echo "mount $*" >> "$STUBLOG/calls"')
+        (self.root / 'etc/mu300').mkdir(parents=True)
+        (self.root / 'etc/mu300/modem-coldboot').touch()     # opt-in (off by default)
 
     def cold(self, shell, cmdline=CHARGER, **env):
         args = self.tmp / 'cmdline'
@@ -67,7 +69,7 @@ class ColdBoot(ShellTest):
                 'f50': dict(DEVICE='f50'),
                 'v50': dict(DEVICE='v50'),
                 'another loader': dict(MU300_COLDBOOT_STOCK='0' * 64),
-                'opted out': dict(optout=True),
+                'not opted in (the default)': dict(optout=True),
                 'cp up': dict(cp_up=True),
                 'cannot tell': dict(cp_odd=True),
             }
@@ -75,8 +77,7 @@ class ColdBoot(ShellTest):
                 with self.subTest(case=name):
                     self.setUp()
                     if c.pop('optout', False):
-                        (self.root / 'etc/mu300').mkdir(parents=True)
-                        (self.root / 'etc/mu300/no-modem-coldboot').touch()
+                        (self.root / 'etc/mu300/modem-coldboot').unlink()
                     if c.pop('cp_up', False):
                         (self.root / 'dev/stty_nr1').write_text('')
                     if c.pop('cp_odd', False):

@@ -13,6 +13,8 @@
 # so the running PM is left alone. Its SHA-256 is checked again. Nothing on the disk changes; no AT, no NV.
 # Every other boot, board, loader or failure: the stock modem_control as before (this never stops the modem from
 # being started; the worst case is the old behaviour).
+# OFF by default: kanoqwq checked the loader and the copy, but the charger-boot start itself has not been run on a
+# device yet. On with: touch /etc/mu300/modem-coldboot (off again: rm it).
 set -u
 export PATH="$PATH:/opt/mu300/bin:/opt/mu300/busybox-bin:/usr/sbin:/sbin"
 BIN=${MU300_BIN:-/opt/mu300/bin}
@@ -27,8 +29,8 @@ say() {
     { echo "mu300-modem-coldboot: $*" > "${MU300_KMSG:-/dev/kmsg}"; } 2>/dev/null || true
 }
 [ -n "$A" ] && [ -r "$ARGS" ] || exit 0
-# the way back to the stock behaviour, should this ever do harm: touch /etc/mu300/no-modem-coldboot
-[ ! -e "$R/etc/mu300/no-modem-coldboot" ] || exit 0
+# opt-in until it has been run on a device (FINDINGS 196)
+[ -e "$R/etc/mu300/modem-coldboot" ] || exit 0
 [ "$("$BIN/mu300-device" 2>/dev/null)" = u30air ] || exit 0
 has() { tr '\000' ' ' < "$ARGS" | grep -Eq "(^|[[:space:]])$1([[:space:]]|\$)"; }
 has '(androidboot|sprdboot)\.mode=charger' || exit 0
