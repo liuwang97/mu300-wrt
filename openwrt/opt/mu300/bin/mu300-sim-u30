@@ -315,9 +315,11 @@ live_switch() {
     fi
     # A card whose SIM power is off answers CME ERROR 10 whatever is in its position: the starting RF state is
     # validated here, the card itself only once its power is on (preflight).
-    # The card in use is on (1), or in flight mode because its radio is switched off in its settings (4: a known
-    # state, from which the sequence below switches it off the same way).
-    { check "$old" 1 || { ! rf_allowed "$old" && check "$old" 4; }; } && check "$target" 0 ||
+    # The card in use is on (1), or off because its radio is switched off in its settings (0 or 2 after AT+SFUN=5,
+    # FINDINGS 202; 4, the flight mode of an earlier release): known states, from which the sequence below switches it
+    # off the same way.
+    { check "$old" 1 || { ! rf_allowed "$old" && { check "$old" 0 || check "$old" 2 || check "$old" 4; }; }; } &&
+        check "$target" 0 ||
         { fail 'Unexpected radio state; reboot first'; return 1; }
     local refusal
     refusal=$(preflight "$target") || { fail "$refusal"; return 1; }

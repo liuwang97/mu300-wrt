@@ -2001,7 +2001,7 @@ at() {
 class SimRadio(ShellTest):
     """Each SIM's radio on or off, kept across reboots (FINDINGS 185, after kanoqwq's mu300-sim-radio): the setting
     tool, and mobile-data's radio-on paths asking it (mobile-data sourced as in MobileData). The modem keeps its CFUN in
-    $STUBLOG/cfun (0 cold, 1 on, 4 flight mode)."""
+    $STUBLOG/cfun (0 cold or the stack off by SFUN=5, 1 on, 4 an earlier release's flight mode; FINDINGS 202)."""
     lib = MobileData.lib
     TOOL = BIN / 'mu300-sim-radio'
     MODEM = r"""
@@ -2011,6 +2011,7 @@ at() {
         'AT+CFUN?') printf '+CFUN: %s\nOK\n' "$(cat "$STUBLOG/cfun" 2>/dev/null || echo 0)" ;;
         'AT+CFUN=4') echo 4 > "$STUBLOG/cfun"; printf 'OK\n' ;;
         'AT+CFUN=1') echo 1 > "$STUBLOG/cfun"; printf 'OK\n' ;;
+        'AT+SFUN=5') echo "${T_SFUN5:-0}" > "$STUBLOG/cfun"; printf 'OK\n' ;;
         'AT+SFUN=4') echo 1 > "$STUBLOG/cfun"; printf 'OK\n' ;;
         *) printf 'OK\n' ;;
     esac
@@ -2116,12 +2117,24 @@ at() {
         self.assertNotIn('AT+SFUN=4', cmds)
         self.assertEqual((self.tmp / 'cfun').read_text().strip(), '0')
         self.assertTrue((self.tmp / 'run' / 'mu300' / 'sim-radio-held').exists())
-        # a radio that is on goes into flight mode
-        r, cmds = self.md('rc=0; radio_on || rc=$?; echo rc=$rc', policy='0 1\n', cfun='1')
-        self.assertIn('rc=7', r.stdout, r.stderr)
-        self.assertIn('AT+CFUN=4', cmds)
-        self.assertEqual((self.tmp / 'cfun').read_text().strip(), '4')
-        # the other card off does not matter to this one; flight mode with the setting on is switched back on
+        # a radio that is on: its stack off (AT+SFUN=5, read back 0 or 2), never AT+CFUN=4 (FINDINGS 202)
+        for off in ('0', '2'):
+            r, cmds = self.md('rc=0; radio_on || rc=$?; echo rc=$rc', policy='0 1\n', cfun='1', T_SFUN5=off)
+            self.assertIn('rc=7', r.stdout, r.stderr)
+            self.assertIn('AT+SFUN=5', cmds)
+            self.assertNotIn('AT+CFUN=4', cmds)
+            self.assertEqual((self.tmp / 'cfun').read_text().strip(), off)
+        # SFUN=5 not read back: a failure is said
+        r, cmds = self.md('rc=0; rf_off_locked || rc=$?; echo rc=$rc', policy='0 1\n', cfun='1', T_SFUN5='1')
+        self.assertIn('rc=1', r.stdout, r.stderr)
+        # off by SFUN=5 (0 or 2) with the setting on: the ordinary bring-up's AT+SFUN=4
+        for off in ('0', '2'):
+            (self.tmp / 'run' / 'mu300-ril-handshake').touch()
+            r, cmds = self.md('rc=0; radio_on || rc=$?; echo rc=$rc', policy='1 0\n', cfun=off)
+            self.assertIn('rc=0', r.stdout, r.stderr)
+            self.assertIn('AT+SFUN=4', cmds)
+        # the other card off does not matter to this one; an earlier release's flight mode with the setting on is
+        # switched back on
         r, cmds = self.md('rc=0; radio_on || rc=$?; echo rc=$rc', policy='1 0\n', cfun='4')
         self.assertIn('rc=0', r.stdout, r.stderr)
         self.assertIn('AT+CFUN=1', cmds)
@@ -2146,11 +2159,11 @@ at() {
         self.stub('ubus', 'echo "$*" >> "$STUBLOG/ubus"; echo "{ \\"up\\": ${T_UP:-true}, \\"autostart\\": ${T_AUTOSTART:-true}, \\"available\\": ${T_AVAILABLE:-true} }"')
         self.stub('ifup', 'echo "ifup $*" >> "$STUBLOG/ifup"')
         held = self.tmp / 'run' / 'mu300' / 'sim-radio-held'
-        # off: the WAN restarted (its dial then ends with SIM_RADIO_DISABLED), flight mode
+        # off: the WAN restarted (its dial then ends with SIM_RADIO_DISABLED), the stack off (SFUN=5)
         r, cmds = self.md('rf_apply; echo rc=$?', policy='0 1\n', cfun='1', MU300_NETIFD=1)
         self.assertIn('rc=0', r.stdout, r.stderr)
         self.assertEqual((self.tmp / 'ifup').read_text(), 'ifup wan\n')
-        self.assertEqual((self.tmp / 'cfun').read_text().strip(), '4')
+        self.assertEqual((self.tmp / 'cfun').read_text().strip(), '0')
         self.assertTrue(held.exists())
         # on: AT+CFUN=1, and the WAN mu300cell made unavailable is made available again (netifd starts it then,
         # unless somebody took it down)
@@ -2168,7 +2181,7 @@ at() {
                           T_UP='false')
         self.assertFalse(held.exists())
         self.assertFalse((self.tmp / 'ifup').exists())
-        self.assertEqual((self.tmp / 'cfun').read_text().strip(), '4')
+        self.assertEqual((self.tmp / 'cfun').read_text().strip(), '0')
         # on, and the WAN is available (nothing was made unavailable): nothing asked of netifd
         (self.tmp / 'ubus').unlink(missing_ok=True)
         r, cmds = self.md('rf_apply; echo rc=$?', policy='1 1\n', cfun='4', MU300_NETIFD=1)
