@@ -20,6 +20,14 @@ def append_once(path, marker, text):
     if marker not in s:
         open(p, 'w').write(s.rstrip('\n') + '\n' + text)
 
+# the ZTE V50's SIM switches (drivers/misc/zte-v50-sim.c, FINDINGS 194; kanoqwq's binding)
+append_once('drivers/misc/Makefile', 'zte-v50-sim.o', 'obj-$(CONFIG_ZTE_V50_SIM) += zte-v50-sim.o\n')
+append_once('drivers/misc/Kconfig', 'config ZTE_V50_SIM',
+            '\nconfig ZTE_V50_SIM\n\ttristate "ZTE V50 SIM multiplexer"\n'
+            '\tdepends on GPIOLIB && OF\n\thelp\n'
+            '\t  The ZTE V50 (MU3351) switches between its built-in and external SIM cards (zte,sim_gpio_ctrl).\n'
+            '\t  Binds only on a board with the V50\'s AW9523B; leaves the lines as the bootloader set them.\n')
+
 append_once('drivers/clk/sprd/Makefile', 'reset.o', 'clk-sprd-y\t+= reset.o\n')
 append_once('drivers/clk/sprd/Makefile', 'ums9620-clk.o', 'obj-$(CONFIG_SPRD_UMS9620_CLK)\t\t+= ums9620-clk.o\n')
 kc = os.path.join(tree, 'drivers/clk/sprd/Kconfig')

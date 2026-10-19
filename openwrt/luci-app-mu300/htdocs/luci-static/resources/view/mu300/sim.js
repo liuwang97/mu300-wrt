@@ -86,7 +86,36 @@ return view.extend({
 			d.addEventListener('click', function() { self.set('default', n); });
 			row.appendChild(b); row.appendChild(d); card.appendChild(row);
 		});
-		dom.content(this.root, card);
+		dom.content(this.root, st.v50 ? [ this.v50(st.v50), card ] : card);
+	},
+	/* The ZTE V50's cards (mu300-sim card, docs/FINDINGS.md 194): ZTE's card IDs, two of them behind a switch on one
+	   of the modem's two SIM interfaces. The choice is switched in before the modem starts, at the next boot. */
+	v50: function(v) {
+		var self = this;
+		var names = [ _('Built-in SIM 1'), _('Built-in SIM 2'), _('Built-in SIM 3'), _('External SIM') ];
+		var name = function(n) { return (n === null || n === undefined || !names[n]) ? _('Unknown') : names[n]; };
+		var box = E('section', { 'class': 'mud-card' }, [
+			E('h3', {}, [ _('SIM card') ]),
+			E('p', {}, [ _('Built-in SIM 3 shares SIM2, the external SIM shares SIM1. The card chosen here is switched in before the modem starts, at the next boot; without a choice the cards stay as the bootloader sets them.') ]),
+			E('p', {}, [ _('Active SIM') + ': ' + name(v.card) ]),
+			E('p', {}, [ _('Cold-boot default') + ': ' + (v.saved_card === null || v.saved_card === undefined ? '-' : name(v.saved_card)) ])
+		]);
+		if (!v.cards || !v.switches) {
+			box.appendChild(E('p', {}, [ _('SIM control unavailable') ]));
+			return box;
+		}
+		var row = E('div', { 'style': 'display:flex;flex-wrap:wrap;gap:8px;margin:12px 0' });
+		v.cards.forEach(function(n) {
+			var b = E('button', { 'class': 'mud-btn', 'disabled': v.saved_card === n ? '' : null }, [ name(n) ]);
+			b.addEventListener('click', function() { self.set('card', n); });
+			row.appendChild(b);
+		});
+		var none = E('button', { 'class': 'mud-btn', 'disabled': (v.saved_card === null || v.saved_card === undefined) ? '' : null },
+			[ _('As the bootloader sets them') ]);
+		none.addEventListener('click', function() { self.set('card', 'none'); });
+		row.appendChild(none);
+		box.appendChild(row);
+		return box;
 	},
 	handleSaveApply: null,
 	handleSave: null,

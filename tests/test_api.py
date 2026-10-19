@@ -550,6 +550,19 @@ class MobileData(ApiCase):
             self.ok(shell, 'data.power', {'state': 'off'})
             self.assertEqual(self.calls('later')[0][-2:], ['stop', 'mu300-mobile-data.service'])
 
+    def test_sim_card(self):
+        """FINDINGS 194: the ZTE V50's card, 0-3 or "none", passed to mu300-sim card; anything else refused here."""
+        for shell in self.each_shell():
+            self.refused(shell, 'sim.card', {'card': 4}, 'bad-value', 'card')
+            self.refused(shell, 'sim.card', {'card': '1;x'}, 'bad-value', 'card')
+            self.refused(shell, 'sim.card', {}, 'missing', 'card')
+            self.ok(shell, 'sim.card', {'card': 3})
+            self.assertIn(['mu300-sim', 'card', '3'], self.calls('mu300-sim'))
+            self.clear_calls()
+            self.ok(shell, 'sim.card', {'card': 'none'})
+            self.assertIn(['mu300-sim', 'card', 'none'], self.calls('mu300-sim'))
+            self.clear_calls()
+
     def test_voice(self):
         """FINDINGS 184: voice.get is mobile-data voice --json --read; voice.set the fixed words, the slot 1/2 as 0/1."""
         for shell in self.each_shell():

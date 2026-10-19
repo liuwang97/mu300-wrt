@@ -26,7 +26,7 @@ sim_cfg_hot() {
 }
 sim_cfg_write() {
     local option=$1 value=$2 old present=0
-    case "$option" in sim_slot|sim_hot) ;; *) return 1;; esac
+    case "$option" in sim_slot|sim_hot|v50_card) ;; *) return 1;; esac
     if old=$(uci -q get "network.wan.$option"); then present=1; fi
     uci set "network.wan.$option=$value" || return 1
     if uci commit network; then return 0; fi
@@ -44,6 +44,31 @@ sim_cfg_save_default() {
         mkdir -p "$sim_config_root/etc/mu300" || return 1
         tmp=$(mktemp "$sim_config_root/etc/mu300/sim-slot.XXXXXX") || return 1
         printf '%s\n' "$1" > "$tmp" && mv -f "$tmp" "$sim_config_root/etc/mu300/sim-slot"
+    fi
+}
+# --- the ZTE V50's card (FINDINGS 194): ZTE's card ID 0-3, or nothing (the switches stay as the bootloader left
+# them). OpenWrt: network.wan.v50_card, next to sim_slot; other systems: /etc/mu300/v50-card. mu300-sim validates it.
+sim_cfg_card() {
+    if command -v uci >/dev/null 2>&1; then
+        uci -q get network.wan.v50_card 2>/dev/null || true
+    else
+        cat "$sim_config_root/etc/mu300/v50-card" 2>/dev/null || true
+    fi
+}
+# sim_cfg_save_card CARD|'': saved, or (empty) forgotten
+sim_cfg_save_card() {
+    local tmp
+    case "$1" in ''|0|1|2|3) ;; *) return 1;; esac
+    if command -v uci >/dev/null 2>&1; then
+        if [ -n "$1" ]; then sim_cfg_write v50_card "$1"; return; fi
+        uci -q get network.wan.v50_card >/dev/null 2>&1 || return 0
+        uci -q delete network.wan.v50_card && uci commit network
+    elif [ -n "$1" ]; then
+        mkdir -p "$sim_config_root/etc/mu300" || return 1
+        tmp=$(mktemp "$sim_config_root/etc/mu300/v50-card.XXXXXX") || return 1
+        printf '%s\n' "$1" > "$tmp" && mv -f "$tmp" "$sim_config_root/etc/mu300/v50-card"
+    else
+        rm -f "$sim_config_root/etc/mu300/v50-card"
     fi
 }
 sim_cfg_save_hot() {

@@ -58,7 +58,7 @@ TAB=$(printf '\t')
 # ------------------------------------------------------------------ the methods
 METHODS='hello overview
 wifi.get wifi.set wifi.power wificlient.status wificlient.scan wificlient.join wificlient.leave
-data.get data.set data.power sim.get sim.select sim.state voice.get voice.set radio.get radio.set lock.get lock.set
+data.get data.set data.power sim.get sim.select sim.card sim.state voice.get voice.set radio.get radio.set lock.get lock.set
 vpn.status vpn.profiles vpn.subs vpn.settings vpn.service vpn.killswitch vpn.use vpn.add vpn.add_url vpn.rename
 vpn.remove vpn.setting vpn.sub_add vpn.sub_refresh vpn.sub_remove vpn.logs vpn.install vpn.engine_install vpn.engines
 sms.list sms.read sms.send sms.job sms.delete sms.forward sms.forward_set sms.forward_test sms.forward_log_clear
@@ -723,6 +723,19 @@ m_sim_select() {
     checked
     tool 60 "$BIN/mu300-sim" default "$V" </dev/null || refuse failed "$ERR"
     ok "\"sim\":$(jcheck "$OUT"),\"text\":$(js "$OUT")"
+}
+# the ZTE V50's card for the next boot (mu300-sim card, FINDINGS 194): ZTE's card ID 0-3, or "none" (the switches as
+# the bootloader leaves them); mu300-sim refuses a card the board has not, on another device too
+m_sim_card() {
+    only card
+    fget card || refuse missing card
+    case $FT:$FV in [ns]:[0-3]|s:none) V=$FV ;; *) refuse bad-value card ;; esac
+    [ -x "$BIN/mu300-sim" ] || refuse unsupported mu300-sim
+    checked
+    tool 60 "$BIN/mu300-sim" card "$V" </dev/null || refuse failed "$ERR"
+    _t=$OUT
+    tool 15 "$BIN/mu300-sim" status --json </dev/null
+    ok "\"sim\":$(jcheck "$OUT"),\"text\":$(js "$_t")"
 }
 # what the card in use says of itself (mu300-sim-state, FINDINGS 186): ready, locked (a PIN or PUK) or absent; the
 # answer kept for this boot, or the card asked (AT+CPIN?, one command) when there is none or "fresh" says so
@@ -1828,6 +1841,7 @@ case $METHOD in
     data.power) m_data_power ;;
     sim.get) m_sim_get ;;
     sim.select) m_sim_select ;;
+    sim.card) m_sim_card ;;
     sim.state) m_sim_state ;;
     voice.get) m_voice_get ;;
     voice.set) m_voice_set ;;
