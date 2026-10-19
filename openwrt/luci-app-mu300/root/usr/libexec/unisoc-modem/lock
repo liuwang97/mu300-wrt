@@ -11,7 +11,8 @@
 #                                       and in the runtime directory for the page (lock get -> "reset")
 #
 # KIND / VALUE:
-#   mode  auto | 4g | sa | nsa          network mode lock (SPTESTMODE + SP5GRAN)
+#   mode  auto | auto152 | 4g | sa | nsa   network mode lock (SPTESTMODE + SP5GRAN); auto152 is the automatic
+#                                       mode 152 instead of 134 (no 2G, from kanoqwq's fork; FINDINGS 198)
 #   endc  on | off                      EN-DC / NSA anchor permission (SPENDC; note OFF is value 2)
 #   lte   "1,3,5" or ""                 LTE band lock (SPLBAND); empty = automatic
 #   nr    "78,41" or ""                 NR band lock (SPLBAND); empty = automatic
@@ -96,7 +97,7 @@ digits() {
 # same before it starts us; this is the adapter's own guard)
 valid_value() {
     case $1 in
-        mode) case $2 in auto|4g|sa|nsa) return 0 ;; esac; return 1 ;;
+        mode) case $2 in auto|auto152|4g|sa|nsa) return 0 ;; esac; return 1 ;;
         endc|auto_apply) case $2 in on|off) return 0 ;; esac; return 1 ;;
         lte|nr)
             # up to 32 band numbers of up to 3 digits, comma-separated; empty = automatic
@@ -183,6 +184,7 @@ mode_label() {  # mode_label WORKMODE GRAN  (decode per ufi_tools toAppMode, slo
     case $1 in
         3)   echo 4g ;;
         134) echo auto ;;
+        152) echo auto152 ;;
         128|131) [ "$2" = 1 ] && echo sa || echo nsa ;;
         *)   echo auto ;;
     esac
@@ -192,6 +194,7 @@ mode_pair() {  # mode_pair LABEL -> "workmode gran"  (encode per ufi_tools modeC
         4g)   echo "3 1" ;;
         sa)   echo "128 1" ;;
         nsa)  echo "131 0" ;;
+        auto152) echo "152 1" ;;
         *)    echo "134 1" ;;
     esac
 }

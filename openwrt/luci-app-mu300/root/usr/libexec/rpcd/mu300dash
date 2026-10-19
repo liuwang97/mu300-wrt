@@ -470,7 +470,7 @@ m_lock_get() {
 # (NR-ARFCN up to 3279165, EARFCN up to 262143, PCI up to 1007)
 lock_val_ok() {  # lock_val_ok KIND VALUE
     case $1 in
-        mode)            allowed "$2" '(auto|4g|sa|nsa)' ;;
+        mode)            allowed "$2" '(auto|auto152|4g|sa|nsa)' ;;
         endc|auto_apply) allowed "$2" '(on|off)' ;;
         lte|nr)          [ -z "$2" ] || allowed "$2" '[0-9]{1,3}(,[0-9]{1,3}){0,31}' ;;
         cell)            allowed "$2" '(auto|off|off-nr|off-lte|(nr|lte):[0-9]{1,7},[0-9]{1,4})' ;;

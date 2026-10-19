@@ -301,6 +301,7 @@ class Refusals(Mu300Dash):
         ('lock_get', {}, 'fresh', '1'),
         ('lock_set', {'kind': 'endc', 'val': 'on'}, 'kind', 'endc'),
         ('lock_set', {'kind': 'mode', 'val': 'sa'}, 'val', 'sa'),
+        ('lock_set', {'kind': 'mode', 'val': 'auto152'}, 'val', 'auto152'),
         ('lock_set', {'kind': 'endc', 'val': 'on'}, 'val', 'on'),
         ('lock_set', {'kind': 'auto_apply', 'val': 'off'}, 'val', 'off'),
         ('lock_set', {'kind': 'lte', 'val': '1,3'}, 'val', '1,3'),

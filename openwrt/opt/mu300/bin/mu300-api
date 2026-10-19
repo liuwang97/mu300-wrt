@@ -813,7 +813,7 @@ m_lock_set() {
     only kind val
     word kind 'mode|endc|lte|nr|cell|reset|auto_apply'; need kind; _k=$V
     case $_k in
-        mode)    word val 'auto|4g|sa|nsa' ;;
+        mode)    word val 'auto|auto152|4g|sa|nsa' ;;
         endc|auto_apply) word val 'on|off' ;;
         lte|nr)  word val '([0-9]{1,3}(,[0-9]{1,3}){0,31})?' ;;
         cell)    word val 'auto|off|off-nr|off-lte|(nr|lte):[0-9]{1,7},[0-9]{1,4}' ;;
