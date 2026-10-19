@@ -2,6 +2,7 @@
 that past bugs taught (see each test)."""
 import json
 import os
+import gzip
 import re
 import shutil
 import subprocess
@@ -323,7 +324,7 @@ class Rules(unittest.TestCase):
         # mu300-update knows the module (fixed asset names, the repository's latest release, MU300_VPN_URL), and
         # mu300-extra lists vpn and its engine extras from it (module v2: the core, and the bundle as the fallback)
         up = (BIN / 'mu300-update').read_text()
-        self.assertRegex(up, r'(?m)^EXTRAS="vpn lang vpn-mihomo panel vpn-xray vpn-singbox vpn-dae"$')
+        self.assertRegex(up, r'(?m)^EXTRAS="vpn lang vpn-mihomo panel vpn-xray vpn-singbox vpn-dae audio"$')
         self.assertRegex(up, r'(?m)^VPN_ENGINE_EXTRAS="vpn-xray vpn-singbox vpn-mihomo vpn-dae"$')
         self.assertRegex(up, r'(?m)^VPN_REPO=dikeckaan/mu300-linux-vpn$')
         self.assertIn('VPN_URL=${MU300_VPN_URL:-https://github.com/$VPN_REPO/releases/latest/download}', up)
@@ -444,18 +445,55 @@ class Rules(unittest.TestCase):
         # the marker is a file of the device, so a zone the user deleted is not made again after an update
         self.assertIn('[ -e /etc/mu300/docker-zone ] && exit 0', zone)
 
-    def test_release_audit_wants_the_audio_stack(self):
-        # make-release.sh: both mainline bundles must carry every module upstream/modules/sprd_audio/Kbuild lists
-        # (#315); its own reader of the Kbuild, run here against the real one
+    def test_release_audit_refuses_the_audio_stack(self):
+        # make-release.sh: call audio is the audio extra's (FINDINGS 194): no kernel bundle carries a driver of the
+        # call-audio stack (mainline's sprd-dma.ko is the stack's own; 5.4's is the vendor kernel's DMA driver and
+        # stays), and no image its programs or services. The audit's own lines, run against bundles made here.
         rel = (TOP / 'tools' / 'make-release.sh').read_text()
-        code = re.search(r"audio=\$\(python3 -c '(.*?)' \"\$TOP/upstream/modules/sprd_audio/Kbuild\"\)", rel, re.S).group(1)
-        self.assertIn('sprd_wlan_combo.ko $audio; do', rel)
-        r = subprocess.run([sys.executable, '-c', code, str(TOP / 'upstream/modules/sprd_audio/Kbuild')],
-                           capture_output=True, text=True, check=True)
-        mods = r.stdout.split()
-        self.assertEqual(20, len(mods), mods)
-        for m in ('sprd-dma.ko', 'audio_mem.ko', 'sprd_audcp_boot.ko', 'mcdt_hw_r2p0.ko', 'snd-soc-sprd-card.ko'):
-            self.assertIn(m, mods)
+        audit = rel[rel.index('AUDIO_KO="'):rel.index('[ $fail = 0 ] || { echo "audit failed')]
+        self.assertEqual(23, len(re.search(r'AUDIO_KO="([^"]*)"', audit).group(1).split()))
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+
+            def bundle(name, *mods):
+                src = d / 'src' / name
+                shutil.rmtree(src, ignore_errors=True)
+                (src / 'modules').mkdir(parents=True)
+                for m in ('sipc-core.ko',) + mods:
+                    (src / 'modules' / m).write_text('')
+                subprocess.run(['tar', '-czf', str(d / f'{name}.tar.gz'), '-C', str(src), '.'], check=True)
+
+            def manifest(name, *paths):
+                with gzip.open(d / f'{name}.manifest.gz', 'wt') as f:
+                    for p in ('etc/mu300/image-version',) + paths:
+                        f.write(f'f 755 0 0 1 {"0" * 64} {p}\n')
+
+            def run():
+                r = subprocess.run(['sh', '-c', 'fail=0\n' + audit + 'echo "fail=$fail"'], env={'D': str(d), 'PATH': os.environ['PATH']},
+                                   capture_output=True, text=True)
+                return r.stdout
+
+            bundle('mu300-kernel', 'sprd-dma.ko', 'virt-dma.ko')
+            bundle('mu300-kernel-6.18')
+            bundle('mu300-kernel-7.2')
+            manifest('mu300-ubuntu-rootfs', 'opt/mu300/bin/mu300-atd', 'etc/systemd/system/mu300-atd.service')
+            manifest('mu300-openwrt-rootfs', 'etc/init.d/mu300-atd')
+            self.assertIn('fail=0', run())
+            for name, mods in (('mu300-kernel', ('audio_sipc.ko',)), ('mu300-kernel-6.18', ('sprd-dma.ko',)),
+                               ('mu300-kernel-7.2', ('snd-soc-sprd-card.ko',))):
+                bundle(name, *mods)
+                out = run()
+                self.assertIn('fail=1', out, name)
+                self.assertIn(f'{name} carries {mods[0]}', out)
+                bundle(name)
+            for name, path in (('mu300-ubuntu-rootfs', 'opt/mu300/bin/mu300-voice'),
+                               ('mu300-ubuntu-rootfs', 'etc/systemd/system/mu300-audio.service'),
+                               ('mu300-openwrt-rootfs', 'etc/init.d/mu300-audio'),
+                               ('mu300-ubuntu-rootfs', 'etc/modprobe.d/mu300-audio.conf')):
+                manifest(name, path)
+                self.assertIn('fail=1', run(), path)
+                manifest(name)
+            self.assertIn('fail=0', run())
 
     def test_e2fsck_is_pinned_and_everywhere(self):
         # tools/e2fsck/build.sh: a pinned e2fsprogs (its signed SHA-256) in a pinned image (FINDINGS 182), and every

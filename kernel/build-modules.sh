@@ -7,10 +7,10 @@ KV=${KV:-6.18.57}
 K=/src/linux-$KV
 O=/src/out-$KV
 OUT=/work/${OUTDIR:-out}   # as in build.sh
-# every out-of-tree module, in dependency order (wlan/bt use wcn_bsp, the PMIC watchdog, the audio stack and Mali the
-# modem's headers, the audio stack also its SIPC exports;
-# mu300_thermal, the stock virtual thermal zone, needs only the kernel)
-mods=${*:-wcn_bsp sprd_wlan_combo sprdbt_tty sprd_modem sprd_pmic_wdt sprd_audio mali mu300_thermal}
+# every out-of-tree module, in dependency order (wlan/bt use wcn_bsp, the PMIC watchdog and Mali the modem's headers;
+# mu300_thermal, the stock virtual thermal zone, needs only the kernel). The call-audio stack is not here: it is the
+# audio extra's (https://github.com/dikeckaan/mu300-audio, built against this tree's build kit; FINDINGS 194)
+mods=${*:-wcn_bsp sprd_wlan_combo sprdbt_tty sprd_modem sprd_pmic_wdt mali mu300_thermal}
 mkdir -p $OUT/modules
 # a full build starts clean, so no module of another kernel release ends up next to the new ones
 [ $# -gt 0 ] || rm -f $OUT/modules/*.ko $OUT/modules/*.log
@@ -43,9 +43,6 @@ for m in $mods; do
     [ -d /src/mod-build/wcn_bsp ] || cp -r /work/modules/wcn_bsp /src/mod-build/wcn_bsp
     # the PMIC watchdog talks to pm_sys over SIPC, so it needs the modem stack's headers next to it
     [ -d /src/mod-build/sprd_modem ] || cp -r /work/modules/sprd_modem /src/mod-build/sprd_modem
-    # the audio stack's DMA driver builds the kernel's own virt-dma into itself (sprd_audio/Kbuild)
-    [ "$m" = sprd_audio ] && cp $K/drivers/dma/virt-dma.c $K/drivers/dma/virt-dma.h $K/drivers/dma/dmaengine.h \
-        /src/mod-build/sprd_audio/dma/
     # the Mali DDK needs its own configuration switches (same ones the 5.4 build uses)
     margs=
     kcflags=
