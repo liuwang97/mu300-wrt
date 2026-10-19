@@ -157,7 +157,16 @@ sec_data() {
 sec_sim() {
     [ -x "$BIN/mu300-sim" ] || return 1
     _s=$(timed 10 "$BIN/mu300-sim" configured 2>/dev/null) || return 1
-    case $_s in 0|1) printf '{"default":%s}\n' "$((_s + 1))" ;; *) return 1 ;; esac
+    case $_s in 0|1) ;; *) return 1 ;; esac
+    # the ZTE V50's chosen card too (mu300-sim card, FINDINGS 204)
+    _c=
+    if [ "$(timed 5 "$BIN/mu300-device" 2>/dev/null)" = v50 ]; then
+        _c=$(timed 10 "$BIN/mu300-sim" status --json 2>/dev/null | jq -r '.v50.saved_card // empty' 2>/dev/null) || _c=
+    fi
+    case $_c in
+        [0-3]) printf '{"default":%s,"card":%s}\n' "$((_s + 1))" "$_c" ;;
+        *) printf '{"default":%s}\n' "$((_s + 1))" ;;
+    esac
 }
 lock_dir() {
     _d=$(uci_q get unisoc_modem.main.state_dir 2>/dev/null)
@@ -379,7 +388,7 @@ else
       sec("data"; keysin(["apn", "pdp", "auth", "user", "password", "roaming"]) and (.apn // "" | l(100))
           and (.pdp // "" | l(8)) and (.auth // "" | l(8)) and (.user // "" | l(64)) and (.password // "" | l(64))
           and (.roaming // false | flags)),
-      sec("sim"; keysin(["default"]) and (.default | IN(1, 2))),
+      sec("sim"; keysin(["default", "card"]) and (.default | IN(1, 2)) and (.card == null or (.card | IN(0, 1, 2, 3)))),
       sec("locks"; keysin(["mode", "endc", "lte", "nr", "cell"]) and all(.[]; l(127))),
       sec("vpn"; keysin(["enabled", "active", "settings", "profiles", "subscriptions"])
           and (.enabled // false | flags)
@@ -493,7 +502,11 @@ def q: tostring | @json;
             {sec: "vpn", do: "vpn-power", state: (if $v.enabled then "on" else "off" end),
              say: "VPN: turned \(if $v.enabled then "on" else "off" end)"} else empty end )
     else empty end ),
-  ( if $B.sim != null and want("sim") and $B.sim.default != ($C.sim.default // null) then
+  ( if $B.sim != null and want("sim") and $B.sim.card != null then
+      (if $B.sim.card != ($C.sim.card // null) then
+         {sec: "sim", do: "api", method: "sim.card", req: {card: $B.sim.card},
+          say: "SIM: card \($B.sim.card) at the next boot"} else empty end)
+    elif $B.sim != null and want("sim") and $B.sim.default != ($C.sim.default // null) then
       {sec: "sim", do: "api", method: "sim.select", req: {slot: $B.sim.default},
        say: "SIM: SIM \($B.sim.default) at the next boot"} else empty end ),
   ( if $B.data != null and want("data") then
@@ -604,7 +617,7 @@ check_step() {
         note) ;;
         api)
             _m=$(field .method)
-            case $_m in wifi.set|wifi.power|data.set|sim.select|lan.set|system.hostname|system.timezone|system.ssh) ;;
+            case $_m in wifi.set|wifi.power|data.set|sim.select|sim.card|lan.set|system.hostname|system.timezone|system.ssh) ;;
                 *) CHK_WHY="no such step"; return 1 ;; esac
             if ! api_call "$_m" "$(fieldc .req)" check; then
                 case $(printf '%s' "$ANS" | jq -r .error 2>/dev/null) in

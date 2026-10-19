@@ -158,6 +158,9 @@ if [ -x /opt/mu300/bin/mu300-modem-coldboot ]; then
 fi
 export MU300_MODEM_CONTROL
 mark vendor-chroot-ready
+# the ZTE V50's SIM switches, set for the card chosen under Linux before the CP starts and powers a SIM (FINDINGS 204):
+# nothing on another board or without a choice, once a boot, and never a reason not to start the modem
+${MU300_SIM_CMD:-/opt/mu300/bin/mu300-sim} v50-boot </dev/null || true
 # sprd_modem_loader only accepts a task whose comm is exactly "modem_control": android-run execs it directly, as the
 # vendor account where there is one
 exec /opt/mu300/bin/android-run modem_control

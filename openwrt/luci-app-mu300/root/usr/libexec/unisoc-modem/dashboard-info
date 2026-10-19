@@ -86,6 +86,8 @@ if [ -x "$SIMBIN" ]; then
     case "$sim_active$sim_wanted$sim_s1" in
         [12][12][01]) SIM_JSON="{\"slot\":$((sim_active - 1)),\"wanted\":$((sim_wanted - 1)),\"slot1_supported\":$sim_s1}" ;;
     esac
+    # the ZTE V50 (FINDINGS 204): slot 0 is built-in SIM 1 or the external SIM, slot 1 built-in SIM 2 or 3
+    case $SIM_JSON:$sim_status in '{'*:*'"v50":{'*) SIM_JSON="${SIM_JSON%\}},\"v50\":1}" ;; esac
 fi
 # The mobile data device: the one netifd's WAN uses now (its l3_device) first, the configured one (data_device) while the
 # WAN has none, the slot's CID 1 bearer last. A configured name used to win over the live one, so a WAN on another

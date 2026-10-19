@@ -65,7 +65,16 @@ return network.registerProtocol('mu300cell', {
 			var self = this;
 			var cur = form.ListValue.prototype.load.apply(this, arguments);
 			return Promise.all([ simSupport(), cur ]).then(function(r) {
-				if (r[0] && !r[0].slot1_supported) {
+				/* the ZTE V50 (FINDINGS 204): each slot is one of the modem's two SIM interfaces, with a choice of
+				   cards behind it (Cellular > SIM) */
+				if (r[0] && r[0].v50) {
+					self.keylist = [];
+					self.vallist = [];
+					self.value('0', _('SIM1: built-in SIM 1 or the external SIM'));
+					self.value('1', _('SIM2: built-in SIM 2 or 3'));
+					self.description = _('Applies after reboot. Which card is behind each SIM is chosen in Cellular > SIM.');
+				}
+				else if (r[0] && !r[0].slot1_supported) {
 					self.keylist = [];
 					self.vallist = [];
 					self.value('0', _('External SIM (slot 0)'));

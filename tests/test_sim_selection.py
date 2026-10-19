@@ -118,9 +118,10 @@ esac
         self.assertFalse((self.tmp / 'etc/mu300/sim-migration/mu300-sim-slot.migrated').exists())
 
     def test_selection_refuses_other_devices(self):
-        # (the V50 too, FINDINGS 95: its second SIM is not started, the external card is the only one)
+        # (the U30 Air outside OpenWrt's native backend; the V50 boots SIM2 as the F50 does since FINDINGS 204,
+        # tests/test_v50_sim.py)
         device = self.tmp / 'mu300-device'
-        for shell, name in [(s, n) for s in self.each_shell() for n in ('u30air', 'v50')]:
+        for shell, name in [(s, n) for s in self.each_shell() for n in ('u30air',)]:
             device.write_text(f'#!/bin/sh\necho {name}\n')
             device.chmod(0o755)
             self.choice.write_text('0\n')
@@ -128,7 +129,7 @@ esac
             r = self.script(shell, BIN / 'mu300-sim', 'select', 'internal',
                             MU300_SIM_ROOT=self.tmp, MU300_DEVICE_CMD=device)
             self.assertNotEqual(r.returncode, 0)
-            self.assertIn('F50 only', r.stderr)
+            self.assertIn('F50 and V50 only', r.stderr)
             self.assertEqual(self.choice.read_text().strip(), '0')
             status = self.script(shell, BIN / 'mu300-sim', 'status', '--json',
                                  MU300_SIM_ROOT=self.tmp, MU300_DEVICE_CMD=device)
