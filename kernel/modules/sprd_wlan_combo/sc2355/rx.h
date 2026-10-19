@@ -89,6 +89,14 @@ struct rx_mgmt {
 	/* MU300: the RX refill's retry after an attempt that got nowhere (see sc2355_mm_fill_buffer) */
 	struct delayed_work refill_retry;
 	unsigned int refill_backoff_ms;
+	/*
+	 * MU300 (kanoqwq's clean-tf-7.2 cf4dcd61): a refill refused by a full EDMA pending ring (-EAGAIN) waits for
+	 * the bus to complete a transfer on the data channel (sc2355_rx_bus_complete) rather than for the whole
+	 * back-off. The lock orders that completion (IRQ) against arming the timer and against teardown.
+	 */
+	spinlock_t refill_lock;
+	bool refill_bus_waiting;
+	bool refill_bus_ready;
 	/* MU300: set by sc2355_rx_deinit(); nothing queues or times another refill after it */
 	bool stopping;
 };
@@ -251,6 +259,8 @@ void sc2355_rx_send_cmd(struct sprd_hif *hif, void *data, int len,
 			unsigned char id, unsigned char ctx_id);
 void sc2355_queue_rx_buff_work(struct sprd_priv *priv, unsigned char id);
 int sc2355_mm_fill_buffer(struct sprd_hif *intf);
+/* MU300: the PCIe data-channel completion; the caller holds rcu_read_lock() across its hif->rx_mgmt lookup */
+void sc2355_rx_bus_complete(struct sprd_hif *hif);
 void sc2355_mm_fill_all_buffer(void *intf);
 void sc2355_rx_flush_buffer(void *intf);
 void sc2355_rx_up(struct rx_mgmt *rx_mgmt);

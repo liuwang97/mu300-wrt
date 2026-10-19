@@ -1471,6 +1471,7 @@ m_power_get() {
     _prof=$(echo "$_pst" | sed -n 's/^profile: \([a-z]*\) (.*)$/\1/p'); _why=$(echo "$_pst" | sed -n 's/^profile: [a-z]* (\(.*\))$/\1/p')
     _state=$(echo "$_pst" | sed -n 's/^state: //p' | head -n 1); _supply=$(echo "$_pst" | sed -n 's/^supply: //p' | head -n 1)
     _sb=$(echo "$_pst" | sed -n 's/^SAVER_BELOW=\([0-9]*\) .*/\1/p'); _ct=$(echo "$_pst" | sed -n 's/.*CHARGE_TO=\([0-9]*\)$/\1/p')
+    _poc=$(echo "$_pst" | sed -n 's/^POWER_ON_CHARGER=\([01]\)$/\1/p')
     _bat=null
     if ! echo "$_pst" | grep -qx 'battery: none'; then
         for _d in "$R"/sys/class/power_supply/*; do
@@ -1487,19 +1488,20 @@ m_power_get() {
     printf '{"ok":1,"state":%s,"profile":%s,"why":%s,"supply":%s,"battery":%s,"charge_off":%s,' \
         "$(js "${_state:-active}")" "$(js "$_prof")" "$(js "$_why")" "$(js "$_supply")" "$_bat" \
         "$(js "$(first "$R/run/mu300/power/charge-off")")"
-    printf '"conf":{"PROFILE":"%s","SAVER_BELOW":%s,"CHARGE_TO":%s,"plugged":%s,"battery":%s,"saver":%s},"text":%s}\n' \
-        "$_conf" "$(jn "$_sb")" "$(jn "$_ct")" "$(power_knobs plugged)" "$(power_knobs battery)" "$(power_knobs saver)" \
+    printf '"conf":{"PROFILE":"%s","SAVER_BELOW":%s,"CHARGE_TO":%s,"POWER_ON_CHARGER":%s,"plugged":%s,"battery":%s,"saver":%s},"text":%s}\n' \
+        "$_conf" "$(jn "$_sb")" "$(jn "$_ct")" "$(jn "$_poc")" "$(power_knobs plugged)" "$(power_knobs battery)" "$(power_knobs saver)" \
         "$(js "$_pst")"
     exit 0
 }
 # power.set {key, value}: as mu300-power set takes them (it checks the value again): PROFILE, SAVER_BELOW, CHARGE_TO,
-# PROFILE.KNOB
+# POWER_ON_CHARGER, PROFILE.KNOB
 m_power_set() {
     only key value
-    word key 'PROFILE|SAVER_BELOW|CHARGE_TO|(plugged|battery|saver)\.(WIFI_IDLE|RADIO_IDLE|LEDS_IDLE|CPU)'; need key; _k=$V
+    word key 'PROFILE|SAVER_BELOW|CHARGE_TO|POWER_ON_CHARGER|(plugged|battery|saver)\.(WIFI_IDLE|RADIO_IDLE|LEDS_IDLE|CPU)'; need key; _k=$V
     case $_k in
         PROFILE) word value 'auto|plugged|battery|saver' ;;
         SAVER_BELOW|CHARGE_TO) int value 0 100 ;;
+        POWER_ON_CHARGER) int value 0 1 ;;
         *.WIFI_IDLE) int value 0 1440 ;;
         *.RADIO_IDLE) word value 'keep|lte|off' ;;
         *.LEDS_IDLE) word value 'on|off' ;;

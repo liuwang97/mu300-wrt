@@ -570,8 +570,8 @@ class Guards(DaemonTest):
             self.assertIn('wifi down', c); self.assertIn('mobile-data suspend off', c); self.assertIn('mu300-led charge on', c)
             self.usb_host(True); self.loops(shell)
             self.assertEqual(self.state(), 'charging-boot')      # a computer does not end a charging boot
-            self.charger(online=0); self.battery(capacity=50); self.loops(shell); self.loops(shell); self.loops(shell)
-            self.assertEqual(self.state(), 'charging-boot')      # unplugged above 5 %: nothing happens
+            self.battery(capacity=50); self.loops(shell); self.loops(shell); self.loops(shell)
+            self.assertEqual(self.state(), 'charging-boot')      # on the charger: nothing happens
             self.assertNotIn('poweroff', self.calls())
             self.power(shell, 'wake'); self.loops(shell)
             self.assertEqual(self.state(), 'active')
@@ -628,32 +628,107 @@ class Guards(DaemonTest):
             self.assertNotIn('wifi up', self.calls())
             self.assertEqual(self.state(), 'charging-boot')
 
-    def test_low_battery_needs_three_unplugged_loops(self):
+    def test_unplugged_in_the_charging_boot_powers_off(self):
+        # the stock charger mode: the charger goes, the device goes off (kanoqwq 85d72fa9, FINDINGS 196); two loops
         for shell in self.each_shell():
             self.setUp()
-            self.charging_boot(shell, capacity=3, online=0)
+            self.charging_boot(shell, capacity=60, online=1)
+            self.charger(online=0); self.loops(shell)
+            self.assertNotIn('poweroff', self.calls())
+            self.charger(online=1); self.loops(shell)          # back in between: the count starts again
+            self.charger(online=0); self.loops(shell)
+            self.assertNotIn('poweroff', self.calls())
+            r = self.loops(shell)
+            self.assertIn('poweroff', self.calls())
+            self.assertIn('charger removed in the charging boot: powering off', r.stderr)
+            self.assertTrue((self.run_dir / 'mu300/power/shutdown').exists())
+
+    def test_unplugged_but_usb_or_charging_is_no_unplug(self):
+        for shell in self.each_shell():
+            self.setUp()
+            self.charging_boot(shell, capacity=60, online=0)
+            e = self.root / 'sys/class/extcon/extcon0'
+            e.mkdir(parents=True, exist_ok=True)
+            (e / 'state').write_text('USB=1\nUSB-HOST=0\n')   # the charger node says offline, extcon a cable
+            for _ in range(3): self.loops(shell)
+            self.assertNotIn('poweroff', self.calls())
+            (e / 'state').write_text('USB=0\nUSB-HOST=0\n')
+            self.battery(capacity=60, status='Charging')
+            for _ in range(3): self.loops(shell)
+            self.assertNotIn('poweroff', self.calls())
+            self.assertEqual(self.state(), 'charging-boot')
+
+    def test_power_on_charger_is_a_normal_boot(self):
+        for shell in self.each_shell():
+            self.setUp()
+            (self.root / 'etc/openwrt_release').unlink()
+            self.write_conf('POWER_ON_CHARGER=1\n')
+            (self.run_dir / 'mu300/charging-boot').touch()       # an older init made it
+            self.charging_boot(shell, capacity=60, online=1)
+            self.assertEqual(self.state(), 'active')
+            self.assertFalse((self.run_dir / 'mu300/charging-boot').exists())
+            c = self.calls()
+            self.assertIn('systemctl start --no-block mu300-mobile-data mu300-hotspot', c)
+            self.assertNotIn('mobile-data suspend', c); self.assertNotIn('mu300-led charge on', c)
+            self.assertIn('charger boot started as a normal boot', (self.run_dir / 'mu300/power/reason').read_text())
+            self.charger(online=0); self.loops(shell); self.loops(shell)
+            self.assertNotIn('poweroff', self.calls())            # an awake device on battery is no charging boot
+
+    def test_power_on_charger_setting(self):
+        for shell in self.each_shell():
+            self.setUp()
+            self.assertIn('POWER_ON_CHARGER=0', self.power(shell, 'status').stdout)
+            self.assertEqual(self.power(shell, 'set POWER_ON_CHARGER 1').returncode, 0)
+            self.assertIn('POWER_ON_CHARGER=1', self.power(shell, 'status').stdout)
+            self.assertEqual(self.power(shell, 'set POWER_ON_CHARGER 2').returncode, 2)
+
+    def low_device(self, capacity, mv, online=0, level=None, device='u30air'):
+        self.stub('mu300-device', f'echo {device}')
+        self.charger(online=online)
+        d = self.battery(capacity=capacity)
+        (d / 'voltage_now').write_text(f'{mv * 1000}\n')
+        if level is not None: (d / 'capacity_level').write_text(f'{level}\n')
+        return d
+
+    def test_low_battery_needs_three_unplugged_loops(self):
+        # Android's rule (FINDINGS 196): 0 % (or capacity_level Critical), unplugged, three loops in a row; every state
+        for shell in self.each_shell():
+            self.setUp()
+            self.low_device(0, 3500)
             self.loops(shell)
             self.assertNotIn('poweroff', self.calls())
             self.charger(online=1); self.loops(shell)          # a plug in between resets the count
             self.charger(online=0); self.loops(shell); self.loops(shell)
             self.assertNotIn('poweroff', self.calls())
-            self.loops(shell)
+            r = self.loops(shell)
             self.assertIn('poweroff', self.calls())
+            self.assertIn('battery at 0 % and unplugged for three loops: powering off', r.stderr)
+
+    def test_critical_level_counts_as_empty(self):
+        for shell in self.each_shell():
+            self.setUp()
+            self.low_device(4, 3500, level='Critical')
+            for _ in range(3): self.loops(shell)
+            self.assertIn('poweroff', self.calls())
+            self.setUp()
+            self.low_device(4, 3500, level='Low')
+            for _ in range(4): self.loops(shell)
+            self.assertNotIn('poweroff', self.calls())
 
     def test_low_battery_no_poweroff_while_usb_or_charging(self):
         for shell in self.each_shell():
             self.setUp()
-            self.charging_boot(shell, capacity=3, online=0)
+            self.low_device(0, 3500)
             e = self.root / 'sys/class/extcon/extcon0'
             e.mkdir(parents=True, exist_ok=True)
-            (e / 'state').write_text('USB=1\nUSB-HOST=0\n')   # the charger node says offline, extcon a cable
+            (e / 'state').write_text('USB=1\nUSB-HOST=0\n')
             for _ in range(4): self.loops(shell)
             self.assertNotIn('poweroff', self.calls())
             (e / 'state').write_text('USB=0\nUSB-HOST=0\n')
-            self.battery(capacity=3, status='Charging')
+            d = self.battery(capacity=0, status='Charging'); (d / 'voltage_now').write_text('3500000\n')
             for _ in range(4): self.loops(shell)
             self.assertNotIn('poweroff', self.calls())
-            self.battery(capacity=3, status='Discharging')
+            d = self.battery(capacity=0, status='Discharging'); (d / 'voltage_now').write_text('3500000\n')
             for _ in range(3): self.loops(shell)
             self.assertIn('poweroff', self.calls())
             self.assertTrue((self.run_dir / 'mu300/power/shutdown').exists())
@@ -661,11 +736,40 @@ class Guards(DaemonTest):
     def test_one_low_sample_does_not_power_off(self):
         for shell in self.each_shell():
             self.setUp()
-            self.charging_boot(shell, capacity=50, online=0)
-            self.battery(capacity=2); self.loops(shell)
+            d = self.low_device(50, 3700)
+            self.battery(capacity=0); self.loops(shell)
             self.battery(capacity=50); self.loops(shell)
-            self.battery(capacity=2); self.loops(shell); self.loops(shell)
+            self.battery(capacity=0); self.loops(shell); self.loops(shell)
             self.assertNotIn('poweroff', self.calls())
+
+    def test_stock_undervoltage_rule(self):
+        # cm_uvlo_check_work: five samples at or under 3.10 + 0.12 V, then off at <= 1 % or <= 3.10 V
+        for shell in self.each_shell():
+            for cap, mv, online, off in ((1, 3200, 0, True), (30, 3200, 0, False), (30, 3090, 0, True),
+                                         (1, 3250, 0, False), (1, 3200, 1, False), (0, 0, 0, False)):
+                self.setUp()
+                self.low_device(cap, mv, online=online)
+                r = self.loops(shell, MU300_POWER_UVLO_GAP=0)
+                self.assertEqual('poweroff' in self.calls(), off, (cap, mv, online, r.stderr))
+                if off: self.assertIn(f'battery at {mv} mV ({cap} %) for five samples, unplugged: powering off', r.stderr)
+
+    def test_undervoltage_threshold_from_the_device_tree(self):
+        for shell in self.each_shell():
+            self.setUp()
+            self.low_device(30, 3390)
+            cm = self.root / 'proc/device-tree/charger-manager'
+            cm.mkdir(parents=True)
+            (cm / 'cm-shutdown-voltage').write_bytes((3400000).to_bytes(4, 'big'))
+            self.loops(shell, MU300_POWER_UVLO_GAP=0)
+            self.assertIn('poweroff', self.calls())
+
+    def test_no_battery_no_low_battery_poweroff(self):
+        for shell in self.each_shell():
+            for device in ('f50', 'v50'):
+                self.setUp()
+                self.low_device(0, 3000, device=device)
+                for _ in range(4): self.loops(shell, MU300_POWER_UVLO_GAP=0)
+                self.assertNotIn('poweroff', self.calls())
 
     def test_temperature_guard_with_hysteresis(self):
         for shell in self.each_shell():
@@ -1446,6 +1550,9 @@ class Adapter(DaemonTest):
             d = json.loads(self.adapter(shell, 'get').stdout)
             self.assertEqual(d['charger']['input_ma'], 1500)
             self.assertEqual(d['conf']['CHARGE_TO'], 37)
+            self.assertEqual(d['conf']['POWER_ON_CHARGER'], 0)
+            self.assertEqual(json.loads(self.adapter(shell, 'set POWER_ON_CHARGER 1').stdout), {'ok': 1})
+            self.assertEqual(json.loads(self.adapter(shell, 'get').stdout)['conf']['POWER_ON_CHARGER'], 1)
             r = self.adapter(shell, 'set CHARGE_TO 0')
             self.assertEqual(json.loads(r.stdout), {'ok': 1})
             r = self.adapter(shell, 'set CHARGE_TO 101')

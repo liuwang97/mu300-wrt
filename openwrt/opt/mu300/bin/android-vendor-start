@@ -149,6 +149,14 @@ case $L in a) AS=b ;; *) L=b; AS=a ;; esac
 # --- slot end
 tr -d '\000' < $src | sed "s/androidboot.slot_suffix=_$L/androidboot.slot_suffix=_$AS/" > /run/mu300-cmdline.android
 mount --bind /run/mu300-cmdline.android $A/proc/cmdline
+# A U30 Air that LK started for its charger has the PM running and no CP, and the stock modem_control then loads
+# nothing (issue #253): mu300-modem-coldboot names a copy that loads the CP alone. Any other boot, board or failure
+# names nothing, and the stock one runs as before (FINDINGS 196).
+MU300_MODEM_CONTROL=
+if [ -x /opt/mu300/bin/mu300-modem-coldboot ]; then
+    MU300_MODEM_CONTROL=$(/opt/mu300/bin/mu300-modem-coldboot $A /run/mu300-cmdline.android) || MU300_MODEM_CONTROL=
+fi
+export MU300_MODEM_CONTROL
 mark vendor-chroot-ready
 # sprd_modem_loader only accepts a task whose comm is exactly "modem_control": android-run execs it directly, as the
 # vendor account where there is one

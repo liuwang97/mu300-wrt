@@ -3,12 +3,14 @@
 #   mu300-power status                  state, profile and why, battery, charger, idle timer
 #   mu300-power profile [NAME|auto]     force a profile (plugged|battery|saver), or back to automatic
 #   mu300-power set PROFILE.KNOB VALUE  knobs: WIFI_IDLE (minutes, 0 never), RADIO_IDLE keep|lte|off,
-#                                       LEDS_IDLE on|off, CPU full|eco; also set SAVER_BELOW N, CHARGE_TO 0..100
+#                                       LEDS_IDLE on|off, CPU full|eco; also set SAVER_BELOW N, CHARGE_TO 0..100,
+#                                       POWER_ON_CHARGER 0|1 (1: a boot the charger started is a normal boot, U30 Air)
 #   mu300-power charge-limit [N]        the charge limit (CHARGE_TO): 100 charges full, 1-99 stops at N % and starts
 #                                       again under N-5, 0 never charges (the device runs on the charger); whatever
 #                                       the limit, the battery charges while under 5 % (U30 Air; the F50 has none)
 #   mu300-power wake [wifi|power]       bring back whatever is down, by looking (the keys call it with their name);
-#                                       restarts the idle timer; a charging boot ends on any wake but "power"
+#                                       restarts the idle timer; a charging boot ends on any wake but "power" (the
+#                                       held power key ends it with a wake without a name)
 #   mu300-power idle                    enter idle now
 #   mu300-power log [SECONDS] [FILE]    append epoch,mV,mA,mW,capacity,temp,state,profile every SECONDS (5) to
 #                                       FILE (/var/log/mu300-power.csv)
@@ -99,7 +101,7 @@ bounded() {
 # --- configuration
 default() {  # default KEY: the built-in value of a top-level key or PROFILE_KNOB
     case $1 in
-        PROFILE) echo auto ;; SAVER_BELOW) echo 20 ;; CHARGE_TO) echo 100 ;;
+        PROFILE) echo auto ;; SAVER_BELOW) echo 20 ;; CHARGE_TO) echo 100 ;; POWER_ON_CHARGER) echo 0 ;;
         plugged_WIFI_IDLE) echo 0 ;;  plugged_RADIO_IDLE) echo keep ;; plugged_LEDS_IDLE) echo on ;;  plugged_CPU) echo full ;;
         battery_WIFI_IDLE) echo 10 ;; battery_RADIO_IDLE) echo off ;;  battery_LEDS_IDLE) echo off ;; battery_CPU) echo full ;;
         saver_WIFI_IDLE) echo 5 ;;    saver_RADIO_IDLE) echo off ;;    saver_LEDS_IDLE) echo off ;;   saver_CPU) echo eco ;;
@@ -112,6 +114,7 @@ valid() {  # valid KEY VALUE
         # numbers without a leading zero: dash reads 08 as a bad octal number, and 00 would be 0
         SAVER_BELOW) case $2 in [0-9]|[1-9][0-9]|100) return 0 ;; esac ;;
         CHARGE_TO) case $2 in [0-9]|[1-9][0-9]|100) return 0 ;; esac ;;
+        POWER_ON_CHARGER) case $2 in 0|1) return 0 ;; esac ;;
         *_WIFI_IDLE) case $2 in [0-9]|[1-9][0-9]|[1-9][0-9][0-9]|[1-9][0-9][0-9][0-9]) return 0 ;; esac ;;
         *_RADIO_IDLE) case $2 in keep|lte|off) return 0 ;; esac ;;
         *_LEDS_IDLE) case $2 in on|off) return 0 ;; esac ;;
@@ -211,6 +214,7 @@ cmd_status() {
     if _c=$(charger_dir); then echo "charger: $(rd "$_c/status" | tr 'A-Z' 'a-z') online=$(rd "$_c/online") usb_type=$(rd "$_c/usb_type" | sed -n 's/.*\[\([A-Za-z_]*\)\].*/\1/p') input=$(( $(num "$(rd "$_c/input_current_limit")") / 1000 )) mA"; fi
     echo "supply: $(plugged && echo plugged || echo battery)"
     echo "SAVER_BELOW=$(conf_get SAVER_BELOW) CHARGE_TO=$(conf_get CHARGE_TO)"
+    echo "POWER_ON_CHARGER=$(conf_get POWER_ON_CHARGER)"
     for _p in $PROFILES; do
         echo "$_p: WIFI_IDLE=$(knob "$_p" WIFI_IDLE) RADIO_IDLE=$(knob "$_p" RADIO_IDLE) LEDS_IDLE=$(knob "$_p" LEDS_IDLE) CPU=$(knob "$_p" CPU)"
     done
@@ -533,25 +537,91 @@ enter_charging_boot() {
 }
 leave_charging_boot() {  # leave_charging_boot REASON
     bounded "$LEDDL" mu300-led charge off </dev/null >/dev/null 2>&1 || true
-    rm -f "$RUN/charging-boot" "$ST/low-loops"
+    rm -f "$RUN/charging-boot" "$ST/low-loops" "$ST/unplugged-loops"
     # skipped at boot by the flag; --no-block: its start waits 15 s, the hotspot must not wait for it
     is_openwrt || bounded "$STEP" systemctl start --no-block mu300-mobile-data </dev/null >/dev/null 2>&1 || true
     leave_idle "$1"
 }
+# A boot the charger started is a normal one with POWER_ON_CHARGER=1 (U30 Air; kanoqwq's power-on-on-charge option,
+# FINDINGS 196): init made no charging-boot marker then; an older init's is removed here and, on Ubuntu, the two units
+# it held back are started.
+charger_power_on() {
+    if [ -e "$RUN/charging-boot" ]; then
+        rm -f "$RUN/charging-boot"
+        is_openwrt || bounded "$STEP" systemctl start --no-block mu300-mobile-data mu300-hotspot </dev/null >/dev/null 2>&1 || true
+    fi
+    set_state active "charger boot started as a normal boot (POWER_ON_CHARGER=1)"
+}
 extcon_usb() { for _s in "$R"/sys/class/extcon/*/state; do grep -qx 'USB=1' "$_s" 2>/dev/null && return 0; done; return 1; }
-low_battery_check() {  # unplugged and under 5 % for three loops in a row: a clean poweroff, not a brown-out
-    _lowc=$(capacity)
-    case $_lowc in ''|*[!0-9]*) echo 0 > "$ST/low-loops"; return 0 ;; esac
-    # unplugged by every account: no charger online, no USB cable on extcon, the battery not charging
-    if plugged || extcon_usb || [ "$(_b=$(battery_dir) && rd "$_b/status")" = Charging ] || [ "$_lowc" -ge 5 ]; then
+# unplugged by every account: no charger online, no USB cable on extcon, the battery not charging
+unplugged() {
+    plugged && return 1
+    extcon_usb && return 1
+    [ "$(_b=$(battery_dir) && rd "$_b/status")" != Charging ]
+}
+power_off() {  # power_off REASON: a clean poweroff, not a brown-out
+    say "$1: powering off"
+    : > "$ST/shutdown"   # the TERM trap must not wake the radios on the way down
+    if is_openwrt; then poweroff; else systemctl poweroff </dev/null; fi
+}
+# The stock charger manager's undervoltage rule (cm_uvlo_check_work in ZTE's sprd-charger-manager.ko, read by kanoqwq,
+# FINDINGS 196): the battery at or under the shutdown voltage + 120 mV for 5 samples in a row (800 ms apart; 1 s
+# here), then off when the capacity is at most 1 % or the voltage at or under the shutdown voltage itself. The
+# shutdown voltage is the device tree's cm-shutdown-voltage (3.10 V on the U30 Air). A sample that cannot be read
+# ends the run without counting. Prints nothing; returns 0 when the battery is to be switched off.
+shutdown_uv() {
+    for _f in "$R"/proc/device-tree/charger-manager*/cm-shutdown-voltage "$R"/proc/device-tree/*/charger-manager*/cm-shutdown-voltage; do
+        [ -r "$_f" ] || continue
+        _x=$(od -An -tx1 -N4 "$_f" 2>/dev/null | tr -d ' \n')
+        case $_x in [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f])
+            _x=$((0x$_x)); [ "$_x" -ge 2500000 ] && [ "$_x" -le 3600000 ] && { echo "$_x"; return 0; } ;; esac
+    done
+    echo 3100000
+}
+uvlo() {
+    _ub=$(battery_dir) || return 1
+    _usd=$(shutdown_uv); _uwin=$((_usd + 120000)); _un=0
+    while [ "$_un" -lt 5 ]; do
+        _uv=$(rd "$_ub/voltage_now")
+        case $_uv in ''|*[!0-9]*) return 1 ;; esac
+        [ "$_uv" -gt 0 ] && [ "$_uv" -le "$_uwin" ] || return 1
+        _un=$((_un + 1))
+        [ "$_un" -ge 5 ] || sleep "${MU300_POWER_UVLO_GAP:-1}"
+    done
+    _ucap=$(capacity)
+    case $_ucap in ''|*[!0-9]*) _ucap=100 ;; esac
+    [ "$_ucap" -le 1 ] || [ "$_uv" -le "$_usd" ] || return 1
+    _ulow="battery at $((_uv / 1000)) mV ($_ucap %) for five samples, unplugged"
+    return 0
+}
+# Every state, the U30 Air only (battery_dir: the F50 and V50 have none), unplugged only: the undervoltage rule
+# above at once; otherwise, three loops in a row of a battery Android would switch off (BatteryService: capacity_level
+# Critical where the driver has it, else 0 %). Unplugged in the charging boot, charger_gone_check is quicker. Returns 1
+# when it powered off.
+low_battery_check() {
+    battery_dir >/dev/null || return 0
+    if ! unplugged; then echo 0 > "$ST/low-loops"; return 0; fi
+    if uvlo; then power_off "$_ulow"; return 1; fi
+    _lowc=$(capacity); _lowl=$(_b=$(battery_dir) && rd "$_b/capacity_level")
+    case $_lowc in ''|*[!0-9]*) _lowc= ;; esac
+    if [ "$_lowl" != Critical ] && { [ -z "$_lowc" ] || [ "$_lowc" -gt 0 ]; }; then
         echo 0 > "$ST/low-loops"; return 0
     fi
     _lown=$(( $(num "$(rd "$ST/low-loops")") + 1 )); echo "$_lown" > "$ST/low-loops"
     [ "$_lown" -ge 3 ] || return 0
-    say "battery at $_lowc % and unplugged for three loops: powering off"
-    : > "$ST/shutdown"   # the TERM trap must not wake the radios on the way down
-    if is_openwrt; then poweroff; else systemctl poweroff </dev/null; fi
-    return 0
+    if [ "$_lowl" = Critical ]; then power_off "battery critical (${_lowc:-?} %) and unplugged for three loops"
+    else power_off "battery at $_lowc % and unplugged for three loops"; fi
+    return 1
+}
+# The charging boot ends with the charger, as the stock charger mode does (kanoqwq 85d72fa9, FINDINGS 196): unplugged
+# by every account for two loops in a row, a clean poweroff. Returns 1 when it powered off.
+charger_gone_check() {
+    battery_dir >/dev/null || return 0
+    if ! unplugged; then rm -f "$ST/unplugged-loops"; return 0; fi
+    _ugn=$(( $(num "$(rd "$ST/unplugged-loops")") + 1 )); echo "$_ugn" > "$ST/unplugged-loops"
+    [ "$_ugn" -ge 2 ] || return 0
+    power_off "charger removed in the charging boot"
+    return 1
 }
 
 # --- charging guard: temperature and the charge limit, through the charger's charge_type (bq256xx: N/A off, Fast on)
@@ -638,6 +708,7 @@ step() {  # one look at the world; sets _acted when it changed the state
     _osup=$(rd "$ST/supply"); echo "$_sup" > "$ST/supply"
     if activity; then echo "$_now" > "$ST/idle-since"; fi
     [ -s "$ST/idle-since" ] || echo "$_now" > "$ST/idle-since"
+    low_battery_check || return 0
     case $_state in
         idle)
             rm -f "$ST/idle-now"
@@ -646,9 +717,9 @@ step() {  # one look at the world; sets _acted when it changed the state
             if [ "$_osup" = battery ] && [ "$_sup" = plugged ]; then leave_idle "woken: plugged in"; return 0; fi
             if _sn=$(stations) && [ "$_sn" -gt 0 ]; then leave_idle "woken by a Wi-Fi station"; return 0; fi
             if [ -n "$_old" ] && [ "$_old" != "$_prof" ]; then enter_idle "$_prof" "idle: profile now $_prof"; fi ;;
-        charging-boot)   # only the Wi-Fi key ends it; a computer on USB or the power key does not
+        charging-boot)   # only the Wi-Fi key (or the held power key) ends it; a computer on USB does not
             rm -f "$ST/idle-now"
-            low_battery_check
+            charger_gone_check || return 0
             if [ -e "$ST/wake" ]; then
                 case $(rd "$ST/wake") in
                     power) rm -f "$ST/wake" ;;
@@ -686,7 +757,9 @@ cmd_daemon() {
         [ -s "$ST/idle-since" ] || uptime_s > "$ST/idle-since"
         # LK booted us for a flat battery on the charger: charging boot, but only when this boot has no state yet
         # (a daemon restarted after the key press keeps "active"; one restarted inside the charging boot keeps that)
-        if [ ! -s "$ST/state" ] && [ "$(boot_mode)" = charger ]; then enter_charging_boot; fi
+        if [ ! -s "$ST/state" ] && [ "$(boot_mode)" = charger ]; then
+            if [ "$(conf_get POWER_ON_CHARGER)" = 1 ]; then charger_power_on; else enter_charging_boot; fi
+        fi
     fi
     _sleep=
     # stopped while idle: the radios come back without a dial (the watcher redials); not during a shutdown. An action

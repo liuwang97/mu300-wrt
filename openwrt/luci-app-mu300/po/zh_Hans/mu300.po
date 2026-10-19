@@ -1815,6 +1815,15 @@ msgstr "0 % 表示从不给电池充电（设备由充电器供电），100 % �
 msgid "80 % keeps the battery healthier on a device that stays plugged in."
 msgstr "80 % 可让长期接着电源的设备电池更健康。"
 
+msgid "When the charger switches the device on"
+msgstr "充电器开机时"
+
+msgid "Charge only, until a key starts it"
+msgstr "仅充电，按键后启动"
+
+msgid "Start normally"
+msgstr "正常启动"
+
 msgid "Keep as is"
 msgstr "保持不变"
 
