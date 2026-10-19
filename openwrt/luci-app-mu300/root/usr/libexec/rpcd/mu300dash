@@ -36,6 +36,8 @@
 #                     mu300-sms-forward); the settings go to the adapter on stdin, as sent: they hold secrets, never
 #                     an argument. forward_log_clear empties the delivery log and takes nothing.
 #   cpu_get, cpu_set profile  the CPU performance profile (unisoc-modem/cpu, mu300-cpu); saving|balanced|performance
+#   cpu_tune op cpu state  op core (cpu 1-63, state on|off: online or offline, saved) or op lowlatency (state on|off:
+#                     CPU0 without its idle states, saved); unisoc-modem/cpu, mu300-cpu (FINDINGS 200)
 #   cpu_voltage_get, cpu_voltage_set op [offsets confirm | minutes]  the CPU voltage offset, EXPERIMENTAL (unisoc-modem/
 #                     cpu, mu300-cpu voltage); op set (offsets "A,B,C" in uV; confirm: the word, for anything but 0,0,0),
 #                     off, or stress (minutes 1-120: the CPU stress test, in the background)
@@ -845,6 +847,23 @@ m_cpu_set() {
     allowed "$profile" '(saving|balanced|performance)' || { refuse 'Invalid CPU profile'; return; }
     reply_obj "$("$CPUA" set "$profile" 2>/dev/null)" 'The CPU adapter gave no valid reply'
 }
+# cpu_tune: a core online or offline, or CPU0's low latency; the adapter and mu300-cpu check them again
+m_cpu_tune() {
+    local op cpu state
+    inp '@.op'; op=$V
+    inp '@.cpu'; cpu=$V
+    inp '@.state'; state=$V
+    allowed "$state" '(on|off)' || { refuse 'Invalid CPU core'; return; }
+    case $op in
+        core)
+            allowed "$cpu" '([1-9]|[1-5][0-9]|6[0-3])' || { refuse 'Invalid CPU core'; return; }
+            reply_obj "$("$CPUA" core "$cpu" "$state" 2>/dev/null)" 'The CPU adapter gave no valid reply' ;;
+        lowlatency)
+            [ -z "$cpu" ] || { refuse 'Invalid CPU core'; return; }
+            reply_obj "$("$CPUA" lowlatency "$state" 2>/dev/null)" 'The CPU adapter gave no valid reply' ;;
+        *) refuse 'Unknown CPU operation' ;;
+    esac
+}
 # The CPU voltage offset (EXPERIMENTAL: it can damage the device for good). Only the shape is checked here - three
 # signed numbers, the confirmation word, the minutes; the adapter checks them again and mu300-cpu and the kernel check
 # the limits. Nothing changes before the next boot, and the initramfs drops a value that does not prove itself.
@@ -975,6 +994,7 @@ do_list() {
 	"forward_log_clear": { },
 	"cpu_get": { },
 	"cpu_set": { "profile": "String" },
+	"cpu_tune": { "op": "String", "cpu": "String", "state": "String" },
 	"cpu_voltage_get": { },
 	"cpu_voltage_set": { "op": "String", "offsets": "String", "confirm": "String", "minutes": "String" },
 	"packages_get": { },
@@ -1109,6 +1129,7 @@ ops_detail() {
         lock_get) inp '@.fresh'; [ "$V" = 1 ] && echo fresh ;;
         update_act) inp '@.op'; allowed "$V" '[a-z_]{1,16}' && printf '%s\n' "$V" ;;
         cpu_voltage_set) inp '@.op'; allowed "$V" '[a-z]{1,8}' && printf '%s\n' "$V" ;;
+        cpu_tune) inp '@.op'; allowed "$V" '[a-z]{1,10}' && printf '%s\n' "$V" ;;
     esac
 }
 
@@ -1252,6 +1273,7 @@ call)
         forward_log_clear) run_m forward_log_clear m_forward_log_clear ;;
         cpu_get)      run_m cpu_get      m_cpu_get ;;
         cpu_set)      run_m cpu_set      m_cpu_set ;;
+        cpu_tune)     run_m cpu_tune     m_cpu_tune ;;
         cpu_voltage_get) run_m cpu_voltage_get m_cpu_voltage_get ;;
         cpu_voltage_set) run_m cpu_voltage_set m_cpu_voltage_set ;;
         packages_get) run_m packages_get m_packages_get ;;

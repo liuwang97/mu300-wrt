@@ -57,6 +57,8 @@ var callFwdTest = rpc.declare({ object: 'mu300dash', method: 'forward_test', exp
 var callFwdLogClear = rpc.declare({ object: 'mu300dash', method: 'forward_log_clear', expect: { '': {} }, nobatch: true });
 var callCpuGet = rpc.declare({ object: 'mu300dash', method: 'cpu_get', expect: { '': {} }, nobatch: true });
 var callCpuSet = rpc.declare({ object: 'mu300dash', method: 'cpu_set', params: [ 'profile' ], expect: { '': {} }, nobatch: true });
+/* a core online/offline (op core, cpu 1-63) or CPU0's low latency (op lowlatency), state on|off; saved */
+var callCpuTune = rpc.declare({ object: 'mu300dash', method: 'cpu_tune', params: [ 'op', 'cpu', 'state' ], expect: { '': {} }, nobatch: true });
 /* the CPU voltage offset, EXPERIMENTAL (op set|off|stress; the backend checks every field again) */
 var callCpuVoltageGet = rpc.declare({ object: 'mu300dash', method: 'cpu_voltage_get', expect: { '': {} }, nobatch: true });
 var callCpuVoltageSet = rpc.declare({ object: 'mu300dash', method: 'cpu_voltage_set',
@@ -733,7 +735,7 @@ return baseclass.extend({
 	callSimGet: callSimGet, callSimSet: callSimSet, callSimcardGet: callSimcardGet, callSimcardSet: callSimcardSet,
 	callTtlGet: callTtlGet, callTtlSet: callTtlSet,
 	callFwdGet: callFwdGet, callFwdSet: callFwdSet, callFwdTest: callFwdTest, callFwdLogClear: callFwdLogClear,
-	callCpuGet: callCpuGet, callCpuSet: callCpuSet, callCpuVoltageGet: callCpuVoltageGet, callCpuVoltageSet: callCpuVoltageSet,
+	callCpuGet: callCpuGet, callCpuSet: callCpuSet, callCpuTune: callCpuTune, callCpuVoltageGet: callCpuVoltageGet, callCpuVoltageSet: callCpuVoltageSet,
 	callPackagesGet: callPackagesGet, callPackagesAct: callPackagesAct,
 	callUpdateGet: callUpdateGet, callUpdateJob: callUpdateJob, callUpdateAct: callUpdateAct,
 	callBackupExport: callBackupExport, callBackupImport: callBackupImport, callBackupJob: callBackupJob,

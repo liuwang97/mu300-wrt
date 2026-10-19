@@ -248,7 +248,7 @@ class Inventory(Mu300Dash):
     METHODS = {'sysinfo', 'status', 'signal', 'act', 'at', 'at_job', 'at_history', 'ops_log', 'lock_get', 'lock_set', 'sms_list',
                'sms_show', 'sms_send', 'sms_job', 'sms_delete', 'sms_sync', 'usb_get', 'usb_set', 'usb_net_list', 'usb_net_add',
                'lang_get', 'lang_set', 'power_get', 'power_set',
-               'ttl_get', 'ttl_set', 'cpu_get', 'cpu_set', 'cpu_voltage_get', 'cpu_voltage_set', 'forward_get',
+               'ttl_get', 'ttl_set', 'cpu_get', 'cpu_set', 'cpu_tune', 'cpu_voltage_get', 'cpu_voltage_set', 'forward_get',
                'forward_set', 'forward_test',
                'forward_log_clear', 'traffic_get', 'traffic_set', 'packages_get', 'packages_act', 'sim_get', 'sim_set', 'simcard_get', 'simcard_set',
                'update_get', 'update_job', 'update_act', 'backup_export', 'backup_import', 'backup_job'}
@@ -368,6 +368,10 @@ class Refusals(Mu300Dash):
         ('cpu_voltage_set', {'op': 'set', 'offsets': '-3125,0,0', 'confirm': 'EXPERIMENTAL'}, 'confirm', 'EXPERIMENTAL'),
         ('cpu_voltage_set', {'op': 'stress', 'minutes': '10'}, 'minutes', '10'),
         ('cpu_voltage_set', {'op': 'off'}, 'op', 'off'),
+        # a core and CPU0's low latency (FINDINGS 200)
+        ('cpu_tune', {'op': 'core', 'cpu': '7', 'state': 'off'}, 'cpu', '7'),
+        ('cpu_tune', {'op': 'core', 'cpu': '7', 'state': 'off'}, 'state', 'off'),
+        ('cpu_tune', {'op': 'lowlatency', 'state': 'on'}, 'state', 'on'),
     ]
 
     def test_hostile_values_are_refused(self):
@@ -449,6 +453,12 @@ class Refusals(Mu300Dash):
             ('power wake with key', 'power_set', {'op': 'wake', 'key': 'PROFILE', 'value': 'saver'}),
             ('power set no value', 'power_set', {'op': 'set', 'key': 'PROFILE', 'value': ''}),
             ('cpu unknown profile', 'cpu_set', {'profile': 'turbo'}),
+            ('cpu core zero', 'cpu_tune', {'op': 'core', 'cpu': '0', 'state': 'off'}),
+            ('cpu core 64', 'cpu_tune', {'op': 'core', 'cpu': '64', 'state': 'off'}),
+            ('cpu core chained', 'cpu_tune', {'op': 'core', 'cpu': '7; reboot', 'state': 'off'}),
+            ('cpu core state', 'cpu_tune', {'op': 'core', 'cpu': '7', 'state': '0'}),
+            ('cpu lowlatency cpu', 'cpu_tune', {'op': 'lowlatency', 'cpu': '1', 'state': 'on'}),
+            ('cpu tune op', 'cpu_tune', {'op': 'voltage', 'cpu': '1', 'state': 'on'}),
             ('cpu profile chained', 'cpu_set', {'profile': 'saving; reboot'}),
             ('cpu profile empty', 'cpu_set', {'profile': ''}),
             ('cpuv op unknown', 'cpu_voltage_set', {'op': 'apply', 'offsets': '-3125,0,0', 'confirm': 'EXPERIMENTAL'}),
@@ -1136,7 +1146,7 @@ class Acl(unittest.TestCase):
     READ = {'sysinfo', 'status', 'signal', 'lock_get', 'usb_get', 'usb_net_list', 'lang_get', 'power_get', 'ttl_get',
             'cpu_get', 'cpu_voltage_get', 'traffic_get', 'ops_log', 'packages_get', 'sim_get', 'simcard_get', 'update_get', 'update_job'}
     WRITE = {'act', 'at', 'at_job', 'at_history', 'lock_set', 'sms_list', 'sms_show', 'sms_send', 'sms_job', 'sms_delete', 'sms_sync',
-             'usb_set', 'usb_net_add', 'lang_set', 'power_set', 'ttl_set', 'cpu_set', 'cpu_voltage_set', 'forward_get',
+             'usb_set', 'usb_net_add', 'lang_set', 'power_set', 'ttl_set', 'cpu_set', 'cpu_tune', 'cpu_voltage_set', 'forward_get',
              'forward_set', 'forward_test', 'forward_log_clear', 'traffic_set', 'packages_act', 'sim_set', 'simcard_set',
              'update_act', 'backup_export', 'backup_import', 'backup_job'}
 

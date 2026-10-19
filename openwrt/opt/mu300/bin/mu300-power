@@ -370,6 +370,8 @@ retry_run() {  # repeat what failed, if the state still wants it; the actions no
     return 0
 }
 CPU=$R/sys/devices/system/cpu
+# a core the owner keeps offline (mu300-cpu core N off, its CORES_OFF) is never brought back here
+kept_off() { sed -n 's/^CORES_OFF=//p' "${MU300_CPU_CONF:-/etc/mu300/cpu.conf}" 2>/dev/null | tail -n1 | tr ',' '\n' | grep -qx "$1"; }
 cpu() {  # cpu eco|full
     if [ "$1" = eco ]; then
         if [ ! -e "$ST/cpu-max4" ]; then   # the marker says eco was applied, even when the limit could not be read
@@ -380,7 +382,7 @@ cpu() {  # cpu eco|full
         echo 0 > "$CPU/cpu7/online" 2>/dev/null
     else
         if [ -e "$ST/cpu-max4" ]; then   # eco was applied: undo exactly that, nothing else
-            echo 1 > "$CPU/cpu7/online" 2>/dev/null
+            kept_off 7 || echo 1 > "$CPU/cpu7/online" 2>/dev/null
             _m=$(rd "$ST/cpu-max4"); [ -n "$_m" ] || _m=$(rd "$CPU/cpufreq/policy4/cpuinfo_max_freq")
             [ -z "$_m" ] || echo "$_m" > "$CPU/cpufreq/policy4/scaling_max_freq" 2>/dev/null
             rm -f "$ST/cpu-max4"
@@ -388,7 +390,7 @@ cpu() {  # cpu eco|full
             # by looking, without the marker (lost, or eco applied by hand): the big core offline comes back, and
             # eco's own cap (1.5 GHz exactly) goes. Another cap is the toolkit's profile or thermal-guard's step, not
             # ours; nothing is lifted while thermal-guard's alarm is on.
-            [ "$(rd "$CPU/cpu7/online")" != 0 ] || echo 1 > "$CPU/cpu7/online" 2>/dev/null
+            [ "$(rd "$CPU/cpu7/online")" != 0 ] || kept_off 7 || echo 1 > "$CPU/cpu7/online" 2>/dev/null
             _m=$(rd "$CPU/cpufreq/policy4/cpuinfo_max_freq")
             if [ "$(rd "$CPU/cpufreq/policy4/scaling_max_freq")" = 1500000 ] && [ "$(num "$_m")" -gt 1500000 ] &&
                [ ! -e "$RUN/thermal-alarm" ]; then

@@ -1204,6 +1204,14 @@ class ModemTools(ApiCase):
             self.ok(shell, 'cpu.voltage', {'op': 'stress', 'minutes': 10})
             self.assertEqual(self.calls('mu300-cpu')[-1], ['mu300-cpu', 'voltage', 'stress', '10', '--background'])
             self.refused(shell, 'cpu.voltage', {'op': 'stress', 'minutes': 121}, 'bad-value', 'minutes')
+            # a core and CPU0's low latency (FINDINGS 200); never CPU0
+            self.ok(shell, 'cpu.core', {'cpu': 7, 'state': 'off'})
+            self.assertEqual(self.calls('mu300-cpu')[-1], ['mu300-cpu', 'core', '7', 'off'])
+            self.refused(shell, 'cpu.core', {'cpu': 0, 'state': 'off'}, 'bad-value', 'cpu')
+            self.refused(shell, 'cpu.core', {'cpu': 7, 'state': 'down'}, 'bad-value', 'state')
+            self.ok(shell, 'cpu.lowlatency', {'state': 'on'})
+            self.assertEqual(self.calls('mu300-cpu')[-1], ['mu300-cpu', 'lowlatency', 'on'])
+            self.refused(shell, 'cpu.lowlatency', {'state': '1'}, 'bad-value', 'state')
 
     def test_update_status_and_source(self):
         for shell in self.each_shell():
