@@ -183,6 +183,13 @@ return view.extend({
 			]));
 			prof.appendChild(E('div', { 'class': 'mud-note' }, _('0 % never charges the battery (the device runs on the charger), 100 % charges it full; in between, charging stops at that level and starts again 5 points lower. Under 5 % the battery always charges.')));
 			prof.appendChild(E('div', { 'class': 'mud-note' }, _('80 % keeps the battery healthier on a device that stays plugged in.')));
+			/* POWER_ON_CHARGER: a boot the charger started stays a charging boot (0) or is a normal boot (1) */
+			prof.appendChild(E('div', { 'style': 'display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:10px 0' }, [
+				E('label', { 'for': 'mud-power-poweron' }, _('When the charger switches the device on')),
+				self.choice('POWER_ON_CHARGER', conf.POWER_ON_CHARGER === 1 ? '1' : '0', [
+					[ '0', _('Charge only, until a key starts it') ], [ '1', _('Start normally') ]
+				], 'mud-power-poweron')
+			]));
 		}
 
 		/* 3. the knobs of the three profiles */

@@ -2,7 +2,8 @@
 # rpcd's view of mu300-power (mu300dash power_get / power_set): one JSON object for the page, and the three
 # writes. Everything the page shows comes from here; the validation of keys and values is mu300-power's.
 #   power get                 the state, the battery and charger, and the knobs of the three profiles
-#   power set KEY VALUE       KEY as mu300-power set takes it (PROFILE, SAVER_BELOW, CHARGE_TO, battery.CPU ...)
+#   power set KEY VALUE       KEY as mu300-power set takes it (PROFILE, SAVER_BELOW, CHARGE_TO, POWER_ON_CHARGER,
+#                             battery.CPU ...)
 #   power wake | power idle   the key press and the "idle now" request
 set -u
 export PATH="$PATH:/opt/mu300/bin:/opt/mu300/busybox-bin:/usr/sbin:/sbin"
@@ -37,6 +38,7 @@ get() {
     _state=$(echo "$_st" | sed -n 's/^state: //p'); _reason=$(rd "$ST/reason" | head -n1)
     _supply=$(echo "$_st" | sed -n 's/^supply: //p')
     _sb=$(echo "$_st" | sed -n 's/^SAVER_BELOW=\([0-9]*\) .*/\1/p'); _ct=$(echo "$_st" | sed -n 's/.*CHARGE_TO=\([0-9]*\)$/\1/p')
+    _poc=$(echo "$_st" | sed -n 's/^POWER_ON_CHARGER=\([01]\)$/\1/p')
     _pf=$(echo "$_st" | sed -n 's/^profile: //p')
     _ign=$(echo "$_st" | sed -n 's/^ignored in power.conf: //p')
     _since=$(echo "$_st" | sed -n 's/^idle timer: last client \([0-9]*\) s ago$/\1/p')
@@ -68,8 +70,8 @@ get() {
     printf '{"state":%s,"reason":%s,"profile":%s,"why":%s,"supply":%s,"battery":%s,"charger":%s,"charge_off":%s,"idle_since_s":%s,' \
         "$(jstr "${_state:-active}")" "$(jstr "$_reason")" "$(jstr "$_prof")" "$(jstr "$_why")" "$(jstr "$_supply")" \
         "$_bat" "$_chg" "$(jstr "$(rd "$ST/charge-off" | head -n1)")" "$(jnum "$_since")"
-    printf '"conf":{"PROFILE":%s,"SAVER_BELOW":%s,"CHARGE_TO":%s,"plugged":%s,"battery":%s,"saver":%s},"ignored":[%s]}\n' \
-        "$(jstr "$_confp")" "$(jnum "$_sb")" "$(jnum "$_ct")" "$(knobs plugged)" "$(knobs battery)" "$(knobs saver)" "$_ignj"
+    printf '"conf":{"PROFILE":%s,"SAVER_BELOW":%s,"CHARGE_TO":%s,"POWER_ON_CHARGER":%s,"plugged":%s,"battery":%s,"saver":%s},"ignored":[%s]}\n' \
+        "$(jstr "$_confp")" "$(jnum "$_sb")" "$(jnum "$_ct")" "$(jnum "$_poc")" "$(knobs plugged)" "$(knobs battery)" "$(knobs saver)" "$_ignj"
 }
 case "${1:-}" in
     get)  get ;;
