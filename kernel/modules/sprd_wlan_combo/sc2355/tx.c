@@ -632,7 +632,10 @@ static void tx_get_pcie_dma_addr(struct sprd_hif *hif, struct sk_buff *skb)
 
 	dma_addr = PFN_PHYS(virt_to_pfn(skb->head)) + offset_in_page(skb->head);
 
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0))
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(7, 3, 0))
+	/* 7.3 added the DMA attributes (0: a plain mapping, as dma_map_single() of this driver makes) */
+	if (!dma_capable(wiphy_dev(hif->priv->wiphy), dma_addr, skb->len, true, 0)) {
+#elif (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0))
 	if (!dma_capable(wiphy_dev(hif->priv->wiphy), dma_addr, skb->len, true)) {
 #else
 	if (!dma_capable(wiphy_dev(hif->priv->wiphy), dma_addr, skb->len)) {

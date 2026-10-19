@@ -11,8 +11,8 @@
 #   mu300-update boot             only the kernel and the boot image
 #   mu300-update rollback [OS]    go back to the previous version kept as <os>.old
 #   mu300-update rollback-boot    go back to the previous boot image
-#   mu300-update kernel [5.4|6.18|7.2]  show, or change, the kernel (vendor 5.4, mainline 6.18 LTS or the newest
-#                                 stable mainline, 7.2) and install it
+#   mu300-update kernel [5.4|6.18|7.2|7.3]  show, or change, the kernel (vendor 5.4, mainline 6.18 LTS, 7.2 stable or
+#                                 7.3, the newest mainline release) and install it
 #   mu300-update clean            delete the kept <os>.old copies
 #   mu300-update notice           only look: a note for the login message and mu300-toolkit when a newer release is
 #                                 out (at boot and every 6 hours; nothing is installed without apply)
@@ -3016,11 +3016,11 @@ BOOTDIR=$DISK/boot
 PERSIST_LOG=$((48 << 20))   # the boot partition keeps the persistent init log from 48 MiB on (boot/build-boot-image.py)
 
 # Which kernel this device runs: the vendor 5.4 (mu300-kernel.tar.gz) or a mainline one (mu300-kernel-<version>.tar.gz:
-# 6.18, the long-term release, and 7.2, the newest stable one).
+# 6.18, the long-term release, 7.2, the stable one, and 7.3, the newest mainline release).
 # Kept on the Linux partition, so both systems and every update follow it - without it an update of a device on
 # 6.18 installed the release's 5.4 kernel. "mu300-update kernel 6.18" changes it.
 KERNEL_CHOICE=$BOOTDIR/kernel
-KERNELS="5.4 6.18 7.2"
+KERNELS="5.4 6.18 7.2 7.3"
 kernel_choice() { c=$(cat "$KERNEL_CHOICE" 2>/dev/null); case " $KERNELS " in *" $c "*) echo "$c" ;; *) echo 5.4 ;; esac; }
 kernel_asset() { case $(kernel_choice) in 5.4) echo mu300-kernel.tar.gz ;; *) echo "mu300-kernel-$(kernel_choice).tar.gz" ;; esac; }
 
@@ -3539,14 +3539,14 @@ boot_update_run() {
 # which 5.4 does not have (5.6 brought it), and fails with ENOSYS instead of falling back - no update or archive
 # with folders unpacks there. Other programs of that release can expect more of the kernel still.
 ubuntu_release() { sed -n 's/^VERSION_ID="\(.*\)"/\1/p' "$DISK/ubuntu/usr/lib/os-release" 2>/dev/null; }
-UBUNTU_2604_KERNEL="Ubuntu 26.04 needs a mainline kernel (6.18 or 7.2): its programs use system calls that 5.4 does not have"
+UBUNTU_2604_KERNEL="Ubuntu 26.04 needs a mainline kernel (6.18, 7.2 or 7.3): its programs use system calls that 5.4 does not have"
 
-kernel_cmd() {  # kernel [5.4|6.18|7.2]: show or change the kernel, and install it
+kernel_cmd() {  # kernel [5.4|6.18|7.2|7.3]: show or change the kernel, and install it
     mounted_disk
     case ${1:-} in
         '') printf 'kernel: %s (running %s)\n' "$(kernel_choice)" "$(uname -r)"; return 0 ;;
-        5.4|6.18|7.2) ;;
-        *) die "usage: mu300-update kernel [5.4|6.18|7.2]" ;;
+        5.4|6.18|7.2|7.3) ;;
+        *) die "usage: mu300-update kernel [5.4|6.18|7.2|7.3]" ;;
     esac
     [ "$1" = 5.4 ] && [ "$(ubuntu_release)" = 26.04 ] &&
         die "$UBUNTU_2604_KERNEL (tar cannot unpack folders there). Stay on a mainline kernel, or move Ubuntu back first: sudo MU300_UBUNTU=24.04 mu300-update apply"
@@ -3749,7 +3749,7 @@ apply() {
     SYSTEM_CHANGED=
     NO_ROLLBACK=
     [ "${MU300_UBUNTU:-}" = 26.04 ] && [ "$(kernel_choice)" = 5.4 ] &&
-        die "$UBUNTU_2604_KERNEL. Change the kernel first: sudo mu300-update kernel 6.18 (or 7.2)"
+        die "$UBUNTU_2604_KERNEL. Change the kernel first: sudo mu300-update kernel 6.18 (or 7.2, 7.3)"
     todo=
     for os in $list; do
         case $os in ubuntu|openwrt|openwrt-luci) ;; *) die "unknown system '$os'" ;; esac
@@ -4260,7 +4260,7 @@ from_read() {
         ubuntu:26.04) _fr=mu300-ubuntu-26.04-rootfs.tar.gz ;;
         *) return 1 ;;
     esac
-    case $FROM_KERNEL in 5.4) _fk=mu300-kernel.tar.gz ;; 6.18|7.2) _fk=mu300-kernel-$FROM_KERNEL.tar.gz ;; *) return 1 ;; esac
+    case $FROM_KERNEL in 5.4) _fk=mu300-kernel.tar.gz ;; 6.18|7.2|7.3) _fk=mu300-kernel-$FROM_KERNEL.tar.gz ;; *) return 1 ;; esac
     [ "$FROM_ROOTFS" = "$_fr" ] && [ "$FROM_KASSET" = "$_fk" ] || return 1
     # the release's own SHA256SUMS where the zip has it (it is what the signature covers); else the two hashes of
     # the manifest, which say only that the file is whole
@@ -4700,5 +4700,5 @@ case ${1:-check} in
     report) report ;;
     source) shift; source_cmd "$@" ;;
     -h|--help|help) sed -n '2,30s/^# \{0,1\}//p' "$0" ;;
-    *) echo "usage: mu300-update check|version|apply [--no-reinstall] [--no-rollback] [ubuntu|openwrt|openwrt-luci ...]|boot|kernel [5.4|6.18|7.2]|rollback [os]|rollback-boot|clean|report|notice|source [URL|off]|status|releases|inspect FILE" >&2; exit 2 ;;
+    *) echo "usage: mu300-update check|version|apply [--no-reinstall] [--no-rollback] [ubuntu|openwrt|openwrt-luci ...]|boot|kernel [5.4|6.18|7.2|7.3]|rollback [os]|rollback-boot|clean|report|notice|source [URL|off]|status|releases|inspect FILE" >&2; exit 2 ;;
 esac

@@ -49,13 +49,14 @@ make O=$O ARCH=arm64 olddefconfig >/dev/null
 # that would bind to the vendor device tree); MU300_ALL_MODULES=0 builds the fragment alone
 rm -f $O/all-modules.report
 [ "${MU300_ALL_MODULES:-1}" = 0 ] || python3 /work/all-modules.py . $O
-# options Kconfig did not take; ones known not to exist in this kernel are listed in config-ignored.txt, any
-# other one stops the build (a silently dropped option has cost a working feature before)
+# options Kconfig did not take stop the build (a silently dropped option has cost a working feature before); one
+# listed in config-ignored.txt passes only when this kernel has no such symbol at all (7.3 has no PROC_SYSCTL)
 bad=
 while IFS= read -r l; do
   case "$l" in CONFIG_*=*) k=${l%%=*}; v=${l#*=}; g=$(grep -E "^$k=" $O/.config | cut -d= -f2- || true);
     [ "$v" = n ] && { grep -q "^$k=y" $O/.config && bad="$bad\nNOT DISABLED: $k" || true; continue; }
-    [ "$g" = "$v" ] || grep -qx "$k" /work/config-ignored.txt 2>/dev/null || bad="$bad\nNOT SET: $k want $v got ${g:-unset}";; esac
+    [ "$g" = "$v" ] || { grep -qx "$k" /work/config-ignored.txt 2>/dev/null && ! grep -qE "(^| )$k[= ]" $O/.config; } ||
+        bad="$bad\nNOT SET: $k want $v got ${g:-unset}";; esac
 done < /work/mu300-mainline.config
 [ -z "$bad" ] || { printf "config options not taken:$bad\n" >&2; exit 1; }
 # a test build's extra kernel arguments: mainline forces its own command line (CONFIG_CMDLINE_FORCE), the
