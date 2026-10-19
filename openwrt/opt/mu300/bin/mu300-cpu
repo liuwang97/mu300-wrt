@@ -183,8 +183,9 @@ CPUV_SYS=$R/sys/module/sprd_cpufreq_v2_driver/parameters
 CPUV_WORD=EXPERIMENTAL
 CPUV_GOOD_MIN=10
 CPUV_WARN=${MU300_CPUV_WARNING:-/opt/mu300/lib/cpu-voltage-warning.txt}
-# the SML (ATF) builds whose DVFS_INIT encoding is known (the same list as boot/init's; a test keeps them equal)
-CPUV_SML_KNOWN=${MU300_CPUV_SML_KNOWN:-ff4782690fd805ff54fe34853ef8ee5c7e51c3259e20077c55373b50a4b259c2}
+# the SML (ATF) builds whose DVFS_INIT encoding is known (the same list as boot/init's; a test keeps them equal): the
+# F50's, the V50's and the U30 Air's (their payload is the F50's byte for byte, FINDINGS 201)
+CPUV_SML_KNOWN=${MU300_CPUV_SML_KNOWN:-ff4782690fd805ff54fe34853ef8ee5c7e51c3259e20077c55373b50a4b259c2 5b3183f17af9b416e71dea61e578c61824e4e1df43737a1179032f4b20466b2b f27ac16f44e6cdc87a8ee00a9b53c499c8dde0c3b92c771388e256e84ef12e70}
 
 cpuv_dir() {  # .mu300 on the Linux disk (the same rule as mu300-next-boot)
     for _d in "${MU300_DISK:-/mnt/mu300-disk}" "$R"; do [ -d "$_d/.mu300" ] && { printf '%s/.mu300' "$_d"; return 0; }; done
