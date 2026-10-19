@@ -12,6 +12,7 @@
 #include <linux/io.h>
 #include <linux/regmap.h>
 #include <linux/of_device.h>
+#include <linux/rcupdate.h>
 
 #include <misc/marlin_platform.h>
 
@@ -593,11 +594,19 @@ static int pcie_suspend_resume_handle(int chn, int mode)
  */
 static int sc2355_pcie_tx_data_complete(int chn, int timeout)
 {
-	struct sprd_hif *hif = sc2355_pcie_get_hif();
-	struct tx_mgmt *tx_mgmt = hif ? smp_load_acquire((struct tx_mgmt **)&hif->tx_mgmt) : NULL;
+	struct sprd_hif *hif;
+	struct tx_mgmt *tx_mgmt;
 
+	/* MU300: RCU keeps hif->rx_mgmt alive across sc2355_rx_bus_complete (sc2355_rx_deinit waits for it) */
+	rcu_read_lock();
+	hif = sc2355_pcie_get_hif();
+	tx_mgmt = hif ? smp_load_acquire((struct tx_mgmt **)&hif->tx_mgmt) : NULL;
 	if (!timeout && tx_mgmt && atomic_xchg(&tx_mgmt->pcie_tx_waiting, 0))
 		sc2355_tx_up(tx_mgmt);
+	/* MU300 (kanoqwq's cf4dcd61): the RX address list travels on this channel too; a slot is free again */
+	if (!timeout && hif && chn == hif->tx_data_port)
+		sc2355_rx_bus_complete(hif);
+	rcu_read_unlock();
 	return 0;
 }
 
