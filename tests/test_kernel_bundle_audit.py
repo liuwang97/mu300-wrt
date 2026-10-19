@@ -52,7 +52,7 @@ class BundleAudit(unittest.TestCase):
             audit.audit(self.out, self.fragment)
 
     def test_option_a_kernel_does_not_have(self):
-        # config-ignored.txt (7.3 folded PROC_SYSCTL into SYSCTL, FINDINGS 194): passes only where the kernel has
+        # config-ignored.txt (7.3 folded PROC_SYSCTL into SYSCTL, FINDINGS 195): passes only where the kernel has
         # no such symbol at all; a kernel that knows it and has it off still fails
         self.fragment.write_text('CONFIG_KVM=y\nCONFIG_PROC_SYSCTL=y\n')
         with self.assertRaisesRegex(ValueError, 'CONFIG_PROC_SYSCTL'):

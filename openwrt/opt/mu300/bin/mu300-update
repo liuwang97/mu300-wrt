@@ -2092,7 +2092,7 @@ apply_one() {  # apply_one OS TAG
 #                core is not to be had (a pinned v1 release, a copy brought by hand), and as the fallback of a set.
 #   audio        call audio (FINDINGS 194): the Unisoc call-audio stack - its drivers, mu300-audio-dsp, mu300-voice,
 #                pcmhost, ctlset, mu300-hfp, the services - released on its own by github.com/dikeckaan/mu300-audio as
-#                one tarball per kernel, mu300-audio-KERNEL.tar.gz (5.4, 6.18, 7.2) with SHA256SUMS: a module like the
+#                one tarball per kernel, mu300-audio-KERNEL.tar.gz (5.4, 6.18, 7.2, 7.3) with SHA256SUMS: a module like the
 #                VPN's (./VERSION, ./requires, ./hooks/link and ./hooks/unlink, ./manifest), and ./kernel, the kernel
 #                choice its drivers (./modules/<release>/) were built for. The one of the kernel this device uses
 #                (kernel_choice) is installed, and it follows the kernel: mu300-update kernel X takes the one of X. Its

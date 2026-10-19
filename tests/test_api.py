@@ -857,6 +857,7 @@ class Jobs(ApiCase):
         for shell in self.each_shell():
             self.ok(shell, 'job.clear')
             self.refused(shell, 'kernel.set', {'version': '6.1'}, 'bad-value', 'version')
+            self.refused(shell, 'kernel.set', {'version': '7.4'}, 'bad-value', 'version')
             self.ok(shell, 'kernel.set', {'version': '7.2'})
             self.assertFalse(self.ok(shell, 'job.status')['job']['cancel'])
             self.refused(shell, 'job.cancel', {}, 'unsupported')

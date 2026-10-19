@@ -89,6 +89,14 @@ class BuildUsesIt(unittest.TestCase):
         self.assertNotIn('sha256sum -c', fetch, 'the unsigned check is gone')
         self.assertEqual(body.count('tar -xJf'), 1)
 
+    def test_checksum_list_from_kernel_org_itself(self):
+        # FINDINGS 195: the CDN's sha256sums.asc lagged 7.3 by hours; the tarball and its signature come from the CDN,
+        # the signed list from www.kernel.org
+        body = (UP / 'build.sh').read_text()
+        fetch = body[body.index('if [ ! -d /src/linux-$KV ]'):body.index('cd /src/linux-$KV')]
+        self.assertIn('base=https://cdn.kernel.org/pub/linux/kernel/v${KV%%.*}.x', fetch)
+        self.assertIn('[ "$f" != sha256sums.asc ] || u=https://www.kernel.org/pub/linux/kernel/v${KV%%.*}.x/$f', fetch)
+
     def test_build_image_has_gpgv(self):
         self.assertRegex((UP / 'Dockerfile').read_text(), r'\bgpgv\b')
 

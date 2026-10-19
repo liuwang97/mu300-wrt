@@ -11,8 +11,12 @@ if [ ! -d /src/linux-$KV ]; then
     base=https://cdn.kernel.org/pub/linux/kernel/v${KV%%.*}.x
     dl=/src/.download-$KV
     rm -rf "$dl" && mkdir -p "$dl"
+    # the signed checksum list from kernel.org itself: the CDN's copy lagged a new release by hours (7.3: the CDN
+    # still had the list of 7.2.11's day, without 7.3's line, FINDINGS 195); it is signed, so where it comes from
+    # does not change what is checked
     for f in linux-$KV.tar.xz linux-$KV.tar.sign sha256sums.asc; do
-        curl -fsSL -o "$dl/$f" "$base/$f" || { rm -rf "$dl"; echo "cannot fetch $base/$f" >&2; exit 1; }
+        u=$base/$f; [ "$f" != sha256sums.asc ] || u=https://www.kernel.org/pub/linux/kernel/v${KV%%.*}.x/$f
+        curl -fsSL -o "$dl/$f" "$u" || { rm -rf "$dl"; echo "cannot fetch $u" >&2; exit 1; }
     done
     bash /work/verify-kernel-src.sh "$dl" "$KV" || { rm -rf "$dl"; exit 1; }
     tar -xJf "$dl/linux-$KV.tar.xz" -C "$dl" && mv "$dl/linux-$KV" /src/linux-$KV
