@@ -558,22 +558,6 @@ int edma_sw_link_done_dscr(struct desc *head, struct desc **tail)
 	return 0;
 }
 
-static bool dscr_ring_empty(int chn)
-{
-	struct desc *dscr = NULL;
-	struct edma_info *edma = edma_info();
-
-	edma_hw_next_dscr(chn, edma->chn_sw[chn].inout, &dscr);
-	if (!IS_ERR_OR_NULL(dscr))
-		return true;
-
-	dscr = mpool_phy_to_vir(dscr);
-	if (dscr == edma->chn_sw[chn].dscr_ring.head)
-		return true;
-
-	return false;
-}
-
 static int dscr_zero(struct desc *dscr)
 {
 	dscr->chn_trans_len.reg = 0;
@@ -1168,24 +1152,25 @@ static int edma_tx_pop_isr(int chn)
 
 static int edma_rx_push_isr(int chn)
 {
-	int ret, node = 0;
+	int node = 0;
 	struct desc *end = NULL;
 	void *head = NULL, *tail = NULL;
 
 	struct edma_info *edma = edma_info();
 
-	ret = dscr_ring_empty(chn);
-	if (!ret) {
-		edma_hw_next_dscr(chn, edma->chn_sw[chn].inout, &end);
-		if (!end) {
-			WCN_WARN("%s: Unable to get RX pop dscr in RX push", __func__);
-			goto rx_pop;
-		}
-		end = mpool_phy_to_vir(end);
-		if (end != edma->chn_sw[chn].dscr_ring.head)
-			edma_pop_link(chn, edma->chn_sw[chn].dscr_ring.head,
-				      end, (void **)(&head), (void **)(&tail),
-				      &node);
+	/*
+	 * MU300 (kanoqwq's clean-tf-7.2 2d3f7438, after ZTE's U30 Air module): read the hardware cursor once, hand
+	 * up what the chip completed, then refill. The vendor's dscr_ring_empty() returned "empty" for every valid
+	 * cursor (its test was inverted), so this path never delivered a completed descriptor and only refilled.
+	 */
+	edma_hw_next_dscr(chn, edma->chn_sw[chn].inout, &end);
+	if (IS_ERR_OR_NULL(end))
+		goto rx_pop;
+	end = mpool_phy_to_vir(end);
+	if (end != edma->chn_sw[chn].dscr_ring.head) {
+		edma_pop_link(chn, edma->chn_sw[chn].dscr_ring.head,
+			      end, (void **)(&head), (void **)(&tail),
+			      &node);
 		edma_rx_list_pop_dp(chn, head, tail, node);
 		if (node > 0)
 			mchn_hw_pop_link(chn, head, tail, node);
