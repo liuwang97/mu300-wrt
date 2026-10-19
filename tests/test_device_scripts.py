@@ -1142,21 +1142,22 @@ at() {
 
     def test_led_from_cereg(self):
         """4G or 5G from the AcT field of AT+CEREG? (K56), not from AT+COPS?; when that names no NR access technology,
-        AT+C5GREG? tells a 5G SA registration (FINDINGS 199, kanoqwq's network-led.sh)."""
+        AT+C5GREG? tells a 5G SA registration when LTE is not registered (FINDINGS 199, kanoqwq's network-led.sh)."""
         for act, want in (('13', 'data 5g'), ('11', 'data 5g')):
             r, sent = self.lib('led_up', CEREG=f'+CEREG: 2,1,"1A2B","0123ABCD",{act}')
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertEqual((self.tmp / 'led').read_text().strip(), want, act)
             self.assertEqual([s.split(' ', 1)[1] for s in sent], ['AT+CEREG?'], act)
-        for cereg, c5g, want in (('+CEREG: 2,1,"1A2B","0123ABCD",7', '', 'data on'),
-                                 ('+CEREG: 2,1,"1A2B","0123ABCD",7', '+C5GREG: 2,0', 'data on'),
-                                 ('+CEREG: 2,2', '+C5GREG: 2,1,"1A2B","0123ABCD",11', 'data 5g'),
-                                 ('+CEREG: 2,1,"1A2B","0123ABCD",7', '+C5GREG: 2,5,"1A2B","0123ABCD",11', 'data 5g'),
-                                 ('+CEREG: 0,4', '+C5GREG: 0,2', 'data on')):
+        for cereg, c5g, want, asked in (('+CEREG: 2,1,"1A2B","0123ABCD",7', '+C5GREG: 2,1', 'data on', False),
+                                        ('+CEREG: 2,5,"1A2B","0123ABCD",7', '', 'data on', False),
+                                        ('+CEREG: 2,2', '+C5GREG: 2,1,"1A2B","0123ABCD",11', 'data 5g', True),
+                                        ('+CEREG: 2,0', '+C5GREG: 2,5,"1A2B","0123ABCD",11', 'data 5g', True),
+                                        ('+CEREG: 0,4', '+C5GREG: 0,2', 'data on', True),
+                                        ('+CEREG: 2,2', '', 'data on', True)):
             r, sent = self.lib('led_up', CEREG=cereg, C5GREG=c5g)
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertEqual((self.tmp / 'led').read_text().strip(), want, (cereg, c5g))
-            self.assertEqual([s.split(' ', 1)[1] for s in sent], ['AT+CEREG?', 'AT+C5GREG?'], cereg)
+            self.assertEqual([s.split(' ', 1)[1] for s in sent], ['AT+CEREG?'] + (['AT+C5GREG?'] if asked else []), cereg)
 
     def test_systemd_path_keeps_v6_up(self):
         """K63 is rejected: on the systemd path (Ubuntu) an IPv6 address from the network still runs v6_up, and none
