@@ -34,10 +34,7 @@ backup/
 arch/*.tar.gz
 arch/ArchLinuxARM-*
 android/magisk/*.zip
-/tools/pcmhost/pcmhost
 
-# built by tools/ctlset/build.sh
-tools/ctlset/ctlset
 # built by tools/adbd/build.sh
 tools/adbd/adbd
 

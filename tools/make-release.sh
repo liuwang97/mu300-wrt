@@ -274,18 +274,32 @@ sys.exit("sbin/e2fsck" not in b.cpio_names(b.unlz4_legacy(open(sys.argv[2], "rb"
     rm -f "$D/ramdisk.check"
 done
 # a mainline bundle carries the kernel's own modules next to the vendor ones (upstream/build-modules.sh): one of each
-# kind - qdisc, filesystem, device mapper, USB modem, vhost - and the vendor Wi-Fi; and every module of the out-of-tree
-# call audio stack, as upstream/modules/sprd_audio/Kbuild lists them (#315: without one of them the DSP stays silent)
-audio=$(python3 -c 'import re, sys
-t = open(sys.argv[1]).read().replace("\\\n", " ")
-print(" ".join(o[:-2] + ".ko" for l in t.splitlines() if re.match(r"obj-m\s*\+?=", l)
-               for o in l.split("=", 1)[1].split() if o.endswith(".o")))' "$TOP/upstream/modules/sprd_audio/Kbuild")
-[ -n "$audio" ] || { echo "upstream/modules/sprd_audio/Kbuild lists no modules"; fail=1; }
+# kind - qdisc, filesystem, device mapper, USB modem, vhost - and the vendor Wi-Fi
 for a in mu300-kernel-6.18 mu300-kernel-7.2; do
     l=$(tar -tzf "$D/$a.tar.gz")
-    for m in sch_htb.ko ntfs3.ko dm-crypt.ko cdc_mbim.ko vhost_net.ko sprd_wlan_combo.ko $audio; do
+    for m in sch_htb.ko ntfs3.ko dm-crypt.ko cdc_mbim.ko vhost_net.ko sprd_wlan_combo.ko; do
         printf '%s\n' "$l" | grep -qx "./modules/$m" || { echo "$a lacks modules/$m"; fail=1; }
     done
+done
+# Call audio is the audio extra's (https://github.com/dikeckaan/mu300-audio, mu300-extra install audio; FINDINGS 194):
+# no kernel bundle carries a driver of the Unisoc call-audio stack, and no image its programs or services. The 23 of
+# 5.4 and the 20 of mainline - mainline's sprd-dma.ko is the stack's AGCP DMA driver; 5.4's is the vendor kernel's
+# own DMA driver, which stays.
+AUDIO_KO="audio_mem agdsp_access audio_sipc sprd_audcp_boot sprd_audcp_dvfs audio-dsp-dump audio-pipe sprd_apipe
+mcdt_hw_r2p0 saudio sprd-dmaengine-pcm sprd-platform-pcm-routing sprd-compr-2stage-dma snd-soc-sprd-dai snd-soc-sprd-vaudio
+snd-soc-sprd-vbc-v4 snd-soc-sprd-vbc-fe snd-soc-sprd-codec-ump9620-power snd-soc-sprd-codec-ump9620-power-dev
+snd-soc-sprd-codec-ump9620 snd-soc-sprd-pa-ucp1301 snd-soc-sprd-dummy-codec snd-soc-sprd-card"
+for a in mu300-kernel mu300-kernel-6.18 mu300-kernel-7.2; do
+    l=$(tar -tzf "$D/$a.tar.gz")
+    extra=; [ "$a" = mu300-kernel ] || extra=sprd-dma
+    for m in $AUDIO_KO $extra; do
+        ! printf '%s\n' "$l" | grep -Eq "/$m\.ko\$" || { echo "$a carries $m.ko, which is the audio extra's"; fail=1; }
+    done
+done
+for m in mu300-ubuntu-rootfs mu300-ubuntu-26.04-rootfs mu300-openwrt-rootfs mu300-openwrt-luci-rootfs; do
+    [ -f "$D/$m.manifest.gz" ] || continue
+    ! gzip -dc "$D/$m.manifest.gz" | grep -Eq '(opt/mu300/bin/(mu300-audio-dsp|mu300-voice|pcmhost|ctlset|mu300-hfp)|systemd/system/mu300-(audio|voice)\.service|init\.d/mu300-(audio|voice)|modprobe\.d/mu300-audio\.conf)( |$)' ||
+        { echo "$m carries the audio extra's programs or services"; fail=1; }
 done
 [ $fail = 0 ] || { echo "audit failed, nothing published" >&2; exit 1; }
 rm -rf "$IN"

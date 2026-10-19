@@ -1,4 +1,5 @@
-# A daemon's own directory under /run, for mu300-atd and mu300-voice (sourced; POSIX sh, busybox ash included).
+# A daemon's own directory under /run, for mu300-atd and the audio extra's mu300-voice (sourced; POSIX sh, busybox
+# ash included).
 #
 # /run takes files from every user on these images (boot/init mounts it 1777), so a name there may be somebody
 # else's, made first: a directory whose owner reads what is written into it (the modem's answers, the callers'
