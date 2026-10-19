@@ -1195,7 +1195,8 @@ class Rules(unittest.TestCase):
         self.assertLess(q.index('READ_ONCE(rx_mgmt->stopping)'), q.index('sprd_alloc_work(0)'))
         self.assertIn('if (!READ_ONCE(rx_mgmt->stopping))\n\t\tsc2355_queue_rx_buff_work(', body('static void rx_refill_retry('))
         f = body('int sc2355_mm_fill_buffer(')
-        self.assertLess(f.index('READ_ONCE(rx_mgmt->stopping)'), f.index('atomic_xchg(&mm_entry->alloc_num, 0)'))
+        # read under refill_lock since the bus-completion resume (FINDINGS 195)
+        self.assertLess(f.index('if (rx_mgmt->stopping) {'), f.index('atomic_xchg(&mm_entry->alloc_num, 0)'))
         d = body('int sc2355_rx_deinit(')
         order = ['WRITE_ONCE(rx_mgmt->stopping, true);', 'cancel_delayed_work_sync(&rx_mgmt->refill_retry);',
                  'flush_workqueue(rx_mgmt->rx_queue);', 'flush_workqueue(rx_mgmt->rx_net_workq);',

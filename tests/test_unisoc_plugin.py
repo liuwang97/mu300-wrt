@@ -196,6 +196,40 @@ esac
             self.assertNotIn('AT+SFUN=', commands)
             self.assertTrue(marker.exists())
 
+    def test_auto152_is_a_mode_lock_like_the_others(self):
+        """FINDINGS 198 (kanoqwq's auto work mode): auto152 writes the automatic mode 152 (no 2G), keeps the slot1 and
+        primary fields, and is replayed like every lock."""
+        _, _, lock, state = self.tree()
+        state.mkdir(parents=True)
+        for k, v in (('auto_apply', 'on'), ('mode', 'auto152')):
+            (state / k).write_text(v)
+        at = self.tmp / 'at'
+        at.write_text('''#!/bin/sh
+printf "%s\\n" "$*" >> "$STUBLOG/at.commands"
+case "$*" in
+  *'AT+SPTESTMODE=152,'*) : > "$STUBLOG/mode152"; printf 'OK\\n' ;;
+  *'AT+SPTESTMODE?'*) if [ -e "$STUBLOG/mode152" ]; then printf '+SPTESTMODE: 152,134,0\\nOK\\n'
+                      else printf '+SPTESTMODE: 134,134,0\\nOK\\n'; fi ;;
+  *'AT+SP5GRAN?'*) printf '+SP5GRAN: 1\\nOK\\n' ;;
+  *) printf 'OK\\n' ;;
+esac
+''')
+        at.chmod(0o755)
+        self.stub('uci', 'case "$3" in unisoc_modem.main.data_interface) echo cellular ;; esac')
+        for shell in self.each_shell():
+            (self.tmp / 'at.commands').unlink(missing_ok=True)
+            (self.tmp / 'mode152').unlink(missing_ok=True)
+            (self.tmp / 'replayed').unlink(missing_ok=True)
+            result = self.script(shell, lock, 'replay', 'early', MU300_AT=at, UNISOC_APPLY_DIR=self.tmp / 'apply',
+                                 UNISOC_REPLAY_MARKER=self.tmp / 'replayed')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            commands = (self.tmp / 'at.commands').read_text()
+            self.assertIn('AT+SP5GRAN=1', commands)
+            self.assertIn('AT+SPTESTMODE=152,134,0', commands)
+        text = lock.read_text()
+        self.assertIn('152) echo auto152 ;;', text)
+        self.assertIn('auto152) echo "152 1" ;;', text)
+
     def test_the_stack_restart_takes_the_radio_lock(self):
         """Final review minor 3: lock apply's and a late replay's SFUN restart run under mobile-data's radio lock
         (mobile-data radio-locked, waiting up to 120 s for the dial or the watchdog); when it stays busy, no SFUN is

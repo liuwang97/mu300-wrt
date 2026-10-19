@@ -1,7 +1,8 @@
 #!/bin/sh
 # The buttons (Ubuntu and OpenWrt; run by mu300-buttons.service / /etc/init.d/mu300-buttons):
 #   power, short press        wake the LEDs (they go dark after LED_TIMEOUT, see mu300-led)
-#   power, held 3 s           shut down cleanly (the battery-powered U30 Air; the F50 starts again on USB power)
+#   power, held 3 s           shut down cleanly (the battery-powered U30 Air; the F50 starts again on USB power);
+#                             in the charging boot it starts the device instead, as in the stock charger mode
 #   Wi-Fi key, short press    hotspot 2.4 <-> 5 GHz (U30 Air; the Wi-Fi LED: white 5, blue 2.4, FINDINGS 152)
 #   Wi-Fi key, held 3 s       hotspot off / on
 # Every press lights the LEDs first (`mu300-led wake`: also in mu300-power's idle, and without any daemon), so a key
@@ -96,6 +97,13 @@ mu300-keys -l 3000 -t 5 | { while read -r code kind; do
         mkdir -p "$PST" 2>/dev/null
         if hotspot_is_up; then dir=off; cut -d. -f1 "${MU300_SYSROOT:-}/proc/uptime" > "$PST/hotspot-off" 2>/dev/null
         else dir=on; rm -f "$PST/hotspot-off"; fi
+    fi
+    # a held power key in the charging boot starts the device (the stock charger mode: hold power to switch it on;
+    # FINDINGS 196): the wake without a key name ends it, as the Wi-Fi key does
+    if [ "$code $kind" = "$KEY_POWER long" ] && [ "$s" = charging-boot ]; then
+        logger -t mu300-buttons "power button held in the charging boot: starting" 2>/dev/null
+        ( mu300-power wake ) </dev/null >/dev/null 2>&1 &
+        continue
     fi
     # a held power key shuts down instead
     [ "$code $kind" = "$KEY_POWER long" ] || ( mu300-power wake "$key" ) </dev/null >/dev/null 2>&1 &

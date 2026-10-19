@@ -67,7 +67,7 @@ system.get system.hostname system.timezone system.password system.ssh system.reb
 update.check update.apply kernel.set extra.list extra.install extra.remove logs
 backup.export backup.import
 at.send at.history ussd.send ussd.cancel modem.restart ttl.get ttl.set traffic.get traffic.set
-power.get power.set led.get led.set zram.get zram.set cpu.get cpu.profile cpu.voltage
+power.get power.set led.get led.set zram.get zram.set cpu.get cpu.profile cpu.core cpu.lowlatency cpu.voltage
 update.status update.source packages.get packages.act docker.status
 job.status job.cancel job.clear'
 
@@ -724,7 +724,7 @@ m_sim_select() {
     tool 60 "$BIN/mu300-sim" default "$V" </dev/null || refuse failed "$ERR"
     ok "\"sim\":$(jcheck "$OUT"),\"text\":$(js "$OUT")"
 }
-# the ZTE V50's card for the next boot (mu300-sim card, FINDINGS 206): ZTE's card ID 0-3, or "none" (the switches as
+# the ZTE V50's card for the next boot (mu300-sim card, FINDINGS 204): ZTE's card ID 0-3, or "none" (the switches as
 # the bootloader leaves them); mu300-sim refuses a card the board has not, on another device too
 m_sim_card() {
     only card
@@ -826,7 +826,7 @@ m_lock_set() {
     only kind val
     word kind 'mode|endc|lte|nr|cell|reset|auto_apply'; need kind; _k=$V
     case $_k in
-        mode)    word val 'auto|4g|sa|nsa' ;;
+        mode)    word val 'auto|auto152|4g|sa|nsa' ;;
         endc|auto_apply) word val 'on|off' ;;
         lte|nr)  word val '([0-9]{1,3}(,[0-9]{1,3}){0,31})?' ;;
         cell)    word val 'auto|off|off-nr|off-lte|(nr|lte):[0-9]{1,7},[0-9]{1,4}' ;;
@@ -1484,6 +1484,7 @@ m_power_get() {
     _prof=$(echo "$_pst" | sed -n 's/^profile: \([a-z]*\) (.*)$/\1/p'); _why=$(echo "$_pst" | sed -n 's/^profile: [a-z]* (\(.*\))$/\1/p')
     _state=$(echo "$_pst" | sed -n 's/^state: //p' | head -n 1); _supply=$(echo "$_pst" | sed -n 's/^supply: //p' | head -n 1)
     _sb=$(echo "$_pst" | sed -n 's/^SAVER_BELOW=\([0-9]*\) .*/\1/p'); _ct=$(echo "$_pst" | sed -n 's/.*CHARGE_TO=\([0-9]*\)$/\1/p')
+    _poc=$(echo "$_pst" | sed -n 's/^POWER_ON_CHARGER=\([01]\)$/\1/p')
     _bat=null
     if ! echo "$_pst" | grep -qx 'battery: none'; then
         for _d in "$R"/sys/class/power_supply/*; do
@@ -1500,19 +1501,20 @@ m_power_get() {
     printf '{"ok":1,"state":%s,"profile":%s,"why":%s,"supply":%s,"battery":%s,"charge_off":%s,' \
         "$(js "${_state:-active}")" "$(js "$_prof")" "$(js "$_why")" "$(js "$_supply")" "$_bat" \
         "$(js "$(first "$R/run/mu300/power/charge-off")")"
-    printf '"conf":{"PROFILE":"%s","SAVER_BELOW":%s,"CHARGE_TO":%s,"plugged":%s,"battery":%s,"saver":%s},"text":%s}\n' \
-        "$_conf" "$(jn "$_sb")" "$(jn "$_ct")" "$(power_knobs plugged)" "$(power_knobs battery)" "$(power_knobs saver)" \
+    printf '"conf":{"PROFILE":"%s","SAVER_BELOW":%s,"CHARGE_TO":%s,"POWER_ON_CHARGER":%s,"plugged":%s,"battery":%s,"saver":%s},"text":%s}\n' \
+        "$_conf" "$(jn "$_sb")" "$(jn "$_ct")" "$(jn "$_poc")" "$(power_knobs plugged)" "$(power_knobs battery)" "$(power_knobs saver)" \
         "$(js "$_pst")"
     exit 0
 }
 # power.set {key, value}: as mu300-power set takes them (it checks the value again): PROFILE, SAVER_BELOW, CHARGE_TO,
-# PROFILE.KNOB
+# POWER_ON_CHARGER, PROFILE.KNOB
 m_power_set() {
     only key value
-    word key 'PROFILE|SAVER_BELOW|CHARGE_TO|(plugged|battery|saver)\.(WIFI_IDLE|RADIO_IDLE|LEDS_IDLE|CPU)'; need key; _k=$V
+    word key 'PROFILE|SAVER_BELOW|CHARGE_TO|POWER_ON_CHARGER|(plugged|battery|saver)\.(WIFI_IDLE|RADIO_IDLE|LEDS_IDLE|CPU)'; need key; _k=$V
     case $_k in
         PROFILE) word value 'auto|plugged|battery|saver' ;;
         SAVER_BELOW|CHARGE_TO) int value 0 100 ;;
+        POWER_ON_CHARGER) int value 0 1 ;;
         *.WIFI_IDLE) int value 0 1440 ;;
         *.RADIO_IDLE) word value 'keep|lte|off' ;;
         *.LEDS_IDLE) word value 'on|off' ;;
@@ -1580,6 +1582,25 @@ m_cpu_profile() {
     [ -x "$BIN/mu300-cpu" ] || refuse unsupported mu300-cpu
     checked
     tool 30 "$BIN/mu300-cpu" profile "$V" </dev/null || refuse failed "$ERR"
+    ok
+}
+# cpu.core {cpu: 1-63, state: on|off}: that core online or offline, saved (CPU0 always stays online, FINDINGS 200)
+m_cpu_core() {
+    only cpu state
+    int cpu 1 63; need cpu; _c=$V
+    word state 'on|off'; need state
+    [ -x "$BIN/mu300-cpu" ] || refuse unsupported mu300-cpu
+    checked
+    tool 30 "$BIN/mu300-cpu" core "$_c" "$V" </dev/null || refuse failed "$ERR"
+    ok
+}
+# cpu.lowlatency {state: on|off}: CPU0 without its idle states (shorter Wi-Fi delays, more power), saved (FINDINGS 200)
+m_cpu_lowlatency() {
+    only state
+    word state 'on|off'; need state
+    [ -x "$BIN/mu300-cpu" ] || refuse unsupported mu300-cpu
+    checked
+    tool 30 "$BIN/mu300-cpu" lowlatency "$V" </dev/null || refuse failed "$ERR"
     ok
 }
 # cpu.voltage {op: set, offsets "A,B,C", confirm "EXPERIMENTAL"} | {op: off} | {op: stress, minutes 1-120}: the
@@ -1916,6 +1937,8 @@ case $METHOD in
     zram.set) m_zram_set ;;
     cpu.get) m_cpu_get ;;
     cpu.profile) m_cpu_profile ;;
+    cpu.core) m_cpu_core ;;
+    cpu.lowlatency) m_cpu_lowlatency ;;
     cpu.voltage) m_cpu_voltage ;;
     update.status) m_update_status ;;
     update.source) m_update_source ;;

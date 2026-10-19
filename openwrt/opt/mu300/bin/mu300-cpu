@@ -8,6 +8,11 @@
 #   mu300-cpu apply                  apply the saved profile (the boot service)
 #   mu300-cpu voltage ...            the CPU voltage offset, EXPERIMENTAL (it can damage the device for good):
 #                                    see "the CPU voltage offset" below and docs/FINDINGS.md 133
+#   mu300-cpu core N on|off          CPU N online or offline now, and saved (CPU0 always stays online); apply takes
+#                                    the saved ones offline again at boot (FINDINGS 200, after kanoqwq's cpu-cores)
+#   mu300-cpu lowlatency [on|off]    CPU0 without its cpuidle states, as ZTE's U30 Air firmware ("lowlatency"): far
+#                                    shorter Wi-Fi delays in kanoqwq's measurements, more power drawn; off by default,
+#                                    saved, applied at boot (FINDINGS 200). No argument: the saved setting
 # Profiles: saving (cores capped at ~60 % of the maximum, schedutil - cooler, less power), balanced (schedutil over
 # the full range, the stock behaviour), performance (every cluster pinned at its hardware maximum).
 # Why it never fights the rest: mu300-power's idle "eco" drops the big core and caps policy4 to 1.5 GHz and brings
@@ -28,13 +33,25 @@ SAVING_PERCENT=${MU300_CPU_SAVING_PERCENT:-60}
 say() { echo "mu300-cpu: $*" >&2; logger -t mu300-cpu -- "$*" 2>/dev/null || true; }
 
 # --- configuration (as mu300-power reads power.conf)
-default() { case $1 in PROFILE) echo balanced ;; *) return 1 ;; esac; }
-valid() { case $1 in PROFILE) case $2 in saving|balanced|performance) return 0 ;; esac ;; esac; return 1; }
+default() { case $1 in PROFILE) echo balanced ;; CORES_OFF) echo ;; LOWLATENCY) echo 0 ;; *) return 1 ;; esac; }
+valid() {
+    case $1 in
+        PROFILE) case $2 in saving|balanced|performance) return 0 ;; esac ;;
+        # the CPUs kept offline: 1..63, comma-separated, never CPU0
+        CORES_OFF) printf '%s\n' "$2" | grep -Eqx '([1-9]|[1-5][0-9]|6[0-3])(,([1-9]|[1-5][0-9]|6[0-3])){0,62}' && return 0 ;;
+        LOWLATENCY) case $2 in 0|1) return 0 ;; esac ;;
+    esac
+    return 1
+}
 conf_raw() { sed -n "s/^$1=\(.*\)\$/\1/p" "$CONF" 2>/dev/null | tail -n1; }
 conf_get() {
     _v=$(conf_raw "$1")
     if [ -n "$_v" ] && valid "$1" "$_v"; then echo "$_v"; return 0; fi
     default "$1"
+}
+conf_del() {  # conf_del KEY: back to its default
+    [ -f "$CONF" ] || return 0
+    { grep -v "^$1=" "$CONF" || true; } > "$CONF.tmp" && mv "$CONF.tmp" "$CONF"   # (grep: 1 when nothing is left)
 }
 conf_set() {
     default "$1" >/dev/null || { echo "mu300-cpu: no such key: $1" >&2; return 2; }
@@ -95,6 +112,86 @@ apply() {  # apply PROFILE
     return 0
 }
 
+# --- the cores (CPU hotplug; mainline has CONFIG_HOTPLUG_CPU, FINDINGS 200). CPU0 is never taken offline: the
+# kernel's timekeeping and the vendor drivers' interrupts start there. mu300-power's idle takes CPU7 offline and
+# brings it back, but not one kept offline here (it reads CORES_OFF too).
+CPUDIR=$R/sys/devices/system/cpu
+cpus() { for c in "$CPUDIR"/cpu[0-9]*; do [ -d "$c" ] && echo "${c##*/cpu}"; done | sort -n; }
+in_list() { case ",$2," in *",$1,"*) return 0 ;; esac; return 1; }
+core_set() {  # core_set N on|off: now and saved
+    case $1 in ''|*[!0-9]*) echo "mu300-cpu: no such CPU: $1" >&2; return 2 ;; esac
+    case $2 in on|off) ;; *) echo "usage: mu300-cpu core N on|off" >&2; return 2 ;; esac
+    [ "$1" != 0 ] || { echo "mu300-cpu: CPU0 always stays online" >&2; return 2; }
+    [ -e "$CPUDIR/cpu$1/online" ] || { echo "mu300-cpu: CPU$1 cannot be switched (no such CPU, or no CPU hotplug in this kernel)" >&2; return 1; }
+    _off=$(conf_get CORES_OFF); _new=
+    for _c in $(printf '%s' "$_off" | tr ',' ' '); do [ "$_c" = "$1" ] || _new="${_new:+$_new,}$_c"; done
+    if [ "$2" = off ]; then
+        # the last online core but CPU0 may go too; CPU0 always keeps the system running
+        echo 0 > "$CPUDIR/cpu$1/online" 2>/dev/null || [ "$(rd "$CPUDIR/cpu$1/online")" = 0 ] ||
+            { echo "mu300-cpu: the kernel refused to take CPU$1 offline" >&2; return 1; }
+        _new="${_new:+$_new,}$1"
+    else
+        echo 1 > "$CPUDIR/cpu$1/online" 2>/dev/null || [ "$(rd "$CPUDIR/cpu$1/online")" = 1 ] ||
+            { echo "mu300-cpu: the kernel refused to bring CPU$1 online" >&2; return 1; }
+    fi
+    if [ -n "$_new" ]; then conf_set CORES_OFF "$_new"; else conf_del CORES_OFF; fi
+    say "CPU$1 $2 (saved)"
+    # the profile's limits for a cluster that came back: its policy was gone while all its cores were off
+    [ "$2" = off ] || apply "$(conf_get PROFILE)" >/dev/null 2>&1 || true
+}
+cores_apply() {  # the saved offline cores, at boot; one that cannot go offline is left as it is
+    for _c in $(conf_get CORES_OFF | tr ',' ' '); do
+        [ "$_c" != 0 ] && [ -e "$CPUDIR/cpu$_c/online" ] || continue
+        [ "$(rd "$CPUDIR/cpu$_c/online")" = 0 ] && continue
+        echo 0 > "$CPUDIR/cpu$_c/online" 2>/dev/null && say "CPU$_c offline (saved)" || say "CPU$_c could not be taken offline"
+    done
+}
+cores_json() {
+    printf '['
+    _sep=
+    for _c in $(cpus); do
+        _on=1
+        [ "$(rd "$CPUDIR/cpu$_c/online")" = 0 ] && _on=0
+        _hp=0
+        [ "$_c" != 0 ] && [ -e "$CPUDIR/cpu$_c/online" ] && _hp=1
+        printf '%s{"cpu":%s,"online":%s,"switchable":%s}' "$_sep" "$_c" "$_on" "$_hp"
+        _sep=,
+    done
+    printf ']'
+}
+
+# --- CPU0's idle states (ZTE's U30 Air: init.md.rc "zte add for feimao lowlatency" disables all three after boot).
+# kanoqwq measured the Wi-Fi receive delay on a U30 Air: with CPU0 allowed into its deeper states, events waited 34 ms
+# on average (100 ms at worst); with them off, 0.6 ms (2 ms); the stock firmware the other way round. The power cost
+# was not measured, so it stays off unless the owner switches it on.
+lowlat_nodes() { for n in "$CPUDIR"/cpu0/cpuidle/state*/disable; do [ -f "$n" ] && echo "$n"; done; }
+lowlat_write() {  # lowlat_write 0|1: 1 disables every state of CPU0
+    _st=0
+    for n in $(lowlat_nodes); do
+        [ "$(rd "$n")" = "$1" ] && continue
+        echo "$1" > "$n" 2>/dev/null || _st=1
+    done
+    return $_st
+}
+lowlat_supported() { [ -n "$(lowlat_nodes)" ]; }
+lowlat_active() {  # every state of CPU0 disabled
+    _any=
+    for n in $(lowlat_nodes); do _any=1; [ "$(rd "$n")" = 1 ] || return 1; done
+    [ -n "$_any" ]
+}
+lowlat_set() {
+    case ${1:-} in on) _v=1 ;; off) _v=0 ;; *) echo "usage: mu300-cpu lowlatency [on|off]" >&2; return 2 ;; esac
+    lowlat_supported || { echo "mu300-cpu: this kernel has no cpuidle states for CPU0" >&2; return 1; }
+    lowlat_write "$_v" || { echo "mu300-cpu: CPU0's idle states could not be written" >&2; return 1; }
+    if [ "$_v" = 1 ]; then conf_set LOWLATENCY 1; else conf_del LOWLATENCY; fi
+    say "low latency $1 (CPU0 idle states $([ "$_v" = 1 ] && echo off || echo on)), saved"
+}
+lowlat_apply() {  # at boot: only an "on" is applied; off leaves the kernel's own settings alone
+    [ "$(conf_get LOWLATENCY)" = 1 ] || return 0
+    lowlat_supported || return 0
+    lowlat_write 1 && say "low latency on (saved): CPU0 idle states off" || say "low latency: CPU0's idle states could not be written"
+}
+
 khz() { case $1 in ''|*[!0-9]*) echo null ;; *) echo $(( $1 / 1000 )) ;; esac; }
 jstr() { printf '"%s"' "$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g')"; }
 
@@ -137,8 +234,11 @@ thermal_json() {
 
 status_json() {
     _saved=$(conf_get PROFILE)
-    printf '{"ok":1,"profile":%s,"profiles":["saving","balanced","performance"],"throttling":%s,"thermal":%s,"policies":[' \
+    printf '{"ok":1,"profile":%s,"profiles":["saving","balanced","performance"],"throttling":%s,"thermal":%s,' \
         "$(jstr "$_saved")" "$(throttling)" "$(thermal_json)"
+    printf '"cores":%s,"cores_off":%s,"lowlatency":{"saved":%s,"active":%s,"supported":%s},"policies":[' \
+        "$(cores_json)" "$(jstr "$(conf_get CORES_OFF)")" "$(conf_get LOWLATENCY)" \
+        "$(lowlat_active && echo 1 || echo 0)" "$(lowlat_supported && echo 1 || echo 0)"
     _sep=
     for pol in $(policies); do
         _rel=$(rd "$pol/related_cpus")
@@ -163,6 +263,11 @@ status_human() {
     done
     echo "  (MHz)"
     [ "$(throttling)" = 1 ] && echo "thermal throttling: active" || echo "thermal throttling: none"
+    _offl=; for _c in $(cpus); do [ "$(rd "$CPUDIR/cpu$_c/online")" = 0 ] && _offl="$_offl cpu$_c"; done
+    echo "offline cores:${_offl:- none} (kept offline: $(conf_get CORES_OFF | sed 's/^$/none/'))"
+    if lowlat_supported; then
+        echo "low latency: $([ "$(conf_get LOWLATENCY)" = 1 ] && echo on || echo off) (CPU0 idle states $(lowlat_active && echo off || echo on))"
+    fi
 }
 
 # --- the CPU voltage offset (EXPERIMENTAL: it can damage the device for good; docs/FINDINGS.md 133)
@@ -183,8 +288,9 @@ CPUV_SYS=$R/sys/module/sprd_cpufreq_v2_driver/parameters
 CPUV_WORD=EXPERIMENTAL
 CPUV_GOOD_MIN=10
 CPUV_WARN=${MU300_CPUV_WARNING:-/opt/mu300/lib/cpu-voltage-warning.txt}
-# the SML (ATF) builds whose DVFS_INIT encoding is known (the same list as boot/init's; a test keeps them equal)
-CPUV_SML_KNOWN=${MU300_CPUV_SML_KNOWN:-ff4782690fd805ff54fe34853ef8ee5c7e51c3259e20077c55373b50a4b259c2}
+# the SML (ATF) builds whose DVFS_INIT encoding is known (the same list as boot/init's; a test keeps them equal): the
+# F50's, the V50's and the U30 Air's (their payload is the F50's byte for byte, FINDINGS 201)
+CPUV_SML_KNOWN=${MU300_CPUV_SML_KNOWN:-ff4782690fd805ff54fe34853ef8ee5c7e51c3259e20077c55373b50a4b259c2 5b3183f17af9b416e71dea61e578c61824e4e1df43737a1179032f4b20466b2b f27ac16f44e6cdc87a8ee00a9b53c499c8dde0c3b92c771388e256e84ef12e70}
 
 cpuv_dir() {  # .mu300 on the Linux disk (the same rule as mu300-next-boot)
     for _d in "${MU300_DISK:-/mnt/mu300-disk}" "$R"; do [ -d "$_d/.mu300" ] && { printf '%s/.mu300' "$_d"; return 0; }; done
@@ -426,8 +532,12 @@ case ${1:-status} in
     profile)
         if [ -z "${2:-}" ]; then echo "$(conf_get PROFILE)"; exit 0; fi
         apply "$2" && conf_set PROFILE "$2" && { [ "${3:-}" = --json ] && status_json || status_human; } ;;
-    apply) apply "$(conf_get PROFILE)" ;;
+    apply) apply "$(conf_get PROFILE)"; cores_apply; lowlat_apply ;;
+    core) core_set "${2:-}" "${3:-}" ;;
+    lowlatency)
+        if [ -z "${2:-}" ]; then [ "$(conf_get LOWLATENCY)" = 1 ] && echo on || echo off; exit 0; fi
+        lowlat_set "$2" ;;
     voltage) shift; voltage_main "$@" ;;
-    -h|--help|help) sed -n '2,10s/^# \{0,1\}//p' "$0" ;;
-    *) echo "usage: mu300-cpu [status [--json]|profile [saving|balanced|performance]|apply|voltage ...]" >&2; exit 2 ;;
+    -h|--help|help) sed -n '2,15s/^# \{0,1\}//p' "$0" ;;
+    *) echo "usage: mu300-cpu [status [--json]|profile [saving|balanced|performance]|apply|core N on|off|lowlatency [on|off]|voltage ...]" >&2; exit 2 ;;
 esac

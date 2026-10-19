@@ -465,6 +465,18 @@ msgstr "硬件最高"
 msgid "Frequencies in MHz."
 msgstr "频率单位为 MHz。"
 
+msgid "Highlighted cores are online. A core taken offline stays offline, also after a reboot, until it is brought back. CPU0 always stays online."
+msgstr "高亮的核心处于在线状态。被关闭的核心会保持离线，重启后也是如此，直到重新开启。CPU0 始终保持在线。"
+
+msgid "Low latency: on"
+msgstr "低延迟：开"
+
+msgid "Low latency: off"
+msgstr "低延迟：关"
+
+msgid "Low latency keeps CPU0 out of its idle states, as ZTE's U30 Air firmware does: Wi-Fi delays are much shorter, and the device draws more power. Off by default."
+msgstr "低延迟模式让 CPU0 不进入空闲状态，与 ZTE U30 Air 原厂固件相同：Wi-Fi 延迟大幅缩短，设备耗电增加。默认关闭。"
+
 msgid "Thermal"
 msgstr "温控"
 
@@ -926,6 +938,9 @@ msgstr "暂无发送记录"
 
 msgid "Test started with the saved settings; the result appears in the delivery log."
 msgstr "已使用保存的设置开始测试；结果会显示在发送日志中。"
+
+msgid "Automatic without 2G (152)"
+msgstr "自动，不含 2G（152）"
 
 msgid "4G only"
 msgstr "仅 4G"
@@ -1799,6 +1814,15 @@ msgstr "0 % 表示从不给电池充电（设备由充电器供电），100 % �
 
 msgid "80 % keeps the battery healthier on a device that stays plugged in."
 msgstr "80 % 可让长期接着电源的设备电池更健康。"
+
+msgid "When the charger switches the device on"
+msgstr "充电器开机时"
+
+msgid "Charge only, until a key starts it"
+msgstr "仅充电，按键后启动"
+
+msgid "Start normally"
+msgstr "正常启动"
 
 msgid "Keep as is"
 msgstr "保持不变"
@@ -3451,6 +3475,12 @@ msgstr "CPU 适配器未返回有效响应"
 msgid "Invalid CPU profile"
 msgstr "无效的 CPU 配置"
 
+msgid "Invalid CPU core"
+msgstr "无效的 CPU 核心"
+
+msgid "Unknown CPU operation"
+msgstr "未知的 CPU 操作"
+
 msgid "Unknown CPU voltage operation"
 msgstr "未知的 CPU 电压操作"
 
@@ -3701,6 +3731,15 @@ msgstr "无法读取 CPU 配置"
 msgid "The CPU profile could not be set"
 msgstr "无法设置 CPU 配置"
 
+msgid "The CPU core could not be switched"
+msgstr "无法切换该 CPU 核心"
+
+msgid "Invalid low latency setting"
+msgstr "无效的低延迟设置"
+
+msgid "The low latency setting could not be applied"
+msgstr "无法应用低延迟设置"
+
 msgid "The CPU voltage offset could not be read"
 msgstr "无法读取 CPU 电压偏移"
 
@@ -3712,9 +3751,6 @@ msgstr "无法关闭 CPU 电压偏移"
 
 msgid "The stress test could not be started"
 msgstr "无法启动压力测试"
-
-msgid "Unknown CPU operation"
-msgstr "未知的 CPU 操作"
 
 msgid "USB role adapter is not executable"
 msgstr "USB 角色适配程序不可执行"

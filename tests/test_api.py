@@ -551,7 +551,7 @@ class MobileData(ApiCase):
             self.assertEqual(self.calls('later')[0][-2:], ['stop', 'mu300-mobile-data.service'])
 
     def test_sim_card(self):
-        """FINDINGS 206: the ZTE V50's card, 0-3 or "none", passed to mu300-sim card; anything else refused here."""
+        """FINDINGS 204: the ZTE V50's card, 0-3 or "none", passed to mu300-sim card; anything else refused here."""
         for shell in self.each_shell():
             self.refused(shell, 'sim.card', {'card': 4}, 'bad-value', 'card')
             self.refused(shell, 'sim.card', {'card': '1;x'}, 'bad-value', 'card')
@@ -1156,7 +1156,7 @@ class ModemTools(ApiCase):
 
     def test_power(self):
         status = ('state: active\nprofile: battery (automatic)\nsupply: battery\nbattery: 80 %\n'
-                  'SAVER_BELOW=20 CHARGE_TO=80\nplugged: WIFI_IDLE=0 RADIO_IDLE=keep LEDS_IDLE=on CPU=full\n'
+                  'SAVER_BELOW=20 CHARGE_TO=80\nPOWER_ON_CHARGER=1\nplugged: WIFI_IDLE=0 RADIO_IDLE=keep LEDS_IDLE=on CPU=full\n'
                   'battery: WIFI_IDLE=10 RADIO_IDLE=lte LEDS_IDLE=off CPU=eco\nsaver: WIFI_IDLE=5 RADIO_IDLE=off LEDS_IDLE=off CPU=eco\n')
         (self.root / 'etc/mu300/power.conf').write_text('PROFILE=saver\n')
         for shell in self.each_shell():
@@ -1165,14 +1165,17 @@ class ModemTools(ApiCase):
             self.assertEqual((o['state'], o['profile'], o['why'], o['supply']), ('active', 'battery', 'automatic', 'battery'))
             self.assertEqual(o['conf']['PROFILE'], 'saver')
             self.assertEqual((o['conf']['SAVER_BELOW'], o['conf']['CHARGE_TO']), (20, 80))
+            self.assertEqual(o['conf']['POWER_ON_CHARGER'], 1)
             self.assertEqual(o['conf']['battery'], {'WIFI_IDLE': 10, 'RADIO_IDLE': 'lte', 'LEDS_IDLE': 'off', 'CPU': 'eco'})
             for req, argv in (({'key': 'PROFILE', 'value': 'auto'}, ['profile', 'auto']),
                               ({'key': 'CHARGE_TO', 'value': 80}, ['set', 'CHARGE_TO', '80']),
+                              ({'key': 'POWER_ON_CHARGER', 'value': 0}, ['set', 'POWER_ON_CHARGER', '0']),
                               ({'key': 'saver.RADIO_IDLE', 'value': 'off'}, ['set', 'saver.RADIO_IDLE', 'off']),
                               ({'key': 'battery.WIFI_IDLE', 'value': 15}, ['set', 'battery.WIFI_IDLE', '15'])):
                 self.ok(shell, 'power.set', req)
                 self.assertEqual(self.calls('mu300-power')[-1], ['mu300-power'] + argv)
             for req in ({'key': 'PROFILE', 'value': 'x'}, {'key': 'FOO', 'value': 1}, {'key': 'CHARGE_TO', 'value': 101},
+                        {'key': 'POWER_ON_CHARGER', 'value': 2},
                         {'key': 'battery.CPU', 'value': 'turbo'}):
                 self.assertEqual(self.call(shell, 'power.set', req)[1]['error'], 'bad-value', req)
 
@@ -1217,6 +1220,14 @@ class ModemTools(ApiCase):
             self.ok(shell, 'cpu.voltage', {'op': 'stress', 'minutes': 10})
             self.assertEqual(self.calls('mu300-cpu')[-1], ['mu300-cpu', 'voltage', 'stress', '10', '--background'])
             self.refused(shell, 'cpu.voltage', {'op': 'stress', 'minutes': 121}, 'bad-value', 'minutes')
+            # a core and CPU0's low latency (FINDINGS 200); never CPU0
+            self.ok(shell, 'cpu.core', {'cpu': 7, 'state': 'off'})
+            self.assertEqual(self.calls('mu300-cpu')[-1], ['mu300-cpu', 'core', '7', 'off'])
+            self.refused(shell, 'cpu.core', {'cpu': 0, 'state': 'off'}, 'bad-value', 'cpu')
+            self.refused(shell, 'cpu.core', {'cpu': 7, 'state': 'down'}, 'bad-value', 'state')
+            self.ok(shell, 'cpu.lowlatency', {'state': 'on'})
+            self.assertEqual(self.calls('mu300-cpu')[-1], ['mu300-cpu', 'lowlatency', 'on'])
+            self.refused(shell, 'cpu.lowlatency', {'state': '1'}, 'bad-value', 'state')
 
     def test_update_status_and_source(self):
         for shell in self.each_shell():

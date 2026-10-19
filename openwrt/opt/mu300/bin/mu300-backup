@@ -158,7 +158,7 @@ sec_sim() {
     [ -x "$BIN/mu300-sim" ] || return 1
     _s=$(timed 10 "$BIN/mu300-sim" configured 2>/dev/null) || return 1
     case $_s in 0|1) ;; *) return 1 ;; esac
-    # the ZTE V50's chosen card too (mu300-sim card, FINDINGS 206)
+    # the ZTE V50's chosen card too (mu300-sim card, FINDINGS 204)
     _c=
     if [ "$(timed 5 "$BIN/mu300-device" 2>/dev/null)" = v50 ]; then
         _c=$(timed 10 "$BIN/mu300-sim" status --json 2>/dev/null | jq -r '.v50.saved_card // empty' 2>/dev/null) || _c=

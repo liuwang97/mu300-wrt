@@ -226,5 +226,87 @@ class Json(CpuTest):
             self.assertEqual(st['throttling'], 1)
 
 
+
+class CoresAndLatency(CpuTest):
+    """FINDINGS 200 (after kanoqwq's cpu-cores and mu300-lowlatency): a core taken offline is saved and taken offline
+    again by apply; CPU0 never; CPU0's idle states off only when asked (low latency is off by default)."""
+
+    def cores(self, n=8):
+        base = self.root / 'sys/devices/system/cpu'
+        for c in range(n):
+            d = base / f'cpu{c}'
+            d.mkdir(parents=True, exist_ok=True)
+            if c:
+                (d / 'online').write_text('1\n')
+        for st in range(3):
+            d = base / f'cpu0/cpuidle/state{st}'
+            d.mkdir(parents=True, exist_ok=True)
+            (d / 'disable').write_text('0\n')
+        return base
+
+    def test_a_core_offline_is_saved_and_replayed_and_cpu0_is_refused(self):
+        for shell in self.each_shell():
+            self.conf.unlink(missing_ok=True)
+            base = self.cores()
+            self.three_clusters()
+            r = self.cpu(shell, 'core 7 off')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual((base / 'cpu7/online').read_text().strip(), '0')
+            self.assertIn('CORES_OFF=7', self.conf.read_text())
+            self.cpu(shell, 'core 5 off')
+            self.assertIn('CORES_OFF=7,5', self.conf.read_text())
+            self.assertNotEqual(self.cpu(shell, 'core 0 off').returncode, 0)
+            self.assertNotEqual(self.cpu(shell, 'core 9 off').returncode, 0)     # no such CPU
+            self.assertIn('CORES_OFF=7,5', self.conf.read_text())
+            # a boot: both online again, apply takes them offline
+            (base / 'cpu7/online').write_text('1\n')
+            (base / 'cpu5/online').write_text('1\n')
+            self.assertEqual(self.cpu(shell, 'apply').returncode, 0)
+            self.assertEqual(((base / 'cpu7/online').read_text().strip(), (base / 'cpu5/online').read_text().strip()),
+                             ('0', '0'))
+            st = json.loads(self.cpu(shell, 'status --json').stdout)
+            self.assertEqual([c['online'] for c in st['cores']], [1, 1, 1, 1, 1, 0, 1, 0])
+            self.assertEqual([c['switchable'] for c in st['cores']], [0, 1, 1, 1, 1, 1, 1, 1])
+            self.assertEqual(st['cores_off'], '7,5')
+            self.cpu(shell, 'core 7 on')
+            self.cpu(shell, 'core 5 on')
+            self.assertEqual((base / 'cpu7/online').read_text().strip(), '1')
+            self.assertNotIn('CORES_OFF', self.conf.read_text())
+
+    def test_a_broken_saved_list_takes_nothing_offline(self):
+        for shell in self.each_shell():
+            base = self.cores()
+            self.conf.write_text('CORES_OFF=0,7\n')
+            self.cpu(shell, 'apply')
+            self.assertEqual((base / 'cpu7/online').read_text().strip(), '1')
+
+    def test_low_latency_is_off_by_default_and_only_on_when_asked(self):
+        for shell in self.each_shell():
+            self.conf.unlink(missing_ok=True)
+            base = self.cores()
+            nodes = [base / f'cpu0/cpuidle/state{s}/disable' for s in range(3)]
+            self.assertEqual(self.cpu(shell, 'lowlatency').stdout.strip(), 'off')
+            self.cpu(shell, 'apply')
+            self.assertEqual({n.read_text().strip() for n in nodes}, {'0'})
+            self.assertEqual(self.cpu(shell, 'lowlatency on').returncode, 0)
+            self.assertEqual({n.read_text().strip() for n in nodes}, {'1'})
+            st = json.loads(self.cpu(shell, 'status --json').stdout)
+            self.assertEqual(st['lowlatency'], {'saved': 1, 'active': 1, 'supported': 1})
+            for n in nodes:
+                n.write_text('0\n')                     # a boot
+            self.cpu(shell, 'apply')
+            self.assertEqual({n.read_text().strip() for n in nodes}, {'1'})
+            self.cpu(shell, 'lowlatency off')
+            self.assertEqual({n.read_text().strip() for n in nodes}, {'0'})
+            self.assertEqual(self.cpu(shell, 'lowlatency').stdout.strip(), 'off')
+            self.assertNotEqual(self.cpu(shell, 'lowlatency maybe').returncode, 0)
+
+    def test_low_latency_without_cpuidle_is_refused(self):
+        for shell in self.each_shell():
+            (self.root / 'sys/devices/system/cpu').mkdir(parents=True, exist_ok=True)
+            self.assertNotEqual(self.cpu(shell, 'lowlatency on').returncode, 0)
+            st = json.loads(self.cpu(shell, 'status --json').stdout)
+            self.assertEqual(st['lowlatency']['supported'], 0)
+
 if __name__ == '__main__':
     unittest.main()

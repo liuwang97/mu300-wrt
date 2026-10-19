@@ -46,7 +46,7 @@ sim_cfg_save_default() {
         printf '%s\n' "$1" > "$tmp" && mv -f "$tmp" "$sim_config_root/etc/mu300/sim-slot"
     fi
 }
-# --- the ZTE V50's card (FINDINGS 206): ZTE's card ID 0-3, or nothing (the switches stay as the bootloader left
+# --- the ZTE V50's card (FINDINGS 204): ZTE's card ID 0-3, or nothing (the switches stay as the bootloader left
 # them). OpenWrt: network.wan.v50_card, next to sim_slot; other systems: /etc/mu300/v50-card. mu300-sim validates it.
 sim_cfg_card() {
     if command -v uci >/dev/null 2>&1; then

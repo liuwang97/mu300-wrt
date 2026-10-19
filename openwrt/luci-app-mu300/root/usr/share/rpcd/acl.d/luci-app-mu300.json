@@ -13,7 +13,7 @@
   },
   "write": {
    "ubus": {
-    "mu300dash": [ "act", "at", "at_job", "at_history", "lock_set", "sms_list", "sms_show", "sms_send", "sms_job", "sms_delete", "sms_sync", "usb_set", "usb_net_add", "lang_set", "power_set", "ttl_set", "forward_get", "forward_set", "forward_test", "forward_log_clear", "cpu_set", "cpu_voltage_set", "traffic_set", "packages_act", "sim_set", "simcard_set", "update_act", "backup_export", "backup_import", "backup_job" ],
+    "mu300dash": [ "act", "at", "at_job", "at_history", "lock_set", "sms_list", "sms_show", "sms_send", "sms_job", "sms_delete", "sms_sync", "usb_set", "usb_net_add", "lang_set", "power_set", "ttl_set", "forward_get", "forward_set", "forward_test", "forward_log_clear", "cpu_set", "cpu_tune", "cpu_voltage_set", "traffic_set", "packages_act", "sim_set", "simcard_set", "update_act", "backup_export", "backup_import", "backup_job" ],
     "mu300vpn": [ "job", "service", "killswitch", "use", "profile_add", "profile_rename", "profile_remove", "profile_check", "profile_option", "profile_reveal", "profile_edit", "latency", "sub_add", "sub_refresh", "sub_remove", "engine_install", "engine_remove", "core_install", "setting_set", "logs" ]
    },
    "uci": {

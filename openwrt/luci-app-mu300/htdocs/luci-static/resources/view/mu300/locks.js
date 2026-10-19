@@ -12,7 +12,8 @@
  * metadata such as the carrier and the neighbors comes from status once, when the page opens.
  * Every neighbor row has a Lock button, shared with the dashboard through M.neighborRows. */
 
-var MODES = [ [ 'auto', _('Automatic') ], [ '4g', _('4G only') ], [ 'sa', '5G SA' ], [ 'nsa', '5G NSA' ] ];
+/* auto152: the automatic mode 152 (no 2G) instead of 134, from kanoqwq's fork (FINDINGS 198) */
+var MODES = [ [ 'auto', _('Automatic') ], [ 'auto152', _('Automatic without 2G (152)') ], [ '4g', _('4G only') ], [ 'sa', '5G SA' ], [ 'nsa', '5G NSA' ] ];
 var NR_CAND = [ 1, 5, 6, 8, 28, 41, 78 ];   /* measured with SP5GCMDS on this device; LTE has no capability query, so a fixed table */
 var LTE_CAND = [ 1, 3, 5, 8, 34, 38, 39, 40, 41 ];
 

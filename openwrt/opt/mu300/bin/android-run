@@ -31,6 +31,10 @@ export LD_LIBRARY_PATH=/apex/com.android.runtime/lib64/bionic:/system/lib64:/ven
 # account (mu300vnd, see android-vendor-start) and setpriv can switch to it (vendor_user above) they start as it instead, with no other groups and only the
 # capabilities they keep on Android (plus chroot's, which their capset drops): their setgroups and setuid(1000)
 # then fail - they log it and carry on, as mu300vnd. cp_diskserver never switches: it stays root.
+# the program: Android's own, or for modem_control the copy android-vendor-start named (mu300-modem-coldboot: only that
+# path, whose name is still modem_control)
+exe=/vendor/bin/$1
+[ "$1" != modem_control ] || [ "${MU300_MODEM_CONTROL:-}" != /tmp/mu300-coldboot/modem_control ] || exe=$MU300_MODEM_CONTROL
 case $1 in
     modem_control) caps=chown,block_suspend ;;
     refnotify) caps=sys_time ;;
@@ -39,6 +43,6 @@ esac
 if [ -n "$caps" ] && [ -n "$(vendor_user)" ]; then
     c=-all,+sys_chroot,+$(echo "$caps" | sed 's/,/,+/g')
     exec setpriv --reuid=mu300vnd --regid=mu300vnd --clear-groups --no-new-privs \
-        --inh-caps="$c" --ambient-caps="$c" --bounding-set="$c" chroot $A /vendor/bin/"$1"
+        --inh-caps="$c" --ambient-caps="$c" --bounding-set="$c" chroot $A "$exe"
 fi
-exec chroot $A /vendor/bin/"$1"
+exec chroot $A "$exe"

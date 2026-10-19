@@ -208,13 +208,17 @@ publish_slot() {
     done
     case $_mode in charger) ;; *) _mode=normal ;; esac
     echo "$_mode" > "$_r/boot-mode"
-    # Charging boot: create this marker so Ubuntu units with ConditionPathExists=!/run/mu300/charging-boot skip radios
-    if [ "$_mode" = charger ]; then
+    # Charging boot: create this marker so Ubuntu units with ConditionPathExists=!/run/mu300/charging-boot skip radios.
+    # Not when the system asks for a normal boot on the charger (mu300-power's POWER_ON_CHARGER=1, FINDINGS 196).
+    _pon=
+    [ "$_mode" != charger ] || ! grep -qx 'POWER_ON_CHARGER=1' "${MU300_NEWROOT:-/newroot}/etc/mu300/power.conf" 2>/dev/null ||
+        _pon=" power-on=1"
+    if [ "$_mode" = charger ] && [ -z "$_pon" ]; then
         touch "$_r/charging-boot"
     else
         rm -f "$_r/charging-boot"
     fi
-    log "stage=boot-mode mode=$_mode source=$_msrc"
+    log "stage=boot-mode mode=$_mode source=$_msrc$_pon"
 }
 # --- slot end
 linux_slot_detect
@@ -597,8 +601,10 @@ pick_root() {
 # ended without a clean shutdown - a crash, a watchdog reset, a power cut: the offset is dropped (back to 0,0,0 and
 # the request cleared). A trial boot that ended cleanly but before the good mark does not get a second try.
 CPUV_SYS=${MU300_CPUV_SYS:-/sys/module/sprd_cpufreq_v2_driver/parameters}
-# the SML (ATF) builds whose DVFS_INIT encoding was read (kano, 3386928: the F50's sml_a/sml_b); any other: 0,0,0
-CPUV_SML_KNOWN=${MU300_CPUV_SML_KNOWN:-ff4782690fd805ff54fe34853ef8ee5c7e51c3259e20077c55373b50a4b259c2}
+# the SML (ATF) builds whose DVFS_INIT encoding was read (kano, 3386928: the F50's sml_a/sml_b; f6b0668d and c1293746: the
+# V50's and the U30 Air's, whose 1 MiB differ from the F50's only in the authentication area, FINDINGS 201); any other:
+# 0,0,0
+CPUV_SML_KNOWN=${MU300_CPUV_SML_KNOWN:-ff4782690fd805ff54fe34853ef8ee5c7e51c3259e20077c55373b50a4b259c2 5b3183f17af9b416e71dea61e578c61824e4e1df43737a1179032f4b20466b2b f27ac16f44e6cdc87a8ee00a9b53c499c8dde0c3b92c771388e256e84ef12e70}
 cpuv_valid() {  # cpuv_valid A,B,C: three whole 3.125 mV steps within -25000..12500 uV, written plainly
     case $1 in *[!0-9,-]*|'') return 1 ;; esac
     _o=$IFS; IFS=,; set -- $1; IFS=$_o

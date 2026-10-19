@@ -2,6 +2,8 @@
 # CPU adapter: mu300-cpu for the panel's CPU page (mu300dash cpu_get, cpu_set). Every reply is one JSON object.
 #   cpu get             {"ok":1,"profile":...,"profiles":[...],"throttling":0|1,"policies":[...]}
 #   cpu set NAME        {"ok":1,...} (the new status), or {"ok":0,"error":...}; NAME checked here again
+#   cpu core N on|off   CPU N online or offline, saved (never CPU0); the reply is the new status
+#   cpu lowlatency on|off  CPU0 without its idle states (lower Wi-Fi latency, more power), saved; the new status
 #   cpu voltage-get     the CPU voltage offset (EXPERIMENTAL): mu300-cpu voltage status --json
 #   cpu voltage-set set A,B,C WORD | off | stress MINUTES
 #                       the request for the next boot, back to the stock voltages, or the CPU stress test in the
@@ -27,6 +29,25 @@ do_set() {
         case $out in '{'*) printf '%s\n' "$out"; return ;; esac
     fi
     error 'The CPU profile could not be set'
+}
+
+do_core() {
+    case ${1:-} in [1-9]|[1-5][0-9]|6[0-3]) ;; *) error 'Invalid CPU core' ;; esac
+    case ${2:-} in on|off) ;; *) error 'Invalid CPU core' ;; esac
+    if ! out=$("$CPU_CMD" core "$1" "$2" 2>&1 >/dev/null); then
+        printf '{"ok":0,"error":"The CPU core could not be switched","detail":%s}\n' "$(json_str "$(why "$out")")"
+        exit 0
+    fi
+    do_get
+}
+
+do_lowlat() {
+    case ${1:-} in on|off) ;; *) error 'Invalid low latency setting' ;; esac
+    if ! out=$("$CPU_CMD" lowlatency "$1" 2>&1 >/dev/null); then
+        printf '{"ok":0,"error":"The low latency setting could not be applied","detail":%s}\n' "$(json_str "$(why "$out")")"
+        exit 0
+    fi
+    do_get
 }
 
 do_vget() {
@@ -63,6 +84,8 @@ do_vset() {
 case ${1:-} in
     get) do_get ;;
     set) do_set "${2:-}" ;;
+    core) do_core "${2:-}" "${3:-}" ;;
+    lowlatency) do_lowlat "${2:-}" ;;
     voltage-get) do_vget ;;
     voltage-set) shift; do_vset "$@" ;;
     *) error 'Unknown CPU operation' ;;

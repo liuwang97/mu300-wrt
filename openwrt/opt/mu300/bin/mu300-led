@@ -52,14 +52,19 @@ DEVICE=$(${MU300_BIN:-/opt/mu300/bin}/mu300-device)
 
 # ZTE V50 (experimental; kano's mapping, read from its Android driver and lit one group at a time, FINDINGS 95): an
 #   AW9523B on I2C3 drives three lamps, each white, blue and red (mainline's leds-aw9523b, port/drivers/leds):
-#   NET1 is the network LED here, as on the F50 (blue on 4G, white on 5G, red without service); NET2 (the second
-#   SIM's) stays dark; Wi-Fi white on 5 GHz, blue on 2.4 GHz. The PMIC's LEDs exist in its device tree as well, but
-#   are not its front panel: never written here. Under 5.4 the V50 has no driver for them: every LED is skipped.
+#   the network LED is the lamp of the SIM in use, as ZTE's firmware (V50 B15, NotificationManagerService.setNetLight,
+#   read by kanoqwq; FINDINGS 199): logical slot 0 (SIM1: built-in card 1 or the external card) lights NET2, slot 1
+#   (SIM2: built-in card 2 or 3) NET1, blue on 4G, white on 5G, red without service; the other lamp stays dark. The
+#   slot is this boot's pin, /run/mu300/sim-slot, as the AT daemons read it. Wi-Fi white on 5 GHz, blue on 2.4 GHz.
+#   The PMIC's LEDs exist in its device tree as well, but are not its front panel: never written here. Under 5.4
+#   the V50 has no driver for them: every LED is skipped.
 BY_SIM=0
+V50_NET=net2
+[ "$(cat "$R/run/mu300/sim-slot" 2>/dev/null)" != 1 ] || V50_NET=net1
 case $DEVICE in
     u30air) POWER=sc27xx:green DATA=net_blue DATA5G=zte-ldo0 NODATA=keyboard-backlight WIFI5=zte-ldo1 WIFI24=zte-ldo2
             DEFAULT_TIMEOUT=60 BY_SIM=1 ;;   # DATA is slot 1's colour here, DATA5G slot 0's (BY_SIM)
-    v50)    POWER= DATA=v50:net1:blue DATA5G=v50:net1:white NODATA=v50:net1:red WIFI5=v50:wifi:white
+    v50)    POWER= DATA=v50:$V50_NET:blue DATA5G=v50:$V50_NET:white NODATA=v50:$V50_NET:red WIFI5=v50:wifi:white
             WIFI24=v50:wifi:blue DEFAULT_TIMEOUT=0 ;;
     *)      POWER= DATA=sc27xx:blue DATA5G=sc27xx:green NODATA=sc27xx:red WIFI5=keyboard-backlight
             WIFI24=keyboard-backlight DEFAULT_TIMEOUT=0 ;;
@@ -67,7 +72,7 @@ esac
 # the PMIC's RGB LED on both (the U30 Air's battery LED, the F50's network LED), one colour at a time: the white
 # outshines the others when mixed; the V50's network lamp
 SIREN="sc27xx:red sc27xx:green sc27xx:blue"
-[ "$DEVICE" != v50 ] || SIREN="v50:net1:red v50:net1:white v50:net1:blue"
+[ "$DEVICE" != v50 ] || SIREN="v50:$V50_NET:red v50:$V50_NET:white v50:$V50_NET:blue"
 SIREN_PID=$R/run/mu300/led-siren.pid
 # the U30 Air's battery LED is the battery's (FINDINGS 151), not a "Linux is up" light any more: the three PMIC
 # channels are drawn by battery_show, never through the state files of the other LEDs

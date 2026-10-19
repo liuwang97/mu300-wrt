@@ -71,3 +71,39 @@ class HwBringup(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+UAPSD = TOP / 'openwrt' / 'overlay' / 'etc' / 'uci-defaults' / '94-mu300-ap-uapsd'
+
+
+class ApUapsd(ShellTest):
+    """FINDINGS 203 (kanoqwq 2d3f7438): U-APSD off on every access point, a new configuration and a kept one; stations
+    and the other options are left alone."""
+
+    def test_new_configuration_has_it_off(self):
+        self.assertIn("set wireless.ap0.uapsd='0'", (BIN / 'openwrt-wifi-config').read_text())
+
+    def test_migration_sets_only_the_access_points(self):
+        fns = self.tmp / 'functions.sh'
+        # sections: ap0 (ap, no uapsd), ap1 (ap, uapsd 1), sta (sta), ap2 (ap, already 0)
+        fns.write_text('''
+config_load() { :; }
+config_foreach() { for s in ap0 ap1 sta ap2; do "$1" "$s"; done; }
+config_get() {
+    case $2:$3 in
+        sta:mode) v=sta ;; *:mode) v=ap ;;
+        ap1:uapsd) v=1 ;; ap2:uapsd) v=0 ;; *) v= ;;
+    esac
+    eval "$1=\\$v"
+}
+''')
+        script = self.tmp / 'uapsd'
+        script.write_text(UAPSD.read_text().replace('. /lib/functions.sh', f'. "{fns}"')
+                          .replace('/etc/config/wireless', str(fns)))
+        self.stub('uci', 'echo "$*" >> "$STUBLOG/uci"')
+        for shell in self.each_shell():
+            (self.tmp / 'uci').unlink(missing_ok=True)
+            r = self.sh(shell, f'. "{script}"')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual((self.tmp / 'uci').read_text().splitlines(),
+                             ['-q set wireless.ap0.uapsd=0', '-q set wireless.ap1.uapsd=0', 'commit wireless'])
