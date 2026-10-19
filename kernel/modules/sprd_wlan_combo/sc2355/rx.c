@@ -13,6 +13,7 @@
 #include <linux/udp.h>
 #include <net/ip.h>
 #include <net/ip6_checksum.h>
+#include <linux/rcupdate.h>
 
 #include "cmdevt.h"
 #include "common/common.h"
@@ -483,6 +484,31 @@ void sc2355_rx_process(struct rx_mgmt *rx_mgmt, struct sk_buff *pskb)
 #define SPRD_REFILL_BACKOFF_MIN_MS	20U
 #define SPRD_REFILL_BACKOFF_MAX_MS	1000U
 
+/*
+ * MU300 (kanoqwq's clean-tf-7.2 cf4dcd61): the back-off above also caught the ordinary case of a full EDMA pending
+ * ring (three usable slots): the address list was refused with -EAGAIN, and the refill then waited 20 ms to 1 s
+ * although the bus freed a slot within microseconds. The bus calls this from its completion on the data channel
+ * (IRQ context): a refill waiting for that is released at once. Only that wait: an allocation failure, a hard
+ * error or an attempt with nothing pending keeps its timer, and nothing polls.
+ */
+void sc2355_rx_bus_complete(struct sprd_hif *hif)
+{
+	struct rx_mgmt *rx_mgmt = smp_load_acquire(&hif->rx_mgmt);
+	unsigned long flags;
+
+	if (!rx_mgmt)
+		return;
+
+	spin_lock_irqsave(&rx_mgmt->refill_lock, flags);
+	if (!rx_mgmt->stopping && rx_mgmt->refill_bus_waiting && !rx_mgmt->refill_bus_ready) {
+		/* the completion may come before the timer is armed: remembered, and the arming sees it */
+		rx_mgmt->refill_bus_ready = true;
+		if (delayed_work_pending(&rx_mgmt->refill_retry))
+			mod_delayed_work(system_wq, &rx_mgmt->refill_retry, 0);
+	}
+	spin_unlock_irqrestore(&rx_mgmt->refill_lock, flags);
+}
+
 static void rx_refill_retry(struct work_struct *work)
 {
 	struct rx_mgmt *rx_mgmt =
@@ -499,44 +525,87 @@ int sc2355_mm_fill_buffer(struct sprd_hif *hif)
 	    (struct rx_mgmt *)hif->rx_mgmt;
 	struct mem_mgmt *mm_entry = &rx_mgmt->mm_entry;
 	unsigned int num = 0, alloc_num;
-	bool had_trans, progress;
+	unsigned long flags;
+	bool had_trans, progress, immediate = false;
+	int ret = 0;
 
+	spin_lock_irqsave(&rx_mgmt->refill_lock, flags);
 	/* MU300: the ring is being torn down; a refill now would re-arm the timed retry */
-	if (READ_ONCE(rx_mgmt->stopping))
+	if (rx_mgmt->stopping) {
+		spin_unlock_irqrestore(&rx_mgmt->refill_lock, flags);
 		return 0;
+	}
 
-	/* MU300: a retry is already timed; RX events (mm_buffer_unlink) must not bypass the back-off */
-	if (delayed_work_pending(&rx_mgmt->refill_retry))
+	/*
+	 * MU300: a retry is already timed; RX events (mm_buffer_unlink) must not bypass the back-off. A bus
+	 * completion that came since (refill_bus_ready) may.
+	 */
+	if (delayed_work_pending(&rx_mgmt->refill_retry) && !rx_mgmt->refill_bus_ready) {
+		spin_unlock_irqrestore(&rx_mgmt->refill_lock, flags);
 		return atomic_read(&mm_entry->alloc_num);
+	}
+	if (rx_mgmt->refill_bus_ready)
+		cancel_delayed_work(&rx_mgmt->refill_retry);
+	rx_mgmt->refill_bus_ready = false;
+	rx_mgmt->refill_bus_waiting = false;
+	spin_unlock_irqrestore(&rx_mgmt->refill_lock, flags);
 
 	alloc_num = atomic_xchg(&mm_entry->alloc_num, 0);
 	had_trans = rx_mgmt->addr_trans_head != NULL;
 
 	num = sc2355_mm_buffer_alloc(&rx_mgmt->mm_entry, alloc_num);
 	progress = num < alloc_num;
+	/*
+	 * MU300: armed before the submission, since its completion can come before tx_addr_trans returns. The
+	 * allocation, the submission and the requeue run outside the lock.
+	 */
+	spin_lock_irqsave(&rx_mgmt->refill_lock, flags);
+	rx_mgmt->refill_bus_waiting = !rx_mgmt->stopping && hif->hw_type == SPRD_HW_SC2355_PCIE &&
+		rx_mgmt->addr_trans_head && hif->ops->tx_addr_trans;
+	spin_unlock_irqrestore(&rx_mgmt->refill_lock, flags);
 	if (hif->ops->tx_addr_trans)
-		hif->ops->tx_addr_trans(hif, NULL, 0, true);
+		ret = hif->ops->tx_addr_trans(hif, NULL, 0, true);
 	if (had_trans && !rx_mgmt->addr_trans_head)
 		progress = true;
 	if (num)
 		num = atomic_add_return(num, &mm_entry->alloc_num);
 
+	spin_lock_irqsave(&rx_mgmt->refill_lock, flags);
+	if (rx_mgmt->stopping) {
+		rx_mgmt->refill_bus_waiting = false;
+		rx_mgmt->refill_bus_ready = false;
+		spin_unlock_irqrestore(&rx_mgmt->refill_lock, flags);
+		return num;
+	}
 	if (progress)
 		rx_mgmt->refill_backoff_ms = 0;
 
+	/* MU300: only a refusal by the full pending ring waits for a completion; anything else keeps the timer */
+	rx_mgmt->refill_bus_waiting = hif->hw_type == SPRD_HW_SC2355_PCIE &&
+		ret == -EAGAIN && rx_mgmt->addr_trans_head;
+	if (!rx_mgmt->refill_bus_waiting)
+		rx_mgmt->refill_bus_ready = false;
+
 	if (num > SPRD_MAX_ADD_MH_BUF_ONCE || rx_mgmt->addr_trans_head) {
 		if (progress) {
-			sc2355_queue_rx_buff_work(rx_mgmt->hif->priv,
-						  SPRD_PCIE_RX_ALLOC_BUF);
+			rx_mgmt->refill_bus_waiting = false;
+			rx_mgmt->refill_bus_ready = false;
+			immediate = true;
 		} else {
 			rx_mgmt->refill_backoff_ms =
 			    clamp(rx_mgmt->refill_backoff_ms * 2,
 				  SPRD_REFILL_BACKOFF_MIN_MS,
 				  SPRD_REFILL_BACKOFF_MAX_MS);
-			queue_delayed_work(system_wq, &rx_mgmt->refill_retry,
-					   msecs_to_jiffies(rx_mgmt->refill_backoff_ms));
+			/* under the lock the completion takes too: its zero delay is never overwritten by this one */
+			mod_delayed_work(system_wq, &rx_mgmt->refill_retry,
+					 rx_mgmt->refill_bus_ready ? 0 :
+					 msecs_to_jiffies(rx_mgmt->refill_backoff_ms));
 		}
 	}
+	spin_unlock_irqrestore(&rx_mgmt->refill_lock, flags);
+	if (immediate)
+		sc2355_queue_rx_buff_work(rx_mgmt->hif->priv,
+					  SPRD_PCIE_RX_ALLOC_BUF);
 
 	return num;
 }
@@ -561,6 +630,7 @@ void sc2355_rx_flush_buffer(void *hif)
 	struct mem_mgmt *mm_entry = &rx_mgmt->mm_entry;
 	enum sprd_hif_type hw_type =
 		((struct sprd_hif *)hif)->hw_type;
+	unsigned long flags;
 
 	if (rx_mgmt->addr_trans_head) {
 		if (hw_type == SPRD_HW_SC2355_PCIE) {
@@ -572,8 +642,12 @@ void sc2355_rx_flush_buffer(void *hif)
 
 	sc2355_mm_flush_buffer(mm_entry);
 	/* MU300: the ring is gone, and with it any timed refill (not _sync: this can run in RX context) */
+	spin_lock_irqsave(&rx_mgmt->refill_lock, flags);
 	cancel_delayed_work(&rx_mgmt->refill_retry);
 	rx_mgmt->refill_backoff_ms = 0;
+	rx_mgmt->refill_bus_waiting = false;
+	rx_mgmt->refill_bus_ready = false;
+	spin_unlock_irqrestore(&rx_mgmt->refill_lock, flags);
 }
 
 int sc2355_rx_init(struct sprd_hif *hif)
@@ -638,10 +712,12 @@ int sc2355_rx_init(struct sprd_hif *hif)
 
 	sc2355_reorder_init(&rx_mgmt->ba_entry);
 	INIT_DELAYED_WORK(&rx_mgmt->refill_retry, rx_refill_retry);
+	spin_lock_init(&rx_mgmt->refill_lock);
 
 	hif->lp = 0;
-	hif->rx_mgmt = (void *)rx_mgmt;
 	rx_mgmt->hif = hif;
+	/* MU300: published last, for the bus completion that looks it up under RCU (sc2355_rx_bus_complete) */
+	smp_store_release(&hif->rx_mgmt, (void *)rx_mgmt);
 
 	return ret;
 
@@ -662,6 +738,7 @@ err_rx_mgmt:
 int sc2355_rx_deinit(struct sprd_hif *hif)
 {
 	struct rx_mgmt *rx_mgmt = (struct rx_mgmt *)hif->rx_mgmt;
+	unsigned long flags;
 
 	/*
 	 * MU300: before rx_mgmt is freed. sprd_work outlives this (sprd_core_free destroys it later). The RX work
@@ -670,7 +747,11 @@ int sc2355_rx_deinit(struct sprd_hif *hif)
 	 * no-op, then the timer, the RX producers and sprd_work are drained, and the timer once more for a refill
 	 * that had passed its stopping check before it was set.
 	 */
+	spin_lock_irqsave(&rx_mgmt->refill_lock, flags);
 	WRITE_ONCE(rx_mgmt->stopping, true);
+	rx_mgmt->refill_bus_waiting = false;
+	rx_mgmt->refill_bus_ready = false;
+	spin_unlock_irqrestore(&rx_mgmt->refill_lock, flags);
 	cancel_delayed_work_sync(&rx_mgmt->refill_retry);
 	flush_workqueue(rx_mgmt->rx_queue);
 	destroy_workqueue(rx_mgmt->rx_queue);
@@ -686,8 +767,13 @@ int sc2355_rx_deinit(struct sprd_hif *hif)
 	sc2355_mm_deinit(&rx_mgmt->mm_entry, hif);
 	sc2355_reorder_deinit(&rx_mgmt->ba_entry);
 
+	/*
+	 * MU300: the PCIe completions stay registered across an RX deinit/init: unpublish, and wait out any that
+	 * already looked it up, before the free.
+	 */
+	smp_store_release(&hif->rx_mgmt, NULL);
+	synchronize_rcu();
 	kfree(rx_mgmt);
-	hif->rx_mgmt = NULL;
 
 	return 0;
 }
