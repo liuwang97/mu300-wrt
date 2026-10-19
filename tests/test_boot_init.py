@@ -471,7 +471,7 @@ class Slot(ShellTest):
         return m.group(1)
 
     def run_slot(self, shell, cmdline=None, bootargs=None, image=None, call='linux_slot_detect; publish_slot',
-                 blocks=('slot-a', 'slot-b-trial', 'slot-b', 'slot-a-trial')):
+                 blocks=('slot-a', 'slot-b-trial', 'slot-b', 'slot-a-trial'), power_conf=None):
         etc, run = self.tmp / 'etc', self.tmp / 'run'
         shutil.rmtree(run, ignore_errors=True)
         shutil.rmtree(etc, ignore_errors=True)
@@ -489,7 +489,13 @@ class Slot(ShellTest):
                 f'write_misc_bc() {{ echo "write $1" >> "{self.tmp}/log"; }}\n' + self.block() + f'\n{call}\n'
                 'echo "linux=$LINUX_SLOT android=$ANDROID_SLOT"')
         (self.tmp / 'log').write_text('')
-        r = self.sh(shell, code, MU300_CMDLINE_SRC=' '.join(srcs) or f'{self.tmp}/none', MU300_ETC=etc, MU300_RUN=run)
+        newroot = self.tmp / 'newroot'
+        shutil.rmtree(newroot, ignore_errors=True)
+        if power_conf is not None:
+            (newroot / 'etc/mu300').mkdir(parents=True)
+            (newroot / 'etc/mu300/power.conf').write_text(power_conf)
+        r = self.sh(shell, code, MU300_CMDLINE_SRC=' '.join(srcs) or f'{self.tmp}/none', MU300_ETC=etc, MU300_RUN=run,
+                    MU300_NEWROOT=newroot)
         self.assertEqual(r.stderr, '')
         return r.stdout.strip(), (self.tmp / 'log').read_text(), run
 
@@ -523,6 +529,20 @@ class Slot(ShellTest):
             self.assertEqual((run / 'mu300' / 'boot-mode').read_text().strip(), 'normal')
             self.assertFalse((run / 'mu300' / 'charging-boot').exists(), 'charging-boot should not exist when mode defaults to normal')
             self.assertIn('stage=boot-mode mode=normal source=default', log)
+
+    def test_power_on_charger_makes_no_charging_boot_marker(self):
+        # mu300-power's POWER_ON_CHARGER=1 in the system that boots (FINDINGS 196): the mode is still charger, but the
+        # Ubuntu units must not be held back
+        for shell in self.each_shell():
+            args = 'androidboot.slot_suffix=_b androidboot.mode=charger'
+            _, log, run = self.run_slot(shell, cmdline='root=/dev/ram0', bootargs=args,
+                                        power_conf='CHARGE_TO=80\nPOWER_ON_CHARGER=1\n')
+            self.assertEqual((run / 'mu300' / 'boot-mode').read_text().strip(), 'charger')
+            self.assertFalse((run / 'mu300' / 'charging-boot').exists())
+            self.assertIn('mode=charger source=', log); self.assertIn(' power-on=1', log)
+            _, log, run = self.run_slot(shell, cmdline='root=/dev/ram0', bootargs=args, power_conf='POWER_ON_CHARGER=0\n')
+            self.assertTrue((run / 'mu300' / 'charging-boot').exists())
+            self.assertNotIn('power-on', log)
 
     def test_image_then_default(self):
         for shell in self.each_shell():

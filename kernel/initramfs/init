@@ -208,13 +208,17 @@ publish_slot() {
     done
     case $_mode in charger) ;; *) _mode=normal ;; esac
     echo "$_mode" > "$_r/boot-mode"
-    # Charging boot: create this marker so Ubuntu units with ConditionPathExists=!/run/mu300/charging-boot skip radios
-    if [ "$_mode" = charger ]; then
+    # Charging boot: create this marker so Ubuntu units with ConditionPathExists=!/run/mu300/charging-boot skip radios.
+    # Not when the system asks for a normal boot on the charger (mu300-power's POWER_ON_CHARGER=1, FINDINGS 196).
+    _pon=
+    [ "$_mode" != charger ] || ! grep -qx 'POWER_ON_CHARGER=1' "${MU300_NEWROOT:-/newroot}/etc/mu300/power.conf" 2>/dev/null ||
+        _pon=" power-on=1"
+    if [ "$_mode" = charger ] && [ -z "$_pon" ]; then
         touch "$_r/charging-boot"
     else
         rm -f "$_r/charging-boot"
     fi
-    log "stage=boot-mode mode=$_mode source=$_msrc"
+    log "stage=boot-mode mode=$_mode source=$_msrc$_pon"
 }
 # --- slot end
 linux_slot_detect

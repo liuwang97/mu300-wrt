@@ -3779,6 +3779,23 @@ class Buttons(ShellTest):
                                         calls.index('systemctl start mu300-hotspot'))
                 self.assertEqual(marker.exists(), event == '116 long', event)
 
+    def test_held_power_in_the_charging_boot_starts(self):
+        # the stock charger mode: hold power to switch the device on (FINDINGS 196); no shutdown, no marker
+        self.stub('mu300-keys', 'cat "$STUBLOG/keys.in"')
+        for name in ('mu300-led', 'systemctl', 'logger', 'poweroff', 'mu300-power'):
+            self.stub(name, f'echo "{name} $*" >> "$STUBLOG/calls"')
+        st = self.tmp / 'run/mu300/power'
+        st.mkdir(parents=True, exist_ok=True)
+        (st / 'state').write_text('charging-boot\n')
+        (self.tmp / 'keys.in').write_text('116 long\n')
+        for shell in self.each_shell():
+            (self.tmp / 'calls').unlink(missing_ok=True)
+            r = self.script(shell, BIN / 'mu300-buttons', MU300_RUN=self.tmp / 'run')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            calls = [c for c in (self.tmp / 'calls').read_text().splitlines() if not c.startswith('logger')]
+            self.assertEqual(sorted(calls), ['mu300-led wake', 'mu300-power wake'])
+            self.assertFalse((st / 'shutdown').exists())
+
     def test_keys_light_the_leds_in_idle_without_any_daemon(self):
         """2026-10-07: the LEDs held dark by `mu300-led idle on`, the state file "active", and every key lit nothing.
         With the real mu300-led and a mu300-power that hangs, each press still lights them, at once."""
