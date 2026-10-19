@@ -16,8 +16,9 @@
 # time): the other card's radio is off anyway, and its setting is what decides whether it may come on - at its boot,
 # its cold start, or a live switch to it, which is refused while it is off. Every program that brings a radio up asks
 # `allowed` first: mobile-data (the dial, the early warm-up, the watchdog, mu300-power's resume, the modem reset), the
-# U30 Air's cold start and live switch, the panel's lock apply. Off is AT+CFUN=4 on that card's own channel (flight
-# mode: the SIM stays powered); a radio that never came on at this boot is left at its cold CFUN 0.
+# U30 Air's cold start and live switch, the panel's lock apply. Off is AT+SFUN=5 on that card's own channel, as the
+# vendor RIL does (the SIM stays powered; CFUN reads 0 or 2; FINDINGS 202); a radio that never came on at this boot is
+# left at its cold CFUN 0.
 # MU300_SIM_RADIO (the file), MU300_SIM_BIN, MU300_MOBILE_DATA, MU300_RUN: the tests.
 set -u
 export PATH="$PATH:/opt/mu300/bin:/opt/mu300/busybox-bin:/usr/sbin:/sbin"

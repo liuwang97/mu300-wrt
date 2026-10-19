@@ -36,7 +36,7 @@ var BAND_CAPS = { nr: [ 1, 5, 6, 8, 28, 41, 78 ], lte: [ 1, 3, 5, 8, 34, 38, 39,
 function lockDeviations(l) {
 	if (!l || l.error || !l.mode) return null;
 	var out = [], caps = l.caps || {};
-	var names = { '4g': _('4G only'), sa: '5G SA', nsa: '5G NSA' };
+	var names = { auto152: _('Automatic without 2G (152)'), '4g': _('4G only'), sa: '5G SA', nsa: '5G NSA' };
 	if (l.mode.label && l.mode.label !== 'auto')
 		out.push(_('Network mode: %s').format(names[l.mode.label] || l.mode.label));
 	if (l.endc && l.endc !== '1') out.push(_('EN-DC off'));

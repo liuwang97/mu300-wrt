@@ -94,10 +94,19 @@ led() { bnd "${MU300_LED_DEADLINE:-10}" /opt/mu300/bin/mu300-led data "$1" </dev
 # technology changes under a live connection, so the watchdog asks again on every round. AT+CEREG? is a short
 # local status read; AT+COPS? took about two seconds on weak service and held the AT channel on every round.
 # +CEREG: <n>,<stat>[,<tac>,<ci>,<AcT>[,...]]: the AcT is the fifth field (with <n> 4 or 5 more fields follow it).
+# A 5G SA registration is in the NR domain alone: LTE's CEREG then says not registered, so with data up and CEREG
+# not registered, AT+C5GREG? decides (registered, home or roaming: 5G). From kanoqwq's network-led.sh (FINDINGS 199);
+# a read that fails leaves the 4G colour, as before. An LTE registration asks nothing more than before.
 led_up() {
+    local reg
     [ ! -e /run/mu300/sim-switching ] && [ ! -e /run/mu300/sim-active-unknown ] || { echo "SIM control is busy or requires a reboot" >&2; return 1; }
-    case $(at 'AT+CEREG?' 4 2>/dev/null | awk -F, '/^\+CEREG:/ { gsub(/[" ]/, "", $5); print $5; exit }' || true) in
-        11|12|13|15) led 5g ;;
+    reg=$(at 'AT+CEREG?' 4 2>/dev/null | awk -F, '/^\+CEREG:/ { gsub(/[" \r]/, ""); print $2 " " $5; exit }' || true)
+    case ${reg#* } in
+        11|12|13|15) led 5g; return 0 ;;
+    esac
+    case ${reg%% *} in 1|5) led on; return 0 ;; esac
+    case $(at 'AT+C5GREG?' 4 2>/dev/null | awk -F, '/^\+C5GREG:/ { gsub(/[" \r]/, "", $2); print $2; exit }' || true) in
+        1|5) led 5g ;;
         *) led on ;;
     esac
 }
@@ -442,18 +451,21 @@ rf_hold() {
     radio_say "the radio of the SIM in use (slot $SIM_SLOT) is switched off in its settings: no radio, no dial"
     logger -t mobile-data "SIM$((SIM_SLOT + 1)) radio is off (mu300-sim-radio): mobile data stays down" 2>/dev/null || true
 }
-# rf_cfun: the card in use's CFUN (0, 1 or 4), nothing when it does not answer
-rf_cfun() { at 'AT+CFUN?' 4 2>/dev/null | tr -d '\r' | sed -n 's/^+CFUN: *\([014]\)$/\1/p' | head -n 1 || true; }
-# rf_off_locked: flight mode on the card's own channel (AT+CFUN=4: the SIM stays powered), read back. A radio still at
-# its cold 0 is off already. Under the radio lock.
+# rf_cfun: the card in use's CFUN (0, 1, 2 or 4), nothing when it does not answer
+rf_cfun() { at 'AT+CFUN?' 4 2>/dev/null | tr -d '\r' | sed -n 's/^+CFUN: *\([0124]\)$/\1/p' | head -n 1 || true; }
+# rf_off_locked: the card's protocol stack off on its own channel, AT+SFUN=5, as the vendor RIL switches a card's radio
+# (kanoqwq cf4dcd61: the stock RIL's isRadioOn reads CFUN 0 and 2 as off; on his V50 SFUN=5 read back 0 with the SIM
+# still powered, and SFUN=4 brought it back; FINDINGS 202). Read back as 0 or 2. A radio at its cold 0, or in the
+# flight mode (4) an earlier release left, is off already. Under the radio lock.
 rf_off_locked() {
-    case $(rf_cfun) in 0|4) return 0 ;; esac
-    at 'AT+CFUN=4' 30 >/dev/null 2>&1 || true
-    case $(rf_cfun) in 0|4) radio_say "radio off (AT+CFUN=4): switched off in the SIM's settings"; return 0 ;; esac
-    radio_say "AT+CFUN=4 was not read back"
+    case $(rf_cfun) in 0|2|4) return 0 ;; esac
+    at 'AT+SFUN=5' 30 >/dev/null 2>&1 || true
+    case $(rf_cfun) in 0|2) radio_say "radio off (AT+SFUN=5): switched off in the SIM's settings"; return 0 ;; esac
+    radio_say "AT+SFUN=5 was not read back"
     return 1
 }
-# rf_on_locked: the radio back: from flight mode AT+CFUN=1, from the cold 0 the ordinary bring-up. Under the radio lock.
+# rf_on_locked: the radio back: from an earlier release's flight mode AT+CFUN=1, from 0 or 2 (SFUN=5, or the cold 0)
+# the ordinary bring-up, whose AT+SFUN=4 is the vendor's way back. Under the radio lock.
 rf_on_locked() {
     local t
     case $(rf_cfun) in
@@ -515,7 +527,7 @@ radio_on_locked() {
         esac
     fi
     out=$(at 'AT+CFUN?' 4 2>&1 || true)
-    # switched off in the SIM's settings: off it stays (the cold 0 as it is, a radio on put into flight mode)
+    # switched off in the SIM's settings: off it stays (the cold 0 as it is, a radio that is on: AT+SFUN=5)
     if ! rf_allowed; then
         rf_hold
         case $out in *"+CFUN: 1"*) rf_off_locked || true ;; esac
@@ -523,7 +535,7 @@ radio_on_locked() {
     fi
     case $out in
         *"+CFUN: 1"*) return 0 ;;
-        *"+CFUN: 0"*) ;;
+        *"+CFUN: 0"*|*"+CFUN: 2"*) ;;
         *"+CFUN: 4"*)
             # flight mode with the setting on (left by an earlier boot's panel, or set by hand): back on
             radio_say "the radio is in flight mode (CFUN 4) and its setting is on: AT+CFUN=1"

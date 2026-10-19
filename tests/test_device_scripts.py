@@ -899,6 +899,7 @@ at() {
     echo "$SECONDS $1" >> "$STUBLOG/at"
     case $1 in
         'AT+CEREG?') printf '%s\nOK\n' "${CEREG:-+CEREG: 2,2}" ;;
+        'AT+C5GREG?') [ -z "${C5GREG:-}" ] || printf '%s\n' "$C5GREG"; printf 'OK\n' ;;
         'AT+CFUN?') printf '+CFUN: 1\nOK\n' ;;
         AT+CGCONTRDP=*)
             # the address arrives once CGACT=1 has been sent $ADDR_AFTER times
@@ -1140,12 +1141,23 @@ at() {
         self.assertFalse([s for s in sent if 'AT+CGACT=0' in s], sent)
 
     def test_led_from_cereg(self):
-        """4G or 5G from the AcT field of AT+CEREG? (K56), not from AT+COPS?."""
-        for act, want in (('13', 'data 5g'), ('7', 'data on'), ('11', 'data 5g')):
+        """4G or 5G from the AcT field of AT+CEREG? (K56), not from AT+COPS?; when that names no NR access technology,
+        AT+C5GREG? tells a 5G SA registration when LTE is not registered (FINDINGS 199, kanoqwq's network-led.sh)."""
+        for act, want in (('13', 'data 5g'), ('11', 'data 5g')):
             r, sent = self.lib('led_up', CEREG=f'+CEREG: 2,1,"1A2B","0123ABCD",{act}')
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertEqual((self.tmp / 'led').read_text().strip(), want, act)
             self.assertEqual([s.split(' ', 1)[1] for s in sent], ['AT+CEREG?'], act)
+        for cereg, c5g, want, asked in (('+CEREG: 2,1,"1A2B","0123ABCD",7', '+C5GREG: 2,1', 'data on', False),
+                                        ('+CEREG: 2,5,"1A2B","0123ABCD",7', '', 'data on', False),
+                                        ('+CEREG: 2,2', '+C5GREG: 2,1,"1A2B","0123ABCD",11', 'data 5g', True),
+                                        ('+CEREG: 2,0', '+C5GREG: 2,5,"1A2B","0123ABCD",11', 'data 5g', True),
+                                        ('+CEREG: 0,4', '+C5GREG: 0,2', 'data on', True),
+                                        ('+CEREG: 2,2', '', 'data on', True)):
+            r, sent = self.lib('led_up', CEREG=cereg, C5GREG=c5g)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual((self.tmp / 'led').read_text().strip(), want, (cereg, c5g))
+            self.assertEqual([s.split(' ', 1)[1] for s in sent], ['AT+CEREG?'] + (['AT+C5GREG?'] if asked else []), cereg)
 
     def test_systemd_path_keeps_v6_up(self):
         """K63 is rejected: on the systemd path (Ubuntu) an IPv6 address from the network still runs v6_up, and none
@@ -1990,7 +2002,7 @@ at() {
 class SimRadio(ShellTest):
     """Each SIM's radio on or off, kept across reboots (FINDINGS 185, after kanoqwq's mu300-sim-radio): the setting
     tool, and mobile-data's radio-on paths asking it (mobile-data sourced as in MobileData). The modem keeps its CFUN in
-    $STUBLOG/cfun (0 cold, 1 on, 4 flight mode)."""
+    $STUBLOG/cfun (0 cold or the stack off by SFUN=5, 1 on, 4 an earlier release's flight mode; FINDINGS 202)."""
     lib = MobileData.lib
     TOOL = BIN / 'mu300-sim-radio'
     MODEM = r"""
@@ -2000,6 +2012,7 @@ at() {
         'AT+CFUN?') printf '+CFUN: %s\nOK\n' "$(cat "$STUBLOG/cfun" 2>/dev/null || echo 0)" ;;
         'AT+CFUN=4') echo 4 > "$STUBLOG/cfun"; printf 'OK\n' ;;
         'AT+CFUN=1') echo 1 > "$STUBLOG/cfun"; printf 'OK\n' ;;
+        'AT+SFUN=5') echo "${T_SFUN5:-0}" > "$STUBLOG/cfun"; printf 'OK\n' ;;
         'AT+SFUN=4') echo 1 > "$STUBLOG/cfun"; printf 'OK\n' ;;
         *) printf 'OK\n' ;;
     esac
@@ -2105,12 +2118,24 @@ at() {
         self.assertNotIn('AT+SFUN=4', cmds)
         self.assertEqual((self.tmp / 'cfun').read_text().strip(), '0')
         self.assertTrue((self.tmp / 'run' / 'mu300' / 'sim-radio-held').exists())
-        # a radio that is on goes into flight mode
-        r, cmds = self.md('rc=0; radio_on || rc=$?; echo rc=$rc', policy='0 1\n', cfun='1')
-        self.assertIn('rc=7', r.stdout, r.stderr)
-        self.assertIn('AT+CFUN=4', cmds)
-        self.assertEqual((self.tmp / 'cfun').read_text().strip(), '4')
-        # the other card off does not matter to this one; flight mode with the setting on is switched back on
+        # a radio that is on: its stack off (AT+SFUN=5, read back 0 or 2), never AT+CFUN=4 (FINDINGS 202)
+        for off in ('0', '2'):
+            r, cmds = self.md('rc=0; radio_on || rc=$?; echo rc=$rc', policy='0 1\n', cfun='1', T_SFUN5=off)
+            self.assertIn('rc=7', r.stdout, r.stderr)
+            self.assertIn('AT+SFUN=5', cmds)
+            self.assertNotIn('AT+CFUN=4', cmds)
+            self.assertEqual((self.tmp / 'cfun').read_text().strip(), off)
+        # SFUN=5 not read back: a failure is said
+        r, cmds = self.md('rc=0; rf_off_locked || rc=$?; echo rc=$rc', policy='0 1\n', cfun='1', T_SFUN5='1')
+        self.assertIn('rc=1', r.stdout, r.stderr)
+        # off by SFUN=5 (0 or 2) with the setting on: the ordinary bring-up's AT+SFUN=4
+        for off in ('0', '2'):
+            (self.tmp / 'run' / 'mu300-ril-handshake').touch()
+            r, cmds = self.md('rc=0; radio_on || rc=$?; echo rc=$rc', policy='1 0\n', cfun=off)
+            self.assertIn('rc=0', r.stdout, r.stderr)
+            self.assertIn('AT+SFUN=4', cmds)
+        # the other card off does not matter to this one; an earlier release's flight mode with the setting on is
+        # switched back on
         r, cmds = self.md('rc=0; radio_on || rc=$?; echo rc=$rc', policy='1 0\n', cfun='4')
         self.assertIn('rc=0', r.stdout, r.stderr)
         self.assertIn('AT+CFUN=1', cmds)
@@ -2135,11 +2160,11 @@ at() {
         self.stub('ubus', 'echo "$*" >> "$STUBLOG/ubus"; echo "{ \\"up\\": ${T_UP:-true}, \\"autostart\\": ${T_AUTOSTART:-true}, \\"available\\": ${T_AVAILABLE:-true} }"')
         self.stub('ifup', 'echo "ifup $*" >> "$STUBLOG/ifup"')
         held = self.tmp / 'run' / 'mu300' / 'sim-radio-held'
-        # off: the WAN restarted (its dial then ends with SIM_RADIO_DISABLED), flight mode
+        # off: the WAN restarted (its dial then ends with SIM_RADIO_DISABLED), the stack off (SFUN=5)
         r, cmds = self.md('rf_apply; echo rc=$?', policy='0 1\n', cfun='1', MU300_NETIFD=1)
         self.assertIn('rc=0', r.stdout, r.stderr)
         self.assertEqual((self.tmp / 'ifup').read_text(), 'ifup wan\n')
-        self.assertEqual((self.tmp / 'cfun').read_text().strip(), '4')
+        self.assertEqual((self.tmp / 'cfun').read_text().strip(), '0')
         self.assertTrue(held.exists())
         # on: AT+CFUN=1, and the WAN mu300cell made unavailable is made available again (netifd starts it then,
         # unless somebody took it down)
@@ -2157,7 +2182,7 @@ at() {
                           T_UP='false')
         self.assertFalse(held.exists())
         self.assertFalse((self.tmp / 'ifup').exists())
-        self.assertEqual((self.tmp / 'cfun').read_text().strip(), '4')
+        self.assertEqual((self.tmp / 'cfun').read_text().strip(), '0')
         # on, and the WAN is available (nothing was made unavailable): nothing asked of netifd
         (self.tmp / 'ubus').unlink(missing_ok=True)
         r, cmds = self.md('rf_apply; echo rc=$?', policy='1 1\n', cfun='4', MU300_NETIFD=1)
@@ -3474,9 +3499,10 @@ class Led(ShellTest):
                 self.assertEqual(self.state()[lit], '255', device)
 
     def test_v50(self):
-        # the ZTE V50 (FINDINGS 95, kano's mapping): the AW9523B's NET1 lamp is the network LED (blue 4G, white 5G,
-        # red without service), its Wi-Fi lamp white on 5 GHz and blue on 2.4 GHz, NET2 stays dark; the PMIC's LEDs,
-        # which its device tree has as well, are never written, and the lamps go no brighter than the driver allows
+        # the ZTE V50 (FINDINGS 95, kano's mapping): the network LED is the lamp of the SIM in use, as ZTE's firmware
+        # (FINDINGS 199): slot 0 NET2, slot 1 NET1 (blue 4G, white 5G, red without service), the other lamp dark; its
+        # Wi-Fi lamp white on 5 GHz and blue on 2.4 GHz; the PMIC's LEDs, which its device tree has as well, are never
+        # written, and the lamps go no brighter than the driver allows
         lamps = {f'v50:{l}:{c}': 80 if c == 'white' else 120 for l in ('net1', 'net2', 'wifi') for c in ('white', 'blue', 'red')}
         for n, m in lamps.items():
             d = self.root / 'sys' / 'class' / 'leds' / n
@@ -3486,17 +3512,19 @@ class Led(ShellTest):
 
         def lamp_state():
             return {n: (self.root / 'sys/class/leds' / n / 'brightness').read_text().strip() for n in lamps}
-        net1 = ('v50:net1:red', 'v50:net1:white', 'v50:net1:blue')
-        for shell in self.each_shell():
+        for shell, slot in [(sh, sl) for sh in self.each_shell() for sl in (None, 0, 1)]:
+            self.sim(slot)
+            lamp, other = ('net1', 'net2') if slot == 1 else ('net2', 'net1')
+            net1 = tuple(f'v50:{lamp}:{c}' for c in ('red', 'white', 'blue'))
             self.reset()
             for n in lamps:
                 (self.root / 'sys/class/leds' / n / 'brightness').write_text('0\n')
             for args in (('power', 'on'), ('wake',), ('sleep',), ('power', 'off')):
                 self.assertEqual(self.led(shell, 'v50', *args).returncode, 0, args)   # no power LED, no timeout
             self.assertEqual(set(lamp_state().values()), {'0'})
-            for args, lit in ((('data', 'error'), 'v50:net1:red'), (('data', 'on'), 'v50:net1:blue'),
-                              (('data', '5g'), 'v50:net1:white'), (('data', 'on'), 'v50:net1:blue'),
-                              (('data', 'error'), 'v50:net1:red')):
+            for args, lit in ((('data', 'error'), f'v50:{lamp}:red'), (('data', 'on'), f'v50:{lamp}:blue'),
+                              (('data', '5g'), f'v50:{lamp}:white'), (('data', 'on'), f'v50:{lamp}:blue'),
+                              (('data', 'error'), f'v50:{lamp}:red')):
                 self.assertEqual(self.led(shell, 'v50', *args).returncode, 0, args)
                 s = lamp_state()
                 self.assertEqual({n: s[n] for n in net1}, {n: str(lamps[n]) if n == lit else '0' for n in net1}, args)
@@ -3510,8 +3538,9 @@ class Led(ShellTest):
                 self.assertEqual((s[lit], s[dark]), (str(lamps[lit]), '0'), iw)
             self.led(shell, 'v50', 'wifi', 'off')
             self.assertEqual((lamp_state()['v50:wifi:white'], lamp_state()['v50:wifi:blue']), ('0', '0'))
-            self.assertEqual({lamp_state()[f'v50:net2:{c}'] for c in ('white', 'blue', 'red')}, {'0'})
+            self.assertEqual({lamp_state()[f'v50:{other}:{c}'] for c in ('white', 'blue', 'red')}, {'0'})
             self.assertEqual(set(self.state().values()), {'0'})   # no PMIC LED, nothing of the F50's or U30 Air's
+        self.sim(None)
         # a V50 under 5.4 (no driver: no lamps): every LED is skipped, the PMIC's are still not written
         for n in lamps:
             shutil.rmtree(self.root / 'sys' / 'class' / 'leds' / n)

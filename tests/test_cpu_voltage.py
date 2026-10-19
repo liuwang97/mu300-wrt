@@ -587,7 +587,10 @@ class Consistency(unittest.TestCase):
         cli = CPU.read_text()
         sml = re.search(r'CPUV_SML_KNOWN=\$\{MU300_CPUV_SML_KNOWN:-([0-9a-f ]+)\}', INIT).group(1)
         self.assertIn('CPUV_SML_KNOWN=${MU300_CPUV_SML_KNOWN:-%s}' % sml, cli)
-        self.assertEqual(sml, 'ff4782690fd805ff54fe34853ef8ee5c7e51c3259e20077c55373b50a4b259c2')
+        # the F50's build, the V50's and the U30 Air's (kanoqwq read them; payload identical to the F50's, FINDINGS 201)
+        self.assertEqual(sml.split(), ['ff4782690fd805ff54fe34853ef8ee5c7e51c3259e20077c55373b50a4b259c2',
+                                       '5b3183f17af9b416e71dea61e578c61824e4e1df43737a1179032f4b20466b2b',
+                                       'f27ac16f44e6cdc87a8ee00a9b53c499c8dde0c3b92c771388e256e84ef12e70'])
         valid_init = re.search(r'cpuv_valid\(\) \{.*?\n(.*?)\n\}', INIT, re.S).group(1)
         valid_cli = re.search(r'cpuv_valid\(\) \{.*?\n(.*?)\n\}', cli, re.S).group(1)
         self.assertEqual(valid_init.strip(), valid_cli.strip())

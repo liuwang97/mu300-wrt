@@ -318,6 +318,18 @@ esac""")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertEqual((self.run / 'mu300/sim-slot').read_text(), '0\n')
 
+    def test_the_card_in_use_off_by_sfun5_still_switches(self):
+        """FINDINGS 202: off by its setting is AT+SFUN=5 now, which reads back as CFUN 0 or 2: known states too."""
+        self.stub('sim-radio', '[ "$1" = allowed ] || exit 2; case " ${T_RF_OFF:-} " in *" $2 "*) exit 1 ;; esac; exit 0')
+        for state in ('0', '2'):
+            with self.subTest(cfun=state):
+                self.setUp()
+                self.stub('sim-radio', '[ "$1" = allowed ] || exit 2; case " ${T_RF_OFF:-} " in *" $2 "*) exit 1 ;; esac; exit 0')
+                (self.tmp / 'radio1').write_text(state)
+                r = self.ctl('switch', '1', MU300_SIM_RADIO_BIN=self.stubs / 'sim-radio', T_RF_OFF='1')
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                self.assertEqual((self.run / 'mu300/sim-slot').read_text(), '0\n')
+
     def test_same_card_sends_no_commands(self):
         self.assertEqual(self.ctl('switch','2').returncode,0)
         self.assertFalse((self.tmp/'at').exists())

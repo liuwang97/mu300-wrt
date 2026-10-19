@@ -67,7 +67,7 @@ system.get system.hostname system.timezone system.password system.ssh system.reb
 update.check update.apply kernel.set extra.list extra.install extra.remove logs
 backup.export backup.import
 at.send at.history ussd.send ussd.cancel modem.restart ttl.get ttl.set traffic.get traffic.set
-power.get power.set led.get led.set zram.get zram.set cpu.get cpu.profile cpu.voltage
+power.get power.set led.get led.set zram.get zram.set cpu.get cpu.profile cpu.core cpu.lowlatency cpu.voltage
 update.status update.source packages.get packages.act docker.status
 job.status job.cancel job.clear'
 
@@ -813,7 +813,7 @@ m_lock_set() {
     only kind val
     word kind 'mode|endc|lte|nr|cell|reset|auto_apply'; need kind; _k=$V
     case $_k in
-        mode)    word val 'auto|4g|sa|nsa' ;;
+        mode)    word val 'auto|auto152|4g|sa|nsa' ;;
         endc|auto_apply) word val 'on|off' ;;
         lte|nr)  word val '([0-9]{1,3}(,[0-9]{1,3}){0,31})?' ;;
         cell)    word val 'auto|off|off-nr|off-lte|(nr|lte):[0-9]{1,7},[0-9]{1,4}' ;;
@@ -1571,6 +1571,25 @@ m_cpu_profile() {
     tool 30 "$BIN/mu300-cpu" profile "$V" </dev/null || refuse failed "$ERR"
     ok
 }
+# cpu.core {cpu: 1-63, state: on|off}: that core online or offline, saved (CPU0 always stays online, FINDINGS 200)
+m_cpu_core() {
+    only cpu state
+    int cpu 1 63; need cpu; _c=$V
+    word state 'on|off'; need state
+    [ -x "$BIN/mu300-cpu" ] || refuse unsupported mu300-cpu
+    checked
+    tool 30 "$BIN/mu300-cpu" core "$_c" "$V" </dev/null || refuse failed "$ERR"
+    ok
+}
+# cpu.lowlatency {state: on|off}: CPU0 without its idle states (shorter Wi-Fi delays, more power), saved (FINDINGS 200)
+m_cpu_lowlatency() {
+    only state
+    word state 'on|off'; need state
+    [ -x "$BIN/mu300-cpu" ] || refuse unsupported mu300-cpu
+    checked
+    tool 30 "$BIN/mu300-cpu" lowlatency "$V" </dev/null || refuse failed "$ERR"
+    ok
+}
 # cpu.voltage {op: set, offsets "A,B,C", confirm "EXPERIMENTAL"} | {op: off} | {op: stress, minutes 1-120}: the
 # request for the next boot (it can damage the device for good: the word is mu300-cpu's own confirmation), back to
 # the stock voltages, or the stress test in the background
@@ -1904,6 +1923,8 @@ case $METHOD in
     zram.set) m_zram_set ;;
     cpu.get) m_cpu_get ;;
     cpu.profile) m_cpu_profile ;;
+    cpu.core) m_cpu_core ;;
+    cpu.lowlatency) m_cpu_lowlatency ;;
     cpu.voltage) m_cpu_voltage ;;
     update.status) m_update_status ;;
     update.source) m_update_source ;;

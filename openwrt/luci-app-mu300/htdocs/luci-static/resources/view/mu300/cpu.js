@@ -34,6 +34,24 @@ return view.extend({
 		return L.resolveDefault(M.callCpuGet(), {}).then(function(st) { self.paint(st || {}); return st; });
 	},
 
+	/* a core online/offline (op core) or CPU0's low latency (op lowlatency); saved, the reply is the new status */
+	tune: function(btn, op, cpu, state) {
+		var self = this;
+		M.busy(btn, true);
+		return M.callCpuTune(op, cpu == null ? '' : String(cpu), state).then(function(r) {
+			M.busy(btn, false);
+			if (!r || r.ok !== 1) {
+				M.toast(_('Failed: %s').format(M.errText(r)), { type: 'error', timeout: 6000 });
+				return;
+			}
+			M.toast(_('Saved'), { type: 'success' });
+			return self.paint(r);
+		}, function() {
+			M.busy(btn, false);
+			M.toast(_('Management connection lost'), { type: 'error', timeout: 6000 });
+		});
+	},
+
 	/* apply a profile and show the result */
 	set: function(btn, name) {
 		var self = this;
@@ -113,9 +131,41 @@ return view.extend({
 			E('div', { 'class': 'mud-note' }, _('Frequencies in MHz.'))
 		]);
 
+		/* 2b. the cores (CPU hotplug) and CPU0's low latency (FINDINGS 200): both saved and applied again at boot */
+		var cards = [ card, table ];
+		if (Array.isArray(st.cores) && st.cores.length) {
+			var crow = E('div', { 'style': 'display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:10px 0', 'id': 'mud-cpu-cores' });
+			st.cores.forEach(function(c) {
+				var on = c.online === 1;
+				var b = E('button', {
+					'class': on ? 'mud-btn cbi-button-positive' : 'mud-btn',
+					'id': 'mud-cpu-core-' + String(c.cpu)
+				}, [ 'CPU' + String(c.cpu) ]);
+				if (c.switchable !== 1) b.disabled = true;
+				else b.addEventListener('click', function() { self.tune(b, 'core', c.cpu, on ? 'off' : 'on'); });
+				crow.appendChild(b);
+			});
+			var ccard = E('section', { 'class': 'mud-card', 'style': 'margin-top:14px', 'id': 'mud-cpu-corecard' }, [
+				E('h3', {}, _('Cores')),
+				E('div', { 'class': 'mud-note' },
+					_('Highlighted cores are online. A core taken offline stays offline, also after a reboot, until it is brought back. CPU0 always stays online.')),
+				crow
+			]);
+			var ll = st.lowlatency || {};
+			if (ll.supported === 1) {
+				var lon = ll.saved === 1;
+				var lb = E('button', { 'class': lon ? 'mud-btn cbi-button-positive' : 'mud-btn', 'id': 'mud-cpu-lowlat' },
+					[ lon ? _('Low latency: on') : _('Low latency: off') ]);
+				lb.addEventListener('click', function() { self.tune(lb, 'lowlatency', null, lon ? 'off' : 'on'); });
+				ccard.appendChild(E('div', { 'class': 'mud-note', 'style': 'margin-top:10px' },
+					_('Low latency keeps CPU0 out of its idle states, as ZTE\'s U30 Air firmware does: Wi-Fi delays are much shorter, and the device draws more power. Off by default.')));
+				ccard.appendChild(E('div', { 'style': 'margin:8px 0' }, [ lb ]));
+			}
+			cards.push(ccard);
+		}
+
 		/* 3. the kernel's thermal zones, read only (mu300-cpu status --json "thermal": /sys/class/thermal; on mainline the
 		 * stock soc-thmzone with its trips and the cpufreq cooling devices, docs/FINDINGS.md 48). Nothing here writes. */
-		var cards = [ card, table ];
 		if (Array.isArray(st.thermal) && st.thermal.length) {
 			var deg = function(mc) { return num(mc) == null ? '--' : (mc / 1000).toFixed(1) + ' \u00b0C'; };
 			var cnt = function(x) { return num(x) == null ? '--' : String(x); };
