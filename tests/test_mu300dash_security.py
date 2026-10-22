@@ -294,6 +294,7 @@ class Refusals(Mu300Dash):
         ('act', {'op': 'os', 'arg': 'android'}, 'arg', 'android'),
         ('act', {'op': 'os', 'arg': 'lock'}, 'arg', 'lock'),
         ('act', {'op': 'reboot'}, 'arg', ''),
+        ('act', {'op': 'poweroff'}, 'arg', ''),
         ('act', {'op': 'modem-reset'}, 'arg', ''),
         ('simcard_set', {'kind': 'volte', 'slot': '0', 'state': 'on'}, 'kind', 'volte'),
         ('simcard_set', {'kind': 'vonr', 'slot': '1', 'state': 'off'}, 'slot', '1'),
@@ -578,6 +579,7 @@ class Passthrough(Mu300Dash):
         # (method, params, the calls wanted)
         ('act', {'op': 'radio', 'arg': 'on'}, [['setsid', 'action', 'radio', 'on']]),
         ('act', {'op': 'reboot', 'arg': None}, [['setsid', 'action', 'reboot', '']]),
+        ('act', {'op': 'poweroff', 'arg': None}, [['setsid', 'action', 'poweroff', '']]),
         ('act', {'op': 'vpn', 'arg': 'stop'}, [['setsid', 'action', 'vpn', 'stop']]),
         ('act', {'op': 'wifi', 'arg': 'off'}, [['action', 'wifi', 'off']]),
         ('act', {'op': 'roaming', 'arg': 'on'}, [['action', 'roaming', 'on']]),

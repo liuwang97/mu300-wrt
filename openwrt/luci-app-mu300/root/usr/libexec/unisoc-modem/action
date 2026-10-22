@@ -8,7 +8,7 @@
 # modem-reset: under mobile-data's radio lock, or "busy" (lib.sh radio_locked); radio: mu300-sim-radio, which takes
 # the lock itself (mobile-data rf-apply)
 #   mu300-dash-act vpn start|stop   /etc/init.d/mu300-vpn
-#   mu300-dash-act reboot           the whole box, after a 3 s grace for the HTTP reply
+#   mu300-dash-act reboot|poweroff  restart or power off the whole box, after a 3 s grace for the HTTP reply
 #
 # Every op prints one JSON line on stdout. The rpcd backend (/usr/libexec/rpcd/mu300dash)
 # runs the slow ones via setsid and returns immediately: LuCI's /admin/ubus endpoint
@@ -121,9 +121,9 @@ case "${1:-}:${2:-}" in
             fail "vpn $2" "VPN integration is not provided by this platform"
         fi
         ;;
-    reboot:)
+    reboot:|poweroff:)
         sleep 3   # the reply has to make it out first
-        reboot
+        "$1"      # procd stops the services and unmounts as usual; never forced
         ;;
     os:android)
         # arm inline (fast, failures surface to the page); reboot DETACHED so
@@ -149,7 +149,7 @@ case "${1:-}:${2:-}" in
         fi
         ;;
     *)
-        echo "usage: $0 radio on|off | data up|down | roaming on|off | wifi on|off | modem-reset | vpn start|stop | reboot | os android|lock|unlock" >&2
+        echo "usage: $0 radio on|off | data up|down | roaming on|off | wifi on|off | modem-reset | vpn start|stop | reboot | poweroff | os android|lock|unlock" >&2
         printf '{"ok":0,"error":"Unknown op"}\n'
         exit 2
         ;;

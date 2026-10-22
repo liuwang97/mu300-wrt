@@ -1104,8 +1104,8 @@ msgstr "Wi-Fi 热点"
 msgid "Restart modem"
 msgstr "重启调制解调器"
 
-msgid "Restart device"
-msgstr "重启设备"
+msgid "Power off or restart"
+msgstr "关机或重启"
 
 msgid "Switch to Android"
 msgstr "切换到 Android"
@@ -1164,11 +1164,14 @@ msgstr "移动数据也会在漫游网络上使用，可能产生额外费用。
 msgid "Cellular connectivity may stop for 1–2 minutes."
 msgstr "蜂窝连接会中断 1-2 分钟。"
 
-msgid "Restart the entire device"
-msgstr "重启整个设备"
-
 msgid "All connections will be interrupted."
 msgstr "所有连接会断开。"
+
+msgid "Power off"
+msgstr "关机"
+
+msgid "Restart"
+msgstr "重启"
 
 msgid "The next boot will enter Android and reboot now. This management page and cellular sharing will disconnect."
 msgstr "下次启动将进入 Android 并立即重启，此管理页面与蜂窝共享都会断开。"
@@ -1494,6 +1497,21 @@ msgstr "锁定当前服务小区"
 msgid "Unlock cell"
 msgstr "解除小区锁定"
 
+msgid "Enter a cell"
+msgstr "手动输入小区"
+
+msgid "Type"
+msgstr "类型"
+
+msgid "Channel number (EARFCN / NR-ARFCN)"
+msgstr "频点（EARFCN / NR-ARFCN）"
+
+msgid "Lock this cell"
+msgstr "锁定指定小区"
+
+msgid "LTE: EARFCN 0–262143, PCI 0–503; NR: NR-ARFCN 1–3279165, PCI 0–1007. A channel number, not a frequency in MHz; the cell need not be in the neighbor list."
+msgstr "LTE: EARFCN 0–262143, PCI 0–503; NR: NR-ARFCN 1–3279165, PCI 0–1007. 请输入频点编号，不是 MHz 频率；无需小区出现在邻区列表中。"
+
 msgid "Applying restarts the radio stack (SFUN) and briefly interrupts cellular service. Settings are saved and replayed by the plugin after AT is ready when Apply at startup is enabled. A platform pre-radio hook can replay without a restart. Apply with no bands selected to restore automatic mode."
 msgstr "应用后协议栈重启（SFUN），蜂窝会短暂断开；设置会持久保存，并在启用“开机自动应用”时由插件于 AT 就绪后回放。接入平台的射频前钩子时可无重启回放。频段全不选再点应用 = 恢复自动。"
 
@@ -1580,6 +1598,9 @@ msgstr "正在后台锁定 %s …"
 
 msgid "Locked %s in the background (SFUN restart, about 30 seconds); reading the status back…"
 msgstr "已后台锁定 %s（SFUN 重启约半分钟），自动回读状态…"
+
+msgid "Enter a channel number and a PCI in the ranges below"
+msgstr "请输入下列范围内的频点和 PCI"
 
 msgid "No serving-network data"
 msgstr "暂无驻网数据"
@@ -2380,9 +2401,6 @@ msgstr "设备现在重启。默认启动的是 Android，所以会进入 Androi
 msgid "The device restarts now and is away for about a minute. If the new system does not start, the device goes back to Android by itself after the failed attempts."
 msgstr "设备现在重启，大约一分钟内无法访问。如果新系统无法启动，设备会在几次失败后自动回到 Android。"
 
-msgid "Restart"
-msgstr "重启"
-
 msgid "Restarting… open this page again in about a minute."
 msgstr "正在重启… 请在大约一分钟后重新打开此页面。"
 
@@ -3036,9 +3054,6 @@ msgstr "自动识别"
 
 msgid "The URL may hold a token: it goes to the device on its own, never into a command line or a log."
 msgstr "URL 可能包含令牌：它会单独发送到设备，绝不会出现在命令行或日志中。"
-
-msgid "Type"
-msgstr "类型"
 
 msgid "Share link"
 msgstr "分享链接"
