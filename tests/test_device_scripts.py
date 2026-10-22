@@ -2276,9 +2276,13 @@ class SimState(ShellTest):
             self.assertIn('notify_proto {"action":5,"available":true}', (self.tmp / 'ubus').read_text())
 
     def test_event_filter(self):
-        hint = ['+ECIND: 3,0', '+ECIND: 3,2,5', '+ECIND:3,100', '+ECIND: 3,1,34', '+ECIND: 3,4,0']
-        other = ['+ECIND: 1,0', '+ECIND: 3,1,3', '+ECIND: 3,0,x', '+ECIND: 3,0,1,2', '+ECIND: 3,9', '+CEREG: 1',
-                 '+ECIND: 3,0;reboot']
+        # numbers after the cause are the RIL's to ignore: a card coming up says 3,100 and then 3,0,0,1 (kanoqwq's
+        # b8d4f222); a field that is not a 32-bit decimal number, or an empty one, is not a hint
+        hint = ['+ECIND: 3,0', '+ECIND: 3,2,5', '+ECIND:3,100', '+ECIND: 3,1,34', '+ECIND: 3,4,0', '+ECIND: 3,0,0,1',
+                '+ECIND: 3,1,2,0,1', '+ECIND: 3,0,1,2']
+        other = ['+ECIND: 1,0', '+ECIND: 3,1,3', '+ECIND: 3,0,x', '+ECIND: 3,9', '+CEREG: 1',
+                 '+ECIND: 3,0;reboot', '+ECIND: 3,1,2,7junk', '+ECIND: 3,0,0,-1', '+ECIND: 3,0,0,4294967296',
+                 '+ECIND: 3,0,0,', '+ECIND: 3,0,,1', '+ECIND: 3,1,3,0']
         self.shell = self.shells[0]   # the event's check waits 2 s: one shell is enough
         if True:
             for urc in hint + other:
@@ -3406,6 +3410,32 @@ class Led(ShellTest):
             self.assertEqual(self.rgb(), ('0', '0', '200'))
             self.assertEqual((blue / 'trigger').read_text().strip(), 'none')
             (blue / 'trigger').write_text('[none] timer\n')
+
+    def test_breathing_after_a_steady_light_stops_the_steady_output_first(self):
+        # the SC27xx's pattern_set leaves the steady TYPE bit set: kanoqwq read 0x300 (RUN and steady) on a U30 Air
+        # whose LED went from steady to the pattern trigger; brightness 0 first clears it (edcdeb27). A channel
+        # already on the pattern trigger is not stopped again.
+        for shell in self.each_shell():
+            self.reset()
+            self.conf.write_text('LED_TIMEOUT=0\n')
+            blue = self.root / 'sys/class/leds/sc27xx:blue'
+            (blue / 'trigger').write_text('[none] timer pattern\n')
+            self.battery(40, 'Not charging', 1)
+            self.led(shell, 'u30air', 'battery')
+            self.assertEqual((blue / 'brightness').read_text().strip(), '200')          # steady blue
+            (blue / 'trigger').write_text('[none] timer pattern\n')                  # as sysfs lists them
+            self.battery(40, 'Charging', 1)
+            self.led(shell, 'u30air', 'battery')
+            self.assertEqual((blue / 'brightness').read_text().strip(), '0')
+            self.assertEqual((blue / 'trigger').read_text().strip(), 'pattern')
+            self.assertEqual((blue / 'hw_pattern').read_text().strip(), '200 320 200 480 200 480 200 720')
+            # already breathing (the trigger shows [pattern]) when it is shown again: no brightness write
+            (blue / 'trigger').write_text('none timer [pattern]\n')
+            (blue / 'brightness').write_text('77\n')
+            (self.root / 'run/mu300/led/.battery-shown').unlink()
+            self.led(shell, 'u30air', 'battery')
+            self.assertEqual((blue / 'brightness').read_text().strip(), '77')
+            self.assertEqual((blue / 'trigger').read_text().strip(), 'none timer [pattern]')
 
     def test_outside_power_keeps_the_leds_lit_and_an_unplug_restarts_the_timeout(self):
         for shell in self.each_shell():

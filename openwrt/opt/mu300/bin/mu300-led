@@ -213,9 +213,16 @@ write_level() {  # write_level NAME LEVEL: steady at LEVEL
 }
 # breathe NAME LEVEL: ZTE's charging light, 800 ms on and 1200 ms off, which its HAL hands the PMIC as a curve:
 # rise 2/5 of on, high 3/5, fall 2/5 of off, low 3/5 (the pattern trigger's hw_pattern); a timer blink without it
+# From a steady light the brightness goes to 0 first: the SC27xx's pattern_set sets RUN without clearing the steady
+# TYPE bit, and the pattern trigger's switch does not always call pattern_clear, so the LED stayed steady with both
+# bits set (kanoqwq read 0x300 in the PMIC's 0x180 on a U30 Air; 0x100 with this). A channel already on the pattern
+# trigger is left as it is.
 breathe() {
     if grep -qw pattern "$LEDS/$1/trigger" 2>/dev/null; then
-        echo pattern > "$LEDS/$1/trigger" 2>/dev/null
+        if ! grep -q '\[pattern\]' "$LEDS/$1/trigger" 2>/dev/null; then
+            echo 0 > "$LEDS/$1/brightness" 2>/dev/null
+            echo pattern > "$LEDS/$1/trigger" 2>/dev/null
+        fi
         echo -1 > "$LEDS/$1/repeat" 2>/dev/null
         echo "$2 320 $2 480 $2 480 $2 720" > "$LEDS/$1/hw_pattern" 2>/dev/null && return 0
     fi
