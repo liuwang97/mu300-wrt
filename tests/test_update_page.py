@@ -92,7 +92,7 @@ def sha(path):
 
 ROOTFS = {('openwrt', ''): 'mu300-openwrt-rootfs.tar.gz', ('openwrt-luci', ''): 'mu300-openwrt-luci-rootfs.tar.gz',
           ('ubuntu', '24.04'): 'mu300-ubuntu-rootfs.tar.gz', ('ubuntu', '26.04'): 'mu300-ubuntu-26.04-rootfs.tar.gz'}
-KERNEL = {'5.4': 'mu300-kernel.tar.gz', '6.18': 'mu300-kernel-6.18.tar.gz', '7.2': 'mu300-kernel-7.2.tar.gz'}
+KERNEL = {'5.4': 'mu300-kernel.tar.gz', '6.18': 'mu300-kernel-6.18.tar.gz', '7.2': 'mu300-kernel-7.2.tar.gz', '7.3': 'mu300-kernel-7.3.tar.gz'}
 
 
 def release_dir(d, tag='v2026.11.02', os_='openwrt-luci', ubuntu='', kernel='5.4', devices='f50 u30air\n'):
@@ -929,7 +929,7 @@ class Status(test_update.Lock):
             self.assertEqual((k['choice'], k['boot'], k['boot_kernel'], k['slot']), ('6.18', 'v2026.10.25', '6.18', 'b'))
             # Ubuntu 26.04 is on this device: 5.4 is not offered (kernel_cmd refuses it)
             self.assertEqual([(c['name'], c['ok'], c['why']) for c in k['choices']],
-                             [('5.4', 0, 'ubuntu-26.04'), ('6.18', 1, None), ('7.2', 1, None)])
+                             [('5.4', 0, 'ubuntu-26.04'), ('6.18', 1, None), ('7.2', 1, None), ('7.3', 1, None)])
             self.assertEqual((k['previous']['release'], k['previous']['kernel'], k['previous']['usable']), ('v2026.10.18', '5.4', 1))
             self.assertEqual((o['boot_default'], o['boot_attempts'], o['boot_locked']), ('linux', 3, 0))
             self.assertEqual((o['disk']['need_one_kb'], o['disk']['need_all_kb']), (2000000, 3000000))

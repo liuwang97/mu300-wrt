@@ -309,4 +309,14 @@ int sprd_tx_special_data(struct sk_buff *skb, struct net_device *ndev);
 int sc2355_send_data_offset(void);
 int sc2355_send_data(struct sprd_vif *vif, struct sprd_msg *msg,
 		     struct sk_buff *skb, u8 type, u8 offset, bool flag);
+/* MU300: 7.3 gave dma_capable() the DMA attributes (0: a plain mapping, as this driver's dma_map_single() makes);
+ * here and not in tx.c so that tx.c, its lines (the BUG table) and its object code stay as they were before 7.3
+ * (FINDINGS 206). The parenthesised name calls the function itself, not this macro.
+ */
+#include <linux/version.h>
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(7, 3, 0))
+#include <linux/dma-direct.h>
+#define dma_capable(dev, addr, size, is_ram) (dma_capable)(dev, addr, size, is_ram, 0)
+#endif
+
 #endif
