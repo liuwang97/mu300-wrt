@@ -276,7 +276,7 @@ return view.extend({
     <div class="mud-kpi"><b id="mud-cpu">--</b><span>${_('CPU usage')}</span><div class="mud-meter"><i id="mud-cpu-bar" style="background:var(--brand,var(--primary,#3b82f6))"></i></div></div>
     <div class="mud-kpi"><b id="mud-ram">--</b><span>${_('Memory')} · <span class="mud-sub" id="mud-ram-sub">--</span></span><div class="mud-meter"><i id="mud-ram-bar" style="background:var(--info,#0ea5e9)"></i></div></div>
     <div class="mud-kpi"><b id="mud-disk">--</b><span>${_('Storage')}</span><div class="mud-meter"><i id="mud-disk-bar" style="background:var(--warning,#f59e0b)"></i></div></div>
-    <div class="mud-kpi" id="mud-batt-kpi" style="display:none"><b id="mud-batt">--</b><span id="mud-batt-l">${_('Battery')}</span></div>
+    <div class="mud-kpi" id="mud-batt-kpi" style="display:none"><b id="mud-batt">--</b><span id="mud-batt-l">${_('Battery')}</span><div class="mud-meter" id="mud-batt-meter" hidden aria-hidden="true"><i id="mud-batt-bar" style="width:0%;background:var(--success,#16a34a)"></i></div></div>
   </div>
   <div id="mud-freqs" class="mud-freqs"></div>
   <div class="mud-cols">
@@ -325,7 +325,7 @@ return view.extend({
     <button class="mud-btn" id="mud-btn-roam">${_('Data roaming')}</button>
     <button class="mud-btn" id="mud-btn-wifi">${_('Wi-Fi hotspot')}</button>
     <button class="mud-btn warn" id="mud-btn-modem">${_('Restart modem')}</button>
-    <button class="mud-btn warn" id="mud-btn-reboot">${_('Restart device')}</button>
+    <button class="mud-btn warn" id="mud-btn-reboot">${_('Power off or restart')}</button>
     <button class="mud-btn warn" id="mud-btn-android">${_('Switch to Android')}</button>
     <button class="mud-btn" id="mud-btn-bootlock">${_('Lock Linux')}</button>
   </div>
@@ -395,10 +395,14 @@ return view.extend({
 			M.confirmBox(_('Restart modem'), _('Cellular connectivity may stop for 1–2 minutes.'), { danger: true })
 				.then(function(go) { if (go) act('modem-reset', null, null, btn); });
 		};
+		/* power off or restart (kanoqwq's b8d4f222): both the orderly way, after the reply is out */
 		q('btn-reboot').onclick = function() {
 			var btn = this;
-			M.confirmBox(_('Restart the entire device'), _('All connections will be interrupted.'), { danger: true })
-				.then(function(go) { if (go) act('reboot', null, null, btn); });
+			M.choiceBox(_('Power off or restart'), _('All connections will be interrupted.'), [
+				{ label: _('Cancel'), value: undefined },
+				{ label: _('Power off'), value: 'poweroff', danger: true },
+				{ label: _('Restart'), value: 'reboot', danger: true }
+			]).then(function(op) { if (op === 'poweroff' || op === 'reboot') act(op, null, null, btn); });
 		};
 		/* The network mode and band locks live in the modem's NV, which Android shares: they stay in force there (#96).
 		 * When the last lock state shows anything not automatic, the dialog says so and offers to reset first; when
@@ -804,6 +808,12 @@ return view.extend({
 				(p.in_volt != null ? ' (' + p.in_volt + ' V)' : '') : 'USB');
 			M.set('batt', p.capacity != null ? p.capacity + '%' : (p.volt != null ? p.volt + ' V' : '--'));
 			M.set('batt-l', parts.join(' · '));
+		}
+		/* the capacity as a bar, as CPU, memory and storage have (kanoqwq's edcdeb27) */
+		var bpct = p.present && typeof p.capacity === 'number' && isFinite(p.capacity) ? Math.max(0, Math.min(100, p.capacity)) : null;
+		if (M.v('batt-meter')) {
+			M.v('batt-meter').hidden = bpct == null;
+			M.v('batt-bar').style.width = (bpct == null ? 0 : bpct) + '%';
 		}
 		M.set('model', i.model || '--');
 		M.set('fwos', i.fw || '--');

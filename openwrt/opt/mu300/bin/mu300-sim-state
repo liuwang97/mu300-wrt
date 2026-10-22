@@ -82,15 +82,22 @@ check() {
     echo "${new:-$old}"
 }
 
-# the filter of the stock RIL's onSimStatusChanged (as kanoqwq read it): +ECIND: 3,<value>[,<cause>]
+# the filter of the stock RIL's onSimStatusChanged (as kanoqwq read it): +ECIND: 3,<value>[,<cause>[,<number>...]].
+# The RIL ignores numbers after the cause: a card coming up reports 3,100 (CPIN still busy) and then 3,0,0,1, which an
+# earlier filter dropped (kanoqwq's b8d4f222, seen on an E5-family board). Every field a decimal number of at most
+# 10 digits and 32 bits; an empty field, a sign or anything else and it is not one.
 sim_event() {
-    local body type value cause extra
+    local body type value cause extra field
     case $1 in '+ECIND: 3,'*|'+ECIND:3,'*) ;; *) return 1 ;; esac
     body=$(printf '%s' "${1#*:}" | tr -d ' \r\t')
+    case $body in ''|,*|*,|*,,*|*[!0-9,]*) return 1 ;; esac
+    for field in $(printf '%s' "$body" | tr ',' ' '); do
+        [ "${#field}" -le 10 ] && [ "$field" -le 4294967295 ] 2>/dev/null || return 1
+    done
     IFS=, read -r type value cause extra <<EOF
 $body
 EOF
-    [ "$type" = 3 ] && [ -z "$extra" ] || return 1
+    [ "$type" = 3 ] || return 1
     case $value:$cause in
         0:|2:|4:|100:|0:[0-9]*|2:[0-9]*|4:[0-9]*|100:[0-9]*|1:1|1:2|1:7|1:25|1:34) ;;
         *) return 1 ;;

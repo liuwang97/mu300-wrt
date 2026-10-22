@@ -240,7 +240,7 @@ m_act() {
         roaming)            allowed "$arg" '(on|off)' ;;
         vpn)                allowed "$arg" '(start|stop)' ;;
         os)                 allowed "$arg" '(android|lock|unlock)' ;;
-        modem-reset|reboot) [ -z "$arg" ] ;;
+        modem-reset|reboot|poweroff) [ -z "$arg" ] ;;
         *)                  refuse 'Unknown op'; return ;;
     esac || { refuse 'Invalid argument for this op'; return; }
     # the radio ops take mobile-data's radio lock (unisoc-modem/action): while the dial, the watchdog or another
@@ -253,7 +253,7 @@ m_act() {
     esac
     case $op in
         # the SFUN dance can run half a minute: never inside the request
-        radio|modem-reset|reboot|vpn)
+        radio|modem-reset|reboot|poweroff|vpn)
             setsid "$DASH/action" "$op" "$arg" >/dev/null 2>&1 &
             printf '{"ok":1,"started":1,"op":%s}\n' "$(json_str "$op${arg:+ $arg}")"
             ;;

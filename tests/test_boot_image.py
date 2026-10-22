@@ -318,6 +318,34 @@ class WithoutTheFirstSegmentsBinaries(Fixtures):
             self.assertIn('only with --append-ramdisk', r.stderr)
 
 
+class CpioParents(unittest.TestCase):
+    """every entry's parent directories come before it: the kernel's unpacker does not create them (kanoqwq's
+    b8d4f222); an appended segment that names only a file gets its directory too"""
+
+    def test_parents_first(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('bbi', TOP / 'boot' / 'build-boot-image.py')
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        raw = mod.cpio_archive({'dev'}, {'etc/mu300/linux-slot': (b'a\n', 0o100644), 'init': (b'#!/bin/sh\n', 0o100755)})
+        order, i = [], 0
+        while True:
+            h = raw[i:i + 110]
+            self.assertEqual(h[:6], b'070701')
+            mode, size, nlen = int(h[14:22], 16), int(h[54:62], 16), int(h[94:102], 16)
+            name = raw[i + 110:i + 110 + nlen - 1].decode()
+            i = (i + 110 + nlen + 3) & ~3
+            i = (i + size + 3) & ~3
+            if name == 'TRAILER!!!':
+                break
+            order.append((name, mode))
+        names = [n for n, _ in order]
+        for name in names:
+            if '/' in name:
+                self.assertIn(name.rsplit('/', 1)[0], names[:names.index(name)], name)
+        self.assertEqual(dict(order)['etc/mu300'] & 0o170000, 0o040000)
+        self.assertEqual(len(names), len(set(names)))
+
 class ModuleOrder(unittest.TestCase):
     def test_u30air_order(self):
         base = (BOOT / 'module-order.txt').read_text().split()
