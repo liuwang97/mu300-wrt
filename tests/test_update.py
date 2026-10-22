@@ -322,7 +322,8 @@ class Update(UpdateBase):
         boot = self.disk / 'boot'
         boot.mkdir()
         cases = [(None, '5.4', 'mu300-kernel.tar.gz'), ('6.18', '6.18', 'mu300-kernel-6.18.tar.gz'),
-                 ('7.2', '7.2', 'mu300-kernel-7.2.tar.gz'), ('5.4', '5.4', 'mu300-kernel.tar.gz'),
+                 ('7.2', '7.2', 'mu300-kernel-7.2.tar.gz'), ('7.3', '7.3', 'mu300-kernel-7.3.tar.gz'),
+                 ('5.4', '5.4', 'mu300-kernel.tar.gz'), ('7.4', '5.4', 'mu300-kernel.tar.gz'),
                  ('6.1', '5.4', 'mu300-kernel.tar.gz'), ('', '5.4', 'mu300-kernel.tar.gz')]
         for shell in self.each_shell():
             for c, choice, asset in cases:

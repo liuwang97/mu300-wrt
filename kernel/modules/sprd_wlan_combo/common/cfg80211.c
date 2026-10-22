@@ -1167,7 +1167,7 @@ int sprd_cfg80211_remain_on_channel(struct wiphy *wiphy,
 	static u64 remain_index;
 	int ret;
 
-	*cookie = vif->listen_cookie = ++remain_index;
+	*cookie = vif->listen_cookie = MU300_COOKIE(*cookie, ++remain_index);
 	netdev_info(wdev->netdev, "%s %d for %dms, cookie %lld\n",
 		    __func__, chan->center_freq, duration, *cookie);
 	memcpy(&vif->listen_channel, chan, sizeof(struct ieee80211_channel));
@@ -1225,7 +1225,7 @@ int sprd_cfg80211_mgmt_tx(struct wiphy *wiphy, struct wireless_dev *wdev,
 			return -ENODATA;
 	}
 
-	*cookie = ++mgmt_index;
+	*cookie = MU300_COOKIE(*cookie, ++mgmt_index);
 	netdev_info(wdev->netdev, "%s cookie %lld\n", __func__, *cookie);
 
 	sprd_dump_frame_prot_info(1, chan->center_freq, buf, len);
@@ -1727,9 +1727,9 @@ static int sprd_cfg80211_dump_station_wdev(struct wiphy *wiphy, struct wireless_
 
 static int sprd_cfg80211_remain_on_channel_wdev(struct wiphy *wiphy, struct wireless_dev *wdev,
 						struct ieee80211_channel *chan, unsigned int duration,
-						u64 *cookie, const u8 *rx_addr)
+						ck_t cookie, const u8 *rx_addr)
 {
-	return sprd_cfg80211_remain_on_channel(wiphy, wdev, chan, duration, cookie);
+	return sprd_cfg80211_remain_on_channel(wiphy, wdev, chan, duration, MU300_COOKIE_PTR(cookie));
 }
 #define MU300_WDEV_OP(f) f##_wdev
 #else
@@ -1764,7 +1764,7 @@ static struct cfg80211_ops sprd_cfg80211_ops = {
 	.flush_pmksa = sprd_cfg80211_flush_pmksa,
 	.remain_on_channel = MU300_WDEV_OP(sprd_cfg80211_remain_on_channel),
 	.cancel_remain_on_channel = sprd_cfg80211_cancel_remain_on_channel,
-	.mgmt_tx = sprd_cfg80211_mgmt_tx,
+	.mgmt_tx = MU300_MGMT_TX,
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0))
 	.update_mgmt_frame_registrations = sprd_cfg80211_mgmt_frame_register,
 #else
