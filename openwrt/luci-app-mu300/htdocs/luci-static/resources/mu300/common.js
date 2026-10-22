@@ -292,6 +292,14 @@ html.mud-bootstrap-theme{--surface:var(--background-color-high);--surface-sunken
 .mud-meter i{display:block;height:100%;border-radius:3px}
 .mud-freq{display:flex;align-items:center;font-size:.76rem;font-variant-numeric:tabular-nums;padding:1px 0}
 .mud-freq .mud-k{flex:0 0 2.4em}
+.mud-manual-cell{margin:12px 0;max-width:720px;min-width:0}
+.mud-manual-cell summary{cursor:pointer;padding:8px 0;font-size:.85rem;font-weight:600}
+.mud-manual-cell form{margin:4px 0 12px}
+.mud-manual-cell-fields{display:flex;flex-wrap:wrap;align-items:end;gap:12px}
+.mud-manual-cell-fields label{display:flex;flex:1 1 140px;flex-direction:column;gap:6px;margin:0;min-width:0;font-size:.82rem}
+.mud-manual-cell-fields input,.mud-manual-cell-fields select{box-sizing:border-box;width:100%;max-width:100%;min-width:0;min-height:38px;margin:0;padding:8px 10px;border:1px solid var(--hairline,var(--border,#ccc));border-radius:var(--radius-base,.5rem);background:var(--surface,var(--background,#fff));color:var(--text,#222);font:inherit}
+.mud-manual-cell-fields button{min-height:38px;margin:0;white-space:normal}
+.mud-manual-cell-fields input:focus,.mud-manual-cell-fields select:focus{outline:2px solid var(--brand,var(--primary,#37a));outline-offset:1px}
 .mud-btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:7px 12px;border:1px solid var(--hairline,var(--border,#ccc));border-radius:var(--radius-base,.5rem);background:var(--surface,var(--background,#fff));color:var(--text,#222);font-size:.82rem;cursor:pointer;user-select:none}
 .mud-btn:active{transform:scale(.97)}
 .mud-btn.on{background:var(--brand,var(--primary,#2f7bf6));border-color:var(--brand,var(--primary,#2f7bf6));color:var(--on-brand,#fff)}
