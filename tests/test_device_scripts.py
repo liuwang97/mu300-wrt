@@ -5427,6 +5427,45 @@ class NextBoot(ShellTest):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(self.bc(), android_a)
 
+    def test_without_the_slot_file_the_published_block_names_the_slot(self):
+        # no linux-slot, but the initramfs' Linux block (its first bytes are the suffix LK reads): that slot, before
+        # the command line and before the b of old images (kanoqwq's b8d4f222)
+        android_a, linux_b, android_b, linux_a = self.blocks
+        (self.run_dir / 'misc-bc-android.bin').write_bytes(android_b)
+        (self.run_dir / 'misc-bc-linux-trial.bin').write_bytes(linux_a)
+        (self.tmp / 'cmdline').write_text('console=x androidboot.slot_suffix=_b\n')
+        r = self.nb('--rearm')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn('slot a armed', r.stdout)
+        self.assertEqual(self.bc()[12], 0x0f | (6 << 4))
+        self.assertEqual(self.nb('android').returncode, 0)
+        self.assertEqual(self.bc(), android_b)
+
+    def test_blocks_that_name_another_slot_are_never_written(self):
+        # the slot file says one thing, a block another: nothing is written, whatever the command (kanoqwq's b8d4f222)
+        android_a, linux_b, android_b, linux_a = self.blocks
+        before = self.misc.read_bytes()
+        for slot, android, linux in (('a', android_b, linux_b),     # Linux's block names b
+                                     ('a', android_a, linux_a),     # Android's block names a, Linux's slot
+                                     ('b', android_a, linux_a),
+                                     ('b', android_b, linux_b)):
+            (self.run_dir / 'linux-slot').write_text(slot + '\n')
+            (self.run_dir / 'misc-bc-android.bin').write_bytes(android)
+            (self.run_dir / 'misc-bc-linux-trial.bin').write_bytes(linux)
+            for cmd in (('android',), ('--rearm',), ('--trial',), ('linux',), ('lock',)):
+                (self.tmp / 'default-boot').write_text('linux\n')
+                r = self.nb(*cmd)
+                self.assertEqual(r.returncode, 1, (slot, cmd, r.stdout))
+                self.assertIn('do not match', r.stderr)
+                self.assertEqual(self.misc.read_bytes(), before)
+            self.assertEqual(self.nb('status').returncode, 0)          # reading is still allowed
+        # a matching pair still works
+        (self.run_dir / 'linux-slot').write_text('a\n')
+        (self.run_dir / 'misc-bc-android.bin').write_bytes(android_b)
+        (self.run_dir / 'misc-bc-linux-trial.bin').write_bytes(linux_a)
+        self.assertEqual(self.nb('android').returncode, 0)
+        self.assertEqual(self.bc(), android_b)
+
 
 class EarlyRecorder(ShellTest):
     """early-recorder's choice of boot partition: the Linux slot's, never Android's."""
@@ -5537,3 +5576,37 @@ class ToolkitStress(ShellTest):
             self.assertIn('the SoC reached 91 C, the limit is 90 C', r.stdout)
             for f in logs.glob('mu300-stress-*.txt'):
                 f.unlink()
+
+
+class SysupgradeWrapper(ShellTest):
+    """OpenWrt's /sbin/sysupgrade here: a firmware image is refused, the configuration backup tools pass (kanoqwq's
+    b8d4f222 added restore: LuCI's System > Backup "Upload archive" runs sysupgrade --restore-backup)."""
+    WRAP = TOP / 'openwrt/overlay/usr/libexec/mu300-sysupgrade'
+
+    def run_it(self, shell, *args):
+        real = self.stubs / 'sysupgrade.openwrt'
+        real.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$STUBLOG/real"\n')
+        real.chmod(0o755)
+        (self.tmp / 'real').unlink(missing_ok=True)
+        r = self.script(shell, self.WRAP, *args, MU300_SYSUPGRADE=real)
+        called = (self.tmp / 'real').read_text() if (self.tmp / 'real').exists() else None
+        return r, called
+
+    def test_backup_restore_and_list_pass(self):
+        for shell in self.each_shell():
+            for args in (['-b', '/tmp/backup.tar.gz'], ['--create-backup', '-'], ['-k', '-b', '/tmp/x.tgz'],
+                         ['--restore-backup', '/tmp/backup.tar.gz'], ['-r', '/tmp/backup.tar.gz'],
+                         ['-l'], ['--list-backup'], ['-u', '-c', '-l'], ['-v', '-b', 'x'], ['-q', '-r', 'x']):
+                r, called = self.run_it(shell, *args)
+                self.assertEqual(r.returncode, 0, (args, r.stderr))
+                self.assertEqual(called, ' '.join(args) + '\n')
+
+    def test_firmware_and_mixed_or_incomplete_requests_are_refused(self):
+        for shell in self.each_shell():
+            for args in ([], ['firmware.bin'], ['-n', 'firmware.bin'], ['-F', 'firmware.bin'], ['-T', 'image'],
+                         ['-b'], ['-r'], ['-b', ''], ['-b', 'x', '-r', 'y'], ['-l', '-b', 'x'], ['-b', 'x', 'image'],
+                         ['-l', 'image'], ['--test', 'image'], ['-r', 'x', '-n']):
+                r, called = self.run_it(shell, *args)
+                self.assertEqual(r.returncode, 1, args)
+                self.assertIsNone(called, args)
+                self.assertIn('sysupgrade is disabled', r.stderr)

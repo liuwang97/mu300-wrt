@@ -26,7 +26,7 @@ import subprocess
 import sys
 import tarfile
 import zlib
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 HERE = Path(__file__).resolve().parent
 PAGE = 4096
@@ -110,6 +110,12 @@ def cpio_names(data):
 
 
 def cpio_archive(dirs, files):
+    # every parent directory of an entry goes in first: the kernel's unpacker does not create missing parents, so a
+    # file under a directory no entry names would be dropped (kanoqwq's b8d4f222). An appended archive whose
+    # directories the main one created gets them again, which is harmless.
+    dirs = set(dirs)
+    for name in list(files) + list(dirs):
+        dirs.update(str(p) for p in PurePosixPath(name).parents if str(p) != '.')
     cpio = bytearray()
     ino = 1
     for d in sorted(dirs, key=lambda x: (x.count('/'), x)):

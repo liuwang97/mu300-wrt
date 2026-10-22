@@ -30,7 +30,13 @@ RUN=${MU300_RUN:-/run/mu300}
 # The initramfs says which slot Linux runs from (Android may be on either); without that (or garbled), the slot LK
 # booted, from the command line or the device tree's bootargs, and b only when nothing says. The blocks it publishes
 # are the pair of that slot; an initramfs from before that publishes only the old names, and only ever for Linux on b.
+# Between the two, the slot the initramfs' Linux block names: it publishes that block with the file, and its first two
+# bytes are the slot suffix (_a/_b) LK reads (kanoqwq's b8d4f222).
+suffix_of() { dd if="$1" bs=1 count=2 2>/dev/null; }
 LINUX_SLOT=$(cat "$RUN/linux-slot" 2>/dev/null || true)
+case $LINUX_SLOT in a|b) ;; *)
+    case $(suffix_of "$RUN/misc-bc-linux-trial.bin") in _a) LINUX_SLOT=a ;; _b) LINUX_SLOT=b ;; esac ;;
+esac
 case $LINUX_SLOT in a|b) ;; *)
     LINUX_SLOT=$(for f in ${MU300_CMDLINE_SRC:-/proc/cmdline /proc/device-tree/chosen/bootargs}; do
         [ -r "$f" ] && tr '\000' ' ' < "$f" | sed -n 's/.*androidboot\.slot_suffix=_\([ab]\).*/\1/p'; done | head -n1)
@@ -43,6 +49,14 @@ if [ "$LINUX_SLOT" = b ]; then
     [ -s "$BC_A" ] || BC_A=$RUN/misc-bc-slot-a.bin
     [ -s "$BC_B" ] || BC_B=$RUN/misc-bc-slot-b-trial.bin
 fi
+# A block that names another slot than the one it is used for is never written: Linux's must name Linux's slot, and
+# Android's the other one. The initramfs never publishes such a pair; this keeps misc unchanged if anything else did
+# (kanoqwq's b8d4f222). A missing block is write_bc's to refuse, as before.
+if [ "$LINUX_SLOT" = a ]; then ANDROID_SLOT=b; else ANDROID_SLOT=a; fi
+pair_ok() {
+    { [ ! -s "$BC_B" ] || [ "$(suffix_of "$BC_B")" = "_$LINUX_SLOT" ]; } &&
+        { [ ! -s "$BC_A" ] || [ "$(suffix_of "$BC_A")" = "_$ANDROID_SLOT" ]; }
+}
 MISC=$(cat "$RUN/misc-dev" 2>/dev/null || readlink -f /dev/block/by-name/misc)
 DEFAULT_ATTEMPTS=5
 
@@ -157,7 +171,9 @@ take_lock() {
         sleep 1
     done
 }
-case "${1:-status}" in status) ;; *) take_lock ;; esac
+case "${1:-status}" in status) ;; *) take_lock
+    pair_ok || { echo "the boot control blocks do not match Linux on slot $LINUX_SLOT; boot control unchanged" >&2; exit 1; } ;;
+esac
 
 case "${1:-status}" in
     linux)   PENDING_CONF=linux; arm_linux; echo "default boot: linux" ;;
