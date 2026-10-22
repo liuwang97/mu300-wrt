@@ -5,9 +5,18 @@ import pathlib
 import sys
 
 
+def ignored(fragment):
+    """config-ignored.txt next to the fragment: options a kernel may not have at all (whole CONFIG_ names)"""
+    f = fragment.parent / 'config-ignored.txt'
+    if not f.is_file():
+        return set()
+    return {l.strip() for l in f.read_text().splitlines() if l.strip().startswith('CONFIG_')}
+
+
 def audit(out, fragment):
     """fragment: mu300-mainline.config; all-modules.report next to the Image (what all-modules.py added) is checked
-    the same way when the build left one."""
+    the same way when the build left one. An option of config-ignored.txt passes only when this kernel does not know
+    it at all (no line names it, not even "is not set"): one it knows is checked like any other."""
     image = (out / 'Image').read_bytes()
     start = image.find(b'IKCFG_ST')
     end = image.find(b'IKCFG_ED', start + 8)
@@ -15,6 +24,9 @@ def audit(out, fragment):
         raise ValueError('Image has no embedded kernel config')
     config = gzip.decompress(image[start + 8:end]).decode()
     actual = dict(line.split('=', 1) for line in config.splitlines() if line.startswith('CONFIG_'))
+    skip = ignored(fragment)
+    known = {w.rstrip('=') for line in config.splitlines() for w in line.replace('#', ' ').split()
+             if w.startswith('CONFIG_')} | set(actual)
     wanted = fragment.read_text().splitlines()
     if (out / 'all-modules.report').is_file():
         wanted += (out / 'all-modules.report').read_text().splitlines()
@@ -22,6 +34,8 @@ def audit(out, fragment):
         if not line.startswith('CONFIG_'):
             continue
         key, value = line.split('=', 1)
+        if key in skip and key not in known:
+            continue
         got = actual.get(key, 'n')
         if got != value:
             raise ValueError(f'Image: {key} wants {value}, got {got}')

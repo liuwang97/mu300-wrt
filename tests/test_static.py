@@ -476,11 +476,12 @@ class Rules(unittest.TestCase):
             bundle('mu300-kernel', 'sprd-dma.ko', 'virt-dma.ko')
             bundle('mu300-kernel-6.18')
             bundle('mu300-kernel-7.2')
+            bundle('mu300-kernel-7.3')
             manifest('mu300-ubuntu-rootfs', 'opt/mu300/bin/mu300-atd', 'etc/systemd/system/mu300-atd.service')
             manifest('mu300-openwrt-rootfs', 'etc/init.d/mu300-atd')
             self.assertIn('fail=0', run())
             for name, mods in (('mu300-kernel', ('audio_sipc.ko',)), ('mu300-kernel-6.18', ('sprd-dma.ko',)),
-                               ('mu300-kernel-7.2', ('snd-soc-sprd-card.ko',))):
+                               ('mu300-kernel-7.2', ('snd-soc-sprd-card.ko',)), ('mu300-kernel-7.3', ('audio_mem.ko',))):
                 bundle(name, *mods)
                 out = run()
                 self.assertIn('fail=1', out, name)
@@ -838,11 +839,11 @@ class Rules(unittest.TestCase):
 
     def test_every_release_kernel_bundle_has_the_sd_host(self):
         # 5.4 reads the card as well (FINDINGS 31j): its bundle says so, and the release audit fails when any of the
-        # three bundles does not (mu300-update refuses such a bundle for a system on the card)
+        # four bundles does not (mu300-update refuses such a bundle for a system on the card)
         mr = (TOP / 'tools' / 'make-release.sh').read_text()
         self.assertIn("printf 'sdcard\\nlinux-slot\\ngpt-root\\n' > \"$K/features\"", mr)
         self.assertLess(mr.index('$K/features'), mr.index('tar -C "$K" -czf "$D/mu300-kernel.tar.gz" .'))
-        self.assertIn('for a in mu300-kernel mu300-kernel-6.18 mu300-kernel-7.2; do\n'
+        self.assertIn('for a in mu300-kernel mu300-kernel-6.18 mu300-kernel-7.2 mu300-kernel-7.3; do\n'
                       '    tar -xzOf "$D/$a.tar.gz" ./features 2>/dev/null | grep -qx sdcard', mr)
         # and that its init works with Linux on either slot (mu300-update refuses one without it on slot a)
         self.assertIn('    tar -xzOf "$D/$a.tar.gz" ./features 2>/dev/null | grep -qx linux-slot', mr)
@@ -1376,6 +1377,54 @@ class SelfUpdateCopies(unittest.TestCase):
         self.assertIn('if [ -e "$TOP/.git" ] && command -v git >/dev/null; then', su)
         self.assertNotIn('-d "$TOP/.git"', su)
         self.assertIn("(Test-Path (Join-Path $Top '.git'))", (TOP / 'install.ps1').read_text())
+
+
+class Ps1FunctionOrder(unittest.TestCase):
+    """PowerShell knows a function only once the script has run past its definition: a top-level line of
+    install.ps1 that calls one defined further down (or that calls one whose body calls one) stops the installer
+    with 'The term ... is not recognized'. The make-room resume path did that on Windows with ResumeFacts and
+    GptDump (#357)."""
+
+    @staticmethod
+    def code(line):
+        line = re.sub(r"'[^']*'", "''", line)
+        line = re.sub(r'"[^"]*"', '""', line)
+        return line.split('#', 1)[0]
+
+    def test_top_level_calls_come_after_the_definitions(self):
+        text = (TOP / 'install.ps1').read_text()
+        lines = re.sub(r'<#.*?#>', lambda m: '\n' * m.group(0).count('\n'), text, flags=re.S).splitlines()
+        defs, bodies, top, i = {}, {}, [], 0
+        while i < len(lines):
+            m = re.match(r'function\s+([A-Za-z][\w-]*)', lines[i])
+            if not m:
+                top.append((i + 1, lines[i]))
+                i += 1
+                continue
+            name, start = m.group(1), i
+            while i < len(lines) and not re.match(r'}\s*$', lines[i]):
+                i += 1
+            defs[name] = start + 1
+            bodies[name] = '\n'.join(self.code(x) for x in lines[start + 1:i])
+            i += 1
+        self.assertIn('ResumeFacts', defs)
+        word = {n: re.compile(r'(?<![\w$.-])' + re.escape(n) + r'(?![\w-])') for n in defs}
+        calls = {n: {c for c in defs if c != n and word[c].search(bodies[n])} for n in defs}
+        late = []
+        for no, line in top:
+            for n in defs:
+                if not word[n].search(self.code(line)):
+                    continue
+                seen, todo = set(), [n]
+                while todo:
+                    f = todo.pop()
+                    if f in seen:
+                        continue
+                    seen.add(f)
+                    if defs[f] > no:
+                        late.append('line %d calls %s, defined at line %d' % (no, f, defs[f]))
+                    todo.extend(calls[f])
+        self.assertEqual(late, [])
 
 
 if __name__ == '__main__':
