@@ -420,4 +420,31 @@ int sprd_cfg80211_change_iface(struct wiphy *wiphy, struct net_device *ndev,
 			       enum nl80211_iftype type,
 			       struct vif_params *params);
 
+/* MU300: since 7.3 cfg80211 picks the cookie of a remain-on-channel or a management frame itself and hands it to the
+ * driver by value (nl80211 assigns it before the call); before, the driver chose one and returned it. cfg80211.c's
+ * functions keep their form (ck_t: the cookie argument, as short as the "u64 *" it stands for, so even the debug
+ * information's columns stay): on 7.3 the by-value ops hand cfg80211's cookie in through the pointer and MU300_COOKIE
+ * keeps it; on older kernels it is the driver's next number, as before. These are here and not in cfg80211.c so that
+ * its lines (the BUG table) and its object code stay as they were on the older kernels (FINDINGS 206).
+ */
+#include <linux/version.h>
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(7, 3, 0))
+#define MU300_COOKIE(given, next) ((void)(next), (given))
+#define ck_t u64
+#define MU300_COOKIE_PTR(c) (&(c))
+int sprd_cfg80211_mgmt_tx(struct wiphy *wiphy, struct wireless_dev *wdev,
+			  struct cfg80211_mgmt_tx_params *params, u64 *cookie);
+static inline int sprd_cfg80211_mgmt_tx_by_value(struct wiphy *wiphy, struct wireless_dev *wdev,
+						 struct cfg80211_mgmt_tx_params *params, u64 cookie)
+{
+	return sprd_cfg80211_mgmt_tx(wiphy, wdev, params, &cookie);
+}
+#define MU300_MGMT_TX sprd_cfg80211_mgmt_tx_by_value
+#else
+#define MU300_COOKIE(given, next) (next)
+#define ck_t u64 *
+#define MU300_COOKIE_PTR(c) (c)
+#define MU300_MGMT_TX sprd_cfg80211_mgmt_tx
+#endif
+
 #endif

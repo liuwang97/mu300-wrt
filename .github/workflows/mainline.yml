@@ -1,7 +1,8 @@
 name: Mainline kernel build
 
 # Builds the mainline port (upstream/: kernel + every out-of-tree vendor module) against the current longterm
-# release and the newest stable release, every week and on changes to upstream/. The build stops on anything that
+# release, the newest stable release, the newest mainline release (not a release candidate) and the newest of each
+# series the releases ship (6.18, 7.2, 7.3), every week and on changes to upstream/. The build stops on anything that
 # drifts silently - a patch that no longer applies, a config option Kconfig drops, a port edit whose anchor moved,
 # an API a module uses that is gone - so a red run is the early warning for the next kernel jump.
 
@@ -14,7 +15,7 @@ on:
   workflow_dispatch:
     inputs:
       kv:
-        description: 'Kernel version to build (empty: longterm and stable from kernel.org)'
+        description: 'Kernel version to build (empty: longterm, stable, mainline and the shipped series from kernel.org)'
         required: false
 
 permissions:
@@ -36,11 +37,18 @@ jobs:
             exit 0
           fi
           curl -fsSL https://www.kernel.org/releases.json | python3 -c '
-          import json, sys
+          import json, re, sys
           r = json.load(sys.stdin)["releases"]
           lts = next(x["version"] for x in r if x["moniker"] == "longterm" and x["version"].startswith("6.18."))
           stable = next(x["version"] for x in r if x["moniker"] == "stable" and not x.get("iseol"))
-          print("list=" + json.dumps(sorted({lts, stable})))
+          # a mainline release is X.Y until X.Y.1 (7.3: linux-7.3.tar.xz); a release candidate has no tarball there
+          vs = [x["version"] for x in r if re.fullmatch(r"[0-9]+\.[0-9]+(\.[0-9]+)?", x["version"])]
+          main = [x["version"] for x in r if x["moniker"] == "mainline" and x["version"] in vs]
+          def newest(series):
+              got = sorted((v for v in vs if v == series or v.startswith(series + ".")), key=lambda v: [int(p) for p in v.split(".")])
+              return got[-1:]
+          shipped = [v for s in ("7.2", "7.3") for v in newest(s)]
+          print("list=" + json.dumps(sorted({lts, stable, *main, *shipped})))
           ' >> "$GITHUB_OUTPUT"
 
   build:

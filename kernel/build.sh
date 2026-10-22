@@ -11,8 +11,12 @@ if [ ! -d /src/linux-$KV ]; then
     base=https://cdn.kernel.org/pub/linux/kernel/v${KV%%.*}.x
     dl=/src/.download-$KV
     rm -rf "$dl" && mkdir -p "$dl"
+    # the signed checksum list from kernel.org itself: the CDN's copy lagged a new release by hours (7.3: the CDN
+    # still had the list of 7.2.11's day, without 7.3's line, FINDINGS 206); it is signed, so where it comes from
+    # does not change what is checked
     for f in linux-$KV.tar.xz linux-$KV.tar.sign sha256sums.asc; do
-        curl -fsSL -o "$dl/$f" "$base/$f" || { rm -rf "$dl"; echo "cannot fetch $base/$f" >&2; exit 1; }
+        u=$base/$f; [ "$f" != sha256sums.asc ] || u=https://www.kernel.org/pub/linux/kernel/v${KV%%.*}.x/$f
+        curl -fsSL -o "$dl/$f" "$u" || { rm -rf "$dl"; echo "cannot fetch $u" >&2; exit 1; }
     done
     bash /work/verify-kernel-src.sh "$dl" "$KV" || { rm -rf "$dl"; exit 1; }
     tar -xJf "$dl/linux-$KV.tar.xz" -C "$dl" && mv "$dl/linux-$KV" /src/linux-$KV
@@ -49,13 +53,14 @@ make O=$O ARCH=arm64 olddefconfig >/dev/null
 # that would bind to the vendor device tree); MU300_ALL_MODULES=0 builds the fragment alone
 rm -f $O/all-modules.report
 [ "${MU300_ALL_MODULES:-1}" = 0 ] || python3 /work/all-modules.py . $O
-# options Kconfig did not take; ones known not to exist in this kernel are listed in config-ignored.txt, any
-# other one stops the build (a silently dropped option has cost a working feature before)
+# options Kconfig did not take stop the build (a silently dropped option has cost a working feature before); one
+# listed in config-ignored.txt passes only when this kernel has no such symbol at all (7.3 has no PROC_SYSCTL)
 bad=
 while IFS= read -r l; do
   case "$l" in CONFIG_*=*) k=${l%%=*}; v=${l#*=}; g=$(grep -E "^$k=" $O/.config | cut -d= -f2- || true);
     [ "$v" = n ] && { grep -q "^$k=y" $O/.config && bad="$bad\nNOT DISABLED: $k" || true; continue; }
-    [ "$g" = "$v" ] || grep -qx "$k" /work/config-ignored.txt 2>/dev/null || bad="$bad\nNOT SET: $k want $v got ${g:-unset}";; esac
+    [ "$g" = "$v" ] || { grep -qx "$k" /work/config-ignored.txt 2>/dev/null && ! grep -qE "(^| )$k[= ]" $O/.config; } ||
+        bad="$bad\nNOT SET: $k want $v got ${g:-unset}";; esac
 done < /work/mu300-mainline.config
 [ -z "$bad" ] || { printf "config options not taken:$bad\n" >&2; exit 1; }
 # a test build's extra kernel arguments: mainline forces its own command line (CONFIG_CMDLINE_FORCE), the
