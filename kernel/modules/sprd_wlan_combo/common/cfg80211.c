@@ -1157,24 +1157,17 @@ int sprd_cfg80211_flush_pmksa(struct wiphy *wiphy, struct net_device *ndev)
 }
 
 /* P2P related stuff */
-/* MU300: since 7.3 cfg80211 picks the cookie of a remain-on-channel or a management frame itself and hands it to the
- * driver by value (nl80211 assigns it before the call); before, the driver chose one and returned it. The *_cookie
- * functions take it either way: cookie_given says that *cookie is cfg80211's and must be used as it is.
- */
-static int sprd_cfg80211_remain_on_channel_cookie(struct wiphy *wiphy,
-						  struct wireless_dev *wdev,
-						  struct ieee80211_channel *chan,
-						  unsigned int duration, u64 *cookie,
-						  bool cookie_given)
+int sprd_cfg80211_remain_on_channel(struct wiphy *wiphy,
+				    struct wireless_dev *wdev,
+				    struct ieee80211_channel *chan,
+				    unsigned int duration, u64 *cookie)
 {
 	struct sprd_vif *vif = container_of(wdev, struct sprd_vif, wdev);
 	enum nl80211_channel_type channel_type = 0;
 	static u64 remain_index;
 	int ret;
 
-	if (!cookie_given)
-		*cookie = ++remain_index;
-	vif->listen_cookie = *cookie;
+	*cookie = vif->listen_cookie = MU300_COOKIE(*cookie, ++remain_index);
 	netdev_info(wdev->netdev, "%s %d for %dms, cookie %lld\n",
 		    __func__, chan->center_freq, duration, *cookie);
 	memcpy(&vif->listen_channel, chan, sizeof(struct ieee80211_channel));
@@ -1200,9 +1193,8 @@ int sprd_cfg80211_cancel_remain_on_channel(struct wiphy *wiphy,
 	return sprd_cancel_remain_chan(vif->priv, vif, cookie);
 }
 
-static int sprd_cfg80211_mgmt_tx_cookie(struct wiphy *wiphy, struct wireless_dev *wdev,
-					struct cfg80211_mgmt_tx_params *params, u64 *cookie,
-					bool cookie_given)
+int sprd_cfg80211_mgmt_tx(struct wiphy *wiphy, struct wireless_dev *wdev,
+			  struct cfg80211_mgmt_tx_params *params, u64 *cookie)
 {
 	struct sprd_vif *vif = container_of(wdev, struct sprd_vif, wdev);
 	struct ieee80211_channel *chan = params->chan;
@@ -1233,8 +1225,7 @@ static int sprd_cfg80211_mgmt_tx_cookie(struct wiphy *wiphy, struct wireless_dev
 			return -ENODATA;
 	}
 
-	if (!cookie_given)
-		*cookie = ++mgmt_index;
+	*cookie = MU300_COOKIE(*cookie, ++mgmt_index);
 	netdev_info(wdev->netdev, "%s cookie %lld\n", __func__, *cookie);
 
 	sprd_dump_frame_prot_info(1, chan->center_freq, buf, len);
@@ -1254,28 +1245,6 @@ static int sprd_cfg80211_mgmt_tx_cookie(struct wiphy *wiphy, struct wireless_dev
 
 	return ret;
 }
-
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(7, 3, 0))
-static int sprd_cfg80211_mgmt_tx(struct wiphy *wiphy, struct wireless_dev *wdev,
-				 struct cfg80211_mgmt_tx_params *params, u64 cookie)
-{
-	return sprd_cfg80211_mgmt_tx_cookie(wiphy, wdev, params, &cookie, true);
-}
-#else
-int sprd_cfg80211_mgmt_tx(struct wiphy *wiphy, struct wireless_dev *wdev,
-			  struct cfg80211_mgmt_tx_params *params, u64 *cookie)
-{
-	return sprd_cfg80211_mgmt_tx_cookie(wiphy, wdev, params, cookie, false);
-}
-
-int sprd_cfg80211_remain_on_channel(struct wiphy *wiphy,
-				    struct wireless_dev *wdev,
-				    struct ieee80211_channel *chan,
-				    unsigned int duration, u64 *cookie)
-{
-	return sprd_cfg80211_remain_on_channel_cookie(wiphy, wdev, chan, duration, cookie, false);
-}
-#endif
 
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0))
 void sprd_cfg80211_mgmt_frame_register(struct wiphy *wiphy,
@@ -1756,21 +1725,12 @@ static int sprd_cfg80211_dump_station_wdev(struct wiphy *wiphy, struct wireless_
 	return sprd_cfg80211_dump_station(wiphy, wdev->netdev, idx, mac, sinfo);
 }
 
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(7, 3, 0))
 static int sprd_cfg80211_remain_on_channel_wdev(struct wiphy *wiphy, struct wireless_dev *wdev,
 						struct ieee80211_channel *chan, unsigned int duration,
-						u64 cookie, const u8 *rx_addr)
+						ck_t cookie, const u8 *rx_addr)
 {
-	return sprd_cfg80211_remain_on_channel_cookie(wiphy, wdev, chan, duration, &cookie, true);
+	return sprd_cfg80211_remain_on_channel(wiphy, wdev, chan, duration, MU300_COOKIE_PTR(cookie));
 }
-#else
-static int sprd_cfg80211_remain_on_channel_wdev(struct wiphy *wiphy, struct wireless_dev *wdev,
-						struct ieee80211_channel *chan, unsigned int duration,
-						u64 *cookie, const u8 *rx_addr)
-{
-	return sprd_cfg80211_remain_on_channel(wiphy, wdev, chan, duration, cookie);
-}
-#endif
 #define MU300_WDEV_OP(f) f##_wdev
 #else
 #define MU300_WDEV_OP(f) f
@@ -1804,7 +1764,7 @@ static struct cfg80211_ops sprd_cfg80211_ops = {
 	.flush_pmksa = sprd_cfg80211_flush_pmksa,
 	.remain_on_channel = MU300_WDEV_OP(sprd_cfg80211_remain_on_channel),
 	.cancel_remain_on_channel = sprd_cfg80211_cancel_remain_on_channel,
-	.mgmt_tx = sprd_cfg80211_mgmt_tx,
+	.mgmt_tx = MU300_MGMT_TX,
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0))
 	.update_mgmt_frame_registrations = sprd_cfg80211_mgmt_frame_register,
 #else

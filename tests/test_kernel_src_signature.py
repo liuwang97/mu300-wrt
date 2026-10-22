@@ -90,7 +90,7 @@ class BuildUsesIt(unittest.TestCase):
         self.assertEqual(body.count('tar -xJf'), 1)
 
     def test_checksum_list_from_kernel_org_itself(self):
-        # FINDINGS 195: the CDN's sha256sums.asc lagged 7.3 by hours; the tarball and its signature come from the CDN,
+        # FINDINGS 206: the CDN's sha256sums.asc lagged 7.3 by hours; the tarball and its signature come from the CDN,
         # the signed list from www.kernel.org
         body = (UP / 'build.sh').read_text()
         fetch = body[body.index('if [ ! -d /src/linux-$KV ]'):body.index('cd /src/linux-$KV')]

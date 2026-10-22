@@ -12,7 +12,7 @@ if [ ! -d /src/linux-$KV ]; then
     dl=/src/.download-$KV
     rm -rf "$dl" && mkdir -p "$dl"
     # the signed checksum list from kernel.org itself: the CDN's copy lagged a new release by hours (7.3: the CDN
-    # still had the list of 7.2.11's day, without 7.3's line, FINDINGS 195); it is signed, so where it comes from
+    # still had the list of 7.2.11's day, without 7.3's line, FINDINGS 206); it is signed, so where it comes from
     # does not change what is checked
     for f in linux-$KV.tar.xz linux-$KV.tar.sign sha256sums.asc; do
         u=$base/$f; [ "$f" != sha256sums.asc ] || u=https://www.kernel.org/pub/linux/kernel/v${KV%%.*}.x/$f
