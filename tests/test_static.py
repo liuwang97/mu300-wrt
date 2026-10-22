@@ -1378,5 +1378,53 @@ class SelfUpdateCopies(unittest.TestCase):
         self.assertIn("(Test-Path (Join-Path $Top '.git'))", (TOP / 'install.ps1').read_text())
 
 
+class Ps1FunctionOrder(unittest.TestCase):
+    """PowerShell knows a function only once the script has run past its definition: a top-level line of
+    install.ps1 that calls one defined further down (or that calls one whose body calls one) stops the installer
+    with 'The term ... is not recognized'. The make-room resume path did that on Windows with ResumeFacts and
+    GptDump (#357)."""
+
+    @staticmethod
+    def code(line):
+        line = re.sub(r"'[^']*'", "''", line)
+        line = re.sub(r'"[^"]*"', '""', line)
+        return line.split('#', 1)[0]
+
+    def test_top_level_calls_come_after_the_definitions(self):
+        text = (TOP / 'install.ps1').read_text()
+        lines = re.sub(r'<#.*?#>', lambda m: '\n' * m.group(0).count('\n'), text, flags=re.S).splitlines()
+        defs, bodies, top, i = {}, {}, [], 0
+        while i < len(lines):
+            m = re.match(r'function\s+([A-Za-z][\w-]*)', lines[i])
+            if not m:
+                top.append((i + 1, lines[i]))
+                i += 1
+                continue
+            name, start = m.group(1), i
+            while i < len(lines) and not re.match(r'}\s*$', lines[i]):
+                i += 1
+            defs[name] = start + 1
+            bodies[name] = '\n'.join(self.code(x) for x in lines[start + 1:i])
+            i += 1
+        self.assertIn('ResumeFacts', defs)
+        word = {n: re.compile(r'(?<![\w$.-])' + re.escape(n) + r'(?![\w-])') for n in defs}
+        calls = {n: {c for c in defs if c != n and word[c].search(bodies[n])} for n in defs}
+        late = []
+        for no, line in top:
+            for n in defs:
+                if not word[n].search(self.code(line)):
+                    continue
+                seen, todo = set(), [n]
+                while todo:
+                    f = todo.pop()
+                    if f in seen:
+                        continue
+                    seen.add(f)
+                    if defs[f] > no:
+                        late.append('line %d calls %s, defined at line %d' % (no, f, defs[f]))
+                    todo.extend(calls[f])
+        self.assertEqual(late, [])
+
+
 if __name__ == '__main__':
     unittest.main()
