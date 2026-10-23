@@ -4,8 +4,8 @@
   openwrt/tools/image-manifest.py make ROOTFS.tar.gz [IMAGE TAG]   print the manifest of a published image
   openwrt/tools/image-manifest.py check ROOTFS.tar.gz              the manifest the image carries (etc/mu300/image-manifest.gz)
                                                            is the one of its own files; exit 1 and the differences if not
-  openwrt/tools/image-manifest.py legacy RELEASE_DIR OUT_DIR       for a release from before images carried one: the manifests
-                                                           of its four images as OUT_DIR/<image>/<tag>.gz
+  openwrt/tools/image-manifest.py legacy RELEASE_DIR OUT_DIR       for a release whose image carries none: the manifest
+                                                           of its image as OUT_DIR/<image>/<tag>.gz
   openwrt/tools/image-manifest.py assets RELEASE_DIR OUT_DIR       the same manifests under the names a release publishes them
                                                            with: OUT_DIR/mu300-<...>-rootfs.manifest.gz
   openwrt/tools/image-manifest.py union OUT.gz MANIFEST.gz...      the manifests of one image in many releases as one file
@@ -14,9 +14,9 @@
 
 An update needs to know which files of the installed system came with its image and which are the user's: a path the
 old image did not have was put there by the user (or by software they installed), one it had with other content was
-changed by them (mu300-update, the carry block; docs/FINDINGS.md 85). Images from the first release with a four-field tag on carry their own
-manifest, written when they are built (mu300-carry manifest, the same lines); for the releases before that the
-manifests made here ship in the images.
+changed by them (mu300-update, the carry block; openwrt/docs/update.md).
+An image carries its own manifest, written when it is built (mu300-carry manifest, the same lines); for the releases
+whose images carry none, the manifests made here ship in the images.
 
 The format, one entry per line, sorted by path (bytewise):
   TYPE MODE UID GID SIZE HASH PATH
@@ -24,7 +24,7 @@ The format, one entry per line, sorted by path (bytewise):
   MODE  octal, permission bits only    SIZE  bytes of a file, length of a link's target, else 0
   HASH  sha256 of a file's content, of a link's target, else -
   PATH  relative to the root, no leading ./ ; a backslash is written \\\\ and a newline \\n
-under a first line "mu300-image-manifest 1 IMAGE TAG" (IMAGE: ubuntu-24.04, ubuntu-26.04, openwrt, openwrt-luci).
+under a first line "mu300-image-manifest 1 IMAGE TAG" (IMAGE: openwrt-luci).
 """
 import gzip
 import hashlib
@@ -34,8 +34,7 @@ import sys
 import tarfile
 
 SELF = 'etc/mu300/image-manifest.gz'
-IMAGES = {'mu300-ubuntu-rootfs.tar.gz': 'ubuntu-24.04', 'mu300-ubuntu-26.04-rootfs.tar.gz': 'ubuntu-26.04',
-          'mu300-openwrt-rootfs.tar.gz': 'openwrt', 'mu300-openwrt-luci-rootfs.tar.gz': 'openwrt-luci'}
+IMAGES = {'mu300-openwrt-luci-rootfs.tar.gz': 'openwrt-luci'}
 TYPES = {tarfile.REGTYPE: 'f', tarfile.AREGTYPE: 'f', tarfile.LNKTYPE: 'f', tarfile.DIRTYPE: 'd', tarfile.SYMTYPE: 'l',
          tarfile.CHRTYPE: 'c', tarfile.BLKTYPE: 'b', tarfile.FIFOTYPE: 'p'}
 

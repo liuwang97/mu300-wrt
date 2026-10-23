@@ -9,8 +9,9 @@
 #
 #   mu300-ipa-dump [-i IFACE] [-t TARGET] [-n CONNECTS] > dump.txt
 #
-# The reference to compare it against - the same fields from stock Android on this device with data working - is
-# in docs/FINDINGS.md 13f.
+# With data working, sipa_eth0's rx_packets and the sipa IRQ climb with every request, SIPA_RM_RES_PROD_CP is granted
+# (ref 1) and the sipa_dele conversation below cycles (type=5 flag=1, CONS_WWAN_DL 0->2, type=6 flag=1); a dead
+# downlink shows all of them at zero or silent.
 set -u
 export PATH="$PATH:/opt/mu300/bin:/opt/mu300/busybox-bin:/usr/sbin:/sbin"
 
@@ -63,7 +64,7 @@ dump() {
     # The downlink is the modem's decision, not ours: it asks over SIPC channel 120 (SMSG_CH_COMM_SIPA, dst 5
     # PSCP), sipa_dele grants SIPA_RM_RES_CONS_WWAN_DL and acks, and only then do packets arrive. Both sides of
     # that exchange are pr_info, so silence here means the delegate is not talking to the modem at all - and a
-    # modem that is never asked never sends. See FINDINGS 13f.
+    # modem that is never asked never sends.
     echo "--- sipa_dele conversation (last 12 lines; empty is the answer, not a gap)"
     dmesg | grep -E 'sipa_dele|sipa_rm' | tail -12 || true
     echo "--- delegate thread:"

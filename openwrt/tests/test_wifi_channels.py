@@ -1,9 +1,7 @@
-"""The hotspot never goes onto a DFS channel (FINDINGS 42: the SC2355 driver has no radar detection, hostapd's
-start_dfs_cac() fails and the AP stays down).
+"""The hotspot never goes onto a DFS channel (the SC2355 driver has no radar detection: hostapd's start_dfs_cac()
+fails and the AP stays down).
 
 * `lib/wifi-channels.sh`: the country table, a DFS or disallowed channel replaced with one line why, "auto", widths;
-* `hotspot-start` (Ubuntu): the hostapd configuration it writes (MU300_HOTSPOT_DRYRUN), with the kernel's channel
-  flags (a stub `iw list`) taking another channel of the country before 2.4 GHz;
 * `openwrt-wifi-config` and `mu300-wifi-band` on OpenWrt (a stub `uci`): the channel, htmode, the channel list for
   auto, and a DFS channel set in LuCI rewritten at boot;
 * `openwrt/patches/wifi-scripts-no-dfs.patch`: how the build applies it, and - with MU300_WRT_IMAGE naming an
@@ -20,7 +18,7 @@ from pathlib import Path
 
 from helpers import BIN, TOP, ShellTest
 
-LIB = TOP / 'rootfs' / 'overlay' / 'opt' / 'mu300' / 'lib' / 'wifi-channels.sh'
+LIB = TOP / 'openwrt' / 'opt' / 'mu300' / 'lib' / 'wifi-channels.sh'
 PATCH = TOP / 'openwrt' / 'patches' / 'wifi-scripts-no-dfs.patch'
 FIXTURES = TOP / "openwrt" / "tests" / 'fixtures' / 'wifi-scripts'
 FIVE = [36, 40, 44, 48, 52, 56, 60, 64, 100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140, 144,
@@ -107,106 +105,6 @@ class Lib(ShellTest):
             self.assertEqual(out.split(), ['40', '40', '20'])
 
 
-IW_LINE = '\t\t\t* {mhz}.0 MHz [{ch}] ({flags})\n'
-
-
-class HotspotStart(ShellTest):
-    """hotspot-start up to the hostapd configuration (bash: it uses ${x^^})."""
-
-    def setUp(self):
-        super().setUp()
-        if not shutil.which('bash'):
-            self.skipTest('no bash')
-        self.conf = self.tmp / 'hotspot.conf'
-        self.out = self.tmp / 'hostapd.conf'
-        self.stub('sleep', 'exit 0')
-        self.stub('iw', 'case "$*" in "reg get") echo "country ${FAKE_REG:-CN}: DFS-FCC" ;; '
-                        'list) cat "$STUBLOG/iwlist" ;; esac; exit 0')
-
-    def iw_list(self, flags=None):
-        """iw list's 5 GHz channels as CN has them (DFS: radar), FLAGS {channel: text} overriding."""
-        lines = ''
-        for c in FIVE:
-            f = '23.0 dBm' if c < 52 or c > 144 else '20.0 dBm) (no IR, radar detection'
-            if 100 <= c <= 144:
-                f = 'disabled'
-            f = (flags or {}).get(c, f)
-            lines += IW_LINE.format(mhz=5000 + 5 * c, ch=c, flags=f)
-        (self.tmp / 'iwlist').write_text(lines)
-
-    def run_start(self, conf, **env):
-        self.conf.write_text(conf)
-        r = subprocess.run(['bash', str(BIN / 'hotspot-start')], capture_output=True, text=True, timeout=60,
-                           env=self.env(MU300_HOTSPOT_CONF=self.conf, MU300_HOSTAPD_CONF=self.out,
-                                        MU300_HOTSPOT_DRYRUN=1, **env))
-        self.assertEqual(r.returncode, 0, r.stderr)
-        cfg = dict(l.split('=', 1) for l in self.out.read_text().splitlines() if '=' in l)
-        return cfg, r.stderr
-
-    def test_dfs_channel_is_replaced(self):
-        self.iw_list()
-        cfg, err = self.run_start('SSID=x\nPSK=12345678\nBAND=5\nCHANNEL=60\nCOUNTRY=CN\n')
-        self.assertEqual((cfg['hw_mode'], cfg['channel']), ('a', '36'))
-        self.assertEqual(cfg['vht_oper_chwidth'], '1')
-        self.assertEqual(cfg['vht_oper_centr_freq_seg0_idx'], '42')
-        self.assertEqual(cfg['ht_capab'], '[HT40+][SHORT-GI-20][SHORT-GI-40]')
-        self.assertEqual(cfg['country_code'], 'CN')
-        self.assertIn('channel 60 is a DFS channel', err)
-
-    def test_auto_and_kept_channels(self):
-        self.iw_list()
-        for ch, seg0, ht in (('auto', '42', '[HT40+]'), ('', '42', '[HT40+]'), ('48', '42', '[HT40-]'),
-                             ('149', '155', '[HT40+]'), ('161', '155', '[HT40-]')):
-            cfg, err = self.run_start(f'SSID=x\nPSK=12345678\nBAND=5\nCHANNEL={ch}\nCOUNTRY=CN\n')
-            self.assertEqual(cfg['channel'], ch if ch not in ('auto', '') else '36', ch)
-            self.assertEqual(cfg['vht_oper_centr_freq_seg0_idx'], seg0, ch)
-            self.assertTrue(cfg['ht_capab'].startswith(ht), ch)
-            self.assertEqual(err, '', ch)
-
-    def test_a_hidden_name(self):
-        # HIDDEN=1 (mu300-api wifi.set's switch): not broadcast; anything else, or no line: broadcast
-        self.iw_list()
-        for line, want in (('HIDDEN=1\n', '1'), ('HIDDEN=0\n', '0'), ('', '0'), ('HIDDEN=yes\n', '0')):
-            cfg, _ = self.run_start(f'SSID=x\nPSK=12345678\nBAND=5\nCHANNEL=36\nCOUNTRY=CN\n{line}')
-            self.assertEqual(cfg['ignore_broadcast_ssid'], want, line)
-
-    def test_165_is_20_mhz(self):
-        self.iw_list()
-        cfg, _ = self.run_start('SSID=x\nPSK=12345678\nBAND=5\nCHANNEL=165\nCOUNTRY=CN\n')
-        self.assertEqual((cfg['channel'], cfg['ht_capab'], cfg['vht_oper_chwidth']), ('165', '[SHORT-GI-20]', '0'))
-        self.assertNotIn('vht_oper_centr_freq_seg0_idx', cfg)
-
-    def test_country_without_149(self):
-        self.iw_list()
-        cfg, err = self.run_start('SSID=x\nPSK=12345678\nBAND=5\nCHANNEL=149\nCOUNTRY=TR\n', FAKE_REG='TR')
-        self.assertEqual(cfg['channel'], '36')
-        self.assertIn('not available to the hotspot in country TR', err)
-
-    def test_kernel_refuses_the_channel(self):
-        # 36 still NO-IR (the country not live yet): another channel of the country, not 2.4 GHz
-        self.iw_list({36: 'no IR'})
-        cfg, err = self.run_start('SSID=x\nPSK=12345678\nBAND=5\nCHANNEL=auto\nCOUNTRY=CN\n')
-        self.assertEqual((cfg['hw_mode'], cfg['channel'], cfg['vht_oper_centr_freq_seg0_idx']), ('a', '40', '42'))
-        self.assertIn('using channel 40', err)
-        # none of them: 2.4 GHz
-        self.iw_list({c: 'no IR' for c in FIVE})
-        cfg, err = self.run_start('SSID=x\nPSK=12345678\nBAND=5\nCHANNEL=auto\nCOUNTRY=CN\n')
-        self.assertEqual((cfg['hw_mode'], cfg['channel']), ('g', '6'))
-        self.assertIn('falling back to 2.4 GHz', err)
-
-    def test_no_5ghz_country(self):
-        self.iw_list()
-        cfg, err = self.run_start('SSID=x\nPSK=12345678\nBAND=5\nCHANNEL=60\nCOUNTRY=00\n', FAKE_REG='00')
-        self.assertEqual((cfg['hw_mode'], cfg['channel']), ('g', '6'))
-        self.assertIn('no 5 GHz channel without DFS in country 00', err)
-
-    def test_2g_untouched(self):
-        self.iw_list()
-        cfg, err = self.run_start('SSID=x\nPSK=12345678\nBAND=2.4\nCHANNEL=11\nCOUNTRY=CN\n')
-        self.assertEqual((cfg['hw_mode'], cfg['channel'], cfg['ht_capab']), ('g', '11', '[SHORT-GI-20]'))
-        self.assertEqual(err, '')
-
-
 UCI = r'''
 [ "$1" = -q ] && shift
 case "$1" in
@@ -226,7 +124,6 @@ class OpenWrt(ShellTest):
         (self.root / 'etc' / 'mu300').mkdir(parents=True)
         (self.root / 'etc' / 'config').mkdir()
         (self.root / 'sys' / 'class' / 'ieee80211' / 'phy0').mkdir(parents=True)
-        (self.root / 'etc' / 'openwrt_release').write_text('DISTRIB_ID=OpenWrt\n')
         self.stub('uci', UCI)
         self.stub('wifi', 'echo "wifi $*" >> "$STUBLOG/wifi.log"')
         self.stub('sleep', 'exit 0')
@@ -241,49 +138,43 @@ class OpenWrt(ShellTest):
         p = self.tmp / 'uci.batch'
         return p.read_text() if p.exists() else ''
 
-    def config(self, shell, hotspot):
+    def config(self, shell, country=None):
         (self.root / 'etc' / 'mu300' / 'wifi-configured').unlink(missing_ok=True)
-        (self.root / 'etc' / 'mu300' / 'hotspot.conf').write_text(hotspot)
+        self.state(f'wireless.radio0.country={country}\n' if country else '')
         r = self.script(shell, BIN / 'openwrt-wifi-config', MU300_SYSROOT=self.root)
         self.assertEqual(r.returncode, 0, r.stderr)
         return r
 
     def test_first_config(self):
         for shell in self.each_shell():
-            self.state('')
-            r = self.config(shell, 'SSID=x\nPSK=12345678\nBAND=5\nCHANNEL=60\nCOUNTRY=CN\n')
+            r = self.config(shell, 'CN')
             b = self.batch()
+            self.assertIn("set wireless.radio0.band='5g'\n", b)
             self.assertIn("set wireless.radio0.channel='36'\n", b)
             self.assertIn("set wireless.radio0.htmode='VHT80'\n", b)
             self.assertIn("set wireless.radio0.channels='36 40 44 48 149 153 157 161 165'\n", b)
             self.assertIn("set wireless.radio0.acs_exclude_dfs='1'\n", b)
             self.assertIn("set wireless.radio0.country='CN'\n", b)
-            self.assertIn('channel 60 is a DFS channel', r.stderr)
+            self.assertRegex(b, r"set wireless.ap0.key='[A-HJ-NP-Za-km-z2-9]{12}'\n")
             self.assertIn('wireless configured: 5g channel 36', r.stdout)
             self.assertTrue((self.root / 'etc' / 'mu300' / 'wifi-configured').exists())
-            # auto: the default, silently; 165: 20 MHz; a country without 149
-            for conf, ch, ht, chans in (('CHANNEL=auto\nCOUNTRY=CN', '36', 'VHT80', None),
-                                        ('CHANNEL=165\nCOUNTRY=CN', '165', 'VHT20', None),
-                                        ('CHANNEL=149\nCOUNTRY=JP', '36', 'VHT80', '36 40 44 48'),
-                                        ('CHANNEL=auto\nCOUNTRY=BD', '149', 'VHT80', '149 153 157 161 165')):
-                self.state('')
-                self.config(shell, f'SSID=x\nPSK=12345678\nBAND=5\n{conf}\n')
+            # the country's default channel without DFS; a radio without a country is TR's
+            for cc, ch, ht, chans in (('JP', '36', 'VHT80', '36 40 44 48'),
+                                      ('BD', '149', 'VHT80', '149 153 157 161 165'),
+                                      (None, '36', 'VHT80', None)):
+                self.config(shell, cc)
                 b = self.batch()
-                self.assertIn(f"set wireless.radio0.channel='{ch}'\n", b, conf)
-                self.assertIn(f"set wireless.radio0.htmode='{ht}'\n", b, conf)
+                self.assertIn(f"set wireless.radio0.channel='{ch}'\n", b, cc)
+                self.assertIn(f"set wireless.radio0.htmode='{ht}'\n", b, cc)
+                self.assertIn(f"set wireless.radio0.country='{cc or 'TR'}'\n", b, cc)
                 if chans:
-                    self.assertIn(f"set wireless.radio0.channels='{chans}'\n", b, conf)
-            # 2.4 GHz: no 5 GHz channel list
-            self.state('')
-            self.config(shell, 'SSID=x\nPSK=12345678\nBAND=2.4\nCHANNEL=auto\nCOUNTRY=CN\n')
-            b = self.batch()
-            self.assertIn("set wireless.radio0.channel='6'\n", b)
-            self.assertIn('delete wireless.radio0.channels\n', b)
-            # a country with no 5 GHz channel without DFS: 2.4 GHz
-            self.state('')
-            r = self.config(shell, 'SSID=x\nPSK=12345678\nBAND=5\nCHANNEL=auto\nCOUNTRY=00\n')
+                    self.assertIn(f"set wireless.radio0.channels='{chans}'\n", b, cc)
+            # a country with no 5 GHz channel without DFS: 2.4 GHz, no 5 GHz channel list
+            r = self.config(shell, '00')
             self.assertIn("set wireless.radio0.band='2g'\n", self.batch())
             self.assertIn("set wireless.radio0.channel='6'\n", self.batch())
+            self.assertIn('delete wireless.radio0.channels\n', self.batch())
+            self.assertIn('no 5 GHz channel without DFS in country 00', r.stderr)
 
     def test_dfs_channel_from_luci_rewritten_at_boot(self):
         (self.root / 'etc' / 'mu300' / 'wifi-configured').write_text('')
@@ -341,9 +232,9 @@ class WifiScriptsPatch(unittest.TestCase):
         apply = 'patch --batch --fuzz=0 -d $R -p1 -i /in/wifi-scripts-no-dfs.patch'
         self.assertIn(apply, text)
         self.assertIn('grep -q "device_no_dfs(config);" $R/usr/share/ucode/wifi/hostapd.uc || {', text)
-        # in every OpenWrt system (outside the panel block), after the copy into $R, before the patch tool goes
+        # after the copy of the overlay into $R, before the panel's files and before the patch tool goes
         self.assertLess(text.index('cp -a /in/overlay/. $R/'), text.index(apply))
-        self.assertLess(text.index(apply), text.index('if [ -d /in/luci-plugin ]; then\n    [ -d /in/luci-overlay ]'))
+        self.assertLess(text.index(apply), text.index('cp -a /in/luci-overlay/. $R/'))
         self.assertLess(text.index(apply), text.index('apk del patch'))
 
     def test_patch(self):
@@ -463,70 +354,6 @@ done
             text, c = conf('no5g-60')
             self.assertEqual(c['channel'], '60')
             self.assertIn('no other 5 GHz channel is allowed', text)
-
-
-class HotspotVerify(ShellTest):
-    """hotspot-verify: a refused CMD_START_AP sends the hotspot to 2.4 GHz; a good start (the mainline driver prints no
-    answer for it) ends as soon as iw shows the access point's SSID instead of after 20 s (it held every boot)."""
-
-    def setUp(self):
-        super().setUp()
-        # Ubuntu's /bin/sh runs it (dash); busybox sh would run its own sleep and touch, not the stubs
-        self.shells = [s for s in self.shells if 'busybox' not in ' '.join(s)]
-        if not self.shells:
-            self.skipTest('no dash or bash')
-        self.stub('sleep', 'echo x >> "$STUBLOG/sleeps"')
-        self.stub('systemctl', 'echo "$*" >> "$STUBLOG/systemctl"')
-        self.stub('touch', 'exit 0')
-        self.stub('dmesg', 'cat "$STUBLOG/dmesg" 2>/dev/null; exit 0')
-        # iw: no SSID for the first FAKE_UP calls, then the access point's
-        self.stub('iw', 'n=$(cat "$STUBLOG/iwn" 2>/dev/null || echo 0); n=$((n + 1)); echo $n > "$STUBLOG/iwn"; '
-                        'echo "Interface wlan0"; [ $n -le ${FAKE_UP:-0} ] || printf "\tssid F50_2\n\ttype AP\n"')
-
-    def run_verify(self, shell, dmesg='', **env):
-        for f in ('sleeps', 'systemctl', 'iwn'):
-            (self.tmp / f).unlink(missing_ok=True)
-        (self.tmp / 'dmesg').write_text(dmesg)
-        env.setdefault('MAINPID', '')
-        r = self.script(shell, BIN / 'hotspot-verify', **env)
-        self.assertEqual(r.returncode, 0, r.stderr)
-        sleeps = len((self.tmp / 'sleeps').read_text().split()) if (self.tmp / 'sleeps').exists() else 0
-        sc = (self.tmp / 'systemctl').read_text() if (self.tmp / 'systemctl').exists() else ''
-        return sleeps, sc, r.stderr
-
-    def test_a_good_start_ends_when_the_ssid_is_up(self):
-        for shell in self.each_shell():
-            sleeps, sc, _ = self.run_verify(shell, FAKE_UP=3)
-            self.assertEqual(sleeps, 4)
-            self.assertEqual(sc, '')
-
-    def test_never_up_waits_its_20_seconds(self):
-        for shell in self.each_shell():
-            sleeps, sc, _ = self.run_verify(shell, FAKE_UP=1000)
-            self.assertEqual(sleeps, 40)
-            self.assertEqual(sc, '')
-
-    def test_a_refused_start_goes_to_2g(self):
-        line = '[   27.5] sprd-wlan: sc2355_rx_rsp_process ctx_id 0 recv rsp[CMD_START_AP] status[SPRD_CMD_STATUS_NOT_SUPPORT]\n'
-        for shell in self.each_shell():
-            # the refusal is printed before the access point shows up, or in the same moment
-            for up in (0, 1000):
-                sleeps, sc, err = self.run_verify(shell, dmesg=line, FAKE_UP=up)
-                self.assertIn('restart mu300-hotspot.service', sc)
-                self.assertIn('falling back to 2.4 GHz', err)
-                self.assertEqual(sleeps, 1)
-
-    @unittest.skipUnless(Path('/proc/self/comm').exists(), 'needs /proc')
-    def test_an_ssid_before_hostapd_runs_is_not_this_start(self):
-        # $MAINPID still hotspot-start (here: a process that is not hostapd): an SSID left from before does not count
-        p = subprocess.Popen(['sleep', '30'])
-        try:
-            for shell in self.each_shell():
-                sleeps, sc, _ = self.run_verify(shell, FAKE_UP=0, MAINPID=p.pid)
-                self.assertEqual(sleeps, 40)
-        finally:
-            p.kill()
-            p.wait()
 
 
 if __name__ == '__main__':

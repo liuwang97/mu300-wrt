@@ -1,4 +1,4 @@
-"""uci-defaults 92-mu300-uhttpd-key (FINDINGS 132): the TLS key pair the OpenWrt releases shipped goes, a key of the
+"""uci-defaults 92-mu300-uhttpd-key: the TLS key pair that published images shipped goes, a key of the
 user's stays. No real key is in the repository: the tests add the fingerprint of a scratch file to the list."""
 import hashlib
 import os
@@ -30,7 +30,7 @@ class ShippedList(unittest.TestCase):
         # both images of each release from v2026.10.13 (the first with a key) to v2026.10.16.1
         tags = ['v2026.10.%d' % n for n in range(13, 28)] + ['v2026.10.16.1']
         self.assertEqual({(t, f) for t in tags for f in ('openwrt', 'openwrt-luci')}, {(r[1], r[2]) for r in rows})
-        # v2026.10.16.1's plain OpenWrt key, as FINDINGS 132 quotes it (seen on F50-C and in the release tarball)
+        # v2026.10.16.1's plain OpenWrt key (the release tarball's)
         self.assertTrue(any(s.startswith('ad78a3f7') and t == 'v2026.10.16.1' and f == 'openwrt' for s, t, f in rows))
 
     def test_runs_at_every_boot_of_a_new_image_and_removes_itself(self):
@@ -49,13 +49,14 @@ class ImageHasNoKey(unittest.TestCase):
         self.assertIn('rm -f $R/etc/uhttpd.key $R/etc/uhttpd.crt\n'
                       '[ ! -e $R/etc/uhttpd.key ] || { echo "the image holds a TLS key" >&2; exit 1; }', owrt)
         # the build script is one single-quoted sh -c argument: no apostrophe may be in it
-        start = "mu300-$FLAVOUR-base:$VER /bin/sh -eu -c '"
+        start = "mu300-openwrt-base:$VER /bin/sh -eu -c '"
         body = owrt[owrt.index(start) + len(start):owrt.rindex("ls -la /out/$OUT'")]
         self.assertNotIn("'", body)
         self.assertIn('rm -f $R/etc/uhttpd.key', body)
         rel = (TOP / 'tools' / 'make-release.sh').read_text()
-        self.assertIn(r"-e '^etc/uhttpd\.key$'", rel)
-        self.assertTrue(re.search(r'^etc/uhttpd\.key$', 'etc/uhttpd.key'))
+        self.assertIn(r"-e '^etc/uhttpd\.(key|crt)$'", rel)
+        for f in ('etc/uhttpd.key', 'etc/uhttpd.crt'):
+            self.assertTrue(re.search(r'^etc/uhttpd\.(key|crt)$', f))
 
 
 class DropShipped(ShellTest):

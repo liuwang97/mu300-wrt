@@ -1,4 +1,4 @@
-"""SMS forwarding of the control panel (openwrt-luci): mu300-sms-forward queues the messages mu300-sms pools and sends
+"""SMS forwarding of the control panel: mu300-sms-forward queues the messages mu300-sms pools and sends
 them on to a webhook, a Telegram chat, an e-mail address (msmtp) and another phone; unisoc-modem/forward is the panel's
 adapter for its settings. The HTTP requests go to the ucode helper on stdin: here `ucode` is a stub that records what
 came on stdin and its arguments, and answers with what the test chose. mu300-sms and msmtp are stubs too.
@@ -16,9 +16,8 @@ import unittest
 from helpers import TOP, ShellTest
 from test_mu300dash_security import JSONFILTER
 
-FWD = TOP / 'rootfs' / 'overlay' / 'opt' / 'mu300' / 'bin' / 'mu300-sms-forward'
+FWD = TOP / 'openwrt' / 'opt' / 'mu300' / 'bin' / 'mu300-sms-forward'
 HTTP_UC = TOP / 'openwrt' / 'luci-overlay' / 'opt' / 'mu300' / 'lib' / 'sms-forward-http.uc'
-HTTP_SH = TOP / 'rootfs' / 'overlay' / 'opt' / 'mu300' / 'lib' / 'sms-forward-http.sh'
 ADAPTER = TOP / 'openwrt' / 'luci-app-mu300' / 'root' / 'usr' / 'libexec' / 'unisoc-modem' / 'forward'
 DASH = TOP / 'openwrt' / 'luci-app-mu300' / 'root' / 'usr' / 'libexec' / 'rpcd' / 'mu300dash'
 
@@ -812,42 +811,6 @@ class Forwarder(ShellTest):
             self.assertIn('not a directory of our own', r.stderr)
             self.assertEqual(list(other.iterdir()), [])
 
-    def test_ubuntu_sms_target_on_stdin_only(self):
-        # Ubuntu: no mu300-sms, the sms command's send --stdin; neither the number nor the text in its arguments
-        pool_msg(self.pool, 1, '+905551112233', 'Kod 4321')
-        self.stub('sms', 'printf "%s\\n" "$*" >> "$STUBLOG/ubsms-argv.log"; cat > "$STUBLOG/ubsms-stdin"; echo "sent (reference 3)"')
-        for shell in self.each_shell():
-            self.fresh()
-            (self.tmp / 'ubsms-argv.log').unlink(missing_ok=True)
-            self.write_conf(enabled=1, sms=1, sms_number='+905550000000', template='{text}')
-            self.fwd(shell, 'enqueue', '1', MU300_SMS_BIN=self.tmp / 'no-mu300-sms')
-            self.fwd(shell, 'run', MU300_SMS_BIN=self.tmp / 'no-mu300-sms')
-            self.assertEqual((self.tmp / 'ubsms-argv.log').read_text().splitlines(), ['send --stdin'])
-            self.assertEqual((self.tmp / 'ubsms-stdin').read_text(encoding='utf-8'), '+905550000000\nKod 4321')
-            self.assertEqual(self.log()[-1][3], 'sent')
-
-    def test_curl_helper_keeps_secrets_out_of_its_arguments(self):
-        # Ubuntu's HTTP client: curl gets the URL and the headers in its configuration on stdin, the body in a file
-        self.stub('curl', 'printf "%s\\n" "$*" >> "$STUBLOG/curl-argv.log"; cat > "$STUBLOG/curl-conf"; '
-                          'for a in "$@"; do :; done; f=$(sed -n \'s/^data-binary = "@\\(.*\\)"$/\\1/p\' "$STUBLOG/curl-conf"); '
-                          'cp "$f" "$STUBLOG/curl-body"; ls -ld "$(dirname "$f")" > "$STUBLOG/curl-dir"; printf 200')
-        req = 'https://api.example.com/bot123:SECRETtok/send?x=1\nAuthorization: Bearer hdrSECRET\nContent-Type: application/json\n\n{"t":"msg"}'
-        for shell in self.each_shell():
-            r = subprocess.run(shell + [str(HTTP_SH)], input=req, capture_output=True, text=True,
-                               env=self.env(MU300_FWD_TMP=self.tmp), timeout=30)
-            self.assertEqual(r.stdout, 'status 200\n', r.stderr)
-            argv = (self.tmp / 'curl-argv.log').read_text()
-            self.assertEqual(argv.splitlines()[-1], '-K -')
-            for secret in ('SECRETtok', 'hdrSECRET', 'msg'):
-                self.assertNotIn(secret, argv)
-            conf = (self.tmp / 'curl-conf').read_text()
-            self.assertIn('url = "https://api.example.com/bot123:SECRETtok/send?x=1"', conf)
-            self.assertIn('header = "Authorization: Bearer hdrSECRET"', conf)
-            self.assertEqual((self.tmp / 'curl-body').read_text(), '{"t":"msg"}')
-            self.assertTrue((self.tmp / 'curl-dir').read_text().startswith('drwx------'))
-            # the request's directory is gone afterwards
-            self.assertEqual([d for d in self.tmp.iterdir() if d.name.startswith('http.')], [])
-
     def test_sms_target_retries_a_modem_refusal(self):
         pool_msg(self.pool, 1, '+905551112233', 'x')
         for shell in self.each_shell():
@@ -1025,7 +988,7 @@ class Adapter(ShellTest):
                                             'detail': 'HTTP 4"01'})
 
     def test_check_mode_checks_everything_and_writes_nothing(self):
-        # mu300-backup's check of a restore (FINDINGS 155): the same rules, no file written
+        # mu300-backup's check of a restore: the same rules, no file written
         for shell in self.each_shell():
             self.conf.parent.mkdir(exist_ok=True)
             self.conf.unlink(missing_ok=True)

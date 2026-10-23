@@ -2,7 +2,7 @@
 
 A profile is a governor and a per-cluster scaling_min/max inside the hardware frequency table; the tool never
 changes voltage and never touches the kernel thermal trips. These tests check the bounds (nothing is set outside
-cpuinfo_min_freq..cpuinfo_max_freq), the governor fallback, the ceiling file thermal-guard reads, and the JSON."""
+cpuinfo_min_freq..cpuinfo_max_freq), the governor fallback, the ceiling file the thermal guard reads, and the JSON."""
 import json
 import unittest
 
@@ -99,7 +99,7 @@ class Profiles(CpuTest):
             self.assertFalse(self.conf.exists())
 
     def test_governor_falls_back_when_the_wanted_one_is_absent(self):
-        # a 5.4-style policy without schedutil: balanced must still set a real governor, not an empty string
+        # a policy without schedutil: balanced must still set a real governor, not an empty string
         self.policy('policy0', '0 1 2 3', [614400, 1200000, 2002000], govs='ondemand userspace performance', gov='ondemand')
         for shell in self.each_shell():
             self.cpu(shell, 'profile balanced')
@@ -228,7 +228,7 @@ class Json(CpuTest):
 
 
 class CoresAndLatency(CpuTest):
-    """FINDINGS 200 (after kanoqwq's cpu-cores and mu300-lowlatency): a core taken offline is saved and taken offline
+    """After kanoqwq's cpu-cores and mu300-lowlatency: a core taken offline is saved and taken offline
     again by apply; CPU0 never; CPU0's idle states off only when asked (low latency is off by default)."""
 
     def cores(self, n=8):

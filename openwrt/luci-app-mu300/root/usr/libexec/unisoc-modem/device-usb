@@ -12,7 +12,7 @@ LIB=${0%/*}/../../share/unisoc-modem/lib.sh
 
 CFG=unisoc_modem.usb
 ROLE_FILE=${MU300_USB_ROLE_FILE:-/sys/class/usb_role/25100000.dwc3-role-switch/role}
-# The USB network mode for the next boot: ncm, ecm or rndis, alone on its line. kernel/initramfs/init reads it from the system
+# The USB network mode for the next boot: ncm, ecm or rndis, alone on its line. the initramfs init reads it from the system
 # it boots and rebinds the gadget once when it differs (D12), then leaves APPLIED_FILE behind (K8).
 BOOT_FILE=${MU300_USB_NET_FILE:-/etc/mu300/usb-net}
 APPLIED_FILE=${MU300_USB_APPLIED_FILE:-/run/mu300/usb-net-applied}
@@ -36,7 +36,7 @@ role_command() {
     if [ -n "$cmd" ]; then
         [ -x "$cmd" ] || error 'USB role adapter is not executable'
         "$cmd" "$1" || error 'USB role adapter failed'
-    elif case $(device_name) in f50|v50) true ;; *) false ;; esac; then   # (the V50: the F50's role file, kano's port)
+    elif [ "$(device_name)" = f50 ]; then
         [ -w "$ROLE_FILE" ] || error 'USB role switch is unavailable'
         printf '%s\n' "$1" > "$ROLE_FILE" || error 'USB role switch failed'
     elif command -v mu300-usb >/dev/null 2>&1; then
@@ -177,7 +177,7 @@ case ${1:-} in
         printf '{"ok":1}\n'
         ;;
     boot)
-        # kernel/initramfs/init applied the selected gadget mode before switch_root (one
+        # the initramfs init applied the selected gadget mode before switch_root (one
         # rebind when it differed). A one-shot mode is consumed only once init
         # says it was in effect for this boot.
         if [ "$(get role_auto)" = 1 ] && [ "$(get net_auto)" = 1 ]; then

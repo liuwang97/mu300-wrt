@@ -1,8 +1,8 @@
 #!/bin/sh
-# OpenWrt only: the hotspot is WPA2-PSK, never WPA3/SAE, on every device of this project (ZTE F50, U30 Air, V50: the
-# SC2355 Wi-Fi). The U30 Air's firmware SAE offload is disabled (docs/U30AIR-SAE.md, FINDINGS 80): the PMK record the
-# firmware hands back came in the same element list as the client's own association request, with no boundary, so a
-# client could forge it and join without the password. Plain hostapd SAE never worked on this chip either.
+# The hotspot is WPA2-PSK, never WPA3/SAE, on every device of this project (ZTE F50, U30 Air: the SC2355 Wi-Fi).
+# The U30 Air's firmware SAE offload is disabled: the PMK record the firmware hands back comes in the same element
+# list as the client's own association request, with no boundary, so a client could forge it and join without the
+# password. Plain hostapd SAE never worked on this chip either.
 #   openwrt-wifi-wpa2-only migrate   at boot (mu300-hw, before its "wifi down; wifi up"): every access point that asks
 #                                    for SAE (encryption sae, sae-mixed, sae-compat, psk3, psk3-mixed, or the offload's
 #                                    hostapd option u30_sae_offload) becomes WPA2-PSK (CCMP) with the same password.
@@ -14,7 +14,6 @@
 # Nothing is done, asked or written when no access point asks for SAE. The password is never printed.
 # (MU300_SYSROOT: for tests/)
 R=${MU300_SYSROOT:-}
-[ -f "$R/etc/openwrt_release" ] || exit 0
 NOTICE=$R/etc/mu300/wpa3-disabled
 SAVED=$R/etc/mu300/wireless.before-wpa2
 
@@ -76,12 +75,12 @@ migrated=$(echo $migrated) down=$(echo $down)
 
 if [ -n "$down" ]; then
 	state=down
-	msg="WPA3 (SAE) on the hotspot is disabled for security (FINDINGS 80) and the switch to WPA2 failed for $down (no usable WPA2 password, or the change was not saved): that access point is off, not open. Set a WPA2 password (8-63 characters) in Network > Wireless and switch it on."
+	msg="WPA3 (SAE) on the hotspot is disabled for security (a client could join without the password) and the switch to WPA2 failed for $down (no usable WPA2 password, or the change was not saved): that access point is off, not open. Set a WPA2 password (8-63 characters) in Network > Wireless and switch it on."
 	[ -z "$migrated" ] || msg="$msg $migrated is back on WPA2-PSK with the same password."
 	prio=daemon.err
 else
 	state=migrated
-	msg="WPA3 (SAE) on the hotspot is disabled for security (FINDINGS 80): $migrated is now WPA2-PSK (CCMP) with the same password. The settings it had are in /etc/mu300/wireless.before-wpa2."
+	msg="WPA3 (SAE) on the hotspot is disabled for security (a client could join without the password): $migrated is now WPA2-PSK (CCMP) with the same password. The settings it had are in /etc/mu300/wireless.before-wpa2."
 	prio=daemon.warn
 fi
 echo "$msg" >&2

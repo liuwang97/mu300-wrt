@@ -1,5 +1,5 @@
 #!/bin/sh
-# The modem of a U30 Air that LK started for its charger (FINDINGS 196; kanoqwq 85d72fa9, issue #253).
+# The modem of a U30 Air that LK started for its charger (kanoqwq 85d72fa9, issue #253).
 #   mu300-modem-coldboot ANDROID-ROOT VENDOR-CMDLINE
 # prints the modem_control to run, as a path inside the Android chroot, and nothing when it is the stock one.
 #
@@ -11,8 +11,8 @@
 # modem_control (the stock one, by its SHA-256) is changed in two instructions: the PM-running result is ignored
 # (0xcf0c mov w19,w0 -> mov w19,wzr) and the load asks for the CP and CH images alone (0xcf50 mov w0,63 -> mov w0,34),
 # so the running PM is left alone. Its SHA-256 is checked again. Nothing on the disk changes; no AT, no NV.
-# Every other boot, board, loader or failure: the stock modem_control as before (this never stops the modem from
-# being started; the worst case is the old behaviour).
+# Every other boot, board, loader or failure: the stock modem_control (this never stops the modem from being
+# started; the worst case is a charger boot without a CP).
 # OFF by default: kanoqwq checked the loader and the copy, but the charger-boot start itself has not been run on a
 # device yet. On with: touch /etc/mu300/modem-coldboot (off again: rm it).
 set -u
@@ -29,7 +29,7 @@ say() {
     { echo "mu300-modem-coldboot: $*" > "${MU300_KMSG:-/dev/kmsg}"; } 2>/dev/null || true
 }
 [ -n "$A" ] && [ -r "$ARGS" ] || exit 0
-# opt-in until it has been run on a device (FINDINGS 196)
+# opt-in until it has been run on a device
 [ -e "$R/etc/mu300/modem-coldboot" ] || exit 0
 [ "$("$BIN/mu300-device" 2>/dev/null)" = u30air ] || exit 0
 has() { tr '\000' ' ' < "$ARGS" | grep -Eq "(^|[[:space:]])$1([[:space:]]|\$)"; }

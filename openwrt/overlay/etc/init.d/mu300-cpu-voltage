@@ -1,5 +1,5 @@
 #!/bin/sh /etc/rc.common
-# The CPU voltage offset (EXPERIMENTAL; mu300-cpu voltage, kernel/initramfs/init cpu-voltage, docs/FINDINGS.md 133): the good mark
+# The CPU voltage offset (EXPERIMENTAL; mu300-cpu voltage, applied by the initramfs, docs/contract.md): the good mark
 # 10 minutes after boot, and at a clean shutdown or reboot (the K link: rcS K shutdown, never a plain "stop") the
 # armed mark goes. A boot that ends any other way leaves the mark, and the initramfs drops the offset. STOP=10 runs
 # before umount.

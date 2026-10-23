@@ -20,8 +20,8 @@ set -euo pipefail
 export PATH="$PATH:/opt/mu300/busybox-bin"
 umask 077   # the logs and markers under /run/mu300 are root's alone
 DEVICE=${MU300_DEVICE_CMD:-/opt/mu300/bin/mu300-device}
-[ -e /etc/openwrt_release ] && [ "$("$DEVICE" 2>/dev/null)" = u30air ] || {
-    echo 'Native SIM startup requires U30 Air on OpenWrt' >&2
+[ "$("$DEVICE" 2>/dev/null)" = u30air ] || {
+    echo 'Native SIM startup requires a U30 Air' >&2
     exit 1
 }
 PENDING=/etc/mu300-sim-pending
@@ -39,7 +39,7 @@ nap() { "${MU300_BUSYBOX:-/opt/mu300/bin/busybox}" sleep "$1" 2>/dev/null || sle
 SLOT=$(cat /run/mu300/sim-slot 2>/dev/null || echo 1)
 case "$SLOT" in 0|1) ;; *) SLOT=1 ;; esac
 say() { logger -t mu300-sim "$*" 2>/dev/null || true; }
-# The chosen card's radio is switched off in its settings (mu300-sim-radio, FINDINGS 185): no cold start now, and no
+# The chosen card's radio is switched off in its settings (mu300-sim-radio): no cold start now, and no
 # verdict on the card. The boot is the one the user asked for, so the pending marker goes (left, it would make the next
 # boot a SIM1 boot), and the cold start runs when the radio is switched on (mobile-data rf-apply runs this script
 # again with --deferred: the same cold start, without the first-data trial).
@@ -170,7 +170,7 @@ while :; do
 done
 # No verdict on a card whose data nobody was trying to bring up: taken down by hand, switched off in the settings,
 # suspended by mu300-power, in the middle of a live switch, or held back because it is roaming with data roaming
-# off (mobile-data, FINDINGS 120: registered, and no data on purpose).
+# off (mobile-data: registered, and no data on purpose).
 if sim_wan_held_down || [[ -s /run/mu300-mobile-data.suspend || -e /run/mu300/sim-switching ]] ||
    [[ -e /run/mu300/data-roaming-held ]] ||
    [[ "$(uci -q get network.wan.auto 2>/dev/null || true)" == 0 || "$(uci -q get network.wan.disabled 2>/dev/null || true)" == 1 ]]; then

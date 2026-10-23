@@ -1,10 +1,9 @@
 // mu300.dash -- the home page's data, without starting a process.
 //
-// The status snapshot (info) is what the shell dashboard-info used to print, field for field: the same keys, the same
-// types, the same rules (each one is commented where it is computed). The shell version started 700 to 1000
-// processes per snapshot (121 command substitutions, each a fork, most of them a cat, awk or sed besides): about
-// 0.56 CPU seconds a call on the U30 Air, every 1.5 s while the home page was open, on top of the cellular collector
-// it kicked each time. Here every file is read in the calling process, ubus, uci, the station table (nl80211) and the
+// The status snapshot (info): the keys, their types and the rules of each (commented where it is computed). Built by a
+// shell it would start 700 to 1000 processes per snapshot (a fork for each command substitution, most of them a cat,
+// awk or sed besides): about 0.56 CPU seconds a call on the U30 Air, every 1.5 s while the home page is open. Here
+// every file is read in the calling process, ubus, uci, the station table (nl80211) and the
 // addresses (rtnl) are asked through ucode's own modules, and the few answers that still need a program (the SIM
 // selector, the device name) are kept: the SIM selector's for a few seconds, the device name for good.
 //
@@ -169,12 +168,11 @@ function uget(cur, conf, section, option) {
 // ------------------------------------------------------------ the SIM selector
 // mu300-sim active and status --json: the selector's own account (its U30 backend reads the modem's state files and
 // takes a lock: ~70 ms of CPU for the two on the U30 Air). The plugin keeps it while the files it is made of are
-// unchanged - the boot's slot (/run/mu300/sim-slot), the saved choice (uci network, /etc/mu300/sim-slot, the old
-// /etc/mu300-sim-slot, the V50's card under /etc/mu300) and the switch markers a SIM switch leaves in /run/mu300 -
-// and SIM_MAXAGE seconds at most. The program keeps nothing (one run, as before).
+// unchanged - the boot's slot (/run/mu300/sim-slot), the saved choice (uci network) and the switch markers a SIM
+// switch leaves in /run/mu300 -
+// and SIM_MAXAGE seconds at most. The program keeps nothing (one run).
 const SIM_MAXAGE = 300;
-const SIM_FILES = [ '/run/mu300/sim-slot', '/run/mu300', '/etc/config/network', '/etc/mu300/sim-slot', '/etc/mu300-sim-slot',
-	'/etc/mu300' ];
+const SIM_FILES = [ '/run/mu300/sim-slot', '/run/mu300', '/etc/config/network', '/etc/mu300' ];
 let sim_cache = null;
 function sim_signature() {
 	return join(':', map(SIM_FILES, (p) => { let s = stat(p); return s ? s.mtime + '/' + s.size : '-'; }));
@@ -229,7 +227,7 @@ function sim_n(text, key) {
 }
 
 // --------------------------------------------------------------- device name
-// mu300-device (its own rules for the V50, which reports itself as an F50 in some boots); asked once
+// mu300-device, asked once
 let device_cache = null;
 function device_name() {
 	if (device_cache == null) {
@@ -294,23 +292,15 @@ function power_info(dev) {
 	let psy = env('MU300_POWER_SUPPLY_DIR', '/sys/class/power_supply');
 	let out = { present: 0, capacity: null, status: null, volt: null, ua: null, w: null, usb: null,
 		in_volt: null, in_ua: null, in_w: null };
-	// only the U30 Air has a battery (the F50 and the V50 have none): under mainline the F50's fuel gauge still
-	// appears, with made-up values, so it reports no battery and the page hides the tile
-	if (dev == 'f50' || dev == 'v50')
+	// only the U30 Air has a battery (the F50 has none): the F50's PMIC fuel gauge still appears, with made-up
+	// values, so it reports no battery and the page hides the tile
+	if (dev == 'f50')
 		return out;
 	let all = glob(psy + '/*') ?? [];
 	let dir = null;
-	for (let d in [ psy + '/battery', psy + '/sc27xx-fgu', ...all ]) {
-		if (!is_dir(d))
-			continue;
-		if (rd(d + '/present') == '0')
-			continue;
-		let base = replace(d, /.*\//, '');
-		if (base == 'battery' || base == 'sc27xx-fgu') {
-			if (!readable(d + '/capacity') && rd(d + '/type') != 'Battery')
-				continue;
-		}
-		else if (rd(d + '/type') != 'Battery')
+	// the PMIC's fuel gauge (sc27xx-fgu) first, else the first other supply of type Battery
+	for (let d in [ psy + '/sc27xx-fgu', ...all ]) {
+		if (!is_dir(d) || rd(d + '/present') == '0' || rd(d + '/type') != 'Battery')
 			continue;
 		dir = d;
 		break;
@@ -532,9 +522,6 @@ function info(opts) {
 		let a = sim_n(st.status, 'active'), w = sim_n(st.status, 'default'), s1 = sim_n(st.status, 'slot1_supported');
 		if (a != null && w != null && s1 != null && match(a + w + s1, /^[12][12][01]$/)) {
 			sim_json = { slot: +a - 1, wanted: +w - 1, slot1_supported: +s1 };
-			// the ZTE V50 (FINDINGS 204): slot 0 is built-in SIM 1 or the external SIM, slot 1 built-in SIM 2 or 3
-			if (index(st.status, '"v50":{') >= 0)
-				sim_json.v50 = 1;
 		}
 	}
 	let slot_n = match('' + sim_slot, /^[0-9]+$/) ? +sim_slot : 0;
@@ -712,7 +699,7 @@ function info(opts) {
 	let lan_ip = memo(opts, 'inet:' + lan_device, 5, () => addresses(lan_device, 'inet'))[0];
 
 	// ---------------------------------------------------------------- modem/path
-	// the liveness rule mu300-atd uses: the URC log on nr0 is written to as long as the modem runs
+	// the URC log on nr0 is written to as long as the modem runs: its age says whether the modem is alive
 	let urclog = '/run/mu300-at/urc/stty_nr' + (slot_n * 3) + '.log';
 	let ust = stat(urclog);
 	let modem_alive = (ust && ust.type == 'file' && NOW - ust.mtime < 240) ? 1 : 0;
@@ -720,7 +707,7 @@ function info(opts) {
 	if (modem_alive != 1)
 		modem_alive = atd_ok;
 	let data_paused = exists('/run/mu300-mobile-data-down') ? 1 : 0;
-	// tracked connections: the kernel's counter (mainline has no /proc/net/nf_conntrack), the table as fallback, null
+	// tracked connections: the kernel's counter (this kernel has no /proc/net/nf_conntrack), the table as fallback, null
 	// when neither can be read
 	let conns = null;
 	let counter = env('MU300_CONNTRACK_COUNT', '/proc/sys/net/netfilter/nf_conntrack_count');
@@ -769,7 +756,7 @@ function info(opts) {
 	let vpn_enabled = vpn.enabled, vpn_engine = vpn.engine, vpn_up = vpn.up, vpn_orphaned = vpn.orphaned;
 	let cap_vpn = vpn.cap_vpn, cap_dualboot = vpn.cap_dualboot, boot_lock = vpn.boot_lock;
 
-	// a newer release: the note mu300-update keeps (only read here); its tag must be a release tag (FINDINGS 125)
+	// a newer release: the note mu300-update keeps (only read here); its tag must be a release tag (vYYYY.MM.DD or vYYYY.MM.DD.N)
 	let notes = memo(opts, 'notes', 10, () => {
 		let update_tag = '';
 		for (let l in split(readfile(env('MU300_NOTICE', '/run/mu300/update-available')) ?? '', '\n')) {
@@ -868,7 +855,7 @@ function collector_alive(lock) {
 	if (cmd == null)
 		return false;
 	cmd = replace(cmd, /\0/g, ' ');
-	// the collector program, or the modem daemon running a round of its own (FINDINGS 216)
+	// the collector program, or the modem daemon running a round of its own
 	return index(cmd, '/unisoc-modem/cell') >= 0 || index(cmd, 'mu300-modemd') >= 0;
 }
 
@@ -903,8 +890,8 @@ function collector(dash, dir, opts) {
 }
 
 // kick(dash, dir, opts, mode): a background round. The modem daemon runs it in its own process when it is there
-// (ubus mu300.modem cell, FINDINGS 216: no process, no fork, the commands straight to its channels); else the
-// collector program starts, detached, as before.
+// (ubus mu300.modem cell: no process, no fork, the commands straight to its channels); else the
+// collector program starts, detached.
 function kick(dash, dir, opts, mode) {
 	let r = ubus_call('mu300.modem', 'cell', { mode: mode });
 	if (r != null && (r.started || r.busy))

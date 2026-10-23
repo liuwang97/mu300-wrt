@@ -12,7 +12,7 @@
 #
 # KIND / VALUE:
 #   mode  auto | auto152 | 4g | sa | nsa   network mode lock (SPTESTMODE + SP5GRAN); auto152 is the automatic
-#                                       mode 152 instead of 134 (no 2G, from kanoqwq's fork; FINDINGS 198)
+#                                       mode 152 instead of 134 (no 2G, from kanoqwq's fork)
 #   endc  on | off                      EN-DC / NSA anchor permission (SPENDC; note OFF is value 2)
 #   lte   "1,3,5" or ""                 LTE band lock (SPLBAND); empty = automatic
 #   nr    "78,41" or ""                 NR band lock (SPLBAND); empty = automatic
@@ -271,7 +271,7 @@ do_get() {
 sfun_restart() {
     local phase=${1:-late}
     # the SIM's radio is switched off in its settings: the stack is not restarted (that would switch the radio on);
-    # the setting is in the modem and takes effect when the radio is switched on (FINDINGS 185)
+    # the setting is in the modem and takes effect when the radio is switched on
     if ! rf_allowed; then
         say "the radio of this SIM is switched off in its settings: no stack restart, the setting applies when it is on"
         return 0

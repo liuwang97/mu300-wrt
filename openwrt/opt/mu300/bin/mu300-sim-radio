@@ -1,5 +1,5 @@
 #!/bin/sh
-# Each SIM's radio on or off, kept across reboots (Ubuntu and OpenWrt; F50, U30 Air). docs/FINDINGS.md 185; after
+# Each SIM's radio on or off, kept across reboots (F50, U30 Air); after
 # kanoqwq's mu300-sim-radio and mu300-radio-allowed (his fork's unpublished image), rewritten for this tree.
 #
 #   mu300-sim-radio status [--json]        the setting of both cards, the card in use, whether a change is running
@@ -8,17 +8,17 @@
 #                                          data follow at once (mobile-data rf-apply). "all off" is the persistent
 #                                          airplane mode: no card's radio comes on, at boot or later, until "on".
 #
-# The setting is /etc/mu300/sim-radio, one line "<slot 0> <slot 1>", 1 on and 0 off. No file is "1 1": both on, as
-# every release before. A line that is not one of the four is read as "1 1" and said so on stderr: a broken file must
-# not take the device off the network for good (bootability over lockdown; it is the user's own file).
+# The setting is /etc/mu300/sim-radio, one line "<slot 0> <slot 1>", 1 on and 0 off. No file is "1 1": both on. A
+# line that is not one of the four is read as "1 1" and said so on stderr: a broken file must not take the
+# device off the network for good (bootability over lockdown; it is the user's own file).
 #
 # Only the card in use has a live protocol stack here (the F50 picks its card at boot; the U30 Air switches one at a
 # time): the other card's radio is off anyway, and its setting is what decides whether it may come on - at its boot,
 # its cold start, or a live switch to it, which is refused while it is off. Every program that brings a radio up asks
 # `allowed` first: mobile-data (the dial, the early warm-up, the watchdog, mu300-power's resume, the modem reset), the
 # U30 Air's cold start and live switch, the panel's lock apply. Off is AT+SFUN=5 on that card's own channel, as the
-# vendor RIL does (the SIM stays powered; CFUN reads 0 or 2; FINDINGS 202); a radio that never came on at this boot is
-# left at its cold CFUN 0.
+# vendor RIL does (the SIM stays powered; CFUN reads 0 or 2, which the stock RIL reads as off); a radio that never
+# came on at this boot is left at its cold CFUN 0.
 # MU300_SIM_RADIO (the file), MU300_SIM_BIN, MU300_MOBILE_DATA, MU300_RUN: the tests.
 set -u
 export PATH="$PATH:/opt/mu300/bin:/opt/mu300/busybox-bin:/usr/sbin:/sbin"

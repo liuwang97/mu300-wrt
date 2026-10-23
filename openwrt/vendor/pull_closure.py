@@ -68,7 +68,7 @@ def locate(libs):
 
 
 # A binary read must not go through `adb exec-out "su -c ..."`: on some devices su gives the command a pty
-# whose ONLCR rewrites every LF as CRLF, and the file arrives inflated and unparsable (issue #2).
+# whose ONLCR rewrites every LF as CRLF, and the file arrives inflated and unparsable.
 def adb_pull_file(path):
     adb_shell(f"su -c 'cat {path} > {DEV}'")
     if WORK.exists():

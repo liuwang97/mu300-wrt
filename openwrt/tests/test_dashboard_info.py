@@ -4,10 +4,10 @@
   before them), a station without metrics still counts, the DHCP name and address come from dnsmasq's lower-case
   leases file and its "*" is no name.
 - DNS: the active servers of both data interfaces, from ubus's multi-line JSON, each once, never inactive ones.
-- Connections: the kernel's nf_conntrack_count (mainline has no /proc/net/nf_conntrack), the table as fallback,
+- Connections: the kernel's nf_conntrack_count (this kernel has no /proc/net/nf_conntrack), the table as fallback,
   null when neither can be read.
 
-The SIM's own number (cell, the collector; home.js, the row; FINDINGS 49, after kanoqwq@0d93695): AT+CNUM on full
+The SIM's own number (cell, the collector; home.js, the row; after kanoqwq@0d93695): AT+CNUM on full
 rounds only, the IMS public identity (AT+SPPAURI?) when the SIM has none, nothing when neither has one; never in
 the fast tier, never on flash, never in a log."""
 import json
@@ -161,7 +161,7 @@ class Info(ShellTest):
             self.assertEqual(self.info(shell)['wan']['dns'], '10.0.0.1, 10.0.0.2, 2001:db8::53')
 
     def test_data_roaming(self):
-        """FINDINGS 120: the card's setting (unset or not a "no": allowed, as the dial reads it) and the hold."""
+        """Data roaming: the card's setting (unset or not a "no": allowed, as the dial reads it) and the hold."""
         held = self.tmp / 'held'
         for shell in self.each_shell():
             held.unlink(missing_ok=True)
@@ -397,9 +397,8 @@ esac""")
 
 
 class IdentityCache(ShellTest):
-    """FINDINGS 174: the 6 h identity cache (sim.json, on flash) holds a complete identity only. A round where the modem
-    was not ready (AT+CGSN timed out while AT+CCID answered) used to cache imei:null for 6 h. Now a partial read is
-    shown, kept in the runtime directory for a minute and asked again; it never replaces a complete cache. ICCIDs with
+    """The 6 h identity cache (sim.json, on flash) holds a complete identity only: a round where the modem was not
+    ready (AT+CGSN timed out while AT+CCID answered) must not cache imei:null for 6 h. A partial read is shown, kept in the runtime directory for a minute and asked again; it never replaces a complete cache. ICCIDs with
     letters (A-F: some eSIM profiles and operators) are kept, the F that pads a 19-digit one is dropped."""
 
     IMEI = '867530012345678'

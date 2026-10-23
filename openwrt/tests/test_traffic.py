@@ -32,7 +32,7 @@ class TrafficBase(ShellTest):
         (self.root / 'run/mu300').mkdir(parents=True)
         self.store = self.root / 'mnt/mu300-disk/.mu300/traffic'
         self.stub('logger', 'shift 2; echo "$*" >> "$STUBLOG/log"')
-        for c in ('ifdown', 'ifup', 'systemctl'):
+        for c in ('ifdown', 'ifup'):
             self.stub(c, f'echo "{c} $*" >> "$STUBLOG/calls"')
         self.synced(True)
         self.now = at(2026, 10, 10, 12)
@@ -339,7 +339,6 @@ class Cap(TrafficBase):
     def setUp(self):
         super().setUp()
         (self.root / 'etc').mkdir()
-        (self.root / 'etc/openwrt_release').write_text("DISTRIB_ID='OpenWrt'\n")
 
     def calls(self):
         p = self.tmp / 'calls'
@@ -432,17 +431,6 @@ class Cap(TrafficBase):
             self.round(shell, 5000, 160)
             self.assertEqual(self.view(shell, self.now + 160)['cap']['level'], 'over')
             self.assertEqual(self.calls(), [])
-
-    def test_ubuntu_stops_the_service(self):
-        (self.root / 'etc/openwrt_release').unlink()
-        for shell in self.each_shell():
-            self.fresh()
-            (self.root / 'run/mu300-mobile-data-down').unlink(missing_ok=True)
-            self.set(shell, 'cap', '1000')
-            self.set(shell, 'cut', 'on')
-            self.round(shell, 0, 100)
-            self.round(shell, 2000, 160)
-            self.assertEqual(self.calls(), ['systemctl stop mu300-mobile-data.service'])
 
     def test_text_view(self):
         for shell in self.each_shell():

@@ -8,8 +8,7 @@
 #
 # It detaches itself on purpose: unbinding the gadget kills the ACM console (and the SSH session over ECM) that
 # this was most likely started from, and a rebind that never runs leaves the device with no USB at all.
-# --fast-run / --ready (K67, ported from the kanoqwq fork, 4e70d02 and cd4fb28): the same rebind in about 100 ms,
-# for use once the LAN is up (OpenWrt's mu300-post).
+# --fast-run / --ready: the same rebind in about 100 ms, for use once the LAN is up (mu300-post).
 set -u
 export PATH="$PATH:/opt/mu300/busybox-bin:/usr/sbin:/sbin"
 G=${MU300_GADGET:-/sys/kernel/config/usb_gadget/linux}

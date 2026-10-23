@@ -1,8 +1,7 @@
-"""An update writes only what changed (docs/FINDINGS.md 131): mu300-carry same, tarfilter and tarlink
-(openwrt/src/carry/mu300-carry.c, built here), mu300-update's delta block (the plan, the room, the unpack, a run that is cut
-off), apply_one and the installers' loop (tools/android-install.sh) with an image that brings it, the previous system
-kept for a rollback whole after the update and after what the new system does to its files, and the Magisk switch
-module the computer's installer puts on the device."""
+"""An update writes only what changed: mu300-carry same, tarfilter and tarlink (openwrt/src/carry/mu300-carry.c, built
+here), mu300-update's delta block (the plan, the room, the unpack, a run that is cut off), apply_one with an image that
+brings it, and the previous system kept for a rollback whole after the update and after what the new system does to its
+files."""
 import gzip
 import io
 import os
@@ -112,7 +111,7 @@ def image(path, spec, tmp, tag, parts=True, fmt=tarfile.GNU_FORMAT):
             (root / f).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy(src, root / f)
             (root / f).chmod(0o755)
-    m = carry('manifest', root, 'ubuntu-24.04', tag)
+    m = carry('manifest', root, 'openwrt-luci', tag)
     assert m.returncode == 0, m.stderr
     (root / 'etc/mu300/image-manifest.gz').write_bytes(gzip.compress(m.stdout.encode()))
     with tarfile.open(path, 'w:gz', format=fmt) as t:
@@ -271,7 +270,7 @@ class Helper(unittest.TestCase):
         self.assertEqual(inode_shared(new, old), {'usr/bin/hard1', 'usr/bin/hard2'})
 
     def test_every_binary_and_never_text(self):
-        # "*": the installers' pack of the device's own files - every binary the old system has as it is, no text
+        # "*": a pack of the device's own files - every binary the old system has as it is, no text
         spec = {'lib/firmware/a.bin': ('f', elf('fw'), 0o644), 'lib/firmware/b.txt': ('f', 'text\n' * 300, 0o644),
                 'lib/firmware/c.bin': ('f', elf('changed'), 0o644)}
         old = build(self.tmp / 'old', dict(spec, **{'lib/firmware/c.bin': ('f', elf('other!!'), 0o644)}))
@@ -330,10 +329,10 @@ class Block(ShellTest):
         shutil.rmtree(self.disk, ignore_errors=True)
         (self.disk / '.mu300-update').mkdir(parents=True)
         v1 = image(self.tmp / 'v1.tar.gz', V1, self.tmp, 'v1')
-        self.old = untar(v1, self.disk / 'ubuntu')
+        self.old = untar(v1, self.disk / 'openwrt-luci')
         # the user's own: a file in /etc and data, as an update carries them
         build(self.old, {'etc/mine.conf': ('f', 'mine\n', 0o600), 'var/lib/app/db': ('f', elf('db'), 0o644)})
-        image(self.disk / '.mu300-update/mu300-ubuntu-rootfs.tar.gz', new, self.tmp, 'v2', parts=parts)
+        image(self.disk / '.mu300-update/mu300-openwrt-luci-rootfs.tar.gz', new, self.tmp, 'v2', parts=parts)
 
     def up(self, shell, code, **env):
         e = dict(MU300_LIB=1, MU300_DISK=self.disk, MU300_BIN=BIN, MU300_SYSROOT=self.root)
@@ -345,8 +344,8 @@ class Block(ShellTest):
             self.fresh()
             w = self.tmp / 'w'
             shutil.rmtree(w, ignore_errors=True)
-            r = self.up(shell, f'delta_tools "$MU300_DISK/.mu300-update/mu300-ubuntu-rootfs.tar.gz" "{w}" && delta_ready "{w}" ubuntu && '
-                               f'delta_plan "$MU300_DISK/ubuntu" "{w}/lines" "{w}" "{w}/carry"')
+            r = self.up(shell, f'delta_tools "$MU300_DISK/.mu300-update/mu300-openwrt-luci-rootfs.tar.gz" "{w}" && delta_ready "{w}" openwrt-luci && '
+                               f'delta_plan "$MU300_DISK/openwrt-luci" "{w}/lines" "{w}" "{w}/carry"')
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
             kb, linked = map(int, r.stdout.split())
             got = set((w / 'link').read_text().split('\n')) - {''}
@@ -366,10 +365,10 @@ class Block(ShellTest):
         for shell in self.each_shell():
             self.fresh()
             before = snapshot(self.old)
-            r = self.up(shell, 'apply_one ubuntu v2')
+            r = self.up(shell, 'apply_one openwrt-luci v2')
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
             self.assertIn('are in this system as they are and are not written again', r.stdout)
-            new, old = self.disk / 'ubuntu', self.disk / 'ubuntu.old'
+            new, old = self.disk / 'openwrt-luci', self.disk / 'openwrt-luci.old'
             self.assertEqual(snapshot(old), before)
             self.assertEqual((new / 'usr/bin/changed').read_bytes(), elf('changed v2'))
             self.assertEqual((new / 'usr/bin/new-in-v2').read_bytes(), elf('new'))
@@ -380,13 +379,13 @@ class Block(ShellTest):
             for p in shared:
                 self.assertRegex(p, r'^(usr/(?!local/)|bin/|sbin/|lib/|opt/mu300/)', p)
                 self.assertIn(b'\0', (new / p).read_bytes(), p)
-            for d in ('ubuntu.new', '.mu300-delta-ubuntu'):
+            for d in ('openwrt-luci.new', '.mu300-delta-openwrt-luci'):
                 self.assertFalse((self.disk / d).exists(), d)
             self.assertIn('shares', r.stdout)
             # what the new system then does to its files: a package manager replaces them (a new file renamed over),
             # an editor writes into a text file, a program into its data, a chmod on /etc - the previous system kept
             # for a rollback sees none of it
-            tmpf = new / 'usr/bin/.prog.dpkg-new'
+            tmpf = new / 'usr/bin/.prog.apk-new'
             tmpf.write_bytes(elf('upgraded'))
             os.rename(tmpf, new / 'usr/bin/prog')
             with open(new / 'usr/lib/python3/mod.py', 'r+b') as f:
@@ -398,19 +397,19 @@ class Block(ShellTest):
             (new / 'etc/mine.conf').chmod(0o644)
             self.assertEqual(snapshot(old), before)
             # and the rollback brings the previous system back exactly
-            r = self.up(shell, 'rollback ubuntu')
+            r = self.up(shell, 'rollback openwrt-luci')
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-            self.assertEqual(snapshot(self.disk / 'ubuntu'), before)
+            self.assertEqual(snapshot(self.disk / 'openwrt-luci'), before)
 
     def test_an_image_without_the_parts_is_unpacked_whole(self):
         for shell in self.each_shell():
             self.fresh(parts=False)
-            r = self.up(shell, 'apply_one ubuntu v2')
+            r = self.up(shell, 'apply_one openwrt-luci v2')
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
             self.assertNotIn('not written again', r.stdout)
-            self.assertEqual(inode_shared(self.disk / 'ubuntu', self.disk / 'ubuntu.old') - {'var/lib/app/db'}, set())
+            self.assertEqual(inode_shared(self.disk / 'openwrt-luci', self.disk / 'openwrt-luci.old') - {'var/lib/app/db'}, set())
             self.fresh()
-            r = self.up(shell, 'apply_one ubuntu v2', MU300_DELTA=0)
+            r = self.up(shell, 'apply_one openwrt-luci v2', MU300_DELTA=0)
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
             self.assertNotIn('not written again', r.stdout)
 
@@ -419,44 +418,44 @@ class Block(ShellTest):
             self.fresh()
             before = snapshot(self.old)
             self.stub('df', 'printf "Filesystem 1024-blocks Used Available Capacity Mounted on\\n/dev/x 900000 899000 1000 99%% /x\\n"')
-            r = self.up(shell, 'apply_one ubuntu v2')
+            r = self.up(shell, 'apply_one openwrt-luci v2')
             self.assertNotEqual(r.returncode, 0)
             self.assertIn('not enough free space on the Linux partition', r.stderr)
             self.assertIn('Nothing was changed', r.stderr)
-            self.assertEqual(snapshot(self.disk / 'ubuntu'), before)
-            self.assertEqual(sorted(p.name for p in self.disk.iterdir()), ['ubuntu'])
+            self.assertEqual(snapshot(self.disk / 'openwrt-luci'), before)
+            self.assertEqual(sorted(p.name for p in self.disk.iterdir()), ['openwrt-luci'])
 
     def test_a_failed_unpack_leaves_nothing_behind(self):
         for shell in self.each_shell():
             self.fresh()
             # the image cut after its parts (they come first): the plan is made, the unpack fails
-            tb = self.disk / '.mu300-update/mu300-ubuntu-rootfs.tar.gz'
+            tb = self.disk / '.mu300-update/mu300-openwrt-luci-rootfs.tar.gz'
             raw = gzip.decompress(tb.read_bytes())
             tb.write_bytes(gzip.compress(raw[:len(raw) - 4096 * 3]))
             before = snapshot(self.old)
-            r = self.up(shell, 'apply_one ubuntu v2')
+            r = self.up(shell, 'apply_one openwrt-luci v2')
             self.assertNotEqual(r.returncode, 0)
-            self.assertEqual(snapshot(self.disk / 'ubuntu'), before)
-            self.assertFalse((self.disk / 'ubuntu.new').exists())
-            self.assertFalse((self.disk / '.mu300-delta-ubuntu').exists())
+            self.assertEqual(snapshot(self.disk / 'openwrt-luci'), before)
+            self.assertFalse((self.disk / 'openwrt-luci.new').exists())
+            self.assertFalse((self.disk / '.mu300-delta-openwrt-luci').exists())
 
     def test_what_a_run_that_was_cut_off_left_goes(self):
         for shell in self.each_shell():
             self.fresh()
-            for d in ('ubuntu.new/usr/bin', '.mu300-delta-openwrt/root', 'openwrt.new'):
+            for d in ('openwrt-luci.new/usr/bin', '.mu300-delta-openwrt-luci/root'):
                 (self.disk / d).mkdir(parents=True)
-            (self.disk / 'ubuntu.new.carry-log').write_text('x')
+            (self.disk / 'openwrt-luci.new.carry-log').write_text('x')
             r = self.up(shell, 'delta_clean "$MU300_DISK"')
             self.assertEqual(r.returncode, 0, r.stderr)
-            self.assertIn('ubuntu: removed ubuntu.new, left by an update that did not finish', r.stdout)
-            self.assertEqual(sorted(p.name for p in self.disk.iterdir()), ['.mu300-update', 'ubuntu'])
+            self.assertIn('openwrt-luci: removed openwrt-luci.new, left by an update that did not finish', r.stdout)
+            self.assertEqual(sorted(p.name for p in self.disk.iterdir()), ['.mu300-update', 'openwrt-luci'])
             # an apply killed in the middle: its EXIT trap removes what it was making
-            (self.disk / 'ubuntu.new').mkdir()
-            (self.disk / '.mu300-delta-ubuntu').mkdir()
-            r = self.up(shell, 'UNPACKING="$MU300_DISK/ubuntu.new $MU300_DISK/.mu300-delta-ubuntu $MU300_DISK/ubuntu"; unpack_abort')
-            self.assertEqual(sorted(p.name for p in self.disk.iterdir()), ['.mu300-update', 'ubuntu'])
+            (self.disk / 'openwrt-luci.new').mkdir()
+            (self.disk / '.mu300-delta-openwrt-luci').mkdir()
+            r = self.up(shell, 'UNPACKING="$MU300_DISK/openwrt-luci.new $MU300_DISK/.mu300-delta-openwrt-luci $MU300_DISK/openwrt-luci"; unpack_abort')
+            self.assertEqual(sorted(p.name for p in self.disk.iterdir()), ['.mu300-update', 'openwrt-luci'])
         src = (BIN / 'mu300-update').read_text()
-        self.assertIn("trap 'unpack_abort; keepalive_stop; resume_data; lock_drop' EXIT", src)
+        self.assertIn("trap 'unpack_abort; lock_drop' EXIT", src)
         apply = src[src.index('\napply() {'):src.index('\nclean_broken() {')]
         self.assertLess(apply.index('delta_clean "$DISK"'), apply.index('update_need "$tag" $todo'))
         self.assertLess(apply.index('update_need "$tag" $todo'), apply.index('fetch_verified "$tag" "$(rootfs_asset "$os")"'))
@@ -467,7 +466,7 @@ class Block(ShellTest):
             w = self.tmp / 'w'
             shutil.rmtree(w, ignore_errors=True)
             w.mkdir()
-            (w / 'm.gz').write_bytes(subprocess.run(['tar', '-xzOf', str(self.disk / '.mu300-update/mu300-ubuntu-rootfs.tar.gz'),
+            (w / 'm.gz').write_bytes(subprocess.run(['tar', '-xzOf', str(self.disk / '.mu300-update/mu300-openwrt-luci-rootfs.tar.gz'),
                                                      './etc/mu300/image-manifest.gz'], capture_output=True).stdout)
             # the running system's helper: with "same" exact; with "sum" only (the releases before this) every file
             # that is there byte for byte counts, text too; none at all: the whole image
@@ -482,26 +481,26 @@ class Block(ShellTest):
                     (bins / 'mu300-carry').chmod(0o755)
                 if kind == 'none':
                     (bins / 'mu300-carry').unlink()
-                r = self.up(shell, f'delta_manifest "{w}/m.gz" v2 ubuntu "{w}/lines" && delta_estimate "$MU300_DISK/ubuntu" "{w}/lines" "{w}"',
+                r = self.up(shell, f'delta_manifest "{w}/m.gz" v2 openwrt-luci "{w}/lines" && delta_estimate "$MU300_DISK/openwrt-luci" "{w}/lines" "{w}"',
                             MU300_BIN=bins)
                 self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
                 res[kind] = int(r.stdout.split()[0])
             self.assertLess(res['sum'], res['same'])
             self.assertLess(res['same'], res['none'])
             # a manifest of another release or image is not taken
-            r = self.up(shell, f'delta_manifest "{w}/m.gz" v3 ubuntu "{w}/x" || echo refused; delta_manifest "{w}/m.gz" v2 openwrt "{w}/x" || echo refused')
+            r = self.up(shell, f'delta_manifest "{w}/m.gz" v3 openwrt-luci "{w}/x" || echo refused; delta_manifest "{w}/m.gz" v2 openwrt "{w}/x" || echo refused')
             self.assertEqual(r.stdout, 'refused\nrefused\n')
 
     def test_the_device_files_are_not_counted_as_a_copy(self):
         # carry_need: what a rollback copy of the user's files takes - the device's own files (firmware, Android's
         # userspace, OpenWrt's modules) are second names now, never copied (205 MiB on an F50)
-        old = build(self.disk / 'openwrt', {'sbin/init': ('f', '#!/bin/sh\n', 0o755), 'etc/mu300/image-version': ('f', 'v1\n', 0o644)})
-        m = carry('manifest', old, 'openwrt', 'v1')
+        old = build(self.disk / 'openwrt-luci', {'sbin/init': ('f', '#!/bin/sh\n', 0o755), 'etc/mu300/image-version': ('f', 'v1\n', 0o644)})
+        m = carry('manifest', old, 'openwrt-luci', 'v1')
         (old / 'etc/mu300/image-manifest.gz').write_bytes(gzip.compress(m.stdout.encode()))
         build(old, {'opt/mu300/android/vendor.bin': ('f', elf('v', 4 << 20), 0o644), 'lib/firmware/fw.bin': ('f', elf('f', 2 << 20), 0o644),
                     'root/mine.bin': ('f', elf('m', 1 << 20), 0o644)})
         for shell in self.each_shell():
-            r = self.sh(shell, f'. "{BIN}/mu300-update"; carry_need openwrt', MU300_LIB=1, MU300_DISK=self.disk, MU300_BIN=BIN)
+            r = self.sh(shell, f'. "{BIN}/mu300-update"; carry_need openwrt-luci', MU300_LIB=1, MU300_DISK=self.disk, MU300_BIN=BIN)
             self.assertEqual(r.returncode, 0, r.stderr)
             kb = int(r.stdout)
             self.assertGreater(kb, 32768 + 1024)
@@ -511,155 +510,20 @@ class Block(ShellTest):
         # asset_kb: from a directory (apply --from) the file itself; from a mirror the server's answer to a HEAD
         src = build(self.tmp / 'src', {'mu300-kernel.tar.gz': ('f', b'x' * 300000, 0o644)})
         for shell in self.each_shell():
-            r = self.up(shell, f'MU300_FROM="{src}"; FROM_KIND=dir; asset_kb v2 mu300-kernel.tar.gz')
+            r = self.up(shell, f'MU300_FROM="{src}"; FROM_DIR="{src}"; FROM_KIND=dir; asset_kb v2 mu300-kernel.tar.gz')
             self.assertEqual(r.stdout.strip(), str(300000 // 1024 + 1), r.stderr)
             self.stub('curl', 'printf "HTTP/1.1 302 Found\\r\\nContent-Length: 0\\r\\n\\r\\nHTTP/1.1 200 OK\\r\\nContent-Length: 20267807\\r\\n\\r\\n"')
-            r = self.up(shell, 'ASSET_JSON=; asset_kb v2 mu300-kernel-6.18.tar.gz', MU300_RELEASE_URL='http://mirror/v2')
+            r = self.up(shell, 'ASSET_JSON=; asset_kb v2 mu300-kernel-7.2.tar.gz', MU300_RELEASE_URL='http://mirror/v2')
             self.assertEqual(r.stdout.strip(), str(20267807 // 1024 + 1), r.stderr)
 
     def test_modules_are_never_written_into(self):
         src = (BIN / 'mu300-update').read_text()
         fn = src[src.index('kernel_modules_into_systems() {'):src.index('boot_update() {')]
-        self.assertIn('rm -f "$DISK/$_os/lib/modules/$_krel/$_f"; cp "$1/$_f"', fn)
+        self.assertIn('rm -f "$_d/$_f"\n            [ ! -f "$1/$_f" ] || cp "$1/$_f" "$_d/$_f"', fn)
         self.assertIn('rm -f "$_d"/*.ko && mod_link "$1/modules" "$_d"', fn)
         # a set gets more names, never a file written into: removed first wherever a link or a copy goes
         ml = src[src.index('mod_link() {'):src.index('\n}\n', src.index('mod_link() {'))]
         self.assertLess(ml.index('rm -f "$2"/*.ko'), ml.index('cp "$1"/*.ko'))
-
-
-@unittest.skipUnless(CC and LINUX and BUSYBOX, 'needs a C compiler and busybox on Linux')
-class Installers(ShellTest):
-    """the installers' loop (tools/android-install.sh) with an image that brings the delta block"""
-
-    def setUp(self):
-        super().setUp()
-        src = (TOP / 'tools/android-install.sh').read_text()
-        self.blocks = ''.join(re.search(rf'# --- {b} begin\n(.*?)# --- {b} end', src, re.S).group(1)
-                              for b in ('stage', 'user-packages', 'delta', 'install-os'))
-        self.T = self.tmp / 'T'
-        self.M = self.T / 'mu300root'
-        sh = [s for s in self.shells if 'busybox' not in s[0]]
-        if shutil.which('mksh'):
-            sh.append([shutil.which('mksh')])
-        self.shells = sh
-
-    def fresh(self, vendor=True):
-        shutil.rmtree(self.T, ignore_errors=True)
-        self.M.mkdir(parents=True)
-        v1 = image(self.tmp / 'v1.tar.gz', V1, self.tmp, 'v1')
-        self.old = untar(v1, self.M / 'ubuntu')
-        build(self.old, {'etc/mine.conf': ('f', 'mine\n', 0o600), 'lib/firmware/fw.bin': ('f', elf('fw'), 0o644),
-                         'lib/firmware/fw.txt': ('f', 'fw text\n', 0o644)})
-        image(self.T / 'mu300-ubuntu.tar.gz', V2, self.tmp, 'v2')
-        if vendor:
-            with tarfile.open(self.T / 'mu300-vendor-ubuntu.tar.gz', 'w:gz') as t:
-                t.add(build(self.tmp / 'vendor', {'lib/firmware/fw.bin': ('f', elf('fw'), 0o644),
-                                                  'lib/firmware/fw.txt': ('f', 'fw text\n', 0o644)}), arcname='.')
-        self.inodes = {p: os.lstat(self.old / p).st_ino for p in ('usr/bin/prog', 'usr/lib/libbig.so', 'lib/firmware/fw.bin',
-                                                                   'lib/firmware/fw.txt', 'usr/lib/python3/mod.py')}
-
-    def install(self, shell, **env):
-        e = dict(OSES='ubuntu', UPDATE='1', PWHASH='', DEFAULT_LINUX='1', BOOT_OS='ubuntu', WIPE_LEGACY='0')
-        e.update(env)
-        pre = ('set -e\numask 022\nsay() { echo "[device] $*"; }\nsd_unmark() { :; }\nextra_keep_vpn() { :; }\nssid=; psk=\n'
-               f'T="{self.T}"; M="{self.M}"\n')
-        return self.sh(shell, pre + self.blocks, **e)
-
-    def test_the_update_links_what_did_not_change(self):
-        for shell in self.each_shell():
-            self.fresh()
-            r = self.install(shell)
-            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-            self.assertIn('are in the installed ubuntu as they are and are not written again', r.stdout)
-            new = self.M / 'ubuntu'
-            self.assertEqual((new / 'etc/mu300/image-version').read_text(), 'v2\n')
-            self.assertEqual((new / 'usr/bin/changed').read_bytes(), elf('changed v2'))
-            self.assertEqual((new / 'etc/mine.conf').read_text(), 'mine\n')
-            # the binaries that did not change are the installed files themselves (the old system went: one name);
-            # text, and what changed, was written
-            for p in ('usr/bin/prog', 'usr/lib/libbig.so', 'lib/firmware/fw.bin'):
-                self.assertEqual(os.lstat(new / p).st_ino, self.inodes[p], p)
-            for p in ('lib/firmware/fw.txt', 'usr/lib/python3/mod.py'):
-                self.assertNotEqual(os.lstat(new / p).st_ino, self.inodes[p], p)
-            self.assertEqual(sorted(p.name for p in self.M.iterdir()), ['.mu300', 'ubuntu'])
-
-    def test_not_enough_room_is_said_before_anything_is_written(self):
-        for shell in self.each_shell():
-            self.fresh()
-            before = snapshot(self.old)
-            self.stub('df', 'printf "Filesystem 1024-blocks Used Available Capacity Mounted on\\n/dev/x 900000 899000 1000 99%% /x\\n"')
-            r = self.install(shell)
-            self.assertNotEqual(r.returncode, 0)
-            self.assertIn('[device] not enough room on the Linux partition', r.stdout)
-            self.assertIn('[device] nothing was changed', r.stdout)
-            self.assertEqual(snapshot(self.old), before)
-            self.assertEqual(sorted(p.name for p in self.M.iterdir()), ['ubuntu'])
-
-    def test_the_whole_image_when_asked_with_its_room_counted(self):
-        for shell in self.each_shell():
-            self.fresh()
-            r = self.install(shell, MU300_DELTA=0)
-            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-            self.assertNotIn('not written again', r.stdout)
-            self.assertNotEqual(os.lstat(self.M / 'ubuntu/usr/bin/prog').st_ino, self.inodes['usr/bin/prog'])
-            self.fresh()
-            self.stub('df', 'printf "Filesystem 1024-blocks Used Available Capacity Mounted on\\n/dev/x 900000 899000 1000 99%% /x\\n"')
-            r = self.install(shell, MU300_DELTA=0)
-            self.assertNotEqual(r.returncode, 0)
-            self.assertIn('[device] not enough room on the Linux partition', r.stdout)
-            (self.stubs / 'df').unlink()
-
-    def test_a_failed_unpack_and_a_cut_off_run_leave_nothing(self):
-        for shell in self.each_shell():
-            self.fresh(vendor=False)
-            # left by an earlier run that was cut off: goes first
-            (self.M / 'ubuntu.new/usr').mkdir(parents=True)
-            (self.M / '.mu300-delta-openwrt').mkdir()
-            tb = self.T / 'mu300-ubuntu.tar.gz'
-            raw = gzip.decompress(tb.read_bytes())
-            tb.write_bytes(gzip.compress(raw[:len(raw) - 4096 * 3]))
-            before = snapshot(self.old)
-            r = self.install(shell)
-            self.assertNotEqual(r.returncode, 0)
-            self.assertIn('[device] ubuntu: removed ubuntu.new, left by an installation that did not finish', r.stdout)
-            self.assertIn('[device] ubuntu: unpacking the new system failed; ubuntu was not replaced', r.stdout)
-            self.assertEqual(snapshot(self.old), before)
-            self.assertEqual(sorted(p.name for p in self.M.iterdir()), ['ubuntu'])
-
-
-@unittest.skipUnless(LINUX or sys.platform == 'darwin', 'needs a POSIX shell')
-class SwitchModule(ShellTest):
-    """the computer's installer puts the release's own switch module on the device, as its Magisk zip does"""
-
-    def run_it(self, **env):
-        self.stub('adb', 'case "$*" in\n'
-                         '  *"magisk -v"*) echo 27.0 ;;\n'
-                         '  push*) cp "$2" "$STUBLOG/pushed-$(basename "$3")" ;;\n'
-                         '  *"echo yes"*) echo yes ;;\n'
-                         'esac\nexit 0')
-        r = self.sh(self.shells[0], f'sh "{TOP}/tools/install-magisk-module.sh"', **env)
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        return (self.tmp / 'pushed-module.prop').read_text()
-
-    def test_the_release_names_the_module(self):
-        prop = self.run_it(MU300_MODULE_TAG='v2026.10.16.80', MU300_MODULE_SYSTEM='openwrt ', MU300_MODULE_KERNEL='6.18')
-        self.assertIn('version=v2026.10.16.80\n', prop)
-        self.assertIn('versionCode=2026101680\n', prop)
-        self.assertIn('Installed openwrt with kernel 6.18 (v2026.10.16.80)', prop)
-        self.assertIn('id=mu300_linux_switch\n', prop)
-        # the zips' own, for the same release
-        zips = (TOP / 'tools/make-magisk-zips.sh').read_text()
-        self.assertIn('"$I/module.prop.in" > "$S/module.prop"', zips)
-        # a build of the checkout: the generic module
-        prop = self.run_it()
-        self.assertEqual(prop, (TOP / 'android/magisk/mu300-linux-switch/module.prop').read_text())
-
-    def test_install_sh_and_install_ps1_pass_the_release(self):
-        sh = (TOP / 'install.sh').read_text()
-        self.assertIn('MU300_MODULE_TAG="${RELEASE:-}" MU300_MODULE_KERNEL="$KERNEL"', sh)
-        ps = (TOP / 'install.ps1').read_text()
-        self.assertIn("installer\\module.prop.in", ps)
-        self.assertIn('PushUnix $PropSrc "$MTmp/module.prop"', ps)
 
 
 if __name__ == '__main__':

@@ -6,11 +6,9 @@
 /* Every value from the backend goes into E() inside an array: LuCI's E() takes a lone string as HTML, an array's
  * strings as text. */
 /* System > Update: the device updated from the browser. What is installed and what is kept for going back, the
- * releases on GitHub, an update from an uploaded release file for a device that is not online, going back, the
- * kernel. Nothing here is an updater of its own: every action is one mu300-update command that the backend
+ * releases on GitHub, an update from an uploaded release file for a device that is not online, going back. Nothing here is an updater of its own: every action is one mu300-update command that the backend
  * (mu300dash update_get/update_job/update_act, unisoc-modem/update) runs as a task of its own, which goes on when
  * this page is closed. The page asks after the task and shows it to whoever opens it. */
-var WIKI = 'https://github.com/dikeckaan/mu300-linux/wiki/Updating';
 var UPLOAD_URL = '/cgi-upload';
 
 function row(k, v) {
@@ -20,8 +18,8 @@ function row(k, v) {
 }
 function when(s) { return s ? new Date(s * 1000).toLocaleString() : '--'; }
 function kb(n) { return n == null ? '--' : M.fmtBytes(n * 1024); }
-// The release tags (docs/FINDINGS.md 125): vYYYY.MM.DD, and from after v2026.10.27 on vYYYY.MM.DD.N (the day of the
-// release, N the release of that day), newer than every three-field tag. The web installer's version.js, word for word.
+// The release tags: vYYYY.MM.DD.N (the day of the release, N the release of that day), newer than every older
+// three-field vYYYY.MM.DD tag (mu300-update's tag_key).
 function releaseKey(t) {
 	var m = /^v(\d{4})\.(\d\d)\.(\d\d)$/.exec(typeof t === 'string' ? t : '');
 	if (m) return [ 1, +(m[1] + m[2] + m[3]), 0 ];
@@ -67,7 +65,8 @@ return view.extend({
 	act: function(btn, a) {
 		var self = this;
 		M.busy(btn, true);
-		var cargs = [ a.op, a.tag || '', a.systems || '', a.kernel || '', a.sha256 || '', a.size || '', a.flags || '', a.confirm || '' ];
+		// (the fourth argument stays empty: there is one kernel, and mu300dash refuses one)
+		var cargs = [ a.op, a.tag || '', a.systems || '', '', a.sha256 || '', a.size || '', a.flags || '', a.confirm || '' ];
 		if (a.url !== undefined)
 			cargs.push(a.url);
 		return M.callUpdateAct.apply(null, cargs).then(function(r) {
@@ -115,8 +114,7 @@ return view.extend({
 		return ({
 			check: _('Check for updates'), inspect: _('Checking the file'), apply: _('Update'),
 			file: _('Update from a file'), rollback: _('Back to the previous version'),
-			rollback_boot: _('Back to the previous boot image'), clean: _('Remove the previous version'),
-			kernel: _('Kernel change')
+			rollback_boot: _('Back to the previous boot image'), clean: _('Remove the previous version')
 		})[kind] || kind || '';
 	},
 
@@ -244,10 +242,10 @@ return view.extend({
 		var inst = E('section', { 'class': 'mud-card', 'id': 'mud-upd-status' }, [ E('h3', {}, _('Installed')) ]);
 		inst.appendChild(row(_('This system'), (st.running || '--') + ' · ' + (me.release || st.installed || '--')));
 		systems.forEach(function(s) {
-			if (s.name !== st.running) inst.appendChild(row(_('Also on this device'), s.name + (s.ubuntu ? ' ' + s.ubuntu : '') + ' · ' + s.release));
+			if (s.name !== st.running) inst.appendChild(row(_('Also on this device'), s.name + ' · ' + s.release));
 		});
-		inst.appendChild(row(_('Kernel'), (kernel.running || '--') + ' · ' + _('choice %s').format(kernel.choice || '--')));
-		inst.appendChild(row(_('Boot image'), kernel.boot || _('from the installer')));
+		inst.appendChild(row(_('Kernel'), kernel.running || '--'));
+		inst.appendChild(row(_('Boot image'), kernel.boot || _('not written by an update yet')));
 		inst.appendChild(row(_('Default boot'), st.boot_default === 'linux' ? 'Linux' : 'Android'));
 		inst.appendChild(row(_('Free space'), kb(disk.free_kb) + ' / ' + kb(disk.total_kb)));
 		inst.appendChild(row(_('Release signatures'), st.signing && st.signing.key ? _('checked with the project\'s key') : _('this system has no release key')));
@@ -350,14 +348,14 @@ return view.extend({
 		cards.push(online);
 
 		/* ---- from a file */
-		var want = 'mu300-magisk-<' + _('release') + '>-' + (me.name === 'ubuntu' ? 'ubuntu-' + (me.ubuntu || '24.04') : (me.name || 'openwrt-luci')) + '-k' + (kernel.choice || '5.4') + '.zip';
+		var want = 'mu300-' + (me.name || 'openwrt-luci') + '-rootfs.tar.gz';
 		var filec = E('section', { 'class': 'mud-card', 'id': 'mud-upd-file', 'style': 'margin-top:14px' }, [
 			E('h3', {}, _('Update from a file')),
-			E('div', { 'class': 'mud-note' }, [ _('For a device without internet: download the Magisk zip of a release for this system and this kernel on another computer, from the release page on GitHub, and upload it here. For this device that is:') + ' ', E('code', {}, [ want ]) ])
+			E('div', { 'class': 'mud-note' }, [ _('For a device without internet: download the root filesystem of a release on another computer, from the release page on GitHub, and upload it here. It updates the system; the kernel follows with the next online update. For this device that is:') + ' ', E('code', {}, [ want ]) ])
 		]);
 		var insp = up.inspect, inspecting = running && job.kind === 'inspect';
 		if (!up.present) {
-			var pick = E('input', { 'type': 'file', 'id': 'mud-upd-pick', 'accept': '.zip,application/zip' });
+			var pick = E('input', { 'type': 'file', 'id': 'mud-upd-pick', 'accept': '.tar.gz,.tgz,application/gzip' });
 			var meter = E('div', { 'class': 'mud-note', 'id': 'mud-upd-upmeter' }, '');
 			var ubtn = E('button', { 'class': 'mud-btn', 'id': 'mud-upd-upload', 'disabled': off ? '' : null }, _('Upload the file…'));
 			ubtn.addEventListener('click', function() { self.upload(ubtn, pick, meter); });
@@ -369,14 +367,12 @@ return view.extend({
 			if (inspecting) filec.appendChild(E('div', { 'class': 'mud-note', 'id': 'mud-upd-inspecting' }, _('Checking the file…')));
 			else if (insp && insp.ok === 1) {
 				filec.appendChild(row('SHA-256', E('code', { 'id': 'mud-upd-sha', 'style': 'word-break:break-all' }, [ insp.sha256 || '--' ])));
-				filec.appendChild(row(_('It says it is'), (insp.tag || '--') + ' · ' + (insp.system || '--') + (insp.ubuntu ? ' ' + insp.ubuntu : '') + (insp.kernel ? ' · ' + _('kernel %s').format(insp.kernel) : '')));
+				filec.appendChild(row(_('It says it is'), (insp.tag || '--') + (insp.kernel ? ' · ' + _('with the kernel') : '')));
 				filec.appendChild(row(_('Signature'), insp.signature === 'valid' ? _('signed with the project\'s release key')
 					: insp.signature === 'bad' ? _('WRONG: it does not match the project\'s release key')
 					: insp.signature === 'unsigned' ? _('not signed') : _('cannot be checked on this system')));
 				var why = ({
 					'system-missing': _('Its system is not installed on this device.'),
-					'ubuntu-release': _('It is the other Ubuntu release, not the one installed.'),
-					'kernel': _('It carries another kernel than this device uses. Take the zip for kernel %s, or change the kernel first.').format(kernel.choice || ''),
 					'device': _('Its kernel does not run on this model.'),
 					'checksum': _('The file is damaged: its contents do not match their checksums.'),
 					'signature': _('Its signature is wrong. This file does not come from the project as it is; it is never installed.')
@@ -385,8 +381,8 @@ return view.extend({
 					[ _('This file cannot be used here.') + ' ' + (why || '') ]));
 				else {
 					ok = true;
-					/* (a signed file is proven by its signature: the note is for one that is not - on the U30 Air it showed for both) */
-					if (insp.signature !== 'valid') filec.appendChild(E('div', { 'class': 'mud-note', 'id': 'mud-upd-compare' }, _('Compare the SHA-256 with the one in SHA256SUMS-magisk on the release page: it is the only proof of where an unsigned file comes from.')));
+					/* (a signed file is proven by its signature: the note is for one that is not) */
+					if (insp.signature !== 'valid') filec.appendChild(E('div', { 'class': 'mud-note', 'id': 'mud-upd-compare' }, _('Compare the SHA-256 with the one in SHA256SUMS on the release page: it is the only proof of where an unsigned file comes from.')));
 					if (insp.same) filec.appendChild(E('div', { 'class': 'mud-note' }, _('This release is installed already; the update would only refresh the boot image.')));
 					if (insp.signature !== 'valid') flags.push({ name: 'unsigned', c: check('mud-upd-unsigned',
 						_('I know this file is not signed: nothing proves that it comes from the project. I compared its SHA-256 myself and want it installed.'), false) });
@@ -396,7 +392,7 @@ return view.extend({
 				}
 			} else if (insp) {
 				filec.appendChild(E('div', { 'id': 'mud-upd-refused', 'style': 'margin:8px 0;color:var(--danger,#E25555)' },
-					_('This is not a release file of this project: a Magisk zip of a release is expected.')));
+					_('This is not a release file of this project: the root filesystem of a release is expected.')));
 			}
 			var fb = E('div', { 'style': 'display:flex;gap:8px;flex-wrap:wrap;margin-top:10px' });
 			if (ok) {
@@ -434,7 +430,7 @@ return view.extend({
 		kept.forEach(function(s) {
 			back.appendChild(row(s.name, s.previous.release + ' · ' + _('replaced %s').format(when(s.since)) + (s.previous.kb != null ? ' · ' + kb(s.previous.kb) : '')));
 		});
-		if (prevBoot) back.appendChild(row(_('Boot image'), (prevBoot.release || '--') + (prevBoot.kernel ? ' · ' + _('kernel %s').format(prevBoot.kernel) : '') + ' · ' + _('replaced %s').format(when(prevBoot.since))));
+		if (prevBoot) back.appendChild(row(_('Boot image'), (prevBoot.release || '--') + ' · ' + _('replaced %s').format(when(prevBoot.since))));
 		var usable = kept.filter(function(s) { return !s.previous.running; });
 		if (usable.length) back.appendChild(this.guarded('mud-upd-rollback', _('Back to the previous version'),
 			_('I want the previous system back; what I changed since the update stays in the version I leave.'),
@@ -454,28 +450,12 @@ return view.extend({
 			_('Remove'), { op: 'clean', confirm: 'clean' }, off));
 		cards.push(back);
 
-		/* ---- the kernel, and Android */
-		var kc = E('section', { 'class': 'mud-card', 'id': 'mud-upd-kernel', 'style': 'margin-top:14px' }, [ E('h3', {}, _('Kernel')) ]);
-		var ksel = E('select', { 'class': 'cbi-input-select', 'id': 'mud-upd-kernel-pick' }, (kernel.choices || []).map(function(k) {
-			return E('option', { 'value': k.name, 'disabled': k.ok ? null : '' }, [ k.name + (k.name === '5.4' ? ' · ' + _('the vendor kernel') : ' · ' + _('mainline')) +
-				(k.why === 'ubuntu-26.04' ? ' · ' + _('not with Ubuntu 26.04') : '') ]);
-		}));
-		ksel.value = kernel.choice || '5.4';
-		var kb2 = E('button', { 'class': 'mud-btn warn', 'id': 'mud-upd-kernel-set', 'disabled': off ? '' : null }, _('Change the kernel'));
-		kb2.addEventListener('click', function() {
-			var k = ksel.value;
-			if (k === kernel.choice) { M.toast(_('This kernel is the one in use'), { type: 'info' }); return; }
-			M.confirmBox(_('Change the kernel to %s?').format(k),
-				_('The device downloads that kernel from the newest release and writes a new boot image; it starts at the next restart. The previous boot image is kept, and if the new one does not start the device goes back to Android by itself. The device must be online.'),
-				{ danger: true, okText: _('Change the kernel') }).then(function(yes) {
-				if (yes) self.act(kb2, { op: 'kernel', kernel: k, confirm: 'kernel' }).then(function(r) { if (r && r.started) self.follow(); });
-			});
-		});
-		kc.appendChild(E('div', { 'style': 'display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:10px 0' }, [ ksel, kb2 ]));
+		/* ---- Android */
+		var kc = E('section', { 'class': 'mud-card', 'id': 'mud-upd-android-card', 'style': 'margin-top:14px' }, [ E('h3', {}, _('Android')) ]);
 		var ab = E('button', { 'class': 'mud-btn', 'id': 'mud-upd-android', 'disabled': off ? '' : null }, _('Start Android at the next restart'));
 		ab.addEventListener('click', function() {
 			M.confirmBox(_('Start Android at the next restart?'),
-				_('The next restart, and the ones after it, start Android instead of Linux. Linux is started again from Android (the Magisk module\'s Action button, or mu300-linux).'),
+				_('The next restart, and the ones after it, start Android instead of Linux. Linux is started again from Android (mu300-linux, as root).'),
 				{ danger: true, okText: _('Start Android next') }).then(function(yes) {
 				if (!yes) return;
 				M.busy(ab, true);
@@ -493,8 +473,7 @@ return view.extend({
 		/* ---- what an update keeps */
 		cards.push(E('section', { 'class': 'mud-card', 'id': 'mud-upd-kept', 'style': 'margin-top:14px' }, [
 			E('h3', {}, _('What an update keeps')),
-			E('div', {}, [ _('An update puts the system of the new release in place and carries over what is yours: the settings, the accounts and their passwords, the device\'s keys and the home directories. Packages you installed yourself are written down and installed again at the first start, once the device is online. The previous version stays on the device until you remove it, so you can go back.') + ' ',
-				E('a', { 'href': WIKI, 'target': '_blank', 'rel': 'noopener noreferrer' }, _('The wiki\'s Updating page lists exactly what is kept.')) ])
+			E('div', {}, [ _('An update puts the system of the new release in place and carries over what is yours: the settings, the accounts and their passwords, the device\'s keys and the home directories. Packages you installed yourself are written down and installed again at the first start, once the device is online. The previous version stays on the device until you remove it, so you can go back.') ])
 		]));
 
 		dom.content(this.root, cards);

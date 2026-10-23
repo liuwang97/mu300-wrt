@@ -1,7 +1,8 @@
 """Shared helpers for the tests: the shells the scripts run under, stub commands, a scratch directory.
 
-The device scripts run under dash (Ubuntu's /bin/sh), bash and busybox ash (OpenWrt); every shell test runs under
-each of them that this machine has (MU300_TEST_SHELLS="dash,busybox sh" picks others). Commands a script calls that
+The device scripts run under busybox ash (OpenWrt's /bin/sh) and, where they ask for it, bash; every shell test runs
+under each POSIX shell this machine has (dash, bash, busybox sh), so a script that leans on one shell's quirks shows
+up (MU300_TEST_SHELLS="busybox sh" picks one). Commands a script calls that
 touch the device (nft, ip, id, ...) are replaced by stubs in a directory put first on PATH.
 """
 import os
@@ -19,7 +20,8 @@ GIT_CHECKOUT = bool(shutil.which('git')) and subprocess.run(['git', '-C', str(TO
                                                            capture_output=True).returncode == 0
 
 
-# The panel's ucode programs (unisoc-modem/dashboard-info and cell, FINDINGS 216) run under a ucode interpreter:
+# The panel's ucode programs (unisoc-modem/dashboard-info and cell: one process instead of a pipeline of shell
+# tools for each refresh) run under a ucode interpreter:
 # MU300_TEST_UCODE (a command line, e.g. a wrapper that sets LD_LIBRARY_PATH for a local build), else `ucode` on PATH.
 # The modules they load from the device's own ucode packages (ubus, uci, nl80211, rtnl) are stood in for by
 # tests/ucode-stubs, which run the same stubbed commands (ubus, uci, iw, ip) the shell versions ran; mu300.dash comes

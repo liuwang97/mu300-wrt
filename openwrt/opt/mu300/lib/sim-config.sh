@@ -1,16 +1,13 @@
 # Shared SIM preference storage. Runtime routing uses /run/mu300/sim-slot, never this preference.
-# The caller sets SIM_CONFIG_U30=1 only after positive U30 Air/OpenWrt identification.
+# The preference is network.wan.sim_slot (uci). The caller sets SIM_CONFIG_U30=1 only on a U30 Air, whose legacy
+# files (/etc/mu300-sim-slot, /etc/mu300-sim-hot) are migrated into uci.
 sim_config_root=${MU300_SIM_ROOT:-}
 sim_cfg_valid() { case "$1" in 0|1) return 0;; *) echo 'SIM slot must be 0 or 1' >&2; return 1;; esac; }
 sim_cfg_default() {
     local slot
-    if command -v uci >/dev/null 2>&1; then
-        if slot=$(uci -q get network.wan.sim_slot); then :
-        elif [ "${SIM_CONFIG_U30:-0}" = 1 ]; then
-            slot=$(cat "$sim_config_root/etc/mu300-sim-slot" 2>/dev/null || true)
-        fi
-    else
-        slot=$(cat "$sim_config_root/etc/mu300/sim-slot" 2>/dev/null || true)
+    if slot=$(uci -q get network.wan.sim_slot); then :
+    elif [ "${SIM_CONFIG_U30:-0}" = 1 ]; then
+        slot=$(cat "$sim_config_root/etc/mu300-sim-slot" 2>/dev/null || true)
     fi
     slot=${slot:-0}
     sim_cfg_valid "$slot" || return 1
@@ -26,7 +23,7 @@ sim_cfg_hot() {
 }
 sim_cfg_write() {
     local option=$1 value=$2 old present=0
-    case "$option" in sim_slot|sim_hot|v50_card) ;; *) return 1;; esac
+    case "$option" in sim_slot|sim_hot) ;; *) return 1;; esac
     if old=$(uci -q get "network.wan.$option"); then present=1; fi
     uci set "network.wan.$option=$value" || return 1
     if uci commit network; then return 0; fi
@@ -36,44 +33,12 @@ sim_cfg_write() {
     return 1
 }
 sim_cfg_save_default() {
-    local tmp
     sim_cfg_valid "$1" || return 1
-    if command -v uci >/dev/null 2>&1; then
-        sim_cfg_write sim_slot "$1"
-    else
-        mkdir -p "$sim_config_root/etc/mu300" || return 1
-        tmp=$(mktemp "$sim_config_root/etc/mu300/sim-slot.XXXXXX") || return 1
-        printf '%s\n' "$1" > "$tmp" && mv -f "$tmp" "$sim_config_root/etc/mu300/sim-slot"
-    fi
-}
-# --- the ZTE V50's card (FINDINGS 204): ZTE's card ID 0-3, or nothing (the switches stay as the bootloader left
-# them). OpenWrt: network.wan.v50_card, next to sim_slot; other systems: /etc/mu300/v50-card. mu300-sim validates it.
-sim_cfg_card() {
-    if command -v uci >/dev/null 2>&1; then
-        uci -q get network.wan.v50_card 2>/dev/null || true
-    else
-        cat "$sim_config_root/etc/mu300/v50-card" 2>/dev/null || true
-    fi
-}
-# sim_cfg_save_card CARD|'': saved, or (empty) forgotten
-sim_cfg_save_card() {
-    local tmp
-    case "$1" in ''|0|1|2|3) ;; *) return 1;; esac
-    if command -v uci >/dev/null 2>&1; then
-        if [ -n "$1" ]; then sim_cfg_write v50_card "$1"; return; fi
-        uci -q get network.wan.v50_card >/dev/null 2>&1 || return 0
-        uci -q delete network.wan.v50_card && uci commit network
-    elif [ -n "$1" ]; then
-        mkdir -p "$sim_config_root/etc/mu300" || return 1
-        tmp=$(mktemp "$sim_config_root/etc/mu300/v50-card.XXXXXX") || return 1
-        printf '%s\n' "$1" > "$tmp" && mv -f "$tmp" "$sim_config_root/etc/mu300/v50-card"
-    else
-        rm -f "$sim_config_root/etc/mu300/v50-card"
-    fi
+    sim_cfg_write sim_slot "$1"
 }
 sim_cfg_save_hot() {
     sim_cfg_valid "$1" || return 1
-    [ "${SIM_CONFIG_U30:-0}" = 1 ] && command -v uci >/dev/null 2>&1 || return 1
+    [ "${SIM_CONFIG_U30:-0}" = 1 ] || return 1
     sim_cfg_write sim_hot "$1"
 }
 sim_cfg_unstage_added() {
@@ -85,7 +50,6 @@ sim_cfg_unstage_added() {
 sim_cfg_migrate() {
     local slot hot saved_slot saved_hot slot_present=0 hot_present=0 touched= key value old destination
     [ "${SIM_CONFIG_U30:-0}" = 1 ] || return 0
-    command -v uci >/dev/null 2>&1 || return 1
     if saved_slot=$(uci -q get network.wan.sim_slot); then slot_present=1; fi
     if saved_hot=$(uci -q get network.wan.sim_hot); then hot_present=1; fi
     [ "$slot_present" = 0 ] || sim_cfg_valid "${saved_slot:-0}" || return 1

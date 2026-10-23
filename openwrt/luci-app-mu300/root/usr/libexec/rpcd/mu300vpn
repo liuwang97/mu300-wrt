@@ -137,8 +137,8 @@ installed() { [ -x "$VPN" ]; }
 # cli_message FILE: the CLI's last message, from its stderr in FILE. A refused import, edit or switch ends with a
 # line that says only that nothing was done ("profile not added", "profile ID not changed", "subscription not added",
 # "profile ID does not check: the VPN stays on profile X"); the line before it says why, and that is what the page
-# must show - with the closing line alone, every refused config read "The profile could not be added: profile not
-# added" (FINDINGS 56). A note of the CLI ("note: top-level keys ... not used") is never the reason.
+# must show - with the closing line alone, every refused config would read "The profile could not be added: profile
+# not added". A note of the CLI ("note: top-level keys ... not used") is never the reason.
 cli_message() {
     tr -d '\r' < "$1" 2>/dev/null | sed '/^[[:space:]]*$/d' | awk '
         { prev = last; last = $0 }
@@ -186,8 +186,7 @@ arg_ok() { case $1 in -*) return 1 ;; esac; }
 # ------------------------------------------------------------------- tasks
 job_running() { [ -s "$JOB/pid" ] && kill -0 "$(cat "$JOB/pid" 2>/dev/null)" 2>/dev/null; }
 
-# The panel's lock: flock(1) on a file of the root-only job directory, through fd 9 (busybox has the applet on
-# OpenWrt, util-linux on Ubuntu). Held by a request from its check that no task runs, through the staging of its
+# The panel's lock: flock(1) on a file of the root-only job directory, through fd 9 (busybox has the applet). Held by a request from its check that no task runs, through the staging of its
 # upload, until the task's pid is written - so two requests can never both start a task, nor can one stage a file
 # while another task runs. The kernel releases it when the request ends, however it ends (a request killed by rpcd
 # leaves no stale lock behind). Nothing the request starts keeps fd 9: the task and the CLI get it closed.
@@ -488,7 +487,7 @@ m_profile_check() {
     allowed "$id" "$ID" || { refuse 'Invalid profile id'; return; }
     need_vpn || return
     # "check ID", which every module has: "profile check ID" (the spec's name for it) exists only in the modules
-    # after v2.0.0, and v2.0.0 answered it with its usage text - this page's check never worked (FINDINGS 56)
+    # after v2.0.0, and v2.0.0 answers it with its usage text
     cli check "$id" </dev/null || { cli_fail 'The profile does not pass the check'; return; }
     printf '{"ok":1}\n'
 }

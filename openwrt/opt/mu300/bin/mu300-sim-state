@@ -1,26 +1,25 @@
 #!/bin/sh
 # What the SIM in use says of itself - ready, locked (a PIN or PUK) or absent - kept for this boot, so that a slot with
-# no card is not dialled over and over (docs/FINDINGS.md 186; after kanoqwq's SIM-state events, f59a296 and ab26e79).
+# no card is not dialled over and over (after kanoqwq's SIM-state events, f59a296 and ab26e79).
 #
 #   mu300-sim-state check [SLOT]      ask the card (AT+CPIN?, one command) and keep the answer; print it
 #   mu300-sim-state get [SLOT]        the kept answer (absent, ready, locked), nothing when there is none
-#   mu300-sim-state event SLOT URC    an unsolicited line from the card's event channel (mu300-atd's drainer): a
+#   mu300-sim-state event SLOT URC    an unsolicited line from the card's event channel (mu300-modemd): a
 #                                     SIM-status change (+ECIND: 3,...) starts a check in the background
 #
 # SLOT is the card in use when it is left out; another card is never asked (its position may have its SIM power off,
 # and then it answers "+CME ERROR: 10" whatever is in it). The answer is kept in /run/mu300/sim<slot>.state.
 #
 # Who reads it: mobile-data's dial asks `check` once its radio is on, and with no card it stops there (netifd:
-# SIM_MISSING, no retry; Ubuntu: the service stays up) and leaves /run/mu300/sim-missing-held; a card that comes back
+# SIM_MISSING, no retry) and leaves /run/mu300/sim-missing-held; a card that comes back
 # (its +ECIND, or the watchdog's look every five minutes) is dialled again from here. mu300-smsd asks nothing of an
 # absent card. +ECIND: 3 is only a hint - the stock RIL reads CPIN after it too: SIM errors and PIN changes send it as
 # well - so it is never taken for a removal itself.
-# MU300_RUN, MU300_AT_BIN, MU300_MOBILE_DATA, MU300_SIM_BIN: the tests.
+# MU300_RUN, MU300_AT_BIN, MU300_SIM_BIN: the tests.
 set -u
 export PATH="$PATH:/opt/mu300/bin:/opt/mu300/busybox-bin:/usr/sbin:/sbin"
 RUN=${MU300_RUN:-/run/mu300}
 AT=${MU300_AT_BIN:-/opt/mu300/bin/mu300-at}
-MD=${MU300_MOBILE_DATA:-/opt/mu300/bin/mobile-data}
 SIMBIN=${MU300_SIM_BIN:-/opt/mu300/bin/mu300-sim}
 HELD=$RUN/sim-missing-held
 
@@ -65,19 +64,15 @@ check() {
         logger -t mu300-sim-state "SIM$((slot + 1)): ${old:-unknown} -> $new" 2>/dev/null || true
     fi
     rm -rf "$lock"
-    # a card back where the dial stopped for its absence: the dial again. OpenWrt: the WAN mu300cell made unavailable
-    # is made available, and netifd starts it unless somebody took it down (ifdown); Ubuntu: the service's dial.
+    # a card back where the dial stopped for its absence: the dial again. The WAN mu300cell made unavailable is made
+    # available, and netifd starts it unless somebody took it down (ifdown).
     if [ -n "$new" ] && [ "$new" != absent ] && { [ -e "$HELD" ] || [ "$old" = absent ]; }; then
         rm -f "$HELD"
-        if [ -e "${MU300_SYSROOT:-}/etc/openwrt_release" ]; then
-            case $(ubus call "network.interface.${MU300_WAN:-wan}" status 2>/dev/null | tr -d ' \n\t') in
-                *'"available":false'*)
-                    ubus call "network.interface.${MU300_WAN:-wan}" notify_proto '{"action":5,"available":true}' \
-                        </dev/null >/dev/null 2>&1 || true ;;
-            esac
-        elif [ ! -e /run/mu300-mobile-data-down ]; then
-            ( setsid "$MD" up </dev/null >/dev/null 2>&1 & ) || true
-        fi
+        case $(ubus call "network.interface.${MU300_WAN:-wan}" status 2>/dev/null | tr -d ' \n\t') in
+            *'"available":false'*)
+                ubus call "network.interface.${MU300_WAN:-wan}" notify_proto '{"action":5,"available":true}' \
+                    </dev/null >/dev/null 2>&1 || true ;;
+        esac
     fi
     echo "${new:-$old}"
 }
@@ -113,7 +108,7 @@ case ${1:-} in
         case ${2:-} in 0|1) ;; *) exit 2 ;; esac
         sim_event "${3:-}" || exit 0
         s=$(slot_arg "$2") || exit 0
-        # the card needs a moment after its event; never inside the caller (the drainer reads on)
+        # the card needs a moment after its event; never inside the caller (mu300-modemd reads on)
         ( sleep 2; check "$s" >/dev/null ) </dev/null >/dev/null 2>&1 &
         ;;
     *) echo "usage: $0 check [SLOT] | get [SLOT] | event SLOT URC" >&2; exit 2 ;;

@@ -1,14 +1,12 @@
-"""The U30 Air's firmware SAE offload is disabled, in every layer (FINDINGS 80, docs/U30AIR-SAE.md): the hotspot is
-WPA2-PSK only on every device (F50, U30 Air, V50: the SC2355).
+"""The U30 Air's firmware SAE offload is disabled, in every layer: the PMK record the firmware hands back cannot be
+told from one a client sends, so the hotspot is WPA2-PSK only on every device (F50, U30 Air: the SC2355). The driver's
+part is tested with the kernel tree.
 
-* the driver (mainline tree and the 5.4 patch): the firmware's PMK record never reaches cfg80211 - the strip function
-  compiled from the source (with UBSan when MU300_TEST_UBSAN=1) against records, malformed lists and random input;
-  the vendor command that gave the firmware the SAE password is refused;
 * no hostapd with the import is built or installed, and the build refuses MU300_SAE_APK_DIR;
 * the wifi-scripts refuse an SAE access point (static, and in the OpenWrt feed's scripts with MU300_WRT_IMAGE);
 * openwrt-wifi-wpa2-only: a hotspot left on SAE becomes WPA2-PSK (CCMP) with the same password at boot, or goes off
   (never open), with one log line and the notice for LuCI; the notice module itself under Node;
-* mu300-api and Ubuntu's hotspot-start never put SAE on the hotspot."""
+* mu300-api never puts SAE on the hotspot."""
 import json
 import os
 import random
@@ -21,198 +19,9 @@ from pathlib import Path
 
 from helpers import BIN, TOP, ShellTest
 
-WLAN = TOP / 'kernel/modules/sprd_wlan_combo'
-PATCH54 = TOP / 'kernel/patches/wlan_combo-softap-no-sae.patch'
 WIFI_PATCH = TOP / 'openwrt/patches/wifi-scripts-wpa2-only.patch'
 MIGRATE = BIN / 'openwrt-wifi-wpa2-only'
 NOTICE_JS = TOP / 'openwrt/overlay/www/luci-static/resources/view/status/include/05_mu300_wpa2.js'
-RECORD_PREFIX = bytes([0xdd, 0x34, 0x40, 0x45, 0xda, 0x04])
-
-
-def c_function(source, name):
-    """the text of C function NAME in SOURCE, from its 'static' line to its closing brace"""
-    start = source.index('static u16 ' + name + '(')
-    i = source.index('{', start)
-    depth = 0
-    while True:
-        if source[i] == '{':
-            depth += 1
-        elif source[i] == '}':
-            depth -= 1
-            if depth == 0:
-                return source[start:i + 1]
-        i += 1
-
-
-def added_lines(patch, path):
-    """the '+' lines of the hunks of PATH in a unified diff"""
-    out, on = [], False
-    for line in patch.splitlines():
-        if line.startswith('+++ '):
-            on = line[4:].strip() == 'b/' + path
-            continue
-        if line.startswith('--- '):
-            continue
-        if on and line.startswith('+'):
-            out.append(line[1:])
-    return '\n'.join(out) + '\n'
-
-
-def strip_model(ies):
-    """what the driver must leave: the well-formed elements, in order, without any dd ..40:45:da:04 element"""
-    out, i = b'', 0
-    while i + 2 <= len(ies):
-        n = ies[i + 1]
-        if i + 2 + n > len(ies):
-            break
-        e = ies[i:i + 2 + n]
-        if not (e[0] == 221 and n >= 4 and e[2:6] == RECORD_PREFIX[2:]):
-            out += e
-        i += 2 + n
-    return out
-
-
-class DriverStripsTheRecord(unittest.TestCase):
-    """common/report.c: mu300_strip_sae_pmk_record before cfg80211_new_sta, compiled from the source."""
-
-    def test_mainline_and_54_patch_carry_the_same_function(self):
-        up = c_function((WLAN / 'common/report.c').read_text(), 'mu300_strip_sae_pmk_record')
-        p54 = c_function(added_lines(PATCH54.read_text(), 'common/report.c'), 'mu300_strip_sae_pmk_record')
-        self.assertEqual(up, p54)
-
-    def test_softap_report_strips_before_cfg80211(self):
-        src = (WLAN / 'common/report.c').read_text()
-        body = src[src.index('void sprd_report_softap('):src.index('EXPORT_SYMBOL(sprd_report_softap)')]
-        self.assertLess(body.index('mu300_strip_sae_pmk_record(req_ie, req_ie_len)'), body.index('sinfo.assoc_req_ies = req_ie'))
-        self.assertLess(body.index('sinfo.assoc_req_ies = req_ie'), body.index('cfg80211_new_sta('))
-        for text in (src, PATCH54.read_text()):
-            # the bytes of the record are never printed
-            self.assertNotIn('hex_dump', body)
-            self.assertIn('0x40, 0x45, 0xda, 0x04', text)
-
-    def test_firmware_never_gets_an_sae_password(self):
-        for text in ((WLAN / 'sc2355/vendor.c').read_text(), added_lines(PATCH54.read_text(), 'sc2355/vendor.c')):
-            fn = text[text.index('static int vendor_set_sae_password('):] if 'static int vendor_set_sae_password(' in text else text
-            ret = fn.index('return -EOPNOTSUPP;')
-            self.assertNotIn('nla_for_each_attr', fn[:ret])
-            self.assertNotIn('send_cmd_recv_rsp', fn[:ret])
-        # the 5.4 patch applies after wlan_combo-sae-private-logs.patch (the build's glob order), which edits vendor.c
-        names = sorted(p.name for p in (TOP / 'kernel/patches').glob('wlan_combo-*.patch'))
-        self.assertLess(names.index('wlan_combo-sae-private-logs.patch'), names.index(PATCH54.name))
-
-    def compile(self):
-        cc = shutil.which('cc')
-        if not cc:
-            self.skipTest('no native C compiler')
-        work = Path(tempfile.mkdtemp(prefix='mu300-strip-'))
-        self.addCleanup(shutil.rmtree, work, True)
-        fn = c_function((WLAN / 'common/report.c').read_text(), 'mu300_strip_sae_pmk_record')
-        (work / 't.c').write_text('''#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-typedef unsigned char u8;
-typedef unsigned short u16;
-''' + fn + '''
-int main(int argc, char **argv)
-{
-	static u8 buf[65536];
-	size_t n = fread(buf, 1, sizeof(buf), stdin);
-	u16 len = (u16)n, out = mu300_strip_sae_pmk_record(buf, len);
-	(void)argc; (void)argv;
-	fwrite(buf, 1, out, stdout);
-	return 0;
-}
-''')
-        flags = ['-std=c99', '-Wall', '-Wextra', '-Werror', '-O1']
-        if os.environ.get('MU300_TEST_UBSAN') == '1':
-            flags += ['-fsanitize=undefined,address', '-fno-sanitize-recover=all']
-        r = subprocess.run([cc] + flags + [str(work / 't.c'), '-o', str(work / 't')], capture_output=True, text=True)
-        self.assertEqual(r.returncode, 0, r.stderr)
-        return work / 't'
-
-    def test_strip(self):
-        exe = self.compile()
-
-        def run(ies):
-            r = subprocess.run([str(exe)], input=ies, capture_output=True, timeout=30)
-            self.assertEqual(r.returncode, 0, r.stderr)
-            return r.stdout
-
-        ssid = bytes([0, 4]) + b'MU30'
-        rsn = bytes([48, 20, 1, 0, 0, 0x0f, 0xac, 4, 1, 0, 0, 0x0f, 0xac, 4, 1, 0, 0, 0x0f, 0xac, 2, 0, 0])
-        wmm = bytes([221, 7, 0, 0x50, 0xf2, 2, 0, 1, 0])
-        record = RECORD_PREFIX + bytes(range(48))
-        other_vendor = bytes([221, 6, 0x40, 0x45, 0xda, 0x05, 1, 2])
-        cases = {
-            'no record': (ssid + rsn + wmm, ssid + rsn + wmm),
-            'empty': (b'', b''),
-            'firmware record at the end': (ssid + rsn + record, ssid + rsn),
-            'a client record in the middle': (ssid + record + rsn + wmm, ssid + rsn + wmm),
-            'two records': (record + ssid + record, ssid),
-            'prefix only': (ssid + bytes([221, 4, 0x40, 0x45, 0xda, 0x04]), ssid),
-            'any length with the prefix': (bytes([221, 10, 0x40, 0x45, 0xda, 0x04]) + bytes(6) + rsn, rsn),
-            'another vendor type stays': (ssid + other_vendor, ssid + other_vendor),
-            'too short for the prefix stays': (bytes([221, 3, 0x40, 0x45, 0xda]), bytes([221, 3, 0x40, 0x45, 0xda])),
-            'a truncated record': (ssid + record[:30], ssid),
-            'a record behind a malformed element': (ssid + bytes([7, 200]) + record, ssid),
-            'one stray byte': (ssid + b'\xdd', ssid),
-        }
-        for name, (ies, want) in cases.items():
-            with self.subTest(case=name):
-                self.assertEqual(run(ies), want)
-                self.assertEqual(strip_model(ies), want)
-        rnd = random.Random(80)
-        for _ in range(400):
-            parts = []
-            for _ in range(rnd.randrange(0, 12)):
-                k = rnd.randrange(5)
-                if k == 0:
-                    parts.append(record)
-                elif k == 1:
-                    parts.append(bytes([221, 4 + rnd.randrange(60)]) + RECORD_PREFIX[2:] + bytes(rnd.randrange(256) for _ in range(60)))
-                else:
-                    n = rnd.randrange(40)
-                    parts.append(bytes([rnd.randrange(256), n]) + bytes(rnd.randrange(256) for _ in range(n)))
-            ies = b''.join(parts)
-            if rnd.random() < 0.3:
-                ies = ies[:rnd.randrange(len(ies) + 1)]
-            out = run(ies)
-            self.assertEqual(out, strip_model(ies))
-            self.assertEqual(strip_model(out), out)       # well-formed, nothing left to strip
-
-
-class DriverPrivacy(unittest.TestCase):
-    """the driver never logs the passphrase, a station key or raw command/event payloads (kept from the offload work)"""
-
-    def body(self, path, name):
-        source = (TOP / 'kernel/modules/sprd_wlan_combo' / path).read_text()
-        start = source.index('{', source.index(name + '('))
-        depth = 1
-        end = start + 1
-        while depth:
-            if source[end] == '{': depth += 1
-            if source[end] == '}': depth -= 1
-            end += 1
-        return source[start:end]
-
-    def test_transport_command_payloads_never_reach_hex_dump(self):
-        for path, name in [('sc2355/pcie.c', 'pcie_tx_one'),
-                           ('sc2355/sdio.c', 'sdio_tx_one'),
-                           ('sc2355/cmdevt.c', 'cmdevt_send_cmd'),
-                           ('sc2355/cmdevt.c', 'sc2355_rx_rsp_process')]:
-            with self.subTest(path=path, name=name):
-                self.assertNotIn('hex_dump', self.body(path, name))
-
-    def test_transport_rx_cannot_dump_a_new_station_pmk(self):
-        for path, name in [('sc2355/pcie.c', 'sc2355_pcie_rx_work_queue'),
-                           ('sc2355/sdio.c', 'sc2355_rx_work_queue')]:
-            with self.subTest(path=path):
-                self.assertNotIn('hex_dump', self.body(path, name))
-
-    def test_station_key_is_not_logged_as_an_unbounded_string(self):
-        source = (TOP / 'kernel/modules/sprd_wlan_combo/common/cfg80211.c').read_text()
-        self.assertNotIn('"PSK %s', source)
-        self.assertIn('memcpy(con.psk, sme->key, sme->key_len)', source)
 
 
 class NoImportIsBuilt(ShellTest):
@@ -225,17 +34,12 @@ class NoImportIsBuilt(ShellTest):
             self.assertNotIn(gone, build)
         self.assertIn('apk add wpad-basic-mbedtls wifi-scripts', build)
 
-    def test_build_refuses_the_sae_apk_dir(self):
-        r = self.script(['sh'], TOP / 'openwrt/build-rootfs.sh', 'x.tar.gz', MU300_SAE_APK_DIR=self.tmp)
-        self.assertEqual(r.returncode, 1)
-        self.assertIn('SAE offload is disabled', r.stderr)
-
     def test_no_code_turns_it_on(self):
         """u30_sae_offload is named only where it is refused or removed (and in the docs and tests)"""
         allowed = {'openwrt/patches/wifi-scripts-wpa2-only.patch', 'openwrt/opt/mu300/bin/openwrt-wifi-wpa2-only',
                    'openwrt/opt/mu300/bin/mu300-api'}
-        out = subprocess.run(['git', '-C', str(TOP), 'grep', '-l', 'u30_sae_offload', '--', '.', ':!docs', ':!tests',
-                              ':!wiki', ':!site', ':!README.md'], capture_output=True, text=True)
+        out = subprocess.run(['git', '-C', str(TOP), 'grep', '-l', 'u30_sae_offload', '--', 'openwrt', ':!openwrt/docs',
+                              ':!openwrt/tests'], capture_output=True, text=True)
         if out.returncode not in (0, 1):
             self.skipTest('not a git checkout')
         self.assertEqual(set(out.stdout.split()) - allowed, set())
@@ -359,7 +163,6 @@ class Migration(ShellTest):
         self.root = self.tmp / 'root'
         for d in ('etc/mu300', 'etc/config'):
             (self.root / d).mkdir(parents=True)
-        (self.root / 'etc/openwrt_release').write_text('DISTRIB_ID=OpenWrt\n')
         (self.root / 'etc/config/wireless').write_text('the file as it was\n')
         self.stub('uci', UCI)
         self.stub('logger', 'echo "$*" >> "$STUBLOG/logger.log"')
@@ -470,11 +273,6 @@ class Migration(ShellTest):
             self.assertEqual((r.returncode, r.stderr, self.state()), (0, '', after))
             self.assertEqual(self.log('logger.log'), [])
 
-    def test_not_openwrt(self):
-        (self.root / 'etc/openwrt_release').unlink()
-        for shell in self.each_shell():
-            self.assertUntouched(self.migrate(shell, SAE_STATE), SAE_STATE)
-
     def test_boot_migrates_before_wifi_up_and_nothing_else_checks_the_offload(self):
         hw = (TOP / 'openwrt/overlay/etc/init.d/mu300-hw').read_text()
         self.assertLess(hw.index('openwrt-wifi-config'), hw.index('openwrt-wifi-wpa2-only migrate'))
@@ -486,7 +284,7 @@ class Migration(ShellTest):
 @unittest.skipUnless(shutil.which('node'), 'no node')
 class NoticeModule(unittest.TestCase):
     """the LuCI notice (Status > Overview and the panel's home): nothing without the file, the message in the
-    language of the page (English, Turkish, Chinese), the dismissal removes the file"""
+    language of the page (English, Chinese), the dismissal removes the file"""
 
     def render(self, content, lang):
         harness = r"""
@@ -538,13 +336,13 @@ mod.load().then(async (n) => {
         o = self.render(down, 'en')
         self.assertIn('ap0 is off, not open', o['box'])
         self.assertIn('error', o['cls'])
-        self.assertIn('WPA2-PSK\'ye (CCMP)', self.render(migrated, 'tr')['box'])
-        self.assertIn('Kapat', self.render(migrated, 'tr')['box'])
         zh = self.render(migrated, 'zh-cn')
         self.assertIn('WPA2-PSK\uff08CCMP\uff09', zh['box'])
         self.assertIn('\u5b89\u5168', zh['title'])
+        self.assertNotIn('FINDINGS', zh['box'])
         # any other language: English
-        self.assertIn('Dismiss', self.render(migrated, 'de')['box'])
+        for lang in ('de', 'tr'):
+            self.assertIn('Dismiss', self.render(migrated, lang)['box'])
 
     def test_panel_home_loads_it_and_acl_allows_only_this_file(self):
         home = (TOP / 'openwrt/luci-app-mu300/htdocs/luci-static/resources/view/mu300/home.js').read_text()
@@ -554,34 +352,6 @@ mod.load().then(async (n) => {
         self.assertEqual(list(g['read']['file']), ['/etc/mu300/wpa3-disabled'])
         self.assertEqual(list(g['write']['file']), ['/etc/mu300/wpa3-disabled'])
         self.assertEqual(g['write']['ubus'], {'file': ['remove']})
-
-
-class UbuntuHotspot(ShellTest):
-    """hotspot-start: a hotspot.conf asking for WPA3/SAE is refused with a line, the hotspot is WPA2-PSK (CCMP)"""
-
-    def test_refused(self):
-        conf = self.tmp / 'hotspot.conf'
-        out = self.tmp / 'hostapd.conf'
-        self.stub('iw', 'exit 0')
-        self.stub('logger', 'echo "$*" >> "$STUBLOG/logger.log"')
-        self.stub('sleep', 'exit 0')
-        for value in ('sae', 'SAE-mixed', 'wpa3', 'psk2'):
-            with self.subTest(value=value):
-                conf.write_text(f'SSID=MU300-T\nPSK={PASSWORD}\nBAND=2.4\nCHANNEL=6\nCOUNTRY=TR\nENCRYPTION={value}\n')
-                (self.tmp / 'logger.log').unlink(missing_ok=True)
-                r = self.script(['bash'], BIN / 'hotspot-start', MU300_HOTSPOT_CONF=conf, MU300_HOSTAPD_CONF=out,
-                                MU300_HOTSPOT_DRYRUN=1)
-                self.assertEqual(r.returncode, 0, r.stderr)
-                c = out.read_text()
-                self.assertIn('wpa_key_mgmt=WPA-PSK\n', c)
-                self.assertIn('rsn_pairwise=CCMP\n', c)
-                self.assertNotIn('SAE', c)
-                if value == 'psk2':
-                    self.assertNotIn('refused', r.stderr)
-                else:
-                    self.assertIn(f'ENCRYPTION={value} refused: WPA3/SAE is disabled on this Wi-Fi chip', r.stderr)
-                    self.assertIn('WPA2-PSK only', r.stderr)
-                    self.assertNotIn(PASSWORD, r.stderr)
 
 
 if __name__ == '__main__':

@@ -2,19 +2,19 @@
 // mu300-dash-info -- the dashboard's system/network snapshot: ONE line of JSON on stdout.
 //
 // The snapshot itself is mu300.dash's info() (/usr/share/ucode/mu300/dash.uc), which the home page now reads in
-// rpcd itself (mu300status, FINDINGS 216). This program is the same snapshot for mu300dash's status and sysinfo and
+// rpcd itself (mu300status). This program is the same snapshot for mu300dash's status and sysinfo and
 // for anything else that ran it: it reads only files and asks ubus/uci/nl80211/rtnl, so it never touches the
 // modem's AT channel - the cell readings live in mu300-dash-cell, which has its own cache and its own pace.
 //
 // CPU time and interface byte counters are "since boot" cumulative values; the page subtracts two consecutive
 // snapshots to get CPU% and live rates, so the poll interval never skews the numbers.
 //
-// Known traps (docs/FINDINGS.md and the V50 research archive), handled in mu300.dash:
-//   * loadavg is meaningless here - vendor kernel threads sit in D state and pin it. It is not reported at all.
+// Known traps, handled in mu300.dash:
+//   * loadavg is meaningless here - kernel threads sit in D state and pin it. It is not reported at all.
 //   * iw/iwinfo never report tx-power or a sane channel on the sprd WCN driver; SSID/channel come from uci instead.
 //   * thermal zones are matched by type, never by zone number.
 //
-// Exits 1 with nothing on stdout when the SIM selector cannot say which card is in use (as before).
+// Exits 1 with nothing on stdout when the SIM selector cannot say which card is in use.
 'use strict';
 
 import { info } from 'mu300.dash';

@@ -45,9 +45,6 @@ msgstr "更新"
 msgid "Backup of settings"
 msgstr "设置备份"
 
-msgid "Languages"
-msgstr "语言"
-
 msgid "Power"
 msgstr "电源"
 
@@ -510,8 +507,8 @@ msgstr "实验性功能：修改 CPU 电压可能导致设备不稳定、损坏�
 msgid "CPU voltage offset unavailable"
 msgstr "CPU 电压偏移不可用"
 
-msgid "Not available with this kernel (a mainline kernel of this release or later has it)."
-msgstr "此内核不支持（本版本或更新版本的主线内核支持）。"
+msgid "Not available with this kernel."
+msgstr "此内核不支持。"
 
 msgid "Off: the stock voltages"
 msgstr "关闭：出厂电压"
@@ -1377,84 +1374,6 @@ msgstr "AT 适配器不可用"
 msgid "Linux locked"
 msgstr "Linux 已锁定"
 
-msgid "Installing the language pack…"
-msgstr "正在安装语言包…"
-
-msgid "The language pack is installed"
-msgstr "语言包已安装"
-
-msgid "The language pack could not be installed"
-msgstr "语言包安装失败"
-
-msgid "Language of the browser"
-msgstr "浏览器语言"
-
-msgid "Language of the web interface"
-msgstr "Web 界面语言"
-
-msgid "English, Turkish and Chinese come with the system; the language pack adds the others."
-msgstr "系统自带英语、土耳其语和中文；其他语言由语言包提供。"
-
-msgid "The same setting is in System > System > Language and Style."
-msgstr "同样的设置也在「系统 > 系统 > 语言和界面」中。"
-
-msgid "Language pack"
-msgstr "语言包"
-
-msgid "The language pack (mu300-extra-lang.tar.gz, about 2 MB) adds LuCI in about 40 more languages and this panel in 29 of them. Download it from the release of this system, or upload the file from the release page when the device has no internet."
-msgstr "语言包（mu300-extra-lang.tar.gz，约 2 MB）可为 LuCI 增加约 40 种语言，并为本面板增加其中 29 种。可从本系统的发布版本下载；设备无法联网时，也可从发布页面下载文件后上传。"
-
-msgid "Download from the release"
-msgstr "从发布版本下载"
-
-msgid "Release"
-msgstr "发布版本"
-
-msgid "Enable all"
-msgstr "全部启用"
-
-msgid "Disable all"
-msgstr "全部禁用"
-
-msgid "Remove the language pack"
-msgstr "移除语言包"
-
-msgid "Remove the language pack?"
-msgstr "移除语言包？"
-
-msgid "Its languages disappear from the list; a page in one of them switches to English."
-msgstr "其中的语言将从列表中消失；正在使用这些语言的页面会切换为英语。"
-
-msgid "Remove"
-msgstr "移除"
-
-msgid "Disable"
-msgstr "禁用"
-
-msgid "Enable"
-msgstr "启用"
-
-msgid "LuCI and this panel"
-msgstr "LuCI 和本面板"
-
-msgid "LuCI only"
-msgstr "仅 LuCI"
-
-msgid "Disabled"
-msgstr "已禁用"
-
-msgid "Language"
-msgstr "语言"
-
-msgid "Code"
-msgstr "代码"
-
-msgid "Translated"
-msgstr "翻译范围"
-
-msgid "LuCI's own translations come from OpenWrt. This panel's translations other than Turkish and Chinese are machine (AI) translations; corrections are welcome."
-msgstr "LuCI 自身的翻译来自 OpenWrt。本面板除土耳其语和中文以外的翻译均为机器（AI）翻译，欢迎指正。"
-
 msgid "Automatic"
 msgstr "自动"
 
@@ -1972,8 +1891,8 @@ msgstr "射频状态未知，请重启设备"
 msgid "Radio state unknown; the device is restarting."
 msgstr "射频状态未知；设备正在重启。"
 
-msgid "Dual SIM control is only for the U30 Air on OpenWrt."
-msgstr "双卡控制仅适用于运行 OpenWrt 的 U30 Air。"
+msgid "Dual SIM control is only for the U30 Air."
+msgstr "双卡控制仅适用于 U30 Air。"
 
 msgid "The chosen SIM could not be started at the last boot (no card, PIN, or the modem refused it)."
 msgstr "上次开机时无法启动所选的 SIM 卡（无卡、需要 PIN，或调制解调器拒绝）。"
@@ -2025,27 +1944,6 @@ msgstr "切换到卡%d"
 
 msgid "Use SIM%d at next boot"
 msgstr "下次启动使用卡%d"
-
-msgid "Built-in SIM 1"
-msgstr "内置 SIM 1"
-
-msgid "Built-in SIM 2"
-msgstr "内置 SIM 2"
-
-msgid "Built-in SIM 3"
-msgstr "内置 SIM 3"
-
-msgid "External SIM"
-msgstr "外置 SIM"
-
-msgid "SIM card"
-msgstr "SIM 卡"
-
-msgid "Built-in SIM 3 shares SIM2, the external SIM shares SIM1. The card chosen here is switched in before the modem starts, at the next boot; without a choice the cards stay as the bootloader sets them."
-msgstr "内置 SIM 3 与 SIM2 共用，外置 SIM 与 SIM1 共用。此处选择的卡会在下次开机、基带启动前切换到位；未选择时，各卡保持引导程序设置的状态。"
-
-msgid "As the bootloader sets them"
-msgstr "保持引导程序的设置"
 
 msgid "Applying the radio setting…"
 msgstr "正在应用射频设置…"
@@ -2326,6 +2224,9 @@ msgstr "生效的规则"
 msgid "Flow offloading"
 msgstr "流量分载（flow offloading）"
 
+msgid "Disabled"
+msgstr "已禁用"
+
 msgid "TTL of mobile data"
 msgstr "移动数据的 TTL"
 
@@ -2364,9 +2265,6 @@ msgstr "回到上一个启动镜像"
 
 msgid "Remove the previous version"
 msgstr "移除上一个版本"
-
-msgid "Kernel change"
-msgstr "更换内核"
 
 msgid "Starting…"
 msgstr "正在开始…"
@@ -2458,14 +2356,11 @@ msgstr "此设备上还有"
 msgid "Kernel"
 msgstr "内核"
 
-msgid "choice %s"
-msgstr "选择 %s"
-
 msgid "Boot image"
 msgstr "启动镜像"
 
-msgid "from the installer"
-msgstr "来自安装程序"
+msgid "not written by an update yet"
+msgstr "尚未由更新写入"
 
 msgid "Default boot"
 msgstr "默认启动"
@@ -2566,11 +2461,8 @@ msgstr "要更新的系统："
 msgid "GitHub could not be reached: the device has no internet connection, or GitHub did not answer. Without internet, update from a file below."
 msgstr "无法连接 GitHub：设备没有互联网连接，或 GitHub 没有响应。没有网络时，请在下方从文件更新。"
 
-msgid "release"
-msgstr "发布版本"
-
-msgid "For a device without internet: download the Magisk zip of a release for this system and this kernel on another computer, from the release page on GitHub, and upload it here. For this device that is:"
-msgstr "适用于没有网络的设备：在另一台电脑上，从 GitHub 的发布页面下载对应本系统和本内核的发布版本 Magisk zip，然后在这里上传。本设备对应的文件是："
+msgid "For a device without internet: download the root filesystem of a release on another computer, from the release page on GitHub, and upload it here. It updates the system; the kernel follows with the next online update. For this device that is:"
+msgstr "适用于无法联网的设备：在另一台电脑上从 GitHub 的发布页面下载某个发布版本的根文件系统，然后在此上传。它会更新系统；内核随下一次在线更新一起更新。本设备需要的文件是："
 
 msgid "Uploaded file"
 msgstr "已上传的文件"
@@ -2581,8 +2473,8 @@ msgstr "正在检查文件…"
 msgid "It says it is"
 msgstr "文件自称为"
 
-msgid "kernel %s"
-msgstr "内核 %s"
+msgid "with the kernel"
+msgstr "含内核"
 
 msgid "Signature"
 msgstr "签名"
@@ -2602,12 +2494,6 @@ msgstr "无法在本系统上校验"
 msgid "Its system is not installed on this device."
 msgstr "此文件中的系统未安装在此设备上。"
 
-msgid "It is the other Ubuntu release, not the one installed."
-msgstr "这是另一个 Ubuntu 版本，不是已安装的那个。"
-
-msgid "It carries another kernel than this device uses. Take the zip for kernel %s, or change the kernel first."
-msgstr "它带的内核与此设备使用的不同。请使用内核 %s 对应的 zip，或先更换内核。"
-
 msgid "Its kernel does not run on this model."
 msgstr "它的内核无法在此型号上运行。"
 
@@ -2620,8 +2506,8 @@ msgstr "签名错误。此文件并非原样来自本项目；绝不会被安装
 msgid "This file cannot be used here."
 msgstr "此文件不能在这里使用。"
 
-msgid "Compare the SHA-256 with the one in SHA256SUMS-magisk on the release page: it is the only proof of where an unsigned file comes from."
-msgstr "请将 SHA-256 与发布页面上 SHA256SUMS-magisk 中的值比对：这是证明未签名文件来源的唯一依据。"
+msgid "Compare the SHA-256 with the one in SHA256SUMS on the release page: it is the only proof of where an unsigned file comes from."
+msgstr "请将 SHA-256 与发布页面上 SHA256SUMS 中的值进行比对：这是未签名文件来源的唯一证明。"
 
 msgid "This release is installed already; the update would only refresh the boot image."
 msgstr "此发布版本已经安装；更新只会刷新启动镜像。"
@@ -2632,8 +2518,8 @@ msgstr "我知道此文件未签名：没有任何东西能证明它来自本项
 msgid "I know this is %s, older than the installed %s, and want to go back to it."
 msgstr "我知道这是 %s，比已安装的 %s 旧，并希望回到这个版本。"
 
-msgid "This is not a release file of this project: a Magisk zip of a release is expected."
-msgstr "这不是本项目的发布文件：需要的是某个发布版本的 Magisk zip。"
+msgid "This is not a release file of this project: the root filesystem of a release is expected."
+msgstr "这不是本项目的发布文件：需要的是某个发布版本的根文件系统。"
 
 msgid "Update from this file"
 msgstr "从此文件更新"
@@ -2692,26 +2578,11 @@ msgstr "移除上一个版本？"
 msgid "The kept copy of the previous system is deleted for good. After that there is no going back to it from this page."
 msgstr "保留的上一个系统副本将被永久删除。之后无法再从此页面回到它。"
 
-msgid "the vendor kernel"
-msgstr "厂商内核"
+msgid "Remove"
+msgstr "移除"
 
-msgid "mainline"
-msgstr "主线"
-
-msgid "not with Ubuntu 26.04"
-msgstr "不适用于 Ubuntu 26.04"
-
-msgid "Change the kernel"
-msgstr "更换内核"
-
-msgid "This kernel is the one in use"
-msgstr "当前使用的就是这个内核"
-
-msgid "Change the kernel to %s?"
-msgstr "将内核更换为 %s？"
-
-msgid "The device downloads that kernel from the newest release and writes a new boot image; it starts at the next restart. The previous boot image is kept, and if the new one does not start the device goes back to Android by itself. The device must be online."
-msgstr "设备会从最新发布版本下载该内核并写入新的启动镜像；下次重启时启动。上一个启动镜像会保留，如果新镜像无法启动，设备会自动回到 Android。设备必须联网。"
+msgid "Android"
+msgstr "Android"
 
 msgid "Start Android at the next restart"
 msgstr "下次重启时启动 Android"
@@ -2719,8 +2590,8 @@ msgstr "下次重启时启动 Android"
 msgid "Start Android at the next restart?"
 msgstr "下次重启时启动 Android？"
 
-msgid "The next restart, and the ones after it, start Android instead of Linux. Linux is started again from Android (the Magisk module's Action button, or mu300-linux)."
-msgstr "下次及之后的重启都会启动 Android 而不是 Linux。之后可从 Android 重新启动 Linux（Magisk 模块的 Action 按钮，或 mu300-linux）。"
+msgid "The next restart, and the ones after it, start Android instead of Linux. Linux is started again from Android (mu300-linux, as root)."
+msgstr "下次重启及之后的重启将启动 Android 而不是 Linux。可从 Android 中再次启动 Linux（以 root 身份运行 mu300-linux）。"
 
 msgid "Start Android next"
 msgstr "下次启动 Android"
@@ -2730,9 +2601,6 @@ msgstr "更新会保留什么"
 
 msgid "An update puts the system of the new release in place and carries over what is yours: the settings, the accounts and their passwords, the device's keys and the home directories. Packages you installed yourself are written down and installed again at the first start, once the device is online. The previous version stays on the device until you remove it, so you can go back."
 msgstr "更新会装上新发布版本的系统，并迁移属于您的内容：设置、账户及其密码、设备的密钥和主目录。您自己安装的软件包会被记录下来，并在设备联网后的首次启动时重新安装。上一个版本会一直留在设备上，直到您将其移除，因此您可以回退。"
-
-msgid "The wiki's Updating page lists exactly what is kept."
-msgstr "Wiki 的「更新」页面列出了具体保留的内容。"
 
 msgid "Choose a file first"
 msgstr "请先选择文件"
@@ -2823,9 +2691,6 @@ msgstr "使用者"
 
 msgid "no profile"
 msgstr "无配置文件"
-
-msgid "dae needs a kernel with BTF, 5.17 or newer: not the 5.4 vendor kernel (mu300-update kernel 6.18). It can be installed anyway."
-msgstr "dae 需要带 BTF 的 5.17 或更新内核：不支持 5.4 厂商内核（mu300-update kernel 6.18）。仍然可以安装。"
 
 msgid "All engines"
 msgstr "所有引擎"
@@ -3229,9 +3094,6 @@ msgstr "TUN 协议栈"
 msgid "Default (gvisor)"
 msgstr "默认（gvisor）"
 
-msgid "system (not on the 5.4 kernel)"
-msgstr "system（不适用于 5.4 内核）"
-
 msgid "set (unchanged unless you type a new one)"
 msgstr "已设置（不输入新值则保持不变）"
 
@@ -3451,21 +3313,6 @@ msgstr "无效的电源值"
 msgid "Invalid power request"
 msgstr "无效的电源请求"
 
-msgid "The languages adapter gave no valid reply"
-msgstr "语言适配程序没有返回有效结果"
-
-msgid "Unknown language operation"
-msgstr "未知的语言操作"
-
-msgid "Invalid language code"
-msgstr "语言代码无效"
-
-msgid "Invalid language request"
-msgstr "语言请求无效"
-
-msgid "Unknown source"
-msgstr "未知的来源"
-
 msgid "The TTL adapter gave no valid reply"
 msgstr "TTL 适配器未返回有效回复"
 
@@ -3552,12 +3399,12 @@ msgid "The modem did not take the setting; nothing was saved"
 msgstr "模组未接受该设置，未保存任何内容"
 
 # Dual SIM controls.
-msgid "SIM control failed"
-msgstr "SIM 控制失败"
-
-# Dual SIM controls.
 msgid "Enable hot switching; reboot if channels are unavailable or wait until idle"
 msgstr "请启用热切换；通道尚未准备好时请重启，操作进行中请等待。"
+
+# Dual SIM controls.
+msgid "SIM control failed"
+msgstr "SIM 控制失败"
 
 msgid "Request too large"
 msgstr "请求过大"
@@ -3687,6 +3534,9 @@ msgstr "文件过大"
 
 msgid "Unknown engine"
 msgstr "未知的引擎"
+
+msgid "Unknown source"
+msgstr "未知的来源"
 
 msgid "The unverified parameter must be 0 or 1"
 msgstr "unverified 参数必须为 0 或 1"
@@ -3898,27 +3748,6 @@ msgstr "无法清空发送日志"
 
 msgid "Unknown forwarding operation"
 msgstr "未知的转发操作"
-
-msgid "The language pack is not installed"
-msgstr "语言包未安装"
-
-msgid "No language given"
-msgstr "未指定语言"
-
-msgid "The language could not be changed"
-msgstr "无法更改语言"
-
-msgid "LuCI does not offer this language"
-msgstr "LuCI 不提供此语言"
-
-msgid "No uploaded language pack"
-msgstr "没有已上传的语言包"
-
-msgid "An installation is already running"
-msgstr "已有安装任务正在进行"
-
-msgid "The language pack could not be removed"
-msgstr "无法移除语言包"
 
 msgid "Lock cache unavailable"
 msgstr "锁定缓存不可用"

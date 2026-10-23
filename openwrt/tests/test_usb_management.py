@@ -1,8 +1,6 @@
 """USB device management of the panel (device-usb): role switch, host mode, USB NIC reattachment, and the USB
-network mode that kernel/initramfs/init applies on the next boot (D12, K7, K8). Ported from the kanoqwq fork
-(tests/test_usb_management.py at 35a1c55); the fork's init-order checks are replaced by D12's file contract."""
+network mode that the initramfs applies on the next boot (/etc/mu300/usb-net, docs/contract.md)."""
 import json
-import re
 import time
 import unittest
 
@@ -10,7 +8,6 @@ from helpers import ShellTest, TOP
 
 APP = TOP / 'openwrt/luci-app-mu300/root'
 USB = APP / 'usr/libexec/unisoc-modem/device-usb'
-INIT = (TOP / 'kernel/initramfs/init').read_text()
 
 
 class USBManagement(ShellTest):
@@ -86,7 +83,7 @@ esac
         self.applied.unlink(missing_ok=True)
         self.role.write_text('device\n')
 
-    # --- the USB network mode (D12, K7, K8)
+    # --- the USB network mode
 
     def test_mode_file_is_the_bare_mode_init_reads(self):
         for shell in self.each_shell():
@@ -96,16 +93,6 @@ esac
                 self.assertEqual(f'{mode}\n', self.net_file.read_text())
                 self.assertEqual(0o600, self.net_file.stat().st_mode & 0o777)
                 self.assertEqual([], [p.name for p in self.net_file.parent.iterdir() if p != self.net_file])
-
-    def test_init_reads_what_the_panel_wrote(self):
-        block = re.search(r'# --- usb-net begin\n(.*?)# --- usb-net end', INIT, re.S).group(1)
-        root = self.net_file.parents[2]
-        for shell in self.each_shell():
-            for mode, functions in (('ncm', 'ncm ecm'), ('ecm', 'ecm ncm'), ('rndis', 'rndis ncm ecm')):
-                self.reset()
-                self.call_usb(shell, 'set-net', mode, 'permanent', '1')
-                out = self.sh(shell, block + f'\nusb_net_policy "{root}"').stdout
-                self.assertEqual(functions, out.strip(), mode)
 
     def test_auto_off_removes_the_file(self):
         for shell in self.each_shell():
@@ -159,10 +146,8 @@ esac
         self.assertIn('${MU300_USB_APPLIED_FILE:-/run/mu300/usb-net-applied}', src)
         self.assertNotIn('usb-boot.conf', src)
         self.assertNotIn('unisoc-usb-net-applied', src)
-        self.assertIn('/run/mu300/usb-net-applied', INIT)
-        self.assertIn('$1/etc/mu300/usb-net', INIT)
 
-    # --- role switch and host mode (the fork's cases)
+    # --- role switch and host mode
 
     def test_host_auto_disables_usb_network_auto_and_blocks_changes(self):
         for shell in self.each_shell():
@@ -194,19 +179,6 @@ esac
                               MU300_USB_NET_FILE=self.net_file)
             self.assertEqual(json.loads(raw.stdout)['ok'], 1)
             self.wait_text(self.role, 'host')
-
-    def test_v50_writes_the_role_switch_as_the_f50(self):
-        # the V50 (FINDINGS 95): the F50's raw role switch, never the U30 Air's charger path (mu300-usb)
-        self.stub('mu300-usb', 'echo called > "$STUBLOG/mu300-usb"; exit 1')
-        for shell in self.each_shell():
-            self.reset()
-            self.role.write_text('device\n')
-            raw = self.script(shell, USB, 'set-role', 'host', '0',
-                              MU300_USB_ROLE_FILE=self.role, MU300_USB_DEVICE='v50',
-                              MU300_USB_NET_FILE=self.net_file)
-            self.assertEqual(json.loads(raw.stdout)['ok'], 1, raw.stdout)
-            self.wait_text(self.role, 'host')
-            self.assertFalse((self.tmp / 'mu300-usb').exists())
 
     def test_async_role_readback_is_pending_not_a_false_failure(self):
         slow = self.tmp / 'slow-role'

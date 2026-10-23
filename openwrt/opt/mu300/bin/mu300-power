@@ -14,11 +14,11 @@
 #   mu300-power idle                    enter idle now
 #   mu300-power log [SECONDS] [FILE]    append epoch,mV,mA,mW,capacity,temp,state,profile every SECONDS (5) to
 #                                       FILE (/var/log/mu300-power.csv)
-#   mu300-power daemon                  the state machine (mu300-power.service, /etc/init.d/mu300-power)
+#   mu300-power daemon                  the state machine (/etc/init.d/mu300-power)
 # Idle: LEDs, hotspot, modem, CPU. Every wake: hotspot, LEDs, CPU, then the modem (its dial can take minutes).
 # A wake restores by inspection, not by the state file, and needs no daemon; every external step has a deadline.
-# Design: docs/superpowers/specs/2026-10-06-power-profiles-design.md. Configuration: /etc/mu300/power.conf,
-# KEY=VALUE, kept across updates with the rest of etc/mu300; a missing key is its default below.
+# Design: openwrt/docs/power.md. Configuration: /etc/mu300/power.conf, KEY=VALUE, kept across updates with the rest
+# of etc/mu300; a missing key is its default below.
 set -u
 export PATH="$PATH:/opt/mu300/bin:/opt/mu300/busybox-bin:/usr/sbin:/sbin"
 R=${MU300_SYSROOT:-}
@@ -29,8 +29,7 @@ ST=$RUN/power
 MD_SUSPEND=$RUNROOT/mu300-mobile-data.suspend   # mobile-data suspend's mode file: the modem is held down
 MD_ENDC=$RUNROOT/mu300-mobile-data.endc-restore   # EN-DC still to be switched back on (a failed lte resume)
 LED_IDLE=$R/run/mu300/led/.idle                  # mu300-led idle on's flag (mu300-led keeps its state under $R/run)
-# Deadlines in seconds (env for tests): a probe (iw, ubus, uci, systemctl is-*), an LED, a service step (wifi,
-# systemctl, the VPN), the modem (mobile-data bounds itself to ~60 s; this is the second guard), and how long a
+# Deadlines in seconds (env for tests): a probe (iw, ubus, uci), an LED, a service step (wifi, the VPN), the modem (mobile-data bounds itself to ~60 s; this is the second guard), and how long a
 # wake waits for an idle entry in progress.
 PROBE=${MU300_POWER_PROBE_DEADLINE:-5}
 LEDDL=${MU300_POWER_LED_DEADLINE:-10}
@@ -159,7 +158,7 @@ psy_of_type() {  # the first one, or return 1
 battery_dir() {  # the first Battery that is present (present=1 or no present file)
     # the F50 has no battery, but its PMIC's fuel gauge still appears under mainline with made-up values (19 %,
     # 75 C): the device decides, as dashboard-info does, so the F50 never shows a battery nor guards one
-    case $(mu300-device 2>/dev/null) in f50|v50) return 1 ;; esac   # (the V50 has no battery either)
+    [ "$(mu300-device 2>/dev/null)" != f50 ] || return 1
     for _d in $(psy_all Battery); do
         [ ! -f "$_d/present" ] || [ "$(cat "$_d/present" 2>/dev/null)" = 1 ] && { echo "$_d"; return 0; }
     done
@@ -172,9 +171,8 @@ num() {  # a number for arithmetic: empty or junk is 0; leading zeros go (dash r
     while [ ${#_nd} -gt 1 ] && [ "${_nd#0}" != "$_nd" ]; do _nd=${_nd#0}; done
     case $1 in -*) echo "-$_nd" ;; *) echo "$_nd" ;; esac
 }
-# --- the daemon's reads (FINDINGS 215). Its loop reads with the shell's own read, into variables: a $( ) is a process,
-# a cat another, and one loop of the helpers above started some forty of them every 10 s (52 ticks a minute on a
-# U30 Air on the charger). The helpers above stay for the commands (status, profile...), with the same answers.
+# --- the daemon's reads. Its loop reads with the shell's own read, into variables: a $( ) is a process and a cat
+# another, and an idle device should wake for nothing it can read without one. The helpers above stay for the commands (status, profile...), with the same answers.
 NL='
 '
 rv() { RV=; { read -r RV < "$1"; } 2>/dev/null; }   # rv FILE: its first line into RV (empty when unreadable)
@@ -217,7 +215,7 @@ psy_scan() {
 device_v() { [ -n "${DEVNAME+x}" ] || DEVNAME=$(mu300-device 2>/dev/null); }   # mu300-device, asked once
 battery_v() {  # battery_dir into BAT (false: none)
     BAT=
-    device_v; case $DEVNAME in f50|v50) return 1 ;; esac
+    device_v; [ "$DEVNAME" != f50 ] || return 1
     for _d in $PSY_BAT; do
         if [ -f "$_d/present" ]; then rv "$_d/present"; [ "$RV" = 1 ] || continue; fi
         BAT=$_d; return 0
@@ -331,7 +329,6 @@ cmd_profile() {
 uptime_s() { cut -d. -f1 "$R/proc/uptime" 2>/dev/null || date +%s; }
 
 # --- inputs
-is_openwrt() { [ -f "$R/etc/openwrt_release" ]; }
 # stations: the number of Wi-Fi stations. No wlan0 is 0. A failed dump while wlan0 exists prints 1 and returns 1:
 # activity, the safe direction (the timer restarts), but idle does not wake on it (a downed AP may refuse the dump).
 stations() {
@@ -375,47 +372,31 @@ activity_v() {
 retry_drop() { [ -f "$ST/retry" ] && { grep -v "^$1 " "$ST/retry" > "$ST/retry.tmp"; mv "$ST/retry.tmp" "$ST/retry"; }; return 0; }
 retry_note() { retry_drop "$1"; say "$1 $2 failed, will retry"; echo "$1 $2" >> "$ST/retry"; }
 hotspot() {  # hotspot on|off
-    if is_openwrt; then
-        if [ "$1" = off ]; then _hw=down; else _hw=up; fi
-        bounded "$STEP" wifi "$_hw" </dev/null >/dev/null 2>&1
-    else
-        if [ "$1" = off ]; then _hw=stop; else _hw=start; fi
-        bounded "$STEP" systemctl "$_hw" mu300-hotspot </dev/null >/dev/null 2>&1
-    fi
+    if [ "$1" = off ]; then _hw=down; else _hw=up; fi
+    bounded "$STEP" wifi "$_hw" </dev/null >/dev/null 2>&1
     _rc=$?
     [ "$1" = off ] || uptime_s > "$ST/hotspot-on-at"   # the self-check gives it time to come up (and backs off)
     if [ $_rc -ne 0 ]; then retry_note hotspot "$1"; return 0; fi
     retry_drop hotspot
-    if is_openwrt; then
-        if [ "$1" = off ]; then bounded "$LEDDL" mu300-led wifi off </dev/null >/dev/null 2>&1
-        else ( bounded "${MU300_POWER_SYNC_DEADLINE:-150}" mu300-led wifi sync 120 ) </dev/null >/dev/null 2>&1 & fi
-    fi
+    if [ "$1" = off ]; then bounded "$LEDDL" mu300-led wifi off </dev/null >/dev/null 2>&1
+    else ( bounded "${MU300_POWER_SYNC_DEADLINE:-150}" mu300-led wifi sync 120 ) </dev/null >/dev/null 2>&1 & fi
     return 0
 }
-# hotspot_up: by looking - hostapd serves wlan0 (OpenWrt), mu300-hotspot is running (Ubuntu)
-hotspot_up() {
-    if is_openwrt; then bounded "$PROBE" ubus -t "$PROBE" call hostapd.wlan0 get_status </dev/null >/dev/null 2>&1
-    else bounded "$PROBE" systemctl is-active --quiet mu300-hotspot </dev/null >/dev/null 2>&1; fi
-}
-# hotspot_wanted: not when somebody turned it off on purpose - the Wi-Fi key held (mu300-buttons leaves
-# $ST/hotspot-off), the panel or UCI (OpenWrt: the interface or the radio disabled), the unit disabled (Ubuntu), the
-# radio a Wi-Fi client, or the scan-mode boot
+# hotspot_up: by looking - hostapd serves wlan0
+hotspot_up() { bounded "$PROBE" ubus -t "$PROBE" call hostapd.wlan0 get_status </dev/null >/dev/null 2>&1; }
+# hotspot_wanted: not when somebody turned it off on purpose - the Wi-Fi key held (mu300-sysd leaves
+# $ST/hotspot-off), the panel or UCI (the interface or the radio disabled), or the radio a Wi-Fi client
 hotspot_wanted() {
     [ ! -e "$ST/hotspot-off" ] || return 1
     [ ! -e "$RUNROOT/mu300-wifi-client.active" ] || return 1
-    [ ! -e "$RUNROOT/mu300-wifi-scan-mode" ] || return 1
-    if is_openwrt; then
-        for _hk in 'wireless.@wifi-iface[0].disabled' 'wireless.@wifi-device[0].disabled'; do
-            [ "$(bounded "$PROBE" uci -q get "$_hk" </dev/null 2>/dev/null)" != 1 ] || return 1
-        done
-    else
-        [ "$(bounded "$PROBE" systemctl is-enabled mu300-hotspot </dev/null 2>/dev/null)" != disabled ] || return 1
-    fi
+    for _hk in 'wireless.@wifi-iface[0].disabled' 'wireless.@wifi-device[0].disabled'; do
+        [ "$(bounded "$PROBE" uci -q get "$_hk" </dev/null 2>/dev/null)" != 1 ] || return 1
+    done
     return 0
 }
-# seen_up: the hotspot is up. A hold marker older than MU300_POWER_MARKER_GRACE (the buttons' toggle deadline + 30 s,
+# seen_up: the hotspot is up. A hold marker older than MU300_POWER_MARKER_GRACE (mu300-sysd's key toggle deadline + 30 s,
 # 180 s) is then stale - the hotspot came back some other way (the panel, wifi up by hand) - and goes; a fresh one is
-# a hold whose toggle may still be on its way down. mu300-buttons writes the uptime of the hold into it.
+# a hold whose toggle may still be on its way down. mu300-sysd writes the uptime of the hold into it.
 seen_up() {
     [ -e "$ST/hotspot-off" ] || return 0
     [ $(( $(num "$(uptime_s)") - $(num "$(rd "$ST/hotspot-off")") )) -ge "${MU300_POWER_MARKER_GRACE:-$(( ${MU300_BUTTONS_DEADLINE:-150} + 30 ))}" ] || return 0
@@ -427,15 +408,9 @@ leds_idle() { bounded "$LEDDL" mu300-led idle "$1" </dev/null >/dev/null 2>&1 ||
 # The stop leaves mu300-vpn's kill switch (nft table inet mu300_vpn) in place by its design, and the engine's routes
 # go with it, so nothing leaves outside the tunnel meanwhile; the modem's bearer is down in any case.
 vpn_svc() {  # vpn_svc running|start|stop
-    if is_openwrt; then
-        [ -x "$R/etc/init.d/mu300-vpn" ] || return 1
-        if [ "$1" = running ]; then _vd=$PROBE; else _vd=$STEP; fi
-        bounded "$_vd" "$R/etc/init.d/mu300-vpn" "$1" </dev/null >/dev/null 2>&1
-    elif [ "$1" = running ]; then
-        bounded "$PROBE" systemctl is-active --quiet mu300-vpn </dev/null >/dev/null 2>&1
-    else
-        bounded "$STEP" systemctl "$1" mu300-vpn </dev/null >/dev/null 2>&1
-    fi
+    [ -x "$R/etc/init.d/mu300-vpn" ] || return 1
+    if [ "$1" = running ]; then _vd=$PROBE; else _vd=$STEP; fi
+    bounded "$_vd" "$R/etc/init.d/mu300-vpn" "$1" </dev/null >/dev/null 2>&1
 }
 vpn_stop() {
     [ ! -e "$ST/vpn-stopped" ] || return 0
@@ -445,17 +420,12 @@ vpn_stop() {
     vpn_svc stop || say "stopping mu300-vpn failed"
     say "mu300-vpn stopped while the modem is off"
 }
-# vpn_wanted: the user has not turned it off meanwhile - the service disabled (init.d `enabled` exits 1, systemd says
-# disabled), or ENABLE=0 in its config, which `mu300-vpn enabled` prints without touching the network (vpn.conf
+# vpn_wanted: the user has not turned it off meanwhile - the service disabled (init.d `enabled` exits 1), or ENABLE=0 in its config, which `mu300-vpn enabled` prints without touching the network (vpn.conf
 # itself is not read here). Anything else - a probe that failed or timed out, an older mu300-vpn without the query -
 # counts as wanted: starting the VPN is the safe direction.
 vpn_wanted() {
-    if is_openwrt; then
-        bounded "$PROBE" "$R/etc/init.d/mu300-vpn" enabled </dev/null >/dev/null 2>&1
-        [ $? != 1 ] || return 1
-    else
-        [ "$(bounded "$PROBE" systemctl is-enabled mu300-vpn </dev/null 2>/dev/null)" != disabled ] || return 1
-    fi
+    bounded "$PROBE" "$R/etc/init.d/mu300-vpn" enabled </dev/null >/dev/null 2>&1
+    [ $? != 1 ] || return 1
     [ "$(bounded "$PROBE" mu300-vpn enabled </dev/null 2>/dev/null)" != 0 ] || return 1
     return 0
 }
@@ -512,8 +482,8 @@ cpu() {  # cpu eco|full
             rm -f "$ST/cpu-max4"
         else
             # by looking, without the marker (lost, or eco applied by hand): the big core offline comes back, and
-            # eco's own cap (1.5 GHz exactly) goes. Another cap is the toolkit's profile or thermal-guard's step, not
-            # ours; nothing is lifted while thermal-guard's alarm is on.
+            # eco's own cap (1.5 GHz exactly) goes. Another cap is the toolkit's profile or the thermal guard's step
+            # (mu300-sysd), not ours; nothing is lifted while its alarm is on.
             [ "$(rd "$CPU/cpu7/online")" != 0 ] || kept_off 7 || echo 1 > "$CPU/cpu7/online" 2>/dev/null
             _m=$(rd "$CPU/cpufreq/policy4/cpuinfo_max_freq")
             if [ "$(rd "$CPU/cpufreq/policy4/scaling_max_freq")" = 1500000 ] && [ "$(num "$_m")" -gt 1500000 ] &&
@@ -574,9 +544,8 @@ enter_idle() {  # enter_idle PROFILE REASON: LEDs, hotspot, modem, CPU - in that
     set_state idle "$2"
     busy_drop
 }
-# restore REASON [fast]: bring back what is down, by looking rather than by the state file (2026-10-07: the raw
-# actions run by hand while the state said "active" left a device dark and deaf for hours, as every wake trusted
-# the file). Hotspot, LEDs, CPU, the VPN, then the modem, whose dial can take minutes; each only when it is down.
+# restore REASON [fast]: bring back what is down, by looking rather than by the state file (raw actions run by hand
+# while the state says "active" would otherwise leave the device dark and deaf until the next idle). Hotspot, LEDs, CPU, the VPN, then the modem, whose dial can take minutes; each only when it is down.
 # fast (the exit trap) does not dial: the radio comes on and mobile-data's watcher redials. Needs no daemon: the keys
 # run it through mu300-power wake, and the daemon's own leave_idle and self-check are this.
 restore() {
@@ -586,7 +555,7 @@ restore() {
         return 0
     fi
     if hotspot_up; then seen_up
-    elif [ -e "$ST/hotspot-idled" ] && [ ! -e "$RUNROOT/mu300-wifi-client.active" ] && [ ! -e "$RUNROOT/mu300-wifi-scan-mode" ]; then
+    elif [ -e "$ST/hotspot-idled" ] && [ ! -e "$RUNROOT/mu300-wifi-client.active" ]; then
         rm -f "$ST/hotspot-off"   # idle took it down: whatever a marker says, it was on
         hotspot on
     elif hotspot_wanted; then hotspot on; fi
@@ -612,7 +581,7 @@ leave_idle() { restore "$@"; }
 # A hotspot that stays down after that is retried at a doubling interval, up to 30 min, logged once per step
 # ($ST/selfcheck-hold); it is reset once the hotspot is seen up.
 # hostapd is asked (ubus) only when SAMPLE is 1 - the daemon's every MU300_POWER_SAMPLE_EVERY-th loop, a minute - or
-# when wlan0 is gone: a hotspot that went down by itself is restored up to a minute later than it was (FINDINGS 215).
+# when wlan0 is gone: a hotspot that went down by itself is restored up to a minute later, for one ubus call a minute.
 selfcheck() {
     SC_WHY=
     if [ -e "$MD_SUSPEND" ]; then rv "$MD_SUSPEND"; SC_WHY="the modem is suspended ($RV)"; return 0; fi
@@ -658,7 +627,7 @@ selfcheck() {
 boot_mode() { rd "$RUN/boot-mode"; }
 enter_charging_boot() {
     echo charging-boot > "$ST/state"   # first, as enter_idle does: the retries need to know what the state wants
-    touch "$RUN/charging-boot"         # init made it already; the Ubuntu units check it
+    touch "$RUN/charging-boot"         # init made it already
     echo 0 > "$ST/low-loops"
     hotspot off
     modem_idle off
@@ -668,18 +637,12 @@ enter_charging_boot() {
 leave_charging_boot() {  # leave_charging_boot REASON
     bounded "$LEDDL" mu300-led charge off </dev/null >/dev/null 2>&1 || true
     rm -f "$RUN/charging-boot" "$ST/low-loops" "$ST/unplugged-loops"
-    # skipped at boot by the flag; --no-block: its start waits 15 s, the hotspot must not wait for it
-    is_openwrt || bounded "$STEP" systemctl start --no-block mu300-mobile-data </dev/null >/dev/null 2>&1 || true
     leave_idle "$1"
 }
-# A boot the charger started is a normal one with POWER_ON_CHARGER=1 (U30 Air; kanoqwq's power-on-on-charge option,
-# FINDINGS 196): init made no charging-boot marker then; an older init's is removed here and, on Ubuntu, the two units
-# it held back are started.
+# A boot the charger started is a normal one with POWER_ON_CHARGER=1 (U30 Air; kanoqwq's power-on-on-charge option):
+# the initramfs makes no charging-boot marker then, and one found anyway is removed.
 charger_power_on() {
-    if [ -e "$RUN/charging-boot" ]; then
-        rm -f "$RUN/charging-boot"
-        is_openwrt || bounded "$STEP" systemctl start --no-block mu300-mobile-data mu300-hotspot </dev/null >/dev/null 2>&1 || true
-    fi
+    rm -f "$RUN/charging-boot"
     set_state active "charger boot started as a normal boot (POWER_ON_CHARGER=1)"
 }
 extcon_usb() { for _s in "$R"/sys/class/extcon/*/state; do grep -qx 'USB=1' "$_s" 2>/dev/null && return 0; done; return 1; }
@@ -692,10 +655,10 @@ unplugged() {
 power_off() {  # power_off REASON: a clean poweroff, not a brown-out
     say "$1: powering off"
     : > "$ST/shutdown"   # the TERM trap must not wake the radios on the way down
-    if is_openwrt; then poweroff; else systemctl poweroff </dev/null; fi
+    poweroff
 }
-# The stock charger manager's undervoltage rule (cm_uvlo_check_work in ZTE's sprd-charger-manager.ko, read by kanoqwq,
-# FINDINGS 196): the battery at or under the shutdown voltage + 120 mV for 5 samples in a row (800 ms apart; 1 s
+# The stock charger manager's undervoltage rule (cm_uvlo_check_work in ZTE's sprd-charger-manager.ko, read by kanoqwq):
+# the battery at or under the shutdown voltage + 120 mV for 5 samples in a row (800 ms apart; 1 s
 # here), then off when the capacity is at most 1 % or the voltage at or under the shutdown voltage itself. The
 # shutdown voltage is the device tree's cm-shutdown-voltage (3.10 V on the U30 Air). A sample that cannot be read
 # ends the run without counting. Prints nothing; returns 0 when the battery is to be switched off.
@@ -725,7 +688,7 @@ uvlo() {
     _ulow="battery at $((_uv / 1000)) mV ($_ucap %) for five samples, unplugged"
     return 0
 }
-# Every state, the U30 Air only (battery_dir: the F50 and V50 have none), unplugged only: the undervoltage rule
+# Every state, the U30 Air only (battery_dir: the F50 has none), unplugged only: the undervoltage rule
 # above at once; otherwise, three loops in a row of a battery Android would switch off (BatteryService: capacity_level
 # Critical where the driver has it, else 0 %). Unplugged in the charging boot, charger_gone_check is quicker. Returns 1
 # when it powered off.
@@ -744,8 +707,7 @@ low_battery_check() {
     else power_off "battery at $_lowc % and unplugged for three loops"; fi
     return 1
 }
-# The charging boot ends with the charger, as the stock charger mode does (kanoqwq 85d72fa9, FINDINGS 196): unplugged
-# by every account for two loops in a row, a clean poweroff. Returns 1 when it powered off.
+# The charging boot ends with the charger, as the stock charger mode does: unplugged by every account for two loops in a row, a clean poweroff. Returns 1 when it powered off.
 charger_gone_check() {
     battery_v || return 0
     if ! unplugged_v; then [ ! -e "$ST/unplugged-loops" ] || rm -f "$ST/unplugged-loops"; return 0; fi
@@ -885,7 +847,7 @@ step() {  # one look at the world; sets _acted when it changed the state
     esac
     return 0
 }
-# wait_v: the wait before the next loop into WV, and its reason into WWHY (FINDINGS 217). The base interval (10 s)
+# wait_v: the wait before the next loop into WV, and its reason into WWHY. The base interval (10 s)
 # while something is close: idle (a plug or a computer on USB wakes it, and only a loop sees them), the charging
 # boot (its charger may go), a battery off the charger at 20 % or less (or Low, Critical, unreadable), a retry, a
 # wake or an idle asked for. Otherwise nothing a loop does is urgent: the charge guard (temperature, the limit) every
@@ -943,9 +905,9 @@ cmd_daemon() {
           [ -z "$_bd_w" ] || { kill "$_bd_w" 2>/dev/null; wait "$_bd_w" 2>/dev/null; }; [ -z "$_bd_f" ] || rm -f "$_bd_f"
           _bd_p= _bd_w= _bd_f=
           if [ "$(rd "$ST/state")" = idle ] && ! shutting_down; then leave_idle "daemon stopping" fast; fi; busy_drop; exit 0' TERM INT
-    # The wait between loops (FINDINGS 215): where the shell's read takes a timeout (busybox ash, bash) and the interval
+    # The wait between loops: where the shell's read takes a timeout (busybox ash, bash) and the interval
     # is whole seconds, on a fifo nobody writes to, opened read-write so it never ends either - no sleep process every
-    # 10 s, and the TERM above still ends it at once; else sleep in the background, as before (dash). Its timer may
+    # 10 s, and the TERM above still ends it at once; else sleep in the background (dash). Its timer may
     # fire up to half a second late, so the kernel can serve the timers of several daemons with one wakeup; what the
     # loop starts keeps the default timer slack.
     _iv=${MU300_POWER_INTERVAL:-10} _wfd= _slack=
@@ -1017,12 +979,8 @@ cmd_log() {  # cmd_log [SECONDS] [FILE]
         sleep "$_lge"
     done
 }
-# shutting_down: mu300-buttons and low_battery_check leave $ST/shutdown before poweroff; Ubuntu also says "stopping"
-shutting_down() {
-    [ -e "$ST/shutdown" ] && return 0
-    is_openwrt && return 1
-    [ "$(systemctl is-system-running </dev/null 2>/dev/null)" = stopping ]
-}
+# shutting_down: mu300-sysd (the held power key) and low_battery_check leave $ST/shutdown before poweroff
+shutting_down() { [ -e "$ST/shutdown" ]; }
 cmd_wake() {  # cmd_wake [wifi|power]: the flag holds the key's name ("any" without one) for the daemon, and the restore
     case ${1:-} in ''|wifi|power) ;; *) echo "usage: mu300-power wake [wifi|power]" >&2; return 2 ;; esac   # runs now
     mkdir -p "$ST"; echo "${1:-any}" > "$ST/wake"

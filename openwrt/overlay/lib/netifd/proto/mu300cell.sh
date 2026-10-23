@@ -10,15 +10,15 @@
 # firewall purposes but never installs or removes them. A mixed mode (netifd
 # installing the v4 during setup, a later update reporting external) makes
 # netifd delete the address it installed the moment the first external report
-# arrives - the mobile-data watchdog then saw an address-less WAN and redialled
-# every 60 s. mobile-data's netifd path leaves the interface alone; this script
-# (and in relay mode mu300cell-v6.sh) is the only writer.
+# arrives - the mobile-data watchdog then sees an address-less WAN and redials
+# every 60 s. mobile-data leaves the interface alone; this script (and in relay
+# mode mu300cell-v6.sh) is the only writer.
 #
-# option ipv6: 'relay' (openwrt-luci, set by its first boot; K35-K37, spec D9) takes IPv6 the way kanoqwq's fork
-# does: sipa_eth0 accepts the carrier's RA, odhcpd relays RA/DHCPv6 to the LAN, fw4 masquerades (NAT66), and the
-# event monitor mu300cell-v6.sh (openwrt-luci's overlay) reports the RA's addresses and routes to netifd. It works on
-# carriers that never fill in +CGCONTRDP's v6 address. Unset or 'extend' (plain OpenWrt): the RFC 7278 design
-# below, which needs that address. Relay applies to a dual-stack context only (pdptype other than IP).
+# option ipv6: 'relay' (set by the first boot) takes IPv6 the way kanoqwq's fork does: sipa_eth0 accepts the
+# carrier's RA, odhcpd relays RA/DHCPv6 to the LAN, fw4 masquerades (NAT66), and the event monitor mu300cell-v6.sh
+# reports the RA's addresses and routes to netifd. It works on carriers that never fill in +CGCONTRDP's v6 address.
+# Unset or 'extend': the RFC 7278 design below, which needs that address. Relay applies to a dual-stack context only
+# (pdptype other than IP).
 [ -n "$INCLUDE_ONLY" ] || {
 	. /lib/functions.sh
 	. ../netifd-proto.sh
@@ -33,7 +33,7 @@ mu300cell_slot() {
 proto_mu300cell_init_config() {
 	available=1
 	no_device=1
-	# renew (K35): SIGUSR1 to the protocol task, which is the relay monitor; with no monitor running it does nothing
+	# renew: SIGUSR1 to the protocol task, which is the relay monitor; with no monitor running it does nothing
 	renew_handler=1
 	proto_config_add_string "sim_slot"
 	proto_config_add_string "apn_internal"
@@ -64,9 +64,9 @@ proto_mu300cell_setup() {
 	[ "$ipv6" = relay ] && [ "${pdptype:-IP}" != IP ] && relay=1
 
 	# In the environment only: never an argument, never logged. mobile-data refuses to dial with them unless
-	# /etc/config/network, which holds the password, is root's alone (its settings_private: one gate for this
-	# system and Ubuntu), and says so on stderr, which is logged below; it never prints the credentials.
-	out=$(MU300_NETIFD=1 MU300_PDP_TYPE="${pdptype:-IP}" MU300_IPV6="$ipv6" \
+	# /etc/config/network, which holds the password, is root's alone (its settings_private), and says so on stderr,
+	# which is logged below; it never prints the credentials.
+	out=$(MU300_PDP_TYPE="${pdptype:-IP}" MU300_IPV6="$ipv6" \
 		MU300_APN_AUTH="$auth" MU300_APN_USER="$username" MU300_APN_PASSWORD="$password" \
 		/opt/mu300/bin/mobile-data up "$apn" 2>/tmp/mu300cell.err)
 	case $? in
@@ -78,7 +78,7 @@ proto_mu300cell_setup() {
 		;;
 	4)
 		# Data roaming is off (option roaming / roaming_internal '0') and the card is registered as roaming: held
-		# back on purpose (mobile-data logged it once, docs/FINDINGS.md 120). Asked again in a minute - no context is
+		# back on purpose (mobile-data logged it once). Asked again in a minute - no context is
 		# activated by that, only the registration read - and data comes back by itself at home. ifdown ends it.
 		proto_notify_error "$config" DATA_ROAMING
 		sleep "${MU300_ROAM_RETRY:-60}"
@@ -86,7 +86,7 @@ proto_mu300cell_setup() {
 		return 1
 		;;
 	6)
-		# No card in the SIM slot in use (mu300-sim-state, docs/FINDINGS.md 186): the interface is unavailable, so no
+		# No card in the SIM slot in use (mu300-sim-state): the interface is unavailable, so no
 		# retry every 20 s; the card's event (or mobile-data's watchdog) makes it available again when one answers,
 		# and netifd starts it then - unless somebody took it down (ifdown: autostart off).
 		proto_notify_error "$config" SIM_MISSING
@@ -94,7 +94,7 @@ proto_mu300cell_setup() {
 		return 1
 		;;
 	7)
-		# The SIM's radio is switched off in its settings (mu300-sim-radio, docs/FINDINGS.md 185): no dial until it is
+		# The SIM's radio is switched off in its settings (mu300-sim-radio): no dial until it is
 		# switched on, and no retry meanwhile (the interface unavailable); mu300-sim-radio set ... on (mobile-data
 		# rf-apply) makes it available again, and netifd starts it unless somebody took it down (ifdown).
 		proto_notify_error "$config" SIM_RADIO_DISABLED
@@ -169,8 +169,8 @@ proto_mu300cell_setup() {
 		# odhcp6c learns the /64 from the router advertisement; extendprefix hands that single /64 to the LAN,
 		# where odhcpd advertises it (lan ip6assign 64) - the same as uqmi does for QMI modems.
 		# IPv6 on first: the teardown's mobile-data down switched it off (v6_off), and netifd does not turn it back
-		# on for a device that never went away - after a WAN restart the bearer stayed IPv4-only, odhcp6c failed
-		# with "Network unreachable" and the LAN had no IPv6 until a reboot (seen on an F50, #87). At boot it is on.
+		# on for a device that never went away - after a WAN restart the bearer would stay IPv4-only, odhcp6c fail
+		# with "Network unreachable" and the LAN have no IPv6 until a reboot (#87). At boot it is on.
 		[ -w "/proc/sys/net/ipv6/conf/$ifname/disable_ipv6" ] &&
 			echo 0 > "/proc/sys/net/ipv6/conf/$ifname/disable_ipv6"
 		ip -6 addr add "fe80::$iid/64" dev "$ifname" 2>/dev/null
@@ -188,14 +188,13 @@ proto_mu300cell_setup() {
 		ubus call network add_dynamic "$(json_dump)"
 	else
 		# After proto_send_update, not before: netifd turns IPv6 back on as it configures the interface,
-		# so mobile-data setting this itself has no effect on OpenWrt. The bearer is IPv4-only, and an
-		# interface left with a link-local address sends router solicitations and multicast into it for
-		# nothing. See docs/FINDINGS.md 13f.
+		# so mobile-data setting this itself has no effect. The bearer is IPv4-only, and an interface left
+		# with a link-local address sends router solicitations and multicast into it for nothing.
 		[ -w "/proc/sys/net/ipv6/conf/$ifname/disable_ipv6" ] &&
 			echo 1 > "/proc/sys/net/ipv6/conf/$ifname/disable_ipv6"
 	fi
-	# (the LED: mobile-data up has set it - blue on 4G and white on 5G, on the U30 Air the SIM in use; "data on" here
-	# turned 5G blue)
+	# (the LED: the watchdog sets it - blue on 4G and white on 5G, on the U30 Air the SIM in use; "data on" here
+	# would turn 5G blue)
 	logger -t mu300cell "connected: $ip/${prefix:-32} on $ifname"
 }
 

@@ -58,23 +58,13 @@ return network.registerProtocol('mu300cell', {
 		o.value('1', _('Internal SIM (slot 1)'));
 		o.default = '0';
 		/* A device without slot 1: mu300-sim refuses the selection and every reader uses slot 0, so the page must
-		   not offer the internal SIM (issue #194: it was chosen on a U30 Air and the WAN silently stayed on the
-		   external card). Where the configuration already asks for it, the entry stays, named for what it is: the
+		   not offer the internal SIM (chosen there, the WAN would silently stay on the external card). Where the configuration already asks for it, the entry stays, named for what it is: the
 		   page then shows what is saved and why it has no effect, and choosing the external SIM puts it right. */
 		o.load = function(section_id) {
 			var self = this;
 			var cur = form.ListValue.prototype.load.apply(this, arguments);
 			return Promise.all([ simSupport(), cur ]).then(function(r) {
-				/* the ZTE V50 (FINDINGS 204): each slot is one of the modem's two SIM interfaces, with a choice of
-				   cards behind it (Cellular > SIM) */
-				if (r[0] && r[0].v50) {
-					self.keylist = [];
-					self.vallist = [];
-					self.value('0', _('SIM1: built-in SIM 1 or the external SIM'));
-					self.value('1', _('SIM2: built-in SIM 2 or 3'));
-					self.description = _('Applies after reboot. Which card is behind each SIM is chosen in Cellular > SIM.');
-				}
-				else if (r[0] && !r[0].slot1_supported) {
+				if (r[0] && !r[0].slot1_supported) {
 					self.keylist = [];
 					self.vallist = [];
 					self.value('0', _('External SIM (slot 0)'));
@@ -99,8 +89,8 @@ return network.registerProtocol('mu300cell', {
 		o.depends('sim_slot', '1');
 		o.retain = true;
 
-		/* data roaming, one setting per card (mobile-data, docs/FINDINGS.md 120): unset is allowed, as every release
-		   before it did; the dial and its watchdog read it, so a change applies within half a minute */
+		/* data roaming, one setting per card (mobile-data): unset means allowed; the dial and its watchdog read it,
+		   so a change applies within half a minute */
 		o = s.taboption('general', form.Flag, 'roaming_internal', _('Internal SIM data roaming'),
 			_('Off: no mobile data while the SIM is registered on a roaming network (SMS and calls are not affected). Some SIMs report roaming at home (an MVNO, national roaming): those need it on.'));
 		o.default = o.enabled;
@@ -121,8 +111,8 @@ return network.registerProtocol('mu300cell', {
 		o.depends('sim_slot', '0');
 		o.retain = true;
 
-		/* data roaming, one setting per card (mobile-data, docs/FINDINGS.md 120): unset is allowed, as every release
-		   before it did; the dial and its watchdog read it, so a change applies within half a minute */
+		/* data roaming, one setting per card (mobile-data): unset means allowed; the dial and its watchdog read it,
+		   so a change applies within half a minute */
 		o = s.taboption('general', form.Flag, 'roaming', _('Data roaming'),
 			_('Off: no mobile data while the SIM is registered on a roaming network (SMS and calls are not affected). Some SIMs report roaming at home (an MVNO, national roaming): those need it on.'));
 		o.default = o.enabled;

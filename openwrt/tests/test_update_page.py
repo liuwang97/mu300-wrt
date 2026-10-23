@@ -1,7 +1,7 @@
-"""The panel's System > Update page (docs/FINDINGS.md 86), from the bottom up:
+"""The panel's System > Update page, from the bottom up:
 
   * mu300-update's additions for a panel, sourced for their functions as test_update does: `status` and `releases`
-    as JSON, an update from a file (a Magisk zip of a release, or a directory of release files) with what it refuses,
+    as JSON, an update from a file (a release's root filesystem, or a directory of release files) with what it refuses,
     and the signature of SHA256SUMS, made here with a throwaway Ed25519 key in usign's format;
   * the adapter (luci-app-mu300's unisoc-modem/update) against a stand-in mu300-update: what each operation needs
     before it starts anything, the one background task and its states, the upload's staging directory, the log as the
@@ -21,7 +21,6 @@ import sys
 import tarfile
 import time
 import unittest
-import zipfile
 from pathlib import Path
 
 from helpers import BIN, TOP, ShellTest
@@ -90,65 +89,58 @@ def sha(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
-ROOTFS = {('openwrt', ''): 'mu300-openwrt-rootfs.tar.gz', ('openwrt-luci', ''): 'mu300-openwrt-luci-rootfs.tar.gz',
-          ('ubuntu', '24.04'): 'mu300-ubuntu-rootfs.tar.gz', ('ubuntu', '26.04'): 'mu300-ubuntu-26.04-rootfs.tar.gz'}
-KERNEL = {'5.4': 'mu300-kernel.tar.gz', '6.18': 'mu300-kernel-6.18.tar.gz', '7.2': 'mu300-kernel-7.2.tar.gz', '7.3': 'mu300-kernel-7.3.tar.gz'}
+ROOTFS = 'mu300-openwrt-luci-rootfs.tar.gz'
+KERNEL = 'mu300-kernel-7.2.tar.gz'
 
 
-def release_dir(d, tag='v2026.11.02', os_='openwrt-luci', ubuntu='', kernel='5.4', devices='f50 u30air\n'):
-    """a release's files for one system and one kernel, with their SHA256SUMS: the directory apply --from takes"""
+def release_dir(d, tag='v2026.11.02', devices='f50 u30air\n', version=None):
+    """a release's files, with their SHA256SUMS: the directory apply --from takes"""
     d = Path(d)
     d.mkdir(parents=True, exist_ok=True)
-    rootfs, kasset = ROOTFS[(os_, ubuntu)], KERNEL[kernel]
-    tgz(d / rootfs, [('sbin/init', '#!/bin/sh\n', 0o755), ('etc/mu300/image-version', tag + '\n', 0o644),
+    tgz(d / ROOTFS, [('sbin/init', '#!/bin/sh\n', 0o755), ('etc/mu300/image-version', (version or tag) + '\n', 0o644),
                      ('etc/config/system', 'new\n', 0o644), ('opt/mu300/bin/marker', tag + '\n', 0o644)])
-    files = [('features', 'sdcard\nlinux-slot\n', 0o644), ('Image', 'kernel', 0o644)]
+    files = [('features', 'sdcard\nlinux-slot\n', 0o644), ('Image', 'kernel', 0o644), ('contract', '1\n', 0o644)]
     if devices is not None:
         files.append(('devices', devices, 0o644))
-    tgz(d / kasset, files)
+    tgz(d / KERNEL, files)
     # mu300-release: the tag as a file, listed like the others - what binds the checksums to their release
     (d / 'mu300-release').write_text(tag + '\n')
-    (d / 'SHA256SUMS').write_text(''.join(f'{sha(d / n)}  {n}\n' for n in (kasset, rootfs, 'mu300-release')))
+    (d / 'SHA256SUMS').write_text(''.join(f'{sha(d / n)}  {n}\n' for n in (KERNEL, ROOTFS, 'mu300-release')))
     return d
 
 
-def magisk_zip(path, rel, tag='v2026.11.02', os_='openwrt-luci', ubuntu='', kernel='5.4', sums=False, sig=None,
-               manifest=None, extra=()):
-    """the Magisk zip of that release as tools/make-magisk-zips.sh makes it: mu300/manifest and the stored payload;
-    SUMS adds the release's SHA256SUMS (what a signature covers), SIG its signature"""
-    rel = Path(rel)
-    rootfs, kasset = ROOTFS[(os_, ubuntu)], KERNEL[kernel]
-    system = os_ + ('-' + ubuntu if ubuntu else '')
-    m = (f'TAG={tag}\nSYSTEM={system}\nOS={os_}\nUBUNTU={ubuntu}\nKERNEL={kernel}\nKERNEL_ASSET={kasset}\n'
-         f'ROOTFS_ASSET={rootfs}\nSHA256_KERNEL={sha(rel / kasset)}\nSHA256_ROOTFS={sha(rel / rootfs)}\n')
-    with zipfile.ZipFile(path, 'w', zipfile.ZIP_DEFLATED) as z:
-        z.writestr('mu300/manifest', m if manifest is None else manifest)
-        z.writestr('module.prop', 'id=mu300_linux_switch\n')
-        if sums:
-            z.writestr('mu300/SHA256SUMS', (rel / 'SHA256SUMS').read_text())
-        if sig:
-            z.writestr('mu300/SHA256SUMS.sig', Path(sig).read_text())
-        for n in (kasset, rootfs):
-            z.write(rel / n, 'payload/' + n, zipfile.ZIP_STORED)
-        for name, data in extra:
-            z.writestr(name, data)
+def signed_dir(d, rel, sig=None, extra=()):
+    """a copy of the release directory REL with SIG as its SHA256SUMS.sig (and EXTRA files: name, text)"""
+    shutil.copytree(rel, d)
+    (Path(d) / 'SHA256SUMS.sig').unlink(missing_ok=True)
+    if sig:
+        shutil.copy(sig, Path(d) / 'SHA256SUMS.sig')
+    for name, data in extra:
+        (Path(d) / name).parent.mkdir(parents=True, exist_ok=True)
+        (Path(d) / name).write_text(data)
+    return Path(d)
+
+
+def upload(path, rel):
+    """the release's root filesystem alone, under a name of its own (as the page uploads it): nothing beside it"""
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy(Path(rel) / ROOTFS, path)
     return Path(path)
 
 
-@unittest.skipUnless(shutil.which('unzip') or shutil.which('busybox'), 'unzip is needed to read a Magisk zip')
 class Offline(UpdateBase):
-    """apply --from: the release from a Magisk zip or a directory, and what is refused before anything changes."""
+    """apply --from: the release from its root filesystem (alone, or beside its SHA256SUMS) or a directory, and what is
+    refused before anything changes."""
 
     def setUp(self):
         super().setUp()
-        shutil.rmtree(self.disk / 'ubuntu')
         old = self.disk / 'openwrt-luci'
         for f, data in [('sbin/init', '#!/bin/sh\n'), ('etc/mu300/image-version', 'v2026.10.25\n'),
                         ('etc/config/system', 'mine\n'), ('etc/mu300/hotspot.conf', 'mine\n')]:
             (old / f).parent.mkdir(parents=True, exist_ok=True)
             (old / f).write_text(data)
         self.rel = release_dir(self.tmp / 'rel')
-        self.zip = magisk_zip(self.tmp / 'mu300-magisk-v2026.11.02-openwrt-luci-k5.4.zip', self.rel)
+        self.file = upload(self.tmp / 'up' / 'staged.tar.gz', self.rel)
         self.nokey = self.tmp / 'no-release.pub'
 
     def frm(self, shell, src, code, **env):
@@ -160,73 +152,53 @@ class Offline(UpdateBase):
         r = self.up(shell, f'inspect_json "{src}"', TMPDIR=self.tmp, **env)
         return json.loads(r.stdout), r
 
-    def test_a_zip_says_what_it_is(self):
+    def test_a_file_says_what_it_is(self):
         for shell in self.each_shell():
-            o, r = self.inspect(shell, self.zip)
-            self.assertEqual(o, {'ok': 1, 'kind': 'zip', 'sha256': sha(self.zip), 'size': self.zip.stat().st_size,
-                                 'tag': 'v2026.11.02', 'system': 'openwrt-luci', 'ubuntu': None, 'kernel': '5.4',
-                                 'signature': 'nokey', 'installed': 'v2026.10.25', 'downgrade': 0, 'same': 0, 'fits': 1,
-                                 'why': None}, r.stderr)
+            o, r = self.inspect(shell, self.file)
+            self.assertEqual(o, {'ok': 1, 'kind': 'file', 'sha256': sha(self.file), 'size': self.file.stat().st_size,
+                                 'tag': 'v2026.11.02', 'kernel': 0, 'signature': 'nokey', 'installed': 'v2026.10.25',
+                                 'downgrade': 0, 'same': 0, 'fits': 1, 'why': None}, r.stderr)
+            # beside its release's SHA256SUMS and kernel bundle: those come along
+            o, r = self.inspect(shell, self.rel / ROOTFS)
+            self.assertEqual((o['kind'], o['kernel'], o['fits']), ('file', 1, 1), r.stderr)
             # nothing is left behind, and nothing was unpacked onto the partition
             self.assertFalse((self.disk / '.mu300-update').exists())
             self.assertEqual([p.name for p in self.tmp.glob('tmp.*')], [])
 
     def test_what_is_not_for_this_device_says_why(self):
-        other = release_dir(self.tmp / 'rel-ubuntu', os_='ubuntu', ubuntu='24.04')
-        k72 = release_dir(self.tmp / 'rel-72', kernel='7.2')
         f50 = release_dir(self.tmp / 'rel-f50', devices='f50\n')
-        old = release_dir(self.tmp / 'rel-olddev', devices=None)
-        cases = [
-            (magisk_zip(self.tmp / 'u.zip', other, os_='ubuntu', ubuntu='24.04'), 'f50', 'system-missing'),
-            (magisk_zip(self.tmp / 'k.zip', k72, kernel='7.2'), 'f50', 'kernel'),
-            (magisk_zip(self.tmp / 'd.zip', f50), 'u30air', 'device'),
-            (magisk_zip(self.tmp / 'o.zip', old), 'u30air', 'device'),    # a bundle from before ./devices: the F50's
-            (magisk_zip(self.tmp / 'o2.zip', old), 'f50', None),
-            (magisk_zip(self.tmp / 'd2.zip', f50), 'f50', None),
-        ]
+        none = release_dir(self.tmp / 'rel-nodev', devices=None)
+        kernel_only = self.tmp / 'rel-kernel'
+        kernel_only.mkdir()
+        shutil.copy(self.rel / KERNEL, kernel_only / KERNEL)
+        (kernel_only / 'SHA256SUMS').write_text(f'{sha(kernel_only / KERNEL)}  {KERNEL}\n')
+        (kernel_only / ROOTFS).write_bytes((self.rel / ROOTFS).read_bytes())    # not listed: not the release's
+        cases = [(f50, 'u30air', 'device'), (none, 'u30air', 'device'), (none, 'f50', 'device'),
+                 (f50, 'f50', None), (self.rel, 'u30air', None), (kernel_only, 'f50', 'system-missing')]
         for shell in self.each_shell():
-            for z, device, why in cases:
+            for d, device, why in cases:
                 self.device(device)
-                o, r = self.inspect(shell, z)
-                self.assertEqual((o['ok'], o['fits'], o['why']), (1, 0 if why else 1, why), (z.name, device, r.stderr))
-                r = self.frm(shell, z, 'MU300_ALLOW_UNSIGNED=1; from_begin; echo began')
-                self.assertEqual('began' in r.stdout, why is None, (z.name, r.stderr))
+                o, r = self.inspect(shell, d, MU300_RELEASE='v2026.11.02')
+                self.assertEqual((o['ok'], o['fits'], o['why']), (1, 0 if why else 1, why), (d.name, device, r.stderr))
+                r = self.frm(shell, d, 'MU300_ALLOW_UNSIGNED=1; from_begin; echo began', MU300_RELEASE='v2026.11.02')
+                self.assertEqual('began' in r.stdout, why is None, (d.name, r.stderr))
                 if why:
                     self.assertIn('is not for this device', r.stderr)
             self.device('f50')
-        # the other Ubuntu release than the one installed
-        (self.disk / 'ubuntu/etc').mkdir(parents=True)
-        (self.disk / 'ubuntu/etc/os-release').write_text('ID=ubuntu\nVERSION_ID="26.04"\n')
-        for shell in self.each_shell():
-            o, _ = self.inspect(shell, self.tmp / 'u.zip')
-            self.assertEqual((o['fits'], o['why']), (0, 'ubuntu-release'))
 
     def test_what_is_not_a_release_is_refused(self):
-        m = 'TAG={tag}\nSYSTEM=x\nOS={os}\nUBUNTU=\nKERNEL={k}\nKERNEL_ASSET={ka}\nROOTFS_ASSET={ra}\nSHA256_KERNEL={h}\nSHA256_ROOTFS={h}\n'
-        good = dict(tag='v2026.11.02', os='openwrt-luci', k='5.4', ka='mu300-kernel.tar.gz',
-                    ra='mu300-openwrt-luci-rootfs.tar.gz', h='a' * 64)
-        bad = {
-            'tag of a test build': dict(good, tag='test-issue-102'),
-            'tag with a command': dict(good, tag='v2026.11.02;reboot'),
-            'tag with a path': dict(good, tag='../../etc'),
-            'unknown system': dict(good, os='android'),
-            'unknown kernel': dict(good, k='6.6'),
-            'a rootfs name of its own': dict(good, ra='../../etc/shadow'),
-            'a rootfs of another system': dict(good, ra='mu300-ubuntu-rootfs.tar.gz'),
-            'a kernel name of its own': dict(good, ka='payload/../x'),
-            'a hash that is none': dict(good, h='$(reboot)'),
-        }
-        files = {n: magisk_zip(self.tmp / f'bad{i}.zip', self.rel, manifest=m.format(**v)) for i, (n, v) in enumerate(bad.items())}
-        with zipfile.ZipFile(self.tmp / 'nomanifest.zip', 'w') as z:
-            z.writestr('module.prop', 'id=x\n')
-        files['a zip without a manifest'] = self.tmp / 'nomanifest.zip'
-        (self.tmp / 'text.zip').write_text('PK but not a zip\n')
-        files['a file that only starts like a zip'] = self.tmp / 'text.zip'
-        (self.tmp / 'rootfs.tar.gz').write_bytes((self.rel / 'mu300-openwrt-luci-rootfs.tar.gz').read_bytes())
-        files['a root filesystem alone'] = self.tmp / 'rootfs.tar.gz'
-        (self.tmp / 'link.zip').symlink_to(self.zip)
-        files['a link to a release'] = self.tmp / 'link.zip'
-        files['nothing'] = self.tmp / 'none.zip'
+        files = {}
+        for name, version in (('a tag of a test build', 'test-issue-102'), ('a tag with a command', 'v2026.11.02;reboot'),
+                              ('a tag with a path', '../../etc')):
+            d = release_dir(self.tmp / f'bad-{len(files)}', version=version)
+            files[name] = upload(self.tmp / f'bad-{len(files)}.bin', d)
+        tgz(self.tmp / 'noversion.tar.gz', [('sbin/init', '#!/bin/sh\n', 0o755)])
+        files['a tarball that names no release'] = self.tmp / 'noversion.tar.gz'
+        (self.tmp / 'text.tar.gz').write_text('not a tarball\n')
+        files['a file that only is called a tarball'] = self.tmp / 'text.tar.gz'
+        (self.tmp / 'link.tar.gz').symlink_to(self.file)
+        files['a link to a release'] = self.tmp / 'link.tar.gz'
+        files['nothing'] = self.tmp / 'none.tar.gz'
         (self.tmp / 'emptydir').mkdir()
         files['a directory without SHA256SUMS'] = self.tmp / 'emptydir'
         for shell in self.each_shell():
@@ -242,39 +214,38 @@ class Offline(UpdateBase):
                     self.assertEqual([p.name for p in self.tmp.glob('tmp.*')], [])
 
     def test_a_damaged_file_is_seen_before_anything_is_applied(self):
-        # the payload does not match the hashes the zip carries: the page says so, and apply stops at the file
-        m = (f'TAG=v2026.11.02\nSYSTEM=openwrt-luci\nOS=openwrt-luci\nUBUNTU=\nKERNEL=5.4\nKERNEL_ASSET=mu300-kernel.tar.gz\n'
-             f'ROOTFS_ASSET=mu300-openwrt-luci-rootfs.tar.gz\nSHA256_KERNEL={sha(self.rel / "mu300-kernel.tar.gz")}\n'
-             f'SHA256_ROOTFS={"0" * 64}\n')
-        z = magisk_zip(self.tmp / 'damaged.zip', self.rel, manifest=m)
+        # a file of the directory does not match the checksums it carries: the page says so, and apply stops at it
+        d = release_dir(self.tmp / 'damaged')
+        tgz(d / ROOTFS, [('sbin/init', '#!/bin/sh\n', 0o755), ('etc/mu300/image-version', 'v2026.11.02\n', 0o644),
+                         ('etc/evil', 'x\n', 0o644)])
         for shell in self.each_shell():
-            o, _ = self.inspect(shell, z)
+            o, _ = self.inspect(shell, d)
             self.assertEqual((o['ok'], o['fits'], o['why']), (1, 0, 'checksum'))
-            r = self.frm(shell, z, 'MU300_ALLOW_UNSIGNED=1; from_begin; from_verified v2026.11.02 mu300-openwrt-luci-rootfs.tar.gz; echo "rc=$?"')
+            r = self.frm(shell, d, 'MU300_ALLOW_UNSIGNED=1; from_begin; from_verified v2026.11.02 mu300-openwrt-luci-rootfs.tar.gz; echo "rc=$?"')
             self.assertIn('rc=1', r.stdout)
             self.assertIn('does not match its checksum', r.stderr)
             self.assertFalse((self.disk / '.mu300-update/mu300-openwrt-luci-rootfs.tar.gz').exists())
 
     def test_files_come_out_of_the_source_checked(self):
         for shell in self.each_shell():
-            for src in (self.zip, self.rel):
+            for src, kernel in ((self.rel, 0), (self.rel / ROOTFS, 0), (self.file, 2)):
                 shutil.rmtree(self.disk / '.mu300-update', ignore_errors=True)
-                r = self.frm(shell, src, 'MU300_ALLOW_UNSIGNED=1; from_begin; for f in mu300-openwrt-luci-rootfs.tar.gz mu300-kernel.tar.gz '
-                                         'mu300-extra-lang.tar.gz mu300-update; do fetch_verified v2026.11.02 $f; echo "$f=$?"; done')
+                r = self.frm(shell, src, 'MU300_ALLOW_UNSIGNED=1; from_begin; for f in mu300-openwrt-luci-rootfs.tar.gz mu300-kernel-7.2.tar.gz '
+                                         'mu300-update; do fetch_verified v2026.11.02 $f; echo "$f=$?"; done')
                 stage = self.disk / '.mu300-update'
                 self.assertIn('mu300-openwrt-luci-rootfs.tar.gz=0', r.stdout, r.stderr)
-                self.assertIn('mu300-kernel.tar.gz=0', r.stdout)
-                # what the source does not have is "not part of this release" (2), as on GitHub: the installed
-                # language pack stays, and the run goes on with this updater
-                self.assertIn('mu300-extra-lang.tar.gz=2', r.stdout)
+                # what the source does not have is "not part of this release" (2), as on GitHub: the run goes on
+                # with this updater, and a root filesystem alone leaves the boot image as it is
+                self.assertIn(f'mu300-kernel-7.2.tar.gz={kernel}', r.stdout, (src, r.stderr))
                 self.assertIn('mu300-update=2', r.stdout)
-                self.assertEqual(sha(stage / 'mu300-kernel.tar.gz'), sha(self.rel / 'mu300-kernel.tar.gz'))
+                if kernel == 0:
+                    self.assertEqual(sha(stage / KERNEL), sha(self.rel / KERNEL))
                 self.assertEqual((stage / 'SHA256SUMS.tag').read_text(), 'v2026.11.02\n')
                 # the staging directory is closed to everyone else before anything is checked in it
                 self.assertEqual(stage.stat().st_mode & 0o777, 0o700)
             # a source that was not judged first gives nothing
             shutil.rmtree(self.disk / '.mu300-update', ignore_errors=True)
-            r = self.frm(shell, self.zip, 'fetch_verified v2026.11.02 mu300-kernel.tar.gz; echo "rc=$?"')
+            r = self.frm(shell, self.rel, 'fetch_verified v2026.11.02 mu300-kernel-7.2.tar.gz; echo "rc=$?"')
             self.assertIn('rc=1', r.stdout)
             self.assertIn('was not checked', r.stderr)
 
@@ -282,14 +253,14 @@ class Offline(UpdateBase):
         # time of check, time of use: the checksums are judged once and pinned by their hash; other bytes at their
         # place afterwards (and a payload that matches those) are not taken
         evil = release_dir(self.tmp / 'evil')
-        tgz(evil / 'mu300-kernel.tar.gz', [('Image', 'another kernel', 0o644)])
-        swapped = f'{sha(evil / "mu300-kernel.tar.gz")}  mu300-kernel.tar.gz\n'
+        tgz(evil / KERNEL, [('Image', 'another kernel', 0o644)])
+        swapped = f'{sha(evil / KERNEL)}  {KERNEL}\n'
         for shell in self.each_shell():
             shutil.rmtree(self.disk / '.mu300-update', ignore_errors=True)
-            r = self.frm(shell, self.zip, 'MU300_ALLOW_UNSIGNED=1; from_begin; fetch_verified v2026.11.02 mu300-openwrt-luci-rootfs.tar.gz; '
+            r = self.frm(shell, self.rel, 'MU300_ALLOW_UNSIGNED=1; from_begin; fetch_verified v2026.11.02 mu300-openwrt-luci-rootfs.tar.gz; '
                                           f'echo "first=$?"; printf "%s" "{swapped}" > "$FROM_TMP/SHA256SUMS"; '
-                                          f'cp "{evil}/mu300-kernel.tar.gz" "$STAGE/mu300-kernel.tar.gz"; '
-                                          'fetch_verified v2026.11.02 mu300-kernel.tar.gz; echo "second=$?"')
+                                          f'cp "{evil}/{KERNEL}" "$STAGE/{KERNEL}"; '
+                                          f'fetch_verified v2026.11.02 {KERNEL}; echo "second=$?"')
             self.assertIn('first=0', r.stdout, r.stderr)
             self.assertIn('second=1', r.stdout)
             self.assertIn('changed after they were checked', r.stderr)
@@ -299,14 +270,14 @@ class Offline(UpdateBase):
         # what it was for the rest of the update (the new system's directories are made under it)
         for shell in self.each_shell():
             shutil.rmtree(self.disk / '.mu300-update', ignore_errors=True)
-            r = self.frm(shell, self.zip, 'umask 022; MU300_ALLOW_UNSIGNED=1; from_begin; fetch_verified v2026.11.02 mu300-kernel.tar.gz; '
+            r = self.frm(shell, self.rel, f'umask 022; MU300_ALLOW_UNSIGNED=1; from_begin; fetch_verified v2026.11.02 {KERNEL}; '
                                           'echo "umask=$(umask)"')
             self.assertIn('umask=0022', r.stdout.replace('umask=022', 'umask=0022'), r.stderr)
             stage = self.disk / '.mu300-update'
             self.assertEqual(stage.stat().st_mode & 0o777, 0o700)
             open_ = {str(p.relative_to(stage)): oct(p.stat().st_mode & 0o777) for p in stage.rglob('*') if p.stat().st_mode & 0o077}
             self.assertEqual(open_, {})
-            self.assertTrue((stage / 'mu300-kernel.tar.gz').exists() and (stage / '.from/SHA256SUMS').exists())
+            self.assertTrue((stage / KERNEL).exists() and (stage / '.from/SHA256SUMS').exists())
             # one that others could write into is emptied before it is used: what they left there is not followed
             shutil.rmtree(stage)
             stage.mkdir()
@@ -314,41 +285,42 @@ class Offline(UpdateBase):
             victim = self.tmp / 'victim'
             victim.write_text('untouched')
             (stage / 'SHA256SUMS').symlink_to(victim)
-            (stage / 'mu300-kernel.tar.gz').symlink_to(victim)
-            r = self.frm(shell, self.zip, 'MU300_ALLOW_UNSIGNED=1; from_begin; fetch_verified v2026.11.02 mu300-kernel.tar.gz; echo "rc=$?"')
+            (stage / KERNEL).symlink_to(victim)
+            r = self.frm(shell, self.rel, f'MU300_ALLOW_UNSIGNED=1; from_begin; fetch_verified v2026.11.02 {KERNEL}; echo "rc=$?"')
             self.assertIn('rc=0', r.stdout, r.stderr)
             self.assertEqual(victim.read_text(), 'untouched')
             self.assertEqual(stage.stat().st_mode & 0o777, 0o700)
-            self.assertFalse((stage / 'mu300-kernel.tar.gz').is_symlink())
+            self.assertFalse((stage / KERNEL).is_symlink())
 
     def test_the_file_that_was_looked_at_is_the_file_that_is_used(self):
         # the page shows a file's SHA-256 and the owner says yes to that file: the updater takes it by that hash
-        other = magisk_zip(self.tmp / 'other.zip', release_dir(self.tmp / 'rel2', tag='v2026.11.03'), tag='v2026.11.03')
+        other = upload(self.tmp / 'other.bin', release_dir(self.tmp / 'rel2', tag='v2026.11.03'))
         for shell in self.each_shell():
-            r = self.frm(shell, self.zip, f'apply_options --from "{self.zip}" --unsigned --sha256={sha(self.zip)}; from_begin; echo "began $MU300_RELEASE"')
+            r = self.frm(shell, self.file, f'apply_options --from "{self.file}" --unsigned --sha256={sha(self.file)}; from_begin; echo "began $MU300_RELEASE"')
             self.assertIn('began v2026.11.02', r.stdout, r.stderr)
             # another file at that path since
-            r = self.frm(shell, other, f'apply_options --from "{other}" --unsigned --sha256={sha(self.zip)}; from_begin; echo began')
+            r = self.frm(shell, other, f'apply_options --from "{other}" --unsigned --sha256={sha(self.file)}; from_begin; echo began')
             self.assertNotIn('began', r.stdout)
             self.assertIn('is not the file that was looked at', r.stderr)
             for bad in ('--sha256=xyz', '--sha256=', '--sha256=' + 'A' * 64):
-                r = self.up(shell, f'apply_options --from /x.zip {bad}; echo parsed')
+                r = self.up(shell, f'apply_options --from /x.tar.gz {bad}; echo parsed')
                 self.assertNotIn('parsed', r.stdout, bad)
             # the hash is this run's own word, not the environment's
-            r = self.up(shell, 'apply_options --from /x.zip; echo "[$MU300_FROM_SHA]"', MU300_FROM_SHA='ab' * 32)
+            r = self.up(shell, 'apply_options --from /x.tar.gz; echo "[$MU300_FROM_SHA]"', MU300_FROM_SHA='ab' * 32)
             self.assertEqual(r.stdout.strip(), '[]')
 
     def test_a_system_under_another_releases_name_is_not_installed(self):
         # what is judged (the signature, the downgrade rule, what the page showed) is a name; what is installed is
-        # the files. An unsigned zip that calls itself v2026.12.24 and carries the system of v2026.09.01 passes the
-        # downgrade rule by its name - and stops at the root filesystem's own word, before anything is changed.
+        # the files. A directory taken as v2026.12.24 that carries the system of v2026.09.01 passes the downgrade
+        # rule by its name - and stops at the root filesystem's own word, before anything is changed.
         old = release_dir(self.tmp / 'old', tag='v2026.09.01')
-        liar = magisk_zip(self.tmp / 'liar.zip', old, tag='v2026.12.24')
+        # (checksums that do not name their release: a signed SHA256SUMS would be bound to v2026.09.01 by its own line)
+        (old / 'SHA256SUMS').write_text(''.join(f'{sha(old / n)}  {n}\n' for n in (KERNEL, ROOTFS)))
         nameless = release_dir(self.tmp / 'nameless')
-        tgz(nameless / 'mu300-openwrt-luci-rootfs.tar.gz', [('sbin/init', '#!/bin/sh\n', 0o755)])
-        (nameless / 'SHA256SUMS').write_text(''.join(f'{sha(nameless / n)}  {n}\n' for n in ('mu300-kernel.tar.gz', 'mu300-openwrt-luci-rootfs.tar.gz')))
+        tgz(nameless / ROOTFS, [('sbin/init', '#!/bin/sh\n', 0o755)])
+        (nameless / 'SHA256SUMS').write_text(''.join(f'{sha(nameless / n)}  {n}\n' for n in (KERNEL, ROOTFS)))
         for shell in self.each_shell():
-            for src, said, env in ((liar, 'says it is v2026.09.01, not v2026.12.24', {}),
+            for src, said, env in ((old, 'says it is v2026.09.01, not v2026.12.24', {'MU300_RELEASE': 'v2026.12.24'}),
                                    (nameless, 'says it is no release at all, not v2026.11.02', {'MU300_RELEASE': 'v2026.11.02'})):
                 shutil.rmtree(self.disk / 'openwrt-luci.old', ignore_errors=True)
                 shutil.rmtree(self.disk / '.mu300-update', ignore_errors=True)
@@ -361,7 +333,6 @@ class Offline(UpdateBase):
             # the same for a download: a mirror that serves the old system as the new release (no key on the system)
             shutil.rmtree(self.disk / '.mu300-update', ignore_errors=True)
             serve = (f'fetch_stdout() {{ cat "{old}/${{1##*/}}" 2>/dev/null; }}; fetch_file() {{ cp "{old}/${{1##*/}}" "$2" 2>/dev/null; }}; sleep() {{ :; }}; ')
-            (old / 'SHA256SUMS').write_text(''.join(l + '\n' for l in (old / 'SHA256SUMS').read_text().split('\n') if l and 'mu300-release' not in l))
             r = self.up(shell, self.APPLY + serve + 'apply', MU300_RELEASE='v2026.12.24', MU300_RELEASE_PUB=self.nokey, **self.busybox_applets(shell))
             self.assertNotEqual(r.returncode, 0)
             self.assertIn('says it is v2026.09.01, not v2026.12.24', r.stderr)
@@ -384,7 +355,7 @@ class Offline(UpdateBase):
         elsewhere.mkdir()
         (self.disk / '.mu300-update').symlink_to(elsewhere)
         for shell in self.each_shell():
-            r = self.frm(shell, self.zip, 'MU300_ALLOW_UNSIGNED=1; from_begin; echo began')
+            r = self.frm(shell, self.file, 'MU300_ALLOW_UNSIGNED=1; from_begin; echo began')
             self.assertNotIn('began', r.stdout)
             r = self.up(shell, 'fetch_stdout() { echo x; }; fetch_verified v2026.11.02 mu300-update; echo "rc=$?"')
             self.assertIn('rc=1', r.stdout)
@@ -412,13 +383,12 @@ class Offline(UpdateBase):
             # the same release, or a newer one, needs no word
             r = self.up(shell, self.APPLY + asked + 'apply', MU300_RELEASE='v2026.12.01')
             self.assertNotIn('is older', r.stderr)
-            # a kernel or a boot image taken alone
-            for code in ('boot_downgrade_ok v2026.11.02; echo "rc=$?"',):
-                r = self.up(shell, 'installed_version() { echo v2026.12.01; }; ' + code)
-                self.assertIn('rc=1', r.stdout)
-                r = self.up(shell, 'installed_version() { echo v2026.12.01; }; ' + code, MU300_ALLOW_DOWNGRADE=1)
-                self.assertIn('rc=0', r.stdout)
-            # the new names (FINDINGS 125): every vYYYY.MM.DD.N is newer than every vYYYY.MM.DD, whatever its date
+            # a boot image taken alone
+            r = self.up(shell, 'installed_version() { echo v2026.12.01; }; boot_downgrade_ok v2026.11.02; echo "rc=$?"')
+            self.assertIn('rc=1', r.stdout)
+            r = self.up(shell, 'installed_version() { echo v2026.12.01; }; boot_downgrade_ok v2026.11.02; echo "rc=$?"', MU300_ALLOW_DOWNGRADE=1)
+            self.assertIn('rc=0', r.stdout)
+            # every vYYYY.MM.DD.N is newer than every vYYYY.MM.DD, whatever its date
             (self.disk / 'openwrt-luci/etc/mu300/image-version').write_text('v2026.10.27\n')
             r = self.up(shell, self.APPLY + asked + 'apply', MU300_RELEASE='v2026.10.16.1')
             self.assertNotIn('is older', r.stderr)
@@ -430,101 +400,104 @@ class Offline(UpdateBase):
             src = UPDATE.read_text()
             self.assertLess(src.index('downgrade_ok "$tag" $(apply_targets "$@")'), src.index('exec sh "$STAGE/mu300-update" apply'))
             self.assertIn('boot_downgrade_ok "$t" || exit 1', src)
-            self.assertIn('boot_downgrade_ok "$t" || { echo "$old" > "$KERNEL_CHOICE"', src)
 
     def test_a_directory_names_its_release_by_its_root_filesystem(self):
         for shell in self.each_shell():
             o, r = self.inspect(shell, self.rel)
-            self.assertEqual((o['ok'], o['kind'], o['tag'], o['fits'], o['sha256']), (1, 'dir', 'v2026.11.02', 1, None), r.stderr)
+            self.assertEqual((o['ok'], o['kind'], o['tag'], o['fits'], o['sha256'], o['kernel']), (1, 'dir', 'v2026.11.02', 1, None, 1), r.stderr)
             o, _ = self.inspect(shell, self.rel, MU300_RELEASE='v2026.11.09')
             self.assertEqual(o['tag'], 'v2026.11.09')
 
     def test_an_older_release_needs_the_word(self):
         (self.disk / 'openwrt-luci/etc/mu300/image-version').write_text('v2026.12.01\n')
         for shell in self.each_shell():
-            o, _ = self.inspect(shell, self.zip)
+            o, _ = self.inspect(shell, self.file)
             self.assertEqual((o['downgrade'], o['installed'], o['fits']), (1, 'v2026.12.01', 1))
-            r = self.frm(shell, self.zip, 'MU300_ALLOW_UNSIGNED=1; from_begin; echo began')
+            r = self.frm(shell, self.file, 'MU300_ALLOW_UNSIGNED=1; from_begin; echo began')
             self.assertNotIn('began', r.stdout)
             self.assertIn('older than what is installed (v2026.12.01)', r.stderr)
-            r = self.frm(shell, self.zip, 'MU300_ALLOW_UNSIGNED=1; MU300_ALLOW_DOWNGRADE=1; from_begin; echo "began $MU300_RELEASE"')
+            r = self.frm(shell, self.file, 'MU300_ALLOW_UNSIGNED=1; MU300_ALLOW_DOWNGRADE=1; from_begin; echo "began $MU300_RELEASE"')
             self.assertIn('began v2026.11.02', r.stdout, r.stderr)
 
     def test_a_file_nothing_vouches_for_needs_the_word(self):
-        # no key on this system, or no signature in the file: an upload has no origin, so it is never taken silently
+        # no key on this system, or no signature beside the file: an upload has no origin, so it is never taken
+        # silently
         for shell in self.each_shell():
-            r = self.frm(shell, self.zip, 'from_begin; echo began')
-            self.assertNotIn('began', r.stdout)
-            self.assertIn('is not signed with the project\'s release key', r.stderr)
-            self.assertIn('nothing was changed', r.stderr)
-            r = self.frm(shell, self.zip, 'MU300_ALLOW_UNSIGNED=1; from_begin; echo "began $FROM_ONLY"')
-            self.assertIn('began openwrt-luci', r.stdout, r.stderr)
-            self.assertIn('used because you said so', r.stderr)
+            for src in (self.file, self.rel):
+                r = self.frm(shell, src, 'from_begin; echo began')
+                self.assertNotIn('began', r.stdout)
+                self.assertIn('is not signed with the project\'s release key', r.stderr)
+                self.assertIn('nothing was changed', r.stderr)
+                r = self.frm(shell, src, 'MU300_ALLOW_UNSIGNED=1; from_begin; echo "began $MU300_RELEASE"')
+                self.assertIn('began v2026.11.02', r.stdout, r.stderr)
+                self.assertIn('used because you said so', r.stderr)
 
     def test_apply_options(self):
         for shell in self.each_shell():
-            r = self.up(shell, 'apply_options --no-reinstall --from /x/y.zip openwrt --unsigned --downgrade; '
+            r = self.up(shell, 'apply_options --no-reinstall --from /x/y.tar.gz openwrt-luci --unsigned --downgrade; '
                                'echo "[$MU300_FROM][$MU300_ALLOW_UNSIGNED][$MU300_ALLOW_DOWNGRADE][$APPLY_ARGS]"')
-            self.assertEqual(r.stdout.strip(), '[/x/y.zip][1][1][ --no-reinstall openwrt]', r.stderr)
+            self.assertEqual(r.stdout.strip(), '[/x/y.tar.gz][1][1][ --no-reinstall openwrt-luci]', r.stderr)
             # the owner's word reaches the release's own updater, which apply hands over to with the options taken
-            # out (on the U30 Air "apply --unsigned" was refused by the next release's updater)
+            # out
             r = self.up(shell, 'apply_options --unsigned --downgrade; '
                                'sh -c \'echo "[$MU300_ALLOW_UNSIGNED][$MU300_ALLOW_DOWNGRADE]"\'')
             self.assertEqual(r.stdout.strip(), '[1][1]', r.stderr)
-            r = self.up(shell, 'apply_options ubuntu; echo "[${MU300_FROM:-}][${MU300_ALLOW_UNSIGNED:-}][$APPLY_ARGS]"')
-            self.assertEqual(r.stdout.strip(), '[][][ ubuntu]')
+            r = self.up(shell, 'apply_options openwrt-luci; echo "[${MU300_FROM:-}][${MU300_ALLOW_UNSIGNED:-}][$APPLY_ARGS]"')
+            self.assertEqual(r.stdout.strip(), '[][][ openwrt-luci]')
             for bad in ('--from', 'openwrt "*"', '"a b"', '--from x "$(echo y)z;"'):
                 r = self.up(shell, f'apply_options {bad}; echo parsed')
                 self.assertNotIn('parsed', r.stdout, bad)
                 self.assertNotEqual(r.returncode, 0)
 
     APPLY = ('boot_update() { echo "BOOT $1 $(kernel_asset)"; [ -s "$STAGE/$(kernel_asset)" ] || echo "NO BUNDLE"; }; '
-             'pause_data() { :; }; resume_data() { :; }; modules_fetch() { :; }; modules_install() { :; }; '
+             'modules_fetch() { :; }; modules_install() { :; }; '
              'modules_link() { :; }; extras_install() { :; }; is_root() { false; }; mounted_disk() { :; }; '
              'df() { printf "Filesystem 1K-blocks Used Available Use%% Mounted\\n/dev/x 9 9 9999999 1%% /\\n"; }; '
              'latest_release() { echo "ASKED GITHUB" >&2; }; ')
 
-    def test_the_whole_update_from_a_zip(self):
+    def test_the_whole_update_from_a_file_or_a_directory(self):
         self.stub('curl', 'echo "network used" >> "$STUBLOG/net"; exit 7')
         self.stub('wget', 'echo "network used" >> "$STUBLOG/net"; exit 7')
         for shell in self.each_shell():
-            for d in ('openwrt-luci.old', '.mu300-update'):
-                shutil.rmtree(self.disk / d, ignore_errors=True)
-            (self.disk / 'openwrt-luci/etc/mu300/image-version').write_text('v2026.10.25\n')
-            (self.disk / 'openwrt-luci/etc/config/system').write_text('mine\n')
-            r = self.frm(shell, self.zip, self.APPLY + 'MU300_ALLOW_UNSIGNED=1; apply_options --no-reinstall; apply $APPLY_ARGS',
-                         MU300_DEFAULT_BOOT=self.tmp / 'default-boot', **self.busybox_applets(shell))
-            self.assertEqual(r.returncode, 0, r.stderr)
-            new = self.disk / 'openwrt-luci'
-            self.assertEqual((new / 'etc/mu300/image-version').read_text(), 'v2026.11.02\n', r.stdout + r.stderr)
-            self.assertEqual((new / 'opt/mu300/bin/marker').read_text(), 'v2026.11.02\n')
-            self.assertEqual((new / 'etc/config/system').read_text(), 'mine\n')
-            self.assertEqual((new / 'etc/mu300/hotspot.conf').read_text(), 'mine\n')
-            self.assertEqual((self.disk / 'openwrt-luci.old/etc/mu300/image-version').read_text(), 'v2026.10.25\n')
-            self.assertIn('BOOT v2026.11.02 mu300-kernel.tar.gz', r.stdout)
-            self.assertNotIn('NO BUNDLE', r.stdout)
-            # the release was the file's, and the network was never asked for it
-            self.assertNotIn('ASKED GITHUB', r.stderr)
-            self.assertFalse((self.tmp / 'net').exists())
-            self.assertFalse((self.disk / '.mu300-update').exists())
-            self.assertTrue(self.zip.exists())
+            for src, bundle in ((self.rel, True), (self.file, False)):
+                for d in ('openwrt-luci.old', '.mu300-update'):
+                    shutil.rmtree(self.disk / d, ignore_errors=True)
+                (self.disk / 'openwrt-luci/etc/mu300/image-version').write_text('v2026.10.25\n')
+                (self.disk / 'openwrt-luci/etc/config/system').write_text('mine\n')
+                r = self.frm(shell, src, self.APPLY + 'MU300_ALLOW_UNSIGNED=1; apply_options --no-reinstall; apply $APPLY_ARGS',
+                             MU300_DEFAULT_BOOT=self.tmp / 'default-boot', **self.busybox_applets(shell))
+                self.assertEqual(r.returncode, 0, r.stderr)
+                new = self.disk / 'openwrt-luci'
+                self.assertEqual((new / 'etc/mu300/image-version').read_text(), 'v2026.11.02\n', r.stdout + r.stderr)
+                self.assertEqual((new / 'opt/mu300/bin/marker').read_text(), 'v2026.11.02\n')
+                self.assertEqual((new / 'etc/config/system').read_text(), 'mine\n')
+                self.assertEqual((new / 'etc/mu300/hotspot.conf').read_text(), 'mine\n')
+                self.assertEqual((self.disk / 'openwrt-luci.old/etc/mu300/image-version').read_text(), 'v2026.10.25\n')
+                self.assertIn('BOOT v2026.11.02 mu300-kernel-7.2.tar.gz', r.stdout)
+                # a root filesystem alone leaves the kernel for the next update
+                self.assertEqual('NO BUNDLE' in r.stdout, not bundle, src)
+                # the release was the source's, and the network was never asked for it
+                self.assertNotIn('ASKED GITHUB', r.stderr)
+                self.assertFalse((self.tmp / 'net').exists())
+                self.assertFalse((self.disk / '.mu300-update').exists())
+                self.assertTrue(src.exists())
 
     def test_a_refused_file_changes_nothing(self):
         for shell in self.each_shell():
             shutil.rmtree(self.disk / 'openwrt-luci.old', ignore_errors=True)
             (self.disk / 'openwrt-luci/etc/mu300/image-version').write_text('v2026.10.25\n')
-            r = self.frm(shell, self.zip, self.APPLY + 'apply', **self.busybox_applets(shell))
+            r = self.frm(shell, self.file, self.APPLY + 'apply', **self.busybox_applets(shell))
             self.assertNotEqual(r.returncode, 0)
             self.assertEqual((self.disk / 'openwrt-luci/etc/mu300/image-version').read_text(), 'v2026.10.25\n')
             self.assertFalse((self.disk / 'openwrt-luci.old').exists())
             self.assertNotIn('BOOT', r.stdout)
 
     def test_the_run_goes_on_with_an_updater_that_knows_a_file_only(self):
-        # apply execs the release's own mu300-update when it differs: one from before --from would ask GitHub
+        # apply execs the release's own mu300-update when it differs: one without --from would ask GitHub
         old = self.tmp / 'old-updater'
         old.write_text('#!/bin/sh\nfetch_verified() { :; }\n')
         for shell in self.each_shell():
-            r = self.frm(shell, self.zip, f'from_open; from_handover "{old}"; echo "old=$?"; from_handover "{UPDATE}"; '
+            r = self.frm(shell, self.file, f'from_open; from_handover "{old}"; echo "old=$?"; from_handover "{UPDATE}"; '
                                           'echo "new=$? [$FROM_KIND]"')
             self.assertIn('old=1', r.stdout, r.stderr)
             self.assertIn('new=0 []', r.stdout)
@@ -542,7 +515,7 @@ class Signature(UpdateBase):
         self.other = Key(self.tmp / 'other', number=b'\x09' * 8)
         self.stub('openssl', f'exec "{OPENSSL}" "$@"')
         self.sums = self.tmp / 'SHA256SUMS'
-        self.sums.write_text('a' * 64 + '  mu300-kernel.tar.gz\n')
+        self.sums.write_text('a' * 64 + '  mu300-kernel-7.2.tar.gz\n')
         self.sig = self.key.sign(self.sums)
 
     def state(self, shell, sums, sig, pub=None, **env):
@@ -551,7 +524,7 @@ class Signature(UpdateBase):
 
     def test_states(self):
         changed = self.tmp / 'changed'
-        changed.write_text('b' * 64 + '  mu300-kernel.tar.gz\n')
+        changed.write_text('b' * 64 + '  mu300-kernel-7.2.tar.gz\n')
         same_number = Key(self.tmp / 'same', number=self.key.number)
         garbage = self.tmp / 'garbage.sig'
         garbage.write_text('untrusted comment: x\nnot base64 at all !!\n')
@@ -630,45 +603,6 @@ class Signature(UpdateBase):
         # nothing of the key is left in the temporary directory
         self.assertEqual([p.name for p in self.tmp.glob('tmp.*')], [])
 
-    def test_the_release_scripts_sign_and_never_publish_unsigned_what_devices_would_refuse(self):
-        rel = (TOP / 'tools/make-release.sh').read_text()
-        self.assertIn('sh "$TOP/tools/sign-release.sh" "$D/SHA256SUMS" "$PUB"', rel)
-        self.assertIn('[ "$PUBLISH" != --publish ] || exit 1', rel)
-        self.assertEqual(rel.count('"$D/SHA256SUMS" $SIG'), 2)          # a new release, and files added to one
-        wf = (TOP / '.github/workflows/release.yml').read_text()
-        self.assertIn('MU300_RELEASE_KEY: ${{ secrets.MU300_RELEASE_KEY }}', wf)
-        # the key is in no file of the tree: the public half arrives with the owner's commit, the secret never
-        self.assertNotIn('RWRSqAkN', rel + wf)
-        self.assertIn("RELEASE_PUB=${MU300_RELEASE_PUB:-/opt/mu300/lib/release.pub}", UPDATE.read_text())
-        # the release names itself inside what is signed
-        self.assertIn('echo "$TAG" > "$D/mu300-release"', rel)
-        self.assertIn('sha256sum *.tar.gz *.manifest.gz mu300-update mu300-release; } > SHA256SUMS', rel)      # (and the manifests)
-        self.assertEqual(rel.count('"$D/mu300-release" "$D/SHA256SUMS" $SIG'), 2)
-
-    @unittest.skipUnless(shutil.which('zip') and shutil.which('unzip'), 'zip and unzip are needed to build the Magisk zips')
-    def test_the_zips_of_a_signed_release_check_on_the_device(self):
-        # the whole chain: the release is signed, the zip builder puts SHA256SUMS and its signature into each zip,
-        # and the updater reads them out of the zip and says the file is the project's
-        from test_magisk_zip import fake_release
-        rel = self.tmp / 'v2026.11.02'
-        fake_release(rel)
-        with open(rel / 'SHA256SUMS', 'a') as f:        # as make-release.sh writes it: the release names itself
-            f.write(hashlib.sha256(b'v2026.11.02\n').hexdigest() + '  mu300-release\n')
-        self.assertEqual(self.sign_release(rel / 'SHA256SUMS', self.key.pub, MU300_RELEASE_KEY=self.secret(self.key)).returncode, 0)
-        r = subprocess.run(['sh', str(TOP / 'tools/make-magisk-zips.sh'), str(rel), str(self.tmp / 'zips')], capture_output=True, text=True)
-        self.assertEqual(r.returncode, 0, r.stderr)
-        z = self.tmp / 'zips/mu300-magisk-v2026.11.02-openwrt-luci-k5.4.zip'
-        (self.disk / 'openwrt-luci/etc/mu300').mkdir(parents=True)
-        (self.disk / 'openwrt-luci/etc/mu300/image-version').write_text('v2026.10.25\n')
-        for shell in self.each_shell():
-            r = self.up(shell, f'inspect_json "{z}"', MU300_RELEASE_PUB=self.key.pub, TMPDIR=self.tmp)
-            o = json.loads(r.stdout)
-            self.assertEqual((o['ok'], o['tag'], o['system'], o['kernel'], o['signature'], o['fits']),
-                             (1, 'v2026.11.02', 'openwrt-luci', '5.4', 'valid', 1), r.stderr)
-            # and with another project's key in the system it is not this project's
-            r = self.up(shell, f'inspect_json "{z}"', MU300_RELEASE_PUB=self.other.pub, TMPDIR=self.tmp)
-            self.assertEqual(json.loads(r.stdout)['signature'], 'bad')
-
     def test_usign_does_it_where_there_is_one(self):
         # OpenWrt: usign -V -m SUMS -p KEY -x SIG, and its status is the answer
         self.stub('usign', 'printf "%s\\n" "$*" >> "$STUBLOG/usign"; [ -z "$USIGN_FAIL" ]')
@@ -681,20 +615,20 @@ class Signature(UpdateBase):
         # the checksums of v2026.11.02 (they say so: their mu300-release line), of no release, and of another one
         named, plain, other = self.tmp / 'named', self.tmp / 'plain', self.tmp / 'other-release'
         tagsha = hashlib.sha256(b'v2026.11.02\n').hexdigest()
-        named.write_text('a' * 64 + '  mu300-kernel.tar.gz\n' + tagsha + '  mu300-release\n')
-        plain.write_text('a' * 64 + '  mu300-kernel.tar.gz\n')
-        other.write_text('a' * 64 + '  mu300-kernel.tar.gz\n' + hashlib.sha256(b'v2026.10.01\n').hexdigest() + '  mu300-release\n')
+        named.write_text('a' * 64 + '  mu300-kernel-7.2.tar.gz\n' + tagsha + '  mu300-release\n')
+        plain.write_text('a' * 64 + '  mu300-kernel-7.2.tar.gz\n')
+        other.write_text('a' * 64 + '  mu300-kernel-7.2.tar.gz\n' + hashlib.sha256(b'v2026.10.01\n').hexdigest() + '  mu300-release\n')
         # (state, checksums, offline source, the owner's word) -> taken or not
         cases = [
-            ('valid', named, '', '', True), ('valid', named, '/x.zip', '', True),
+            ('valid', named, '', '', True), ('valid', named, '/x.tar.gz', '', True),
             # a signature says nothing about checksums that name no release, or another one - with any word
-            ('valid', plain, '', '1', False), ('valid', other, '', '1', False), ('valid', other, '/x.zip', '1', False),
-            ('unsigned', other, '/x.zip', '1', False), ('nokey', other, '', '', False),
-            ('bad', named, '', '1', False), ('bad', named, '/x.zip', '1', False),
-            ('badkey', named, '', '1', False), ('badkey', named, '/x.zip', '1', False),
+            ('valid', plain, '', '1', False), ('valid', other, '', '1', False), ('valid', other, '/x.tar.gz', '1', False),
+            ('unsigned', other, '/x.tar.gz', '1', False), ('nokey', other, '', '', False),
+            ('bad', named, '', '1', False), ('bad', named, '/x.tar.gz', '1', False),
+            ('badkey', named, '', '1', False), ('badkey', named, '/x.tar.gz', '1', False),
             ('nokey', named, '', '', True), ('nokey', plain, '', '', True),    # online, no key: as it always was
-            ('nokey', named, '/x.zip', '', False), ('nokey', plain, '/x.zip', '1', True),
-            ('unsigned', named, '/x.zip', '', False), ('unsigned', plain, '/x.zip', '1', True),
+            ('nokey', named, '/x.tar.gz', '', False), ('nokey', plain, '/x.tar.gz', '1', True),
+            ('unsigned', named, '/x.tar.gz', '', False), ('unsigned', plain, '/x.tar.gz', '1', True),
             # this system has a key: no unsigned release silently, newer or older - taking the signature away is
             # not a way in
             ('unsigned', named, '', '', False), ('unsigned', plain, '', '', False), ('unsigned', plain, '', '1', True),
@@ -712,7 +646,7 @@ class Signature(UpdateBase):
         # file others can write. That is not "no key" (which would let everything through as before signing)
         rel = release_dir(self.tmp / 'rel')
         sig = self.key.sign(rel / 'SHA256SUMS')
-        z = magisk_zip(self.tmp / 'signed.zip', rel, sums=True, sig=sig)
+        z = signed_dir(self.tmp / 'signed', rel, sig)
         (self.disk / 'openwrt-luci/etc/mu300').mkdir(parents=True)
         (self.disk / 'openwrt-luci/etc/mu300/image-version').write_text('v2026.10.25\n')
         link = self.tmp / 'link.pub'
@@ -723,7 +657,7 @@ class Signature(UpdateBase):
         empty = self.tmp / 'empty.pub'
         empty.write_text('')
         get = (self.serve(rel) + 'installed_version() { echo v2026.10.25; }; '
-               'fetch_verified v2026.11.02 mu300-kernel.tar.gz; echo "rc=$?"')
+               'fetch_verified v2026.11.02 mu300-kernel-7.2.tar.gz; echo "rc=$?"')
         for shell in self.each_shell():
             for pub in (link, loose, empty, self.tmp):
                 self.assertEqual(self.state(shell, rel / 'SHA256SUMS', sig, pub=pub), 'badkey', pub.name)
@@ -736,8 +670,8 @@ class Signature(UpdateBase):
                     self.assertNotIn('began', r.stdout, pub.name)
                 o = json.loads(self.up(shell, f'inspect_json "{z}"', MU300_RELEASE_PUB=pub, TMPDIR=self.tmp).stdout)
                 self.assertEqual((o['signature'], o['fits'], o['why']), ('bad', 0, 'signature'), pub.name)
-        # a zip that brings a key of its own, and is signed with it: the key is never read from there
-        own = magisk_zip(self.tmp / 'own.zip', rel, sums=True, sig=self.other.sign(rel / 'SHA256SUMS', self.tmp / 'own.sig'),
+        # a directory that brings a key of its own, and is signed with it: the key is never read from there
+        own = signed_dir(self.tmp / 'own', rel, self.other.sign(rel / 'SHA256SUMS', self.tmp / 'own.sig'),
                          extra=[('mu300/release.pub', self.other.pub.read_text()), ('release.pub', self.other.pub.read_text()),
                                 ('opt/mu300/lib/release.pub', self.other.pub.read_text())])
         for shell in self.each_shell():
@@ -749,27 +683,27 @@ class Signature(UpdateBase):
         self.assertEqual(src.count('release.pub'), 1)          # one place names the key: the system's own path
 
     def test_a_signature_of_one_release_under_the_name_of_another(self):
-        # the signed checksums of the old v2026.10.01, handed out as v2026.11.02: by a mirror, and in a zip whose
-        # manifest says the newer tag. The tag is inside what is signed.
+        # the signed checksums of the old v2026.10.01, handed out as v2026.11.02: by a mirror, and as a directory
+        # said to be the newer release. The tag is inside what is signed.
         (self.disk / 'openwrt-luci/etc/mu300').mkdir(parents=True)
         (self.disk / 'openwrt-luci/etc/mu300/image-version').write_text('v2026.10.25\n')
         old = release_dir(self.tmp / 'old', tag='v2026.10.01')
         sig = self.key.sign(old / 'SHA256SUMS')
-        relabelled = magisk_zip(self.tmp / 'relabelled.zip', old, tag='v2026.11.02', sums=True, sig=sig)
-        honest = magisk_zip(self.tmp / 'honest.zip', old, tag='v2026.10.01', sums=True, sig=sig)
+        relabelled = honest = signed_dir(self.tmp / 'signed-old', old, sig)
+        said = {'MU300_RELEASE': 'v2026.11.02'}
         inst = 'installed_version() { echo v2026.10.25; }; '
         for shell in self.each_shell():
             shutil.rmtree(self.disk / '.mu300-update', ignore_errors=True)
-            r = self.up(shell, self.serve(old) + inst + 'fetch_verified v2026.11.02 mu300-kernel.tar.gz; echo "rc=$?"',
+            r = self.up(shell, self.serve(old) + inst + 'fetch_verified v2026.11.02 mu300-kernel-7.2.tar.gz; echo "rc=$?"',
                         MU300_RELEASE_PUB=self.key.pub, TMPDIR=self.tmp)
             self.assertIn('rc=3', r.stdout, r.stderr)
             self.assertIn('checksums of another release than v2026.11.02', r.stderr)
-            self.assertFalse((self.disk / '.mu300-update/mu300-kernel.tar.gz').exists())
-            o = json.loads(self.up(shell, f'inspect_json "{relabelled}"', MU300_RELEASE_PUB=self.key.pub, TMPDIR=self.tmp).stdout)
+            self.assertFalse((self.disk / '.mu300-update/mu300-kernel-7.2.tar.gz').exists())
+            o = json.loads(self.up(shell, f'inspect_json "{relabelled}"', MU300_RELEASE_PUB=self.key.pub, TMPDIR=self.tmp, **said).stdout)
             self.assertEqual((o['signature'], o['fits'], o['why']), ('bad', 0, 'signature'))
             for word in ('', '1'):
                 r = self.up(shell, f'MU300_FROM="{relabelled}"; MU300_ALLOW_UNSIGNED={word}; MU300_ALLOW_DOWNGRADE={word}; from_begin; echo began',
-                            MU300_RELEASE_PUB=self.key.pub, TMPDIR=self.tmp)
+                            MU300_RELEASE_PUB=self.key.pub, TMPDIR=self.tmp, **said)
                 self.assertNotIn('began', r.stdout, r.stderr)
             # under its own name it is what it is: signed, and older than what is installed
             o = json.loads(self.up(shell, f'inspect_json "{honest}"', MU300_RELEASE_PUB=self.key.pub, TMPDIR=self.tmp).stdout)
@@ -784,7 +718,7 @@ class Signature(UpdateBase):
         psig = self.key.sign(plain / 'SHA256SUMS')
         for shell in self.each_shell():
             shutil.rmtree(self.disk / '.mu300-update', ignore_errors=True)
-            r = self.up(shell, self.serve(plain) + inst + 'fetch_verified v2026.11.02 mu300-kernel.tar.gz; echo "rc=$?"',
+            r = self.up(shell, self.serve(plain) + inst + 'fetch_verified v2026.11.02 mu300-kernel-7.2.tar.gz; echo "rc=$?"',
                         MU300_RELEASE_PUB=self.key.pub, TMPDIR=self.tmp)
             self.assertIn('rc=3', r.stdout, r.stderr)
             self.assertIn('do not say which release', r.stderr)
@@ -797,8 +731,8 @@ class Signature(UpdateBase):
         tgz(evil, [('Image', 'another kernel', 0o644)])
         code = (self.serve(rel) + 'installed_version() { echo v2026.10.25; }; '
                 'fetch_verified v2026.11.02 mu300-openwrt-luci-rootfs.tar.gz; echo "first=$?"; '
-                f'printf "%s  mu300-kernel.tar.gz\n" "{sha(evil)}" > "$STAGE/SHA256SUMS"; cp "{evil}" "$STAGE/mu300-kernel.tar.gz"; '
-                'fetch_verified v2026.11.02 mu300-kernel.tar.gz; echo "second=$?"')
+                f'printf "%s  mu300-kernel-7.2.tar.gz\n" "{sha(evil)}" > "$STAGE/SHA256SUMS"; cp "{evil}" "$STAGE/mu300-kernel-7.2.tar.gz"; '
+                'fetch_verified v2026.11.02 mu300-kernel-7.2.tar.gz; echo "second=$?"')
         for shell in self.each_shell():
             for pub in (self.key.pub, self.tmp / 'no.pub'):
                 shutil.rmtree(self.disk / '.mu300-update', ignore_errors=True)
@@ -815,7 +749,7 @@ class Signature(UpdateBase):
     def test_a_download_is_checked_against_the_signature(self):
         rel = release_dir(self.tmp / 'rel')
         sig = self.key.sign(rel / 'SHA256SUMS')
-        get = 'fetch_verified v2026.11.02 mu300-kernel.tar.gz; echo "rc=$?"'
+        get = 'fetch_verified v2026.11.02 mu300-kernel-7.2.tar.gz; echo "rc=$?"'
         inst = 'installed_version() { echo v2026.10.25; }; '
         stage = self.disk / '.mu300-update'
         for shell in self.each_shell():
@@ -827,8 +761,8 @@ class Signature(UpdateBase):
             evil = self.tmp / 'evil'
             shutil.rmtree(evil, ignore_errors=True)
             shutil.copytree(rel, evil)
-            tgz(evil / 'mu300-kernel.tar.gz', [('Image', 'another kernel', 0o644)])
-            (evil / 'SHA256SUMS').write_text(f'{sha(evil / "mu300-kernel.tar.gz")}  mu300-kernel.tar.gz\n')
+            tgz(evil / 'mu300-kernel-7.2.tar.gz', [('Image', 'another kernel', 0o644)])
+            (evil / 'SHA256SUMS').write_text(f'{sha(evil / "mu300-kernel-7.2.tar.gz")}  mu300-kernel-7.2.tar.gz\n')
             for strip in (False, True):
                 if strip:
                     (evil / 'SHA256SUMS.sig').unlink()
@@ -836,7 +770,7 @@ class Signature(UpdateBase):
                 r = self.up(shell, self.serve(evil) + inst + get, MU300_RELEASE_PUB=self.key.pub, TMPDIR=self.tmp)
                 # (3: the release was refused, which no second try changes - apply says no more than that)
                 self.assertIn('rc=3', r.stdout, (strip, r.stderr))
-                self.assertFalse((stage / 'mu300-kernel.tar.gz').exists())
+                self.assertFalse((stage / 'mu300-kernel-7.2.tar.gz').exists())
             # a release from before signing, older than what is installed: not silently either, once there is a key
             shutil.rmtree(stage, ignore_errors=True)
             unsigned = self.tmp / 'unsigned'
@@ -862,15 +796,14 @@ class Signature(UpdateBase):
             r = self.up(shell, self.serve(evil) + inst + get, MU300_RELEASE_PUB=self.tmp / 'no.pub', TMPDIR=self.tmp)
             self.assertIn('rc=0', r.stdout, r.stderr)
 
-    @unittest.skipUnless(shutil.which('unzip') or shutil.which('busybox'), 'unzip is needed to read a Magisk zip')
-    def test_a_signed_zip_needs_no_word_and_a_forged_one_gets_none(self):
+    def test_a_signed_release_needs_no_word_and_a_forged_one_gets_none(self):
         (self.disk / 'openwrt-luci/etc/mu300').mkdir(parents=True)
         (self.disk / 'openwrt-luci/etc/mu300/image-version').write_text('v2026.10.25\n')
         rel = release_dir(self.tmp / 'rel')
         sig = self.key.sign(rel / 'SHA256SUMS')
-        good = magisk_zip(self.tmp / 'good.zip', rel, sums=True, sig=sig)
-        nosig = magisk_zip(self.tmp / 'nosig.zip', rel, sums=True)
-        forged = magisk_zip(self.tmp / 'forged.zip', rel, sums=True, sig=self.other.sign(rel / 'SHA256SUMS', self.tmp / 'f.sig'))
+        good = signed_dir(self.tmp / 'good', rel, sig)
+        nosig = signed_dir(self.tmp / 'nosig', rel)
+        forged = signed_dir(self.tmp / 'forged', rel, self.other.sign(rel / 'SHA256SUMS', self.tmp / 'f.sig'))
         for shell in self.each_shell():
             for z, state, begins, with_word in ((good, 'valid', True, True), (nosig, 'unsigned', False, True),
                                                 (forged, 'bad', False, False)):
@@ -888,21 +821,17 @@ class Status(test_update.Lock):
     """mu300-update status and releases: JSON a page can take as it is."""
 
     def fill(self):
-        for os_, tag in (('ubuntu', 'v2026.10.25'), ('openwrt-luci', 'v2026.10.25'), ('openwrt-luci.old', 'v2026.10.18')):
+        for os_, tag in (('openwrt-luci', 'v2026.10.25'), ('openwrt-luci.old', 'v2026.10.18')):
             (self.disk / os_ / 'etc/mu300').mkdir(parents=True, exist_ok=True)
             (self.disk / os_ / 'etc/mu300/image-version').write_text(tag + '\n')
-        (self.disk / 'ubuntu/etc/os-release').write_text('ID=ubuntu\nVERSION_ID="26.04"\n')
-        (self.disk / 'ubuntu/usr/lib').mkdir(parents=True)
-        (self.disk / 'ubuntu/usr/lib/os-release').write_text('ID=ubuntu\nVERSION_ID="26.04"\n')
         boot = self.disk / 'boot'
         boot.mkdir()
-        for f, v in (('installed.tag', 'v2026.10.25'), ('installed.kernel', '6.18'), ('kernel', '6.18'),
-                     ('prev.tag', 'v2026.10.18'), ('prev.kernel', '5.4'), ('prev.body', 'image'), ('prev.slot', 'b')):
+        for f, v in (('installed.tag', 'v2026.10.25'), ('prev.tag', 'v2026.10.18'), ('prev.body', 'image'), ('prev.slot', 'b')):
             (boot / f).write_text(v + '\n')
         (self.disk / '.mu300').mkdir()
         (self.disk / '.mu300/boot-attempts').write_text('3\n')
         (self.tmp / 'default-boot').write_text('linux\n')
-        (self.tmp / 'notice').write_text('mu300-linux v2026.11.02 is out (this is v2026.10.25): sudo mu300-update apply\n')
+        (self.tmp / 'notice').write_text('mu300-linux v2026.11.02 is out (this is v2026.10.25): mu300-update apply\n')
 
     def status(self, shell, args='', **env):
         r = self.sh(shell, f'. "{UPDATE}"; installed_version() {{ echo v2026.10.25; }}; status_json {args}', MU300_LIB=1,
@@ -920,19 +849,15 @@ class Status(test_update.Lock):
             self.assertEqual((o['ok'], o['device'], o['installed'], o['running'], o['restart_pending']),
                              (1, 'f50', 'v2026.10.25', 'openwrt-luci', 0), r.stderr)
             by = {s['name']: s for s in o['systems']}
-            self.assertEqual(set(by), {'ubuntu', 'openwrt-luci'})
-            self.assertEqual((by['ubuntu']['release'], by['ubuntu']['ubuntu'], by['ubuntu']['previous']), ('v2026.10.25', '26.04', None))
+            self.assertEqual(set(by), {'openwrt-luci'})
             prev = by['openwrt-luci']['previous']
             self.assertEqual((prev['release'], prev['running']), ('v2026.10.18', 0))
             self.assertIsInstance(prev['kb'], int)
             k = o['kernel']
-            self.assertEqual((k['choice'], k['boot'], k['boot_kernel'], k['slot']), ('6.18', 'v2026.10.25', '6.18', 'b'))
-            # Ubuntu 26.04 is on this device: 5.4 is not offered (kernel_cmd refuses it)
-            self.assertEqual([(c['name'], c['ok'], c['why']) for c in k['choices']],
-                             [('5.4', 0, 'ubuntu-26.04'), ('6.18', 1, None), ('7.2', 1, None), ('7.3', 1, None)])
-            self.assertEqual((k['previous']['release'], k['previous']['kernel'], k['previous']['usable']), ('v2026.10.18', '5.4', 1))
+            self.assertEqual((k['series'], k['boot'], k['slot']), ('7.2', 'v2026.10.25', 'b'))
+            self.assertEqual((k['previous']['release'], k['previous']['usable']), ('v2026.10.18', 1))
             self.assertEqual((o['boot_default'], o['boot_attempts'], o['boot_locked']), ('linux', 3, 0))
-            self.assertEqual((o['disk']['need_one_kb'], o['disk']['need_all_kb']), (2000000, 3000000))
+            self.assertEqual((o['disk']['need_one_kb'], o['disk']['need_all_kb']), (2000000, 2000000))
             self.assertIsInstance(o['disk']['free_kb'], int)
             self.assertEqual(o['lock'], {'held': 0, 'pid': None, 'command': None})
             self.assertEqual(o['notice'], 'v2026.11.02')
@@ -940,14 +865,14 @@ class Status(test_update.Lock):
             # without --sizes nothing is added up
             o, _ = self.status(shell)
             self.assertIsNone({s['name']: s for s in o['systems']}['openwrt-luci']['previous']['kb'])
-            # the note of a release with a four-field tag (FINDINGS 125)
-            (self.tmp / 'notice').write_text('mu300-linux v2026.10.16.10 is out (this is v2026.10.25): sudo mu300-update apply\n')
+            # the note of a release with a four-field tag
+            (self.tmp / 'notice').write_text('mu300-linux v2026.10.16.10 is out (this is v2026.10.25): mu300-update apply\n')
             self.assertEqual(self.status(shell)[0]['notice'], 'v2026.10.16.10')
-            (self.tmp / 'notice').write_text('mu300-linux v2026.11.02 is out (this is v2026.10.25): sudo mu300-update apply\n')
+            (self.tmp / 'notice').write_text('mu300-linux v2026.11.02 is out (this is v2026.10.25): mu300-update apply\n')
         self.assertFalse((self.tmp / 'net').exists())
 
     def test_status_of_an_empty_device_is_still_json(self):
-        shutil.rmtree(self.disk / 'ubuntu')
+        shutil.rmtree(self.disk / 'openwrt-luci')
         (self.tmp / 'notice').write_text('mu300-linux v1"; rm -rf / is out (this is x): y\n')
         for shell in self.each_shell():
             o, r = self.status(shell)
@@ -999,13 +924,12 @@ class Status(test_update.Lock):
                             'browser_download_url': f'https://github.com/x/y/releases/download/{tag}/{n}'} for n, s in assets.items()],
                 'tarball_url': 'https://api.github.com/x/tarball', 'zipball_url': 'https://api.github.com/x/zipball',
                 # notes that look like the fields this reads
-                'body': 'Notes: "tag_name": "v2099.01.01", "prerelease": true,\r\n| "name": "mu300-kernel.tar.gz", "size": 1 |\n{"assets": [1]}',
+                'body': 'Notes: "tag_name": "v2099.01.01", "prerelease": true,\r\n| "name": "mu300-kernel-7.2.tar.gz", "size": 1 |\n{"assets": [1]}',
             })
         return json.dumps(out, indent=2) if pretty else json.dumps(out, separators=(',', ':'))
 
-    ASSETS = {'mu300-kernel.tar.gz': 20000000, 'mu300-kernel-6.18.tar.gz': 30000000, 'mu300-openwrt-luci-rootfs.tar.gz': 40000000,
-              'mu300-ubuntu-rootfs.tar.gz': 300000000, 'mu300-ubuntu-26.04-rootfs.tar.gz': 310000000,
-              'mu300-extra-lang.tar.gz': 2000000, 'mu300-update': 100000, 'SHA256SUMS': 900}
+    ASSETS = {'mu300-kernel-7.2.tar.gz': 20000000, 'mu300-openwrt-luci-rootfs.tar.gz': 40000000,
+              'mu300-update': 100000, 'SHA256SUMS': 900}
 
     def releases(self, shell, listing, latest):
         (self.tmp / 'list.json').write_text(listing)
@@ -1016,9 +940,6 @@ class Status(test_update.Lock):
 
     def test_releases(self):
         self.fill()
-        (self.disk / 'extra/lang/i18n').mkdir(parents=True)
-        (self.disk / 'extra/lang/name').write_text('lang\n')
-        (self.disk / 'extra/lang/release').write_text('v2026.10.25\n')
         signed = dict(self.ASSETS, **{'SHA256SUMS.sig': 150})
         rels = [('v2026.11.09', True, False, signed), ('test-issue-102', True, False, {}), ('v2026.11.05', True, True, self.ASSETS),
                 ('v2026.11.02', False, False, self.ASSETS), ('v2026.10.30', True, False, self.ASSETS),
@@ -1029,14 +950,13 @@ class Status(test_update.Lock):
                 self.assertEqual((o['ok'], o['installed'], o['boot']), (1, 'v2026.10.25', 'v2026.10.25'), r.stderr)
                 la = o['latest']
                 self.assertEqual((la['tag'], la['title'], la['published'], la['signed'], la['systems'], la['need_kb']),
-                                 ('v2026.11.02', 'MU300 Linux v2026.11.02', '2026-11-02', 0, 2, 3000000))
-                self.assertEqual(la['url'], 'https://github.com/dikeckaan/mu300-linux/releases/tag/v2026.11.02')
-                # what this device takes: both systems (Ubuntu's 26.04), the 6.18 kernel, the updater, the language pack
+                                 ('v2026.11.02', 'MU300 Linux v2026.11.02', '2026-11-02', 0, 1, 2000000))
+                self.assertEqual(la['url'], 'https://github.com/liuwang97/mu300-wrt/releases/tag/v2026.11.02')
+                # what this device takes: the system, the kernel bundle, the updater
                 self.assertEqual({f['name']: f['size'] for f in la['files']},
-                                 {'mu300-kernel-6.18.tar.gz': 30000000, 'mu300-update': 100000,
-                                  'mu300-ubuntu-26.04-rootfs.tar.gz': 310000000, 'mu300-openwrt-luci-rootfs.tar.gz': 40000000,
-                                  'mu300-extra-lang.tar.gz': 2000000})
-                self.assertEqual(la['download'], 382100000)
+                                 {'mu300-kernel-7.2.tar.gz': 20000000, 'mu300-update': 100000,
+                                  'mu300-openwrt-luci-rootfs.tar.gz': 40000000})
+                self.assertEqual(la['download'], 60100000)
                 # the newest pre-release that is a release tag, not a draft, and newer than the newest release
                 self.assertEqual((o['beta']['tag'], o['beta']['signed']), ('v2026.11.09', 1))
             # no pre-release newer than the newest release: none is offered
@@ -1045,10 +965,10 @@ class Status(test_update.Lock):
             # up to date: nothing but the kernel and the updater would be looked at
             o, _ = self.releases(shell, self.github(True, rels[5:]), 'v2026.10.25')
             self.assertEqual((o['latest']['systems'], o['latest']['need_kb']), (0, 1000000))
-        self.assertIn('https://api.github.com/repos/dikeckaan/mu300-linux/releases?per_page=10', (self.tmp / 'asked').read_text())
+        self.assertIn('https://api.github.com/repos/liuwang97/mu300-wrt/releases?per_page=10', (self.tmp / 'asked').read_text())
 
     def test_releases_of_the_new_names(self):
-        # vYYYY.MM.DD.N (FINDINGS 125): newer than every three-field tag, whatever its date; .10 after .9
+        # vYYYY.MM.DD.N: newer than every three-field tag, whatever its date; .10 after .9
         self.fill()
         rels = [('v2026.10.16.9', True, False, self.ASSETS), ('v2026.10.16.10', True, False, self.ASSETS),
                 ('v2026.10.26', True, False, self.ASSETS), ('v2026.10.16.0', True, False, self.ASSETS),
@@ -1112,7 +1032,7 @@ class Status(test_update.Lock):
         # clears those variables before it runs anything)
         conf = self.tmp / 'update-source'
         self.fill()
-        url = 'https://proxy.example/https://github.com/dikeckaan/mu300-linux/releases/download'
+        url = 'https://proxy.example/https://github.com/liuwang97/mu300-wrt/releases/download'
         for shell in self.each_shell():
             conf.unlink(missing_ok=True)
             o, r = self.status(shell, MU300_SOURCE_CONF=conf)
@@ -1137,9 +1057,9 @@ class Status(test_update.Lock):
         # take it out again - written through the checks source_conf reads the file with, so the next run takes it
         conf = self.tmp / 'update-source'
         self.stub('id', 'echo 0')
-        url = 'https://proxy.example/https://github.com/dikeckaan/mu300-linux/releases/download'
-        default = ('release files  https://github.com/dikeckaan/mu300-linux/releases/download  (default)\n'
-                   'release list   https://api.github.com/repos/dikeckaan/mu300-linux  (default)\n')
+        url = 'https://proxy.example/https://github.com/liuwang97/mu300-wrt/releases/download'
+        default = ('release files  https://github.com/liuwang97/mu300-wrt/releases/download  (default)\n'
+                   'release list   https://api.github.com/repos/liuwang97/mu300-wrt  (default)\n')
         for shell in self.each_shell():
             conf.unlink(missing_ok=True)
             r = self.script(shell, UPDATE, 'source', MU300_SOURCE_CONF=conf)
@@ -1176,7 +1096,7 @@ class Status(test_update.Lock):
         # a mirror the device cannot reach: said once, and the rest of that run comes from github.com. An HTTP
         # error is the source's answer, and stops the run as it always did.
         conf = self.tmp / 'update-source'
-        url = 'https://proxy.example/https://github.com/dikeckaan/mu300-linux/releases/download'
+        url = 'https://proxy.example/https://github.com/liuwang97/mu300-wrt/releases/download'
         field = 'a' * 64
         conf.write_text(f'MU300_DOWNLOAD_URL={url}\n')
         conf.chmod(0o600)
@@ -1195,7 +1115,7 @@ class Status(test_update.Lock):
             self.assertIn('api: []', r.stdout, 'a run that says github.com must not still ask an API mirror')
             urls = (self.tmp / 'urls').read_text().split()
             self.assertTrue(urls[0].startswith(url + '/v2026.11.02/'), urls[:2])
-            self.assertIn('https://github.com/dikeckaan/mu300-linux/releases/download/v2026.11.02/SHA256SUMS', urls)
+            self.assertIn('https://github.com/liuwang97/mu300-wrt/releases/download/v2026.11.02/SHA256SUMS', urls)
         # an HTTP error (22) is not a mirror that is gone: the run stops with the source still in place
         self.stub('curl', 'for u in "$@"; do :; done\nprintf "%s\\n" "$u" >> "$STUBLOG/urls"\ncase $u in *proxy.example*) exit 22 ;; *) exit 0 ;; esac')
         for shell in self.each_shell():
@@ -1247,7 +1167,7 @@ class Status(test_update.Lock):
             r = self.up(shell, code, MU300_SOURCE_CONF=conf, MU300_FETCH_DELAY=0)
             self.assertEqual(r.stderr.count('mirror unreachable: the rest comes from github.com'), 1, r.stderr)
             urls = (self.tmp / 'urls').read_text().split()
-            self.assertIn('https://github.com/dikeckaan/mu300-linux/releases/download/v2026.11.02/mu300-update', urls)
+            self.assertIn('https://github.com/liuwang97/mu300-wrt/releases/download/v2026.11.02/mu300-update', urls)
 
     def test_the_fetchers_tell_unreachable_from_an_answer(self):
         # fetch_unreachable_rc on its own: connect-class codes are "not there", 28/56 only when nothing arrived, an
@@ -1322,10 +1242,10 @@ class Status(test_update.Lock):
                 r = self.up(shell, code, MU300_SOURCE_CONF=conf, MU300_FETCH_DELAY=0)
                 self.assertEqual(r.stderr.count('mirror unreachable: the rest comes from github.com'), 1, (url, r.stderr))
         # apply's first fetch is its self-update check, with its stderr thrown away: the line is said there all the
-        # same (fd 7, the run's stderr), once, and the run's next fetch does not say it again (F50-B, 2026-10-17)
-        url = 'http://192.168.79.22:8799'
+        # same (fd 7, the run's stderr), once, and the run's next fetch does not say it again
+        url = 'http://192.168.77.22:8799'
         two = ('source_conf; fetch_verified v2026.11.02 mu300-update 2>/dev/null; '
-               'fetch_verified v2026.11.02 mu300-ubuntu-rootfs.tar.gz; echo "rc=$?"')
+               'fetch_verified v2026.11.02 mu300-kernel-7.2.tar.gz; echo "rc=$?"')
         self.stub('curl', 'exit 7')
         for extra, line in (('', 'a plain-http or LAN mirror; MU300_MIRROR_FALLBACK=1'),
                             ('MU300_MIRROR_FALLBACK=1\n', 'mirror unreachable: the rest comes from github.com')):
@@ -1357,7 +1277,7 @@ class Status(test_update.Lock):
             r = self.up(shell, 'source_conf; echo "mirror: [${MU300_DOWNLOAD_URL:-}]"; echo "base: $(fetch_base v2026.11.02)"',
                         MU300_SOURCE_CONF=conf, MU300_MIRROR_FELL_BACK=1)
             self.assertIn('mirror: []', r.stdout)
-            self.assertIn('base: https://github.com/dikeckaan/mu300-linux/releases/download/v2026.11.02', r.stdout)
+            self.assertIn('base: https://github.com/liuwang97/mu300-wrt/releases/download/v2026.11.02', r.stdout)
             self.assertEqual(r.stderr.count('mirror unreachable'), 0, r.stderr)
         # and the whole download of the handed-over updater: not one request to the mirror, nothing said again
         field = 'c' * 64
@@ -1373,7 +1293,7 @@ class Status(test_update.Lock):
 
     def test_the_download_address(self):
         for shell in self.each_shell():
-            for env, want in (({}, 'https://github.com/dikeckaan/mu300-linux/releases/download/v2026.11.02/SHA256SUMS'),
+            for env, want in (({}, 'https://github.com/liuwang97/mu300-wrt/releases/download/v2026.11.02/SHA256SUMS'),
                               ({'MU300_DOWNLOAD_URL': 'http://m/dl'}, 'http://m/dl/v2026.11.02/SHA256SUMS'),
                               ({'MU300_RELEASE_URL': 'http://m/flat', 'MU300_DOWNLOAD_URL': 'http://m/dl'}, 'http://m/flat/SHA256SUMS')):
                 r = self.up(shell, 'fetch_stdout() { echo "$1" >&2; return 1; }; fetch_verified v2026.11.02 mu300-update', **env)
@@ -1383,9 +1303,9 @@ class Status(test_update.Lock):
         p = self.tmp / 'progress'
         for shell in self.each_shell():
             p.unlink(missing_ok=True)
-            self.up(shell, 'fetch_stdout() { return 1; }; fetch_verified v2026.11.02 mu300-kernel.tar.gz; '
+            self.up(shell, 'fetch_stdout() { return 1; }; fetch_verified v2026.11.02 mu300-kernel-7.2.tar.gz; '
                            'fetch_verified v2026.11.02 mu300-openwrt-rootfs.tar.gz', MU300_PROGRESS=p)
-            self.assertEqual(p.read_text(), 'file mu300-kernel.tar.gz\nfile mu300-openwrt-rootfs.tar.gz\n')
+            self.assertEqual(p.read_text(), 'file mu300-kernel-7.2.tar.gz\nfile mu300-openwrt-rootfs.tar.gz\n')
             # and without a follower nothing is written anywhere
             r = self.up(shell, 'progress file x; echo "rc=$?"')
             self.assertEqual(r.stdout, 'rc=0\n')
@@ -1398,7 +1318,7 @@ class Status(test_update.Lock):
         import re
         self.assertEqual(sorted(re.findall(r'^([a-z_]+)\(\) \{', block, re.M)), sorted([
             'jv', 'jstr', 'jnum', 'mtime', 'tag_ok', 'tag_key', 'newer', 'space_needed', 'source_conf', 'key_state', 'sig_raw', 'sig_state',
-            'stage_private', 'tag_sha', 'sums_trusted', 'sums_verdict', 'apply_targets', 'downgrade_ok', 'boot_downgrade_ok', 'zip_p', 'man_val', 'from_open', 'from_read', 'payload_is', 'from_close', 'from_member', 'from_fits',
+            'stage_private', 'tag_sha', 'sums_trusted', 'sums_verdict', 'apply_targets', 'downgrade_ok', 'boot_downgrade_ok', 'from_open', 'from_sums', 'from_read', 'payload_is', 'from_close', 'from_member', 'from_fits',
             'from_installed', 'apply_options', 'from_begin', 'from_verified', 'from_handover', 'inspect_json',
             'lock_holder', 'size_kb', 'status_json', 'release_json', 'releases_json', 'progress',
             'mirror_fell_back_inherited']))
@@ -1598,17 +1518,18 @@ class Adapter(ShellTest):
             for bad, error in ((dict(ok, confirm=''), 'This needs confirmation'), (dict(ok, confirm='clean'), 'This needs confirmation'),
                                (dict(ok, tag='v2026.11.03'), 'Check for updates first'), (dict(ok, tag=''), 'Invalid update request'),
                                (dict(ok, tag='latest'), 'Invalid update request'), (dict(ok, tag='v2026.11.02;id'), 'Invalid update request'),
-                               # the new names (FINDINGS 125): a release tag, only not the one the check offered
+                               # the new names: a release tag, only not the one the check offered
                                (dict(ok, tag='v2026.10.16.1'), 'Check for updates first'), (dict(ok, tag='v2026.10.16.10'), 'Check for updates first'),
                                (dict(ok, tag='v2026.10.16.0'), 'Invalid update request'), (dict(ok, tag='v2026.13.01.1'), 'Invalid update request'),
                                (dict(ok, systems='android'), 'Invalid update request'), (dict(ok, systems='--from'), 'Invalid update request'),
                                (dict(ok, flags='force'), 'Invalid update request'), (dict(ok, flags='--unsigned'), 'Invalid update request')):
                 self.assertEqual(self.act(shell, 'apply', **bad), {'ok': 0, 'error': error}, bad)
             self.assertEqual(self.started(), [])
-            self.assertEqual(self.act(shell, 'apply', systems='openwrt-luci ubuntu', flags='no_reinstall', **ok),
+            self.assertEqual(self.act(shell, 'apply', systems='openwrt-luci openwrt', **ok), {'ok': 0, 'error': 'Invalid update request'})
+            self.assertEqual(self.act(shell, 'apply', systems='openwrt-luci', flags='no_reinstall', **ok),
                              {'ok': 1, 'started': 1, 'kind': 'apply'})
             # one at a time: whatever is asked for while it runs is refused, and nothing second is started
-            for op, kw in (('apply', ok), ('check', {}), ('clean', {'confirm': 'clean'}), ('kernel', {'kernel': '7.2', 'confirm': 'kernel'}),
+            for op, kw in (('apply', ok), ('check', {}), ('clean', {'confirm': 'clean'}),
                            ('rollback', {'confirm': 'rollback'}), ('dismiss', {}), ('upload_begin', {'size': '100'})):
                 self.assertEqual(self.act(shell, op, **kw), {'ok': 0, 'error': 'An update task is already running'}, op)
             self.assertEqual(self.ad(shell, 'job')['job']['state'], 'running')
@@ -1617,7 +1538,7 @@ class Adapter(ShellTest):
             self.put('newtag', 'v2026.11.02\n')
             self.run_job(shell)
             # the release the page showed is the one installed, whatever is the newest by now
-            self.assertEqual(self.calls(), ['apply --no-reinstall openwrt-luci ubuntu|v2026.11.02|progress'])
+            self.assertEqual(self.calls(), ['apply --no-reinstall openwrt-luci|v2026.11.02|progress'])
             j = self.ad(shell, 'job')['job']
             self.assertEqual((j['kind'], j['state'], j['rc'], j['stage'], j['changed']), ('apply', 'done', 0, 'switch', 1))
             self.assertIn('updated v2026.10.25 -> v2026.11.02', j['log'])
@@ -1670,7 +1591,7 @@ class Adapter(ShellTest):
             self.started()
             job = self.run_dir / 'update-job'
             (job / 'log').write_text('\n==> downloading v2026.11.02\n')
-            (job / 'progress').write_text('file mu300-kernel.tar.gz\nfile mu300-openwrt-luci-rootfs.tar.gz\n')
+            (job / 'progress').write_text('file mu300-kernel-7.2.tar.gz\nfile mu300-openwrt-luci-rootfs.tar.gz\n')
             (self.disk / '.mu300-update').mkdir(exist_ok=True)
             (self.disk / '.mu300-update/mu300-openwrt-luci-rootfs.tar.gz').write_bytes(b'x' * 12345)
             j = self.ad(shell, 'job')['job']
@@ -1690,8 +1611,7 @@ class Adapter(ShellTest):
             self.check(shell)
             self.put('status', json.dumps(held))
             for op, kw in (('apply', dict(tag='v2026.11.02', confirm='apply')), ('rollback', {'confirm': 'rollback'}),
-                           ('rollback_boot', {'confirm': 'rollback'}), ('clean', {'confirm': 'clean'}),
-                           ('kernel', {'kernel': '7.2', 'confirm': 'kernel'})):
+                           ('rollback_boot', {'confirm': 'rollback'}), ('clean', {'confirm': 'clean'})):
                 o = self.act(shell, op, **kw)
                 self.assertEqual(o, {'ok': 0, 'busy': 1, 'error': 'Another update is running on the device',
                                      'detail': 'sh /opt/mu300/bin/mu300-update apply (pid 4242)'}, op)
@@ -1700,22 +1620,21 @@ class Adapter(ShellTest):
             self.assertEqual(self.act(shell, 'check')['ok'], 1)
             self.assertEqual(len(self.started(wait=5)), 1)
 
-    def test_going_back_cleaning_and_the_kernel(self):
+    def test_going_back_and_cleaning(self):
         for shell in self.each_shell():
             self.reset()
             cases = [('rollback', {'confirm': 'rollback'}, 'rollback||progress'),
-                     ('rollback', {'confirm': 'rollback', 'systems': 'ubuntu'}, 'rollback ubuntu||progress'),
+                     ('rollback', {'confirm': 'rollback', 'systems': 'openwrt-luci'}, 'rollback openwrt-luci||progress'),
                      ('rollback_boot', {'confirm': 'rollback'}, 'rollback-boot||progress'),
-                     ('clean', {'confirm': 'clean'}, 'clean||progress'),
-                     ('kernel', {'confirm': 'kernel', 'kernel': '6.18'}, 'kernel 6.18||progress')]
+                     ('clean', {'confirm': 'clean'}, 'clean||progress')]
             for op, kw, call in cases:
                 for wrong in ('', 'yes', 'apply'):
                     self.assertEqual(self.act(shell, op, **dict(kw, confirm=wrong)), {'ok': 0, 'error': 'This needs confirmation'})
                 self.assertEqual(self.act(shell, op, **kw), {'ok': 1, 'started': 1, 'kind': op})
                 self.run_job(shell)
                 self.assertEqual(self.calls(), [call])
-            for k in ('', '6.6', '6.18.3', '7.2 --from x', '-h'):
-                self.assertEqual(self.act(shell, 'kernel', kernel=k, confirm='kernel'), {'ok': 0, 'error': 'Invalid update request'})
+            # the kernel is not chosen here any more: there is one
+            self.assertEqual(self.act(shell, 'kernel', kernel='7.2', confirm='kernel')['error'], 'Unknown update operation')
             self.assertEqual(self.act(shell, 'boot')['error'], 'Unknown update operation')
             self.assertEqual(self.started(), [])
 
@@ -1734,7 +1653,7 @@ class Adapter(ShellTest):
                                  {'ok': 0, 'error': 'Invalid update request'}, bad)
             self.assertEqual(self.calls(), [])
             # a mirror: the updater is asked for exactly that, and the reply is a whole update_get
-            url = 'https://proxy.example/https://github.com/dikeckaan/mu300-linux/releases/download'
+            url = 'https://proxy.example/https://github.com/liuwang97/mu300-wrt/releases/download'
             r = self.act(shell, 'source', url=url, confirm='source')
             self.assertEqual(r['ok'], 1, r)
             self.assertEqual(r['status']['running'], 'openwrt-luci')
@@ -1764,7 +1683,7 @@ class Adapter(ShellTest):
                'option password \'x\' PASSWORD=TopSecret9 token: abc123def\n'
                'IMSI 286011234567890 ICCID 89900112345678901234 number +90 532 123 45 67 or 05321234567\n'
                'boot: updated to v2026.11.02 (kernel 14582784 bytes, ramdisk 9234234 bytes)\n'
-               f'{"a1" * 32}  mu300-kernel.tar.gz\n'
+               f'{"a1" * 32}  mu300-kernel-7.2.tar.gz\n'
                'progress\rprogress 50%\rprogress 100%\n\x1b[31mcolour\x1b[0m \x00\x07\n')
         secrets = ('hunter2', 'SECRETTOKEN', 'mirror.example/dl', 'SIGNEDVALUE', 'MyWifiPassword1', 'TopSecret9', 'abc123def',
                    '286011234567890', '89900112345678901234', '532 123', '05321234567', '\x1b', '\x00', '\r')
@@ -1795,7 +1714,7 @@ class Adapter(ShellTest):
     def test_room_is_checked_before_an_upload(self):
         for shell in self.each_shell():
             self.reset()
-            self.assertEqual(self.begin(shell), {'ok': 1, 'path': str(self.updir / 'update.zip')})
+            self.assertEqual(self.begin(shell), {'ok': 1, 'path': str(self.updir / 'update.tar.gz')})
             self.assertEqual(self.updir.stat().st_mode & 0o777, 0o700)
             for size in ('', '0', '012', 'abc', '-1', '1e9', '10 20'):
                 self.assertEqual(self.begin(shell, size)['error'], 'Invalid update request', size)
@@ -1820,14 +1739,14 @@ class Adapter(ShellTest):
             # a link where the directory should be: nothing is made or deleted through it
             self.reset()
             elsewhere.mkdir(exist_ok=True)
-            (elsewhere / 'update.zip').write_text('theirs')
+            (elsewhere / 'update.tar.gz').write_text('theirs')
             self.updir.symlink_to(elsewhere)
             for op, kw in (('upload_begin', {'size': '1000'}), ('upload_done', {}), ('upload_cancel', {}),
                            ('apply_file', {'sha256': 'a' * 64, 'confirm': 'apply', 'flags': 'unsigned'})):
                 o = self.act(shell, op, **kw)
                 self.assertEqual(o['ok'], 0, op)
                 self.assertIn(o['error'], ('The upload directory is not safe; nothing was changed', 'No uploaded file'))
-            self.assertEqual((elsewhere / 'update.zip').read_text(), 'theirs')
+            self.assertEqual((elsewhere / 'update.tar.gz').read_text(), 'theirs')
             self.assertEqual(self.started(), [])
             self.updir.unlink()
             # a directory others can write into: refused as it is
@@ -1838,36 +1757,35 @@ class Adapter(ShellTest):
             # the upload itself is a link (to a file the panel has no business with): not followed, and removed
             self.assertEqual(self.begin(shell)['ok'], 1)
             victim.write_text('PK the root password file')
-            (self.updir / 'update.zip').symlink_to(victim)
+            (self.updir / 'update.tar.gz').symlink_to(victim)
             self.assertEqual(self.act(shell, 'upload_done'), {'ok': 0, 'error': 'No uploaded file'})
-            self.assertFalse((self.updir / 'update.zip').is_symlink())
+            self.assertFalse((self.updir / 'update.tar.gz').is_symlink())
             self.assertEqual(victim.read_text(), 'PK the root password file')
             self.assertEqual(self.started(), [])
             # nothing, an empty file, a directory: no upload
             for make in (lambda p: None, lambda p: p.write_text(''), lambda p: p.mkdir()):
                 shutil.rmtree(self.updir, ignore_errors=True)
                 self.begin(shell)
-                make(self.updir / 'update.zip')
+                make(self.updir / 'update.tar.gz')
                 self.assertEqual(self.act(shell, 'upload_done')['ok'], 0)
                 self.assertEqual(self.started(), [])
             # the Linux partition is not there
             self.assertEqual(self.begin(shell, MU300_DISK=self.tmp / 'nodisk')['error'], 'The upload directory is not safe; nothing was changed')
 
-    INSPECT = {'ok': 1, 'kind': 'zip', 'sha256': 'ab' * 32, 'size': 1000, 'tag': 'v2026.11.02', 'system': 'openwrt-luci',
-               'ubuntu': None, 'kernel': '5.4', 'signature': 'valid', 'installed': 'v2026.10.25', 'downgrade': 0, 'same': 0,
-               'fits': 1, 'why': None}
+    INSPECT = {'ok': 1, 'kind': 'file', 'sha256': 'ab' * 32, 'size': 1000, 'tag': 'v2026.11.02', 'kernel': 0,
+               'signature': 'valid', 'installed': 'v2026.10.25', 'downgrade': 0, 'same': 0, 'fits': 1, 'why': None}
 
     def upload(self, shell, inspect):
         self.reset()
         self.assertEqual(self.begin(shell)['ok'], 1)
-        (self.updir / 'update.zip').write_bytes(b'PK' + b'x' * 998)
+        (self.updir / 'update.tar.gz').write_bytes(b'\x1f\x8b' + b'x' * 998)
         self.put('inspect', json.dumps(inspect))
         self.assertEqual(self.act(shell, 'upload_done'), {'ok': 1, 'started': 1, 'kind': 'inspect'})
         self.run_job(shell)
-        staged = self.updir / 'staged.zip'
+        staged = self.updir / 'staged.tar.gz'
         # the file has a name the panel cannot write to, and that file is what was looked at
         self.assertEqual(self.calls(), [f'inspect {staged}'])
-        self.assertFalse((self.updir / 'update.zip').exists())
+        self.assertFalse((self.updir / 'update.tar.gz').exists())
         return staged
 
     def test_an_upload_is_looked_at_and_then_applied(self):
@@ -1927,7 +1845,7 @@ class Adapter(ShellTest):
     def test_nothing_in_the_environment_turns_a_check_off(self):
         # --unsigned and --downgrade come from the request, by name (the flags of apply_file); what the adapter was
         # started with reaches the updater in no other way - not the word, not the key, not the source
-        hostile = dict(MU300_ALLOW_UNSIGNED=1, MU300_ALLOW_DOWNGRADE=1, MU300_RELEASE_PUB='/tmp/x.pub', MU300_FROM='/tmp/x.zip',
+        hostile = dict(MU300_ALLOW_UNSIGNED=1, MU300_ALLOW_DOWNGRADE=1, MU300_RELEASE_PUB='/tmp/x.pub', MU300_FROM='/tmp/x.tar.gz',
                        MU300_FROM_SHA='cd' * 32,
                        MU300_RELEASE_URL='http://x/', MU300_API_URL='http://x/', MU300_DOWNLOAD_URL='http://x/', MU300_FORCE=1)
         for shell in self.each_shell():
@@ -1953,7 +1871,7 @@ class Adapter(ShellTest):
             staged = self.upload(shell, self.INSPECT)
             self.check(shell)
             self.put('log', 'x\n')
-            self.put('progress', 'file mu300-kernel.tar.gz\n')
+            self.put('progress', 'file mu300-kernel-7.2.tar.gz\n')
             old = os.umask(0)
             try:
                 self.assertEqual(self.act(shell, 'apply', tag='v2026.11.02', confirm='apply')['ok'], 1)
@@ -2069,23 +1987,20 @@ const STATE = __STATE__;
 PAGE_STATE = {
     'ok': 1,
     'status': {'ok': 1, 'device': 'f50', 'installed': 'v2026.10.25', 'running': 'openwrt-luci', 'restart_pending': 0,
-               'systems': [{'name': 'openwrt-luci', 'release': 'v2026.10.25', 'ubuntu': None, 'since': 1790000000,
-                            'previous': {'release': 'v2026.10.18', 'kb': 123456, 'running': 0}},
-                           {'name': 'ubuntu', 'release': 'v2026.10.18', 'ubuntu': '26.04', 'since': 1780000000, 'previous': None}],
-               'kernel': {'running': '6.18.3', 'choice': '6.18', 'boot': 'v2026.10.25', 'boot_kernel': '6.18', 'slot': 'b',
-                          'choices': [{'name': '5.4', 'ok': 0, 'why': 'ubuntu-26.04'}, {'name': '6.18', 'ok': 1, 'why': None},
-                                      {'name': '7.2', 'ok': 1, 'why': None}],
-                          'previous': {'release': 'v2026.10.18', 'kernel': '6.18', 'since': 1790000000, 'usable': 1}},
+               'systems': [{'name': 'openwrt-luci', 'release': 'v2026.10.25', 'since': 1790000000,
+                            'previous': {'release': 'v2026.10.18', 'kb': 123456, 'running': 0}}],
+               'kernel': {'running': '7.2.11', 'series': '7.2', 'boot': 'v2026.10.25', 'slot': 'b',
+                          'previous': {'release': 'v2026.10.18', 'since': 1790000000, 'usable': 1}},
                'boot_default': 'linux', 'boot_attempts': 5, 'boot_locked': 0,
-               'disk': {'free_kb': 5000000, 'total_kb': 9000000, 'need_one_kb': 2000000, 'need_all_kb': 3000000},
+               'disk': {'free_kb': 5000000, 'total_kb': 9000000, 'need_one_kb': 2000000, 'need_all_kb': 2000000},
                'lock': {'held': 0, 'pid': None, 'command': None}, 'notice': 'v2026.11.02', 'signing': {'key': 0, 'tool': 'usign'}},
     'check': {'ok': 1, 'installed': 'v2026.10.25', 'boot': 'v2026.10.25',
               'latest': {'tag': 'v2026.11.02', 'title': 'MU300 Linux v2026.11.02', 'published': '2026-11-02',
-                         'url': 'https://github.com/dikeckaan/mu300-linux/releases/tag/v2026.11.02', 'signed': 0, 'systems': 2,
-                         'need_kb': 3000000, 'files': [], 'download': 382100000},
+                         'url': 'https://github.com/liuwang97/mu300-wrt/releases/tag/v2026.11.02', 'signed': 0, 'systems': 1,
+                         'need_kb': 2000000, 'files': [], 'download': 60100000},
               'beta': {'tag': 'v2026.11.09', 'title': 'MU300 Linux v2026.11.09', 'published': '2026-11-09',
-                       'url': 'https://github.com/dikeckaan/mu300-linux/releases/tag/v2026.11.09', 'signed': 0, 'systems': 2,
-                       'need_kb': 3000000, 'files': [], 'download': 382100000}},
+                       'url': 'https://github.com/liuwang97/mu300-wrt/releases/tag/v2026.11.09', 'signed': 0, 'systems': 1,
+                       'need_kb': 2000000, 'files': [], 'download': 60100000}},
     'check_age': 60, 'upload': {'present': 0, 'size': 0, 'inspect': None}, 'report': None,
     'job': {'kind': None, 'state': 'none'},
 }
@@ -2115,18 +2030,19 @@ class Page(unittest.TestCase):
     def test_what_is_installed_and_offered(self):
         r = self.page('''const root = await open(STATE);
             return { text: root.textContent, calls: calls, beta: !!root.find('mud-upd-beta'), apply: !!root.find('mud-upd-apply'),
-                     k54: root.find('mud-upd-kernel-pick').kids[0].attrs.disabled != null, job: root.find('mud-upd-job') };''')
+                     kernel: !!root.find('mud-upd-kernel-pick'), job: root.find('mud-upd-job') };''')
         self.assertEqual(r['calls'], [['update_get', {'sizes': '1'}]])
         t = r['text']
-        for want in ('openwrt-luci · v2026.10.25', 'ubuntu 26.04 · v2026.10.18', '6.18.3', 'Update to v2026.11.02', 'Release notes',
+        for want in ('openwrt-luci · v2026.10.25', '7.2.11', 'Update to v2026.11.02', 'Release notes',
                      'If Linux fails to start 5 times in a row', 'this system has no release key', 'v2026.10.18',
-                     'mu300-magisk-<release>-openwrt-luci-k6.18.zip', 'What an update keeps', 'not with Ubuntu 26.04'):
+                     'mu300-openwrt-luci-rootfs.tar.gz', 'What an update keeps'):
             self.assertIn(want, t)
         # the pre-release is there to be asked for, and not offered by itself
         self.assertIn('Also offer the pre-release v2026.11.09', t)
         self.assertFalse(r['beta'])
         self.assertTrue(r['apply'])
-        self.assertTrue(r['k54'])
+        # one kernel: nothing to choose
+        self.assertFalse(r['kernel'])
         self.assertIsNone(r['job'])
 
     def test_the_mirror_field(self):
@@ -2173,8 +2089,7 @@ class Page(unittest.TestCase):
         r = self.page('''const root = await open(STATE);
             replies.update_act = { ok: 1, started: 1, kind: 'apply' };
             replies.update_job = { ok: 1, job: { kind: 'apply', state: 'running', stage: 'download', elapsed: 5, log: '',
-                file: { name: 'mu300-kernel.tar.gz', have: 10, total: 20 } } };
-            await tick(root, 'mud-upd-sys-ubuntu', false);
+                file: { name: 'mu300-kernel-7.2.tar.gz', have: 10, total: 20 } } };
             await tick(root, 'mud-upd-reinstall', false);
             await click(root, 'mud-upd-apply');
             const sent = calls.filter((c) => c[0] === 'update_act');
@@ -2187,23 +2102,23 @@ class Page(unittest.TestCase):
         self.assertEqual(len(r['asked']), 1)
         self.assertIn('v2026.11.02', r['asked'][0][0])
         self.assertIn('previous version is kept', r['asked'][0][1])
-        self.assertEqual(r['sent'], [['update_act', {'op': 'apply', 'tag': 'v2026.11.02', 'systems': 'openwrt-luci', 'kernel': '',
+        self.assertEqual(r['sent'], [['update_act', {'op': 'apply', 'tag': 'v2026.11.02', 'systems': '', 'kernel': '',
                                                      'sha256': '', 'size': '', 'flags': 'no_reinstall', 'confirm': 'apply'}]])
         self.assertGreaterEqual(r['polled'], 1)
         self.assertEqual(r['stage'], 'Downloading')
-        self.assertIn('mu300-kernel.tar.gz: 10.0 B / 20.0 B (50%)', r['file'])
+        self.assertIn('mu300-kernel-7.2.tar.gz: 10.0 B / 20.0 B (50%)', r['file'])
 
     def test_a_running_task_is_shown_to_whoever_opens_the_page(self):
         job = {'kind': 'apply', 'state': 'running', 'started': 1, 'elapsed': 200, 'rc': None, 'stage': 'unpack', 'stage_text': 'x',
                'file': None, 'changed': 0, 'log': 'line <b>one</b>'}
         r = self.page('''const root = await open(STATE);
-            const off = ['mud-upd-check', 'mud-upd-apply', 'mud-upd-upload', 'mud-upd-kernel-set', 'mud-upd-android']
+            const off = ['mud-upd-check', 'mud-upd-apply', 'mud-upd-upload', 'mud-upd-android']
                 .map((id) => root.find(id).attrs.disabled != null);
             return { card: root.find('mud-upd-job').textContent, off: off, log: root.find('mud-upd-log').textContent,
                      following: timers.length, raw: raw.filter((s) => s.indexOf('<') >= 0) };''', self.with_(job=job))
         self.assertIn('Unpacking the new system', r['card'])
         self.assertIn('It goes on when this page is closed', r['card'])
-        self.assertEqual(r['off'], [True] * 5)
+        self.assertEqual(r['off'], [True] * 4)
         # the log is text: nothing of the backend ever went into E() as markup
         self.assertIn('line <b>one</b>', r['log'])
         self.assertEqual(r['raw'], [])
@@ -2268,27 +2183,26 @@ class Page(unittest.TestCase):
 
     def test_an_upload_goes_through_lucis_endpoint_after_room_was_made(self):
         r = self.page('''const root = await open(STATE);
-            replies.update_act = (a) => a.op === 'upload_begin' ? { ok: 1, path: '/mnt/mu300-disk/.mu300-upload/update.zip' } : { ok: 1, started: 1 };
-            root.find('mud-upd-pick').files = [ { name: 'mu300-magisk-v2026.11.02-openwrt-luci-k6.18.zip', size: 52428800 } ];
+            replies.update_act = (a) => a.op === 'upload_begin' ? { ok: 1, path: '/mnt/mu300-disk/.mu300-upload/update.tar.gz' } : { ok: 1, started: 1 };
+            root.find('mud-upd-pick').files = [ { name: 'mu300-openwrt-luci-rootfs.tar.gz', size: 52428800 } ];
             await click(root, 'mud-upd-upload');
             return { sent: calls.filter((c) => c[0] === 'update_act').map((c) => [c[1].op, c[1].size]), posted: posted };''')
         self.assertEqual(r['sent'], [['upload_begin', '52428800'], ['upload_done', '']])
         self.assertEqual(r['posted'], [['POST', '/cgi-bin/cgi-upload', [['sessionid', 'S'],
-                                       ['filename', '/mnt/mu300-disk/.mu300-upload/update.zip'],
-                                       ['filedata', 'mu300-magisk-v2026.11.02-openwrt-luci-k6.18.zip']]]])
+                                       ['filename', '/mnt/mu300-disk/.mu300-upload/update.tar.gz'],
+                                       ['filedata', 'mu300-openwrt-luci-rootfs.tar.gz']]]])
         # no room: nothing is posted
         r = self.page('''const root = await open(STATE);
             replies.update_act = { ok: 0, error: 'Not enough free space on the Linux partition' };
-            root.find('mud-upd-pick').files = [ { name: 'x.zip', size: 5 } ];
+            root.find('mud-upd-pick').files = [ { name: 'x.tar.gz', size: 5 } ];
             await click(root, 'mud-upd-upload');
             return { posted: posted, toasts: toasts };''')
         self.assertEqual(r['posted'], [])
         self.assertIn('Not enough free space on the Linux partition', r['toasts'][0])
 
     def test_an_uploaded_file_is_shown_before_it_is_used(self):
-        insp = {'ok': 1, 'kind': 'zip', 'sha256': 'ab' * 32, 'size': 1000, 'tag': 'v2026.10.01', 'system': 'openwrt-luci',
-                'ubuntu': None, 'kernel': '6.18', 'signature': 'unsigned', 'installed': 'v2026.10.25', 'downgrade': 1, 'same': 0,
-                'fits': 1, 'why': None}
+        insp = {'ok': 1, 'kind': 'file', 'sha256': 'ab' * 32, 'size': 1000, 'tag': 'v2026.10.01', 'kernel': 0,
+                'signature': 'unsigned', 'installed': 'v2026.10.25', 'downgrade': 1, 'same': 0, 'fits': 1, 'why': None}
         body = '''const root = await open(STATE);
             replies.update_act = { ok: 1, started: 1 };
             const text = root.find('mud-upd-file').textContent;
@@ -2300,10 +2214,10 @@ class Page(unittest.TestCase):
             return { text: text, early: early, toasts: toasts, danger: asked.map((a) => !!a[2].danger),
                      sent: calls.filter((c) => c[0] === 'update_act').map((c) => c[1]) };'''
         r = self.page(body, self.with_(upload={'present': 1, 'size': 1000, 'inspect': insp}))
-        for want in ('ab' * 32, 'v2026.10.01 · openwrt-luci · kernel 6.18', 'not signed', 'nothing proves that it comes from the project',
+        for want in ('ab' * 32, 'v2026.10.01', 'not signed', 'nothing proves that it comes from the project',
                      'older than the installed v2026.10.25', 'the only proof of where an unsigned file comes from'):
             self.assertIn(want, r['text'])
-        # a signed file is not told to be compared by hand (the note showed for one on the U30 Air)
+        # a signed file is not told to be compared by hand
         signed = self.page('''const root = await open(STATE); return { text: root.find('mud-upd-file').textContent,
                                   button: !!root.find('mud-upd-apply-file') };''',
                            self.with_(upload={'present': 1, 'size': 1000, 'inspect': dict(insp, signature='valid')}))
@@ -2314,8 +2228,8 @@ class Page(unittest.TestCase):
         self.assertEqual(r['danger'], [True])
         self.assertEqual(r['sent'], [{'op': 'apply_file', 'tag': '', 'systems': '', 'kernel': '', 'sha256': 'ab' * 32, 'size': '',
                                       'flags': 'unsigned downgrade', 'confirm': 'apply'}])
-        # a file for another kernel, or with a wrong signature, has no button at all
-        for why, sig, says in (('kernel', 'unsigned', 'Take the zip for kernel 6.18'), ('signature', 'bad', 'it is never installed')):
+        # a file for another board, or with a wrong signature, has no button at all
+        for why, sig, says in (('device', 'unsigned', 'Its kernel does not run on this model'), ('signature', 'bad', 'it is never installed')):
             bad = dict(insp, fits=0, why=why, signature=sig)
             r = self.page("const root = await open(STATE); return [ root.find('mud-upd-file').textContent, !!root.find('mud-upd-apply-file'), "
                           "!!root.find('mud-upd-upload-cancel') ];", self.with_(upload={'present': 1, 'size': 1000, 'inspect': bad}))
@@ -2326,24 +2240,18 @@ class Page(unittest.TestCase):
         self.assertIn('not a release file of this project', r[0])
         self.assertFalse(r[1])
 
-    def test_the_kernel_and_android(self):
+    def test_android(self):
         r = self.page('''const root = await open(STATE);
             replies.update_act = { ok: 1, started: 1 }; replies.act = { ok: 1 };
-            await click(root, 'mud-upd-kernel-set');                // the kernel in use: nothing to do
-            const same = calls.filter((c) => c[0] === 'update_act').length;
-            root.find('mud-upd-kernel-pick').value = '7.2';
-            await click(root, 'mud-upd-kernel-set');
             await click(root, 'mud-upd-android');
-            return { same: same, asked: asked.map((a) => [a[0], !!a[2].danger]),
+            return { asked: asked.map((a) => [a[0], !!a[2].danger]),
                      sent: calls.filter((c) => c[0] === 'update_act' || c[0] === 'act').map((c) => c[1]) };''')
-        self.assertEqual(r['same'], 0)
-        self.assertEqual(r['asked'], [['Change the kernel to 7.2?', True], ['Start Android at the next restart?', True]])
-        self.assertEqual(r['sent'], [{'op': 'kernel', 'tag': '', 'systems': '', 'kernel': '7.2', 'sha256': '', 'size': '', 'flags': '',
-                                      'confirm': 'kernel'}, {'op': 'os', 'arg': 'android'}])
+        self.assertEqual(r['asked'], [['Start Android at the next restart?', True]])
+        self.assertEqual(r['sent'], [{'op': 'os', 'arg': 'android'}])
 
     def test_someone_elses_update_stops_the_page(self):
         r = self.page('''const root = await open(STATE);
-            return [ root.find('mud-upd-foreign').textContent ].concat(['mud-upd-check', 'mud-upd-apply', 'mud-upd-kernel-set']
+            return [ root.find('mud-upd-foreign').textContent ].concat(['mud-upd-check', 'mud-upd-apply', 'mud-upd-android']
                 .map((id) => root.find(id).attrs.disabled != null));''',
                       self.with_(status__lock={'held': 1, 'pid': 4242, 'command': 'sh /opt/mu300/bin/mu300-update apply'}))
         self.assertIn('sh /opt/mu300/bin/mu300-update apply (pid 4242)', r[0])
@@ -2364,7 +2272,7 @@ class Page(unittest.TestCase):
         r = self.page(js, st)
         self.assertFalse(r['apply'])
         self.assertIn('not signed, and this system checks signatures', r['note'])
-        self.assertFalse(r['reinstall'])      # (the choices of an Update button, without one: seen on the U30 Air)
+        self.assertFalse(r['reinstall'])      # (the choices of an Update button go with it)
         # signed, or a system without the key (as before signing): offered
         for change in ({'status__signing': {'key': 1, 'tool': 'usign'}, 'check__latest__signed': 1},
                        {'status__signing': {'key': 0, 'tool': 'usign'}, 'check__latest__signed': 0}):
@@ -2372,7 +2280,7 @@ class Page(unittest.TestCase):
             self.assertEqual((r['apply'], r['note'], r['reinstall']), (True, None, True), change)
 
     def test_no_form_buttons(self):
-        # nothing on the page is a form: LuCI's Save & Apply, Save and Reset did nothing there (seen on the U30 Air)
+        # nothing on the page is a form: LuCI's Save & Apply, Save and Reset would do nothing there
         src = VIEW.read_text(encoding='utf-8')
         self.assertIn('handleSaveApply: null, handleSave: null, handleReset: null', src)
 

@@ -1,11 +1,11 @@
 /*
- * mu300-keys: the device's buttons as lines of text, for mu300-buttons (a shell script: OpenWrt has no Python and
- * a pipe from od is block-buffered, so the events came too late) and mu300-sysd.
+ * mu300-keys: the device's buttons as lines of text, for mu300-sysd (the device's ucode cannot read an input device
+ * itself, and a pipe from od is block-buffered, so the events would come too late).
  *
  * Watches every /dev/input/event* that has keys and prints, flushed at once:
  *   <code> short      released before the long-press time
  *   <code> long       still held when the long-press time is reached (once; nothing on its release)
- *   0 tick            every -t seconds (the LED timeout of mu300-buttons runs on these)
+ *   0 tick            every -t seconds
  *   uevent <action> <subsystem> <name>
  *                     -u: a kernel uevent of one of the subsystems given (mu300-sysd: the charger and the fuel gauge
  *                     announce a plug, an unplug and every 1 % of charge; the device's ucode cannot open a netlink

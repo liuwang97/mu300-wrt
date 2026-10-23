@@ -5,7 +5,7 @@ functions, `ip`, `mobile-data`, `mu300-led`, `sleep`, `logger` and `fw4` record 
 The script's absolute paths (/opt/mu300/bin, /tmp, /proc/sys) are pointed into the scratch directory in a copy;
 sipa_eth0's disable_ipv6 and accept_ra are files there, so what the script writes into them is checked.
 
-Relay mode (K35-K37, K30, D9; openwrt-luci only) has its files in openwrt/luci-overlay: the event monitor
+Relay mode has its files in openwrt/luci-overlay: the event monitor
 mu300cell-v6.sh, ndp-learn, init.d/mu300-ndp and the first-boot settings in 91-mu300-luci (class Relay).
 """
 import os
@@ -92,7 +92,7 @@ exit 0''')
             p.chmod(0o755)
 
     def set_mobile(self, out, rc, err=''):
-        self.mobile.write_text('#!/bin/sh\necho "mobile-data $* env:$MU300_NETIFD:$MU300_PDP_TYPE:$MU300_IPV6" >> "$STUBLOG/calls"\n'
+        self.mobile.write_text('#!/bin/sh\necho "mobile-data $* env:$MU300_PDP_TYPE:$MU300_IPV6" >> "$STUBLOG/calls"\n'
                                'echo "$1 $#:${MU300_APN_AUTH-unset}:${MU300_APN_USER-unset}:${MU300_APN_PASSWORD-unset}" >> "$STUBLOG/creds"\n'
                                f'[ "$1" = up ] || exit 0\nprintf \'{out}\'\necho \'{err}\' >&2\nexit {rc}\n')
         self.mobile.chmod(0o755)
@@ -116,7 +116,7 @@ exit 0''')
             self.assertIn('proto_init_update sipa_eth0 1 1', calls)
             self.assertIn('proto_add_ipv4_address 10.20.30.40 30', calls)
             self.assertIn('proto_send_update wan', calls)
-            self.assertIn('mobile-data up internet env:1:IP:', calls)
+            self.assertIn('mobile-data up internet env:IP:', calls)
 
     def test_internal_profile_and_teardown_use_boot_slot(self):
         helper = self.mobile.parent / 'mu300-sim'
@@ -129,7 +129,7 @@ exit 0''')
             calls = self.run_proto(shell, 'proto_mu300cell_setup',
                                    out=UP_V4.replace('sipa_eth0', 'sipa_eth8'),
                                    T_APN='ctnet', T_APN_INTERNAL='cmnet', T_AUTH='pap', T_USERNAME='user', T_PASSWORD='secret')
-            self.assertIn('mobile-data up cmnet env:1:IPV4V6:', calls)
+            self.assertIn('mobile-data up cmnet env:IPV4V6:', calls)
             # the internal card dials its own APN: the external card's credentials are not offered to its carrier
             self.assertEqual((self.tmp / 'creds').read_text().splitlines()[0], 'up 2:::')
             self.assertIn('proto_init_update sipa_eth8 1 1', calls)
@@ -140,7 +140,7 @@ exit 0''')
             self.assertFalse(any('sipa_eth0' in c for c in calls))
 
     def test_the_apn_credentials_reach_mobile_data_in_its_environment_only(self):
-        # FINDINGS 65: username, password and auth of the wan interface; never an argument (ps), never in the log
+        # username, password and auth of the wan interface; never an argument (ps), never in the log
         for shell in self.each_shell():
             (self.tmp / 'creds').unlink(missing_ok=True)
             calls = self.run_proto(shell, 'proto_mu300cell_setup', T_AUTH='chap', T_USERNAME='user@apn', T_PASSWORD='s3 cret')
@@ -172,7 +172,7 @@ exit 0''')
             # installed before netifd is told about it
             self.assertLess(calls.index('ip -4 addr replace 10.20.30.40/30 dev sipa_eth0'),
                             calls.index('proto_send_update wan'))
-            # R34: and once more after the leftovers are gone: a leftover primary in the new address's subnet takes
+            # and once more after the leftovers are gone: a leftover primary in the new address's subnet takes
             # its secondary (the new address) with it when it is deleted
             last_del = max(i for i, c in enumerate(calls) if c.startswith('ip -4 addr del '))
             again = [i for i, c in enumerate(calls) if c == 'ip -4 addr replace 10.20.30.40/30 dev sipa_eth0']
@@ -180,7 +180,7 @@ exit 0''')
             self.assertLess(again[-1], calls.index('proto_send_update wan'))
 
     def test_setup_adds_when_replace_fails(self):
-        """R34: an `ip` that refuses `addr replace` still gets the address, by `addr add`."""
+        """An `ip` that refuses `addr replace` still gets the address, by `addr add`."""
         for shell in self.each_shell():
             calls = self.run_proto(shell, 'proto_mu300cell_setup', T_NO_REPLACE='1')
             self.assertIn('ip -4 addr add 10.20.30.40/30 dev sipa_eth0', calls)
@@ -188,7 +188,7 @@ exit 0''')
                             calls.index('proto_send_update wan'))
 
     def test_v4_bearer_switches_ipv6_off_after_the_update(self):
-        """R34: an IPv4-only bearer gets disable_ipv6 1 (FINDINGS 13f), written after proto_send_update."""
+        """An IPv4-only bearer gets disable_ipv6 1, written after proto_send_update."""
         for shell in self.each_shell():
             self.run_proto(shell, 'proto_mu300cell_setup')
             self.assertEqual((self.conf / 'disable_ipv6').read_text().strip(), '1', shell)
@@ -238,7 +238,7 @@ exit 0''')
             self.assertNotIn('sleep 20', calls)
 
     def test_held_for_roaming_is_retried_a_minute_later_without_a_log_line(self):
-        """FINDINGS 120: exit 4 is data held back for roaming. DATA_ROAMING, netifd tries again after a minute (the
+        """Exit 4 is data held back for roaming. DATA_ROAMING, netifd tries again after a minute (the
         way data comes back at home), no restart block, no address, and no log line of its own (mobile-data said it
         once)."""
         for shell in self.each_shell():
@@ -250,7 +250,7 @@ exit 0''')
             self.assertFalse([c for c in calls if c.startswith(('proto_send_update', 'logger', 'proto_init_update'))], calls)
 
     def test_an_empty_slot_is_not_redialled(self):
-        """FINDINGS 186: exit 6 is no card in the slot in use: SIM_MISSING, no retry every 20 s (unavailable; the card's event brings
+        """Exit 6 is no card in the slot in use: SIM_MISSING, no retry every 20 s (unavailable; the card's event brings
         the WAN up when one answers)."""
         for shell in self.each_shell():
             calls = self.run_proto(shell, 'proto_mu300cell_setup', out='', rc=6, err='', ok=1)
@@ -260,7 +260,7 @@ exit 0''')
             self.assertNotIn('sleep 20', calls)
 
     def test_a_sim_radio_switched_off_is_not_retried(self):
-        """FINDINGS 185: exit 7 is the SIM's radio switched off in its settings: SIM_RADIO_DISABLED, no retry (the
+        """Exit 7 is the SIM's radio switched off in its settings: SIM_RADIO_DISABLED, no retry (the
         interface is unavailable until mu300-sim-radio switches it on and brings the WAN up), no address."""
         for shell in self.each_shell():
             calls = self.run_proto(shell, 'proto_mu300cell_setup', out='', rc=7, err='', ok=1)
@@ -271,7 +271,7 @@ exit 0''')
             self.assertFalse([c for c in calls if c.startswith(('proto_send_update', 'proto_init_update'))], calls)
 
     def test_ipv6_bearer_still_adds_extendprefix_interface(self):
-        """Without ipv6 'relay' (plain OpenWrt, or the option unset or 'extend'): today's RFC 7278 design, no monitor."""
+        """Without ipv6 'relay' (the option unset or 'extend'): today's RFC 7278 design, no monitor."""
         for ipv6 in ('', 'extend'):
             for shell in self.each_shell():
                 calls = self.run_proto(shell, 'proto_mu300cell_setup', out=UP_V6, T_PDPTYPE='IPV4V6', T_IPV6=ipv6)
@@ -298,7 +298,7 @@ exit 0''')
                         branch.index('ip -6 addr add "fe80::$iid/64"'))
 
     def test_config_has_the_ipv6_option_and_renew(self):
-        """K35: `option ipv6` (relay / extend) is a protocol option, and netifd may ask for a renew."""
+        """`option ipv6` (relay / extend) is a protocol option, and netifd may ask for a renew."""
         for shell in self.each_shell():
             (self.tmp / 'calls').write_text('')
             r = self.sh(shell, HARNESS + 'proto_mu300cell_init_config; echo "renew=$renew_handler"',
@@ -307,13 +307,13 @@ exit 0''')
             self.assertIn('proto_config_add_string ipv6', (self.tmp / 'calls').read_text().splitlines())
 
     def test_relay_starts_the_monitor(self):
-        """K35, K36, K64: ipv6 'relay' with a dual-stack context. mobile-data is told (MU300_IPV6=relay), sipa_eth0
+        """ipv6 'relay' with a dual-stack context. mobile-data is told (MU300_IPV6=relay), sipa_eth0
         takes RAs (disable_ipv6 0, accept_ra 2, after the 1->0 and 0->2 cycles), and after the first update the event
         monitor runs as netifd's protocol task with the fork's arguments. No extendprefix interface: odhcpd relays."""
         for out in (UP_V4, UP_V6):          # the carrier filled +CGCONTRDP's v6 address, or did not
             for shell in self.each_shell():
                 calls = self.run_proto(shell, 'proto_mu300cell_setup', out=out, T_PDPTYPE='IPV4V6', T_IPV6='relay')
-                self.assertIn('mobile-data up internet env:1:IPV4V6:relay', calls)
+                self.assertIn('mobile-data up internet env:IPV4V6:relay', calls)
                 dns2 = '8.8.8.8' if out == UP_V4 else ''
                 run = ('proto_run_command wan /lib/netifd/proto/mu300cell-v6.sh wan sipa_eth0 10.20.30.40 30 1.1.1.1 '
                        f'{dns2} 1')
@@ -341,7 +341,7 @@ exit 0''')
             self.assertEqual((self.conf / 'accept_ra').read_text().strip(), '-', shell)
 
     def test_renew_signals_the_monitor(self):
-        """K35: renew sends SIGUSR1 to the protocol task (the monitor re-reads the bearer); nothing else. A shell
+        """Renew sends SIGUSR1 to the protocol task (the monitor re-reads the bearer); nothing else. A shell
         that cannot name the signal (dash) sends nothing; netifd runs busybox ash, which can."""
         for shell in self.each_shell():
             num = subprocess.run(shell + ['-c', 'kill -l SIGUSR1'], capture_output=True, text=True).stdout.strip()
@@ -389,7 +389,7 @@ class Relay(ShellTest):
                 self.assertEqual((r.returncode, r.stdout, r.stderr), (0, '', ''), (shell, args))
 
     def test_monitor_once_reports_external(self):
-        """K36: one report (--once): the v4 address and route, the RA's address with its lifetimes, the RA default
+        """One report (--once): the v4 address and route, the RA's address with its lifetimes, the RA default
         route, the DNS servers - all address-external, as setup sent them."""
         text = MONITOR.read_text()
         harness = self.tmp / 'netifd.sh'
@@ -424,7 +424,7 @@ esac''')
                 'proto_add_dns_server 8.8.8.8', 'proto_send_update wan'], shell)
 
     def test_ndp_learn_prefix(self):
-        """K37: the bearer's /64 from /proc/net/if_inet6 (fixed-width hex, so compressed hextets cannot confuse it):
+        """The bearer's /64 from /proc/net/if_inet6 (fixed-width hex, so compressed hextets cannot confuse it):
         only sipa_eth0's global (scope 00) address counts, never link-local or another interface."""
         fake = self.tmp / 'if_inet6'
         fake.write_text('fe800000000000000000000000000001 05 40 20 80 sipa_eth0\n'
@@ -578,56 +578,7 @@ exit 0''')
             self.assertIn('ip -6 route replace 240e:388:a:9999::/64 dev br-lan metric 128', rounds[2], shell)
             self.assertNotIn('replace', rounds[3], shell)
 
-    def test_ndp_learn_daemon_routes_again_only_when_something_changed(self):
-        """FINDINGS 215: the daemon's round reads if_inet6 itself and looks at the routing table's lines of the /64
-        every ROUTE_EVERY rounds; ip runs only when the addresses or those lines changed (a route removed by someone
-        comes back), never every round of an unchanged bearer. Without a global address accept_ra is flipped."""
-        import time
-        fake = self.tmp / 'if_inet6'
-        fake.write_text('240e0388000a12340000000000000001 05 40 00 00 sipa_eth0\n')
-        routes = self.tmp / 'ipv6_route'
-        ours = ('240e0388000a12340000000000000000 40 00000000000000000000000000000000 00 '
-                '00000000000000000000000000000000 00000080 00000001 00000000 00000001   br-lan\n')
-        routes.write_text(ours)
-        self.stub('ip', 'echo "ip $*" >> "$STUBLOG/ipcalls"; exit 0')
-        self.stub('logger', 'exit 0')
-
-        def replaces():
-            p = self.tmp / 'ipcalls'
-            return [c for c in p.read_text().splitlines() if ' replace ' in c] if p.exists() else []
-
-        def until(cond, timeout=10):
-            end = time.monotonic() + timeout
-            while time.monotonic() < end:
-                if cond():
-                    return True
-                time.sleep(0.05)
-            return False
-
-        for shell in self.each_shell():
-            (self.tmp / 'ipcalls').unlink(missing_ok=True)
-            fake.write_text('240e0388000a12340000000000000001 05 40 00 00 sipa_eth0\n')
-            routes.write_text(ours)
-            d = subprocess.Popen(shell + [str(NDP_LEARN)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                                 env=self.env(MU300_IF_INET6=fake, MU300_IPV6_ROUTE=routes, MU300_NDP_INTERVAL='0.2',
-                                              MU300_NDP_ROUTE_EVERY='3', MU300_RA_DEPRECATE='true'))
-            try:
-                self.assertTrue(until(lambda: len(replaces()) == 1), (shell, replaces()))
-                time.sleep(2)                                    # ten rounds of an unchanged bearer
-                self.assertEqual(replaces(), ['ip -6 route replace 240e:388:a:1234::/64 dev br-lan metric 128'])
-                routes.write_text('')                            # someone took the route away
-                self.assertTrue(until(lambda: len(replaces()) == 2), (shell, replaces()))
-                routes.write_text(ours)
-                time.sleep(1)
-                n = len(replaces())
-                fake.write_text('240e0388000a99990000000000000002 05 40 00 00 sipa_eth0\n')   # renumbered
-                self.assertTrue(until(lambda: 'ip -6 route replace 240e:388:a:9999::/64 dev br-lan metric 128'
-                                      in replaces()[n:]), (shell, replaces()))
-            finally:
-                d.kill()
-                d.communicate(timeout=10)
-
-    # FINDINGS 216: with ip's monitor the daemon's rounds come with the kernel's word. The stand-in ip records every
+    # The daemon's rounds come with the kernel's word (ip's monitor). The stand-in ip records every
     # call in ipcalls; a `route replace` puts our route into the routing table file (as the kernel would), and
     # `monitor` (pid in mon.pid) passes on what the test writes into the fifo $STUBLOG/mon, one line a change, as
     # `ip -o -6 monitor address route` prints them.
@@ -681,9 +632,9 @@ exit 0''')
         os.write(fd, ''.join(l + '\n' for l in lines).encode())
 
     def test_ndp_learn_daemon_does_its_rounds_on_the_monitors_word(self):
-        """A route of br-lan or the bearer that changed, or any address: a round at once (a removed route back at
-        once, was within 30 s; a renumbered bearer routed at once, was within 10 s). In between nothing at all: no ip,
-        no grep, not even a wakeup; a line about anything else is no round. The monitor goes with the daemon."""
+        """A route of br-lan or the bearer that changed, or any address: a round at once (a removed route back, a
+        renumbered bearer routed). In between nothing at all: no ip, no grep, not even a wakeup; a line about anything
+        else is no round. The monitor goes with the daemon."""
         self.monitor_ip()
         grep = shutil.which('grep')
         self.stub('grep', f'echo grep >> "$STUBLOG/greps"; exec {grep} "$@"')
@@ -741,28 +692,19 @@ exit 0''')
         if not ran:
             self.skipTest('no shell with read -t')
 
-    def test_ndp_learn_daemon_without_a_monitor_keeps_its_rounds(self):
-        """An ip without monitor (busybox's: usage, exit 1) or a shell without read -t (dash): a round every INTERVAL,
-        a removed route back within ROUTE_EVERY rounds, as before; the monitor is asked once, never again."""
+    def test_ndp_learn_daemon_without_a_monitor_ends(self):
+        """An ip without monitor (busybox's: usage, exit 1): no rounds on a timer, the daemon ends after its first
+        round at the latest and says why (procd starts it again)."""
         self.monitor_ip(monitor=False)
         for shell in self.each_shell():
-            d = self.ndp_daemon(shell, MU300_NDP_ROUTE_EVERY='2')
-            try:
-                self.until(lambda: len(self.replaces()) == 1, 'the first round did not route the prefix')
-                (self.tmp / 'ipv6_route').write_text('')
-                self.until(lambda: len(self.replaces()) == 2, 'the removed route did not come back')
-                time.sleep(2.5)
-            finally:
-                d.send_signal(signal.SIGTERM)
-                d.communicate(timeout=10)
-            asked = [c for c in self.lines('ipcalls') if 'monitor' in c]
-            if timed_read(shell):
-                self.assertEqual(asked, ['ip -o -6 monitor address route'])
-                self.assertEqual([l for l in self.lines('logged') if 'monitor' in l],
-                                 ['logger -t ndp-learn no address and route monitor (ip -6 monitor); '
-                                  'a round every 1 s'])
-            else:
-                self.assertEqual(asked, [])
+            if not timed_read(shell):
+                continue
+            d = self.ndp_daemon(shell)
+            out, err = d.communicate(timeout=10)
+            self.assertEqual(d.returncode, 1, err)
+            self.assertEqual([c for c in self.lines('ipcalls') if 'monitor' in c], ['ip -o -6 monitor address route'])
+            self.assertLessEqual(len(self.replaces()), 1)
+            self.assertTrue([l for l in self.lines('logged') if 'monitor' in l], self.lines('logged'))
 
     def test_ndp_learn_daemon_solicits_less_often_while_the_bearer_has_no_global_address(self):
         """With the monitor the self-heal's router solicitations (accept_ra flipped, a `sleep 1` between) come after
@@ -774,7 +716,7 @@ exit 0''')
         ran = False
         for shell in self.each_shell():
             # the solicitations are seen through the sleep stub: a shell whose sleep is its own (busybox ash built
-            # with its applets preferred, as Ubuntu's) never runs it
+            # with its applets preferred) never runs it
             if not timed_read(shell) or subprocess.run(shell + ['-c', 'command -v sleep'], capture_output=True,
                                                        text=True, env=self.env()).stdout.strip() == 'sleep':
                 continue
@@ -865,9 +807,9 @@ exit 0''')
                 self.assertEqual((r.returncode, r.stdout), (0, want + '\n'), (shell, route, r.stderr))
 
     def test_ra_deprecate_is_in_the_panel_image(self):
-        """ra-deprecate needs ucode's socket module, which the panel system's build installs."""
+        """ra-deprecate needs ucode's socket module, which the image's build installs."""
         build = (TOP / 'openwrt' / 'build-rootfs.sh').read_text()
-        self.assertIn('[ -d /in/luci-plugin ] && apk add ucode-mod-socket', build)
+        self.assertIn('apk add ucode-mod-socket', build)
         ra = (LUCI / 'opt' / 'mu300' / 'bin' / 'ra-deprecate').read_text()
         self.assertTrue(ra.startswith('#!/usr/bin/ucode\n'))
         self.assertIn("import * as socket from 'socket';", ra)
@@ -900,7 +842,7 @@ exit 0''')
         return (self.tmp / 'calls').read_text().splitlines()
 
     def test_ndp_init_only_in_relay_mode(self):
-        """K37: init.d/mu300-ndp starts ndp-learn only when network.wan.ipv6 is relay."""
+        """Init.d/mu300-ndp starts ndp-learn only when network.wan.ipv6 is relay."""
         for shell in self.each_shell():
             for ipv6 in ('', 'extend'):
                 self.assertEqual(self.init_start(shell, ipv6), [], (shell, ipv6))
@@ -932,10 +874,10 @@ exit 0''')
         return db
 
     def test_first_boot_selects_relay(self):
-        """K30, D9: 91-mu300-luci sets ipv6 relay, pdptype IPV4V6 and the fork's RA/DHCPv6 relay and masq6; run twice
+        """91-mu300-luci sets ipv6 relay, pdptype IPV4V6 and the fork's RA/DHCPv6 relay and masq6; run twice
         (uci is a stand-in over a flat file), the result is the same. Review I1: no NDP relay on lan or wan (odhcpd's
         relay pins any LAN-spoofed neighbour, even off-prefix, as a /128 to br-lan), and an earlier ndp or
-        ndproxy_routing value is removed. Review R38: the ULA OpenWrt generated is kept, never a fixed one."""
+        ndproxy_routing value is removed. the ULA OpenWrt generated is kept, never a fixed one."""
         db = self.uci_db()
         want = {
             "network.wan.ipv6": 'relay', "network.wan.pdptype": 'IPV4V6', "network.lan.ip6assign": '60',
@@ -994,9 +936,9 @@ exit 0''')
 
 
 class MobileDataRelay(ShellTest):
-    """K64: mobile-data's side of relay mode, sourced (MU300_LIB=1) with bash, /proc/sys/net/ipv6/conf in the scratch
-    directory. On the netifd path with MU300_IPV6=relay and a dual-stack context, sipa_eth0 takes the carrier's RA
-    (disable_ipv6 0, accept_ra 2) even without an interface identifier; everywhere else nothing changes."""
+    """mobile-data's side of relay mode, sourced (MU300_LIB=1) with bash, /proc/sys/net/ipv6/conf in the scratch
+    directory. With MU300_IPV6=relay and a dual-stack context, sipa_eth0 takes the carrier's RA (disable_ipv6 0,
+    accept_ra 2) even without an interface identifier; everywhere else nothing changes."""
 
     def run_relay(self, **env):
         if not shutil.which('bash'):
@@ -1007,38 +949,37 @@ class MobileDataRelay(ShellTest):
             (conf / k).write_text('-\n')
         lib = self.tmp / 'mobile-data.lib'
         lib.write_text((BIN / 'mobile-data').read_text().replace('/proc/sys/net/ipv6/conf/', f'{self.tmp}/conf/'))
-        e = dict(MU300_NETIFD='', MU300_IPV6='', MU300_PDP_TYPE='')
+        e = dict(MU300_IPV6='', MU300_PDP_TYPE='')
         e.update(env)
         r = self.sh(['bash'], f'MU300_LIB=1; . "{lib}"\nrc=0; v6_relay_ra || rc=$?; echo "rc=$rc"', **e)
         return r.stdout.strip(), (conf / 'disable_ipv6').read_text().strip(), (conf / 'accept_ra').read_text().strip()
 
     def test_relay_takes_the_ra(self):
         for pdp in ('IPV4V6', 'IPV6'):
-            self.assertEqual(self.run_relay(MU300_NETIFD='1', MU300_IPV6='relay', MU300_PDP_TYPE=pdp),
+            self.assertEqual(self.run_relay(MU300_IPV6='relay', MU300_PDP_TYPE=pdp),
                              ('rc=0', '0', '2'), pdp)
 
     def test_not_relay_changes_nothing(self):
-        for env in (dict(MU300_NETIFD='1', MU300_IPV6='', MU300_PDP_TYPE='IPV4V6'),        # plain OpenWrt (extend)
-                    dict(MU300_NETIFD='1', MU300_IPV6='extend', MU300_PDP_TYPE='IPV4V6'),
-                    dict(MU300_NETIFD='1', MU300_IPV6='relay', MU300_PDP_TYPE='IP'),       # an IPv4 context
-                    dict(MU300_NETIFD='1', MU300_IPV6='relay', MU300_PDP_TYPE=''),
-                    dict(MU300_NETIFD='', MU300_IPV6='relay', MU300_PDP_TYPE='IPV4V6')):   # the systemd path
+        for env in (dict(MU300_IPV6='', MU300_PDP_TYPE='IPV4V6'),        # extend
+                    dict(MU300_IPV6='extend', MU300_PDP_TYPE='IPV4V6'),
+                    dict(MU300_IPV6='relay', MU300_PDP_TYPE='IP'),       # an IPv4 context
+                    dict(MU300_IPV6='relay', MU300_PDP_TYPE='')):
             self.assertEqual(self.run_relay(**env), ('rc=1', '-', '-'), env)
 
-    def test_relay_replaces_v6_off_on_the_netifd_path_only(self):
-        """Relay keeps IPv6 on where the bearer has no interface identifier; otherwise v6_off as before, and the
-        systemd path still runs v6_up (test_device_scripts' test_systemd_path_keeps_v6_up)."""
+    def test_relay_replaces_v6_off(self):
+        """Relay keeps IPv6 on where the bearer has no interface identifier; otherwise v6_off, before the dial
+        hands its result to netifd."""
         text = (BIN / 'mobile-data').read_text()
         start = text.index('\nup_locked() {')
         body = text[start:text.index('\ndown() {', start)]
-        netifd = body.index('if [ "${MU300_NETIFD:-0}" = 1 ]; then')
-        self.assertIn('v6_relay_ra || { [ -n "$iid" ] || v6_off; }', body[:netifd])
+        handover = body.index("printf 'IFACE=%s")
+        self.assertIn('v6_relay_ra || { [ -n "$iid" ] || v6_off; }', body[:handover])
 
 
 
 
 class MobileDataContext(ShellTest):
-    """mobile-data's define_context (FINDINGS 65), sourced (MU300_LIB=1) with bash: the context of an APN, and the
+    """mobile-data's define_context, sourced (MU300_LIB=1) with bash: the context of an APN, and the
     credentials of one that asks for them. mu300-at is a stub that records its arguments, its stdin and what it finds
     of the credentials in its own environment, and answers from a file; the nr2 command fifo is one in the scratch
     directory. SECRET never appears anywhere but on the stub's stdin: every run is checked for that."""
@@ -1065,7 +1006,6 @@ esac
         os.mkfifo(self.tmp / 'cmd')
         self.mark = self.tmp / 'etc' / 'apn-auth-set.sim0'      # the external card's; the internal one's: .sim1
         self.mark.parent.mkdir()
-        self.conf = self.tmp / 'mobile-data.conf'
         self.netconf = self.tmp / 'network'
         self.lib = self.tmp / 'mobile-data.lib'
         self.lib.write_text((BIN / 'mobile-data').read_text()
@@ -1073,17 +1013,17 @@ esac
                             .replace('/opt/mu300/bin/mu300-at ', f'{self.stubs}/mu300-at '))
 
     def define(self, apn, slot=0, trace=False, drop=(), **env):
-        """define_context APN with the settings in the environment (DROP: names left out of it altogether, so that
-        the settings file says them). -> (CompletedProcess, the stub's log lines)."""
+        """define_context APN with the settings in the environment (DROP: names left out of it altogether).
+        -> (CompletedProcess, the stub's log lines)."""
         (self.tmp / 'at.log').unlink(missing_ok=True)
-        e = dict(MU300_APN_USER='', MU300_APN_PASSWORD='', MU300_APN_AUTH='', MU300_PDP_TYPE='', MU300_NETIFD='',
-                 MU300_APN_AUTH_MARK=self.mark.with_suffix(''), MU300_CONF=self.conf, MU300_NETWORK_CONF=self.netconf, APN=apn)
+        e = dict(MU300_APN_USER='', MU300_APN_PASSWORD='', MU300_APN_AUTH='', MU300_PDP_TYPE='',
+                 MU300_APN_AUTH_MARK=self.mark.with_suffix(''), MU300_NETWORK_CONF=self.netconf, APN=apn)
         e.update(env)
         full = self.env(**e)
         for name in drop:
             full.pop(name, None)
         code = (f'MU300_LIB=1; . "{self.lib}"\nSIM_SLOT={slot}\nrc=0; '
-                'define_context "${APN:-${MU300_APN:-}}" || rc=$?; echo "rc=$rc"')
+                'define_context "$APN" || rc=$?; echo "rc=$rc"')
         r = subprocess.run(['bash'] + (['-x'] if trace else []) + ['-c', code], capture_output=True, text=True,
                            env=full, timeout=60)
         log = (self.tmp / 'at.log').read_text().splitlines() if (self.tmp / 'at.log').exists() else []
@@ -1168,12 +1108,6 @@ esac
         self.assertEqual(self.sent(log)[1][0], 'stdin')
         self.assertIn('+ ', r.stderr)                               # it is a trace
         self.assertNotIn('tracedUser', r.stderr)
-        # and from the settings file
-        self.conf.write_text(f'MU300_APN=private.apn\nMU300_APN_USER=tracedUser\nMU300_APN_PASSWORD={self.SECRET}\n')
-        self.conf.chmod(0o600)
-        r, log = self.define('', trace=True, drop=('MU300_APN_USER', 'MU300_APN_PASSWORD', 'MU300_APN_AUTH'))
-        self.assertEqual(r.stdout.strip(), 'rc=0', r.stderr[-400:])
-        self.assertNotIn('tracedUser', r.stderr)
 
     def test_a_modem_that_refuses_the_credentials_ends_the_dial_and_says_nothing_secret(self):
         for answer in ('ERROR\n', '+CME ERROR: 50\n', ''):
@@ -1245,17 +1179,17 @@ esac
         self.assertEqual([p.name for p in self.mark.parent.iterdir()], ['apn-auth-set.sim0'])     # no temporary file left
 
     def test_the_settings_file_is_roots_alone_or_there_is_no_dial(self):
-        # one gate for both systems: Ubuntu's mobile-data.conf, and /etc/config/network under netifd
+        # /etc/config/network holds the password
         creds = dict(MU300_APN_USER='u', MU300_APN_PASSWORD=self.SECRET)
-        for netifd, path in (('', self.conf), ('1', self.netconf)):
+        for netifd, path in (('', self.netconf),):
             path.write_text('x\n')
             path.chmod(0o644)
-            r, log = self.define('private.apn', MU300_NETIFD=netifd, **creds)
+            r, log = self.define('private.apn', **creds)
             self.assertEqual(r.stdout.strip(), 'rc=0', r.stderr)
             self.assertEqual(path.stat().st_mode & 0o777, 0o600, netifd)
             # without credentials the file is nobody's business
             path.chmod(0o644)
-            self.define('internet', MU300_NETIFD=netifd)
+            self.define('internet')
             self.assertEqual(path.stat().st_mode & 0o777, 0o644)
             # a link is not followed to change anything: what it leads to must be private already
             target = self.tmp / f'real{netifd}'
@@ -1264,7 +1198,7 @@ esac
             path.symlink_to(target)
             for mode, rc in ((0o644, 'rc=1'), (0o640, 'rc=1'), (0o604, 'rc=1'), (0o600, 'rc=0'), (0o400, 'rc=0')):
                 target.chmod(mode)
-                r, log = self.define('private.apn', MU300_NETIFD=netifd, **creds)
+                r, log = self.define('private.apn', **creds)
                 self.assertEqual((r.stdout.strip(), target.stat().st_mode & 0o777), (rc, mode), (netifd, oct(mode)))
                 if rc == 'rc=1':
                     self.assertEqual(log, [])                       # refused before anything reaches the modem
@@ -1272,34 +1206,12 @@ esac
             # something that is no file at all
             path.unlink()
             path.mkdir()
-            r, log = self.define('private.apn', MU300_NETIFD=netifd, **creds)
+            r, log = self.define('private.apn', **creds)
             self.assertEqual((r.stdout.strip(), log), ('rc=1', []))
             path.rmdir()
             # no file: the credentials came another way (a command run by hand)
-            r, log = self.define('private.apn', MU300_NETIFD=netifd, **creds)
+            r, log = self.define('private.apn', **creds)
             self.assertEqual(r.stdout.strip(), 'rc=0')
-
-    def test_every_dial_reads_the_settings_file_the_same_way(self):
-        # mu300-power's "mobile-data resume" and a command run by hand have no environment from systemd: what the
-        # environment does not say comes from the file, so they dial the APN, with its credentials, as the service does
-        names = ('MU300_APN', 'MU300_PDP_TYPE', 'MU300_APN_USER', 'MU300_APN_PASSWORD', 'MU300_APN_AUTH')
-        self.conf.write_text('# a comment\n#MU300_APN=commented\nMU300_APN=first\nMU300_APN="private.apn"\n'
-                             f"MU300_PDP_TYPE=IPV4V6\nMU300_APN_USER='user name'\nMU300_APN_PASSWORD={self.SECRET}\n"
-                             'MU300_APN_AUTH=chap\r\nOTHER=$(touch "$STUBLOG/executed")\n')
-        self.conf.chmod(0o644)
-        r, log = self.define('', drop=names)
-        self.assertEqual(r.stdout.strip(), 'rc=0', r.stderr)
-        self.assertEqual(self.sent(log), [('argv', 'AT+CGDCONT=1,"IPV4V6","private.apn"'),
-                                          ('stdin', f'AT+CGPCO=0,"user name","{self.SECRET}",1,2')])
-        self.assertEqual(self.conf.stat().st_mode & 0o777, 0o600)
-        self.assertFalse((self.tmp / 'executed').exists())          # read, never run
-        # what the environment says wins (systemd read the same file; a hand-set variable)
-        r, log = self.define('', drop=[n for n in names if n != 'MU300_APN_AUTH'], MU300_APN_AUTH='pap')
-        self.assertEqual(self.sent(log)[1], ('stdin', f'AT+CGPCO=0,"user name","{self.SECRET}",1,1'))
-        # under netifd the file is not looked at: mu300cell.sh said everything
-        self.mark.unlink()
-        r, log = self.define('internet', drop=names, MU300_NETIFD='1')
-        self.assertEqual(self.sent(log), [('argv', 'AT+CGDCONT=1,"IP","internet"')])
 
     def test_the_interface_page_offers_them(self):
         js = (TOP / 'openwrt/overlay/www/luci-static/resources/protocol/mu300cell.js').read_text()
@@ -1308,11 +1220,7 @@ esac
         self.assertIn('o.password = true', js)
         for v in ("o.value('pap'", "o.value('chap'", "o.value('both'", "o.value('none'"):
             self.assertIn(v, js)
-        example = (TOP / 'rootfs/overlay/etc/mu300/mobile-data.conf.example').read_text()
-        for name in ('MU300_APN_USER', 'MU300_APN_PASSWORD', 'MU300_APN_AUTH', 'install -m 600'):
-            self.assertIn(name, example)
-        # the settings file never goes into a release, and OpenWrt's network settings are private from the first boot
-        self.assertIn('(hotspot|vpn|toolkit|mobile-data)', (TOP / 'tools/make-release.sh').read_text())
+        # the network settings (they hold the APN password) are private from the first boot
         self.assertIn('chmod 600 /etc/config/network', (TOP / 'openwrt/overlay/etc/uci-defaults/90-mu300').read_text())
         # the protocol handler has no gate of its own to differ from mobile-data's
         self.assertNotIn('chmod', (TOP / 'openwrt/overlay/lib/netifd/proto/mu300cell.sh').read_text())
@@ -1323,7 +1231,7 @@ if __name__ == '__main__':
 
 
 class RelayMonitorBearer(ShellTest):
-    """FINDINGS 91: the relay monitor's bearer half - which card's channels and URC log it uses, what it believes of
+    """The relay monitor's bearer half - which card's channels and URC log it uses, what it believes of
     +CGCONTRDP, and how an address change is applied (after kanoqwq's clean-tf-7.2 3cbf37fc). The monitor is
     sourced with MU300CELL_V6_LIB=1 (functions only); mu300-sim, mu300-at, ip and logger are stubs."""
 

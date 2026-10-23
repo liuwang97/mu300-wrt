@@ -4,7 +4,7 @@ from pathlib import Path
 from helpers import TOP
 
 FIX = TOP / "openwrt" / "tests" / 'fixtures' / 'po2lmo'
-sys.path.insert(0, str(TOP / 'tools'))
+sys.path.insert(0, str(TOP / 'openwrt' / 'tools'))
 import po2lmo  # noqa: E402
 
 

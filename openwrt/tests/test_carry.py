@@ -1,8 +1,9 @@
-"""An update keeps everything the user made (docs/FINDINGS.md 85): openwrt/src/carry/mu300-carry.c, built here, and the carry
-block of mu300-update, run on small fake systems - an old image with its manifest, what a user did to it, a new
-image - under each shell. openwrt/tools/image-manifest.py against the helper's own manifest. On real release images the same
-is measured by tests/update-experiment (in a container, as root: owners, capabilities, devices)."""
+"""An update keeps everything the user made: openwrt/src/carry/mu300-carry.c, built here, and the carry block of
+mu300-update, run on small fake systems - an old image with its manifest, what a user did to it, a new image - under
+each shell. openwrt/tools/image-manifest.py against the helper's own manifest."""
+import base64
 import gzip
+import hashlib
 import os
 import re
 import shutil
@@ -20,7 +21,7 @@ CC = shutil.which('cc') or shutil.which('gcc')
 LINUX = sys.platform.startswith('linux')
 CARRY = None
 _build = None
-TOOL = TOP / 'tools' / 'image-manifest.py'
+TOOL = TOP / 'openwrt' / 'tools' / 'image-manifest.py'
 
 
 def setUpModule():
@@ -210,15 +211,15 @@ class Helper(unittest.TestCase):
 
     def test_manifest_is_the_tools_manifest_of_the_tarball(self):
         src = build(self.tmp / 'src', {'etc/mu300/image-version': 'v1\n', 'bin/sh': ('f', '#!', 0o755), 'lib': ('l', 'usr/lib'),
-                                       'usr/lib/x\\x2dy.slice': 'unit', 'usr/lib/näme': 'u', 'tmp/': ('d', 0o1777),
+                                       'usr/lib/x\\x2dy.conf': 'conf', 'usr/lib/näme': 'u', 'tmp/': ('d', 0o1777),
                                        'etc/mu300/image-manifest.gz': b'not part of it'})
         os.link(src / 'bin/sh', src / 'bin/ash')
-        m = carry('manifest', src, 'openwrt', 'v1')
+        m = carry('manifest', src, 'openwrt-luci', 'v1')
         self.assertEqual(m.returncode, 0, m.stderr)
-        self.assertEqual(m.stdout.splitlines()[0], 'mu300-image-manifest 1 openwrt v1')
+        self.assertEqual(m.stdout.splitlines()[0], 'mu300-image-manifest 1 openwrt-luci v1')
         self.assertNotIn('image-manifest.gz', m.stdout)
-        self.assertIn(' usr/lib/x\\\\x2dy.slice\n', m.stdout)
-        tar = self.tmp / 'mu300-openwrt-rootfs.tar.gz'
+        self.assertIn(' usr/lib/x\\\\x2dy.conf\n', m.stdout)
+        tar = self.tmp / 'mu300-openwrt-luci-rootfs.tar.gz'
         subprocess.run(['tar', '--numeric-owner', '-czf', str(tar), '-C', str(src), '.'], check=True)
         t = subprocess.run([sys.executable, str(TOOL), 'make', str(tar)], capture_output=True, text=True)
         self.assertEqual(t.returncode, 0, t.stderr)
@@ -226,7 +227,7 @@ class Helper(unittest.TestCase):
         # the same manifest under the name a release publishes it with
         a = subprocess.run([sys.executable, str(TOOL), 'assets', str(self.tmp), str(self.tmp / 'assets')], capture_output=True, text=True)
         self.assertEqual(a.returncode, 0, a.stderr)
-        self.assertEqual(gzip.decompress((self.tmp / 'assets/mu300-openwrt-rootfs.manifest.gz').read_bytes()).decode(), m.stdout)
+        self.assertEqual(gzip.decompress((self.tmp / 'assets/mu300-openwrt-luci-rootfs.manifest.gz').read_bytes()).decode(), m.stdout)
         # and the check make-release.sh runs: the manifest an image carries is the one of its files
         (src / 'etc/mu300/image-manifest.gz').write_bytes(gzip.compress(m.stdout.encode()))
         subprocess.run(['tar', '--numeric-owner', '-czf', str(tar), '-C', str(src), '.'], check=True)
@@ -241,7 +242,7 @@ class Helper(unittest.TestCase):
 class Tool(unittest.TestCase):
     def test_union_gives_every_release_back(self):
         # the manifests of the releases before the first release with a four-field tag ship as one file per image: every distinct line once
-        sys.path.insert(0, str(TOP / 'tools'))
+        sys.path.insert(0, str(TOP / 'openwrt' / 'tools'))
         try:
             import importlib
             im = importlib.import_module('image-manifest')
@@ -259,18 +260,18 @@ class Tool(unittest.TestCase):
         with self.assertRaises(SystemExit):
             im.extract(u, 'v2026.10.04')
         with self.assertRaises(SystemExit):
-            im.union([a, a.replace('openwrt', 'ubuntu-24.04')])
+            im.union([a, a.replace('openwrt', 'another-image')])
 
     def test_the_shipped_unions_are_whole(self):
         # one per image, each naming the releases it holds; a release's manifest comes out with the image's own files
         d = TOP / 'openwrt/opt/mu300/lib/image-manifests'
-        self.assertEqual(sorted(p.name for p in d.iterdir()), ['openwrt-luci.gz', 'openwrt.gz', 'ubuntu-24.04.gz', 'ubuntu-26.04.gz'])
+        self.assertEqual(sorted(p.name for p in d.iterdir()), ['openwrt-luci.gz'])
         for p in d.iterdir():
             lines = gzip.open(p, 'rt', errors='surrogateescape').read().split('\n')
             self.assertEqual(lines[0], f'mu300-image-manifests 1 {p.name[:-3]}')
             tags = lines[1].split(' ')[1:]
-            # (every release before the carry block: one published before this is merged must be added, or a device on
-            # it updates the old way - openwrt/tools/image-manifest.py legacy and union, FINDINGS 85)
+            # (every release before images carried their own manifest: a device on one of them updates the old way
+            # without it - openwrt/tools/image-manifest.py legacy and union)
             self.assertIn('v2026.10.27', tags)
             self.assertEqual(tags, sorted(tags))
             body = [l for l in lines[2:] if l]
@@ -279,11 +280,31 @@ class Tool(unittest.TestCase):
             self.assertTrue(any(l.endswith(' opt/mu300/bin/mu300-update') for l in last), p.name)
 
 
+def apk_db(pkgs):
+    """lib/apk/db/installed of PKGS: {name: [path | (path, content)]} - with content, the Q1 sum apk writes of it"""
+    out = []
+    for name, files in pkgs.items():
+        out += [f'P:{name}', 'V:1-r1']
+        dirs = {}
+        for f in files:
+            path, content = f if isinstance(f, tuple) else (f, None)
+            d, _, b = path.rpartition('/')
+            dirs.setdefault(d, []).append((b, content))
+        for d, fs in dirs.items():
+            out.append(f'F:{d}')
+            for b, content in fs:
+                out.append(f'R:{b}')
+                if content is not None:
+                    out.append('Z:Q1' + base64.b64encode(hashlib.sha1(content.encode()).digest()).decode())
+        out.append('')
+    return '\n'.join(out) + '\n'
+
+
 OLD_IMAGE = {
     'sbin/init': ('f', '#!/bin/sh\n', 0o755),
-    'usr/lib/os-release': 'VERSION_ID="24.04"\nVERSION_CODENAME=noble\n',
     'etc/mu300/image-version': 'v1\n',
     'etc/hostname': 'mu300\n',
+    'etc/config/system': "config system\n\toption hostname 'mu300'\n",
     'etc/ssh/sshd_config': 'Port 22\n',
     'etc/sysctl.conf': '# defaults\n',
     'etc/unchanged.conf': 'as shipped\n',
@@ -291,26 +312,27 @@ OLD_IMAGE = {
     'etc/motd': 'welcome\n',
     'etc/overlay.conf': 'of the project\n',
     'etc/resolv.conf': ('l', '../run/resolv.conf'),
-    'etc/issue.net': 'Ubuntu\n',
+    'etc/issue': 'OpenWrt\n',
     'etc/skel/': None,
     'etc/skel/.profile': 'skel\n',
     'etc/ld.so.cache': 'old cache',
-    'etc/systemd/system/multi-user.target.wants/mu300-telnetd.service': ('l', '/etc/systemd/system/mu300-telnetd.service'),
-    'etc/systemd/system/mu300-telnetd.service': '[Service]\n',
-    'etc/systemd/system/mu300-wifi.service': '[Service]\nExecStart=/opt/mu300/bin/mu300-wifi\n',
+    'etc/rc.d/S50mu300-telnetd': ('l', '../init.d/mu300-telnetd'),
+    'etc/init.d/mu300-telnetd': '#!/bin/sh /etc/rc.common\n',
+    'etc/init.d/mu300-wifi': '#!/bin/sh /etc/rc.common\nPROG=/opt/mu300/bin/mu300-wifi\n',
     'etc/uci-defaults/90-mu300': 'runs once and removes itself\n',
-    'etc/pam.d/common-auth': 'auth required pam_unix.so\n',
     'etc/udev/rules.d/70-mu300-wcn.rules': '# the rules of v1\n',
     'etc/mu300/firewall.nft': '# the rules of the image\n',
     'opt/mu300/bin/mu300-wifi': ('f', '#!/bin/sh\necho v1\n', 0o755),
     'opt/mu300/lib/path-commands': 'mu300-update mu300-os\n',
     'usr/bin/tool': ('f', 'tool v1', 0o755),
-    'usr/lib/systemd/system/ssh.service': '[Unit]\n',
+    'usr/lib/tool/defaults': 'defaults\n',
     'usr/share/doc/readme': 'doc\n',
     'usr/local/bin/mu300-os': ('l', '/opt/mu300/bin/mu300-os'),
-    'home/ubuntu/.bashrc': '# bashrc\n',
+    'home/admin/.ashrc': '# ashrc\n',
     'var/log/wtmp': '',
-    'var/lib/dpkg/status': 'Package: base\nStatus: install ok installed\n',
+    'lib/apk/db/installed': apk_db({'base': []}),
+    'etc/apk/world': 'base\n',
+    'var/lib/': None,
     'tmp/': ('d', 0o1777),
     'proc/': None, 'run/': None, 'var/cache/': None, 'srv/': None, 'root/': None,
 }
@@ -323,7 +345,8 @@ NEW_IMAGE.update({
     'opt/mu300/bin/mu300-wifi': ('f', '#!/bin/sh\necho v2\n', 0o755),
     'etc/udev/rules.d/70-mu300-wcn.rules': '# the rules of v2\n',
     'usr/bin/tool': ('f', 'tool v2', 0o755),
-    'var/lib/dpkg/status': 'Package: base\nStatus: install ok installed\n\nPackage: newpkg\nStatus: install ok installed\n',
+    'lib/apk/db/installed': apk_db({'base': [], 'newpkg': []}),
+    'etc/apk/world': 'base\nnewpkg\n',
 })
 del NEW_IMAGE['etc/dropped-by-v2.conf']
 
@@ -336,7 +359,7 @@ class CarryCase(ShellTest):
         super().setUp()
         self.n = 0
 
-    def systems(self, user, old_image=OLD_IMAGE, new_image=NEW_IMAGE, manifest='own', image='ubuntu-24.04'):
+    def systems(self, user, old_image=OLD_IMAGE, new_image=NEW_IMAGE, manifest='own', image='openwrt-luci'):
         """(old, new): fresh for every run. USER(old) does to the installed system what a user did."""
         self.n += 1
         base = self.tmp / f'run{self.n}'
@@ -357,7 +380,7 @@ class CarryCase(ShellTest):
         user(old)
         return old, new
 
-    def run_carry(self, shell, old, new, os_name='ubuntu', mode='copy', **env):
+    def run_carry(self, shell, old, new, os_name='openwrt-luci', mode='copy', **env):
         return self.sh(shell, f'. "{BIN}/mu300-update"; carry_system "{old}" "{new}" {os_name} {mode}; echo "rc=$?"',
                        MU300_LIB=1, MU300_CARRY=CARRY, **env)
 
@@ -377,25 +400,25 @@ class CarryCase(ShellTest):
 class Carry(CarryCase):
     def test_what_the_user_made_goes_wherever_it_is(self):
         def user(old):
-            build(old, {'etc/netplan/60-user.yaml': ('f', 'network: {}\n', 0o600), 'etc/wireguard/wg0.conf': ('f', 'key', 0o600),
-                        'etc/systemd/system/myapp.service': '[Service]\n',
-                        'etc/systemd/system/multi-user.target.wants/myapp.service': ('l', '/etc/systemd/system/myapp.service'),
-                        'var/spool/cron/crontabs/ubuntu': ('f', '* * * * * true\n', 0o600),
+            build(old, {'etc/myapp/60-user.yaml': ('f', 'network: {}\n', 0o600), 'etc/wireguard/wg0.conf': ('f', 'key', 0o600),
+                        'etc/init.d/myapp': ('f', '#!/bin/sh /etc/rc.common\n', 0o755),
+                        'etc/rc.d/S99myapp': ('l', '../init.d/myapp'),
+                        'var/spool/cron/crontabs/admin': ('f', '* * * * * true\n', 0o600),
                         'var/lib/docker/volumes/db/_data/ibdata1': b'\x00\x01\x02', 'var/www/html/index.html': '<h1>mine</h1>',
                         'opt/myapp/bin/run': ('f', '#!/bin/sh\n', 0o755), 'usr/share/myfonts/x.ttf': b'font',
                         'usr/local/bin/mytool': ('f', '#!/bin/sh\n', 0o755), 'swapfile': ('f', b'\0' * 4096, 0o600),
                         'srv/odd/new\nline': 'n', 'srv/odd/back\\slash': 'b', 'srv/odd/ sp ace ': 's', 'srv/odd/-dash': 'd',
                         'srv/odd/$(touch pwned)': 'x', 'srv/odd/gl*b?[x]': 'g', 'srv/empty/': None,
-                        'home/ubuntu/.ssh/authorized_keys': ('f', 'ssh-ed25519 AAAA\n', 0o600), 'root/.bash_history': 'ls\n',
+                        'home/admin/.ssh/authorized_keys': ('f', 'ssh-ed25519 AAAA\n', 0o600), 'root/.bash_history': 'ls\n',
                         'opt/mu300/bin/my-own-script': ('f', '#!/bin/sh\n', 0o755), 'mnt/data/': None})
-            (old / 'home/ubuntu/.ssh').chmod(0o700)
+            (old / 'home/admin/.ssh').chmod(0o700)
             os.utime(old / 'srv/odd/-dash', ns=(981173106123456789, 981173106123456789))
 
         def check(old, new, report, r):
             for p, st in snapshot(old).items():
-                if p.startswith(('etc/netplan', 'etc/wireguard', 'var/spool', 'var/lib/docker', 'var/www', 'opt/myapp', 'usr/share/myfonts',
-                                 'usr/local/bin/mytool', 'swapfile', 'srv/', 'home/ubuntu/.ssh', 'root/.bash', 'mnt/data',
-                                 'opt/mu300/bin/my-own', 'etc/systemd/system/myapp', 'etc/systemd/system/multi-user.target.wants/myapp')):
+                if p.startswith(('etc/myapp', 'etc/wireguard', 'var/spool', 'var/lib/docker', 'var/www', 'opt/myapp', 'usr/share/myfonts',
+                                 'usr/local/bin/mytool', 'swapfile', 'srv/', 'home/admin/.ssh', 'root/.bash', 'mnt/data',
+                                 'opt/mu300/bin/my-own', 'etc/init.d/myapp', 'etc/rc.d/S99myapp')):
                     got = snapshot(new).get(p)
                     self.assertIsNotNone(got, p)
                     if not stat.S_ISDIR(st[0]):
@@ -419,7 +442,7 @@ class Carry(CarryCase):
             (old / 'etc/sysctl.conf').write_text('# defaults\nvm.swappiness=10\n')   # the release changed it too
             (old / 'etc/hostname').write_text('myrouter\n')
             (old / 'etc/dropped-by-v2.conf').write_text('mine now\n')           # the release no longer has it
-            (old / 'home/ubuntu/.bashrc').write_text('# bashrc\nalias l=ls\n')
+            (old / 'home/admin/.ashrc').write_text('# ashrc\nalias l=ls\n')
             (old / 'var/log/wtmp').write_text('logins')
 
         def check(old, new, report, r):
@@ -427,7 +450,7 @@ class Carry(CarryCase):
             self.assertEqual((new / 'etc/sysctl.conf').read_text(), '# defaults\nvm.swappiness=10\n')
             self.assertEqual((new / 'etc/hostname').read_text(), 'myrouter\n')
             self.assertEqual((new / 'etc/dropped-by-v2.conf').read_text(), 'mine now\n')
-            self.assertEqual((new / 'home/ubuntu/.bashrc').read_text(), '# bashrc\nalias l=ls\n')
+            self.assertEqual((new / 'home/admin/.ashrc').read_text(), '# ashrc\nalias l=ls\n')
             self.assertEqual((new / 'var/log/wtmp').read_text(), 'logins')
             # both changed it: the release's version is set aside and the report says so; the others are not in it
             self.assertEqual((new / 'etc/mu300/update-kept/v1/image/etc/sysctl.conf').read_text(), '# defaults of v2\n')
@@ -445,12 +468,11 @@ class Carry(CarryCase):
     def test_programs_are_the_releases_and_the_users_version_is_set_aside(self):
         def user(old):
             (old / 'usr/bin/tool').write_text('tool v1, patched by hand')                # outside /etc
-            (old / 'usr/lib/systemd/system/ssh.service').write_text('[Unit]\n# edited\n')    # ... and unchanged by v2
+            (old / 'usr/lib/tool/defaults').write_text('defaults\n# edited\n')            # ... and unchanged by v2
             (old / 'opt/mu300/bin/mu300-wifi').write_text('#!/bin/sh\necho hacked\n')    # the project's own
-            (old / 'etc/systemd/system/mu300-wifi.service').write_text('[Service]\nExecStart=/bin/true\n')
+            (old / 'etc/init.d/mu300-wifi').write_text('#!/bin/sh /etc/rc.common\nPROG=/bin/true\n')
             (old / 'usr/local/bin/mu300-os').unlink()
             (old / 'usr/local/bin/mu300-os').write_text('#!/bin/sh\n# my wrapper\n')     # a command the images link
-            (old / 'etc/pam.d/common-auth').write_text('auth required pam_unix.so\nauth required pam_extra.so\n')
             # what the project put under /etc as a setting stays the user's when they changed it
             (old / 'etc/udev/rules.d/70-mu300-wcn.rules').write_text('# the rules of v1, edited\n')
             (old / 'etc/mu300/firewall.nft').write_text('# my rules\n')
@@ -464,17 +486,15 @@ class Carry(CarryCase):
             self.assertEqual((new / 'etc/overlay.conf').read_text(), 'of the project, with a line of mine\n')
             self.assertEqual((new / 'usr/bin/tool').read_text(), 'tool v2')
             self.assertEqual((kept / 'usr/bin/tool').read_text(), 'tool v1, patched by hand')
-            self.assertEqual((new / 'usr/lib/systemd/system/ssh.service').read_text(), '[Unit]\n')
-            self.assertEqual((kept / 'usr/lib/systemd/system/ssh.service').read_text(), '[Unit]\n# edited\n')
+            self.assertEqual((new / 'usr/lib/tool/defaults').read_text(), 'defaults\n')
+            self.assertEqual((kept / 'usr/lib/tool/defaults').read_text(), 'defaults\n# edited\n')
             self.assertEqual((new / 'opt/mu300/bin/mu300-wifi').read_text(), '#!/bin/sh\necho v2\n')
             self.assertEqual((kept / 'opt/mu300/bin/mu300-wifi').read_text(), '#!/bin/sh\necho hacked\n')
-            self.assertEqual((new / 'etc/systemd/system/mu300-wifi.service').read_text(), OLD_IMAGE['etc/systemd/system/mu300-wifi.service'])
+            self.assertEqual((new / 'etc/init.d/mu300-wifi').read_text(), OLD_IMAGE['etc/init.d/mu300-wifi'])
             self.assertTrue((new / 'usr/local/bin/mu300-os').is_symlink())
             self.assertEqual((kept / 'usr/local/bin/mu300-os').read_text(), '#!/bin/sh\n# my wrapper\n')
-            self.assertEqual((new / 'etc/pam.d/common-auth').read_text(), 'auth required pam_unix.so\n')
-            self.assertIn('pam_extra', (kept / 'etc/pam.d/common-auth').read_text())
-            for p in ('/usr/bin/tool', '/usr/lib/systemd/system/ssh.service', '/opt/mu300/bin/mu300-wifi',
-                      '/etc/systemd/system/mu300-wifi.service', '/usr/local/bin/mu300-os', '/etc/pam.d/common-auth'):
+            for p in ('/usr/bin/tool', '/usr/lib/tool/defaults', '/opt/mu300/bin/mu300-wifi',
+                      '/etc/init.d/mu300-wifi', '/usr/local/bin/mu300-os'):
                 self.assertRegex(report, r'The version of the release is in use; yours is in /etc/mu300/update-kept/v1/user:\n(  /.*\n)*  '
                                  + re.escape(p) + '\n')
         self.each(user, check)
@@ -483,17 +503,16 @@ class Carry(CarryCase):
         def user(old):
             for p in ('etc/motd',                                   # a file under /etc: stays deleted
                       'etc/overlay.conf',                           # also one the project put there
-                      'etc/systemd/system/multi-user.target.wants/mu300-telnetd.service',     # a service disabled: stays
+                      'etc/rc.d/S50mu300-telnetd',                  # a service disabled: stays
                       'etc/uci-defaults/90-mu300',                  # removed itself when it ran: must run again
-                      'home/ubuntu/.bashrc',                        # the user's own place: stays deleted
+                      'home/admin/.ashrc',                          # the user's own place: stays deleted
                       'usr/share/doc/readme',                       # a program's file: back, without a word
                       'opt/mu300/bin/mu300-wifi'):                  # the project's own: back
                 (old / p).unlink()
             shutil.rmtree(old / 'etc/skel')                         # a whole directory
 
         def check(old, new, report, r):
-            for p in ('etc/motd', 'etc/overlay.conf', 'etc/systemd/system/multi-user.target.wants/mu300-telnetd.service',
-                      'home/ubuntu/.bashrc', 'etc/skel'):
+            for p in ('etc/motd', 'etc/overlay.conf', 'etc/rc.d/S50mu300-telnetd', 'home/admin/.ashrc', 'etc/skel'):
                 self.assertFalse(os.path.lexists(new / p), p)
                 self.assertRegex(report, r'Deleted again, as you had deleted them:\n(  /.*\n)*  /' + re.escape(p) + '\n')
             for p in ('etc/uci-defaults/90-mu300', 'usr/share/doc/readme', 'opt/mu300/bin/mu300-wifi'):
@@ -506,15 +525,15 @@ class Carry(CarryCase):
 
     def test_another_kind_of_file_than_the_image_had(self):
         def user(old):
-            (old / 'etc/issue.net').unlink()
-            build(old, {'etc/issue.net/note': 'a directory where the image has a file\n'})
+            (old / 'etc/issue').unlink()
+            build(old, {'etc/issue/note': 'a directory where the image has a file\n'})
             (old / 'etc/resolv.conf').unlink()
             (old / 'etc/resolv.conf').write_text('nameserver 9.9.9.9\n')        # a file where the image has a link
             shutil.rmtree(old / 'etc/skel')
             os.symlink('/srv/skel', old / 'etc/skel')                           # a link where the image has a directory
 
         def check(old, new, report, r):
-            self.assertEqual((new / 'etc/issue.net/note').read_text(), 'a directory where the image has a file\n')
+            self.assertEqual((new / 'etc/issue/note').read_text(), 'a directory where the image has a file\n')
             self.assertEqual((new / 'etc/resolv.conf').read_text(), 'nameserver 9.9.9.9\n')
             self.assertFalse((new / 'etc/resolv.conf').is_symlink())
             self.assertEqual(os.readlink(new / 'etc/skel'), '/srv/skel')
@@ -554,12 +573,13 @@ class Carry(CarryCase):
 
     def test_never_carried(self):
         def user(old):
-            build(old, {'tmp/scratch': 'x', 'var/cache/apt/archives/x.deb': 'x', 'proc/1/cmdline': 'x', 'run/lock/x': 'x',
-                        'usr/lib/modules/6.18.1/extra/old.ko': 'ko', 'usr/lib/python3/dist-packages/__pycache__/x.pyc': 'pyc',
-                        'var/lib/dpkg/info/base.list': '/.\n', 'var/lib/apt/extended_states': '', 'etc/alternatives/editor': ('l', '/usr/bin/vi'),
+            build(old, {'tmp/scratch': 'x', 'var/cache/x': 'x', 'proc/1/cmdline': 'x', 'run/lock/x': 'x',
+                        'usr/lib/python3/site-packages/__pycache__/x.pyc': 'pyc',
+                        'lib/apk/packages/base.list': 'x\n',
                         'etc/mu300/user-packages/wanted': 'stale\n'})
             (old / 'etc/ld.so.cache').write_text('a cache of the old libraries')
-            (old / 'var/lib/dpkg/status').write_text('Package: base\nStatus: install ok installed\n\nPackage: mine\nStatus: install ok installed\n')
+            (old / 'lib/apk/db/installed').write_text(apk_db({'base': [], 'mine': []}))
+            (old / 'etc/apk/world').write_text('base\nmine\n')
             s = socket.socket(socket.AF_UNIX)
             cwd = os.getcwd()
             os.chdir(old / 'srv')
@@ -568,11 +588,11 @@ class Carry(CarryCase):
             s.close()
 
         def check(old, new, report, r):
-            for p in ('tmp/scratch', 'var/cache/apt', 'proc/1', 'run/lock', 'usr/lib/modules/6.18.1', 'srv/sock',
-                      'usr/lib/python3/dist-packages/__pycache__', 'var/lib/dpkg/info/base.list', 'etc/alternatives/editor'):
+            for p in ('tmp/scratch', 'var/cache/x', 'proc/1', 'run/lock', 'srv/sock',
+                      'usr/lib/python3/site-packages/__pycache__', 'lib/apk/packages/base.list'):
                 self.assertFalse(os.path.lexists(new / p), p)
             self.assertEqual((new / 'etc/ld.so.cache').read_text(), 'new cache')
-            self.assertEqual((new / 'var/lib/dpkg/status').read_text(), NEW_IMAGE['var/lib/dpkg/status'])
+            self.assertEqual((new / 'lib/apk/db/installed').read_text(), NEW_IMAGE['lib/apk/db/installed'])
             self.assertFalse((new / 'etc/mu300/update-kept').exists())
             # the package mine, in no image, is written down to be installed again; the record of the update before
             # is not carried as a file, but what it still waited for stays wanted (upk_record)
@@ -581,21 +601,17 @@ class Carry(CarryCase):
         self.each(user, check)
 
     def test_packages_are_the_package_managers(self):
-        md5 = '5d41402abc4b2a76b9719d911017c592'      # of "hello"
-
         def user(old):
             # a package the user installed: its program is not carried (it is installed again), its changed
             # configuration and its data are; a file a package upgrade changed is not a change of the user's
             build(old, {'usr/bin/userpkg': ('f', 'elf', 0o755), 'usr/share/userpkg/data': 'pkg', 'etc/userpkg/userpkg.conf': 'option=changed\n',
                         'var/lib/userpkg/state.db': b'\x00\x01', 'etc/init.d/userpkg': ('f', '#!/bin/sh\n', 0o755),
-                        'var/lib/dpkg/info/userpkg.list': '/.\n/usr\n/usr/bin\n/usr/bin/userpkg\n/usr/share/userpkg\n/usr/share/userpkg/data\n'
-                                                          '/etc/userpkg\n/etc/userpkg/userpkg.conf\n/etc/init.d/userpkg\n',
-                        'var/lib/dpkg/info/base.list': '/.\n/usr/bin/tool\n/etc/motd\n',
-                        'var/lib/dpkg/info/base.md5sums': f'{md5}  usr/bin/tool\n'})
-            (old / 'var/lib/dpkg/status').write_text(
-                'Package: base\nStatus: install ok installed\n\nPackage: userpkg\nStatus: install ok installed\n'
-                'Conffiles:\n /etc/userpkg/userpkg.conf d41d8cd98f00b204e9800998ecf8427e\nDescription: x\n')
-            (old / 'usr/bin/tool').write_text('hello')      # as dpkg's own sums have it: upgraded with apt
+                        'lib/apk/packages/userpkg.conffiles': '/etc/userpkg/userpkg.conf\n'})
+            (old / 'lib/apk/db/installed').write_text(apk_db({
+                'base': [('usr/bin/tool', 'hello'), 'etc/motd'],
+                'userpkg': ['usr/bin/userpkg', 'usr/share/userpkg/data', 'etc/userpkg/userpkg.conf', 'etc/init.d/userpkg']}))
+            (old / 'etc/apk/world').write_text('base\nuserpkg\n')
+            (old / 'usr/bin/tool').write_text('hello')      # as apk's own sums have it: upgraded with apk
 
         def check(old, new, report, r):
             self.assertFalse((new / 'usr/bin/userpkg').exists())
@@ -611,8 +627,7 @@ class Carry(CarryCase):
 
     def test_a_package_the_user_removed_is_back_with_its_files(self):
         new_image = dict(NEW_IMAGE)
-        new_image.update({'var/lib/dpkg/info/extra.list': '/.\n/etc/motd\n/usr/share/doc/readme\n',
-                          'var/lib/dpkg/status': 'Package: base\nStatus: install ok installed\n\nPackage: extra\nStatus: install ok installed\n'})
+        new_image.update({'lib/apk/db/installed': apk_db({'base': [], 'extra': ['etc/motd', 'usr/share/doc/readme']})})
 
         def user(old):
             (old / 'etc/motd').unlink()
@@ -626,24 +641,24 @@ class Carry(CarryCase):
 
     def test_accounts(self):
         old_image = dict(OLD_IMAGE)
-        old_image.update({'etc/passwd': 'root:x:0:0::/root:/bin/sh\nubuntu:x:1000:1000::/home/ubuntu:/bin/bash\nbt:x:105:105::/:/bin/false\n',
-                          'etc/group': 'root:x:0:\nubuntu:x:1000:\nbt:x:105:\n', 'etc/shadow': 'root:*:1::::::\nubuntu:$6$image:1::::::\nbt:!:1::::::\n',
-                          'etc/gshadow': 'root:*::\nubuntu:!::\nbt:!::\n', 'etc/subuid': 'ubuntu:100000:65536\n'})
+        old_image.update({'etc/passwd': 'root:x:0:0::/root:/bin/sh\nadmin:x:1000:1000::/home/admin:/bin/ash\nbt:x:105:105::/:/bin/false\n',
+                          'etc/group': 'root:x:0:\nadmin:x:1000:\nbt:x:105:\n', 'etc/shadow': 'root:*:1::::::\nadmin:$6$image:1::::::\nbt:!:1::::::\n',
+                          'etc/gshadow': 'root:*::\nadmin:!::\nbt:!::\n', 'etc/subuid': 'admin:100000:65536\n'})
         new_image = dict(NEW_IMAGE)
         # the new release numbers bt differently, has an account vnd the old one did not, and uses 990 for it
-        new_image.update({'etc/passwd': 'root:x:0:0::/root:/bin/sh\nubuntu:x:1000:1000::/home/ubuntu:/bin/bash\nbt:x:988:988::/:/bin/false\nvnd:x:990:990::/:/bin/false\n',
-                          'etc/group': 'root:x:0:\nubuntu:x:1000:\nbt:x:988:\nvnd:x:990:\n',
-                          'etc/shadow': 'root:*:1::::::\nubuntu:$6$image:1::::::\nbt:!:1::::::\nvnd:!:1::::::\n',
-                          'etc/gshadow': 'root:*::\nubuntu:!::\nbt:!::\nvnd:!::\n', 'etc/subuid': 'ubuntu:100000:65536\n'})
+        new_image.update({'etc/passwd': 'root:x:0:0::/root:/bin/sh\nadmin:x:1000:1000::/home/admin:/bin/ash\nbt:x:988:988::/:/bin/false\nvnd:x:990:990::/:/bin/false\n',
+                          'etc/group': 'root:x:0:\nadmin:x:1000:\nbt:x:988:\nvnd:x:990:\n',
+                          'etc/shadow': 'root:*:1::::::\nadmin:$6$image:1::::::\nbt:!:1::::::\nvnd:!:1::::::\n',
+                          'etc/gshadow': 'root:*::\nadmin:!::\nbt:!::\nvnd:!::\n', 'etc/subuid': 'admin:100000:65536\n'})
 
         def user(old):
             with open(old / 'etc/passwd', 'a') as f:
-                f.write('kaan:x:1001:1001::/home/kaan:/bin/bash\nmyapp:x:777:777::/var/lib/myapp:/bin/false\nclash:x:990:990::/:/bin/false\n')
+                f.write('kaan:x:1001:1001::/home/kaan:/bin/ash\nmyapp:x:777:777::/var/lib/myapp:/bin/false\nclash:x:990:990::/:/bin/false\n')
             with open(old / 'etc/group', 'a') as f:
                 f.write('kaan:x:1001:\nmyapp:x:777:\nclash:x:990:\n')
             with open(old / 'etc/gshadow', 'a') as f:
                 f.write('kaan:!::\nmyapp:!::\nclash:!::\n')
-            (old / 'etc/shadow').write_text('root:*:1::::::\nubuntu:$6$mine:2::::::\nbt:!:1::::::\nkaan:$6$kaan:2::::::\nmyapp:!:2::::::\nclash:!:2::::::\n')
+            (old / 'etc/shadow').write_text('root:*:1::::::\nadmin:$6$mine:2::::::\nbt:!:1::::::\nkaan:$6$kaan:2::::::\nmyapp:!:2::::::\nclash:!:2::::::\n')
             with open(old / 'etc/subuid', 'a') as f:
                 f.write('kaan:165536:65536\n')
 
@@ -651,8 +666,8 @@ class Carry(CarryCase):
             passwd = (new / 'etc/passwd').read_text().splitlines()
             shadow = (new / 'etc/shadow').read_text().splitlines()
             # the users of the device and their passwords (merge_accounts), the release's own accounts
-            self.assertIn('kaan:x:1001:1001::/home/kaan:/bin/bash', passwd)
-            self.assertIn('ubuntu:$6$mine:2::::::', shadow)
+            self.assertIn('kaan:x:1001:1001::/home/kaan:/bin/ash', passwd)
+            self.assertIn('admin:$6$mine:2::::::', shadow)
             self.assertIn('kaan:$6$kaan:2::::::', shadow)
             self.assertIn('vnd:x:990:990::/:/bin/false', passwd)
             self.assertIn('bt:x:988:988::/:/bin/false', passwd)
@@ -666,7 +681,7 @@ class Carry(CarryCase):
             self.assertIn('clash:x:999:', (new / 'etc/group').read_text().splitlines())
             self.assertIn('clash:!:2::::::', shadow)
             self.assertEqual(len(passwd), len(set(l.split(':')[0] for l in passwd)))
-            self.assertEqual((new / 'etc/subuid').read_text(), 'ubuntu:100000:65536\nkaan:165536:65536\n')
+            self.assertEqual((new / 'etc/subuid').read_text(), 'admin:100000:65536\nkaan:165536:65536\n')
             self.assertNotIn('could not be carried', report)
         self.each(user, check, old_image=old_image, new_image=new_image)
         # what the accounts own follows the number: the map mu300-carry gets
@@ -732,7 +747,7 @@ class Carry(CarryCase):
         # image or release, that is a link, or that has a line which is no manifest line (a path out of the system)
         # is refused whole, and the update goes on as without one - nothing is decided by it.
         def other_image(old):
-            m = gzip.decompress((old / 'etc/mu300/image-manifest.gz').read_bytes()).decode().replace(' ubuntu-24.04 v1\n', ' openwrt v1\n', 1)
+            m = gzip.decompress((old / 'etc/mu300/image-manifest.gz').read_bytes()).decode().replace(' openwrt-luci v1\n', ' openwrt v1\n', 1)
             (old / 'etc/mu300/image-manifest.gz').write_bytes(gzip.compress(m.encode()))
 
         def a_link(old):
@@ -745,7 +760,7 @@ class Carry(CarryCase):
             (old / 'etc/mu300/image-manifest.gz').write_bytes(gzip.compress(m.encode()))
 
         def not_gzip(old):
-            (old / 'etc/mu300/image-manifest.gz').write_bytes(b'mu300-image-manifest 1 ubuntu-24.04 v1\n')
+            (old / 'etc/mu300/image-manifest.gz').write_bytes(b'mu300-image-manifest 1 openwrt-luci v1\n')
 
         def check(old, new, report, r):
             self.assertIn('no list of the files of v1 here', r.stdout)
@@ -760,8 +775,8 @@ class Carry(CarryCase):
         # the same for the manifests the new image brings: one file per image, and the file must say which
         for shell in self.each_shell():
             old, new = self.systems(lambda old: (old / 'etc/motd').unlink(), manifest='union')
-            u = new / 'opt/mu300/lib/image-manifests/ubuntu-24.04.gz'
-            u.write_bytes(gzip.compress(gzip.decompress(u.read_bytes()).replace(b'mu300-image-manifests 1 ubuntu-24.04', b'mu300-image-manifests 1 openwrt', 1)))
+            u = new / 'opt/mu300/lib/image-manifests/openwrt-luci.gz'
+            u.write_bytes(gzip.compress(gzip.decompress(u.read_bytes()).replace(b'mu300-image-manifests 1 openwrt-luci', b'mu300-image-manifests 1 openwrt', 1)))
             r = self.run_carry(shell, old, new)
             self.assertIn('rc=0\n', r.stdout, r.stderr)
             self.assertIn('no list of the files of v1 here', r.stdout)
@@ -794,33 +809,29 @@ class Carry(CarryCase):
         # the working directory, which holds the lists of the user's files while the update runs
         self.assertIn('( umask 077; mkdir "$CARRY_T" ) && chmod 700 "$CARRY_T"', src)
         self.assertIn('( umask 077; cat "$CARRY_T/report" > "$_cr" )', src)
-        # the installers pass the block's output on from a file on the Linux filesystem, never from /data/local/tmp
-        ai = (TOP / 'tools/android-install.sh').read_text()
-        self.assertIn('clog=$M/$os.new.carry-log', ai)
-        self.assertNotIn('$T/mu300-carry', ai)
 
     def test_without_a_manifest(self):
         def user(old):
-            build(old, {'etc/netplan/60-user.yaml': 'network: {}\n', 'var/www/html/index.html': '<h1>mine</h1>', 'srv/data': 'd',
+            build(old, {'etc/myapp/60-user.yaml': 'network: {}\n', 'var/www/html/index.html': '<h1>mine</h1>', 'srv/data': 'd',
                         'opt/mu300/bin/of-an-old-release': 'x'})
-            (old / 'etc/hostname').write_text('myrouter\n')                 # a place an update always kept
+            (old / 'etc/config/system').write_text("config system\n\toption hostname 'myrouter'\n")   # a place an update always kept
             (old / 'etc/sysctl.conf').write_text('# defaults\nvm.swappiness=10\n')     # what protects the device
-            (old / 'etc/issue.net').write_text('Ubuntu, mine\n')
+            (old / 'etc/issue').write_text('OpenWrt, mine\n')
             (old / 'etc/motd').unlink()
 
         def check(old, new, report, r):
             self.assertIn('no list of the files of v1 here', r.stdout)
             kept = new / 'etc/mu300/update-kept/v1/user'
             # what the new image does not have is carried, the places of the old list are the user's
-            self.assertEqual((new / 'etc/netplan/60-user.yaml').read_text(), 'network: {}\n')
+            self.assertEqual((new / 'etc/myapp/60-user.yaml').read_text(), 'network: {}\n')
             self.assertEqual((new / 'var/www/html/index.html').read_text(), '<h1>mine</h1>')
             self.assertEqual((new / 'srv/data').read_text(), 'd')
-            self.assertEqual((new / 'etc/hostname').read_text(), 'myrouter\n')
+            self.assertIn('myrouter', (new / 'etc/config/system').read_text())
             # a file that differs from the new image's: the new one is in use, the old one is set aside - the user's
             # change and the old release's own file alike, they cannot be told apart
             self.assertEqual((new / 'etc/sysctl.conf').read_text(), '# defaults\nvm.swappiness=10\n')
-            self.assertEqual((new / 'etc/issue.net').read_text(), 'Ubuntu\n')
-            self.assertEqual((kept / 'etc/issue.net').read_text(), 'Ubuntu, mine\n')
+            self.assertEqual((new / 'etc/issue').read_text(), 'OpenWrt\n')
+            self.assertEqual((kept / 'etc/issue').read_text(), 'OpenWrt, mine\n')
             self.assertEqual((kept / 'usr/bin/tool').read_text(), 'tool v1')
             self.assertEqual((kept / 'etc/dropped-by-v2.conf').read_text() if (kept / 'etc/dropped-by-v2.conf').exists()
                              else (new / 'etc/dropped-by-v2.conf').read_text(), 'old release\n')
@@ -830,7 +841,7 @@ class Carry(CarryCase):
             self.assertEqual((new / 'opt/mu300/bin/mu300-wifi').read_text(), '#!/bin/sh\necho v2\n')
             self.assertTrue((new / 'etc/motd').exists())                    # a deletion cannot be told
             self.assertIn('has no list of its files here', report)
-            self.assertIn('  /etc/issue.net\n', report)
+            self.assertIn('  /etc/issue\n', report)
             self.assertTrue((new / 'etc/mu300/update-report.new').exists())
         self.each(user, check, manifest='none')
 
@@ -869,34 +880,24 @@ class Carry(CarryCase):
             (old / 'usr/bin/tool').write_text('patched')
 
         def check(old, new, report, r):
-            self.assertRegex(report, r'(?s)^==== ubuntu: v1 -> v2, .*/usr/bin/tool.*==== sys: v0 -> v1 ====\nan earlier update\n$')
+            self.assertRegex(report, r'(?s)^==== openwrt-luci: v1 -> v2, .*/usr/bin/tool.*==== sys: v0 -> v1 ====\nan earlier update\n$')
             self.assertEqual(stat.S_IMODE((new / 'etc/mu300/update-report').stat().st_mode), 0o600)
-            self.assertIn('==== ubuntu: v1 -> v2', r.stdout)                # shown when the update runs
+            self.assertIn('==== openwrt-luci: v1 -> v2', r.stdout)                # shown when the update runs
         self.each(user, check)
+        # (the login note is /etc/profile.d/mu300-update.sh's, while update-report.new is there)
         for shell in self.each_shell():
             root = self.tmp / 'root'
             shutil.rmtree(root, ignore_errors=True)
-            build(root, {'etc/mu300/update-report.new': '', 'run/motd.d/': None})
-            r = self.sh(shell, f'. "{BIN}/mu300-update"; latest_release() {{ :; }}; notice; ls "{root}/run/motd.d"',
-                        MU300_LIB=1, MU300_SYSROOT=root, MU300_MOTD_DIR=root / 'run/motd.d', MU300_NOTICE=root / 'run/note')
-            self.assertIn('61-mu300-update-report', r.stdout, r.stderr)
-            self.assertIn('mu300-update report', (root / 'run/motd.d/61-mu300-update-report').read_text())
-            # mu300-update report shows it, and the note goes
-            (root / 'etc/mu300/update-report').write_text('==== ubuntu: v1 -> v2 ====\nthe report\n')
-            r = self.sh(shell, f'. "{BIN}/mu300-update"; report; ls "{root}/run/motd.d" "{root}/etc/mu300"',
-                        MU300_LIB=1, MU300_SYSROOT=root, MU300_MOTD_DIR=root / 'run/motd.d')
-            self.assertIn('==== ubuntu: v1 -> v2 ====\nthe report\n', r.stdout)
-            self.assertNotIn('61-mu300-update-report', r.stdout)
+            build(root, {'etc/mu300/update-report.new': '', 'etc/mu300/update-report': '==== openwrt-luci: v1 -> v2 ====\nthe report\n'})
+            r = self.sh(shell, f'. "{BIN}/mu300-update"; report; ls "{root}/etc/mu300"', MU300_LIB=1, MU300_SYSROOT=root)
+            self.assertIn('==== openwrt-luci: v1 -> v2 ====\nthe report\n', r.stdout)
             self.assertNotIn('update-report.new', r.stdout)
-            r = self.sh(shell, f'. "{BIN}/mu300-update"; latest_release() {{ :; }}; notice; ls "{root}/run/motd.d"',
-                        MU300_LIB=1, MU300_SYSROOT=root, MU300_MOTD_DIR=root / 'run/motd.d', MU300_NOTICE=root / 'run/note')
-            self.assertNotIn('61-mu300-update-report', r.stdout)
 
     def test_openwrt(self):
         old_image = {'bin/busybox': ('f', '#!', 0o755), 'etc/mu300/image-version': 'v1\n', 'etc/config/network': "config interface 'lan'\n",
                      'etc/config/system': "config system\n", 'etc/rc.d/S50cron': ('l', '../init.d/cron'), 'etc/init.d/cron': ('f', '#!/bin/sh\n', 0o755),
                      'etc/init.d/dnsmasq': ('f', '#!/bin/sh\n# v1\n', 0o755), 'etc/banner': 'OpenWrt\n', 'etc/uci-defaults/90-mu300': 'once\n',
-                     'www/index.html': '<html>', 'etc/apk/world': 'base\n', 'lib/modules/5.4/a.ko': 'ko', 'etc/sysctl.conf': '# d\n',
+                     'www/index.html': '<html>', 'etc/apk/world': 'base\n', 'lib/modules/7.2.10/a.ko': 'ko', 'etc/sysctl.conf': '# d\n',
                      'lib/apk/db/installed': 'P:base\nF:etc\nR:banner\nR:sysctl.conf\nF:etc/init.d\nR:dnsmasq\nF:www\nR:index.html\n',
                      'lib/apk/packages/base.conffiles': '/etc/sysctl.conf\n/etc/config/\n', 'opt/mu300/lib/path-commands': 'mu300-update\n'}
         new_image = dict(old_image)
@@ -942,7 +943,7 @@ class Carry(CarryCase):
             self.assertEqual((new / 'etc/mu300/orphaned-config/etc/config/userpkg').read_text(), 'config main\n')
             self.assertFalse((new / 'etc/config/userpkg').exists())
             self.assertIn('/etc/config/userpkg -> /etc/mu300/orphaned-config/etc/config/userpkg', report)
-        self.each(user, check, old_image=old_image, new_image=new_image, image='openwrt', os_name='openwrt')
+        self.each(user, check, old_image=old_image, new_image=new_image, image='openwrt-luci', os_name='openwrt-luci')
 
     def test_with_busybox_for_every_command(self):
         # as on OpenWrt, and as the update runs it: by the image's static busybox
@@ -961,7 +962,7 @@ class Carry(CarryCase):
             (old / 'usr/bin/tool').write_text('patched')
             (old / 'etc/motd').unlink()
         old, new = self.systems(user)
-        r = self.sh([bb, 'sh'], f'. "{BIN}/mu300-update"; carry_system "{old}" "{new}" ubuntu copy; echo "rc=$?"',
+        r = self.sh([bb, 'sh'], f'. "{BIN}/mu300-update"; carry_system "{old}" "{new}" openwrt-luci copy; echo "rc=$?"',
                     MU300_LIB=1, MU300_CARRY=CARRY, PATH=f'{d}')
         self.assertIn('rc=0\n', r.stdout, r.stdout + r.stderr)
         self.assertEqual(r.stderr, '')
@@ -973,19 +974,21 @@ class Carry(CarryCase):
         self.assertFalse((new / 'etc/motd').exists())
 
 
+# (the image's account is not the number of whoever runs the tests: the files of the fake old system are theirs, and
+# a number that no account of the old system has but one of the new image has is set aside - Owners)
 SEC = {
-    'etc/passwd': 'root:x:0:0::/root:/bin/sh\nubuntu:x:1000:1000::/home/ubuntu:/bin/bash\n',
-    'etc/group': 'root:x:0:\nubuntu:x:1000:\n',
-    'etc/shadow': 'root:*:1::::::\nubuntu:$6$image:1::::::\n',
+    'etc/passwd': 'root:x:0:0::/root:/bin/sh\nadmin:x:4000:4000::/home/admin:/bin/ash\n',
+    'etc/group': 'root:x:0:\nadmin:x:4000:\n',
+    'etc/shadow': 'root:*:1::::::\nadmin:$6$image:1::::::\n',
     'etc/ssh/sshd_config.d/10-mu300.conf': 'PasswordAuthentication yes\n',
     'etc/sysctl.d/99-mu300-console.conf': 'kernel.printk = 4\n',
     'etc/sudoers': 'root ALL=(ALL) ALL\n',
-    'etc/sudoers.d/90-image': 'ubuntu ALL=(ALL) NOPASSWD: ALL\n',
+    'etc/sudoers.d/90-image': 'admin ALL=(ALL) NOPASSWD: ALL\n',
     'etc/mu300/firewall.nft': '# the rules of the image\n',
     'etc/config/firewall': "config defaults\n\toption input 'ACCEPT'\n",
     'etc/secret.conf': 'a setting\n',
-    'usr/lib/systemd/system/telnet.service': '[Service]\n',
-    'etc/systemd/system/multi-user.target.wants/telnet.service': ('l', '/usr/lib/systemd/system/telnet.service'),
+    'etc/init.d/telnet': '#!/bin/sh /etc/rc.common\n',
+    'etc/rc.d/S50telnet': ('l', '../init.d/telnet'),
     'opt/mu300/bin/mu300-telnetd': ('f', '#!/bin/sh\n', 0o755),
 }
 SEC_OLD = dict(OLD_IMAGE, **SEC)
@@ -997,9 +1000,8 @@ SEC_NEW.update({
     'etc/sudoers': 'root ALL=(ALL) ALL\n# v2\n',
     'etc/mu300/firewall.nft': '# the rules of the image, v2\n',
     'etc/config/firewall': "config defaults\n\toption input 'ACCEPT'\n# v2\n",
-    'etc/systemd/system/mu300-telnetd.service': '[Service]\n# v2\n',
-    'etc/mu300/adb': 'on\n',
-    'etc/sudoers.d/91-of-v2': 'ubuntu ALL=(ALL) NOPASSWD: /usr/bin/new\n',
+    'etc/init.d/mu300-telnetd': '#!/bin/sh /etc/rc.common\n# v2\n',
+    'etc/sudoers.d/91-of-v2': 'admin ALL=(ALL) NOPASSWD: /usr/bin/new\n',
 })
 
 
@@ -1007,15 +1009,13 @@ SEC_NEW.update({
 class NeverLessProtected(CarryCase):
     """An update never leaves the device less protected than the user left it: everything the user tightened is
     planted in the old system, and the new one must be at least as tight - with the old image's manifest, and without
-    one. (main's test_update asserts the adb state for the list of kept places; that update is still there, and
-    still tested there.)"""
+    one."""
 
     @staticmethod
     def tighten(old):
-        build(old, {'etc/mu300/adb': 'off\n', 'etc/mu300/adb_auth': 'keys\n', 'etc/mu300/adb_keys': ('f', 'QAAAAkey me@pc\n', 0o600),
-                    'etc/mu300/vpn.conf': ('f', 'ENABLE=1\nKILL_SWITCH=1\n', 0o600), 'etc/mu300/mobile-data.conf': ('f', 'APN=x\nPASS=y\n', 0o600),
+        build(old, {'etc/mu300/vpn.conf': ('f', 'ENABLE=1\nKILL_SWITCH=1\n', 0o600), 'etc/mu300/mobile-data.conf': ('f', 'APN=x\nPASS=y\n', 0o600),
                     'etc/dropbear/authorized_keys': ('f', 'ssh-ed25519 AAAA only-this-one\n', 0o600),
-                    'home/ubuntu/.ssh/authorized_keys': ('f', 'ssh-ed25519 AAAA only-this-one\n', 0o600),
+                    'home/admin/.ssh/authorized_keys': ('f', 'ssh-ed25519 AAAA only-this-one\n', 0o600),
                     'etc/nftables.d/10-user.nft': 'drop everything\n'})
         (old / 'etc/ssh/sshd_config.d/10-mu300.conf').write_text('PasswordAuthentication no\n')
         (old / 'etc/ssh/sshd_config').write_text('Port 22\nPermitRootLogin no\n')
@@ -1024,11 +1024,9 @@ class NeverLessProtected(CarryCase):
         (old / 'etc/sudoers.d/90-image').unlink()                     # no sudo without a password
         (old / 'etc/mu300/firewall.nft').write_text('# my rules: drop\n')
         (old / 'etc/config/firewall').write_text("config defaults\n\toption input 'REJECT'\n")
-        # services turned off: disabled (the link is gone), and masked (a link to /dev/null over the project's unit)
-        (old / 'etc/systemd/system/multi-user.target.wants/telnet.service').unlink()
-        (old / 'etc/systemd/system/multi-user.target.wants/mu300-telnetd.service').unlink()
-        (old / 'etc/systemd/system/mu300-telnetd.service').unlink()
-        os.symlink('/dev/null', old / 'etc/systemd/system/mu300-telnetd.service')
+        # services turned off: disabled (the link is gone), also one of the project's own
+        (old / 'etc/rc.d/S50telnet').unlink()
+        (old / 'etc/rc.d/S50mu300-telnetd').unlink()
         # modes narrowed: a setting, a program of the release the user edited, a program of the project
         (old / 'etc/secret.conf').chmod(0o600)
         (old / 'usr/bin/tool').write_text('tool v1, patched')
@@ -1039,19 +1037,17 @@ class NeverLessProtected(CarryCase):
         (old / 'etc/group').write_text('root:x:0:\n')
         (old / 'etc/shadow').write_text('root:!locked:2::::::\n')
 
-    def check(self, old, new, report, r):
+    def check(self, old, new, report, r, manifest=True):
         mode = lambda p: stat.S_IMODE(os.lstat(new / p).st_mode)
-        # adb stays off and limited to its keys
-        self.assertEqual((new / 'etc/mu300/adb').read_text(), 'off\n')
-        self.assertEqual((new / 'etc/mu300/adb_auth').read_text(), 'keys\n')
-        self.assertEqual(((new / 'etc/mu300/adb_keys').read_text(), mode('etc/mu300/adb_keys')), ('QAAAAkey me@pc\n', 0o600))
         # the VPN's kill switch, the settings with a password in them, with their modes
         self.assertEqual(((new / 'etc/mu300/vpn.conf').read_text(), mode('etc/mu300/vpn.conf')), ('ENABLE=1\nKILL_SWITCH=1\n', 0o600))
         self.assertEqual(mode('etc/mu300/mobile-data.conf'), 0o600)
-        # ssh: the settings, also the one in the project's own drop-in, and the keys that may log in
-        self.assertEqual((new / 'etc/ssh/sshd_config.d/10-mu300.conf').read_text(), 'PasswordAuthentication no\n')
-        self.assertEqual((new / 'etc/ssh/sshd_config').read_text(), 'Port 22\nPermitRootLogin no\n')
-        for p in ('etc/dropbear/authorized_keys', 'home/ubuntu/.ssh/authorized_keys'):
+        # ssh: the settings, also the one in the project's own drop-in (an sshd the user installed: without the
+        # manifest only OpenWrt's own places are known to be the user's - dropbear's), and the keys that may log in
+        if manifest:
+            self.assertEqual((new / 'etc/ssh/sshd_config.d/10-mu300.conf').read_text(), 'PasswordAuthentication no\n')
+            self.assertEqual((new / 'etc/ssh/sshd_config').read_text(), 'Port 22\nPermitRootLogin no\n')
+        for p in ('etc/dropbear/authorized_keys', 'home/admin/.ssh/authorized_keys'):
             self.assertEqual(((new / p).read_text(), mode(p)), ('ssh-ed25519 AAAA only-this-one\n', 0o600))
         # the firewall, sysctl, sudo
         self.assertEqual((new / 'etc/mu300/firewall.nft').read_text(), '# my rules: drop\n')
@@ -1060,10 +1056,9 @@ class NeverLessProtected(CarryCase):
         self.assertIn('dmesg_restrict = 1', (new / 'etc/sysctl.d/99-mu300-console.conf').read_text())
         self.assertIn('timestamp_timeout=0', (new / 'etc/sudoers').read_text())
         self.assertFalse((new / 'etc/sudoers.d/90-image').exists())
-        # services that were off are off: no enable link, the mask in place over the release's unit
-        for p in ('etc/systemd/system/multi-user.target.wants/telnet.service', 'etc/systemd/system/multi-user.target.wants/mu300-telnetd.service'):
+        # services that were off are off: no enable link
+        for p in ('etc/rc.d/S50telnet', 'etc/rc.d/S50mu300-telnetd'):
             self.assertFalse(os.path.lexists(new / p), p)
-        self.assertEqual(os.readlink(new / 'etc/systemd/system/mu300-telnetd.service'), '/dev/null')
         # modes stay narrow, also where the release's content is the one in use - and that case is in the report
         self.assertEqual(mode('etc/secret.conf'), 0o600)
         self.assertEqual(((new / 'usr/bin/tool').read_text(), mode('usr/bin/tool')), ('tool v2', 0o700))
@@ -1072,8 +1067,8 @@ class NeverLessProtected(CarryCase):
         # the account that was deleted does not come back with the image's password, and root stays locked
         shadow = (new / 'etc/shadow').read_text().splitlines()
         self.assertIn('root:!locked:2::::::', shadow)
-        self.assertIn('ubuntu:!$6$image:1::::::', shadow)
-        self.assertRegex(report, r'Accounts of the release that the previous system did not have are locked.*\n  ubuntu\n')
+        self.assertIn('admin:!$6$image:1::::::', shadow)
+        self.assertRegex(report, r'Accounts of the release that the previous system did not have are locked.*\n  admin\n')
 
     def test_with_the_manifest(self):
         def check(old, new, report, r):
@@ -1084,27 +1079,26 @@ class NeverLessProtected(CarryCase):
 
     def test_without_a_manifest(self):
         def check(old, new, report, r):
-            self.check(old, new, report, r)
+            self.check(old, new, report, r, manifest=False)
             self.assertIn('has no list of its files here', report)
             # what cannot be told is decided for the tighter side, and said
             self.assertFalse((new / 'etc/sudoers.d/91-of-v2').exists())
             self.assertRegex(report, r'Not taken from the new release.*\n(  /.*\n)*  /etc/sudoers\.d/91-of-v2\n')
-            self.assertRegex(report, r'Left off, as in the previous system.*\n(  /.*\n)*  /etc/systemd/system/multi-user\.target\.wants/telnet\.service\n')
+            self.assertRegex(report, r'Left off, as in the previous system.*\n(  /.*\n)*  /etc/rc\.d/S50telnet\n')
         self.each(self.tighten, check, old_image=SEC_OLD, new_image=SEC_NEW, manifest='none')
 
     def test_a_removed_package_is_back_without_its_service(self):
         # the user removed the telnet package; the image has it. Its files are back, its service is not enabled.
         new_image = dict(SEC_NEW)
-        new_image.update({'var/lib/dpkg/info/telnetd.list': '/.\n/usr/lib/systemd/system/telnet.service\n',
-                          'var/lib/dpkg/status': 'Package: base\nStatus: install ok installed\n\nPackage: telnetd\nStatus: install ok installed\n'})
+        new_image.update({'lib/apk/db/installed': apk_db({'base': [], 'telnetd': ['etc/init.d/telnet']})})
 
         def user(old):
-            (old / 'usr/lib/systemd/system/telnet.service').unlink()
-            (old / 'etc/systemd/system/multi-user.target.wants/telnet.service').unlink()
+            (old / 'etc/init.d/telnet').unlink()
+            (old / 'etc/rc.d/S50telnet').unlink()
 
         def check(old, new, report, r):
-            self.assertTrue((new / 'usr/lib/systemd/system/telnet.service').exists())
-            self.assertFalse(os.path.lexists(new / 'etc/systemd/system/multi-user.target.wants/telnet.service'))
+            self.assertTrue((new / 'etc/init.d/telnet').exists())
+            self.assertFalse(os.path.lexists(new / 'etc/rc.d/S50telnet'))
             self.assertRegex(report, r'Packages you had removed are part of the image, and back \(their services are not enabled\):\n  telnetd\n')
         self.each(user, check, old_image=SEC_OLD, new_image=new_image)
 
@@ -1257,7 +1251,7 @@ class Owners(CarryCase):
             old, new = self.systems(lambda old: None, old_image=old_image, new_image=new_image)
             # merge_accounts stands in for anything that would leave another number than the plan's
             r = self.sh(shell, f'. "{BIN}/mu300-update"; merge_accounts() {{ sed -i "s/^svc:x:301:/svc:x:302:/" "$2/etc/passwd"; }}; '
-                               f'carry_system "{old}" "{new}" ubuntu copy; echo "rc=$?"', MU300_LIB=1, MU300_CARRY=CARRY)
+                               f'carry_system "{old}" "{new}" openwrt-luci copy; echo "rc=$?"', MU300_LIB=1, MU300_CARRY=CARRY)
             self.assertIn('rc=1\n', r.stdout, r.stdout + r.stderr)
             self.assertIn('svc: 302 in the new system, the plan was 301', r.stderr)
 
@@ -1277,7 +1271,7 @@ def image_tar(path, spec, tmp):
 
 @unittest.skipUnless(CC and LINUX and shutil.which('busybox'), 'needs a C compiler and busybox on Linux')
 class Apply(ShellTest):
-    """apply_one and the installers' update with an image that brings the carry block: run from the image, by its busybox"""
+    """apply_one with an image that brings the carry block: run from the image, by its busybox"""
 
     def setUp(self):
         super().setUp()
@@ -1290,13 +1284,13 @@ class Apply(ShellTest):
         """the Linux partition before an update: the old system with what a user did to it, and the new image
         downloaded (with what carries everything over in it, or as an image built without)"""
         shutil.rmtree(self.disk, ignore_errors=True)
-        self.old = build(self.disk / 'ubuntu', OLD_IMAGE)
-        m = carry('manifest', self.old, 'ubuntu-24.04', 'v1')
+        self.old = build(self.disk / 'openwrt-luci', OLD_IMAGE)
+        m = carry('manifest', self.old, 'openwrt-luci', 'v1')
         (self.old / 'etc/mu300/image-manifest.gz').write_bytes(gzip.compress(m.stdout.encode()))
         build(self.old, {'etc/wireguard/wg0.conf': ('f', 'key', 0o600), 'var/lib/app/db': 'data', 'opt/app/run': ('f', '#!', 0o755)})
         (self.old / 'etc/sysctl.conf').write_text('# mine\n')
         (self.disk / '.mu300-update').mkdir()
-        tar = self.disk / '.mu300-update/mu300-ubuntu-rootfs.tar.gz'
+        tar = self.disk / '.mu300-update/mu300-openwrt-luci-rootfs.tar.gz'
         if with_engine:
             image_tar(tar, NEW_IMAGE, self.tmp)
         else:
@@ -1312,73 +1306,73 @@ class Apply(ShellTest):
         for shell in self.each_shell():
             self.fresh()
             before = snapshot(self.old)
-            r = self.up(shell, 'apply_one ubuntu v2')
+            r = self.up(shell, 'apply_one openwrt-luci v2')
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-            new = self.disk / 'ubuntu'
+            new = self.disk / 'openwrt-luci'
             self.assertEqual((new / 'etc/wireguard/wg0.conf').read_text(), 'key')
             self.assertEqual((new / 'var/lib/app/db').read_text(), 'data')
             self.assertEqual((new / 'opt/app/run').read_text(), '#!')
             self.assertEqual((new / 'etc/sysctl.conf').read_text(), '# mine\n')
             self.assertEqual((new / 'etc/mu300/image-version').read_text(), 'v2\n')
-            self.assertIn('ubuntu: updated v1 -> v2', r.stdout)
+            self.assertIn('openwrt-luci: updated v1 -> v2', r.stdout)
             self.assertIn('Everything you added to the system was carried over', r.stdout)
             # the rollback copy is the old system as it was, to the last attribute
-            self.assertEqual(snapshot(self.disk / 'ubuntu.old'), before)
-            self.assertFalse((self.disk / 'ubuntu.new').exists())
+            self.assertEqual(snapshot(self.disk / 'openwrt-luci.old'), before)
+            self.assertFalse((self.disk / 'openwrt-luci.new').exists())
 
     def test_the_old_way_stays_reachable(self):
         for shell in self.each_shell():
             # asked for: only the list of places, as before the first release with a four-field tag
             self.fresh()
-            r = self.up(shell, 'apply_one ubuntu v2', MU300_UPDATE_KEEP='list')
+            r = self.up(shell, 'apply_one openwrt-luci v2', MU300_UPDATE_KEEP='list')
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-            new = self.disk / 'ubuntu'
+            new = self.disk / 'openwrt-luci'
             self.assertFalse((new / 'etc/wireguard').exists())
             self.assertFalse((new / 'var/lib/app').exists())
             self.assertEqual((new / 'etc/hostname').read_text(), 'mu300\n')
             self.assertNotIn('carried over', r.stdout)
-            self.assertTrue((self.disk / 'ubuntu.old/etc/wireguard/wg0.conf').exists())
+            self.assertTrue((self.disk / 'openwrt-luci.old/etc/wireguard/wg0.conf').exists())
             # and for an image that does not bring the helper, with a line that says so
             self.fresh(with_engine=False)
-            r = self.up(shell, 'apply_one ubuntu v2')
+            r = self.up(shell, 'apply_one openwrt-luci v2')
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
             self.assertIn('does not bring what carries everything over', r.stdout)
-            self.assertFalse((self.disk / 'ubuntu/etc/wireguard').exists())
+            self.assertFalse((self.disk / 'openwrt-luci/etc/wireguard').exists())
 
     def test_no_rollback_keeps_no_copy(self):
         for shell in self.each_shell():
             self.fresh()
-            (self.disk / 'ubuntu.old').mkdir()              # the copy an earlier update kept goes too
+            (self.disk / 'openwrt-luci.old').mkdir()              # the copy an earlier update kept goes too
             ino = os.lstat(self.old / 'var/lib/app/db').st_ino
-            r = self.up(shell, 'NO_ROLLBACK=; CARRY_MODE=link; apply_one ubuntu v2; echo "none:$NO_ROLLBACK"')
+            r = self.up(shell, 'NO_ROLLBACK=; CARRY_MODE=link; apply_one openwrt-luci v2; echo "none:$NO_ROLLBACK"')
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-            self.assertEqual(os.lstat(self.disk / 'ubuntu/var/lib/app/db').st_ino, ino)
-            self.assertFalse((self.disk / 'ubuntu.old').exists())
-            self.assertTrue((self.disk / 'ubuntu.broken/sbin/init').exists())
-            self.assertIn('none: ubuntu', r.stdout)
+            self.assertEqual(os.lstat(self.disk / 'openwrt-luci/var/lib/app/db').st_ino, ino)
+            self.assertFalse((self.disk / 'openwrt-luci.old').exists())
+            self.assertTrue((self.disk / 'openwrt-luci.broken/sbin/init').exists())
+            self.assertIn('none: openwrt-luci', r.stdout)
             # no rollback is offered, and the next apply removes what is left
-            r = self.up(shell, 'mounted_disk() { :; }; rollback ubuntu')
-            self.assertIn('ubuntu: no previous version kept', r.stdout)
+            r = self.up(shell, 'mounted_disk() { :; }; rollback openwrt-luci')
+            self.assertIn('openwrt-luci: no previous version kept', r.stdout)
             r = self.up(shell, 'clean_broken')
-            self.assertIn('ubuntu: removed the copy', r.stdout)
-            self.assertFalse((self.disk / 'ubuntu.broken').exists())
+            self.assertIn('openwrt-luci: removed the copy', r.stdout)
+            self.assertFalse((self.disk / 'openwrt-luci.broken').exists())
             # the files are the new system's alone now
-            self.assertEqual(os.lstat(self.disk / 'ubuntu/var/lib/app/db').st_nlink, 1)
-            self.assertEqual((self.disk / 'ubuntu/var/lib/app/db').read_text(), 'data')
+            self.assertEqual(os.lstat(self.disk / 'openwrt-luci/var/lib/app/db').st_nlink, 1)
+            self.assertEqual((self.disk / 'openwrt-luci/var/lib/app/db').read_text(), 'data')
 
     def test_no_room_stops_before_anything_changes(self):
         self.stub('df', 'echo "Filesystem 1024-blocks Used Available Capacity Mounted on"; echo "/dev/x 100000 99000 1000 99% /"')
         for shell in self.each_shell():
             self.fresh()
             before = snapshot(self.old)
-            r = self.up(shell, 'apply_one ubuntu v2')
+            r = self.up(shell, 'apply_one openwrt-luci v2')
             self.assertNotEqual(r.returncode, 0)
             self.assertIn('nothing was changed', r.stderr)
             self.assertIn('mu300-update apply --no-rollback', r.stderr)
             self.assertRegex(r.stderr, r'\d+ MB needed, 0 MB free')
-            self.assertEqual(snapshot(self.disk / 'ubuntu'), before)
-            self.assertFalse((self.disk / 'ubuntu.new').exists())
-            self.assertFalse((self.disk / 'ubuntu.old').exists())
+            self.assertEqual(snapshot(self.disk / 'openwrt-luci'), before)
+            self.assertFalse((self.disk / 'openwrt-luci.new').exists())
+            self.assertFalse((self.disk / 'openwrt-luci.old').exists())
 
     def test_the_room_an_update_wants_counts_what_the_carry_copies(self):
         # one rule (space_needed) for apply's refusal and the panel's figures, and in it what the carry block copies
@@ -1387,7 +1381,7 @@ class Apply(ShellTest):
         self.stub('wget', 'exit 4')
         (self.old / 'var/lib/app/big').write_bytes(b'x' * (8 << 20))
         for shell in self.each_shell():
-            r = self.up(shell, 'carry_need ubuntu; CARRY_MODE=link carry_need ubuntu; MU300_UPDATE_KEEP=list carry_need ubuntu; '
+            r = self.up(shell, 'carry_need openwrt-luci; CARRY_MODE=link carry_need openwrt-luci; MU300_UPDATE_KEEP=list carry_need openwrt-luci; '
                                'carry_need openwrt; space_needed 2; space_needed 2 5')
             need, *rest = [int(x) for x in r.stdout.split()]
             self.assertEqual(rest, [0, 0, 0, 3000000, 3000005], r.stderr)
@@ -1403,7 +1397,7 @@ class Apply(ShellTest):
             self.assertRegex(r.stderr, r'not enough free space on the Linux partition: (\d+) MB needed')
             self.assertAlmostEqual(int(re.search(r'(\d+) MB needed', r.stderr).group(1)), (2000000 + need) // 1024, delta=1)
             self.assertIn('mu300-update apply --no-rollback', r.stderr)
-            self.assertTrue((self.disk / '.mu300-update/mu300-ubuntu-rootfs.tar.gz').exists())
+            self.assertTrue((self.disk / '.mu300-update/mu300-openwrt-luci-rootfs.tar.gz').exists())
             for args, free in (('--no-rollback', 1000000 + 1000000 + 1), ('', 1000000 + 1000000 + need + 1024)):
                 r = self.up(shell, df + f'mounted_disk() {{ :; }}; apply_options {args}; apply $APPLY_ARGS', MU300_RELEASE='v2',
                             FREE=str(free), MU300_FETCH_DELAY=0)
@@ -1412,7 +1406,7 @@ class Apply(ShellTest):
             # without the manifest of the old system's image nothing is known before the new image is here: the
             # carry block counts it then (test_no_room_stops_before_anything_changes)
             (self.old / 'etc/mu300/image-manifest.gz').rename(self.tmp / 'manifest.gz')
-            self.assertEqual(self.up(shell, 'carry_need ubuntu').stdout.split(), ['0'])
+            self.assertEqual(self.up(shell, 'carry_need openwrt-luci').stdout.split(), ['0'])
             (self.tmp / 'manifest.gz').rename(self.old / 'etc/mu300/image-manifest.gz')
 
     def test_never_back_to_an_older_release_by_itself(self):
@@ -1424,7 +1418,7 @@ class Apply(ShellTest):
             for env in ({}, {'MU300_DOWNGRADE': '1'}, {'MU300_DOWNGRADE': 'yes'}):     # the zip's setting is no word here
                 r = self.up(shell, 'mounted_disk() { :; }; apply_options; apply $APPLY_ARGS', MU300_RELEASE='v2026.10.23', **env)
                 self.assertNotEqual(r.returncode, 0)
-                self.assertIn('ubuntu is v2026.10.26 and v2026.10.23 is older', r.stderr)
+                self.assertIn('openwrt-luci is v2026.10.26 and v2026.10.23 is older', r.stderr)
                 self.assertIn('needs --downgrade, as the older release\'s updater may not carry over everything', r.stderr)
                 self.assertIn('nothing was changed', r.stderr)
                 self.assertNotIn('network used', r.stderr)             # refused before anything is fetched
@@ -1438,179 +1432,28 @@ class Apply(ShellTest):
 
 
 @unittest.skipUnless(CC and LINUX and shutil.which('busybox'), 'needs a C compiler and busybox on Linux')
-class Installers(ShellTest):
-    """The update of install.sh, install.ps1 and the Magisk zip: the install loop of tools/android-install.sh (cut out
-    between its markers, as tests/test_android_install.py does) on a fake mounted Linux filesystem, with an image
-    that brings the carry block."""
-
-    def setUp(self):
-        super().setUp()
-        src = (TOP / 'tools/android-install.sh').read_text()
-        self.blocks = ''.join(re.search(rf'# --- {b} begin\n(.*?)# --- {b} end', src, re.S).group(1)
-                              for b in ('stage', 'user-packages', 'install-os'))
-        self.T = self.tmp / 'T'
-        self.M = self.T / 'mu300root'
-
-    def fresh(self, spec=NEW_IMAGE):
-        shutil.rmtree(self.T, ignore_errors=True)
-        self.old = build(self.M / 'ubuntu', OLD_IMAGE)
-        m = carry('manifest', self.old, 'ubuntu-24.04', 'v1')
-        (self.old / 'etc/mu300/image-manifest.gz').write_bytes(gzip.compress(m.stdout.encode()))
-        build(self.old, {'etc/wireguard/wg0.conf': ('f', 'key', 0o600), 'var/lib/app/db': 'data', 'opt/app/run': ('f', '#!', 0o755),
-                         'etc/shadow': 'root:*:1::::::\nubuntu:$6$mine:2::::::\n', 'etc/passwd': 'root:x:0:0::/root:/bin/sh\nubuntu:x:1000:1000::/home/ubuntu:/bin/sh\n'})
-        (self.old / 'usr/bin/tool').write_text('patched')
-        # another system and the extras beside it: not this update's to touch
-        build(self.M, {'openwrt/etc/config/network': 'mine\n', 'openwrt/root/file': 'x', 'extra/vpn/bin/mu300-vpn': ('f', '#!', 0o755),
-                       'extra/vpn/VERSION': '2.0\n', '.mu300/boot-attempts': '5\n'})
-        spec = dict(spec)
-        spec.update({'etc/shadow': 'root:*:1::::::\nubuntu:$6$image:1::::::\n', 'etc/passwd': 'root:x:0:0::/root:/bin/sh\nubuntu:x:1000:1000::/home/ubuntu:/bin/sh\n'})
-        image_tar(self.T / 'mu300-ubuntu.tar.gz', spec, self.tmp)
-
-    def install(self, shell, **env):
-        e = dict(OSES='ubuntu', UPDATE='1', PWHASH='', DEFAULT_LINUX='1', BOOT_OS='ubuntu', WIPE_LEGACY='0')
-        e.update(env)
-        pre = ('set -e\numask 022\nsay() { echo "[device] $*"; }\nsd_unmark() { :; }\nextra_keep_vpn() { :; }\nssid=; psk=\n'
-               f'T="{self.T}"; M="{self.M}"\n')
-        return self.sh(shell, pre + self.blocks, **e)
-
-    def test_everything_is_carried_and_the_rest_of_the_partition_is_left_alone(self):
-        for shell in self.each_shell():
-            self.fresh()
-            beside = {d: snapshot(self.M / d) for d in ('openwrt', 'extra', '.mu300')}
-            ino = os.lstat(self.old / 'var/lib/app/db').st_ino
-            r = self.install(shell)
-            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-            new = self.M / 'ubuntu'
-            self.assertEqual((new / 'etc/mu300/image-version').read_text(), 'v2\n')
-            self.assertEqual((new / 'etc/wireguard/wg0.conf').read_text(), 'key')
-            self.assertEqual((new / 'opt/app/run').read_text(), '#!')
-            # by link: the old system is not kept on this path, so its files became the new one's, with no copy
-            st = os.lstat(new / 'var/lib/app/db')
-            self.assertEqual((st.st_ino, st.st_nlink), (ino, 1))
-            self.assertEqual((new / 'usr/bin/tool').read_text(), 'tool v2')
-            self.assertEqual((new / 'etc/mu300/update-kept/v1/user/usr/bin/tool').read_text(), 'patched')
-            # the device's password stays; the output says what happened, line by line
-            self.assertIn('ubuntu:$6$mine:2::::::', (new / 'etc/shadow').read_text())
-            self.assertIn('[device] carrying everything of yours in the previous ubuntu over', r.stdout)
-            self.assertIn('[device] Everything you added to the system was carried over', r.stdout)
-            self.assertIn('[device] kept the accounts and passwords of the previous ubuntu', r.stdout)
-            for d in ('ubuntu.new', 'ubuntu.broken', 'ubuntu.old', 'ubuntu/.mu300-carried', 'ubuntu/.mu300-carry'):
-                self.assertFalse((self.M / d).exists(), d)
-            self.assertEqual(sorted(p.name for p in self.T.iterdir()), ['mu300root'])
-            self.assertFalse((self.M / 'ubuntu.new.carry-log').exists())
-            # the other system, the extras and the boot settings are as they were
-            for d, before in beside.items():
-                after = snapshot(self.M / d)
-                after.pop('boot-os', None)
-                self.assertEqual(after, before, d)
-            # a password the installer was given goes in after the accounts were carried over
-            self.fresh()
-            r = self.install(shell, PWHASH='$6$new$hash')
-            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-            self.assertIn('ubuntu:$6$new$hash:', (self.M / 'ubuntu/etc/shadow').read_text())
-
-    def test_the_old_way_when_asked_or_when_the_image_cannot(self):
-        for shell in self.each_shell():
-            self.fresh()
-            r = self.install(shell, MU300_UPDATE_KEEP='list')
-            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-            self.assertFalse((self.M / 'ubuntu/etc/wireguard').exists())
-            self.assertNotIn('carrying everything', r.stdout)
-            self.assertIn('[device] kept from the previous ubuntu:', r.stdout)
-            # an image without the helper: said, and the list of places is kept
-            self.fresh()
-            root = build(self.tmp / 'plain', NEW_IMAGE)
-            subprocess.run(['tar', '-czf', str(self.T / 'mu300-ubuntu.tar.gz'), '-C', str(root), '.'], check=True)
-            shutil.rmtree(root)
-            r = self.install(shell)
-            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-            self.assertIn('does not bring what carries everything over', r.stdout)
-            self.assertFalse((self.M / 'ubuntu/etc/wireguard').exists())
-
-    def test_a_failed_carry_replaces_nothing(self):
-        # the carry block ends without saying it did the work (here: its helper cannot run): the old system stays
-        spec = dict(NEW_IMAGE)
-        for shell in self.each_shell():
-            self.fresh(spec)
-            before = snapshot(self.old)
-            # break the helper of the image after it was checked to be there: an update-report in the way as a directory
-            build(self.old, {'etc/mu300/update-report/x': 'a directory where the report goes'})
-            before = snapshot(self.old)
-            r = self.install(shell)
-            self.assertNotEqual(r.returncode, 0, r.stdout)
-            self.assertIn('carrying your files over failed; ubuntu was not replaced', r.stdout)
-            self.assertNotIn('MU300-INSTALL-OK', r.stdout)
-            self.assertEqual(snapshot(self.M / 'ubuntu'), before)
-            self.assertFalse((self.M / 'ubuntu.new').exists())
-
-    def test_a_run_that_was_cut_off_is_picked_up(self):
-        # the old system had been moved aside and the new one was not in place yet: the next run finds the old one
-        # (its files may be the only names of the user's data) and updates it
-        for shell in self.each_shell():
-            self.fresh()
-            (self.M / 'ubuntu').rename(self.M / 'ubuntu.broken')
-            build(self.M / 'ubuntu.new', {'half': 'unpacked'})
-            r = self.install(shell)
-            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-            self.assertIn('the system it was replacing is back in place', r.stdout)
-            self.assertEqual((self.M / 'ubuntu/var/lib/app/db').read_text(), 'data')
-            self.assertEqual((self.M / 'ubuntu/etc/mu300/image-version').read_text(), 'v2\n')
-            self.assertFalse((self.M / 'ubuntu.broken').exists())
-            self.assertFalse((self.M / 'ubuntu/half').exists())
-
-
 class Wiring(unittest.TestCase):
-    """What must hold for an update to carry everything over at all: the images get the helper, the manifests and
-    the list of the overlay's files, a release is not published without them, and the installers' update runs the
-    same carry block, from the new image."""
+    """What must hold for an update to carry everything over at all: the image gets the helper and its manifest, and
+    the update runs the carry block of the new image."""
 
-    def test_the_images_get_what_carries_everything_over(self):
-        assemble = (TOP / 'rootfs/assemble.sh').read_text()
+    def test_the_image_gets_what_carries_everything_over(self):
         owrt = (TOP / 'openwrt/build-rootfs.sh').read_text()
-        self.assertIn('if [ -e /carry ]; then install -m755 /carry $R/opt/mu300/bin/mu300-carry; fi', assemble)
         self.assertIn('[ -e /in/carry ] && { cp /in/carry $R/opt/mu300/bin/mu300-carry;', owrt)
-        for text in (assemble, owrt):
-            self.assertIn('/opt/mu300/bin/mu300-carry manifest $R', text)
-            # the manifest is made last: nothing in the image changes after it
-            self.assertLess(text.index('mu300-carry manifest $R'), text.rindex('cd $R && tar '))
-            after = text[text.index('image-manifest.gz $R/etc/mu300/image-manifest.gz'):text.rindex('cd $R && tar ')]
-            self.assertEqual(after.count('\n'), 2, after)
-        # each image has the old releases' manifests of its own system only
-        self.assertIn('rm -f $R/opt/mu300/lib/image-manifests/openwrt*.gz', assemble)
-        self.assertIn('[ "$m" = "$R/opt/mu300/lib/image-manifests/$MU300_SYSTEM.gz" ] || rm -f "$m"', owrt)
+        self.assertIn('/opt/mu300/bin/mu300-carry manifest $R', owrt)
+        # the manifest is made last: nothing in the image changes after it
+        self.assertLess(owrt.index('mu300-carry manifest $R'), owrt.rindex('cd $R && tar '))
+        after = owrt[owrt.index('image-manifest.gz $R/etc/mu300/image-manifest.gz'):owrt.rindex('cd $R && tar ')]
+        self.assertEqual(after.count('\n'), 2, after)
         self.assertIn('-e MU300_SYSTEM="$SYSTEM"', owrt)
 
-    def test_a_release_is_not_published_without_them(self):
-        rel = (TOP / 'tools/make-release.sh').read_text()
-        self.assertIn('gcc -O2 -static -o /o/carry/mu300-carry /src/carry/mu300-carry.c', rel)
-        self.assertIn('-v "$IN/tools/carry/mu300-carry":/carry:ro', rel)
-        audit = rel[rel.index('echo "==> audit"'):rel.index('audit failed, nothing published')]
-        for s in ('opt/mu300/bin/mu300-carry', 'etc/mu300/image-manifest.gz', 'image-manifest.py" check "$D/$a.tar.gz" || fail=1',
-                  'mu300-openwrt-luci-rootfs:opt/mu300/bin/busybox:openwrt-luci'):
-            self.assertIn(s, audit)
-        self.assertIn('*.manifest.gz mu300-update', rel)                    # in SHA256SUMS
-        self.assertEqual(rel.count('"$D"/*.manifest.gz "$D/mu300-update" "$D/mu300-release" "$D/SHA256SUMS" $SIG'), 2)     # uploaded
-        inst = (TOP / 'install.sh').read_text()
-        self.assertIn('gcc -O2 -static -o /o/carry/mu300-carry /src/carry/mu300-carry.c', inst)
-        self.assertIn('-v "$WORK/tools/carry/mu300-carry":/carry:ro', inst)
-
-    def test_the_installers_run_the_new_images_carry_block(self):
-        ai = (TOP / 'tools/android-install.sh').read_text()
-        self.assertIn("MU300_LIB='' $cbb sh $M/$os.new/opt/mu300/bin/mu300-update carry $M/$os $M/$os.new $os link", ai)
-        # and a run that does not say it did the work at its end is a failed one, whatever its status
-        self.assertIn('if [ $crc = 0 ] && [ ! -e $M/$os.new/.mu300-carried ]; then crc=1; fi', ai)
-        # nothing of the block is copied there: the image's own runs
-        self.assertNotIn('carry_plan', ai)
-        self.assertNotIn('carry_system', ai)
+    def test_the_update_runs_the_new_images_carry_block(self):
         upd = (BIN / 'mu300-update').read_text()
         self.assertIn('MU300_LIB=\'\' "$(carry_bb "$2")" sh "$2/opt/mu300/bin/mu300-update" carry "$1" "$2" "$3" "$4" || return', upd)
         self.assertIn('[ -e "$2/.mu300-carried" ] || return 1', upd)
         # carry runs without the root check and without the lock, which the run that called it holds
         main = upd[upd.index('[ -z "${MU300_LIB:-}" ] || return 0'):]
         self.assertLess(main.index('    carry) shift; carry_system "$@"; exit $? ;;'), main.index('[ "$(id -u)" = 0 ]'))
-        # (and so does the installers' count of what an update writes, docs/FINDINGS.md 131)
-        self.assertLess(main.index('    delta-room) shift; delta_room "$@"; exit $? ;;'), main.index('[ "$(id -u)" = 0 ]'))
-        self.assertNotIn('carry', main[main.index('apply|boot|kernel|rollback'):main.index('lock_take')])
+        self.assertNotIn('carry', main[main.index('apply|boot|rollback'):main.index('lock_take')])
 
 
 if __name__ == '__main__':

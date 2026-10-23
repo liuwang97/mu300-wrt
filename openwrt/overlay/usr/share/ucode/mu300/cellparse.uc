@@ -1,9 +1,8 @@
-// mu300.cellparse -- the cellular collector's readings, from the modem's answers to JSON (FINDINGS 216).
+// mu300.cellparse -- the cellular collector's readings, from the modem's answers to JSON.
 //
 // Pure functions, no AT and no files: shared by the collector program (/usr/libexec/unisoc-modem/cell) and the modem
-// daemon (/opt/mu300/bin/mu300-modemd), so both write the same sig.json and cell.json. They were the awk and sed
-// fragments of the shell collector; each keeps that one's rules (comments below). busybox awk's 32-bit integers are
-// no longer a concern (ucode's are 64-bit), but the cell ids stay strings, as the page expects them.
+// daemon (/opt/mu300/bin/mu300-modemd), so both write the same sig.json and cell.json; each function's rules are in
+// its comment. ucode's integers are 64-bit, but the cell ids stay strings, as the page expects them.
 'use strict';
 
 function safe_iface(name, dflt) {

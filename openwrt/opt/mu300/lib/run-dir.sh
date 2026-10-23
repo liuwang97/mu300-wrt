@@ -1,11 +1,12 @@
-# A daemon's own directory under /run, for mu300-atd and the audio extra's mu300-voice (sourced; POSIX sh, busybox
-# ash included).
+# A daemon's own directory under /run, for mu300-api and the audio extra's mu300-voice (sourced; POSIX sh, busybox
+# ash included). mu300-modemd applies the same rule to /run/mu300-at* in ucode (take_dir).
 #
-# /run takes files from every user on these images (kernel/initramfs/init mounts it 1777), so a name there may be somebody
+# /run takes files from every user on these images (the initramfs init mounts it 1777), so a name there may be somebody
 # else's, made first: a directory whose owner reads what is written into it (the modem's answers, the callers'
 # numbers) and puts his own files where a daemon expects its own (a command fifo, pid files it kills), or a symlink
 # that sends root's writes elsewhere. Existing is therefore not enough: the directory must be a real directory,
-# its owner the daemon's user, and nobody else may write it. One helper for both, so the two checks cannot drift.
+# its owner the daemon's user, and nobody else may write it. One helper for the shell daemons, so their checks
+# cannot drift.
 #
 #   run_dir_ours PATH [UID]         true when PATH is a directory (not a symlink to one) that UID (default 0) owns
 #                                   and neither its group nor others may write

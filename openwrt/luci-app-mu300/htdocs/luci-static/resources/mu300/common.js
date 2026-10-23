@@ -18,7 +18,7 @@
  * whole page went blank while one AT command was stuck. */
 
 /* The status snapshot and the new-message watcher's look at the SMS pool are answered by rpcd itself (mu300status,
- * the ucode plugin; FINDINGS 216): mu300dash's shell started ~700 processes per snapshot, every 1.5 s. */
+ * the ucode plugin): a shell backend would start some 700 processes per snapshot, every 1.5 s. */
 var callStatus = rpc.declare({ object: 'mu300status', method: 'status', expect: { '': {} }, nobatch: true });
 var callSignal = rpc.declare({ object: 'mu300dash', method: 'signal', expect: { '': {} }, nobatch: true });
 var callSysinfo = rpc.declare({ object: 'mu300status', method: 'sysinfo', expect: { '': {} }, nobatch: true });
@@ -41,8 +41,6 @@ var callUsbGet = rpc.declare({ object: 'mu300dash', method: 'usb_get', expect: {
 var callUsbSet = rpc.declare({ object: 'mu300dash', method: 'usb_set', params: [ 'kind', 'value', 'scope', 'auto' ], expect: { '': {} }, nobatch: true });
 var callUsbNetList = rpc.declare({ object: 'mu300dash', method: 'usb_net_list', expect: { '': {} }, nobatch: true });
 var callUsbNetAdd = rpc.declare({ object: 'mu300dash', method: 'usb_net_add', params: [ 'iface' ], expect: { '': {} }, nobatch: true });
-var callLangGet = rpc.declare({ object: 'mu300dash', method: 'lang_get', expect: { '': {} }, nobatch: true });
-var callLangSet = rpc.declare({ object: 'mu300dash', method: 'lang_set', params: [ 'op', 'codes', 'source' ], expect: { '': {} }, nobatch: true });
 var callPowerGet = rpc.declare({ object: 'mu300dash', method: 'power_get', expect: { '': {} }, nobatch: true });
 var callPowerSet = rpc.declare({ object: 'mu300dash', method: 'power_set', params: [ 'op', 'key', 'value' ], expect: { '': {} }, nobatch: true });
 var callSimGet = rpc.declare({ object: 'mu300dash', method: 'sim_get', expect: { '': {} }, nobatch: true });
@@ -71,7 +69,7 @@ var callPackagesAct = rpc.declare({ object: 'mu300dash', method: 'packages_act',
 /* System > Update: what is installed and offered, the one update task, and every action (each parameter a fixed word,
  * a release tag, a size or a SHA-256; the backend checks them again) */
 var callUpdateGet = rpc.declare({ object: 'mu300dash', method: 'update_get', params: [ 'sizes' ], expect: { '': {} }, nobatch: true });
-/* System > Backup of settings (mu300-api backup.export / backup.import, FINDINGS 155) */
+/* System > Backup of settings (mu300-api backup.export / backup.import) */
 var callBackupExport = rpc.declare({ object: 'mu300dash', method: 'backup_export', params: [ 'passphrase', 'with_password' ],
 	expect: { '': {} }, nobatch: true });
 var callBackupImport = rpc.declare({ object: 'mu300dash', method: 'backup_import',
@@ -755,7 +753,6 @@ return baseclass.extend({
 	callSmsDel: callSmsDel, callSmsSync: callSmsSync,
 	callUsbGet: callUsbGet, callUsbSet: callUsbSet,
 	callUsbNetList: callUsbNetList, callUsbNetAdd: callUsbNetAdd,
-	callLangGet: callLangGet, callLangSet: callLangSet,
 	callPowerGet: callPowerGet, callPowerSet: callPowerSet,
 	callSimGet: callSimGet, callSimSet: callSimSet, callSimcardGet: callSimcardGet, callSimcardSet: callSimcardSet,
 	callTtlGet: callTtlGet, callTtlSet: callTtlSet,

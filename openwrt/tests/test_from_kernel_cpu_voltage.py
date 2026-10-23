@@ -225,21 +225,6 @@ class Cli(ShellTest):
             self.assertEqual(self.cpu(shell, 'shutdown').returncode, 0)
             self.assertIsNone(self.f('cpu-voltage-armed'))
 
-    def test_systemd_stop_is_not_a_shutdown(self):
-        # outside a sysroot the systemd check runs: "running" means somebody stopped the service by hand
-        self.stub('systemctl', 'echo running')
-        self.stub('id', 'echo 0')
-        for shell in self.each_shell():
-            self.clear()
-            (self.disk / '.mu300' / 'cpu-voltage-armed').write_text('-6250,0,0\n')
-            r = self.sh(shell, f'"{CPU}" voltage shutdown', MU300_DISK=self.disk, MU300_RUN=self.run_dir)
-            self.assertEqual(r.returncode, 0)
-            self.assertEqual(self.f('cpu-voltage-armed'), '-6250,0,0')
-            self.stub('systemctl', 'echo stopping')
-            r = self.sh(shell, f'"{CPU}" voltage shutdown', MU300_DISK=self.disk, MU300_RUN=self.run_dir)
-            self.assertIsNone(self.f('cpu-voltage-armed'))
-            self.stub('systemctl', 'echo running')
-
     def test_root_only(self):
         self.stub('id', 'echo 1000')
         for shell in self.each_shell():
@@ -259,10 +244,10 @@ class Cli(ShellTest):
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertEqual((self.tmp / 'stress-fg').read_text().strip(), 'stress cpu 7')
 
-    def test_warning_in_three_languages(self):
+    def test_warning_in_both_languages(self):
         text = WARNING.read_text(encoding='utf-8')
         self.assertIn('PERMANENTLY DAMAGE', text)
-        self.assertIn('kalıcı zarar verebilirsiniz', text)            # the owner's words
+        self.assertNotIn('DENEYSEL', text)
         self.assertIn('永久性损坏', text)                   # permanent damage
         for shell in self.each_shell():
             self.assertEqual(self.cpu(shell, 'warning').stdout, text)

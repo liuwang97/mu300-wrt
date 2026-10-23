@@ -92,7 +92,7 @@ exit 0
 DEFAULTS = {
     'dashboard-info': '{"ok":1,"host":"f50"}', 'cell': '{"ok":1}', 'action': '{"ok":1,"op":"x"}',
     'lock': '{"ok":1,"mode":{"label":"auto"}}', 'device-usb': '{"ok":1}', 'at': 'OK', 'sms': 'sent (12)',
-    'languages': '{"ok":1}', 'power': '{"ok":1}', 'ttl': '{"ok":1}', 'traffic': '{"ok":1}', 'forward': '{"ok":1}',
+    'power': '{"ok":1}', 'ttl': '{"ok":1}', 'traffic': '{"ok":1}', 'forward': '{"ok":1}',
     'packages': '{"ok":1}', 'sim': '{"ok":1,"hot":1,"available":1,"busy":0}', 'update': '{"ok":1}',
     'cpu': '{"ok":1}', 'mobile-data': '{"slot":0,"slots":[{"volte":true,"vonr":null},{"volte":true,"vonr":null}]}',
 }
@@ -247,7 +247,7 @@ class Mu300Dash(ShellTest):
 class Inventory(Mu300Dash):
     METHODS = {'sysinfo', 'status', 'signal', 'act', 'at', 'at_job', 'at_history', 'ops_log', 'lock_get', 'lock_set', 'sms_list',
                'sms_show', 'sms_send', 'sms_job', 'sms_delete', 'sms_sync', 'usb_get', 'usb_set', 'usb_net_list', 'usb_net_add',
-               'lang_get', 'lang_set', 'power_get', 'power_set',
+               'power_get', 'power_set',
                'ttl_get', 'ttl_set', 'cpu_get', 'cpu_set', 'cpu_tune', 'cpu_voltage_get', 'cpu_voltage_set', 'forward_get',
                'forward_set', 'forward_test',
                'forward_log_clear', 'traffic_get', 'traffic_set', 'packages_get', 'packages_act', 'sim_get', 'sim_set', 'simcard_get', 'simcard_set',
@@ -273,12 +273,12 @@ class Inventory(Mu300Dash):
     def test_the_changed_scripts_parse(self):
         for shell in self.each_shell():
             for p in [DASH, LIB] + [ADAPTERS / n for n in ('action', 'at', 'boot-replay',
-                                                         'device-usb', 'lock', 'languages', 'power', 'ttl',
+                                                         'device-usb', 'lock', 'power', 'ttl',
                                                          'cpu', 'forward', 'traffic', 'packages', 'update')]:
                 with self.subTest(p=p.name):
                     r = subprocess.run(shell + ['-n', str(p)], capture_output=True, text=True)
                     self.assertEqual(r.returncode, 0, r.stderr)
-        # the collector and the snapshot are ucode programs (FINDINGS 216), the plugin and its modules ucode too:
+        # the collector and the snapshot are ucode programs, the plugin and its modules ucode too:
         # each compiles (ucode -c), where there is a ucode
         from helpers import ucode, ucode_paths
         u = ucode()
@@ -333,7 +333,6 @@ class Refusals(Mu300Dash):
         ('sms_delete', {'id': '3'}, 'id', '3'),
         ('sms_delete', {'id': '3'}, 'sim', '1'),
         ('usb_set', {'kind': 'role', 'value': 'host', 'scope': '', 'auto': '0'}, 'kind', 'role'),
-        ('lang_set', {'op': 'enable', 'codes': 'de'}, 'op', 'enable'),
         ('power_set', {'op': 'set', 'key': 'battery.WIFI_IDLE', 'value': '15'}, 'op', 'set'),
         ('power_set', {'op': 'set', 'key': 'battery.WIFI_IDLE', 'value': '15'}, 'key', 'battery.WIFI_IDLE'),
         ('power_set', {'op': 'set', 'key': 'battery.WIFI_IDLE', 'value': '15'}, 'value', '15'),
@@ -341,10 +340,6 @@ class Refusals(Mu300Dash):
         ('power_set', {'op': 'wake'}, 'value', ''),
         ('sim_set', {'op':'switch','value':'1'}, 'op','switch'),
         ('sim_set', {'op':'switch','value':'1'}, 'value','1'),
-        ('lang_set', {'op': 'enable', 'codes': 'de'}, 'codes', 'de'),
-        ('lang_set', {'op': 'disable', 'codes': 'de pt_br'}, 'codes', 'de pt_br'),
-        ('lang_set', {'op': 'use', 'codes': 'en'}, 'codes', 'en'),
-        ('lang_set', {'op': 'install', 'source': 'file'}, 'source', 'file'),
         ('usb_set', {'kind': 'role', 'value': 'host', 'scope': '', 'auto': '0'}, 'value', 'host'),
         ('usb_set', {'kind': 'role', 'value': 'host', 'scope': '', 'auto': '0'}, 'auto', '0'),
         ('usb_set', {'kind': 'role', 'value': 'host', 'scope': '', 'auto': '0'}, 'scope', ''),
@@ -361,13 +356,12 @@ class Refusals(Mu300Dash):
         ('update_get', {}, 'sizes', '1'),
         ('update_act', {'op': 'check'}, 'op', 'check'),
         ('update_act', {'op': 'apply', 'tag': 'v2026.10.25', 'confirm': 'apply'}, 'tag', 'v2026.10.25'),
-        # (the release tags, docs/FINDINGS.md 125: vYYYY.MM.DD.N too, N up to 99)
+        # (the release tags: vYYYY.MM.DD.N too, N up to 99, for a second release on one day)
         ('update_act', {'op': 'apply', 'confirm': 'apply'}, 'tag', 'v2026.10.16.1'),
         ('update_act', {'op': 'apply', 'confirm': 'apply'}, 'tag', 'v2026.10.16.12'),
         ('update_act', {'op': 'apply', 'tag': 'v2026.10.25', 'confirm': 'apply'}, 'confirm', 'apply'),
-        ('update_act', {'op': 'apply', 'tag': 'v2026.10.25', 'confirm': 'apply'}, 'systems', 'openwrt-luci ubuntu'),
+        ('update_act', {'op': 'apply', 'tag': 'v2026.10.25', 'confirm': 'apply'}, 'systems', 'openwrt-luci'),
         ('update_act', {'op': 'apply', 'tag': 'v2026.10.25', 'confirm': 'apply'}, 'flags', 'no_reinstall'),
-        ('update_act', {'op': 'kernel', 'confirm': 'kernel'}, 'kernel', '6.18'),
         ('update_act', {'op': 'upload_begin'}, 'size', '52428800'),
         ('update_act', {'op': 'apply_file', 'confirm': 'apply'}, 'sha256', 'ab' * 32),
         ('update_act', {'op': 'apply_file', 'confirm': 'apply', 'sha256': 'ab' * 32}, 'flags', 'unsigned downgrade'),
@@ -385,7 +379,7 @@ class Refusals(Mu300Dash):
         ('cpu_voltage_set', {'op': 'set', 'offsets': '-3125,0,0', 'confirm': 'EXPERIMENTAL'}, 'confirm', 'EXPERIMENTAL'),
         ('cpu_voltage_set', {'op': 'stress', 'minutes': '10'}, 'minutes', '10'),
         ('cpu_voltage_set', {'op': 'off'}, 'op', 'off'),
-        # a core and CPU0's low latency (FINDINGS 200)
+        # a core and CPU0's low latency
         ('cpu_tune', {'op': 'core', 'cpu': '7', 'state': 'off'}, 'cpu', '7'),
         ('cpu_tune', {'op': 'core', 'cpu': '7', 'state': 'off'}, 'state', 'off'),
         ('cpu_tune', {'op': 'lowlatency', 'state': 'on'}, 'state', 'on'),
@@ -446,22 +440,6 @@ class Refusals(Mu300Dash):
             ('usb iface slash', 'usb_net_add', {'iface': 'eth1/../x'}),
             ('usb iface 16', 'usb_net_add', {'iface': 'e' * 16}),
             ('usb iface empty', 'usb_net_add', {'iface': ''}),
-            ('lang op', 'lang_set', {'op': 'shell', 'codes': 'de'}),
-            ('lang no codes', 'lang_set', {'op': 'enable', 'codes': ''}),
-            ('lang code long', 'lang_set', {'op': 'enable', 'codes': 'deutsch'}),
-            ('lang code upper', 'lang_set', {'op': 'enable', 'codes': 'DE'}),
-            ('lang code region', 'lang_set', {'op': 'enable', 'codes': 'pt-br'}),
-            ('lang two spaces', 'lang_set', {'op': 'enable', 'codes': 'de  fr'}),
-            ('lang 65 codes', 'lang_set', {'op': 'enable', 'codes': ' '.join(['de'] * 65)}),
-            ('lang all and more', 'lang_set', {'op': 'enable', 'codes': 'all de'}),
-            ('lang enable en', 'lang_set', {'op': 'enable', 'codes': 'en'}),
-            ('lang use two', 'lang_set', {'op': 'use', 'codes': 'de fr'}),
-            ('lang use all', 'lang_set', {'op': 'use', 'codes': 'all'}),
-            ('lang source path', 'lang_set', {'op': 'install', 'source': '/etc/shadow'}),
-            ('lang source url', 'lang_set', {'op': 'install', 'source': 'http://x/y.tar.gz'}),
-            ('lang install codes', 'lang_set', {'op': 'install', 'source': 'file', 'codes': 'de'}),
-            ('lang enable source', 'lang_set', {'op': 'enable', 'codes': 'de', 'source': 'file'}),
-            ('lang remove codes', 'lang_set', {'op': 'remove', 'codes': 'de'}),
             ('power key colour', 'power_set', {'op': 'set', 'key': 'battery.COLOUR', 'value': 'red'}),
             ('power value chained', 'power_set', {'op': 'set', 'key': 'battery.WIFI_IDLE', 'value': '15; reboot'}),
             ('power value long', 'power_set', {'op': 'set', 'key': 'battery.WIFI_IDLE', 'value': '123456'}),
@@ -514,10 +492,11 @@ class Refusals(Mu300Dash):
             ('update tag a url', 'update_act', {'op': 'apply', 'tag': 'http://x/v2026.10.25'}),
             ('update tag an option', 'update_act', {'op': 'apply', 'tag': '--from'}),
             ('update system unknown', 'update_act', {'op': 'apply', 'systems': 'android'}),
-            ('update system a path', 'update_act', {'op': 'rollback', 'systems': '../ubuntu'}),
-            ('update systems four', 'update_act', {'op': 'apply', 'systems': 'ubuntu openwrt openwrt-luci ubuntu'}),
-            ('update kernel unknown', 'update_act', {'op': 'kernel', 'kernel': '6.6'}),
-            ('update kernel version', 'update_act', {'op': 'kernel', 'kernel': '6.18.3'}),
+            ('update system a path', 'update_act', {'op': 'rollback', 'systems': '../openwrt-luci'}),
+            ('update system removed', 'update_act', {'op': 'apply', 'systems': 'openwrt'}),
+            ('update systems two', 'update_act', {'op': 'apply', 'systems': 'openwrt-luci openwrt-luci'}),
+            ('update kernel op', 'update_act', {'op': 'kernel', 'kernel': '7.2', 'confirm': 'kernel'}),
+            ('update kernel given', 'update_act', {'op': 'apply', 'kernel': '7.2'}),
             ('update sha short', 'update_act', {'op': 'apply_file', 'sha256': 'ab' * 31}),
             ('update sha upper', 'update_act', {'op': 'apply_file', 'sha256': 'AB' * 32}),
             ('update size zero', 'update_act', {'op': 'upload_begin', 'size': '0'}),
@@ -547,7 +526,7 @@ class Refusals(Mu300Dash):
 
 
 class SimCard(Mu300Dash):
-    """Cellular > SIM settings (FINDINGS 184): mobile-data voice with the fixed words only, the slot 0/1."""
+    """Cellular > SIM settings: mobile-data voice with the fixed words only, the slot 0/1."""
 
     def test_get_and_set(self):
         md = self.adapters / 'mobile-data'
@@ -626,14 +605,6 @@ class Passthrough(Mu300Dash):
         ('usb_net_list', {}, [['device-usb', 'net-list']]),
         ('usb_net_add', {'iface': 'eth1'}, [['device-usb', 'net-add', 'eth1']]),
         ('usb_net_add', {'iface': 'enx00e04c680001'}, [['device-usb', 'net-add', 'enx00e04c680001']]),
-        ('lang_get', {}, [['languages', 'get']]),
-        ('lang_set', {'op': 'enable', 'codes': 'de pt_br'}, [['languages', 'enable', 'de', 'pt_br']]),
-        ('lang_set', {'op': 'disable', 'codes': 'all'}, [['languages', 'disable', 'all']]),
-        ('lang_set', {'op': 'use', 'codes': 'auto'}, [['languages', 'use', 'auto']]),
-        ('lang_set', {'op': 'use', 'codes': 'zh_cn'}, [['languages', 'use', 'zh_cn']]),
-        ('lang_set', {'op': 'install', 'source': 'release'}, [['languages', 'install', 'release']]),
-        ('lang_set', {'op': 'install', 'source': 'file'}, [['languages', 'install', 'file']]),
-        ('lang_set', {'op': 'remove'}, [['languages', 'remove']]),
         ('power_get', {}, [['power', 'get']]),
         ('power_set', {'op': 'set', 'key': 'battery.WIFI_IDLE', 'value': '15'}, [['power', 'set', 'battery.WIFI_IDLE', '15']]),
         ('power_set', {'op': 'set', 'key': 'PROFILE', 'value': 'saver'}, [['power', 'set', 'PROFILE', 'saver']]),
@@ -656,19 +627,17 @@ class Passthrough(Mu300Dash):
         ('update_job', {}, [['update', 'job']]),
         ('update_job', {'op': 'clean', 'confirm': 'clean'}, [['update', 'job']]),
         ('update_act', {'op': 'check'}, [['update', 'act', 'check', '', '', '', '', '', '', '', '']]),
-        ('update_act', {'op': 'apply', 'tag': 'v2026.10.25', 'systems': 'openwrt-luci ubuntu', 'flags': 'no_reinstall',
+        ('update_act', {'op': 'apply', 'tag': 'v2026.10.25', 'systems': 'openwrt-luci', 'flags': 'no_reinstall',
                         'confirm': 'apply'},
-         [['update', 'act', 'apply', 'v2026.10.25', 'openwrt-luci ubuntu', '', '', '', 'no_reinstall', 'apply', '']]),
+         [['update', 'act', 'apply', 'v2026.10.25', 'openwrt-luci', '', '', '', 'no_reinstall', 'apply', '']]),
         ('update_act', {'op': 'apply', 'tag': 'v2026.10.16.12', 'confirm': 'apply'},
          [['update', 'act', 'apply', 'v2026.10.16.12', '', '', '', '', '', 'apply', '']]),
-        ('update_act', {'op': 'kernel', 'kernel': '7.2', 'confirm': 'kernel'},
-         [['update', 'act', 'kernel', '', '', '7.2', '', '', '', 'kernel', '']]),
         ('update_act', {'op': 'upload_begin', 'size': '52428800'},
          [['update', 'act', 'upload_begin', '', '', '', '', '52428800', '', '', '']]),
         ('update_act', {'op': 'apply_file', 'sha256': 'ab' * 32, 'flags': 'unsigned downgrade', 'confirm': 'apply'},
          [['update', 'act', 'apply_file', '', '', '', 'ab' * 32, '', 'unsigned downgrade', 'apply', '']]),
-        ('update_act', {'op': 'rollback', 'systems': 'ubuntu', 'confirm': 'rollback'},
-         [['update', 'act', 'rollback', '', 'ubuntu', '', '', '', '', 'rollback', '']]),
+        ('update_act', {'op': 'rollback', 'systems': 'openwrt-luci', 'confirm': 'rollback'},
+         [['update', 'act', 'rollback', '', 'openwrt-luci', '', '', '', '', 'rollback', '']]),
         ('update_act', {'op': 'clean', 'confirm': 'clean'}, [['update', 'act', 'clean', '', '', '', '', '', '', 'clean', '']]),
         # (the release source: the address is the last argument, empty for GitHub)
         ('update_act', {'op': 'source', 'confirm': 'source', 'url': 'https://proxy.example/https://github.com/x/y/releases/download'},
@@ -808,7 +777,7 @@ class Replies(Mu300Dash):
             self.assertEqual(self.reply(r)['info'], want)
 
     def test_a_stale_page_is_answered_by_the_rpcd_plugin(self):
-        # FINDINGS 216: a browser still running the old home.js polls status and sysinfo here; with mu300status
+        # a browser still running an old home.js polls status and sysinfo here; with mu300status
         # there, each is one ubus call to it and nothing else runs (no dashboard-info, no collector)
         plugin = self.tmp / 'mu300status.uc'
         plugin.write_text('')
@@ -931,110 +900,6 @@ class Adapters(Mu300Dash):
                 self.assertEqual(r.returncode, 2, r.stderr)
 
 
-class LanguagesAdapter(ShellTest):
-    """unisoc-modem/languages: what the Languages page gets and starts, through a stub mu300-extra and uci"""
-
-    def setUp(self):
-        super().setUp()
-        self.disk = self.tmp / 'disk'
-        self.job = self.tmp / 'job'
-        self.job.mkdir(mode=0o700)
-        self.upload = self.tmp / 'upload.tar.gz'
-        # mu300-extra: records its arguments and MU300_EXTRA_FILE (and what that file holds), prints a list
-        self.stub('mu300-extra', 'printf "%s|" "$@" >> "$STUBLOG/extra.log"; '
-                                 'printf "file=%s\\n" "${MU300_EXTRA_FILE:-}" >> "$STUBLOG/extra.log"; '
-                                 '[ -z "${MU300_EXTRA_FILE:-}" ] || cat "$MU300_EXTRA_FILE" >> "$STUBLOG/extra.log"; '
-                                 'case "$1 ${2:-}" in "lang list"|"lang ") '
-                                 'printf "de\\tenabled\\tDeutsch (German)\\nja\\tdisabled\\tA \\"q\\" \\\\\\\\ b\\n" ;; esac')
-        self.stub('setsid', '"$@"')
-        self.uci = {'luci.main.lang': 'en', 'luci.languages.tr': 'T\u00fcrk\u00e7e (Turkish)', 'luci.languages.de': 'Deutsch (German)'}
-        lines = ''.join(f"{k}) printf '%s\\n' '{v}' ;; " for k, v in self.uci.items())
-        show = ''.join(f"printf \"%s='%s'\\n\" '{k}' '{v}'; " for k, v in self.uci.items() if k.startswith('luci.languages.'))
-        self.stub('uci', 'echo "$*" >> "$STUBLOG/uci.log"; a=; for x; do [ "$x" = -q ] || a="$a $x"; done; set -- $a; '
-                         f'case $1 in get) case $2 in {lines} *) exit 1 ;; esac ;; '
-                         f'show) printf "luci.languages=internal\\n"; {show} ;; esac; exit 0')
-
-    def run_ad(self, shell, *args):
-        r = self.script(shell, ADAPTERS / 'languages', *args, MU300_EXTRA_CMD=self.stubs / 'mu300-extra',
-                        MU300_DISK=self.disk, MU300_LANG_UPLOAD=self.upload, MU300_LANG_JOB_DIR=self.job)
-        self.assertEqual(r.returncode, 0, r.stderr)
-        return json.loads(r.stdout)
-
-    def wait_job(self):
-        deadline = time.monotonic() + 10
-        while time.monotonic() < deadline and (self.job / 'lang-job.state').read_text().strip() == 'running':
-            time.sleep(0.05)
-        time.sleep(0.1)
-
-    def log(self):
-        p = self.tmp / 'extra.log'
-        t = p.read_text() if p.exists() else ''
-        p.unlink(missing_ok=True)
-        return t
-
-    def test_get_reports_and_escapes(self):
-        for shell in self.each_shell():
-            r = self.run_ad(shell, 'get')
-            self.assertEqual(r['extra']['installed'], 0)
-            self.assertEqual(r['current'], 'en')
-            self.assertEqual(sorted(l['code'] for l in r['luci']), ['de', 'tr'])
-            (self.disk / 'extra/lang/i18n').mkdir(parents=True, exist_ok=True)
-            (self.disk / 'extra/lang/i18n/mu300.de.lmo').write_text('x')
-            (self.disk / 'extra/lang/release').write_text('v1\n')
-            r = self.run_ad(shell, 'get')
-            self.assertEqual(r['extra'], {'installed': 1, 'release': 'v1', 'languages': [
-                {'code': 'de', 'name': 'Deutsch (German)', 'enabled': 1, 'panel': 1},
-                {'code': 'ja', 'name': 'A "q" \\ b', 'enabled': 0, 'panel': 0}]}, shell)
-            shutil.rmtree(self.disk)
-
-    def test_switch_and_use_check_again(self):
-        (self.disk / 'extra/lang/i18n').mkdir(parents=True)
-        for shell in self.each_shell():
-            self.assertEqual(self.run_ad(shell, 'enable', 'de', 'ja'), {'ok': 1})
-            self.assertEqual(self.log(), 'lang|enable|de|ja|file=\n')
-            for bad in (('enable', 'de;x'), ('disable', '-rf'), ('enable',)):
-                self.assertEqual(self.run_ad(shell, *bad)['ok'], 0, bad)
-            self.assertEqual(self.log(), '')
-            self.assertEqual(self.run_ad(shell, 'use', 'de'), {'ok': 1})
-            self.assertEqual(self.run_ad(shell, 'use', 'auto'), {'ok': 1})
-            # only a language LuCI offers
-            self.assertEqual(self.run_ad(shell, 'use', 'fr')['ok'], 0)
-            self.assertEqual(self.run_ad(shell, 'use', 'de;x')['ok'], 0)
-            self.assertIn('set luci.main.lang=de', (self.tmp / 'uci.log').read_text())
-            self.assertNotIn('lang=fr', (self.tmp / 'uci.log').read_text())
-
-    def test_an_upload_is_moved_out_of_tmp_before_anything_reads_it(self):
-        for shell in self.each_shell():
-            self.upload.write_bytes(b'PACK')
-            r = self.run_ad(shell, 'install', 'file')
-            self.assertEqual(r, {'ok': 1, 'started': 1})
-            self.assertFalse(self.upload.exists(), 'the upload is moved away')
-            self.wait_job()
-            # mu300-extra got the private copy, which is gone after the job
-            log = self.log()
-            self.assertEqual(log, f'install|lang|file={self.job}/lang-upload.tar.gz\nPACK', shell)
-            self.assertFalse((self.job / 'lang-upload.tar.gz').exists())
-            self.assertEqual(self.run_ad(shell, 'get')['job']['state'], 'done')
-            # a link planted at the upload path is not followed
-            secret = self.tmp / 'secret'
-            secret.write_text('root:x')
-            os.symlink(secret, self.upload)
-            r = self.run_ad(shell, 'install', 'file')
-            self.assertEqual(r['ok'], 0)
-            self.assertEqual(self.log(), '')
-            self.upload.unlink()
-            self.assertEqual(self.run_ad(shell, 'install', 'file')['ok'], 0)   # nothing uploaded
-            self.assertEqual(self.run_ad(shell, 'install', '/etc/shadow')['ok'], 0)
-            self.assertEqual(self.run_ad(shell, 'install', 'release'), {'ok': 1, 'started': 1})
-            self.wait_job()
-            self.assertEqual(self.log(), 'install|lang|file=\n')
-            # a job that died without saying how it ended (killed, a reboot) is a failed one, not one running forever
-            (self.job / 'lang-job.state').write_text('running\n')
-            (self.job / 'lang-job.pid').write_text('999999\n')
-            self.assertEqual(self.run_ad(shell, 'get')['job']['state'], 'failed')
-            (self.job / 'lang-job.pid').unlink()
-
-
 class TtlAdapter(ShellTest):
     """unisoc-modem/ttl: mu300-ttl's state as JSON for the TTL page, and set/off with the value checked again"""
 
@@ -1067,7 +932,7 @@ class TtlAdapter(ShellTest):
             self.state.write_text('TTL=128\nBACKEND=nft\nIFACES=\nOFFLOAD=0\n')
             self.assertEqual(self.run_ad(shell, 'get'), {'ok': 1, 'enabled': 1, 'value': 128, 'backend': 'nft',
                                                          'offload': 0, 'iface': []})
-            # off, Ubuntu (no fw4), and whatever odd text: still JSON, nothing odd passed on
+            # off, no fw4, and whatever odd text: still JSON, nothing odd passed on
             self.state.write_text('TTL=\nBACKEND=none\nIFACES=\nOFFLOAD=\n')
             self.assertEqual(self.run_ad(shell, 'get'), {'ok': 1, 'enabled': 0, 'value': None, 'backend': 'none',
                                                          'offload': None, 'iface': []})
@@ -1154,7 +1019,7 @@ class TrafficAdapter(ShellTest):
 
 
 class Backup(Mu300Dash):
-    """System > Backup of settings (FINDINGS 155): the request goes on to mu300-api as it came; the reply (the file, or
+    """System > Backup of settings: the request goes on to mu300-api as it came; the reply (the file, or
     what a restore changes) is never kept in the call log."""
 
     def test_passed_to_the_api_and_never_logged(self):
@@ -1183,11 +1048,11 @@ class Backup(Mu300Dash):
 
 
 class Acl(unittest.TestCase):
-    # SMS bodies (one-time codes) and the AT history (AT+CPIN PINs) are not for read-only users (ruling R14)
-    READ = {'sysinfo', 'status', 'signal', 'lock_get', 'usb_get', 'usb_net_list', 'lang_get', 'power_get', 'ttl_get',
+    # SMS bodies (one-time codes) and the AT history (AT+CPIN PINs) are not for read-only users
+    READ = {'sysinfo', 'status', 'signal', 'lock_get', 'usb_get', 'usb_net_list', 'power_get', 'ttl_get',
             'cpu_get', 'cpu_voltage_get', 'traffic_get', 'ops_log', 'packages_get', 'sim_get', 'simcard_get', 'update_get', 'update_job'}
     WRITE = {'act', 'at', 'at_job', 'at_history', 'lock_set', 'sms_list', 'sms_show', 'sms_send', 'sms_job', 'sms_delete', 'sms_sync',
-             'usb_set', 'usb_net_add', 'lang_set', 'power_set', 'ttl_set', 'cpu_set', 'cpu_tune', 'cpu_voltage_set', 'forward_get',
+             'usb_set', 'usb_net_add', 'power_set', 'ttl_set', 'cpu_set', 'cpu_tune', 'cpu_voltage_set', 'forward_get',
              'forward_set', 'forward_test', 'forward_log_clear', 'traffic_set', 'packages_act', 'sim_set', 'simcard_set',
              'update_act', 'backup_export', 'backup_import', 'backup_job'}
 
@@ -1198,17 +1063,16 @@ class Acl(unittest.TestCase):
         self.assertEqual(read, self.READ)
         self.assertEqual(write, self.WRITE)
         self.assertEqual(read | write, Inventory.METHODS)
-        # the Languages page, the VPN pages and the Update page upload to fixed paths (a language pack; a VPN config
-        # and a VPN extra's tarball; a release file, which goes to the Linux partition, into a directory only root
-        # can enter), and only with write access; mu300vpn has its own read/write split (test_mu300vpn)
+        # the VPN pages and the Update page upload to fixed paths (a VPN config and a VPN extra's tarball; a
+        # release's root filesystem, which goes to the Linux partition, into a directory only root can enter), and
+        # only with write access; mu300vpn has its own read/write split (test_mu300vpn)
         self.assertEqual(acl['write'].get('cgi-io'), ['upload'])
-        self.assertEqual(acl['write'].get('file'), {'/tmp/mu300-extra-lang.tar.gz': ['write'],
-                                                    '/tmp/mu300-vpn-upload': ['write'],
+        self.assertEqual(acl['write'].get('file'), {'/tmp/mu300-vpn-upload': ['write'],
                                                     '/tmp/mu300-vpn-extra.tar.gz': ['write'],
-                                                    '/mnt/mu300-disk/.mu300-upload/update.zip': ['write']})
+                                                    '/mnt/mu300-disk/.mu300-upload/update.tar.gz': ['write']})
         self.assertEqual(set(acl['read']['ubus']), {'mu300dash', 'mu300rates', 'mu300status', 'mu300vpn'})
         self.assertEqual(set(acl['write']['ubus']), {'mu300dash', 'mu300status', 'mu300vpn'})
-        # the status plugin in rpcd (FINDINGS 216): the snapshot is a read, the SMS pool's head a write like sms_list
+        # the status plugin in rpcd: the snapshot is a read, the SMS pool's head a write like sms_list
         self.assertEqual(acl['read']['ubus'].get('mu300status'), ['status', 'sysinfo'])
         self.assertEqual(acl['write']['ubus'].get('mu300status'), ['sms_head'])
         self.assertNotIn('cgi-io', acl['read'])
@@ -1296,7 +1160,7 @@ class FixRound1(Mu300Dash):
     def test_the_commands_that_move_the_sim_or_the_data_route_are_the_selectors_alone(self):
         # AT+SPSWDATA from the terminal moves the packet-data route under a connection that then answers CONNECT and
         # loses every packet; the SIM selector sends these three itself, in a measured order, and keeps a mark of
-        # where the route is (FINDINGS 74, after kanoqwq's terminal). Their "?" forms only ask.
+        # where the route is (after kanoqwq's terminal). Their "?" forms only ask.
         bad = ['AT+SPSWDATA', 'at+spswdata', 'AT + SPSWDATA', 'AT+SPSWDATA=1', 'AT+SPSWDATA=0', 'AT+SPACTCARD=1',
                'AT+SPACTCARD=0', 'at+spactcard = 1', 'AT+SPACTCARD="1"', 'AT+SMMSWAP=0', 'AT+SMMSWAP=1', 'at+smmswap=1',
                'ATE0+SPSWDATA', 'AT+SPACTCARD=']
@@ -1330,7 +1194,7 @@ class FixRound1(Mu300Dash):
     def test_errors_are_english_sentences_in_the_catalogs(self):
         # the page shows _(error): each error is one fixed English sentence that openwrt/tools/luci-i18n.py extracts (so it
         # is in po/tr and po/zh_Hans), never Chinese; the value it carries, if any, is in detail
-        known = set(subprocess.run([sys.executable, str(TOP / 'tools' / 'luci-i18n.py'), 'extract'], check=True,
+        known = set(subprocess.run([sys.executable, str(TOP / 'openwrt' / 'tools' / 'luci-i18n.py'), 'extract'], check=True,
                                    capture_output=True, text=True, encoding='utf-8').stdout.splitlines())
         busy = 'The AT channel is busy; the command was not sent, try again'
         cases = [
@@ -1527,7 +1391,7 @@ class RuntimeDir(Mu300Dash):
             text = path.read_text()
             self.assertTrue('${MU300_DASH_DIR:-$RUN_DIR}' in text, path.name)
             self.assertFalse('/tmp/unisoc-modem' in text, path.name)
-        # the ucode collector and the status module (FINDINGS 216): the same directory, the same override
+        # the ucode collector and the status module: the same directory, the same override
         for path in (ADAPTERS / 'cell', APP / 'usr' / 'share' / 'ucode' / 'mu300' / 'dash.uc'):
             text = path.read_text()
             self.assertIn("'/var/run/unisoc-modem'", text, path.name)
@@ -1536,8 +1400,8 @@ class RuntimeDir(Mu300Dash):
         self.assertIn('RUN_DIR=/var/run/unisoc-modem', LIB.read_text())
         if not GIT_CHECKOUT:
             self.skipTest('no git checkout here')
-        r = subprocess.run(['git', 'grep', '-l', '/tmp/unisoc-modem', '--', 'openwrt', 'rootfs', 'README.md',
-                            'docs/BUILD.md'], cwd=TOP, capture_output=True, text=True)
+        r = subprocess.run(['git', 'grep', '-l', '/tmp/unisoc-modem', '--', 'openwrt', ':(exclude)openwrt/tests'],
+                           cwd=TOP, capture_output=True, text=True)
         if r.returncode not in (0, 1):
             self.skipTest('no git checkout here: ' + r.stderr.strip())
         self.assertEqual(r.stdout, '')
@@ -1668,7 +1532,7 @@ class RadioLock(Mu300Dash):
         return p
 
     def test_the_radio_button_is_the_sim_in_uses_setting(self):
-        """FINDINGS 185: radio on|off is mu300-sim-radio set <the card in use> on|off (persistent, per SIM), which takes
+        """Radio on|off is mu300-sim-radio set <the card in use> on|off (persistent, per SIM), which takes
         the radio lock itself (mobile-data rf-apply): no AT from here, no radio-locked around it."""
         for shell in self.each_shell():
             sr = self.sim_radio()
@@ -1705,7 +1569,7 @@ class RadioLock(Mu300Dash):
             self.assertEqual([l.split()[1] for l in self.log('md')], ['radio-locked'])
 
     def test_the_backend_says_busy_before_starting_anything(self):
-        known = set(subprocess.run([sys.executable, str(TOP / 'tools' / 'luci-i18n.py'), 'extract'], check=True,
+        known = set(subprocess.run([sys.executable, str(TOP / 'openwrt' / 'tools' / 'luci-i18n.py'), 'extract'], check=True,
                                    capture_output=True, text=True, encoding='utf-8').stdout.splitlines())
         self.assertIn(BUSY_RADIO, known)
         for shell in self.each_shell():
@@ -1736,7 +1600,7 @@ class AtBudget(Mu300Dash):
                       'case $3 in AT+SLOW) echo "mu300-at: no answer from the daemon" >&2; exit 1 ;; esac\necho OK\n')
         at.chmod(0o755)
         slow = 'The modem did not answer in time; the command may still run, check before sending it again'
-        known = set(subprocess.run([sys.executable, str(TOP / 'tools' / 'luci-i18n.py'), 'extract'], check=True,
+        known = set(subprocess.run([sys.executable, str(TOP / 'openwrt' / 'tools' / 'luci-i18n.py'), 'extract'], check=True,
                                    capture_output=True, text=True, encoding='utf-8').stdout.splitlines())
         self.assertIn(slow, known)
         for shell in self.each_shell():

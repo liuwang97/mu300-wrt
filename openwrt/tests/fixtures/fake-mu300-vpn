@@ -76,7 +76,7 @@ status)
         prof=$(jq -c '{id, name, type, engine}' "$P/$a/meta.json")
         e=$(jq -r .engine "$P/$a/meta.json")
         if installed "$e"; then
-            eng=$(jq -cn --arg n "$e" --arg x "$(extra_of "$e")" '{name:$n, extra:$x, installed:true, usable:($n != "dae"), reason:(if $n == "dae" then "the kernel has no BTF (/sys/kernel/btf/vmlinux): dae needs kernel 5.17 or newer with BTF, e.g. mu300-update kernel 6.18" else null end)}')
+            eng=$(jq -cn --arg n "$e" --arg x "$(extra_of "$e")" '{name:$n, extra:$x, installed:true, usable:($n != "dae"), reason:(if $n == "dae" then "the kernel has no BTF (/sys/kernel/btf/vmlinux): dae needs a kernel with BTF" else null end)}')
         else
             miss=$(jq -cn --arg x "$(extra_of "$e")" '$x')
             eng=$(jq -cn --arg n "$e" --arg x "$(extra_of "$e")" '{name:$n, extra:$x, installed:false, usable:false, reason:null}')
@@ -158,7 +158,7 @@ engines)
           size:(if $inst[$n] == 1 or $chk == 1 then size[$n] else null end),
           needed_by:[$prof[] | select(.engine == $n) | .id],
           usable:(if $n == "dae" and $inst[$n] == 1 then false else ($inst[$n] == 1) end),
-          reason:(if $n == "dae" and $inst[$n] == 1 then "the kernel has no BTF (/sys/kernel/btf/vmlinux): dae needs kernel 5.17 or newer with BTF, e.g. mu300-update kernel 6.18" else null end),
+          reason:(if $n == "dae" and $inst[$n] == 1 then "the kernel has no BTF (/sys/kernel/btf/vmlinux): dae needs a kernel with BTF" else null end),
           install:(if extra[$n] then "mu300-vpn engines install \($n) (mu300-extra install \(extra[$n]))" else "mu300-vpn engines install \($n)" end)})' --argjson inst "$(cat "$D/engines")" -n ;;
 engine)
     case ${1:-} in

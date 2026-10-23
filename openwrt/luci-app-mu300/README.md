@@ -25,11 +25,9 @@ says so.
 The dashboard follows LuCI's selected language. Its colors follow Aurora's existing
 tokens when present, or the official Bootstrap theme's light/dark tokens.
 The translations are standard LuCI catalogs: English message ids in the
-JavaScript, `po/<language>/mu300.po` as the editable source. Turkish and
-Simplified Chinese are in the image; the other languages (`po/*` besides those
-two: machine/AI translations, corrections welcome) are in the lang extra
-(`mu300-extra install lang`, or the Languages page under System), named by
-`openwrt/luci-languages.tsv`.
+JavaScript, `po/<language>/mu300.po` as the editable source. The panel speaks
+English (the message ids) and Simplified Chinese (`po/zh_Hans`, LuCI's code
+`zh-cn` in `openwrt/luci-languages.tsv`); both are in the image.
 `lmo/` is not kept in the tree; the image build compiles the catalogs with
 `openwrt/tools/po2lmo.py`, so the top-level menu and submenu stay translated on
 unrelated LuCI pages where the dashboard JavaScript is not loaded.
@@ -74,12 +72,12 @@ System > Update updates the device from the browser. It is not an updater of its
 `mu300-update` command (`MU300_UPDATE_CMD`), run by the `unisoc-modem/update` adapter as a task of its own that
 outlives the request, the page, the session and rpcd, and whose log (redacted) the page follows; the updater's own
 lock decides whether a run may start. The page reads `mu300-update status` and `releases` (JSON), and for a device
-without internet takes a release's Magisk zip: uploaded through cgi-io to
-`/mnt/mu300-disk/.mu300-upload/update.zip`, the one path the ACL adds, in a directory only root can enter, looked
+without internet takes a release's root filesystem (`mu300-openwrt-luci-rootfs.tar.gz`): uploaded through cgi-io to
+`/mnt/mu300-disk/.mu300-upload/update.tar.gz`, the one path the ACL adds, in a directory only root can enter, looked
 at with `mu300-update inspect` and installed with `mu300-update apply --from`. Reads (`update_get`, `update_job`)
 are in the read grant, every change (`update_act`) in the write grant, and each parameter is a fixed word, a release
 tag, a size or a SHA-256. The design, the trust model for uploaded files and release signatures are in
-docs/FINDINGS.md 86. Without `mu300-update` the page says updating is not available.
+`openwrt/docs/update.md`. Without `mu300-update` the page says updating is not available.
 
 ## AT adapters
 
@@ -154,7 +152,7 @@ accepts `host` or `device`. The plugin must not bypass a known platform's
 power-safety checks.
 
 NCM/ECM/RNDIS selection is stored in `/etc/mu300/usb-net` (one line: `ncm`,
-`ecm` or `rndis`) only when "Enable selected protocol" is checked. `kernel/initramfs/init`
+`ecm` or `rndis`) only when "Enable selected protocol" is checked. The initramfs init
 reads that file from the system it has chosen to boot, after picking the root;
 when it asks for other functions than the gadget was bound with, init rebinds
 the gadget once before `switch_root` (`MU300_USBNET` on the kernel command line
@@ -166,7 +164,7 @@ kernel or gadget. `once` is consumed after a successful boot only if init left
 subsequent boots use the platform's default NCM. Selecting persistent host mode automatically disables USB
 network auto-apply. While the current role is host, network-mode controls are
 disabled. The backend validates the same rules regardless of UI state.
-On openwrt-luci, `kernel/initramfs/init` exposes RNDIS as a single USB configuration with
+On openwrt-luci, the initramfs init exposes RNDIS as a single USB configuration with
 the ACM console, and RNDIS replaces the other network function; Windows does
 not bind a composite RNDIS adapter when the device offers both RNDIS and NCM
 configurations. On LAN handoff, the early DHCP server of the initramfs is

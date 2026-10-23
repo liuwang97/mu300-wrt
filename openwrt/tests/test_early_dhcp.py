@@ -1,12 +1,11 @@
-"""The USB host's early DHCP lease, from kernel/initramfs/init into the system (K5, K9, K11, K13, K25-K27): OpenWrt's preinit
-server on the system's own subnet, the LAN hook that ends it, the first-boot defaults, and Ubuntu's lan-start. The
-scripts run against a scratch directory and stub commands, under each shell (busybox ash on OpenWrt)."""
+"""The USB host's early DHCP lease, from the initramfs into the system: OpenWrt's preinit server on the system's own
+subnet, the LAN hook that ends it and the first-boot defaults. The scripts run against a scratch directory and stub
+commands, under each shell (busybox ash on OpenWrt)."""
 import json
-import shutil
 import subprocess
 import unittest
 
-from helpers import BIN, TOP, ShellTest
+from helpers import TOP, ShellTest
 
 
 OPENWRT = TOP / 'openwrt' / 'overlay'
@@ -134,12 +133,12 @@ def fresh_openwrt_config():
                  sec('wan', 'dhcp', interface='wan', ignore='1')],
         # luci-base's own, with the languages the image's catalogs registered
         'luci': [sec('main', 'core', lang='auto', mediaurlbase='/luci-static/bootstrap'),
-                 sec('languages', 'internal', tr='T\u00fcrk\u00e7e (Turkish)', zh_cn='Chinese')],
+                 sec('languages', 'internal', zh_cn='Chinese')],
     }
 
 
 class EarlyUsbOpenWrt(ShellTest):
-    """The early DHCP lease of kernel/initramfs/init carried into OpenWrt (K9, K11, K13, K25-K27): preinit serves the system's
+    """The initramfs' early DHCP lease carried into OpenWrt: preinit serves the system's
     own LAN on the gadget's netdev until netifd brings the LAN up, the LAN hook ends it, and the first-boot defaults
     give the host its pinned, broadcast lease and the early path its firewall zone."""
 
@@ -158,7 +157,7 @@ class EarlyUsbOpenWrt(ShellTest):
             body = body.replace(old, new)
         return body
 
-    # --- preinit 06_mu300_early_usb (K11)
+    # --- preinit 06_mu300_early_usb
     def preinit(self, shell, lan, netmask=None):
         self.stub('uci', f'echo "uci $*" >> "$STUBLOG/uci.log"\n'
                          f'[ "$*" = "-q get network.lan.ipaddr" ] && {"echo " + repr(lan) if lan else "exit 1"}\n'
@@ -237,7 +236,7 @@ class EarlyUsbOpenWrt(ShellTest):
             self.assertFalse((self.tmp / 'run' / 'mu300-early-udhcpd.pid').exists())
             self.tearDown(); self.setUp()
 
-    # --- hotplug iface/10-mu300-usb (K9; K10 rejected: the re-enumeration stays)
+    # --- hotplug iface/10-mu300-usb
     def hotplug(self, shell, stamp_age=None, bridge='10.1.2.1/24', port='10.1.2.1/24', rndis_port='yes',
                 rndis_addr='', usb0_port='yes'):
         (self.tmp / 'run' / 'mu300-early-udhcpd.pid').write_text('4242\n')
@@ -282,13 +281,13 @@ class EarlyUsbOpenWrt(ShellTest):
             self.assertNotIn('dev rndis0\nip addr del', ip)
             self.assertEqual(1, ip.count('ip addr del'))
             self.assertIn('ip link set rndis0 master br-lan\n', ip)
-            # the macOS re-enumeration still runs (K10 rejected until its gate)
+            # the macOS re-enumeration still runs
             self.assertEqual('100', (self.tmp / 'stamp').read_text().strip())
             self.assertEqual('25100000.dwc3', (g / 'UDC').read_text().strip())
             self.tearDown(); self.setUp()
 
     def test_rndis_joins_the_bridge_before_its_address_comes_off(self):
-        """Issue #45: a device whose bridge section predates the switch to RNDIS. Preinit's early server (K11)
+        """Issue #45: a device whose bridge section predates the switch to RNDIS. Preinit's early server
         left the LAN address on rndis0, and rndis0 is not a bridge port when this hook runs. It used to be enslaved
         after the removal loop, so the address stayed while br-lan held the same one, and neither the Wi-Fi clients
         nor the USB host could use the LAN. Join first, then take the address off - and once only."""
@@ -359,7 +358,7 @@ class EarlyUsbOpenWrt(ShellTest):
                 self.assertEqual(0, r.returncode)
                 self.assertFalse((self.tmp / 'kill.log').exists(), env)
 
-    # --- uci-defaults 90-mu300 (K25, K26, K27)
+    # --- uci-defaults 90-mu300
     def defaults(self, shell, runs=1, mac='02:50:aa:bb:77:02', lan='192.168.77.1', config=None):
         """Run 90-mu300 RUNS times against the uci stand-in, on CONFIG (a fresh first boot's when None and there is
         none yet): uci.log."""
@@ -433,35 +432,6 @@ class EarlyUsbOpenWrt(ShellTest):
             self.assertEqual(self.uci('get', 'firewall.@zone[1].device'), 'sipa_eth0 sipa_eth8')   # #67 + #72: both bearers
             self.tearDown(); self.setUp()
 
-    # --- hotplug.d/iface/19-mu300-fw4 (issue #67): the 5.4 kernel's stale flowtable before 20-firewall's reload
-    def fw4_hook(self, shell, kernel='5.4.254', action='ifup', iface='lan', flowtable=True, in_zone=True):
-        self.stub('uname', f'echo {kernel}')
-        self.stub('fw4', 'echo "fw4 $*" >> "$STUBLOG/fw4.log"; ' + ('exit 0' if in_zone else 'exit 1'))
-        self.stub('nft', 'echo "nft $*" >> "$STUBLOG/nft.log"\n'
-                         'case "$*" in "list flowtables inet fw4") '
-                         + ('printf "table inet fw4 {\\n\\tflowtable ft {\\n\\t}\\n}\\n"' if flowtable else ':')
-                         + ' ;; esac')
-        self.stub('logger', ':')
-        body = self.text('etc/hotplug.d/iface/19-mu300-fw4', **{'/etc/init.d/firewall enabled': 'true'})
-        r = self.sh(shell, f'ACTION={action} INTERFACE={iface}\n' + body)
-        self.assertEqual(0, r.returncode, r.stderr)
-        self.assertEqual('', r.stderr)
-        nft = self.tmp / 'nft.log'
-        return nft.read_text() if nft.exists() else ''
-
-    def test_fw4_hook_deletes_the_flowtable_on_5_4_before_the_reload(self):
-        for shell in self.each_shell():
-            self.assertIn('nft delete flowtable inet fw4 ft\n', self.fw4_hook(shell))
-            self.tearDown(); self.setUp()
-
-    def test_fw4_hook_leaves_the_flowtable_alone_when_no_reload_follows_or_the_kernel_updates_it(self):
-        for shell in self.each_shell():
-            for kw in ({'kernel': '6.18.56'}, {'kernel': '7.2.10'}, {'action': 'ifdown'}, {'in_zone': False},
-                       {'flowtable': False}):
-                with self.subTest(shell=' '.join(shell), **kw):
-                    self.assertNotIn('delete', self.fw4_hook(shell, **kw))
-                    self.tearDown(); self.setUp()
-
     def test_defaults_bridge_rndis0_only_when_it_exists(self):
         for shell in self.each_shell():
             for present in (False, True):
@@ -528,7 +498,7 @@ class EarlyUsbOpenWrt(ShellTest):
             self.tearDown(); self.setUp()
 
     def test_an_update_of_an_install_from_before_the_marker(self):
-        # set up by an earlier 90-mu300 (wan proto mu300cell, no marker, no K25 host entry, no earlyusb zone, no
+        # set up by an earlier 90-mu300 (wan proto mu300cell, no marker, no pinned host entry, no earlyusb zone, no
         # flowtable, no bridge_empty): the user's settings stay; it gets what it lacked, and the marker
         old = fresh_openwrt_config()
         for s in old['network']:
@@ -557,7 +527,7 @@ class EarlyUsbOpenWrt(ShellTest):
             self.tearDown(); self.setUp()
 
     def test_openwrt_luci_first_install_ends_with_ip6assign_60(self):
-        # 90-mu300 then 91-mu300-luci: the panel system's first install asks for a /60 from the ULA (K30); an update
+        # 90-mu300 then 91-mu300-luci: the panel system's first install asks for a /60 from the ULA; an update
         # keeps what the user chose
         for shell in self.each_shell():
             self.defaults(shell)
@@ -571,23 +541,23 @@ class EarlyUsbOpenWrt(ShellTest):
             self.tearDown(); self.setUp()
 
     def test_the_images_languages_are_offered_after_an_update(self):
-        # the kept /etc/config/luci of a plain OpenWrt from before had no languages: the image's catalogs (Turkish,
-        # Chinese) are registered on the first boot after the update; a name the user's configuration has stays
+        # a kept /etc/config/luci that does not know the image's Chinese catalog gets it on the first boot after the
+        # update; a name the user's configuration has stays
         for shell in self.each_shell():
             (self.tmp / 'i18n').mkdir(exist_ok=True)
-            for n in ('base.tr.lmo', 'base.zh-cn.lmo'):
-                (self.tmp / 'i18n' / n).write_text('x')
+            (self.tmp / 'i18n' / 'base.zh-cn.lmo').write_text('x')
             old = fresh_openwrt_config()
-            old['luci'][1]['opts'] = {'zh_cn': 'Mine'}
-            self.defaults(shell, config=old)
-            self.assertEqual(self.uci('get', 'luci.languages.tr'), 'T\u00fcrk\u00e7e (Turkish)', shell)
-            self.assertEqual(self.uci('get', 'luci.languages.zh_cn'), 'Mine', shell)
-            # without the catalogs (no LuCI translations in the image) nothing is offered
-            for n in ('base.tr.lmo', 'base.zh-cn.lmo'):
-                (self.tmp / 'i18n' / n).unlink()
             old['luci'][1]['opts'] = {}
             self.defaults(shell, config=old)
-            self.assertIsNone(self.uci('get', 'luci.languages.tr'), shell)
+            self.assertIn('Simplified Chinese', self.uci('get', 'luci.languages.zh_cn'), shell)
+            old['luci'][1]['opts'] = {'zh_cn': 'Mine'}
+            self.defaults(shell, config=old)
+            self.assertEqual(self.uci('get', 'luci.languages.zh_cn'), 'Mine', shell)
+            # without the catalog nothing is offered
+            (self.tmp / 'i18n' / 'base.zh-cn.lmo').unlink()
+            old['luci'][1]['opts'] = {}
+            self.defaults(shell, config=old)
+            self.assertIsNone(self.uci('get', 'luci.languages.zh_cn'), shell)
             self.tearDown(); self.setUp()
 
     def test_luci_starts_in_english_and_keeps_a_chosen_language(self):
@@ -599,18 +569,18 @@ class EarlyUsbOpenWrt(ShellTest):
             self.assertEqual(self.uci('get', 'luci.mu300.lang'), '1', shell)
             self.assertEqual(self.script(shell, LUCI_DEFAULTS).returncode, 0)
             self.assertEqual(self.uci('get', 'luci.main.lang'), 'en', shell)
-            for chosen in ('tr', 'auto', 'zh_cn'):
+            for chosen in ('auto', 'zh_cn'):
                 self.uci('set', f'luci.main.lang={chosen}')
                 self.defaults(shell)
                 self.assertEqual(self.script(shell, LUCI_DEFAULTS).returncode, 0)
                 self.assertEqual(self.uci('get', 'luci.main.lang'), chosen, (shell, chosen))
-            for before in ('auto', None, 'tr'):
+            for before in ('auto', None, 'zh_cn'):
                 old = fresh_openwrt_config()
                 old['luci'][0]['opts'].pop('lang')
                 if before:
                     old['luci'][0]['opts']['lang'] = before
                 self.defaults(shell, config=old)
-                self.assertEqual(self.uci('get', 'luci.main.lang'), before if before == 'tr' else 'en', (shell, before))
+                self.assertEqual(self.uci('get', 'luci.main.lang'), before if before == 'zh_cn' else 'en', (shell, before))
             old = fresh_openwrt_config()
             del old['luci']
             (self.tmp / 'uci.log').write_text('')
@@ -619,40 +589,19 @@ class EarlyUsbOpenWrt(ShellTest):
             self.assertNotIn('commit luci', log, shell)
             self.tearDown(); self.setUp()
 
-    # --- init.d/mu300-post (K13)
+    # --- init.d/mu300-post
     def test_post_bridges_usb1(self):
         text = (OPENWRT / 'etc' / 'init.d' / 'mu300-post').read_text()
         self.assertIn('[ -e /sys/class/net/usb1 ] && ip link set usb1 master br-lan', text)
-        # K12's gate was shown on macOS only (Windows and Linux hosts not measured): one behaviour for every host,
-        # the lease check and the re-enumeration; the fork's one-shot rebind at boot is not started
+        # one behaviour for every host: the lease check and the re-enumeration, no one-shot rebind at boot
         self.assertIn('mu300-usb-reset --if-no-lease 25', text)
         self.assertNotIn('usb-ready', text)
         self.assertNotIn('--fast-run', text)
 
     def test_overlay_scripts_are_executable(self):
-        # the fork's mu300-post and mu300-usb-reset (Task 26) run the LAN hook directly
+        # mu300-post and mu300-usb-reset run the LAN hook directly
         for rel in ('lib/mu300/usb-host.sh', 'lib/preinit/06_mu300_early_usb', 'etc/hotplug.d/iface/10-mu300-usb', 'etc/uci-defaults/90-mu300'):
             self.assertTrue((OPENWRT / rel).stat().st_mode & 0o111, rel)
-
-
-class LanStartHandoff(ShellTest):
-    """Ubuntu: the early lease of kernel/initramfs/init ends at lan-start, which takes the early address off whichever gadget
-    netdev init put it on (usb0, or rndis0 with RNDIS), so br-lan alone holds the subnet and dnsmasq answers."""
-
-    def test_flushes_both_gadget_netdevs(self):
-        if not shutil.which('bash'):
-            self.skipTest('no bash')
-        self.stub('ip', 'echo "ip $*" >> "$STUBLOG/ip.log"; exit 0')
-        self.stub('dnsmasq', 'echo "dnsmasq $*" >> "$STUBLOG/dnsmasq.log"')
-        r = subprocess.run(['bash', str(BIN / 'lan-start')], capture_output=True, text=True,
-                           env=self.env(MU300_LAN_IP='10.1.2.1'), timeout=30)
-        self.assertEqual(0, r.returncode, r.stderr)
-        ip = (self.tmp / 'ip.log').read_text()
-        self.assertIn('ip addr flush dev usb0\n', ip)
-        self.assertIn('ip addr flush dev rndis0\n', ip)
-        self.assertLess(ip.index('ip addr flush dev rndis0'), ip.index('ip addr replace 10.1.2.1/24 dev br-lan'))
-        # the early host address (.200) is in the pool: a renewal is answered (NAK, then a fresh lease)
-        self.assertIn('--dhcp-range=10.1.2.2,10.1.2.200,', (self.tmp / 'dnsmasq.log').read_text())
 
 
 if __name__ == '__main__':

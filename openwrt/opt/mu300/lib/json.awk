@@ -1,5 +1,5 @@
-# JSON for the device's shell scripts, without jq or jsonfilter (Ubuntu has one, OpenWrt the other; this runs on
-# both, and under busybox awk, mawk, gawk and the BSD awk the tests may use). Always run with LC_ALL=C: a string is
+# JSON for the device's shell scripts in awk alone (jsonfilter only reads, and builds nothing): one parser for every
+# script, under busybox awk and under the mawk, gawk and BSD awk a test host may have. Always run with LC_ALL=C: a string is
 # bytes; \u escapes become UTF-8.
 #
 #   awk -v mode=flat -f json.awk     stdin: one JSON object whose values are strings, numbers, true/false or null

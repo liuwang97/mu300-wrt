@@ -2,9 +2,9 @@
 # Keep the modem's log channel empty.
 #
 # The CP streams its own debug log into a SIPC "spool" channel (label slog_nr in the device tree). On Android
-# slogmodem opens it and reads it for ever. Nothing here did, so the ring filled up - 257 KB were sitting in it
-# when this was found - and the modem stopped servicing SIPC altogether about ninety seconds into every boot:
-# AT answered at 67 s and was silent by 89 s, and restarting the vendor daemons did not bring it back.
+# slogmodem opens it and reads it for ever. Unread, the ring fills up (257 KB) and the modem stops servicing SIPC
+# altogether about ninety seconds into the boot: AT answers at 67 s and is silent by 89 s, and restarting the vendor
+# daemons does not bring it back.
 #
 # The driver registers the channel as a char device (see /proc/devices, "spool-<dst>-<channel>") but creates no
 # node, so make one and read it into the bit bucket.

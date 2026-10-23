@@ -1,9 +1,8 @@
-# The release tags and how they compare: one table for every language that compares them - sh (tools/releases.sh,
-# and its copy in mu300-update), Python (tools/release_pick.py), JavaScript (the web installer's version.js, and its
-# copy in the panel's update.js), PowerShell (install.ps1). docs/FINDINGS.md 125.
-#   vYYYY.MM.DD      the releases up to v2026.10.27, where the "day" was a counter
-#   vYYYY.MM.DD.N    from then on: the real (UTC) day the release was built, N = 1..99 for the releases of that day;
-#                    newer than every three-field tag whatever its date; compared by the date, then N, as numbers
+# The release tags and how they compare: one table for every place that compares them - sh (tools/releases.sh, and
+# its copy in mu300-update) and JavaScript (the panel's update.js); each must agree with every line.
+#   vYYYY.MM.DD      a three-field tag, where the "day" is a counter
+#   vYYYY.MM.DD.N    the (UTC) day the release was built, N = 1..99 for the releases of that day; newer than every
+#                    three-field tag whatever its date; compared by the date, then N, as numbers
 # Lines (fields separated by one tab):
 #   ok TAG        a release tag
 #   bad TAG       not one (an empty TAG too)

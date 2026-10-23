@@ -1,4 +1,4 @@
-# Release source for the MU300 (Ubuntu and OpenWrt). To use it:
+# Release source for the MU300. To use it:
 #   install -m 600 /etc/mu300/update-source.example /etc/mu300/update-source
 # and edit that - or have the command write it for you: mu300-update source https://<mirror>/
 # The file has to stay root's own (mu300-update refuses anything else): whoever can write it decides what this
@@ -10,12 +10,11 @@
 
 # Where "which release is newest" is asked. The usual GitHub file proxies do NOT serve GitHub's API - a request
 # through them for api.github.com comes back 403 - so this is normally left out and GitHub itself is asked.
-#MU300_API_URL=https://api.github.com/repos/dikeckaan/mu300-linux
+#MU300_API_URL=https://api.github.com/repos/liuwang97/mu300-wrt
 
 # A release is checked against the checksums the project signed (SHA256SUMS.sig, with the release key in
-# /opt/mu300/lib/release.pub - see wiki/Updating.md) wherever it came from. A system that has no such key - every
-# release up to v2026.10.27 - has nothing of its own to compare with: there a mirror is trusted as much as whoever
-# runs it. A mirror that cannot be reached is said once, and the rest of that run comes from github.com; the
+# /opt/mu300/lib/release.pub - see openwrt/docs/update.md) wherever it came from. A system without that key has
+# nothing of its own to compare with: there a mirror is trusted as much as whoever runs it. A mirror that cannot be reached is said once, and the rest of that run comes from github.com; the
 # setting stays, so the next run tries your mirror again. A mirror that answers and then stalls is not
 # "unreachable": the run keeps taking the files from it.
 # On a metered link the fallback can be the worse answer - the release would come over mobile data. So it only

@@ -1,7 +1,7 @@
 """Packages installed on the device across an update (#116): mu300-update's upk_record writes down what was added to
-a system (OpenWrt's world file, dpkg's manual packages) less the image's own set and sets the UCI files of those
+a system (OpenWrt's world file) less the image's own set and sets the UCI files of those
 packages aside; mu300-user-packages installs them again at the first boot, puts their settings back, takes a dead DNS
-forwarder and a missing LuCI theme out, and says what it did. apk, apt-get, dpkg-query and uci are stubs."""
+forwarder and a missing LuCI theme out, and says what it did. apk and uci are stubs."""
 import os
 import re
 import shutil
@@ -205,124 +205,12 @@ class Record(ShellTest):
             self.assertTrue((self.new / 'etc/mu300/orphaned-config/etc/config/openclash').exists())
 
     def test_safe_under_set_e(self):
-        # tools/android-install.sh runs with set -e
+        # a caller may run with set -e
         for shell in self.each_shell():
             self.fresh()
             r = self.record(shell, pre='set -e;')
             self.assertIn('rc=0', r.stdout, r.stderr)
             self.assertEqual(self.rec('wanted'), 'luci-app-openclash\nluci-theme-argon\n')
-
-    def test_ubuntu_manual_packages_less_the_images(self):
-        def dpkg(names, auto=()):
-            st = ''.join(f'Package: {n}\nStatus: install ok installed\nVersion: 1\n\n' for n in names)
-            st += 'Package: removed\nStatus: deinstall ok config-files\n\n'
-            es = ''.join(f'Package: {n}\nArchitecture: arm64\nAuto-Installed: 1\n\n' for n in auto)
-            return {'var/lib/dpkg/status': st, 'var/lib/apt/extended_states': es}
-        for shell in self.each_shell():
-            for d in (self.old, self.new):
-                shutil.rmtree(d, ignore_errors=True)
-            write(self.old, dpkg(['bash', 'openssh-server', 'htop', 'libfoo', 'linux-image-6.8'], auto=['libfoo']))
-            write(self.old, {'etc/mu300/image-packages': 'bash\nopenssh-server\n', 'etc/mu300/image-version': 'v1\n',
-                             'etc/config/x': ''})
-            write(self.new, dpkg(['bash', 'openssh-server']))
-            write(self.new, {'etc/mu300/image-version': 'v2\n', 'etc/mu300/image-packages': 'bash\nopenssh-server\n'})
-            r = self.record(shell, 'ubuntu')
-            self.assertIn('rc=0', r.stdout, r.stderr)
-            self.assertEqual(self.rec('wanted'), 'htop\n')
-            self.assertEqual(self.rec('files'), '')
-            # without the old image's list: the new image's manual set
-            (self.old / 'etc/mu300/image-packages').unlink()
-            shutil.rmtree(self.new / 'etc/mu300/user-packages')
-            r = self.record(shell, 'ubuntu')
-            self.assertEqual(self.rec('wanted'), 'htop\n', r.stderr)
-
-    def ubuntu_roots(self, old_codename='noble', new_codename='noble', manual=('bash', 'htop')):
-        def dpkg(names):
-            return {'var/lib/dpkg/status': ''.join(f'Package: {n}\nStatus: install ok installed\n\n' for n in names),
-                    'var/lib/apt/extended_states': ''}
-        for d in (self.old, self.new):
-            shutil.rmtree(d, ignore_errors=True)
-        write(self.old, dpkg(manual))
-        write(self.old, {
-            'usr/lib/os-release': f'NAME="Ubuntu"\nVERSION_CODENAME={old_codename}\n',
-            'etc/mu300/image-packages': 'bash\n', 'etc/mu300/image-version': 'v1\n',
-            # the image's own source (the new image has it too) and two the user added, one deb822 with a key
-            'etc/apt/sources.list.d/ubuntu.sources': 'old\n',
-            'etc/apt/sources.list.d/ppa-htop.list': 'deb [signed-by=/etc/apt/keyrings/htop.gpg] http://ppa noble main\n',
-            'etc/apt/sources.list.d/vendor.sources': 'Types: deb\nSigned-By: /usr/share/keyrings/vendor.gpg\n',
-            'etc/apt/keyrings/htop.gpg': 'k1', 'usr/share/keyrings/vendor.gpg': 'k2',
-            'usr/share/keyrings/unrelated.gpg': 'k3', 'usr/share/keyrings/ubuntu-archive-keyring.gpg': 'old key',
-            'etc/apt/trusted.gpg.d/legacy.gpg': 'k4',
-            # pinning: the user's own, and one the new image ships itself (never replaced)
-            'etc/apt/preferences.d/htop-ppa': 'Package: *\nPin: release o=LP-PPA-htop\nPin-Priority: 600\n',
-            'etc/apt/preferences.d/image-pin': 'old pin\n',
-            # htop's units: one enabled, one masked, one disabled, a template (skipped)
-            'var/lib/dpkg/info/htop:arm64.list': '/.\n/usr/lib/systemd/system/htopd.service\n'
-                                                 '/lib/systemd/system/htop.timer\n/usr/lib/systemd/system/htop-x.socket\n'
-                                                 '/usr/lib/systemd/system/htop@.service\n/usr/bin/htop\n'
-                                                 '/usr/lib/systemd/system/htop-alias.service\n'})
-        os.makedirs(self.old / 'etc/systemd/system/multi-user.target.wants')
-        os.symlink('/usr/lib/systemd/system/htopd.service', self.old / 'etc/systemd/system/multi-user.target.wants/htopd.service')
-        os.symlink('/dev/null', self.old / 'etc/systemd/system/htop.timer')
-        # an alias of htopd.service (smartd.service of smartmontools): it follows its unit, never recorded itself
-        os.makedirs(self.old / 'usr/lib/systemd/system', exist_ok=True)
-        os.symlink('htopd.service', self.old / 'usr/lib/systemd/system/htop-alias.service')
-        write(self.new, dpkg(['bash']))
-        write(self.new, {'usr/lib/os-release': f'NAME="Ubuntu"\nVERSION_CODENAME={new_codename}\n',
-                         'etc/mu300/image-packages': 'bash\n', 'etc/mu300/image-version': 'v2\n',
-                         'etc/apt/sources.list.d/ubuntu.sources': 'image\n',
-                         'etc/apt/preferences.d/image-pin': 'image pin\n',
-                         'usr/share/keyrings/ubuntu-archive-keyring.gpg': 'image key'})
-
-    def test_ubuntu_apt_sources_and_units(self):
-        for shell in self.each_shell():
-            self.ubuntu_roots()
-            r = self.record(shell, 'ubuntu')
-            self.assertIn('rc=0', r.stdout, r.stderr)
-            src = self.new / 'etc/apt/sources.list.d'
-            # the image's own never replaced; the user's kept, with the keys they name and trusted.gpg.d's
-            self.assertEqual((src / 'ubuntu.sources').read_text(), 'image\n')
-            self.assertTrue((src / 'ppa-htop.list').exists())
-            self.assertTrue((src / 'vendor.sources').exists())
-            self.assertEqual((self.new / 'etc/apt/keyrings/htop.gpg').read_text(), 'k1')
-            self.assertEqual((self.new / 'usr/share/keyrings/vendor.gpg').read_text(), 'k2')
-            self.assertEqual((self.new / 'etc/apt/trusted.gpg.d/legacy.gpg').read_text(), 'k4')
-            self.assertFalse((self.new / 'usr/share/keyrings/unrelated.gpg').exists())
-            self.assertEqual((self.new / 'usr/share/keyrings/ubuntu-archive-keyring.gpg').read_text(), 'image key')
-            self.assertEqual(self.rec('apt-sources'),
-                             'etc/apt/sources.list.d/ppa-htop.list\netc/apt/sources.list.d/vendor.sources\n')
-            self.assertEqual(self.rec('units'), 'htop htop-x.socket disabled\nhtop htop.timer masked\n'
-                                                'htop htopd.service enabled\n')
-            self.assertIn('apt: /etc/apt/sources.list.d/ppa-htop.list kept', r.stdout)
-            pref = self.new / 'etc/apt/preferences.d'
-            self.assertIn('LP-PPA-htop', (pref / 'htop-ppa').read_text())
-            self.assertEqual((pref / 'image-pin').read_text(), 'image pin\n')
-            self.assertEqual(self.rec('apt-prefs'), 'etc/apt/preferences.d/htop-ppa\n')
-
-    def test_ubuntu_sources_of_another_release_with_nothing_to_install_stay_off(self):
-        # 24.04 -> 26.04 and no package to bring back: no first-boot check, so they are kept disabled
-        for shell in self.each_shell():
-            self.ubuntu_roots('noble', 'resolute', manual=('bash',))
-            r = self.record(shell, 'ubuntu')
-            self.assertIn('rc=0', r.stdout, r.stderr)
-            src = self.new / 'etc/apt/sources.list.d'
-            self.assertFalse((src / 'ppa-htop.list').exists())
-            self.assertTrue((src / 'ppa-htop.list.disabled').exists())
-            self.assertIn('is for Ubuntu noble, this is resolute: kept disabled', r.stdout)
-            self.assertFalse((self.new / 'etc/mu300/user-packages').exists())
-            # with a package to bring back they stay on: the first boot tries them (mu300-user-packages)
-            self.ubuntu_roots('noble', 'resolute')
-            self.record(shell, 'ubuntu')
-            self.assertTrue((src / 'ppa-htop.list').exists())
-
-    def test_android_install_has_the_same_block(self):
-        upd = UPD.read_text()
-        ai = (TOP / 'tools/android-install.sh').read_text()
-        blk = re.compile(r'# --- user-packages begin\n.*?# --- user-packages end\n', re.S)
-        self.assertEqual(blk.search(ai).group(0), blk.search(upd).group(0))
-        # and it runs where mu300-update's does: after the settings, before the switch
-        self.assertLess(ai.index('image_own_save "$M/$os.new"'), ai.index('for k in $keep'))
-        self.assertLess(ai.index('upk_record "$M/$os"'), ai.index('mv $M/$os.new $M/$os'))
 
 
 class ApplyOne(ShellTest):
@@ -469,7 +357,7 @@ elif cmd == 'commit':
 
 
 class Service(ShellTest):
-    """mu300-user-packages on a fake root (MU300_SYSROOT): apk/apt-get, dpkg-query, uci, the init scripts stubbed."""
+    """mu300-user-packages on a fake root (MU300_SYSROOT): apk, uci, the init scripts stubbed."""
 
     def setUp(self):
         super().setUp()
@@ -489,13 +377,6 @@ class Service(ShellTest):
                          '       for p; do echo "$p" >> "$STUBLOG/installed"; done ;;\n'
                          '  info) grep -qx "$3" "$STUBLOG/installed" 2>/dev/null ;;\n'
                          'esac')
-        self.stub('apt-get', 'echo "apt-get $*" >> "$STUBLOG/pm.log"\n'
-                             # a source whose suite is gone (another Ubuntu release) fails the update while it is on
-                             'case $1 in update) [ -e "$STUBLOG/online" ] || exit 100\n'
-                             '    [ ! -e "$MU300_SYSROOT/etc/apt/sources.list.d/gone.list" ] || exit 100 ;;\n'
-                             '  *) for p; do case $p in -*|install) continue ;; esac; grep -qx "$p" "$STUBLOG/missing" 2>/dev/null && { echo "E: Unable to locate package $p"; exit 100; }; done ;;\n'
-                             'esac\nexit 0')
-        self.stub('dpkg-query', 'exit 1')
 
     def setup_openwrt(self, server='127.0.0.1#7874', listening=False):
         shutil.rmtree(self.R, ignore_errors=True)
@@ -532,7 +413,7 @@ class Service(ShellTest):
     def run_upk(self, shell, *args, **env):
         e = dict(MU300_SYSROOT=self.R, MU300_BIN=BIN, MU300_PKG_SETTLE=0, MU300_PKG_DELAY=0, MU300_PKG_TRIES=2,
                  MU300_DNS_CHECKS=2, MU300_DNS_INTERVAL=0,
-                 MU300_RUN=self.tmp / 'run', MU300_MOTD_DIR=self.tmp / 'motd')
+                 MU300_RUN=self.tmp / 'run')
         e.update(env)
         return self.script(shell, UPK, *args, **e)
 
@@ -776,106 +657,24 @@ class Service(ShellTest):
             self.assertEqual((r.returncode, r.stdout), (0, ''), r.stderr)
             self.assertIn('No packages', self.run_upk(shell, 'status').stdout)
 
-    def test_ubuntu(self):
-        for shell in self.each_shell():
-            shutil.rmtree(self.R, ignore_errors=True)
-            for f in ('online', 'missing', 'pm.log'):
-                (self.tmp / f).unlink(missing_ok=True)
-            shutil.rmtree(self.tmp / 'motd', ignore_errors=True)
-            d = 'etc/mu300/user-packages'
-            write(self.R, {f'{d}/wanted': 'htop\nppa-thing\n', f'{d}/done': '', f'{d}/failed': '', f'{d}/files': '',
-                           f'{d}/rc.d': '', f'{d}/state': 'pending\n'})
-            (self.tmp / 'online').write_text('')
-            (self.tmp / 'missing').write_text('ppa-thing\n')
-            r = self.run_upk(shell, 'run')
-            self.assertEqual(r.returncode, 0, r.stderr)
-            self.assertEqual(self.rec('done'), 'htop\n')
-            self.assertIn('ppa-thing E: Unable to locate package ppa-thing', self.rec('failed'))
-            # offline must fail the update: apt-get returns 0 without --error-on=any
-            self.assertIn('apt-get update -q --error-on=any -o Acquire::http::Timeout=10', (self.tmp / 'pm.log').read_text())
-            self.assertIn('apt-get install -y -q -o Dpkg::Options::=--force-confold htop ppa-thing',
-                          (self.tmp / 'pm.log').read_text())
-            self.assertIn('could not be installed again', (self.tmp / 'motd/61-mu300-packages').read_text())
-            self.run_upk(shell, 'dismiss')
-            self.assertFalse((self.tmp / 'motd/61-mu300-packages').exists())
-
-    def ubuntu_record(self, wanted='htop\n', units='', sources=''):
-        shutil.rmtree(self.R, ignore_errors=True)
-        for f in ('online', 'missing', 'pm.log', 'systemctl.log'):
-            (self.tmp / f).unlink(missing_ok=True)
-        d = 'etc/mu300/user-packages'
-        write(self.R, {f'{d}/wanted': wanted, f'{d}/done': '', f'{d}/failed': '', f'{d}/files': '', f'{d}/rc.d': '',
-                       f'{d}/state': 'pending\n', f'{d}/units': units, f'{d}/apt-sources': sources})
-
-    def test_ubuntu_units_as_they_were(self):
-        # systemctl: logs; is-enabled says enabled (apt enabled every unit it installed)
-        self.stub('systemctl', 'echo "$*" >> "$STUBLOG/systemctl.log"; [ "$1" = is-enabled ] && echo enabled; exit 0')
-        for shell in self.each_shell():
-            self.ubuntu_record('htop\nsmartmontools\n', 'smartmontools smartd.service disabled\n'
-                               'smartmontools smartd-check.timer masked\nhtop htopd.service enabled\n'
-                               'other x.service disabled\n')
-            (self.tmp / 'online').write_text('')
-            r = self.run_upk(shell, 'run')
-            self.assertEqual(r.returncode, 0, r.stderr)
-            log = (self.tmp / 'systemctl.log').read_text()
-            self.assertIn('enable htopd.service\n', log)
-            self.assertIn('disable smartd.service\nstop smartd.service\n', log)
-            self.assertIn('mask smartd-check.timer\nstop smartd-check.timer\n', log)
-            self.assertNotIn('x.service', log)
-            self.assertIn('smartd.service left disabled, as it was', self.rec('log'))
-
-    def test_ubuntu_kept_source_that_fails_is_disabled(self):
-        for shell in self.each_shell():
-            self.ubuntu_record(sources='etc/apt/sources.list.d/gone.list\netc/apt/sources.list.d/ok.list\n')
-            write(self.R, {'etc/mu300/user-packages/apt-prefs': 'etc/apt/preferences.d/gone-pin\n',
-                           'etc/apt/preferences.d/gone-pin': 'Package: *\n',
-                           'etc/apt/sources.list.d/gone.list': 'deb x noble main\n',
-                           'etc/apt/sources.list.d/ok.list': 'deb y resolute main\n'})
-            (self.tmp / 'online').write_text('')
-            r = self.run_upk(shell, 'run')
-            self.assertEqual(r.returncode, 0, r.stderr)
-            src = self.R / 'etc/apt/sources.list.d'
-            self.assertFalse((src / 'gone.list').exists())
-            self.assertTrue((src / 'gone.list.disabled').exists())
-            self.assertTrue((src / 'ok.list').exists())
-            self.assertEqual(self.rec('state'), 'done\n')
-            self.assertIn('/etc/apt/sources.list.d/gone.list was disabled', self.rec('note'))
-            st = self.run_upk(shell, 'status').stdout
-            self.assertIn('gone.list was disabled', st)
-            # its pin stays (harmless without the source), and status says so
-            self.assertTrue((self.R / 'etc/apt/preferences.d/gone-pin').exists())
-            self.assertIn('/etc/apt/preferences.d/gone-pin', st)
-            self.assertIn('a pin of a source that was turned off does nothing', st)
-            # offline: nothing is disabled, they all stay as they were
-            self.ubuntu_record(sources='etc/apt/sources.list.d/gone.list\n')
-            write(self.R, {'etc/apt/sources.list.d/gone.list': 'deb x noble main\n'})
-            self.run_upk(shell, 'run')
-            self.assertEqual(self.rec('state'), 'offline\n')
-            self.assertTrue((src / 'gone.list').exists())
-            self.assertFalse((src / 'gone.list.disabled').exists())
-
 
 class Wiring(ShellTest):
     def test_the_images_list_their_packages_and_run_the_service(self):
         b = (TOP / 'openwrt/build-rootfs.sh').read_text()
         self.assertRegex(b, r'for s in [^\n]*\bmu300-user-packages\b[^\n]*; do')   # in the service loop, whatever else is there
-        self.assertIn('upk_manual $R openwrt) > $R/etc/mu300/image-packages', b)
+        self.assertIn('upk_manual $R) > $R/etc/mu300/image-packages', b)
         # no stray config file in the image itself (an update would add it to every device): removed from $R, checked
         self.assertIn('rm -f $R/etc/config/attendedsysupgrade $R/etc/config/*.apk-new', b)
         self.assertLess(b.index('rm -f $R/etc/config/attendedsysupgrade'), b.index('cd $R && tar -czf'))
-        a = (TOP / 'rootfs/assemble.sh').read_text()
-        self.assertIn('mu300-user-packages.service:multi-user.target', a)
-        self.assertIn('upk_manual $R ubuntu) > $R/etc/mu300/image-packages', a)
-        self.assertTrue((TOP / 'rootfs/overlay/etc/systemd/system/mu300-user-packages.service').exists())
         i = TOP / 'openwrt/overlay/etc/init.d/mu300-user-packages'
         self.assertTrue(i.stat().st_mode & 0o111)
         self.assertIn('START=99', i.read_text())
         self.assertIn('/etc/mu300/user-packages/note', (TOP / 'openwrt/overlay/etc/profile.d/mu300-update.sh').read_text())
 
     def test_build_shell_can_source_the_updater(self):
-        # the OpenWrt build sources mu300-update under sh -eu, assemble.sh under bash -e
+        # the image build sources mu300-update under sh -eu
         r = self.tmp / 'r'
         write(r, {'etc/apk/world': 'a\nb=1\nc><Q1x=\n'})
         for shell in self.each_shell():
-            out = self.sh(shell, f'set -eu; (MU300_LIB=1; . "{UPD}"; upk_manual "{r}" openwrt)')
+            out = self.sh(shell, f'set -eu; (MU300_LIB=1; . "{UPD}"; upk_manual "{r}")')
             self.assertEqual((out.returncode, out.stdout), (0, 'a\nb\nc\n'), out.stderr)

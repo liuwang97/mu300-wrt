@@ -1,7 +1,6 @@
-"""The platform offers the optional unisoc-modem LuCI plugin an early hook to replay its saved locks (K65).
+"""The platform offers the optional unisoc-modem LuCI plugin an early hook to replay its saved locks.
 
-Ported from kanoqwq/clean-tf-7.2 (6404c10, tests/test_early_replay_hook.py). The plugin's path is
-$PLUGIN_LOCK here (MU300_PLUGIN_LOCK overrides it for the tests), so the checks name the variable and its default
+The plugin's path is $PLUGIN_LOCK here (MU300_PLUGIN_LOCK overrides it for the tests), so the checks name the variable and its default
 instead of the literal path. The behaviour is tested in test_device_scripts.MobileData.test_early_lock_replay_hook.
 """
 from pathlib import Path

@@ -14,13 +14,13 @@
 #     "2A31303123" works whatever AT+CSCS says.
 #   * The answer does not come back on the channel the command went out on. The command gets a bare OK on
 #     /dev/stty_nr1 and the +CUSD arrives seconds later on nr0, the unsolicited channel - so anything that
-#     waits for it on nr1 waits for ever. mu300-atd's drainer already logs nr0, and that log is what this reads.
+#     waits for it on nr1 waits for ever. mu300-modemd logs nr0, and that log is what this reads.
 #   * The answer is hex too, and the third +CUSD field is a CBS coding scheme, not an SMS one. 15 is the GSM
 #     alphabet, 72 is UCS2 - which is what a Turkish menu comes back as.
 #
-# Waiting happens on the log file, never on the modem. Polling this with AT commands is what wedged the channel
-# the first time: each mu300-at takes the client lock, so a loop of them queues up behind whichever command is
-# still waiting for its own answer and the whole channel looks dead (docs/FINDINGS.md 26d).
+# Waiting happens on the log file, never on the modem. Polling this with AT commands wedges the channel: each
+# mu300-at takes the client lock, so a loop of them queues up behind whichever command is still waiting for its own
+# answer and the whole channel looks dead.
 set -u
 export PATH="$PATH:/opt/mu300/bin:/opt/mu300/busybox-bin:/usr/sbin:/sbin"
 
@@ -64,7 +64,7 @@ case "$reply" in
 esac
 
 # Now wait on the files. Nothing here touches the modem.
-end=$(( $(date +%s) + T + 1 ))   # at least T whole seconds (see collect in mu300-atd)
+end=$(( $(date +%s) + T + 1 ))   # at least T whole seconds: date +%s counts whole ones
 while [ "$(date +%s)" -lt "$end" ]; do
     line=$( { tail -n +$((m_urc + 1)) "$URCLOG" 2>/dev/null
               tail -n +$((m_cmd + 1)) "$CMDLOG" 2>/dev/null; } | grep -m1 '^+CUSD:')
@@ -85,5 +85,5 @@ while [ "$(date +%s)" -lt "$end" ]; do
 done
 
 echo "mu300-ussd: no answer within ${T}s" >&2
-[ -f "$URCLOG" ] || echo "mu300-ussd: no $URCLOG - mu300-atd is not draining the unsolicited channel" >&2
+[ -f "$URCLOG" ] || echo "mu300-ussd: no $URCLOG - mu300-modemd is not draining the unsolicited channel" >&2
 exit 1

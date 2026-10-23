@@ -1,5 +1,5 @@
-"""/run/mu300-at (and the audio extra's /run/mu300-voice): lib/run-dir.sh, the one check the daemons that keep a
-directory under the world-writable /run use."""
+"""lib/run-dir.sh, the one check the shell daemons that keep a directory under the world-writable /run use (mu300-api,
+the audio extra's mu300-voice), and the same rule in mu300-modemd for /run/mu300-at*."""
 import subprocess
 import tempfile
 import unittest
@@ -7,13 +7,13 @@ from pathlib import Path
 
 from helpers import TOP
 
-RUN_DIR_LIB = TOP / 'rootfs' / 'overlay' / 'opt' / 'mu300' / 'lib' / 'run-dir.sh'
-ATD = TOP / 'rootfs' / 'overlay' / 'opt' / 'mu300' / 'bin' / 'mu300-atd'
+RUN_DIR_LIB = TOP / 'openwrt' / 'opt' / 'mu300' / 'lib' / 'run-dir.sh'
+MODEMD = TOP / 'openwrt' / 'opt' / 'mu300' / 'bin' / 'mu300-modemd'
 
 
 class RunDirectory(unittest.TestCase):
-    """/run is world-writable on the images, so /run/mu300-voice (and /run/mu300-at) may be a directory somebody
-    else made first. lib/run-dir.sh is the one check both daemons use."""
+    """/run is world-writable on the images, so a daemon's /run directory may be a directory somebody else made
+    first. lib/run-dir.sh is the one check the shell daemons use."""
 
     def call(self, fn, path, uid, pre=''):
         return subprocess.run(['sh', '-c', '. "$0"; %s\n%s "$1" "$2" test' % (pre, fn), str(RUN_DIR_LIB), str(path),
@@ -159,13 +159,20 @@ class RunDirectory(unittest.TestCase):
                 # and the name is never left as a symlink that the daemon would go on to write through
                 self.assertFalse(r.returncode == 0 and (d / 'at').is_symlink(), r.stderr)
 
-    def test_mu300_atd_uses_the_helper_before_it_writes(self):
-        # (mu300-voice, the other user, is the audio extra's now: github.com/dikeckaan/mu300-audio tests it there)
-        atd = ATD.read_text()
-        check = atd.index('run_dir_take "$DIR"')
-        for first_use in ('mkdir "$LOCK"', 'mkfifo -m 600 "$CMD"', 'mkdir -p "$URCDIR"'):
-            self.assertLess(check, atd.index(first_use), first_use)
-        self.assertNotIn('run_dir_ours() {', atd)       # no copy of its own
+    def test_modemd_takes_its_directory_before_it_writes(self):
+        # /run/mu300-at* are mu300-modemd's: the same rule in ucode (root's own directory, nobody else may write it,
+        # a foreign entry put out of the way), checked before the URC directory or a log is made in it
+        # (mu300-voice, the helper's other user, is the audio extra's: github.com/dikeckaan/mu300-audio tests it there)
+        md = MODEMD.read_text()
+        take = md[md.index('function take_dir(dir) {'):]
+        take = take[:take.index('\n}\n')]
+        for rule in ("l.type == 'directory' && l.uid == 0", 'l.perm?.group_write || l.perm?.other_write',
+                     ".foreign.' + MYPID", 'rename(dir,'):
+            self.assertIn(rule, take)
+        self.assertNotIn('mkdir -p', take)
+        check = md.index('if (!take_dir(b.dir))')
+        for first_use in ('mkdir(b.urcdir, 0700);', "write_small(logf, '');"):
+            self.assertLess(check, md.index(first_use), first_use)
 
 
 if __name__ == '__main__':

@@ -1,7 +1,6 @@
 #!/bin/sh
-# SMS forwarding of the control panel (Cellular > SMS forwarding on openwrt-luci, SMS on Ubuntu's Cockpit page): every
-# message that lands in the SMS pool (mu300-sms on openwrt-luci; on Ubuntu the forwarding service's own pool, which
-# unisoc-modem/forward-feed fills from "sms watch") can be sent on to a webhook, a Telegram chat, an e-mail address (when
+# SMS forwarding of the control panel (Cellular > SMS forwarding): every message that lands in the SMS pool
+# (mu300-sms) can be sent on to a webhook, a Telegram chat, an e-mail address (when
 # the image has msmtp) and another phone, by SMS. Off until the panel turns it on.
 #   mu300-sms-forward enqueue ID...   queue pool messages that pass the filters, then deliver (mu300-sms sync runs it)
 #   mu300-sms-forward kick            start a delivery when something waits and none runs (also run by every sync)
@@ -23,8 +22,7 @@
 #
 # The configuration, /etc/mu300/sms-forward.conf, is written by the panel (unisoc-modem/forward) and is root's only
 # (0600): it holds the Telegram token, the webhook URL and headers and the mail password. None of them is ever put in
-# a command line or the log: an HTTP request goes to the ucode helper (/opt/mu300/lib/sms-forward-http.uc; on Ubuntu,
-# which has no ucode, /opt/mu300/lib/sms-forward-http.sh with curl, the same request and answer) on stdin,
+# a command line or the log: an HTTP request goes to the ucode helper (/opt/mu300/lib/sms-forward-http.uc) on stdin,
 # the mail password to msmtp in a 0600 file in RAM. The log says which message went where and how it ended, never the
 # message, the sender or a secret. Lines are "key=value": enabled, template (a newline as \n, a backslash as \\),
 # allow, deny, keyword (one entry per line, repeated), webhook, webhook_url, webhook_format (json|form|text),
@@ -48,7 +46,6 @@ RETRY=$RUN/retry
 POOL=${MU300_SMS_POOL:-/etc/mu300/sms-pool}
 SMS=${MU300_SMS_BIN:-/opt/mu300/bin/mu300-sms}
 HTTP=${MU300_FWD_HTTP:-/opt/mu300/lib/sms-forward-http.uc}
-HTTP_CURL=${MU300_FWD_HTTP_CURL:-/opt/mu300/lib/sms-forward-http.sh}
 QUEUE_MAX=${MU300_FWD_QUEUE_MAX:-100}
 ATTEMPTS=${MU300_FWD_ATTEMPTS:-10}
 # the largest webhook request body, filled in (the panel takes a body template of 2000 bytes at most)
@@ -434,10 +431,9 @@ answer_verdict() {
 # answer_verdict: d_answer is that verdict.
 http_post() {
     d_status=0 d_answer=
-    # the client: OpenWrt's ucode helper, else (Ubuntu) the curl one; both read the same request and say the same
+    # the client: the ucode helper
     if command -v ucode >/dev/null 2>&1 && [ -f "$HTTP" ]; then set -- ucode "$HTTP" "$@"
-    elif command -v curl >/dev/null 2>&1 && [ -f "$HTTP_CURL" ]; then set -- sh "$HTTP_CURL" "$@"
-    else d_detail='no HTTP client (ucode or curl)'; return; fi
+    else d_detail='no HTTP client (ucode)'; return; fi
     _hc1=$1 _hc2=$2; shift 2
     _to=; command -v timeout >/dev/null 2>&1 && _to='timeout 40'
     if [ -n "${5:-}" ]; then
@@ -536,16 +532,13 @@ deliver() {
         if [ -x "$SMS" ]; then
             # the number on stdin's first line, the text after it: neither in an argument
             _out=$({ printf '%s\n' "$c_sms_number"; one_sms "$_msg"; } | MU300_SMS_POOL=$POOL "$SMS" send --stdin 2>&1)
-        elif command -v sms >/dev/null 2>&1; then
-            # Ubuntu: the sms command (no pool); the number and the text on its stdin, never in an argument
-            _out=$({ printf '%s\n' "$c_sms_number"; one_sms "$_msg"; } | sms send --stdin 2>&1)
         else
             d_detail='no SMS command'; return 2
         fi
         case $(printf '%s\n' "$_out" | tail -n 1) in
             'sent'*) d_detail=sent; return 0 ;;
         esac
-        # the reason, without the text: mu300-sms (and sms) quote only the modem's error line or their own refusal
+        # the reason, without the text: mu300-sms quotes only the modem's error line or their own refusal
         d_detail=$(printf '%s\n' "$_out" | tail -n 1 | sed 's/^mu300-sms: //; s/^sms: //' | cut -c1-120)
         case $_out in *'number may only'*|*'more than 20 digits'*|*'is empty'*) return 2 ;; esac
         return 1 ;;
@@ -651,7 +644,7 @@ cmd_kick() {
 cmd_run() {
     state_init
     lock worker || return 0
-    # on a signal only, never on EXIT (some shells run an EXIT trap when a subshell ends: see mu300-atd); a worker
+    # on a signal only, never on EXIT (some shells run an EXIT trap when a subshell ends); a worker
     # that dies otherwise leaves its lock to the next one, which takes it over
     trap 'unlock worker; exit 0' INT TERM
     while :; do

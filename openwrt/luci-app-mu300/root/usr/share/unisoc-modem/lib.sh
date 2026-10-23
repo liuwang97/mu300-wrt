@@ -35,8 +35,8 @@ json_num() {
     esac
 }
 
-# jfilter [-i FILE] -e EXPR: jsonfilter where there is one (OpenWrt); elsewhere (Ubuntu, which runs the lock and
-# forwarding adapters too) the few expressions the adapters use, through jq: @.a.b (a string as it is, anything else
+# jfilter [-i FILE] -e EXPR: jsonfilter where there is one (OpenWrt); elsewhere (a host without it: the tests) the few
+# expressions the adapters use, through jq: @.a.b (a string as it is, anything else
 # as compact JSON, nothing for null or a missing key) and @.a[*] (each element on its own line). Any other expression
 # matches nothing. The input is stdin unless -i names a file.
 jfilter() {
@@ -149,9 +149,9 @@ private_dir() {
 # -------------------------------------------------------------------- radio
 # MOBILE_DATA: the platform dialer. Its radio lock keeps one radio state machine at a time (the dial, the watchdog,
 # the boot warm-up: K57); the panel's own radio sequences take the same lock through it (mobile-data radio-locked),
-# never a copy of its locking. A platform without it runs them unlocked, as before. MU300_MOBILE_DATA: the tests.
+# never a copy of its locking. A platform without it runs them unlocked. MU300_MOBILE_DATA: the tests.
 MOBILE_DATA=${MU300_MOBILE_DATA:-/opt/mu300/bin/mobile-data}
-# SIM_RADIO: each SIM's radio on or off, kept across reboots (mu300-sim-radio, docs/FINDINGS.md 185). rf_allowed: the
+# SIM_RADIO: each SIM's radio on or off, kept across reboots (mu300-sim-radio). rf_allowed: the
 # card in use's radio may be on (yes without the tool). A sequence that would switch the radio on asks it first.
 SIM_RADIO=${MU300_SIM_RADIO_BIN:-/opt/mu300/bin/mu300-sim-radio}
 rf_allowed() { [ ! -x "$SIM_RADIO" ] || "$SIM_RADIO" allowed 2>/dev/null; }

@@ -1,19 +1,31 @@
 /*
  * mu300-atd-io: holds the modem's AT channels (the SIPC ttys /dev/stty_nr*) and mu300-at's request FIFOs open and moves
  * their bytes to and from one client over a unix socket: mu300-modemd, which makes every decision. No AT knowledge at
- * all. The protocol is docs/MODEMD.md, "The bridge protocol".
+ * all.
+ *
+ * The protocol: a unix stream socket (mode 0600 in a 0700 directory), one client at a time (a new connection replaces
+ * the old one, so a restarted modemd is never locked out). Records are lines of printable ASCII ending in \n, fields
+ * separated by one space, payloads uppercase hex, so nothing a modem or a client sends can break the framing.
+ *   client -> bridge: OPEN NAME DEVICE [sbuf:SBUF] (own the channel; retried every 200 ms, after SBUF is READY in
+ *                     /dev/sipc_sbuf when given), FIFO NAME PATH (own a request FIFO), TX NAME HEX, REOPEN NAME,
+ *                     CLOSE NAME, PING TOKEN
+ *   bridge -> client: HELLO VERSION PID (first), STATE NAME DEVICE open|pending|eof|closed, OPENFAIL NAME ERRNO,
+ *                     RX NAME HEX (one line, \r\n taken off), RXP NAME HEX (bytes without a newline after 300 ms),
+ *                     REQ NAME HEX (one FIFO line), TXERR NAME ERRNO, EOF NAME, DROPPED NAME COUNT, PONG TOKEN
+ * Without a client every channel is still read and RX/RXP/REQ/STATE are queued (1024 per channel, 256 KiB in all,
+ * the oldest dropped first) for the next one.
  *
  * Why a C program: modemd is ucode, which cannot make a descriptor non-blocking, so a tty read from its event loop
  * would stop the loop at the first partial line. And the descriptors outlive modemd: closing a SIPC channel while the
- * modem runs silences it until a reboot (FINDINGS 13b). Everything here follows from that: a channel is closed on
- * CLOSE, REOPEN, SIGTERM and the end of file of a terminal (a test's pty) and on nothing else. A client that goes away, stops reading or sends garbage
- * loses its connection at most, never a channel.
+ * modem runs silences it until a reboot. Everything here follows from that: a channel is closed on CLOSE, REOPEN,
+ * SIGTERM and the end of file of a terminal (a test's pty) and on nothing else. A client that goes away, stops
+ * reading or sends garbage loses its connection at most, never a channel.
  *
  * usage: mu300-atd-io [-s SOCKET]     (default /run/mu300-modem/io.sock)
  *   MU300_SIPC_SBUF   the file the READY condition reads (default /dev/sipc_sbuf; for the tests)
  * Runs in the foreground (procd supervises it). Short lines on stderr, and never a payload byte: AT traffic holds
- * PINs, passwords and messages. Its name keeps "mu300-atd" in the command line, which mu300-at and the panel's
- * collector take for a live owner of the channel.
+ * PINs, passwords and messages. Its pid is the channel's owner (DIR/owner/pid, written by modemd): mu300-at and
+ * mobile-data know a live owner by "mu300-atd-io" in its command line.
  *
  * What the protocol leaves open, decided here:
  *   - An ERRNO field is the decimal errno value (Linux numbers, the same on arm64 and x86_64).
@@ -26,8 +38,8 @@
  *     device it holds); an OPEN of a device another channel holds is refused (OPENFAIL EBUSY, STATE closed): two
  *     readers of a SIPC channel each get half of every reply. The same for FIFO with a path in use.
  *   - A FIFO that cannot be made: OPENFAIL NAME ERRNO and STATE NAME PATH closed. A repeated FIFO whose path no longer
- *     is our FIFO (removed, replaced) makes it again. CLOSE and SIGTERM remove a FIFO that still is ours, as
- *     mu300-atd did: no client may write into a FIFO that nobody reads.
+ *     is our FIFO (removed, replaced) makes it again. CLOSE and SIGTERM remove a FIFO that still is ours:
+ *     no client may write into a FIFO that nobody reads.
  *   - Nothing to read is EAGAIN, and also ENODATA and EBUSY: a SIPC pipe opened O_NONBLOCK reads ENODATA once it is
  *     drained (sbuf_read without waiting) and EBUSY while its reader lock is taken.
  *   - On a terminal (a pty in the tests) any other read error is an end of file (one whose other side closed reads
@@ -39,7 +51,7 @@
  *   - A record that never reached a client that went away goes back into the queue for the next one (whole records
  *     only, no replies), so a client restart loses only what was already in the socket.
  *   - A peer of another uid is refused. A second instance on the same socket waits for the first (a lock file next
- *     to the socket), as a second mu300-atd did: two of them would split every channel.
+ *     to the socket): two of them would split every channel.
  *
  * SPDX-License-Identifier: MIT
  */
@@ -448,7 +460,7 @@ static void try_open(struct chan *c, long long t)
 			err = errno;
 	}
 	if (fd >= 0) {
-		/* what mu300-atd did with stty raw -echo: no echo, no line editing, no CR/NL translation either way */
+		/* stty raw -echo: no echo, no line editing, no CR/NL translation either way */
 		struct termios tio;
 		if (isatty(fd) && tcgetattr(fd, &tio) == 0) {
 			cfmakeraw(&tio);

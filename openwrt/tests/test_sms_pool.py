@@ -1,6 +1,6 @@
-"""The SMS pool of openwrt-luci (K69, D11): mu300-sms keeps every message the SIM holds, and every message the panel
+"""The SMS pool: mu300-sms keeps every message the SIM holds, and every message the panel
 sends, in /etc/mu300/sms-pool, one file per message; mu300-smsd keeps it in step with the SIM. It is the panel's SMS
-store only - the `sms` command stays the SMS tool of every system, with its own state in /etc/mu300/sms.
+store only - the `sms` command stays the plain SMS tool.
 
 mu300-sms talks to the modem only through mu300-at, in PDU mode as `sms` does, and decodes with the same
 /opt/mu300/lib/sms-pdu.awk. Here mu300-at is a stub that answers from a table and records every command, and the AT
@@ -16,19 +16,19 @@ import subprocess
 import time
 import unittest
 
-from helpers import TOP, ShellTest
+from helpers import BIN, TOP, ShellTest
 from test_mu300dash_security import DASH, JSONFILTER
 
 LUCI = TOP / 'openwrt' / 'luci-overlay'
 SMS = LUCI / 'opt' / 'mu300' / 'bin' / 'mu300-sms'
 SMSD = LUCI / 'opt' / 'mu300' / 'bin' / 'mu300-smsd'
 INITD = LUCI / 'etc' / 'init.d' / 'mu300-smsd'
-AWK = TOP / 'rootfs' / 'overlay' / 'opt' / 'mu300' / 'lib' / 'sms-pdu.awk'
+AWK = TOP / 'openwrt' / 'opt' / 'mu300' / 'lib' / 'sms-pdu.awk'
 BUILD = TOP / 'openwrt' / 'build-rootfs.sh'
 APP = TOP / 'openwrt' / 'luci-app-mu300'
 
 # Two SMS-DELIVER PDUs, checked against sms-pdu.awk: the GSM 7-bit textbook example (from +31641600986, unread on the
-# SIM) and a UCS-2 one from an alphanumeric sender (ADANA BLD, the case text mode mangles - FINDINGS 26c), already read
+# SIM) and a UCS-2 one from an alphanumeric sender (ADANA BLD, the case text mode mangles), already read
 PDU_GSM = '07911326040000F0040B911346610089F60000208062917314480CC8F71D14969741F977FD07'
 PDU_UCS2 = ('000410D04162D0190409994400086290517181004024004B006100720067006F006E0075007A00200079006F006C006400610020011F'
             '00FC015F')
@@ -38,7 +38,7 @@ CMGL = f'+CMGL: 3,0,,40\n{PDU_GSM}\n+CMGL: 7,1,,56\n{PDU_UCS2}\nOK\n'
 # Ctrl-Z of a submit shown as ^ and ~), then answers from $STUBLOG/at/<name>: the first file whose name is a prefix
 # of the command with the characters outside [A-Za-z0-9] dropped (CMGL4, CPMS, CMGS ...); OK when there is none.
 # $STUBLOG/at/BUSY makes it the client that gave up on the lock. $STUBLOG/held.log gets, per call, the lock the client
-# was told it holds (MU300_AT_LOCK_HELD) and who holds the lock directory (a send's transaction, FINDINGS 46).
+# was told it holds (MU300_AT_LOCK_HELD) and who holds the lock directory (a send's transaction).
 AT_STUB = r'''
 log=$STUBLOG/at.log
 [ "${1:-}" = -t ] && shift 2
@@ -53,8 +53,8 @@ echo OK
 '''
 
 
-# The daemons that wait on events (FINDINGS 216: mu300-smsd on the modem daemon's ubus events, ndp-learn on ip's
-# monitor) read their listener with read -t, which dash has not: there they look on their timers as before.
+# The daemons that wait on events (mu300-smsd on the modem daemon's ubus events, ndp-learn on ip's monitor) read their
+# listener with read -t, which dash has not.
 def timed_read(shell):
     """SHELL's read takes a timeout (bash, busybox ash; not dash)."""
     r = subprocess.run(shell + ['-c', 'read -t 1 x < /dev/null; [ $? = 1 ]'], capture_output=True, timeout=10)
@@ -160,7 +160,7 @@ class Pool(ShellTest):
 
     # ------------------------------------------------------------------ the pool path
     def test_the_pool_is_etc_mu300_sms_pool_everywhere(self):
-        # D11: /etc/mu300/sms is the sms command's state directory, so the pool is never there
+        # /etc/mu300/sms is the sms command's state directory, so the pool is never there
         for p in (SMS, SMSD):
             with self.subTest(p=p.name):
                 self.assertIn('POOL=${MU300_SMS_POOL:-/etc/mu300/sms-pool}\n', p.read_text())
@@ -444,7 +444,7 @@ class Pool(ShellTest):
             self.assertEqual([c for c in self.at_log() if c.startswith('AT+CMGD')], ['AT+CMGD=9'])
 
     def test_no_at_daemon_no_modem_traffic(self):
-        # without mu300-atd, mu300-at would open the tty itself, which can wedge the channel: refused instead
+        # without the daemon's command fifo there is no AT: nothing is sent, and it says so
         for shell in self.each_shell():
             os.unlink(self.atdir / 'cmd')
             for args, stdin in ((('sync',), None), (('send', '--stdin', '123'), 'hi')):
@@ -490,8 +490,8 @@ class Pool(ShellTest):
 
     def test_the_smsc_is_written_back_unchanged_before_a_send(self):
         # The modem's own SMSC is set again, byte for byte as the modem shows it (hexadecimal under CSCS "HEX", or
-        # plain) and with its type, before the submission (FINDINGS 46: on one network every send failed until
-        # this was done). Never another address, and the character set is never touched.
+        # plain) and with its type, before the submission (on one network every send fails until
+        # this is done). Never another address, and the character set is never touched.
         self.answer('CMGS', '+CMGS: 2\nOK\n')
         for shell in self.each_shell():
             for smsc in (self.SMSC_HEX, '"+1555010099",145', '"1555010099",129'):
@@ -747,7 +747,7 @@ class Pool(ShellTest):
 
     def test_the_panel_never_puts_the_pool_in_the_sms_state_directory(self):
         # the pool the backend hands mu300-sms: the default, or a uci sms_pool under /etc/mu300 - but never
-        # /etc/mu300/sms, which is the sms command's own state (D11)
+        # /etc/mu300/sms, which is the sms command's own state
         self.stub('mu300-sms-env', 'printf "%s\\n" "$MU300_SMS_POOL" > "$STUBLOG/pool"; '
                                    'echo "pool: 0 message(s), 0 unread - page 1/1 (10 per page)"')
         for shell in self.each_shell():
@@ -786,7 +786,7 @@ class Pool(ShellTest):
             self.assertFalse([l for l in self.at_log() if 'SYNC' in l])
 
     def test_without_fsync_coreutils_sync_takes_the_files(self):
-        # Ubuntu: no fsync applet, but coreutils' sync FILE...; busybox's sync (no FILE in its help) is never given files
+        # no fsync applet, but a sync that takes FILE...: it is used; busybox's sync (no FILE in its help) is never given files
         for shell in self.each_shell():
             for helptext, want in (('Usage: sync [OPTION] [FILE]...', 'SYNC -- '), ('Usage: sync', 'SYNC ')):
                 self.fresh()
@@ -823,7 +823,7 @@ class Pool(ShellTest):
         scts = ''.join(d[1] + d[0] for d in re.findall('[0-9]{2}', at[2:])) + '48'
         return f'00440B911346610089F60008{scts}{len(ud) // 2:02X}{ud}'
 
-    # ------------------------------------------------------------------ a reference number used again (FINDINGS 63)
+    # ------------------------------------------------------------------ a reference number used again
     def test_a_second_message_under_a_waiting_reference_is_not_mixed_into_it(self):
         # part 1 of 3 of an old message still waits on the SIM; an hour later the same sender sends a two-part and a
         # three-part message under the same reference number
@@ -1232,9 +1232,9 @@ class Pool(ShellTest):
 
 
 class Spool(ShellTest):
-    """mu300-cmt-spool (every system): the two lines of a +CMT frame on stdin, the PDU into the pool's spool."""
+    """mu300-cmt-spool: the two lines of a +CMT frame on stdin, the PDU into the pool's spool."""
 
-    SPOOLER = TOP / 'rootfs' / 'overlay' / 'opt' / 'mu300' / 'bin' / 'mu300-cmt-spool'
+    SPOOLER = TOP / 'openwrt' / 'opt' / 'mu300' / 'bin' / 'mu300-cmt-spool'
 
     def setUp(self):
         super().setUp()
@@ -1384,8 +1384,8 @@ class Codec(ShellTest):
 
 
 class Listing(ShellTest):
-    """`sms json` / `sms list` (every system): the SIM keeps messages until they are deleted, so two long messages of
-    one sender under one reference number are both there; each is shown whole (FINDINGS 63)."""
+    """`sms json` / `sms list`: the SIM keeps messages until they are deleted, so two long messages of
+    one sender under one reference number are both there; each is shown whole."""
 
     def setUp(self):
         super().setUp()
@@ -1409,7 +1409,7 @@ class Listing(ShellTest):
 
 
 class Delete(ShellTest):
-    """`sms delete` (every system): only a message index, read or all reach the modem."""
+    """`sms delete`: only a message index, read or all reach the modem."""
 
     def setUp(self):
         super().setUp()
@@ -1435,8 +1435,8 @@ class Delete(ShellTest):
 
 
 class Send(ShellTest):
-    """`sms send` (every system, its own send path): one transaction under mu300-at's client lock, the modem's SMSC
-    written back unchanged first, and the submission as the one request mu300-sms sends (FINDINGS 46)."""
+    """`sms send` (its own send path): one transaction under mu300-at's client lock, the modem's SMSC
+    written back unchanged first, and the submission as the one request mu300-sms sends."""
 
     SMS_CMD = TOP / 'openwrt/opt/mu300/bin/sms'
 
@@ -1569,8 +1569,8 @@ class Send(ShellTest):
             self.assertFalse(lock.exists())
 
     def test_no_daemon_no_lock(self):
-        # without mu300-atd's fifo mu300-at opens the tty itself and takes no lock: none is taken here either, and the
-        # send still goes the same way
+        # without the daemon's fifo there is no client lock to hold: none is taken here, and every command goes to
+        # mu300-at as it is (which then says that there is no AT)
         (self.atdir / 'cmd').unlink()
         for shell in self.each_shell():
             r = self.send(shell, '10099', 'hi')
@@ -1580,61 +1580,6 @@ class Send(ShellTest):
             self.assertFalse((self.atdir / 'lock').exists())
 
 
-class Watch(ShellTest):
-    """`sms watch` (every system): a long message waits for its other parts, MU300_SMS_PARTIAL_WAIT at most."""
-
-    def setUp(self):
-        super().setUp()
-        self.stub('mu300-at', AT_STUB)
-        (self.tmp / 'at').mkdir()
-        (self.tmp / 'at' / 'CPMS').write_text('+CPMS: 2,50,2,50,2,50\nOK\n')
-        # one round of the loop: the second sleep ends the script
-        self.stub('sleep', 'n=$(cat "$STUBLOG/rounds" 2>/dev/null || echo 0); n=$((n + 1)); echo $n > "$STUBLOG/rounds"; '
-                           '[ "$n" -ge "${ROUNDS:-1}" ] && kill $PPID; exit 0')
-
-    def watch(self, shell, cmgl, **env):
-        (self.tmp / 'at' / 'CMGL4').write_text(cmgl)
-        (self.tmp / 'rounds').unlink(missing_ok=True)
-        hook = f'printf "%s|%s\\n" "$SMS_FROM" "$SMS_TEXT" >> "{self.tmp}/hook.out"'
-        # A busybox that runs sleep as its own applet never calls the stub, so the loop sleeps for real: one round
-        # takes well under the timeout, which then ends it.
-        try:
-            return subprocess.run(shell + [str(TOP / 'openwrt/opt/mu300/bin/sms'), 'watch', hook],
-                                  capture_output=True, text=True, timeout=8,
-                                  env=self.env(MU300_SMS_AWK=AWK, MU300_SMS_STATE=self.tmp / 'state', **env))
-        except subprocess.TimeoutExpired as e:
-            return e
-
-    def test_an_incomplete_message_waits_then_is_reported(self):
-        part = Pool.part
-        p1 = part(0x45, 2, 1, 'hello')
-        for shell in self.each_shell():
-            for f in ('hook.out', 'state'):
-                subprocess.run(['rm', '-rf', str(self.tmp / f)])
-            self.watch(shell, f'+CMGL: 1,0,,30\n{p1}\nOK\n')
-            time.sleep(0.3)
-            self.assertFalse((self.tmp / 'hook.out').exists())
-            key, first = (self.tmp / 'state' / 'partial').read_text().rstrip('\n').split('\t')
-            (self.tmp / 'state' / 'partial').write_text(f'{key}\t{int(first) - 3600}\n')
-            self.watch(shell, f'+CMGL: 1,0,,30\n{p1}\nOK\n')
-            for _ in range(30):
-                if (self.tmp / 'hook.out').exists():
-                    break
-                time.sleep(0.1)
-            self.assertEqual((self.tmp / 'hook.out').read_text(), '+31641600986|hello[missing part 2]\n')
-            # the whole message, once the rest comes: reported again, and the waiting state is gone
-            p2 = part(0x45, 2, 2, ' world')
-            self.watch(shell, f'+CMGL: 1,0,,30\n{p1}\n+CMGL: 2,0,,30\n{p2}\nOK\n')
-            for _ in range(30):
-                if len((self.tmp / 'hook.out').read_text().splitlines()) == 2:
-                    break
-                time.sleep(0.1)
-            self.assertEqual((self.tmp / 'hook.out').read_text().splitlines()[1], '+31641600986|hello world')
-            self.assertFalse((self.tmp / 'state' / 'partial').exists() and
-                             (self.tmp / 'state' / 'partial').read_text())
-
-
-@unittest.skipUnless(os.path.isdir('/proc/self'), 'mu300-smsd tells a live holder by /proc/PID/cmdline')
 class Daemon(ShellTest):
     def setUp(self):
         super().setUp()
@@ -1659,14 +1604,30 @@ class Daemon(ShellTest):
         self.flag = self.tmp / 'direct'
         self.pool = self.tmp / 'pool'
         self.spool = self.pool / 'incoming'
+        self.event_ubus()
+        self.fd = None
 
-    def start(self, shell, **env):
+    def each_shell(self):
+        # the daemon waits on its listener with read -t; a shell without it is refused
+        for shell in super().each_shell():
+            if timed_read(shell):
+                yield shell
+
+    def start(self, shell, listen=True, **env):
+        """The daemon; with LISTEN, once the stand-in listener has opened its fifo, its write end in self.fd."""
         e = dict(MU300_AT_DIR=self.atdir, MU300_SMS_BIN=self.stubs / 'fake-sms', MU300_SMS_LOCK=self.lock,
-                 MU300_SMS_POLL=1, MU300_SMS_SYNC_INTERVAL=600, MU300_SMS_POOL=self.pool,
+                 MU300_SMS_POLL=1, MU300_SMS_FOLLOW=1, MU300_SMS_SYNC_INTERVAL=600, MU300_SMS_POOL=self.pool,
                  MU300_SMS_DIRECT_FLAG=self.flag)
         e.update(env)
-        return subprocess.Popen(shell + [str(SMSD)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                                env=self.env(**e))
+        d = subprocess.Popen(shell + [str(SMSD)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                             env=self.env(**e))
+        if listen:
+            self.fd = fifo_writer(self.tmp / 'events')
+            if self.fd is None:
+                d.kill()
+                d.communicate(timeout=10)
+                self.fail('no listener')
+        return d
 
     def syncs(self):
         p = self.tmp / 'sms.log'
@@ -1681,8 +1642,10 @@ class Daemon(ShellTest):
         return [l.split(' ', 2)[2] for l in self.at_log() if l.startswith('-t ')]
 
     def fresh(self):
-        for f in ('sms.log', 'at.log', 'refuse', 'cnmi', 'sms-fail', 'sync-fail', 'lockwait'):
+        for f in ('sms.log', 'at.log', 'refuse', 'cnmi', 'sms-fail', 'sync-fail', 'lockwait', 'ubus.log',
+                  'listener.pid', 'grep.log'):
             (self.tmp / f).unlink(missing_ok=True)
+        (self.tmp / 'modemd').write_text('')
         shutil.rmtree(self.pool, ignore_errors=True)
         self.flag.unlink(missing_ok=True)
 
@@ -1693,7 +1656,22 @@ class Daemon(ShellTest):
 
     def stop(self, d):
         d.send_signal(signal.SIGTERM)
-        return d.communicate(timeout=10)
+        try:
+            return d.communicate(timeout=10)
+        finally:
+            if self.fd is not None:
+                os.close(self.fd)
+                self.fd = None
+
+    def event(self, line, channel='stty_nr0'):
+        """modemd's event for LINE of the unsolicited CHANNEL."""
+        self.send(self.fd, self.urc(line, channel))
+
+    def delivered(self, name='cmt-1.abcdef.ready', pdu=PDU_GSM):
+        """A message modemd spooled, and its event."""
+        f = self.spooled(name, pdu)
+        self.event('+CMT (PDU spooled)')
+        return f
 
     def test_direct_delivery_is_asked_after_the_first_sync_and_a_message_is_acknowledged_after_its_import(self):
         for shell in self.each_shell():
@@ -1709,7 +1687,7 @@ class Daemon(ShellTest):
                 self.wait_for(lambda: self.flag.exists(), 'no flag for direct delivery')
                 self.assertEqual((self.tmp / 'lockwait').read_text().strip(), '8')   # never behind a stuck client for 90 s
                 # a spooled message: pooled, and only then acknowledged; the file goes once the modem took the ack
-                f = self.spooled()
+                f = self.delivered()
                 self.wait_for(lambda: 'AT+CNMA=1' in self.commands(), 'no acknowledgement', timeout=15)
                 log = self.at_log()
                 self.assertLess(log.index(f'SMS import-pdu {f}'), log.index('-t 5 AT+CNMA=1'))
@@ -1717,7 +1695,7 @@ class Daemon(ShellTest):
                 self.wait_for(lambda: not f.exists(), 'the acknowledged file stayed')
                 self.assertEqual(sorted(p.name for p in self.spool.iterdir()), [])
                 # two at once: oldest first, one acknowledgement each
-                self.spooled('cmt-200.b.ready'); self.spooled('cmt-100.a.ready', PDU_UCS2)
+                self.spooled('cmt-200.b.ready'); self.delivered('cmt-100.a.ready', PDU_UCS2)
                 self.wait_for(lambda: self.at_log().count('-t 5 AT+CNMA=1') == 3, 'two more acknowledgements', timeout=15)
                 imports = [l for l in self.at_log() if l.startswith('SMS import-pdu')]
                 self.assertEqual([i.rsplit('/', 1)[1] for i in imports[1:]], ['cmt-100.a.ready', 'cmt-200.b.ready'])
@@ -1744,12 +1722,11 @@ class Daemon(ShellTest):
                             self.assertNotIn('AT+CNMI=3,2,2,0,1', c)
                         time.sleep(1.2)
                         self.assertFalse(self.flag.exists())
-                        # a +CMTI still starts a sync, as before
-                        with open(self.atdir / 'urc' / 'stty_nr0.log', 'a') as f:
-                            f.write('+CMTI: "SM",4\n')
+                        # a +CMTI still starts a sync
+                        self.event('+CMTI: "SM",4')
                         self.wait_for(lambda: self.syncs() == ['sync', 'sync'], 'no sync after +CMTI', timeout=15)
                         # a frame that comes anyway is still pooled and acknowledged
-                        self.spooled()
+                        self.delivered()
                         self.wait_for(lambda: 'AT+CNMA=1' in self.commands(), 'no acknowledgement', timeout=15)
                     finally:
                         out, err = self.stop(d)
@@ -1763,7 +1740,7 @@ class Daemon(ShellTest):
             d = self.start(shell)
             try:
                 self.wait_for(lambda: self.flag.exists(), 'direct delivery was not asked for')
-                f = self.spooled()
+                f = self.delivered()
                 self.wait_for(lambda: len([l for l in self.at_log() if l.startswith('SMS import-pdu')]) >= 3,
                               'three rounds of importing', timeout=15)
                 self.assertNotIn('AT+CNMA=1', self.commands())
@@ -1788,6 +1765,7 @@ class Daemon(ShellTest):
                 target = self.tmp / 'target.pdu'
                 target.write_text(PDU_GSM + '\n')
                 (self.spool / 'cmt-1.link.ready').symlink_to(target)
+                self.event('+CMT (PDU spooled)')
                 self.wait_for(lambda: (self.spool / 'cmt-1.link.failed').is_symlink(), 'the link was not set aside')
                 self.assertFalse([l for l in self.at_log() if l.startswith('SMS import-pdu')])
                 self.assertNotIn('AT+CNMA=1', self.commands())
@@ -1803,7 +1781,7 @@ class Daemon(ShellTest):
             d = self.start(shell)
             try:
                 self.wait_for(lambda: self.flag.exists(), 'direct delivery was not asked for')
-                f = self.spooled()
+                f = self.delivered()
                 self.wait_for(lambda: self.commands().count('AT+CNMA=1') == 2, 'a second try', timeout=15)
                 self.assertTrue(f.exists())                       # imported (twice, idempotent), never removed
                 self.assertEqual(len([l for l in self.at_log() if l.startswith('SMS import-pdu')]), 2)
@@ -1815,7 +1793,7 @@ class Daemon(ShellTest):
         for shell in self.each_shell():
             self.fresh()
             (self.tmp / 'cnmi').write_text('+CNMI: 0,0,0,0,0\n')   # what a modem answers after an acknowledgement never came
-            d = self.start(shell, MU300_SMS_CHECK_INTERVAL=2)
+            d = self.start(shell, MU300_SMS_EVENT_CHECK_INTERVAL=2)
             try:
                 self.wait_for(lambda: self.commands().count('AT+CNMI=3,2,2,0,1') >= 2, 'routing not put back', timeout=15)
                 c = self.commands()
@@ -1830,7 +1808,7 @@ class Daemon(ShellTest):
         # a busy or silent channel says nothing about the routing: no new setup, no sync, asked again at the next check
         for shell in self.each_shell():
             self.fresh()
-            d = self.start(shell, MU300_SMS_CHECK_INTERVAL=2)
+            d = self.start(shell, MU300_SMS_EVENT_CHECK_INTERVAL=2)
             try:
                 self.wait_for(lambda: self.flag.exists(), 'direct delivery was not asked for')
                 (self.tmp / 'refuse').write_text('AT+CNMI?\n')
@@ -1847,7 +1825,7 @@ class Daemon(ShellTest):
         for shell in self.each_shell():
             self.fresh()
             (self.tmp / 'cnmi').write_text('+CNMI: 0,0,0,0,0\n')
-            d = self.start(shell, MU300_SMS_DIRECT='0', MU300_SMS_CHECK_INTERVAL=2)
+            d = self.start(shell, MU300_SMS_DIRECT='0', MU300_SMS_EVENT_CHECK_INTERVAL=2)
             try:
                 self.wait_for(lambda: self.commands().count('AT+CNMI=2,1,0,0,0') >= 3, 'routing not put back',
                               timeout=15)
@@ -1863,39 +1841,10 @@ class Daemon(ShellTest):
             finally:
                 self.stop(d)
 
-    def test_an_idle_daemon_asks_the_modem_nothing_between_checks(self):
-        # FINDINGS 215: the look every POLL seconds is the spool and the URC logs' times, no AT command, no process
-        # for the logs while none changed; a full sync only every SYNC_INTERVAL
-        self.stub('md5sum', 'echo md5 >> "$STUBLOG/md5.log"; cksum')
-        for shell in self.each_shell():
-            self.fresh()
-            (self.tmp / 'md5.log').unlink(missing_ok=True)
-            with open(self.atdir / 'urc' / 'stty_nr0.log', 'a') as f:
-                f.write('+CTZV: "26/10/22,15:15:06+32,0"\n')
-            d = self.start(shell, MU300_SMS_CHECK_INTERVAL=600, MU300_SMS_URC_CHECK=1)
-            try:
-                self.wait_for(lambda: self.flag.exists(), 'direct delivery was not asked for')
-                time.sleep(1.5)
-                n, s = len(self.at_log()), (self.tmp / 'md5.log').read_text().count('md5')
-                time.sleep(4)
-                self.assertEqual(self.at_log()[n:], [])
-                self.assertEqual((self.tmp / 'md5.log').read_text().count('md5'), s)
-                # a line that is no +CMTI: the checksum once, and the routing is looked at (a modem that restarted
-                # announces itself on that channel); the start asked AT+CNMI? already, so the one after this line
-                asked = self.commands().count('AT+CNMI?')
-                with open(self.atdir / 'urc' / 'stty_nr0.log', 'a') as f:
-                    f.write('+SIND: 1\n')
-                self.wait_for(lambda: self.commands().count('AT+CNMI?') > asked, 'the routing was not looked at',
-                              timeout=15)
-                self.assertEqual((self.tmp / 'md5.log').read_text().count('md5'), s + 1)
-                self.assertEqual(self.syncs(), ['sync'])
-            finally:
-                self.stop(d)
-
     def test_parked_parts_are_synced_at_every_check(self):
         for shell in self.each_shell():
             self.fresh()
-            d = self.start(shell, MU300_SMS_CHECK_INTERVAL=2)
+            d = self.start(shell, MU300_SMS_EVENT_CHECK_INTERVAL=2)
             try:
                 self.wait_for(lambda: self.flag.exists(), 'direct delivery was not asked for')
                 time.sleep(3)
@@ -1909,21 +1858,23 @@ class Daemon(ShellTest):
     def test_a_failed_sync_is_tried_again_at_the_next_check(self):
         for shell in self.each_shell():
             self.fresh()
-            d = self.start(shell, MU300_SMS_CHECK_INTERVAL=2)
+            d = self.start(shell, MU300_SMS_EVENT_CHECK_INTERVAL=2)
             try:
                 self.wait_for(lambda: self.flag.exists(), 'direct delivery was not asked for')
                 (self.tmp / 'sync-fail').write_text('')
-                with open(self.atdir / 'urc' / 'stty_nr0.log', 'a') as f:
-                    f.write('+CMTI: "SM",7\n')
+                self.event('+CMTI: "SM",7')
                 self.wait_for(lambda: len(self.syncs()) >= 2, 'no sync after +CMTI', timeout=15)
+                time.sleep(0.5)
                 (self.tmp / 'sync-fail').unlink()
-                self.wait_for(lambda: len(self.syncs()) >= 3, 'the failed sync was not tried again', timeout=15)
+                m = len(self.syncs())
+                self.wait_for(lambda: len(self.syncs()) > m, 'the failed sync was not tried again', timeout=15)
+                time.sleep(0.5)
                 n = len(self.syncs())
                 time.sleep(4.5)
-                self.assertEqual(len(self.syncs()), n)            # once it worked: no more
+                self.assertEqual(len(self.syncs()), n, self.at_log())            # once it worked: no more
             finally:
                 out, err = self.stop(d)
-            self.assertIn('sync failed, retrying at the next check', err)
+            self.assertIn("sync failed, retrying at the next check", err, err)
 
     def test_the_sim_state_helper_is_asked_only_when_its_files_change(self):
         run = self.tmp / 'run-mu300'
@@ -1943,6 +1894,7 @@ class Daemon(ShellTest):
                 # the card went: mu300-sim-state check wrote its file; the helper is asked, and the modem is not
                 (self.tmp / 'simstate').write_text('absent\n')
                 (run / 'sim0.state').write_text('absent\n')
+                self.event('+ECIND: 3,0,0,0')
                 self.wait_for(lambda: not self.flag.exists(), 'an absent card was not noticed')
                 self.assertEqual((self.tmp / 'simstate.log').read_text().splitlines(), ['get', 'get'])
                 n = len(self.at_log())
@@ -1967,47 +1919,25 @@ class Daemon(ShellTest):
                 self.wait_for(lambda: self.syncs() == ['sync'], 'no first sync')
                 self.assertIn('AT+CNMI=2,1,0,0,0', (self.tmp / 'at.log').read_text())
                 # a second one leaves the pool to the first
-                second = self.start(shell)
+                second = self.start(shell, listen=False)
                 out, err = second.communicate(timeout=10)
                 self.assertEqual(second.returncode, 0)
                 self.assertIn(f'pid {first.pid} is already pooling', err)
                 # a +CMTI in the AT daemon's URC log: one more sync
-                with open(self.atdir / 'urc' / 'stty_nr0.log', 'a') as f:
-                    f.write('+CMTI: "SM",4\n')
+                self.event('+CMTI: "SM",4')
                 self.wait_for(lambda: self.syncs() == ['sync', 'sync'], 'no sync after +CMTI', timeout=15)
             finally:
-                first.send_signal(signal.SIGTERM)
-                first.communicate(timeout=10)
+                self.stop(first)
             self.assertFalse(self.lock.exists(), 'the lock outlived its daemon')
 
-    def test_a_new_message_syncs_without_cksum(self):
-        # OpenWrt's busybox has md5sum but no cksum: a +CMTI still starts a sync, and nothing says "not found"
-        self.stub('cksum', 'echo "cksum: not found" >&2; exit 127')
-        for shell in self.each_shell():
-            (self.tmp / 'sms.log').unlink(missing_ok=True)
-            (self.atdir / 'urc' / 'stty_nr0.log').unlink(missing_ok=True)
-            d = self.start(shell)
-            try:
-                self.wait_for(lambda: self.syncs() == ['sync'], 'no first sync')
-                time.sleep(1.5)   # a look or two at the URC logs before the message
-                with open(self.atdir / 'urc' / 'stty_nr0.log', 'a') as f:
-                    f.write('+CMTI: "SM",4\n')
-                self.wait_for(lambda: self.syncs() == ['sync', 'sync'], 'no sync after +CMTI', timeout=15)
-            finally:
-                d.send_signal(signal.SIGTERM)
-                out, err = d.communicate(timeout=10)
-            self.assertNotIn('not found', err + out)
-
-    # FINDINGS 216: with the modem daemon on ubus (the object mu300.modem) the daemon waits on its events instead of
-    # looking every POLL seconds. The stand-in ubus has the object while $STUBLOG/modemd exists and records its calls in
-    # ubus.log; its `listen` (pid in listener.pid) passes on what the test writes into the fifo $STUBLOG/events, one
-    # event a line, as `ubus -S listen` prints them.
-    def event_ubus(self, modemd=True):
+    # The stand-in ubus has mu300.modem while $STUBLOG/modemd exists and records its calls in ubus.log; its `listen`
+    # (pid in listener.pid) passes on what the test writes into the fifo $STUBLOG/events, one event a line, as
+    # `ubus -S listen` prints them.
+    def event_ubus(self):
         ev = self.tmp / 'events'
         if not ev.exists():
             os.mkfifo(ev)
-        if modemd:
-            (self.tmp / 'modemd').write_text('')
+        (self.tmp / 'modemd').write_text('')
         cat = shutil.which('cat')
         self.stub('ubus', 'echo "$*" >> "$STUBLOG/ubus.log"\n'
                           'case "$*" in\n'
@@ -2015,11 +1945,6 @@ class Daemon(ShellTest):
                           f'  *"listen"*) echo $$ > "$STUBLOG/listener.pid"; exec {cat} "$STUBLOG/events" ;;\n'
                           '  *) exit 1 ;;\n'
                           'esac')
-
-    def fresh_events(self):
-        for f in ('ubus.log', 'listener.pid', 'grep.log'):
-            (self.tmp / f).unlink(missing_ok=True)
-        (self.atdir / 'urc' / 'stty_nr0.log').unlink(missing_ok=True)
 
     @staticmethod
     def urc(line, channel='stty_nr0'):
@@ -2041,23 +1966,15 @@ class Daemon(ShellTest):
         p = self.tmp / 'listener.pid'
         return int(p.read_text()) if p.exists() else None
 
-    def test_with_the_modem_daemon_a_spooled_message_is_pooled_at_its_event_and_nothing_runs_in_between(self):
-        self.event_ubus()
+    def test_a_spooled_message_is_pooled_at_its_event_and_nothing_runs_in_between(self):
         grep = shutil.which('grep')
         self.stub('grep', f'echo grep >> "$STUBLOG/grep.log"; exec {grep} "$@"')
-        ran = False
         for shell in self.each_shell():
-            if not timed_read(shell):
-                continue
-            ran = True
             self.fresh()
-            self.fresh_events()
-            # POLL 30: whatever comes within seconds came with an event, not with the look
-            d = self.start(shell, MU300_SMS_POLL=30, MU300_SMS_FOLLOW=1)
-            fd = None
+            # POLL 30: whatever comes within seconds came with an event
+            d = self.start(shell, MU300_SMS_POLL=30)
+            fd = self.fd
             try:
-                fd = fifo_writer(self.tmp / 'events')
-                self.assertIsNotNone(fd, 'no listener')
                 self.wait_for(lambda: self.flag.exists(), 'direct delivery was not asked for')
                 time.sleep(2.5)    # the FOLLOW second after the listener started
                 n, s, g, w = len(self.at_log()), len(self.syncs()), len(self.lines('grep.log')), wakeups(d.pid)
@@ -2070,9 +1987,8 @@ class Daemon(ShellTest):
                                                           '-S listen mu300.modem.urc ubus.object.remove'])
                 self.assertLessEqual(wakeups(d.pid) - w, 1)
                 # a message delivered directly: modemd spooled it and says so; pooled, then acknowledged, at once
-                f = self.spooled()
                 t0 = time.monotonic()
-                self.send(fd, self.urc('+CMT (PDU spooled)'))
+                f = self.delivered()
                 self.wait_for(lambda: 'AT+CNMA=1' in self.commands(), 'not acknowledged at the event', timeout=10)
                 self.assertLess(time.monotonic() - t0, 3)
                 log = self.at_log()
@@ -2087,145 +2003,106 @@ class Daemon(ShellTest):
                 self.assertEqual(len(self.syncs()), s)
                 # a +CMTI of the card in use: a sync (after the 2 s the message gets to land)
                 s = self.syncs().count('sync')
-                self.send(fd, self.urc('+CMTI: "SM",4'))
+                self.event('+CMTI: "SM",4')
                 self.wait_for(lambda: self.syncs().count('sync') == s + 1, 'no sync after +CMTI', timeout=10)
                 self.assertEqual(self.commands()[n:], [])          # (the stub mu300-sms asks the modem itself)
             finally:
                 out, err = self.stop(d)
-                if fd is not None:
-                    os.close(fd)
             pid = self.listener()
             self.assertIsNotNone(pid)
             self.wait_for(lambda: not alive(pid), 'the listener outlived its daemon', timeout=5)
             self.assertIn("waiting on the modem daemon's events", err)
             self.assertFalse(self.lock.exists(), 'the lock outlived its daemon')
-        if not ran:
-            self.skipTest('no shell with read -t')
 
-    def test_with_the_modem_daemon_sim_lines_have_the_routing_asked_once_they_stop(self):
+    def test_sim_lines_have_the_routing_asked_once_they_stop(self):
         # slot 1: its card's unsolicited channel is stty_nr3
-        self.event_ubus()
         run = self.tmp / 'run-mu300'
         run.mkdir()
         (run / 'sim-slot').write_text('1\n')
-        ran = False
         for shell in self.each_shell():
-            if not timed_read(shell):
-                continue
-            ran = True
             self.fresh()
-            self.fresh_events()
-            d = self.start(shell, MU300_SMS_POLL=30, MU300_SMS_FOLLOW=1, MU300_RUN=run)
-            fd = None
+            d = self.start(shell, MU300_SMS_POLL=30, MU300_RUN=run)
             try:
-                fd = fifo_writer(self.tmp / 'events')
-                self.assertIsNotNone(fd, 'no listener')
                 self.wait_for(lambda: self.flag.exists(), 'direct delivery was not asked for')
                 time.sleep(2.5)
                 n = len(self.commands())
                 # a modem that started again: the SIM's lines in a burst, the routing asked once they have stopped
-                self.send(fd, self.urc('+SIND: 1', 'stty_nr3'), self.urc('+ECIND: 3,0,0,1', 'stty_nr3'),
+                self.send(self.fd, self.urc('+SIND: 1', 'stty_nr3'), self.urc('+ECIND: 3,0,0,1', 'stty_nr3'),
                           self.urc('+SIND: 10,"SM",1,"FD",1', 'stty_nr3'))
                 self.wait_for(lambda: 'AT+CNMI?' in self.commands()[n:], 'the routing was not asked', timeout=10)
                 time.sleep(2)
                 self.assertEqual(self.commands()[n:], ['AT+CNMI?'])
                 # this card's +CMTI comes on stty_nr3; slot 0's channel says nothing about it
                 s = self.syncs().count('sync')
-                self.send(fd, self.urc('+CMTI: "SM",5'))
+                self.event('+CMTI: "SM",5')
                 time.sleep(3)
                 self.assertEqual(self.syncs().count('sync'), s)
-                self.send(fd, self.urc('+CMTI: "SM",5', 'stty_nr3'))
+                self.event('+CMTI: "SM",5', 'stty_nr3')
                 self.wait_for(lambda: self.syncs().count('sync') == s + 1, 'no sync after +CMTI on stty_nr3',
                               timeout=10)
             finally:
                 self.stop(d)
-                if fd is not None:
-                    os.close(fd)
-        if not ran:
-            self.skipTest('no shell with read -t')
 
-    def test_the_look_comes_back_when_the_modem_daemon_goes_and_the_events_when_it_comes_back(self):
-        self.event_ubus()
-        ran = False
+    def test_without_the_modem_daemon_nothing_but_looking_for_it(self):
+        # modemd leaves ubus, or the stream ends: the listener goes, nothing is pooled or synced, and modemd is looked
+        # for every POLL seconds; once it is back, the events again and a full sync for what came meanwhile
         for shell in self.each_shell():
-            if not timed_read(shell):
-                continue
-            ran = True
             for how in ('modemd left ubus', 'the stream ended'):
                 with self.subTest(how=how):
                     self.fresh()
-                    self.fresh_events()
-                    (self.tmp / 'modemd').write_text('')
-                    d = self.start(shell, MU300_SMS_POLL=1, MU300_SMS_FOLLOW=1, MU300_SMS_CHECK_INTERVAL=3)
-                    fd = None
+                    d = self.start(shell, MU300_SMS_EVENT_CHECK_INTERVAL=3)
                     try:
-                        fd = fifo_writer(self.tmp / 'events')
-                        self.assertIsNotNone(fd, 'no listener')
                         self.wait_for(lambda: self.flag.exists(), 'direct delivery was not asked for')
                         first = self.listener()
                         if how == 'modemd left ubus':
                             (self.tmp / 'modemd').unlink()
-                            self.send(fd, self.removed('mu300.modem'))
+                            self.send(self.fd, self.removed('mu300.modem'))
                         else:
-                            os.close(fd)
-                            fd = None
+                            (self.tmp / 'modemd').unlink()
+                            os.close(self.fd)
+                            self.fd = None
                         self.wait_for(lambda: not alive(first), 'the listener was not stopped')
-                        # the look, as without the daemon: a +CMTI in a URC log, a spooled message
-                        with open(self.atdir / 'urc' / 'stty_nr0.log', 'a') as f:
-                            f.write('+CMTI: "SM",4\n')
-                        self.wait_for(lambda: self.syncs().count('sync') >= 2, 'the look did not come back',
-                                      timeout=15)
                         self.spooled()
-                        self.wait_for(lambda: 'AT+CNMA=1' in self.commands(), 'no acknowledgement', timeout=15)
-                        # modemd (back) on ubus: the next check takes the events up again
+                        n, s = len(self.at_log()), len(self.syncs())
+                        time.sleep(3.5)
+                        self.assertEqual(self.at_log()[n:], [])            # nothing asked, nothing pooled
+                        self.assertEqual(len(self.syncs()), s)
+                        lists = self.lines('ubus.log').count('-t 2 list mu300.modem')
+                        self.assertGreaterEqual(lists, 3)
+                        # modemd back on ubus: the events again, a full sync, and the spool taken
+                        if self.fd is not None:
+                            os.close(self.fd)
                         (self.tmp / 'modemd').write_text('')
-                        self.wait_for(lambda: len([l for l in self.lines('ubus.log') if 'listen' in l]) == 2,
-                                      'the events were not taken up again', timeout=15)
+                        self.fd = fifo_writer(self.tmp / 'events')
+                        self.assertIsNotNone(self.fd, 'the events were not taken up again')
+                        self.wait_for(lambda: len(self.syncs()) == s + 1, 'no sync once modemd was back', timeout=10)
+                        self.wait_for(lambda: 'AT+CNMA=1' in self.commands(), 'the spool was not taken', timeout=10)
+                        self.assertEqual(len([l for l in self.lines('ubus.log') if 'listen' in l]), 2)
                     finally:
                         out, err = self.stop(d)
-                        if fd is not None:
-                            os.close(fd)
-                    self.assertIn('a look every 1 s again', err)
                     self.assertIn('the modem daemon left ubus' if how == 'modemd left ubus'
                                   else "the modem daemon's event stream ended", err)
+                    self.assertIn('waiting for it on ubus', err)
                     self.wait_for(lambda: not alive(self.listener()), 'the second listener outlived its daemon',
                                   timeout=5)
-        if not ran:
-            self.skipTest('no shell with read -t')
 
-    def test_without_the_modem_daemon_no_listener_and_the_look_as_before(self):
-        # Without mu300.modem on ubus the look every POLL seconds, and a `ubus list` at each check for a modemd that
-        # came. dash has no read with a timeout to wait on events with: it looks, and asks ubus nothing, even with
-        # modemd there.
-        self.event_ubus(modemd=False)
+    def test_a_daemon_started_before_the_modem_daemon_waits_for_it(self):
         for shell in self.each_shell():
             self.fresh()
-            self.fresh_events()
-            (self.tmp / 'modemd').unlink(missing_ok=True)
-            if not timed_read(shell):
-                (self.tmp / 'modemd').write_text('')
-            d = self.start(shell, MU300_SMS_CHECK_INTERVAL=2)
+            (self.tmp / 'modemd').unlink()
+            d = self.start(shell, listen=False)
             try:
                 self.wait_for(lambda: self.flag.exists(), 'direct delivery was not asked for')
-                self.spooled()
-                self.wait_for(lambda: 'AT+CNMA=1' in self.commands(), 'no acknowledgement', timeout=15)
-                with open(self.atdir / 'urc' / 'stty_nr0.log', 'a') as f:
-                    f.write('+CMTI: "SM",4\n')
-                self.wait_for(lambda: self.syncs().count('sync') == 2, 'no sync after +CMTI', timeout=15)
-                if timed_read(shell):
-                    self.wait_for(lambda: len(self.lines('ubus.log')) >= 3, 'modemd not looked for at the checks',
-                                  timeout=15)
-                else:
-                    self.wait_for(lambda: self.commands().count('AT+CNMI?') >= 2, 'no checks', timeout=15)
+                self.wait_for(lambda: self.lines('ubus.log').count('-t 2 list mu300.modem') >= 3,
+                              'modemd not looked for', timeout=10)
+                self.assertIsNone(self.listener())
+                (self.tmp / 'modemd').write_text('')
+                self.fd = fifo_writer(self.tmp / 'events')
+                self.assertIsNotNone(self.fd, 'no listener once modemd came')
+                self.wait_for(lambda: self.syncs() == ['sync', 'sync'], 'no sync once modemd came', timeout=10)
             finally:
                 out, err = self.stop(d)
-            calls = self.lines('ubus.log')
-            if timed_read(shell):
-                self.assertEqual(set(calls), {'-t 2 list mu300.modem'}, calls)
-            else:
-                self.assertEqual(calls, [])
-            self.assertNotIn("waiting on the modem daemon's events", err)
-            self.assertIsNone(self.listener())
+            self.assertIn('the modem daemon is not on ubus; waiting for it', err)
 
     def test_a_dead_holder_is_taken_over(self):
         for shell in self.each_shell():
@@ -2238,24 +2115,25 @@ class Daemon(ShellTest):
                 self.wait_for(lambda: (self.lock / 'pid').exists() and
                               (self.lock / 'pid').read_text().strip() == str(d.pid), 'lock not taken over')
             finally:
-                d.send_signal(signal.SIGTERM)
-                d.communicate(timeout=10)
+                self.stop(d)
 
 
 class Wiring(unittest.TestCase):
-    def test_the_spooler_is_on_every_system_and_the_at_daemon_knows_it(self):
-        # mu300-atd runs on Ubuntu too, and a +CMT frame must never end in its log or be lost: the spooler is in the
-        # shared tree, the pool and spool paths are the pool's everywhere
-        spooler = TOP / 'rootfs' / 'overlay' / 'opt' / 'mu300' / 'bin' / 'mu300-cmt-spool'
+    def test_the_spooler_is_shared_and_the_modem_daemon_knows_it(self):
+        # a +CMT frame must never end in a log or be lost: modemd pipes it to the spooler, and the pool and spool
+        # paths are the pool's everywhere
+        spooler = TOP / 'openwrt' / 'opt' / 'mu300' / 'bin' / 'mu300-cmt-spool'
         self.assertTrue(spooler.stat().st_mode & 0o111, 'not executable')
         self.assertIn('POOL=${MU300_SMS_POOL:-/etc/mu300/sms-pool}\n', spooler.read_text())
         self.assertIn('SPOOL=$POOL/incoming\n', spooler.read_text())
-        atd = (TOP / 'rootfs' / 'overlay' / 'opt' / 'mu300' / 'bin' / 'mu300-atd').read_text()
-        self.assertIn('CMT_SPOOL=${MU300_CMT_SPOOL_BIN:-/opt/mu300/bin/mu300-cmt-spool}\n', atd)
+        modemd = (TOP / 'openwrt' / 'opt' / 'mu300' / 'bin' / 'mu300-modemd').read_text()
+        self.assertIn("const CMT_SPOOL = env('MU300_CMT_SPOOL_BIN', '/opt/mu300/bin/mu300-cmt-spool');", modemd)
+        self.assertIn("log_line(f.log, '+CMT (PDU spooled)');", modemd)
         self.assertIn('SPOOL=$POOL/incoming\n', SMSD.read_text())
         self.assertIn('PARTS=$POOL/parts', SMS.read_text())
-        # the message is never an argument: the daemon pipes the frame, the daemon of the pool reads a file
-        self.assertNotRegex(atd, r'"\$CMT_SPOOL" +"\$')
+        # the message is never an argument: modemd writes the frame on the spooler's stdin, the daemon of the pool
+        # reads a file
+        self.assertIn("popen(shq(CMT_SPOOL) + ' >/dev/null 2>&1', 'w')", modemd)
         self.assertIn('"$SMS" import-pdu "$f"', SMSD.read_text())
         self.assertIn('export MU300_AT_LOCK_WAIT=${MU300_AT_LOCK_WAIT:-8}', SMSD.read_text())
 
@@ -2267,23 +2145,49 @@ class Wiring(unittest.TestCase):
         self.assertIn('procd_set_param respawn', src)
         self.assertRegex(src, r'(?m)^START=\d+$')
 
-    def test_build_enables_the_pool_on_openwrt_luci_only(self):
+    def test_build_enables_the_pool(self):
         src = BUILD.read_text()
-        # inside the same luci-plugin branch that enables the panel's own service, never in the common lists
-        block = src[src.index('    ln -sf ../init.d/unisoc-modem-ui'):]
-        block = block[:block.index('\nfi\n')]
-        self.assertIn('ln -sf ../init.d/mu300-smsd $R/etc/rc.d/S${n}mu300-smsd', block)
-        self.assertIn('ln -sf /opt/mu300/bin/mu300-sms $R/usr/bin/mu300-sms', block)
+        # enabled beside the panel's own service, never in the common lists
+        self.assertIn('ln -sf ../init.d/mu300-smsd $R/etc/rc.d/S${n}mu300-smsd', src)
+        self.assertIn('ln -sf /opt/mu300/bin/mu300-sms $R/usr/bin/mu300-sms', src)
         common = re.search(r'for s in (mu300-accounts[^;]*);', src).group(1)
         self.assertNotIn('smsd', common)
-        # the commands every system links come from the shared list
+        # the commands on PATH come from the shared list
         self.assertIn('for c in $(cat /in/opt-mu300/lib/path-commands)', src)
-        common = (TOP / 'rootfs' / 'overlay' / 'opt' / 'mu300' / 'lib' / 'path-commands').read_text().split()
+        common = (TOP / 'openwrt' / 'opt' / 'mu300' / 'lib' / 'path-commands').read_text().split()
         self.assertNotIn('mu300-sms', common)
-        # the pool programs come from the luci overlay; the shared tree (every system) has none of them
+        # the pool programs come from the luci overlay; opt/mu300 has none of them
         for name in ('mu300-sms', 'mu300-smsd'):
-            self.assertFalse((TOP / 'rootfs' / 'overlay' / 'opt' / 'mu300' / 'bin' / name).exists())
+            self.assertFalse((TOP / 'openwrt' / 'opt' / 'mu300' / 'bin' / name).exists())
         self.assertFalse((TOP / 'openwrt' / 'overlay' / 'etc' / 'init.d' / 'mu300-smsd').exists())
+
+
+
+class SmsJson(ShellTest):
+    """`sms json`: the SIM's messages, long ones joined, as one JSON object (mu300-api's sms.list without the pool)"""
+
+    def setUp(self):
+        super().setUp()
+        self.stub('mu300-at', AT_STUB)
+        (self.tmp / 'at').mkdir()
+        (self.tmp / 'at' / 'CPMS').write_text('+CPMS: 2,50,2,50,2,50\nOK\n')
+
+    def run_json(self, shell, cmgl):
+        (self.tmp / 'at' / 'CMGL4').write_text(cmgl)
+        r = self.script(shell, BIN / 'sms', 'json', MU300_SMS_AWK=AWK, MU300_SMS_STATE=self.tmp / 'state')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return json.loads(r.stdout)
+
+    def test_messages(self):
+        hostile = Pool.part(0x45, 1, 1, 'a "quote" \\ back\tslash ü')
+        for shell in self.each_shell():
+            j = self.run_json(shell, f'+CMGL: 3,0,,40\n{PDU_GSM}\n+CMGL: 7,1,,56\n{PDU_UCS2}\n+CMGL: 9,0,,30\n{hostile}\nOK\n')
+            self.assertEqual(j['store'], 'SM')
+            m = {x['index'][0]: x for x in j['messages']}
+            self.assertEqual(m[3]['sender'], '+31641600986')
+            self.assertEqual(m[7]['sender'], 'ADANA BLD')
+            self.assertEqual(m[9]['text'], 'a "quote" \\ back slash ü')
+            self.assertEqual(self.run_json(shell, 'OK\n'), {'store': 'SM', 'messages': []})
 
 
 if __name__ == '__main__':

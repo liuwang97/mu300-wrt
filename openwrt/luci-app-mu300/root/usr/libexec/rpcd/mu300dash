@@ -11,11 +11,10 @@
 #                     cache (mu300-dash-cell) with its age. A stale cache triggers a
 #                     background refresh (setsid) - the call itself NEVER waits for AT:
 #                     LuCI's /admin/ubus endpoint kills a call after 30 s, and an AT
-#                     round inside a page request starves the dial watchdog (V50 lesson).
+#                     round inside a page request starves the dial watchdog.
 #   act op [arg]      mu300-dash-act; slow ops run detached via setsid and return
 #                     immediately ("started":1), fast ones run inline.
-#   at cmd [confirm]  one raw AT command through mu300-at, with the same guards the
-#                     V50 panel used: must start with AT, no ";" command chaining, and
+#   at cmd [confirm]  one raw AT command through mu300-at, with guards: must start with AT, no ";" command chaining, and
 #                     AT+SPENGMD=0,1,... is hard-denied in any spelling (it switches the port into
 #                     streaming mode and kills the AT channel until a reboot).
 #                     Reply includes the raw modem output; last 40 commands are kept
@@ -27,7 +26,6 @@
 #   at_history        that history, raw text.
 #   ops_log           the panel's recent calls (method, time taken, outcome) of this boot and
 #                     the one before: no values, no replies (see run_m).
-#   lang_get, lang_set  LuCI's languages and the lang extra (unisoc-modem/languages, mu300-extra)
 #   power_get, power_set  the power profiles (unisoc-modem/power, mu300-power)
 #   ttl_get, ttl_set value  the TTL of mobile data (unisoc-modem/ttl, mu300-ttl); value off or 1-255
 #   traffic_get, traffic_set op value  the mobile data count, its billing cycle and cap (unisoc-modem/traffic,
@@ -37,17 +35,17 @@
 #                     an argument. forward_log_clear empties the delivery log and takes nothing.
 #   cpu_get, cpu_set profile  the CPU performance profile (unisoc-modem/cpu, mu300-cpu); saving|balanced|performance
 #   cpu_tune op cpu state  op core (cpu 1-63, state on|off: online or offline, saved) or op lowlatency (state on|off:
-#                     CPU0 without its idle states, saved); unisoc-modem/cpu, mu300-cpu (FINDINGS 200)
+#                     CPU0 without its idle states, saved); unisoc-modem/cpu, mu300-cpu
 #   cpu_voltage_get, cpu_voltage_set op [offsets confirm | minutes]  the CPU voltage offset, EXPERIMENTAL (unisoc-modem/
 #                     cpu, mu300-cpu voltage); op set (offsets "A,B,C" in uV; confirm: the word, for anything but 0,0,0),
 #                     off, or stress (minutes 1-120: the CPU stress test, in the background)
 #   packages_get, packages_act op  the packages installed before an update, installed again (unisoc-modem/packages,
 #                     mu300-user-packages); op retry|repair_dns|dismiss
 #   backup_export, backup_import, backup_job  System > Backup of settings: mu300-api's backup.export, backup.import
-#                     and job.status (mu300-backup, FINDINGS 155); their replies are never kept in the call log
+#                     and job.status (mu300-backup); their replies are never kept in the call log
 #   update_get [sizes], update_job, update_act op ...  the System > Update page (unisoc-modem/update, mu300-update):
 #                     what is installed and what is kept, the releases, the one update task and its log, and the
-#                     release source in force; update_act starts a check, an update, a rollback, a kernel change,
+#                     release source in force; update_act starts a check, an update, a rollback,
 #                     names another release source (op source, url empty = GitHub) or takes an uploaded release file
 #
 # No call waits for the modem longer than about 17 s, under both the browser's 20 s
@@ -55,12 +53,12 @@
 # for the channel lock plus AT_BUDGET for the answer, mu300-at's MU300_AT_BUDGET),
 # the live signal read has a deadline, and the lock state is read in the background.
 # A busy or slow channel answers "busy" instead of the call being killed: a killed
-# call used to leave its AT client and collector running on, and the page kept
-# starting new ones (the stuck-panel report of v2026.10.18).
+# call would leave its AT client and collector running on, and the page would keep
+# starting new ones until the whole panel stuck.
 
 export PATH="$PATH:/opt/mu300/bin:/opt/mu300/busybox-bin:/usr/libexec/unisoc-modem:/usr/sbin:/sbin"
 
-# A page from before mu300status (FINDINGS 216) still polls status and sysinfo here every 1.5 s: LuCI loads a view
+# A page from before mu300status still polls status and sysinfo here every 1.5 s: LuCI loads a view
 # with its own version in the URL, which an update of this app does not change, so a browser can keep running the old
 # home.js from its cache for days. rpcd's own plugin answers it, before this script reads the rest of itself: one
 # ubus call instead of a shell, dashboard-info and the collectors (170 ms a call on the U30 Air, 100 forks a second).
@@ -108,7 +106,7 @@ export MU300_AT_LOCK_WAIT
 # browser's 20 s and rpcd's 30
 AT_LOCK_WAIT=3
 AT_BUDGET=13
-# a confirmed scan (at_class scan) runs detached: 99 s for the answer, the most mu300-at and mu300-atd take (-t 1-99)
+# a confirmed scan (at_class scan) runs detached: 99 s for the answer, the most mu300-at and mu300-modemd take (-t 1-99)
 AT_JOB=$DIR/at-job
 AT_JOB_T=99
 # a send (sms_send) runs detached too, and the page asks after it (sms_job): mu300-sms's whole transaction, each
@@ -639,7 +637,7 @@ m_sms_job() {
         # message went out is not known, and nothing sends it again by itself.
         v=$(refuse 'Sending failed' 'the send ended without a result; check the conversation before sending again')
     fi
-    # the verdict as sms_send used to answer it, and that it is done
+    # the verdict in sms_send's own form, and that it is done
     printf '{"done":1,"running":0,"elapsed":%d,"ended":%d,%s\n' "$elapsed" "$end" "${v#\{}"
 }
 
@@ -652,9 +650,9 @@ m_sms_send() {
     [ "$(sms_chars "$text")" -le "$SMS_MAX" ] || { refuse 'The message is too long (over 480 characters)'; return; }
     sms_text_ok "$text" || { refuse 'The message contains a control character'; return; }
     # The send runs detached ("mu300dash sms-job"), and the page asks after it (sms_job): mu300-sms waits up to
-    # 40 s for the modem's +CMGS, and its whole transaction can take longer, while rpcd ends a call at 30 s. A slow
-    # send used to be killed with the call, its result lost ("sms_send - killed" in the operations log) and the
-    # message gone out, or not, behind the page's back (#176). One at a time: while a send still runs (it holds the
+    # 40 s for the modem's +CMGS, and its whole transaction can take longer, while rpcd ends a call at 30 s: inside
+    # the call a slow send would be killed with it, its result lost and the message gone out, or not, behind the
+    # page's back. One at a time: while a send still runs (it holds the
     # AT channel) another is not started, and nothing is ever submitted twice by itself.
     if sms_job_running; then
         printf '{"ok":0,"busy":1,"job":1,"error":"The AT channel is busy; the command was not sent, try again"}\n'
@@ -750,9 +748,7 @@ m_usb_net_add() {
     reply_obj "$("$DASH/device-usb" net-add "$iface" 2>/dev/null)" 'The USB adapter (device-usb) gave no valid reply'
 }
 
-# ---------------------------------------------------------------- languages
-# LuCI's languages and the lang extra (the Languages page): the adapter does the work through mu300-extra
-LANGS=${MU300_LANGS_BIN:-$DASH/languages}
+# ---------------------------------------------------------------- power
 POWERA=${MU300_POWER_ADAPTER:-$DASH/power}
 m_power_get() { reply_obj "$("$POWERA" get 2>/dev/null)" 'The power adapter gave no valid reply'; }
 m_power_set() {
@@ -772,41 +768,6 @@ m_power_set() {
     esac
     reply_obj "$out" 'The power adapter gave no valid reply'
 }
-m_lang_get() { reply_obj "$("$LANGS" get 2>/dev/null)" 'The languages adapter gave no valid reply'; }
-
-# op: enable|disable (codes: up to 64 language codes, or all), use (one code, en or auto), install (source: release
-# or file - never a path: the upload goes to the one path the ACL allows), remove
-m_lang_set() {
-    local op codes source c n out
-    inp '@.op'; op=$V
-    inp '@.codes'; codes=$V
-    inp '@.source'; source=$V
-    allowed "$op" '(enable|disable|use|install|remove)' || { refuse 'Unknown language operation'; return; }
-    case $op in
-        enable|disable|use)
-            allowed "$codes" '(all|en|auto|[a-z]{2,3}(_[a-z]{2})?( [a-z]{2,3}(_[a-z]{2})?){0,63})' ||
-                { refuse 'Invalid language code'; return; }
-            n=0; for c in $codes; do n=$((n + 1)); done
-            case $op:$codes in
-                use:all|enable:en|enable:auto|disable:en|disable:auto) refuse 'Invalid language code'; return ;;
-            esac
-            [ "$op" != use ] || [ "$n" = 1 ] || { refuse 'Invalid language code'; return; }
-            # all, en and auto go alone
-            case " $codes " in *" all "*|*" en "*|*" auto "*) [ "$n" = 1 ] || { refuse 'Invalid language code'; return; } ;; esac
-            [ -z "$source" ] || { refuse 'Invalid language request'; return; }
-            # shellcheck disable=SC2086 -- checked above: words of [a-z_] only
-            out=$("$LANGS" "$op" $codes 2>/dev/null) ;;
-        install)
-            allowed "$source" '(release|file)' || { refuse 'Unknown source'; return; }
-            [ -z "$codes" ] || { refuse 'Invalid language request'; return; }
-            out=$("$LANGS" install "$source" 2>/dev/null) ;;
-        remove)
-            [ -z "$codes$source" ] || { refuse 'Invalid language request'; return; }
-            out=$("$LANGS" remove 2>/dev/null) ;;
-    esac
-    reply_obj "$out" 'The languages adapter gave no valid reply'
-}
-
 # ---------------------------------------------------------------- TTL
 # The TTL page: mu300-ttl through the adapter, which checks the value again
 TTLA=${MU300_TTL_BIN:-$DASH/ttl}
@@ -923,7 +884,7 @@ m_packages_act() {
 # of its own (an update takes minutes; the page asks update_job after it). Each parameter is a fixed word, a release
 # tag, a size or a SHA-256: nothing typed reaches the adapter.
 UPDA=${MU300_UPDATE_ADAPTER:-$DASH/update}
-UPD_SYS='(ubuntu|openwrt|openwrt-luci)'
+UPD_SYS='openwrt-luci'
 UPD_FLAG='(no_reinstall|unsigned|downgrade)'
 m_update_get() {
     local sizes
@@ -944,12 +905,12 @@ m_update_act() {
     inp '@.flags'; flags=$V
     inp '@.confirm'; confirm=$V
     inp '@.url'; url=$V
-    allowed "$op" '(check|apply|upload_begin|upload_done|upload_cancel|apply_file|rollback|rollback_boot|clean|kernel|source|dismiss)' ||
+    allowed "$op" '(check|apply|upload_begin|upload_done|upload_cancel|apply_file|rollback|rollback_boot|clean|source|dismiss)' ||
         { refuse 'Unknown update operation'; return; }
-    # a release tag (docs/FINDINGS.md 125: vYYYY.MM.DD, and vYYYY.MM.DD.N after v2026.10.27) or none
-    allowed "$tag" '(v[0-9]{4}\.[0-9]{2}\.[0-9]{2}|v[0-9]{4}\.(0[1-9]|1[0-2])\.(0[1-9]|[12][0-9]|3[01])\.[1-9][0-9]?)?' && allowed "$systems" "($UPD_SYS( $UPD_SYS){0,2})?" &&
-        allowed "$kernel" '(5\.4|6\.18|7\.2)?' && allowed "$sha" '([0-9a-f]{64})?' && allowed "$size" '([1-9][0-9]{0,9})?' &&
-        allowed "$flags" "($UPD_FLAG( $UPD_FLAG){0,2})?" && allowed "$confirm" '(apply|rollback|clean|kernel|source)?' &&
+    # a release tag (vYYYY.MM.DD.N, and the older vYYYY.MM.DD) or none
+    allowed "$tag" '(v[0-9]{4}\.[0-9]{2}\.[0-9]{2}|v[0-9]{4}\.(0[1-9]|1[0-2])\.(0[1-9]|[12][0-9]|3[01])\.[1-9][0-9]?)?' && allowed "$systems" "($UPD_SYS)?" &&
+        [ -z "$kernel" ] && allowed "$sha" '([0-9a-f]{64})?' && allowed "$size" '([1-9][0-9]{0,9})?' &&
+        allowed "$flags" "($UPD_FLAG( $UPD_FLAG){0,2})?" && allowed "$confirm" '(apply|rollback|clean|source)?' &&
         # (the release source, op source: a plain http(s) URL, or empty for GitHub - the shape the updater itself
         #  takes, and what is written is one root's own file of its, which checks it again)
         allowed "$url" '(https?://[A-Za-z0-9._:/-]{1,200})?' ||
@@ -981,8 +942,6 @@ do_list() {
 	"usb_set": { "kind": "String", "value": "String", "scope": "String", "auto": "String" },
 	"usb_net_list": { },
 	"usb_net_add": { "iface": "String" },
-	"lang_get": { },
-	"lang_set": { "op": "String", "codes": "String", "source": "String" },
 	"power_get": { },
 	"power_set": { "op": "String", "key": "String", "value": "String" },
 	"sim_get": { },
@@ -1028,8 +987,8 @@ m_backup_export() { reply_obj "$(printf '%s' "$INPUT" | "$APIB" backup.export 2>
 m_backup_import() { reply_obj "$(printf '%s' "$INPUT" | "$APIB" backup.import 2>/dev/null)" 'The backup tool gave no valid reply'; }
 m_backup_job() { reply_obj "$(printf '{"from":0}' | "$APIB" job.status 2>/dev/null)" 'The backup tool gave no valid reply'; }
 
-# Cellular > SIM settings: per card, the radio on or off (mu300-sim-radio, FINDINGS 185) and VoLTE and VoNR
-# (mobile-data voice, FINDINGS 184). get asks the card in use what
+# Cellular > SIM settings: per card, the radio on or off (mu300-sim-radio) and VoLTE and VoNR
+# (mobile-data voice). get asks the card in use what
 # it has now (two short reads); set sends the choice to the card in use and reads it back, or saves it for the other
 # card's next start. Nothing a caller sends reaches the command but the fixed words checked here.
 m_simcard_get() {
@@ -1074,15 +1033,8 @@ m_sim_set() {
     local op value
     inp '@.op'; op=$V
     inp '@.value'; value=$V
-    case $op:$value in default:1|default:2|hot:0|hot:1|switch:1|switch:2|card:0|card:1|card:2|card:3|card:none) ;;
+    case $op:$value in default:1|default:2|hot:0|hot:1|switch:1|switch:2) ;;
         *) refuse 'Invalid SIM setting'; return;; esac
-    # the ZTE V50's card for the next boot (mu300-sim card, FINDINGS 204): its words when refused, else the status
-    if [ "$op" = card ]; then
-        local err
-        err=$("$SIMCTL" card "$value" 2>&1 >/dev/null) || { refuse 'SIM control failed' "$err"; return; }
-        reply_obj "$("$SIMCTL" status --json 2>/dev/null)" 'SIM control unavailable'
-        return
-    fi
     if [ "$op" = switch ]; then
         local state
         state=$("$SIMCTL" status --json 2>/dev/null)
@@ -1273,8 +1225,6 @@ call)
         usb_set)      run_m usb_set      m_usb_set ;;
         usb_net_list) run_m usb_net_list m_usb_net_list ;;
         usb_net_add)  run_m usb_net_add  m_usb_net_add ;;
-        lang_get)     run_m lang_get     m_lang_get ;;
-        lang_set)     run_m lang_set     m_lang_set ;;
         power_get)    run_m power_get    m_power_get ;;
         power_set)    run_m power_set    m_power_set ;;
         sim_get)      run_m sim_get m_sim_get ;;

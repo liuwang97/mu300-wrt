@@ -29,7 +29,6 @@ LIB=${0%/*}/../../share/unisoc-modem/lib.sh
 
 FWD=${MU300_FWD_BIN:-/opt/mu300/bin/mu300-sms-forward}
 CONF=${MU300_FWD_CONF:-/etc/mu300/sms-forward.conf}
-FWD_UNIT=${MU300_FWD_UNIT:-/etc/systemd/system/mu300-sms-forward.service}
 NL='
 '
 
@@ -214,7 +213,7 @@ do_set() {
     fi
     [ "$sm" = 0 ] || [ -n "$num" ] || error 'SMS forwarding needs a phone number'
 
-    # MU300_FWD_CHECK=1: every field checked as above, nothing written (mu300-backup checks a restore first, FINDINGS 155)
+    # MU300_FWD_CHECK=1: every field checked as above, nothing written (mu300-backup checks a restore first)
     [ -z "${MU300_FWD_CHECK:-}" ] || { echo '{"ok":1,"checked":1}'; exit 0; }
     was=$(saved enabled)
     dir=${CONF%/*}
@@ -238,12 +237,7 @@ do_set() {
     ) || error 'The forwarding settings could not be saved'
     # turned off: what still waited is not sent later
     [ "$was" = 1 ] && [ "$en" = 0 ] && "$FWD" clear >/dev/null 2>&1
-    # Ubuntu: the service that reads new messages from the SIM for this (sms watch, forward-feed) runs only while
-    # forwarding is on; OpenWrt's pool hands its messages over by itself
-    if [ -f "$FWD_UNIT" ] && command -v systemctl >/dev/null 2>&1; then
-        if [ "$en" = 1 ]; then systemctl --no-block start mu300-sms-forward.service >/dev/null 2>&1
-        else systemctl --no-block stop mu300-sms-forward.service >/dev/null 2>&1; fi
-    fi
+    # (the SMS pool hands new messages over by itself: nothing to start or stop)
     echo '{"ok":1}'
 }
 

@@ -1,6 +1,6 @@
 #!/bin/sh
 # mu300-traffic: how much mobile data was used, per day and per billing cycle, with an optional monthly cap
-# (Ubuntu and OpenWrt; the control panel's Data usage page shows the same).
+# (the control panel's Data usage page shows the same).
 #   mu300-traffic                 today, this billing cycle and the cap
 #   mu300-traffic days [N]        the last N days with traffic (default 31)
 #   mu300-traffic cycles [N]      the last N billing cycles (default 12)
@@ -13,8 +13,8 @@
 #   mu300-traffic used SIZE       what the operator says this cycle has used so far (the count is corrected)
 #   mu300-traffic clear --yes     forget every count; counting goes on from now
 #   mu300-traffic save            write the count to the disk now
-#   mu300-traffic run             the service (mu300-traffic.service, init.d/mu300-traffic)
-#   mu300-traffic clock-synced    the clock is right now (OpenWrt's NTP hotplug says so)
+#   mu300-traffic run             the service (init.d/mu300-traffic)
+#   mu300-traffic clock-synced    the clock is right now (the NTP hotplug says so)
 #
 # What is counted: the bytes of the cellular interface (sipa_eth0), both ways: what the operator sees, a VPN's own
 # overhead included. The kernel's counters are read every INTERVAL seconds (60); the modem is never asked.
@@ -33,10 +33,10 @@
 # (1800), after CHECKPOINT_BYTES (1 GiB) more traffic but not within 5 minutes of the last one, at a clean shutdown
 # and after every change made here - always a new file renamed over the old one. A power cut loses what was counted
 # since the last write, never more; nothing is ever counted twice.
-# The count and its settings are on the Linux disk (.mu300/traffic), so OpenWrt, OpenWrt with the panel and Ubuntu
-# share one count; a system without that directory keeps it in /etc/mu300/traffic.
-# Cap: at WARN percent of it a warning (the panel, the log); with cut on, mobile data goes off at the cap (OpenWrt:
-# ifdown wan; Ubuntu: mu300-mobile-data.service stops). It is cut once per cycle, and again after a reboot; whoever
+# The count and its settings are on the Linux disk (.mu300/traffic), so an update or a reinstalled system keeps the
+# count; a system without that directory keeps it in /etc/mu300/traffic.
+# Cap: at WARN percent of it a warning (the panel, the log); with cut on, mobile data goes off at the cap (ifdown
+# wan). It is cut once per cycle, and again after a reboot; whoever
 # turns mobile data back on in the same boot keeps it on. It comes back on by itself when the next cycle starts,
 # the cap is raised or cut is turned off - if this tool was what turned it off.
 # (MU300_SYSROOT, MU300_DISK, MU300_TRAFFIC_STORE, MU300_TRAFFIC_RUN, MU300_TRAFFIC_NOW and MU300_TRAFFIC_TZOFF are
@@ -105,8 +105,8 @@ tzoff() {
     [ -n "${MU300_TRAFFIC_TZOFF:-}" ] && { echo "$MU300_TRAFFIC_TZOFF"; return; }
     date +%z | awk '{ s = substr($0, 1, 1) == "-" ? -1 : 1; print s * (substr($0, 2, 2) * 3600 + substr($0, 4, 2) * 60) }'
 }
-# clock: NOW and OFF (as now and tzoff) from one date, the offset worked out by the shell (FINDINGS 215: the service's
-# round used to run date twice and awk for this)
+# clock: NOW and OFF (as now and tzoff) from one date, the offset worked out by the shell (one process a round, not
+# date twice and awk)
 clock() {
     NOW=${MU300_TRAFFIC_NOW:-} OFF=${MU300_TRAFFIC_TZOFF:-}
     [ -n "$NOW" ] && [ -n "$OFF" ] && return 0
@@ -133,10 +133,9 @@ counters() {
     case $IDX$RX$TX in *[!0-9]*) IDX= RX= TX= ;; esac
     case $BOOT in *[!0-9a-f-]*) BOOT= ;; esac
 }
-# the clock is right: NTP said so (OpenWrt's hotplug, systemd-timesyncd), CLOCK=trust, or six hours went by without
+# the clock is right: NTP said so (the NTP hotplug), CLOCK=trust, or six hours went by without
 clock_ok() {
-    [ "$CLOCK" = trust ] || [ -e "$SYNCED" ] || [ -e "$R/run/systemd/timesync/synchronized" ] ||
-        [ "${UP:-0}" -ge 21600 ]
+    [ "$CLOCK" = trust ] || [ -e "$SYNCED" ] || [ "${UP:-0}" -ge 21600 ]
 }
 # mobile data is not down on purpose (mobile-data down leaves this file until the next up)
 data_up() { [ ! -e "$R/run/mu300-mobile-data-down" ]; }
@@ -425,14 +424,9 @@ change() {
 
 # ---------------------------------------------------------------- the service
 log() { logger -t mu300-traffic "$*" 2>/dev/null || echo "mu300-traffic: $*" >&2; }
-openwrt() { [ -f "$R/etc/openwrt_release" ]; }
 wan() { w=$(uci -q get unisoc_modem.main.data_interface 2>/dev/null); case $w in ''|*[!A-Za-z0-9_]*) w=wan ;; esac; echo "$w"; }
-data_off() {
-    if openwrt; then ifdown "$(wan)"; else systemctl stop mu300-mobile-data.service; fi
-}
-data_on() {
-    if openwrt; then ifup "$(wan)"; else systemctl start mu300-mobile-data.service; fi
-}
+data_off() { ifdown "$(wan)"; }
+data_on() { ifup "$(wan)"; }
 
 # one round: read, write the live ledger and the summary, act on what the summary says
 round() {
@@ -479,7 +473,7 @@ run() {
     conf_changed || :; load_conf
     mkdir -p "$RUN" "$STORE" || die "cannot create $RUN or $STORE"
     # the wait's timer (and those of what this starts: awk, date) may fire up to half a second late, so the kernel can
-    # serve the timers of several daemons with one wakeup (FINDINGS 215)
+    # serve the timers of several daemons with one wakeup
     { echo 500000000 > /proc/$$/timerslack_ns; } 2>/dev/null
     # one service: another one alive keeps its place
     p=$(cat "$RUN/pid" 2>/dev/null)

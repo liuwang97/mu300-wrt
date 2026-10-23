@@ -62,16 +62,15 @@ class Orphaned(ShellTest):
             self.assertEqual(self.check(shell, 'ENABLE=1\n', cmd=self.stubs / 'mu300-vpn'), 'no')
 
     def test_the_copies_are_the_same(self):
-        # mu300-update (runs before the new system exists) and android-install.sh (runs on Android) carry their own
-        # copy of the check: the same two functions, word for word
+        # mu300-update (runs before the new system exists) carries its own copy of the check: the same two
+        # functions, word for word
         import re
         lib = ORPHAN_LIB.read_text()
 
         def fns(text):
             return [re.search(rf'\n{n}\(\) \{{\n.*?\n\}}\n', '\n' + text, re.S).group(0)
                     for n in ('vpn_conf_value', 'vpn_killswitch_wanted')]
-        for f in (BIN / 'mu300-update', TOP / 'tools/android-install.sh'):
-            self.assertEqual(fns(f.read_text()), fns(lib), f)
+        self.assertEqual(fns((BIN / 'mu300-update').read_text()), fns(lib))
 
     def test_the_engine_missing(self):
         """vpn_engine_missing: the VPN on, and its active profile's engine extra not installed (module v2: each
@@ -191,7 +190,7 @@ class Toolkit(ShellTest):
             r = self.run_menu(shell, self.tmp / 'no-such-mu300-vpn', '0\n')
             self.assertIn('rc=0', r.stdout, r.stderr)
             self.assertIn('https://github.com/dikeckaan/mu300-linux-vpn', r.stdout)
-            self.assertIn('sudo mu300-extra install vpn', r.stdout)
+            self.assertIn('    mu300-extra install vpn\n', r.stdout)
             self.assertIn('--from', r.stdout)
             self.assertEqual(self.calls(), '')
             # 1: installs it there and then
@@ -220,8 +219,9 @@ class Toolkit(ShellTest):
     def test_the_menus_name_it_and_leave_its_service_out(self):
         src = TOOLKIT.read_text()
         self.assertIn('VPN (not installed: how to add it)', src)
-        # the services list shows mu300-vpn only with the module
-        self.assertIn('[ "$s" != mu300-vpn ] || vpn_present', src)
+        # the services list is procd's init scripts: mu300-vpn only where the module linked its own
+        self.assertIn('for s in /etc/init.d/mu300-* ', src)
+        self.assertNotIn('mu300-vpn mu300-', src)
         # the menus name the VPN only to someone who has the module (mu300-extra's test: its mu300-vpn in the vpn
         # extra on the disk), or had it (the kill switch orphaned): the main menu's label and the Network item
         self.assertIn('vpn_installed() { [ -x "${MU300_DISK:-/mnt/mu300-disk}/extra/vpn/bin/mu300-vpn" ]; }', src)
@@ -230,11 +230,11 @@ class Toolkit(ShellTest):
 
     def test_the_network_menu_lists_the_vpn_only_with_the_module(self):
         src = TOOLKIT.read_text()
-        network = src[src.index('\nmenu_network() {'):src.index('\nMU300_SERVICES=')]
+        network = src[src.index('\nmenu_network() {'):src.index('\nmenu_services() {')]
         pre = ('menu() { shift; for l in "$@"; do echo "item: $l"; done; read -r CHOICE || CHOICE=0; }\n'
                'menu_vpn() { echo "-> vpn"; }; menu_ttl() { echo "-> ttl"; }; menu_wifi() { echo "-> wifi"; }\n'
                'menu_roaming() { echo "-> roaming"; }\n'
-               'title() { :; }; pause() { :; }; svc() { :; }; monitor() { :; }; menu_signal() { :; }; is_openwrt() { false; }\n'
+               'title() { :; }; pause() { :; }; svc() { :; }; monitor() { :; }; menu_signal() { :; }\n'
                'C=; N=; D=; B=; G=\nVPN_CONF=/nonexistent\n')
         # (the stubs after the block: its own menu_vpn is not what is under test here)
         code = self.block + '\n' + pre + network + '\nmenu_network; echo "rc=$?"'
@@ -289,7 +289,7 @@ class Static(unittest.TestCase):
         self.assertIn('if [ -x "$VPN_CMD" ] && ! "$VPN_CMD" guard', (BIN / 'wifi-client').read_text())
 
     def test_luci_vpn_capability_is_the_module(self):
-        # the snapshot is mu300.dash's (FINDINGS 216): dashboard-info and rpcd's mu300status both use it
+        # the snapshot is mu300.dash's: dashboard-info and rpcd's mu300status both use it
         info = (TOP / 'openwrt/luci-app-mu300/root/usr/share/ucode/mu300/dash.uc').read_text()
         self.assertIn("let cap_vpn = (executable('/opt/mu300/bin/mu300-vpn') && "
                       "executable('/etc/init.d/mu300-vpn')) ? 1 : 0;", info)

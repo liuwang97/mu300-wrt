@@ -271,11 +271,11 @@ class Image(unittest.TestCase):
 
     def test_build_installs_and_configures_ttyd_for_the_panel_only(self):
         b = BUILD.read_text()
-        self.assertIn('[ -d /in/luci-plugin ] && apk add ttyd luci-app-ttyd >/dev/null', b)
+        self.assertIn('\napk add ttyd luci-app-ttyd >/dev/null\n', b)
         self.assertEqual(b.count('apk add ttyd'), 1)
-        # before the translation loop, which adds luci-i18n-ttyd-tr/zh-cn for the installed luci-app-ttyd
+        # before the translation loop, which adds luci-i18n-ttyd-zh-cn for the installed luci-app-ttyd
         self.assertLess(b.index('apk add ttyd luci-app-ttyd'), b.index('for c in base $(apk list --installed'))
-        block = b[b.index('if [ -d /in/luci-plugin ]; then\n    [ -d /in/luci-overlay ]'):]
+        block = b[b.index('cp -a /in/luci-plugin/root/. $R/'):]
         self.assertIn('rm -f $R/usr/share/luci/menu.d/luci-app-ttyd.json', block)
         self.assertIn('/usr/libexec/rpcd/mu300term', block)
         self.assertIn('ttyd is not configured for the panel', block)

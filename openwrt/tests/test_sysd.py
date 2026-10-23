@@ -1,16 +1,15 @@
-"""mu300-sysd (FINDINGS 217): the buttons, the LED tick and the thermal guard in one event-driven ucode daemon, and
-its helper's uevent option (mu300-keys -u).
+"""mu300-sysd: the buttons, the LED tick and the thermal guard in one event-driven ucode daemon, and its helper's
+uevent option (mu300-keys -u).
 
-The daemon is held to the scripts it replaces by their own tests: test_device_scripts' Buttons (mu300-buttons) and
-ThermalGuard (thermal-guard) run again with a stand-in for the shell they start the script with, which starts the
-daemon instead - for the keys until its helper's output ends (MU300_SYSD_ONCE), for the guard one round (--round).
-On top, what is new: the LED tick on events and on time instead of a look every 5 s (a uevent, the hint's due time,
-the end of a key's wake; a 1 % step of the battery starts nothing), the thermal rounds on their own timer, the helper
-started again, --check, the init scripts' choice between the daemon and the old loops, and mu300-keys -u itself
-(built here with the machine's C compiler; Linux only).
+The keys (ButtonsCases) and the thermal round (ThermalGuardCases) run with a stand-in for a shell that starts the
+daemon - for the keys until its helper's output ends (MU300_SYSD_ONCE), for the guard one round (--round). On top: the
+LED tick on events and on time (a uevent, the hint's due time, the end of a key's wake; a 1 % step of the battery
+starts nothing), the thermal rounds on their own timer, the helper started again, the init script, and mu300-keys -u
+itself (built here with the machine's C compiler; Linux only).
 
 Needs a ucode with the uloop, socket and fs modules (MU300_TEST_UCODE, e.g. /root/ucbuild/full/bin/ucode-run)."""
 import os
+import re
 import select
 import shlex
 import shutil
@@ -23,12 +22,14 @@ import time
 import unittest
 from pathlib import Path
 
-import test_device_scripts as old
 from helpers import BIN, TOP, ShellTest, ucode, ucode_paths
 
 SYSD = BIN / 'mu300-sysd'
+# what the stand-in shell (sysd_shell) runs: the keys and the LED tick, or one thermal round
+KEYS_RUN = BIN / 'mu300-sysd-keys'
+ROUND = BIN / 'mu300-sysd-round'
 INIT = TOP / 'openwrt' / 'overlay' / 'etc' / 'init.d'
-KEYS_SRC = TOP / 'tools' / 'keys' / 'mu300-keys.c'
+KEYS_SRC = TOP / 'openwrt' / 'src' / 'keys' / 'mu300-keys.c'
 CC = shutil.which('gcc') or shutil.which('cc')
 LINUX = sys.platform.startswith('linux')
 KEYS = None
@@ -81,16 +82,16 @@ def wait_for(pred, timeout=8.0, step=0.05):
 
 
 def sysd_shell(tmp):
-    """A stand-in for the shell the old tests start mu300-buttons and thermal-guard with: mu300-sysd instead (the
-    keys and the LED tick until the helper's output ends, with the hint's minute of mu300-buttons; one thermal round),
-    its log lines where those tests' logger stub put the guard's. Anything else runs under /bin/sh."""
+    """A stand-in for the shell the tests run a script with: KEYS_RUN starts mu300-sysd for the keys and the LED tick
+    until the helper's output ends (with a hint of a minute at most), ROUND runs one thermal round with its log lines
+    where the logger stubs put them. Anything else runs under /bin/sh."""
     w = tmp / 'sysd-shell'
     argv = ' '.join(shlex.quote(a) for a in sysd_argv())
     w.write_text(f'''#!/bin/sh
 case ${{1:-}} in
-    */mu300-buttons) shift; MU300_SYSD_ONCE=1 MU300_SYSD_PARTS="keys led" MU300_SYSD_LED_HINT_MAX=60 \\
+    */mu300-sysd-keys) shift; MU300_SYSD_ONCE=1 MU300_SYSD_PARTS="keys led" MU300_SYSD_LED_HINT_MAX=60 \\
         MU300_SYSD_LOG="$STUBLOG/sysd.log" exec {argv} "$@" ;;
-    */thermal-guard) shift; MU300_SYSD_LOG="$STUBLOG/log" exec {argv} --round "$@" ;;
+    */mu300-sysd-round) shift; MU300_SYSD_LOG="$STUBLOG/log" exec {argv} --round "$@" ;;
     *) exec /bin/sh "$@" ;;
 esac
 ''')
@@ -98,18 +99,608 @@ esac
     return [str(w)]
 
 
-# ------------------------------------------------------------------ the old daemons' tests, against mu300-sysd
+# ------------------------------------------------------------------ the keys and the thermal round
+class ButtonsCases:
+    """the keys, as mu300-sysd handles them (run by ButtonsUnderSysd)"""
+    def test_actions(self):
+        self.stub('mu300-keys', 'cat "$STUBLOG/keys.in"')
+        for name in ('mu300-led', 'mu300-wifi-band', 'ubus', 'wifi', 'logger', 'poweroff', 'mu300-power'):
+            self.stub(name, f'echo "{name} $*" >> "$STUBLOG/calls"; [ "{name} $*" != "ubus -t 5 call hostapd.wlan0 get_status" ]')
+        # Every press lights the LEDs first (a key always shows life, whatever the state), then wakes mu300-power with
+        # the key's name in the background (only wifi ends a charging boot; other keys count as power), which the
+        # rest does not wait for: its order against the band and hotspot toggles is free.
+        WP, WW = 'mu300-power wake power', 'mu300-power wake wifi'
+        cases = [('116 short', [WP]),
+                 ('138 short', [WW, 'mu300-wifi-band toggle']),
+                 ('138 long', [WW, 'ubus -t 5 call hostapd.wlan0 get_status', 'wifi up', 'mu300-led wifi sync 120']),
+                 ('0 tick', None),   # a tick is no press: it must not wake, only let the LEDs time out (and the battery LED follow)
+                 # held power: no mu300-power wake (the radios would come back on the way down); the shutdown marker
+                 ('116 long', ['poweroff']),
+                 ('115 short', [WP])]
+        marker = self.tmp / 'run/mu300/power/shutdown'
+        for shell in self.each_shell():
+            for event, want in cases:
+                (self.tmp / 'keys.in').write_text(event + '\n')
+                (self.tmp / 'calls').unlink(missing_ok=True)
+                marker.unlink(missing_ok=True)
+                r = self.script(shell, KEYS_RUN, MU300_RUN=self.tmp / 'run')
+                self.assertEqual(r.returncode, 0, r.stderr)
+                calls = (self.tmp / 'calls').read_text().splitlines() if (self.tmp / 'calls').exists() else []
+                calls = [c.rstrip() for c in calls if not c.startswith('logger')]
+                if want is None:
+                    self.assertEqual(calls, ['mu300-led tick'], event)
+                else:
+                    self.assertEqual(calls[0], 'mu300-led wake', event)
+                    self.assertEqual(sorted(calls[1:]), sorted(want), event)
+                    if 'ubus -t 5 call hostapd.wlan0 get_status' in want:
+                        self.assertLess(calls.index('ubus -t 5 call hostapd.wlan0 get_status'),
+                                        calls.index('wifi up'))
+                self.assertEqual(marker.exists(), event == '116 long', event)
+
+    def test_a_tick_starts_mu300_led_only_when_it_has_something_to_do(self):
+        """The tick every 5 s starts mu300-led only when a file its hint names changed, its due time
+        came (a timeout running out; a minute at the latest) or there is no hint - the LEDs still time out on time and
+        the battery LED still follows the charger"""
+        root = self.tmp / 'root'
+        for n in ('sc27xx:red', 'sc27xx:green', 'sc27xx:blue', 'zte-ldo0'):   # zte-ldo0: SIM 1's network LED
+            d = root / 'sys/class/leds' / n
+            d.mkdir(parents=True, exist_ok=True)
+            (d / 'brightness').write_text('0\n'); (d / 'max_brightness').write_text('255\n')
+            (d / 'trigger').write_text('[none] timer\n')
+        ps = root / 'sys/class/power_supply'
+        for d, files in (('sc27xx-fgu', {'capacity': 80, 'status': 'Discharging'}), ('bq256xx-charger', {'online': 0})):
+            (ps / d).mkdir(parents=True, exist_ok=True)
+            for k, v in files.items():
+                (ps / d / k).write_text(f'{v}\n')
+        (root / 'proc').mkdir(parents=True, exist_ok=True)
+        (root / 'run/mu300').mkdir(parents=True, exist_ok=True)
+        (root / 'run/mu300/device').write_text('u30air\n')
+        self.stub('mu300-keys', 'echo "0 tick"')
+        self.stub('mu300-led', f'echo "mu300-led $*" >> "$STUBLOG/calls"; exec "{BIN}/mu300-led" "$@"')
+        env = dict(MU300_RUN=self.tmp / 'run', MU300_SYSROOT=root, MU300_BIN=BIN, MU300_LED_CONF=self.tmp / 'none')
+
+        def uptime(s):
+            (root / 'proc/uptime').write_text(f'{s}.50 0.00\n')
+
+        def ticks(shell):
+            (self.tmp / 'calls').unlink(missing_ok=True)
+            r = self.script(shell, KEYS_RUN, **env)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            calls = (self.tmp / 'calls').read_text().splitlines() if (self.tmp / 'calls').exists() else []
+            return calls.count('mu300-led tick')
+
+        def lit():
+            return (root / 'sys/class/leds/zte-ldo0/brightness').read_text().strip()
+
+        for shell in self.each_shell():
+            for f in (root / 'run/mu300/led').glob('.*'):
+                f.unlink()
+            (ps / 'bq256xx-charger/online').write_text('0\n')
+            uptime(100)
+            self.assertEqual(self.script(shell, BIN / 'mu300-led', 'data', 'on', **env).returncode, 0)
+            self.assertEqual(self.script(shell, BIN / 'mu300-led', 'wake', **env).returncode, 0)   # lit until 160
+            self.assertEqual(lit(), '255')
+            self.assertEqual(ticks(shell), 1)          # no hint yet
+            uptime(101)
+            self.assertEqual(ticks(shell), 0)          # nothing changed, nothing due
+            uptime(160)
+            self.assertEqual(ticks(shell), 1)          # the timeout ran out: dark
+            self.assertEqual(lit(), '0')
+            uptime(170)
+            self.assertEqual(ticks(shell), 0)
+            (ps / 'bq256xx-charger/online').write_text('1\n')
+            self.assertEqual(ticks(shell), 1)          # plugged in: lit at once
+            self.assertEqual(lit(), '255')
+            uptime(200)
+            self.assertEqual(ticks(shell), 0)
+            uptime(230)
+            self.assertEqual(ticks(shell), 1)          # a minute without one: a tick all the same
+            (ps / 'bq256xx-charger/online').write_text('0\n')
+            self.assertEqual(ticks(shell), 1)          # unplugged: the timeout starts again (until 290)
+            uptime(250)
+            self.assertEqual(ticks(shell), 0)
+            self.assertEqual(self.script(shell, BIN / 'mu300-led', 'wake', **env).returncode, 0)   # a key: until 310
+            self.assertEqual(ticks(shell), 1)          # .awake-until changed
+            uptime(300)
+            self.assertEqual(ticks(shell), 0)
+            self.assertEqual(lit(), '255')
+            uptime(310)
+            self.assertEqual(ticks(shell), 1)
+            self.assertEqual(lit(), '0')
+
+    def test_held_power_in_the_charging_boot_starts(self):
+        # the stock charger mode: hold power to switch the device on; no shutdown, no marker
+        self.stub('mu300-keys', 'cat "$STUBLOG/keys.in"')
+        for name in ('mu300-led', 'ubus', 'wifi', 'logger', 'poweroff', 'mu300-power'):
+            self.stub(name, f'echo "{name} $*" >> "$STUBLOG/calls"')
+        st = self.tmp / 'run/mu300/power'
+        st.mkdir(parents=True, exist_ok=True)
+        (st / 'state').write_text('charging-boot\n')
+        (self.tmp / 'keys.in').write_text('116 long\n')
+        for shell in self.each_shell():
+            (self.tmp / 'calls').unlink(missing_ok=True)
+            r = self.script(shell, KEYS_RUN, MU300_RUN=self.tmp / 'run')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            calls = [c for c in (self.tmp / 'calls').read_text().splitlines() if not c.startswith('logger')]
+            self.assertEqual(sorted(calls), ['mu300-led wake', 'mu300-power wake'])
+            self.assertFalse((st / 'shutdown').exists())
+
+    def test_keys_light_the_leds_in_idle_without_any_daemon(self):
+        """The LEDs held dark by `mu300-led idle on` while the state file says "active": with the real mu300-led and a
+        mu300-power that hangs, each press still lights them, at once."""
+        import time
+        root = self.tmp / 'root'
+        for n in ('sc27xx:green', 'net_blue'):
+            d = root / 'sys/class/leds' / n
+            d.mkdir(parents=True, exist_ok=True)
+            (d / 'brightness').write_text('0\n'); (d / 'max_brightness').write_text('255\n'); (d / 'trigger').write_text('none\n')
+        (root / 'proc').mkdir(parents=True, exist_ok=True)
+        (root / 'proc/uptime').write_text('500.00 0.00\n')
+        (root / 'run/mu300/led').mkdir(parents=True, exist_ok=True)
+        (root / 'run/mu300/device').write_text('u30air\n')
+        (root / 'run/mu300/led/sc27xx:green').write_text('1\n'); (root / 'run/mu300/led/net_blue').write_text('1\n')
+        (root / 'run/mu300/led/.idle').touch()
+        (self.tmp / 'run/mu300/power').mkdir(parents=True, exist_ok=True)
+        (self.tmp / 'run/mu300/power/state').write_text('active\n')
+        self.stub('mu300-keys', 'cat "$STUBLOG/keys.in"')
+        self.stub('mu300-power', 'echo "mu300-power $*" >> "$STUBLOG/calls"; sleep 3')   # no daemon, a slow wake
+        for name in ('mu300-wifi-band', 'ubus', 'wifi', 'logger'):
+            self.stub(name, f'echo "{name} $*" >> "$STUBLOG/calls"')
+        (self.tmp / 'keys.in').write_text('116 short\n138 short\n')
+        for shell in self.each_shell():
+            for n in ('sc27xx:green', 'net_blue'):
+                (root / 'sys/class/leds' / n / 'brightness').write_text('0\n')
+            (self.tmp / 'calls').unlink(missing_ok=True)
+            env = self.env(MU300_RUN=self.tmp / 'run', MU300_SYSROOT=root, MU300_BIN=BIN, MU300_LED_CONF=self.tmp / 'none')
+            env['PATH'] = f'{self.stubs}{os.pathsep}{BIN}{os.pathsep}{env["PATH"]}'
+            p = subprocess.Popen(shell + [str(KEYS_RUN)], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            time.sleep(1.5)   # well inside the slow wake
+            lit = {n: (root / 'sys/class/leds' / n / 'brightness').read_text().strip() for n in ('sc27xx:green', 'net_blue')}
+            p.communicate(timeout=30)
+            self.assertEqual(lit, {'sc27xx:green': '255', 'net_blue': '255'})
+            calls = (self.tmp / 'calls').read_text()
+            # the Wi-Fi press on a device held dark only wakes it: no band toggle
+            self.assertNotIn('mu300-wifi-band', calls)
+            self.assertIn('mu300-power wake power', calls); self.assertIn('mu300-power wake wifi', calls)
+
+    def test_a_hung_direction_probe_is_bounded(self):
+        """hostapd may not answer: the hold's direction is decided within the probe deadline."""
+        import time
+        self.stub('mu300-keys', 'cat "$STUBLOG/keys.in"')
+        for name in ('mu300-led', 'logger', 'mu300-power'):
+            self.stub(name, f'echo "{name} $*" >> "$STUBLOG/calls"')
+        self.stub('ubus', 'echo "ubus $*" >> "$STUBLOG/calls"; exec sleep 60')
+        self.stub('wifi', 'echo "wifi $*" >> "$STUBLOG/calls"')
+        (self.tmp / 'keys.in').write_text('138 long\n')
+        for shell in self.each_shell():
+            (self.tmp / 'calls').unlink(missing_ok=True)
+            t0 = time.time()
+            r = self.script(shell, KEYS_RUN, MU300_RUN=self.tmp / 'run', MU300_BUTTONS_PROBE_DEADLINE=1)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertLess(time.time() - t0, 10)
+            self.assertIn('wifi up', (self.tmp / 'calls').read_text())   # no answer: not up
+
+    def test_the_hold_marker_is_there_before_the_wake_of_the_same_press(self):
+        """The wake started by a Wi-Fi hold must find the user's marker already, or its restore sees the
+        hotspot still up (or deactivating) and starts it again."""
+        self.stub('mu300-keys', 'cat "$STUBLOG/keys.in"')
+        for name in ('mu300-led', 'logger'):
+            self.stub(name, f'echo "{name} $*" >> "$STUBLOG/calls"')
+        self.stub('mu300-power', 'echo "mu300-power $* marker=$([ -e "$MU300_RUN/mu300/power/hotspot-off" ] && echo yes || echo no)" >> "$STUBLOG/calls"')
+        self.stub('ubus', 'exit 0')   # up: the hold turns it off
+        self.stub('wifi', 'echo "wifi $*" >> "$STUBLOG/calls"')
+        (self.tmp / 'keys.in').write_text('138 long\n')
+        for shell in self.each_shell():
+            (self.tmp / 'calls').unlink(missing_ok=True)
+            self.script(shell, KEYS_RUN, MU300_RUN=self.tmp / 'run')
+            calls = (self.tmp / 'calls').read_text()
+            self.assertIn('mu300-power wake wifi marker=yes', calls)
+            self.assertIn('wifi down', calls)
+
+    def test_a_hung_toggle_does_not_hold_the_next_press(self):
+        """The hotspot toggle runs in the background under a deadline: the next press shows life at once."""
+        import time
+        self.stub('mu300-keys', 'echo "138 long"; sleep 1; echo "116 short"; sleep 2')
+        for name in ('logger', 'mu300-power'):
+            self.stub(name, f'echo "{name} $*" >> "$STUBLOG/calls"')
+        self.stub('mu300-led', 'echo "mu300-led $* $(date +%s)" >> "$STUBLOG/calls"')
+        self.stub('ubus', 'exit 0')   # up: the hold turns it off, and that hangs
+        self.stub('wifi', 'echo "wifi $*" >> "$STUBLOG/calls"; [ "$1" != down ] || { sleep 30; echo "stop done" >> "$STUBLOG/calls"; }')
+        for shell in self.each_shell():
+            (self.tmp / 'calls').unlink(missing_ok=True)
+            t0 = time.time()
+            r = self.script(shell, KEYS_RUN, MU300_RUN=self.tmp / 'run', MU300_BUTTONS_DEADLINE=2)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertLess(time.time() - t0, 15)
+            calls = (self.tmp / 'calls').read_text()
+            self.assertEqual(calls.count('mu300-led wake'), 2, calls)
+            self.assertNotIn('stop done', calls)   # killed at its deadline
+
+    def test_the_hotspot_toggle_leaves_a_marker_while_off(self):
+        """mu300-power's wake and self-check leave a hotspot alone that the user turned off with the key."""
+        self.stub('mu300-keys', 'cat "$STUBLOG/keys.in"')
+        for name in ('mu300-led', 'logger', 'mu300-power'):
+            self.stub(name, f'echo "{name} $*" >> "$STUBLOG/calls"')
+        (self.tmp / 'keys.in').write_text('138 long\n')
+        marker = self.tmp / 'run/mu300/power/hotspot-off'
+        for shell in self.each_shell():
+            self.stub('wifi', 'echo "wifi $*" >> "$STUBLOG/calls"')
+            self.stub('ubus', 'exit 0')   # up: the hold stops it
+            self.script(shell, KEYS_RUN, MU300_RUN=self.tmp / 'run')
+            self.assertTrue(marker.exists())
+            self.stub('ubus', 'exit 1')   # down: the hold starts it
+            self.script(shell, KEYS_RUN, MU300_RUN=self.tmp / 'run')
+            self.assertFalse(marker.exists())
+
+    def test_first_wifi_press_while_asleep_only_wakes(self):
+        self.stub('mu300-keys', 'cat "$STUBLOG/keys.in"')
+        for name in ('mu300-led', 'mu300-wifi-band', 'ubus', 'wifi', 'logger', 'mu300-power'):
+            self.stub(name, f'echo "{name} $*" >> "$STUBLOG/calls"')
+        (self.tmp / 'run/mu300/power').mkdir(parents=True)
+        for state, acts in (('idle', False), ('charging-boot', False), ('active', True)):
+            (self.tmp / 'run/mu300/power/state').write_text(state + '\n')
+            for shell in self.each_shell():
+                for event in ('138 short', '138 long'):
+                    (self.tmp / 'keys.in').write_text(event + '\n')
+                    (self.tmp / 'calls').unlink(missing_ok=True)
+                    r = self.script(shell, KEYS_RUN, MU300_RUN=self.tmp / 'run')
+                    self.assertEqual(r.returncode, 0, r.stderr)
+                    calls = (self.tmp / 'calls').read_text()
+                    self.assertIn('mu300-power wake', calls, (state, event))
+                    self.assertEqual(acts, ('mu300-wifi-band toggle' in calls or 'wifi up' in calls or 'get_status' in calls), (state, event))
+
+
+
+
+class ThermalGuardCases:
+    """the thermal guard's LED alarm (one round of mu300-sysd against a fake /: MU300_SYSROOT)."""
+    def setUp(self):
+        super().setUp()
+        self.root = self.tmp / 'root'
+        self.bin = self.tmp / 'bin'
+        self.bin.mkdir()
+        led = self.bin / 'mu300-led'
+        led.write_text('#!/bin/sh\necho "mu300-led $*" >> "$STUBLOG/calls"\n')
+        led.chmod(0o755)
+        shutil.copy(BIN / 'mu300-device', self.bin / 'mu300-device')
+        self.device('u30air')
+        self.stub('logger', ':')
+        self.stub('poweroff', 'echo poweroff >> "$STUBLOG/calls"')
+
+    def device(self, name):
+        (self.root / 'run/mu300').mkdir(parents=True, exist_ok=True)
+        (self.root / 'run/mu300/device').write_text(name + '\n')
+
+    def round(self, shell, soc, battery=None, trips=False):
+        z = self.root / 'sys/class/thermal/thermal_zone0'
+        z.mkdir(parents=True, exist_ok=True)
+        (z / 'temp').write_text(f'{soc}\n')
+        if trips:
+            (z / 'trip_point_0_temp').write_text('95000\n')
+        if battery is not None:
+            b = self.root / 'sys/class/power_supply/battery'
+            b.mkdir(parents=True, exist_ok=True)
+            (b / 'type').write_text('Battery\n')
+            (b / 'temp').write_text(f'{battery}\n')
+        (self.tmp / 'calls').unlink(missing_ok=True)
+        r = self.script(shell, ROUND, MU300_SYSROOT=self.root, MU300_BIN=self.bin)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return (self.tmp / 'calls').read_text().splitlines() if (self.tmp / 'calls').exists() else []
+
+    def test_alarm_on_and_off(self):
+        for shell in self.each_shell():
+            shutil.rmtree(self.root, ignore_errors=True)
+            self.device('u30air')
+            self.assertEqual(self.round(shell, 60000, 300), [])
+            self.assertEqual(self.round(shell, 86000, 300), ['mu300-led alarm on'])
+            self.assertEqual(self.round(shell, 90000, 300), [])                # on already
+            self.assertEqual(self.round(shell, 80000, 300), [])                # not cool enough yet
+            self.assertEqual(self.round(shell, 74000, 300), ['mu300-led alarm off'])
+            self.assertEqual(self.round(shell, 60000, 510), ['mu300-led alarm on'])   # the battery alone
+            self.assertEqual(self.round(shell, 60000, 460), [])
+            self.assertEqual(self.round(shell, 60000, 440), ['mu300-led alarm off'])
+
+    def test_f50_battery_is_ignored(self):
+        # the F50 has no battery, but its fuel gauge reports one at 75.0 C from an open NTC input: the alarm would go
+        # on at every boot and never off
+        for shell in self.each_shell():
+            shutil.rmtree(self.root, ignore_errors=True)
+            self.device('f50')
+            self.assertEqual(self.round(shell, 46000, 750), [])
+            self.assertEqual(self.round(shell, 86000, 750), ['mu300-led alarm on'])    # the SoC still counts
+            self.assertEqual(self.round(shell, 74000, 750), ['mu300-led alarm off'])
+
+    def kernel(self, release):
+        (self.root / 'proc/sys/kernel').mkdir(parents=True, exist_ok=True)
+        (self.root / 'proc/sys/kernel/osrelease').write_text(release + '\n')
+
+    def test_no_bound_zone_caps_and_powers_off_at_crit(self):
+        # without a thermal zone whose cooling devices are bound, this guard caps and powers off at CRIT itself
+        self.stub('logger', 'echo "$*" >> "$STUBLOG/log"')
+        for shell in self.each_shell():
+            shutil.rmtree(self.root, ignore_errors=True)
+            (self.tmp / 'log').unlink(missing_ok=True)
+            self.device('u30air')
+            self.kernel('7.2.10')
+            self.assertEqual(self.round(shell, 110000, trips=True), ['poweroff', 'mu300-led alarm on'])
+            self.assertIn('no kernel thermal zone throttles the CPUs (kernel 7.2.10)', self.log())
+
+    # --- the stock virtual zone (mu300_thermal): the kernel throttles, this guard only watches
+    def cooling(self, n, kind, state=0):
+        d = self.root / f'sys/class/thermal/cooling_device{n}'
+        d.mkdir(parents=True, exist_ok=True)
+        (d / 'type').write_text(kind + '\n')
+        (d / 'cur_state').write_text(f'{state}\n')
+        (d / 'max_state').write_text('9\n')
+        return d
+
+    def zone(self, n, kind, temp, trips=(), cdevs=(), mode='enabled'):
+        """thermal_zoneN of type KIND with TRIPS [(type, temp)] and the cooling devices CDEVS bound (cdevK links)."""
+        z = self.root / f'sys/class/thermal/thermal_zone{n}'
+        z.mkdir(parents=True, exist_ok=True)
+        (z / 'type').write_text(kind + '\n')
+        (z / 'temp').write_text(f'{temp}\n')
+        (z / 'mode').write_text(mode + '\n')
+        for i, (tt, tv) in enumerate(trips):
+            (z / f'trip_point_{i}_type').write_text(tt + '\n')
+            (z / f'trip_point_{i}_temp').write_text(f'{tv}\n')
+        for i, c in enumerate(cdevs):
+            (z / f'cdev{i}').symlink_to(f'../cooling_device{c}')
+        return z
+
+    def soc_zone(self, temp, cdevs=(0, 1, 2), mode='enabled'):
+        """the stock soc-thmzone as mu300_thermal brings it back: passive 70 and 85 C, critical 110 C, the three
+        cpufreq cooling devices bound through the cooling maps (thermal_zone0..2 are physical zones without trips)"""
+        for i, kind in enumerate(('lit0-thmzone', 'big7-thmzone', 'gpu-thmzone')):
+            self.zone(i, kind, temp)
+        for i, cpu in enumerate((0, 4, 7)):
+            self.cooling(i, f'cpufreq-cpu{cpu}')
+        return self.zone(3, 'soc-thmzone', temp, [('passive', 70000), ('passive', 85000), ('critical', 110000)],
+                         cdevs, mode)
+
+    def board(self, temp, **zone):
+        shutil.rmtree(self.root, ignore_errors=True)
+        self.device('f50')
+        self.kernel('7.2.10')
+        freqs = [614400, 936000, 1105000, 1404000, 2002000]
+        self.pols = [self.policy(p, freqs, 2002000) for p in ('policy0', 'policy4', 'policy7')]
+        if zone is not None:
+            self.soc_zone(temp, **zone)
+
+    def maxes(self):
+        return [(p / 'scaling_max_freq').read_text().strip() for p in self.pols]
+
+    def log(self):
+        return (self.tmp / 'log').read_text() if (self.tmp / 'log').exists() else ''
+
+    def test_kernel_cooling_bound_to_the_stock_zone_hands_frequency_control_over(self):
+        self.stub('logger', 'echo "$*" >> "$STUBLOG/log"')
+        for shell in self.each_shell():
+            self.board(90000)
+            (self.tmp / 'log').unlink(missing_ok=True)
+            self.assertEqual(self.round(shell, 90000), ['mu300-led alarm on'])    # hot: the alarm, no capping
+            self.assertEqual(self.maxes(), ['2002000'] * 3)
+            self.assertIn('soc-thmzone', self.log())
+            self.assertIn('watching', self.log())
+            self.assertEqual(self.round(shell, 105000), ['poweroff'])             # our 105 C power-off stays
+            self.assertEqual(self.maxes(), ['2002000'] * 3)
+
+    def next_look(self, shell, soc, battery=None):
+        """one round with every zone at SOC and the battery at BATTERY; the seconds the guard would wait for the next"""
+        (self.root / 'sys/class/thermal/thermal_zone0').mkdir(parents=True, exist_ok=True)
+        for z in (self.root / 'sys/class/thermal').glob('thermal_zone*'):
+            (z / 'temp').write_text(f'{soc}\n')
+        if battery is not None:
+            b = self.root / 'sys/class/power_supply/battery'
+            b.mkdir(parents=True, exist_ok=True)
+            (b / 'type').write_text('Battery\n')
+            (b / 'temp').write_text(f'{battery}\n')
+        r = self.script(shell, ROUND, MU300_SYSROOT=self.root, MU300_BIN=self.bin)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return int(re.search(r'next look in (\d+) s', r.stderr).group(1))
+
+    def test_the_interval_grows_with_the_distance_from_the_thresholds(self):
+        """5 s near HOT, a second more per 2 C under it, at most 30 s while the kernel throttles itself
+        and 10 s where this guard is the thermal policy; 5 s while its cap or the alarm is on"""
+        for shell in self.each_shell():
+            self.board(50000)                                       # the kernel's soc-thmzone is bound
+            self.assertEqual(self.next_look(shell, 50000), 22)
+            self.board(30000)
+            self.assertEqual(self.next_look(shell, 30000), 30)
+            self.board(80000)
+            self.assertEqual(self.next_look(shell, 80000), 7)
+            self.board(86000)
+            self.assertEqual(self.next_look(shell, 86000), 5)          # the alarm is on
+            self.assertEqual(self.next_look(shell, 80000), 5)          # and stays on until COOL
+            self.assertEqual(self.next_look(shell, 50000), 22)         # off again
+            # the battery counts too, a second per degree under BATT_HOT (the U30 Air: the F50 has no battery)
+            self.board(50000)
+            self.device('u30air')
+            self.assertEqual(self.next_look(shell, 50000, battery=420), 13)
+            # this guard is the thermal policy (no zone): at most 10 s, and 5 s while its cap is on
+            self.board(50000)
+            shutil.rmtree(self.root / 'sys/class/thermal/thermal_zone3')
+            self.assertEqual(self.next_look(shell, 50000), 10)
+            self.assertEqual(self.next_look(shell, 90000), 5)          # capped (and the alarm)
+            self.assertTrue((self.root / 'run/mu300/thermal-capped').exists())
+            (self.root / 'run/mu300/thermal-alarm').unlink()
+            self.assertEqual(self.next_look(shell, 80000), 5)          # still capped
+
+    def test_without_the_zone_caps_and_powers_off(self):
+        for shell in self.each_shell():
+            self.board(90000)
+            shutil.rmtree(self.root / 'sys/class/thermal/thermal_zone3')
+            self.assertEqual(self.round(shell, 90000), ['mu300-led alarm on'])
+            self.assertEqual(self.maxes(), ['1404000'] * 3)
+            self.assertEqual(self.round(shell, 105000), ['poweroff'])
+
+    def test_a_zone_whose_reading_cannot_be_trusted_keeps_this_guard_capping(self):
+        for shell in self.each_shell():
+            self.board(90000)                                                  # bound, but the zone does not read
+            (self.root / 'sys/class/thermal/thermal_zone3/temp').unlink()
+            self.round(shell, 90000)
+            self.assertEqual(self.maxes(), ['1404000'] * 3)
+            self.board(90000)                                                  # reads, but not a number
+            (self.root / 'sys/class/thermal/thermal_zone3/temp').write_text('\n')
+            self.round(shell, 90000)
+            self.assertEqual(self.maxes(), ['1404000'] * 3)
+            self.board(90000)                                                  # stale: far below the die sensors
+            (self.root / 'sys/class/thermal/thermal_zone3/temp').write_text('40000\n')
+            self.round(shell, 90000)
+            self.assertEqual(self.maxes(), ['1404000'] * 3)
+            self.board(90000)                                                  # within 15 C of the hottest: trusted
+            (self.root / 'sys/class/thermal/thermal_zone3/temp').write_text('80000\n')
+            self.round(shell, 90000)
+            self.assertEqual(self.maxes(), ['2002000'] * 3)
+            self.board(90000)                                                  # passive trips above HOT: not ours
+            z = self.root / 'sys/class/thermal/thermal_zone3'
+            (z / 'trip_point_0_temp').write_text('95000\n')
+            (z / 'trip_point_1_temp').write_text('100000\n')
+            self.round(shell, 90000)
+            self.assertEqual(self.maxes(), ['1404000'] * 3)
+
+    def test_a_cluster_left_out_of_the_zone_keeps_this_guard_capping(self):
+        for shell in self.each_shell():
+            self.board(90000, cdevs=(0, 1))                                    # cpufreq-cpu7 not bound
+            self.round(shell, 90000)
+            self.assertEqual(self.maxes(), ['1404000'] * 3)
+            self.board(90000, mode='disabled')                                 # the zone is off
+            self.round(shell, 90000)
+            self.assertEqual(self.maxes(), ['1404000'] * 3)
+            self.board(90000)
+            for i in range(3):                                                    # no cpufreq cooling device at all
+                shutil.rmtree(self.root / f'sys/class/thermal/cooling_device{i}')
+            self.round(shell, 90000)
+            self.assertEqual(self.maxes(), ['1404000'] * 3)
+
+    def test_handoff_lifts_the_caps_this_guard_set_and_the_zone_gone_caps_again(self):
+        for shell in self.each_shell():
+            self.board(90000, cdevs=())
+            shutil.rmtree(self.root / 'sys/class/thermal/thermal_zone3')          # module not loaded yet
+            (self.root / 'run/mu300/cpu-ceiling').write_text('policy0=1105000\n')
+            self.round(shell, 90000)                                              # hot: one step down everywhere
+            self.round(shell, 90000)
+            self.assertEqual(self.maxes(), ['1105000', '1105000', '1105000'])
+            self.assertTrue((self.root / 'run/mu300/thermal-capped').exists())
+            self.soc_zone(80000)                                                  # mu300_thermal loaded, zone bound
+            self.round(shell, 80000)                                              # neither cool nor hot
+            # our caps go (the kernel holds its own, as a QoS limit under scaling_max_freq), the profile's stays
+            self.assertEqual(self.maxes(), ['1105000', '2002000', '2002000'])
+            self.assertFalse((self.root / 'run/mu300/thermal-capped').exists())
+            self.round(shell, 90000)                                              # hot under the kernel: untouched
+            self.assertEqual(self.maxes(), ['1105000', '2002000', '2002000'])
+            shutil.rmtree(self.root / 'sys/class/thermal/thermal_zone3')          # rmmod
+            self.round(shell, 90000)
+            self.assertEqual(self.maxes(), ['936000', '1404000', '1404000'])
+
+    def test_a_restarted_guard_lifts_its_old_cap_on_the_handoff_too(self):
+        # the marker outlives a restart: the cap of a run before the module loaded does not stick for ever
+        for shell in self.each_shell():
+            self.board(80000)
+            for p in self.pols:
+                (p / 'scaling_max_freq').write_text('1404000\n')
+            (self.root / 'run/mu300/thermal-capped').write_text('')
+            self.round(shell, 80000)
+            self.assertEqual(self.maxes(), ['2002000'] * 3)
+            self.board(80000)                                                  # no marker: another cap is not ours
+            for p in self.pols:
+                (p / 'scaling_max_freq').write_text('1404000\n')
+            self.round(shell, 80000)
+            self.assertEqual(self.maxes(), ['1404000'] * 3)
+
+    # --- the backstop: the kernel throttles, but the SoC climbs on (step_wise follows the sensors' noise: under a full
+    # load the SoC reaches 98 C in three minutes with the states at 1-3 of 9)
+    def test_backstop_caps_the_a76_clusters_on_top_of_the_kernel_from_92_c(self):
+        self.stub('logger', 'echo "$*" >> "$STUBLOG/log"')
+        for shell in self.each_shell():
+            self.board(91000)
+            (self.tmp / 'log').unlink(missing_ok=True)
+            self.round(shell, 91000)                                              # under the backstop: watching
+            self.assertEqual(self.maxes(), ['2002000'] * 3)
+            self.board(93000)
+            (self.tmp / 'log').unlink(missing_ok=True)
+            self.assertEqual(self.round(shell, 93000), ['mu300-led alarm on'])
+            self.assertEqual(self.maxes(), ['2002000', '1404000', '1404000'])     # policy0 (A55) left alone
+            self.assertTrue((self.root / 'run/mu300/thermal-capped').exists())
+            self.assertIn('soc-thmzone does not hold the SoC (93000 mC)', self.log())
+            self.round(shell, 93000)                                              # a step a round, logged once
+            self.assertEqual(self.maxes(), ['2002000', '1105000', '1105000'])
+            self.assertEqual(self.log().count('does not hold'), 1)
+
+    def test_backstop_caps_every_cluster_from_95_c_and_powers_off_at_crit_still(self):
+        for shell in self.each_shell():
+            self.board(96000)
+            self.round(shell, 96000)
+            self.assertEqual(self.maxes(), ['1404000'] * 3)
+            self.assertEqual(self.round(shell, 105000), ['poweroff'])
+
+    def heat(self, temp):
+        """every zone at TEMP (round() sets thermal_zone0 only)"""
+        for t in (self.root / 'sys/class/thermal').glob('thermal_zone*/temp'):
+            t.write_text(f'{temp}\n')
+
+    def test_backstop_lifts_its_caps_at_hot_a_step_a_round_never_above_the_ceiling(self):
+        for shell in self.each_shell():
+            self.board(96000)
+            (self.root / 'run/mu300/cpu-ceiling').write_text('policy0=1404000\n')
+            self.round(shell, 96000)
+            self.round(shell, 96000)
+            self.assertEqual(self.maxes(), ['1105000', '1105000', '1105000'])
+            self.heat(88000); self.round(shell, 88000)            # between HOT and the backstop: held
+            self.assertEqual(self.maxes(), ['1105000', '1105000', '1105000'])
+            self.heat(85000); self.round(shell, 85000)
+            self.assertEqual(self.maxes(), ['1404000', '1404000', '1404000'])
+            self.assertTrue((self.root / 'run/mu300/thermal-capped').exists())
+            self.heat(84000); self.round(shell, 84000)
+            self.assertEqual(self.maxes(), ['1404000', '2002000', '2002000'])     # the profile's ceiling stays
+            self.assertFalse((self.root / 'run/mu300/thermal-capped').exists())
+            self.heat(84000); self.round(shell, 84000)            # no marker: nothing more
+            self.assertEqual(self.maxes(), ['1404000', '2002000', '2002000'])
+
+    def policy(self, name, freqs, cur_max):
+        p = self.root / 'sys/devices/system/cpu/cpufreq' / name
+        p.mkdir(parents=True, exist_ok=True)
+        (p / 'scaling_available_frequencies').write_text(' '.join(str(f) for f in freqs) + ' \n')
+        (p / 'cpuinfo_max_freq').write_text(f'{max(freqs)}\n')
+        (p / 'scaling_max_freq').write_text(f'{cur_max}\n')
+        return p
+
+    def test_cooldown_does_not_raise_a_policy_above_the_mu300_cpu_ceiling(self):
+        # mu300-cpu's "saving" profile caps a cluster and records the cap in /run/mu300/cpu-ceiling; on cool-down
+        # the guard steps scaling_max up a notch at a time but never past that ceiling, so the profile stays.
+        freqs = [614400, 768000, 936000, 1105000, 1228800, 1404000, 2002000]
+        for shell in self.each_shell():
+            shutil.rmtree(self.root, ignore_errors=True)
+            self.device('u30air')
+            p = self.policy('policy0', freqs, 936000)   # capped below hw max (2002000)
+            (self.root / 'run/mu300/cpu-ceiling').write_text('policy0=1105000\n')
+            self.round(shell, 60000)                     # cool: one step up, but clamped to the ceiling
+            self.assertEqual((p / 'scaling_max_freq').read_text().strip(), '1105000')
+            self.round(shell, 60000)                     # at the ceiling now: no further rise
+            self.assertEqual((p / 'scaling_max_freq').read_text().strip(), '1105000')
+
+    def test_cooldown_without_a_ceiling_rises_to_the_hardware_maximum(self):
+        freqs = [614400, 936000, 1105000, 2002000]
+        for shell in self.each_shell():
+            shutil.rmtree(self.root, ignore_errors=True)
+            self.device('u30air')
+            p = self.policy('policy0', freqs, 936000)
+            for _ in range(5):
+                self.round(shell, 60000)
+            self.assertEqual((p / 'scaling_max_freq').read_text().strip(), '2002000')
+
+
 @unittest.skipUnless(OK, NEEDS)
-class ButtonsUnderSysd(old.Buttons):
-    """every test of mu300-buttons, with mu300-sysd reading the same keys"""
+class ButtonsUnderSysd(ButtonsCases, ShellTest):
+    """the keys, with mu300-sysd reading them until its helper's output ends"""
     def setUp(self):
         super().setUp()
         self.shells = [sysd_shell(self.tmp)]
 
 
 @unittest.skipUnless(OK, NEEDS)
-class ThermalGuardUnderSysd(old.ThermalGuard):
-    """every test of thermal-guard, one round of mu300-sysd each"""
+class ThermalGuardUnderSysd(ThermalGuardCases, ShellTest):
+    """one round of mu300-sysd each"""
     def setUp(self):
         super().setUp()
         self.shells = [sysd_shell(self.tmp)]
@@ -309,8 +900,8 @@ class Daemon(ShellTest):
         return root
 
     def test_on_the_charger_the_safety_look_comes_sooner(self):
-        """the U30 Air's charger has no interrupt wired: charging -> full changes the battery LED without a uevent
-        (FINDINGS 217), so on the charger the hint is looked at every SAFETY_PLUGGED s (30)"""
+        """the U30 Air's charger has no interrupt wired: charging -> full changes the battery LED without a uevent,
+        so on the charger the hint is looked at every SAFETY_PLUGGED s (30)"""
         root = self.led_daemon(1, 'Charging')
         time.sleep(2.5)                                            # looks, nothing changed
         self.assertEqual(self.calls().count('mu300-led tick'), 1)
@@ -425,55 +1016,21 @@ class Daemon(ShellTest):
 
 # ------------------------------------------------------------------ --check and the init scripts
 @unittest.skipUnless(OK, NEEDS)
-class Check(ShellTest):
-    def check(self, keys):
-        return subprocess.run(sysd_argv() + ['--check'], env=self.env(MU300_KEYS_BIN=keys), capture_output=True,
-                              text=True, timeout=30)
-
-    @unittest.skipUnless(LINUX and CC, 'needs a C compiler on Linux')
-    def test_a_helper_with_uevents_passes(self):
-        r = self.check(KEYS)
-        self.assertEqual(r.returncode, 0, r.stderr)
-
-    def test_an_older_helper_or_none_fails(self):
-        self.stub('mu300-keys', 'echo "usage: mu300-keys [-l MS] [-t SEC]" >&2; exit 2')
-        r = self.check('mu300-keys')
-        self.assertEqual(r.returncode, 1)
-        self.assertIn('does not know -u', r.stderr)
-        r = self.check(self.tmp / 'none')
-        self.assertEqual(r.returncode, 1)
-
-
 class Init(ShellTest):
-    """/etc/init.d/mu300-sysd runs the daemon where sysd_on says so; mu300-buttons and mu300-post's thermal-guard
-    step aside exactly then (the same test in all three)"""
+    """/etc/init.d/mu300-sysd runs the daemon, and nothing else runs the keys or the thermal guard"""
     HARNESS = 'procd_open_instance() { echo "instance $*"; }\nprocd_set_param() { echo "param $*"; }\n' \
               'procd_close_instance() { :; }\n'
 
-    def start(self, name, on):
-        text = (INIT / name).read_text().replace('[ -x /opt/mu300/bin/mu300-keys ]', 'true')
-        tail = f'\nsysd_on() {{ return {0 if on else 1}; }}\nstart_service\n'
-        r = self.sh(self.shells[0], self.HARNESS + text + tail)
+    def start(self, name):
+        r = self.sh(self.shells[0], self.HARNESS + (INIT / name).read_text() + '\nstart_service\n')
         self.assertEqual(r.returncode, 0, r.stderr)
         return [l.split()[1] for l in r.stdout.splitlines() if l.startswith('instance ')], r.stdout
 
-    def test_the_daemon_or_the_old_loops(self):
-        self.assertEqual(self.start('mu300-sysd', True)[0], ['sysd'])
-        self.assertEqual(self.start('mu300-sysd', False)[0], [])
-        self.assertEqual(self.start('mu300-buttons', True)[0], [])
-        self.assertEqual(self.start('mu300-buttons', False)[0], ['buttons'])
-        on, off = self.start('mu300-post', True)[0], self.start('mu300-post', False)[0]
-        self.assertNotIn('thermalguard', on)
-        self.assertEqual([i for i in off if i != 'thermalguard'], on)
-        self.assertIn('thermalguard', off)
-        out = self.start('mu300-sysd', True)[1]
+    def test_the_daemon_alone(self):
+        names, out = self.start('mu300-sysd')
+        self.assertEqual(names, ['sysd'])
         self.assertIn('param command /usr/bin/ucode /opt/mu300/bin/mu300-sysd\n', out)
         self.assertIn('param respawn 3600 5 0', out)
-
-    def test_one_test_everywhere(self):
-        rule = 'sysd_on() { [ -e /etc/mu300/sysd ] && /usr/bin/ucode /opt/mu300/bin/mu300-sysd --check >/dev/null 2>&1; }'
-        for name in ('mu300-sysd', 'mu300-buttons', 'mu300-post'):
-            self.assertIn('\n' + rule + '\n', (INIT / name).read_text(), name)
 
 
 # ------------------------------------------------------------------ mu300-keys -u

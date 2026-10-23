@@ -1,9 +1,9 @@
-"""mu300-modemd (FINDINGS 216, docs/MODEMD.md): the modem daemon in ucode, against a stand-in for mu300-atd-io.
+"""mu300-modemd: the modem daemon in ucode, against a stand-in for mu300-atd-io.
 
 The stand-in speaks the bridge's side of the protocol (HELLO, STATE, RX, REQ...) on the unix socket and plays a modem:
-each TX is answered with the lines a test gave for that command. What is checked is what mu300-atd did, kept: one
+each TX is answered with the lines a test gave for that command. What is checked: one
 command at a time, the drain before it (and its log), the collect after it, the answer file (whole, owner only), the
-refusals, the URC logs, +CMT to the spooler, +ECIND to mu300-sim-state, the reopen rule; and what is new: the ubus
+refusals, the URC logs, +CMT to the spooler, +ECIND to mu300-sim-state, the reopen rule; and the ubus
 object mu300.modem (at, status, cell), the URC events, and the panel's collection inside the daemon, which must write
 the same sig.json and cell.json as the collector program for the same modem answers.
 
@@ -22,7 +22,7 @@ from pathlib import Path
 
 from helpers import TOP, ucode, ucode_paths
 
-MODEMD = TOP / 'rootfs' / 'overlay' / 'opt' / 'mu300' / 'bin' / 'mu300-modemd'
+MODEMD = TOP / 'openwrt' / 'opt' / 'mu300' / 'bin' / 'mu300-modemd'
 CELL = TOP / 'openwrt' / 'luci-app-mu300' / 'root' / 'usr' / 'libexec' / 'unisoc-modem' / 'cell'
 UBUSD = os.environ.get('MU300_TEST_UBUSD', '/root/ucbuild/full/bin/ubusd-run')
 UBUS = os.environ.get('MU300_TEST_UBUS', '/root/ucbuild/full/bin/ubus-run')
@@ -260,7 +260,7 @@ class Base(unittest.TestCase):
 
 @unittest.skipUnless(ucode() and has_modules(ucode()), 'a ucode with uloop, socket and ubus is needed (MU300_TEST_UCODE)')
 class Modemd(Base):
-    """The broker: what mu300-atd did."""
+    """The broker: one command channel and its clients."""
 
     def test_hello_opens_the_channels_and_the_fifo(self):
         self.start()
@@ -308,7 +308,7 @@ class Modemd(Base):
         self.ready()
         refused = self.at_dir() / 'answer.9'
         self.ask(f'2 {refused} AT+CSQ\rAT+CFUN=0')
-        self.assertEqual(self.answer(refused), 'mu300-atd: refused\n')
+        self.assertEqual(self.answer(refused), 'mu300-modemd: refused\n')
         for bad in (f'120 {self.at_dir()}/answer.10 AT', f'2 /tmp/elsewhere AT', f'2 {self.at_dir()}/answer.x AT',
                     f'2 {self.at_dir()}/answer.11', 'garbage'):
             self.ask(bad)

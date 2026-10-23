@@ -216,12 +216,10 @@ class Inventory(Mu300Vpn):
         acl = json.loads(ACL.read_text())['luci-app-mu300']
         self.assertEqual(set(acl['read']['ubus']['mu300vpn']), READ)
         self.assertEqual(set(acl['write']['ubus']['mu300vpn']), WRITE)
-        # the two upload paths, write only, and nothing else of the file system (beside the Languages page's and the
-        # Update page's own one each)
-        self.assertEqual(acl['write']['file'], {'/tmp/mu300-extra-lang.tar.gz': ['write'],
-                                                '/tmp/mu300-vpn-upload': ['write'],
+        # the two upload paths, write only, and nothing else of the file system (beside the Update page's own one)
+        self.assertEqual(acl['write']['file'], {'/tmp/mu300-vpn-upload': ['write'],
                                                 '/tmp/mu300-vpn-extra.tar.gz': ['write'],
-                                                '/mnt/mu300-disk/.mu300-upload/update.zip': ['write']})
+                                                '/mnt/mu300-disk/.mu300-upload/update.tar.gz': ['write']})
         self.assertNotIn('file', acl['read'])
 
     def test_the_menu_has_the_six_pages_and_their_views_exist(self):
@@ -240,7 +238,7 @@ class Inventory(Mu300Vpn):
         for k, v in menu.items():
             if not k.startswith('admin/vpn/'):
                 self.assertNotIn('fs', v['depends'], k)
-        extra = (TOP / 'rootfs' / 'overlay' / 'opt' / 'mu300' / 'bin' / 'mu300-extra').read_text()
+        extra = (TOP / 'openwrt' / 'opt' / 'mu300' / 'bin' / 'mu300-extra').read_text()
         self.assertIn('[ "$name" != vpn ] || luci_menu_refresh', extra)
         self.assertIn('[ "$1" != vpn ] || luci_menu_refresh', extra)
         self.assertIn('rm -f "$SYSROOT"/tmp/luci-indexcache "$SYSROOT"/tmp/luci-indexcache.*', extra)
@@ -450,7 +448,7 @@ class Passthrough(Mu300Vpn):
              ['profile', 'set', 'office', 'NAME', 'Ali\'s "VPN"; $(x)']),
             ('profile_remove', {'id': 'office'}, ['profile', 'remove', 'office']),
             # (check ID, the command every module has: "profile check ID" is in the spec's table, but module
-            # v2.0.0 answers it with its usage text - the page's check never worked, docs/FINDINGS.md 56)
+            # v2.0.0 answers it with its usage text)
             ('profile_check', {'id': 'office'}, ['check', 'office']),
             ('profile_option', {'id': 'm', 'key': 'MIHOMO_STACK', 'value': 'system'},
              ['profile', 'set', 'm', 'MIHOMO_STACK', 'system']),
@@ -713,8 +711,8 @@ class Replies(Mu300Vpn):
 
     def test_a_refusal_shows_its_reason_not_the_closing_line(self):
         """The CLI ends a refused import, edit or switch with a line that says only that nothing was done ("profile
-        not added"); the reason is the line before it. The page showed the closing line for every refused config -
-        "The profile could not be added: profile not added" - and never why (docs/FINDINGS.md 56)."""
+        not added"); the reason is the line before it, and that is what the page shows - not "The profile could not
+        be added: profile not added" for every refused config."""
         note = ('note: top-level keys of the file that are not used (this driver writes its own tun and dns; nothing '
                 'listens but the TUN): port tun dns\n')
         cases = [
@@ -729,11 +727,11 @@ class Replies(Mu300Vpn):
                                'profile sub does not check: the VPN stays on profile home\n',
              'use', {'id': 'sub'},
              'The profile could not be made the active one', 'mihomo rejects the config as this driver rebuilds it'),
-            ('vpn.use', 'dae needs Linux 5.17 or newer with BTF, and this kernel is 5.4.210\n'
+            ('vpn.use', 'dae needs a kernel with BTF (/sys/kernel/btf/vmlinux), and kernel 7.2.11 has none\n'
                         'profile hy cannot run on this system: the VPN stays on profile home\n',
              'use', {'id': 'hy'},
              'The profile could not be made the active one',
-             'dae needs Linux 5.17 or newer with BTF, and this kernel is 5.4.210'),
+             'dae needs a kernel with BTF (/sys/kernel/btf/vmlinux), and kernel 7.2.11 has none'),
             # a closing line alone is still the message, and so is a last line that is a reason itself
             ('vpn.profile', 'profile not added\n', 'profile_add',
              {'source': 'text', 'data': 'mode: rule\n', 'type': 'mihomo', 'name': 'x'},
@@ -758,7 +756,7 @@ class Replies(Mu300Vpn):
                     self.assertEqual(obj, {'ok': 0, 'error': error, 'detail': detail})
 
     def test_errors_are_english_sentences_in_the_catalogs(self):
-        known = set(subprocess.run([sys.executable, str(TOP / 'tools' / 'luci-i18n.py'), 'extract'], check=True,
+        known = set(subprocess.run([sys.executable, str(TOP / 'openwrt' / 'tools' / 'luci-i18n.py'), 'extract'], check=True,
                                    capture_output=True, text=True, encoding='utf-8').stdout.splitlines())
         src = VPNB.read_text()
         import re

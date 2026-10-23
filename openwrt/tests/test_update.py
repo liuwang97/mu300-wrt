@@ -1,5 +1,5 @@
 """mu300-update, sourced for its functions (MU300_LIB=1) against a fake Linux partition (MU300_DISK): which files of a
-release it takes, the kernel choice, the byte helpers it edits boot image headers with, and whether a kernel bundle
+release it takes, the kernel bundle, the byte helpers it edits boot image headers with, and whether a kernel bundle
 may go onto this device."""
 import io
 import os
@@ -14,14 +14,13 @@ import time
 import unittest
 
 from helpers import BIN, TOP, ShellTest
-from test_boot_image import HAVE_LZ4, fake_stock, fake_misc, BOOT
 
 
 class UpdateBase(ShellTest):
     def setUp(self):
         super().setUp()
         self.disk = self.tmp / 'disk'
-        (self.disk / 'ubuntu' / 'etc').mkdir(parents=True)
+        (self.disk / 'openwrt-luci' / 'etc').mkdir(parents=True)
         self.root = self.tmp / 'root'
         (self.root / 'run/mu300').mkdir(parents=True)
         self.device('f50')
@@ -35,7 +34,7 @@ class UpdateBase(ShellTest):
 
     def busybox_applets(self, shell):
         """For busybox sh, {'PATH': ...} that runs the applets the update uses from busybox, as on OpenWrt: busybox sh
-        on Ubuntu runs /usr/bin/cp, GNU's, which hides what busybox's own cp does. {} for the other shells."""
+        on a desktop runs /usr/bin/cp, GNU's, which hides what busybox's own cp does. {} for the other shells."""
         if os.path.basename(shell[0]) != 'busybox':
             return {}
         d = self.tmp / 'busybox-applets'
@@ -51,10 +50,8 @@ class Update(UpdateBase):
     def test_version_lists_what_is_installed_without_the_network(self):
         # mu300-toolkit's summary and its update screen when offline: each system with its release, the boot image,
         # the extras; no download is tried
-        (self.disk / 'ubuntu/etc/mu300').mkdir(parents=True, exist_ok=True)
-        (self.disk / 'ubuntu/etc/mu300/image-version').write_text('v2026.10.18\n')
-        (self.disk / 'openwrt/etc/mu300').mkdir(parents=True)
-        (self.disk / 'openwrt/etc/mu300/image-version').write_text('v2026.10.17\n')
+        (self.disk / 'openwrt-luci/etc/mu300').mkdir(parents=True, exist_ok=True)
+        (self.disk / 'openwrt-luci/etc/mu300/image-version').write_text('v2026.10.18\n')
         (self.disk / 'boot').mkdir()
         (self.disk / 'boot/installed.tag').write_text('v2026.10.18\n')
         (self.disk / 'extra/vpn/bin').mkdir(parents=True)
@@ -65,8 +62,7 @@ class Update(UpdateBase):
             r = self.up(shell, 'mounted_disk() { :; }; version')
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertNotIn('network used', r.stderr)
-            self.assertRegex(r.stdout, r'systems on disk +.*ubuntu v2026\.10\.18')
-            self.assertRegex(r.stdout, r'openwrt v2026\.10\.17')
+            self.assertRegex(r.stdout, r'systems on disk +openwrt-luci v2026\.10\.18')
             self.assertIn('boot image: v2026.10.18', r.stdout)
             self.assertIn('vpn (v1.0.0)', r.stdout)
 
@@ -128,7 +124,7 @@ class Update(UpdateBase):
 
     def test_a_boot_image_already_in_place_is_named_after_the_release(self):
         # the kernel did not change between two releases: the image in place is the new release's too, or check and
-        # the Update page offer that release again and again (U30 Air, FINDINGS 86)
+        # the Update page offer that release again and again
         src = (BIN / 'mu300-update').read_text()
         bu = src[src.index('boot_update_run() {'):src.index('\n}\n', src.index('boot_update_run() {'))]
         same = bu[bu.index('if [ "$cur" = "$(cat "$BOOTDIR/written.sha256"'):]
@@ -138,7 +134,7 @@ class Update(UpdateBase):
 
     def test_a_boot_partition_that_is_a_plain_file_is_not_written(self):
         # on the U30 Air /dev/mmcblk0p38 (boot_b) was once a 50 MB file in RAM, made by the early recorder while procd
-        # replaced /dev: an image written there reads back as written (FINDINGS 86). Neither writer takes it.
+        # replaced /dev: an image written there reads back as written. Neither writer takes it.
         boot = self.disk / 'boot'
         boot.mkdir()
         for name, data in (('prev.body', b'old image'), ('prev.vbmeta', b'v'), ('prev.footer', b'f' * 64)):
@@ -208,12 +204,12 @@ class Update(UpdateBase):
 
     def test_notice(self):
         # a note for the login message and mu300-toolkit when a newer release is out; nothing else happens
-        note, motd = self.tmp / 'run/update-available', self.tmp / 'motd.d'
-        env = dict(MU300_NOTICE=str(note), MU300_MOTD_DIR=str(motd))
+        note = self.tmp / 'run/update-available'
+        env = dict(MU300_NOTICE=str(note))
         for shell in self.each_shell():
             for installed, latest, noted in (('v2026.10.06', 'v2026.10.08', True), ('v2026.10.08', 'v2026.10.08', False),
                                              ('v2026.10.09', 'v2026.10.08', False),    # a test release: no note
-                                             # the new names (FINDINGS 125): newer than every three-field tag
+                                             # the four-field tags: newer than every three-field tag
                                              ('v2026.10.27', 'v2026.10.16.1', True), ('v2026.10.16.1', 'v2026.10.27', False),
                                              ('v2026.10.16.9', 'v2026.10.16.10', True), ('v2026.10.16.10', 'v2026.10.16.9', False),
                                              ('unknown', 'v2026.10.16.1', True), ('v2026.10.27', 'test-issue-102', False)):
@@ -221,10 +217,9 @@ class Update(UpdateBase):
                                    'notice; echo rc=$?', **env)
                 self.assertIn('rc=0', r.stdout, r.stderr)
                 self.assertEqual(note.exists(), noted, (installed, latest))
-                self.assertEqual((motd / '60-mu300-update').exists(), noted)
                 if noted:
                     self.assertEqual(note.read_text(), f'mu300-linux {latest} is out (this is {installed}): '
-                                                       'sudo mu300-update apply\n')
+                                                       'mu300-update apply\n')
             # offline: the note stays, and the caller hears it (to ask again sooner)
             self.up(shell, 'latest_release() { echo v2026.10.08; }; installed_version() { echo v2026.10.06; }; notice', **env)
             r = self.up(shell, 'latest_release() { :; }; notice; echo rc=$?', **env)
@@ -232,7 +227,7 @@ class Update(UpdateBase):
             self.assertTrue(note.exists())
 
     def test_check_and_version_ok_know_the_new_names(self):
-        # vYYYY.MM.DD.N (FINDINGS 125) is newer than every vYYYY.MM.DD: check offers it, a module's requires is met by it
+        # vYYYY.MM.DD.N is newer than every vYYYY.MM.DD: check offers it, a module's requires is met by it
         for shell in self.each_shell():
             for installed, latest, says in (('v2026.10.27', 'v2026.10.16.1', 'Run: mu300-update apply'),
                                             ('v2026.10.16.2', 'v2026.10.16.1', 'newer than the newest release'),
@@ -246,50 +241,33 @@ class Update(UpdateBase):
                 self.assertIn('rc=0' if ok else 'rc=1', r.stdout, (need, have))
 
     def test_rootfs_asset(self):
-        osr = self.disk / 'ubuntu' / 'etc' / 'os-release'
-        cases = [('24.04', {}, 'mu300-ubuntu-rootfs.tar.gz'),
-                 ('26.04', {}, 'mu300-ubuntu-26.04-rootfs.tar.gz'),
-                 ('26.04', {'MU300_UBUNTU': '24.04'}, 'mu300-ubuntu-rootfs.tar.gz'),
-                 ('24.04', {'MU300_UBUNTU': '26.04'}, 'mu300-ubuntu-26.04-rootfs.tar.gz'),
-                 (None, {}, 'mu300-ubuntu-rootfs.tar.gz')]
         for shell in self.each_shell():
-            for ver, env, want in cases:
-                if ver:
-                    osr.write_text(f'NAME="Ubuntu"\nVERSION_ID="{ver}"\n')
-                else:
-                    osr.unlink(missing_ok=True)
-                self.assertEqual(self.up(shell, 'rootfs_asset ubuntu', **env).stdout.strip(), want, (ver, env))
-            self.assertEqual(self.up(shell, 'rootfs_asset openwrt').stdout.strip(), 'mu300-openwrt-rootfs.tar.gz')
+            self.assertEqual(self.up(shell, 'rootfs_asset openwrt-luci').stdout.strip(), 'mu300-openwrt-luci-rootfs.tar.gz')
+            self.assertEqual(self.up(shell, 'kernel_asset').stdout.strip(), 'mu300-kernel-7.2.tar.gz')
 
     def test_os_kind(self):
         for shell in self.each_shell():
-            for name, kind in [('ubuntu', 'ubuntu'), ('openwrt', 'openwrt'), ('openwrt-luci', 'openwrt')]:
-                self.assertEqual(self.up(shell, f'os_kind {name}').stdout.strip(), kind)
-            self.assertEqual(self.up(shell, 'os_kind arch').returncode, 1)
+            self.assertEqual(self.up(shell, 'os_kind openwrt-luci').stdout.strip(), 'openwrt')
+            self.assertEqual(self.up(shell, 'os_kind debian').returncode, 1)
 
-    def test_installed_systems_three(self):
-        for name in ('openwrt', 'openwrt-luci', 'openwrt-luci.old'):
+    def test_installed_systems_only_the_one(self):
+        for name in ('openwrt', 'debian', 'openwrt-luci.old'):
             (self.disk / name).mkdir()
         for shell in self.each_shell():
-            self.assertEqual(self.up(shell, 'installed_systems').stdout.split(), ['ubuntu', 'openwrt', 'openwrt-luci'])
+            self.assertEqual(self.up(shell, 'installed_systems').stdout.split(), ['openwrt-luci'])
 
-    def test_lists_by_kind(self):
+    def test_lists(self):
         for shell in self.each_shell():
-            self.assertEqual(self.up(shell, 'keep_list openwrt-luci').stdout, self.up(shell, 'keep_list openwrt').stdout)
-            # the panel's saved locks (FINDINGS 64)
+            # the panel's saved locks
             self.assertIn('etc/unisoc-modem', self.up(shell, 'keep_list openwrt-luci').stdout.split())
             # the jobs of System > Scheduled Tasks: the image ships /etc/crontabs empty, so without this an update
-            # dropped them and cron's own init refused to start (FINDINGS 83)
+            # would drop them and cron's own init refuse to start
             self.assertIn('etc/crontabs', self.up(shell, 'keep_list openwrt-luci').stdout.split())
-            # the installer on Android carries the same things over (its own copy of the lists)
-            ai = (TOP / 'tools/android-install.sh').read_text()
-            for kind, pattern in (('ubuntu', r'ubuntu\) keep="([^"]*)"'), ('openwrt', r'openwrt\|openwrt-\*\) keep="([^"]*)"')):
-                self.assertEqual(re.search(pattern, ai).group(1), self.up(shell, f'keep_list {kind}').stdout.strip())
-            self.assertEqual(self.up(shell, 'vendor_list openwrt-luci').stdout, self.up(shell, 'vendor_list openwrt').stdout)
-            self.assertEqual(self.up(shell, 'rootfs_asset openwrt-luci').stdout.strip(), 'mu300-openwrt-luci-rootfs.tar.gz')
+            # the image carries no modules: the systems' sets go along with the vendor files
+            self.assertEqual(self.up(shell, 'vendor_list openwrt-luci').stdout.split(),
+                             ['opt/mu300/android', 'lib/firmware', 'lib/modules'])
 
     def test_running_os_by_directory(self):
-        (self.disk / 'openwrt-luci' / 'etc').mkdir(parents=True)
         (self.disk / 'openwrt-luci' / 'etc' / 'openwrt_release').write_text('x')
         for shell in self.each_shell():
             r = self.up(shell, 'running_os', MU300_ROOT=self.disk / 'openwrt-luci')
@@ -303,8 +281,7 @@ class Update(UpdateBase):
             self.assertEqual(r.stdout.strip(), 'openwrt-luci')
 
     def test_running_os_after_rollback_is_the_broken_copy(self):
-        # between rollback and the reboot / is <os>.broken: it was "openwrt" for an openwrt-luci (U30 Air, FINDINGS 86)
-        (self.disk / 'openwrt-luci').mkdir()
+        # between rollback and the reboot / is <os>.broken, named after the system it is the copy of
         (self.disk / 'openwrt-luci.broken' / 'etc').mkdir(parents=True)
         (self.disk / 'openwrt-luci.broken' / 'etc' / 'openwrt_release').write_text('x')
         for shell in self.each_shell():
@@ -317,22 +294,6 @@ class Update(UpdateBase):
             self.up(shell, 'STAGE=$MU300_DISK/.stage; df() { :; }; clean')
             self.assertFalse((self.disk / 'openwrt-luci.old').exists())
             (self.disk / 'openwrt-luci.old').mkdir()
-
-    def test_kernel_choice(self):
-        boot = self.disk / 'boot'
-        boot.mkdir()
-        cases = [(None, '5.4', 'mu300-kernel.tar.gz'), ('6.18', '6.18', 'mu300-kernel-6.18.tar.gz'),
-                 ('7.2', '7.2', 'mu300-kernel-7.2.tar.gz'), ('7.3', '7.3', 'mu300-kernel-7.3.tar.gz'),
-                 ('5.4', '5.4', 'mu300-kernel.tar.gz'), ('7.4', '5.4', 'mu300-kernel.tar.gz'),
-                 ('6.1', '5.4', 'mu300-kernel.tar.gz'), ('', '5.4', 'mu300-kernel.tar.gz')]
-        for shell in self.each_shell():
-            for c, choice, asset in cases:
-                f = boot / 'kernel'
-                if c is None:
-                    f.unlink(missing_ok=True)
-                else:
-                    f.write_text(c + '\n')
-                self.assertEqual(self.up(shell, 'kernel_choice; kernel_asset').stdout.split(), [choice, asset], c)
 
     def test_byte_helpers(self):
         # the boot image header is edited with these: sizes little endian, the AVB footer big endian
@@ -359,35 +320,26 @@ class Update(UpdateBase):
                 self.up(shell, f'pad_page "{f}"')
                 self.assertEqual(f.stat().st_size, want, n)
 
-    def test_installed_systems(self):
-        for shell in self.each_shell():
-            self.assertEqual(self.up(shell, 'installed_systems').stdout.split(), ['ubuntu'])
-            (self.disk / 'openwrt').mkdir(exist_ok=True)
-            self.assertEqual(self.up(shell, 'installed_systems').stdout.split(), ['ubuntu', 'openwrt'])
-            (self.disk / 'openwrt').rmdir()
-
     def test_stale_broken_copies_are_removed(self):
         # a rollback leaves the system it left as <os>.broken (it may still be running until the reboot); nothing
-        # removed it after that but a second rollback or "clean" - 655 MB stayed on the second F50 through an update
+        # removes it after that but a second rollback or "clean" - some 650 MB would stay through an update
+        os_ = 'openwrt-luci'
         for shell in self.each_shell():
-            for os_ in ('ubuntu', 'openwrt'):
-                (self.disk / f'{os_}.broken' / 'etc').mkdir(parents=True, exist_ok=True)
-                (self.disk / f'{os_}.old' / 'etc').mkdir(parents=True, exist_ok=True)
+            (self.disk / f'{os_}.broken' / 'etc').mkdir(parents=True, exist_ok=True)
+            (self.disk / f'{os_}.old' / 'etc').mkdir(parents=True, exist_ok=True)
             r = self.up(shell, 'clean_broken')
             self.assertEqual(r.returncode, 0, r.stderr)
-            self.assertFalse((self.disk / 'ubuntu.broken').exists())
-            self.assertFalse((self.disk / 'openwrt.broken').exists())
-            self.assertIn('ubuntu: removed the copy left by a rollback (ubuntu.broken)', r.stdout)
-            self.assertTrue((self.disk / 'ubuntu.old').is_dir())          # the rollback copy stays
-            self.assertTrue((self.disk / 'ubuntu').is_dir())
+            self.assertFalse((self.disk / f'{os_}.broken').exists())
+            self.assertIn(f'{os_}: removed the copy left by a rollback ({os_}.broken)', r.stdout)
+            self.assertTrue((self.disk / f'{os_}.old').is_dir())          # the rollback copy stays
+            self.assertTrue((self.disk / os_).is_dir())
             # the running system (rolled back from, not rebooted yet) is never removed
-            (self.disk / 'ubuntu.broken' / 'etc').mkdir(parents=True)
-            r = self.up(shell, f'is_root() {{ [ "$1" = "{self.disk}/ubuntu.broken" ]; }}; clean_broken')
+            (self.disk / f'{os_}.broken' / 'etc').mkdir(parents=True)
+            r = self.up(shell, f'is_root() {{ [ "$1" = "{self.disk}/{os_}.broken" ]; }}; clean_broken')
             self.assertEqual(r.returncode, 0, r.stderr)
-            self.assertTrue((self.disk / 'ubuntu.broken').is_dir())
+            self.assertTrue((self.disk / f'{os_}.broken').is_dir())
             self.assertEqual(self.up(shell, 'clean_broken; echo rc=$?').stdout.strip().splitlines()[-1], 'rc=0')
-            for d in ('ubuntu.broken', 'ubuntu.old', 'openwrt.old'):
-                import shutil
+            for d in (f'{os_}.broken', f'{os_}.old'):
                 shutil.rmtree(self.disk / d, ignore_errors=True)
 
     def test_apply_cleans_before_it_counts_free_space(self):
@@ -396,10 +348,11 @@ class Update(UpdateBase):
         self.assertIn('clean_broken', body)
         self.assertLess(body.index('clean_broken'), body.index('not enough free space'))
 
-    def bundle(self, name, devices, features=None):
+    def bundle(self, name, devices, features=None, contract='1'):
         p = self.tmp / name
         with tarfile.open(p, 'w:gz') as t:
-            for fn, data in [('./Image', b'kernel'), ('./ramdisk-generic.lz4', b'rd')] + (
+            for fn, data in [('./Image', b'kernel'), ('./ramdisk-generic.lz4', b'rd'), ('./kernel.release', b'7.2.11\n')] + (
+                    [('./contract', contract.encode() + b'\n')] if contract is not None else []) + (
                     [('./devices', devices.encode())] if devices is not None else []) + (
                     [('./features', features.encode())] if features is not None else []):
                 ti = tarfile.TarInfo(fn)
@@ -411,12 +364,9 @@ class Update(UpdateBase):
         new = self.bundle('new.tar.gz', 'f50 u30air\n')
         old = self.bundle('old.tar.gz', None)
         f50only = self.bundle('f50.tar.gz', 'f50\n')
-        withv50 = self.bundle('v50.tar.gz', 'f50 u30air v50\n')
-        # the ZTE V50 (FINDINGS 95): only a kernel that names it (a mainline one with its LED driver), never the 5.4
-        # bundle nor one from before; the F50 and the U30 Air take that bundle as any other
-        cases = [('f50', new, True), ('f50', old, True), ('u30air', new, True), ('u30air', old, False),
-                 ('u30air', f50only, False), ('v50', withv50, True), ('v50', new, False), ('v50', old, False),
-                 ('v50', f50only, False), ('f50', withv50, True), ('u30air', withv50, True)]
+        # a bundle names the boards it runs on (docs/contract.md); one that names none runs on none
+        cases = [('f50', new, True), ('f50', old, False), ('u30air', new, True), ('u30air', old, False),
+                 ('u30air', f50only, False), ('f50', f50only, True)]
         for shell in self.each_shell():
             for dev, b, ok in cases:
                 self.device(dev)
@@ -425,6 +375,16 @@ class Update(UpdateBase):
                 r = self.up(shell, f'tar -tzf "{b}" > "{d}/list"; bundle_runs_here "{b}" "{d}/list" "{d}" && echo YES || echo NO')
                 self.assertEqual(r.stdout.strip(), 'YES' if ok else 'NO', (dev, b.name, r.stderr))
                 (d / 'devices').unlink(missing_ok=True)
+
+    def test_bundle_contract(self):
+        cases = [('1', True), ('2', False), ('', False), (None, False), ('1.0', False)]
+        for shell in self.each_shell():
+            for c, ok in cases:
+                b = self.bundle('c.tar.gz', 'f50 u30air\n', contract=c)
+                d = self.tmp / 'x'
+                d.mkdir(exist_ok=True)
+                r = self.up(shell, f'tar -tzf "{b}" > "{d}/list"; bundle_contract_ok "{b}" "{d}/list" && echo YES || echo NO')
+                self.assertEqual(r.stdout.strip(), 'YES' if ok else 'NO', (c, r.stderr))
 
     def test_card_installation_needs_an_sd_capable_kernel(self):
         rootdev = self.tmp / 'root-dev'
@@ -447,10 +407,10 @@ class Update(UpdateBase):
             self.assertEqual(run('/dev/mmcblk1p1', empty), 'REFUSE')
             self.assertEqual(run('/dev/mmcblk1p1', sd), 'OK')
             self.assertEqual(run('mmcblk0@27762098176', plain), 'OK')
-            # the internal region on an eMMC that came up as mmcblk1 (FINDINGS 31l)
+            # the internal region on an eMMC that came up as mmcblk1
             self.assertEqual(run('mmcblk1@27762098176', plain), 'OK')
             self.assertEqual(run(None, plain), 'OK')
-            # another installer's init on the card names only the device it mounted (kanoqwq's 5161859d)
+            # another installer's init on the card names only the device it mounted
             (self.root / 'run/mu300').mkdir(parents=True, exist_ok=True)
             (self.root / 'run/mu300/disk-dev').write_text('/dev/mmcblk1p1\n')
             (self.root / 'sys/class/block/mmcblk1/device').mkdir(parents=True, exist_ok=True)
@@ -460,8 +420,8 @@ class Update(UpdateBase):
             (self.root / 'run/mu300/disk-dev').unlink()
 
     def test_a_disk_another_installer_put_elsewhere_keeps_the_boot_image(self):
-        # issue #290: a V50 installed with kanoqwq's desktop installer ran from a GPT partition named mu300root (or
-        # from an image file in userdata); the release's boot image went in, its init found no system, waited 5 minutes
+        # issue #290: a device installed with a desktop installer ran from a GPT partition named mu300root (or from
+        # an image file in userdata); the release's boot image went in, its init found no system, waited 5 minutes
         # in the rescue shell and went back to Android. That init leaves no /run/mu300-root-dev, only
         # /run/mu300/disk-dev
         rootdev = self.tmp / 'root-dev'
@@ -509,7 +469,7 @@ class Update(UpdateBase):
             self.assertEqual(run(None, '/dev/mmcblk0p5', plain), 'unknown OK')
             self.assertEqual(run(None, '/dev/mmcblk1p1', plain), 'unknown OK')
             self.assertEqual(run(None, None, plain), 'unknown OK')
-            # another init's TF installation: a device of a disk the kernel calls an SD card (kanoqwq's 5161859d)
+            # another init's installation on the card: a device of a disk the kernel calls an SD card
             (sysb / 'mmcblk1/device').mkdir(parents=True, exist_ok=True)
             (sysb / 'mmcblk1/device/type').write_text('SD\n')
             self.assertEqual(run(None, '/dev/mmcblk1p1', plain), 'sd OK')
@@ -521,441 +481,6 @@ class Update(UpdateBase):
         ap = src[src.index('\napply() {'):src.index('\n}\n', src.index('\napply() {'))]
         self.assertLess(ap.index('bundle_finds_root'), ap.index('all files are here'))
         self.assertLess(ap.index('all files are here'), ap.index('apply_one'))
-
-
-# Update's setUp, device() and up() live in UpdateBase, which has no tests; Update and FromStock both derive from it
-# (deriving from Update would run its tests twice).
-@unittest.skipIf(not HAVE_LZ4, 'neither the lz4 command nor the lz4 Python module is installed')
-class FromStock(UpdateBase):
-    """bootimg_from_stock gives the bytes kernel/initramfs/build-boot-image.py gives, from the same stock image, kernel and
-    ramdisk: the header page of Android's image with the new sizes, loglevel=5 and no signature, its vbmeta, its
-    footer with the new sizes."""
-
-    def python_image(self, stock):
-        mods = self.tmp / 'mods'; mods.mkdir(exist_ok=True)
-        for n in (BOOT / 'module-order.txt').read_text().split():
-            (mods / n).write_bytes(b'\x7fELF ' + n.encode())
-        for f in ('busybox', 'logdw'):
-            (self.tmp / f).write_bytes(b'\x7fELF ' + f.encode())
-        fake_misc(self.tmp / 'misc.bin')
-        (self.tmp / 'Image').write_bytes(b'\x7fkernel' * 12345)
-        out = self.tmp / 'py.img'
-        r = subprocess.run([sys.executable, str(BOOT / 'build-boot-image.py'), '--stock-boot', str(stock),
-                            '--misc-head', str(self.tmp / 'misc.bin'), '--kernel', str(self.tmp / 'Image'),
-                            '--modules', str(mods), '--busybox', str(self.tmp / 'busybox'), '--logdw', str(self.tmp / 'logdw'),
-                            '--ueventd-perms', str(TOP / 'android-vendor' / 'ueventd-perms.sh'), '--out', str(out)],
-                           capture_output=True, text=True)
-        self.assertEqual(r.returncode, 0, r.stderr)
-        img = out.read_bytes()
-        ksz, rsz = struct.unpack_from('<II', img, 8)
-        roff = 4096 + (ksz + 4095) // 4096 * 4096
-        (self.tmp / 'ramdisk').write_bytes(img[roff:roff + rsz])
-        osz, _, vbs = struct.unpack_from('>QQQ', img, len(img) - 64 + 12)
-        return img[:osz + vbs], img[-64:]
-
-    def check(self, **stock_args):
-        stock = self.tmp / 'stock.img'
-        fake_stock(stock, **stock_args)
-        head, footer = self.python_image(stock)
-        d = self.tmp / 'out'
-        for shell in self.each_shell():
-            if d.exists():
-                shutil.rmtree(d)
-            d.mkdir()
-            r = self.up(shell, f'bootimg_from_stock "{stock}" "{self.tmp}/Image" "{self.tmp}/ramdisk" "{d}"')
-            self.assertEqual(r.returncode, 0, r.stderr)
-            self.assertEqual((d / 'new').read_bytes() + (d / 'vbmeta').read_bytes(), head, shell)
-            self.assertEqual((d / 'newfooter').read_bytes(), footer, shell)
-
-    def test_same_bytes_as_the_python_builder(self):
-        self.check()
-
-    def test_unaligned_vbmeta(self):
-        self.check(vbmeta_offset=(1 << 20) + 100)
-
-    def test_cmdline_is_loglevel_5_whatever_the_stock_one_is(self):
-        # the Android-side switch arms a slot only when it sees this marker; stock headers have it empty, but a
-        # stock image with a command line of its own must not leak it into the Linux image
-        stock = self.tmp / 'stock.img'
-        fake_stock(stock)
-        raw = bytearray(stock.read_bytes())
-        raw[44:44 + 1536] = b'console=ttyMSM0 androidboot.x=1'.ljust(1536, b'\0')
-        stock.write_bytes(bytes(raw))
-        (self.tmp / 'k').write_bytes(b'k'); (self.tmp / 'r').write_bytes(b'r')
-        d = self.tmp / 'out'
-        for shell in self.each_shell():
-            if d.exists():
-                shutil.rmtree(d)
-            d.mkdir()
-            r = self.up(shell, f'bootimg_from_stock "{stock}" "{self.tmp}/k" "{self.tmp}/r" "{d}"')
-            self.assertEqual(r.returncode, 0, r.stderr)
-            self.assertEqual((d / 'new').read_bytes()[44:44 + 1536], b'loglevel=5'.ljust(1536, b'\0'), shell)
-
-    def test_refuses_what_is_not_a_v4_image(self):
-        bad = self.tmp / 'bad.img'
-        bad.write_bytes(bytes(1 << 20))
-        (self.tmp / 'k').write_bytes(b'k'); (self.tmp / 'r').write_bytes(b'r')
-        for shell in self.each_shell():
-            r = self.up(shell, f'bootimg_from_stock "{bad}" "{self.tmp}/k" "{self.tmp}/r" "{self.tmp}"')
-            self.assertNotEqual(r.returncode, 0)
-            self.assertIn('does not hold a boot image header v4', r.stderr)
-
-    def test_refuses_a_v4_image_without_an_avb_footer(self):
-        stock = self.tmp / 'stock.img'
-        fake_stock(stock)
-        raw = bytearray(stock.read_bytes())
-        raw[-64:-60] = b'XXXX'
-        stock.write_bytes(bytes(raw))
-        (self.tmp / 'k').write_bytes(b'k'); (self.tmp / 'r').write_bytes(b'r')
-        for shell in self.each_shell():
-            r = self.up(shell, f'bootimg_from_stock "{stock}" "{self.tmp}/k" "{self.tmp}/r" "{self.tmp}"')
-            self.assertNotEqual(r.returncode, 0)
-            self.assertIn('has no AVB footer', r.stderr)
-
-    def test_refuses_a_result_that_reaches_the_persistent_log(self):
-        stock = self.tmp / 'stock.img'
-        fake_stock(stock)
-        (self.tmp / 'k').write_bytes(b'k' * 4096); (self.tmp / 'r').write_bytes(b'r')
-        for shell in self.each_shell():
-            r = self.up(shell, f'PERSIST_LOG=8192; bootimg_from_stock "{stock}" "{self.tmp}/k" "{self.tmp}/r" "{self.tmp}"')
-            self.assertNotEqual(r.returncode, 0)
-            self.assertIn('persistent log area', r.stderr)
-            # the sizes it is made of, so a doubled file (two updaters in one directory) shows as one
-            self.assertIn('(12288 bytes: kernel 4096, ramdisks 1, with vbmeta', r.stderr)
-
-    def test_refuses_a_file_another_run_appended_to(self):
-        # two mu300-updates in the same $STAGE/boot each appended their kernel to new (a 56 MB "image" refused by the
-        # persistent log check); a new file that is not what was just assembled is refused as that, and never written
-        stock = self.tmp / 'stock.img'
-        fake_stock(stock)
-        (self.tmp / 'k').write_bytes(b'k' * 4096); (self.tmp / 'r').write_bytes(b'r')
-        grow = 'pad_page() { p=$(( (4096 - $(fsize "$1") % 4096) % 4096 )); [ "$p" = 0 ] || head -c "$p" /dev/zero >> "$1"; ' \
-               'head -c 4096 /dev/zero >> "$1"; }'
-        for shell in self.each_shell():
-            r = self.up(shell, f'{grow}; bootimg_from_stock "{stock}" "{self.tmp}/k" "{self.tmp}/r" "{self.tmp}"')
-            self.assertNotEqual(r.returncode, 0)
-            self.assertIn('not the image just assembled', r.stderr)
-            self.assertIn('another mu300-update', r.stderr)
-            self.assertFalse((self.tmp / 'newfooter').exists())
-
-    def test_apply_keeps_the_vendor_files_the_image_has_a_directory_for(self):
-        # the images ship opt/mu300/android/system/bin/cltest and a few firmware files, so the vendor directories
-        # exist in the new system; busybox's `cp -an old/. new/` then skips them as existing and copies nothing (an
-        # update run from OpenWrt left every system without the Android userspace: no modem, no Wi-Fi)
-        img = self.tmp / 'img'
-        for f, data in [('sbin/init', b'#!/bin/sh\n'), ('opt/mu300/android/system/bin/cltest', b'image'),
-                        ('lib/firmware/regulatory.db', b'image'), ('etc/mu300/image-version', b'v2\n')]:
-            (img / f).parent.mkdir(parents=True, exist_ok=True)
-            (img / f).write_bytes(data)
-        (img / 'sbin/init').chmod(0o755)
-        old = self.disk / 'openwrt'
-        for f, data in [('sbin/init', b'#!/bin/sh\n'), ('opt/mu300/android/system/bin/cltest', b'old'),
-                        ('opt/mu300/android/system/bin/cp_diskserver', b'vendor'),
-                        ('opt/mu300/android/vendor/lib/libril.so', b'vendor'),
-                        ('opt/mu300/android/dev-properties/property_info', b'props'),
-                        ('lib/firmware/wcnmodem.bin', b'fw'), ('lib/firmware/regulatory.db', b'old'),
-                        ('lib/modules/5.4.254/x.ko', b'ko'), ('etc/mu300/vpn.conf', b'mine'),
-                        # adb: off, keys only, and the keys - somebody's choice, which an update must not turn
-                        # back into the default (on, and open to every computer)
-                        ('etc/mu300/adb', b'off\n'), ('etc/mu300/adb_auth', b'keys\n'),
-                        ('etc/mu300/adb_keys', b'QAAAAkey me@pc\n')]:
-            (old / f).parent.mkdir(parents=True, exist_ok=True)
-            (old / f).write_bytes(data)
-        (old / 'etc/mu300/adb_keys').chmod(0o600)
-        (old / 'opt/mu300/android/system/lib').symlink_to('../vendor/lib')
-        stage = self.disk / '.mu300-update'
-        for shell in self.each_shell():
-            for d in ('openwrt.old', 'openwrt.new'):
-                shutil.rmtree(self.disk / d, ignore_errors=True)
-            stage.mkdir(exist_ok=True)
-            subprocess.run(['tar', '-czf', str(stage / 'mu300-openwrt-rootfs.tar.gz'), '-C', str(img), '.'], check=True)
-            r = self.up(shell, 'is_root() { false; }; apply_one openwrt v2', **self.busybox_applets(shell))
-            self.assertEqual(r.returncode, 0, r.stderr)
-            new = self.disk / 'openwrt'
-            self.assertEqual((new / 'opt/mu300/android/system/bin/cp_diskserver').read_bytes(), b'vendor')
-            self.assertEqual((new / 'opt/mu300/android/vendor/lib/libril.so').read_bytes(), b'vendor')
-            self.assertEqual((new / 'opt/mu300/android/dev-properties/property_info').read_bytes(), b'props')
-            self.assertEqual(os.readlink(new / 'opt/mu300/android/system/lib'), '../vendor/lib')
-            self.assertEqual((new / 'lib/firmware/wcnmodem.bin').read_bytes(), b'fw')
-            self.assertEqual((new / 'lib/modules/5.4.254/x.ko').read_bytes(), b'ko')
-            # what the image has stays the image's
-            self.assertEqual((new / 'opt/mu300/android/system/bin/cltest').read_bytes(), b'image')
-            self.assertEqual((new / 'lib/firmware/regulatory.db').read_bytes(), b'image')
-            self.assertEqual((new / 'etc/mu300/vpn.conf').read_bytes(), b'mine')
-            self.assertEqual((new / 'etc/mu300/adb').read_bytes(), b'off\n')
-            self.assertEqual((new / 'etc/mu300/adb_auth').read_bytes(), b'keys\n')
-            self.assertEqual((new / 'etc/mu300/adb_keys').read_bytes(), b'QAAAAkey me@pc\n')
-            self.assertEqual((new / 'etc/mu300/adb_keys').stat().st_mode & 0o777, 0o600)
-            # the next shell updates from this one (disk/openwrt again)
-
-    def test_apply_keeps_the_settings_and_adds_the_images_new_config_files(self):
-        # the old etc/config is kept, but a package the new image brings has its own file there: copied whole, the
-        # old directory dropped /etc/config/sqm and LuCI's SQM page failed ("uci/get: Resource not found")
-        img = self.tmp / 'img-cfg'
-        for f, data in [('sbin/init', b'#!/bin/sh\n'), ('etc/config/network', b'image'), ('etc/config/sqm', b'image sqm'),
-                        ('etc/mu300/image-version', b'v2\n')]:
-            (img / f).parent.mkdir(parents=True, exist_ok=True)
-            (img / f).write_bytes(data)
-        (img / 'sbin/init').chmod(0o755)
-        (img / 'etc/crontabs').mkdir(parents=True)     # the image ships the directory, empty
-        old = self.disk / 'openwrt'
-        for f, data in [('sbin/init', b'#!/bin/sh\n'), ('etc/config/network', b'mine'), ('etc/config/tailscale', b'mine too'),
-                        ('etc/unisoc-modem/lock-state.d/lte_band', b'3,7'), ('etc/unisoc-modem/panel-ops.log', b'log'),
-                        ('etc/crontabs/root', b'0 4 * * * reboot\n')]:
-            (old / f).parent.mkdir(parents=True, exist_ok=True)
-            (old / f).write_bytes(data)
-        stage = self.disk / '.mu300-update'
-        for shell in self.each_shell():
-            for d in ('openwrt.old', 'openwrt.new'):
-                shutil.rmtree(self.disk / d, ignore_errors=True)
-            stage.mkdir(exist_ok=True)
-            subprocess.run(['tar', '-czf', str(stage / 'mu300-openwrt-rootfs.tar.gz'), '-C', str(img), '.'], check=True)
-            r = self.up(shell, 'is_root() { false; }; apply_one openwrt v2', **self.busybox_applets(shell))
-            self.assertEqual(r.returncode, 0, r.stderr)
-            cfg = self.disk / 'openwrt/etc/config'
-            self.assertEqual((cfg / 'network').read_bytes(), b'mine')          # the device's settings win
-            self.assertEqual((cfg / 'tailscale').read_bytes(), b'mine too')    # and stay
-            self.assertEqual((cfg / 'sqm').read_bytes(), b'image sqm')         # the new package's file is added
-            self.assertFalse((self.disk / 'openwrt/etc/config.image').exists())
-            # the panel's saved locks come along (they are replayed at boot, and the modem holds them anyway)
-            state = self.disk / 'openwrt/etc/unisoc-modem'
-            self.assertEqual((state / 'lock-state.d/lte_band').read_bytes(), b'3,7')
-            self.assertEqual((state / 'panel-ops.log').read_bytes(), b'log')
-            # and the jobs of System > Scheduled Tasks come along (the image's own /etc/crontabs is empty)
-            self.assertEqual((self.disk / 'openwrt/etc/crontabs/root').read_bytes(), b'0 4 * * * reboot\n')
-
-    def test_copy_missing_never_writes_through_a_link_of_the_target(self):
-        a, b, outside = self.tmp / 'a', self.tmp / 'b', self.tmp / 'outside'
-        (a / 'd/x').mkdir(parents=True)
-        (a / 'd/x/f').write_text('a')
-        (a / 'name with space').write_text('s')
-        b.mkdir(); outside.mkdir()
-        (b / 'd').symlink_to(outside)
-        for shell in self.each_shell():
-            r = self.up(shell, f'copy_missing "{a}" "{b}"', **self.busybox_applets(shell))
-            self.assertEqual(r.returncode, 0, r.stderr)
-            self.assertEqual(list(outside.iterdir()), [])
-            self.assertEqual((b / 'name with space').read_text(), 's')
-            (b / 'name with space').unlink()
-            r = self.up(shell, f'copy_missing "{self.tmp}/missing" "{b}"', **self.busybox_applets(shell))
-            self.assertNotEqual(r.returncode, 0)
-
-    def test_apply_takes_the_vendor_files_only_the_previous_old_copy_still_has(self):
-        # a device updated by an updater with the busybox cp bug: the system in place has the image's vendor
-        # directories but none of the device's files, and the only copy is in openwrt.old, which the update replaces
-        img = self.tmp / 'img'
-        for f, data in [('sbin/init', b'#!/bin/sh\n'), ('opt/mu300/android/system/bin/cltest', b'image'),
-                        ('lib/firmware/regulatory.db', b'image')]:
-            (img / f).parent.mkdir(parents=True, exist_ok=True)
-            (img / f).write_bytes(data)
-        (img / 'sbin/init').chmod(0o755)
-        stage = self.disk / '.mu300-update'
-        for shell in self.each_shell():
-            for d in ('openwrt', 'openwrt.old', 'openwrt.new'):
-                shutil.rmtree(self.disk / d, ignore_errors=True)
-            hit, good = self.disk / 'openwrt', self.disk / 'openwrt.old'
-            for f, data in [('sbin/init', b'#!/bin/sh\n'), ('opt/mu300/android/system/bin/cltest', b'image'),
-                            ('lib/firmware/regulatory.db', b'image'), ('lib/firmware/mine.bin', b'newer')]:
-                (hit / f).parent.mkdir(parents=True, exist_ok=True)
-                (hit / f).write_bytes(data)
-            for f, data in [('sbin/init', b'#!/bin/sh\n'), ('opt/mu300/android/system/bin/cp_diskserver', b'vendor'),
-                            ('opt/mu300/android/vendor/lib/libril.so', b'vendor'),
-                            ('lib/firmware/wcnmodem.bin', b'fw'), ('lib/firmware/mine.bin', b'older'),
-                            ('lib/firmware/regulatory.db', b'old')]:
-                (good / f).parent.mkdir(parents=True, exist_ok=True)
-                (good / f).write_bytes(data)
-            stage.mkdir(exist_ok=True)
-            subprocess.run(['tar', '-czf', str(stage / 'mu300-openwrt-rootfs.tar.gz'), '-C', str(img), '.'], check=True)
-            r = self.up(shell, 'is_root() { false; }; apply_one openwrt v2', **self.busybox_applets(shell))
-            self.assertEqual(r.returncode, 0, r.stderr)
-            new = self.disk / 'openwrt'
-            self.assertEqual((new / 'opt/mu300/android/system/bin/cp_diskserver').read_bytes(), b'vendor')
-            self.assertEqual((new / 'opt/mu300/android/vendor/lib/libril.so').read_bytes(), b'vendor')
-            self.assertEqual((new / 'lib/firmware/wcnmodem.bin').read_bytes(), b'fw')
-            # gaps only: the system in place and the image come first
-            self.assertEqual((new / 'lib/firmware/mine.bin').read_bytes(), b'newer')
-            self.assertEqual((new / 'lib/firmware/regulatory.db').read_bytes(), b'image')
-
-    def test_modules_into_every_system(self):
-        b = self.tmp / 'bundle'
-        (b / 'modules').mkdir(parents=True)
-        (b / 'modules' / 'a.ko').write_bytes(b'a')
-        (b / 'kernel.release').write_text('6.18.55-mu300\n')
-        (b / 'modules.builtin').write_text('kernel/x.ko\n')
-        (self.disk / 'openwrt').mkdir()
-        for shell in self.each_shell():
-            # a module of an earlier bundle of this release that this one no longer has goes
-            for d in ('ubuntu/lib/modules/6.18.55-mu300/extra', 'openwrt/lib/modules/6.18.55-mu300'):
-                (self.disk / d).mkdir(parents=True, exist_ok=True)
-                (self.disk / d / 'gone.ko').write_bytes(b'old')
-            r = self.up(shell, f'kernel_modules_into_systems "{b}"', MU300_NO_DEPMOD=1)
-            self.assertFalse((self.disk / 'ubuntu/lib/modules/6.18.55-mu300/extra/gone.ko').exists())
-            self.assertFalse((self.disk / 'openwrt/lib/modules/6.18.55-mu300/gone.ko').exists())
-            self.assertEqual(r.returncode, 0, r.stderr)
-            self.assertEqual((self.disk / 'ubuntu/lib/modules/6.18.55-mu300/extra/a.ko').read_bytes(), b'a')
-            self.assertTrue((self.disk / 'ubuntu/lib/modules/6.18.55-mu300/modules.builtin').exists())
-            self.assertEqual((self.disk / 'ubuntu/lib/modules/6.18.55-mu300/modules.order').read_bytes(), b'')
-            self.assertEqual((self.disk / 'openwrt/lib/modules/6.18.55-mu300/a.ko').read_bytes(), b'a')
-        (b / 'kernel.release').write_text('../evil\n')
-        for shell in self.each_shell():
-            self.assertNotEqual(self.up(shell, f'kernel_modules_into_systems "{b}"', MU300_NO_DEPMOD=1).returncode, 0)
-
-    def test_a_new_boot_image_unlocks_for_its_trial(self):
-        src = (BIN / 'mu300-update').read_text()
-        bu = src[src.index('boot_update_run() {'):src.index('\n}\n', src.index('boot_update_run() {'))]
-        self.assertLess(bu.index('unlock_for_trial'), bu.index('write_boot "$dev" "$psize" "$tmp/new"'))
-        rb = src[src.index('rollback_boot() {'):src.index('\n}\n', src.index('rollback_boot() {'))]
-        self.assertLess(rb.index('unlock_for_trial'), rb.index('write_boot'))
-        nb = self.tmp / 'nb'
-        (nb / 'mu300-next-boot').parent.mkdir(parents=True, exist_ok=True)
-        (nb / 'mu300-next-boot').write_text(f'#!/bin/sh\necho "$@" >> "{self.tmp}/nb.log"\n')
-        (nb / 'mu300-next-boot').chmod(0o755)
-        for shell in self.each_shell():
-            r = self.sh(shell, f'. "{BIN}/mu300-update"; unlock_for_trial', MU300_LIB=1, MU300_BIN=nb,
-                        MU300_DISK=self.disk, MU300_SYSROOT=self.root)
-            self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(set((self.tmp / 'nb.log').read_text().split()), {'--trial'})
-
-    def test_a_next_boot_from_before_the_trial_hands_it_to_the_new_system(self):
-        # issue #290: an update from a system whose mu300-next-boot has no --trial (usage, exit 2) wrote the boot image
-        # unarmed. The copy in the system the update has just installed arms it instead
-        nb = self.tmp / 'nb'
-        nb.mkdir(parents=True, exist_ok=True)
-        old = nb / 'mu300-next-boot'
-        old.write_text(f'#!/bin/sh\necho "old $@" >> "{self.tmp}/nb.log"\n'
-                       'echo "usage: $0 linux|android|attempts [N]|status" >&2\nexit 2\n')
-        old.chmod(0o755)
-        new = self.disk / 'openwrt/opt/mu300/bin/mu300-next-boot'
-        new.parent.mkdir(parents=True, exist_ok=True)
-        for shell in self.each_shell():
-            for new_knows, want_err in ((True, ''), (False, 'could not arm the Linux slot')):
-                (self.tmp / 'nb.log').unlink(missing_ok=True)
-                if new_knows:
-                    new.write_text(f'#!/bin/sh\necho "new $@" >> "{self.tmp}/nb.log"\nexit 0\n')
-                else:
-                    new.write_text(old.read_text())
-                new.chmod(0o755)
-                r = self.sh(shell, f'. "{BIN}/mu300-update"; unlock_for_trial; echo "rc=$?"', MU300_LIB=1, MU300_BIN=nb,
-                            MU300_DISK=self.disk, MU300_SYSROOT=self.root)
-                self.assertIn('rc=0', r.stdout)
-                log = (self.tmp / 'nb.log').read_text().splitlines()
-                if new_knows:
-                    self.assertEqual(log, ['old --trial', 'new --trial'])
-                    self.assertEqual(r.stderr, '')
-                else:
-                    self.assertIn(want_err, r.stderr)
-                    self.assertIn('usage:', r.stderr)
-        # a running mu300-next-boot that knows --trial is the only one asked
-        (self.tmp / 'nb.log').unlink(missing_ok=True)
-        old.write_text(f'#!/bin/sh\necho "running $@" >> "{self.tmp}/nb.log"\nexit 0\n')
-        new.write_text(f'#!/bin/sh\necho "new $@" >> "{self.tmp}/nb.log"\nexit 0\n')
-        for shell in self.each_shell():
-            r = self.sh(shell, f'. "{BIN}/mu300-update"; unlock_for_trial', MU300_LIB=1, MU300_BIN=nb,
-                        MU300_DISK=self.disk, MU300_SYSROOT=self.root)
-            self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(set((self.tmp / 'nb.log').read_text().splitlines()), {'running --trial'})
-
-    def test_the_trial_arming_says_what_it_could_not_do(self):
-        # a boot image written while Android is the default boot is not tried at all, and one whose slot block cannot
-        # be rebuilt gets a single boot instead of N: both are said (2026-10-12: silence about the first is how an
-        # update ended in Android while its last line promised a reboot). boot_update keeps going - the image is
-        # written either way - so unlock_for_trial itself never fails
-        nb = self.tmp / 'nb'
-        (nb / 'mu300-next-boot').parent.mkdir(parents=True, exist_ok=True)
-        for shell in self.each_shell():
-            for code, line, want in (('0', '', None),
-                                     ('3', 'default boot is not linux: nothing armed', 'the default boot is Android'),
-                                     ('1', 'arming with 1 attempt, not 5', 'arming with 1 attempt, not 5')):
-                (nb / 'mu300-next-boot').write_text(
-                    '#!/bin/sh\n' + (f'echo "{line}" >&2\n' if line else '') + f'exit {code}\n')
-                (nb / 'mu300-next-boot').chmod(0o755)
-                r = self.sh(shell, f'. "{BIN}/mu300-update"; unlock_for_trial; echo "rc=$?"', MU300_LIB=1, MU300_BIN=nb,
-                            MU300_DISK=self.disk, MU300_SYSROOT=self.root)
-                self.assertEqual(r.returncode, 0, r.stderr)
-                self.assertIn('rc=0', r.stdout, code)
-                if want:
-                    self.assertIn(want, r.stderr, code)
-                else:
-                    self.assertEqual(r.stderr, '', code)
-
-    def test_the_reboot_line_knows_android_is_the_default_boot(self):
-        # what apply, kernel, rollback and boot print last: with Android as the default boot a plain reboot starts
-        # Android, so the way to Linux takes the place of "Reboot to start it" (2026-10-12)
-        f = self.tmp / 'default-boot'
-        for shell in self.each_shell():
-            for value in ('linux\n', 'android\n', None):
-                if value is None:
-                    f.unlink(missing_ok=True)
-                else:
-                    f.write_text(value)
-                r = self.sh(shell, f'. "{BIN}/mu300-update"; reboot_goes_to_android || echo REBOOT-LINE',
-                            MU300_LIB=1, MU300_BIN=BIN, MU300_DISK=self.disk, MU300_SYSROOT=self.root,
-                            MU300_DEFAULT_BOOT=f)
-                self.assertEqual(r.returncode, 0, r.stderr)
-                if value == 'linux\n':
-                    self.assertEqual(r.stdout, 'REBOOT-LINE\n')
-                else:
-                    self.assertIn('The default boot is Android', r.stdout, value)
-                    self.assertIn('mu300-next-boot linux', r.stdout, value)
-                    self.assertNotIn('REBOOT-LINE', r.stdout, value)
-
-    def test_rollback_boot_brings_the_modules_of_its_image_back(self):
-        # two builds of one kernel release share lib/modules/<release>: the set in place is kept with the image it
-        # runs with, and goes back with it (seen on F50-B: rollback-boot to a 6.18.55 image with the other
-        # release's 6.18.55 modules did not come up)
-        b = self.tmp / 'bundle'
-        (b / 'modules').mkdir(parents=True)
-        (b / 'modules' / 'a.ko').write_bytes(b'new')
-        (b / 'modules' / 'b.ko').write_bytes(b'new')
-        (b / 'kernel.release').write_text('6.18.55\n')
-        (self.disk / 'openwrt').mkdir()
-        dirs = ('ubuntu/lib/modules/6.18.55/extra', 'openwrt/lib/modules/6.18.55')
-        for shell in self.each_shell():
-            shutil.rmtree(self.disk / 'boot', ignore_errors=True)
-            for d in dirs:
-                shutil.rmtree(self.disk / d, ignore_errors=True)
-                (self.disk / d).mkdir(parents=True)
-                (self.disk / d / 'a.ko').write_bytes(b'old')
-            r = self.up(shell, f'BOOTDIR="{self.disk}/boot"; mkdir -p "$BOOTDIR"; prev_modules_save "{b}" && '
-                               f'kernel_modules_into_systems "{b}" >/dev/null && prev_modules_commit', MU300_NO_DEPMOD=1)
-            self.assertEqual(r.returncode, 0, r.stderr)
-            for d in dirs:
-                self.assertEqual(sorted(f.name for f in (self.disk / d).glob('*.ko')), ['a.ko', 'b.ko'])
-            r = self.up(shell, f'BOOTDIR="{self.disk}/boot"; prev_modules_restore', MU300_NO_DEPMOD=1)
-            self.assertEqual(r.returncode, 0, r.stderr)
-            self.assertIn('modules of the previous image (6.18.55) are back', r.stdout)
-            for d in dirs:
-                self.assertEqual({f.name: f.read_bytes() for f in (self.disk / d).glob('*.ko')}, {'a.ko': b'old'})
-            # a system that had no set of this release then has none after the rollback
-            shutil.rmtree(self.disk / dirs[1])
-            r = self.up(shell, f'BOOTDIR="{self.disk}/boot"; prev_modules_save "{b}" && '
-                               f'kernel_modules_into_systems "{b}" >/dev/null && prev_modules_commit && '
-                               f'prev_modules_restore >/dev/null',
-                        MU300_NO_DEPMOD=1)
-            self.assertEqual(r.returncode, 0, r.stderr)
-            self.assertEqual(list((self.disk / dirs[1]).glob('*.ko')), [])
-            # a 5.4 bundle (no kernel.release) leaves the mainline sets alone, and keeps nothing to restore
-            (b / 'kernel.release').rename(b / 'kr')
-            r = self.up(shell, f'BOOTDIR="{self.disk}/boot"; prev_modules_save "{b}"; prev_modules_commit; prev_modules_restore; echo done')
-            (b / 'kr').rename(b / 'kernel.release')
-            self.assertEqual(r.stdout, 'done\n', r.stderr)
-            self.assertFalse((self.disk / 'boot/prev.modules').exists())
-
-    def test_boot_update_keeps_the_modules_before_it_replaces_them(self):
-        src = (BIN / 'mu300-update').read_text()
-        bu = src[src.index('boot_update_run() {'):src.index('\n}\n', src.index('boot_update_run() {'))]
-        # the replacing set goes in after the old one is kept, and before the image is written
-        self.assertLess(bu.index('prev_modules_save "$tmp"'), bu.index('! kernel_modules_into_systems "$tmp"'))
-        self.assertLess(bu.index('! kernel_modules_into_systems "$tmp"'), bu.index('write_boot "$dev" "$psize" "$tmp/new"'))
-        # the kept set becomes the previous image's together with prev.body, before the write
-        self.assertLess(bu.index('! kernel_modules_into_systems "$tmp"'), bu.index('prev_modules_commit\n'))
-        self.assertLess(bu.index('prev_modules_commit\n'), bu.index('mv -f "$tmp/body" "$BOOTDIR/prev.body"'))
-        self.assertLess(bu.index('prev_modules_commit\n'), bu.index('write_boot "$dev" "$psize" "$tmp/new"'))
-        # a failed write puts the old modules back with the old image
-        fail = bu[bu.index('failed verification; restoring'):]
-        self.assertIn('prev_modules_restore', fail[:fail.index('return 1')])
-        rb = src[src.index('rollback_boot() {'):src.index('\n}\n', src.index('rollback_boot() {'))]
-        self.assertLess(rb.index('write_boot'), rb.index('prev_modules_restore'))
 
 
 class KernelSetOptionalArgs(UpdateBase):
@@ -995,29 +520,25 @@ boot_kept_drop {new}
 
 
 class KernelStep(UpdateBase):
-    """boot_update as a whole against a boot partition that is a file (FINDINGS 177): since every module is built a
-    kernel update wanted 500 MB free at once and left its unpacked bundle behind when it failed. The step now unpacks
-    once, removes the bundle once unpacked, gives module sets more names instead of copying them, keeps the image it
+    """boot_update as a whole against a boot partition that is a file: every module is built, so a set is 120 MB and a
+    copy of each would make a kernel update want 500 MB free at once. The step unpacks once, removes the bundle once unpacked, gives module sets more names instead of copying them, keeps the image it
     read by moving it, and leaves nothing of itself behind however it ends - with the one-boot fallback's needs kept:
     the image before and the set it runs with, together."""
 
-    KREL = '6.18.57'
+    KREL = '7.2.11'
     PSIZE = 4 << 20
 
     def setUp(self):
         super().setUp()
-        (self.disk / 'openwrt').mkdir()
         (self.root / 'run/mu300/linux-slot').write_text('b\n')
         self.part = self.tmp / 'boot_b.img'
         self.src = self.tmp / 'src'
         self.src.mkdir()
         (self.disk / 'boot').mkdir()
-        (self.disk / 'boot/kernel').write_text('6.18\n')
 
     def old_image(self, krel=None):
         """the image in the slot: header v4 with a 4 KiB kernel (with the banner of KREL) and an LZ4-legacy ramdisk,
-        vbmeta at 1 MiB, footer (and the kernel choice 6.18: a rollback-boot sets it back)"""
-        (self.disk / 'boot/kernel').write_text('6.18\n')
+        vbmeta at 1 MiB, footer"""
         img = bytearray(self.PSIZE)
         img[0:8] = b'ANDROID!'
         struct.pack_into('<III', img, 8, 4096, 16, 0)
@@ -1034,9 +555,10 @@ class KernelStep(UpdateBase):
         return bytes(img)
 
     def make_bundle(self, mods, krel=None):
-        p = self.src / 'mu300-kernel-6.18.tar.gz'
+        p = self.src / 'mu300-kernel-7.2.tar.gz'
         files = [('./Image', b'N' * 100 + f'Linux version {krel or self.KREL} (b@h)'.encode() + b'N' * 8000), ('./ramdisk-generic.lz4', b'\x02\x21\x4c\x18generic'),
-                 ('./devices', b'f50 u30air\n'), ('./features', b'sdcard\nlinux-slot\n'),
+                 ('./devices', b'f50 u30air\n'), ('./features', b'sdcard\nlinux-slot\n'), ('./contract', b'1\n'),
+                 ('./autoload-blocked', b'tipc\n'),
                  ('./kernel.release', ((krel or self.KREL) + '\n').encode()), ('./modules.builtin', b'kernel/x.ko\n'),
                  ('./kernel.config', b'CONFIG_X=y\n' * 100)]
         files += [(f'./modules/{n}', d) for n, d in mods.items()]
@@ -1060,13 +582,13 @@ class KernelStep(UpdateBase):
 
     def mod_dirs(self, krel=None):
         k = krel or self.KREL
-        return [self.disk / f'ubuntu/lib/modules/{k}/extra', self.disk / f'openwrt/lib/modules/{k}']
+        return [self.disk / f'openwrt-luci/lib/modules/{k}']
 
     def kept(self, mods):
         """the set kept with the image before the one in the slot (an update before this one)"""
         pm = self.disk / 'boot/prev.modules'
         shutil.rmtree(pm, ignore_errors=True)
-        for os_ in ('ubuntu', 'openwrt'):
+        for os_ in ('openwrt-luci',):
             (pm / os_).mkdir(parents=True)
             for n, data in mods.items():
                 (pm / os_ / n).write_bytes(data)
@@ -1105,16 +627,15 @@ class KernelStep(UpdateBase):
             self.assertEqual(part[4096:4196], b'N' * 100)
             self.assertEqual((self.disk / 'boot/prev.body').read_bytes(), img[:1 << 20])
             self.assertEqual((self.disk / 'boot/prev.vbmeta').read_bytes(), b'V' * 2304)
-            # the systems have the new set, one file for both systems and the stage's unpacked copy gone
-            u, o = self.mod_dirs()
-            self.assertEqual(self.ko(u), new)
+            # the system has the new set, with the list the guard reads beside it, and the stage's unpacked copy gone
+            o, = self.mod_dirs()
             self.assertEqual(self.ko(o), new)
-            self.assertEqual((u / 'a.ko').stat().st_ino, (o / 'a.ko').stat().st_ino)
-            self.assertEqual((u / 'a.ko').stat().st_nlink, 2)
+            self.assertEqual((o / 'autoload-blocked').read_text(), 'tipc\n')
+            self.assertEqual((o / 'modules.builtin').read_text(), 'kernel/x.ko\n')
+            self.assertEqual((o / 'a.ko').stat().st_nlink, 1)
             # the set the image before runs with is kept with it, as the same files (no copy)
             pm = self.disk / 'boot/prev.modules'
-            self.assertEqual(self.ko(pm / 'ubuntu'), old)
-            self.assertEqual(self.ko(pm / 'openwrt'), old)
+            self.assertEqual(self.ko(pm / 'openwrt-luci'), old)
             self.assertEqual((pm / 'kernel.release').read_text().strip(), self.KREL)
             # nothing of the step is left: no unpacked bundle, no download, no half-kept set
             self.assertEqual(self.leftovers(), [])
@@ -1123,9 +644,9 @@ class KernelStep(UpdateBase):
                         MU300_NO_DEPMOD=1, **self.busybox_applets(shell))
             self.assertIn('rc=0', r.stdout, r.stderr)
             self.assertEqual(self.part.read_bytes()[:1 << 20], img[:1 << 20])
-            self.assertEqual(self.ko(u), old)
             self.assertEqual(self.ko(o), old)
-            self.assertEqual(self.ko(pm / 'ubuntu'), old)
+            self.assertFalse((o / 'autoload-blocked').exists())
+            self.assertEqual(self.ko(pm / 'openwrt-luci'), old)
 
     def test_too_little_room_changes_nothing_and_leaves_nothing(self):
         old = {'a.ko': b'old a'}
@@ -1138,7 +659,7 @@ class KernelStep(UpdateBase):
             for staged in (False, True):
                 if staged:
                     (self.disk / '.mu300-update').mkdir(exist_ok=True)
-                    shutil.copy(self.src / 'mu300-kernel-6.18.tar.gz', self.disk / '.mu300-update/')
+                    shutil.copy(self.src / 'mu300-kernel-7.2.tar.gz', self.disk / '.mu300-update/')
                 r = self.run_step(shell, 'df() { printf "Filesystem 1024-blocks Used Available Capacity Mounted\\n'
                                          'x 800000 790000 10 99%% /\\n"; }; ')
                 self.assertIn('rc=1', r.stdout, r.stderr)
@@ -1147,11 +668,11 @@ class KernelStep(UpdateBase):
                 self.assertEqual(self.part.read_bytes(), img)
                 for d in self.mod_dirs():
                     self.assertEqual(self.ko(d), old)
-                self.assertEqual(self.ko(self.disk / 'boot/prev.modules/ubuntu'), {'a.ko': b'older a'})
+                self.assertEqual(self.ko(self.disk / 'boot/prev.modules/openwrt-luci'), {'a.ko': b'older a'})
                 self.assertEqual(self.leftovers(), [])
 
     def test_short_of_room_the_image_kept_from_before_goes_first(self):
-        # after one kernel update F50-C keeps the image before with its own set (120 MB): the next update would not
+        # after one kernel update the device keeps the image before with its own set (120 MB): the next update may not
         # fit beside it. It goes - image and set together - when that makes the room, and the update goes on.
         old = {'a.ko': b'old a'}
         df = 'df() { printf "F 1 2 3 4 5\\nx 800000 790000 5000 99%% /\\n"; }; '
@@ -1168,7 +689,7 @@ class KernelStep(UpdateBase):
             self.assertIn('the boot image kept from before the one in place (v2026.10.01.1) and its modules are given up',
                           r.stdout)
             self.assertEqual((self.disk / 'boot/prev.body').read_bytes(), img[:1 << 20])
-            self.assertEqual(self.ko(self.disk / 'boot/prev.modules/ubuntu'), old)
+            self.assertEqual(self.ko(self.disk / 'boot/prev.modules/openwrt-luci'), old)
             self.assertEqual(self.leftovers(), [])
             # without the room even then: nothing is given up, nothing changes
             self.old_image()
@@ -1178,15 +699,14 @@ class KernelStep(UpdateBase):
             self.assertIn('rc=1', r.stdout, r.stderr)
             self.assertIn('in the boot image kept for rollback-boot', r.stderr)
             self.assertEqual((self.disk / 'boot/prev.body').read_bytes(), b'image before')
-            self.assertEqual(self.ko(self.disk / 'boot/prev.modules/ubuntu'), {'a.ko': b'older a'})
+            self.assertEqual(self.ko(self.disk / 'boot/prev.modules/openwrt-luci'), {'a.ko': b'older a'})
             self.assertEqual(self.leftovers(), [])
 
     def test_sets_no_boot_image_runs_go(self):
-        # every kernel release a bundle brought left its set (120 MB) behind: F50-C had 6.18.56's beside 6.18.57's.
-        # Only the image in the slot, the kept image and the running kernel need theirs; the vendor kernel's sets and
-        # directories without modules are the systems' own.
+        # every kernel release a bundle brought leaves its set (120 MB) behind: 7.2.10's beside 7.2.11's. Only the
+        # image in the slot, the kept image and the running kernel need theirs; directories without modules stay.
         old = {'a.ko': b'old a'}
-        u, o = self.disk / 'ubuntu/lib/modules', self.disk / 'openwrt/lib/modules'
+        o = self.disk / 'openwrt-luci/lib/modules'
         for shell in self.each_shell():
             for banner in (None, self.KREL):
                 self.old_image(banner)
@@ -1194,72 +714,31 @@ class KernelStep(UpdateBase):
                 self.kept({'a.ko': b'older a'})
                 kept = bytearray(8192)
                 struct.pack_into('<I', kept, 8, 4096)
-                kept[4096:4096 + 40] = b'Linux version 6.18.56 (b@h) #1 SMP'.ljust(40, b'k')
+                kept[4096:4096 + 40] = b'Linux version 7.2.10 (b@h) #1 SMP'.ljust(40, b'k')
                 (self.disk / 'boot/prev.body').write_bytes(bytes(kept))
-                for d, n in ((u / '6.18.56/extra', 'k.ko'), (o / '6.18.56', 'k.ko'), (o / '6.18.40', 's.ko'),
-                             (u / '6.18.40/extra', 's.ko'), (o / '5.4.254-gtest', 'v.ko'), (o / '6.12.94', None)):
+                for d, n in ((o / '7.2.10', 'k.ko'), (o / '7.2.9', 's.ko'), (o / '6.12.94', None)):
                     d.mkdir(parents=True, exist_ok=True)
                     if n:
                         (d / n).write_bytes(b'x')
                 self.make_bundle({'a.ko': b'new a'})
                 r = self.run_step(shell)
                 self.assertIn('rc=0', r.stdout, r.stderr)
-                left = sorted(p.name for p in o.iterdir()), sorted(p.name for p in u.iterdir())
+                left = sorted(p.name for p in o.iterdir())
                 if banner is None:
                     # the image in the slot does not say its release: nothing is removed
                     self.assertNotIn('removed', r.stdout)
-                    self.assertEqual(left, (['5.4.254-gtest', '6.12.94', '6.18.40', '6.18.56', self.KREL],
-                                            ['6.18.40', '6.18.56', self.KREL]))
+                    self.assertEqual(left, ['6.12.94', '7.2.10', self.KREL, '7.2.9'])
                 else:
-                    # 6.18.40 before the download; 6.18.56 once its image is no longer kept
+                    # 7.2.9 before the download; 7.2.10 once its image is no longer kept
                     gone = [ln.split(': ')[-1].split() for ln in r.stdout.splitlines() if 'no boot image here runs removed' in ln]
-                    self.assertEqual([sorted(g) for g in gone], [['openwrt:6.18.40', 'ubuntu:6.18.40'],
-                                                                 ['openwrt:6.18.56', 'ubuntu:6.18.56']])
-                    self.assertEqual(left, (['5.4.254-gtest', '6.12.94', self.KREL], [self.KREL]))
+                    self.assertEqual(gone, [['openwrt-luci:7.2.9'], ['openwrt-luci:7.2.10']])
+                    self.assertEqual(left, ['6.12.94', self.KREL])
                     self.assertEqual(self.ko(o / self.KREL), {'a.ko': b'new a'})
-                for d in (u, o):
-                    shutil.rmtree(d)
-
-    def test_a_system_just_replaced_gets_the_set_of_the_image_in_the_slot(self):
-        # Ubuntu's sets are never carried over by a system update: after "apply" replaced Ubuntu, the image in the
-        # slot - kept for rollback-boot once the new one is written - had no modules in the new system, and
-        # rollback-boot brought it back without them (F50-B, 2026-10-17). The previous system ran with it: its set
-        # is taken over, as second names.
-        old = {'a.ko': b'old a', 'b.ko': b'old b'}
-        for shell in self.each_shell():
-            for krel in (self.KREL, '7.2.11'):
-                self.old_image(self.KREL)
-                self.systems(old)
-                shutil.rmtree(self.disk / 'ubuntu.old', ignore_errors=True)
-                (self.disk / 'ubuntu').rename(self.disk / 'ubuntu.old')
-                (self.disk / 'ubuntu/etc').mkdir(parents=True)
-                (self.disk / f'ubuntu.old/lib/modules/{self.KREL}/modules.builtin').write_text('kernel/x.ko\n')
-                self.make_bundle({'a.ko': b'new a'}, krel=krel)
-                r = self.run_step(shell)
-                self.assertIn('rc=0', r.stdout, r.stderr)
-                self.assertIn(f'the modules of {self.KREL} (the image in the slot) taken over from ubuntu.old into ubuntu',
-                              r.stdout)
-                u = self.disk / f'ubuntu/lib/modules/{self.KREL}/extra'
-                if krel == self.KREL:
-                    # the kept set is the old system's, and rollback-boot puts it back
-                    self.assertEqual(self.ko(self.disk / 'boot/prev.modules/ubuntu'), old)
-                    self.assertEqual(self.ko(u), {'a.ko': b'new a'})
-                    r = self.up(shell, (self.STUBS % self.PSIZE) + 'rollback_boot; echo "rc=$?"', PART=self.part,
-                                MU300_NO_DEPMOD=1)
-                    self.assertIn('rc=0', r.stdout, r.stderr)
-                    self.assertEqual(self.ko(u), old)
-                else:
-                    # another release: the slot image's set stays in the new system for a rollback-boot
-                    self.assertEqual(self.ko(u), old)
-                    self.assertEqual((u / 'a.ko').stat().st_ino,
-                                     (self.disk / f'ubuntu.old/lib/modules/{self.KREL}/extra/a.ko').stat().st_ino)
-                    self.assertTrue((u.parent / 'modules.builtin').exists())
-                    self.assertEqual(self.ko(self.disk / 'ubuntu/lib/modules/7.2.11/extra'), {'a.ko': b'new a'})
-                shutil.rmtree(self.disk / 'ubuntu.old')
+                shutil.rmtree(o)
 
     def test_the_kept_set_counts_only_its_own_files(self):
         # after a rollback-boot the systems' set is the kept set's files: giving it up frees nothing of those
-        pm = self.disk / 'boot/prev.modules/openwrt'
+        pm = self.disk / 'boot/prev.modules/openwrt-luci'
         pm.mkdir(parents=True)
         (pm / 'own.ko').write_bytes(b'x' * 10000)
         (pm / 'shared.ko').write_bytes(b'y' * 50000)
@@ -1285,7 +764,7 @@ class KernelStep(UpdateBase):
                 self.assertEqual(self.ko(d), old)
             # the image in the slot is the kept one now, with its own set
             self.assertEqual((self.disk / 'boot/prev.body').read_bytes(), img[:1 << 20])
-            self.assertEqual(self.ko(self.disk / 'boot/prev.modules/openwrt'), old)
+            self.assertEqual(self.ko(self.disk / 'boot/prev.modules/openwrt-luci'), old)
             self.assertEqual(self.leftovers(), [])
 
     @unittest.skipIf(os.geteuid() == 0, 'root writes into a read-only directory')
@@ -1296,20 +775,20 @@ class KernelStep(UpdateBase):
             self.systems(old)
             self.kept({'a.ko': b'older a'})
             self.make_bundle({'a.ko': b'new a'})
-            o = self.mod_dirs()[1]
+            o = self.mod_dirs()[0]
             o.chmod(0o555)
             try:
                 r = self.run_step(shell)
             finally:
                 o.chmod(0o755)
             self.assertIn('rc=1', r.stdout, r.stderr)
-            self.assertIn('installing the modules into openwrt failed', r.stderr)
+            self.assertIn('installing the modules into openwrt-luci failed', r.stderr)
             self.assertEqual(self.part.read_bytes(), img)
             for d in self.mod_dirs():
                 self.assertEqual(self.ko(d), old)
             # the image kept before this run, and the set it runs with, are as they were
             self.assertEqual((self.disk / 'boot/prev.body').read_bytes(), b'image before')
-            self.assertEqual(self.ko(self.disk / 'boot/prev.modules/ubuntu'), {'a.ko': b'older a'})
+            self.assertEqual(self.ko(self.disk / 'boot/prev.modules/openwrt-luci'), {'a.ko': b'older a'})
             self.assertEqual(self.leftovers(), [])
 
     def test_a_run_stopped_between_the_modules_and_the_image_puts_the_set_back(self):
@@ -1324,7 +803,7 @@ class KernelStep(UpdateBase):
             self.assertEqual(r.returncode, 130, r.stderr)
             for d in self.mod_dirs():
                 self.assertEqual(self.ko(d), old)
-            self.assertEqual(self.ko(self.disk / 'boot/prev.modules/ubuntu'), {'a.ko': b'older a'})
+            self.assertEqual(self.ko(self.disk / 'boot/prev.modules/openwrt-luci'), {'a.ko': b'older a'})
             self.assertEqual(self.leftovers(), [])
 
     def test_a_bundle_of_the_callers_is_never_removed(self):
@@ -1349,12 +828,12 @@ class KernelStep(UpdateBase):
             r = self.up(shell, 'asset_kb() { echo 80000; }; kernel_need_kb v1')
             self.assertEqual(int(r.stdout), 3 * 80000 + 80000 + 16384, r.stderr)
             st.mkdir()
-            (st / 'mu300-kernel-6.18.tar.gz').write_bytes(b'x' * (20 << 20))
+            (st / 'mu300-kernel-7.2.tar.gz').write_bytes(b'x' * (20 << 20))
             r = self.up(shell, 'asset_kb() { echo 1; }; kernel_need_kb v1')
             kd = (20 << 20) // 1024 + 1
             self.assertEqual(int(r.stdout), 3 * kd + (65536 - kd) + 16384, r.stderr)
-        # what a kernel update wants is what the F50-C's 804 MiB region has after OpenWrt (345 MB): the release's
-        # 6.18 bundle (51 MB) before its download
+        # what a kernel update wants is less than the smallest region (804 MiB) has after OpenWrt (345 MB): a bundle
+        # of 51 MB before its download
         self.assertLess((3 * 51445 + 65536 + 16384) // 1024, 300)
 
     def test_apply_with_only_the_kernel_to_do_asks_for_the_kernels_room(self):
@@ -1368,7 +847,7 @@ class KernelStep(UpdateBase):
 
 class Lock(UpdateBase):
     """One mu300-update at a time: the second says who holds the lock and exits 1 before it touches anything.
-    With flock where the machine has it (busybox's applet on OpenWrt, util-linux on Ubuntu), with a pid directory
+    With flock where the machine has it (busybox's applet, or the test machine's), with a pid directory
     without; NO_FLOCK forces the directory on a machine that has flock."""
     NO_FLOCK = 'have() { [ "$1" != flock ] && command -v "$1" >/dev/null 2>&1; }'
 
@@ -1432,10 +911,9 @@ class Lock(UpdateBase):
 
     def test_a_run_continued_with_the_releases_updater_keeps_its_lock(self):
         """apply execs the release's mu300-update when it differs: the same process, and the lock is its own. What
-        the updater before the exec left behind - its keep-alive's ping or sleep, started after lock_take with the
-        lock's descriptor - holds the flock for a few seconds more, and the continued run then said "another
-        mu300-update is running" with its own pid and ended: every update to a release with another updater
-        (v2026.10.23 to v2026.10.24 on a device, docs/FINDINGS.md 81). A stranger's lock is still refused."""
+        the updater before the exec left behind - a child started after lock_take with the lock's descriptor - can
+        hold the flock for a few seconds more, and the continued run must not say "another mu300-update is running"
+        with its own pid and end. A stranger's lock is still refused."""
         for shell in self.each_shell():
             with self.subTest(shell=shell[0]):
                 if not shutil.which('flock'):
@@ -1453,18 +931,6 @@ class Lock(UpdateBase):
                 self.assertEqual((r.returncode, r.stdout), (1, ''), r.stderr)
                 self.assertIn(f'another mu300-update is running (pid {pid})', r.stderr)
                 self.end_holders()
-
-    def test_the_keep_alive_does_not_hold_the_lock(self):
-        """keepalive_start's loop runs without the lock's descriptor: a ping or sleep of it that outlives the run
-        (kill ends the subshell, not its child) must not keep the next run out."""
-        for shell in self.each_shell():
-            with self.subTest(shell=shell[0]):
-                if not shutil.which('flock'):
-                    self.skipTest('no flock here')
-                r = self.sh(shell, f'. "{BIN}/mu300-update"; lock_take; keepalive_start; sleep 0.3; keepalive_stop; '
-                                   f'exec 9>&-; . "{BIN}/mu300-update"; lock_take; echo taken',
-                            MU300_LIB=1, MU300_DISK=self.disk, MU300_BIN=BIN, MU300_SYSROOT=self.root, MU300_LOCK=self.lock)
-                self.assertEqual((r.returncode, r.stdout), (0, 'taken\n'), r.stderr)
 
     def test_second_run_is_refused_with_the_holders_pid(self):
         for shell in self.each_shell():
@@ -1564,8 +1030,7 @@ class Lock(UpdateBase):
         main = src[src.index('[ "$(id -u)" = 0 ]'):]
         m = re.search(r'^\s*([a-z|-]+)\)\n\s*lock_take;', main, re.M)
         self.assertIsNotNone(m, 'no command locks')
-        self.assertEqual(set(m.group(1).split('|')), {'apply', 'boot', 'kernel', 'rollback', 'rollback-boot', 'clean', 'accounts'})
-        self.assertLess(main.index('lock_take'), main.index('keepalive_start'))
+        self.assertEqual(set(m.group(1).split('|')), {'apply', 'boot', 'rollback', 'rollback-boot', 'clean', 'accounts'})
         self.assertIn("lock_drop' EXIT", main)
         # under /run (root's own, so no login user can plant a link or a lock there), not in $STAGE (clean deletes
         # it) nor /tmp or /var/lock (anyone's)

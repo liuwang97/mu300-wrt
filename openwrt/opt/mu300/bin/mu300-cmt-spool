@@ -1,6 +1,6 @@
 #!/bin/sh
 # Put one message the modem delivered directly (an unsolicited "+CMT: ..." line and the PDU line after it, PDU mode)
-# on the disk, for mu300-smsd to pool and acknowledge. mu300-atd runs this for every +CMT frame it reads, with the
+# on the disk, for mu300-smsd to pool and acknowledge. mu300-modemd runs this for every +CMT frame it reads, with the
 # two lines on stdin: the message is never an argument (argv is public), and never left in the URC log (world
 # readable, and emptied when it grows).
 #

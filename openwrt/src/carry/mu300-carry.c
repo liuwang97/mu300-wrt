@@ -1,9 +1,7 @@
 /*
  * mu300-carry: the file work of an update that keeps everything the user made (mu300-update, the carry block;
- * docs/FINDINGS.md 85). One static program does it on every path an update takes - Ubuntu, OpenWrt's busybox, and
- * Android's toybox when an installer or the Magisk zip updates - because none of their cp and tar keep all of a file
- * (measured: busybox cp -a makes a sparse file dense and drops extended attributes and the fraction of the second;
- * toybox cp -a also breaks hard links).
+ * openwrt/docs/update.md). One static program does it, because busybox's cp and tar do not keep all of a file
+ * (busybox cp -a makes a sparse file dense and drops extended attributes and the fraction of the second).
  *
  *   mu300-carry scan ROOT              one line for everything below ROOT, never leaving its filesystem:
  *                                        TYPE MODE UID GID SIZE NLINK INODE BLOCKS PATH
@@ -18,7 +16,7 @@
  *                                      of one file in the list stay one file; a directory is made, not filled
  *   mu300-carry link SRC DST [IDMAP] < PATHS   the same, but a file becomes a second name of SRC's (no data copied)
  *
- * The unpack of an update that writes only what changed (docs/FINDINGS.md 131; mu300-update, the delta block):
+ * The unpack of an update that writes only what changed (mu300-update, the delta block):
  *   mu300-carry same OLD < LINES       for lines of the new image's manifest: "B PATH" (a binary) or "T PATH" (text)
  *                                      for each file OLD has byte for byte with that mode and owner
  *   mu300-carry tarfilter OLD LIST LOG   the image's tar stream, stdin to stdout, without the files LIST names that
@@ -763,7 +761,7 @@ static int cmd_copy(const char *src, const char *dst, const char *map, int by_li
 	return 0;
 }
 
-/* ---- an update that writes only what changed (docs/FINDINGS.md 131): the new image's files that the installed
+/* ---- an update that writes only what changed: the new image's files that the installed
  * system has byte for byte become second names of the installed ones instead of being written again */
 
 /* a set of paths (open addressing); each entry remembers whether its file was really left out of the stream */

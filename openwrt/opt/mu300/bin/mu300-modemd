@@ -1,22 +1,23 @@
 #!/usr/bin/ucode
-// mu300-modemd -- the modem's AT channels in one event-driven daemon (docs/MODEMD.md, FINDINGS 216).
+// mu300-modemd -- the one owner of the modem's AT channels: every channel of the boot's layout in one event-driven
+// process (openwrt/docs/modem.md).
 //
-// It does what one shell mu300-atd per channel did, for every channel of the boot's layout at once: one request at a
-// time per command channel, a drain before it and a collect after it, the answer files of mu300-at's protocol, the
-// URC logs, the +CMT spool, the +ECIND hook and the reopen rule. The channels themselves are held by mu300-atd-io (C):
-// this daemon talks to it over a unix socket and never blocks (the device's ucode cannot read a tty without
-// blocking). On top of what the shell did: the ubus object mu300.modem (at, status, cell), a ubus event per URC line
-// (mu300.modem.urc), and the panel's cellular collection on demand (cell), inside this process.
+// A SIPC channel hands each line to one reader only and goes silent until a reboot once it is closed, so every AT
+// client goes through here: one request at a time per command channel, a drain before it and a collect after it, the
+// answer files of mu300-at's protocol, the URC logs, the +CMT spool, the +ECIND hook and the reopen rule. The channels
+// themselves are held by mu300-atd-io (C): ucode cannot read a tty without blocking, so this daemon talks to the
+// bridge over a unix socket and never blocks, and a restarted daemon takes the bridge's open channels over. It also
+// publishes the ubus object mu300.modem (at, status, cell), a ubus event per URC line (mu300.modem.urc), and runs the
+// panel's cellular collection on demand (cell) inside this process.
 //
-// Why: the shell daemon paid ~10 forks and 11-16 ms of CPU for every AT command, and a `wc -c` for every URC line;
-// the panel's collector started a process per round on top. Here a command costs a few socket writes, and nothing
-// runs while nothing happens: no timer is armed unless a deadline exists.
+// Nothing runs while nothing happens: a command costs a few socket writes, no process is started for it, and no timer
+// is armed unless a deadline exists, so the panel and the event-driven clients cost next to no CPU.
 //
 //   mu300-modemd [-s SOCKET] BROKER...
 //   BROKER  name=NAME,dev=/dev/stty_nrN,dir=DIR[,urc=N[+N...]][,live=LOG][,reopen=0][,ready=sbuf:SBUF]
-//           one command channel (as one shell mu300-atd instance: MU300_AT_DEV, MU300_AT_DIR,
-//           MU300_AT_URC_CHANNELS, MU300_AT_LIVE_URC_LOG, MU300_AT_DISABLE_REOPEN=1 is reopen=0, and the sbuf
-//           condition the init script waited for)
+//           one command channel: its device, its directory (the request fifo, the locks, the answer files), the
+//           unsolicited channels drained into DIR/urc, the URC log its clients read (live), whether the reopen rule
+//           applies, and the sbuf that must be READY before the first open
 //
 // Environment: MU300_AT_URC_MAX (65536 bytes a log), MU300_AT_URC_QUIET (240 s), MU300_CMT_SPOOL_BIN,
 // MU300_SIM_STATE_BIN, MU300_DASH_DIR / MU300_DASH_POOL_DIR / MU300_DASH_IDENT_DIR (the collector's, as
@@ -161,7 +162,7 @@ for (let s in specs) {
 		if (dev == s.dev || chans[name])
 			continue;
 		let logf = b.urcdir + '/' + name + '.log';
-		write_small(logf, '');   // the drainer of the shell daemon started its log over too
+		write_small(logf, '');   // a new boot's log starts over
 		chans[name] = { name: name, dev: dev, kind: 'urc', broker: b, n: +n, log: logf, state: 'unknown', partial: '', cmt: null };
 	}
 }
@@ -277,7 +278,7 @@ function answer_file(r, text) {
 }
 
 // the client lock ($DIR/lock, mu300-at's mutex between clients), for this daemon's own requests: taken without waiting
-// (as the collector's mu300-at did with MU300_AT_LOCK_WAIT=0); a stale holder is taken over as mu300-at does
+// (as mu300-at with MU300_AT_LOCK_WAIT=0); a stale holder is taken over as mu300-at does
 function lock_take(b, budget) {
 	let lock = b.dir + '/lock';
 	for (let tries = 0; tries < 4; tries++) {
@@ -288,7 +289,6 @@ function lock_take(b, budget) {
 		}
 		let o = rd(lock + '/pid');
 		if (o != '' && !alive(o)) { rm_rf(lock); continue; }
-		if (o != '' && index(cmdline(o), 'mu300-atd') >= 0) { rm_rf(lock); continue; }
 		let due = rd(lock + '/until');
 		if (o != '' && match(due, /^[0-9]+$/) && time() > +due && index(cmdline(o), 'mu300-at') >= 0) {
 			log('pid ' + o + ' held the AT lock past its own deadline; ending it');
@@ -404,7 +404,7 @@ finish = function(b, clean) {
 	b.reply = [];
 	if (!length(reply)) {
 		b.silent++;
-		// The reopen rule (mu300-atd): a descriptor left on a channel that no longer exists (a modem restart) reads
+		// The reopen rule: a descriptor left on a channel that no longer exists (a modem restart) reads
 		// nothing for ever; reopening cures that case and breaks every other one. So only when five commands in a
 		// row went unanswered, the last reopen was 5 min ago, and the modem's URC log has been quiet too.
 		if (b.reopen && b.silent >= 5 && time() - b.last_reopen >= 300 && !modem_alive(b) && !r.retried) {
@@ -435,12 +435,12 @@ send_cmd = function(b) {
 	let r = b.cur;
 	b.phase = 'collect';
 	b.reply = [];
-	// A PDU send ("AT+CMGS=N<CR>PDU<Ctrl-Z>") goes out as one write too (FINDINGS 46)
+	// A PDU send ("AT+CMGS=N<CR>PDU<Ctrl-Z>") goes out as one write too: nothing may come between the prompt and the PDU
 	if (!io_send('TX ' + b.chan + ' ' + uc(hexenc(r.cmd + CR)))) {
 		finish(b, false);
 		return;
 	}
-	// at least T whole seconds, as mu300-atd's collect
+	// at least T whole seconds, the client's promise (mu300-at counts whole seconds)
 	b.t_collect = retimer(b.t_collect, (r.t + 1) * 1000, () => finish(b, false));
 };
 
@@ -486,7 +486,7 @@ function cmd_line(b, c, line) {
 		b.t_quiet = retimer(b.t_quiet, b.drain_wait, () => drain_done(b));
 }
 
-// a line on an unsolicited channel (what a drainer of the shell daemon did)
+// a line on an unsolicited channel
 function urc_line(c, line) {
 	if (cmt_line(c, line))
 		return;
@@ -496,14 +496,15 @@ function urc_line(c, line) {
 	}
 	log_line(c.log, line);
 	// a SIM-status change on the card's event channel (nr0 slot 0, nr3 slot 1): mu300-sim-state asks the card in the
-	// background whether one is there (FINDINGS 186)
+	// background whether one is there, so an empty slot is not dialled over and over
 	if (match(line, /^\+ECIND: ?3,/) && executable(SIM_STATE))
 		system(shq(SIM_STATE) + ' event ' + int(c.n / 3) + ' ' + shq(line) + ' </dev/null >/dev/null 2>&1 &');
 	if (line != '')
 		urc_event(c.name, line);
 }
 
-// one request line from a channel's fifo: "SECONDS /path/to/answer AT+COMMAND", parsed strictly (mu300-atd)
+// one request line from a channel's fifo: "SECONDS /path/to/answer AT+COMMAND", parsed strictly (as mu300-at's
+// one_request)
 function fifo_request(b, line) {
 	if (line == '')
 		return;
@@ -522,7 +523,7 @@ function fifo_request(b, line) {
 	if (sp2 < 0 || cmd == '') { log('malformed request (no command), dropped'); return; }
 	if (!one_request(cmd)) {
 		log('a request with more than one command, refused');
-		publish(answer, 'mu300-atd: refused\n');
+		publish(answer, 'mu300-modemd: refused\n');
 		return;
 	}
 	enqueue(b, { kind: 'fifo', t: +t, answer: answer, cmd: cmd });
@@ -543,8 +544,7 @@ function hello() {
 		if (chans[name].kind == 'urc')
 			io_send('OPEN ' + name + ' ' + chans[name].dev + ((chans[name].broker.ready != '') ? ' ' + chans[name].broker.ready : ''));
 }
-// a channel is open: the slow drain once (quiet for a second, 3 s at most), then it serves (mu300-atd did this as soon
-// as the channel was its own)
+// a channel is open: the slow drain once (quiet for a second, 3 s at most), then it serves
 function chan_open(c) {
 	let b = c.broker;
 	if (c.kind != 'cmd')
@@ -607,7 +607,7 @@ on_record = function(rec) {
 		break;
 	}
 	case 'RXP':
-		// bytes without a newline (a "> " prompt): they lead the next line, as a shell read had them
+		// bytes without a newline (a "> " prompt): they lead the next line
 		if (c) c.partial += hexdec(p[2] ?? '');
 		break;
 	case 'REQ': {

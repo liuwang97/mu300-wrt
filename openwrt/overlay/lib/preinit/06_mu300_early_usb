@@ -1,15 +1,13 @@
 #!/bin/sh
-# MU300: keep the USB host's DHCP going across switch_root (K11, ported from the kanoqwq fork, cd4fb28). kernel/initramfs/init
-# answers the host's first request with a 120 s lease on its own subnet and its server ends at switch_root; netifd
+# MU300: keep the USB host's DHCP going across switch_root. The initramfs init answers the host's first request with a 120 s lease on its own subnet and its server ends at switch_root; netifd
 # and dnsmasq come up many seconds later, and Windows gives up waiting long before that. So the early server starts
 # again here, at once, on the system's own LAN address (network.lan.ipaddr, else the device's default). When that
 # differs from init's subnet, the host's renewal of init's lease goes unanswered, and once that lease runs out
 # (two minutes) it is offered one here on the real subnet; a host that asks from scratch (a replug, the LAN hook's
 # re-enumeration) is NAKed and asks again at once. This lease is one hour: the host keeps it until dnsmasq answers
 # a fresh request (its host entry, 90-mu300, broadcasts the OFFER/ACK). The LAN ifup hook
-# (hotplug.d/iface/10-mu300-usb) ends this server.
-# Fixed against the fork, which hard-codes 192.168.77.x (the F50's subnet: wrong on a U30 Air and with a custom LAN
-# address), and serves rndis0 as well as usb0 (RNDIS has no usb0).
+# (hotplug.d/iface/10-mu300-usb) ends this server. The address is the LAN's, never a fixed subnet (the F50's and the
+# U30 Air's differ, and the LAN may be the user's own), and rndis0 is served as well as usb0 (RNDIS has no usb0).
 mu300_early_usb() {
 	bb=/opt/mu300/bin/busybox
 	[ -x $bb ] && [ -r /lib/mu300/usb-host.sh ] || return 0

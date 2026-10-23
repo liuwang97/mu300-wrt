@@ -1,18 +1,16 @@
 #!/bin/sh
-# Optional parts that are not in the images, downloaded when you want them (Ubuntu and OpenWrt).
+# Optional parts that are not in the image, downloaded when you want them.
 #   mu300-extra list              what there is, and what is installed
 #   mu300-extra status [NAME]     the installed extras: release, size, commands
 #   mu300-extra install NAME      download it, check it against its release's SHA256SUMS, install it and put its
-#                                 commands on the PATH (lang: from the release of this system; vpn and its engines
-#                                 vpn-xray, vpn-singbox, vpn-mihomo, vpn-dae: the latest release of the VPN module,
-#                                 github.com/dikeckaan/mu300-linux-vpn). vpn brings the engines the profiles need
-#                                 along (and, the first time, MU300_VPN_ENGINES, default vpn-xray), all or nothing
+#                                 commands on the PATH (vpn and its engines vpn-xray, vpn-singbox, vpn-mihomo,
+#                                 vpn-dae: the latest release of the VPN module, github.com/dikeckaan/mu300-linux-vpn).
+#                                 vpn brings the engines the profiles need along (and, the first time,
+#                                 MU300_VPN_ENGINES, default vpn-xray), all or nothing
 #   mu300-extra install vpn|vpn-ENGINE --from FILE|DIR   offline: the module's tarball copied onto the device, or a
 #                                 directory with the tarballs and their SHA256SUMS (then they are verified)
-#   mu300-extra install panel --from FILE|DIR   offline: mu300-extra-panel-offline.tar.gz of the release (Cockpit's
-#                                 packages for Ubuntu 24.04 and 26.04 in it), or a directory with it and SHA256SUMS
 #   mu300-extra install audio [--from FILE|DIR]   call audio: the latest release of github.com/dikeckaan/mu300-audio for
-#                                 the kernel this device uses (mu300-audio-KERNEL.tar.gz, checked against its
+#                                 this kernel series (mu300-audio-KERNEL.tar.gz, checked against its
 #                                 SHA256SUMS), linked into every system, and the DSP firmware fetched along (pinned
 #                                 sha256). Offline: DIR with the tarball, SHA256SUMS and agdsp.bin. MU300_AUDIO_FIRMWARE=
 #                                 none fetches no firmware, =FILE installs your own image instead
@@ -25,33 +23,21 @@
 #   mu300-extra remove NAME [--force]   (--force: the vpn extra, or an engine, even while the VPN is on with it)
 #   mu300-extra link              put the system's commands and the extras' on the PATH, and link the VPN module
 #                                 into this system (its hooks/link; run at every boot)
-#   mu300-extra lang [list]       the languages of the lang extra, and which this system offers in LuCI
-#   mu300-extra lang enable CODE...|all    offer them in LuCI (System > System > Language and Style)
-#   mu300-extra lang disable CODE...|all   take them off that list again (the extra stays)
 #
-# Extras live on the Linux partition (/mnt/mu300-disk/extra/NAME), not in a system: Ubuntu and OpenWrt share one
-# copy, and an update or reinstall of a system keeps it. mu300-update apply brings them up to date.
+# Extras live on the Linux partition (/mnt/mu300-disk/extra/NAME), not in a system: an update or reinstall of the
+# system keeps them. mu300-update apply brings them up to date.
 # There are:
 #   vpn         the VPN toolkit: mu300-vpn, the module of github.com/dikeckaan/mu300-linux-vpn. Installing it links it
 #               into every installed system (the images have no mu300-vpn); removing it takes it out of them again.
-#   lang        LuCI's own catalogs in every language of the OpenWrt feed, and the MU300 panel's (OpenWrt only:
-#               Ubuntu has no LuCI). install enables every language; which ones a system offers is its own
-#               (/etc/mu300/languages, kept by updates; no file: all of them).
 #   vpn-xray, vpn-singbox, vpn-mihomo, vpn-dae   the VPN's engines (Xray-core with hev-socks5-tunnel, sing-box,
 #               mihomo, dae), each on its own, from the same module repository (mu300-vpn engine install NAME)
-#   panel       the web panel for Ubuntu: Cockpit (Ubuntu's web console) and the MU300 page in it, on the LAN only
-#               (https://LAN-ADDRESS:9090, the Ubuntu account's password). Its command, mu300-panel, installs Cockpit's
-#               packages into the system (from the extra when it carries them, else from Ubuntu's archive) and, after
-#               an update replaced the system, again in the background at its first boot (mu300-extra link).
-#   audio       call audio (FINDINGS 194): the Unisoc audio DSP's drivers for one kernel, mu300-audio-dsp, mu300-voice
-#               and their services, the module of github.com/dikeckaan/mu300-audio. It follows the kernel: mu300-update
-#               kernel X installs the one of X. Removing it takes it out of every system again (and the firmware it
-#               had put there).
+#   audio       call audio: the Unisoc audio DSP's drivers for one kernel series, mu300-audio-dsp, mu300-voice and
+#               their services, the module of github.com/dikeckaan/mu300-audio. Removing it takes it out of every system
+#               again (and the firmware it had put there).
 #
-# MU300_RELEASE=TAG takes another release, MU300_RELEASE_URL=URL another server with the same files and SHA256SUMS,
 # MU300_VPN_URL=URL another place for the VPN module (a pinned tag: .../releases/download/v1.0.0), MU300_VPN_MODULE
-# the same as --from, MU300_AUDIO_URL and MU300_AUDIO_MODULE the same for the audio extra, MU300_EXTRA_FILE=FILE a
-# mu300-extra-NAME.tar.gz on this device (not checked: you chose it).
+# the same as --from, MU300_AUDIO_URL and MU300_AUDIO_MODULE the same for the audio extra, MU300_EXTRA_FILE=FILE the
+# same as --from for an extra of your own.
 # The download, the checks and the installation are mu300-update's own (fetch_verified, module_get, extra_unpack).
 BIN=${MU300_BIN:-/opt/mu300/bin}
 _lib=${MU300_LIB:-}
@@ -61,30 +47,13 @@ MU300_LIB=$_lib
 STAGE=$DISK/.mu300-extra
 OPT=${MU300_OPT:-/opt/mu300}
 SYSROOT=${MU300_SYSROOT:-}
-# LuCI's catalogs, and the languages of the lang extra this system offers (no file: all of them)
-I18N=${MU300_LUCI_I18N:-$SYSROOT/usr/lib/lua/luci/i18n}
-LANGS_ON=$SYSROOT/etc/mu300/languages
-NL='
-'
-TAB=$(printf '\t')
 
-# where commands go: a directory on everybody's PATH, sudo's secure_path included (Ubuntu keeps usr/local across
-# updates; OpenWrt's busybox PATH has no /usr/local)
-link_dir() {
-    if [ -n "${MU300_LINKDIR:-}" ]; then echo "$MU300_LINKDIR"
-    elif [ -e "$SYSROOT/etc/openwrt_release" ]; then echo /usr/bin
-    else echo /usr/local/bin; fi
-}
+# where commands go: a directory on everybody's PATH (busybox's PATH has no /usr/local)
+link_dir() { echo "${MU300_LINKDIR:-/usr/bin}"; }
 
 # link: the system's commands (one list, the same the images are built with) and every installed extra's. A file
 # or a link of somebody else's is never replaced; a link into an extra that is gone is removed.
-do_link() { do_link_commands; do_link_modules; do_link_panel; }
-# the panel into this system (Ubuntu): its page, and Cockpit again in the background after an update (mu300-panel)
-do_link_panel() {
-    [ -f "$EXTRA/panel/bin/mu300-panel" ] || return 0
-    is_openwrt && return 0
-    sh "$EXTRA/panel/bin/mu300-panel" link || true
-}
+do_link() { do_link_commands; do_link_modules; }
 do_link_commands() {
     L=$(link_dir)
     mkdir -p "$L"
@@ -109,7 +78,6 @@ do_link_commands() {
         [ -L "$l" ] && [ ! -e "$l" ] || continue
         case $(readlink "$l") in "$EXTRA"/*) rm -f "$l" ;; esac
     done
-    lang_link
 }
 # the VPN module into this system: a new image has none of it (the boot after an update or a reinstall)
 do_link_modules() {
@@ -120,122 +88,20 @@ do_link_modules() {
     return 0
 }
 
-# ---- lang: LuCI's languages --------------------------------------------------------------------------------------
-is_openwrt() { [ -e "$SYSROOT/etc/openwrt_release" ]; }
-luci_uci() { uci -q ${SYSROOT:+-c "$SYSROOT/etc/config"} "$@"; }
-# the languages of the installed lang extra: KEY<tab>NAME lines (checked when it was installed, and again here)
-lang_lines() { LC_ALL=C grep -Ex -- "$LANG_LINE" "$EXTRA/lang/languages" 2>/dev/null; }
-lang_keys() { lang_lines | cut -f1; }
-lang_enabled() { [ ! -f "$LANGS_ON" ] || grep -qxF -- "$1" "$LANGS_ON"; }
-# luci_languages: the keys of luci.languages
-luci_languages() { luci_uci show luci.languages | sed -n "s/^luci\.languages\.\([a-z_]*\)=.*/\1/p"; }
-# does LuCI have a catalog of language KEY (any component)?
-lang_has_catalog() {
-    _c=$(printf '%s' "$1" | tr _ -)
-    for _f in "$I18N"/*."$_c".lmo; do [ -e "$_f" ] && return 0; done
-    return 1
-}
-# lang_link: the catalogs of the enabled languages into LuCI's directory (links into the extra; a file or a link of
-# somebody else's is never replaced), the links of disabled or vanished ones out, and luci.languages to match: an
-# enabled language of the extra is registered, a registered language without any catalog left is not, and LuCI goes
-# back to English when the language it was set to is gone. Nothing to do without LuCI.
-lang_link() {
-    is_openwrt && [ -d "$I18N" ] || return 0
-    for _l in "$I18N"/*.lmo; do
-        [ -L "$_l" ] || continue
-        case $(readlink "$_l") in "$EXTRA"/*) ;; *) continue ;; esac
-        _k=${_l%.lmo}; _k=$(printf '%s' "${_k##*.}" | tr - _)
-        { [ -e "$_l" ] && lang_enabled "$_k"; } || rm -f "$_l"
-    done
-    for _f in "$EXTRA"/lang/i18n/*.lmo; do
-        [ -f "$_f" ] || continue
-        _n=${_f##*/}; _k=${_n%.lmo}; _k=$(printf '%s' "${_k##*.}" | tr - _)
-        lang_enabled "$_k" || continue
-        if [ -L "$I18N/$_n" ]; then
-            case $(readlink "$I18N/$_n") in "$EXTRA"/*) ln -sfn "$_f" "$I18N/$_n" ;; esac
-        elif [ ! -e "$I18N/$_n" ]; then
-            ln -s "$_f" "$I18N/$_n" 2>/dev/null || true
-        fi
-    done
-    _ch=
-    luci_uci get luci.languages >/dev/null || { luci_uci set luci.languages=internal && _ch=1; }
-    while IFS="$TAB" read -r _k _name; do
-        [ -n "$_k" ] && lang_enabled "$_k" && lang_has_catalog "$_k" || continue
-        [ "$(luci_uci get "luci.languages.$_k")" = "$_name" ] && continue
-        luci_uci set "luci.languages.$_k=$_name" && _ch=1
-    done <<LANGS
-$(lang_lines)
-LANGS
-    for _k in $(luci_languages); do
-        lang_has_catalog "$_k" || { luci_uci delete "luci.languages.$_k" && _ch=1; }
-    done
-    _cur=$(luci_uci get luci.main.lang)
-    case $_cur in
-        ''|auto|en) ;;
-        *) luci_uci get "luci.languages.$_cur" >/dev/null || { luci_uci set luci.main.lang=en && _ch=1; } ;;
-    esac
-    [ -z "$_ch" ] || luci_uci commit luci
-    return 0
-}
-
-# lang list | enable CODE...|all | disable CODE...|all
-do_lang() {
-    [ -d "$EXTRA/lang/i18n" ] || die "the lang extra is not installed (mu300-extra install lang)"
-    case ${1:-list} in
-        list)
-            lang_lines | while IFS="$TAB" read -r k name; do
-                if lang_enabled "$k"; then st=enabled; else st=disabled; fi
-                printf '%s\t%s\t%s\n' "$k" "$st" "$name"
-            done ;;
-        enable|disable)
-            op=$1; shift
-            [ $# -gt 0 ] || die "usage: mu300-extra lang $op CODE...|all"
-            need_root lang
-            is_openwrt || die "LuCI's languages are for OpenWrt; this system has no LuCI"
-            all=$(lang_keys)
-            if [ "$1" = all ]; then
-                [ $# = 1 ] || die "all goes alone"
-                mkdir -p "${LANGS_ON%/*}"
-                if [ "$op" = enable ]; then rm -f "$LANGS_ON"; else : > "$LANGS_ON"; fi
-            else
-                for k in "$@"; do
-                    printf '%s\n' "$all" | grep -qx -- "$k" || die "no language '$k' in the lang extra (mu300-extra lang list)"
-                done
-                on=$(for k in $all; do lang_enabled "$k" && echo "$k"; done)
-                for k in "$@"; do
-                    if [ "$op" = enable ]; then on="$on$NL$k"; else on=$(printf '%s\n' "$on" | grep -vx -- "$k"); fi
-                done
-                mkdir -p "${LANGS_ON%/*}"
-                printf '%s\n' "$on" | grep . | sort -u > "$LANGS_ON.new"
-                mv "$LANGS_ON.new" "$LANGS_ON"
-            fi
-            lang_link
-            echo "LuCI offers: en $(luci_languages | tr '\n' ' ')" ;;
-        *) die "usage: mu300-extra lang [list | enable CODE...|all | disable CODE...|all]" ;;
-    esac
-}
-
-need_root() { [ "$(id -u)" = 0 ] || die "run as root (sudo mu300-extra $*)"; }
-need_disk() { [ -d "$DISK/ubuntu" ] || [ -d "$DISK/openwrt" ] || [ -d "$DISK/openwrt-luci" ] || die "the Linux partition is not mounted at $DISK"; }
+need_root() { [ "$(id -u)" = 0 ] || die "run as root (mu300-extra $*)"; }
+need_disk() { [ -n "$(installed_systems)" ] || die "the Linux partition is not mounted at $DISK"; }
 known() { extra_known "$1" || die "there is no extra called '$1' (mu300-extra list)"; }
 
-# the release whose extra goes with this system: MU300_RELEASE, the system's own, or the newest
+# the release of this system (what a module's ./requires is held to)
 system_release() {
     v=$(cat "$SYSROOT/etc/mu300/image-version" 2>/dev/null)
     case $v in v[0-9]*) echo "$v" ;; esac
 }
 
-# dae_kernel_ok: the running kernel can run dae - 5.17 or newer with BTF (/sys/kernel/btf/vmlinux) - as the VPN
-# module's own check (mu300-vpn, dae_kernel_ok) has it; else the reason on stdout and 1. (MU300_KREL, MU300_BTF: tests/)
+# dae_kernel_ok: the running kernel can run dae - it has BTF (/sys/kernel/btf/vmlinux); else the reason on stdout
+# and 1. (MU300_KREL, MU300_BTF: tests/)
 dae_kernel_ok() {
     _kr=${MU300_KREL:-$(uname -r 2>/dev/null)}
-    _maj=${_kr%%.*}; _min=${_kr#*.}; _min=${_min%%[!0-9]*}
-    case $_maj in ''|*[!0-9]*) _maj=0 ;; esac
-    case $_min in ''|*[!0-9]*) _min=0 ;; esac
-    if [ "$_maj" -lt 5 ] || { [ "$_maj" -eq 5 ] && [ "$_min" -lt 17 ]; }; then
-        echo "dae needs Linux 5.17 or newer with BTF, and this kernel is $_kr (the 5.4 vendor kernel cannot run it: mu300-update kernel 6.18, reboot, then install it)"
-        return 1
-    fi
     [ -r "${MU300_BTF:-/sys/kernel/btf/vmlinux}" ] && return 0
     echo "dae needs a kernel with BTF (/sys/kernel/btf/vmlinux), and kernel $_kr has none"
     return 1
@@ -247,7 +113,7 @@ dae_kernel_ok() {
 do_install_module() {
     name=$1
     from=${2:-${MU300_VPN_MODULE:-}}
-    # dae is 33 MB of program and 25 MB of geodata that the 5.4 vendor kernel, and any kernel without BTF, cannot run:
+    # dae is 33 MB of program and 25 MB of geodata that a kernel without BTF cannot run:
     # said before anything is downloaded (MU300_DAE_ANY_KERNEL=1: for a kernel this device is about to boot)
     if [ "$name" = vpn-dae ] && [ "${MU300_DAE_ANY_KERNEL:-}" != 1 ] && ! why_=$(dae_kernel_ok); then
         die "vpn-dae was not installed: $why_ (MU300_DAE_ANY_KERNEL=1 installs it anyway, for a kernel this device is about to boot)"
@@ -300,19 +166,19 @@ EOF
     printf '%s %s installed in %s\n' "$name" "$(extra_release "$name")" "$EXTRA/$name"
 }
 
-# install audio [FROM]: the audio extra of the kernel this device uses, from FROM (a file, or a directory with
+# install audio [FROM]: the audio extra of this kernel series, from FROM (a file, or a directory with
 # SHA256SUMS) or its latest release, with the DSP firmware (audio_firmware: before the systems are linked, so
 # hooks/link finds it); the firmware is never fatal, the extra is
 do_install_audio() {
     from=${1:-${MU300_AUDIO_MODULE:-}}
-    [ -n "$from" ] || say "downloading $(module_asset audio) (call audio for kernel $(kernel_choice)) from $AUDIO_URL"
+    [ -n "$from" ] || say "downloading $(module_asset audio) (call audio for kernel $KERNEL_SERIES) from $AUDIO_URL"
     audio_get "$STAGE" "$from"; r=$?
     case $r in
         0|3) ;;
         1) rm -rf "$STAGE"; die "audio was not installed: the audio extra could not be downloaded ($(offline_why); offline: mu300-extra install audio --from DIR, a directory with $(module_asset audio), the release's SHA256SUMS and agdsp.bin copied onto the device)" ;;
         *) rm -rf "$STAGE"; die "audio was not installed" ;;
     esac
-    [ "$r" = 0 ] || echo "audio $(extra_release audio) for kernel $(kernel_choice) is the latest release already"
+    [ "$r" = 0 ] || echo "audio $(extra_release audio) for kernel $KERNEL_SERIES is the latest release already"
     _mf=$MODULE_FILE _ms=$MODULE_SHA
     audio_firmware "$from"
     if [ "$r" = 0 ]; then
@@ -327,25 +193,6 @@ do_install_audio() {
         [ -f "$DISK/$_o/lib/firmware/agdsp.bin" ] || echo "note: $_o has no DSP firmware: the DSP stays down there (mu300-audio-dsp install FILE|--download)"
     done
     echo "the sound card and the DSP start now in the background, and at every boot (mu300-audio-dsp status)"
-}
-
-# panel_from FILE|DIR: PANEL_FILE, the offline panel extra. A directory must hold mu300-extra-panel-offline.tar.gz and
-# a SHA256SUMS that lists it; a file is checked against a SHA256SUMS next to it when that lists it (else it is the
-# user's own choice).
-panel_from() {
-    PANEL_FILE=
-    if [ -d "$1" ]; then
-        _w=$(sums_want "$1/SHA256SUMS" mu300-extra-panel-offline.tar.gz)
-        [ -s "$1/mu300-extra-panel-offline.tar.gz" ] || { echo "no mu300-extra-panel-offline.tar.gz in $1" >&2; return 1; }
-        [ -n "$_w" ] || { echo "$1/SHA256SUMS is missing or does not list mu300-extra-panel-offline.tar.gz: not installed unverified" >&2; return 1; }
-        [ "$(sha_of "$1/mu300-extra-panel-offline.tar.gz")" = "$_w" ] || { echo "$1/mu300-extra-panel-offline.tar.gz does not match its SHA256SUMS" >&2; return 1; }
-        PANEL_FILE=$1/mu300-extra-panel-offline.tar.gz
-        return 0
-    fi
-    [ -s "$1" ] || { echo "$1 not found" >&2; return 1; }
-    _w=$(sums_want "$(dirname "$1")/SHA256SUMS" "${1##*/}")
-    [ -z "$_w" ] || [ "$(sha_of "$1")" = "$_w" ] || { echo "$1 does not match $(dirname "$1")/SHA256SUMS" >&2; return 1; }
-    PANEL_FILE=$1
 }
 
 # own_from NAME FILE|DIR: OWN_FILE, an extra of the user's own. A directory must hold NAME.tar.gz and a SHA256SUMS that
@@ -382,71 +229,17 @@ do_install() {
         install_own "$name" "${2:-${MU300_EXTRA_FILE:-}}"
         return
     fi
-    [ "$name" != lang ] || is_openwrt || die "the lang extra is LuCI's languages, for OpenWrt only: install it from an OpenWrt system"
     if [ "$name" = audio ]; then
         [ -z "${MU300_EXTRA_FILE:-}" ] || die "MU300_EXTRA_FILE is not for the audio extra: mu300-extra install audio --from FILE|DIR"
         do_install_audio "${2:-}"
         return
     fi
-    if extra_is_module "$name" && [ -z "${MU300_EXTRA_FILE:-}" ]; then
-        do_install_module "$name" "${2:-}"
-        return
-    fi
-    [ "$name" != panel ] || ! is_openwrt || die "the panel extra is Cockpit, for Ubuntu: OpenWrt has its own panel (openwrt-luci)"
-    [ -z "${2:-}" ] || [ "$name" = panel ] || die "--from is for the VPN module (vpn and its engines vpn-*), the audio extra and the panel; for $name: MU300_EXTRA_FILE=FILE"
-    if [ -n "${2:-}" ]; then
-        # panel offline: the release's offline tarball (Cockpit's packages in it), checked as the module's copies are
-        panel_from "$2" || die "panel was not installed"
-        extra_unpack panel "$PANEL_FILE" "$(system_release)" || die "panel was not installed"
-        rm -f "$EXTRA/.panel.sha256"
-    elif [ -n "${MU300_EXTRA_FILE:-}" ]; then
-        [ -s "$MU300_EXTRA_FILE" ] || die "$MU300_EXTRA_FILE not found"
-        extra_unpack "$name" "$MU300_EXTRA_FILE" "$(system_release)" || die "$name was not installed"
-        rm -f "$EXTRA/.$name.sha256"
-    else
-        tag=${MU300_RELEASE:-$(system_release)}
-        [ -n "$tag" ] || tag=$(latest_release)
-        [ -n "$tag" ] || die "could not reach GitHub ($(offline_why))"
-        asset=$(extra_asset "$name")
-        say "downloading $asset of $tag"
-        fetch_verified "$tag" "$asset"; r=$?
-        # a system from before extras: its release has none, the newest one has
-        if [ "$r" = 2 ] && [ -z "${MU300_RELEASE:-}" ]; then
-            newest=$(latest_release)
-            if [ -n "$newest" ] && [ "$newest" != "$tag" ]; then
-                tag=$newest
-                say "downloading $asset of $tag"
-                fetch_verified "$tag" "$asset"; r=$?
-            fi
-        fi
-        [ "$r" = 0 ] || { rm -rf "$STAGE"; _w=; [ "$r" != 1 ] || ! vpn_ks_blocks || _w=": the download was $(offline_why)"; die "$name was not installed (no verified $asset of $tag)$_w"; }
-        extra_unpack "$name" "$STAGE/$asset" || { rm -rf "$STAGE"; die "$name was not installed"; }
-        rm -rf "$STAGE"
-    fi
-    # panel: Cockpit into this system (the extra's own command: packages, configuration, the page)
-    if [ "$name" = panel ]; then
-        do_link_commands
-        sh "$EXTRA/panel/bin/mu300-panel" install || die "the panel extra is on the disk, but Cockpit is not installed (see above; again: sudo mu300-panel install)"
-        printf '%s %s installed in %s\n' "$name" "$(extra_release "$name")" "$EXTRA/$name"
-        return
-    fi
-    # a fresh install of the languages offers all of them
-    [ "$name" != lang ] || rm -f "$LANGS_ON"
-    if extra_is_module "$name"; then
-        do_link_commands
-        module_hook_all "$name" link || true
-        [ "$name" != vpn ] || luci_menu_refresh
-    else
-        do_link
-    fi
-    printf '%s %s installed in %s\n' "$name" "$(extra_release "$name")" "$EXTRA/$name"
+    do_install_module "$name" "${2:-}"
 }
-
 # luci_menu_refresh: the panel's VPN menu (OpenWrt) depends on the module's mu300-vpn in the extra (menu.d, "fs");
 # LuCI checks that when it builds its index cache, and the cache is keyed on the menu files alone - so the cache
 # goes when the module comes or goes, and the next request builds it again (a reboot clears /tmp anyway)
 luci_menu_refresh() {
-    is_openwrt || return 0
     rm -f "$SYSROOT"/tmp/luci-indexcache "$SYSROOT"/tmp/luci-indexcache.* 2>/dev/null
     return 0
 }
@@ -464,12 +257,9 @@ do_remove() {
         echo "the VPN is on with a profile that runs on $1: turn it off or use another profile first (mu300-vpn off), or: mu300-extra remove $1 --force" >&2
         return 1
     fi
-    # panel: Cockpit out of this system first (its packages, configuration and page)
-    if [ "$1" = panel ] && [ -f "$EXTRA/panel/bin/mu300-panel" ]; then sh "$EXTRA/panel/bin/mu300-panel" remove || true; fi
     # the module out of every system first (its hooks are part of it): what an older image had comes back
     { extra_is_module "$1" || extra_own "$1"; } && module_hook_all "$1" unlink
     rm -rf "$EXTRA/$1" "$EXTRA/.$1.new" "$EXTRA/.$1.old" "$EXTRA/.$1.sha256"
-    [ "$1" != lang ] || rm -f "$LANGS_ON"
     # the firmware the audio extra fetched (the copies it put into the systems went with hooks/unlink)
     [ "$1" != audio ] || rm -rf "${AUDIO_FW_CACHE%/*}"
     sync
@@ -480,17 +270,15 @@ do_remove() {
 
 do_list() {
     for x in $EXTRAS; do
-        if [ -d "$EXTRA/$x/bin" ] || [ -d "$EXTRA/$x/i18n" ]; then st="installed ($(extra_release "$x"))"; else st="not installed"; fi
+        if [ -d "$EXTRA/$x/bin" ]; then st="installed ($(extra_release "$x"))"; else st="not installed"; fi
         [ "$x" != vpn ] || [ ! -d "$EXTRA/vpn/bin" ] || vpn_module_in "$EXTRA/vpn" || st="$st - the engines of an older release only, without mu300-vpn: mu300-extra install vpn"
         case $x in vpn-xray|vpn-singbox)
             [ ! -d "$EXTRA/$x/bin" ] && vpn_engine_have "$x" && st="carried by the vpn extra (module v1 or the bundle)" ;;
         esac
-        [ "$x" != lang ] || is_openwrt || st="$st - for OpenWrt only: Ubuntu has no LuCI"
-        [ "$x" != panel ] || ! is_openwrt || st="$st - for Ubuntu only: OpenWrt has its own panel"
-        if [ "$x" = audio ] && [ -d "$EXTRA/audio/bin" ] && [ "$(cat "$EXTRA/audio/kernel" 2>/dev/null)" != "$(kernel_choice)" ]; then
-            st="$st - for kernel $(cat "$EXTRA/audio/kernel" 2>/dev/null), and this device uses $(kernel_choice): mu300-extra install audio"
+        if [ "$x" = audio ] && [ -d "$EXTRA/audio/bin" ] && [ "$(cat "$EXTRA/audio/kernel" 2>/dev/null)" != "$KERNEL_SERIES" ]; then
+            st="$st - for kernel $(cat "$EXTRA/audio/kernel" 2>/dev/null), and this is $KERNEL_SERIES: mu300-extra install audio"
         elif [ "$x" = audio ] && [ -d "$EXTRA/audio/bin" ]; then
-            st="$st, kernel $(kernel_choice)"
+            st="$st, kernel $KERNEL_SERIES"
         fi
         printf '%-6s %s\n       %s\n' "$x" "$st" "$(extra_desc "$x")"
     done
@@ -499,7 +287,7 @@ do_list() {
 do_status() {
     any=
     if [ -n "${1:-}" ]; then
-        [ -d "$EXTRA/$1/bin" ] || [ -d "$EXTRA/$1/i18n" ] || { echo "$1 is not installed"; return 1; }
+        [ -d "$EXTRA/$1/bin" ] || { echo "$1 is not installed"; return 1; }
         _which=$1
     else
         _which=; for x in $(extra_installed); do extra_known "$x" && _which="$_which $x"; done
@@ -507,13 +295,8 @@ do_status() {
     for x in $_which; do
         any=1
         printf '%s\n  release   %s\n  size      %s\n' "$x" "$(extra_release "$x")" "$(du -sh "$EXTRA/$x" 2>/dev/null | cut -f1)"
-        if [ "$x" = lang ]; then
-            if is_openwrt; then on=$(for k in $(lang_keys); do lang_enabled "$k" && printf '%s ' "$k"; done); else on="none (no LuCI)"; fi
-            printf '  languages %s, offered here: %s' "$(lang_keys | wc -l | tr -d ' ')" "${on:-none}"
-        else
-            printf '  commands '
-            for f in "$EXTRA/$x"/bin/*; do printf ' %s' "${f##*/}"; done
-        fi
+        printf '  commands '
+        for f in "$EXTRA/$x"/bin/*; do printf ' %s' "${f##*/}"; done
         printf '\n  location  %s\n' "$EXTRA/$x"
         [ -s "$EXTRA/$x/components" ] && sed 's/^/  contains  /' "$EXTRA/$x/components"
     done
@@ -538,7 +321,6 @@ case ${1:-list} in
     link) need_root link; do_link ;;
     # gone: the VPN module carries its engines (an older mu300-vpn asks for it, then installs the extra)
     adopt) echo "nothing to adopt: the VPN module carries its own engines (mu300-extra install vpn)" >&2; exit 1 ;;
-    lang) shift; do_lang "$@" ;;
-    -h|--help|help) sed -n '2,55s/^# \{0,1\}//p' "$0" ;;
-    *) echo "usage: mu300-extra list|status|install NAME [--from FILE|DIR]|remove NAME|link|lang ..." >&2; exit 2 ;;
+    -h|--help|help) sed -n '2,45s/^# \{0,1\}//p' "$0" ;;
+    *) echo "usage: mu300-extra list|status|install NAME [--from FILE|DIR]|remove NAME|link" >&2; exit 2 ;;
 esac

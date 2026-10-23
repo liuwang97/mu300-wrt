@@ -7,7 +7,7 @@
  * strings as text. */
 /* System > Backup of settings: the user's settings as one file (the hotspot, mobile data, the locks, the VPN, SMS
  * forwarding, the LAN, the host name and time zone, SSH keys, the password if asked) and back. The backend is
- * mu300dash backup_export/backup_import/backup_job, which hand the request to mu300-api (mu300-backup, FINDINGS 155):
+ * mu300dash backup_export/backup_import/backup_job, which hand the request to mu300-api (mu300-backup):
  * every value of a file is checked by the rules of the setter that takes it, a preview shows what would change, and
  * the restore runs as a task the page follows. The file is made in the browser from the reply and never stored on
  * the device. */

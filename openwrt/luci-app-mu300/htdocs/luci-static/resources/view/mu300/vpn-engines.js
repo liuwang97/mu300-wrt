@@ -133,8 +133,6 @@ return view.extend({
 			]);
 			if (e.usable === false && e.reason)
 				c.appendChild(E('div', { 'class': 'mvp-alert bad', 'style': 'margin:8px 0 0' }, [ String(e.reason) ]));
-			if (e.name === 'dae')
-				c.appendChild(V.note(_('dae needs a kernel with BTF, 5.17 or newer: not the 5.4 vendor kernel (mu300-update kernel 6.18). It can be installed anyway.')));
 			if (e.path) c.appendChild(E('div', { 'class': 'mvp-sub mvp-mono' }, [ String(e.path) ]));
 			c.appendChild(acts);
 			return c;

@@ -1,5 +1,5 @@
 #!/bin/sh
-# The U30 Air's NFC tag (Ubuntu and OpenWrt): a phone held against the device reads what is written there.
+# The U30 Air's NFC tag: a phone held against the device reads what is written there.
 #   mu300-nfc                 what the tag holds (for Wi-Fi only the network name, never the password)
 #   mu300-nfc wifi            the hotspot's name and password: a phone joins the Wi-Fi with a tap
 #   mu300-nfc url URL         a link the phone opens (https://..., tel:..., mailto:..., geo:...)
@@ -16,13 +16,12 @@
 # ZTE's NFC switch is bit 5 of the chip's configuration byte 0x3bf (set: the RF side stays silent, though the
 # field-detect interrupt still counts every tap), found by reading the chip with the switch on and off; this
 # changes that one byte and nothing else there (the same block holds the tag's I2C address).
-# (MU300_SYSROOT, MU300_BIN, MU300_HOTSPOT_CONF are for tests/)
+# (MU300_SYSROOT and MU300_BIN are for tests/)
 export PATH="$PATH:/opt/mu300/bin:/usr/sbin:/sbin"
 # nap SECONDS: a fraction of a second where a sleep takes one. OpenWrt's /bin/sleep refuses "0.2": a bare "sleep 0.2" did
 # not wait at all there, and "sleep 0.02 || sleep 1" waited a whole second; the static busybox next to us takes it.
 nap() { "${MU300_BUSYBOX:-/opt/mu300/bin/busybox}" sleep "$1" 2>/dev/null || sleep "$1" 2>/dev/null || sleep 1; }
 R=${MU300_SYSROOT:-}
-CONF=${MU300_HOTSPOT_CONF:-/etc/mu300/hotspot.conf}
 BUS=2 ADDR=0x57 LINE=190 START=16 CFG=0x3bf RF_OFF=0x20
 
 die() { echo "mu300-nfc: $*" >&2; exit 1; }
@@ -35,16 +34,12 @@ i2ct() {  # i2ctransfer ARGS: i2c-tools when there, else busybox's
 # --- the enable line -------------------------------------------------------------------------------------------
 HOLD=
 enable() {
-    # 5.4: ZTE's fm11tag driver owns the line and offers it in /proc
-    for f in "$R"/proc/ntag_gpios/*reset*; do
-        [ -e "$f" ] && { echo 0 > "$f" && HOLD=proc:$f; trap disable EXIT INT TERM; nap 0.2; return; }
-    done
     chip=
     for c in "$R"/sys/bus/gpio/devices/gpiochip*; do
         case $(readlink -f "$c" 2>/dev/null) in */64170000.gpio/*) chip=${c##*/}; break ;; esac
     done
     [ -n "$chip" ] || die "the AP GPIO controller is not there"
-    command -v gpioset >/dev/null 2>&1 || die "gpioset is missing (Ubuntu: apt install gpiod, OpenWrt: apk add gpiod-tools)"
+    command -v gpioset >/dev/null 2>&1 || die "gpioset is missing (apk add gpiod-tools)"
     # libgpiod 2 holds the line while it runs; 1.x needs --mode=signal for that
     if gpioset --help 2>&1 | grep -q -- '--chip'; then gpioset -c "$chip" "$LINE=0" </dev/null >/dev/null 2>&1 &
     else gpioset --mode=signal "$chip" "$LINE=0" </dev/null >/dev/null 2>&1 & fi
@@ -54,7 +49,6 @@ enable() {
 }
 disable() {
     case $HOLD in
-        proc:*) echo 1 > "${HOLD#proc:}" 2>/dev/null ;;
         ?*) kill "$HOLD" 2>/dev/null; wait "$HOLD" 2>/dev/null ;;
     esac
     HOLD=
@@ -148,17 +142,11 @@ wifi_record() {  # wifi_record SSID PSK: WSC credential as ZTE writes it (open n
     cred="$cred 10 20 00 06 00 00 00 00 00 00 10 49 00 06 00 37 2a 00 01 20"
     record 2 "$(hex application/vnd.wfa.wsc)" "10 0e $(be16 "$(count "$cred")") $cred"
 }
-hotspot() {  # SSID and PSK of the hotspot, one per line
-    if [ -e /etc/openwrt_release ] && [ -z "${MU300_HOTSPOT_CONF:-}" ]; then
-        s=$(uci -q show wireless | sed -n "s/^wireless\.\([^.=]*\)\.mode='ap'$/\1/p" | head -n1)
-        [ -n "$s" ] || die "no access point in /etc/config/wireless"
-        uci -q get "wireless.$s.ssid"
-        case $(uci -q get "wireless.$s.encryption") in none|'') echo ;; *) uci -q get "wireless.$s.key" ;; esac
-    else
-        [ -r "$CONF" ] || die "cannot read $CONF (run as root)"
-        sed -n 's/^SSID=//p' "$CONF" | head -n1
-        sed -n 's/^PSK=//p' "$CONF" | head -n1
-    fi
+hotspot() {  # SSID and PSK of the hotspot (the first access point in /etc/config/wireless), one per line
+    s=$(uci -q show wireless | sed -n "s/^wireless\.\([^.=]*\)\.mode='ap'$/\1/p" | head -n1)
+    [ -n "$s" ] || die "no access point in /etc/config/wireless"
+    uci -q get "wireless.$s.ssid"
+    case $(uci -q get "wireless.$s.encryption") in none|'') echo ;; *) uci -q get "wireless.$s.key" ;; esac
 }
 describe() {  # describe HEX: the NDEF message in words (hex on stdin as words)
     echo "$1" | LC_ALL=C awk '
@@ -197,18 +185,15 @@ describe() {  # describe HEX: the NDEF message in words (hex on stdin as words)
 }
 
 # --- main -------------------------------------------------------------------------------------------------------
-# the V50 has a tag of the same kind on another reset line (kano: I2C2 0x57, GPIO189; the U30 Air's is GPIO190): not
-# driven here yet (FINDINGS 95)
 case $(${MU300_BIN:-/opt/mu300/bin}/mu300-device) in
     u30air) ;;
-    v50) die "the V50's NFC tag is not supported yet (docs/FINDINGS.md 95)" ;;
     *) die "only the U30 Air has an NFC tag" ;;
 esac
 case ${1:-show} in
     show|status|wifi|url|text|clear|sync|on|off) ;;
     *) sed -n '2,10s/^# \{0,1\}//p' "$0" >&2; exit 2 ;;
 esac
-[ -n "$R" ] || [ "$(id -u)" = 0 ] || die "run as root (sudo mu300-nfc ...)"
+[ -n "$R" ] || [ "$(id -u)" = 0 ] || die "run as root"
 case ${1:-show} in
     url)  [ -n "${2:-}" ] || die "which URL?"; new=$(tlv "$(uri_record "$2")") ;;
     text) [ -n "${2:-}" ] || die "which text?"; new=$(tlv "$(text_record "$2")") ;;
@@ -226,7 +211,7 @@ now=$(describe "$(read_ndef)")
 case ${1:-show} in
     show|status)
         echo "$now"
-        [ "$(rf)" = on ] || echo "NFC is off: phones get nothing (sudo mu300-nfc on)" ;;
+        [ "$(rf)" = on ] || echo "NFC is off: phones get nothing (mu300-nfc on)" ;;
     sync)
         case $now in wifi:*|empty) ;; *) echo "the tag holds something else, left as it is: $now"; exit 0 ;; esac
         write_ndef $new

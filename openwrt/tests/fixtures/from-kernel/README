@@ -1,4 +1,4 @@
 Copies of what the kernel bundle ships, for the tests of the root filesystem's side (they never read kernel/):
-  autoload-blocked          the bundle's autoload-blocked (kernel/autoload-blocked)
+  autoload-blocked          a copy of the list the kernel bundle ships as autoload-blocked
   autoload-7.2.11/          a subset of the 7.2.11 build's modules.dep and modules.alias
 Refresh them from a bundle when its list changes.

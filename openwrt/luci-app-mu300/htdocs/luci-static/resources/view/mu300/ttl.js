@@ -6,8 +6,7 @@
 /* Every value from the backend goes into E() inside an array: LuCI's E() takes a lone string as HTML, an array's
  * strings as text. */
 /* Cellular > TTL: the TTL (IPv6: hop limit) of everything that leaves through mobile data. The backend is mu300dash
- * ttl_get/ttl_set (unisoc-modem/ttl, mu300-ttl): tc on the mainline kernels, nftables (with the firewall's
- * fast-path off while a TTL is set) on the 5.4 vendor kernel. */
+ * ttl_get/ttl_set (unisoc-modem/ttl, mu300-ttl), which sets it with tc. */
 return view.extend({
 	load: function() { return L.resolveDefault(M.callTtlGet(), {}); },
 

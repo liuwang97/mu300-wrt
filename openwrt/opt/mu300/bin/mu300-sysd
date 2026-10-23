@@ -1,29 +1,30 @@
 #!/usr/bin/ucode
-// mu300-sysd -- the buttons, the LEDs' tick and the thermal guard in one event-driven daemon (FINDINGS 217).
+// mu300-sysd -- the buttons, the LEDs' tick and the thermal guard in one event-driven daemon.
 //
-// It does what three shell loops did, without their clocks: mu300-buttons (the keys), the LED tick that mu300-buttons
-// looked at every 5 s (the LEDs' timeout, the U30 Air's battery LED; FINDINGS 215) and thermal-guard (its caps, the
-// alarm, the power-off at CRIT). One helper, `mu300-keys -u power_supply,extcon` (C), reports the presses and the
+// Nothing runs on a clock that has nothing to do: the keys, the LED tick (the LEDs' timeout, the U30 Air's battery
+// LED) and the thermal guard (its caps, the alarm, the power-off at CRIT). One helper, `mu300-keys -u power_supply,extcon` (C), reports the presses and the
 // kernel's power_supply and extcon uevents (the device's ucode cannot open a netlink socket); the rest is read here:
-//   keys      each press as mu300-buttons handled it: the same order (the LEDs' wake first), the same helpers
-//             (mu300-led wake, mu300-power wake, mu300-wifi-band, wifi or systemctl), the same markers in $PST, the
-//             same deadlines. A press is the only thing that starts them.
+//   keys      power, short: wake the LEDs; held 3 s: shut down (in the charging boot: start the device). Wi-Fi key
+//             (U30 Air), short: hotspot 2.4 <-> 5 GHz; held 3 s: hotspot off / on. Every press lights the LEDs first
+//             (mu300-led wake), then wakes mu300-power with the key's name in the background (idle wakes on any key, a
+//             charging boot only on the Wi-Fi key); the toggles act on an awake device, under a deadline. A held
+//             power key leaves $PST/shutdown, a hotspot toggled off $PST/hotspot-off. A press is the only thing that
+//             starts them.
 //   LED tick  `mu300-led tick` only when it has something to do, by its hint (.tick-hint): looked at on a uevent of
 //             the charger, the fuel gauge or the plug (extcon), by a timer at the hint's due time (and at the end of a
 //             key's wake, which the hint cannot know of yet), and every SAFETY s (SAFETY_PLUGGED on the charger, whose
 //             state changes come without a uevent here) in case none came. The battery's readings count
 //             by what mu300-led shows of them (colour, breathing, low, plugged): a 1 % step starts nothing. Every
-//             other file the hint names counts as it is, as mu300-buttons compared them.
-//   thermal   thermal-guard's rounds as timers, at its adaptive interval, with its thresholds, caps, alarm, power-off
-//             and log lines; the zones are read here, no process per round.
+//             other file the hint names counts as it is.
+//   thermal   rounds as timers, at an adaptive interval (below), with the thresholds, caps, alarm, power-off and log
+//             lines; the zones are read here, no process per round.
 // At rest that is a thermal round every 22-30 s and a look at the LED hint every SAFETY s, both in this process,
 // and nothing else: no tick every 5 s, no process unless an LED, a cap or the alarm has to change.
 //
-//   mu300-sysd            the daemon (/etc/init.d/mu300-sysd, opted into with /etc/mu300/sysd)
-//   mu300-sysd --check    exit 0 when what it needs is there (the init scripts ask before the old loops step aside)
-//   mu300-sysd --round    one thermal round, its next look on stderr: thermal-guard with MU300_SYSROOT (the tests)
+//   mu300-sysd            the daemon (/etc/init.d/mu300-sysd)
+//   mu300-sysd --round    one thermal round, its next look on stderr (the tests, with MU300_SYSROOT)
 //
-// Environment, as the scripts it replaces read it: MU300_SYSROOT (a fake / for the tests), MU300_RUN, MU300_BIN,
+// Environment: MU300_SYSROOT (a fake / for the tests), MU300_RUN, MU300_BIN,
 // MU300_BUTTONS_DEADLINE, MU300_BUTTONS_PROBE_DEADLINE, MU300_THERMAL_*, MU300_BATTERY_HOT, MU300_BATTERY_COOL. Its
 // own: MU300_KEYS_BIN (mu300-keys), MU300_SYSD_SAFETY (90 s), MU300_SYSD_SAFETY_PLUGGED (30 s),
 // MU300_SYSD_LED_HINT_MAX (600 s: the hint's due time
@@ -85,13 +86,13 @@ let parts = {};
 for (let p in split(env('MU300_SYSD_PARTS', 'keys led thermal'), /[ ,]+/))
 	parts[p] = true;
 
-// the uptime in seconds (a fraction): the clock of the LED files and of mu300-buttons' hotspot marker
+// the uptime in seconds (a fraction): the clock of the LED files and of the hotspot marker
 function now() {
 	let u = readfile(R + '/proc/uptime');
 	return u ? +split(u, ' ')[0] : 0;
 }
 
-// log TAG MSG: as the script it comes from logged it (logger -t TAG), into syslog; MU300_SYSD_LOG: into that file
+// log TAG MSG: into syslog under TAG (as logger -t TAG); MU300_SYSD_LOG: into that file
 const LOGFILE = env('MU300_SYSD_LOG', null);
 function log(tag, msg) {
 	if (LOGFILE) {
@@ -110,7 +111,7 @@ function log(tag, msg) {
 }
 
 // ------------------------------------------------------------------ processes
-// What runs is found on mu300-buttons' PATH (the stubs of the tests come first).
+// What runs is found on PATH, /opt/mu300/bin added (the stubs of the tests come first).
 let ENV = getenv();
 ENV.PATH = (ENV.PATH ?? '/usr/sbin:/usr/bin:/sbin:/bin') + ':/opt/mu300/bin:/usr/sbin:/sbin';
 function which(cmd) {
@@ -124,8 +125,8 @@ function which(cmd) {
 	return null;
 }
 
-// The waits may end up to half a second late, so the kernel can serve the timers of several daemons with one wakeup
-// (thermal-guard's timer slack, FINDINGS 215); what this starts gets the default back. Only on a real /.
+// The waits may end up to half a second late, so the kernel can serve the timers of several daemons with one wakeup;
+// what this starts gets the default back. Only on a real /.
 const SLACK_FILE = '/proc/self/timerslack_ns';
 let slack = (R == '' && MODE == '') ? rd(SLACK_FILE) : null;
 function slack_wait() { if (slack != null) writefile(SLACK_FILE, '500000000'); }
@@ -140,7 +141,7 @@ function fork_exec(exe, args, envs, cb) {
 let running = 0;   // started and not ended yet (the helper is not counted)
 let idle_check;    // set below
 // spawn ARGV [DONE] [MORE] [QUIET]: ARGV in the background, DONE(exit code) once it ended; MORE: environment on top.
-// QUIET: stdin, stdout and stderr on /dev/null, as mu300-buttons ran its background work.
+// QUIET: stdin, stdout and stderr on /dev/null.
 function spawn(argv, done, more, quiet) {
 	let exe = which(argv[0]) ?? argv[0], args = slice(argv, 1);
 	if (quiet) {
@@ -165,7 +166,7 @@ function spawn(argv, done, more, quiet) {
 	return p;
 }
 
-// --- deadlines (mu300-buttons' and mu300-power's rule): a process tree killed
+// --- deadlines (mu300-power's rule too): a process tree killed
 function proc_table() {   // { PID: PPID } of every process
 	let t = {};
 	for (let d in lsdir('/proc') ?? []) {
@@ -235,7 +236,7 @@ function chain(argv) {
 		chain_next();
 }
 
-// ------------------------------------------------------------------ the keys (mu300-buttons)
+// ------------------------------------------------------------------ the keys
 const KEY_POWER = 116;
 const KEY_WIFI = 138;   // "Wifi Switch Key" in the U30 Air's device tree (KEY_HELP's code, as its Android maps it)
 const PST = RUN + '/mu300/power';
@@ -243,55 +244,50 @@ const LEDDIR = R + '/run/mu300/led';
 const LEDIDLE = LEDDIR + '/.idle';   // mu300-led idle on (mu300-led keeps its state there)
 const DEADLINE = num('MU300_BUTTONS_DEADLINE', 150);   // a toggle in the background (the LED sync after wifi up: 120 s)
 const PROBE_DEADLINE = num('MU300_BUTTONS_PROBE_DEADLINE', 5);
-function is_openwrt() { return exists('/etc/openwrt_release'); }
 
 // probe ARGV CB: ARGV within PROBE_DEADLINE, CB(true) when it said yes (the direction of a hold is decided before the
-// wake: it must not wait long)
+// wake: it must not wait long). One killed at the deadline said no: uloop reports a killed process with code 0.
 function probe(argv, cb) {
-	let t = null;
-	t = deadline(PROBE_DEADLINE, spawn(argv, (code) => {
+	let t = null, late = false;
+	let p = spawn(argv, (code) => {
 		if (t)
 			t.cancel();
-		cb(code == 0);
-	}, null, true));
+		cb(!late && code == 0);
+	}, null, true);
+	t = p ? uloop.timer(PROBE_DEADLINE * 1000, () => { late = true; tree_kill(p.pid()); }) : null;
 }
 function hotspot_is_up(cb) {
-	if (is_openwrt())
-		probe([ 'ubus', '-t', '5', 'call', 'hostapd.wlan0', 'get_status' ], cb);
-	else
-		probe([ 'systemctl', 'is-active', '--quiet', 'mu300-hotspot' ], cb);
+	probe([ 'ubus', '-t', '5', 'call', 'hostapd.wlan0', 'get_status' ], cb);
 }
 function hotspot_set(dir) {   // the toggle itself, a shell command
-	if (is_openwrt())
-		return (dir == 'off') ? 'wifi down; mu300-led wifi off' : 'wifi up; mu300-led wifi sync 120';
-	return (dir == 'off') ? 'systemctl stop mu300-hotspot' : 'systemctl start mu300-hotspot';
+	return (dir == 'off') ? 'wifi down; mu300-led wifi off' : 'wifi up; mu300-led wifi sync 120';
 }
 
 let led_arm;   // set below (the LED tick)
 let presses = [], pressing = false;
 let press_next;   // set below
-// press_act: what the press does once the LEDs are lit and, for a Wi-Fi hold, its direction is decided (see the top
-// of mu300-buttons: idle wakes on any key, a charging boot only on the Wi-Fi key; the toggles act on an awake device)
+// press_act: what the press does once the LEDs are lit and, for a Wi-Fi hold, its direction is decided (see the top:
+// idle wakes on any key, a charging boot only on the Wi-Fi key; the toggles act on an awake device)
 function press_act(code, kind, s, was_idle, dir) {
 	let key = (code == KEY_WIFI) ? 'wifi' : 'power';
-	// a held power key in the charging boot starts the device (the stock charger mode: hold power to switch it on;
-	// FINDINGS 196): the wake without a key name ends it, as the Wi-Fi key does
+	// a held power key in the charging boot starts the device (the stock charger mode: hold power to switch it on):
+	// the wake without a key name ends it, as the Wi-Fi key does
 	if (code == KEY_POWER && kind == 'long' && s == 'charging-boot') {
-		log('mu300-buttons', 'power button held in the charging boot: starting');
+		log('mu300-sysd', 'power button held in the charging boot: starting');
 		spawn([ 'mu300-power', 'wake' ], null, null, true);
 		return;
 	}
 	// a held power key shuts down instead: no wake (it would bring the radios back on the way down), the marker
 	if (code == KEY_POWER && kind == 'long') {
-		log('mu300-buttons', 'power button held: shutting down');
+		log('mu300-sysd', 'power button held: shutting down');
 		mkdir_p(PST);
 		writefile(PST + '/shutdown', '');
-		spawn(is_openwrt() ? [ 'poweroff' ] : [ 'systemctl', 'poweroff' ]);
+		spawn([ 'poweroff' ]);
 		return;
 	}
 	spawn([ 'mu300-power', 'wake', key ], null, null, true);
 	if (code == KEY_WIFI && kind == 'short' && !was_idle)
-		in_background(DEADLINE, 'mu300-wifi-band toggle | logger -t mu300-buttons 2>/dev/null');
+		in_background(DEADLINE, 'mu300-wifi-band toggle | logger -t mu300-sysd 2>/dev/null');
 	else if (code == KEY_WIFI && kind == 'long' && dir)
 		in_background(DEADLINE, hotspot_set(dir));
 }
@@ -321,7 +317,7 @@ function press_rest(code, kind) {
 		press_next();
 	});
 }
-// one press at a time, in order, as mu300-buttons read them; the next waits for this one's wake and probe only
+// one press at a time, in order, as the helper reports them; the next waits for this one's wake and probe only
 press_next = function() {
 	let p = shift(presses);
 	if (!p) {
@@ -349,19 +345,19 @@ function press(code, kind) {
 		press_next();
 }
 
-// ------------------------------------------------------------------ the LED tick (mu300-led's hint, FINDINGS 215)
+// ------------------------------------------------------------------ the LED tick (mu300-led's hint)
 const LEDHINT = LEDDIR + '/.tick-hint';
 const PSY = R + '/sys/class/power_supply/';
 const SAFETY = num('MU300_SYSD_SAFETY', 90);
 // On the charger the look comes sooner: the U30 Air's charger (an SGM41513 under the bq256xx driver) has no interrupt
 // wired, and the gauge's comes at a 1 % step only, so "charging" -> "full" (and charging switched off or on by the
 // charge guard) changes the battery LED without any uevent. The plug itself is extcon-gpio's interrupt, an extcon
-// uevent (FINDINGS 217).
+// uevent.
 const SAFETY_PLUGGED = num('MU300_SYSD_SAFETY_PLUGGED', 30);
 const UEVENTS = 'power_supply,extcon';
 const HINT_MAX = num('MU300_SYSD_LED_HINT_MAX', 600);
 
-// The hint: "due UPTIME", then a "FILE VALUE" line for every file the next tick depends on, as mu300-buttons read it
+// The hint: "due UPTIME", then a "FILE VALUE" line for every file the next tick depends on
 // (whole lines only; the value is what follows the first space). The battery's files are kept apart.
 let hint = null;   // { due, lines: [ [ FILE, VALUE ] ], battery: { FILE: VALUE } or null }
 function hint_load() {
@@ -459,7 +455,7 @@ function led_look() {
 	}, { MU300_LED_TICK_HINT_MAX: '' + HINT_MAX });
 }
 // the next look: at the hint's due time, at the end of a timeout the hint cannot know of yet (a key's wake since the
-// last tick), every SAFETY s at the latest. Without a hint (an mu300-led that writes none) as mu300-buttons did,
+// last tick), every SAFETY s at the latest. Without a hint (an mu300-led that writes none):
 // every 5 s, and less often while none comes.
 led_arm = function() {
 	let t = now();
@@ -494,7 +490,7 @@ function on_line(line) {
 		if (parts.led)
 			led_soon();
 	}
-	else if (f[1] == 'tick') {   // (from -t: a look, as mu300-buttons' tick)
+	else if (f[1] == 'tick') {   // (from -t: a look)
 		if (parts.led)
 			led_look();
 	}
@@ -586,7 +582,7 @@ helper_start = function() {
 		helper_ended(-1);
 };
 
-// ------------------------------------------------------------------ thermal (thermal-guard)
+// ------------------------------------------------------------------ thermal
 const HOT = num('MU300_THERMAL_HOT', 85000);
 const COOL = num('MU300_THERMAL_COOL', 75000);
 const CRIT = num('MU300_THERMAL_CRIT', 105000);
@@ -605,14 +601,14 @@ const ALARM = R + '/run/mu300/thermal-alarm';     // the alarm is on (it outlive
 
 let DEVICE = null, RELEASE = null;
 function thermal_init() {
-	// the label kernel/initramfs/init leaves when it says u30air, else mu300-device (its V50 rule is about the other labels)
+	// the label the boot's init leaves when it says u30air, else mu300-device
 	DEVICE = rd(R + '/run/mu300/device');
 	if (DEVICE != 'u30air') {
 		let p = popen(shq(BIN + '/mu300-device') + ' 2>/dev/null', 'r');
 		DEVICE = p ? trim(p.read('all') ?? '') : '';
 		p?.close();
 	}
-	// the kernel, for the log only: what this guard does is decided by the zones it finds, on every kernel (#229)
+	// the kernel, for the log only: what this guard does is decided by the zones it finds
 	RELEASE = rd(R + '/proc/sys/kernel/osrelease') ?? rd('/proc/sys/kernel/osrelease') ?? '';
 }
 
@@ -651,7 +647,7 @@ function battery_temp() {
 
 // native_cpu_cooling HOTTEST LISTING: the type of an enabled zone with a passive trip at or below HOT that has every
 // cpufreq cooling device bound and reads a number within 15 C of HOTTEST (the kernel throttles the CPUs itself), or
-// null: then this guard caps. Decided again every round, as thermal-guard did, without a pattern match (one is ~0.1
+// null: then this guard caps. Decided again every round, without a pattern match (one is ~0.1
 // ms here: a round of them took 30 ms). A sysfs read is ~60 us from here, and the 40 reads of a whole look at the
 // zones' modes and trips were a third of a round: the zone found last round is looked at alone, and all of them
 // again when /sys/class/thermal lists other entries (a module came or went), when that zone does not qualify any
@@ -804,30 +800,30 @@ function thermal_round() {
 	let native = native_cpu_cooling(t, listing) ?? '';
 	if (native != '') {
 		if (native != native_was) {
-			log('thermal-guard', 'kernel thermal zone ' + native + ' throttles the CPUs: watching only, power-off at ' + CRIT + ' mC stays');
+			log('mu300-thermal', 'kernel thermal zone ' + native + ' throttles the CPUs: watching only, power-off at ' + CRIT + ' mC stays');
 			lift_caps();
 		}
 	}
 	else {
 		throttle = true;
 		if (native_was != '')
-			log('thermal-guard', 'kernel thermal zone ' + native_was + ' gone: capping cpufreq again');
+			log('mu300-thermal', 'kernel thermal zone ' + native_was + ' gone: capping cpufreq again');
 		else if (first)
-			log('thermal-guard', 'no kernel thermal zone throttles the CPUs (kernel ' + RELEASE + '): capping cpufreq here above ' + HOT + ' mC, power-off at ' + CRIT + ' mC');
+			log('mu300-thermal', 'no kernel thermal zone throttles the CPUs (kernel ' + RELEASE + '): capping cpufreq here above ' + HOT + ' mC, power-off at ' + CRIT + ' mC');
 	}
 	native_was = native;
 	first = false;
 	// the battery as the guard compared it ("${b:-0}"): none is 0, a reading that is no number compares false
 	let bn = (b == null || b == '') ? 0 : integer(b) ? +b : null;
 	if (t >= CRIT) {
-		log('thermal-guard', 'critical temperature ' + t + ' mC, powering off');
+		log('mu300-thermal', 'critical temperature ' + t + ' mC, powering off');
 		chain([ 'poweroff' ]);
 	}
 	else if (t >= HOT && throttle) {
 		for (let p in policies())
 			step(p, -1);
 		mark(CAPPED, '');
-		log('thermal-guard', 'hot (' + t + ' mC): lowered cpufreq limits');
+		log('mu300-thermal', 'hot (' + t + ' mC): lowered cpufreq limits');
 	}
 	else if (t <= COOL && throttle)
 		raise_caps();
@@ -835,7 +831,7 @@ function thermal_round() {
 		// the kernel throttles but does not hold the SoC: one step more per round on top of its cap, the A76 clusters
 		// from BACKSTOP, the A55 one (policy0) too from BACKSTOP_ALL; logged once per hot spell
 		if (!exists(CAPPED))
-			log('thermal-guard', 'kernel thermal zone ' + native + ' does not hold the SoC (' + t + ' mC): capping cpufreq on top of it from ' + BACKSTOP + ' mC (the A55 cluster too from ' + BACKSTOP_ALL + ' mC) until ' + HOT + ' mC');
+			log('mu300-thermal', 'kernel thermal zone ' + native + ' does not hold the SoC (' + t + ' mC): capping cpufreq on top of it from ' + BACKSTOP + ' mC (the A55 cluster too from ' + BACKSTOP_ALL + ' mC) until ' + HOT + ' mC');
 		for (let p in policies())
 			if (basename(p) != 'policy0' || t >= BACKSTOP_ALL)
 				step(p, -1);
@@ -846,12 +842,12 @@ function thermal_round() {
 	let bs = (b == null || b == '') ? '-' : b;
 	if (!exists(ALARM) && (t >= HOT || (bn != null && bn >= BATT_HOT))) {
 		mark(ALARM, '');
-		log('thermal-guard', 'too hot (SoC ' + t + ' mC, battery ' + bs + ' dC): LED alarm on');
+		log('mu300-thermal', 'too hot (SoC ' + t + ' mC, battery ' + bs + ' dC): LED alarm on');
 		chain([ LED, 'alarm', 'on' ]);
 	}
 	else if (exists(ALARM) && t <= COOL && bn != null && bn <= BATT_COOL) {
 		unlink(ALARM);
-		log('thermal-guard', 'cooled down (SoC ' + t + ' mC, battery ' + bs + ' dC): LED alarm off');
+		log('mu300-thermal', 'cooled down (SoC ' + t + ' mC, battery ' + bs + ' dC): LED alarm off');
 		chain([ LED, 'alarm', 'off' ]);
 	}
 	return next_look(t, b, throttle);
@@ -873,23 +869,6 @@ idle_check = function() {
 		uloop.end();
 };
 
-if (MODE == '--check') {
-	// the modules loaded (or this program would not run), the calls of this ucode, a helper that knows -u
-	if (type(socket.pair) != 'function' || type(uloop.process) != 'function' || type(uloop.signal) != 'function') {
-		warn('mu300-sysd: this ucode lacks socket.pair, uloop.process or uloop.signal\n');
-		exit(1);
-	}
-	let exe = which(KEYS);
-	let p = exe ? popen(shq(exe) + ' -? 2>&1', 'r') : null;
-	let usage = p ? (p.read('all') ?? '') : '';
-	p?.close();
-	if (index(usage, '-u SUBSYSTEM') < 0) {
-		warn('mu300-sysd: ' + (exe ? exe + ' does not know -u (an older build)' : 'no ' + KEYS) + '\n');
-		exit(1);
-	}
-	exit(0);
-}
-
 uloop.init();
 if (MODE == '--round') {
 	thermal_init();
@@ -899,7 +878,7 @@ if (MODE == '--round') {
 	exit(0);
 }
 if (MODE != '') {
-	warn('usage: mu300-sysd [--check | --round]\n');
+	warn('usage: mu300-sysd [--round]\n');
 	exit(2);
 }
 
@@ -910,7 +889,7 @@ if (parts.keys || parts.led)
 	helper_start();
 if (parts.led) {
 	hint_load();
-	// the first look a little after the start, as mu300-buttons' first tick (the tests' runs end before it)
+	// the first look a little after the start (the tests' runs end before it)
 	if (!ONCE)
 		led_timer = uloop.timer(5000, () => { led_timer = null; led_look(); });
 }

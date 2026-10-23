@@ -1,16 +1,15 @@
 # SMS PDU codec for the MU300. Decodes SMS-DELIVER and builds SMS-SUBMIT.
 #
-# In awk because that is what the device has: no python, no lua, no perl, only an awk - busybox's on OpenWrt,
-# mawk on Ubuntu. printf "%c" with a value under 256 emits a raw byte in all of them, so UTF-8 is written out a
-# byte at a time. The bit operations are the b_* functions below rather than b_and()/b_or()/b_lshift()/b_rshift():
-# busybox awk and gawk have those built in, mawk does not, and on Ubuntu every USSD answer and every SMS
-# failed with "function and never defined". gawk will not let a script define its own b_and(), hence the prefix.
+# In awk because that is what the device has: no python, no lua, no perl, only busybox's awk. printf "%c" with a
+# value under 256 emits a raw byte in every awk, so UTF-8 is written out a byte at a time. The bit operations are the
+# b_* functions below rather than and()/or()/lshift()/rshift(), which mawk (a test host's awk) does not have; gawk
+# will not let a script define its own and(), hence the prefix.
 #
 # PDU mode rather than text mode is not a preference. This modem returns a mangled address in text mode
 # whenever the sender is alphanumeric - a brand name rather than a number, which is most of what a SIM in a
 # router receives. Measured: text mode gives "144414+4140224P444" where the PDU says type-of-address 0xD0 and
 # the packed septets spell the operator's name. Text mode also cannot say whether two messages are halves of
-# one long one. See docs/FINDINGS.md.
+# one long one.
 #
 #   decode: awk -v mode=decode -f sms-pdu.awk        (one PDU per line, "index<TAB>pdu")
 #   encode: MU300_PDU_NUMBER=... MU300_PDU_TEXT=... awk -v mode=encode -f sms-pdu.awk (from the environment, as it is:
@@ -34,7 +33,7 @@
 # whose service centre timestamps are within GROUP_WINDOW seconds (600: the centre stamps the parts of one
 # submission seconds apart, and a redelivery keeps the stamp), and no two of them may claim the same part
 # number with different text. The idea is kanoqwq's (clean-tf-7.2 a5bd3e06), who keys a group by the same
-# things and the same ten minutes; the rest is ours (FINDINGS 63). TIMESTAMP in the key is the earliest stamp
+# things and the same ten minutes; the rest is ours. TIMESTAMP in the key is the earliest stamp
 # among the parts seen. `known` names a file whose first tab field per line is a key from an earlier run (the
 # waiting state of the caller): a group that is the continuation of one of those keeps that key, also when a
 # part with an earlier stamp has arrived since, so the caller's "first seen" stays attached to it.

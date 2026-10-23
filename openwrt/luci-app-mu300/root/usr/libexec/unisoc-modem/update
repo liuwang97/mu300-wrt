@@ -12,7 +12,7 @@
 #                        looked at with "mu300-update report" yet (the note at login)
 #   update job           {"ok":1,"job":{"kind","state":none|running|done|failed,"started","elapsed","rc","stage",
 #                        "stage_text","file":{"name","have","total"}|null,"changed":0|1,"log":TEXT}}
-#   update act OP TAG SYSTEMS KERNEL SHA256 SIZE FLAGS CONFIRM
+#   update act OP TAG SYSTEMS KERNEL SHA256 SIZE FLAGS CONFIRM   (KERNEL: unused, empty)
 #       check                       ask GitHub for the releases (mu300-update releases), kept for the page
 #       apply TAG SYSTEMS FLAGS     mu300-update apply: TAG is the release the last check offered (the newest, or the
 #                                   pre-release), SYSTEMS none (all) or some of the installed ones, FLAGS no_reinstall
@@ -22,7 +22,7 @@
 #       upload_cancel               delete it
 #       apply_file SHA256 FLAGS     mu300-update apply --from the upload whose SHA-256 the page showed; FLAGS
 #                                   unsigned, downgrade (each needed when the file is that), no_reinstall
-#       rollback SYSTEMS | rollback_boot | clean | kernel KERNEL
+#       rollback SYSTEMS | rollback_boot | clean
 #       source URL|(empty)          where the release files come from: mu300-update source URL, or source off for
 #                                   GitHub (the panel's "Mirror (release files)"). Runs at once, not as a task, and
 #                                   its reply is a whole update_get: the page has the new state in one round trip
@@ -52,16 +52,16 @@ RUN=${MU300_UPDATE_RUN_DIR:-$RUN_DIR}
 JOB=$RUN/update-job
 CHECK=$RUN/update-check.json
 INSPECT=$RUN/update-inspect.json
-# The upload: on the Linux partition (a zip is 40 to 400 MB, more than RAM should hold), in a directory only root can
-# enter. UPLOAD is the one path the panel's ACL may write; what is used is STAGED, the same file renamed.
+# The upload: on the Linux partition (a root filesystem is 150 to 400 MB, more than RAM should hold), in a directory
+# only root can enter. UPLOAD is the one path the panel's ACL may write; what is used is STAGED, the same file renamed.
 UPDIR=${MU300_UPDATE_UPLOAD_DIR:-$DISK/.mu300-upload}
-UPLOAD=$UPDIR/update.zip
-STAGED=$UPDIR/staged.zip
+UPLOAD=$UPDIR/update.tar.gz
+STAGED=$UPDIR/staged.tar.gz
 UPLOAD_MAX=$((2047 << 20))
 # cgi-io keeps an upload in /tmp until it is complete and then moves it: /tmp needs the room too
 UPLOAD_TMP=${MU300_UPDATE_TMP:-/tmp}
 REPORT=${MU300_UPDATE_REPORT:-/etc/mu300/update-report}
-SYSTEMS='ubuntu openwrt openwrt-luci'
+SYSTEMS='openwrt-luci'
 
 error() { printf '{"ok":0,"error":%s}\n' "$(json_str "$1")"; exit 0; }
 now() { date +%s; }
@@ -105,13 +105,13 @@ job_running() {
 }
 job_kind() {
     _k=$(head -c 24 "$JOB/kind" 2>/dev/null | head -n1)
-    case $_k in check|inspect|apply|file|rollback|rollback_boot|clean|kernel) echo "$_k" ;; esac
+    case $_k in check|inspect|apply|file|rollback|rollback_boot|clean) echo "$_k" ;; esac
 }
-# fingerprint: what a restart would start - the release of each system, the boot image and the kernel choice. A task
-# that changed it leaves a device that wants a restart.
+# fingerprint: what a restart would start - the release of the system and the boot image. A task that changed it
+# leaves a device that wants a restart.
 fingerprint() {
     for _s in $SYSTEMS; do cat "$DISK/$_s/etc/mu300/image-version" 2>/dev/null || echo -; done
-    for _f in installed.tag installed.id written.sha256 kernel; do cat "$DISK/boot/$_f" 2>/dev/null || echo -; done
+    for _f in installed.tag installed.id written.sha256; do cat "$DISK/boot/$_f" 2>/dev/null || echo -; done
 }
 # stage_of TEXT: the step an update is at, from the last "==> ..." line of its output; "other" for one this does not
 # know (the page then shows the line itself)
@@ -261,9 +261,9 @@ do_get() {
 
 do_job() { printf '{"ok":1,"job":%s}\n' "$(job_json)"; }
 
-# systems_ok LIST: every word one of the three systems (the updater says which are installed)
+# systems_ok LIST: every word one of the systems (the updater says which are installed)
 systems_ok() {
-    for _s in $1; do case $_s in ubuntu|openwrt|openwrt-luci) ;; *) return 1 ;; esac; done
+    for _s in $1; do case " $SYSTEMS " in *" $_s "*) ;; *) return 1 ;; esac; done
 }
 # has_flag FLAGS NAME
 has_flag() { case " $1 " in *" $2 "*) return 0 ;; esac; return 1; }
@@ -283,7 +283,7 @@ do_act() {  # do_act OP TAG SYSTEMS KERNEL SHA256 SIZE FLAGS CONFIRM URL
             start_job check -- ;;
         apply)
             [ "$confirm" = apply ] || error 'This needs confirmation'
-            # a release tag (docs/FINDINGS.md 125: vYYYY.MM.DD, and vYYYY.MM.DD.N after v2026.10.27)
+            # a release tag (vYYYY.MM.DD.N, and the older vYYYY.MM.DD)
             printf '%s\n' "$tag" | LC_ALL=C grep -Eqx -- 'v[0-9]{4}\.[0-9]{2}\.[0-9]{2}|v[0-9]{4}\.(0[1-9]|1[0-2])\.(0[1-9]|[12][0-9]|3[01])\.[1-9][0-9]?' || error 'Invalid update request'
             # only a release the last check offered: the newest one, or the pre-release
             offered=0
@@ -362,12 +362,6 @@ do_act() {  # do_act OP TAG SYSTEMS KERNEL SHA256 SIZE FLAGS CONFIRM URL
             job_running && error 'An update task is already running'
             lock_free
             start_job clean -- clean ;;
-        kernel)
-            [ "$confirm" = kernel ] || error 'This needs confirmation'
-            case $kernel in 5.4|6.18|7.2|7.3) ;; *) error 'Invalid update request' ;; esac
-            job_running && error 'An update task is already running'
-            lock_free
-            start_job kernel -- kernel "$kernel" ;;
         source)
             # the release source: one mu300-update command, run here rather than as a task (it downloads nothing),
             # and the whole update_get back so the page needs no second call

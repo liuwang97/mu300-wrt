@@ -30,16 +30,16 @@
 # Which parts are one message is sms-pdu.awk's to say (its group mode): the same sender, reference number and total,
 # service centre timestamps within ten minutes of each other, and no part number twice with two texts. The reference
 # number alone is not enough: senders reuse it (it is eight bits wide, and some send every long message under the same
-# one), so a second long message under the reference of one still waiting here used to be mixed into it, and every
-# later message under the reference of one that had been pooled incomplete was pooled part by part, never joined
-# (FINDINGS 63; the idea of keying by more than the reference is kanoqwq's, clean-tf-7.2 a5bd3e06).
+# one): keyed by the reference alone, a second long message under the reference of one still waiting here would be
+# mixed into it, and a later message under the reference of one pooled incomplete would never be joined (the idea of
+# keying by more than the reference is kanoqwq's, clean-tf-7.2 a5bd3e06).
 #
 # A long message in the pool remembers its parts (a header "part_ids: <md5 of each part's PDU>", his idea too): a
 # part the network delivers once more (an acknowledgement that did not reach it) is then known as part of a message
-# the pool has, and dropped, where it used to wait its hour alone and be pooled as an incomplete message.
+# the pool has, and dropped, instead of waiting its hour alone and being pooled as an incomplete message.
 #
 # A message the modem delivers directly (AT+CNMI mt=2, which mu300-smsd asks for: no SIM slot, a "+CMT:" frame that
-# mu300-atd puts in $POOL/incoming as one PDU) comes in through import-pdu. Its PDU is parked in $POOL/parts, on the
+# mu300-modemd puts in $POOL/incoming as one PDU) comes in through import-pdu. Its PDU is parked in $POOL/parts, on the
 # disk, before anything else; then the parts there are decoded and grouped exactly as a SIM listing is (absorb), so a
 # long message's parts wait for each other there as they wait on the SIM, with the same PARTIAL_WAIT. import-pdu exits
 # 0 only once the pool holds the message (or its part): that is when mu300-smsd acknowledges it to the network
@@ -52,8 +52,8 @@
 # (the SIM holds a few dozen, and a full one takes no more, so a message left there costs the next one), and only
 # once the pool's copy is on the disk.
 #
-# The modem is reached only through mu300-atd (mu300-at), in PDU mode, as `sms` does: text mode mangles a sender
-# that is a name and cannot tell the parts of a long message apart (FINDINGS 26c). The frames are decoded and built
+# The modem is reached only through mu300-modemd (mu300-at), in PDU mode, as `sms` does: text mode mangles a sender
+# that is a name and cannot tell the parts of a long message apart. The frames are decoded and built
 # by the same /opt/mu300/lib/sms-pdu.awk. A send is one transaction under mu300-at's client lock (at_lock): the
 # modem's own SMSC written back to it unchanged, PDU mode, then the submission, with no other client in between.
 #
@@ -75,8 +75,8 @@ PAGE=${MU300_SMS_PAGE:-10}
 HOOK=${MU300_SMS_HOOK:-/etc/mu300/sms-hook}
 case $PAGE in ''|*[!0-9]*|0) PAGE=10 ;; esac
 TAB=$(printf '\t')
-# The pool lock lives in RAM, not in the pool: the pool is on flash (/etc), and smsd syncs (FINDINGS 215). One lock per
-# pool path.
+# The pool lock lives in RAM, not in the pool: the pool is on flash (/etc), and smsd syncs often; a lock there would
+# write to flash every time. One lock per pool path.
 RUNDIR=${MU300_SMS_RUN:-/run}
 [ -d "$RUNDIR" ] || RUNDIR=${TMPDIR:-/tmp}
 # md5sum first: OpenWrt's busybox has no cksum
@@ -101,7 +101,7 @@ durable() {
     command sync 2>/dev/null || true
 }
 
-# at CMD [SECONDS]: one command through mu300-atd. Its stderr is passed on: "mu300-at: busy" is how the panel learns
+# at CMD [SECONDS]: one command through mu300-modemd. Its stderr is passed on: "mu300-at: busy" is how the panel learns
 # that the channel was busy.
 at() { mu300-at -t "${2:-8}" "$1"; }
 
@@ -113,7 +113,7 @@ nap() { "$BB" sleep "$1" 2>/dev/null || sleep 1; }
 # at_lock / at_unlock: mu300-at's client lock ($ATDIR/lock, the mutex its clients take around every single command),
 # held here across a whole transaction. A send is several commands (the SMSC refresh, PDU mode, the submission)
 # that must reach the modem with nothing else in between: as separate mu300-at calls, each one let another client
-# in (the panel's collectors, a sync), and on one network the submission then failed (FINDINGS 46). The mu300-at
+# in (the panel's collectors, a sync), and on one network the submission then failed. The mu300-at
 # calls made under it are told so (MU300_AT_LOCK_HELD) and take no lock of their own. The rules are mu300-at's: a
 # holder that is gone is taken over, and the wait is MU300_AT_LOCK_WAIT seconds of the clock (the panel sets it
 # short, so a busy channel is "busy" within seconds, before anything is sent). Giving up says it in mu300-at's own
@@ -148,7 +148,7 @@ at_unlock() {
 }
 
 # smsc_refresh: the SMSC the modem has, written back to it unchanged (AT+CSCA?, then AT+CSCA="<the same>",<type>)
-# before a send. On one network (China Broadnet, FINDINGS 46) every submission failed with the modem's IMS stack
+# before a send. On one network (China Broadnet) every submission failed with the modem's IMS stack
 # saying "SMS FAILED: CODE:600 REASON:Busy Everywhere" until exactly this had been done; what it puts right inside
 # the modem is not known. The address is kept byte for byte as the modem showed it, in the active character set
 # (AT+CSCS, which is never touched here: "HEX" on that device, where the address reads as hexadecimal), with the
@@ -177,9 +177,9 @@ smsc_refresh() {
     return 0
 }
 
-# Without mu300-atd, mu300-at opens the tty itself, which works once and can leave the channel silent until a
-# reboot (FINDINGS 13b): a daemon that syncs every few seconds must never take that path.
-need_atd() {
+# need_modemd: mu300-modemd (the mu300-atd service) serves the channel, its command fifo. Without it there is no AT at
+# all (mu300-at never opens the tty itself), and a sync says so at once instead of failing in each command.
+need_modemd() {
     [ -p "$ATDIR/cmd" ] || die "mu300-atd is not running (no $ATDIR/cmd); the modem is reached only through it"
 }
 
@@ -524,7 +524,7 @@ absorb() {
         take "$_idx" "$_unread" "$_from" "$_ts" "$_text" "$_hd"
     done < "$_tmp"
     # The parts of long messages that are not whole yet. $POOL/partial keeps when each was first seen, and whether it
-    # was unread then ("key <TAB> epoch <TAB> 0|1": AT+CMGL marks what it lists read on this modem, FINDINGS 35, so
+    # was unread then ("key <TAB> epoch <TAB> 0|1": AT+CMGL marks what it lists read on this modem, so
     # the next listing would say read); one that has waited PARTIAL_WAIT seconds is taken as it is. So is one whose
     # earlier parts the pool already took that way (a header "partial: <md5 of its key without the time>", on a
     # message of the same ten minutes: rest_of_pooled): the rest of a message that is in the pool already.
@@ -611,7 +611,7 @@ absorb() {
 }
 
 cmd_sync() {
-    need_atd
+    need_modemd
     absorb sim
 }
 
@@ -764,7 +764,7 @@ cmd_send() {
         _text=$*
     fi
     [ -n "$_text" ] || die "the message is empty"
-    need_atd
+    need_modemd
     [ -f "$AWK" ] || die "$AWK is missing"
     # the number and the text reach the encoder in its environment, never in its arguments (anyone may list those)
     _enc=$(MU300_PDU_NUMBER=$_num MU300_PDU_TEXT=$_text awk -v mode=encode -f "$AWK" </dev/null)
@@ -782,13 +782,13 @@ cmd_send() {
         _coding=gsm
     fi
     # The whole conversation with the modem under one AT client lock (at_lock): the SMSC refresh, PDU mode and the
-    # submission reach it with nothing from another client in between (FINDINGS 46). The pool lock comes after it
+    # submission reach it with nothing from another client in between. The pool lock comes after it
     # is released: a path holding the pool lock makes no AT call (see cmd_sync).
     at_lock
     smsc_refresh
     _r=$(at 'AT+CMGF=0' 6) || exit 1
     # AT+CMGS, the CR, the PDU and Ctrl-Z as one request: the modem prompts with "> " and no newline, which a line
-    # reader never sees; mu300-atd writes the whole request and collects the answer (FINDINGS 46 on why it stays so)
+    # reader never sees; mu300-modemd writes the whole request and collects the answer
     _r=$(at "$(printf 'AT+CMGS=%s\r%s\032' "$_len" "$_pdu")" 40) || {
         die "the modem did not take the message: $(printf '%s\n' "$_r" | grep -E 'CMS|ERROR' | head -n 1)"; }
     case $_r in
@@ -828,7 +828,7 @@ cmd_delete() {
         case $_a in --sim) _sim=1 ;; *) _what=$_a ;; esac
     done
     pool_init
-    [ "$_sim" = 1 ] && need_atd
+    [ "$_sim" = 1 ] && need_modemd
     # The SIM first (AT calls, so without the pool lock), then the tombstones and the files under the pool lock: a
     # tombstone written while a sync rewrites the list would be lost, and the message would come back.
     if [ "$_what" = all ]; then

@@ -99,8 +99,9 @@ return view.extend({
 		root.innerHTML = this.html();
 		this.wire(root);
 		var self = this;
-		/* WPA3 on the hotspot was switched off at boot (openwrt-wifi-wpa2-only, FINDINGS 80): the notice of Status >
-		 * Overview, from the same module (its own English, Turkish and Chinese), above the cards until dismissed */
+		/* WPA3 on the hotspot was switched off at boot (openwrt-wifi-wpa2-only: the SC2355 firmware's SAE does not
+		 * work): the notice of Status > Overview, from the same module (its own English and Chinese), above the cards
+		 * until dismissed */
 		if (typeof L.require === 'function')
 			Promise.resolve().then(function() { return L.require('view.status.include.05_mu300_wpa2'); }).then(function(m) {
 				return m && m.load().then(function(n) {
@@ -375,7 +376,7 @@ return view.extend({
 				: M.confirmBox(_('Turn on cellular radio'), _('The radio of the SIM in use comes on and stays on after a reboot (up to about 1 minute).'))
 			).then(function(go) { if (go) act('radio', on ? 'off' : 'on', null, btn); });
 		};
-		/* data roaming of the SIM in use (mobile-data, FINDINGS 120): off keeps data down while the SIM is registered
+		/* data roaming of the SIM in use (mobile-data): off keeps data down while the SIM is registered
 		 * as roaming. Some SIMs say "roaming" at home (an MVNO on another operator's network, national roaming). */
 		q('btn-roam').onclick = function() {
 			var ro = self.lastInfo && self.lastInfo.wan && self.lastInfo.wan.roaming;
@@ -794,7 +795,7 @@ return view.extend({
 		if (bk) bk.style.display = p.present ? '' : 'none';
 		if (p.present) {
 			/* direction from status; for Unknown and the like from the sign of the current (positive into the
-			 * battery), with the gauge's own 20 mA dead band. The 5.4 SQC charger says Unknown once full. */
+			 * battery), with the gauge's own 20 mA dead band. */
 			var pst = p.status, pcur = p.ua || 0, parts = [ _('Battery') ];
 			var pdir = pst === 'Charging' ? 1 : pst === 'Discharging' ? -1 :
 				(pst === 'Full' || pst === 'Not charging') ? 0 : (pcur >= 20000 ? 1 : pcur <= -20000 ? -1 : 0);

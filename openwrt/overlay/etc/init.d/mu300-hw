@@ -5,11 +5,11 @@ export PATH="$PATH:/opt/mu300/busybox-bin"
 
 # Everything here runs in the background on purpose. busybox init only spawns the consoles after sysinit has
 # finished, so anything slow (or hanging) in here costs the device its serial console *and* its network - which
-# is exactly what a hanging wifi-start did on the mainline kernel, leaving no way in at all.
+# is exactly what a hanging wifi-start would do, leaving no way in at all.
 boot() {
 	/opt/mu300/bin/mu300-led power on
 	/opt/mu300/bin/mu300-usb boot
-	# the kernel's module helper once its table is made (~2 s; FINDINGS 163)
+	# the kernel's module helper once its table is made (~2 s)
 	/opt/mu300/bin/mu300-modprobe-guard --prepare > /tmp/mu300-modprobe-guard.log 2>&1 &
 	hw_bringup > /tmp/mu300-hw.log 2>&1 &
 }
@@ -18,7 +18,7 @@ hw_bringup() {
 	# The rules first, then the chip: cfg80211 looked for regulatory.db before the rootfs was mounted, and with the
 	# database and the country in place before the phy appears, netifd's own start of hostapd (it starts one as soon
 	# as the phy is there) already runs under them. The Wi-Fi then comes before the vendor extras and zram, which held
-	# it back ~2 s at every boot (10 modprobes of modules this kernel does not have, and the Mali GPU's).
+	# it back ~2 s at every boot (modprobes of modules this kernel does not have).
 	/opt/mu300/bin/regdb-load >/tmp/mu300-wifi-start.log 2>&1
 	country=$(uci -q get wireless.radio0.country)
 	[ -n "$country" ] && iw reg set "$country"
@@ -27,7 +27,8 @@ hw_bringup() {
 	/opt/mu300/bin/zram-start >/dev/null 2>&1
 	cfg=$(md5sum /etc/config/wireless 2>/dev/null)
 	/opt/mu300/bin/openwrt-wifi-config >>/tmp/mu300-wifi-start.log 2>&1
-	# a hotspot set to WPA3/SAE (the U30 Air's SAE offload, now disabled: docs/U30AIR-SAE.md, FINDINGS 80) becomes
+	# a hotspot set to WPA3/SAE (disabled: with the U30 Air's firmware SAE offload a client can join without the
+	# password) becomes
 	# WPA2-PSK with the same password, before the Wi-Fi restart below, which is the start that brings the hotspot up
 	# (netifd's own, earlier one ends AP-DISABLED under the world regulatory domain; the wifi-scripts refuse SAE)
 	/opt/mu300/bin/openwrt-wifi-wpa2-only migrate >>/tmp/mu300-wifi-start.log 2>&1

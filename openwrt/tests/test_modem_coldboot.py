@@ -1,7 +1,7 @@
-"""mu300-modem-coldboot and its two callers (FINDINGS 196, issue #253): the CP of a U30 Air that LK started for its
+"""mu300-modem-coldboot and its two callers (issue #253): the CP of a U30 Air that LK started for its
 charger. The stock modem_control is not in this repository: a stand-in of its size carries the two instructions at
-their offsets, and the script is told its checksums (MU300_COLDBOOT_STOCK / _PATCHED); the real ones are checked
-against the device's file in FINDINGS 196."""
+their offsets, and the script is told its checksums (MU300_COLDBOOT_STOCK / _PATCHED); the real ones are those of
+the device's file."""
 import hashlib
 import re
 import unittest
@@ -67,7 +67,6 @@ class ColdBoot(ShellTest):
                 'normal boot': dict(cmdline='androidboot.mode=normal'),
                 'no modem=shutdown': dict(cmdline='androidboot.mode=charger'),
                 'f50': dict(DEVICE='f50'),
-                'v50': dict(DEVICE='v50'),
                 'another loader': dict(MU300_COLDBOOT_STOCK='0' * 64),
                 'not opted in (the default)': dict(optout=True),
                 'cp up': dict(cp_up=True),

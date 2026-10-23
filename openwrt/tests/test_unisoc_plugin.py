@@ -198,7 +198,7 @@ esac
             self.assertTrue(marker.exists())
 
     def test_auto152_is_a_mode_lock_like_the_others(self):
-        """FINDINGS 198 (kanoqwq's auto work mode): auto152 writes the automatic mode 152 (no 2G), keeps the slot1 and
+        """kanoqwq's auto work mode: auto152 writes the automatic mode 152 (no 2G), keeps the slot1 and
         primary fields, and is replayed like every lock."""
         _, _, lock, state = self.tree()
         state.mkdir(parents=True)
@@ -505,7 +505,7 @@ class NrBand(ShellTest):
     the narrower band must be looked up first, or every n78 cell - the only one of the two this modem has - shows
     as n77 (reported by a user in China)."""
 
-    # the collector is ucode since FINDINGS 216: its table is mu300.cellparse's NR_BANDS, looked up by band_of (which
+    # the collector is ucode: its table is mu300.cellparse's NR_BANDS, looked up by band_of (which
     # modemd's collection round uses too)
     def test_n78_is_not_named_n77(self):
         u = ucode()

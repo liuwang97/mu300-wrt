@@ -15,11 +15,9 @@
 # kills a call after 30 s, and AT-heavy sequences must never run inside a request
 # anyway (they would starve the dial watchdog; same rule as the collector).
 #
-# The radio button is the SIM in use's own radio setting (docs/FINDINGS.md 185): off is the card's stack off
-# (AT+SFUN=5, FINDINGS 202) and stays off after a reboot, on brings the radio and the WAN back (mobile-data
-# rf-apply). The button
-# used to send AT+CFUN=0 (on: the SFUN dance) for this boot only, to whichever card, and was refused on the U30
-# Air's dual-SIM boots; the setting's path knows both cards and both boots.
+# The radio button is the SIM in use's own radio setting: off is the card's stack off (AT+SFUN=5, not flight mode)
+# and stays off after a reboot, on brings the radio and the WAN back (mobile-data rf-apply). The setting's path knows
+# both cards and both kinds of boot of the U30 Air (a plain AT+CFUN=0 would reach whichever card, for this boot only).
 
 export PATH="$PATH:/opt/mu300/bin:/opt/mu300/busybox-bin:/usr/libexec/unisoc-modem:/usr/sbin:/sbin"
 # the shared JSON escaper and uci allow-lists (/usr/share/unisoc-modem/lib.sh)
@@ -83,7 +81,7 @@ case "${1:-}:${2:-}" in
         ok "data down"
         ;;
     roaming:on|roaming:off)
-        # data roaming of the card in use (mobile-data roaming, docs/FINDINGS.md 120): stored in network.<wan>.roaming
+        # data roaming of the card in use (mobile-data roaming): stored in network.<wan>.roaming
         # (or roaming_internal); the dial and its watchdog act on it within half a minute
         if [ ! -x "$MOBILE_DATA" ]; then
             fail "roaming $2" "Mobile data integration is not provided by this platform"

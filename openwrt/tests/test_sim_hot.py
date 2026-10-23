@@ -29,7 +29,7 @@ case "$*" in *network.interface.wan*)
     else printf '{ "up": false, "ipv4-address": [ ] }\n'; fi ;;
 esac
 '''
-# The modem, as our U30 Air answered (docs/FINDINGS.md 74): a card whose SIM power is off says "+CME ERROR: 10"
+# The modem, as our U30 Air answered: a card whose SIM power is off says "+CME ERROR: 10"
 # whatever is in its position; AT+SPACTCARD=<n>;+SFUN=2/3 is its SIM power, ;+SFUN=5 its radio off, AT+SFUN=4 on its
 # data channel its radio on; AT+SPSWDATA gives the packet-data route to the channel's card and AT+SPSWDATA? reads it.
 #   T_NOCARD=<slot>   no card in that position        T_PIN (+T_PINSLOT, default 0)  that card answers T_PIN
@@ -68,7 +68,6 @@ class HotSim(ShellTest):
         self.run = self.tmp / 'run'
         self.etc = self.tmp / 'etc'
         self.etc.mkdir()
-        (self.etc / 'openwrt_release').write_text('DISTRIB_ID=OpenWrt\n')
         (self.run / 'mu300').mkdir(parents=True)
         (self.run / 'mu300/sim-slot').write_text('1\n')
         (self.etc / 'uci-slot').write_text('1\n')
@@ -155,7 +154,7 @@ esac""")
 
     def test_the_card_in_use_goes_off_before_the_other_one_comes_on(self):
         # measured on our U30 Air: with the target's radio switched on first, its AT+SFUN=4 never answered and the
-        # card in use lost its radio; this order answered within a second, both ways (FINDINGS 74)
+        # card in use lost its radio; this order answered within a second, both ways
         self.assertEqual(self.ctl('switch','1').returncode,0)
         calls=self.calls()
         off, on = calls.index('1 AT+SPACTCARD=1;+SFUN=5'), calls.index('0 AT+SFUN=4')
@@ -177,7 +176,7 @@ esac""")
         self.assertEqual((self.run / 'mu300/sim-slot').read_text(), '1\n')
 
     def test_the_network_led_blinks_the_target_while_switching(self):
-        # as ZTE's firmware (FINDINGS 154): the target card's colour blinks once the old connection is taken down;
+        # as ZTE's firmware: the target card's colour blinks once the old connection is taken down;
         # the dial that follows shows the card in use. A missing or failing mu300-led changes nothing.
         self.stub('mu300-led', 'echo "led $* $(cat "$T_RUN/mu300/sim-switching" >/dev/null 2>&1 && echo marked)" >> "$STUBLOG/net"')
         r = self.ctl('switch', '1', MU300_LED_CMD=self.stubs / 'mu300-led')
@@ -244,7 +243,7 @@ esac""")
         self.assertEqual(self.status()['result'],'switched')
 
     def test_mobile_data_switched_off_stays_off(self):
-        # (after kanoqwq's clean-tf-7.2 2d3b6f3f; FINDINGS 104) the user turned mobile data off, then switches cards:
+        # (after kanoqwq's clean-tf-7.2 2d3b6f3f) the user turned mobile data off, then switches cards:
         # the switch is done and saved, and nothing brings the data back - no ifup, and mobile-data's marker that
         # keeps its watchdog from dialling stays where its `down` put it
         marker = self.run / 'mu300-mobile-data-down'
@@ -297,7 +296,7 @@ esac""")
         self.assertEqual((self.tmp / 'net').read_text(), 'down\nup\n')
 
     def test_a_target_whose_radio_is_off_is_refused(self):
-        """FINDINGS 185: the target's radio is switched off in its settings: refused before anything is sent."""
+        """The target's radio is switched off in its settings: refused before anything is sent."""
         self.stub('sim-radio', '[ "$1" = allowed ] || exit 2; case " ${T_RF_OFF:-} " in *" $2 "*) exit 1 ;; esac; exit 0')
         r = self.ctl('switch', '1', MU300_SIM_RADIO_BIN=self.stubs / 'sim-radio', T_RF_OFF='0')
         self.assertEqual(r.returncode, 1)
@@ -307,7 +306,7 @@ esac""")
         self.assertEqual((self.etc / 'uci-slot').read_text(), '1\n')
 
     def test_the_card_in_use_in_flight_mode_by_its_setting_still_switches(self):
-        """FINDINGS 185: the card in use is in flight mode (CFUN 4) because its radio is off in its settings: a known
+        """The card in use is in flight mode (CFUN 4) because its radio is off in its settings: a known
         state, switched off the same way; a CFUN 4 without that setting is still an unexpected state."""
         self.stub('sim-radio', '[ "$1" = allowed ] || exit 2; case " ${T_RF_OFF:-} " in *" $2 "*) exit 1 ;; esac; exit 0')
         (self.tmp / 'radio1').write_text('4')
@@ -319,7 +318,7 @@ esac""")
         self.assertEqual((self.run / 'mu300/sim-slot').read_text(), '0\n')
 
     def test_the_card_in_use_off_by_sfun5_still_switches(self):
-        """FINDINGS 202: off by its setting is AT+SFUN=5 now, which reads back as CFUN 0 or 2: known states too."""
+        """Off by its setting is AT+SFUN=5 now, which reads back as CFUN 0 or 2: known states too."""
         self.stub('sim-radio', '[ "$1" = allowed ] || exit 2; case " ${T_RF_OFF:-} " in *" $2 "*) exit 1 ;; esac; exit 0')
         for state in ('0', '2'):
             with self.subTest(cfun=state):
@@ -487,15 +486,12 @@ esac""")
         self.assertEqual(s['boot_check'],'waiting'); self.assertIsNone(s['boot_check_left'])
         self.assertFalse((self.tmp/'reboot').exists())
 
-    def test_other_devices_and_systems_refuse_everything(self):
+    def test_other_devices_refuse_everything(self):
         for env in ({'T_DEVICE': 'f50'}, {'T_DEVICE': 'u30pro'}):
             for args in (('status',), ('default','2'), ('hot','1'), ('switch','1')):
                 r=self.ctl(*args, **env)
                 self.assertNotEqual(r.returncode,0,args)
                 self.assertEqual(json.loads(r.stdout)['supported'],0)
-        (self.etc/'openwrt_release').unlink()   # Ubuntu
-        r=self.ctl('default','2')
-        self.assertNotEqual(r.returncode,0); self.assertEqual(json.loads(r.stdout)['ok'],0)
         self.assertEqual((self.etc/'uci-slot').read_text(),'1\n')
         self.assertEqual((self.etc/'uci-hot').read_text(),'1\n')
         self.assertFalse((self.tmp/'at').exists())

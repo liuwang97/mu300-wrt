@@ -1,7 +1,7 @@
 #!/bin/bash
 # OpenWrt SIM policy and a bounded, broker-only live switch. Public slots are 1/2.
-# U30 Air on OpenWrt only: the cold start and the live switch were validated on that firmware alone; everywhere
-# else every command (status included) answers ok:0, and nothing is written.
+# U30 Air only: the cold start and the live switch were validated on its firmware alone; on the F50 every command
+# (status included) answers ok:0, and nothing is written.
 #
 # Nothing a caller passes ever reaches an AT command: the arguments are checked against a fixed list below, and the
 # commands are built from the two slot numbers alone. Replies are never logged (CCID, cell, numbers).
@@ -16,10 +16,10 @@ DEVICE=/opt/mu300/bin/mu300-device
 REBOOT=${MU300_REBOOT_CMD:-reboot}
 LED=${MU300_LED_CMD:-/opt/mu300/bin/mu300-led}
 SIM_RADIO=${MU300_SIM_RADIO_BIN:-/opt/mu300/bin/mu300-sim-radio}
-# rf_allowed SLOT: that card's radio may be on (mu300-sim-radio, FINDINGS 185; without the tool: yes)
+# rf_allowed SLOT: that card's radio may be on (mu300-sim-radio; without the tool: yes)
 rf_allowed() { [ ! -x "$SIM_RADIO" ] || "$SIM_RADIO" allowed "$1" 2>/dev/null; }
-supported() { [ -e /etc/openwrt_release ] && [ "$("$DEVICE" 2>/dev/null)" = u30air ]; }
-supported || { printf '{"ok":0,"supported":0,"error":"Dual SIM control is only for the U30 Air on OpenWrt"}\n'; exit 1; }
+supported() { [ "$("$DEVICE" 2>/dev/null)" = u30air ]; }
+supported || { printf '{"ok":0,"supported":0,"error":"Dual SIM control is only for the U30 Air"}\n'; exit 1; }
 SIM_CONFIG_U30=1
 . "${MU300_SIM_CONFIG_LIB:-/opt/mu300/lib/sim-config.sh}"
 LOCKED=${MU300_SIM_LOCKED:-0}
@@ -177,12 +177,11 @@ route() {
 }
 # sequence TARGET: the radio from the other card to TARGET, the card in use first off, then the other one on.
 #
-# The order is the measured one (our U30 Air, 7.2.10, 2026-10-13; docs/FINDINGS.md 74). The factory selector
-# (VendorTelephonyManager.setProtocolStack) and this script's first version switch the target's radio on while the
-# other card is still on, and on the unit the sequence came from that worked in both directions. On ours the
-# target's AT+SFUN=4 then never answered (30 s), the card in use lost its radio meanwhile, and the way back could
-# not be verified. With the card in use switched off first, every step answered within a second, in both
-# directions: it is the cold start's situation, one card on while the other is off, which both units have shown.
+# The order is the measured one on a U30 Air. The factory selector (VendorTelephonyManager.setProtocolStack) switches
+# the target's radio on while the other card is still on; on a U30 Air the target's AT+SFUN=4 then never answers
+# (30 s), the card in use loses its radio meanwhile, and the way back cannot be verified. With the card in use
+# switched off first, every step answers within a second, in both directions: it is the cold start's situation, one
+# card on while the other is off.
 #
 # Every command names its card (AT+SPACTCARD=<card>;+...): the selection holds for that command line only. A
 # line with AT+SPACTCARD=0 alone, which the first version sent "to reset the channel", changes nothing (measured:
@@ -285,7 +284,8 @@ roll_back() {
 # wan_back: the wan as the user left it before the switch. One taken down on purpose (the panel's button, ifdown, the
 # data cap: netifd's autostart is off then, sim_wan_held_down) stays down, and so does the marker mobile-data's
 # `down` left (/run/mu300-mobile-data-down), which keeps its watchdog from dialling again; only a wan that was meant
-# to be up is brought up. (After kanoqwq's clean-tf-7.2 2d3b6f3f; FINDINGS 104.)
+# to be up is brought up, so a switch never turns mobile data back on that the user switched off (after kanoqwq's
+# clean-tf-7.2 2d3b6f3f).
 wan_back() {
     [ "$held" = 0 ] || return 0
     rm -f /run/mu300-mobile-data-down
@@ -316,7 +316,7 @@ live_switch() {
     # A card whose SIM power is off answers CME ERROR 10 whatever is in its position: the starting RF state is
     # validated here, the card itself only once its power is on (preflight).
     # The card in use is on (1), or off because its radio is switched off in its settings (0 or 2 after AT+SFUN=5,
-    # FINDINGS 202; 4, the flight mode of an earlier release): known states, from which the sequence below switches it
+    # the vendor's radio off; 4, flight mode): known states, from which the sequence below switches it
     # off the same way.
     { check "$old" 1 || { ! rf_allowed "$old" && { check "$old" 0 || check "$old" 2 || check "$old" 4; }; }; } &&
         check "$target" 0 ||
@@ -334,7 +334,7 @@ live_switch() {
     trap 'atomic "$R/sim-phase" idle; rm -f "$R/sim-sequence" "$R/sim-switching"; if [ "$(cat "$R/sim-result")" = switching ]; then unknown_radio; fi' EXIT
     trap interrupt_switch INT TERM
     ifdown wan || { atomic "$R/sim-result" failed; fail 'Cannot stop WAN'; return 1; }
-    # the network LED blinks the target card's colour, as ZTE's firmware does while it switches (FINDINGS 154);
+    # the network LED blinks the target card's colour, as ZTE's firmware does while it switches;
     # the next dial's "data on" shows the card that ends up in use, a rollback's too. Cosmetic: never a failure.
     "$LED" data switching "$target" </dev/null >/dev/null 2>&1 || true
     # Serialize the whole protocol-stack transaction against radio-on and manual resets.

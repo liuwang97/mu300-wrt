@@ -1,9 +1,8 @@
 #!/bin/sh
 # openwrt-luci's settings: a security part on every run, and first-install defaults once.
 #
-# This runs more than once: mu300-update apply and android-install.sh UPDATE=1 unpack a fresh rootfs (which carries
-# /etc/uci-defaults again) and keep /etc/config, so it runs on the first boot after every update, against the
-# user's settings.
+# This runs more than once: mu300-update apply unpacks a fresh rootfs (which carries /etc/uci-defaults again) and
+# keeps /etc/config, so it runs on the first boot after every update, against the user's settings.
 #
 # Every run: no NDP relay (security review of the port, unlike the fork). odhcpd's NDP relay turns every br-lan
 # neighbour entry into a /128 route to br-lan (ndproxy_routing, on by default), and a LAN host creates such an entry
@@ -25,9 +24,8 @@ uci commit dhcp
 [ "$(uci -q get luci.mu300.defaults)" = 1 ] && exit 0
 
 # Aurora is the LuCI theme (Bootstrap stays installed and selectable), and LuCI and the MU300 panel start in English
-# (90-mu300 set it already; System > System > Language and Style switches to Turkish, Chinese or a language of the
-# lang extra). Runs after 90-mu300 and after the themes' own uci-defaults, which would otherwise pick their own
-# default.
+# (90-mu300 set it already; System > System > Language and Style switches to Chinese). Runs after 90-mu300 and after
+# the themes' own uci-defaults, which would otherwise pick their own default.
 uci -q batch <<UCI
 set luci.main.mediaurlbase='/luci-static/aurora'
 set luci.main.lang='en'

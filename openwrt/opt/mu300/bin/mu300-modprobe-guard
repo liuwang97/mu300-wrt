@@ -1,32 +1,34 @@
 #!/bin/sh
-# The kernel's module helper on Ubuntu and OpenWrt (FINDINGS 163). When code asks the kernel for something a module
-# provides - a socket of a protocol family, a filesystem type, a netlink family, a link kind - the kernel runs its
-# helper (sysctl kernel.modprobe) as root: "HELPER -q -- REQUEST". Any user can make it do that
-# (socket(AF_TIPC, ...) is enough), so every installed module would be one any user can load.
-#   mu300-modprobe-guard --prepare    at boot (mu300-modprobe-guard.service, OpenWrt's mu300-hw): makes the alias
-#                                     table, then makes this script the kernel's helper
-#   mu300-modprobe-guard -q -- REQ    what the kernel runs: refuses REQ when it resolves to a module of
-#                                     /opt/mu300/lib/autoload-blocked, else runs /sbin/modprobe with the same arguments
+# The kernel's module helper. When code asks the kernel for something a module provides - a socket of a protocol
+# family, a filesystem type, a netlink family, a link kind - the kernel runs its helper (sysctl kernel.modprobe) as
+# root: "HELPER -q -- REQUEST". Any user can make it do that (socket(AF_TIPC, ...) is enough), so every installed
+# module would be one any user can load.
+#   mu300-modprobe-guard --prepare    at boot (init.d/mu300-hw): makes the alias table, then makes this script the
+#                                     kernel's helper
+#   mu300-modprobe-guard -q -- REQ    what the kernel runs: refuses REQ when it resolves to a module of the kernel
+#                                     bundle's list, /lib/modules/$(uname -r)/autoload-blocked (MU300_AUTOLOAD_BLOCKED
+#                                     names another), else runs /sbin/modprobe with the same arguments
 # The modules are refused by MODULE, not by request string: a request is refused when it is one of their names or
 # matches one of their aliases (the "alias=" strings of each module file, with modprobe's glob rules and its
-# "-" = "_"), however the asker spelled it. The list holds every module that depends on one of them as well
-# (make-bundle.sh checks it against the build), so no request reaches them through a dependency. Root loads a refused
-# module deliberately with `modprobe NAME` (that runs /sbin/modprobe, not this), and
-# `touch /etc/mu300/autoload-allow-all` turns the refusal off altogether.
+# "-" = "_"), however the asker spelled it. The list holds every module that depends on one of them as well (the
+# bundle is built so), so no request reaches them through a dependency. Root loads a refused module deliberately with
+# `modprobe NAME` (that runs /sbin/modprobe, not this), and `touch /etc/mu300/autoload-allow-all` turns the refusal
+# off altogether.
 #   The table lives in /run/mu300-modprobe-guard (root's, mode 700), one file per kernel release. Making it takes
 # about 2 s on the U30 Air, so it is made at boot before the guard takes over, never inside a request; only a table
 # gone stale since (the running kernel's modules reinstalled) is made again on the spot. A request for an alias of a
 # module that is not installed is handed on: modprobe finds nothing for it either. Without any table (the cache
 # directory is not root's own) the names are checked, and socket/diag/genetlink families, filesystems, line
-# disciplines and link kinds are refused altogether (fail closed), with a line in the kernel log.
+# disciplines and link kinds are refused altogether (fail closed), with a line in the kernel log. Without a list
+# (a kernel bundle without one) nothing is refused.
 #   A fault here would stop every on-demand load (crypto, netfilter, filesystems), so the script keeps to what busybox
-# ash and dash both do, and hands on whatever it cannot decide.
-LIST=${MU300_AUTOLOAD_BLOCKED:-/opt/mu300/lib/autoload-blocked}
+# ash does, and hands on whatever it cannot decide.
+KREL=${MU300_KREL:-$(uname -r)}
+MODDIR=${MU300_MODDIR:-/lib/modules/$KREL}
+LIST=${MU300_AUTOLOAD_BLOCKED:-$MODDIR/autoload-blocked}
 ALLOW=${MU300_AUTOLOAD_ALLOW:-/etc/mu300/autoload-allow-all}
 MODPROBE=${MU300_MODPROBE:-/sbin/modprobe}
 MODINFO=${MU300_MODINFO:-modinfo}
-KREL=${MU300_KREL:-$(uname -r)}
-MODDIR=${MU300_MODDIR:-/lib/modules/$KREL}
 CACHE=${MU300_GUARD_CACHE:-/run/mu300-modprobe-guard}
 SELF=/opt/mu300/bin/mu300-modprobe-guard
 HELPER=${MU300_HELPER_SYSCTL:-/proc/sys/kernel/modprobe}
@@ -39,8 +41,8 @@ norm() { awk '{ o = ""; b = 0; n = length($0)
         if (c == "-" && !b) c = "_"; o = o c }
     print o }'; }
 
-# names: the listed modules and every module whose dependencies (modules.dep, where there is one: Ubuntu's depmod
-# makes it; OpenWrt has none, and make-bundle.sh checks that the list itself holds all of them) reach a listed one
+# names: the listed modules and every module whose dependencies (modules.dep, where there is one: OpenWrt has none,
+# and the bundle's list itself holds all of them) reach a listed one
 names() {
     { sed 's/#.*//' "$LIST"; [ -r "$MODDIR/modules.dep" ] && awk -v list="$LIST" '
         function nm(p) { sub(/.*\//, "", p); sub(/\.ko.*$/, "", p); gsub(/-/, "_", p); return p }
@@ -114,7 +116,7 @@ else
 fi
 if [ -n "$hit" ]; then
     fix=$hit; [ "$hit" = "no alias table" ] && fix=$name
-    echo "mu300: on-demand loading of $name ($hit) refused (root: modprobe $fix; FINDINGS 163)" \
+    echo "mu300: on-demand loading of $name ($hit) refused (root: modprobe $fix; any user can ask the kernel for a module)" \
         > "${MU300_KMSG:-/dev/kmsg}" 2>/dev/null
     exit 1
 fi

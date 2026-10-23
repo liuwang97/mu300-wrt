@@ -1,10 +1,9 @@
-"""mu300-backup (FINDINGS 155): the user's settings as one file and back. Export reads the settings where they live
-(hotspot.conf or UCI, mobile-data.conf, the VPN module, the lock tool's directory, the panel's SMS forwarding file,
-the login user's keys and hash), import checks every value by the rules of the setter that takes it (mu300-api's
+"""mu300-backup: the user's settings as one file and back. Export reads the settings where they live (UCI, the VPN
+module, the lock tool's directory, the panel's SMS forwarding file, root's keys and hash), import checks every value by the rules of the setter that takes it (mu300-api's
 check mode, the forwarding adapter's, the module's own) and changes nothing when one is refused; a file of another
 device type is refused without --force; the file is 0600 and, with a passphrase, sealed. Hostile files: unknown
 keys, wrong kinds, oversize, control characters, an engine binary's path, options in front of an SSH key, a hash
-another C library cannot read, a tampered seal. Secrets never on a command line or in what is printed. Under each
+musl cannot read, a tampered seal. Secrets never on a command line or in what is printed. Under each
 shell, on the fake device of test_api."""
 import json
 import os
@@ -89,15 +88,15 @@ class BackupCase(ApiCase):
         super().setUp()
         (self.stubs / 'vpn.py').write_text(FAKE_VPN)
         (self.root / 'etc/mu300/vpn').mkdir(parents=True, exist_ok=True)
-        (self.root / 'etc/shadow').write_text(f'root:*:19000:0:99999:7:::\nubuntu:{HASH}:19000:0:99999:7:::\n')
-        (self.root / 'etc/passwd').write_text(f'root:x:0:0::/root:/bin/sh\nubuntu:x:{os.getuid()}:{os.getgid()}::/home/ubuntu:/bin/bash\n')
-        if self.system == 'ubuntu':
-            (self.root / 'etc/mu300/mobile-data.conf').write_text('MU300_APN=internet\nMU300_APN_USER=apnuser\nMU300_APN_PASSWORD=apnsecret7\n')
-            (self.root / 'etc/mu300/lan.conf').write_text('LAN_IP=192.168.77.1\n')
-            (self.root / 'etc/hostname').write_text('mu300\n')
-            os.symlink('/usr/share/zoneinfo/Europe/Istanbul', self.root / 'etc/localtime')
-            (self.root / 'home/ubuntu/.ssh').mkdir(parents=True)
-            (self.root / 'home/ubuntu/.ssh/authorized_keys').write_text(KEY1 + '\ncommand="rm -rf /" ' + KEY2 + '\n')
+        (self.root / 'etc/shadow').write_text(f'root:{HASH}:19000:0:99999:7:::\n')
+        (self.root / 'etc/passwd').write_text('root:x:0:0::/root:/bin/ash\n')
+        (self.root / 'etc/dropbear').mkdir(parents=True, exist_ok=True)
+        (self.root / 'etc/dropbear/authorized_keys').write_text(KEY1 + '\ncommand="rm -rf /" ' + KEY2 + '\n')
+        (self.root / 'etc/init.d').mkdir(parents=True, exist_ok=True)
+        (self.root / 'etc/init.d/dropbear').write_text('#!/bin/sh\n')
+        (self.root / 'etc/init.d/dropbear').chmod(0o755)
+        (self.root / 'etc/rc.d').mkdir(parents=True, exist_ok=True)
+        (self.root / 'etc/rc.d/S50dropbear').write_text('')
         self.out('mu300-sim', '0\n')
         self.out('mobile-data', '{"allowed":false,"held":false}\n')
         self.tool('mobile-data')
@@ -131,7 +130,7 @@ class BackupCase(ApiCase):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         return out
 
-    def doc(self, sections, device='f50', system='ubuntu'):
+    def doc(self, sections, device='f50', system='openwrt-luci'):
         return {'format': 'mu300-backup', 'version': 1, 'created': 1791000000,
                 'source': {'device': device, 'system': system, 'release': 'v2026.10.16.1', 'hostname': 'h'},
                 'sections': sections}
@@ -145,8 +144,14 @@ class BackupCase(ApiCase):
         p = self.tmp / 'calls'
         return p.read_text() if p.exists() else ''
 
+    def chpasswd(self):
+        return [c for c in self.calls('busybox') if c[1:2] == ['chpasswd']]
 
-class ExportUbuntu(BackupCase):
+    def wan(self):
+        return self.ucidb()['network']['wan']
+
+
+class Export(BackupCase):
     def test_every_section_and_a_private_file(self):
         for shell in self.each_shell():
             self.fresh()
@@ -161,18 +166,18 @@ class ExportUbuntu(BackupCase):
             d = json.loads(f.read_text())
             s = d['sections']
             self.assertEqual((d['format'], d['version'], d['source']['device'], d['source']['system']),
-                             ('mu300-backup', 1, 'f50', 'ubuntu'))
-            self.assertEqual(s['wifi'], {'ssid': 'MU300-AB12', 'password': 'hotspotsecret1', 'band': '5', 'channel': 'auto',
+                             ('mu300-backup', 1, 'f50', 'openwrt-luci'))
+            self.assertEqual(s['wifi'], {'ssid': 'OpenWrt-1', 'password': 'wrtsecret99', 'band': '5', 'channel': '36',
                                          'hidden': False, 'enabled': True})
-            self.assertEqual(s['data'], {'apn': 'internet', 'pdp': 'IP', 'auth': '', 'user': 'apnuser',
+            self.assertEqual(s['data'], {'apn': 'internet', 'pdp': 'IP', 'auth': '', 'user': 'user1',
                                          'password': 'apnsecret7', 'roaming': False})
             self.assertEqual(s['sim'], {'default': 1})
             self.assertEqual(s['lan'], {'ip': '192.168.77.1'})
-            self.assertEqual(s['system'], {'hostname': 'mu300', 'timezone': 'Europe/Istanbul', 'ssh': True})
+            self.assertEqual(s['system'], {'hostname': 'OpenWrt', 'timezone': 'UTC', 'ssh': True})
             self.assertEqual(s['ssh_keys'], [KEY1])        # the line with options in front is left out, and said so
             self.assertIn('ssh_keys: 1 line(s)', r.stderr)
             self.assertEqual(s['password'], {'hash': HASH})
-            self.assertNotIn('locks', s)                   # Ubuntu has none
+            self.assertNotIn('locks', s)                   # no lock tool here
             self.assertNotIn('sms_forward', s)
             v = s['vpn']
             self.assertEqual((v['enabled'], v['active']), (True, 'Work'))
@@ -180,7 +185,7 @@ class ExportUbuntu(BackupCase):
             self.assertEqual(v['subscriptions'], [{'name': 'Provider', 'url': SUB_URL, 'type': 'auto', 'interval': 24, 'insecure': False}])
             self.assertEqual(v['settings'], {'KILL_SWITCH': '1', 'IPV6': 'auto'})   # never an engine's path
             # nothing secret printed or on a command line
-            for secret in ('hotspotsecret1', 'apnsecret7', 'vpnlinksecret', 'subtokensecret', HASH):
+            for secret in ('wrtsecret99', 'apnsecret7', 'vpnlinksecret', 'subtokensecret', HASH):
                 self.assertNotIn(secret, r.stdout + r.stderr)
                 self.assertNotIn(secret, self.argv_text())
             # without --with-password: no hash
@@ -217,12 +222,12 @@ class Encryption(BackupCase):
             out = self.export(shell, '--passphrase-file', pw)
             text = out.read_text()
             self.assertTrue(text.startswith('MU300-BACKUP-ENCRYPTED 1\ncipher=aes-256-cbc kdf=pbkdf2 digest=sha256 iter=10000\n'))
-            for secret in ('hotspotsecret1', 'apnsecret7', 'MU300-AB12'):
+            for secret in ('wrtsecret99', 'apnsecret7', 'OpenWrt-1'):
                 self.assertNotIn(secret, text)
             r = self.backup(shell, 'show', out, '--passphrase-file', pw)
             self.assertEqual(r.returncode, 0, r.stderr)
-            self.assertIn('from: f50, ubuntu', r.stdout)
-            self.assertNotIn('hotspotsecret1', r.stdout)
+            self.assertIn('from: f50, openwrt-luci', r.stdout)
+            self.assertNotIn('wrtsecret99', r.stdout)
             # the passphrase on stdin, the file after it
             r = self.backup(shell, 'show', '-', '--passphrase-stdin', stdin='correct horse battery\n' + text)
             self.assertEqual(r.returncode, 0, r.stderr)
@@ -250,26 +255,24 @@ class Encryption(BackupCase):
             self.assertNotIn('correct horse', self.argv_text())
 
 
-class ImportUbuntu(BackupCase):
+class Import(BackupCase):
     def test_dry_run_changes_nothing_and_import_sets_what_differs(self):
         for shell in self.each_shell():
             self.fresh()
-            hs = self.root / 'etc/mu300/hotspot.conf'
-            hs.write_text('SSID=MU300-AB12\nPSK=hotspotsecret1\nBAND=5\nCHANNEL=auto\nCOUNTRY=TR\n')
-            (self.root / 'etc/mu300/lan.conf').write_text('LAN_IP=192.168.77.1\n')
-            keys = self.root / 'home/ubuntu/.ssh/authorized_keys'
+            keys = self.root / 'etc/dropbear/authorized_keys'
             keys.write_text(KEY1 + '\n')
+            before = self.ucidb()
             new = self.write(self.doc({
-                'wifi': {'ssid': 'Home net', 'password': 'newsecret99', 'band': '2.4', 'channel': '6', 'hidden': False, 'enabled': True},
-                'data': {'apn': 'internet', 'pdp': 'IP', 'auth': '', 'user': 'apnuser', 'password': 'apnsecret7', 'roaming': True},
+                'wifi': {'ssid': 'Home net', 'password': 'newsecret99', 'band': '5', 'channel': '44', 'hidden': False, 'enabled': True},
+                'data': {'apn': 'internet', 'pdp': 'IP', 'auth': '', 'user': 'user1', 'password': 'apnsecret7', 'roaming': True},
                 'lan': {'ip': '192.168.50.1'},
-                'system': {'hostname': 'mu300', 'timezone': 'Europe/Istanbul', 'ssh': True},
+                'system': {'hostname': 'OpenWrt', 'timezone': 'UTC', 'ssh': True},
                 'ssh_keys': [KEY1, KEY2],
                 'password': {'hash': HASH.replace('a' * 86, 'b' * 86)}}))
             self.clear_calls()
             r = self.backup(shell, 'import', new, '--dry-run')
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-            self.assertIn('would  hotspot: ssid "MU300-AB12" -> "Home net", the password changes, band "5" -> "2.4", channel "auto" -> "6"', r.stdout)
+            self.assertIn('would  hotspot: ssid "OpenWrt-1" -> "Home net", the password changes, channel "36" -> "44"', r.stdout)
             self.assertIn('would  data roaming: allowed', r.stdout)
             self.assertIn('would  LAN address: "192.168.77.1" -> "192.168.50.1"', r.stdout)
             self.assertIn('would  SSH keys: 1 to add', r.stdout)
@@ -277,23 +280,23 @@ class ImportUbuntu(BackupCase):
             self.assertNotIn('mobile data:', r.stdout)            # the same
             self.assertNotIn('host name', r.stdout)
             self.assertIn('dry run: nothing was changed', r.stdout)
-            self.assertIn('SSID=MU300-AB12', hs.read_text())
+            self.assertEqual(self.ucidb(), before)
             self.assertEqual(keys.read_text(), KEY1 + '\n')
             self.assertEqual(self.calls('later'), [])
-            self.assertEqual(self.calls('chpasswd'), [])
+            self.assertEqual(self.chpasswd(), [])
             r = self.backup(shell, 'import', new)
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
             self.assertIn('restored', r.stdout)
-            t = hs.read_text()
-            for want in ('SSID=Home net', 'PSK=newsecret99', 'BAND=2.4', 'CHANNEL=6'):
-                self.assertIn(want, t)
-            self.assertEqual(stat.S_IMODE(hs.stat().st_mode), 0o600)
-            self.assertIn('LAN_IP=192.168.50.1', (self.root / 'etc/mu300/lan.conf').read_text())
+            db = self.ucidb()
+            w = db['wireless']
+            self.assertEqual((w['default_radio0']['ssid'], w['default_radio0']['key'], w['radio0']['channel']),
+                             ('Home net', 'newsecret99', '44'))
+            self.assertEqual(db['network']['lan']['ipaddr'], '192.168.50.1')
             self.assertEqual(keys.read_text(), KEY1 + '\n' + KEY2 + '\n')
             self.assertEqual(stat.S_IMODE(keys.stat().st_mode), 0o600)
             self.assertIn(['mobile-data', 'roaming', 'on'], self.calls('mobile-data'))
-            self.assertEqual((self.tmp / 'stdin.chpasswd').read_text(), 'ubuntu:' + HASH.replace('a' * 86, 'b' * 86) + '\n')
-            self.assertEqual(self.calls('chpasswd')[-1], ['chpasswd', '-e'])
+            self.assertEqual((self.tmp / 'stdin.busybox').read_text(), 'root:' + HASH.replace('a' * 86, 'b' * 86) + '\n')
+            self.assertEqual(self.chpasswd()[-1], ['busybox', 'chpasswd', '-e'])
             for secret in ('newsecret99', 'apnsecret7', 'b' * 86):
                 self.assertNotIn(secret, r.stdout + r.stderr)
                 self.assertNotIn(secret, self.argv_text())
@@ -311,18 +314,17 @@ class ImportUbuntu(BackupCase):
             pw.write_text('correct horse battery\n')
             out = self.export(shell, '--passphrase-file', pw)
             # everything changed afterwards ...
-            (self.root / 'etc/mu300/hotspot.conf').write_text('SSID=Other\nPSK=othersecret1\nBAND=2.4\nCHANNEL=1\nCOUNTRY=TR\n')
-            (self.root / 'etc/mu300/mobile-data.conf').write_text('MU300_APN=other.apn\n')
+            db = self.ucidb()
+            db['wireless']['default_radio0'].update(ssid='Other', key='othersecret1')
+            db['network']['wan'].update(apn='other.apn', username='', password='')
+            self.uci(db)
             self.vpn()
             # ... and back
             r = self.backup(shell, 'import', out, '--passphrase-file', pw)
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-            t = (self.root / 'etc/mu300/hotspot.conf').read_text()
-            for want in ('SSID=MU300-AB12', 'PSK=hotspotsecret1', 'BAND=5', 'CHANNEL=auto'):
-                self.assertIn(want, t)
-            md = (self.root / 'etc/mu300/mobile-data.conf').read_text()
-            for want in ('MU300_APN=internet', 'MU300_APN_USER=apnuser', 'MU300_APN_PASSWORD=apnsecret7'):
-                self.assertIn(want, md)
+            w = self.ucidb()['wireless']['default_radio0']
+            self.assertEqual((w['ssid'], w['key']), ('OpenWrt-1', 'wrtsecret99'))
+            self.assertEqual((self.wan()['apn'], self.wan()['username'], self.wan()['password']), ('internet', 'user1', 'apnsecret7'))
             db = json.loads((self.tmp / 'vpn.json').read_text())
             self.assertEqual([(p['name'], p['type'], p['config']) for p in db['profiles']], [('Work', 'xray', VLESS)])
             self.assertEqual(db['active'], db['profiles'][0]['id'])
@@ -330,7 +332,7 @@ class ImportUbuntu(BackupCase):
             self.assertEqual(db['settings'], {'KILL_SWITCH': '1', 'IPV6': 'auto'})
             self.assertEqual((self.root / 'etc/mu300/vpn.conf').read_text(), 'ENABLE=1\n')
             # the link and the subscription's address went on stdin, never on a command line
-            for secret in ('vpnlinksecret', 'subtokensecret', 'hotspotsecret1', 'apnsecret7'):
+            for secret in ('vpnlinksecret', 'subtokensecret', 'wrtsecret99', 'apnsecret7'):
                 self.assertNotIn(secret, self.argv_text())
                 self.assertNotIn(secret, r.stdout + r.stderr)
 
@@ -341,39 +343,49 @@ class ImportUbuntu(BackupCase):
             r = self.backup(shell, 'import', f)
             self.assertEqual(r.returncode, 1)
             self.assertIn('from a u30air, this device is a f50: refused', r.stderr)
-            self.assertIn('LAN_IP=192.168.77.1', (self.root / 'etc/mu300/lan.conf').read_text())
+            self.assertEqual(self.ucidb()['network']['lan']['ipaddr'], '192.168.77.1')
             r = self.backup(shell, 'import', f, '--force')
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-            self.assertIn('LAN_IP=192.168.60.1', (self.root / 'etc/mu300/lan.conf').read_text())
+            self.assertEqual(self.ucidb()['network']['lan']['ipaddr'], '192.168.60.1')
 
-    def test_openwrt_only_sections_are_skipped_here(self):
+    def test_sections_without_their_tool_are_skipped(self):
         for shell in self.each_shell():
             self.fresh()
-            f = self.write(self.doc({'locks': {'lte': '1,3'}, 'sms_forward': {'enabled': False}, 'lan': {'ip': '192.168.77.1'}},
-                                    system='openwrt-luci'))
+            f = self.write(self.doc({'locks': {'lte': '1,3'}, 'sms_forward': {'enabled': False}, 'lan': {'ip': '192.168.77.1'}}))
             r = self.backup(shell, 'import', f)
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-            self.assertIn('note: from openwrt-luci, taken on ubuntu', r.stdout)
             self.assertIn('skip  network lock: lte "1,3" (no network locks on this system)', r.stdout)
             self.assertIn('skip  SMS forwarding', r.stdout)
+
+    def test_a_hash_musl_cannot_read_is_refused(self):
+        for shell in self.each_shell():
+            self.fresh()
+            f = self.write(self.doc({'wifi': {'ssid': 'Mine', 'password': 'minesecret1', 'band': '5', 'channel': '36',
+                                              'hidden': False, 'enabled': True},
+                                     'password': {'hash': '$y$j9T$abcdefgh$' + 'c' * 43}}))
+            r = self.backup(shell, 'import', f)
+            self.assertEqual(r.returncode, 1, r.stdout)
+            self.assertIn('not a password hash this system takes', r.stdout)
+            r = self.backup(shell, 'import', f, '--skip', 'password')
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            w = self.ucidb()['wireless']['default_radio0']
+            self.assertEqual((w['ssid'], w['key']), ('Mine', 'minesecret1'))
+            self.assertNotIn('minesecret1', self.argv_text().replace((self.tmp / 'uci-batch').read_text(), ''))
 
 
 class Hostile(BackupCase):
     """A file refused whole: nothing changes, whatever part of it was fine."""
 
     def assert_refused(self, shell, doc, code=None, text=None):
-        hs = self.root / 'etc/mu300/hotspot.conf'
-        before = hs.read_text()
-        lan = (self.root / 'etc/mu300/lan.conf').read_text()
+        before = self.ucidb()
         self.clear_calls()
         r = self.backup(shell, 'import', self.write(doc))
         self.assertIn(r.returncode, (code,) if code else (1, 2), (doc, r.stdout, r.stderr))
         if text:
             self.assertIn(text, r.stdout + r.stderr)
-        self.assertEqual(hs.read_text(), before)
-        self.assertEqual((self.root / 'etc/mu300/lan.conf').read_text(), lan)
+        self.assertEqual(self.ucidb(), before)
         self.assertEqual(self.calls('later'), [])
-        self.assertEqual(self.calls('chpasswd'), [])
+        self.assertEqual(self.chpasswd(), [])
         return r
 
     def test_format(self):
@@ -402,9 +414,9 @@ class Hostile(BackupCase):
                         json.dumps(self.doc({'password': {'hash': HASH + '\nroot:' + HASH}})),
                         json.dumps(self.doc({'password': {'hash': HASH + '\n'}})),
                         json.dumps(self.doc({'locks': {'lte': '1\n--help'}})),
-                        json.dumps(dict(self.doc(good), source={'device': 'f50\nx', 'system': 'ubuntu', 'release': '', 'hostname': ''})),
+                        json.dumps(dict(self.doc(good), source={'device': 'f50\nx', 'system': 'openwrt-luci', 'release': '', 'hostname': ''})),
                         json.dumps(self.doc({'vpn': {'subscriptions': [{'name': 'a', 'url': 'u', 'interval': 9999}]}})),
-                        json.dumps(dict(self.doc(good), source={'device': 'f50; reboot', 'system': 'ubuntu', 'release': '', 'hostname': ''})),
+                        json.dumps(dict(self.doc(good), source={'device': 'f50; reboot', 'system': 'openwrt-luci', 'release': '', 'hostname': ''})),
                         '{"format":"mu300-backup","version":1,"created":1,"source":"x","sections":{}}'):
                 self.assert_refused(shell, doc, code=2)
             # larger than 4 MiB
@@ -449,48 +461,8 @@ class Hostile(BackupCase):
                 self.assertEqual(json.loads((self.tmp / 'vpn.json').read_text())['profiles'], [])
 
 
-class OpenWrt(BackupCase):
-    system = 'openwrt'
-
-    def setUp(self):
-        super().setUp()
-        (self.root / 'etc/dropbear').mkdir(parents=True, exist_ok=True)
-        (self.root / 'etc/dropbear/authorized_keys').write_text(KEY2 + '\n')
-        (self.root / 'etc/init.d').mkdir(parents=True, exist_ok=True)
-        (self.root / 'etc/init.d/dropbear').write_text('#!/bin/sh\n')
-        (self.root / 'etc/init.d/dropbear').chmod(0o755)
-        (self.root / 'etc/rc.d').mkdir(parents=True, exist_ok=True)
-        (self.root / 'etc/rc.d/S50dropbear').write_text('')
-
-    def test_export_from_uci_and_an_ubuntu_file_taken(self):
-        for shell in self.each_shell():
-            self.fresh()
-            d = json.loads(self.export(shell).read_text())
-            s = d['sections']
-            self.assertEqual(d['source']['system'], 'openwrt')
-            self.assertEqual(s['wifi'], {'ssid': 'OpenWrt-1', 'password': 'wrtsecret99', 'band': '5', 'channel': '36',
-                                         'hidden': False, 'enabled': True})
-            self.assertEqual((s['data']['apn'], s['data']['password']), ('internet', 'apnsecret7'))
-            self.assertEqual(s['ssh_keys'], [KEY2])
-            self.assertEqual(s['system']['ssh'], True)
-            # an Ubuntu backup: what both systems have
-            f = self.write(self.doc({'wifi': {'ssid': 'From Ubuntu', 'password': 'ubuntusecret1', 'band': '5', 'channel': '36',
-                                              'hidden': False, 'enabled': True},
-                                     'ssh_keys': [KEY1], 'password': {'hash': '$y$j9T$abcdefgh$' + 'c' * 43}}))
-            r = self.backup(shell, 'import', f)
-            self.assertEqual(r.returncode, 1, r.stdout)
-            self.assertIn('not a password hash this system takes', r.stdout)   # OpenWrt's musl has no yescrypt
-            r = self.backup(shell, 'import', f, '--skip', 'password')
-            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-            w = self.ucidb()['wireless']['default_radio0']
-            self.assertEqual((w['ssid'], w['key']), ('From Ubuntu', 'ubuntusecret1'))
-            self.assertEqual((self.root / 'etc/dropbear/authorized_keys').read_text(), KEY2 + '\n' + KEY1 + '\n')
-            self.assertNotIn('ubuntusecret1', self.argv_text().replace((self.tmp / 'uci-batch').read_text(), ''))
-
-
 class Luci(BackupCase):
-    """openwrt-luci: the network locks through the lock tool, SMS forwarding through the panel's adapter."""
-    system = 'openwrt'
+    """the network locks through the lock tool, SMS forwarding through the panel's adapter."""
 
     def setUp(self):
         super().setUp()
@@ -565,7 +537,7 @@ class Luci(BackupCase):
 
 
 class ApiMethods(BackupCase):
-    """mu300-api backup.export and backup.import: the device manager's (and the LuCI page's) way in."""
+    """mu300-api backup.export and backup.import: the LuCI page's way in."""
 
     def test_export_and_import_through_the_api(self):
         for shell in self.each_shell():
@@ -574,7 +546,7 @@ class ApiMethods(BackupCase):
             self.assertFalse(o['encrypted'])
             self.assertTrue(o['name'].endswith('.json'))
             doc = json.loads(o['file'])
-            self.assertEqual(doc['sections']['wifi']['password'], 'hotspotsecret1')
+            self.assertEqual(doc['sections']['wifi']['password'], 'wrtsecret99')
             self.assertNotIn('password', doc['sections'])
             o = self.ok(shell, 'backup.export', {'passphrase': 'correct horse battery', 'with_password': True})
             self.assertTrue(o['encrypted'])
@@ -583,12 +555,14 @@ class ApiMethods(BackupCase):
             self.refused(shell, 'backup.export', {'passphrase': 'short'}, 'bad-value', 'passphrase')
             self.refused(shell, 'backup.export', {'path': '/etc/shadow'}, 'unknown-field', 'path')
             # the dry run: what would change, nothing changed
-            (self.root / 'etc/mu300/hotspot.conf').write_text('SSID=Changed\nPSK=othersecret1\nBAND=5\nCHANNEL=auto\nCOUNTRY=TR\n')
+            db = self.ucidb()
+            db['wireless']['default_radio0'].update(ssid='Changed', key='othersecret1')
+            self.uci(db)
             o = self.ok(shell, 'backup.import', {'file': sealed, 'passphrase': 'correct horse battery', 'dry_run': True,
                                                  'skip': 'password'})
             self.assertTrue(o['valid'], o['text'])
-            self.assertIn('would  hotspot: ssid "Changed" -> "MU300-AB12", the password changes', o['text'])
-            self.assertIn('SSID=Changed', (self.root / 'etc/mu300/hotspot.conf').read_text())
+            self.assertIn('would  hotspot: ssid "Changed" -> "OpenWrt-1", the password changes', o['text'])
+            self.assertEqual(self.ucidb()['wireless']['default_radio0']['ssid'], 'Changed')
             o = self.ok(shell, 'backup.import', {'file': sealed, 'passphrase': 'not the passphrase', 'dry_run': True})
             self.assertFalse(o['valid'])
             self.assertIn('wrong passphrase', o['text'])
@@ -602,23 +576,24 @@ class ApiMethods(BackupCase):
             j = self.wait_job(shell, timeout=120)
             self.assertEqual(j['rc'], 0, j['text'])
             self.assertIn('restored', j['text'])
-            self.assertIn('SSID=MU300-AB12', (self.root / 'etc/mu300/hotspot.conf').read_text())
+            self.assertEqual(self.ucidb()['wireless']['default_radio0']['ssid'], 'OpenWrt-1')
             # the passphrase and the secrets: never on a command line, in a job file or in its log
-            written = self.everything_written()
-            for secret in ('correct horse battery', 'hotspotsecret1', 'apnsecret7'):
+            written = self.everything_written().replace((self.tmp / 'uci-batch').read_text(), '')
+            for secret in ('correct horse battery', 'wrtsecret99', 'apnsecret7'):
                 self.assertNotIn(secret, written)
 
 
 
 # OpenWrt's jq is built without Oniguruma: test/capture/gsub/sub/match/scan/splits fail there ("jq was compiled
-# without ONIGURUMA regex library"), and every file was refused as "a value of the wrong kind" (F50-C, 2026-10-17).
-# A jq that refuses any program using them, in front of the real one: the OpenWrt and panel paths run through it.
+# without ONIGURUMA regex library"), and a program using them would refuse every file as "a value of the wrong kind".
+# A jq that refuses any program using them, in front of the real one: the export, import and panel paths run through
+# it.
 NO_REGEX_JQ = ('for a in "$@"; do case $a in *test\\(*|*capture\\(*|*sub\\(*|*match\\(*|*scan\\(*|*splits\\(*) '
                'echo "jq: error: jq was compiled without ONIGURUMA regex library." >&2; exit 5 ;; esac; done\n'
                f'exec "{shutil.which("jq")}" "$@"')
 
 
-class OpenWrtJqWithoutRegex(OpenWrt):
+class ImportJqWithoutRegex(Import):
     def setUp(self):
         super().setUp()
         self.stub('jq', NO_REGEX_JQ)
@@ -632,7 +607,7 @@ class LuciJqWithoutRegex(Luci):
 
 class Wiring(unittest.TestCase):
     def test_on_the_path(self):
-        # the wiki and FINDINGS 155 say "mu300-backup export": a command on PATH on both systems (path-commands)
+        # "mu300-backup export": a command on PATH (path-commands)
         self.assertIn('mu300-backup', (BIN.parent / 'lib' / 'path-commands').read_text().split())
         self.assertTrue(os.access(BIN / 'mu300-backup', os.X_OK))
 

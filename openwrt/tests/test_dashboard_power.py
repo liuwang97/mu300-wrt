@@ -1,11 +1,9 @@
 """The dashboard's battery tile: dashboard-info finds the battery and the charger in a fake /sys/class/power_supply
-(MU300_POWER_SUPPLY_DIR) the way each device and kernel names them, and home.js turns the result into the tile.
+(MU300_POWER_SUPPLY_DIR) the way each device names them, and home.js turns the result into the tile.
 
-- F50: no battery. Under mainline its PMIC's fuel gauge (sc27xx-fgu) still appears, with made-up values: no tile.
-- U30 Air under 5.4: the vendor charger manager's "battery" (capacity, status, voltage_now, current_now) and the
-  charger's "usb"/"ac" online flags (FINDINGS 33, mu300-toolkit). The vendor fuel gauge may be there as well.
-- U30 Air under mainline: the UMP9620 fuel gauge "sc27xx-fgu" (FINDINGS 33d), positive current into the battery,
-  no charger driver at all.
+- F50: no battery. Its PMIC's fuel gauge (sc27xx-fgu) still appears, with made-up values: no tile.
+- U30 Air: the UMP9620 fuel gauge "sc27xx-fgu", positive current into the battery, and the charger
+  (bq256xx-charger) as a supply of type USB.
 - Anything else of type Battery / USB / Mains is found by type, whatever its name."""
 import json
 import shutil
@@ -18,10 +16,10 @@ APP = TOP / 'openwrt' / 'luci-app-mu300'
 INFO = APP / 'root' / 'usr' / 'libexec' / 'unisoc-modem' / 'dashboard-info'
 HOME = APP / 'htdocs' / 'luci-static' / 'resources' / 'view' / 'mu300' / 'home.js'
 
-# FINDINGS 33d's node and the patch's sign: discharging at 470 mA from 3.85 V
-FGU_MAINLINE = {'type': 'Battery', 'present': '1', 'capacity': '64', 'status': 'Discharging',
+# the U30 Air's fuel gauge, positive current into the battery: discharging at 470 mA from 3.85 V
+FGU = {'type': 'Battery', 'present': '1', 'capacity': '64', 'status': 'Discharging',
                 'voltage_now': '3850000', 'current_now': '-470000', 'voltage_ocv': '3901000', 'temp': '281'}
-BATTERY_54 = {'type': 'Battery', 'present': '1', 'capacity': '87', 'status': 'Charging',
+BATTERY = {'type': 'Battery', 'present': '1', 'capacity': '87', 'status': 'Charging',
               'voltage_now': '4123000', 'current_now': '780000'}
 
 
@@ -55,52 +53,43 @@ class Power(ShellTest):
             self.assertEqual(p, out[0])
         return out[0]
 
-    def test_f50_under_mainline_has_no_battery(self):
+    def test_f50_has_no_battery(self):
         self.device('f50')
-        self.supply('sc27xx-fgu', **FGU_MAINLINE)
+        self.supply('sc27xx-fgu', **FGU)
         p = self.power()
         self.assertEqual(p['present'], 0)
         self.assertIsNone(p['capacity'])
         self.assertIsNone(p['w'])
 
-    def test_v50_has_no_battery(self):
-        # the V50 (FINDINGS 95) has none either, and the same PMIC fuel gauge under mainline
-        self.device('v50')
-        self.supply('sc27xx-fgu', **FGU_MAINLINE)
-        p = self.power()
-        self.assertEqual(p['present'], 0)
-        self.assertIsNone(p['capacity'])
-
-    def test_f50_under_54_has_no_battery(self):
+    def test_f50_with_a_charger_has_no_battery(self):
         self.device('f50')
         self.supply('usb', type='USB', online='1')
         p = self.power()
         self.assertEqual(p['present'], 0)
         self.assertIsNone(p['usb'])
 
-    def test_u30air_under_54(self):
+    def test_u30air(self):
         self.device('u30air')
-        self.supply('sc27xx-fgu', type='Unknown', capacity='12')   # the vendor gauge behind the charger manager
-        self.supply('battery', **BATTERY_54)
-        self.supply('ac', type='Mains', online='0')
-        self.supply('usb', type='USB', online='1')
-        p = self.power()
-        self.assertEqual((p['present'], p['capacity'], p['status']), (1, 87, 'Charging'))
-        self.assertEqual(p['volt'], 4.12)
-        self.assertEqual(p['ua'], 780000)
-        self.assertEqual(p['w'], 3.22)                    # 4.123 V x 0.78 A
-        self.assertEqual(p['usb'], 1)
-        self.assertIsNone(p['in_w'])                      # the charger manager's usb says online only
-
-    def test_u30air_under_mainline(self):
-        self.device('u30air')
-        self.supply('sc27xx-fgu', **FGU_MAINLINE)
+        self.supply('sc27xx-fgu', **FGU)
         p = self.power()
         self.assertEqual((p['present'], p['capacity'], p['status']), (1, 64, 'Discharging'))
         self.assertEqual(p['volt'], 3.85)
         self.assertEqual(p['ua'], -470000)
         self.assertEqual(p['w'], 1.81)                    # |3.85 V x -0.47 A|
-        self.assertIsNone(p['usb'])                       # no charger driver under mainline
+        self.assertIsNone(p['usb'])                       # no charger supply here
+
+    def test_u30air_with_its_charger(self):
+        self.device('u30air')
+        self.supply('sc27xx-fgu', **FGU)
+        self.supply('bq256xx-charger', type='USB', online='1', voltage_now='5012000', current_now='900000')
+        p = self.power()
+        self.assertEqual((p['present'], p['capacity']), (1, 64))
+        self.assertEqual((p['usb'], p['in_volt'], p['in_ua'], p['in_w']), (1, 5.01, 900000, 4.51))
+
+    def test_a_gauge_that_is_not_of_type_battery_is_none(self):
+        self.device('u30air')
+        self.supply('sc27xx-fgu', type='Unknown', capacity='12')
+        self.assertEqual(self.power()['present'], 0)
 
     def test_found_by_type_with_charger_input(self):
         self.device(None)                                 # no mu300-device: any board, found by type
@@ -116,7 +105,7 @@ class Power(ShellTest):
 
     def test_the_charger_online_after_offline_ones_with_input_current(self):
         self.device('u30air')
-        self.supply('battery', **BATTERY_54)
+        self.supply('battery', **BATTERY)
         self.supply('ac', type='Mains', online='0')
         self.supply('bq2560x', type='USB', online='0', voltage_now='1000000', current_now='1')
         self.supply('usb', type='USB', online='1', voltage_now='5000000', input_current_now='1000000')
@@ -174,7 +163,7 @@ process.stdout.write(JSON.stringify({ shown: kpi.style.display !== 'none', value
         self.assertEqual(t['value'], '87%')
         self.assertEqual(t['label'], 'Battery · charging 3.2 W · 4.12 V · USB in 4.5 W (5.01 V)')
 
-    def test_discharging_under_mainline(self):
+    def test_discharging(self):
         t = self.render({'present': 1, 'capacity': 64, 'status': 'Discharging', 'volt': 3.85, 'ua': -470000,
                          'w': 1.81, 'usb': None})
         self.assertEqual(t['value'], '64%')
@@ -192,7 +181,7 @@ process.stdout.write(JSON.stringify({ shown: kpi.style.display !== 'none', value
         self.assertEqual(t['label'], 'Battery · charging 2.6 W')     # the voltage is the value already
 
     def test_unknown_when_full_on_usb(self):
-        # the 5.4 SQC charger says Unknown once full (mu300-toolkit); a few mA either way is noise
+        # a charger that says Unknown once full; a few mA either way is noise
         t = self.render({'present': 1, 'capacity': 100, 'status': 'Unknown', 'volt': 4.34, 'ua': 3000,
                          'w': 0.01, 'usb': 1})
         self.assertEqual(t['label'], 'Battery · full · 4.34 V · USB')

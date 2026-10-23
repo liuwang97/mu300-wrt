@@ -3,11 +3,11 @@
 #   mu300-next-boot linux          Linux stays the default (re-armed on every successful boot)
 #   mu300-next-boot android        next reboot (and later ones) go to Android
 #   mu300-next-boot attempts [N]   show, or set, how many boots in a row may fail before Android takes over (1-6)
-#   mu300-next-boot --rearm        used by mu300-boot-ok.service after a successful boot
+#   mu300-next-boot --rearm        used by mu300-post 30 s into a successful boot
 #   mu300-next-boot lock           Linux stays, whatever happens: no failed boot ever sends it to Android by itself
 #   mu300-next-boot unlock         back to the attempts above
 #   mu300-next-boot --trial        used by mu300-update before it writes a boot image: locked or not, the next boots
-#                                  are the attempts above until one of them gets to mu300-boot-ok (which locks again)
+#                                  are the attempts above until one of them gets to --rearm (which locks again)
 #   mu300-next-boot status
 # Locked: the Linux slot is armed successful=1. LK never counts a successful slot down, so it never rolls back; the
 # initramfs' backstop and its standalone fallback see the bit in misc and do not go to Android either (the fallback
@@ -15,23 +15,23 @@
 # one thing that could leave a locked device with no Linux at all, so every boot image write unlocks for its first
 # boot (--trial). The wish to stay locked is .mu300/boot-lock on the Linux disk.
 # The Linux slot (b, or a when Android runs from b) is armed with tries=N+1 and successful=0. LK decrements tries on
-# every boot and rolls back to Android's slot when it finds tries=1, so N boots that never reach mu300-boot-ok land
+# every boot and rolls back to Android's slot when it finds tries=1, so N boots that never reach --rearm land
 # in Android on the next one. A boot that does reach it arms N+1 again. N lives in .mu300/boot-attempts on the Linux
 # disk, shared by every system there and by the initramfs; without the file it is 5.
 # What a caller of --trial has to know (mu300-update, which has just written a boot image): nothing is armed, and the
 # exit status says which nothing. 3: the default boot is not linux, so there is no default-Linux boot to protect -
 # every Linux boot is a one-shot trial armed from Android and a reboot goes there. 1: this slot's block cannot be
-# rebuilt here, so the initramfs' own one-shot block went in instead (one boot, not N; FINDINGS 32). 0: armed.
-# OpenWrt: od/timeout come from the static busybox in /opt/mu300/busybox-bin
+# rebuilt here, so the initramfs' own one-shot block went in instead (one boot, not N). 0: armed.
+# od/timeout come from the static busybox in /opt/mu300/busybox-bin
 export PATH="$PATH:/opt/mu300/busybox-bin"
 set -eu
 CONF=${MU300_CONF:-/etc/mu300/default-boot}
 RUN=${MU300_RUN:-/run/mu300}
 # The initramfs says which slot Linux runs from (Android may be on either); without that (or garbled), the slot LK
 # booted, from the command line or the device tree's bootargs, and b only when nothing says. The blocks it publishes
-# are the pair of that slot; an initramfs from before that publishes only the old names, and only ever for Linux on b.
-# Between the two, the slot the initramfs' Linux block names: it publishes that block with the file, and its first two
-# bytes are the slot suffix (_a/_b) LK reads (kanoqwq's b8d4f222).
+# are the pair of that slot; for Linux on b it also publishes them under their slot names, used when the pair is
+# missing. Between the two, the slot the initramfs' Linux block names: it publishes that block with the file, and its
+# first two bytes are the slot suffix (_a/_b) LK reads.
 suffix_of() { dd if="$1" bs=1 count=2 2>/dev/null; }
 LINUX_SLOT=$(cat "$RUN/linux-slot" 2>/dev/null || true)
 case $LINUX_SLOT in a|b) ;; *)
@@ -50,8 +50,8 @@ if [ "$LINUX_SLOT" = b ]; then
     [ -s "$BC_B" ] || BC_B=$RUN/misc-bc-slot-b-trial.bin
 fi
 # A block that names another slot than the one it is used for is never written: Linux's must name Linux's slot, and
-# Android's the other one. The initramfs never publishes such a pair; this keeps misc unchanged if anything else did
-# (kanoqwq's b8d4f222). A missing block is write_bc's to refuse, as before.
+# Android's the other one. The initramfs never publishes such a pair; this keeps misc unchanged if anything else did.
+# A missing block is write_bc's to refuse.
 if [ "$LINUX_SLOT" = a ]; then ANDROID_SLOT=b; else ANDROID_SLOT=a; fi
 pair_ok() {
     { [ ! -s "$BC_B" ] || [ "$(suffix_of "$BC_B")" = "_$LINUX_SLOT" ]; } &&
@@ -133,7 +133,7 @@ arm_linux() {  # arm_linux [trial]: locked when that is wanted, unless this is t
     # above is wrong for this misc and nothing it makes gets written.
     if [ "$(make_bc_b 2 2>/dev/null)" != "$(hex_of "$BC_B")" ]; then
         # The arithmetic above is wrong for this misc, so the initramfs' own one-shot block goes in instead: this
-        # image gets one boot to prove itself, not N (FINDINGS 32). A degraded arm, and it fails: a caller that was
+        # image gets one boot to prove itself, not N. A degraded arm, and it fails: a caller that was
         # promised N attempts would otherwise be promising one and saying nothing.
         echo "cannot rebuild the slot $LINUX_SLOT block on this system; arming with 1 attempt, not $(attempts)" >&2
         write_bc "$BC_B"
@@ -155,11 +155,11 @@ slot_state() {
     echo "  slot a info: ${b:24:2}  slot b info: ${b:28:2}  (prio | tries<<4 | successful<<7)"
 }
 
-# One change of misc at a time. mu300-boot-ok's --rearm reads the default boot and then writes the Linux block: a
-# "mu300-next-boot android" (the panel's Switch to Android) in between was overwritten by it, and the device booted
-# Linux once more with the file saying android. Every command but status holds the lock from its first read to its
-# last write. flock(1) where there is one (util-linux on Ubuntu, busybox's applet on OpenWrt); without it, or without
-# the runtime directory, nothing is serialised (as before). A lock file that is a symlink is not opened.
+# One change of misc at a time. --rearm reads the default boot and then writes the Linux block: a "mu300-next-boot
+# android" (the panel's Switch to Android) in between would be overwritten by it, and the device would boot Linux once
+# more with the file saying android. Every command but status holds the lock from its first read to its last write
+# (busybox's flock); without flock, or without the runtime directory, nothing is serialised. A lock file that is a
+# symlink is not opened.
 take_lock() {
     local f=$RUN/next-boot.lock n=0
     command -v flock >/dev/null 2>&1 || return 0

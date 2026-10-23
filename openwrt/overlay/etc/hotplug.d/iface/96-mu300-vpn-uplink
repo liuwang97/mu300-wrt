@@ -1,5 +1,6 @@
 #!/bin/sh
-# The modem's bearer is up: a VPN that started before it is started again (mu300-vpn-uplink, docs/FINDINGS.md 176).
+# The modem's bearer is up: a VPN that started before it is started again (mu300-vpn-uplink): one that
+# started a moment before the bearer gets nothing back over it until restarted.
 # In the background: hotplug runs its scripts one after another.
 [ "$ACTION" = ifup ] || exit 0
 case "${DEVICE:-}" in sipa_eth*) ;; *) exit 0 ;; esac

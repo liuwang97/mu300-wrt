@@ -142,7 +142,7 @@ return view.extend({
 					label = _('TUN stack');
 					el = E('select', { 'class': 'cbi-input-select', 'id': id }, [
 						E('option', { 'value': '' }, [ _('Default (gvisor)') ]), E('option', { 'value': 'gvisor' }, [ 'gvisor' ]),
-						E('option', { 'value': 'system' }, [ _('system (not on the 5.4 kernel)') ]), E('option', { 'value': 'mixed' }, [ 'mixed' ]) ]);
+						E('option', { 'value': 'system' }, [ 'system' ]), E('option', { 'value': 'mixed' }, [ 'mixed' ]) ]);
 					el.value = o[k] || '';
 				} else if (k === 'OVPN_PASS') {
 					label = _('Password');

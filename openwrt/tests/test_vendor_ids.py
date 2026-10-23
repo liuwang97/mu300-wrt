@@ -1,40 +1,32 @@
-"""The Android vendor daemons' own account (FINDINGS: "The vendor daemons' own account").
+"""The Android vendor daemons' own account.
 
-Android's system user is uid 1000, the first human account on a distribution: ueventd-perms.sh gave that account the
-modem's calibration partitions, and modem_control/refnotify ran as it. Now: the nodes go to the vendor account
-mu300vnd (uid 1000 only where there is no account at all), nothing is writable by everyone, the GPU is the video
-group's, the daemons start as mu300vnd, and the images (and updated systems) have the account.
+Android's system user is uid 1000, which is also the first login account a system makes: the nodes go to the vendor
+account mu300vnd (uid 1000 only where there is no account at all), nothing is writable by everyone, shared memory is
+the video group's, the daemons start as mu300vnd where setpriv can switch to it, and updated systems keep the account.
+The generator and the initramfs' copy are the kernel tree's (its test_from_openwrt_vendor_ids); the root filesystem's
+copy is self-contained.
 """
 import fnmatch
 import os
 import re
 import shutil
-import subprocess
-import sys
 
 from helpers import BIN, TOP, ShellTest
 
-GEN = TOP / 'android-vendor' / 'gen-ueventd-perms.py'
-INPUTS = [TOP / 'android-vendor' / 'ueventd' / 'ueventd.rc', TOP / 'android-vendor' / 'ueventd' / 'init-perms.rc']
-OUTPUTS = [TOP / 'android-vendor' / 'ueventd-perms.sh', BIN / 'ueventd-perms.sh']
+PERMS = BIN / 'ueventd-perms.sh'
 # the script as it was until v2026.10.18: Android's numbers taken over
 BEFORE = TOP / "openwrt" / "tests" / 'fixtures' / 'ueventd-perms-v2026.10.18.sh'
-# Ubuntu's accounts as on an F50 (v2026.10.18 with the vendor account made at boot)
+# a system's accounts with the vendor account made at boot
 IDS = {'$V': 999, '$VG': 991, '$GPU': 44}
 # who must not gain anything: the login user (uid 1000, its groups on the image), a second login user in the usual
 # groups and everyone else; the vendor account itself is new and is not compared
-PEOPLE = {'ubuntu': (1000, {1000, 4, 20, 24, 25, 27, 29, 30, 44, 46}),
+PEOPLE = {'a login user': (1000, {1000, 4, 20, 24, 25, 27, 29, 30, 44, 46}),
           'a second user': (1001, {1001, 100, 44, 20, 29, 46, 993, 996}),
           'others': (65534, {65534})}
 # what Linux starts a node with that neither script names (the RTC: root:root 0660, as udev leaves it here)
 LINUX = (0, 0, 0o660)
 LINE = re.compile(r'for n in (.+?); do \[ -e "\$n" \] && (?:chown (\S+):(\S+) "\$n"(?: && chmod ([0-7]+) "\$n")?'
                   r'|chmod ([0-7]+) "\$n"); done')
-
-
-def generate(*files):
-    return subprocess.run([sys.executable, str(GEN)] + [str(f) for f in files],
-                          capture_output=True, text=True, check=True).stdout
 
 
 def rules(text):
@@ -79,7 +71,7 @@ def access(state, uid, groups):
 
 class Generated(ShellTest):
     def test_nobody_gains_anything(self):
-        before, after = final_states(BEFORE.read_text()), final_states(OUTPUTS[0].read_text())
+        before, after = final_states(BEFORE.read_text()), final_states(PERMS.read_text())
         for n in sorted(set(before) | set(after)):
             for who, (uid, groups) in PEOPLE.items():
                 was = access(before.get(n, LINUX), uid, groups)
@@ -87,25 +79,21 @@ class Generated(ShellTest):
                 self.assertEqual(now & ~was, 0, f'{n}: {who} gains {now & ~was:o} ({before.get(n)} -> {after.get(n)})')
 
     def test_the_modem_calibration_was_the_login_users_and_is_not(self):
-        before, after = final_states(BEFORE.read_text()), final_states(OUTPUTS[0].read_text())
+        before, after = final_states(BEFORE.read_text()), final_states(PERMS.read_text())
         for n in ('/dev/block/by-name/nr_X0', '/dev/block/by-name/persist'):
-            self.assertEqual(access(before[n], *PEOPLE['ubuntu']), 6)
-            self.assertEqual(access(after[n], *PEOPLE['ubuntu']), 0)
+            self.assertEqual(access(before[n], *PEOPLE['a login user']), 6)
+            self.assertEqual(access(after[n], *PEOPLE['a login user']), 0)
 
 
-    def test_the_committed_script_is_the_generators(self):
-        want = generate(*INPUTS)
-        for f in OUTPUTS:
-            self.assertEqual(f.read_text(), want, f'{f}: run gen-ueventd-perms.py again')
 
     def test_every_line_is_understood(self):
-        text = OUTPUTS[0].read_text()
+        text = PERMS.read_text()
         lines = [x for x in text.splitlines() if x.startswith('for n in ')]
         self.assertEqual(len(rules(text)), len(lines))
         self.assertGreater(len(lines), 500)
 
     def test_nothing_writable_by_everyone(self):
-        for path, _, _, mode in rules(OUTPUTS[0].read_text()):
+        for path, _, _, mode in rules(PERMS.read_text()):
             if mode is None:
                 continue
             m = int(mode, 8)
@@ -114,15 +102,15 @@ class Generated(ShellTest):
                 self.assertEqual(m & 0o007, 0, (path, mode))     # 0666/0646 nodes are 0660 here
 
     def test_no_numeric_account(self):
-        # no Android number reaches chown: 1000 (ubuntu, alarm on Arch), 1001 (the next human), 1003, ...
-        for path, owner, group, _ in rules(OUTPUTS[0].read_text()):
+        # no Android number reaches chown: 1000 (a login account), 1001 (the next one), 1003, ...
+        for path, owner, group, _ in rules(PERMS.read_text()):
             if owner is None:
                 continue
             self.assertIn(owner, ('0', '$V'), path)
             self.assertIn(group, ('0', '$VG', '$GPU'), path)
 
     def test_partitions(self):
-        r = {p: (o, g, m) for p, o, g, m in rules(OUTPUTS[0].read_text()) if p.startswith('/dev/block/')}
+        r = {p: (o, g, m) for p, o, g, m in rules(PERMS.read_text()) if p.startswith('/dev/block/')}
         # the modem's calibration NV and persist: the vendor account's, never a login account's
         for p in ('/dev/block/by-name/nr_*', '/dev/block/by-name/persist', '/dev/block/by-name/calinv'):
             self.assertEqual(r[p], ('$V', '$VG', '0660'), p)
@@ -130,57 +118,22 @@ class Generated(ShellTest):
             self.assertIn(o, ('0', '$V'), p)
             self.assertNotEqual(g, '$GPU', p)
 
-    def test_gpu_is_the_video_groups(self):
-        r = {p: (o, g, m) for p, o, g, m in rules(OUTPUTS[0].read_text()) if o is not None}
-        for p in ('/dev/mali0', '/dev/ion', '/dev/sprd_dmabuf', '/dev/dma_heap/carveout_fd'):
+    def test_shared_memory_is_the_video_groups(self):
+        r = {p: (o, g, m) for p, o, g, m in rules(PERMS.read_text()) if o is not None}
+        self.assertNotIn('/dev/mali0', r)
+        for p in ('/dev/ion', '/dev/sprd_dmabuf', '/dev/dma_heap/carveout_fd'):
             self.assertEqual(r[p], ('0', '$GPU', '0660'), p)
 
     def test_root_only(self):
         # keys pressed, the serial console and the firmware search path were the first human's: root's alone now
-        r = {p: (o, g, m) for p, o, g, m in rules(OUTPUTS[0].read_text()) if o is not None}
+        r = {p: (o, g, m) for p, o, g, m in rules(PERMS.read_text()) if o is not None}
         for p in ('/sys/module/firmware_class/parameters/path', '/dev/input/event*', '/dev/ttyGS*'):
             self.assertEqual(r[p], ('0', '0', '0600'), p)
-        self.assertNotIn('chmod 660 /sys/module/firmware_class', OUTPUTS[0].read_text())
-        # the RTC stays root's (systemd-timedated has no CAP_DAC_OVERRIDE); refnotify reaches it through the group
-        r = {p: (o, g, m) for p, o, g, m in rules(OUTPUTS[0].read_text()) if o is not None}
+        self.assertNotIn('chmod 660 /sys/module/firmware_class', PERMS.read_text())
+        # the RTC stays root's; refnotify reaches it through the group
+        r = {p: (o, g, m) for p, o, g, m in rules(PERMS.read_text()) if o is not None}
         self.assertEqual(r['/dev/rtc*'], ('0', '$VG', '0660'))
 
-    def test_mapping(self):
-        rc = self.tmp / 'ueventd.rc'
-        rc.write_text('/dev/modem 0660 system radio\n/dev/spipe_pm* 0666 system system\n'
-                      '/dev/mali0 0666 system graphics\n/dev/gsp 0660 system graphics\n/dev/audio_dsp* 666 audioserver audio\n'
-                      '/dev/stty_nr* 0660 radio system\n/dev/block/by-name/miscdata 0660 root system\n'
-                      '/dev/ttyM0 0660 bluetooth net_bt_admin\n/dev/input/event* 0660 system input\n'
-                      '/dev/x 0646 system system   # a comment\n/dev/unknown 0660 nosuch system\n')
-        init = self.tmp / 'init.rc'
-        init.write_text('    chown system system /sys/power/a\n    chmod 0666 /sys/class/b\n'
-                        '    chmod 0646 /dev/c\n    chown graphics system /sys/d\n    chown system /sys/e\n'
-                        '    chown system system /sys/module/firmware_class/parameters/path\n'
-                        '    chmod 660 /sys/module/firmware_class/parameters/path\n    write /dev/f 1\n')
-        r = {p: (o, g, m) for p, o, g, m in rules(generate(rc, init)) if o is not None}
-        self.assertEqual(r['/dev/modem'], ('$V', '$VG', '0660'))
-        self.assertEqual(r['/dev/spipe_pm*'], ('$V', '$VG', '0660'))
-        self.assertEqual(r['/dev/mali0'], ('0', '$GPU', '0660'))
-        self.assertEqual(r['/dev/gsp'], ('$V', '0', '0660'))     # only everyone's GPU nodes go to video
-        self.assertEqual(r['/dev/audio_dsp*'], ('0', '0', '0600'))       # root's alone: no group bits
-        self.assertEqual(r['/dev/stty_nr*'], ('$V', '$VG', '0660'))
-        self.assertEqual(r['/dev/block/by-name/miscdata'], ('0', '$VG', '0660'))
-        self.assertEqual(r['/dev/ttyM0'], ('0', '0', '0600'))
-        self.assertEqual(r['/dev/x'], ('$V', '$VG', '0640'))
-        self.assertEqual(r['/dev/input/event*'], ('0', '0', '0600'))
-        self.assertNotIn('/dev/unknown', r)
-        out = generate(rc, init)
-        self.assertIn('chown $V:$VG "$n"; done', out.splitlines()[[i for i, x in enumerate(out.splitlines())
-                                                                   if '/sys/power/a' in x][0]])
-        c = {p: m for p, o, g, m in rules(out) if o is None}
-        self.assertEqual(c['/sys/class/b'], '0664')     # readable stays readable, written by nobody else
-        self.assertEqual(c['/dev/c'], '0640')
-        r2 = {p: (o, g) for p, o, g, m in rules(out) if o is not None}
-        self.assertEqual(r2['/sys/d'], ('0', '$VG'))
-        self.assertEqual(r2['/sys/e'], ('$V', '$VG'))
-        self.assertIn('for n in /sys/module/firmware_class/parameters/path; do [ -e "$n" ] && chown 0:0 "$n" && chmod 0600', out)
-        self.assertEqual(out.count('firmware_class'), 1)     # its chmod 660 is not taken over
-        self.assertNotIn('/dev/f', out)
 
     def ids(self, shell, passwd, group):
         etc = self.tmp / 'etc'
@@ -190,7 +143,7 @@ class Generated(ShellTest):
                 (etc / name).unlink(missing_ok=True)
             else:
                 (etc / name).write_text(text)
-        text = OUTPUTS[1].read_text()
+        text = PERMS.read_text()
         header = text[:text.index('\nfor n in ')]
         r = self.sh(shell, header + '\necho "$V $VG $GPU"', MU300_ETC=etc)
         self.assertEqual(r.returncode, 0, r.stderr)
@@ -198,11 +151,11 @@ class Generated(ShellTest):
 
     def test_ids_at_run_time(self):
         for shell in self.each_shell():
-            # Ubuntu: the vendor account, the video group; ubuntu at 1000 owns nothing
-            self.assertEqual(self.ids(shell, 'root:x:0:0::/root:/bin/bash\nubuntu:x:1000:1000::/home/ubuntu:/bin/bash\n'
+            # the vendor account and a video group: a login account at 1000 owns nothing
+            self.assertEqual(self.ids(shell, 'root:x:0:0::/root:/bin/bash\nuser:x:1000:1000::/home/user:/bin/bash\n'
                                              'mu300vnd:x:991:988:MU300:/nonexistent:/usr/sbin/nologin\n',
-                                      'root:x:0:\nvideo:x:44:ubuntu\nubuntu:x:1000:\nmu300vnd:x:988:'), '991 988 44')
-            # OpenWrt: no such account, no video group: the uid the daemons switch to themselves; the GPU root's
+                                      'root:x:0:\nvideo:x:44:user\nuser:x:1000:\nmu300vnd:x:988:'), '991 988 44')
+            # OpenWrt: no such account, no video group: the uid the daemons switch to themselves; shared memory root's
             self.assertEqual(self.ids(shell, 'root:x:0:0:root:/root:/bin/ash\nnetwork:x:101:101::/var:/bin/false\n',
                                       'root:x:0:\nnetwork:x:101:\n'), '1000 1000 0')
             # the initramfs: no /etc/passwd at all
@@ -211,7 +164,7 @@ class Generated(ShellTest):
             self.assertEqual(self.ids(shell, 'mu300vndx:x:5:5::/:/bin/false\n', 'mu300vndx:x:5:\n'), '1000 1000 0')
 
 
-# util-linux's setpriv (its --help names --reuid), and busybox's applet, which has no --reuid (OpenWrt, issue #314)
+# util-linux's setpriv (its --help names --reuid), and busybox's applet, which has no --reuid (OpenWrt)
 UTIL_LINUX_SETPRIV = ('case $1 in --help) printf " --reuid <uid|user>  set real and effective uid\\n"; exit 0 ;; esac\n'
                       'echo "setpriv $*" >> "$STUBLOG/calls"')
 BUSYBOX_SETPRIV = ('case $1 in --help) printf "Usage: setpriv [OPTIONS] PROG ARGS\\n\\t--nnp\\n\\t--inh-caps\\n" >&2; '
@@ -235,7 +188,7 @@ class DaemonsStartAsTheAccount(ShellTest):
         return calls.read_text().strip()
 
     def test_with_the_account(self):
-        (self.etc / 'passwd').write_text('ubuntu:x:1000:1000::/home/ubuntu:/bin/bash\nmu300vnd:x:991:988::/:/x\n')
+        (self.etc / 'passwd').write_text('user:x:1000:1000::/home/user:/bin/bash\nmu300vnd:x:991:988::/:/x\n')
         a = self.tmp / 'a'
         for shell in self.each_shell():
             c = '-all,+sys_chroot,+chown,+block_suspend'
@@ -276,7 +229,7 @@ class Account(ShellTest):
         calls = self.tmp / 'calls'
         for shell in self.each_shell():
             calls.unlink(missing_ok=True)
-            (etc / 'passwd').write_text('ubuntu:x:1000:1000::/home/ubuntu:/bin/bash\n')
+            (etc / 'passwd').write_text('user:x:1000:1000::/home/user:/bin/bash\n')
             r = self.sh(shell, 'set -e\n' + self.block(), MU300_ETC=etc, MU300_ANDROID_RUN=BIN / 'android-run')
             self.assertEqual(r.returncode, 0, r.stderr)
             call = calls.read_text()
@@ -295,33 +248,26 @@ class Account(ShellTest):
         self.stub('setpriv', UTIL_LINUX_SETPRIV)
         etc = self.tmp / 'etc'
         etc.mkdir()
-        (etc / 'passwd').write_text('ubuntu:x:1000:1000::/home/ubuntu:/bin/bash\n')
+        (etc / 'passwd').write_text('user:x:1000:1000::/home/user:/bin/bash\n')
         for shell in self.each_shell():
             r = self.sh(shell, 'set -e\n' + self.block() + 'echo went-on', MU300_ETC=etc,
                         MU300_ANDROID_RUN=BIN / 'android-run')
             self.assertEqual(r.stdout.strip(), 'went-on', (shell, r.stderr))
             self.assertIn('uid 1000', r.stderr)
 
-    def test_the_images_have_it(self):
-        for f, rx in ((TOP / 'rootfs' / 'assemble.sh', r'useradd --root \$R --system --user-group [^\n]*\\\n[^\n]*mu300vnd'),
-                      (TOP / 'arch' / 'build-rootfs.sh', r'useradd --system --user-group [^\n]*\\\n[^\n]*mu300vnd')):
-            self.assertRegex(f.read_text(), rx, f.name)
-        # the account line goes in before the image is packed
-        a = (TOP / 'rootfs' / 'assemble.sh').read_text()
-        self.assertLess(a.index('mu300vnd'), a.index('tar --numeric-owner'))
 
     def test_an_update_brings_it(self):
         # mu300-update's merge: the new image's passwd with the old system's human accounts - the image's mu300vnd
-        # is in the updated system, at the image's uid, next to the device's ubuntu
+        # is in the updated system, at the image's uid, next to the device's login accounts
         upd = (BIN / 'mu300-update').read_text()
         fn = re.search(r'^merge_accounts\(\) \{.*?^\}\n', upd, re.S | re.M).group(0)
         old, new = self.tmp / 'old', self.tmp / 'new'
-        for d, pw, gr in ((old, 'root:x:0:0::/root:/bin/bash\nubuntu:x:1000:1000::/home/ubuntu:/bin/bash\n'
+        for d, pw, gr in ((old, 'root:x:0:0::/root:/bin/bash\nuser:x:1000:1000::/home/user:/bin/bash\n'
                                 'kaan:x:1001:1001::/home/kaan:/bin/bash\n',
-                           'root:x:0:\nvideo:x:44:ubuntu,kaan\nubuntu:x:1000:\nkaan:x:1001:\n'),
-                          (new, 'root:x:0:0::/root:/bin/bash\nubuntu:x:1000:1000::/home/ubuntu:/bin/bash\n'
+                           'root:x:0:\nvideo:x:44:user,kaan\nuser:x:1000:\nkaan:x:1001:\n'),
+                          (new, 'root:x:0:0::/root:/bin/bash\nuser:x:1000:1000::/home/user:/bin/bash\n'
                                 'mu300vnd:x:991:988:MU300 Android vendor daemons:/nonexistent:/usr/sbin/nologin\n',
-                           'root:x:0:\nvideo:x:44:ubuntu\nubuntu:x:1000:\nmu300vnd:x:988:\n')):
+                           'root:x:0:\nvideo:x:44:user\nuser:x:1000:\nmu300vnd:x:988:\n')):
             (d / 'etc').mkdir(parents=True)
             (d / 'etc' / 'passwd').write_text(pw)
             (d / 'etc' / 'group').write_text(gr)
@@ -334,7 +280,7 @@ class Account(ShellTest):
             self.assertEqual(r.returncode, 0, r.stderr)
             pw = (new / 'etc' / 'passwd').read_text()
             self.assertIn('mu300vnd:x:991:988:', pw)
-            self.assertIn('ubuntu:x:1000:1000:', pw)
+            self.assertIn('user:x:1000:1000:', pw)
             self.assertIn('kaan:x:1001:1001:', pw)
             self.assertIn('mu300vnd:x:988:', (new / 'etc' / 'group').read_text())
             self.assertIn('mu300vnd:', (new / 'etc' / 'shadow').read_text())
@@ -343,11 +289,10 @@ class Account(ShellTest):
 
 
 class OneDecision(ShellTest):
-    """Issue #314: on OpenWrt with shadow-useradd installed, android-vendor-start made mu300vnd and ueventd-perms.sh
-    gave it the modem's nodes (uid 999), but android-run had no setpriv that can switch users (OpenWrt has none;
-    busybox's applet has no --reuid), so it ran chroot as root and the daemons switched to uid 1000 themselves:
-    EACCES on /dev/modem, the modem never started. The account the nodes go to and the uid the daemons run as now
-    come from one decision, android-run's, for every combination of account, useradd and setpriv."""
+    """On OpenWrt with shadow-useradd installed, android-vendor-start could make mu300vnd and ueventd-perms.sh
+    give it the modem's nodes (uid 999) while android-run has no setpriv that can switch users (OpenWrt has none;
+    busybox's applet has no --reuid): chroot runs as root and the daemons switch to uid 1000 themselves, EACCES on
+    /dev/modem, no modem. The account the nodes go to and the uid the daemons run as come from one decision, android-run's, for every combination of account, useradd and setpriv."""
 
     SETPRIVS = {'util-linux': UTIL_LINUX_SETPRIV, 'busybox': BUSYBOX_SETPRIV, 'none': None}
 
@@ -366,7 +311,7 @@ class OneDecision(ShellTest):
         self.etc.mkdir()
         text = (BIN / 'android-vendor-start').read_text()
         self.block = re.search(r'# --- account begin\n(.*?)# --- account end', text, re.S).group(1)
-        perms = OUTPUTS[1].read_text()
+        perms = PERMS.read_text()
         self.header = perms[:perms.index('\nfor n in ')]
 
     def setup(self, account, useradd, setpriv):
@@ -439,7 +384,7 @@ class OneDecision(ShellTest):
             self.assertEqual(self.daemon_uid(shell), '1000')
 
     def test_without_the_variable_the_script_is_as_before(self):
-        # ueventd-perms.sh run by itself (the initramfs' copy) still looks the account up by name
+        # ueventd-perms.sh run by itself (as the initramfs runs its copy) looks the account up by name
         self.setup(account=True, useradd=False, setpriv='none')
         for shell in self.each_shell():
             r = self.sh(shell, self.header + '\necho "$V:$VG"', MU300_ETC=self.etc)

@@ -1,15 +1,13 @@
 #!/bin/sh
-# mu300-vpn-uplink [IFACE]: the bearer has just come up (OpenWrt: its ifup hotplug; Ubuntu: `mobile-data up`). A VPN
-# whose current run started before that moment is started again (docs/FINDINGS.md 176).
+# mu300-vpn-uplink [IFACE]: the bearer has just come up (its ifup hotplug). A VPN whose current run started before
+# that moment is started again.
 #
-# Measured on the U30 Air (openwrt-luci, the owner's sing-box profile, the kill switch on, kernels 6.18.56 and 6.18.57
-# alike): the VPN service starts at boot before the bearer, finds no uplink, and its service manager starts it again
-# every few seconds. When one of those runs reaches its engine a second or two before netifd has finished with the
-# bearer (sing-box at 42-43 s, the address at 44-45 s), the tunnel never comes up: sipa_eth0 sends and receives
-# nothing at all, the modem never even asks to deliver, for as long as the boot lasts (ten minutes watched). Neither
-# the data context again, nor the radio off and on, nor the modem restarted brings one packet back; `mu300-vpn
-# restart` does, at once, every time (eight boots out of eight). An `ifup wan` did not, because nothing restarted the
-# VPN after it - this does.
+# Seen on the U30 Air (a sing-box profile, the kill switch on): the VPN service starts at boot before the bearer,
+# finds no uplink, and its service manager starts it again every few seconds. When one of those runs reaches its
+# engine a second or two before netifd has finished with the bearer, the tunnel never comes up: sipa_eth0 sends and
+# receives nothing at all, the modem never even asks to deliver, for as long as the boot lasts. Neither the data
+# context again, nor the radio off and on, nor the modem restarted brings one packet back; `mu300-vpn restart` does,
+# at once, every time. An `ifup wan` alone does not, because nothing restarts the VPN after it - this does.
 #
 # The kill switch is not touched: `mu300-vpn restart` replaces it in one transaction, so nothing leaves beside the
 # tunnel meanwhile. Nothing is done without a VPN that is on, nor for a run that started after the bearer was up.
@@ -18,7 +16,7 @@ export PATH="$PATH:/opt/mu300/busybox-bin:/usr/sbin:/sbin:/usr/bin:/bin"
 VPN=${MU300_VPN_CMD:-/opt/mu300/bin/mu300-vpn}
 RUN=${MU300_VPN_RUN:-/run/mu300-vpn}
 STATE=${MU300_UPLINK_DIR:-/run/mu300}
-SETTLE=${MU300_UPLINK_SETTLE:-3}     # seconds for netifd (or mobile-data) to finish with the interface
+SETTLE=${MU300_UPLINK_SETTLE:-3}     # seconds for netifd to finish with the interface
 WAIT=${MU300_UPLINK_RUN_WAIT:-60}    # seconds a run that is starting gets to reach its engine
 IFACE=${1:-the bearer}
 

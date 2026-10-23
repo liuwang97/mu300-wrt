@@ -1,7 +1,7 @@
 #!/bin/sh
 # busybox ntpd (sysntpd) through ntpd-hotplug: the clock was set from the network (a step, or a stratum other than
 # 16, unsynchronized). There is no RTC, so until this the clock is whatever the last shutdown left: mu300-traffic
-# dates mobile data by it only from now on (Ubuntu: systemd-timesyncd's /run/systemd/timesync/synchronized).
+# dates mobile data by it only from now on.
 case $ACTION in
 	step) ;;
 	stratum|periodic) [ "${stratum:-16}" != 16 ] || exit 0 ;;

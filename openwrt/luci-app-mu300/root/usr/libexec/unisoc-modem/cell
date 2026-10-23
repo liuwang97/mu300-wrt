@@ -4,17 +4,15 @@
 //
 // The web page NEVER runs this directly and never waits for it: the rpcd backend
 // (mu300status in rpcd, or /usr/libexec/rpcd/mu300dash) serves the cache and kicks a background refresh
-// (setsid) whenever it is older than the TTL. That separation is the one hard rule
-// the V50 panel learned in the field: a synchronous AT round inside a web request
-// starves the AT channel, the dial watchdog then sees a dead modem and the box
-// ends up rebooting itself (docs/FINDINGS.md, V50 archive "45g").
+// (setsid) whenever it is older than the TTL. That separation is the one hard rule:
+// a synchronous AT round inside a web request starves the AT channel, the dial
+// watchdog then sees a dead modem and the box ends up rebooting itself.
 //
-// A ucode program since the home page's CPU work (FINDINGS 216): the shell version paid ~60 ms of CPU per AT command
-// (the adapter, mu300-at and their forks: ~48 ms on the client side alone) and ~0.5 s per fast round, every 1.5 s
-// while the home page was open. The commands, the files, the locks and the JSON are the same as before. With the
-// platform's mu300-atd (the "mu300" backend) the commands go to the daemon directly, by mu300-at's own protocol
-// (the client lock $DIR/lock, one "T ANSWER-FILE COMMAND" line on the fifo, the answer file); any other backend, or
-// an adapter named in MU300_AT (the tests), is run as before.
+// A ucode program, not a shell script: a shell collector pays ~60 ms of CPU per AT command (the adapter, mu300-at
+// and their forks) and ~0.5 s per fast round, every 1.5 s while the home page is open. With the platform's
+// mu300-modemd (the "mu300" backend) the commands go to the daemon directly, by mu300-at's own protocol (the client
+// lock $DIR/lock, one "T ANSWER-FILE COMMAND" line on the fifo, the answer file); any other backend, or an adapter
+// named in MU300_AT (the tests), is run through the adapter.
 //
 // Commands per round (about 10, roughly one second on this modem):
 //   AT+CFUN?            radio on/off - the honest state for the toggle
@@ -30,8 +28,7 @@
 //   AT+CNUM             the SIM's own number (full rounds only, until one is found; see "own number" below)
 //   AT+SPPAURI?         the IMS public identity, when the SIM has no number
 // AT+SPENGMD=0,1,0 is NEVER sent: it switches the AT port into streaming mode and
-// kills the channel until the next reboot (V50 archive; blacklisted in the rpcd
-// AT terminal too).
+// kills the channel until the next reboot (refused in the rpcd AT terminal too).
 //
 // SIM/module identity (IMEI/IMSI/ICCID/model/firmware) changes only when the SIM
 // or the firmware changes, so it lives in the configured state directory and is re-read
@@ -184,7 +181,7 @@ const DEADLINE = now() + ((dl != null && match(dl, /^[0-9]+$/)) ? +dl : ((MODE =
 
 // ------------------------------------------------------------------ AT
 // The backend the adapter (unisoc-modem/at) would take: "mu300" when it would run mu300-at, which then talks to
-// mu300-atd - and so can this program, without the adapter and mu300-at in between.
+// mu300-modemd - and so can this program, without the adapter and mu300-at in between.
 function native_backend() {
 	if (getenv('MU300_AT') != null && getenv('MU300_AT') != '')
 		return false;
@@ -211,7 +208,7 @@ function atd_command(d, t, left, cmd) {
 		return null;
 	let budget = t + 2;
 	let owner = rd(d + '/owner/pid');
-	if (owner != '' && index(cmdline(owner), 'mu300-atd') >= 0)
+	if (owner != '' && index(cmdline(owner), 'mu300-atd-io') >= 0)
 		budget = t + 31;
 	if (left < budget)
 		budget = left;
@@ -220,7 +217,6 @@ function atd_command(d, t, left, cmd) {
 	while (!mkdir(lock)) {
 		let o = rd(lock + '/pid');
 		if (o != '' && !alive(o)) { rm_rf(lock); continue; }
-		if (o != '' && index(cmdline(o), 'mu300-atd') >= 0) { rm_rf(lock); continue; }
 		let due = rd(lock + '/until');
 		if (o != '' && match(due, /^[0-9]+$/) && now() > +due && index(cmdline(o), 'mu300-at') >= 0) {
 			warn('mu300-at: pid ' + o + ' held the AT lock past its own deadline; ending it\n');
@@ -253,7 +249,7 @@ function atd_command(d, t, left, cmd) {
 				return null;
 			sleep(10);
 		}
-		// atd always creates the answer file, even for a timeout: only a final result code is an answer
+		// the daemon always creates the answer file, even for a timeout: only a final result code is an answer
 		let a = readfile(answer) ?? '';
 		return match(a, FINAL) ? a : null;
 	};
@@ -325,9 +321,9 @@ function file_age(path) { let s = stat(path); return now() - (s ? s.mtime : 0); 
 // user part is an international number (a bare numeric SIP user part is the IMSI on many networks)
 
 // --------------------------------------------------------------- one collector
-// the same "one owner, spare waits/takes over" pattern mu300-atd uses, so two
-// kicks (page reload while a refresh runs) cannot interleave AT replies
-// a collector: this program, or the modem daemon in a round of its own (mu300-modemd, FINDINGS 216)
+// one owner, a spare waits or takes over, so two kicks (page reload while a refresh
+// runs) cannot interleave AT replies
+// a collector: this program, or the modem daemon in a round of its own (mu300-modemd)
 function collector(pid) {
 	if (!alive(pid))
 		return false;
@@ -453,9 +449,9 @@ function bearer_qos() {
 // "+CGEQOSRDP: 1,9,..OK" (this modem glues OK onto the line)
 
 // at_group CMDS TIMEOUT: the standard reads whose answers carry their own prefix (+CFUN:, +CEREG:, ...) in ONE request
-// ("AT+CFUN?;+CEREG?;..."): mu300-atd's cost is per request (its forks), not per line. The answer is taken only
+// ("AT+CFUN?;+CEREG?;..."): a request costs a round with the daemon, a line costs nothing more. The answer is taken only
 // when it ends in OK and has every prefix; anything else (a modem that refuses one of them, or the whole line) and
-// each command is asked on its own, as before. Returns the answers, one text per command.
+// each command is asked on its own. Returns the answers, one text per command.
 function at_group(cmds, timeout) {
 	let prefix = (c) => replace(replace(c, /^AT/, ''), /[?=].*$/, '') + ':';
 	let all = at('AT' + join(';', map(cmds, (c) => substr(c, 2))), timeout + 1);

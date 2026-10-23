@@ -1,8 +1,8 @@
-"""mu300-api (FINDINGS 110): the one device-side entry point of the web installer's device manager. A method from a
-fixed list, a JSON object on stdin, every field checked before anything runs, the device's own tools called with
-values as one argument that cannot be an option or on their stdin, one JSON object back; secrets (the hotspot's and
-the APN's passwords, VPN links and URLs, the login password, an adb key's owner) never in a reply, an argument list
-or a file other than the one they belong in. Every tool is a stub that records its arguments (one line per call,
+"""mu300-api: the device's settings for a program (the control panel's backup, mu300-backup). A method from a fixed
+list, a JSON object on stdin, every field checked before anything runs, the device's own tools called with values as
+one argument that cannot be an option or on their stdin, one JSON object back; secrets (the hotspot's and the APN's
+passwords, VPN links and URLs, the login password) never in a reply, an argument list or a file other than the one
+they belong in. Every tool is a stub that records its arguments (one line per call,
 fields separated by \\x1f) and its stdin; uci is a small stand-in that keeps its settings in a JSON file. Under each
 shell, and with busybox's awk where busybox is there."""
 import json
@@ -92,12 +92,9 @@ else:
 '''
 
 LINK = 'vless://3f6a1c2e-0000-4000-8000-123456789abc@203.0.113.7:443?security=reality&sni=example.com#secret-link'
-PUBKEY = 'QAAAA' + 'B' * 519 + '= browser@mu300-web'
 
 
 class ApiCase(ShellTest):
-    system = 'ubuntu'
-
     def setUp(self):
         super().setUp()
         t = self.tmp
@@ -107,11 +104,9 @@ class ApiCase(ShellTest):
         for d in ('out', 'err', 'rc'):
             (t / d).mkdir()
         self.bin.mkdir()
-        (self.disk / 'boot').mkdir(parents=True)
-        (self.disk / '.mu300').mkdir()
-        (self.disk / 'boot/kernel').write_text('6.18\n')
-        (self.disk / '.mu300/boot-os').write_text('ubuntu\n')
-        (self.disk / 'ubuntu/etc').mkdir(parents=True)
+        (self.disk / '.mu300').mkdir(parents=True)
+        (self.disk / '.mu300/boot-os').write_text('openwrt-luci\n')
+        (self.disk / 'openwrt-luci/etc').mkdir(parents=True)
         (self.root / 'etc/mu300/image-version').write_text('v2026.10.15\n')
         (self.root / 'etc/mu300/default-boot').write_text('linux\n')
         (self.root / 'proc/uptime').write_text('3725.12 100.0\n')
@@ -119,26 +114,22 @@ class ApiCase(ShellTest):
         (self.root / 'sys/class/thermal/thermal_zone0/type').write_text('soc-thmzone\n')
         (self.root / 'sys/class/thermal/thermal_zone0/temp').write_text('048250\n')
         (self.root / 'usr/share/zoneinfo/Europe/Istanbul').write_text('TZif...\n<+03>-3\n')
-        if self.system == 'ubuntu':
-            (self.root / 'etc/os-release').write_text('ID=ubuntu\nVERSION_ID="24.04"\n')
-            (self.root / 'etc/mu300/hotspot.conf').write_text('SSID=MU300-AB12\nPSK=hotspotsecret1\nBAND=5\nCHANNEL=auto\nCOUNTRY=TR\n')
-        else:
-            (self.root / 'etc/openwrt_release').write_text('DISTRIB_ID=OpenWrt\n')
-            (self.root / 'etc/os-release').write_text('ID=openwrt\nVERSION_ID="25.12.5"\n')
-            self.uci({'wireless': {'radio0': {'.type': 'wifi-device', 'band': '5g', 'channel': '36', 'country': 'TR', 'htmode': 'VHT80'},
-                                   'default_radio0': {'.type': 'wifi-iface', 'device': 'radio0', 'mode': 'ap', 'ssid': 'OpenWrt-1',
-                                                      'encryption': 'psk2', 'key': 'wrtsecret99'}},
-                      'network': {'wan': {'.type': 'interface', 'apn': 'internet', 'pdptype': 'IP', 'password': 'apnsecret7'},
-                                  'lan': {'.type': 'interface', 'ipaddr': '192.168.77.1'}},
-                      'system': {'system0': {'.type': 'system', 'hostname': 'OpenWrt', 'zonename': 'UTC'}}})
+        (self.root / 'etc/openwrt_release').write_text('DISTRIB_ID=OpenWrt\n')
+        (self.root / 'etc/os-release').write_text('ID=openwrt\nVERSION_ID="25.12.5"\n')
+        self.uci({'wireless': {'radio0': {'.type': 'wifi-device', 'band': '5g', 'channel': '36', 'country': 'TR', 'htmode': 'VHT80'},
+                               'default_radio0': {'.type': 'wifi-iface', 'device': 'radio0', 'mode': 'ap', 'ssid': 'OpenWrt-1',
+                                                  'encryption': 'psk2', 'key': 'wrtsecret99'}},
+                  'network': {'wan': {'.type': 'interface', 'apn': 'internet', 'pdptype': 'IP', 'username': 'user1',
+                                      'password': 'apnsecret7'},
+                              'lan': {'.type': 'interface', 'ipaddr': '192.168.77.1'}},
+                  'system': {'system0': {'.type': 'system', 'hostname': 'OpenWrt', 'zonename': 'UTC'}}})
         for name in ('mu300-lan-ip', 'mu300-traffic', 'mu300-sim', 'mu300-wifi-band', 'wifi-client', 'sms', 'mu300-usb',
                      'mu300-next-boot', 'mu300-os', 'mu300-update', 'mu300-extra', 'mu300-at', 'busybox'):
             self.tool(name)
         self.tool('mu300-device', 'cat "$STUBLOG/device"')
         self.device('f50')
         self.out('mu300-lan-ip', '192.168.77.1\n')
-        for name in ('systemctl', 'iw', 'ip', 'hostnamectl', 'timedatectl', 'chpasswd', 'ifup', 'ifdown', 'ifstatus', 'wifi',
-                     'reboot', 'dmesg', 'journalctl', 'logread'):
+        for name in ('iw', 'ip', 'ifup', 'ifdown', 'ifstatus', 'wifi', 'reboot', 'dmesg', 'logread'):
             (self.stubs / name).write_text(RECORD)
             (self.stubs / name).chmod(0o755)
         (self.stubs / 'uci.py').write_text(FAKE_UCI)
@@ -172,7 +163,7 @@ class ApiCase(ShellTest):
         e = super().env(**extra)
         e.update(MU300_SYSROOT=str(self.root), MU300_BIN=str(self.bin), MU300_LIBDIR=str(LIB), MU300_DISK=str(self.disk),
                  MU300_API_RUN=str(self.run_dir), MU300_API_NOROOT='1', MU300_DASH_RPC=str(self.tmp / 'mu300dash'),
-                 STUB_STDIN='mu300-vpn chpasswd mu300-usb busybox wifi-client mu300dash mu300-at sms')
+                 STUB_STDIN='mu300-vpn mu300-usb busybox wifi-client mu300dash mu300-at sms')
         e.update({k: str(v) for k, v in extra.items()})
         return e
 
@@ -278,14 +269,14 @@ class Requests(ApiCase):
             self.refused(shell, 'wifi.set', {'ssid': 5}, 'bad-value', 'ssid')
             self.refused(shell, 'job.status', {'from': -1}, 'bad-value', 'from')
             self.refused(shell, 'job.status', {'from': 1.5}, 'bad-value', 'from')
-            self.assertEqual(self.calls('systemctl'), [])
+            self.assertEqual(self.calls('later'), [])
 
 
 class Overview(ApiCase):
     def test_hello_says_what_there_is(self):
         for shell in self.each_shell():
             o = self.ok(shell, 'hello')
-            self.assertEqual((o['api'], o['system'], o['device'], o['release']), (1, 'ubuntu', 'f50', 'v2026.10.15'))
+            self.assertEqual((o['api'], o['system'], o['device'], o['release']), (1, 'openwrt-luci', 'f50', 'v2026.10.15'))
             listed = subprocess.run(shell + [str(API), '--methods'], capture_output=True, text=True, env=self.env()).stdout.split()
             self.assertEqual(o['methods'], listed)
             self.assertFalse(o['features']['vpn'])
@@ -304,11 +295,10 @@ class Overview(ApiCase):
                   '*CEREG*) printf \'+CEREG: 0,5\\r\\nOK\\r\\n\' ;; *CESQ*) printf \'+CESQ: 99,99,255,255,30,60\\r\\nOK\\r\\n\' ;; esac')
         self.out('mu300-traffic', '{"today":{"rx":1,"tx":2},"cycle":{"used":3}}\n')
         self.out('ip', '5: sipa_eth0    inet 10.0.0.2/30 scope global sipa_eth0\n')
-        self.out('systemctl', 'active\n')
         for shell in self.each_shell():
             shutil.rmtree(self.run_dir, ignore_errors=True)
             o = self.ok(shell, 'overview')
-            self.assertEqual((o['system'], o['os'], o['device'], o['kernel_choice']), ('ubuntu', 'ubuntu 24.04', 'f50', '6.18'))
+            self.assertEqual((o['system'], o['os'], o['device']), ('openwrt-luci', 'openwrt 25.12.5', 'f50'))
             self.assertEqual(o['uptime'], 3725)
             self.assertEqual(o['memory'], {'total_kb': 500000, 'avail_kb': 250000})
             self.assertEqual(o['signal']['operator'], 'Evil\\x <b>')
@@ -317,10 +307,10 @@ class Overview(ApiCase):
             self.assertEqual(o['traffic']['cycle'], {'used': 3})
             self.assertEqual(o['temperatures'], [{'name': 'soc-thmzone', 'millicelsius': 48250}])
             self.assertIsNone(o['battery'])
-            self.assertEqual(o['hotspot']['ssid'], 'MU300-AB12')
+            self.assertEqual(o['hotspot'], {'ssid': 'OpenWrt-1', 'enabled': True})
             self.assertEqual(o['lan'], '192.168.77.1')
-            self.assertEqual(o['boot'], {'default': 'linux', 'os': 'ubuntu', 'systems': ['ubuntu']})
-            self.assertNotIn('hotspotsecret1', json.dumps(o))
+            self.assertEqual(o['boot'], {'default': 'linux', 'os': 'openwrt-luci', 'systems': ['openwrt-luci']})
+            self.assertNotIn('wrtsecret99', json.dumps(o))
             # a tool's answer that is not JSON is null, never pasted in
             self.out('mu300-traffic', '{"x": 1} , "injected": true\n')
             shutil.rmtree(self.run_dir, ignore_errors=True)
@@ -339,25 +329,22 @@ class Overview(ApiCase):
             self.device('f50')
 
 
-class HotspotUbuntu(ApiCase):
+class Hotspot(ApiCase):
     HOSTILE = ['', 'x' * 33, 'a\nb', 'a\tb', ' lead', 'trail ', 'ok\u0007']
 
-    def conf(self):
-        return (self.root / 'etc/mu300/hotspot.conf').read_text().splitlines()
-
     def test_get_never_shows_the_password(self):
-        self.out('iw', 'Station AA:BB:CC:DD:EE:01 (on wlan0)\n\tinactive time: 10 ms\nStation aa:bb:cc:dd:ee:02 (on wlan0)\n')
-        (self.root / 'run/mu300-lan.leases').write_text('1700000000 aa:bb:cc:dd:ee:01 192.168.77.23 <b>laptop</b> *\n')
+        self.out('iw', 'Station AA:BB:CC:DD:EE:01 (on phy0-ap0)\n\tinactive time: 10 ms\nStation aa:bb:cc:dd:ee:02 (on phy0-ap0)\n')
+        (self.root / 'tmp/dhcp.leases').write_text('1700000000 aa:bb:cc:dd:ee:01 192.168.77.23 <b>laptop</b> *\n')
         for shell in self.each_shell():
             o = self.ok(shell, 'wifi.get')
-            self.assertEqual((o['ssid'], o['band'], o['channel'], o['security'], o['password_set']), ('MU300-AB12', '5', 'auto', 'wpa2', True))
+            self.assertEqual((o['ssid'], o['band'], o['channel'], o['security'], o['password_set']), ('OpenWrt-1', '5', '36', 'wpa2', True))
             self.assertEqual(o['channels']['5'], [36, 40, 44, 48])     # Turkey: no 149-165
             self.assertEqual(o['clients'][0], {'mac': 'aa:bb:cc:dd:ee:01', 'ip': '192.168.77.23', 'name': '<b>laptop</b>'})
             self.assertEqual(o['clients'][1]['ip'], '')
-            self.assertNotIn('hotspotsecret1', json.dumps(o))
+            self.assertNotIn('wrtsecret99', json.dumps(o))
 
     def test_set_checks_every_value(self):
-        before = (self.root / 'etc/mu300/hotspot.conf').read_text()
+        before = self.ucidb()
         for shell in self.each_shell():
             for ssid in self.HOSTILE:
                 # (a control character other than tab, newline and CR is refused with the request itself)
@@ -370,51 +357,18 @@ class HotspotUbuntu(ApiCase):
             self.refused(shell, 'wifi.set', {'band': '6'}, 'bad-value', 'band')
             self.refused(shell, 'wifi.set', {'band': '2.4', 'channel': '36'}, 'bad-value', 'channel')
             self.refused(shell, 'wifi.set', {}, 'missing')
-            self.assertEqual((self.root / 'etc/mu300/hotspot.conf').read_text(), before)
+            self.assertEqual(self.ucidb(), before)
             self.assertEqual(self.calls('later'), [])
-
-    def test_set_writes_hotspot_conf_and_restarts(self):
-        conf = self.root / 'etc/mu300/hotspot.conf'
-        for shell in self.each_shell():
-            conf.write_text('SSID=MU300-AB12\nPSK=hotspotsecret1\nBAND=5\nCHANNEL=auto\nCOUNTRY=TR\n')
-            self.clear_calls()
-            o = self.ok(shell, 'wifi.set', {'ssid': 'Café $(id) "x"', 'password': "p@ss $(reboot)'`", 'channel': '44', 'hidden': True})
-            self.assertEqual(o, {'ok': 1, 'restart': True})
-            self.assertEqual(self.conf(), ['BAND=5', 'COUNTRY=TR', 'SSID=Café $(id) "x"', "PSK=p@ss $(reboot)'`", 'CHANNEL=44', 'HIDDEN=1'])
-            self.assertEqual(conf.stat().st_mode & 0o777, 0o600)
-            self.assertEqual(self.calls('later'), [['later', 'sh', '-c', 'sleep 2; "$@"', 'sh', 'systemctl', 'restart', 'mu300-hotspot']])
-            self.assertNotIn('p@ss', self.everything_written())
-            # a new band starts on its automatic channel
-            self.ok(shell, 'wifi.set', {'band': '2.4'})
-            self.assertIn('BAND=2.4', self.conf())
-            self.assertIn('CHANNEL=auto', self.conf())
-            self.ok(shell, 'wifi.set', {'channel': '11'})
-            self.assertIn('CHANNEL=11', self.conf())
-            # while the radio is a client of another network, the hotspot is not restarted
-            (self.root / 'run/mu300-wifi-client.active').write_text('')
-            self.clear_calls()
-            self.ok(shell, 'wifi.set', {'hidden': False})
-            self.assertEqual(self.calls('later'), [])
-            (self.root / 'run/mu300-wifi-client.active').unlink()
-
-    def test_on_while_starting(self):
-        """The hotspot restarted by wifi.set stays "activating" for about 20 s (its ExecStartPost checks): on, not off."""
-        (self.root / 'etc/mu300/hotspot.conf').write_text('SSID=MU300-AB12\nPSK=hotspotsecret1\n')
-        for state, want in (('activating\n', True), ('active\n', True), ('inactive\n', False), ('failed\n', False)):
-            self.out('systemctl', state)
-            for shell in self.each_shell():
-                self.assertEqual(self.ok(shell, 'wifi.get')['enabled'], want, state)
 
     def test_power(self):
         for shell in self.each_shell():
             self.clear_calls()
             self.ok(shell, 'wifi.power', {'state': 'off'})
-            self.assertIn(['systemctl', 'disable', 'mu300-hotspot'], self.calls('systemctl'))
-            self.assertEqual(self.calls('later')[0][-2:], ['stop', 'mu300-hotspot'])
-
-
-class HotspotOpenWrt(ApiCase):
-    system = 'openwrt'
+            self.assertEqual(self.ucidb()['wireless']['radio0']['disabled'], '1')
+            self.assertEqual(self.calls('later')[0][-2:], ['wifi', 'down'])
+            self.assertFalse(self.ok(shell, 'wifi.get')['enabled'])
+            self.ok(shell, 'wifi.power', {'state': 'on'})
+            self.assertEqual(self.ucidb()['wireless']['radio0']['disabled'], '0')
 
     def test_get_and_set_through_uci(self):
         start = self.ucidb()
@@ -450,7 +404,7 @@ class HotspotOpenWrt(ApiCase):
             self.assertEqual(self.calls('later')[-1][-2:], ['wifi', 'reload'])
 
     def test_a_hotspot_left_on_sae_becomes_wpa2(self):
-        """WPA3/SAE is disabled on this chip (FINDINGS 80): any change through the API puts a hotspot still set to
+        """WPA3/SAE is disabled on this chip: any change through the API puts a hotspot still set to
         it on WPA2-PSK (CCMP), with its password or the new one, and restarts Wi-Fi fully; never SAE, never open"""
         start = self.ucidb()
         for shell in self.each_shell():
@@ -483,8 +437,6 @@ class HotspotOpenWrt(ApiCase):
 
 class MobileData(ApiCase):
     def test_get_never_shows_the_password(self):
-        conf = self.root / 'etc/mu300/mobile-data.conf'
-        conf.write_text('MU300_APN=internet\nMU300_APN_USER="user1"\nMU300_APN_PASSWORD=apnsecret7\n')
         self.out('mu300-sim', '{"version":1,"ok":1,"active":1,"default":1,"slot1_supported":0}\n')
         for shell in self.each_shell():
             o = self.ok(shell, 'data.get')
@@ -493,9 +445,9 @@ class MobileData(ApiCase):
             self.assertNotIn('apnsecret7', json.dumps(o))
 
     def test_set_checks_and_writes_the_dials_settings(self):
-        conf = self.root / 'etc/mu300/mobile-data.conf'
+        start = self.ucidb()
         for shell in self.each_shell():
-            conf.write_text('# mine\nMU300_APN=old\n')
+            self.uci(start)
             for apn in ('-x', 'a b', 'a"b', 'x' * 101, 'ä', 'a.'):
                 self.refused(shell, 'data.set', {'apn': apn}, 'bad-value', 'apn')
             for cred in ('a"b', "a'b", 'a\\b', 'x' * 65, ' x', 'ü'):
@@ -503,19 +455,20 @@ class MobileData(ApiCase):
                 self.refused(shell, 'data.set', {'password': cred}, 'bad-value', 'password')
             self.refused(shell, 'data.set', {'pdp': 'IPv4'}, 'bad-value', 'pdp')
             self.refused(shell, 'data.set', {'auth': 'mschap'}, 'bad-value', 'auth')
-            self.assertEqual(conf.read_text(), '# mine\nMU300_APN=old\n')
+            self.assertEqual(self.ucidb(), start)
             self.clear_calls()
             self.ok(shell, 'data.set', {'apn': 'corp.example-1', 'pdp': 'IPV4V6', 'auth': 'chap', 'user': 'u$(x)', 'password': 'p@$$;w0rd'})
-            self.assertEqual(conf.read_text().splitlines(), ['# mine', 'MU300_APN=corp.example-1', 'MU300_PDP_TYPE=IPV4V6',
-                                                             'MU300_APN_AUTH=chap', 'MU300_APN_USER=u$(x)', 'MU300_APN_PASSWORD=p@$$;w0rd'])
-            self.assertEqual(conf.stat().st_mode & 0o777, 0o600)
-            self.assertEqual(self.calls('later')[0][-2:], ['restart', 'mu300-mobile-data'])
-            self.assertNotIn('p@$$', self.everything_written())
+            wan = self.ucidb()['network']['wan']
+            self.assertEqual((wan['apn'], wan['pdptype'], wan['auth'], wan['username'], wan['password']),
+                             ('corp.example-1', 'IPV4V6', 'chap', 'u$(x)', 'p@$$;w0rd'))
+            self.assertEqual(self.calls('later')[0][-2:], ['ifup', 'wan'])
+            self.assertNotIn('p@$$', ''.join('\x1f'.join(c) for c in self.calls()))
             self.ok(shell, 'data.set', {'clear_credentials': True})
-            self.assertEqual(conf.read_text().splitlines(), ['# mine', 'MU300_APN=corp.example-1', 'MU300_PDP_TYPE=IPV4V6'])
+            wan = self.ucidb()['network']['wan']
+            self.assertEqual((wan['apn'], wan['auth'], wan['username'], wan['password']), ('corp.example-1', '', '', ''))
 
     def test_data_roaming(self):
-        """FINDINGS 120: mobile-data roaming --json in data.get; data.set roaming true/false runs mobile-data roaming
+        """mobile-data roaming --json in data.get; data.set roaming true/false runs mobile-data roaming
         on/off and restarts nothing; a system without the command has no switch."""
         for shell in self.each_shell():
             o = self.ok(shell, 'data.get')
@@ -548,23 +501,10 @@ class MobileData(ApiCase):
             self.assertEqual(self.calls('mu300-sim')[-1], ['mu300-sim', 'default', '2'])
             self.clear_calls()
             self.ok(shell, 'data.power', {'state': 'off'})
-            self.assertEqual(self.calls('later')[0][-2:], ['stop', 'mu300-mobile-data.service'])
-
-    def test_sim_card(self):
-        """FINDINGS 204: the ZTE V50's card, 0-3 or "none", passed to mu300-sim card; anything else refused here."""
-        for shell in self.each_shell():
-            self.refused(shell, 'sim.card', {'card': 4}, 'bad-value', 'card')
-            self.refused(shell, 'sim.card', {'card': '1;x'}, 'bad-value', 'card')
-            self.refused(shell, 'sim.card', {}, 'missing', 'card')
-            self.ok(shell, 'sim.card', {'card': 3})
-            self.assertIn(['mu300-sim', 'card', '3'], self.calls('mu300-sim'))
-            self.clear_calls()
-            self.ok(shell, 'sim.card', {'card': 'none'})
-            self.assertIn(['mu300-sim', 'card', 'none'], self.calls('mu300-sim'))
-            self.clear_calls()
+            self.assertEqual(self.calls('later')[0][-2:], ['ifdown', 'wan'])
 
     def test_voice(self):
-        """FINDINGS 184: voice.get is mobile-data voice --json --read; voice.set the fixed words, the slot 1/2 as 0/1."""
+        """voice.get is mobile-data voice --json --read; voice.set the fixed words, the slot 1/2 as 0/1."""
         for shell in self.each_shell():
             self.refused(shell, 'voice.get', {}, 'unsupported', 'mobile-data')
             self.tool('mobile-data')
@@ -585,7 +525,7 @@ class MobileData(ApiCase):
             (self.bin / 'mobile-data').unlink()
 
     def test_radio(self):
-        """FINDINGS 185: radio.get is mu300-sim-radio status --json; radio.set slot 1/2/"all" as 0/1/all."""
+        """radio.get is mu300-sim-radio status --json; radio.set slot 1/2/"all" as 0/1/all."""
         for shell in self.each_shell():
             self.refused(shell, 'radio.get', {}, 'unsupported', 'mu300-sim-radio')
             self.tool('mu300-sim-radio')
@@ -608,9 +548,6 @@ class MobileData(ApiCase):
             self.refused(shell, 'lock.get', {}, 'unsupported')
 
 
-class MobileDataOpenWrt(ApiCase):
-    system = 'openwrt'
-
     def test_set_through_uci(self):
         start = self.ucidb()
         for shell in self.each_shell():
@@ -625,8 +562,7 @@ class MobileDataOpenWrt(ApiCase):
 
 
 class Luci(ApiCase):
-    """openwrt-luci: what only the control panel has goes to its backend, called as rpcd calls it"""
-    system = 'openwrt'
+    """what only the control panel has goes to its backend, called as rpcd calls it"""
 
     def setUp(self):
         super().setUp()
@@ -753,32 +689,16 @@ class Vpn(ApiCase):
             self.refused(shell, 'vpn.profiles', {}, 'failed')
 
 
-class UsbLanAdb(ApiCase):
+class UsbLan(ApiCase):
     def test_lan_address(self):
         for shell in self.each_shell():
             for ip in ('8.8.8.1', '192.168.1.2', '192.168.1.1;reboot', '172.32.0.1', '10.0.0.256', '192.168.01.1'):
                 self.refused(shell, 'lan.set', {'ip': ip}, 'bad-value', 'ip')
             self.ok(shell, 'lan.set', {'ip': '10.20.30.1'})
-            self.assertEqual((self.root / 'etc/mu300/lan.conf').read_text(), 'LAN_IP=10.20.30.1\n')
-            self.assertEqual(self.ok(shell, 'lan.get')['ip'], '10.20.30.1')
-            self.assertEqual(self.calls('later')[-1][-2:], ['restart', 'mu300-lan'])
-
-    def test_adb_keys_mode_takes_the_callers_key_first(self):
-        for shell in self.each_shell():
-            self.refused(shell, 'adb.auth', {'mode': 'keys'}, 'missing', 'key')
-            for key in ('short', PUBKEY + '\nssh-rsa x', PUBKEY.replace('B', '$', 1), '-' + PUBKEY):
-                self.refused(shell, 'adb.auth', {'mode': 'keys', 'key': key}, 'bad-value', 'key')
-            self.clear_calls()
-            self.ok(shell, 'adb.auth', {'mode': 'keys', 'key': PUBKEY})
-            self.assertEqual(self.calls('mu300-usb')[0], ['mu300-usb', 'adb', 'key', '-'])
-            self.assertEqual((self.tmp / 'stdin.mu300-usb').read_text(), PUBKEY + '\n')
-            self.assertEqual(self.calls('later')[-1][-4:], [str(self.bin / 'mu300-usb'), 'adb', 'auth', 'keys'])
-            # a key that is not taken: keys mode is not switched on
-            self.out('mu300-usb', '', rc=1, err='mu300-usb: not a key\n')
-            self.clear_calls()
-            self.refused(shell, 'adb.auth', {'mode': 'keys', 'key': PUBKEY}, 'failed')
-            self.assertEqual(self.calls('later'), [])
-            self.out('mu300-usb', '')
+            self.assertEqual(self.ucidb()['network']['lan']['ipaddr'], '10.20.30.1')
+            o = self.ok(shell, 'lan.get')
+            self.assertEqual(o['ip'], '10.20.30.1')
+            self.assertEqual(self.calls('later')[-1][-2:], ['/etc/init.d/network', 'reload'])
 
     def test_usb_role_is_the_u30_airs(self):
         for shell in self.each_shell():
@@ -790,15 +710,21 @@ class UsbLanAdb(ApiCase):
 
 
 class System(ApiCase):
+    def setUp(self):
+        super().setUp()
+        (self.root / 'etc/init.d').mkdir(parents=True)
+        self.tool('dropbear')
+        (self.root / 'etc/init.d/dropbear').symlink_to(self.bin / 'dropbear')
+
     def test_password_goes_to_chpasswd_on_stdin(self):
         for shell in self.each_shell():
             self.refused(shell, 'system.password', {'password': ''}, 'missing', 'password')
             self.refused(shell, 'system.password', {'password': 'a\nroot:x'}, 'bad-value', 'password')
             self.refused(shell, 'system.password', {'password': 'x' * 129}, 'bad-value', 'password')
             o = self.ok(shell, 'system.password', {'password': 'Gizli şifre: $(x) "y"'})
-            self.assertEqual(o, {'ok': 1, 'user': 'ubuntu'})
-            self.assertEqual(self.calls('chpasswd')[-1], ['chpasswd'])
-            self.assertEqual((self.tmp / 'stdin.chpasswd').read_text(), 'ubuntu:Gizli şifre: $(x) "y"\n')
+            self.assertEqual(o, {'ok': 1, 'user': 'root'})
+            self.assertEqual(self.calls('busybox')[-1], ['busybox', 'chpasswd', '-c', 'sha512'])
+            self.assertEqual((self.tmp / 'stdin.busybox').read_text(), 'root:Gizli şifre: $(x) "y"\n')
             self.assertNotIn('Gizli', self.everything_written())
 
     def test_hostname_timezone_ssh_boot(self):
@@ -806,29 +732,22 @@ class System(ApiCase):
             for name in ('-x', 'a_b', 'x' * 64, 'a b', 'a;b'):
                 self.refused(shell, 'system.hostname', {'name': name}, 'bad-value', 'name')
             self.ok(shell, 'system.hostname', {'name': 'my-router1'})
-            self.assertEqual(self.calls('hostnamectl')[-1], ['hostnamectl', 'set-hostname', 'my-router1'])
-            for z in ('../../etc/passwd', 'Europe/../x', 'Europe/Nowhere', 'europe/istanbul'):
+            self.assertEqual(self.ucidb()['system']['system0']['hostname'], 'my-router1')
+            self.assertEqual(self.calls('later')[-1][-2:], ['/etc/init.d/system', 'reload'])
+            for z in ('../../etc/passwd', 'Europe/../x', 'europe/istanbul'):
                 self.refused(shell, 'system.timezone', {'zone': z}, 'bad-value', 'zone')
+            self.refused(shell, 'system.timezone', {'zone': 'Asia/Tokyo'}, 'unsupported')
             self.ok(shell, 'system.timezone', {'zone': 'Europe/Istanbul'})
-            self.assertEqual(self.calls('timedatectl')[-1], ['timedatectl', 'set-timezone', 'Europe/Istanbul'])
+            self.assertIn("set system.@system[0].timezone='<+03>-3'", (self.tmp / 'uci-batch').read_text())
             self.ok(shell, 'system.ssh', {'state': 'off'})
-            self.assertEqual(self.calls('systemctl')[-1], ['systemctl', 'disable', '--now', 'ssh.socket', 'ssh.service'])
+            self.assertEqual([c[1] for c in self.calls('dropbear')[-2:]], ['stop', 'disable'])
             self.ok(shell, 'system.boot', {'target': 'android'})
             self.assertEqual(self.calls('mu300-next-boot')[-1], ['mu300-next-boot', 'android'])
             self.refused(shell, 'system.boot', {'target': 'recovery'}, 'bad-value', 'target')
+            self.refused(shell, 'system.bootos', {'os': 'openwrt'}, 'bad-value', 'os')
             o = self.ok(shell, 'system.get')
-            self.assertEqual((o['user'], o['boot']['default'], o['kernel_choice']), ('ubuntu', 'linux', '6.18'))
+            self.assertEqual((o['user'], o['boot']['default']), ('root', 'linux'))
             self.assertEqual(o['extras'][0], {'name': 'vpn', 'installed': False, 'release': ''})
-
-    def test_openwrt_password_and_timezone(self):
-        (self.root / 'etc/openwrt_release').write_text('x\n')
-        for shell in self.each_shell():
-            self.ok(shell, 'system.password', {'password': 'rootpw1'})
-            self.assertEqual(self.calls('busybox')[-1], ['busybox', 'chpasswd', '-c', 'sha512'])
-            self.assertEqual((self.tmp / 'stdin.busybox').read_text(), 'root:rootpw1\n')
-            self.ok(shell, 'system.timezone', {'zone': 'Europe/Istanbul'})
-            self.assertIn("set system.@system[0].timezone='<+03>-3'", (self.tmp / 'uci-batch').read_text())
-            self.refused(shell, 'system.timezone', {'zone': 'Asia/Tokyo'}, 'unsupported')
 
 
 class Jobs(ApiCase):
@@ -852,26 +771,24 @@ class Jobs(ApiCase):
             self.ok(shell, 'job.clear')
             self.assertEqual(self.ok(shell, 'job.status')['job']['state'], 'none')
 
-    def test_an_update_or_a_kernel_is_never_stopped_half_way(self):
-        self.tool('mu300-update', 'echo "mu300-update\x1f$1\x1f$2" >> "$STUBLOG/calls"; sleep 3')
+    def test_an_update_is_never_stopped_half_way(self):
+        self.tool('mu300-update', 'echo "mu300-update\x1f$1" >> "$STUBLOG/calls"; sleep 3')
         for shell in self.each_shell():
             self.ok(shell, 'job.clear')
-            self.refused(shell, 'kernel.set', {'version': '6.1'}, 'bad-value', 'version')
-            self.refused(shell, 'kernel.set', {'version': '7.4'}, 'bad-value', 'version')
-            self.ok(shell, 'kernel.set', {'version': '7.2'})
+            self.ok(shell, 'update.apply')
             self.assertFalse(self.ok(shell, 'job.status')['job']['cancel'])
             self.refused(shell, 'job.cancel', {}, 'unsupported')
             self.wait_job(shell)
-            self.assertIn(['mu300-update', 'kernel', '7.2'], self.calls('mu300-update'))
+            self.assertIn(['mu300-update', 'apply'], self.calls('mu300-update'))
 
     def test_extras(self):
         for shell in self.each_shell():
             self.ok(shell, 'job.clear')
             for n in ('vpn;reboot', 'bogus', '--from'):
                 self.refused(shell, 'extra.install', {'name': n}, 'bad-value', 'name')
-            self.ok(shell, 'extra.install', {'name': 'panel'})
+            self.ok(shell, 'extra.install', {'name': 'audio'})
             self.wait_job(shell)
-            self.assertIn(['mu300-extra', 'install', 'panel'], self.calls('mu300-extra'))
+            self.assertIn(['mu300-extra', 'install', 'audio'], self.calls('mu300-extra'))
 
     def test_joining_a_network_takes_the_password_on_stdin(self):
         for shell in self.each_shell():
@@ -920,8 +837,8 @@ class Static(unittest.TestCase):
 
 
 class PanelAdapters(ApiCase):
-    """Ubuntu has the control panel's lock and forwarding programs too (FINDINGS 189): lock.get/lock.set and the
-    sms.forward methods call them directly; the AT terminal's history, the card's state, the USB network mode."""
+    """Without the panel's backend, lock.get/lock.set and the sms.forward methods call the panel's lock and
+    forwarding programs directly; the AT terminal's history, the card's state, the USB network mode."""
 
     def setUp(self):
         super().setUp()
@@ -1066,7 +983,7 @@ class PanelAdapters(ApiCase):
             (self.root / 'run/mu300').mkdir(parents=True, exist_ok=True)
             (self.root / 'run/mu300/usb-net-applied').write_text('ecm\n')
             self.assertEqual(self.ok(shell, 'usb.net'), {'ok': 1, 'mode': 'ecm', 'once': True, 'now': 'ecm'})
-            # at the next boot the one-boot choice is used up (mu300-usb boot, mu300-fixups)
+            # at the next boot the one-boot choice is used up (mu300-usb boot, from mu300-hw)
             r = self.script(shell, self.bin / 'mu300-usb', 'boot', MU300_SYSROOT=self.root, PATH=f'{self.bin}:{self.env()["PATH"]}')
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertFalse((self.root / 'etc/mu300/usb-net').exists())
@@ -1082,8 +999,8 @@ class PanelAdapters(ApiCase):
 
 
 class ModemTools(ApiCase):
-    """The methods of Cockpit's MU300 page (the LuCI panel's pages, through the device's own tools): the AT terminal,
-    USSD, TTL, data usage, power, LEDs, zram, CPU, updates, packages, Docker"""
+    """The modem's and the system's own tools: the AT terminal, USSD, TTL, data usage, power, LEDs, zram, CPU,
+    updates, packages, Docker"""
 
     def setUp(self):
         super().setUp()
@@ -1121,7 +1038,7 @@ class ModemTools(ApiCase):
     def test_modem_restart(self):
         for shell in self.each_shell():
             self.ok(shell, 'modem.restart')
-            self.assertEqual(self.calls('later')[-1][-2:], ['restart', 'mu300-mobile-data.service'])
+            self.assertEqual(self.calls('later')[-1][-1], 'ifdown wan; sleep 3; ifup wan')
 
     def test_ttl(self):
         for shell in self.each_shell():
@@ -1221,7 +1138,7 @@ class ModemTools(ApiCase):
             self.ok(shell, 'cpu.voltage', {'op': 'stress', 'minutes': 10})
             self.assertEqual(self.calls('mu300-cpu')[-1], ['mu300-cpu', 'voltage', 'stress', '10', '--background'])
             self.refused(shell, 'cpu.voltage', {'op': 'stress', 'minutes': 121}, 'bad-value', 'minutes')
-            # a core and CPU0's low latency (FINDINGS 200); never CPU0
+            # a core and CPU0's low latency; never CPU0
             self.ok(shell, 'cpu.core', {'cpu': 7, 'state': 'off'})
             self.assertEqual(self.calls('mu300-cpu')[-1], ['mu300-cpu', 'core', '7', 'off'])
             self.refused(shell, 'cpu.core', {'cpu': 0, 'state': 'off'}, 'bad-value', 'cpu')
@@ -1253,7 +1170,9 @@ class ModemTools(ApiCase):
             self.wait_job(shell)
             self.refused(shell, 'packages.act', {'op': 'run'}, 'bad-value', 'op')
             self.out('docker', 'web\tnginx:1\trunning\tUp 2 hours\ndb "x"\tpg\texited\tExited (0)\n')
-            self.out('systemctl', 'active\n')
+            (self.root / 'etc/init.d').mkdir(parents=True, exist_ok=True)
+            (self.root / 'etc/init.d/dockerd').write_text('#!/bin/sh\n[ "$1" = running ]\n')
+            (self.root / 'etc/init.d/dockerd').chmod(0o755)
             o = self.ok(shell, 'docker.status')
             self.assertEqual(o['containers'][1], {'name': 'db "x"', 'image': 'pg', 'state': 'exited', 'status': 'Exited (0)'})
             self.assertEqual((o['installed'], o['active'], len(o['containers'])), (True, 'active', 2))

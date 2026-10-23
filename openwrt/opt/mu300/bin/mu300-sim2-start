@@ -12,8 +12,8 @@ set -euo pipefail
 export PATH="$PATH:/opt/mu300/busybox-bin"
 umask 077   # the logs and markers under /run/mu300 are root's alone
 DEVICE=${MU300_DEVICE_CMD:-/opt/mu300/bin/mu300-device}
-[ -e /etc/openwrt_release ] && [ "$("$DEVICE" 2>/dev/null)" = u30air ] || {
-    echo 'Native SIM startup requires U30 Air on OpenWrt' >&2
+[ "$("$DEVICE" 2>/dev/null)" = u30air ] || {
+    echo 'Native SIM startup requires a U30 Air' >&2
     exit 1
 }
 [[ ${1:-} == --cold-start ]] || { echo 'Requires an explicitly prepared cold-start boot.' >&2; exit 2; }
@@ -35,7 +35,7 @@ trap 'result=$?; say "EXIT rc=$result; no further radio commands will be sent"' 
 at() {
     local slot=$1 command=$2 seconds=${3:-6} directory
     case "$slot" in main0) directory=/run/mu300-at ;; main1) directory=/run/mu300-at4 ;; data0) directory=/run/mu300-at2 ;; data1) directory=/run/mu300-at5 ;; *) return 2 ;; esac
-    # mu300-at has a direct-device fallback: never allow this probe to take it.
+    # only through a live owner of the channel: without one there is no AT on it
     [[ -p "$directory/cmd" && -s "$directory/owner/pid" ]] || return 2
     local owner
     owner=$(cat "$directory/owner/pid")
@@ -49,7 +49,7 @@ expect_ok() {
     [[ $(printf '%s\n' "$output" | tr -d '\r' | tail -n 1) == OK ]] || { say "FAILED $1 $2 (modem rejected command)"; return 1; }
 }
 
-# The card's radio is switched off in its settings (mu300-sim-radio, FINDINGS 185): nothing is sent, and the cold start
+# The card's radio is switched off in its settings (mu300-sim-radio): nothing is sent, and the cold start
 # stays possible later in this boot (mu300-sim2-warmup --deferred, when it is switched on). 7: put off, not failed.
 SIM_RADIO=${MU300_SIM_RADIO_BIN:-/opt/mu300/bin/mu300-sim-radio}
 if [[ -x $SIM_RADIO ]] && ! "$SIM_RADIO" allowed "$SLOT" 2>/dev/null; then
@@ -80,8 +80,8 @@ for slot in main0 main1; do
 done
 # The card. What it is not is told apart, for the page and the log (the answer itself is never logged):
 #   +CPIN: SIM PIN / SIM PUK    locked; nothing here ever enters a PIN
-#   +CME ERROR: 10              no card - or a position whose SIM power is off. Measured on our U30 Air (7.2.10,
-#                               2026-10-13): its second position answers exactly this at every cold boot, and
+#   +CME ERROR: 10              no card - or a position whose SIM power is off. Measured on a U30 Air: its
+#                               second position answers exactly this at every cold boot, and
 #                               READY, with a card identity of its own, one second after its SIM power is switched
 #                               on. (On the unit the sequence came from it answered READY at once; the modem
 #                               seems to power at boot the cards Android had in use.) So that answer is not
@@ -161,8 +161,8 @@ for ((attempt=0; attempt<15; attempt++)); do
 done
 [[ "$response" == *'+CFUN: 1'* ]] || stop no-radio "SIM$((SLOT+1)) did not reach CFUN=1"
 # CFUN=1 is the radio ready, for either card, exactly as the SIM1 path marks it: no service on a card does not
-# invalidate its RF bring-up, and registration is netifd's to wait for and retry (a slow registration used to
-# fail this gate and leave the whole boot without WAN).
+# invalidate its RF bring-up, and registration is netifd's to wait for and retry (a slow registration that failed
+# this gate would leave the whole boot without WAN).
 : > /run/mu300/sim-radio-ready
 if [[ "$SLOT" == 0 ]]; then
     say 'SIM1 native RF ready; data registration belongs to netifd'

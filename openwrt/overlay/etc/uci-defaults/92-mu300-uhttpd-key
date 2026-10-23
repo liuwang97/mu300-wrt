@@ -1,21 +1,19 @@
 #!/bin/sh
-# The web server's TLS key that the releases shipped (FINDINGS 132). Every OpenWrt and OpenWrt-LuCI image from
-# v2026.10.13 to v2026.10.16.1 carried /etc/uhttpd.key, one key per image and the same on every device that installed
-# it; anyone who downloads the release has that key, so LuCI over HTTPS could be impersonated. The image build no
-# longer puts one in (build-rootfs.sh). This takes a shipped key away on the devices: a key file that is byte for byte
+# The web server's TLS keys that published images carried: each of the images listed below has /etc/uhttpd.key, one
+# key per image and the same on every device that installed it; anyone who downloads the release has that key, so
+# LuCI over HTTPS could be impersonated. The image build puts none in (build-rootfs.sh). This takes a shipped key away on the devices: a key file that is byte for byte
 # one of them goes, with its certificate, and uhttpd makes the device its own pair when it starts (it does whenever
 # the pair is missing; px5g, an EC P-256 key). A key that is not on the list - one the device made, one the user put
 # there - is never touched.
 #
-# uci-defaults run at boot before uhttpd starts, and the image brings this file again with every update (mu300-update,
-# the Magisk zip, the computer's installer: each carries /etc over, and a shipped key with it where the old image is
-# not known), so the check runs on the first boot of each image; it removes itself when it ran, as uci-defaults do.
+# uci-defaults run at boot before uhttpd starts, and the image brings this file again with every update (mu300-update
+# carries /etc over, and a shipped key with it where the old image is not known), so the check runs on the first boot of each image; it removes itself when it ran, as uci-defaults do.
 # By hand on a running system (the file is gone after the first boot: take it from the repository):
 # "sh 92-mu300-uhttpd-key; /etc/init.d/uhttpd restart". The browser warns once about the new self-signed certificate;
 # LuCI over plain HTTP is not affected.
 #
 # The list: sha256 of etc/uhttpd.key in each published mu300-openwrt-rootfs.tar.gz and mu300-openwrt-luci-rootfs.tar.gz
-# (the releases before v2026.10.13 had none), "sha256 release image". Fingerprints only, never a key.
+# "sha256 release image". Fingerprints only, never a key.
 shipped='
 0523f54e5501011c84224ee7167cae5032d45962f960a37332bb5b2fdf95a0ba v2026.10.16.1 openwrt-luci
 ad78a3f7bd4ac1407e5b5c70075f028c85398853df07e40597d05ceb36cb5a84 v2026.10.16.1 openwrt

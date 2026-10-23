@@ -1,8 +1,8 @@
 #!/bin/sh
-# mu300-zram: compressed swap in RAM (zram), on by default (Ubuntu, Arch and OpenWrt alike).
+# mu300-zram: compressed swap in RAM (zram), on by default.
 #   mu300-zram                status: on or off, size, compressor, and what the swapped-out pages cost in RAM
 #   mu300-zram on|off         switch it on or off, now and at every boot (kept in /etc/mu300/zram.conf)
-#   mu300-zram start          what the boot runs (mu300-zram.service, OpenWrt's mu300-hw): set up unless switched off
+#   mu300-zram start          what the boot runs (mu300-hw): set up unless switched off
 #   mu300-zram stop           swap off and free the device until the next boot
 #   mu300-zram brief          one line, for mu300-toolkit info
 # Settings (all optional) in /etc/mu300/zram.conf, KEY=VALUE; /opt/mu300/lib/zram.conf.example explains them:
@@ -35,13 +35,12 @@ conf_set() {  # conf_set KEY VALUE: the other lines as they were, KEY's last
 }
 need_root() {
     [ "$(id -u)" = 0 ] && return 0
-    command -v sudo >/dev/null && exec sudo "$0" "$@"
     echo "run as root" >&2; exit 1
 }
-# to stderr, and to syslog where that is not the same place (systemd puts a unit's output in the journal already)
+# to stderr and to syslog
 log() {
     echo "mu300-zram: $*" >&2
-    [ -z "${INVOCATION_ID:-}" ] && command -v logger >/dev/null && logger -t mu300-zram "$*" 2>/dev/null
+    command -v logger >/dev/null && logger -t mu300-zram "$*" 2>/dev/null
     return 0
 }
 
@@ -53,8 +52,7 @@ current_algorithm() {
 
 vm_tune() {
     sw=$(num "$(conf ZRAM_SWAPPINESS 100)" 0 200 100)
-    # 5.4 takes at most 100 (200 since 5.8)
-    echo "$sw" > "$PROC/sys/vm/swappiness" 2>/dev/null || echo 100 > "$PROC/sys/vm/swappiness" 2>/dev/null
+    echo "$sw" > "$PROC/sys/vm/swappiness" 2>/dev/null
     # one page at a time: read-ahead from a RAM device only costs
     echo 0 > "$PROC/sys/vm/page-cluster" 2>/dev/null
     return 0

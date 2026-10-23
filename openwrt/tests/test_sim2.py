@@ -1,6 +1,6 @@
 """SIM2 boot gates with fake AT brokers; no modem devices or host /run writes. The cold start, its warm-up wrapper
-(the fallback to SIM1 when it cannot be done, the first-data check of a second card) and init.d/mu300-atd's dual-SIM
-path, on macOS too."""
+(the fallback to SIM1 when it cannot be done, the first-data check of a second card) and init.d/mu300-atd's brokers
+(mu300-modemd's arguments) for a SIM1 and a dual-SIM boot."""
 import os
 import subprocess
 import time
@@ -15,7 +15,6 @@ class Sim2ColdStart(ShellTest):
         self.run = self.tmp / 'run'
         self.etc = self.tmp / 'etc'
         self.etc.mkdir()
-        (self.etc / 'openwrt_release').touch()
         (self.run / 'mu300').mkdir(parents=True)
         (self.run / 'mu300-radio-freeze').touch()
         for name in ('mu300-at', 'mu300-at2', 'mu300-at4', 'mu300-at5'):
@@ -48,7 +47,7 @@ esac''')
     elif [ -e "$STUBLOG/wan-held-down" ]; then printf '{ "up": false, "autostart": false, "ipv4-address": [ ] }\n'
     else printf '{ "up": false, "autostart": true, "ipv4-address": [ ] }\n'; fi ;;
 esac''')
-        # The modem as our U30 Air answered (docs/FINDINGS.md 74). T_UNPOWERED=1: the card's SIM power is off at
+        # The modem as our U30 Air answered. T_UNPOWERED=1: the card's SIM power is off at
         # boot ("+CME ERROR: 10" until AT+SPACTCARD=<n>;+SFUN=2); T_NOCARD=1: nothing answers in the position at
         # all; T_PIN: what the card says of itself; T_MODES: the work modes; T_ROUTE: what AT+SPSWDATA? answers
         # (default: the card the route was given to; "none": the question is not answered).
@@ -111,14 +110,11 @@ echo OK
         p = self.tmp / 'at'
         return p.read_text().splitlines() if p.exists() else []
 
-    def test_cold_helpers_refuse_unverified_devices_and_other_systems(self):
+    def test_cold_helpers_refuse_unverified_devices(self):
         for device in ('f50', 'u30pro', 'm3', ''):
             with self.subTest(device=device):
                 self.assertNotEqual(self.boot(T_DEVICE=device).returncode, 0)
                 self.assertFalse(self.calls())
-        (self.etc / 'openwrt_release').unlink()
-        self.assertNotEqual(self.boot().returncode, 0)
-        self.assertFalse(self.calls())
 
     def test_success_and_zero_byte_marker(self):
         r = self.boot()
@@ -281,7 +277,7 @@ echo OK
         return self.stubs / 'sim-radio'
 
     def test_a_card_whose_radio_is_off_is_not_started_until_it_is_on(self):
-        """FINDINGS 185: the chosen card's radio is switched off in its settings. The cold start is put off - nothing
+        """The chosen card's radio is switched off in its settings. The cold start is put off - nothing
         sent, the boot confirmed (no fallback next boot), no trial - and runs with --deferred once it is on."""
         rf = self.rf_stub()
         (self.tmp / 'rf-off').write_text('1')
@@ -435,7 +431,7 @@ echo OK
                 if how == 'down': (self.tmp / 'wan-held-down').touch()                 # ifdown wan by hand
                 elif how == 'suspend': (self.run / 'mu300-mobile-data.suspend').write_text('off\n')   # mu300-power
                 elif how == 'auto': (self.etc / 'uci-auto').write_text('0\n')
-                elif how == 'roaming': (self.run / 'mu300/data-roaming-held').write_text('1\n')   # FINDINGS 120
+                elif how == 'roaming': (self.run / 'mu300/data-roaming-held').write_text('1\n')
                 else: (self.etc / 'uci-disabled').write_text('1\n')
                 r = self.warmup()
                 self.assertEqual(r.returncode, 0, r.stderr)
@@ -629,13 +625,13 @@ echo OK
 
     def test_runtime_scripts_read_the_boot_pin_only(self):
         # the saved choice is init.d/mu300-atd's to read (on the U30 Air alone): a stray /etc/mu300-sim-slot on
-        # another device or on Ubuntu, where no second broker exists, changes nothing for mu300-at and mobile-data
+        # an F50, where no second broker exists, changes nothing for mu300-at and mobile-data
         for name in ('mu300-at', 'mobile-data', 'sipa-dele-start'):
             with self.subTest(name=name):
                 text = (BIN / name).read_text()
                 self.assertNotIn('cat /etc/mu300-sim-slot', text)
         for rel in ('openwrt/overlay/lib/netifd/proto/mu300cell.sh', 'openwrt/luci-app-mu300/root/usr/libexec/unisoc-modem/lock',
-                    'openwrt/luci-app-mu300/root/usr/libexec/unisoc-modem/cell', 'openwrt/luci-overlay/etc/init.d/mu300-atd-dash'):
+                    'openwrt/luci-app-mu300/root/usr/libexec/unisoc-modem/cell', 'openwrt/overlay/etc/init.d/mu300-atd'):
             with self.subTest(rel=rel):
                 self.assertNotIn('cat /etc/mu300-sim-slot', (TOP / rel).read_text())
 
@@ -662,14 +658,29 @@ sleep() {{ :; }}
     def instances(self, r):
         return [l.split()[1] for l in r.stdout.splitlines() if l.startswith('instance ')]
 
+    # the brokers: arguments of one mu300-modemd, behind one mu300-atd-io bridge
+    def modemd_command(self, r):
+        cmd = [l for l in r.stdout.splitlines() if l.startswith('param command /usr/bin/ucode /opt/mu300/bin/mu300-modemd')]
+        self.assertEqual(len(cmd), 1, r.stdout)
+        return cmd[0].split()[6:]   # after "param command /usr/bin/ucode PROGRAM -s SOCKET"
+
+    def brokers(self, r):
+        return [b.split(',', 1)[0].removeprefix('name=') for b in self.modemd_command(r)]
+
+    def bridge(self, r):
+        return r.stdout[r.stdout.index('instance atd-io'):r.stdout.index('instance modemd')]
+
+    SIM1 = ['atd-io', 'modemd', 'radio-warmup']
+
     def test_hot_sim1_boot_opens_both_groups_once(self):
         (self.etc / 'uci-slot').write_text('0\n')
         (self.etc / 'uci-hot').write_text('1\n')
         r = self.init_service()
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(r.stdout.count('MU300_AT_DISABLE_REOPEN=1'), 4)
+        self.assertEqual(self.brokers(r), ['atd', 'atd2', 'atd4', 'atd5'])
+        self.assertEqual(sum(',reopen=0,' in b for b in self.modemd_command(r)), 4)
         self.assertTrue((self.run / 'mu300/sim-managed').exists())
-        self.assertNotIn('param respawn', r.stdout)
+        self.assertNotIn('respawn', self.bridge(r))
         self.assertTrue((self.tmp / 'pending').exists())
 
     def test_setting_is_pinned_until_reboot(self):
@@ -677,95 +688,38 @@ sleep() {{ :; }}
         r = self.init_service(f'start_service; echo 1 > "{self.tmp}/choice"; start_service')
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual((self.run / 'mu300/sim-slot').read_text(), '0\n')
-        self.assertNotIn('instance atd4', r.stdout)
+        self.assertNotIn('name=atd4', r.stdout)
 
-    # --- the modem daemon (FINDINGS 216, docs/MODEMD.md): the same brokers as arguments of one mu300-modemd
-    MODEMD_ON = 'modemd_on() { return 0; }; '
-
-    def modemd_command(self, r):
-        cmd = [l for l in r.stdout.splitlines() if l.startswith('param command /usr/bin/ucode /opt/mu300/bin/mu300-modemd')]
-        self.assertEqual(len(cmd), 1, r.stdout)
-        return cmd[0].split()[6:]   # after "param command /usr/bin/ucode PROGRAM -s SOCKET"
-
-    def test_modemd_sim2_brokers_without_reopen_and_a_bridge_without_respawn(self):
+    def test_sim2_brokers_without_reopen_and_a_bridge_without_respawn(self):
         (self.etc / 'uci-slot').write_text('1\n')
-        r = self.init_service(self.MODEMD_ON + 'start_service')
+        r = self.init_service()
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(self.instances(r), ['atd-io', 'modemd', 'sim2-cold-start'])
         run = str(self.run)
+        # each opened once the second group's sbuf is READY, inside modemd: never a wait in start_service
         self.assertEqual(self.modemd_command(r), [
             f'name=atd,dev=/dev/stty_nr1,dir={run}/mu300-at,urc=0,live={run}/mu300-at/urc/stty_nr0.log,reopen=0,ready=sbuf:sbuf_5_006',
             f'name=atd2,dev=/dev/stty_nr2,dir={run}/mu300-at2,live={run}/mu300-at/urc/stty_nr0.log,reopen=0,ready=sbuf:sbuf_5_006',
             f'name=atd4,dev=/dev/stty_nr4,dir={run}/mu300-at4,urc=3,live={run}/mu300-at4/urc/stty_nr3.log,reopen=0,ready=sbuf:sbuf_5_006',
             f'name=atd5,dev=/dev/stty_nr5,dir={run}/mu300-at5,live={run}/mu300-at4/urc/stty_nr3.log,reopen=0,ready=sbuf:sbuf_5_006'])
-        io = r.stdout[r.stdout.index('instance atd-io'):r.stdout.index('instance modemd')]
-        self.assertNotIn('respawn', io)                    # a new bridge would reopen the channels
+        self.assertNotIn('respawn', self.bridge(r))                 # a new bridge would reopen the channels
         md = r.stdout[r.stdout.index('instance modemd'):r.stdout.index('instance sim2-cold-start')]
-        self.assertIn('param respawn 3600 5 0', md)        # the daemon holds no channel
-        self.assertNotIn('/opt/mu300/bin/mu300-atd"', r.stdout)
-        self.assertNotIn('exec /opt/mu300/bin/mu300-atd', r.stdout)
-
-    def test_modemd_sim1_brokers_with_reopen_and_a_respawned_bridge(self):
-        (self.etc / 'uci-slot').write_text('0\n')
-        r = self.init_service(self.MODEMD_ON + 'start_service')
-        self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(self.instances(r), ['atd-io', 'modemd', 'radio-warmup'])
-        run = str(self.run)
-        self.assertEqual(self.modemd_command(r), [f'name=atd,dev=/dev/stty_nr1,dir={run}/mu300-at,urc=0,reopen=1',
-                                                  f'name=atd2,dev=/dev/stty_nr2,dir={run}/mu300-at2,reopen=1'])
-        io = r.stdout[r.stdout.index('instance atd-io'):r.stdout.index('instance modemd')]
-        self.assertIn('param command /opt/mu300/bin/mu300-atd-io -s ' + run + '/mu300-modem/io.sock', io)
-        self.assertIn('param respawn 3600 10 0', io)       # as the shell daemons of a SIM1 boot were
-
-    def test_modemd_is_opt_in(self):
-        # no /etc/mu300/modemd (or no ucode): the shell daemons, exactly as before
-        (self.etc / 'uci-slot').write_text('0\n')
-        text = (TOP / 'openwrt/overlay/etc/init.d/mu300-atd').read_text()
-        self.assertIn('[ -e /etc/mu300/modemd ] && [ -x /opt/mu300/bin/mu300-atd-io ] && [ -x /opt/mu300/bin/mu300-modemd ]', text)
-        r = self.init_service('modemd_on() { return 1; }; start_service')
-        self.assertEqual(self.instances(r), ['atd', 'atd2', 'radio-warmup'])
-
-    def test_sim2_owners_are_persistent_and_not_respawned(self):
-        (self.etc / 'uci-slot').write_text('1\n')
-        r = self.init_service()
-        self.assertEqual(r.returncode, 0, r.stderr)
-        for channel in (1, 2, 4, 5):
-            self.assertIn(f'MU300_AT_DEV=/dev/stty_nr{channel}', r.stdout)
-        self.assertEqual(r.stdout.count('MU300_AT_DISABLE_REOPEN=1'), 4)
-        self.assertNotIn('param respawn', r.stdout)
-        self.assertEqual(self.instances(r), ['atd', 'atd2', 'atd4', 'atd5', 'sim2-cold-start'])
+        self.assertIn('param respawn 3600 5 0', md)                 # the daemon holds no channel
+        self.assertNotIn('sipc_sbuf', r.stdout + r.stderr)
         self.assertTrue((self.tmp / 'pending').exists())
 
-    def test_all_native_owners_wait_for_the_sbuf_inside_their_instances(self):
-        # the wait is the instance's, bounded, never start_service's: a boot always gets its brokers
-        (self.etc / 'uci-slot').write_text('1\n')
+    def test_sim1_brokers_with_reopen_and_a_respawned_bridge(self):
+        (self.etc / 'uci-slot').write_text('0\n')
         r = self.init_service()
-        commands = [l for l in r.stdout.splitlines() if l.startswith('param command ')]
-        self.assertEqual(len(commands), 5)
-        for c in commands:
-            if '/dev/stty_nr' in c:
-                self.assertIn("sbuf_5_006, state: 1,", c); self.assertIn('/dev/sipc_sbuf', c); self.assertIn('-gt 240', c)
-            else:
-                self.assertNotIn('sipc_sbuf', c)
-        self.assertNotIn('sipc_sbuf', r.stderr)
-
-    def test_generated_broker_wait_reaches_exec_on_posix_shells(self):
-        (self.etc / 'uci-slot').write_text('1\n')
-        r = self.init_service()
-        commands = [l.removeprefix('param command /bin/sh -c ') for l in r.stdout.splitlines()
-                    if l.startswith('param command /bin/sh -c ')]
-        self.assertEqual(len(commands), 4)
-        for command in commands:
-            # Execute the real generated command, with only the device/readiness and owner substituted.
-            # In particular, a stray ]} is syntactically valid but makes the test loop forever.
-            import re
-            command = re.sub(r'\[ -c /dev/stty_nr[1245] \]', 'true', command)
-            command = command.replace("[ -c /dev/sipc_sbuf ] && grep -q '^sbuf_5_006, state: 1,' /dev/sipc_sbuf", 'true')
-            command = command.replace('exec /opt/mu300/bin/mu300-atd', 'echo owner-started')
-            for shell in ('sh', 'bash'):
-                result = subprocess.run([shell, '-c', 'sleep() { exit 97; }; ' + command], capture_output=True, text=True, timeout=5)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(result.stdout.strip(), 'owner-started')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.instances(r), self.SIM1)
+        run = str(self.run)
+        self.assertEqual(self.modemd_command(r), [f'name=atd,dev=/dev/stty_nr1,dir={run}/mu300-at,urc=0,reopen=1',
+                                                  f'name=atd2,dev=/dev/stty_nr2,dir={run}/mu300-at2,reopen=1',
+                                                  f'name=atd6,dev=/dev/stty_nr6,dir={run}/mu300-at6,reopen=1',
+                                                  f'name=atd7,dev=/dev/stty_nr7,dir={run}/mu300-at7,reopen=1'])
+        self.assertIn('param command /opt/mu300/bin/mu300-atd-io -s ' + run + '/mu300-modem/io.sock', self.bridge(r))
+        self.assertIn('param respawn 3600 10 0', self.bridge(r))
 
     def test_other_devices_ignore_the_dual_sim_files(self):
         (self.etc / 'uci-slot').write_text('1\n')
@@ -775,7 +729,7 @@ sleep() {{ :; }}
             with self.subTest(device=device):
                 r = self.init_service(device=device)
                 self.assertEqual(r.returncode, 0, r.stderr)
-                self.assertEqual(self.instances(r), ['atd', 'atd2', 'radio-warmup'])
+                self.assertEqual(self.instances(r), self.SIM1)
                 self.assertFalse((self.tmp / 'pending').exists())
                 self.assertFalse((self.run / 'mu300-radio-freeze').exists())
         self.assertEqual((self.etc / 'uci-slot').read_text(), '1\n', 'left alone, for a U30 Air that reads it')
@@ -787,7 +741,7 @@ sleep() {{ :; }}
         (self.tmp / 'pending').touch()
         result = self.init_service()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.instances(result), ['atd', 'atd2', 'radio-warmup'])
+        self.assertEqual(self.instances(result), self.SIM1)
         self.assertEqual((self.run / 'mu300/sim-slot').read_text(), '0\n')
         self.assertEqual((self.etc / 'uci-slot').read_text(), '0\n')
 
@@ -798,7 +752,7 @@ sleep() {{ :; }}
         (self.tmp / 'pending').write_text('')
         r = self.init_service()
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(self.instances(r), ['atd', 'atd2', 'radio-warmup'])
+        self.assertEqual(self.instances(r), self.SIM1)
         self.assertEqual((self.etc / 'uci-slot').read_text(), '0\n')
         self.assertEqual((self.etc / 'uci-hot').read_text(), '0\n')
         self.assertEqual((self.tmp / 'fallback').read_text(), 'unconfirmed\n')
@@ -824,8 +778,8 @@ sleep() {{ :; }}
                     (self.run / 'mu300/sim-fallback-boot').touch()
                 r = self.init_service(**kw)
                 self.assertEqual(r.returncode, 0, r.stderr)
-                self.assertEqual(self.instances(r), ['atd', 'atd2', 'radio-warmup'])
-                self.assertIn('param respawn', r.stdout)
+                self.assertEqual(self.instances(r), self.SIM1)
+                self.assertIn('param respawn 3600 10 0', self.bridge(r))
                 if 'library' not in name:
                     self.assertEqual((self.run / 'mu300/sim-slot').read_text(), '0\n',
                                      'the pin says SIM1 to every reader: never nr4/nr5 under SIM1\'s names')
@@ -836,7 +790,7 @@ sleep() {{ :; }}
         (self.tmp / 'uci-readonly').touch()
         r = self.init_service()
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(self.instances(r), ['atd', 'atd2', 'radio-warmup'])
+        self.assertEqual(self.instances(r), self.SIM1)
         self.assertEqual((self.run / 'mu300/sim-slot').read_text(), '0\n')
         self.assertTrue((self.tmp / 'pending').exists(), 'kept: it makes the next boot a SIM1 boot too')
 
@@ -847,9 +801,8 @@ sleep() {{ :; }}
         (self.run / 'mu300/sim-boot-policy').touch()   # this boot's pin: the service is being restarted
         r = self.init_service()
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn('atd4', self.instances(r))
+        self.assertIn('atd4', self.brokers(r))
         self.assertEqual((self.etc / 'uci-slot').read_text(), '1\n')
-
 
 if __name__ == '__main__':
     unittest.main()

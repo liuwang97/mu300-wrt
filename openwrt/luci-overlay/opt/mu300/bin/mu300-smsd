@@ -1,45 +1,35 @@
 #!/bin/sh
-# Keep the SMS pool of the control panel (mu300-sms, /etc/mu300/sms-pool) in step with the modem. openwrt-luci only.
+# Keep the SMS pool of the control panel (mu300-sms, /etc/mu300/sms-pool) in step with the modem, on the modem daemon's
+# events (mu300-modemd: the ubus object mu300.modem, its events mu300.modem.urc).
 #
 # Two ways in. Delivered directly, when the modem agrees: after the first sync this asks for AT+CMGF=0, AT+CSMS=1 and
 # AT+CNMI=3,2,2,0,1 - every new message then comes as a "+CMT:" frame (header and PDU) on the modem's unsolicited
-# channel, which mu300-atd hands to mu300-cmt-spool, and that puts the PDU in $POOL/incoming/*.ready, fsynced. Every
-# POLL seconds this pools what is there ("mu300-sms import-pdu FILE") and, only once that has succeeded, acknowledges
-# the message to the network (AT+CNMA=1; with CSMS=1 the modem forwards no second message until the first is
-# acknowledged, and one it never gets acknowledged for it stores on the SIM instead). An import or an acknowledgement
-# that fails stops this round and is tried again on the next; after three rounds that failed in a row direct delivery
+# channel, which modemd hands to mu300-cmt-spool, and that puts the PDU in $POOL/incoming/*.ready, fsynced. At modemd's
+# "+CMT (PDU spooled)" event this pools what is there ("mu300-sms import-pdu FILE") and, only once that has succeeded,
+# acknowledges the message to the network (AT+CNMA=1; with CSMS=1 the modem forwards no second message until the first
+# is acknowledged, and one it never gets acknowledged for it stores on the SIM instead). An import or an
+# acknowledgement that fails is tried again every POLL seconds; after three tries that failed in a row direct delivery
 # is given up for the SIM path, and the files are set aside as *.failed. The message is never an argument: the
 # spooler reads it on stdin, import-pdu reads the file.
 #
 # Through the SIM, which is also where direct delivery falls back to, and what a message the modem keeps on the SIM
-# anyway (a class 2 one) takes: with AT+CNMI=2,1,0,0,0 the modem stores a new message and announces it (+CMTI).
-# mu300-atd appends every unsolicited line of the modem to $ATDIR/urc/*.log, so a new "+CMTI:" changes the checksum
-# of the +CMTI lines there, and that starts a sync (mu300-sms sync, which moves what it pooled off the SIM, so a full
-# SIM never refuses the next message). The logs are emptied when they grow too large, which changes the checksum
-# too: a sync is idempotent, so a spurious one costs one AT+CMGL. The checksum is taken only when a log is not older
-# than the last look (FINDINGS 215: four processes every five seconds were most of this daemon's idle CPU).
+# anyway (a class 2 one) takes: with AT+CNMI=2,1,0,0,0 the modem stores a new message and announces it (+CMTI), and
+# modemd's event for that line starts a sync (mu300-sms sync, which moves what it pooled off the SIM, so a full SIM
+# never refuses the next message).
 #
-# The safety nets, without asking the modem every few seconds (FINDINGS 215). Every MU300_SMS_CHECK_INTERVAL seconds
-# (120), and at once when a URC log changed without a new +CMTI (a modem that restarted says so there; at most once in
-# 30 s), AT+CNMI? - one command - says whether the modem still routes new messages the way it was asked (direct: mt 2;
+# The safety nets, without asking the modem every few seconds. Every MU300_SMS_EVENT_CHECK_INTERVAL seconds (600;
+# MU300_SMS_CHECK_INTERVAL, 120, after a sync that failed), and once the SIM's lines of a modem that started again have
+# stopped, AT+CNMI? - one command - says whether the modem still routes new messages the way it was asked (direct: mt 2;
 # the SIM path: mt 1). It drops direct routing by itself after an acknowledgement that never came (mt=0: no indication
 # at all, every new message stored in silence), and a restarted modem forgets the setting: then the routing is put
 # back and a full sync takes what was stored meanwhile. Only mt is looked at: the modem says OK and then keeps a
 # setting of its own for the rest (measured on the U30 Air: "3,2,1,0,1" for the "3,2,2,0,1" it was asked). A full
 # sync also runs every MU300_SMS_SYNC_INTERVAL seconds (1800), for an announcement that was missed; at every check
 # while parts of long messages delivered directly are parked ($POOL/parts: a sync pools the ones whose siblings never
-# came once they have waited their hour, like those on the SIM); and at the next check after one that failed. Until
-# v2026.10.22 a full sync (four AT commands) and AT+CNMI? ran every 30 s: a third of the device's idle CPU.
+# came once they have waited their hour, like those on the SIM); and at the next check after one that failed.
 #
 # If the modem refuses any of the three commands (or MU300_SMS_DIRECT=0 says not to ask), AT+CNMI=2,1,0,0,0 is asked
-# again and only the SIM path runs, as before. $DIRECT_FLAG exists while direct delivery is on.
-#
-# With the modem daemon (mu300-modemd, FINDINGS 216) there is no look every POLL seconds: this waits on its events
-# (ubus mu300.modem.urc) - a spooled +CMT is pooled and acknowledged as soon as modemd says so, a +CMTI syncs, a SIM
-# or modem start is looked at - and the routing is asked every 600 s; see "The modem daemon's events" below.
-#
-# Port of the fork's mu300-smsd (kanoqwq/clean-tf-7.2, cd4fb28, and its direct +CMT delivery), with the pool in
-# /etc/mu300/sms-pool (D11).
+# again and only the SIM path runs. $DIRECT_FLAG exists while direct delivery is on.
 set -u
 export PATH="$PATH:/opt/mu300/bin:/opt/mu300/busybox-bin:/usr/sbin:/sbin"
 # A client that is stuck or busy on the AT channel must not hold the receiver behind mu300-at's 90 s default: a
@@ -50,11 +40,9 @@ export MU300_AT_LOCK_WAIT=${MU300_AT_LOCK_WAIT:-8}
 POOL=${MU300_SMS_POOL:-/etc/mu300/sms-pool}
 export MU300_SMS_POOL=$POOL
 ATDIR=${MU300_AT_DIR:-/run/mu300-at}
-URCDIR=$ATDIR/urc
 POLL=${MU300_SMS_POLL:-5}
 CHECK_INTERVAL=${MU300_SMS_CHECK_INTERVAL:-120}
 SYNC_INTERVAL=${MU300_SMS_SYNC_INTERVAL:-1800}
-URC_CHECK=${MU300_SMS_URC_CHECK:-30}   # the routing looked at after a URC that was no +CMTI: at most this often
 SMS=${MU300_SMS_BIN:-/opt/mu300/bin/mu300-sms}
 SPOOL=$POOL/incoming
 PARTS=$POOL/parts
@@ -94,19 +82,17 @@ trap 'exit 0' INT TERM
 rm -f "$DIRECT_FLAG"
 
 # nap SECONDS: the waits of this daemon. Where the shell's read takes a timeout (busybox ash, bash) it waits on a
-# fifo that nobody ever writes to, opened read-write so it never ends either: no sleep process every five seconds,
-# and a signal still ends the wait at once. dash has no read -t: sleep. (OpenWrt's busybox takes whole seconds only.)
-# For the wait the timer slack is half a second (FINDINGS 215): its timer may fire that much late, so the kernel can
-# serve the timers of several daemons with one wakeup; what this starts (mu300-at's short polls) keeps the default.
+# fifo that nobody ever writes to, opened read-write so it never ends either: no sleep process, and a signal still
+# ends the wait at once. (OpenWrt's busybox takes whole seconds only.) For the wait the timer slack is half a second:
+# its timer may fire that much late, so the kernel can serve the timers of several daemons with one wakeup; what this
+# starts (mu300-at's short polls) keeps the default.
 NAP_FIFO=$LOCK/nap
-read_t=0
 if mkfifo "$NAP_FIFO" 2>/dev/null && exec 9<>"$NAP_FIFO" && rm -f "$NAP_FIFO" &&
     { read -t 0 _n <&9; [ $? = 1 ]; } 2>/dev/null; then
-    read_t=1
     wait_for() { read -t "$1" _n <&9 || :; }
 else
-    exec 9<&-; rm -f "$NAP_FIFO"
-    wait_for() { sleep "$1"; }
+    echo "mu300-smsd: this shell's read takes no timeout (or there is no fifo for it); busybox ash or bash it is" >&2
+    exit 1
 fi
 slack=; { read -r slack < /proc/$$/timerslack_ns; } 2>/dev/null
 nap() {
@@ -118,18 +104,18 @@ nap() {
 T=0
 now() { { read -r _up _ < /proc/uptime; } 2>/dev/null && T=${_up%%.*} || T=$((T + POLL)); }
 
-# mu300-atd owns the AT channel; until its command fifo is there nothing can be asked
+# modemd owns the AT channel; until its command fifo is there nothing can be asked
 n=0
 until [ -p "$ATDIR/cmd" ]; do
     n=$((n + 1))
-    [ "$n" -gt 120 ] && { echo "mu300-smsd: no command fifo from mu300-atd after ten minutes, exiting" >&2; exit 1; }
+    [ "$n" -gt 120 ] && { echo "mu300-smsd: no command fifo from the modem daemon after ten minutes, exiting" >&2; exit 1; }
     nap 5
 done
 
-# A slot with no card (mu300-sim-state, FINDINGS 186) is asked nothing - no CPIN, CNMI, CMGL or CNMA - until a card
+# A slot with no card (mu300-sim-state) is asked nothing - no CPIN, CNMI, CMGL or CNMA - until a card
 # answers there; then the setup below runs as at the start. mu300-sim-state's answer is the slot of this boot and the
 # state it keeps for each card; the helper (and mu300-sim, which it runs: 17 ms together on a U30 Air on slot 1) is
-# asked again only when one of those files changed (FINDINGS 215).
+# asked again only when one of those files changed.
 SIM_STATE=${MU300_SIM_STATE_BIN:-/opt/mu300/bin/mu300-sim-state}
 SIM_RUN=${MU300_RUN:-/run/mu300}
 sim_key= sim_said=
@@ -216,29 +202,6 @@ process_spool() {
     return 0
 }
 
-# md5sum first: OpenWrt's busybox has no cksum
-signature() {
-    cat "$URCDIR"/*nr*.log 2>/dev/null | grep -aF '+CMTI' | { md5sum 2>/dev/null || cksum; }
-}
-# urc_changed: a URC log may have changed since the last look - it is not older than the stamp that look made (test -nt
-# is the shell's own, no process), or the set of logs is another. Two stamps take turns: this look's is made before
-# the logs are compared with the last one's, so a line written while this looks is seen by the next. Busybox's test
-# compares whole seconds: a log written in the second of a stamp counts as changed, so nothing is missed there either.
-# No stamp (no room in the lock directory): every look counts as a change, as before.
-URC_SEEN=$LOCK/urc-seen
-urc_turn=0 urc_logs=
-urc_changed() {
-    _old=$URC_SEEN.$urc_turn; urc_turn=$((1 - urc_turn))
-    _c=1 _l=
-    : > "$URC_SEEN.$urc_turn" 2>/dev/null || _c=0
-    for _f in "$URCDIR"/*nr*.log; do
-        [ -e "$_f" ] || continue
-        _l="$_l $_f"
-        [ "$_old" -nt "$_f" ] || _c=0
-    done
-    [ "$_l" = "$urc_logs" ] || { urc_logs=$_l; _c=0; }
-    return $_c
-}
 # parked: parts of long messages delivered directly wait in $PARTS for their siblings (a sync pools them after the
 # wait)
 parked() { for _p in "$PARTS"/p*; do [ -f "$_p" ] && return 0; done; return 1; }
@@ -254,15 +217,10 @@ routing() {
     return 2
 }
 # check: the routing, put back (with a full sync for what was stored in silence meanwhile) when the modem dropped it;
-# a full sync when one is due. And the events (below): taken up when modemd has come, given up when it has gone
-# without a word (one `ubus list` a check).
+# a full sync when one is due. And modemd itself: given up when it has gone without a word (one `ubus list` a check).
 check() {
     checked=$T
-    if [ "$events" = 1 ]; then
-        ubus -t 2 list mu300.modem >/dev/null 2>&1 || events_lost "the modem daemon is no longer on ubus"
-    else
-        events_start || :
-    fi
+    ubus -t 2 list mu300.modem >/dev/null 2>&1 || events_lost "the modem daemon is no longer on ubus"
     routing; _ro=$?
     if [ "$_ro" = 1 ]; then
         echo "mu300-smsd: the modem no longer routes new messages as asked; asking again" >&2
@@ -279,36 +237,31 @@ check() {
     fi
 }
 
-# The modem daemon's events (FINDINGS 216, docs/MODEMD.md). With mu300-modemd on ubus (the object mu300.modem) this
-# does not look every POLL seconds: it waits on modemd's events. `ubus -S listen` runs as a child and writes into a
-# fifo that this reads with read -t - no process, no wakeup while nothing comes - and the shell tells each event
-# apart itself. What an event asks for:
+# The modem daemon's events (see mu300-modemd). `ubus -S listen` runs as a child and writes into a fifo that this reads
+# with read -t - no process, no wakeup while nothing comes - and the shell tells each event apart itself. What an event
+# asks for:
 # - "+CMT (PDU spooled)" (or "not spooled"), on any channel: modemd put a message delivered directly into the spool
 #   (the fixed words it writes into the URC log, never the header or the PDU). The spool is pooled and acknowledged at
-#   once: within the second, where the look took up to POLL seconds.
+#   once.
 # - "+CMTI:" from the card in use - on any channel but the other card's unsolicited one (stty_nr3 while slot 0 is in
-#   use, stty_nr0 while slot 1 is): a sync, as a new +CMTI in a URC log started one. (The logs' look reads $ATDIR/urc
-#   only: slot 1's channel of a dual-SIM boot logs into /run/mu300-at4, so there a +CMTI came to it only with the
-#   half-hourly sync. And it read the command channel's log too, where a +CMTI that came amid a reply goes: modemd
-#   publishes the lines of its unsolicited channels only, so such a one waits for the half-hourly sync here.)
+#   use, stty_nr0 while slot 1 is): a sync. (modemd publishes the lines of its unsolicited channels only: a +CMTI that
+#   came amid a reply on the command channel waits for the half-hourly sync.)
 # - "+ECIND: 3," (the SIM's status, which mu300-sim-state takes up) or "+SIND:" (the SIM coming up: a modem that
 #   started again says so), on either card's channel - a switch's first lines can come before the slot is published:
 #   the SIM state is looked at every POLL seconds for the next FOLLOW seconds (mu300-sim-state asks the card 2 s after
 #   +ECIND and writes its answer then), and once the lines have stopped for FOLLOW seconds the routing is asked (a
-#   restarted modem has forgotten it; asked while it is still starting, it may not answer). The logs' look took any
-#   other line for a reason to ask the routing too, every 30 s while there were lines: the signal reports (+CSQ, +CESQ:
-#   bursts of them while the panel is open) are none.
-# - modemd leaving the bus (ubus.object.remove of mu300.modem): the look every POLL seconds, as without it. So does the
-#   end of the stream (ubus gone); the next check takes the events up again when modemd is back.
+#   restarted modem has forgotten it; asked while it is still starting, it may not answer). Signal reports (+CSQ,
+#   +CESQ: bursts of them while the panel is open) ask for nothing.
+# - modemd leaving the bus (ubus.object.remove of mu300.modem), or the end of the stream (ubus gone): the listener
+#   goes, and modemd is looked for every POLL seconds (one `ubus list`) until it is back. Nothing comes without it:
+#   modemd owns the channels, the spool and the AT command fifo.
 # Everything else is its timers: the routing every CHECK_EVENTS seconds (600; CHECK_INTERVAL after a sync that failed),
-# the full sync as before, a spooled message that could not be pooled or acknowledged tried again every POLL seconds,
-# and the FOLLOW seconds after the listener started (what was spooled before it). Why the routing waits longer with
-# events: both ways it gets lost show on the channel - a modem that restarts announces the SIM again (above), and the
-# modem drops direct routing only after an acknowledgement that never came, for a +CMT this pools within the second.
-# Left for the check: a client that set CNMI itself, a restart whose lines were lost while modemd reopened the channels,
-# and a frame modemd could not spool (the modem drops the routing a few minutes after it).
-# Without modemd (the shell mu300-atd), without ubus, or in a shell whose read has no timeout (dash): the look every
-# POLL seconds, exactly as before (and a `ubus list` at each check, for a modemd that came).
+# the full sync, a spooled message that could not be pooled or acknowledged tried again every POLL seconds, and the
+# FOLLOW seconds after the listener started (what was spooled before it). Why the routing can wait that long: both ways
+# it gets lost show on the channel - a modem that restarts announces the SIM again (above), and the modem drops direct
+# routing only after an acknowledgement that never came, for a +CMT this pools within the second. Left for the check:
+# a client that set CNMI itself, a restart whose lines were lost while modemd reopened the channels, and a frame modemd
+# could not spool (the modem drops the routing a few minutes after it).
 CHECK_EVENTS=${MU300_SMS_EVENT_CHECK_INTERVAL:-600}
 FOLLOW=${MU300_SMS_FOLLOW:-30}
 EV_FIFO=$LOCK/events
@@ -318,8 +271,7 @@ events=0 ev= ev_why= follow=0 settle=0
 C=0
 cs() { { read -r _up _ < /proc/uptime; } 2>/dev/null && C=$((${_up%.*} * 100 + 1${_up#*.} - 100)); }
 events_start() {
-    [ -z "$ev_pid" ] && [ "$read_t" = 1 ] && [ "${MU300_SMS_EVENTS:-1}" = 1 ] && [ -r /proc/uptime ] || return 1
-    command -v ubus >/dev/null 2>&1 || return 1
+    [ -z "$ev_pid" ] || return 0
     ubus -t 2 list mu300.modem >/dev/null 2>&1 || return 1
     rm -f "$EV_FIFO"
     mkfifo -m 600 "$EV_FIFO" 2>/dev/null || return 1
@@ -340,11 +292,11 @@ events_stop() {
     exec 8<&-
     ev_pid= events=0 settle=0
 }
-# events_lost WHY: back to the look every POLL seconds. Its first look compares the URC logs with what it saw before the
-# events: a +CMTI that came in between is synced (again, at worst: a sync is idempotent).
+# events_lost WHY: the listener gone; modemd looked for every POLL seconds. Once it is back, a full sync takes a +CMTI
+# that came in between.
 events_lost() {
     events_stop
-    echo "mu300-smsd: $1; a look every ${POLL} s again" >&2
+    echo "mu300-smsd: $1; waiting for it on ubus" >&2
 }
 # ev_next SECONDS: the listener's next line in $ev; false when none came in that time or the stream ended
 ev_next() {
@@ -375,7 +327,7 @@ ev_says() {
     case $ev in *'"channel":"stty_nr'$(((1 - _s) * 3))'"'*) ;; *) ev_why=sync ;; esac
 }
 # every: the seconds between two checks, in $E
-every() { E=$CHECK_INTERVAL; [ "$events" = 0 ] || [ "$sync_failed" = 1 ] || E=$CHECK_EVENTS; }
+every() { E=$CHECK_EVENTS; [ "$sync_failed" = 0 ] || [ "$CHECK_INTERVAL" -ge "$E" ] || E=$CHECK_INTERVAL; }
 # wait_event: the wait with events - until the next check, the next POLL seconds while a spooled message waits for
 # another try or a SIM event is followed, the end of that (the routing), or an event that asks for something (ev_why)
 wait_event() {
@@ -395,16 +347,20 @@ wait_event() {
 }
 
 now
-last=$(signature)
-urc_changed || :
 failures=0
 checked=$T synced=$T
-echo "mu300-smsd: pooling into $POOL (a look every ${POLL} s, the routing every ${CHECK_INTERVAL} s," \
-    "a full sync every ${SYNC_INTERVAL} s)" >&2
-events_start || :
+echo "mu300-smsd: pooling into $POOL (the routing every ${CHECK_EVENTS} s, a full sync every ${SYNC_INTERVAL} s)" >&2
+events_start || echo "mu300-smsd: the modem daemon is not on ubus; waiting for it" >&2
 while :; do
     ev_why=
-    if [ "$events" = 1 ]; then wait_event; else nap "$POLL"; fi
+    if [ "$events" = 0 ]; then
+        # nothing comes without modemd; once it is back, a full sync for what came meanwhile
+        nap "$POLL"
+        events_start || continue
+        ev_why=sync
+    else
+        wait_event
+    fi
     now
     case $ev_why in
         gone) events_lost "the modem daemon left ubus"; ev_why= ;;
@@ -415,7 +371,7 @@ while :; do
         continue
     fi
     if [ "$configured" = 0 ]; then
-        setup; configured=1; settle=0; last=$(signature); urc_changed || :; now; checked=$T synced=$T
+        setup; configured=1; settle=0; now; checked=$T synced=$T
         continue
     fi
     # the spool, whatever the mode: a frame the modem sent anyway is pooled and acknowledged like any other
@@ -436,18 +392,6 @@ while :; do
         full_sync || echo "mu300-smsd: sync failed, retrying at the next check" >&2
         now; synced=$T
         continue
-    elif [ "$events" = 0 ] && urc_changed; then
-        s=$(signature)
-        if [ "$s" != "$last" ]; then
-            last=$s
-            nap 2   # let the message land in the storage before listing it
-            full_sync || echo "mu300-smsd: sync failed, retrying at the next check" >&2
-            now; synced=$T
-            continue
-        fi
-        # something else came on the unsolicited channel (a modem that restarted announces itself there): the routing
-        # is looked at now, at most every URC_CHECK seconds
-        [ $((T - checked)) -lt "$URC_CHECK" ] || { check; continue; }
     fi
     # the SIM's lines (events) have stopped for FOLLOW seconds: the routing
     if [ "$settle" = 1 ] && [ "$T" -ge "$follow" ]; then settle=0; check; continue; fi

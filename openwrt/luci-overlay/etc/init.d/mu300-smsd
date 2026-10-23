@@ -5,7 +5,7 @@
 # /etc/mu300/sms-pool: /etc, not /var (tmpfs), so the pool outlives a reboot. Never /etc/mu300/sms, which is the
 # sms command's own state. A changed sms_pool takes effect when this service restarts.
 #
-# No wait for the modem tty here: mu300-smsd waits for mu300-atd's command fifo itself (ten minutes at most, then
+# No wait for the modem tty here: mu300-smsd waits for mu300-modemd's command fifo itself (ten minutes at most, then
 # procd starts it again).
 START=95
 USE_PROCD=1

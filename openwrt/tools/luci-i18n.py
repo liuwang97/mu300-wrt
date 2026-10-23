@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The control panel's (openwrt/luci-app-mu300) translation catalogs, po/<lang>/mu300.po (tr and zh_Hans required).
+"""The control panel's (openwrt/luci-app-mu300) translation catalogs, po/<lang>/mu300.po (zh_Hans required).
 
     python3 openwrt/tools/luci-i18n.py check   [--root DIR]   list the problems; exit 1 if there is any
     python3 openwrt/tools/luci-i18n.py extract [--root DIR]   print every message once, in order of first use
@@ -29,9 +29,9 @@ Messages are English and come from:
   * N_() is an error: the app has no plural messages (openwrt/tools/po2lmo.py refuses msgid_plural).
 
 The problems `check` prints, one per line as RULE: PATH:LINE: WHAT (spec, Translations):
-  cjk          a CJK character outside the catalogs (po/) and the installers' i18n data
-  missing      a message without an entry, or with an empty msgstr, in any po/<lang>/mu300.po (or no po/tr,
-               po/zh_Hans: the images need both)
+  cjk          a CJK character outside the catalogs (po/)
+  missing      a message without an entry, or with an empty msgstr, in any po/<lang>/mu300.po (or no po/zh_Hans:
+               the image needs it)
   language     a po/<lang> directory without a row in openwrt/luci-languages.tsv (its LuCI code and name)
   placeholder  a msgstr whose %s/%d/%% placeholders are not its msgid's, in the same order
   stale        a msgid that no source uses
@@ -47,13 +47,13 @@ import subprocess
 import sys
 from pathlib import Path
 
-TOP = Path(__file__).resolve().parent.parent
+TOP = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import po2lmo  # noqa: E402
 
 APP = TOP / 'openwrt' / 'luci-app-mu300'
-REQUIRED = ('tr', 'zh_Hans')
-# po directory -> (LuCI code, name): the build, the lang extra and this check read the same table
+REQUIRED = ('zh_Hans',)
+# po directory -> (LuCI code, name): the build and this check read the same table
 TABLE = TOP / 'openwrt' / 'luci-languages.tsv'
 
 
@@ -83,8 +83,8 @@ BACKEND_DYNAMIC_OK = {('mu300dash', 'refuse', '"$2"'),   # reply_obj passing its
 
 # CJK: only these files may contain it (repository paths; with --root, only po/ of that copy)
 CJK = re.compile('[\u2e80-\u9fff\uf900-\ufaff\uff00-\uffef]')
-CJK_SCOPE = ['openwrt', 'rootfs/overlay', 'boot', 'tools', 'install.sh', 'uninstall.sh']
-CJK_ALLOWED = re.compile(r'^(tools/i18n\.sh|i18n/[^/]+\.tsv|openwrt/luci-app-mu300/po/.*|openwrt/luci-languages\.tsv|tests/fixtures/.*|openwrt/opt/mu300/lib/cpu-voltage-warning\.txt|openwrt/opt/mu300/lib/image-manifests/[^/]+\.gz)$')   # (compressed data: no text to look at)
+CJK_SCOPE = ['openwrt']
+CJK_ALLOWED = re.compile(r'^(openwrt/luci-app-mu300/po/.*|openwrt/luci-languages\.tsv|openwrt/tests/.*|openwrt/opt/mu300/lib/cpu-voltage-warning\.txt|openwrt/opt/mu300/lib/image-manifests/[^/]+\.gz)$')   # (compressed data: no text to look at)
 
 PLACEHOLDER = re.compile(r'%(?:%|[-+#0]*\d*(?:\.\d+)?[a-zA-Z])')
 
@@ -288,7 +288,7 @@ SH_PLAIN_VALUE = re.compile(r'"((?:[^"\\]|\\.)*)"')
 SH_ESCAPED_VALUE = re.compile(r'\\"((?:[^"\\]|\\[^"])*)\\"')
 SH_CONST = re.compile(r'(?:null|true|false|-?\d)')
 CONVERSION = re.compile(r'%(?!%)')
-# the same in a ucode backend (FINDINGS 216: the collector, the snapshot module, rpcd's mu300status): an "error" or
+# the same in a ucode backend (the collector, the snapshot module, rpcd's mu300status): an "error" or
 # "message" key of an object the code builds, quoted or not (error: 'Text', "message": "Text"), and '// i18n: Text'
 UC_I18N = re.compile(r'^\s*// i18n: (.+?)\s*$')
 UC_KEY = re.compile(r'''(?<![\w$.])["']?(?:error|message)["']?\s*:(?!:)\s*''')

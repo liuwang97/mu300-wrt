@@ -50,7 +50,6 @@ esac
 
     def native(self):
         (self.tmp / 'etc').mkdir(exist_ok=True)
-        (self.tmp / 'etc/openwrt_release').touch()
         self.stub('mu300-device', 'echo u30air')
         self.backend = self.tmp / 'mu300-sim-u30'
         self.backend.write_text((BIN / 'mu300-sim-u30').read_text()
@@ -118,10 +117,8 @@ esac
         self.assertFalse((self.tmp / 'etc/mu300/sim-migration/mu300-sim-slot.migrated').exists())
 
     def test_selection_refuses_other_devices(self):
-        # (the U30 Air outside OpenWrt's native backend; the V50 boots SIM2 as the F50 does since FINDINGS 204,
-        # tests/test_v50_sim.py)
         device = self.tmp / 'mu300-device'
-        for shell, name in [(s, n) for s in self.each_shell() for n in ('u30air',)]:
+        for shell, name in [(s, n) for s in self.each_shell() for n in ('unknown', 'u30pro')]:
             device.write_text(f'#!/bin/sh\necho {name}\n')
             device.chmod(0o755)
             self.choice.write_text('0\n')
@@ -129,7 +126,7 @@ esac
             r = self.script(shell, BIN / 'mu300-sim', 'select', 'internal',
                             MU300_SIM_ROOT=self.tmp, MU300_DEVICE_CMD=device)
             self.assertNotEqual(r.returncode, 0)
-            self.assertIn('F50 and V50 only', r.stderr)
+            self.assertIn('the F50 and the U30 Air only', r.stderr)
             self.assertEqual(self.choice.read_text().strip(), '0')
             status = self.script(shell, BIN / 'mu300-sim', 'status', '--json',
                                  MU300_SIM_ROOT=self.tmp, MU300_DEVICE_CMD=device)
@@ -222,11 +219,11 @@ esac
         # define_context and what it calls (tests/test_mu300cell.py MobileDataContext has the rest of it)
         start = s.index('# settings_private FILE:')
         block = s[start:s.index('# Only one bring-up at a time', start)]
-        self.assertIn('    define_context "$1" || exit 1\n', s)
+        self.assertIn('    define_context "${1:-}" || exit 1\n', s)
         for shell in self.each_shell():
             for apn, rc in [('internet', 0), ('cmnet', 0), ('a-b.c_d', 0), ('x"y', 1), ('x\\y', 1), ('x\ry', 1), ('x\ny', 1), ('', 0)]:
                 (self.tmp / 'calls').unlink(missing_ok=True)
-                code = ('at() { echo "$1" >> "$STUBLOG/calls"; }; CID=1; APN_AUTH_MARK=$STUBLOG/mark; MD_CONF=$STUBLOG/conf\n' +
+                code = ('at() { echo "$1" >> "$STUBLOG/calls"; }; CID=1; APN_AUTH_MARK=$STUBLOG/mark\n' +
                         block + '\ndefine_context "$APN" || exit 1; echo defined')
                 r = self.sh(shell, code, APN=apn, SIM_SLOT='0')
                 self.assertEqual(r.returncode, rc, (apn, r.stderr))
@@ -253,22 +250,15 @@ esac
         for shell in self.each_shell():
             for slot in (0, 1):
                 self.choice.write_text(str(slot))
-                for source, dashboard in [
-                    (TOP / 'openwrt/overlay/etc/init.d/mu300-atd', False),
-                    (TOP / 'openwrt/luci-overlay/etc/init.d/mu300-atd-dash', True),
-                ]:
-                    s = source.read_text().replace('/opt/mu300/bin/mu300-sim', str(helper))
-                    code = 'procd_open_instance() { echo instance "$@"; }; procd_set_param() { echo param "$@"; }; procd_close_instance() { :; };\n' + s + '\nstart_service\n'
-                    r = self.sh(shell, code)
-                    self.assertEqual(r.returncode, 0, r.stderr)
-                    if dashboard:
-                        if slot == 1: self.assertNotIn('instance ', r.stdout)
-                        else:
-                            self.assertIn('/dev/stty_nr6', r.stdout)
-                            self.assertIn('/dev/stty_nr7', r.stdout)
-                    else:
-                        self.assertIn('/dev/stty_nr' + str(slot * 3 + 1), r.stdout)
-                        self.assertIn('MU300_AT_DEV=/dev/stty_nr' + str(slot * 3 + 2), r.stdout)
+                s = (TOP / 'openwrt/overlay/etc/init.d/mu300-atd').read_text().replace('/opt/mu300/bin/mu300-sim', str(helper))
+                code = 'procd_open_instance() { echo instance "$@"; }; procd_set_param() { echo param "$@"; }; procd_close_instance() { :; };\n' + s + '\nstart_service\n'
+                r = self.sh(shell, code)
+                self.assertEqual(r.returncode, 0, r.stderr)
+                # the slot's command and data channels; the panel's nr6/nr7 belong to the slot 0 group only
+                self.assertIn(f'name=atd,dev=/dev/stty_nr{slot * 3 + 1},dir=/run/mu300-at,urc={slot * 3},', r.stdout)
+                self.assertIn(f'name=atd2,dev=/dev/stty_nr{slot * 3 + 2},dir=/run/mu300-at2,', r.stdout)
+                for panel in ('/dev/stty_nr6', '/dev/stty_nr7'):
+                    (self.assertIn if slot == 0 else self.assertNotIn)(panel, r.stdout)
 
     def test_data_route_command_failure_stops_slot1_only(self):
         s = (BIN / 'mobile-data').read_text()
@@ -300,7 +290,7 @@ for (const neigh of [null, [null], {}, [null, {rat:'nr', band:41, pci:315, arfcn
         self.assertEqual(r.returncode, 0, r.stderr)
 
     def test_empty_lte_neighbours_are_not_null_entries(self):
-        # the collector's parsers (mu300.cellparse, FINDINGS 216): no LTE neighbour line is an empty list, never [null]
+        # the collector's parsers (mu300.cellparse): no LTE neighbour line is an empty list, never [null]
         s = (TOP / 'openwrt/luci-app-mu300/root/usr/libexec/unisoc-modem/cell').read_text()
         self.assertIn('let NEIGH = [ ...nr_neighbours(SP_NRNB), ...sp_ltenb(SP_LN) ];', s)
         self.assertIn('NEIGH = null;', s)
@@ -344,7 +334,7 @@ PROTO = TOP / 'openwrt/overlay/www/luci-static/resources/protocol/mu300cell.js'
 
 
 class SimInTheSnapshot(ShellTest):
-    """Issue #194: dashboard-info's "sim" is mu300-sim's own account - the card in use, the one asked for, whether
+    """dashboard-info's "sim" is mu300-sim's own account - the card in use, the one asked for, whether
     the device has slot 1 - so that a page can say that an internal SIM chosen on a device without one is not used.
     The real mu300-sim runs, on a fake root, with a fake mu300-device."""
 
@@ -379,7 +369,6 @@ class SimInTheSnapshot(ShellTest):
 
     def native(self):
         (self.root / 'etc').mkdir(parents=True, exist_ok=True)
-        (self.root / 'etc/openwrt_release').write_text('DISTRIB_ID=OpenWrt\n')
         self.backend = self.tmp / 'mu300-sim-u30'
         self.backend.write_text((BIN / 'mu300-sim-u30').read_text()
                                .replace('/run/', str(self.root / 'run') + '/')
@@ -411,13 +400,6 @@ class SimInTheSnapshot(ShellTest):
             self.assertEqual(i['data_device'], 'sipa_eth8')
         self.assertFalse((self.tmp / 'unexpected-at').exists())
 
-    def test_the_reported_case_an_internal_sim_chosen_on_a_u30_air(self):
-        for shell in self.each_shell():
-            for boot_slot in (None, 1):     # chosen before this boot (the state says 1), or the state not yet written
-                i = self.info(shell, 'u30air', 1, boot_slot)
-                self.assertEqual(i['sim'], {'slot': 0, 'wanted': 1, 'slot1_supported': 0})
-                self.assertEqual(i['data_device'], 'sipa_eth0')     # and the page's figures are slot 0's
-
     def test_the_f50(self):
         for shell in self.each_shell():
             self.assertEqual(self.info(shell, 'f50', 0)['sim'], {'slot': 0, 'wanted': 0, 'slot1_supported': 1})
@@ -426,10 +408,6 @@ class SimInTheSnapshot(ShellTest):
             self.assertEqual(i['data_device'], 'sipa_eth8')
             # selected, not yet rebooted
             self.assertEqual(self.info(shell, 'f50', 1, boot_slot=0)['sim'], {'slot': 0, 'wanted': 1, 'slot1_supported': 1})
-
-    def test_a_u30_air_on_the_external_sim_has_nothing_to_say(self):
-        for shell in self.each_shell():
-            self.assertEqual(self.info(shell, 'u30air', 0)['sim'], {'slot': 0, 'wanted': 0, 'slot1_supported': 0})
 
     def test_without_the_selector_or_its_status_the_field_is_null(self):
         odd = self.tmp / 'odd-sim'

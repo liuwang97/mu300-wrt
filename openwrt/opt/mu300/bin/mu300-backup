@@ -1,5 +1,5 @@
 #!/bin/sh
-# mu300-backup: the user's settings as one file, and back (FINDINGS 155). Ubuntu and OpenWrt; F50, U30 Air, V50.
+# mu300-backup: the user's settings as one file, and back. F50 and U30 Air.
 #
 #   mu300-backup export [-o FILE|-] [--encrypt] [--with-password] [--only S,S...] [PASSPHRASE]
 #       the settings into FILE (0600; without -o: ./mu300-backup-HOST-DATE.json, or .enc when encrypted; "-o -" is
@@ -7,16 +7,15 @@
 #   mu300-backup import FILE|- [--dry-run] [--force] [--only S,S...] [--skip S,S...] [PASSPHRASE]
 #       every value of FILE checked by the rules of the setter that takes it, then what differs set, the rest left
 #       alone. --dry-run: the check and what would change, nothing changed. A file of another device type is
-#       refused without --force; one of the other system (Ubuntu <-> OpenWrt) gives what both have.
+#       refused without --force.
 #   mu300-backup show FILE|- [PASSPHRASE]   where a file comes from and what it holds (no secret)
 #   PASSPHRASE: --passphrase-file FILE (its first line) | --passphrase-stdin (the first line of stdin; with "-" the
 #       file follows it). Without either, --encrypt and an encrypted file ask on the terminal. 8-256 characters.
 #
 # Sections: wifi (the hotspot: name, password, band, channel, hidden, on), data (APN, PDP type, authentication, user,
-# password, data roaming), sim (the boot SIM), locks (band, mode, EN-DC and cell locks; OpenWrt with the panel and
-# Ubuntu), vpn (the VPN module's own profiles, subscriptions, settings, the active one, on/off), sms_forward (OpenWrt
-# with the panel and Ubuntu), lan (the device's address), system (host name, time zone, SSH on/off), ssh_keys (the login user's
-# authorized keys), password (with --with-password).
+# password, data roaming), sim (the boot SIM), locks (band, mode, EN-DC and cell locks), vpn (the VPN module's own
+# profiles, subscriptions, settings, the active one, on/off), sms_forward, lan (the device's address), system (host
+# name, time zone, SSH on/off), ssh_keys (root's authorized keys), password (root's, with --with-password).
 #
 # The file holds secrets (the hotspot's and the APN's passwords, VPN configurations, tokens): it is written 0600,
 # and --encrypt seals it with a passphrase (openssl enc: AES-256-CBC, PBKDF2-SHA256, 600000 rounds; the SHA-256 of
@@ -30,7 +29,7 @@ umask 077
 HERE=$(cd "${0%/*}" 2>/dev/null && pwd)
 APIBIN=${MU300_API:-$HERE/mu300-api}
 [ -r "$APIBIN" ] || { echo "mu300-backup: $APIBIN is missing" >&2; exit 1; }
-# mu300-api's helpers and the system's facts (R, BIN, SYS, HOTSPOT, MDCONF, LANCONF, conf, uci_q, wifi_iface, ...)
+# mu300-api's helpers and the system's facts (R, BIN, SYS, uci_q, wifi_iface, ...)
 MU300_LIB=1
 . "$APIBIN"
 unset MU300_LIB
@@ -51,7 +50,7 @@ die() { warn "$*"; exit 1; }
 usage() { sed -n '2,15s/^# \{0,1\}//p' "$HERE/mu300-backup" >&2 2>/dev/null; exit 2; }
 bad_file() { warn "not a valid backup: $*"; exit 2; }
 
-command -v jq >/dev/null 2>&1 || die "needs jq (both images have it)"
+command -v jq >/dev/null 2>&1 || die "needs jq"
 [ "$(id -u)" = 0 ] || [ -n "${MU300_API_NOROOT:-}" ] || die "run it as root"
 
 WORK=$(mktemp -d /run/mu300-backup.XXXXXX 2>/dev/null) || WORK=$(mktemp -d "${TMPDIR:-/tmp}/mu300-backup.XXXXXX") ||
@@ -116,36 +115,21 @@ decrypt() {     # decrypt ARMOURED PLAIN
 # ------------------------------------------------------------------ export: one JSON object per section
 jb_of() { case ${1:-} in 1|true|yes|on) echo true ;; *) echo false ;; esac; }
 sec_wifi() {
-    if is_openwrt; then
-        command -v uci >/dev/null 2>&1 || return 1
-        _rd=$(wifi_radio); [ -n "$_rd" ] || return 1
-        _if=$(wifi_iface)
-        _ssid=$(uci_q get "$_if.ssid"); _key=$(uci_q get "$_if.key")
-        case $(uci_q get "$_rd.band") in 2g) _band=2.4 ;; *) _band=5 ;; esac
-        _ch=$(uci_q get "$_rd.channel"); _hid=$(uci_q get "$_if.hidden")
-        _on=true
-        { [ "$(uci_q get "$_rd.disabled")" = 1 ] || [ "$(uci_q get "$_if.disabled")" = 1 ]; } && _on=false
-    else
-        [ -f "$HOTSPOT" ] || return 1
-        _ssid=$(conf SSID "$HOTSPOT"); _key=$(conf PSK "$HOTSPOT")
-        case $(conf BAND "$HOTSPOT") in 2.4) _band=2.4 ;; *) _band=5 ;; esac
-        _ch=$(conf CHANNEL "$HOTSPOT"); _hid=$(conf HIDDEN "$HOTSPOT")
-        _on=$(systemctl is-enabled mu300-hotspot >/dev/null 2>&1 && echo true || echo false)
-    fi
+    command -v uci >/dev/null 2>&1 || return 1
+    _rd=$(wifi_radio); [ -n "$_rd" ] || return 1
+    _if=$(wifi_iface)
+    _ssid=$(uci_q get "$_if.ssid"); _key=$(uci_q get "$_if.key")
+    case $(uci_q get "$_rd.band") in 2g) _band=2.4 ;; *) _band=5 ;; esac
+    _ch=$(uci_q get "$_rd.channel"); _hid=$(uci_q get "$_if.hidden")
+    _on=true
+    { [ "$(uci_q get "$_rd.disabled")" = 1 ] || [ "$(uci_q get "$_if.disabled")" = 1 ]; } && _on=false
     S1=$_ssid S2=$_key S3=$_band S4=${_ch:-auto} jq -n --argjson hid "$(jb_of "$_hid")" --argjson on "$_on" \
         '{ssid: env.S1, password: env.S2, band: env.S3, channel: env.S4, hidden: $hid, enabled: $on}'
 }
 sec_data() {
-    if is_openwrt; then
-        uci_q show network 2>/dev/null | grep -q '^network\.wan=' || return 1
-        _apn=$(uci_q get network.wan.apn); _pdp=$(uci_q get network.wan.pdptype); _auth=$(uci_q get network.wan.auth)
-        _user=$(uci_q get network.wan.username); _pw=$(uci_q get network.wan.password)
-    else
-        [ -f "$MDCONF" ] || [ -x "$BIN/mobile-data" ] || return 1
-        _apn=$(conf_unq MU300_APN "$MDCONF"); _pdp=$(conf_unq MU300_PDP_TYPE "$MDCONF")
-        _auth=$(conf_unq MU300_APN_AUTH "$MDCONF"); _user=$(conf_unq MU300_APN_USER "$MDCONF")
-        _pw=$(conf_unq MU300_APN_PASSWORD "$MDCONF")
-    fi
+    uci_q show network 2>/dev/null | grep -q '^network\.wan=' || return 1
+    _apn=$(uci_q get network.wan.apn); _pdp=$(uci_q get network.wan.pdptype); _auth=$(uci_q get network.wan.auth)
+    _user=$(uci_q get network.wan.username); _pw=$(uci_q get network.wan.password)
     _roam=null
     if [ -x "$BIN/mobile-data" ]; then
         _roam=$(timed 10 "$BIN/mobile-data" roaming --json 2>/dev/null | head -n 1 | jq -c '.allowed | booleans' 2>/dev/null)
@@ -158,15 +142,7 @@ sec_sim() {
     [ -x "$BIN/mu300-sim" ] || return 1
     _s=$(timed 10 "$BIN/mu300-sim" configured 2>/dev/null) || return 1
     case $_s in 0|1) ;; *) return 1 ;; esac
-    # the ZTE V50's chosen card too (mu300-sim card, FINDINGS 204)
-    _c=
-    if [ "$(timed 5 "$BIN/mu300-device" 2>/dev/null)" = v50 ]; then
-        _c=$(timed 10 "$BIN/mu300-sim" status --json 2>/dev/null | jq -r '.v50.saved_card // empty' 2>/dev/null) || _c=
-    fi
-    case $_c in
-        [0-3]) printf '{"default":%s,"card":%s}\n' "$((_s + 1))" "$_c" ;;
-        *) printf '{"default":%s}\n' "$((_s + 1))" ;;
-    esac
+    printf '{"default":%s}\n' "$((_s + 1))"
 }
 lock_dir() {
     _d=$(uci_q get unisoc_modem.main.state_dir 2>/dev/null)
@@ -246,18 +222,16 @@ sec_sms_forward() {
          email_to: one("email_to"), sms: on("sms"), sms_number: one("sms_number")}' "$FWD_CONF"
 }
 sec_lan() {
-    if is_openwrt; then _ip=$(uci_q get network.lan.ipaddr)
-    else _ip=$(conf LAN_IP "$LANCONF"); fi
+    _ip=$(uci_q get network.lan.ipaddr)
     [ -n "$_ip" ] || return 1
     S1=$_ip jq -n '{ip: env.S1}'
 }
 sec_system() {
-    if is_openwrt; then _h=$(uci_q get 'system.@system[0].hostname')
-    else _h=$(first "$R/etc/hostname"); fi
+    _h=$(uci_q get 'system.@system[0].hostname')
     S1=$_h S2=$(timezone) jq -n --argjson ssh "$(ssh_on && echo true || echo false)" \
         '{hostname: env.S1, timezone: env.S2, ssh: $ssh} | with_entries(select(.value != ""))'
 }
-keys_file() { if is_openwrt; then echo "$R/etc/dropbear/authorized_keys"; else echo "$R/home/$USR/.ssh/authorized_keys"; fi; }
+keys_file() { echo "$R/etc/dropbear/authorized_keys"; }
 # a public key line of OpenSSH's own (POSIX regular expressions count to 255 at most: key_ok checks the length): no options in front (from=, command=: such a line is left out, and said so)
 KEY_ERE='(ssh-(rsa|ed25519|dss)|ecdsa-sha2-nistp(256|384|521)|sk-ssh-ed25519@openssh\.com|sk-ecdsa-sha2-nistp256@openssh\.com) [A-Za-z0-9+/]{16,}={0,3}( [ -~]{0,200})?'
 key_ok() { [ "${#1}" -le 8500 ] && allowed "$1" "$KEY_ERE"; }
@@ -272,13 +246,9 @@ sec_ssh_keys() {
     _skip=$(grep -c skipped "$WORK/keys.skipped" 2>/dev/null) || _skip=0
     [ "$_skip" = 0 ] || warn "ssh_keys: $_skip line(s) with options or of another kind left out"
 }
-# a crypt(3) hash: SHA-512 or SHA-256 crypt, bcrypt, yescrypt (Ubuntu's own)
-HASH_ERE='\$(6|5)\$(rounds=[0-9]{4,9}\$)?[./A-Za-z0-9]{1,16}\$[./A-Za-z0-9]{43,86}|\$2[aby]\$[0-9]{2}\$[./A-Za-z0-9]{53}|\$y\$[./A-Za-z0-9]{1,8}\$[./A-Za-z0-9]{1,86}\$[./A-Za-z0-9]{43}'
-hash_ok() {
-    allowed "$1" "$HASH_ERE" || return 1
-    # OpenWrt's C library (musl) has no yescrypt: such a hash there would lock the user out
-    case $1 in '$y$'*) ! is_openwrt ;; esac
-}
+# a crypt(3) hash: SHA-512 or SHA-256 crypt, bcrypt (musl has no yescrypt: such a hash would lock root out)
+HASH_ERE='\$(6|5)\$(rounds=[0-9]{4,9}\$)?[./A-Za-z0-9]{1,16}\$[./A-Za-z0-9]{43,86}|\$2[aby]\$[0-9]{2}\$[./A-Za-z0-9]{53}'
+hash_ok() { allowed "$1" "$HASH_ERE"; }
 sec_password() {
     _h=$(awk -F: -v u="$USR" '$1 == u { print $2; exit }' "$R/etc/shadow" 2>/dev/null)
     allowed "$_h" "$HASH_ERE" || { warn "password: $USR has no password hash to keep: left out"; return 1; }
@@ -350,7 +320,7 @@ SCHEMA_JQ='
 # every key known, every value of its kind and size: a file that says anything else is refused whole
 def s($n): type == "string" and (utf8bytelength <= $n);
 # No regular expressions anywhere in here: the jq of OpenWrt is built without them (test/capture/gsub fail there,
-# and every file was refused as "a value of the wrong kind", F50-C 2026-10-17). Characters are checked by code point.
+# and every file would be refused as "a value of the wrong kind"). Characters are checked by code point.
 # one line: no control character at all - C0, DEL and C1 (a configuration and the forwarding texts are s, the rest l)
 def l($n): s($n) and (explode | all(. >= 32 and (. < 127 or . > 159)));
 def az09: (. >= 97 and . <= 122) or (. >= 48 and . <= 57);
@@ -378,7 +348,7 @@ else
   ( (keysin(["format", "version", "created", "source", "sections"])) | err("unknown keys") ),
   ( (.created | type == "number") | err("created") ),
   ( (.source | keysin(["device", "system", "release", "hostname"]) and (.device | l(16) and lowalnum)
-       and (.system | IN("ubuntu", "openwrt", "openwrt-luci")) and (.release | l(64)) and (.hostname | l(64)))
+       and (.system | IN("openwrt-luci")) and (.release | l(64)) and (.hostname | l(64)))
     | err("source") ),
   ( .sections | if type != "object" then "sections" else
       ( (keysin(["wifi", "data", "sim", "locks", "vpn", "sms_forward", "lan", "system", "ssh_keys", "password"])) | err("unknown section") ),
@@ -502,11 +472,7 @@ def q: tostring | @json;
             {sec: "vpn", do: "vpn-power", state: (if $v.enabled then "on" else "off" end),
              say: "VPN: turned \(if $v.enabled then "on" else "off" end)"} else empty end )
     else empty end ),
-  ( if $B.sim != null and want("sim") and $B.sim.card != null then
-      (if $B.sim.card != ($C.sim.card // null) then
-         {sec: "sim", do: "api", method: "sim.card", req: {card: $B.sim.card},
-          say: "SIM: card \($B.sim.card) at the next boot"} else empty end)
-    elif $B.sim != null and want("sim") and $B.sim.default != ($C.sim.default // null) then
+  ( if $B.sim != null and want("sim") and $B.sim.default != ($C.sim.default // null) then
       {sec: "sim", do: "api", method: "sim.select", req: {slot: $B.sim.default},
        say: "SIM: SIM \($B.sim.default) at the next boot"} else empty end ),
   ( if $B.data != null and want("data") then
@@ -617,7 +583,7 @@ check_step() {
         note) ;;
         api)
             _m=$(field .method)
-            case $_m in wifi.set|wifi.power|data.set|sim.select|sim.card|lan.set|system.hostname|system.timezone|system.ssh) ;;
+            case $_m in wifi.set|wifi.power|data.set|sim.select|lan.set|system.hostname|system.timezone|system.ssh) ;;
                 *) CHK_WHY="no such step"; return 1 ;; esac
             if ! api_call "$_m" "$(fieldc .req)" check; then
                 case $(printf '%s' "$ANS" | jq -r .error 2>/dev/null) in
@@ -697,23 +663,18 @@ vpn_options() {   # vpn_options ID: the step's options set on profile ID (OpenVP
 }
 add_keys() {
     _f=$(keys_file); _dir=${_f%/*}
-    if is_openwrt; then _own=0:0
-    else
-        _own=$(awk -F: -v u="$USR" '$1 == u { print $3 ":" $4; exit }' "$R/etc/passwd" 2>/dev/null)
-        [ -n "$_own" ] || return 1
-    fi
-    # never through a link (a home directory is its user's: ~/.ssh could point anywhere)
+    # never through a link
     [ ! -L "$_dir" ] && [ ! -L "$_f" ] || return 1
-    [ -d "$_dir" ] || { mkdir -p "$_dir" && chmod 700 "$_dir" && { is_openwrt || chown "$_own" "$_dir" 2>/dev/null || [ -n "${MU300_API_NOROOT:-}" ]; }; } || return 1
+    [ -d "$_dir" ] || { mkdir -p "$_dir" && chmod 700 "$_dir"; } || return 1
     { [ -f "$_f" ] && cat "$_f"; printf '%s' "$ST" | jq -r '.keys[]'; } > "$_dir/.authorized_keys.mu300-backup" &&
         chmod 600 "$_dir/.authorized_keys.mu300-backup" &&
-        { is_openwrt || chown "$_own" "$_dir/.authorized_keys.mu300-backup" 2>/dev/null || [ -n "${MU300_API_NOROOT:-}" ]; } &&
         mv -f "$_dir/.authorized_keys.mu300-backup" "$_f" || { rm -f "$_dir/.authorized_keys.mu300-backup"; return 1; }
 }
 set_password() {
-    if is_openwrt && [ -x "$BIN/busybox" ]; then set -- "$BIN/busybox" chpasswd -e; else set -- chpasswd -e; fi
+    # the system's busybox has no chpasswd, the static one next to us has it
+    if [ -x "$BIN/busybox" ]; then set -- "$BIN/busybox" chpasswd -e; else set -- chpasswd -e; fi
     arg _h .hash && hash_ok "$_h" || return 1
-    case $USR in root|ubuntu) ;; *) return 1 ;; esac
+    [ "$USR" = root ] || return 1
     printf '%s:%s\n' "$USR" "$_h" | timed 20 "$@" >/dev/null 2>&1
 }
 # apply_step: the step in $ST done
@@ -792,7 +753,6 @@ do_import() {
         [ "$FORCE" = 1 ] || die "this file is from a $_dev, this device is a $DEV: refused (--force takes it anyway)"
         say "note: from a $_dev, taken on a $DEV (--force)"
     fi
-    case $_sys:$SYS in ubuntu:ubuntu|openwrt*:openwrt*) ;; *) say "note: from $_sys, taken on $SYS: what both systems have" ;; esac
     # this device as it is now, in the same form, for the comparison (its password hash only when the file has one)
     _secs=$(printf '%s\n' $SECTIONS | grep -vx password | tr '\n' ' ')
     [ "$(jq -r '.sections | has("password")' "$WORK/doc.json")" != true ] || _secs="$_secs password"

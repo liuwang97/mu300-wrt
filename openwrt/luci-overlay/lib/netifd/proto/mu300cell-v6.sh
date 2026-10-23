@@ -10,7 +10,8 @@
 # single read refreshes them. This process is owned by netifd via
 # proto_run_command and also implements the standard WAN renew signal (USR1).
 # The bearer half follows the active card and believes only a well-formed
-# answer (docs/FINDINGS.md 91, after kanoqwq's clean-tf-7.2 3cbf37fc).
+# answer: an address of four 0-255 parts, a contiguous mask, DNS that are
+# addresses (after kanoqwq's clean-tf-7.2 3cbf37fc).
 #
 # Every update is sent address-external (matching the setup in mu300cell.sh):
 # the kernel state belongs to RA and to this monitor, netifd only tracks it. A
@@ -43,10 +44,10 @@ SIM_SLOT=0
 if [ -x /opt/mu300/bin/mu300-sim ]; then
     SIM_SLOT=$(/opt/mu300/bin/mu300-sim active) || exit 1
 fi
-# The active card's channels and URC log, chosen as mobile-data and the panel's collector choose them (FINDINGS 74,
-# 91). SIM1: the panel pool nr6/nr7, then nr1's daemon. SIM2 pinned at boot: /run/mu300-at is that card's own nr4.
-# SIM2 in a dual-SIM boot (/run/mu300-radio-freeze): /run/mu300-at stays SIM1's nr1, SIM2's owner is /run/mu300-at4,
-# and its URCs are logged there - the monitor used to read SIM1's context and wait for a log that never appears.
+# The active card's channels and URC log, chosen as mobile-data and the panel's collector choose them. SIM1: the
+# panel pool nr6/nr7, then nr1's daemon. SIM2 pinned at boot: /run/mu300-at is that card's own nr4. SIM2 in a
+# dual-SIM boot (/run/mu300-radio-freeze): /run/mu300-at stays SIM1's nr1, SIM2's owner is /run/mu300-at4, and its
+# URCs are logged there - SIM1's channels would answer for a card whose radio is off.
 SIM_NATIVE=0
 [ ! -e "${MU300_RADIO_FREEZE:-/run/mu300-radio-freeze}" ] || SIM_NATIVE=1
 case "$SIM_SLOT:$SIM_NATIVE" in

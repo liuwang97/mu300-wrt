@@ -1,5 +1,5 @@
 {
-    "data-root": "/mnt/mu300-disk/docker/openwrt",
+    "data-root": "/mnt/mu300-disk/docker/openwrt-luci",
     "storage-driver": "overlay2",
     "features": { "containerd-snapshotter": false },
     "firewall-backend": "nftables",

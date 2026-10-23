@@ -1,11 +1,11 @@
-"""The control panel's catalogs: complete in Turkish and Chinese, no Chinese outside them (spec, Translations)."""
+"""The control panel's catalog: English is the source, the Chinese catalog is complete, no Chinese outside it."""
 import importlib.util, json, re, shutil, subprocess, sys, tempfile, unittest
 from pathlib import Path
 from helpers import GIT_CHECKOUT, TOP
 
-TOOL = [sys.executable, str(TOP / 'tools' / 'luci-i18n.py')]
+TOOL = [sys.executable, str(TOP / 'openwrt' / 'tools' / 'luci-i18n.py')]
 APP = TOP / 'openwrt' / 'luci-app-mu300'
-CJK = '\u4e2d\u6587'        # written as escapes: this file is not one of the places Chinese is allowed
+CJK = '\u4e2d\u6587'        # a Chinese word, written as escapes
 
 VIEW = 'htdocs/luci-static/resources/view/mu300/home.js'
 DASH = 'root/usr/libexec/rpcd/mu300dash'
@@ -55,7 +55,7 @@ MINI = {
         "fail() { printf '{\"ok\":0,\"op\":%s,\"error\":%s}\\n' \"$(json_str \"$1\")\" \"$(json_str \"$2\")\"; }\n"
         "radio_on || fail \"radio on\" \"Radio did not come up\"\n"
         "printf '{\"ok\":1,\"message\":\"Done\"}\\n'\n"),
-    # a ucode program and modules (FINDINGS 216)
+    # a ucode program and modules: their messages are extracted as the shell's are
     'root/usr/libexec/unisoc-modem/cell': (
         "#!/usr/bin/ucode\n"
         "// error: 'Not a message: a comment'\n"
@@ -92,11 +92,10 @@ class Catalogs(unittest.TestCase):
         for rel, text in MINI.items():
             (root / rel).parent.mkdir(parents=True, exist_ok=True)
             (root / rel).write_text(text, encoding='utf-8')
-        for lang, mark in (('tr', 'TR'), ('zh_Hans', CJK)):
-            (root / 'po' / lang).mkdir(parents=True)
-            (root / 'po' / lang / 'mu300.po').write_text(
-                po(lang, [(po_str(m), po_str(m.replace('messages', 'x') + ' ' + mark)) for m in MESSAGES]),
-                encoding='utf-8')
+        (root / 'po' / 'zh_Hans').mkdir(parents=True)
+        (root / 'po' / 'zh_Hans' / 'mu300.po').write_text(
+            po('zh_Hans', [(po_str(m), po_str(m.replace('messages', 'x') + ' ' + CJK)) for m in MESSAGES]),
+            encoding='utf-8')
         return root
 
     @unittest.skipUnless(GIT_CHECKOUT, 'no git checkout here: the check reads what git tracks')
@@ -106,23 +105,25 @@ class Catalogs(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which('git'), 'no git')
     def test_default_check_scans_the_repository(self):
-        # without --root the check reads the files git tracks: Chinese in a shared script is found, Chinese in the
-        # installers' i18n data is not (a copy of the tool, the app and two such files in a scratch repository)
+        # without --root the check reads the files git tracks: Chinese in a script of the openwrt tree is found,
+        # Chinese outside that tree is not its business (a copy of the tool, the app and two such files in a scratch
+        # repository)
         repo = self.tmp / 'repo'
         shutil.copytree(APP, repo / 'openwrt' / 'luci-app-mu300')
         shutil.copy(TOP / 'openwrt' / 'luci-languages.tsv', repo / 'openwrt' / 'luci-languages.tsv')
-        (repo / 'tools').mkdir()
+        (repo / 'openwrt' / 'tools').mkdir()
         for name in ('luci-i18n.py', 'po2lmo.py'):
-            shutil.copy(TOP / 'tools' / name, repo / 'tools' / name)
-        (repo / 'tools' / 'i18n.sh').write_text('# %s\n' % CJK, encoding='utf-8')
-        (repo / 'rootfs' / 'overlay').mkdir(parents=True)
-        (repo / 'rootfs' / 'overlay' / 'x.sh').write_text('echo %s\n' % CJK, encoding='utf-8')
+            shutil.copy(TOP / 'openwrt' / 'tools' / name, repo / 'openwrt' / 'tools' / name)
+        (repo / 'openwrt' / 'opt' / 'mu300' / 'bin').mkdir(parents=True)
+        (repo / 'openwrt' / 'opt' / 'mu300' / 'bin' / 'x').write_text('echo %s\n' % CJK, encoding='utf-8')
+        (repo / 'docs').mkdir()
+        (repo / 'docs' / 'x.md').write_text('# %s\n' % CJK, encoding='utf-8')
         subprocess.run(['git', 'init', '-q', str(repo)], check=True)
         subprocess.run(['git', '-C', str(repo), 'add', '.'], check=True)
-        r = subprocess.run([sys.executable, str(repo / 'tools' / 'luci-i18n.py'), 'check'], capture_output=True,
-                           text=True, encoding='utf-8')
+        r = subprocess.run([sys.executable, str(repo / 'openwrt' / 'tools' / 'luci-i18n.py'), 'check'],
+                           capture_output=True, text=True, encoding='utf-8')
         self.assertNotIn('Traceback', r.stderr)
-        self.assertEqual(r.stdout, 'cjk: rootfs/overlay/x.sh:1: echo %s\n' % CJK)
+        self.assertEqual(r.stdout, 'cjk: openwrt/opt/mu300/bin/x:1: echo %s\n' % CJK)
 
     def test_extract_finds_every_kind_of_message_and_nothing_else(self):
         r = run('extract', '--root', str(self.mini()))
@@ -134,12 +135,11 @@ class Catalogs(unittest.TestCase):
         self.assertEqual((r.returncode, r.stdout), (0, ''), r.stderr)
 
     def test_every_catalog_is_checked(self):
-        # a third language is held to the same rules as tr and zh_Hans; CJK is fine in any catalog; a catalog
-        # directory the language table does not know is an error (the build could not name its .lmo)
+        # the Chinese catalog is held to the rules (a message it lacks is missing); a catalog directory the language
+        # table does not know is an error (the build could not name its .lmo)
         root = self.mini()
-        (root / 'po' / 'ja').mkdir()
-        (root / 'po' / 'ja' / 'mu300.po').write_text(
-            po('ja', [(po_str(m), po_str(m.replace('messages', 'x') + ' ' + CJK)) for m in MESSAGES[1:]]),
+        (root / 'po' / 'zh_Hans' / 'mu300.po').write_text(
+            po('zh_Hans', [(po_str(m), po_str(m.replace('messages', 'x') + ' ' + CJK)) for m in MESSAGES[1:]]),
             encoding='utf-8')
         (root / 'po' / 'xx').mkdir()
         (root / 'po' / 'xx' / 'mu300.po').write_text(
@@ -148,14 +148,15 @@ class Catalogs(unittest.TestCase):
         self.assertEqual(r.returncode, 1)
         lines = r.stdout.splitlines()
         self.assertEqual(len(lines), 2, lines)
-        self.assertTrue(lines[0].startswith('missing: po/ja/mu300.po:0: "Dashboard" (used at '), lines)
-        self.assertEqual(lines[1], 'language: po/xx/mu300.po:0: po/xx has no row in openwrt/luci-languages.tsv')
-        # update keeps every catalog, the third one included
+        self.assertEqual(lines[0], 'language: po/xx/mu300.po:0: po/xx has no row in openwrt/luci-languages.tsv')
+        self.assertTrue(lines[1].startswith('missing: po/zh_Hans/mu300.po:0: "Dashboard" (used at '), lines)
+        # update adds what the catalog lacks
         run('update', '--root', str(root))
-        self.assertIn('msgid "Dashboard"', (root / 'po' / 'ja' / 'mu300.po').read_text(encoding='utf-8'))
+        self.assertIn('msgid "Dashboard"', (root / 'po' / 'zh_Hans' / 'mu300.po').read_text(encoding='utf-8'))
 
     def test_language_table(self):
-        # one row per catalog of the app; codes as LuCI names its .lmo files; no row for English (the source)
+        # one row per catalog of the app; codes as LuCI names its .lmo files; no row for English (the source).
+        # The panel speaks English and Simplified Chinese only.
         rows = [l.split('\t') for l in (TOP / 'openwrt' / 'luci-languages.tsv').read_text(encoding='utf-8')
                 .splitlines() if l and not l.startswith('#')]
         self.assertTrue(all(len(r) == 3 for r in rows), rows)
@@ -167,20 +168,22 @@ class Catalogs(unittest.TestCase):
             self.assertRegex(name, r'^[^\t"\'\\$`]+ \([A-Z][A-Za-z ]+\)$', d)
         cats = sorted(p.parent.name for p in (APP / 'po').glob('*/mu300.po'))
         self.assertTrue(set(cats) <= set(dirs), set(cats) - set(dirs))
-        self.assertGreaterEqual(len(cats), 25, 'the panel speaks at least the 23 languages asked for, tr and zh')
+        self.assertEqual((dirs, cats), (['zh_Hans'], ['zh_Hans']))
 
     def test_update_adds_missing_and_removes_stale_in_order_of_first_use(self):
         root = self.mini()
-        tr = root / 'po' / 'tr' / 'mu300.po'
-        tr.write_text(po('tr', [('Done', 'Tamam'), ('Gone', 'Yok')]), encoding='utf-8')
-        shutil.rmtree(root / 'po' / 'zh_Hans')
+        zh = root / 'po' / 'zh_Hans' / 'mu300.po'
+        zh.write_text(po('zh_Hans', [('Done', 'X'), ('Gone', 'Y')]), encoding='utf-8')
         r = run('update', '--root', str(root))
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        want = po('tr', [(po_str(m), 'Tamam' if m == 'Done' else '') for m in MESSAGES])
-        self.assertEqual(tr.read_text(encoding='utf-8'), want)
-        zh = (root / 'po' / 'zh_Hans' / 'mu300.po').read_text(encoding='utf-8')
-        self.assertIn('"Language: zh_Hans\\n"', zh)
-        self.assertEqual(zh.count('msgstr ""'), len(MESSAGES) + 1)
+        want = po('zh_Hans', [(po_str(m), 'X' if m == 'Done' else '') for m in MESSAGES])
+        self.assertEqual(zh.read_text(encoding='utf-8'), want)
+        # the catalog the image needs is made when it is not there
+        shutil.rmtree(root / 'po' / 'zh_Hans')
+        self.assertEqual(run('update', '--root', str(root)).returncode, 0)
+        text = zh.read_text(encoding='utf-8')
+        self.assertIn('"Language: zh_Hans\\n"', text)
+        self.assertEqual(text.count('msgstr ""'), len(MESSAGES) + 1)
         r = run('check', '--root', str(root))       # still failing: the new entries have no translation yet
         self.assertEqual(r.returncode, 1)
         self.assertIn('empty msgstr', r.stdout)
@@ -195,8 +198,8 @@ class Catalogs(unittest.TestCase):
                     f.write(text)
             return apply
 
-        def tr_entry(msgid, msgstr):
-            return append('po/tr/mu300.po', f'\nmsgid "{msgid}"\nmsgstr "{msgstr}"\n')
+        def zh_entry(msgid, msgstr):
+            return append('po/zh_Hans/mu300.po', f'\nmsgid "{msgid}"\nmsgstr "{msgstr}"\n')
 
         def both(*steps):
             def apply(root):
@@ -211,11 +214,11 @@ class Catalogs(unittest.TestCase):
             ('missing', append(DASH, "\nm_z() { refuse 'A refusal nobody translated'; }\n")),
             ('missing', append(DASH, "\nm_y() { printf '{\"ok\":0,\"error\":\"A printf nobody translated\"}\\n'; }\n")),
             ('missing', append(DASH, '\n# i18n: A comment message nobody translated\n')),
-            ('missing', both(append(VIEW, "\nE('p', {}, _('Empty in tr'));\n"), tr_entry('Empty in tr', ''))),
+            ('missing', both(append(VIEW, "\nE('p', {}, _('Empty in zh_Hans'));\n"), zh_entry('Empty in zh_Hans', ''))),
             ('missing', append(DASH, '\nm_x() { awk \'END { print "{\\"error\\":\\"Escaped nobody translated\\"}" }\'; }\n')),
             ('placeholder', both(append(VIEW, "\nE('p', {}, _('%d new messages').format(n));\n"),
-                                 tr_entry('%d new messages', '%s yeni mesaj'))),
-            ('stale', tr_entry('A message no source uses', 'Kimse kullanmiyor')),
+                                 zh_entry('%d new messages', '%s X'))),
+            ('stale', zh_entry('A message no source uses', 'X')),
             ('dynamic', append(VIEW, "\nE('p', {}, _(someVariable));\n")),
             ('dynamic', append(VIEW, "\nE('p', {}, _('Half ' + 'a sentence'));\n")),
             ('dynamic', append(DASH, '\nm_w() { printf \'{"ok":0,"error":%s}\\n\' "$(json_str "$msg")"; }\n')),
@@ -246,7 +249,7 @@ BUILD = TOP / 'openwrt' / 'build-rootfs.sh'
 
 def catalog(lang):
     """{msgid: msgstr} of po/<lang>/mu300.po, read as the tool reads it."""
-    spec = importlib.util.spec_from_file_location('luci_i18n', TOP / 'tools' / 'luci-i18n.py')
+    spec = importlib.util.spec_from_file_location('luci_i18n', TOP / 'openwrt' / 'tools' / 'luci-i18n.py')
     tool = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(tool)
     return {e['msgid']: e['msgstr'] for e in tool.read_po(APP / 'po' / lang / 'mu300.po')[1]}
@@ -263,7 +266,7 @@ class Languages(unittest.TestCase):
         used: every _() argument, in order}. The stubs: one DOM element per createElement, every getElementById the
         toast container (notes collects what it is given), window.setInterval keeps its callback as tick, rpc calls
         answer rpcReply, and setTimeout does nothing."""
-        cat = catalog(lang) if lang in ('tr', 'zh_Hans') else {}
+        cat = catalog(lang) if lang == 'zh_Hans' else {}
         harness = r'''
 const fs = require('fs');
 const src = fs.readFileSync(process.argv[2], 'utf8');
@@ -310,7 +313,7 @@ return {
     sms: notes.map((n) => n.querySelector('b').textContent)
 };'''
 
-    def test_three_languages(self):
+    def test_english_and_chinese(self):
         # The fork's case was a sentence assembled from fragments ('Link & traffic' + ' · ' + 'No response', a pair
         # that exists only in its test). common.js's own assembled sentence was the new-SMS banner, ('new SMS · ' in
         # Chinese) + sender; it is now one message with a placeholder, rendered whole in each language, with the unknown-
@@ -318,9 +321,6 @@ return {
         want = {
             None: (['Excellent', 'Good', 'Fair', 'Poor', 'Unknown'], ['1 d 1 h', '1 h 2 min', '5 min'],
                    'No neighbor-cell data', 'Locked', 'Lock', ['New SMS · Unknown number', 'New SMS · 10086']),
-            'tr': (['Mükemmel', 'İyi', 'Orta', 'Zayıf', 'Bilinmiyor'],
-                   ['1 gün 1 sa', '1 sa 2 dk', '5 dk'], 'Komşu hücre verisi yok', 'Kilitli', 'Kilitle',
-                   ['Yeni SMS · Bilinmeyen numara', 'Yeni SMS · 10086']),
             'zh_Hans': (['\u4f18\u79c0', '\u826f\u597d', '\u4e00\u822c', '\u8f83\u5dee', '\u672a\u77e5'],
                         ['1 \u5929 1 \u5c0f\u65f6', '1 \u5c0f\u65f6 2 \u5206', '5 \u5206'],
                         '\u6682\u65e0\u90bb\u533a\u6570\u636e', '\u5df2\u9501\u5b9a', '\u9501\u5b9a',
@@ -369,7 +369,7 @@ const levels = %s, readings = [ [ -85 ], [ -95 ], [ -105 ], [ -115 ], [], [ null
 return { colours: levels.map((l) => M.qCol(l)),
          graded: readings.map((r) => [ M.qLevel.apply(null, r), M.qLabel.apply(null, r) ]),
          names: levels.map((l) => M.qLevelLabel(l)) };''' % json.dumps(self.LEVELS)
-        runs = {lang: self.run_js(lang, body)['result'] for lang in (None, 'tr', 'zh_Hans')}
+        runs = {lang: self.run_js(lang, body)['result'] for lang in (None, 'zh_Hans')}
         colours = runs[None]['colours']
         self.assertEqual(len(set(colours)), 5, colours)                   # five levels, five colours
         self.assertIn('var(--text-subtle', colours[4])                    # unknown is the neutral grey
@@ -405,7 +405,6 @@ return { colours: levels.map((l) => M.qCol(l)),
                           M.carrierName({ plmn: '28601' }), M.carrierName(null) ];'''
         unicom, mobile = '\u4e2d\u56fd\u8054\u901a', '\u4e2d\u56fd\u79fb\u52a8'
         for lang, want in ((None, ['China Unicom', 'China Unicom', 'China Mobile']),
-                           ('tr', ['China Unicom', 'China Unicom', 'China Mobile']),
                            ('zh_Hans', [unicom, unicom, mobile])):
             with self.subTest(lang=lang):
                 # a name the catalogs do not know, a PLMN outside the table and no operator pass through
@@ -425,11 +424,10 @@ if (selected !== true) throw Error('the Bootstrap token bridge must survive the 
         extracted = set(subprocess.run(TOOL + ['extract'], capture_output=True, text=True, encoding='utf-8',
                                        check=True).stdout.splitlines())
         self.assertLessEqual(used, extracted)
-        for lang in ('tr', 'zh_Hans'):
-            self.assertLessEqual(used, set(catalog(lang)), lang)
+        self.assertLessEqual(used, set(catalog('zh_Hans')))
 
-    def test_common_menu_and_acl_have_no_chinese_and_are_in_both_catalogs(self):
-        # Task 13's files: the catalog check finds no problem in them (the views and backend are Tasks 14-16)
+    def test_common_menu_and_acl_have_no_chinese_and_are_catalogued(self):
+        # the shared files: the catalog check finds no problem in them, and no catalog entry is stale
         r = run('check')
         mine = ('mu300/common.js', 'menu.d/luci-app-mu300.json', 'acl.d/luci-app-mu300.json')
         self.assertEqual([l for l in r.stdout.splitlines() if any(m in l for m in mine)], [])
@@ -445,7 +443,7 @@ if (selected !== true) throw Error('the Bootstrap token bridge must survive the 
 
 
 VIEWS = APP / 'htdocs/luci-static/resources/view/mu300'
-VIEW_NAMES = ('home', 'locks', 'sms', 'at', 'settings', 'device', 'languages', 'ttl', 'traffic', 'packages', 'terminal',
+VIEW_NAMES = ('home', 'locks', 'sms', 'at', 'settings', 'device', 'ttl', 'traffic', 'packages', 'terminal',
               'update')
 CJK_RE = re.compile('[\u2e80-\u9fff\uf900-\ufaff\uff00-\uffef]')
 
@@ -511,7 +509,7 @@ const notes = () => toasts.map((t) => t.lastChild.textContent);
 '''
 
     def run_view(self, name, lang, body):
-        cat = catalog(lang) if lang in ('tr', 'zh_Hans') else {}
+        cat = catalog(lang) if lang == 'zh_Hans' else {}
         harness = self.HARNESS.replace('__CATALOG__', json.dumps(cat, ensure_ascii=True)).replace('__BODY__', body)
         r = subprocess.run(['node', '-', str(COMMON), str(VIEWS / f'{name}.js')], input=harness, capture_output=True,
                            text=True, encoding='utf-8')
@@ -519,11 +517,10 @@ const notes = () => toasts.map((t) => t.lastChild.textContent);
         return json.loads(r.stdout)
 
     def assert_english_and_catalogued(self, out):
-        # no Chinese left in what the page shows, and every message it used is extracted and in both catalogs
+        # no Chinese left in what the page shows, and every message it used is extracted and in the catalog
         self.assertIsNone(CJK_RE.search(json.dumps(out['result'], ensure_ascii=False)), out['result'])
         self.assertLessEqual(set(out['used']), set(run('extract').stdout.splitlines()))
-        for lang in ('tr', 'zh_Hans'):
-            self.assertLessEqual(set(out['used']), set(catalog(lang)), lang)
+        self.assertLessEqual(set(out['used']), set(catalog('zh_Hans')))
 
     def test_every_view_loads(self):
         # the module of each page evaluates and returns a view object with render()
@@ -532,16 +529,9 @@ const notes = () => toasts.map((t) => t.lastChild.textContent);
                 r = self.run_view(name, None, "return [ typeof V, typeof V.render ];")['result']
                 self.assertEqual(r, ['object', 'function'])
 
-    def test_the_languages_page_puts_backend_text_in_as_text(self):
-        # LuCI's E(tag, attrs, 'string') sets innerHTML; names, the release and the job's log come from the language
-        # pack (perhaps an uploaded one), so every value that is not a literal or a _() message goes in as [ value ]
-        src = (VIEWS / 'languages.js').read_text(encoding='utf-8')
-        self.assertEqual(re.findall(r"E\('\w+', \{[^}]*\}, (?!_\(|\[|')[A-Za-z][^\n]*", src), [])
-        self.assertNotIn('innerHTML', src)
-
     def test_the_translate_shims_are_gone(self):
-        # translate/localize/localizeMenu did the fork's partial matching; the pages have only _() now, and
-        # common.js no longer has the no-op shims Task 13 left for them
+        # the pages translate with _() only: no translate/localize/localizeMenu helper doing partial matching,
+        # in the pages or in common.js
         for name in VIEW_NAMES:
             with self.subTest(view=name):
                 src = (VIEWS / f'{name}.js').read_text(encoding='utf-8')
@@ -568,9 +558,6 @@ return { html: root.innerHTML, op: text('op'), uptime: text('uptime'), reg: text
             None: ('Link & traffic', 'China Unicom · Signal Good 7.8/10', 'Uptime 1 h 2 min', 'Registered · TAC AB',
                    'Online · AT adapter unavailable', '2 clients', '7 entries', 'Total 1.0 MB · free 512 KB',
                    'Anchor B3', 'Cluster 0', 'Recent DHCP leases', '2 h'),
-            'tr': ('Bağlantı ve trafik', 'China Unicom · Sinyal İyi 7.8/10', 'Çalışma süresi 1 sa 2 dk',
-                   'Kayıtlı · TAC AB', 'Çevrimiçi · AT bağdaştırıcısı kullanılamıyor', '2 istemci', '7 kayıt',
-                   'Toplam 1.0 MB · boş 512 KB', 'Ankraj hücresi B3', 'Küme 0', 'Son DHCP kiraları', '2 sa'),
             'zh_Hans': ('\u94fe\u8def\u4e0e\u6d41\u91cf',
                         '\u4e2d\u56fd\u8054\u901a \xb7 \u4fe1\u53f7 \u826f\u597d 7.8 \u5206',
                         '\u5df2\u8fd0\u884c 1 \u5c0f\u65f6 2 \u5206', '\u5df2\u6ce8\u518c \xb7 TAC AB',
@@ -616,9 +603,6 @@ return out;'''
         want = {
             None: ('Band locking', '1 locked: n78', 'Automatic (9 supported)', 'Apply at startup ✓', 'Unlock NR',
                    '5G NSA · China Mobile', 'NR serving cell', ['Apply at startup is on', 'Apply at startup is off']),
-            'tr': ('Bant kilitleme', '1 kilitli: n78', 'Otomatik (9 destekleniyor)', 'Başlangıçta uygula ✓',
-                   'NR kilidini kaldır', '5G NSA · China Mobile', 'NR hizmet hücresi',
-                   ['Başlangıçta uygulama açık', 'Başlangıçta uygulama kapalı']),
             'zh_Hans': ('\u9891\u6bb5\u9501\u5b9a', '\u5df2\u9501 1 \u4e2a\uff1an78',
                         '\u81ea\u52a8\uff08\u652f\u6301 9 \u4e2a\uff09', '\u5f00\u673a\u81ea\u52a8\u5e94\u7528 ✓',
                         '\u89e3\u9501 NR', '5G NSA \xb7 \u4e2d\u56fd\u79fb\u52a8', 'NR \u670d\u52a1\u5c0f\u533a',
@@ -638,7 +622,7 @@ return out;'''
 
     def test_locks_page_offers_the_reset_and_says_the_locks_stay_in_android(self):
         # #96: mode and band locks live in the modem's NV and stay in force in Android
-        for lang in (None, 'tr', 'zh_Hans'):
+        for lang in (None, 'zh_Hans'):
             with self.subTest(lang=lang):
                 out = self.run_view('locks', lang, 'const root = V.render(); await flush(); return root.innerHTML;')
                 cat = catalog(lang) if lang else {}
@@ -725,10 +709,6 @@ return out;'''
                    ['Enter both a number and a message.', 'Sending…',
                     'The AT channel is busy; the command was not sent, try again', 'Sending…',
                     'Sending failed (+CMS ERROR: 500)']),
-            'tr': ('SIM’den eşitle', '· 3 mesaj, 1 okunmamış · 2 görüşme', 'Ben: hi',
-                   ['Numara ve mesaj girin.', 'Gönderiliyor…',
-                    'AT kanalı meşgul; komut gönderilmedi, yeniden deneyin', 'Gönderiliyor…',
-                    'Gönderme başarısız (+CMS ERROR: 500)']),
             'zh_Hans': ('\u4ece SIM \u540c\u6b65', '\xb7 3 \u6761\uff0c1 \u6761\u672a\u8bfb \xb7 2 \u4e2a\u4f1a\u8bdd',
                         '\u6211: hi',
                         ['\u53f7\u7801\u548c\u5185\u5bb9\u90fd\u8981\u586b\u3002', '\u53d1\u9001\u4e2d…',
@@ -756,12 +736,10 @@ return { html: root.innerHTML, lines: lines.filter((l) => !/^(> |\\u2014)/.test(
 
     def test_at_renders_in_each_language(self):
         want = {
-            # the backend's sentence alone: it is a whole sentence already, an "Error: " in front doubled it (R31)
+            # the backend's sentence alone: it is a whole sentence already, an "Error: " in front would double it
             None: ('Clear screen', ['The AT channel is busy; the command was not sent, try again\n',
                                     '(no output)\n'],
                    '(empty)'),
-            'tr': ('Ekranı temizle', ['AT kanalı meşgul; komut gönderilmedi, yeniden deneyin\n',
-                                      '(çıktı yok)\n'], '(boş)'),
             'zh_Hans': ('\u6e05\u5c4f',
                         ['AT \u901a\u9053\u6b63\u5fd9\uff0c\u547d\u4ee4\u672a\u53d1\u51fa\uff0c\u8bf7\u91cd\u8bd5\n',
                          '(\u65e0\u8f93\u51fa)\n'], '\uff08\u7a7a\uff09'),
@@ -795,8 +773,6 @@ return { html: root.innerHTML, role: text('usb-role-now'), note: text('usb-net-n
             None: ('USB adapters', 'Host mode', 'USB network mode is unavailable in host mode; host auto-start also '
                    'disables USB network auto-start.', ['eth1', 'Link connected', 'Added to LAN', 'eth2',
                                                         'No link; enable attempted', 'Add to LAN']),
-            'tr': ('USB bağdaştırıcıları', 'Ana makine modu', None, ['eth1', None, 'LAN’a eklendi', 'eth2', None,
-                                                                     'LAN’a ekle']),
             'zh_Hans': ('USB \u7f51\u5361', '\u4e3b\u673a\u6a21\u5f0f', None,
                         ['eth1', None, '\u5df2\u6dfb\u52a0\u5230 LAN', 'eth2', None, '\u6dfb\u52a0\u5230 LAN']),
         }
@@ -815,19 +791,6 @@ return { html: root.innerHTML, role: text('usb-role-now'), note: text('usb-net-n
 
     SETTINGS = '''
 return V.render();'''
-
-    # the Languages page without the pack (a failed install), with it (one running), and the replies of lang_set
-    LANGUAGES = '''
-V.render({ ok: 1, current: 'en', luci: [ { code: 'tr', name: 'T' } ], extra: { installed: 0 },
-           job: { state: 'failed', log: 'no verified file' } });
-V.paint({ ok: 1, current: 'de', luci: [], job: { state: 'running' }, extra: { installed: 1, release: 'v1',
-          languages: [ { code: 'de', name: 'Deutsch (German)', enabled: 1, panel: 1 },
-                       { code: 'ja', name: 'J', enabled: 0, panel: 0 } ] } });
-rpcReply = { ok: 0, error: 'Invalid language code' }; await V.set(null, 'enable', 'de'); await flush();
-rpcReply = { ok: 1, started: 1 }; await V.set(null, 'install', '', 'release'); await flush();
-rpcReply = { ok: 1, job: { state: 'done' }, extra: {} }; timers.splice(0).forEach((f) => f()); await flush(); await flush();
-rpcReply = { ok: 1 }; await V.set(null, 'disable', 'ja'); await flush();
-return notes();'''
 
     TTL = '''
 V.render({ ok: 1, enabled: 1, value: 64, backend: 'nft', offload: 0, iface: [] });
@@ -878,7 +841,7 @@ return [ at('192.168.77.1'), at('mu300.lan'), at('[fd00::1]'), at('fd00::1'),
         self.assertEqual(r[4:7], [None, None, None])
 
     def test_terminal_page_messages(self):
-        for lang in (None, 'tr', 'zh_Hans'):
+        for lang in (None, 'zh_Hans'):
             with self.subTest(lang=lang):
                 out = self.run_view('terminal', lang, self.TERMINAL)
                 for m in ('Terminal', 'It closes after %d minutes without activity.',
@@ -913,8 +876,9 @@ return { asked: asked, before: before, notes: notes() };'''
 
     def test_packages_page(self):
         for lang, want in ((None, ['Started in background: Repair DNS', 'Failed: Reinstalling is running already', 'Saved']),
-                           ('tr', ["Arka planda başlatıldı: DNS'i onar", 'Başarısız: Yeniden kurma zaten çalışıyor',
-                                   'Kaydedildi'])):
+                           ('zh_Hans', ['\u5df2\u540e\u53f0\u6267\u884c\uff1a\u4fee\u590d DNS',
+                                        '\u5931\u8d25\uff1a\u91cd\u65b0\u5b89\u88c5\u5df2\u5728\u8fd0\u884c',
+                                        '\u5df2\u4fdd\u5b58'])):
             with self.subTest(lang=lang):
                 out = self.run_view('packages', lang, self.PACKAGES)
                 res = out['result']
@@ -931,7 +895,8 @@ return { asked: asked, before: before, notes: notes() };'''
 
     def test_traffic_page_messages(self):
         for lang, want in ((None, ['Failed: Invalid value for this setting', 'Saved']),
-                           ('tr', ['Başarısız: Bu ayar için geçersiz değer', 'Kaydedildi'])):
+                           ('zh_Hans', ['\u5931\u8d25\uff1a\u6b64\u8bbe\u7f6e\u7684\u503c\u65e0\u6548',
+                                        '\u5df2\u4fdd\u5b58'])):
             with self.subTest(lang=lang):
                 out = self.run_view('traffic', lang, self.TRAFFIC)
                 self.assertEqual(out['result'], want)
@@ -999,7 +964,7 @@ return [ notes().pop() ];""", [('Add failed: %s', 'Not a USB network interface',
     ]
 
     def test_backend_errors_are_shown_through_the_catalogs(self):
-        for lang in (None, 'tr', 'zh_Hans'):
+        for lang in (None, 'zh_Hans'):
             cat = catalog(lang) if lang else {}
             for name, body, shown in self.BACKEND_ERRORS:
                 with self.subTest(lang=lang, view=name):
@@ -1017,14 +982,12 @@ return [ notes().pop() ];""", [('Add failed: %s', 'Not a USB network interface',
     UPDATE = '''
 rpcReply = { ok: 1, check_age: 60, report: 'kept: etc/config',
     status: { ok: 1, installed: 'v2026.10.25', running: 'openwrt-luci', restart_pending: 1, boot_default: 'linux', boot_attempts: 5,
-        systems: [ { name: 'openwrt-luci', release: 'v2026.10.25', since: 1790000000, previous: { release: 'v2026.10.18', kb: 5, running: 0 } },
-                   { name: 'ubuntu', release: 'v2026.10.18', ubuntu: '26.04', previous: null } ],
-        kernel: { running: '6.18.3', choice: '6.18', boot: 'v2026.10.25', choices: [ { name: '5.4', ok: 0, why: 'ubuntu-26.04' },
-            { name: '6.18', ok: 1 } ], previous: { release: 'v2026.10.18', kernel: '5.4', since: 1790000000, usable: 1 } },
+        systems: [ { name: 'openwrt-luci', release: 'v2026.10.25', since: 1790000000, previous: { release: 'v2026.10.18', kb: 5, running: 0 } } ],
+        kernel: { running: '7.2.11', boot: 'v2026.10.25', previous: { release: 'v2026.10.18', since: 1790000000, usable: 1 } },
         disk: { free_kb: 5000000, total_kb: 9000000 }, lock: { held: 0 }, signing: { key: 1 } },
     check: { ok: 1, latest: { tag: 'v2026.11.02', published: '2026-11-02', url: 'https://example.invalid/', download: 5, need_kb: 9 },
              beta: { tag: 'v2026.11.09', url: 'https://example.invalid/', download: 5, need_kb: 9 } },
-    upload: { present: 1, size: 9, inspect: { ok: 1, sha256: 'ab', tag: 'v2026.10.01', system: 'openwrt-luci', kernel: '6.18',
+    upload: { present: 1, size: 9, inspect: { ok: 1, sha256: 'ab', tag: 'v2026.10.01', system: 'openwrt-luci', kernel: '7.2',
         signature: 'unsigned', installed: 'v2026.10.25', downgrade: 1, same: 0, fits: 1 } },
     job: { kind: 'apply', state: 'done', elapsed: 9, rc: 0, stage: 'boot', changed: 1, log: 'updated' } };
 const st = await V.load();
@@ -1032,7 +995,7 @@ V.beta = true;
 V.render(st); await flush();'''
 
     def test_every_view_in_an_unknown_language_is_english_and_catalogued(self):
-        # German has no catalog: everything a page shows is English, and every message it used is in both catalogs
+        # German has no catalog: everything a page shows is English, and every message it used is in the catalog
         for name in VIEW_NAMES:
             with self.subTest(view=name):
                 body = 'await (async function() { %s })(); return shown();' % getattr(self, name.upper())

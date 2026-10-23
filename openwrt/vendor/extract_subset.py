@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Pull the Android vendor runtime needed by modem_control from a rooted device (adb + su) and build the chroot
-subset used by the initramfs (/android) and the root filesystem (/opt/mu300/android).
+subset the root filesystem image carries (/opt/mu300/android, build-rootfs.sh's android-subset input).
 
     python3 openwrt/vendor/extract_subset.py [OUTDIR]
 
@@ -8,14 +8,12 @@ These files are proprietary (ZTE/Unisoc/Google) and are NOT part of this reposit
 extract-subset.sh; written in Python so it also runs on Windows.
 
 Windows cannot store every name the device sends: the Android property area is a directory of files called
-u:object_r:<context>:s0, ':' may not appear in a file name there, and the extraction used to die on the first of
-them with "OSError: [Errno 22] Invalid argument". The archive from the device is therefore also kept as
-OUTDIR/windows-source.tar.gz, and while that file exists it is the copy the packing tools use
-(tools/vendor-overlay.py and kernel/initramfs/build-boot-image.py read it instead of the directory), so a Windows install
-gets exactly what a Linux host would have extracted - including the file modes, which the file system there
-cannot hold either (the chroot's modem_control has to stay executable).
+u:object_r:<context>:s0, and ':' may not appear in a file name there ("OSError: [Errno 22] Invalid argument"). The
+archive from the device is therefore also kept as OUTDIR/windows-source.tar.gz: a packing tool that finds it reads
+it instead of the directory, and gets exactly what a Linux host would have extracted - including the file modes,
+which the file system there cannot hold either (the chroot's modem_control has to stay executable).
 
-The directory is built beside its final place and renamed when it is complete: the installer skips this step when
+The directory is built beside its final place and renamed when it is complete: a later run skips this step when
 OUTDIR exists, so an interrupted run must not leave a directory behind that later runs then use as it is.
 """
 import io
@@ -168,7 +166,7 @@ def main():
         blob = Path(tmp) / 'vendor.tar'
         # Build the tar on the device and pull it as a file. Streaming it through `adb exec-out "su -c ..."`
         # is what the comment here used to claim was binary-clean, and on some devices it is not: su gives
-        # the command a pty whose ONLCR turns every LF into CRLF, and the archive arrives corrupt (issue #2).
+        # the command a pty whose ONLCR turns every LF into CRLF, and the archive arrives corrupt.
         devtar = '/data/local/tmp/mu300-subset.tar'
         subprocess.run(['adb', 'shell', f"su -c 'tar -chf {devtar} " + ' '.join(PULL) + " 2>/dev/null'"],
                        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL)

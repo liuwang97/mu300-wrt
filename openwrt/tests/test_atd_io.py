@@ -1,4 +1,4 @@
-"""mu300-atd-io (openwrt/src/atd-io/mu300-atd-io.c; docs/MODEMD.md, "The bridge protocol"): the C bridge that holds the
+"""mu300-atd-io (openwrt/src/atd-io/mu300-atd-io.c, its header has the protocol): the C bridge that holds the
 modem's AT channels and mu300-at's request FIFOs open for mu300-modemd. Built here with the machine's C compiler (Linux
 only, else skipped) and driven through its socket: pseudo-terminals stand in for the SIPC channels (the bridge opens
 the slave, the test is the modem on the master), real FIFOs for the request FIFOs, a file for /dev/sipc_sbuf. The rule
@@ -22,7 +22,7 @@ from pathlib import Path
 
 from helpers import TOP
 
-SRC = TOP / 'tools' / 'atd-io' / 'mu300-atd-io.c'
+SRC = TOP / 'openwrt' / 'src' / 'atd-io' / 'mu300-atd-io.c'
 CC = shutil.which('gcc') or shutil.which('cc')
 LINUX = sys.platform.startswith('linux')
 BRIDGE = None
@@ -722,13 +722,7 @@ class Wiring(unittest.TestCase):
     /opt/mu300/bin by both root filesystem builds"""
 
     def test_built_and_installed(self):
-        for script, d in (('tools/make-release.sh', '$IN'), ('install.sh', '$WORK')):
-            text = (TOP / script).read_text()
-            self.assertIn('mkdir -p /o/atd-io && gcc -O2 -static -o /o/atd-io/mu300-atd-io /src/atd-io/mu300-atd-io.c &&',
-                          text)
-            self.assertIn(f'-v "{d}/tools/atd-io/mu300-atd-io":/atd-io:ro', text)
-        assemble = (TOP / 'rootfs/assemble.sh').read_text()
-        self.assertIn('if [ -e /atd-io ]; then install -m755 /atd-io $R/opt/mu300/bin/mu300-atd-io; fi', assemble)
+        # (the release builds the static program into $MU300_INPUTS/openwrt/src/atd-io/mu300-atd-io)
         owrt = (TOP / 'openwrt/build-rootfs.sh').read_text()
         self.assertIn('$(opt openwrt/src/atd-io/mu300-atd-io atd-io)', owrt)
         self.assertIn('[ -e /in/atd-io ] && { cp /in/atd-io $R/opt/mu300/bin/mu300-atd-io; '

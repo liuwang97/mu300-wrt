@@ -8,7 +8,7 @@ TMP=$(mktemp -d)
 # The tar is built on the device and pulled as a file, never streamed through `adb exec-out "su -c ..."`:
 # on some devices su gives the command a pty whose ONLCR turns every LF into CRLF, and a tar mangled that way
 # fails with "Skipping to next header" / "A lone zero block" - or, worse, extracts a few entries and looks
-# like it worked (issue #2).
+# like it worked.
 DEVTAR=/data/local/tmp/mu300-subset.tar
 adb shell "su -c 'tar -chf $DEVTAR /apex/com.android.runtime /system/lib64 /vendor/bin/modem_control /vendor/bin/cp_diskserver /vendor/bin/refnotify /vendor/lib64/lib_crypto.so /vendor/bin/sh /vendor/bin/toybox_vendor /vendor/bin/getprop /vendor/lib64/libkernelbootcp.trusty.so /vendor/etc /dev/__properties__ 2>/dev/null'" </dev/null >/dev/null
 adb pull "$DEVTAR" "$TMP/subset.tar" >/dev/null 2>&1

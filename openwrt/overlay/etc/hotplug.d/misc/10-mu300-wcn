@@ -8,8 +8,7 @@
 # One reopen at a time: a reset can send FW_ERROR more than once (the watchdog's and wcn_bsp's own), and two
 # overlapping "wifi down; wifi up" runs race each other through netifd. A second event while one runs is dropped -
 # the running one reopens the chip that is there by then. The lock names its holder, so one left behind by a killed
-# run is taken over. (The Ubuntu side gets this from systemd: starting a oneshot that is already starting is one run.)
-# Based on kanoqwq/mu300-linux@23361ce.
+# run is taken over.
 [ "$ACTION" = change ] && [ "$SOURCE" = unisocwl ] && [ "$EVENT" = FW_ERROR ] || exit 0
 
 LOCK=${MU300_WCN_LOCK:-/run/mu300-wcn-reopen.lock}

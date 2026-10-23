@@ -1,5 +1,5 @@
 #!/bin/sh
-# Docker's networks in fw4 (docs/FINDINGS.md 130), once per device: the marker /etc/mu300/docker-zone is a file of
+# Docker's networks in fw4, once per device: the marker /etc/mu300/docker-zone is a file of
 # the device that every update carries, so a zone the user changed or deleted stays as the user left it.
 #
 # dockerd runs with the nftables backend (/etc/docker/daemon.json): its own tables (ip docker-bridges) do the NAT
@@ -16,7 +16,7 @@
 # The names are those of the package's own "/etc/init.d/dockerd uciadd", which its boot() runs whenever dockerd is
 # enabled, and its interface and bridge device are made here as uciadd makes them: uciadd then finds everything in
 # place and changes nothing. When it had to add them, its network reload at that boot took docker0 away from the
-# dockerd that had just made it ("adding interface ... to bridge docker0 failed: Device does not exist", F50, 5.4).
+# dockerd that had just made it ("adding interface ... to bridge docker0 failed: Device does not exist").
 [ -e /etc/mu300/docker-zone ] && exit 0
 if ! uci -q get network.docker >/dev/null; then
 	uci -q batch <<'UCI'

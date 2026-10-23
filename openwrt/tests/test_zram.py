@@ -1,6 +1,6 @@
-"""mu300-zram: compressed swap in RAM, on by default (FINDINGS 27 and 162). A fake /sys/block/zram0 and /proc (meminfo,
-swaps, vm sysctls) and stub mkswap/swapon/swapoff; under each shell. The wiring: the boot runs it on every system,
-the setting survives as /etc/mu300/zram.conf, and the mainline kernels have zram with both compressors."""
+"""mu300-zram: compressed swap in RAM, on by default (the RAM Linux sees is ~1.4 GiB). A fake /sys/block/zram0 and
+/proc (meminfo, swaps, vm sysctls) and stub mkswap/swapon/swapoff; under each shell. The wiring: the boot runs it, and
+the setting survives as /etc/mu300/zram.conf."""
 import re
 import unittest
 
@@ -196,20 +196,15 @@ class OnOff(ZramBase):
 
 
 class Wiring(unittest.TestCase):
-    def test_every_system_starts_it_at_boot(self):
-        unit = (TOP / 'rootfs/overlay/etc/systemd/system/mu300-zram.service').read_text()
-        self.assertIn('ExecStart=/opt/mu300/bin/mu300-zram start', unit)
-        self.assertIn('ExecStop=-/opt/mu300/bin/mu300-zram stop', unit)
-        for f in ('rootfs/assemble.sh', 'arch/build-rootfs.sh'):
-            self.assertIn('mu300-zram.service:swap.target', (TOP / f).read_text(), f)
-        # OpenWrt: mu300-hw runs the old name, which hands over to mu300-zram
+    def test_the_image_starts_it_at_boot(self):
+        # mu300-hw runs the old name, which hands over to mu300-zram
         self.assertIn('/opt/mu300/bin/zram-start', (TOP / 'openwrt/overlay/etc/init.d/mu300-hw').read_text())
         self.assertIn('exec /opt/mu300/bin/mu300-zram start', (BIN / 'zram-start').read_text())
         self.assertIn('mu300-zram', (TOP / 'openwrt/opt/mu300/lib/path-commands').read_text().split())
 
     def test_no_second_zram_setup_in_the_images(self):
-        # Ubuntu's zram-tools / zram-config / systemd-zram-generator would set up zram0 a second time
-        for f in ('rootfs/Dockerfile', 'rootfs/assemble.sh', 'arch/build-rootfs.sh', 'openwrt/build-rootfs.sh'):
+        # a package's zram setup would set up zram0 a second time
+        for f in ('openwrt/build-rootfs.sh',):
             src = (TOP / f).read_text()
             for pkg in ('zram-tools', 'zram-config', 'zram-generator', 'zram-swap', 'kmod-zram'):
                 self.assertNotIn(pkg, src, f'{f}: {pkg}')
@@ -221,18 +216,6 @@ class Wiring(unittest.TestCase):
                                 'ZRAM_SWAPPINESS'})
         for k in keys:
             self.assertIn(f'#{k}=', example)
-
-    def test_mainline_has_zram_with_lz4_and_zstd(self):
-        cfg = (TOP / 'kernel/mu300-mainline.config').read_text().splitlines()
-        for opt in ('SWAP', 'ZRAM', 'ZSMALLOC', 'ZRAM_BACKEND_LZ4', 'ZRAM_BACKEND_ZSTD', 'ZRAM_DEF_COMP_LZ4',
-                    'CRYPTO_LZ4', 'CRYPTO_ZSTD'):
-            self.assertIn(f'CONFIG_{opt}=y', cfg)
-
-    def test_vendor_54_has_zram_and_both_compressors(self):
-        # 5.4 is left as it is: zram a module (the fragment's =y is refused), the crypto API compressors built in
-        cfg = (TOP / 'kernel/linux.config').read_text().splitlines()
-        for line in ('CONFIG_ZRAM=m', 'CONFIG_ZSMALLOC=m', 'CONFIG_CRYPTO_LZ4=y', 'CONFIG_CRYPTO_ZSTD=y'):
-            self.assertIn(line, cfg)
 
     def test_toolkit_offers_it(self):
         tk = (BIN / 'mu300-toolkit').read_text()

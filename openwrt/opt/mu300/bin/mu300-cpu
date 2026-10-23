@@ -1,26 +1,26 @@
 #!/bin/sh
-# CPU performance profiles for the MU300 (Ubuntu and OpenWrt, POSIX sh). A profile is a governor and a per-cluster
+# CPU performance profiles for the MU300 (POSIX sh). A profile is a governor and a per-cluster
 # scaling_min/max; it moves only inside the hardware frequency table (cpuinfo_min_freq..cpuinfo_max_freq) and never
-# touches voltage or the kernel thermal trips - thermal-guard keeps throttling in every profile.
+# touches voltage or the kernel thermal trips - mu300-sysd's thermal guard keeps throttling in every profile.
 #   mu300-cpu status [--json]        per-policy governor, cur/min/max, hw max, saved profile, throttling (--json: the
 #                                    kernel's thermal zones too, read only)
 #   mu300-cpu profile [NAME]         apply NAME and save it; no NAME shows the saved one
 #   mu300-cpu apply                  apply the saved profile (the boot service)
 #   mu300-cpu voltage ...            the CPU voltage offset, EXPERIMENTAL (it can damage the device for good):
-#                                    see "the CPU voltage offset" below and docs/FINDINGS.md 133
+#                                    see "the CPU voltage offset" below and docs/contract.md
 #   mu300-cpu core N on|off          CPU N online or offline now, and saved (CPU0 always stays online); apply takes
-#                                    the saved ones offline again at boot (FINDINGS 200, after kanoqwq's cpu-cores)
+#                                    the saved ones offline again at boot (after kanoqwq's cpu-cores)
 #   mu300-cpu lowlatency [on|off]    CPU0 without its cpuidle states, as ZTE's U30 Air firmware ("lowlatency"): far
 #                                    shorter Wi-Fi delays in kanoqwq's measurements, more power drawn; off by default,
-#                                    saved, applied at boot (FINDINGS 200). No argument: the saved setting
-#   mu300-cpu services [little|all]  where the system's services run (OpenWrt: procd's /sys/fs/cgroup/services, and
+#                                    saved, applied at boot. No argument: the saved setting
+#   mu300-cpu services [little|all]  where the system's services run (procd's /sys/fs/cgroup/services, and
 #                                    every process they start): on the little cluster (the default) or on every CPU;
-#                                    saved, applied now and at boot (FINDINGS 216). No argument: the saved setting
+#                                    saved, applied now and at boot. No argument: the saved setting
 #   mu300-cpu services apply         apply the saved setting (the boot service)
 # Profiles: saving (cores capped at ~60 % of the maximum, schedutil - cooler, less power), balanced (schedutil over
 # the full range, the stock behaviour), performance (every cluster pinned at its hardware maximum).
 # Why it never fights the rest: mu300-power's idle "eco" drops the big core and caps policy4 to 1.5 GHz and brings
-# it back by looking; it wins while the device is asleep and restores to whatever this profile set. thermal-guard
+# it back by looking; it wins while the device is asleep and restores to whatever this profile set. The thermal guard
 # caps a hot policy a step lower and lifts it on cool-down, but not above the ceiling this profile wrote
 # (/run/mu300/cpu-ceiling), so "saving" stays capped. Configuration: /etc/mu300/cpu.conf (KEY=VALUE), kept across
 # updates with the rest of etc/mu300; a missing key is its default.
@@ -30,7 +30,7 @@ R=${MU300_SYSROOT:-}
 RUNROOT=${MU300_RUN:-/run}
 CPUFREQ=$R/sys/devices/system/cpu/cpufreq
 CONF=${MU300_CPU_CONF:-/etc/mu300/cpu.conf}
-CEIL=$RUNROOT/mu300/cpu-ceiling          # one "policyN=HZ" line per cluster: the max a profile set, for thermal-guard
+CEIL=$RUNROOT/mu300/cpu-ceiling          # one "policyN=HZ" line per cluster: the max a profile set, for the thermal guard
 PROFILES="saving balanced performance"
 SAVING_PERCENT=${MU300_CPU_SAVING_PERCENT:-60}
 
@@ -75,13 +75,13 @@ num() { case ${1#-} in ''|*[!0-9]*) echo 0 ;; *) echo "${1#-}" ;; esac; }
 rd() { cat "$1" 2>/dev/null; }
 policies() { for p in "$CPUFREQ"/policy*; do [ -d "$p" ] && echo "$p"; done; }
 
-# a governor the policy has, else its first available one (schedutil is the mainline default; the 5.4 vendor kernel
-# may not have it; powersave is only a fallback we never choose on purpose)
+# a governor the policy has, else its first available one (schedutil is the default; a kernel built without it still
+# gets a real governor; powersave is only a fallback we never choose on purpose)
 pick_gov() {  # pick_gov POLICY WANT
     if grep -qw "$2" "$1/scaling_available_governors" 2>/dev/null; then echo "$2"; else cut -d' ' -f1 "$1/scaling_available_governors" 2>/dev/null; fi
 }
 
-# ceil_write / ceil_get: the per-policy ceiling a profile set, so thermal-guard does not lift a capped policy past it
+# ceil_write / ceil_get: the per-policy ceiling a profile set, so the thermal guard does not lift a capped policy past it
 ceil_write() {  # ceil_write POLICYNAME HZ
     mkdir -p "${CEIL%/*}" 2>/dev/null
     { grep -v "^$1=" "$CEIL" 2>/dev/null; echo "$1=$2"; } > "$CEIL.tmp" 2>/dev/null && mv "$CEIL.tmp" "$CEIL" 2>/dev/null
@@ -117,7 +117,7 @@ apply() {  # apply PROFILE
     return 0
 }
 
-# --- the cores (CPU hotplug; mainline has CONFIG_HOTPLUG_CPU, FINDINGS 200). CPU0 is never taken offline: the
+# --- the cores (CPU hotplug, CONFIG_HOTPLUG_CPU). CPU0 is never taken offline: the
 # kernel's timekeeping and the vendor drivers' interrupts start there. mu300-power's idle takes CPU7 offline and
 # brings it back, but not one kept offline here (it reads CORES_OFF too).
 CPUDIR=$R/sys/devices/system/cpu
@@ -197,12 +197,12 @@ lowlat_apply() {  # at boot: only an "on" is applied; off leaves the kernel's ow
     lowlat_write 1 && say "low latency on (saved): CPU0 idle states off" || say "low latency: CPU0's idle states could not be written"
 }
 
-# --- the services' CPUs (FINDINGS 216). The panel, the collectors and the daemons are shell scripts and ucode: short
+# --- the services' CPUs. The panel, the collectors and the daemons are shell scripts and ucode: short
 # bursts of process starts that the scheduler spread over idle big cores (each burst woke an A76 and its cluster, and
 # raised its clock), for work a little core does in the same milliseconds. procd puts every service in a cgroup of its
 # own under /sys/fs/cgroup/services, so one cpuset there holds them all, and every process they start, on the little
 # cluster; the kernel's own work (network, interrupts) is not touched. "all" gives the services every CPU again (a
-# userspace VPN engine pushing traffic, say). A no-op where there is no procd service tree (Ubuntu) or no cpuset.
+# userspace VPN engine pushing traffic, say). A no-op where there is no procd service tree or no cpuset.
 CGROUP=$R/sys/fs/cgroup
 little_cpus() {  # the CPUs of the lowest capacity, comma-separated (every CPU on a SoC of one kind)
     _lc_min= _lc_list=
@@ -251,8 +251,8 @@ throttling() {
 }
 
 # thermal_json: the kernel's thermal zones for the panel's read-only Thermal section - type, temperature (mC), mode,
-# trip points and the cooling devices bound to the zone (cdevK links) with their states. Read only, every kernel: on
-# mainline the stock soc-thmzone (mu300_thermal, docs/FINDINGS.md 48) is the one with trips and cooling devices.
+# trip points and the cooling devices bound to the zone (cdevK links) with their states. Read only: the stock
+# soc-thmzone (the virtual zone of the mu300_thermal module) is the one with trips and cooling devices.
 thermal_json() {
     printf '['
     _sep=
@@ -316,16 +316,16 @@ status_human() {
     fi
 }
 
-# --- the CPU voltage offset (EXPERIMENTAL: it can damage the device for good; docs/FINDINGS.md 133)
+# --- the CPU voltage offset (EXPERIMENTAL: it can damage the device for good; docs/contract.md)
 #   mu300-cpu voltage status [--json]   what DVFS runs with, what is asked for, the trial/good/armed marks, the limits,
 #                                       the firmware check and each domain's frequency/voltage table
 #   mu300-cpu voltage set A,B,C --confirm EXPERIMENTAL
 #                                       offsets in uV for domains 0, 1, 2 (CPUs 0-3, 4-6, 7), from the next boot on
 #   mu300-cpu voltage off               back to 0,0,0 from the next boot on
 #   mu300-cpu voltage stress [MINUTES] [--background]   mu300-toolkit's CPU stress test (10 minutes)
-#   mu300-cpu voltage warning           the warning (English, Turkish, Chinese)
+#   mu300-cpu voltage warning           the warning (English, Chinese)
 #   (services) voltage mark-good: 10 minutes after boot; voltage shutdown: a clean shutdown or reboot
-# The firmware applies an offset once per boot, inside DVFS_INIT; the initramfs (kernel/initramfs/init, cpu-voltage) decides at
+# The firmware applies an offset once per boot, inside DVFS_INIT; the initramfs decides at
 # every boot whether the value asked for may run and writes it to the kernel. A new value gets one trial boot; it is
 # kept ("good") once that boot has been up 10 minutes, and dropped - back to 0,0,0, the request cleared - when a boot
 # with an offset ends without a clean shutdown (a crash, a watchdog reset, a power cut) or the trial boot ended before
@@ -334,9 +334,9 @@ CPUV_SYS=$R/sys/module/sprd_cpufreq_v2_driver/parameters
 CPUV_WORD=EXPERIMENTAL
 CPUV_GOOD_MIN=10
 CPUV_WARN=${MU300_CPUV_WARNING:-/opt/mu300/lib/cpu-voltage-warning.txt}
-# the SML (ATF) builds whose DVFS_INIT encoding is known (the same list as kernel/initramfs/init's; a test keeps them equal): the
-# F50's, the V50's and the U30 Air's (their payload is the F50's byte for byte, FINDINGS 201)
-CPUV_SML_KNOWN=${MU300_CPUV_SML_KNOWN:-ff4782690fd805ff54fe34853ef8ee5c7e51c3259e20077c55373b50a4b259c2 5b3183f17af9b416e71dea61e578c61824e4e1df43737a1179032f4b20466b2b f27ac16f44e6cdc87a8ee00a9b53c499c8dde0c3b92c771388e256e84ef12e70}
+# the SML (ATF) builds whose DVFS_INIT encoding is known (the same list as the initramfs has; a test keeps them equal):
+# the F50's and the U30 Air's (whose payload is the F50's byte for byte; only the authentication area differs)
+CPUV_SML_KNOWN=${MU300_CPUV_SML_KNOWN:-ff4782690fd805ff54fe34853ef8ee5c7e51c3259e20077c55373b50a4b259c2 f27ac16f44e6cdc87a8ee00a9b53c499c8dde0c3b92c771388e256e84ef12e70}
 
 cpuv_dir() {  # .mu300 on the Linux disk (the same rule as mu300-next-boot)
     for _d in "${MU300_DISK:-/mnt/mu300-disk}" "$R"; do [ -d "$_d/.mu300" ] && { printf '%s/.mu300' "$_d"; return 0; }; done
@@ -344,7 +344,7 @@ cpuv_dir() {  # .mu300 on the Linux disk (the same rule as mu300-next-boot)
 }
 cpuv_is_root() { [ "$(id -u)" = 0 ] || [ -n "${MU300_SYSROOT:-}" ]; }
 cpuv_norm() { printf '%s' "$1" | tr -s ' \t' ',' | sed 's/^,//; s/,$//'; }
-cpuv_valid() {  # the same check as kernel/initramfs/init's: three whole 3.125 mV steps within -25000..12500 uV, written plainly
+cpuv_valid() {  # the same check as the initramfs's: three whole 3.125 mV steps within -25000..12500 uV, written plainly
     case $1 in *[!0-9,-]*|'') return 1 ;; esac
     _o=$IFS; IFS=,; set -- $1; IFS=$_o
     [ $# = 3 ] || return 1
@@ -532,10 +532,7 @@ voltage_mark_good() {  # 10 minutes after boot (mu300-cpu-voltage.timer, the Ope
     say "CPU voltage offset $_a: good mark after ${_up} s up"
 }
 
-voltage_shutdown() {  # a clean shutdown or reboot only: the armed mark goes; a stopped service is not a shutdown
-    if [ -z "${MU300_SYSROOT:-}" ] && command -v systemctl >/dev/null 2>&1; then
-        case $(systemctl is-system-running 2>/dev/null) in stopping) ;; *) say "not a shutdown: the armed mark stays"; return 0 ;; esac
-    fi
+voltage_shutdown() {  # a clean shutdown or reboot only (the init script's stop at shutdown): the armed mark goes
     _d=$(cpuv_dir) || return 0
     [ -e "$_d/cpu-voltage-armed" ] || return 0
     rm -f "$_d/cpu-voltage-armed" && sync
