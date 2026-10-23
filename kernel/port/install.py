@@ -20,14 +20,6 @@ def append_once(path, marker, text):
     if marker not in s:
         open(p, 'w').write(s.rstrip('\n') + '\n' + text)
 
-# the ZTE V50's SIM switches (drivers/misc/zte-v50-sim.c, FINDINGS 204; kanoqwq's binding)
-append_once('drivers/misc/Makefile', 'zte-v50-sim.o', 'obj-$(CONFIG_ZTE_V50_SIM) += zte-v50-sim.o\n')
-append_once('drivers/misc/Kconfig', 'config ZTE_V50_SIM',
-            '\nconfig ZTE_V50_SIM\n\ttristate "ZTE V50 SIM multiplexer"\n'
-            '\tdepends on GPIOLIB && OF\n\thelp\n'
-            '\t  The ZTE V50 (MU3351) switches between its built-in and external SIM cards (zte,sim_gpio_ctrl).\n'
-            '\t  Binds only on a board with the V50\'s AW9523B; leaves the lines as the bootloader set them.\n')
-
 append_once('drivers/clk/sprd/Makefile', 'reset.o', 'clk-sprd-y\t+= reset.o\n')
 append_once('drivers/clk/sprd/Makefile', 'ums9620-clk.o', 'obj-$(CONFIG_SPRD_UMS9620_CLK)\t\t+= ums9620-clk.o\n')
 kc = os.path.join(tree, 'drivers/clk/sprd/Kconfig')
@@ -57,40 +49,30 @@ def once(marker, old, new):
     if marker not in m:
         m = m.replace(old, new, 1)
 # The UMP9620's BC1.2 result (CHARGE_STATUS, Unisoc's sprd-bc1p2.h) is at 0x239c, with the SC27xx bits (DONE 11, SDP 7,
-# DCP 6, CDP 5). The first version of this edit pointed it at the SC2730's 0x1b9c, where detection never finished on
-# the U30 Air: a tree prepared with that is corrected.
+# DCP 6, CDP 5); at the SC2730's 0x1b9c detection never finishes on the U30 Air.
 UMP9620_DATA = ('/* UMP9620 BC1.2 status (CHARGE_STATUS) */\n#define SPRD_UMP9620_CHG_DET\t\t0x239c\n\n'
                 'static const struct sprd_pmic_data ump9620_data = {\n\t.irq_base = 0x80,\n\t.num_irqs = 11,\n'
                 '\t.charger_det = SPRD_UMP9620_CHG_DET,\n};\n')
-m = m.replace('static const struct sprd_pmic_data ump9620_data = {\n\t.irq_base = 0x80,\n\t.num_irqs = 11,\n'
-              '\t.charger_det = SPRD_SC2730_CHG_DET,\n};\n', UMP9620_DATA)
 once('ump9620_data = {', 'static const struct sprd_pmic_data sc2731_data = {',
      UMP9620_DATA + '\nstatic const struct sprd_pmic_data sc2731_data = {')
-if 'enum sprd_pmic_type' not in m:
-    # up to 6.x: the match data is the pmic data, and the DT's sub-nodes are populated as they are
-    once('"sprd,ump9620"', '\t{ .compatible = "sprd,sc2731", .data = &sc2731_data },\n',
-         '\t{ .compatible = "sprd,sc2731", .data = &sc2731_data },\n\t{ .compatible = "sprd,ump9620", .data = &ump9620_data },\n')
-    once('.name = "ump9620"', '\t{ .name = "sc2731", .driver_data = (unsigned long)&sc2731_data },\n',
-         '\t{ .name = "sc2731", .driver_data = (unsigned long)&sc2731_data },\n\t{ .name = "ump9620", .driver_data = (unsigned long)&ump9620_data },\n')
-else:
-    # 7.x: the match data is a PMIC type, and each type brings a list of MFD cells. The vendor DT's sub-nodes are
-    # in no list, so UMP9620 gets no cells and its sub-nodes populated as before.
-    once('PMIC_TYPE_UMP9620,', '\tPMIC_TYPE_SC2731,\n', '\tPMIC_TYPE_SC2731,\n\tPMIC_TYPE_UMP9620,\n')
-    once('case PMIC_TYPE_UMP9620:', '\tdefault:\n\t\tdev_err(&spi->dev, "Invalid device ID\\n");',
-         '\tcase PMIC_TYPE_UMP9620:\n\t\t/* MU300: no cells; the DT\'s own sub-nodes are populated below */\n'
-         '\t\tpdata = &ump9620_data;\n\t\tcells = NULL;\n\t\tnum_cells = 0;\n\t\tbreak;\n'
-         '\tdefault:\n\t\tdev_err(&spi->dev, "Invalid device ID\\n");')
-    once('if (pmic_type == PMIC_TYPE_UMP9620) {',
-         '\t\tdev_err(&spi->dev, "Failed to populate sub-devices %d\\n", ret);\n\t\treturn ret;\n\t}\n',
-         '\t\tdev_err(&spi->dev, "Failed to populate sub-devices %d\\n", ret);\n\t\treturn ret;\n\t}\n\n'
-         '\tif (pmic_type == PMIC_TYPE_UMP9620) {\n\t\tret = devm_of_platform_populate(&spi->dev);\n'
-         '\t\tif (ret)\n\t\t\treturn ret;\n\t}\n')
-    once('"sprd,ump9620"', '\t{ .compatible = "sprd,sc2731", .data = (void *)PMIC_TYPE_SC2731 },\n',
-         '\t{ .compatible = "sprd,sc2731", .data = (void *)PMIC_TYPE_SC2731 },\n'
-         '\t{ .compatible = "sprd,ump9620", .data = (void *)PMIC_TYPE_UMP9620 },\n')
-    once('.name = "ump9620"', '\t{ .name = "sc2731", .driver_data = PMIC_TYPE_SC2731 },\n',
-         '\t{ .name = "sc2731", .driver_data = PMIC_TYPE_SC2731 },\n\t{ .name = "ump9620", .driver_data = PMIC_TYPE_UMP9620 },\n')
-    once('linux/of_platform.h', '#include <linux/module.h>', '#include <linux/module.h>\n#include <linux/of_platform.h>')
+# The match data is a PMIC type, and each type brings a list of MFD cells. The vendor DT's sub-nodes are in no list, so
+# UMP9620 gets no cells and its sub-nodes are populated from the DT.
+once('PMIC_TYPE_UMP9620,', '\tPMIC_TYPE_SC2731,\n', '\tPMIC_TYPE_SC2731,\n\tPMIC_TYPE_UMP9620,\n')
+once('case PMIC_TYPE_UMP9620:', '\tdefault:\n\t\tdev_err(&spi->dev, "Invalid device ID\\n");',
+     '\tcase PMIC_TYPE_UMP9620:\n\t\t/* MU300: no cells; the DT\'s own sub-nodes are populated below */\n'
+     '\t\tpdata = &ump9620_data;\n\t\tcells = NULL;\n\t\tnum_cells = 0;\n\t\tbreak;\n'
+     '\tdefault:\n\t\tdev_err(&spi->dev, "Invalid device ID\\n");')
+once('if (pmic_type == PMIC_TYPE_UMP9620) {',
+     '\t\tdev_err(&spi->dev, "Failed to populate sub-devices %d\\n", ret);\n\t\treturn ret;\n\t}\n',
+     '\t\tdev_err(&spi->dev, "Failed to populate sub-devices %d\\n", ret);\n\t\treturn ret;\n\t}\n\n'
+     '\tif (pmic_type == PMIC_TYPE_UMP9620) {\n\t\tret = devm_of_platform_populate(&spi->dev);\n'
+     '\t\tif (ret)\n\t\t\treturn ret;\n\t}\n')
+once('"sprd,ump9620"', '\t{ .compatible = "sprd,sc2731", .data = (void *)PMIC_TYPE_SC2731 },\n',
+     '\t{ .compatible = "sprd,sc2731", .data = (void *)PMIC_TYPE_SC2731 },\n'
+     '\t{ .compatible = "sprd,ump9620", .data = (void *)PMIC_TYPE_UMP9620 },\n')
+once('.name = "ump9620"', '\t{ .name = "sc2731", .driver_data = PMIC_TYPE_SC2731 },\n',
+     '\t{ .name = "sc2731", .driver_data = PMIC_TYPE_SC2731 },\n\t{ .name = "ump9620", .driver_data = PMIC_TYPE_UMP9620 },\n')
+once('linux/of_platform.h', '#include <linux/module.h>', '#include <linux/module.h>\n#include <linux/of_platform.h>')
 open(mfd, 'w').write(m)
 append_once('drivers/regulator/Makefile', 'ump9620-regulator.o', 'obj-$(CONFIG_REGULATOR_UMP9620) += ump9620-regulator.o\n')
 rk = os.path.join(tree, 'drivers/regulator/Kconfig')
@@ -124,12 +106,9 @@ append_once('drivers/watchdog/Makefile', 'ump9620-pmic-wdt.o', 'obj-$(CONFIG_MFD
 
 # sdhci-sprd: the SD card can hold the Linux filesystem, so the card slot's host (sprd,name "sdio_sd") is probed
 # next to the non-removable eMMC. Any other host the stock device tree describes (sdio_wifi: Wi-Fi is on PCIe on
-# this board) stays unprobed, as before. An earlier version of this port let only the eMMC through; take that edit
-# out of a kernel tree that was prepared with it.
+# this board) stays unprobed.
 sp = os.path.join(tree, 'drivers/mmc/host/sdhci-sprd.c')
 t = open(sp).read()
-t = t.replace('\t/* MU300: only the non-removable eMMC is used */\n'
-              '\tif (!of_property_read_bool(pdev->dev.of_node, "non-removable"))\n\t\treturn -ENODEV;\n', '')
 marker = 'MU300: only the eMMC and the card slot'
 if marker not in t:
     anchor = 'static int sdhci_sprd_probe(struct platform_device *pdev)\n{\n'
@@ -165,19 +144,6 @@ parse_new = '''\tret = mmc_of_parse(host->mmc);
 \tif (ret)
 \t\treturn ret;
 '''
-# a tree prepared by the first version of this edit, which only masked the deferral (and so the rest of the parse)
-masked = '''\tret = mmc_of_parse(host->mmc);
-\tif (ret == -EPROBE_DEFER &&
-\t    of_property_present(pdev->dev.of_node, "cd-gpios") &&
-\t    of_property_match_string(pdev->dev.of_node, "sprd,name", "sdio_sd") >= 0) {
-\t\tdev_warn(&pdev->dev, "MU300: CD GPIO deferred, polling the card slot\\n");
-\t\thost->mmc->caps |= MMC_CAP_NEEDS_POLL;
-\t\tret = 0;
-\t}
-\tif (ret)
-\t\treturn ret;
-'''
-t = t.replace(masked, parse_old)
 if 'of_remove_property(pdev->dev.of_node, cd)' not in t:
     if parse_old not in t:
         sys.exit('port: sdhci-sprd mmc_of_parse anchor changed')
@@ -294,7 +260,7 @@ if 'ump96xx-rtc' not in t:
     open(rp, 'w').write(t)
 # The ZTE U30 Air's charger (SGM41511, a bq25601): its vendor DT compatible in bq256xx's OF and I2C tables; the
 # driver's handling of that node (no IRQ, no input current in the DT, the chip as Android left it) is patch 0009. The
-# I2C table is an edit rather than part of the patch: 6.18 writes its entries positionally, 7.x with .name/.driver_data.
+# I2C table is an edit rather than part of the patch, so the patch does not depend on how the table is written.
 bp = os.path.join(tree, 'drivers/power/supply/bq256xx_charger.c')
 t = open(bp).read()
 if '"ti,bq2560x_chg"' not in t:
@@ -302,20 +268,16 @@ if '"ti,bq2560x_chg"' not in t:
                   '\t{ .compatible = "ti,bq25601", .data = &bq256xx_chip_info_tbl[BQ25601] },\n'
                   '\t{ .compatible = "ti,bq2560x_chg", .data = &bq256xx_chip_info_tbl[BQ25601] },\n', 1)
 if '"bq2560x_chg"' not in t:
-    for line in ('\t{ "bq25601", (kernel_ulong_t)&bq256xx_chip_info_tbl[BQ25601] },\n',
-                 '\t{ .name = "bq25601", .driver_data = (kernel_ulong_t)&bq256xx_chip_info_tbl[BQ25601] },\n'):
-        # the I2C table comes first; the ACPI table has the same positional line further down
-        i = t.find(line, t.index('bq256xx_i2c_ids[]'))
-        if i >= 0 and i < t.index('MODULE_DEVICE_TABLE(i2c'):
-            t = t[:i + len(line)] + line.replace('"bq25601"', '"bq2560x_chg"') + t[i + len(line):]
-            break
+    line = '\t{ .name = "bq25601", .driver_data = (kernel_ulong_t)&bq256xx_chip_info_tbl[BQ25601] },\n'
+    i = t.find(line, t.index('bq256xx_i2c_ids[]'))
+    if i >= 0 and i < t.index('MODULE_DEVICE_TABLE(i2c'):
+        t = t[:i + len(line)] + line.replace('"bq25601"', '"bq2560x_chg"') + t[i + len(line):]
 open(bp, 'w').write(t)
 # Every edit above is a text substitution, and one whose anchor drifted in a new kernel release changes nothing
 # without saying so. Check the result rather than trusting the substitutions.
 expect = [
-    ('drivers/mfd/sprd-sc27xx-spi.c', ['ump9620_data = {', '.charger_det = SPRD_UMP9620_CHG_DET,', '"sprd,ump9620"', '.name = "ump9620"']
-     + (['case PMIC_TYPE_UMP9620:', 'if (pmic_type == PMIC_TYPE_UMP9620) {', 'linux/of_platform.h']
-        if 'enum sprd_pmic_type' in open(os.path.join(tree, 'drivers/mfd/sprd-sc27xx-spi.c')).read() else [])),
+    ('drivers/mfd/sprd-sc27xx-spi.c', ['ump9620_data = {', '.charger_det = SPRD_UMP9620_CHG_DET,', '"sprd,ump9620"', '.name = "ump9620"',
+                                       'case PMIC_TYPE_UMP9620:', 'if (pmic_type == PMIC_TYPE_UMP9620) {', 'linux/of_platform.h']),
     ('drivers/mmc/host/sdhci-sprd.c', ['MU300: only the eMMC and the card slot', 'MU300: CD GPIO deferred', 'of_remove_property(pdev->dev.of_node, cd)', 'DLL_PHASE_INTERNAL\t0x2 /* MU300 r11p3 */',
                                      'MU300: the eMMC is mmc0', 'WRITE_ONCE(sdhci_sprd_emmc_added, true);']),
     ('drivers/nvmem/sprd-efuse.c', ['"sprd,qogirn6pro-efuse"', 'econfig.read_only = true;']),
@@ -331,10 +293,8 @@ if missing:
 print('port installed')
 
 # LEDs of the ZTE U30 Air: its white ones on PMIC LDOs (leds-zte-ldo.c), and its red on the PMIC's keypad backlight
-# sink (leds-sc27xx-kpled.c); the ZTE V50's, an AW9523B with ZTE's binding (leds-aw9523b.c, kano's, FINDINGS 95)
+# sink (leds-sc27xx-kpled.c)
 LED_DRIVERS = (
-    ('LEDS_AW9523B', 'leds-aw9523b', 'AW9523B LEDs with the vendor binding (ZTE V50)', 'LEDS_CLASS && I2C && OF',
-     "The ZTE V50's (MU3351) front LEDs: an AW9523B as ZTE's Android device tree describes it."),
     ('LEDS_ZTE_LDO', 'leds-zte-ldo', 'LEDs on PMIC LDOs (ZTE U30 Air)', 'LEDS_CLASS && REGULATOR && OF',
      "The ZTE U30 Air's white LEDs, powered by three PMIC LDOs."),
     ('LEDS_SC27XX_KPLED', 'leds-sc27xx-kpled', 'Spreadtrum/Unisoc PMIC keypad backlight',
