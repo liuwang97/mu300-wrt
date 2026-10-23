@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Check the Image's embedded config and every expected in-tree module before packaging."""
 import gzip
+import os
 import pathlib
 import sys
 
@@ -42,11 +43,17 @@ def audit(out, fragment):
     expected = (out / 'modules.in-tree').read_text().splitlines()
     if not expected:
         raise ValueError('empty in-tree module manifest')
+    # by the names the directory lists, not is_file(): on a file system that ignores case xt_hl.ko "is" a file when
+    # only xt_HL.ko is there - one of each such pair was lost in every mainline bundle before v2026.10.23.1
+    # (FINDINGS 212)
+    present = set(os.listdir(out / 'modules'))
     for name in expected:
         if pathlib.Path(name).name != name or not name.endswith('.ko'):
             raise ValueError(f'invalid module name: {name}')
-        if not (out / 'modules' / name).is_file():
-            raise ValueError(f'missing in-tree module: {name}')
+        if name not in present or not (out / 'modules' / name).is_file():
+            folded = [p for p in present if p.lower() == name.lower()]
+            raise ValueError(f'missing in-tree module: {name}' +
+                             (f' (only {folded[0]}: built on a file system that ignores case? FINDINGS 212)' if folded else ''))
     (out / 'kernel.config').write_text(config)
     print(f'Image config verified; {len(expected)} in-tree modules present; KVM built in')
 

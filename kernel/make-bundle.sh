@@ -20,6 +20,10 @@ OUT=${1:?usage: upstream/make-bundle.sh OUT.tar.gz [mu300-kernel.tar.gz]}
 REF=${2:-$(ls -t "$TOP"/release/*/mu300-kernel.tar.gz 2>/dev/null | head -1)}
 [ -f "$UO/Image" ] || { echo "no $UO/Image (run build.sh)" >&2; exit 1; }
 [ -f "$REF" ] || { echo "no 5.4 kernel bundle for busybox/logdw (give one as the second argument)" >&2; exit 1; }
+# the build's module tree and the staging directory must keep xt_HL.ko and xt_hl.ko apart (FINDINGS 212); a tree built
+# on a file system that ignores case has lost one of each pair already (audit-bundle.py also finds that)
+. "$U/case-sensitive.sh"
+case_sensitive "$UO/modules" || exit 1
 
 python3 "$U/audit-bundle.py" "$UO" "$U/mu300-mainline.config"
 # the modules the devices' guard keeps from on-demand loading, against this build (FINDINGS 163)
@@ -37,8 +41,9 @@ for m in $(cat "$U/module-order.txt"); do
     [ -f "$UO/modules/$m" ] || { echo "module-order.txt names $m, which was not built" >&2; exit 1; }
 done
 
-W=$(mktemp -d)
+W=$(mktemp -d "${TMPDIR:-/tmp}/mu300-bundle.XXXXXX")
 trap 'rm -rf "$W"' EXIT
+case_sensitive "$W" || exit 1
 tar -xzf "$REF" -C "$W" ./busybox ./logdw
 # init's e2fsck (FINDINGS 182), from 5.4 bundles since it came; an older one: the ramdisk boots without it (the
 # release audit refuses such a bundle)

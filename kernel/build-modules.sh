@@ -12,6 +12,9 @@ OUT=/work/${OUTDIR:-out}   # as in build.sh
 # audio extra's (https://github.com/dikeckaan/mu300-audio, built against this tree's build kit; FINDINGS 194)
 mods=${*:-wcn_bsp sprd_wlan_combo sprdbt_tty sprd_modem sprd_pmic_wdt mali mu300_thermal}
 mkdir -p $OUT/modules
+# xt_HL.ko and xt_hl.ko (and three more pairs) must stay two files: not on a host directory that ignores case
+. /work/case-sensitive.sh
+case_sensitive $OUT/modules || exit 1
 # a full build starts clean, so no module of another kernel release ends up next to the new ones
 [ $# -gt 0 ] || rm -f $OUT/modules/*.ko $OUT/modules/*.log
 # Module.symvers for the built-in exports (pcie-sprd etc.)

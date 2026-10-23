@@ -73,6 +73,11 @@ IN=$D/inputs
 ls "$KOUT"/modules-u30air/*.ko >/dev/null 2>&1 || { echo "U30 Air modules missing in $KOUT/modules-u30air (kernel/build-all.sh)" >&2; exit 1; }
 [ -z "$(git -C "$TOP" status --porcelain)" ] || { echo "commit your changes first: the release must match a commit" >&2; exit 1; }
 rm -rf "$D" && mkdir -p "$IN/out" "$IN/tools/logdw" "$IN/tools/bt-init" "$IN/tools/gpu"
+# the module trees are staged here and in TMPDIR (upstream/make-bundle.sh): both must keep xt_HL.ko and xt_hl.ko
+# apart, which macOS's default file system does not (FINDINGS 212)
+. "$TOP/upstream/case-sensitive.sh"
+case_sensitive "$D" || exit 1
+case_sensitive "${TMPDIR:-/tmp}" || exit 1
 
 echo "==> helper binaries"
 cp -R "$KOUT/modules" "$IN/out/modules"
@@ -282,6 +287,18 @@ for a in mu300-kernel-6.18 mu300-kernel-7.2 mu300-kernel-7.3; do
         printf '%s\n' "$l" | grep -qx "./modules/$m" || { echo "$a lacks modules/$m"; fail=1; }
     done
 done
+# every module a mainline build made (its modules.in-tree) is in the bundle, by its exact name: on a file system that
+# ignores case xt_HL.ko and xt_hl.ko, xt_TCPMSS.ko and xt_tcpmss.ko, xt_DSCP.ko and xt_dscp.ko, xt_RATEEST.ko and
+# xt_rateest.ko became one file each - in every mainline bundle before v2026.10.23.1 (FINDINGS 212). The TTL and
+# MSS pairs are named as well, so a modules.in-tree that lost them too does not pass.
+for a in mu300-kernel-6.18 mu300-kernel-7.2 mu300-kernel-7.3; do
+    tar -tzf "$D/$a.tar.gz" | sed -n 's|^\./modules/||p' > "$D/modules.check"
+    want=$(tar -xzOf "$D/$a.tar.gz" ./modules.in-tree 2>/dev/null) || { echo "$a has no modules.in-tree"; fail=1; }
+    for m in $(printf '%s\n' $want xt_HL.ko xt_hl.ko xt_TCPMSS.ko xt_tcpmss.ko | sort -u | grep -vxF -f "$D/modules.check"); do
+        echo "$a lacks modules/$m"; fail=1
+    done
+    rm -f "$D/modules.check"
+done
 # Call audio is the audio extra's (https://github.com/dikeckaan/mu300-audio, mu300-extra install audio; FINDINGS 194):
 # no kernel bundle carries a driver of the Unisoc call-audio stack, and no image its programs or services. The 23 of
 # 5.4 and the 20 of mainline - mainline's sprd-dma.ko is the stack's AGCP DMA driver; 5.4's is the vendor kernel's
@@ -335,7 +352,7 @@ ls -la "$D"
 commit=$(git -C "$TOP" rev-parse HEAD)
 kernel_rev=$(sed -n 's/^KERNEL_REV=//p' "$TOP/kernel/build-all.sh")
 modules_rev=$(sed -n 's/^MODULES_REV=//p' "$TOP/kernel/build-all.sh")
-notes=$(mktemp)
+notes=$(mktemp "${TMPDIR:-/tmp}/mu300-notes.XXXXXX")
 cat > "$notes" <<EOF
 Prebuilt images for \`./install.sh\` (ZTE F50 / MU300 and ZTE U30 Air; the installer recognises which). Check your device
 first with \`./install.sh --check\`.
