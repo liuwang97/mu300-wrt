@@ -50,6 +50,13 @@ Applies to: Linux 7.2.11, OpenWrt 25.12.5 (F50, U30 Air). Checked against the co
 **Next**: iperf3 both ways at full rate for minutes, idle and loaded ping, hotspot restart under traffic; then make it the default.
 **Workaround**: None needed.
 
+## The hotspot has no WPA3-SAE and no 5 GHz mid channels
+**Symptom**: The access point is WPA2-PSK only and starts on 36-48 or 149-165: `openwrt/patches/wifi-scripts-wpa2-only.patch` refuses an SAE AP, and `openwrt/opt/mu300/lib/wifi-channels.sh` replaces 52-64 and 100-144.
+**Impact**: No WPA3, and the mid channels stay unused; `docs/decisions/0008-hotspot-sae-and-mid-channels.md` asks for both.
+**Known**: The firmware returns the SAE PMK as vendor element `40:45:da:04` inside the client's own element list, so a client could append one.
+**Next**: Frame the SAE record in the driver, then drop the two patches and the channel replacement; test on both boards.
+**Workaround**: None.
+
 ## U30 Air USB 3 link follows the plug orientation
 **Symptom**: In device mode `current_speed` is `super-speed-plus` only in the orientation latched at power-on; flipped it falls back to `high-speed` and stays there. Verified on 7.2.11.
 **Impact**: 480 Mbps instead of SuperSpeed in the wrong orientation (325.9 Mbps down over SuperSpeed vs 244 Mbps over the fallback on cellular).
