@@ -1671,7 +1671,6 @@ static int sprd_cfg80211_get_channel(struct wiphy *wiphy, struct wireless_dev *w
 }
 #endif
 
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(7, 0, 0))
 /*
  * MU300: 7.x hands the key and station ops a wireless_dev where 6.x passed the net_device, and adds rx_addr to
  * remain_on_channel. The driver's functions stay as they are; these adapt the calls.
@@ -1732,9 +1731,6 @@ static int sprd_cfg80211_remain_on_channel_wdev(struct wiphy *wiphy, struct wire
 	return sprd_cfg80211_remain_on_channel(wiphy, wdev, chan, duration, MU300_COOKIE_PTR(cookie));
 }
 #define MU300_WDEV_OP(f) f##_wdev
-#else
-#define MU300_WDEV_OP(f) f
-#endif
 
 static struct cfg80211_ops sprd_cfg80211_ops = {
 	.add_virtual_intf = sprd_cfg80211_add_iface,

@@ -91,7 +91,6 @@ typedef int mm_segment_t;
  * 7.x: strncpy() is gone. Same semantics - copy up to n bytes, pad the rest with zeros, no guaranteed NUL - for
  * the vendor code that relies on them.
  */
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 0, 0)
 #include <linux/string.h>
 static inline char *mu300_strncpy(char *dst, const char *src, size_t n)
 {
@@ -104,7 +103,6 @@ static inline char *mu300_strncpy(char *dst, const char *src, size_t n)
 	return dst;
 }
 #define strncpy(dst, src, n) mu300_strncpy(dst, src, n)
-#endif
 
 /* 7.x: hex2bin() and friends moved to their own header */
 #if __has_include(<linux/hex.h>)
@@ -112,10 +110,8 @@ static inline char *mu300_strncpy(char *dst, const char *src, size_t n)
 #endif
 
 /* 7.x: alarm_start()/alarm_restart() became alarm_start_timer(alarm, expires, relative) */
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 0, 0)
 #include <linux/alarmtimer.h>
 #define alarm_start(a, t) alarm_start_timer((a), (t), false)
 #define alarm_restart(a) alarm_start_timer((a), (a)->node.expires, false)
-#endif
 
 #endif

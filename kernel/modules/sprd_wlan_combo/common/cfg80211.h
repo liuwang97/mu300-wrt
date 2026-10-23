@@ -428,23 +428,9 @@ int sprd_cfg80211_change_iface(struct wiphy *wiphy, struct net_device *ndev,
  * its lines (the BUG table) and its object code stay as they were on the older kernels (FINDINGS 206).
  */
 #include <linux/version.h>
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(7, 3, 0))
-#define MU300_COOKIE(given, next) ((void)(next), (given))
-#define ck_t u64
-#define MU300_COOKIE_PTR(c) (&(c))
-int sprd_cfg80211_mgmt_tx(struct wiphy *wiphy, struct wireless_dev *wdev,
-			  struct cfg80211_mgmt_tx_params *params, u64 *cookie);
-static inline int sprd_cfg80211_mgmt_tx_by_value(struct wiphy *wiphy, struct wireless_dev *wdev,
-						 struct cfg80211_mgmt_tx_params *params, u64 cookie)
-{
-	return sprd_cfg80211_mgmt_tx(wiphy, wdev, params, &cookie);
-}
-#define MU300_MGMT_TX sprd_cfg80211_mgmt_tx_by_value
-#else
 #define MU300_COOKIE(given, next) (next)
 #define ck_t u64 *
 #define MU300_COOKIE_PTR(c) (c)
 #define MU300_MGMT_TX sprd_cfg80211_mgmt_tx
-#endif
 
 #endif

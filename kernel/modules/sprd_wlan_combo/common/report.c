@@ -13,12 +13,8 @@
 #include "delay_work.h"
 #include "chip_ops.h"
 
-/* MU300: cfg80211_new_sta()/del_sta() take the wireless_dev in 7.x, the net_device before */
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(7, 0, 0))
+/* MU300: cfg80211_new_sta()/del_sta() take the wireless_dev */
 #define MU300_STA_DEV(vif) (&(vif)->wdev)
-#else
-#define MU300_STA_DEV(vif) ((vif)->ndev)
-#endif
 
 void sprd_report_scan_done(struct sprd_vif *vif, bool abort)
 {
