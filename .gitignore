@@ -24,7 +24,6 @@ openwrt/src/bt-init/mu300-bt-init
 openwrt/src/keys/mu300-keys
 openwrt/src/atd-io/mu300-atd-io
 openwrt/src/carry/mu300-carry
-openwrt/src/adbd/adbd
 # a test run with TMPDIR inside the tree
 */tests/mu300-test-*/
 # the release smoke test's boards (tools/smoke.py; tools/smoke.example.json is the example)

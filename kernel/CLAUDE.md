@@ -40,7 +40,7 @@ Read the root `CLAUDE.md` first. This tree never reads a file under `openwrt/`: 
 - The initramfs is part of the kernel: it ships with the Image and insmods by path, so its modules must match the
   kernel's vermagic. It reads only what `docs/contract.md` lists from the system it boots.
 - Out-of-tree modules carry no compatibility code for kernels other than 7.2.
-- A test that needs a file under `openwrt/` belongs in `openwrt/tests`, with a fixture.
+- A test that needs a file of the root filesystem's tree belongs in that tree's tests, with a fixture.
 
 ## Building here (WSL)
 

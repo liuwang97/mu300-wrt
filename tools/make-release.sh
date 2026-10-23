@@ -10,7 +10,7 @@
 #                                          not offer it until it is promoted on GitHub
 #   --any-date                             take a TAG whose day is not today (a build that went on past midnight)
 # The kernel must be built first (kernel/build.sh and kernel/build-modules.sh into $MU300_KERNEL_OUT, default
-# kernel/out). Needs docker with linux/arm64 (the image, adbd, e2fsck) and an aarch64 C compiler for the static
+# kernel/out). Needs docker with linux/arm64 (the image, e2fsck) and an aarch64 C compiler for the static
 # programs (aarch64-linux-gnu-gcc, or gcc on an arm64 host; CC overrides it).
 # Assets: mu300-kernel-7.2.tar.gz, mu300-openwrt-luci-rootfs.tar.gz and its .manifest.gz, mu300-update,
 # mu300-release, SHA256SUMS (and SHA256SUMS.sig with the release key). They must never contain proprietary files or
@@ -94,8 +94,6 @@ for p in logdw/logdw bt-init/mu300-bt-init keys/mu300-keys atd-io/mu300-atd-io c
     mkdir -p "$IN/openwrt/src/${p%/*}"
     "$CC" -O2 -static -o "$IN/openwrt/src/$p" "$S/$p.c"
 done
-# adbd (adb over USB to Linux): static aarch64, from AOSP's sources
-sh "$S/adbd/build.sh" "$IN/openwrt/src/adbd/adbd" >/dev/null
 cp "$IN/ktools/busybox" "$IN/busybox"
 
 echo "==> OpenWrt image with the control panel"

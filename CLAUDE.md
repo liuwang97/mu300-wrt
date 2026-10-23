@@ -3,7 +3,8 @@
 Linux 7.2 and OpenWrt 25.12.5 (with the LuCI panel) for two UMS9620 boards: the ZTE F50 (MU300) and the ZTE U30 Air.
 A hard fork of dikeckaan/mu300-linux; `UPSTREAM` names the last upstream commit reviewed. Nothing else is supported:
 no other kernel (5.4, 6.18, 7.3), no other system (Ubuntu, Arch, ImmortalWrt, OpenWrt without LuCI), no V50, no
-installer, no Magisk module. Do not bring any of it back.
+installer, no Magisk module, no adbd, no out-of-tree GPU driver (the GPU waits for Panfrost), no OpenWrt failsafe.
+Do not bring any of it back.
 
 ## Layout
 
@@ -30,7 +31,7 @@ installer, no Magisk module. Do not bring any of it back.
   slots.
 - **The device is shared.** Before rebooting, flashing, deploying or killing daemons on the U30 Air, read and take the
   device lock `C:\Users\Akira\mu300-linux\U30AIR-DEVICE-LOCK.txt` (WSL: `/mnt/c/Users/Akira/mu300-linux/`). Short
-  read-only adb commands need no lock.
+  read-only commands need no lock.
 
 ## Build and test
 

@@ -27,7 +27,7 @@ Applies to: Linux 7.2.11, OpenWrt 25.12.5 (F50, U30 Air). Checked against the co
 **Impact**: Unknown whether trips and handoff match on the U30 Air, whose tree may name other `thmzone-cells`; hot shutdowns have been followed by boots without eMMC (see above).
 **Known**: Mainline has no energy-model governor or cluster hotplug for this SoC; the vendor kernel held the same load at 80-91 C with both.
 **Next**: Load runs on 7.2 and on the U30 Air; decide whether an energy-model governor is needed.
-**Workaround**: `openwrt/opt/mu300/bin/thermal-guard` caps from userspace; keep stress runs capped.
+**Workaround**: the thermal guard in `openwrt/opt/mu300/bin/mu300-sysd` caps from userspace; keep stress runs capped.
 
 ## SD card slot: hot insert and spontaneous removal (F50)
 **Symptom**: A card inserted by hand into a slot polled empty for minutes was detected but unusable (`Card stuck being busy`, -110; polled fallback before patch `0014`). Once an SD-rooted system saw the card leave and every exec failed (6.18.56).
@@ -135,7 +135,7 @@ Applies to: Linux 7.2.11, OpenWrt 25.12.5 (F50, U30 Air). Checked against the co
 **Workaround**: `mu300-extra install NAME --from DIR`, or wait until the tunnel is up.
 
 ## /run is world-writable
-**Symptom**: `kernel/initramfs/init` mounts `/run` as plain tmpfs (mode 1777), so any local user can create `/run/<name>` before its daemon; for `mu300-atd`'s command fifo or `mu300-voice`'s state that would let it inject AT commands as root.
+**Symptom**: `kernel/initramfs/init` mounts `/run` as plain tmpfs (mode 1777), so any local user can create `/run/<name>` before its daemon; for an AT command fifo in `/run/mu300-at` or the voice extra's state that would let it inject AT commands as root.
 **Impact**: A nuisance for the checked directories; `/run/mu300-at/answer.<pid>` and `/run/mu300/` are as before.
 **Known**: `openwrt/opt/mu300/lib/run-dir.sh` requires a real directory owned by the daemon's uid, not group/other writable, and moves a squatted non-empty one aside (`/run/.<name>.foreign.<pid>`, 0700).
 **Next**: Mount with `-o mode=755` in `init` and test a boot.
