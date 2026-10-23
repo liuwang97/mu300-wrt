@@ -2,7 +2,7 @@
 /*
  * MU300: the Marlin3 is a PCIe device. SIPC (sbuf/sblock) and the Trusty IPC channel are only used by the
  * integrated WCN variants, whose code is still linked in; these generated stubs satisfy the linker and fail
- * cleanly. Regenerate with the snippet in upstream/README.md if the sources change.
+ * cleanly: one per symbol the link would otherwise miss.
  */
 #include <linux/errno.h>
 #include <linux/types.h>

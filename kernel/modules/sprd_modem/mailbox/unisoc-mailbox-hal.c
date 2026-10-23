@@ -220,7 +220,7 @@ static void put_msg_in_tx_fifo(unsigned long id, void *msg)
 	 * the previous message, and that raises nothing. One such timeout left the fifo non-empty for ever,
 	 * so every later message was queued behind it and the AP never spoke to the modem again: the AT
 	 * channel went silent about ninety seconds into every boot and nothing short of a reboot brought it
-	 * back (docs/FINDINGS.md 13e).
+	 * back.
 	 */
 	wake_up(&deliver_thread_wait);
 }

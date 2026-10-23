@@ -154,7 +154,7 @@ static void sprd_pcie_notify_client(struct sprd_pcie *ctrl,
  * to high.
  *
  * MU300: a wakeup only when power/wakeup asks for one. The Marlin3 pulls WAKE# within 0-2 s of every L2 entry, so
- * as a wakeup it ended every system sleep with Wi-Fi up at once (FINDINGS 37). Off by default; writing "enabled"
+ * as a wakeup it ended every system sleep with Wi-Fi up at once. Off by default; writing "enabled"
  * to the controller's power/wakeup arms it.
  */
 static irqreturn_t sprd_pcie_wakeup_irq(int irq, void *data)
@@ -294,7 +294,7 @@ no_wakeup:
 #ifdef DW_PCIE_HAS_SKIP_LINK_WAIT
 	/*
 	 * MU300: the Marlin3 is off until wcn_bsp powers it and brings the link up through
-	 * sprd_pcie_configure_device(); the core's 0.9 s wait at probe never sees a link (patches/6.18/0028, patches/7.2/0028)
+	 * sprd_pcie_configure_device(); the core's 0.9 s wait at probe never sees a link (patches/0028)
 	 */
 	pp->skip_link_wait = true;
 #endif

@@ -2,7 +2,7 @@
 # apart, else a message on stderr and status 1. A kernel's module tree has such names (mainline: xt_HL.ko and
 # xt_hl.ko, xt_TCPMSS.ko and xt_tcpmss.ko, xt_DSCP.ko and xt_dscp.ko, xt_RATEEST.ko and xt_rateest.ko); on a file
 # system that ignores case (macOS's default APFS, Windows' NTFS) each pair becomes one file, under one name with the
-# other's contents, and the bundle loses a module without a word (docs/FINDINGS.md 212). Asked of the directory
+# other's contents, and the bundle loses a module without a word. Asked of the directory
 # itself, by making two such files in it: a volume's name says nothing about a directory mounted from elsewhere.
 case_sensitive() {
     _cs_d=$(mktemp -d "$1/.mu300-case.XXXXXX" 2>/dev/null) || { echo "cannot make a directory in $1" >&2; return 1; }
@@ -15,7 +15,6 @@ would become one file there. Work on a case-sensitive volume instead, for exampl
 sparse image:
   hdiutil create -size 100g -type SPARSE -fs 'Case-sensitive APFS' -volname mu300 ~/mu300.sparseimage
   hdiutil attach ~/mu300.sparseimage      # then clone or copy the tree to /Volumes/mu300 and run it from there
-(docs/FINDINGS.md 212)
 MSG
     return 1
 }

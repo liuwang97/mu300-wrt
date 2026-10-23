@@ -4,8 +4,7 @@ spread by hand (HEAVY) so no shard carries two of them."""
 import sys
 from pathlib import Path
 
-HEAVY = ['test_device_scripts', 'test_panel', 'test_power', 'test_update', 'test_sms_pool', 'test_luci_i18n',
-         'test_installer', 'test_android_install', 'test_answers', 'test_gui']
+HEAVY = ['test_boot_init', 'test_cpu_voltage']
 
 
 def shards(n):

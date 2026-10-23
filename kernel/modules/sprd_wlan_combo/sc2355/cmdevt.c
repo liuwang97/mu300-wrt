@@ -683,7 +683,7 @@ int sc2355_send_cmd_recv_rsp(struct sprd_priv *priv, struct sprd_msg *msg, u8 *r
 	 * blocked windows below returned 0 with nothing sent and, for the blocked ones, *rlen as the caller set it: the
 	 * caller then read its own uninitialised reply buffer as the firmware's answer (sc2355_get_station: a station's
 	 * signal and rates from the kernel stack, to any user's nl80211 request), and every setting "succeeded" that the
-	 * firmware never saw. After kanoqwq's clean-tf-7.2 0e19fe32; FINDINGS 106.
+	 * firmware never saw. After kanoqwq's clean-tf-7.2 0e19fe32.
 	 */
 	ret = sc2355_api_version_available_check(priv, msg);
 	if (!ret && cmdevt_lock_cmd(cmd, hif))

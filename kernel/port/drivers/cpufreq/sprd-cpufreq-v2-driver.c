@@ -29,7 +29,7 @@ static struct cluster_info *pclusters;
 static unsigned long boot_done_timestamp;
 
 /*
- * MU300: the CPU voltage offset (EXPERIMENTAL; docs/FINDINGS.md 133, based on kanoqwq/mu300-linux@3386928).
+ * MU300: the CPU voltage offset (EXPERIMENTAL; based on kanoqwq/mu300-linux@3386928).
  *
  * The firmware applies an offset only inside DVFS_INIT, once per boot, so it cannot be changed at run time and has to
  * be known before DVFS starts. Persistent settings live on the Linux filesystem, which only the initramfs can read,

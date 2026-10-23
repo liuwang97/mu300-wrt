@@ -1,9 +1,9 @@
-mmc: core: a failed HS400ES falls back to HS200, then HS/DDR52 (FINDINGS 160, issue #226)
+mmc: core: a failed HS400ES falls back to HS200, then HS/DDR52 (issue #226)
 
 On some units mainline does not bring the eMMC up at a cold boot: every one of mmc_rescan's four attempts ends in
 `mmc_select_hs400es failed, error -84` and then `Failed to initialize a non-removable card`, so there is no mmcblk0:
 no root and no modem firmware (issue #226: a user's unit on 6.18.56, cold boots failing every time; once on an F50
-here, after a sysrq reboot, FINDINGS 112). -84 is -EILSEQ, a CRC error, and no inner message precedes it, so it is
+here, after a sysrq reboot). -84 is -EILSEQ, a CRC error, and no inner message precedes it, so it is
 one of the two CMD13 status checks of the switch: at 52 MHz HS or, most likely, the one right after the host went
 to HS400 with the enhanced strobe. The vendor 5.4 kernel works on the same units.
 

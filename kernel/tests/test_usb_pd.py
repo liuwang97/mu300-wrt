@@ -1,5 +1,5 @@
-"""The U30 Air's USB-C port controller (kernel/patches/0019, 0020; FINDINGS 150): off unless asked for, never on
-another board, and its callbacks run against a fake PMIC: roles, the boost, the input current, the PD FIFOs."""
+"""The U30 Air's USB-C port controller (kernel/patches/0019, 0020): experimental, so off unless asked for (enable=1),
+never on another board, and its callbacks run against a fake PMIC: roles, the boost, the input current, the PD FIFOs."""
 import re
 import shutil
 import subprocess
@@ -62,7 +62,6 @@ class Static(unittest.TestCase):
         cfg = (ROOT / 'kernel/mu300-mainline.config').read_text()
         for opt in ('TYPEC', 'TYPEC_TCPM', 'TYPEC_UMP9620'):
             self.assertIn(f'\nCONFIG_{opt}=m\n', cfg)
-        self.assertIn('blacklist ump9620_tcpc', (ROOT / 'rootfs/overlay/etc/modprobe.d/mu300-usb-pd.conf').read_text())
 
     def test_no_vconn_no_dummy_regulator_no_clock_off(self):
         self.assertIn('return on ? -EOPNOTSUPP : 0;', function(self.drv, 'ump9620_set_vconn'))

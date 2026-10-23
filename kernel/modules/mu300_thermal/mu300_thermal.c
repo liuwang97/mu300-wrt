@@ -14,9 +14,9 @@
  * soc-thmzone from the device tree with its trips and polling delays, binds the cpufreq cooling devices through the
  * cooling maps (the maps to the vendor cooling nodes are ignored, nothing registers them), and the step_wise
  * governor throttles the clusters at 85 C; the critical trip powers the device off at 110 C through the thermal
- * core. thermal-guard notices the bound zone and hands frequency control over (docs/FINDINGS.md 48). The trend
+ * core. thermal-guard notices the bound zone and hands frequency control over. The trend
  * step_wise steps by is this driver's (get_trend, mu300_trend.h): with the core's own, reading against reading, the
- * sensors' noise kept the cooling at a step or two and the SoC passed 98 C under a full CPU load (FINDINGS 166).
+ * sensors' noise kept the cooling at a step or two and the SoC passed 98 C under a full CPU load.
  *
  * After kanoqwq's mu300_thermal (github.com/kanoqwq/mu300-linux, branch clean-tf-7.2, commit 5c8c2f9), GPL-2.0.
  *
@@ -71,7 +71,7 @@ static int mu300_virtual_get_temp(struct thermal_zone_device *tz, int *temp)
 }
 
 /*
- * The trend step_wise throttles by, from the slope over about a second (mu300_trend.h, docs/FINDINGS.md 166): the
+ * The trend step_wise throttles by, from the slope over about a second (mu300_trend.h): the
  * core's own (each reading against the one 100 ms before) follows the sensors' noise, and step_wise steps the
  * cooling down on every falling reading, so it never held the SoC under a full CPU load.
  */

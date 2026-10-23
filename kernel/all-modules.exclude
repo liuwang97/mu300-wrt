@@ -27,7 +27,7 @@ dir sound/soc
 ^(SERIAL_DEV_BUS|POWER_SEQUENCING)$
 ^EXT2_FS$
 ^I3C$
-# CoreSight trace: selects PERF_EVENTS (kept off, FINDINGS 31p) and would bind to the SoC's trace blocks
+# CoreSight trace: selects PERF_EVENTS (kept off) and would bind to the SoC's trace blocks
 ^CORESIGHT
 # board wiring: drivers for chips a board's device tree connects (power, clocks, pins, displays, camera sensors,
 # Ethernet switches, the SoC's own infrastructure). Without a board that has them they never bind, and the ones
@@ -94,8 +94,9 @@ dir drivers/usb/chipidea
 dir drivers/usb/cdns3
 dir drivers/usb/gadget/udc
 dir drivers/watchdog
-# DRM: only the displays a USB port takes. The SoC GPU drivers (panfrost, lima, etnaviv...) would bind next to
-# the vendor Mali driver and select IOMMU DMA and CMA, which change how every device of the vendor tree maps memory
+# DRM: only the displays a USB port takes. The SoC GPU drivers (panfrost, lima, etnaviv...) stay out until the GPU is
+# brought up with one on purpose: they select IOMMU DMA and CMA, which change how every device of the vendor tree maps
+# memory
 dir drivers/gpu/drm
 keep ^(DRM|DRM_UDL|DRM_GUD|DRM_GM12U320|DRM_VGEM)$
 dir drivers/video/fbdev
@@ -157,7 +158,7 @@ dir drivers/iio/dummy
 # the PMIC's vibrator (the boards have none): udev loaded it on F50-B at boot, though it bound nothing; no other
 # Spreadtrum/Unisoc driver came in with the expansion (SPI_SPRD above), and none may (the rule is general)
 (^|_)(SPRD|SC27XX|UMS9|UNISOC)
-# no realistic use on these devices and a poor security record (security review of #256, FINDINGS 163): not built
+# no realistic use on these devices and a poor security record (security review of #256): not built
 # at all. TIPC, SCTP, CAN, NFC and IEEE 802.15.4 stay, but the kernel does not load them on demand
 # (mu300-modprobe-guard); root loads them by name.
 ^N_GSM$                # GSM 07.10 mux line discipline (CVE-2023-6546 and more); no modem here sits on a tty

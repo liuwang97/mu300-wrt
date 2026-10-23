@@ -22,7 +22,7 @@
  * The blocks' registers: +0x08 IRQ_EN reads the enabled mask and sets the bits written as 1, +0x0c IRQ_DIS clears the
  * bits written as 1; both are single writes, so nothing is read, modified and written back and no lock with TF-A is
  * needed. A block whose clock (AON gate 0x64900008, ap-intcN-eb, kept on by CLK_IGNORE_UNUSED) is off is left alone.
- * Only the UMS9620 is accepted. docs/FINDINGS.md 218.
+ * Only the UMS9620 is accepted.
  */
 #include <linux/bits.h>
 #include <linux/io.h>

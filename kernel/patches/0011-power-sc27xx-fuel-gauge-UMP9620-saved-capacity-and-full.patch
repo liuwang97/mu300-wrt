@@ -8,7 +8,7 @@ The first version of this patch took it for 0.1 % (57.5 %) and wrote 0.1 % back,
 
 - a saved value is read in Android's format, and written as whole percent (which is the same number in both
   formats). A value that is a capacity in that format is taken as it is, as Unisoc's driver does; one that is not
-  is decided by the open-circuit voltage from the battery node's OCV table (FINDINGS 181: an earlier version also
+  is decided by the open-circuit voltage from the battery node's OCV table (an earlier version of this patch also
   sent a multiple of 10 with tenths to the OCV, for what the first version of this patch had written, and so
   misread Android's own 0x244 = 68.2 % at rest)
 - the capacity is written to the user area whenever its whole percent changes, as Android does: mainline wrote it
@@ -18,7 +18,7 @@ The first version of this patch took it for 0.1 % (57.5 %) and wrote 0.1 % back,
   charger-manager's full current): the U30 Air's charger ends a charge at 4.208 V, below the top of the OCV table,
   so mainline's calibration (OCV above the table's top) never did. After a 1.5 h charge at 1.2 A the battery
   rested at 4.146 V with Full from bq256xx, and the capacity still said 58. No voltage condition: that 4.146 V is
-  below the node's fullbatt-voltage (4.2 V) too (FINDINGS 181; an earlier version asked for 70 % by the OCV table)
+  below the node's fullbatt-voltage (4.2 V) too (an earlier version asked for 70 % by the OCV table)
 - the reported capacity stays within 0-100: while charging nothing calibrates the coulomb count
 
 --- a/drivers/power/supply/sc27xx_fuel_gauge.c
@@ -214,8 +214,8 @@ The first version of this patch took it for 0.1 % (57.5 %) and wrote 0.1 % back,
 + * termination current. That stands for 100 % while the battery current is still within the battery node's
 + * fullbatt-current either way (Unisoc's charger-manager's full current, 120 mA on the U30 Air): a Full with the
 + * battery charging or drained harder than that is not the end of a charge. No voltage condition: after the
-+ * termination the voltage settles below the charge voltage (4.146 V at rest after a Full from 4.208 V, FINDINGS
-+ * 33d), below the node's fullbatt-voltage too.
++ * termination the voltage settles below the charge voltage (4.146 V at rest after a Full from 4.208 V on a U30
++ * Air), below the node's fullbatt-voltage too.
 + */
 +static bool ump9620_fgu_full_current(struct sc27xx_fgu_data *data)
 +{

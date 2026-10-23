@@ -1,4 +1,4 @@
-"""The fuel gauge's shutdown callback (kernel/patches/0018, FINDINGS 105; after kanoqwq's clean-tf-7.2 2af101f8):
+"""The fuel gauge's shutdown callback (kernel/patches/0018; after kanoqwq's clean-tf-7.2 2af101f8):
 the function as the patch adds it, compiled against stubs of the driver's helpers. It reads the capacity under the
 driver's lock, keeps it and the boot mode, stops at the first error without writing what came after, and does nothing
 on a PMIC other than UMP9620 or without a battery. Needs a C compiler (skipped without one)."""
@@ -53,7 +53,7 @@ int main(void)
 	assert(area == 18 && mode == 0 && warned == 1 && !d.lock.held);
 	reset(); err_mode = -5; sc27xx_fgu_shutdown(&p);
 	assert(area == 76 && warned == 1 && !d.lock.held);
-	reset(); d.bat_present = false; sc27xx_fgu_shutdown(&p); /* the F50 and the V50: no battery */
+	reset(); d.bat_present = false; sc27xx_fgu_shutdown(&p); /* the F50: no battery */
 	assert(!reads && area == 18 && mode == 0);
 	reset(); d.bat_present = true; d.var = &sc2731_info; sc27xx_fgu_shutdown(&p);
 	assert(!reads && area == 18);
@@ -110,7 +110,7 @@ int main(void)
 {
 	struct sc27xx_fgu_data d = { .full_current_ua = 120000 };
 
-	cur_ma = 2; assert(ump9620_fgu_full_current(&d));      /* FINDINGS 33d: Full, +2 mA at rest */
+	cur_ma = 2; assert(ump9620_fgu_full_current(&d));      /* Full, +2 mA at rest (U30 Air) */
 	cur_ma = -3; assert(ump9620_fgu_full_current(&d));     /* the ADC's offset the other way */
 	cur_ma = 120; assert(ump9620_fgu_full_current(&d));
 	cur_ma = -120; assert(ump9620_fgu_full_current(&d));
@@ -127,7 +127,7 @@ int main(void)
 
 @unittest.skipUnless(shutil.which('cc'), 'needs a C compiler')
 class FguFull(unittest.TestCase):
-    """0011 (FINDINGS 181): the charger's Full stands for 100 % with the battery current within the battery node's
+    """0011: the charger's Full stands for 100 % with the battery current within the battery node's
     fullbatt-current either way; no voltage condition (a real Full rested at 4.146 V, under fullbatt-voltage)."""
 
     def test_full_current_window(self):

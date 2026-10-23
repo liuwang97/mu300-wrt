@@ -1,4 +1,4 @@
-"""kanoqwq's charger and NCM kernel patches (kernel/patches/0024-0026; FINDINGS 207, 208): the U30 Air's battery
+"""kanoqwq's charger and NCM kernel patches (kernel/patches/0024-0026): the U30 Air's battery
 CV and stock safety-timer policy on, its 3 A and the NCM busy-flush retry off unless asked for."""
 import re
 import unittest

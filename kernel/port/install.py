@@ -121,7 +121,7 @@ if marker not in t:
 ''' + t[j:]
 # The stock device tree gives the slot a card-detect GPIO on line 35 of the EIC's sync controller. Mainline's
 # sprd-eic used to give that controller 24 lines (three banks of its six), the lookup never succeeded and the host
-# would have stayed deferred for ever (FINDINGS 31j); patches/0014 maps all of its banks, so the parse now finds the
+# would have stayed deferred for ever; patches/0014 maps all of its banks, so the parse now finds the
 # line and the core takes its interrupt instead of polling (issue #181: a polled empty slot was initialised once a
 # second, and the host's late command interrupts filled the log). What follows is the fallback for a parse that still
 # defers on the CD GPIO (a kernel without 0014, or an EIC that never binds - built in, it binds before any sdhci
@@ -151,7 +151,7 @@ if 'of_remove_property(pdev->dev.of_node, cd)' not in t:
 # The eMMC is mmc0 and the card slot mmc1. The stock device tree has no mmc aliases, so the host index is the order
 # in which the two hosts reach sdhci_pltfm_init(), and both probe asynchronously: about one boot in twenty the card
 # slot came first, the card became mmcblk0 and the eMMC mmcblk1, and init (and everything after it) took the card
-# for the eMMC - it never found the card and rebooted at 300 s (FINDINGS 31l). The card slot's host now defers until
+# for the eMMC - it never found the card and rebooted at 300 s. The card slot's host now defers until
 # the eMMC's host is added; the deferral is checked before sdhci_pltfm_init(), which allocates the index. If the eMMC's
 # host never binds, the card slot's host stays deferred: there is no root on the card without a working eMMC host.
 emmc_marker = 'MU300: the eMMC is mmc0'
@@ -199,7 +199,7 @@ static bool sdhci_sprd_emmc_pending(struct device_node *self)
 # which gives data CRC errors on HS400ES writes while reads work)
 t = t.replace('#define  SDHCI_SPRD_DLL_PHASE_INTERNAL\t0x3', '#define  SDHCI_SPRD_DLL_PHASE_INTERNAL\t0x2 /* MU300 r11p3 */')
 # the register accessors with the generic SDHCI ordering: the ADMA descriptors are in memory before the command
-# register starts the transfer (sdhci_order.py, FINDINGS 93)
+# register starts the transfer (sdhci_order.py)
 sys.path.insert(0, here)
 sys.dont_write_bytecode = True     # no __pycache__ in port/: its subdirectories are copied into the kernel tree
 import sdhci_order

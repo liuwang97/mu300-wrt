@@ -3,7 +3,8 @@
 
     python3 check-dt-modules.py MODULES_ALIAS dt-compatibles.txt [allowed module...]
 
-Ubuntu's udev loads every module whose "of:" alias matches a node of the device tree at boot. The vendor tree these
+A module whose "of:" alias matches a node of the device tree binds to it as soon as anything loads it (a hotplug
+helper that loads by modalias, a package's modules.d entry). The vendor tree these
 boards boot with names hundreds of nodes (dt-compatibles.txt: every compatible string of the F50's and the U30
 Air's /proc/device-tree, 2026-10-16), and a mainline driver that matched one of them would start driving a part of
 the SoC next to (or instead of) the vendor driver - the expansion of all-modules.py must not bring one in. The

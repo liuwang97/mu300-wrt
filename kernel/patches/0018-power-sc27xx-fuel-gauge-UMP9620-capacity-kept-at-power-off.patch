@@ -1,13 +1,12 @@
 power: supply: sc27xx_fuel_gauge: UMP9620's capacity kept at a power-off
 
-After kanoqwq's clean-tf-7.2 2af101f8 (his 0017, "retain live soc before reset") and f59a296 (his 0020); rewritten
-here (FINDINGS 105, 181).
+After kanoqwq's clean-tf-7.2 2af101f8 (his 0017, "retain live soc before reset") and f59a296 (his 0020); rewritten.
 
 - The capacity a boot starts from (this one's or Android's) is the one in the FGU's always-on user area, and 0011
   writes it when somebody reads the capacity and its whole percent has changed: the panel, mu300-power. A device
   powered off or rebooted after the capacity moved and before the next read starts from an older one. A shutdown
   callback now reads it once more while the PMIC still answers, writes it, and writes the boot mode (normal power-on)
-  with it. Only on UMP9620 with a battery present: the F50 and the V50 have none, and the SC2731 path is mainline's.
+  with it. Only on UMP9620 with a battery present: the F50 has none, and the SC2731 path is mainline's.
 - The user area is written through a CLEAR and a SET register: clear, set, release, 200 us after each of the first
   two. Unisoc's driver (sc27xx_fgu_save_boot_mode()/save_last_cap() in the U30 Air's 5.4 source, and the U30 Air's
   stock sc27xx_fuel_gauge.ko at 0x4ba4) waits after the release too; on UMP9620 this one does now, so the boot mode

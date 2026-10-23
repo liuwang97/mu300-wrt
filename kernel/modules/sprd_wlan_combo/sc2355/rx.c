@@ -243,8 +243,7 @@ static void rx_skb_process(struct sprd_priv *priv, struct sk_buff *skb)
 			 * too) is sent back to the BSS here. Unless the bridge port has hairpin mode, this copy is how
 			 * mDNS, SSDP and IPv6 ND reach the other clients of the same radio: a bridge never sends a frame
 			 * back out of the port it came from. "Fixing" it with htons() hands IP multicast to the stack
-			 * alone and can cut that, so it stays as the vendor shipped it until it is measured
-			 * (docs/FINDINGS.md 92). */
+			 * alone and can cut that, so it stays as the vendor shipped it until it is measured. */
 			if (eth->h_proto != ETH_P_IP &&
 			    eth->h_proto != ETH_P_IPV6) {
 				tx_skb = pskb_copy(skb, GFP_ATOMIC);
@@ -502,7 +501,7 @@ void sc2355_rx_bus_complete(struct sprd_hif *hif)
 	struct rx_mgmt *rx_mgmt;
 	unsigned long flags;
 
-	/* MU300: off by default until measured on a board (FINDINGS 195); off, the refill keeps its back-off timer */
+	/* MU300: off by default until measured on a board; off, the refill keeps its back-off timer */
 	if (!READ_ONCE(refill_bus_resume))
 		return;
 	rx_mgmt = smp_load_acquire(&hif->rx_mgmt);

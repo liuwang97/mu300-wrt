@@ -1,10 +1,10 @@
-"""kernel/verify-kernel-src.sh (FINDINGS 161): a kernel.org tarball is unpacked only when the autosigner's signed
+"""kernel/verify-kernel-src.sh: a kernel.org tarball is unpacked only when the autosigner's signed
 sha256sums.asc lists its SHA-256 and a pinned releaser signed the uncompressed tar.
 
 The pinned keyrings are checked offline (the fingerprints of the committed keys, parsed from the OpenPGP packets,
 against the .fpr lists, the README and the list below). The fail-closed logic runs against throwaway keys made with
-gpg in a scratch GNUPGHOME (skipped where gpg, gpgv or xz are missing); the real kernel.org files were checked by
-hand (FINDINGS 161), as the build workflows do on every run."""
+gpg in a scratch GNUPGHOME (skipped where gpg, gpgv or xz are missing); the real kernel.org files are checked by
+every build."""
 import hashlib
 import io
 import os
@@ -16,7 +16,7 @@ import unittest
 
 from helpers import TOP
 
-UP = TOP / 'upstream'
+UP = TOP / 'kernel'
 KEYS = UP / 'keys'
 SCRIPT = UP / 'verify-kernel-src.sh'
 AUTOSIGNER = {'B8868C80BA62A1FFFAF5FDA9632D3A06589DA6B1'}
@@ -81,19 +81,19 @@ class PinnedKeys(unittest.TestCase):
 class BuildUsesIt(unittest.TestCase):
     def test_build_verifies_before_unpacking(self):
         body = (UP / 'build.sh').read_text()
-        fetch = body[body.index('if [ ! -d /src/linux-$KV ]'):body.index('cd /src/linux-$KV')]
+        fetch = body[body.index('if [ ! -d "$SRC/linux-$KV" ]'):body.index('cd "$SRC/linux-$KV"')]
         for f in ('linux-$KV.tar.xz', 'linux-$KV.tar.sign', 'sha256sums.asc'):
             self.assertIn(f, fetch)
-        verify = fetch.index('bash /work/verify-kernel-src.sh "$dl" "$KV" || { rm -rf "$dl"; exit 1; }')
+        verify = fetch.index('bash "$W/verify-kernel-src.sh" "$dl" "$KV" || { rm -rf "$dl"; exit 1; }')
         self.assertLess(verify, fetch.index('tar -xJf'))
         self.assertNotIn('sha256sum -c', fetch, 'the unsigned check is gone')
         self.assertEqual(body.count('tar -xJf'), 1)
 
     def test_checksum_list_from_kernel_org_itself(self):
-        # FINDINGS 206: the CDN's sha256sums.asc lagged 7.3 by hours; the tarball and its signature come from the CDN,
+        # the CDN's sha256sums.asc can lag a new release by hours: the tarball and its signature come from the CDN,
         # the signed list from www.kernel.org
         body = (UP / 'build.sh').read_text()
-        fetch = body[body.index('if [ ! -d /src/linux-$KV ]'):body.index('cd /src/linux-$KV')]
+        fetch = body[body.index('if [ ! -d "$SRC/linux-$KV" ]'):body.index('cd "$SRC/linux-$KV"')]
         self.assertIn('base=https://cdn.kernel.org/pub/linux/kernel/v${KV%%.*}.x', fetch)
         self.assertIn('[ "$f" != sha256sums.asc ] || u=https://www.kernel.org/pub/linux/kernel/v${KV%%.*}.x/$f', fetch)
 

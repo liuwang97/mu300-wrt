@@ -7,11 +7,10 @@ sc27xx_pd.c to mainline's TCPM (kanoqwq/mu300-linux 2af101f8, "complete U30 Air 
 on his unit a computer gave device + sink, and a dock with its charger gave host + sink after a manual data role
 swap, while the automatic switch to host did not, and his last receive fix was not run against the dock again.
 
-This is his driver reviewed and rewritten (FINDINGS 150), one file, Unisoc's register sequences checked against
+This is his driver reviewed and rewritten, one file, Unisoc's register sequences checked against
 sc27xx_pd.c and sc27xx_typec.c of ZTE's U30 Air kernel. Built as a module, and probe does nothing unless the
 module is loaded with enable=1 (mu300-usb pd on); then only where the device tree has the charger policy service
-(the U30 Air, as 0016), the Type-C block's use_pdhub_c2c and the PD block enabled (the F50's is disabled, the V50
-has no charger policy service).
+(the U30 Air, as 0016), the Type-C block's use_pdhub_c2c and the PD block enabled (the F50's is disabled).
 
 What changed from kano's version, and why:
 
@@ -41,7 +40,7 @@ done: TCPM's port reset at start then does not drop a computer that is plugged i
 frame (it holds the CRC behind it), TX_OK and a received GoodCRC completing one transmission once, the VBUS GPIO's
 extcon for VBUS changes without a CC event, TCPM registered last and unregistered first.
 
-Not known yet and to be seen on the device (FINDINGS 150): whether the Type-C block follows a mode change while
+Not known yet and to be seen on the device: whether the Type-C block follows a mode change while
 attached (power role swaps, Try.SNK), whether a hard reset sent raises TX_OK, and whether a second frame can sit in
 the FIFO behind the first (the RX FIFO level is logged at debug level).
 
@@ -87,7 +86,7 @@ the FIFO behind the first (the RX FIFO level is logged at debug level).
 + *
 + * EXPERIMENTAL and off by default: probe does nothing unless the module is loaded with enable=1
 + * (`mu300-usb pd on`). Only the U30 Air binds it: its device tree has the charger policy service, the Type-C block's
-+ * use_pdhub_c2c and the PD block enabled; the F50 and the V50 have none of that.
++ * use_pdhub_c2c and the PD block enabled; the F50 has none of that.
 + *
 + * The register sequences are Unisoc's (sc27xx_pd.c and sc27xx_typec.c of ZTE's U30 Air kernel, GPL); kano put them
 + * under mainline's TCPM first (kanoqwq/mu300-linux 2af101f8). The Type-C block runs its own state machine (DRP

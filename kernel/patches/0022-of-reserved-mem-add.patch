@@ -1,11 +1,11 @@
 of: reserved_mem: reserve ranges the device tree forgot
 
-The 6.18 counterpart of kernel/patches/of-reserved-mem-add.patch. The F50's audio DSP cannot start because
+The F50's audio DSP cannot start because
 /audio-mem-mgr has no memory-region: every other audio address is in that node (cmdaddr, smsg-addr,
 shmaddr-dsp-vbc, the IRAM bases), and the reservation is missing. CONFIG_OF_RESERVED_MEM_ADD (or
 reserved_mem_add= on the command line) is a list of base,size pairs reserved as though the device tree had asked
-for them, so the memory stays out of Linux's hands and the DSP can be loaded into it (FINDINGS 24, 188). The
-ranges keep their struct pages, as on 5.4: audio_mem maps them non-cached with vmap(), as the modem's smem does.
+for them, so the memory stays out of Linux's hands and the DSP can be loaded into it. The
+ranges keep their struct pages, as in the vendor kernel: audio_mem maps them non-cached with vmap(), as the modem's smem does.
 
 diff -ruN a/drivers/of/Kconfig b/drivers/of/Kconfig
 --- a/drivers/of/Kconfig

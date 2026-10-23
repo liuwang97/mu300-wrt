@@ -5,7 +5,7 @@ layout); a controller whose "reg" lists more banks gets a gpiochip of 24 lines a
 UMS9620's sync controller (/soc/aon/gpio@2000c0, "sprd,qogirn6pro-eic-sync", "sprd,sc9860-eic-sync") lists six
 banks (0x2000c0 ... 0x2500c0, Unisoc's qogirn6pro.dtsi), and the F50's SD card slot has its card detect on line
 35 of it (cd-gpios = <&eic_sync 35 GPIO_ACTIVE_HIGH>): in the fifth bank, so of_gpio_simple_xlate() rejected
-the line, the lookup never found the chip and mmc_of_parse() returned -EPROBE_DEFER for ever (FINDINGS 31j).
+the line, the lookup never found the chip and mmc_of_parse() returned -EPROBE_DEFER for ever.
 The port then dropped cd-gpios and polled the slot (MMC_CAP_NEEDS_POLL); with SDHCI_QUIRK_BROKEN_CARD_DETECTION
 sdhci_get_cd() reports a card present on every poll, so an empty slot was initialised once a second, and the
 host's late command interrupts for commands nothing answered came as "mmc1: Got command interrupt 0x00000001

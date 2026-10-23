@@ -12,9 +12,9 @@ OUT=${MU300_OUT:-$W/out}
 export ARCH=arm64
 [ "$(uname -m)" = aarch64 ] || export CROSS_COMPILE=${CROSS_COMPILE:-aarch64-linux-gnu-}
 STRIP=${CROSS_COMPILE:-}strip
-# Every out-of-tree module, in dependency order: wlan and bt use wcn_bsp, the PMIC watchdog and Mali the modem's
-# headers; mu300_thermal and ums9620_lpintc need only the kernel.
-mods=${*:-wcn_bsp sprd_wlan_combo sprdbt_tty sprd_modem sprd_pmic_wdt mali mu300_thermal ums9620_lpintc}
+# Every out-of-tree module, in dependency order: wlan and bt use wcn_bsp, the PMIC watchdog the modem's headers;
+# mu300_thermal and ums9620_lpintc need only the kernel.
+mods=${*:-wcn_bsp sprd_wlan_combo sprdbt_tty sprd_modem sprd_pmic_wdt mu300_thermal ums9620_lpintc}
 mkdir -p "$OUT/modules"
 # xt_HL.ko and xt_hl.ko (and three more pairs) must stay two files
 . "$W/case-sensitive.sh"
@@ -36,10 +36,12 @@ tr - _ < "$O/modules.in-tree" | sort > "$O/modules.in-tree.names"
 [ -z "$(uniq -d "$O/modules.in-tree.names")" ] || { echo "in-tree modules share a name: $(uniq -d "$O/modules.in-tree.names")" >&2; exit 1; }
 # none of them may load by itself on the boards: udev loads what matches a node of the vendor device tree
 krel=$(cat "$O/include/config/kernel.release")
-depmod -b "$O/mod-install" "$krel"
+# (depmod lives in /sbin, which a user's PATH may lack)
+DEPMOD=$(command -v depmod || echo /sbin/depmod)
+"$DEPMOD" -b "$O/mod-install" "$krel"
 python3 "$W/check-dt-modules.py" "$O/mod-install/lib/modules/$krel/modules.alias" "$W/dt-compatibles.txt" \
     $(sed 's/#.*//' "$W/dt-modules-allowed.txt")
-# depmod's index, for make-bundle.sh's check of the on-demand guard (check-autoload-blocked.py)
+# depmod's index, for make-bundle.sh's check of the autoload-blocked list (check-autoload-blocked.py)
 cp "$O/mod-install/lib/modules/$krel/modules.dep" "$O/mod-install/lib/modules/$krel/modules.alias" "$OUT/"
 find "$O/mod-install/lib/modules" -name '*.ko' -exec cp {} "$OUT/modules/" \;
 B=$SRC/mod-build
@@ -50,15 +52,7 @@ for m in $mods; do
     # SIPC, so it needs the modem stack's headers next to it
     [ -d "$B/wcn_bsp" ] || cp -r "$W/modules/wcn_bsp" "$B/wcn_bsp"
     [ -d "$B/sprd_modem" ] || cp -r "$W/modules/sprd_modem" "$B/sprd_modem"
-    margs=
-    kcflags=
-    if [ "$m" = mali ]; then
-        # the Mali DDK calls Trusty for protected mode: the vendor trusty headers that ship with the modem modules
-        [ -d "$B/mali/kinclude" ] || cp -r "$W/modules/sprd_modem/kinclude" "$B/mali/kinclude"
-        kcflags="-I$B/mali/kinclude"
-        margs="src=$B/mali CONFIG_MALI_MIDGARD=m CONFIG_MALI_PLATFORM_NAME=qogirn6pro CONFIG_MALI_DEVFREQ=y CONFIG_DEVFREQ_THERMAL=y CONFIG_MALI_DEBUG=n CONFIG_MALI_FENCE_DEBUG=n BUILD=no"
-    fi
-    make -C "$O" M="$B/$m" KBUILD_EXTRA_SYMBOLS="$extra" KCFLAGS="$kcflags" $margs -j"$(nproc)" modules 2>&1 | tee "$OUT/modules/$m.log"
+    make -C "$O" M="$B/$m" KBUILD_EXTRA_SYMBOLS="$extra" -j"$(nproc)" modules 2>&1 | tee "$OUT/modules/$m.log"
     [ -f "$B/$m/Module.symvers" ] && extra="$extra $B/$m/Module.symvers"
     for ko in $(find "$B/$m" -name '*.ko'); do
         ! echo "${ko##*/}" | tr - _ | grep -Fqx -f - "$O/modules.in-tree.names" || { echo "$m: ${ko##*/} has the name of an in-tree module" >&2; exit 1; }

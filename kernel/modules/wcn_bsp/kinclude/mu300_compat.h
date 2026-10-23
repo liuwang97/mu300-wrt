@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0 */
-/* MU300: build the 5.4 vendor WCN drivers against a 6.18 kernel */
+/* MU300: build the vendor WCN drivers (written for Unisoc's 5.4 kernel) against the mainline kernel */
 #ifndef _MU300_COMPAT_H
 #define _MU300_COMPAT_H
 
@@ -16,7 +16,7 @@
 
 #define PDE_DATA(inode) pde_data(inode)
 
-/* 5.4 had create+add / remove+destroy; 6.18 only exports register/unregister */
+/* 5.4 had create+add / remove+destroy; mainline only exports register/unregister */
 #define wakeup_source_create(name) wakeup_source_register(NULL, name)
 #define wakeup_source_add(ws) do { } while (0)
 #define wakeup_source_remove(ws) do { } while (0)

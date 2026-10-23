@@ -398,7 +398,7 @@ int sprd_iface_set_power(struct sprd_hif *hif, int val)
 	 * open's power-on (1st count) ran start_marlin + post_init while the probe's power-off (last count) was
 	 * still in post_deinit.  post_deinit then cleared the channels and sc2355_hif.hif that post_init had just
 	 * set, stop_marlin powered the chip down, and the next RX interrupt read hif->rx_mgmt from NULL
-	 * (pcie_rx_handle+0x34, "paging request at 00000000000030b8", FINDINGS 31n).  One transition at a time.
+	 * (pcie_rx_handle+0x34, "paging request at 00000000000030b8").  One transition at a time.
 	 */
 	mutex_lock(&hif->power_lock);
 	if (val) {
@@ -734,7 +734,7 @@ static netdev_tx_t iface_start_xmit(struct sk_buff *skb, struct net_device *ndev
 	ret = sprd_send_data(vif->priv, vif, msg, skb, SPRD_DATA_TYPE_NORMAL,
 			     offset, true);
 	if (ret) {
-		/* once per dropped frame while a client is gone or the queue is full: bounded (docs/FINDINGS.md 92) */
+		/* once per dropped frame while a client is gone or the queue is full: bounded */
 		if (net_ratelimit())
 			netdev_err(ndev, "%s drop msg due to TX Err\n", __func__);
 		/* FIXME
@@ -1890,7 +1890,7 @@ static int iface_core_init(struct device *dev, struct sprd_priv *priv)
 	 * interface (cfg80211_leave_all), and the WCN PCI function, which suspends asynchronously, has usually taken
 	 * the bus down by then: CMD_CLOSE and CMD_DISCONNECT were dropped ("fail because bus done"), the firmware kept
 	 * them open, and the next close and open of Wi-Fi after the resume hit a firmware assert (mchn.c line 137)
-	 * that only a reboot cleared (FINDINGS 37). With a configuration the interfaces stay as they are; the
+	 * that only a reboot cleared. With a configuration the interfaces stay as they are; the
 	 * firmware is told about the sleep through the PCIe channel's power_notify, as before. "iw phy phy0 wowlan
 	 * disable" brings the old behaviour back. wiphy_unregister() frees it.
 	 */

@@ -6,7 +6,7 @@ import unittest
 
 from helpers import TOP, ShellTest
 
-INIT = (TOP / 'boot' / 'init').read_text()
+INIT = (TOP / 'kernel' / 'initramfs' / 'init').read_text()
 
 
 def fake_ext4(path, label, magic=b'\x53\xef'):
@@ -77,51 +77,39 @@ class SdRoot(ShellTest):
                 (c / 'driver').mkdir(exist_ok=True)
         return s
 
-    def waited(self, shell, kernel, sys, extra=''):
-        call = (f'n_sleep=0; sleep() {{ n_sleep=$((n_sleep + 1)); {extra} }}; uname() {{ echo {kernel}; }}; '
+    def waited(self, shell, sys, extra=''):
+        call = (f'n_sleep=0; sleep() {{ n_sleep=$((n_sleep + 1)); {extra} }}; '
                 f'MU300_SYS={sys}; wait_sd_root 3 6; r=$?; echo "slept=$n_sleep"; (exit $r)')
         return self.run_fn(shell, call, f'{self.tmp}/mmcblk[1-9]p1')
 
     def test_mainline_empty_slot_keeps_the_short_wait(self):
-        # 6.18/7.2 poll the slot and find a card in about 2.5 s: a host without a card is no reason to wait longer
+        # the kernel polls the slot and finds a card in about 2.5 s: a host without a card is no reason to wait longer
         sys = self.fake_sys(hosts=('mmc0', 'mmc1'))
         for shell in self.each_shell():
-            self.assertEqual('slept=3\nrc=1', self.waited(shell, '6.18.55', sys).strip())
+            self.assertEqual('slept=3\nrc=1', self.waited(shell, sys).strip())
 
     def test_card_found_but_not_set_up_yet_extends_the_wait(self):
         sys = self.fake_sys(hosts=('mmc0', 'mmc1'), card=('SD', False))
         for shell in self.each_shell():
-            self.assertEqual('slept=6\nrc=1', self.waited(shell, '6.18.55', sys).strip())
+            self.assertEqual('slept=6\nrc=1', self.waited(shell, sys).strip())
 
     def test_card_that_is_set_up_and_foreign_does_not_extend(self):
         sys = self.fake_sys(hosts=('mmc0', 'mmc1'), card=('SD', True))
         for shell in self.each_shell():
-            self.assertEqual('slept=3\nrc=1', self.waited(shell, '5.4.254-gb50db5b6224c', sys).strip())
-
-    def test_vendor_kernel_with_a_card_host_extends_the_wait(self):
-        # 5.4 has a card-detect line and no poll, and the card was once seen only at 23.75 s (FINDINGS 31j)
-        sys = self.fake_sys(hosts=('mmc0', 'mmc1', 'mmc2'))
-        for shell in self.each_shell():
-            self.assertEqual('slept=6\nrc=1', self.waited(shell, '5.4.254-gb50db5b6224c', sys).strip())
-
-    def test_vendor_kernel_without_a_card_host_keeps_the_short_wait(self):
-        # the U30 Air: the eMMC is its only host
-        sys = self.fake_sys(hosts=('mmc0',))
-        for shell in self.each_shell():
-            self.assertEqual('slept=3\nrc=1', self.waited(shell, '5.4.254-gb50db5b6224c', sys).strip())
+            self.assertEqual('slept=3\nrc=1', self.waited(shell, sys).strip())
 
     def test_late_card_found_during_the_long_wait(self):
-        sys = self.fake_sys(hosts=('mmc0', 'mmc1', 'mmc2'))
+        sys = self.fake_sys(hosts=('mmc0', 'mmc1'), card=('SD', False))
         src = self.tmp / 'card'
         fake_ext4(src, 'mu300sd')
         appear = f'[ $n_sleep = 5 ] && cp {src} {self.tmp}/mmcblk1p1;'
         for shell in self.each_shell():
             (self.tmp / 'mmcblk1p1').unlink(missing_ok=True)
-            out = self.waited(shell, '5.4.254-gb50db5b6224c', sys, appear)
+            out = self.waited(shell, sys, appear)
             self.assertEqual(f'{self.tmp}/mmcblk1p1\nslept=5\nrc=0', out.strip())
 
 
-    # The eMMC and the card by type, never by number (FINDINGS 31l: the card slot's host once took mmc0).
+    # The eMMC and the card by type, never by number (the card slot's host can take mmc0).
     def fake_disks(self, layout):
         """layout: {'mmcblk0': 'SD', 'mmcblk1': 'MMC', ...}; /sys/block/<n>/device/type in self.tmp/sys,
         the block devices as files in self.tmp/dev"""
@@ -178,18 +166,7 @@ class SdRoot(ShellTest):
         c.mkdir(parents=True)
         (c / 'type').write_text('SD\n')
         for shell in self.each_shell():
-            self.assertEqual('slept=6\nrc=1', self.waited(shell, '6.18.55', s).strip())
-
-    def test_vendor_kernel_card_host_under_any_number(self):
-        # 5.4 with the eMMC on mmc1 and the card host on mmc0: still a card host, still the long wait
-        s = self.tmp / 'sys'
-        (s / 'class' / 'mmc_host' / 'mmc0').mkdir(parents=True)
-        e = s / 'class' / 'mmc_host' / 'mmc1' / 'mmc1:0001'
-        e.mkdir(parents=True)
-        (e / 'type').write_text('MMC\n')
-        (s / 'bus' / 'mmc' / 'devices').mkdir(parents=True)
-        for shell in self.each_shell():
-            self.assertEqual('slept=6\nrc=1', self.waited(shell, '5.4.254-gb50db5b6224c', s).strip())
+            self.assertEqual('slept=6\nrc=1', self.waited(shell, s).strip())
 
 
 class Region(ShellTest):
@@ -277,7 +254,7 @@ mount() {
     esac
 }
 umount() { ON=; }
-pick_root() { case $ON in internal) echo /disk/ubuntu ;; part) echo /disk/openwrt ;; card) [ "$CARD_EMPTY" = 1 ] || echo /disk/openwrt ;; esac; }
+pick_root() { case $ON in internal) echo /disk/openwrt-luci ;; part) echo /disk/openwrt-luci ;; card) [ "$CARD_EMPTY" = 1 ] || echo /disk/openwrt-luci ;; esac; }
 ON=
 ROOT_OFFSET=27762098176
 EMMC=${EMMC:-/dev/mmcblk0}
@@ -531,8 +508,8 @@ class Slot(ShellTest):
             self.assertIn('stage=boot-mode mode=normal source=default', log)
 
     def test_power_on_charger_makes_no_charging_boot_marker(self):
-        # mu300-power's POWER_ON_CHARGER=1 in the system that boots (FINDINGS 196): the mode is still charger, but the
-        # Ubuntu units must not be held back
+        # POWER_ON_CHARGER=1 in the system's power settings: the mode is still charger, but the radios must not be
+        # held back
         for shell in self.each_shell():
             args = 'androidboot.slot_suffix=_b androidboot.mode=charger'
             _, log, run = self.run_slot(shell, cmdline='root=/dev/ram0', bootargs=args,
@@ -591,18 +568,15 @@ class Slot(ShellTest):
 
 
 class Device(ShellTest):
-    """Which device init takes (the device block) and the USB subnet that goes with it: the F50 and the U30 Air as
-    before, labelled or not; the V50 (FINDINGS 95) by its AW9523B node, also under an older installer's f50 label,
-    on 192.168.79.x; nothing ever takes one board for another."""
-    def decide(self, shell, label=None, u30=False, v50=None, dt=True):
+    """Which board init takes (the device block) and the USB subnet that goes with it: the F50 and the U30 Air, by the
+    device segment's label or else by the stock device tree's charger policy service; a label init does not know
+    leaves it to the device tree."""
+    def decide(self, shell, label=None, u30=False):
         d = self.tmp / 'dt'
         shutil.rmtree(d, ignore_errors=True)
-        if dt:
-            (d / 'soc' / 'ap-ahb' / 'i2c@2270000').mkdir(parents=True)
+        d.mkdir()
         if u30:
             (d / 'charger_policy_service').mkdir(parents=True)
-        if v50:
-            (d / 'soc' / v50 / 'i2c@2270000' / 'aw9523b_led@5b').mkdir(parents=True)
         f = self.tmp / 'mu300-device'
         f.unlink(missing_ok=True)
         if label is not None:
@@ -614,15 +588,13 @@ class Device(ShellTest):
         code = m.group(1) + net.group(0) + '\necho "$DEVICE $NET"'
         return self.sh(shell, code, MU300_DT=str(d), MU300_DEVICE_FILE=str(f)).stdout.strip()
 
-    def test_three_boards(self):
+    def test_two_boards(self):
         cases = [
-            (dict(), 'f50 192.168.77'), (dict(label='f50'), 'f50 192.168.77'), (dict(label='v50'), 'f50 192.168.77'),
+            (dict(), 'f50 192.168.77'), (dict(label='f50'), 'f50 192.168.77'),
             (dict(u30=True), 'u30air 192.168.78'), (dict(label='u30air', u30=True), 'u30air 192.168.78'),
             (dict(label='u30air'), 'u30air 192.168.78'), (dict(label='f50', u30=True), 'f50 192.168.77'),
-            (dict(label='v50', u30=True), 'u30air 192.168.78'), (dict(u30=True, v50='ap-ahb'), 'u30air 192.168.78'),
-            (dict(v50='ap-ahb'), 'v50 192.168.79'), (dict(v50='soc:ap-ahb'), 'v50 192.168.79'),
-            (dict(label='v50', v50='ap-ahb'), 'v50 192.168.79'), (dict(label='f50', v50='ap-ahb'), 'v50 192.168.79'),
-            (dict(label='v50', dt=False), 'v50 192.168.79'), (dict(dt=False), 'f50 192.168.77'),
+            (dict(label='v50'), 'f50 192.168.77'), (dict(label='v50', u30=True), 'u30air 192.168.78'),
+            (dict(label=''), 'f50 192.168.77'),
         ]
         for shell in self.each_shell():
             for kw, want in cases:
@@ -715,8 +687,17 @@ class PickRoot(ShellTest):
             self.assertEqual(self.pick(shell), f'{self.tmp}/disk/openwrt-luci')
 
     def test_boot_os_chooses_it(self):
-        self.system('ubuntu', 'lib/systemd/systemd'); self.system('openwrt'); self.system('openwrt-luci')
-        (self.tmp / 'disk/.mu300').mkdir(); (self.tmp / 'disk/.mu300/boot-os').write_text('openwrt-luci\n')
+        self.system('openwrt-luci'); self.system('openwrt-test')
+        (self.tmp / 'disk/.mu300').mkdir(); (self.tmp / 'disk/.mu300/boot-os').write_text('openwrt-test\n')
+        for shell in self.each_shell():
+            self.assertEqual(self.pick(shell), f'{self.tmp}/disk/openwrt-test')
+
+    def test_no_other_system_by_itself(self):
+        # only openwrt-luci, unless boot-os names another: no Ubuntu (in a directory or in the root), no plain openwrt
+        self.system('ubuntu', 'lib/systemd/systemd'); self.system('openwrt'); self.system('lib/systemd', 'systemd')
+        for shell in self.each_shell():
+            self.assertEqual(self.pick(shell), '')
+        self.system('openwrt-luci')
         for shell in self.each_shell():
             self.assertEqual(self.pick(shell), f'{self.tmp}/disk/openwrt-luci')
 
@@ -1011,7 +992,7 @@ class EarlyDhcp(GadgetHarness):
         block = self.block('usb-gadget')
         self.assertIn('start $NET.200', block)
         self.assertIn('option lease 120', block)
-        # gone before the system starts: its own server answers (Ubuntu's dnsmasq, OpenWrt's preinit then dnsmasq)
+        # gone before the system starts: its own server answers (OpenWrt's preinit, then dnsmasq)
         self.assertEqual(1, INIT.count('killall udhcpd 2>/dev/null\n    mkdir -p /newroot/dev'))
         self.assertLess(INIT.index('killall udhcpd'), INIT.index('exec switch_root'))
         # the standalone fallback starts its own server on usb0 in place of the early one
@@ -1046,8 +1027,8 @@ class BootTries(ShellTest):
         super().setUp()
         self.disk = self.tmp / 'disk'
         (self.disk / '.mu300').mkdir(parents=True)
-        (self.disk / 'ubuntu/etc/mu300').mkdir(parents=True)
-        (self.disk / 'ubuntu/etc/mu300/default-boot').write_text('linux\n')
+        (self.disk / 'openwrt-luci/etc/mu300').mkdir(parents=True)
+        (self.disk / 'openwrt-luci/etc/mu300/default-boot').write_text('linux\n')
         self.misc = self.tmp / 'misc'
 
     def lk(self, slot, tries, successful=False, magic=b'BCAB'):
@@ -1063,7 +1044,7 @@ class BootTries(ShellTest):
 
     def boot(self, shell, slot='b', misc=True):
         code = (self.functions() + f'\nmisc={self.misc if misc else ""}; LINUX_SLOT={slot}\n'
-                f'if boot_tries_exceeded "{self.disk}/ubuntu" "{self.disk}"; then echo android; else echo linux; fi')
+                f'if boot_tries_exceeded "{self.disk}/openwrt-luci" "{self.disk}"; then echo android; else echo linux; fi')
         r = self.sh(shell, code)
         self.assertEqual(r.returncode, 0, r.stderr)
         return r.stdout.strip(), r.stderr
@@ -1131,7 +1112,7 @@ class BootTries(ShellTest):
             self.assertEqual(self.boot(shell, misc=False)[0], 'android')
 
     def test_one_shot_mode_never_counts(self):
-        (self.disk / 'ubuntu/etc/mu300/default-boot').unlink()
+        (self.disk / 'openwrt-luci/etc/mu300/default-boot').unlink()
         for shell in self.each_shell():
             (self.disk / '.mu300/boot-tries').write_text('9\n')
             self.lk('b', 6)

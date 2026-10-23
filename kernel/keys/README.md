@@ -1,8 +1,8 @@
 # kernel.org signing keys (pinned)
 
 `kernel/verify-kernel-src.sh` checks every mainline kernel tarball `kernel/build.sh` downloads (locally, in the
-Mainline kernel build workflow and in the release workflow) against these keyrings with `gpgv`, and fails closed
-(FINDINGS 161). There are two independent checks:
+Mainline kernel build workflow and in the release workflow) against these keyrings with `gpgv`, and fails closed.
+There are two independent checks:
 
 | file | used for | keys |
 |---|---|---|

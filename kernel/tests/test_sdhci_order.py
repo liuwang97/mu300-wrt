@@ -1,6 +1,6 @@
-"""kernel/port/sdhci_order.py: sdhci-sprd's accessors get the generic SDHCI ordering (FINDINGS 93).
+"""kernel/port/sdhci_order.py: sdhci-sprd's accessors get the generic SDHCI ordering.
 
-The text below is the accessor block of mainline drivers/mmc/host/sdhci-sprd.c (6.18 and 7.x), the shape the edit
+The text below is the accessor block of mainline drivers/mmc/host/sdhci-sprd.c (7.2), the shape the edit
 is anchored on; the real tree is checked by the Mainline kernel build workflow, where install.py stops on a changed
 anchor."""
 import sys
@@ -8,7 +8,7 @@ import unittest
 
 from helpers import TOP
 
-sys.path.insert(0, str(TOP / 'upstream' / 'port'))
+sys.path.insert(0, str(TOP / 'kernel' / 'port'))
 sys.dont_write_bytecode = True
 import sdhci_order  # noqa: E402
 
@@ -103,7 +103,7 @@ class SdhciOrder(unittest.TestCase):
                 sdhci_order.ordered(broken)
 
     def test_install_uses_it_and_stops_on_a_changed_anchor(self):
-        port = (TOP / 'upstream' / 'port' / 'install.py').read_text()
+        port = (TOP / 'kernel' / 'port' / 'install.py').read_text()
         self.assertIn('t = sdhci_order.ordered(t)', port)
         self.assertIn("sys.exit('port: ' + str(e))", port)
         self.assertIn('sys.dont_write_bytecode = True', port)

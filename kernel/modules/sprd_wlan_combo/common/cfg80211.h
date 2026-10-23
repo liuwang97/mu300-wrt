@@ -420,12 +420,10 @@ int sprd_cfg80211_change_iface(struct wiphy *wiphy, struct net_device *ndev,
 			       enum nl80211_iftype type,
 			       struct vif_params *params);
 
-/* MU300: since 7.3 cfg80211 picks the cookie of a remain-on-channel or a management frame itself and hands it to the
- * driver by value (nl80211 assigns it before the call); before, the driver chose one and returned it. cfg80211.c's
- * functions keep their form (ck_t: the cookie argument, as short as the "u64 *" it stands for, so even the debug
- * information's columns stay): on 7.3 the by-value ops hand cfg80211's cookie in through the pointer and MU300_COOKIE
- * keeps it; on older kernels it is the driver's next number, as before. These are here and not in cfg80211.c so that
- * its lines (the BUG table) and its object code stay as they were on the older kernels (FINDINGS 206).
+/* MU300: the driver chooses the cookie of a remain-on-channel or a management frame and returns it through the
+ * pointer (MU300_COOKIE: its next number). cfg80211.c's functions take the cookie as ck_t, as short as the "u64 *" it
+ * stands for, so that a later cfg80211 that hands the cookie in by value needs only these lines changed, and
+ * cfg80211.c's lines (the BUG table) and object code stay as they are.
  */
 #include <linux/version.h>
 #define MU300_COOKIE(given, next) (next)

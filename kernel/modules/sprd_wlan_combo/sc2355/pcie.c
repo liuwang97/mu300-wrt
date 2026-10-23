@@ -401,7 +401,7 @@ static int pcie_rx_handle(int chn, struct mbuf_t *head,
 	 * them, post_deinit clears it after it unregistered them, sprd_iface_set_power serialises the two).
 	 * Without hif there is no device to unmap the buffers from and no queue to hand them to, and the
 	 * channel's mbuf pool is already freed (no sprdwcn_bus_list_free): the data buffers of this one list
-	 * leak, and it is said once.  A NULL here was a panic in hard IRQ (FINDINGS 31n).
+	 * leak, and it is said once.  A NULL here was a panic in hard IRQ.
 	 */
 	rx_mgmt = hif ? (struct rx_mgmt *)READ_ONCE(hif->rx_mgmt) : NULL;
 	if (unlikely(!rx_mgmt)) {

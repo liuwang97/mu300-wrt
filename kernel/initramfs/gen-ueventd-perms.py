@@ -6,8 +6,8 @@ usage: gen-ueventd-perms.py vendor/etc/ueventd.rc vendor-init/*.rc > ueventd-per
  gen-ueventd-perms.py kernel/initramfs/ueventd/ueventd.rc kernel/initramfs/ueventd/init-perms.rc)
 
 Android's ids are not taken over as numbers. Android's system user is uid 1000, and on a distribution uid 1000 is
-the first human account (ubuntu; alarm on Arch): the modem's calibration partitions (nr_fixnv*), persist and the
-modem's control nodes were that account's, writable without sudo (FINDINGS: "The vendor daemons' own account").
+the first human account a distribution makes: the modem's calibration partitions (nr_fixnv*), persist and the
+modem's control nodes would be that account's, writable without sudo.
 What each Android id becomes on Linux (MAP below):
   system, radio -> the vendor account mu300vnd ($V, group $VG): the ids the vendor daemons run as. Where there is no
                    such account (OpenWrt, the initramfs) that is uid/gid 1000, which they switch to themselves.
@@ -38,7 +38,7 @@ ROOT_OWNED = ('/dev/rtc',)
 # whoever logs in, as on any Linux), and the firmware search path (whoever writes it chooses the firmware the kernel
 # loads).
 ROOT_ONLY = ('/dev/input/', '/dev/ttyGS', '/sys/module/firmware_class/')
-# Block devices by mmcblk number: the number follows probe order and is not always the eMMC's (FINDINGS 31l). The
+# Block devices by mmcblk number: the number follows probe order and is not always the eMMC's. The
 # card's partitions (Android's mmcblk1p*, for vold) are left alone - no vendor daemon run here opens the card, and a
 # system-group card would be the first user's on Linux (where the root filesystem may be on it). The vendor daemons
 # reach the eMMC through by-name, linked to the eMMC only; its RPMB partition is the only one there is (a card has

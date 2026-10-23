@@ -1,5 +1,6 @@
 #!/bin/busybox sh
-# MU300 standalone Linux initramfs v10 (switch_root to Ubuntu on the free eMMC region; comm fix; custom kernel + modem_control + node perms + Android's slot modem) (Linux on the other slot, tries=2 one-shot trial).
+# MU300 initramfs: loads the modules the boot needs, brings up the USB gadget, finds the Linux disk (eMMC region, GPT
+# partition mu300root or SD card) and switch_roots into the OpenWrt system on it; anything else goes back to Android.
 # Every stage is written to /dev/kmsg at KERN_ERR so it survives in
 # /sys/fs/pstore/console-ramoops-0 after the fallback boot into Android.
 /bin/busybox mkdir -p /bin /sbin /proc /sys /dev /run /tmp /root /etc /config
@@ -92,53 +93,25 @@ echo 1 > /proc/sys/kernel/sysrq
  rmdir /run/persist.lock
  persist; reboot -f; sleep 10; echo b > /proc/sysrq-trigger) &
 
-# Which device this is. The ZTE U30 Air is the F50's board with a battery: ZTE's SQC charger stack, USB-PD, LEDs.
-# It runs the same kernel with its own build of a few modules (linux-modules/u30air/, see kernel/build-u30air.sh)
-# and its own load order; without them the charger manager never probes and USB stays down. The installer names
-# the device in /etc/mu300-device (the device segment of the ramdisk, which the generic segment of an update does
-# not replace); without that file the stock device tree tells: only the U30 Air's has the charger policy service.
-# The ZTE V50 (MU3351, experimental, docs/FINDINGS.md 95) runs as an F50 does (the same modules and order) with a
-# subnet of its own; it is told by its device tree whatever the label says (mu300-device has the same rule): its
-# AW9523B LED controller is in no F50's or U30 Air's. An F50 or U30 Air is decided exactly as before.
+# Which board this is: the F50, or the U30 Air (the F50's board with a battery: ZTE's charger, USB-PD, LEDs). Both run
+# the same kernel and modules. The ramdisk's device segment may name the board in /etc/mu300-device; without a label
+# it knows, the stock device tree tells: only the U30 Air's has the charger policy service.
 # --- device begin
 DT=${MU300_DT:-/proc/device-tree}
-v50_dt() {  # the V50's AW9523B node; its parent is soc:ap-ahb or ap-ahb, by kernel
-    for _n in "$DT"/soc/*/i2c@2270000/aw9523b_led@5b; do [ -d "$_n" ] && return 0; done
-    return 1
-}
-v50_fix() {  # v50_fix LABEL: the label, unless the device tree says otherwise about a V50
-    case $1 in
-        f50) if [ ! -d "$DT/charger_policy_service" ] && v50_dt; then echo v50; else echo f50; fi ;;
-        v50) if [ ! -d "$DT" ] || { [ ! -d "$DT/charger_policy_service" ] && v50_dt; }; then echo v50
-             elif [ -d "$DT/charger_policy_service" ]; then echo u30air; else echo f50; fi ;;
-        *) echo "$1" ;;
-    esac
-}
-if [ -s ${MU300_DEVICE_FILE:-/etc/mu300-device} ]; then
-    DEVICE=$(v50_fix "$(cat ${MU300_DEVICE_FILE:-/etc/mu300-device})")
-elif [ -d "$DT/charger_policy_service" ]; then
-    DEVICE=u30air
-else
-    DEVICE=$(v50_fix f50)
-fi
+DEVICE=$(cat ${MU300_DEVICE_FILE:-/etc/mu300-device} 2>/dev/null)
+case $DEVICE in
+    f50|u30air) ;;
+    *) if [ -d "$DT/charger_policy_service" ]; then DEVICE=u30air; else DEVICE=f50; fi ;;
+esac
 # --- device end
-# its modules only for the kernel they were built for (a mainline kernel brings its own set and order)
-MODULE_ORDER=/etc/module-order
-if [ "$DEVICE" != f50 ] && [ -s /etc/module-order-$DEVICE ] &&
-   [ "$(cat /linux-modules/$DEVICE/kernel.release 2>/dev/null)" = "$(uname -r)" ]; then
-    MODULE_ORDER=/etc/module-order-$DEVICE
-else
-    DEVICE_MODULES=none
-fi
-log "stage=device $DEVICE order=$MODULE_ORDER"
+log "stage=device $DEVICE"
 
-# The USB network. Its subnet goes with the kind of device, so that an F50 and a U30 Air on one computer do not
-# collide: F50 192.168.77.1, U30 Air 192.168.78.1, V50 192.168.79.1 (the system's lan.conf overrides it after
-# switch_root). The
-# gadget's MAC addresses and USB serial number go with the device's serial number and its eMMC's: two devices on one
+# The USB network. Its subnet goes with the board, so that an F50 and a U30 Air on one computer do not collide:
+# F50 192.168.77.1, U30 Air 192.168.78.1 (the system's own LAN settings take over after switch_root). The gadget's
+# MAC addresses and USB serial number go with the device's serial number and its eMMC's: two devices on one
 # computer used to have the same ones, and macOS then gave the second one no network interface at all. The serial
 # number alone was not enough: a device restored from another's backup has its androidboot.serialno too.
-case $DEVICE in u30air) NET=192.168.78 ;; v50) NET=192.168.79 ;; *) NET=192.168.77 ;; esac
+case $DEVICE in u30air) NET=192.168.78 ;; *) NET=192.168.77 ;; esac
 # --- usb-id begin
 # usb_id BOOTARGS...: USBID (serial number-eMMC serial) and MAC (its first five bytes) from the bootloader's
 # arguments. Not from the eMMC's CID in /sys: this runs before the modules that find the eMMC, so it would come and go.
@@ -158,25 +131,22 @@ load_vendor_modules() {
     loaded=0
     failed=0
     while read module; do
-        # vendor_boot's /lib/modules were built for the stock kernel; only our rebuilt copies match
-        file="/linux-modules/$module"
-        [ -z "${DEVICE_MODULES:-}" ] && [ -f "/linux-modules/$DEVICE/$module" ] && file="/linux-modules/$DEVICE/$module"
-        if insmod "$file" 2>/run/insmod.err; then
+        # vendor_boot's /lib/modules are the stock kernel's; only the copies built with this kernel load
+        if insmod "/linux-modules/$module" 2>/run/insmod.err; then
             loaded=$((loaded + 1))
         else
             failed=$((failed + 1))
             log "insmod-fail $module $(cat /run/insmod.err)"
         fi
-    done < $MODULE_ORDER
+    done < /etc/module-order
     mdev -s
     log "stage=modules-done loaded=$loaded failed=$failed"
 }
 
-# Which slot this Linux runs from, and so which one is Android's (after an OTA Android often runs from b, and the
-# Magisk installer then puts Linux on a). LK names the slot it booted on the command line; the mainline kernel
-# replaces that line, so the bootargs LK put in the device tree come next, as for the vendor daemons below. Then
-# the slot the image was built for (etc/mu300-linux-slot, from the installer), and b: every image before this one
-# was built for b.
+# Which slot this Linux runs from, and so which one is Android's (after an OTA Android often runs from b, and Linux
+# then sits on a). LK names the slot it booted on the command line; the kernel replaces that line, so the bootargs
+# LK put in the device tree come next. Then the slot the image was built for (etc/mu300-linux-slot in the device
+# segment), and b, the slot of images without that file.
 # --- slot begin
 linux_slot_detect() {
     LINUX_SLOT=; _src=default
@@ -216,8 +186,8 @@ publish_slot() {
     done
     case $_mode in charger) ;; *) _mode=normal ;; esac
     echo "$_mode" > "$_r/boot-mode"
-    # Charging boot: create this marker so Ubuntu units with ConditionPathExists=!/run/mu300/charging-boot skip radios.
-    # Not when the system asks for a normal boot on the charger (mu300-power's POWER_ON_CHARGER=1, FINDINGS 196).
+    # Charging boot: this marker tells the system to leave the radios off (LK starts no CP in its charger boot). Not
+    # when the system asks for a normal boot on the charger (POWER_ON_CHARGER=1 in its etc/mu300/power.conf).
     _pon=
     [ "$_mode" != charger ] || ! grep -qx 'POWER_ON_CHARGER=1' "${MU300_NEWROOT:-/newroot}/etc/mu300/power.conf" 2>/dev/null ||
         _pon=" power-on=1"
@@ -236,7 +206,7 @@ linux_slot_detect
 # log). So this runs after load_vendor_modules; whether Android's slot is restored is decided once the rootfs is known.
 # --- emmc begin
 # The eMMC and the card by what they are, never by number: the host index follows probe order, and under mainline
-# the card slot once took mmc0 and left mmcblk1 to the eMMC (FINDINGS 31l).
+# the card slot can take mmc0 and leave mmcblk1 to the eMMC.
 mmc_disks() {  # mmc_disks TYPE: the whole mmcblkN disks whose card is of TYPE (MMC: the eMMC, SD: a card)
     for b in "${MU300_SYS:-/sys}"/block/mmcblk*; do
         case ${b##*/mmcblk} in ''|*[!0-9]*) continue ;; esac   # not mmcblk0boot0, mmcblk0rpmb, ...
@@ -399,7 +369,7 @@ setup_usb_gadget() {  # setup_usb_gadget [FUNCTIONS]: FUNCTIONS, else MU300_USBN
     persist
 
     # The functions register their netdevs as they are bound, configuration by configuration, so RNDIS would take
-    # usb0 - the name lan-start and the OpenWrt bridge expect for the CDC link. Name them by function instead.
+    # usb0 - the name the OpenWrt bridge expects for the CDC link. Name them by function instead.
     if [ -n "$rndis" ]; then
         r=$(cat "$g/functions/rndis.rn0/ifname" 2>/dev/null)
         case $r in ""|"(unnamed net_device)"|rndis0) ;; *) ip link set "$r" name rndis0 ;; esac
@@ -409,15 +379,15 @@ setup_usb_gadget() {  # setup_usb_gadget [FUNCTIONS]: FUNCTIONS, else MU300_USBN
 
     # Bring usb0 up immediately after binding, before the host selects the data interface:
     # f_ecm (and f_ncm alike) reports the link state in its first CONNECT notification, and macOS' ECM driver does not
-    # pick up a later "connected" notification (v10 left usb0 down until systemd ran -> host "inactive").
+    # pick up a later "connected" notification (the host then shows the link "inactive" until usb0 is cycled).
     ifconfig usb0 up
 
     # Early DHCP (K5, ported from the kanoqwq fork, 1f5b82a): the host asks for a lease as soon as the gadget
     # enumerates - Windows long before any system's server runs - so answer it from here, on the gadget's netdev
     # (rndis0 with RNDIS, usb0 otherwise), with the one address $NET.200. The lease is 120 s, not the fork's 3600:
-    # the system may use another subnet (lan.conf, network.lan.ipaddr), and the host must not keep this one for
-    # an hour; it renews after 60 s and then gets the system's own (OpenWrt's preinit restarts this server on the
-    # system's subnet; Ubuntu's dnsmasq NAKs the renewal and leases afresh). The host's MAC is left in /run for
+    # the system may use another subnet (network.lan.ipaddr), and the host must not keep this one for an hour; it
+    # renews after 60 s and then gets the system's own (OpenWrt's preinit restarts this server on the system's
+    # subnet). The host's MAC is left in /run for
     # OpenWrt's first-boot dnsmasq entry. One server at a time: apply_usb_net builds the gadget a second time,
     # and that build replaces the first server (whose netdev may be gone) with one on the new netdev. It runs in
     # the foreground of a background job so that its pid is known at once; killall ends it before switch_root.
@@ -479,10 +449,9 @@ find_sd_root() {  # the first card device that holds mu300sd; the eMMC is never 
     done
     return 1
 }
-# Is a card on its way, so that waiting past the first seconds can pay off? Mainline polls the slot and has a card
-# set up at about 2.5 s, so an empty slot there is simply empty. Two cases are not: a card the host has found whose
-# block device is still being set up (its driver is bound once the partitions are read), and the vendor 5.4 kernel,
-# whose host waits for a card-detect line instead of polling and was once seen to bring the card only at 23.75 s.
+# Is a card on its way, so that waiting past the first seconds can pay off? The kernel polls the slot and has a card
+# set up at about 2.5 s, so an empty slot is simply empty - unless the host has found a card whose block device is
+# still being set up (its driver is bound once the partitions are read).
 sd_coming() {
     s=${MU300_SYS:-/sys}
     for c in "$s"/bus/mmc/devices/mmc*:*; do
@@ -490,13 +459,6 @@ sd_coming() {
         [ -e "$c/driver" ] && return 1
         return 0
     done
-    case $(uname -r) in
-        5.4.*) for h in "$s"/class/mmc_host/mmc*; do   # a host that is not the eMMC's
-                   [ -e "$h" ] || continue
-                   e=0; for c in "$h"/mmc*:*; do [ "$(cat "$c/type" 2>/dev/null)" = MMC ] && e=1; done
-                   [ "$e" = 0 ] && return 0
-               done ;;
-    esac
     return 1
 }
 wait_sd_root() {  # wait_sd_root SECONDS [MAX]: a card the host has not found yet; up to MAX while sd_coming
@@ -511,13 +473,11 @@ wait_sd_root() {  # wait_sd_root SECONDS [MAX]: a card the host has not found ye
     done
 }
 # --- sd-root end
-ROOT_OFFSET=27762098176   # linux-boot/rootfs-region.env; outside every GPT partition
-# The region is not at the same place on every device (eMMC size, partition layout), and a number in this file is
-# not enough: the installer writes the device's offset in here, but the generic ramdisk segment that updates put
-# behind this one (mu300-update, and a mainline kernel from the installer) carries its own init, which replaces
-# this file - with the default above. Devices whose region is elsewhere then booted into standalone mode and went
-# back to Android. So find it the way the installer places it - the first 2 MiB boundary after the last partition
-# - and take the first candidate that really holds the mu300root filesystem (ext4 magic and label).
+ROOT_OFFSET=27762098176   # the first devices' region: outside every GPT partition
+# The region is not at the same place on every device (eMMC size, partition layout), and this init is the generic
+# segment's, the same for every device. So find it where it is placed - the first 2 MiB boundary after the last
+# partition - and take the first candidate that really holds the mu300root filesystem (ext4 magic and label); the
+# default above comes last.
 # --- region begin
 is_mu300root() {  # is_mu300root OFFSET: on the eMMC ($EMMC)
     [ "$(dd if="$EMMC" bs=1 skip=$(($1 + 1080)) count=2 2>/dev/null | od -An -tx1 | tr -d ' \n')" = 53ef ] &&
@@ -540,8 +500,8 @@ find_root_offset() {
     return 1
 }
 # No region, but the eMMC's GPT partition named mu300root holding that filesystem: where kanoqwq's desktop installer
-# puts the system ("independent internal partition"). His boot image's init finds it there; ours did not, and a device
-# updated from his system with mu300-update found no system and went back to Android (issue #290, FINDINGS 178).
+# puts the system ("independent internal partition"); without this a device updated from his system with mu300-update
+# finds no system and goes back to Android.
 # The whole label, not its first 9 bytes: "mu300rootfs" is not this filesystem (from kanoqwq's 5161859d).
 gpt_root() {
     _gp=$(emmc_part mu300root) || return 1
@@ -581,22 +541,19 @@ apply_usb_net() {  # apply_usb_net ROOTDIR: rebind once if ROOTDIR asks for othe
 }
 # --- usb-net end
 # --- pick-root begin
-# The ext4 area holds one or more systems: /ubuntu, /openwrt, /openwrt-luci (selected by /.mu300/boot-os), or a
-# single Ubuntu directly in its root (first installs). Explicit names only: a kept copy (openwrt.old, ubuntu.broken)
-# must never be what boots, so a boot-os with a dot in it is ignored.
-has_init() { [ -x "$1/lib/systemd/systemd" ] || [ -x "$1/sbin/init" ]; }
+# The system is the directory /openwrt-luci of the ext4 area, or the one /.mu300/boot-os names. Explicit names only:
+# a kept copy (openwrt-luci.old) must never be what boots, so a boot-os with a dot in it is ignored.
+has_init() { [ -x "$1/sbin/init" ]; }
 pick_root() {
     want=$(cat /disk/.mu300/boot-os 2>/dev/null)
     case $want in *.*|*/*) want= ;; esac
-    for os in $want ubuntu openwrt openwrt-luci; do
+    for os in $want openwrt-luci; do
         [ -d "/disk/$os" ] && has_init "/disk/$os" && { echo "/disk/$os"; return; }
-        # legacy layout: Ubuntu in the filesystem root
-        [ "$os" = ubuntu ] && [ -x /disk/lib/systemd/systemd ] && { echo /disk; return; }
     done
 }
 # --- pick-root end
 # --- cpu-voltage begin
-# The CPU voltage offset (EXPERIMENTAL: it can damage the device for good; docs/FINDINGS.md 133). The mainline cpufreq
+# The CPU voltage offset (EXPERIMENTAL: it can damage the device for good). The cpufreq
 # driver holds DVFS until a value is written to voltage_offset_uv (or 45 s pass), and the firmware applies it once per
 # boot, so this is the only place it can come from: the settings are on the Linux disk. Every boot writes one -
 # 0,0,0 (the stock call) unless an offset was asked for and may run. Never a reason not to boot: anything unclear is
@@ -611,10 +568,9 @@ pick_root() {
 # ended without a clean shutdown - a crash, a watchdog reset, a power cut: the offset is dropped (back to 0,0,0 and
 # the request cleared). A trial boot that ended cleanly but before the good mark does not get a second try.
 CPUV_SYS=${MU300_CPUV_SYS:-/sys/module/sprd_cpufreq_v2_driver/parameters}
-# the SML (ATF) builds whose DVFS_INIT encoding was read (kano, 3386928: the F50's sml_a/sml_b; f6b0668d and c1293746: the
-# V50's and the U30 Air's, whose 1 MiB differ from the F50's only in the authentication area, FINDINGS 201); any other:
-# 0,0,0
-CPUV_SML_KNOWN=${MU300_CPUV_SML_KNOWN:-ff4782690fd805ff54fe34853ef8ee5c7e51c3259e20077c55373b50a4b259c2 5b3183f17af9b416e71dea61e578c61824e4e1df43737a1179032f4b20466b2b f27ac16f44e6cdc87a8ee00a9b53c499c8dde0c3b92c771388e256e84ef12e70}
+# the SML (ATF) builds whose DVFS_INIT encoding was read: the F50's, and the U30 Air's, whose 1 MiB differs from the
+# F50's only in the authentication area; any other: 0,0,0
+CPUV_SML_KNOWN=${MU300_CPUV_SML_KNOWN:-ff4782690fd805ff54fe34853ef8ee5c7e51c3259e20077c55373b50a4b259c2 f27ac16f44e6cdc87a8ee00a9b53c499c8dde0c3b92c771388e256e84ef12e70}
 cpuv_valid() {  # cpuv_valid A,B,C: three whole 3.125 mV steps within -25000..12500 uV, written plainly
     case $1 in *[!0-9,-]*|'') return 1 ;; esac
     _o=$IFS; IFS=,; set -- $1; IFS=$_o
@@ -659,7 +615,7 @@ cpu_voltage_stock() {  # no Linux disk: DVFS at the stock voltages now rather th
     cpuv_stock && log "stage=cpu-voltage 0,0,0" || log "stage=cpu-voltage-failed 0,0,0"
 }
 cpu_voltage_boot() {  # cpu_voltage_boot DIR: DIR is .mu300 on the mounted Linux disk
-    [ -w "$CPUV_SYS/voltage_offset_uv" ] || return 0         # a kernel without the offset (5.4, an older mainline)
+    [ -w "$CPUV_SYS/voltage_offset_uv" ] || return 0         # a kernel without the offset
     [ "$(cat "$CPUV_SYS/voltage_state" 2>/dev/null)" = waiting ] || return 0
     _d=$1 _want=0,0,0
     _req=$(head -n1 "$_d/cpu-voltage" 2>/dev/null)
@@ -707,9 +663,9 @@ cpu_voltage_boot() {  # cpu_voltage_boot DIR: DIR is .mu300 on the mounted Linux
 }
 # --- cpu-voltage end
 # --- fsck begin
-# The root filesystem's own record of errors, read before it is mounted (FINDINGS 182; kanoqwq's desktop init did it
+# The root filesystem's own record of errors, read before it is mounted (kanoqwq's desktop init did it
 # first): ext4 sets ERROR_FS (bit 1 of s_state, superblock byte 58) when it finds corruption, and nothing on the
-# device ever cleared it - every later boot mounted the damaged filesystem as it was. One byte is read on a clean
+# device would clear it - every later boot would mount the damaged filesystem as it is. One byte is read on a clean
 # filesystem; only with the bit set does the ramdisk's static e2fsck (kernel/initramfs/e2fsck/build.sh) run, -fy, on the
 # unmounted device - the loop over the region, the GPT partition, the card. Never a reason not to boot: whatever
 # e2fsck says, or when it takes longer than FSCK_TIMEOUT seconds (it is stopped then, TERM first: e2fsck cancels at a
@@ -920,10 +876,8 @@ if [ "$root_mounted" = 1 ] && rootdir=$(pick_root) && [ -n "$rootdir" ]; then
     # Default-Linux mode: leave LK's decremented tries (Linux's slot: not successful). Userspace re-arms the Linux
     # slot (tries N+1) once the system is up; N boots in a row that never get there and LK falls back to Android on
     # the next one.
-    trial=1
     if [ "$(cat /newroot/etc/mu300/default-boot 2>/dev/null)" = linux ]; then
         log "stage=default-boot-linux (Android's slot restore skipped)"
-        trial=
     else
         restore_android
     fi
@@ -933,17 +887,16 @@ if [ "$root_mounted" = 1 ] && rootdir=$(pick_root) && [ -n "$rootdir" ]; then
     echo "$diskdev" > /run/mu300/disk-dev
     echo "$DEVICE" > /run/mu300/device
     init=/sbin/init
-    [ -x /newroot/lib/systemd/systemd ] && init=/lib/systemd/systemd
-    # OpenWrt: procd's first act is "kmodloader /etc/modules-boot.d/", and kmodloader begins by reading every module
+    # procd's first act is "kmodloader /etc/modules-boot.d/", and kmodloader begins by reading every module
     # in /lib/modules/<release> (~2950 files, a few scattered blocks of each, cold off the eMMC: 1.7 s with procd
     # waiting; parallel reads or the loop device's direct I/O won back 0.2 s at most). What that list loads is all in
     # /etc/modules.d as well, which /etc/init.d/boot loads two seconds later (by then from the cache the prefetch
     # above filled). So only that one call is skipped: a stub bind-mounted over /sbin/kmodloader takes itself away at
     # its first run, whatever that is (lazily: the shell running it holds it open), and hands every call but
     # procd's to the real kmodloader by its own name (modprobe, insmod, lsmod are links to it).
-    if [ "$init" = /sbin/init ] && [ -x /newroot/sbin/kmodloader ] && [ -d /newroot/etc/modules-boot.d ]; then
+    if [ -x /newroot/sbin/kmodloader ] && [ -d /newroot/etc/modules-boot.d ]; then
         printf '%s\n' '#!/bin/sh' \
-            '# MU300 initramfs (kernel/initramfs/init): stands in for kmodloader until its first run, procd'"'"'s modules-boot.d' \
+            '# MU300 initramfs: stands in for kmodloader until its first run, procd'"'"'s modules-boot.d' \
             'umount -l /sbin/kmodloader 2>/dev/null' \
             '[ "${0##*/} $1" = "kmodloader /etc/modules-boot.d/" ] && exit 0' \
             '[ -z "$MU300_KMOD_ONCE" ] || exit 1' \
@@ -959,25 +912,6 @@ if [ "$root_mounted" = 1 ] && rootdir=$(pick_root) && [ -n "$rootdir" ]; then
         p=${p#/proc/}
         [ "$p" = 1 ] || [ "$p" = "$prefetch" ] || kill -9 "$p" 2>/dev/null
     done
-    # Trial guard, only in images built with --trial-guard SECONDS (tools/flash-trial.sh experiments, never an
-    # install): the timer above ends here, and a trial kernel that boots but never brings up USB (6.18 on the U30
-    # Air) left a device that only failing five boots by hand brought back. So one more timer outlives
-    # switch_root: unless /run/stay exists by then (created over SSH), it reboots - into Android, as Android's slot
-    # is already restored. switch_root deletes this ramdisk, so it runs from a copy of busybox in /run, reached
-    # through its working directory once /run has moved.
-    # Only in a trial boot: mu300-update keeps the device segment of whatever image is in the Linux slot's boot
-    # partition, and a guard that came along from an experiment into an installed system restarted it every 10
-    # minutes (FINDINGS 33e)
-    if [ -s /etc/mu300-trial-guard ] && [ -z "$trial" ]; then
-        log "stage=trial-guard-ignored (Linux is the default: not a trial)"
-    elif [ -s /etc/mu300-trial-guard ]; then
-        g=$(cat /etc/mu300-trial-guard)
-        # (named busybox: busybox takes the applet from its own name when that is not "busybox")
-        mkdir -p /run/.trial-guard && cp /bin/busybox /run/.trial-guard/busybox
-        log "stage=trial-guard ${g}s"
-        (cd /run && exec .trial-guard/busybox sh -c ".trial-guard/busybox sleep $g; [ -e stay ] && exit 0; .trial-guard/busybox sync; .trial-guard/busybox reboot -f") \
-            </dev/null >/dev/null 2>&1 &
-    fi
     umount /config 2>/dev/null
     # the early DHCP server ends with this ramdisk (K5): the host keeps its lease, and the system's server answers
     # the renewal (the kill loop above has already stopped it; this says so where it matters)

@@ -1,6 +1,6 @@
 of: reserved_mem: allow skipping /reserved-memory nodes Linux does not need
 
-The 6.18 counterpart of kernel/patches/of-reserved-mem-skip.patch. The F50 device tree reserves a 9 MiB boot
+The F50 device tree reserves a 9 MiB boot
 logo buffer (the device has no display) and a 16 MiB bootloader sysdump area. CONFIG_OF_RESERVED_MEM_SKIP (or
 reserved_mem_skip= on the command line) lists node names that are left as normal RAM. The 464 MiB modem and
 24 MiB Trusty regions must stay. Since 6.x the nodes are walked twice - once to reserve them, once to fill the

@@ -10,7 +10,7 @@ power_supply uevent. Both are armed here once both IRQ handlers are registered, 
 the battery is removed and armed again when it is inserted. hw_init already sets the delta to 1 %.
 
 Only the U30 Air: the UMP9620 variant on a device tree with the charger policy service (the test of patch 0016).
-The F50 and V50 probe this fuel gauge too, with made-up readings and no battery, and keep the mainline mask. No
+The F50 probes this fuel gauge too, with made-up readings and no battery, and keep the mainline mask. No
 polling, no change to the capacity tables, the saved capacity or the charger.
 
 --- a/drivers/power/supply/sc27xx_fuel_gauge.c
@@ -24,7 +24,7 @@ polling, no change to the capacity tables, the saved capacity or the charger.
 + * awake too. Mainline arms them in suspend alone, and these boards do not suspend: the low-voltage calibration of
 + * the capacity never ran and no capacity change reached userspace. hw_init has set the delta to 1 % already. Only
 + * the U30 Air, the board with a battery (its device tree has the charger policy service, as patch 0016 tells it);
-+ * the F50 and V50 have this fuel gauge with made-up readings and keep the mainline mask. A removed battery disarms
++ * the F50 has this fuel gauge with made-up readings and keep the mainline mask. A removed battery disarms
 + * them, an inserted one arms them again.
 + */
 +static bool ump9620_fgu_awake_events(struct sc27xx_fgu_data *data)

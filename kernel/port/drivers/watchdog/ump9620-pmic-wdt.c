@@ -6,7 +6,7 @@
  * hang then resets the board, and LK falls back to Android. MU300 bring-up driver.
  *
  * The watchdog runs on the PMIC's 32 kHz clock and keeps counting while the AP sleeps, where nothing pings it
- * (Android has the PM co-processor feed it): a system sleep longer than the timeout reset the board (FINDINGS 37).
+ * (Android has the PM co-processor feed it): a system sleep longer than the timeout reset the board.
  * It is stopped as the last thing before the sleep and armed again, with a fresh count, as the first thing after
  * it - the vendor's sprd_wdt does the same for the AP watchdog.
  */

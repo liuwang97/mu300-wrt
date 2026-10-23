@@ -1,8 +1,8 @@
 """Shared helpers for the tests: the shells the scripts run under, stub commands, a scratch directory.
 
-The device scripts run under dash (Ubuntu's /bin/sh), bash and busybox ash (OpenWrt); every shell test runs under
-each of them that this machine has (MU300_TEST_SHELLS="dash,busybox sh" picks others). Commands a script calls that
-touch the device (nft, ip, id, ...) are replaced by stubs in a directory put first on PATH.
+The initramfs runs under busybox ash; every shell test runs under each POSIX shell this machine has (dash, bash,
+busybox sh; MU300_TEST_SHELLS="dash,busybox sh" picks others), so the scripts stay portable. Commands a script calls
+that touch the device are replaced by stubs in a directory put first on PATH.
 """
 import os
 import shutil
@@ -12,55 +12,6 @@ import unittest
 from pathlib import Path
 
 TOP = Path(__file__).resolve().parents[2]
-BIN = TOP / "openwrt" / "opt" / "mu300" / "bin"
-# the tests that read what git tracks (file modes, ls-files) skip where there is no git or no checkout of this tree,
-# e.g. a container with the worktree mounted but not the repository it belongs to
-GIT_CHECKOUT = bool(shutil.which('git')) and subprocess.run(['git', '-C', str(TOP), 'rev-parse', '--git-dir'],
-                                                           capture_output=True).returncode == 0
-
-
-# The panel's ucode programs (unisoc-modem/dashboard-info and cell, FINDINGS 216) run under a ucode interpreter:
-# MU300_TEST_UCODE (a command line, e.g. a wrapper that sets LD_LIBRARY_PATH for a local build), else `ucode` on PATH.
-# The modules they load from the device's own ucode packages (ubus, uci, nl80211, rtnl) are stood in for by
-# tests/ucode-stubs, which run the same stubbed commands (ubus, uci, iw, ip) the shell versions ran; mu300.dash comes
-# from the tree. A test of such a program is skipped where there is no ucode.
-UCODE_STUBS = TOP / "openwrt" / "tests" / "ucode-stubs"
-UCODE_MODULES = TOP / 'openwrt' / 'luci-app-mu300' / 'root' / 'usr' / 'share' / 'ucode'
-# the modules of the base system (mu300.cellparse: the modem daemon's and the panel's collector's parsers)
-UCODE_BASE_MODULES = TOP / "openwrt" / "overlay" / "usr" / "share" / "ucode"
-
-
-def ucode_paths():
-    """The -L arguments: the stand-ins first, then the tree's modules."""
-    return ['-L', f'{UCODE_STUBS}/*.uc', '-L', f'{UCODE_MODULES}/*.uc', '-L', f'{UCODE_BASE_MODULES}/*.uc']
-
-
-def ucode():
-    """[argv] of a ucode interpreter, or None."""
-    cmd = os.environ.get('MU300_TEST_UCODE', '').split() or ([shutil.which('ucode')] if shutil.which('ucode') else [])
-    if not cmd:
-        return None
-    try:
-        ok = subprocess.run(cmd + ['-e', 'print(1)'], capture_output=True, timeout=10).returncode == 0
-    except (OSError, subprocess.TimeoutExpired):
-        ok = False
-    return cmd if ok else None
-
-
-def is_ucode(path):
-    try:
-        with open(path, 'rb') as f:
-            return f.readline().startswith(b'#!/usr/bin/ucode')
-    except OSError:
-        return False
-
-
-def ucode_argv(path):
-    """The command line that runs the ucode program at PATH with the stand-in modules, or None without ucode."""
-    u = ucode()
-    if not u:
-        return None
-    return u + ucode_paths() + [str(path)]
 
 
 def _works(argv):
@@ -121,13 +72,8 @@ class ShellTest(unittest.TestCase):
                               env=self.env(**env), timeout=60)
 
     def script(self, shell, path, *args, stdin=None, **env):
-        """Run the script at PATH with SHELL (not its #! line: the point is to try every shell). A ucode program
-        (#!/usr/bin/ucode) runs under ucode instead, with the stand-in modules; skipped where there is none."""
+        """Run the script at PATH with SHELL (not its #! line: the point is to try every shell)."""
         argv = shell + [str(path)]
-        if is_ucode(path):
-            argv = ucode_argv(path)
-            if argv is None:
-                self.skipTest('no ucode interpreter (MU300_TEST_UCODE)')
         return subprocess.run(argv + [str(a) for a in args], input=stdin, capture_output=True,
                               text=True, env=self.env(**env), timeout=60)
 
@@ -137,6 +83,6 @@ class ShellTest(unittest.TestCase):
                 try:
                     yield s
                 except GeneratorExit:
-                    # the loop's body left by an exception (a skipTest() where there is no ucode, a failure): that
-                    # exception is the test's outcome, not a second error in this subtest
+                    # the loop's body left by an exception (a skipTest(), a failure): that exception is the test's
+                    # outcome, not a second error in this subtest
                     return

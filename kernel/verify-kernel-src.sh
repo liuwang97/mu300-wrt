@@ -1,6 +1,6 @@
 #!/bin/bash
 # Verify a kernel.org source tarball against two independent OpenPGP signatures before anything unpacks it
-# (FINDINGS 161):
+#:
 #   1. sha256sums.asc, kernel.org's checksum list signed by its off-the-network autosigner: the tarball's SHA-256
 #      must be on a line of the *signed* text (gpgv --output; text outside the clearsigned block is never read);
 #   2. linux-$KV.tar.sign, the releaser's own signature over the uncompressed tar (Linus Torvalds, Greg

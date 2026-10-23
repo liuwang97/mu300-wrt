@@ -67,7 +67,7 @@ void sprd_report_sched_scan_done(struct sprd_vif *vif, bool abort)
 }
 EXPORT_SYMBOL(sprd_report_sched_scan_done);
 
-/* MU300: the SC2355 firmware's soft-AP SAE offload (U30 Air, docs/U30AIR-SAE.md, FINDINGS 80) is switched off.
+/* MU300: the SC2355 firmware's soft-AP SAE offload (U30 Air) is switched off.
  * Its PMK record, vendor element dd 34 40:45:da:04 <PMK 32><PMKID 16>, arrived in this element list behind the
  * station's own association-request elements, with nothing to tell the firmware's record from one a client sent
  * over the air: a hostapd that imported it could be handed a PMK by a client that never knew the passphrase. So no

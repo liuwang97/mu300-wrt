@@ -51,27 +51,13 @@ class BundleAudit(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'CONFIG_KEXEC'):
             audit.audit(self.out, self.fragment)
 
-    def test_option_a_kernel_does_not_have(self):
-        # config-ignored.txt (7.3 folded PROC_SYSCTL into SYSCTL, FINDINGS 206): passes only where the kernel has
-        # no such symbol at all; a kernel that knows it and has it off still fails
-        self.fragment.write_text('CONFIG_KVM=y\nCONFIG_PROC_SYSCTL=y\n')
-        with self.assertRaisesRegex(ValueError, 'CONFIG_PROC_SYSCTL'):
+    def test_the_report_is_checked_too(self):
+        # what all-modules.py added, next to the Image, is held to the Image like the fragment
+        (self.out / 'all-modules.report').write_text('CONFIG_BTRFS_FS=m\n')
+        with self.assertRaisesRegex(ValueError, 'CONFIG_BTRFS_FS wants m'):
             audit.audit(self.out, self.fragment)
-        (self.out / 'config-ignored.txt').write_text('# comment\nCONFIG_PROC_SYSCTL\n')
+        self.image(self.config + 'CONFIG_BTRFS_FS=m\n')
         audit.audit(self.out, self.fragment)
-        self.image(self.config + '# CONFIG_PROC_SYSCTL is not set\n')
-        with self.assertRaisesRegex(ValueError, 'CONFIG_PROC_SYSCTL'):
-            audit.audit(self.out, self.fragment)
-
-    def test_listed_options_of_the_repository(self):
-        # what config-ignored.txt may list: options of the fragment, each with a reason above it
-        lines = (TOP / 'kernel/config-ignored.txt').read_text().splitlines()
-        names = [l for l in lines if l.startswith('CONFIG_')]
-        fragment = {l.split('=', 1)[0] for l in (TOP / 'kernel/mu300-mainline.config').read_text().splitlines()}
-        self.assertEqual(names, ['CONFIG_PROC_SYSCTL'])
-        self.assertTrue(set(names) <= fragment)
-        self.assertIn('CONFIG_SYSCTL', fragment)
-        self.assertTrue(all(l.startswith('#') or l.startswith('CONFIG_') for l in lines if l))
 
     def test_missing_manifest(self):
         (self.out / 'modules.in-tree').unlink()

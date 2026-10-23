@@ -23,7 +23,7 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 # debug and test switches that must stay off whatever came on with a driver (the ones the boot depends on staying
-# off: kprobes and the tracing they pull in broke 2 of 36 boots of 7.2, FINDINGS 31p)
+# off: kprobes and the tracing they pull in broke 2 of 36 boots of 7.2)
 NEW_BOOL_OFF = re.compile(r'DEBUG|(^|_)TESTS?($|_)|KUNIT|TORTURE|SELFTEST|VERBOSE|TRACE|TRACING|DUMP|INJECT|'
                           r'WERROR|COMPILE_TEST|SAMPLE|BENCH')
 FORBIDDEN_Y = ['KPROBES', 'FTRACE', 'FUNCTION_TRACER', 'KPROBE_EVENTS', 'BPF_EVENTS', 'PERF_EVENTS', 'KASAN',

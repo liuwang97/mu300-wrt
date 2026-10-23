@@ -768,7 +768,7 @@ int sprd_pcie_scan_card(void *wcn_dev)
 	/*
 	 * MU300: sprd_pcie_remove() completes remove_done, and it also runs when a scan times out with the card half
 	 * probed - before sprd_pcie_remove_card() ever initialised it: complete() on a zeroed completion oopsed in
-	 * __wake_up_locked and the board panicked (seen on OpenWrt, docs/FINDINGS.md 31i). Completing it with nobody
+	 * __wake_up_locked and the board panicked (seen on OpenWrt). Completing it with nobody
 	 * waiting is harmless.
 	 */
 	init_completion(&priv->remove_done);
@@ -1271,7 +1271,7 @@ static int sprd_ep_resume(struct device *dev)
 	/*
 	 * MU300: the vendor turned the firmware's ARM log on here after every resume. The firmware keeps the setting
 	 * through D3hot, and with the log on it pulls PCIe WAKE# within 0-2 s of every L2 entry to push log packets:
-	 * a system sleep with Wi-Fi up ended at once (FINDINGS 37). It is off by default (sysfs.c); leave it as it was.
+	 * a system sleep with Wi-Fi up ended at once. It is off by default (sysfs.c); leave it as it was.
 	 */
 	mdbg_device_lock_notify();
 	for (chn = 0; chn < 16; chn++) {

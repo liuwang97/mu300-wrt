@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * mu300_thermal's trend for step_wise (docs/FINDINGS.md 166): plain C with no kernel header, so that
+ * mu300_thermal's trend for step_wise: plain C with no kernel header, so that
  * tests/test_mu300_thermal.py compiles and runs it on the host. Temperatures in mC, times in ticks.
  *
  * Without a get_trend op the thermal core compares each reading with the one before it, 100 ms earlier while

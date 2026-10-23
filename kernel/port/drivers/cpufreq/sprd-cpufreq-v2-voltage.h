@@ -8,8 +8,7 @@
  * (0x8200060b) takes a flag word whose byte 0 is the vendor's androidboot.dvfs_set and whose bytes 1..3 are the
  * offsets of DVFS domains 0..2 (CPUs 0-3, 4-6, 7): bit 7 the sign (1 = lower), bits 0-6 whole millivolts. The
  * firmware turns them into ceil(mV * 1000 / 3125) steps of its 3.125 mV selector and moves the CPU and the SRAM
- * tables by that many steps. Encoding and firmware analysis: kano (github.com/kanoqwq/mu300-linux@3386928),
- * docs/FINDINGS.md 133.
+ * tables by that many steps. Encoding and firmware analysis: kano (github.com/kanoqwq/mu300-linux@3386928).
  *
  * Limits (ours, tighter than kano's -50..+25 mV): -25 mV .. +12.5 mV, a whole number of 3.125 mV steps (the UMP9620
  * CPU DCDC's own step). A raise is also held under the DCDC's regulator-max-microvolt from the device tree by the

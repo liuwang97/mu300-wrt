@@ -1,4 +1,4 @@
-"""sdhci-sprd's register accessors with the ordering of the generic SDHCI ones (docs/FINDINGS.md 93).
+"""sdhci-sprd's register accessors with the ordering of the generic SDHCI ones.
 
 Mainline sdhci-sprd overrides readl/writel/writew/writeb to handle its reserved registers, and does the access
 itself with the *_relaxed forms. The SDHCI core writes the ADMA descriptor table to DMA memory and then starts the
@@ -8,13 +8,13 @@ memory stores, so the controller can fetch a descriptor the CPU has not yet made
 interrupt mask, the reset bits) are kept as they are: only the final access changes.
 
 After kanoqwq's clean-tf-7.2 0438ab01 (his kernel/port/emmc.py; his measurement was on a different board, an
-E5, see FINDINGS 93). Used by install.py; files directly in port/ are not copied into the kernel tree.
+E5). Used by install.py; files directly in port/ are not copied into the kernel tree.
 """
 import re
 
 START = 'static inline u32 sdhci_sprd_readl('
 END = 'static inline void sdhci_sprd_sd_clk_off('
-MARKER = 'MU300: ordered MMIO, as the generic SDHCI accessors (FINDINGS 93)'
+MARKER = 'MU300: ordered MMIO, as the generic SDHCI accessors'
 SWAPS = (('\treturn readl_relaxed(host->ioaddr + reg);', '\t/* ' + MARKER + ' */\n\treturn readl(host->ioaddr + reg);'),
          ('\twritel_relaxed(val, host->ioaddr + reg);', '\twritel(val, host->ioaddr + reg);'),
          ('\twritew_relaxed(val, host->ioaddr + reg);', '\twritew(val, host->ioaddr + reg);'),
