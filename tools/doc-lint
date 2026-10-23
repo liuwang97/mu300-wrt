@@ -1,0 +1,41 @@
+#!/bin/sh
+# Keeps the documentation a reference, not a lab notebook (CLAUDE.md, "Documentation"):
+#   * a fact document (docs/, kernel/docs/, openwrt/docs/) has at most 200 lines, docs/open-issues.md 300;
+#   * a decision (docs/decisions/NNNN-*.md) at most 30 lines, and its name is numbered;
+#   * all of them together at most 120 KiB;
+#   * CLAUDE.md at the root at most 80 lines, each tree's at most 120; README.md at most 150;
+#   * no file anywhere cites the old notebook by section number ("FINDINGS 12", "FINDINGS.md"): say why instead.
+#   tools/doc-lint        exit 1 and list what is over
+set -eu
+TOP=$(cd "$(dirname "$0")/.." && pwd)
+cd "$TOP"
+fail=0
+bad() { echo "$*"; fail=1; }
+lines() { wc -l < "$1" | tr -d ' '; }
+docs=$(git ls-files -co --exclude-standard -- 'docs/*.md' 'docs/**/*.md' 'kernel/docs/*.md' 'openwrt/docs/*.md' | sort -u)
+total=0
+for f in $docs; do
+    [ -f "$f" ] || continue
+    n=$(lines "$f")
+    case $f in
+        docs/open-issues.md) max=300 ;;
+        docs/decisions/*)
+            max=30
+            case ${f##*/} in [0-9][0-9][0-9][0-9]-*.md) ;; *) bad "$f: a decision is named NNNN-title.md" ;; esac ;;
+        *) max=200 ;;
+    esac
+    [ "$n" -le "$max" ] || bad "$f: $n lines (at most $max)"
+    total=$((total + $(wc -c < "$f")))
+done
+[ "$total" -le $((120 * 1024)) ] || bad "the documents hold $total bytes (at most $((120 * 1024)))"
+for f in CLAUDE.md:80 kernel/CLAUDE.md:120 openwrt/CLAUDE.md:120 README.md:150; do
+    p=${f%:*} max=${f#*:}
+    [ -f "$p" ] || { bad "$p is missing"; continue; }
+    n=$(lines "$p")
+    [ "$n" -le "$max" ] || bad "$p: $n lines (at most $max)"
+done
+hits=$(git ls-files -coz --exclude-standard | xargs -0 grep -nIE 'FINDINGS([.]md| *§? *[0-9])' -- 2>/dev/null |
+       grep -v '^tools/doc-lint:' || true)
+[ -z "$hits" ] || bad "$(printf 'references to the old notebook (write the reason, or point to a document):\n%s' "$(printf '%s\n' "$hits" | head -40)")"
+[ $fail = 0 ] && echo "doc-lint: $(echo "$docs" | grep -c .) documents, $total bytes"
+exit $fail

@@ -1,10 +1,13 @@
 # device dumps, proprietary blobs and build outputs never belong in this repository
 dumps/
 firmware/
-# ...but not the kernel source directory of that name in the mainline port
+# ...but not the kernel source directory of that name in the port
 !kernel/port/drivers/firmware/
 android-subset/
 out/
+release/
+work/
+work-*/
 *.img
 *.tar
 *.tar.gz
@@ -12,38 +15,17 @@ out/
 *.bin
 *.ko
 busybox
-openwrt/src/logdw/logdw
-logs-*/
-rootfs/base.tar
 __pycache__/
 .DS_Store
+logs-*/
+# the static programs, built in place by hand (tools/make-release.sh builds them elsewhere)
+openwrt/src/logdw/logdw
 openwrt/src/bt-init/mu300-bt-init
+openwrt/src/keys/mu300-keys
+openwrt/src/atd-io/mu300-atd-io
 openwrt/src/carry/mu300-carry
-openwrt/src/gpu/cltest
-work/
-work-*/
-openwrt/*.tar.gz
-kernel/stub/*.elf
-kernel/stub/*.bin
-sing-box
-/xray
-/hev-socks5-tunnel
-release/
-backup/
-!stock/*.img
-arch/*.tar.gz
-arch/ArchLinuxARM-*
-android/magisk/*.zip
-
-# built by openwrt/src/adbd/build.sh
 openwrt/src/adbd/adbd
-
-# written by the installer self-update in copies without git
-.mu300-source
-kernel/out-*/
-# the user's own list of files the self-update leaves alone (tools/self-update.sh, install.ps1)
-.mu300-keep
 # a test run with TMPDIR inside the tree
-tests/mu300-test-*/
+*/tests/mu300-test-*/
 # the release smoke test's boards (tools/smoke.py; tools/smoke.example.json is the example)
 /tools/smoke.json

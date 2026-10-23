@@ -1,0 +1,25 @@
+#!/bin/sh
+# The two trees never read each other's files (docs/contract.md): kernel/ names no path under openwrt/, and openwrt/
+# names no path under kernel/; what they share is the kernel bundle and the contract. A path is "under" a tree when
+# it starts with the tree's name and one of the tree's own top-level entries (kernel/initramfs, openwrt/opt, ...), or
+# when Python joins the tree's name as a component (TOP / 'kernel'). Runtime paths such as /sys/kernel/debug or
+# /disk/openwrt-luci are not repository paths and do not match.
+#   tools/check-boundary        exit 1 and list the lines when a tree reaches into the other
+set -eu
+TOP=$(cd "$(dirname "$0")/.." && pwd)
+cd "$TOP"
+entries() { ls -A "$1" | sed 's/[.[\*^$+?(){}|]/\\&/g' | paste -sd'|' -; }
+fail=0
+check() {  # check TREE OTHER
+    pat="(^|[^/A-Za-z0-9_.-])$2/($(entries "$2"))([^A-Za-z0-9_-]|\$)|/ *['\"]$2['\"]|\\.\\./$2([/'\"]|\$)"
+    hits=$(git ls-files -coz --exclude-standard "$1" | xargs -0 grep -nIE -- "$pat" 2>/dev/null || true)
+    if [ -n "$hits" ]; then
+        echo "$1/ refers to files under $2/ (use the kernel bundle or docs/contract.md instead):"
+        printf '%s\n' "$hits" | head -50
+        fail=1
+    fi
+}
+check kernel openwrt
+check openwrt kernel
+[ $fail = 0 ] && echo "check-boundary: kernel/ and openwrt/ keep to themselves"
+exit $fail

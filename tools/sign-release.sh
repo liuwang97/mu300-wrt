@@ -1,5 +1,5 @@
 #!/bin/sh
-# Maintainer: sign a release's SHA256SUMS with the project's release key (docs/FINDINGS.md 86).
+# Maintainer: sign a release's SHA256SUMS with the project's release key (docs/decisions/0011-signed-releases-and-version-tags.md).
 #   tools/sign-release.sh SHA256SUMS [PUBLIC_KEY]     writes SHA256SUMS.sig beside it
 # The key is the secret key file that OpenWrt's usign wrote (usign -G -s release.sec -p release.pub; OpenBSD's
 # signify -G -n makes the same file), given as its text in MU300_RELEASE_KEY (the repository secret of that name, in
@@ -7,7 +7,7 @@
 # directory of this run's own that is removed at its end.
 # The signature is the file `usign -S` writes (a comment line, then base64 of "Ed", the key's number and the 64 bytes
 # of an Ed25519 signature of the whole file), made with openssl 3 so that neither the runner nor a maintainer's
-# computer needs usign. mu300-update checks it with usign on OpenWrt and with openssl on Ubuntu (sig_state).
+# computer needs usign. mu300-update checks it with usign (sig_state).
 # With PUBLIC_KEY the result is checked against it before it counts: signing with a key that is not the one in the
 # images must stop the release here, not on every device that then refuses it.
 set -eu

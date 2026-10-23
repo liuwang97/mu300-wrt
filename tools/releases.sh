@@ -1,16 +1,11 @@
-# Which release install.sh installs. Sourced by install.sh (t, ask and die are its own; needs $TOP, $REPO, $RELEASE).
-#   MU300_RELEASE=<tag>       that release, and nothing is asked
-#   MU300_RELEASE_URL=<url>   another place with the same files (the release is then called "custom"); nothing asked
-# Otherwise the newest full release. When GitHub also has a prerelease published after it, release_resolve asks
-# whether to install that beta instead (default: no). tools/release_pick.py decides which is which, for install.ps1
-# and the graphical installer too.
+# The release tags, for tools/make-release.sh. The block below is word for word the one in mu300-update
+# (openwrt/tests/test_releases.py holds the two to each other and to its fixture of tags).
 
 # --- release-tag begin
-# The release tags (docs/FINDINGS.md 125): vYYYY.MM.DD up to v2026.10.27, where the "day" was a counter, and from then
-# on vYYYY.MM.DD.N: the real (UTC) day the release was built, N = 1..99 for the releases of that day. Every four-field
-# tag is newer than every three-field one; four-field tags compare by the date, then by N, as numbers. The same block,
-# word for word, is in tools/releases.sh (install.sh, make-release.sh), mu300-update and tools/android-install.sh
-# (tests/test_releases.py holds the copies to each other and to tests/fixtures/release-tags.tsv).
+# The release tags: vYYYY.MM.DD.N, the real (UTC) day the release was built and N = 1..99 for the releases of that
+# day; the older three-field vYYYY.MM.DD tags are still read, and every four-field tag is newer than every three-field
+# one. Four-field tags compare by the date, then by N, as numbers. The same block, word for word, is in
+# tools/releases.sh and mu300-update (openwrt/tests/test_releases.py holds the two to each other).
 # tag_ok TAG: TAG is a release tag (in the shell's own patterns: no grep, no locale, no regex engine to differ)
 tag_ok() {
     case $1 in
@@ -43,32 +38,3 @@ newer() {
     [ "${_na#0}" -gt "${_nb#0}" ]
 }
 # --- release-tag end
-# release_list: LATEST=<tag> and, with a newer prerelease, BETA=<tag>, from GitHub's list of releases. No token is
-# needed. Nothing at all when the list does not come (no network, the API's rate limit, a proxy's page).
-release_list() {
-    curl -fsSL --connect-timeout 10 --max-time 30 "https://api.github.com/repos/$REPO/releases?per_page=15" 2>/dev/null |
-        python3 "$TOP/tools/release_pick.py" 2>/dev/null || true
-}
-
-# release_resolve: RELEASE, when it is not set yet. BETA_OFFERED is the prerelease that was offered (empty: none).
-release_resolve() {
-    BETA_OFFERED=
-    [ -z "$RELEASE" ] || return 0
-    if [ -n "${MU300_RELEASE_URL:-}" ]; then RELEASE=custom; return 0; fi
-    _rl=$(release_list)
-    RELEASE=$(printf '%s\n' "$_rl" | sed -n 's/^LATEST=//p' | head -n1)
-    _rb=$(printf '%s\n' "$_rl" | sed -n 's/^BETA=//p' | head -n1)
-    if [ -z "$RELEASE" ]; then
-        # the list did not come: the newest release alone, the way it was always looked up, and no question
-        _rb=
-        RELEASE=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" 2>/dev/null \
-            | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)
-        [ -n "$RELEASE" ] || die "$(t 'cannot find the newest release of {1} (set MU300_RELEASE=<tag> to pick one)' "$REPO")"
-    fi
-    [ -n "$_rb" ] || return 0
-    BETA_OFFERED=$_rb
-    echo "  $(t 'A beta is out: {1}, a prerelease for testing, newer than the newest full release {2}.' "$_rb" "$RELEASE")"
-    ask _ra "$(t 'Install the beta {1} instead of {2}? (yes/no)' "$_rb" "$RELEASE")" no MU300_ANS_BETA
-    if [ "$_ra" = yes ]; then RELEASE=$_rb; fi
-    return 0
-}

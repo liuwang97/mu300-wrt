@@ -1,8 +1,8 @@
 name: Tests
 
-# tests/: the device scripts under every shell they run with (dash and bash on Ubuntu, busybox ash on OpenWrt), the
-# boot image builder, the installers' translations and rules, and install.ps1's functions under Windows PowerShell
-# 5.1 and PowerShell 7. Run them locally with: python3 -m unittest discover -s tests
+# Each tree's tests on its own (kernel/tests, openwrt/tests), and the rules that keep the repository in shape: the two
+# trees never read each other's files (tools/check-boundary), and the documentation stays a reference (tools/doc-lint).
+# Locally: cd kernel/tests && python3 -m unittest; the same in openwrt/tests.
 on:
   push:
     branches: [main]
@@ -12,71 +12,58 @@ permissions:
   contents: read
 
 jobs:
-  ubuntu:
+  rules:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sh tools/check-boundary
+      - run: sh tools/doc-lint
+
+  kernel:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: shells and lz4
+        run: |
+          sudo apt-get install -y -qq busybox lz4 cpio >/dev/null
+          python3 -m pip install -q lz4 || python3 -m pip install -q --break-system-packages lz4
+      - name: tests
+        env:
+          MU300_TEST_SHELLS: busybox sh
+        run: cd kernel/tests && python3 -m unittest
+
+  openwrt:
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3]       # tests/shard.py: the modules of each quarter, ~7 min instead of ~30
+        shard: [0, 1, 2]          # openwrt/tests/shard.py: round-robin, the heavy modules spread by hand
     runs-on: ubuntu-latest
-    name: ubuntu shard ${{ matrix.shard }}
+    name: openwrt shard ${{ matrix.shard }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4     # the control panel's JavaScript tests
         with:
           node-version: 22
-      - name: shells and lz4
-        run: |
-          sudo apt-get install -y -qq dash busybox lz4 zip unzip cpio jq python3-tk xvfb >/dev/null   # (tk and Xvfb: the graphical installer's window, tests/test_gui.py)
-          python3 -m pip install -q lz4 || python3 -m pip install -q --break-system-packages lz4
-      - name: the driver strips the firmware SAE PMK record, with UBSan (Linux)
-        if: runner.os == 'Linux'
+      - name: shells and tools
+        run: sudo apt-get install -y -qq busybox lz4 cpio jq >/dev/null
+      - name: the driver strips the firmware SAE PMK record, with UBSan
+        if: matrix.shard == 0
         env:
           MU300_TEST_UBSAN: '1'
-        run: python3 -m unittest discover -s tests -p test_wpa2_only.py -v
+        run: cd openwrt/tests && python3 -m unittest test_wpa2_only -v
       - name: tests
-        # quick mode on pull requests: the device scripts under busybox sh only (what OpenWrt runs; dash and bash
-        # are Ubuntu's) - a third of the time. A push to main runs every shell.
+        # OpenWrt runs every script under busybox ash
         env:
-          MU300_TEST_SHELLS: ${{ github.event_name == 'pull_request' && 'busybox sh' || 'dash,bash,busybox sh,sh' }}
+          MU300_TEST_SHELLS: busybox sh
         run: |
-          cd tests
-          python3 -c 'import helpers; print("shells:", helpers.shells())'
-          mods=$(python3 shard.py 4 ${{ matrix.shard }}); echo "shard ${{ matrix.shard }}: $mods"
+          cd openwrt/tests
+          mods=$(python3 shard.py 3 ${{ matrix.shard }}); echo "shard ${{ matrix.shard }}: $mods"
           python3 -m unittest $mods
 
-  # the name the branch ruleset requires: green only when every shard is. (macOS: dropped 2026-10-12, GitHub's
-  # macOS runners queued for hours; the suite is POSIX-shell work that Ubuntu covers.)
-  unix-ubuntu:
-    name: unix (ubuntu-latest)
-    needs: ubuntu
+  # the name a branch ruleset can require: green only when every job is
+  all:
+    needs: [rules, kernel, openwrt]
     if: always()
     runs-on: ubuntu-latest
     steps:
-      - run: test "${{ needs.ubuntu.result }}" = success
-  windows:
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: install.ps1 functions (Windows PowerShell 5.1)
-        shell: powershell
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests\installer.Tests.ps1
-      - name: install.ps1 functions (PowerShell 7)
-        shell: pwsh
-        run: pwsh -NoProfile -File tests\installer.Tests.ps1
-      - name: install.ps1 and uninstall.ps1 in answers mode against the fake adb (Windows PowerShell 5.1)
-        shell: powershell
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests\answers.Tests.ps1
-      - name: install.ps1 and uninstall.ps1 in answers mode against the fake adb (PowerShell 7)
-        shell: pwsh
-        run: pwsh -NoProfile -File tests\answers.Tests.ps1
-      - name: the graphical installer - its logic, a run against the fake installer, and the window itself
-        shell: pwsh
-        run: |
-          cd tests
-          python -m unittest test_gui test_releases -v
-      - name: boot image builder (the Windows install runs it too)
-        shell: pwsh
-        run: |
-          python -m pip install -q lz4
-          cd tests
-          python -m unittest test_boot_image -v
+      - run: test "${{ needs.rules.result }}" = success && test "${{ needs.kernel.result }}" = success && test "${{ needs.openwrt.result }}" = success
