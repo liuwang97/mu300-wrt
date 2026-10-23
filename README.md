@@ -13,6 +13,8 @@ narrowed to one kernel, one system and two boards:
 | boards | F50, U30 Air | V50 |
 | installing | `mu300-update` on a device that runs Linux | install.sh/ps1/cmd, GUI, web installer, Magisk zips |
 | LuCI languages | English, Chinese (zh_Hans) | the other 29 |
+| access | SSH, the LuCI panel, the USB serial console | adbd, OpenWrt failsafe |
+| GPU | none yet (Panfrost later) | the vendor Mali driver and its userspace |
 
 Kept on purpose: Bluetooth, the audio DSP memory reservation, the SD card as the home of the
 system, and the eMMC GPT partition `mu300root`.
@@ -23,10 +25,12 @@ There is no installer. A device that already runs OpenWrt with the panel on Linu
 project's installer) switches to this project's releases by pointing its updater here:
 
 ```sh
-mu300-update source https://github.com/liuwang97/mu300-wrt   # once
-mu300-update check
-mu300-update apply        # kernel bundle and image: download, verify, unpack beside the old system, switch
+# once: this project's release key (an upstream image carries upstream's, which refuses these signatures)
+wget -O /opt/mu300/lib/release.pub https://raw.githubusercontent.com/liuwang97/mu300-wrt/main/openwrt/opt/mu300/lib/release.pub
+MU300_REPO=liuwang97/mu300-wrt mu300-update apply   # the first time; this release's updater then defaults to it
 reboot
+mu300-update check        # later: newest release vs installed
+mu300-update apply        # kernel bundle and image: download, verify, unpack beside the old system, switch
 ```
 
 The panel does the same under System > Update. Everything you added or changed is carried over (the image manifest
