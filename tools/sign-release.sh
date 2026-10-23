@@ -20,7 +20,7 @@ SSL=${MU300_OPENSSL:-openssl}
 "$SSL" pkeyutl -help 2>&1 | grep -q -- -rawin ||
     { echo "sign-release: $SSL cannot sign with Ed25519 (OpenSSL 3 is needed; MU300_OPENSSL names another one)" >&2; exit 1; }
 
-W=$(umask 077; mktemp -d)
+W=$(umask 077; mktemp -d "${TMPDIR:-/tmp}/mu300-sign.XXXXXX")
 trap 'rm -rf "${W:?}"' EXIT
 umask 077
 if [ -n "${MU300_RELEASE_KEY:-}" ]; then printf '%s\n' "$MU300_RELEASE_KEY" > "$W/sec"
