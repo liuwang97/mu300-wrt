@@ -1,7 +1,7 @@
 From: kanoqwq <kanoqwq@qq.com>
 Subject: [PATCH] power: supply: bq256xx: the U30 Air's battery CV and the stock safety-timer policy
 
-Ported from kanoqwq/mu300-linux c031a58a (his upstream/patches/0023, docs/U30AIR-CHARGING-EARLY-FULL-20261022).
+Ported from kanoqwq/mu300-linux c031a58a (his kernel/patches/0023, docs/U30AIR-CHARGING-EARLY-FULL-20261022).
 
 The vendor node used a 4.208 V cap copied from an Android register snapshot,
 not its battery configuration (4.3 V on the tested SSV board). Honor the

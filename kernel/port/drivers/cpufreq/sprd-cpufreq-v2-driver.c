@@ -40,7 +40,7 @@ static unsigned long boot_done_timestamp;
  * -25..+12.5 mV, whole 3.125 mV steps, UMS9620 only, a raise only with a known DCDC maximum (and an OPP whose raised
  * voltage would go above that maximum is left out of the table). The command line can never set it (the parameter
  * refuses anything before userspace runs), and only CAP_SYS_ADMIN can write it. Whether an offset is ever written
- * at all (the boot counter that takes it back after a crash) is the initramfs' decision (boot/init, cpu-voltage).
+ * at all (the boot counter that takes it back after a crash) is the initramfs' decision (kernel/initramfs/init, cpu-voltage).
  */
 enum sprd_volt_state {
 	SV_PROBING,	/* not probed (yet), or the probe failed */

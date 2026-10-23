@@ -1,7 +1,7 @@
 name: Release
 
 # The whole release on a GitHub arm64 runner: the vendor 5.4 kernel (kernel/build-all.sh), the mainline 6.18, 7.2 and 7.3
-# kernels with their modules (upstream/build.sh, build-modules.sh), then tools/make-release.sh, which builds the root
+# kernels with their modules (kernel/build.sh, build-modules.sh), then tools/make-release.sh, which builds the root
 # filesystems and the extras, audits every asset and publishes the release. Actions > Release > Run workflow on main,
 # with the tag left empty (the next one of today: vYYYY.MM.DD.N, tools/make-release.sh --next-tag, docs/FINDINGS.md
 # 125) or given (then it must be of today, in that form): a prerelease by default, which the installers and mu300-update do not offer until the maintainer has
@@ -131,19 +131,19 @@ jobs:
         id: c618
         uses: actions/cache/restore@v4
         with:
-          path: upstream/out
+          path: kernel/out
           key: kernel-${{ steps.kv.outputs.kv618 }}-${{ steps.kv.outputs.treeup }}
       - name: Mainline 7.2 outputs from the cache
         id: c72
         uses: actions/cache/restore@v4
         with:
-          path: upstream/out-7.2
+          path: kernel/out-7.2
           key: kernel-${{ steps.kv.outputs.kv72 }}-${{ steps.kv.outputs.treeup }}
       - name: Mainline 7.3 outputs from the cache
         id: c73
         uses: actions/cache/restore@v4
         with:
-          path: upstream/out-7.3
+          path: kernel/out-7.3
           key: kernel-${{ steps.kv.outputs.kv73 }}-${{ steps.kv.outputs.treeup }}
       - name: Mainline build environment
         if: steps.c618.outputs.cache-hit != 'true' || steps.c72.outputs.cache-hit != 'true' || steps.c73.outputs.cache-hit != 'true'
@@ -157,11 +157,11 @@ jobs:
         run: |
           sudo -E docker run --rm -e KV="$KV" -v mu300-mainline:/src -v "$PWD/upstream":/work mu300-mainline-build bash /work/build.sh
           sudo -E docker run --rm -e KV="$KV" -v mu300-mainline:/src -v "$PWD/upstream":/work mu300-mainline-build bash /work/build-modules.sh > /dev/null
-          ls upstream/out/modules/*.ko | wc -l
+          ls kernel/out/modules/*.ko | wc -l
       - if: steps.c618.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
-          path: upstream/out
+          path: kernel/out
           key: kernel-${{ steps.kv.outputs.kv618 }}-${{ steps.kv.outputs.treeup }}
       - name: Mainline 7.2
         if: steps.c72.outputs.cache-hit != 'true'
@@ -170,11 +170,11 @@ jobs:
         run: |
           sudo -E docker run --rm -e KV="$KV" -e OUTDIR=out-7.2 -v mu300-mainline:/src -v "$PWD/upstream":/work mu300-mainline-build bash /work/build.sh
           sudo -E docker run --rm -e KV="$KV" -e OUTDIR=out-7.2 -v mu300-mainline:/src -v "$PWD/upstream":/work mu300-mainline-build bash /work/build-modules.sh > /dev/null
-          ls upstream/out-7.2/modules/*.ko | wc -l
+          ls kernel/out-7.2/modules/*.ko | wc -l
       - if: steps.c72.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
-          path: upstream/out-7.2
+          path: kernel/out-7.2
           key: kernel-${{ steps.kv.outputs.kv72 }}-${{ steps.kv.outputs.treeup }}
       - name: Mainline 7.3
         if: steps.c73.outputs.cache-hit != 'true'
@@ -183,11 +183,11 @@ jobs:
         run: |
           sudo -E docker run --rm -e KV="$KV" -e OUTDIR=out-7.3 -v mu300-mainline:/src -v "$PWD/upstream":/work mu300-mainline-build bash /work/build.sh
           sudo -E docker run --rm -e KV="$KV" -e OUTDIR=out-7.3 -v mu300-mainline:/src -v "$PWD/upstream":/work mu300-mainline-build bash /work/build-modules.sh > /dev/null
-          ls upstream/out-7.3/modules/*.ko | wc -l
+          ls kernel/out-7.3/modules/*.ko | wc -l
       - if: steps.c73.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
-          path: upstream/out-7.3
+          path: kernel/out-7.3
           key: kernel-${{ steps.kv.outputs.kv73 }}-${{ steps.kv.outputs.treeup }}
       # the three mainline trees with every module (FINDINGS 163) share one volume, ~21 GB; the runner had ~108 GB free
       - name: Disk after the kernels
@@ -197,10 +197,10 @@ jobs:
           sudo du -sh /var/lib/docker/volumes/mu300-mainline 2>/dev/null || true
       - name: Build logs
         if: failure()
-        run: tail -n 60 upstream/out/modules/*.log upstream/out-7.2/modules/*.log upstream/out-7.3/modules/*.log 2>/dev/null || true
+        run: tail -n 60 kernel/out/modules/*.log kernel/out-7.2/modules/*.log kernel/out-7.3/modules/*.log 2>/dev/null || true
       # MU300_RELEASE_KEY: the release key (a usign secret key, see tools/sign-release.sh). With it make-release.sh
       # signs SHA256SUMS and publishes SHA256SUMS.sig; without it the release is as it always was - unless the tree
-      # has the public key (rootfs/overlay/opt/mu300/lib/release.pub), and then nothing is published unsigned.
+      # has the public key (openwrt/opt/mu300/lib/release.pub), and then nothing is published unsigned.
       - name: Root filesystems, extras, audit, sign, publish
         env:
           INPUT_PRERELEASE: ${{ inputs.prerelease }}

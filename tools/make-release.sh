@@ -73,7 +73,7 @@ IN=$D/inputs
 ls "$KOUT"/modules-u30air/*.ko >/dev/null 2>&1 || { echo "U30 Air modules missing in $KOUT/modules-u30air (kernel/build-all.sh)" >&2; exit 1; }
 [ -z "$(git -C "$TOP" status --porcelain)" ] || { echo "commit your changes first: the release must match a commit" >&2; exit 1; }
 rm -rf "$D" && mkdir -p "$IN/out" "$IN/tools/logdw" "$IN/tools/bt-init" "$IN/tools/gpu"
-# the module trees are staged here and in TMPDIR (upstream/make-bundle.sh): both must keep xt_HL.ko and xt_hl.ko
+# the module trees are staged here and in TMPDIR (kernel/make-bundle.sh): both must keep xt_HL.ko and xt_hl.ko
 # apart, which macOS's default file system does not (FINDINGS 212)
 . "$TOP/upstream/case-sensitive.sh"
 case_sensitive "$D" || exit 1
@@ -100,7 +100,7 @@ H='$y$j9T$yozuPAQ4fDSQH5fJzaFQd/$Z6UKqnHQMcZqZNJ18QIV5mTrJ7raj2y7MDipRg8bUj.'
     { echo "mu300-pwcheck does not check a yescrypt hash" >&2; exit 1; }
 # e2fsck for the boot ramdisk: init runs it on a root filesystem whose superblock records an error (FINDINGS 182)
 sh "$TOP/tools/e2fsck/build.sh" "$IN/tools/e2fsck/e2fsck" >/dev/null
-# adbd (adb over USB to Linux): static aarch64, from AOSP's sources (tools/adbd/build.sh)
+# adbd (adb over USB to Linux): static aarch64, from AOSP's sources (openwrt/src/adbd/build.sh)
 sh "$TOP/tools/adbd/build.sh" "$IN/tools/adbd/adbd" >/dev/null
 # cltest links against Android's libraries at build time only; use a local build when there is one
 [ -f "$TOP/tools/gpu/cltest" ] && cp "$TOP/tools/gpu/cltest" "$IN/tools/gpu/cltest"
@@ -110,7 +110,7 @@ K=$D/kernel && mkdir -p "$K"
 cp -R "$IN/out/modules" "$K/modules"
 cp -R "$KOUT/modules-u30air" "$K/modules-u30air"
 # the devices this bundle runs on (mu300-update and the installers check it); not the V50: the only V50 known to run
-# this project (kano's) ran mainline, and its LED driver is mainline only (upstream/make-bundle.sh, FINDINGS 95)
+# this project (kano's) ran mainline, and its LED driver is mainline only (kernel/make-bundle.sh, FINDINGS 95)
 echo "f50 u30air" > "$K/devices"
 # what it can do that older bundles could not: 5.4 reads the SD card (FINDINGS 31j), so a system on the card may get
 # it; its init runs from either slot, so a Linux on slot a may get it (mu300-update checks both); the same init finds a
@@ -119,7 +119,7 @@ printf 'sdcard\nlinux-slot\ngpt-root\n' > "$K/features"
 cp "$KOUT/Image" "$KOUT/modules.builtin" "$KOUT/modules.builtin.modinfo" "$IN/busybox" "$IN/tools/logdw/logdw" "$K/"
 # beside busybox for the installers' password check (the Magisk zips take both from here; FINDINGS 126)
 cp "$IN/tools/pwcheck/mu300-pwcheck" "$K/"
-# beside busybox for every boot ramdisk built from this bundle (install.sh, install.ps1, upstream/make-bundle.sh)
+# beside busybox for every boot ramdisk built from this bundle (install.sh, install.ps1, kernel/make-bundle.sh)
 cp "$IN/tools/e2fsck/e2fsck" "$K/"
 # the device-independent part of the boot ramdisk, which mu300-update puts behind the device's own ramdisk to update
 # the kernel and the boot image without a computer (same builder and file list as install.sh)
@@ -131,12 +131,12 @@ tar -C "$K" -czf "$D/mu300-kernel.tar.gz" .
 rm -rf "$K"
 
 echo "==> mainline kernel bundles"
-# "mu300-update kernel 6.18|7.2|7.3": built by upstream/build.sh + build-modules.sh at this commit - 6.18 into
-# upstream/out, 7.2 into upstream/out-7.2 (OUTDIR=out-7.2 KV=7.2.x), 7.3 into upstream/out-7.3 (OUTDIR=out-7.3 KV=7.3
+# "mu300-update kernel 6.18|7.2|7.3": built by kernel/build.sh + build-modules.sh at this commit - 6.18 into
+# kernel/out, 7.2 into kernel/out-7.2 (OUTDIR=out-7.2 KV=7.2.x), 7.3 into kernel/out-7.3 (OUTDIR=out-7.3 KV=7.3
 # or 7.3.x; its first release reports 7.3.0); each build must be the version its name says
 for kv in 6.18:out 7.2:out-7.2 7.3:out-7.3; do
     v=${kv%%:*}; o=$TOP/upstream/${kv#*:}
-    [ -f "$o/Image" ] || { echo "$o/Image missing (upstream/build.sh, build-modules.sh)" >&2; exit 1; }
+    [ -f "$o/Image" ] || { echo "$o/Image missing (kernel/build.sh, build-modules.sh)" >&2; exit 1; }
     rel=$(strings "$o/Image" | sed -n 's/^Linux version \([^ ]*\) .*/\1/p' | head -1)
     case $rel in "$v".*) ;; *) echo "$o holds $rel, not $v" >&2; exit 1 ;; esac
     MU300_UPSTREAM_OUT=$o sh "$TOP/upstream/make-bundle.sh" "$D/mu300-kernel-$v.tar.gz" "$D/mu300-kernel.tar.gz"
@@ -280,7 +280,7 @@ sys.exit("sbin/e2fsck" not in b.cpio_names(b.unlz4_legacy(open(sys.argv[2], "rb"
         "$TOP/boot/build-boot-image.py" "$D/ramdisk.check" || { echo "$a: its ramdisk-generic.lz4 has no sbin/e2fsck"; fail=1; }
     rm -f "$D/ramdisk.check"
 done
-# a mainline bundle carries the kernel's own modules next to the vendor ones (upstream/build-modules.sh): one of each
+# a mainline bundle carries the kernel's own modules next to the vendor ones (kernel/build-modules.sh): one of each
 # kind - qdisc, filesystem, device mapper, USB modem, vhost - and the vendor Wi-Fi
 for a in mu300-kernel-6.18 mu300-kernel-7.2 mu300-kernel-7.3; do
     l=$(tar -tzf "$D/$a.tar.gz")
@@ -323,7 +323,7 @@ done
 [ $fail = 0 ] || { echo "audit failed, nothing published" >&2; exit 1; }
 rm -rf "$IN"
 # the updater itself: an older mu300-update fetches this one and continues with it
-cp "$TOP/rootfs/overlay/opt/mu300/bin/mu300-update" "$D/mu300-update"
+cp "$TOP/openwrt/opt/mu300/bin/mu300-update" "$D/mu300-update"
 # mu300-release: the tag, as a file, so that SHA256SUMS - and with it the signature - says which release these
 # checksums are of (mu300-update's tag_sha: a signed SHA256SUMS cannot be handed out as another release's)
 echo "$TAG" > "$D/mu300-release"
@@ -333,7 +333,7 @@ echo "$TAG" > "$D/mu300-release"
 # repository secret of that name, or MU300_RELEASE_KEY_FILE. The images of this release carry the public key when it
 # is in the tree; devices with it refuse a newer release that is not signed, so such a release is never published
 # without its signature.
-PUB=$TOP/rootfs/overlay/opt/mu300/lib/release.pub
+PUB=$TOP/openwrt/opt/mu300/lib/release.pub
 SIG=
 if [ -n "${MU300_RELEASE_KEY:-}${MU300_RELEASE_KEY_FILE:-}" ]; then
     if [ -s "$PUB" ]; then sh "$TOP/tools/sign-release.sh" "$D/SHA256SUMS" "$PUB"
@@ -378,7 +378,7 @@ first with \`./install.sh --check\`.
 
 The images contain **no proprietary files**: the installer pulls the Wi-Fi/Bluetooth firmware and the Android
 modem/GPU userspace from your own device and adds them during installation. They carry a static adbd (AOSP
-platform-tools, built by \`tools/adbd/build.sh\`) for adb to Linux over USB, which is **on by default and lets every
+platform-tools, built by \`openwrt/src/adbd/build.sh\`) for adb to Linux over USB, which is **on by default and lets every
 computer in**: whoever can plug a cable into the device gets a root shell without a password. To close it:
 \`sudo mu300-usb adb auth keys\` (only the keys authorised with \`sudo mu300-usb adb key FILE\`) or
 \`sudo mu300-usb adb off\`. A device where adb was turned off, or set up with a key, before this release stays as it was.

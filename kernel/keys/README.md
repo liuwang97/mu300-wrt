@@ -1,6 +1,6 @@
 # kernel.org signing keys (pinned)
 
-`upstream/verify-kernel-src.sh` checks every mainline kernel tarball `upstream/build.sh` downloads (locally, in the
+`kernel/verify-kernel-src.sh` checks every mainline kernel tarball `kernel/build.sh` downloads (locally, in the
 Mainline kernel build workflow and in the release workflow) against these keyrings with `gpgv`, and fails closed
 (FINDINGS 161). There are two independent checks:
 
@@ -39,8 +39,8 @@ A new releaser, an expired or revoked key: fetch the key from at least two of th
 `GNUPGHOME`, compare the fingerprints, then
 
 ```sh
-gpg --export --export-options export-minimal autosigner@kernel.org > upstream/keys/kernel-autosigner.gpg
-gpg --export --export-options export-minimal torvalds@kernel.org gregkh@kernel.org sashal@kernel.org > upstream/keys/kernel-releasers.gpg
+gpg --export --export-options export-minimal autosigner@kernel.org > kernel/keys/kernel-autosigner.gpg
+gpg --export --export-options export-minimal torvalds@kernel.org gregkh@kernel.org sashal@kernel.org > kernel/keys/kernel-releasers.gpg
 ```
 
 and update the `.fpr` files, this table and `tests/test_kernel_src_signature.py` (which pins the same list).

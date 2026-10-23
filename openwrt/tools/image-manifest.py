@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """The manifest of a root filesystem image: one line for every file it holds.
 
-  tools/image-manifest.py make ROOTFS.tar.gz [IMAGE TAG]   print the manifest of a published image
-  tools/image-manifest.py check ROOTFS.tar.gz              the manifest the image carries (etc/mu300/image-manifest.gz)
+  openwrt/tools/image-manifest.py make ROOTFS.tar.gz [IMAGE TAG]   print the manifest of a published image
+  openwrt/tools/image-manifest.py check ROOTFS.tar.gz              the manifest the image carries (etc/mu300/image-manifest.gz)
                                                            is the one of its own files; exit 1 and the differences if not
-  tools/image-manifest.py legacy RELEASE_DIR OUT_DIR       for a release from before images carried one: the manifests
+  openwrt/tools/image-manifest.py legacy RELEASE_DIR OUT_DIR       for a release from before images carried one: the manifests
                                                            of its four images as OUT_DIR/<image>/<tag>.gz
-  tools/image-manifest.py assets RELEASE_DIR OUT_DIR       the same manifests under the names a release publishes them
+  openwrt/tools/image-manifest.py assets RELEASE_DIR OUT_DIR       the same manifests under the names a release publishes them
                                                            with: OUT_DIR/mu300-<...>-rootfs.manifest.gz
-  tools/image-manifest.py union OUT.gz MANIFEST.gz...      the manifests of one image in many releases as one file
-                                                           (rootfs/overlay/opt/mu300/lib/image-manifests/<image>.gz)
-  tools/image-manifest.py extract UNION.gz TAG             one release's manifest out of such a file
+  openwrt/tools/image-manifest.py union OUT.gz MANIFEST.gz...      the manifests of one image in many releases as one file
+                                                           (openwrt/opt/mu300/lib/image-manifests/<image>.gz)
+  openwrt/tools/image-manifest.py extract UNION.gz TAG             one release's manifest out of such a file
 
 An update needs to know which files of the installed system came with its image and which are the user's: a path the
 old image did not have was put there by the user (or by software they installed), one it had with other content was

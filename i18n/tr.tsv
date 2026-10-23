@@ -1,5 +1,5 @@
 # Türkçe - MU300 Linux installer. One line per message: English<TAB>translation; {1}.. are the arguments.
-# Check with: tools/check-i18n.py
+# Check with: openwrt/tools/check-i18n.py
 parallel download failed, retrying as a single stream	paralel indirme başarısız oldu, tek bağlantıyla yeniden deneniyor
 could not read {1} from the device	{1} cihazdan okunamadı
 Checking host tools and device	Bilgisayardaki araçlar ve cihaz kontrol ediliyor

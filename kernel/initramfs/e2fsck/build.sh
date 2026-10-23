@@ -1,12 +1,12 @@
 #!/bin/sh
-# Build e2fsck for the boot ramdisk: one static aarch64 binary (musl), which boot/init runs on the unmounted root
+# Build e2fsck for the boot ramdisk: one static aarch64 binary (musl), which kernel/initramfs/init runs on the unmounted root
 # filesystem only when its superblock records an error (FINDINGS 182; kanoqwq's desktop init did it first).
-#   tools/e2fsck/build.sh OUT        (OUT: the binary to write; needs docker with arm64 support)
+#   kernel/initramfs/e2fsck/build.sh OUT        (OUT: the binary to write; needs docker with arm64 support)
 # e2fsprogs from kernel.org, checked against the SHA-256 of its signed sha256sums.asc, built in a pinned Alpine image
 # with fixed paths and dates: the same inputs give the same binary. e2fsck alone (no NLS, no undo database, no
 # other tools), stripped; about 1.4 MB, some 0.6 MB in the LZ4 ramdisk.
 set -eu
-OUT=${1:?usage: tools/e2fsck/build.sh OUT}
+OUT=${1:?usage: kernel/initramfs/e2fsck/build.sh OUT}
 VER=1.47.4
 URL=https://mirrors.edge.kernel.org/pub/linux/kernel/people/tytso/e2fsprogs/v$VER/e2fsprogs-$VER.tar.xz
 SHA=fd5bf388cbdbe006a3d3b318d983b2948382440acc85a87f1e7d108653e8db0b

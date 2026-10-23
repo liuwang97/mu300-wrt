@@ -15,7 +15,7 @@
 #                         "mu300-usb host" asks it for the host role (a data role swap). Kept across reboots
 #                         (/etc/mu300/usb-pd). With it on, host/device ask the port controller instead.
 #   mu300-usb net [ncm|ecm|rndis [once]|default]   the USB network to a computer from the next boot on (both
-#                         devices; /etc/mu300/usb-net, which boot/init reads): NCM, the default (Windows 10 2004+/11,
+#                         devices; /etc/mu300/usb-net, which kernel/initramfs/init reads): NCM, the default (Windows 10 2004+/11,
 #                         macOS, Linux); ECM (macOS, Linux; no Windows driver); RNDIS (older Windows; no macOS
 #                         driver). "once": for the next boot only, then NCM again. Without an argument: the choice and
 #                         what this boot made. (openwrt-luci: its control panel's Device page keeps this.)
@@ -199,7 +199,7 @@ if [ "${1:-}" = adb ]; then
     esac
     exit 0
 fi
-# The USB network mode (D12): the choice in USBNET_FILE, read by boot/init from the system it boots, which rebinds the
+# The USB network mode (D12): the choice in USBNET_FILE, read by kernel/initramfs/init from the system it boots, which rebinds the
 # gadget once when it differs and says what it made in USBNET_APPLIED; USBNET_ONCE marks a choice for one boot only.
 USBNET_FILE=$R/etc/mu300/usb-net
 USBNET_ONCE=$R/etc/mu300/usb-net.once
@@ -230,7 +230,7 @@ if [ "${1:-}" = net ]; then
     exit 0
 fi
 if [ "${1:-}" = boot ]; then
-    # a one-boot USB network mode is used up once boot/init has made it (it says so in USBNET_APPLIED)
+    # a one-boot USB network mode is used up once kernel/initramfs/init has made it (it says so in USBNET_APPLIED)
     if [ -e "$USBNET_ONCE" ] && [ -s "$USBNET_APPLIED" ]; then
         rm -f "$USBNET_FILE" "$USBNET_ONCE"
         echo "mu300-usb: the USB network mode for one boot was used: NCM (the default) from the next boot"

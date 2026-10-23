@@ -7,7 +7,7 @@
 #     nothing throttled: the unit overheated and reset.
 #   * Without such a zone (mainline's stock device tree has no trip point; a 5.4 whose binding failed) this guard is
 #     the thermal policy: above HOT it caps every cpufreq policy one step lower, below COOL it lifts the cap one step
-#     (never above the ceiling a CPU profile set). At CRIT it powers off, on every kernel. The mu300_thermal module (upstream/modules, loaded by extra-modules) brings
+#     (never above the ceiling a CPU profile set). At CRIT it powers off, on every kernel. The mu300_thermal module (kernel/modules, loaded by extra-modules) brings
 #     the stock virtual zone back with its trips and cpufreq cooling maps; while an enabled zone with a passive trip
 #     has every cpufreq cooling device bound, the kernel throttles and this guard hands frequency control over: it
 #     lifts the caps it set itself and touches scaling_max_freq no more. The kernel's cap is a frequency QoS request

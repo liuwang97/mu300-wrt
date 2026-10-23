@@ -1,5 +1,5 @@
 #!/bin/sh
-# MU300: keep the USB host's DHCP going across switch_root (K11, ported from the kanoqwq fork, cd4fb28). boot/init
+# MU300: keep the USB host's DHCP going across switch_root (K11, ported from the kanoqwq fork, cd4fb28). kernel/initramfs/init
 # answers the host's first request with a 120 s lease on its own subnet and its server ends at switch_root; netifd
 # and dnsmasq come up many seconds later, and Windows gives up waiting long before that. So the early server starts
 # again here, at once, on the system's own LAN address (network.lan.ipaddr, else the device's default). When that

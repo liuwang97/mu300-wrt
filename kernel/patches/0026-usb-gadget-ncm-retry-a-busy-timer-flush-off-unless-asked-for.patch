@@ -1,7 +1,7 @@
 From: kanoqwq <kanoqwq@qq.com>
 Subject: [PATCH] usb: gadget: f_ncm: retry a timer flush when USB TX is busy, off unless asked for
 
-Ported from kanoqwq/mu300-linux e4ad30a0 (his upstream/patches/0025,
+Ported from kanoqwq/mu300-linux e4ad30a0 (his kernel/patches/0025,
 docs/NCM-TX-TIMER-20261022), a backport of Cosmin Tanislav's linux-usb patch,
 2026-08-17:
 https://lore.kernel.org/linux-usb/20260817192638.437798-1-cosmin-gabriel.tanislav.xa@renesas.com/

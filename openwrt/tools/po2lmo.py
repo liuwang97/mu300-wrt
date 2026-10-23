@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """LuCI .lmo catalog from a .po file, byte for byte as LuCI's po2lmo (luci-base/src/po2lmo.c, lib/lmo.c, openwrt-25.12).
 
-    python3 tools/po2lmo.py IN.po OUT.lmo
+    python3 openwrt/tools/po2lmo.py IN.po OUT.lmo
 
 Format: the values, each padded with NUL to a multiple of 4; then the index, one (key_id, val_id, offset, length)
 record of big-endian u32 per value, sorted by key_id; then the big-endian u32 offset of the index. key_id is

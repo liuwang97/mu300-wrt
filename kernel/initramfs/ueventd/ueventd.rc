@@ -1,5 +1,5 @@
 # The /dev rules of the F50's /vendor/etc/ueventd.rc (the lines gen-ueventd-perms.py reads), in their order.
-# Taken from the device's own file (android-vendor/extract-subset.sh puts it in android-subset/vendor/etc).
+# Taken from the device's own file (openwrt/vendor/extract-subset.sh puts it in android-subset/vendor/etc).
 /dev/apipe-pcm          0660     system      audio
 /dev/apipe-cmd-in       0660     system      audio
 /dev/apipe-cmd-out      0660     system      audio

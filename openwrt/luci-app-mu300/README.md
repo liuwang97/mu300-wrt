@@ -31,7 +31,7 @@ two: machine/AI translations, corrections welcome) are in the lang extra
 (`mu300-extra install lang`, or the Languages page under System), named by
 `openwrt/luci-languages.tsv`.
 `lmo/` is not kept in the tree; the image build compiles the catalogs with
-`tools/po2lmo.py`, so the top-level menu and submenu stay translated on
+`openwrt/tools/po2lmo.py`, so the top-level menu and submenu stay translated on
 unrelated LuCI pages where the dashboard JavaScript is not loaded.
 
 The package does not start or own the modem. Platform-specific access is behind
@@ -154,7 +154,7 @@ accepts `host` or `device`. The plugin must not bypass a known platform's
 power-safety checks.
 
 NCM/ECM/RNDIS selection is stored in `/etc/mu300/usb-net` (one line: `ncm`,
-`ecm` or `rndis`) only when "Enable selected protocol" is checked. `boot/init`
+`ecm` or `rndis`) only when "Enable selected protocol" is checked. `kernel/initramfs/init`
 reads that file from the system it has chosen to boot, after picking the root;
 when it asks for other functions than the gadget was bound with, init rebinds
 the gadget once before `switch_root` (`MU300_USBNET` on the kernel command line
@@ -166,7 +166,7 @@ kernel or gadget. `once` is consumed after a successful boot only if init left
 subsequent boots use the platform's default NCM. Selecting persistent host mode automatically disables USB
 network auto-apply. While the current role is host, network-mode controls are
 disabled. The backend validates the same rules regardless of UI state.
-On openwrt-luci, `boot/init` exposes RNDIS as a single USB configuration with
+On openwrt-luci, `kernel/initramfs/init` exposes RNDIS as a single USB configuration with
 the ACM console, and RNDIS replaces the other network function; Windows does
 not bind a composite RNDIS adapter when the device offers both RNDIS and NCM
 configurations. On LAN handoff, the early DHCP server of the initramfs is

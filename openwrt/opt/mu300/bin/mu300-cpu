@@ -325,7 +325,7 @@ status_human() {
 #   mu300-cpu voltage stress [MINUTES] [--background]   mu300-toolkit's CPU stress test (10 minutes)
 #   mu300-cpu voltage warning           the warning (English, Turkish, Chinese)
 #   (services) voltage mark-good: 10 minutes after boot; voltage shutdown: a clean shutdown or reboot
-# The firmware applies an offset once per boot, inside DVFS_INIT; the initramfs (boot/init, cpu-voltage) decides at
+# The firmware applies an offset once per boot, inside DVFS_INIT; the initramfs (kernel/initramfs/init, cpu-voltage) decides at
 # every boot whether the value asked for may run and writes it to the kernel. A new value gets one trial boot; it is
 # kept ("good") once that boot has been up 10 minutes, and dropped - back to 0,0,0, the request cleared - when a boot
 # with an offset ends without a clean shutdown (a crash, a watchdog reset, a power cut) or the trial boot ended before
@@ -334,7 +334,7 @@ CPUV_SYS=$R/sys/module/sprd_cpufreq_v2_driver/parameters
 CPUV_WORD=EXPERIMENTAL
 CPUV_GOOD_MIN=10
 CPUV_WARN=${MU300_CPUV_WARNING:-/opt/mu300/lib/cpu-voltage-warning.txt}
-# the SML (ATF) builds whose DVFS_INIT encoding is known (the same list as boot/init's; a test keeps them equal): the
+# the SML (ATF) builds whose DVFS_INIT encoding is known (the same list as kernel/initramfs/init's; a test keeps them equal): the
 # F50's, the V50's and the U30 Air's (their payload is the F50's byte for byte, FINDINGS 201)
 CPUV_SML_KNOWN=${MU300_CPUV_SML_KNOWN:-ff4782690fd805ff54fe34853ef8ee5c7e51c3259e20077c55373b50a4b259c2 5b3183f17af9b416e71dea61e578c61824e4e1df43737a1179032f4b20466b2b f27ac16f44e6cdc87a8ee00a9b53c499c8dde0c3b92c771388e256e84ef12e70}
 
@@ -344,7 +344,7 @@ cpuv_dir() {  # .mu300 on the Linux disk (the same rule as mu300-next-boot)
 }
 cpuv_is_root() { [ "$(id -u)" = 0 ] || [ -n "${MU300_SYSROOT:-}" ]; }
 cpuv_norm() { printf '%s' "$1" | tr -s ' \t' ',' | sed 's/^,//; s/,$//'; }
-cpuv_valid() {  # the same check as boot/init's: three whole 3.125 mV steps within -25000..12500 uV, written plainly
+cpuv_valid() {  # the same check as kernel/initramfs/init's: three whole 3.125 mV steps within -25000..12500 uV, written plainly
     case $1 in *[!0-9,-]*|'') return 1 ;; esac
     _o=$IFS; IFS=,; set -- $1; IFS=$_o
     [ $# = 3 ] || return 1

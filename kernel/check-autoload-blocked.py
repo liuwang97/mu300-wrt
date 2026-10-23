@@ -7,7 +7,7 @@ BUILD_OUT holds what build-modules.sh keeps of depmod's work on the kernel's own
 modules.alias). Checked:
   * every module that depends on a blocked one is blocked too (otherwise a request for it would load the blocked one
     as a dependency);
-  * the guard (rootfs/overlay/opt/mu300/bin/mu300-modprobe-guard, run with sh, over module files that carry the
+  * the guard (openwrt/opt/mu300/bin/mu300-modprobe-guard, run with sh, over module files that carry the
     aliases of modules.alias in their .modinfo strings) refuses every alias of every blocked module and every spelling of its name, and never calls modprobe
     for them;
   * it hands on the aliases and names of the modules the systems load on demand every day (nft, wireguard, overlay,

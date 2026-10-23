@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Check the installer translations in i18n/<lang>.tsv against the messages the scripts use.
 
-  tools/check-i18n.py            list, per language, the messages without a translation and the stale lines
-  tools/check-i18n.py --keys     print every message key once (to start a new language)
+  openwrt/tools/check-i18n.py            list, per language, the messages without a translation and the stale lines
+  openwrt/tools/check-i18n.py --keys     print every message key once (to start a new language)
 
 A message is the first argument of t '...' / t "..." in the shell scripts and of T '...' / T "..." in install.ps1,
 and of _('...') / N_('...') in the graphical installer (gui/, read with Python's own parser, so a message there is

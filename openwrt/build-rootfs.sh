@@ -6,10 +6,10 @@
 # OUT is written into openwrt/ under its base name.
 # Inputs (same as rootfs/assemble.sh, all optional except modules):
 #   out/modules/*.ko  out/modules.builtin*  firmware/  android-subset/  android-gpu-subset/
-#   tools/logdw/logdw  tools/bt-init/mu300-bt-init  tools/keys/mu300-keys  tools/gpu/cltest  busybox (static, full)
-#   tools/carry/mu300-carry (static: an update carries everything of the user's over with it)
-#   tools/atd-io/mu300-atd-io (static: holds the modem's AT channels for mu300-modemd, docs/MODEMD.md)
-#   upstream/out/modules/*.ko (optional: out-of-tree WCN modules for the mainline 6.18 kernel)
+#   openwrt/src/logdw/logdw  openwrt/src/bt-init/mu300-bt-init  openwrt/src/keys/mu300-keys  openwrt/src/gpu/cltest  busybox (static, full)
+#   openwrt/src/carry/mu300-carry (static: an update carries everything of the user's over with it)
+#   openwrt/src/atd-io/mu300-atd-io (static: holds the modem's AT channels for mu300-modemd, docs/MODEMD.md)
+#   kernel/out/modules/*.ko (optional: out-of-tree WCN modules for the mainline 6.18 kernel)
 # openwrt-luci only: MU300_LUCI_THEME_APK, a local copy of the pinned Aurora .apk (offline builds; else downloaded)
 # (MU300_SAE_APK_DIR, a hand-built hostapd for the U30 Air's firmware SAE offload, is gone: the offload is
 # disabled, docs/U30AIR-SAE.md, FINDINGS 80. The build refuses it rather than ignore it.)
@@ -94,7 +94,7 @@ if [ "$SYSTEM" = openwrt-luci ]; then
         echo "Aurora APK checksum mismatch: $THEME_APK" >&2; exit 1;
     }
     # The panel's catalogs in the image: Turkish and Simplified Chinese (the others are the lang extra,
-    # tools/make-extra.sh). A catalog without translations (English: the msgids are the English text) is no file at
+    # openwrt/tools/make-extra.sh). A catalog without translations (English: the msgids are the English text) is no file at
     # all. Named by LuCI's code for the language (openwrt/luci-languages.tsv: zh_Hans is zh-cn), or LuCI does not
     # load them.
     CAT=$(mktemp -d)
@@ -134,7 +134,7 @@ ls "$IN/out/modules"/*.ko >/dev/null 2>&1 || {
 }
 # The optional ones decide whether the image can use the modem, Wi-Fi or the GPU at all. Missing ones
 # used to be skipped silently, which produces an image that boots and then does nothing useful.
-for o in firmware android-subset android-gpu-subset tools/logdw/logdw tools/bt-init/mu300-bt-init tools/keys/mu300-keys tools/atd-io/mu300-atd-io tools/adbd/adbd tools/carry/mu300-carry tools/gpu/cltest busybox upstream/out/modules; do
+for o in firmware android-subset android-gpu-subset openwrt/src/logdw/logdw openwrt/src/bt-init/mu300-bt-init openwrt/src/keys/mu300-keys openwrt/src/atd-io/mu300-atd-io openwrt/src/adbd/adbd openwrt/src/carry/mu300-carry openwrt/src/gpu/cltest busybox kernel/out/modules; do
     [ -e "$IN/$o" ] && echo "  + $o" || echo "  - $o   (missing: the image is built without it)"
 done
 # shellcheck disable=SC2046
@@ -147,8 +147,8 @@ docker run --rm --platform linux/arm64 \
   -v "$TOP/boot/module-order.txt":/in/module-order.txt:ro -v "$IN/out/modules":/in/modules:ro \
   $(opt out/modules.builtin modules.builtin) $(opt out/modules.builtin.modinfo modules.builtin.modinfo) \
   $(opt firmware firmware) $(opt android-subset android-subset) $(opt android-gpu-subset android-gpu-subset) \
-  $(opt tools/logdw/logdw logdw) $(opt tools/bt-init/mu300-bt-init bt-init) $(opt tools/keys/mu300-keys keys) $(opt tools/atd-io/mu300-atd-io atd-io) $(opt tools/adbd/adbd adbd) $(opt tools/gpu/cltest cltest) \
-  $(opt busybox busybox) $(opt upstream/out/modules mainline-modules) $(opt tools/carry/mu300-carry carry) -v "$TOP/openwrt":/out -v "$REGDB":/in/regdb:ro "$@" \
+  $(opt openwrt/src/logdw/logdw logdw) $(opt openwrt/src/bt-init/mu300-bt-init bt-init) $(opt openwrt/src/keys/mu300-keys keys) $(opt openwrt/src/atd-io/mu300-atd-io atd-io) $(opt openwrt/src/adbd/adbd adbd) $(opt openwrt/src/gpu/cltest cltest) \
+  $(opt busybox busybox) $(opt kernel/out/modules mainline-modules) $(opt openwrt/src/carry/mu300-carry carry) -v "$TOP/openwrt":/out -v "$REGDB":/in/regdb:ro "$@" \
   -e KREL=$KREL -e OUT="$(basename "$OUT")" -e MU300_VERSION="${MU300_VERSION:-dev}" -e MU300_SYSTEM="$SYSTEM" -e MU300_DOCKER="$DOCKER" mu300-$FLAVOUR-base:$VER /bin/sh -eu -c '
 mkdir -p /var/lock /var/run /tmp
 # The packages come from the feed over the network while the image is built, and one connection cut in the middle of
@@ -420,14 +420,14 @@ apk list --installed | sort > $R/etc/mu300/packages.txt
 for c in $(cat /in/opt-mu300/lib/path-commands); do ln -sf /opt/mu300/bin/$c $R/usr/bin/$c; done
 # no kernel of its own: OpenWrt kmods (6.12) and grub are unused on this device
 rm -rf $R/lib/modules/6.* $R/boot
-# the modules of the mainline kernel (upstream/out: the vendor ones and those of the kernel itself, about 20 MiB), so that
+# the modules of the mainline kernel (kernel/out: the vendor ones and those of the kernel itself, about 20 MiB), so that
 # a switch to it needs nothing more; mu300-update installs those of the bundle it boots over them
 if ls /in/mainline-modules/*.ko >/dev/null 2>&1; then
     # the release the modules were built for (their vermagic), not a version written down here
     krel=$(for f in /in/mainline-modules/*.ko; do tr "\0" "\n" < $f | sed -n "s/^vermagic=\([^ ]*\) .*/\1/p"; break; done)
     [ -n "$krel" ] && mkdir -p $R/lib/modules/$krel && cp /in/mainline-modules/*.ko $R/lib/modules/$krel/
 fi
-# The manifest of the image: every file it holds, with type, mode, owner, size and sha256 (tools/image-manifest.py has
+# The manifest of the image: every file it holds, with type, mode, owner, size and sha256 (openwrt/tools/image-manifest.py has
 # the format and makes the same lines from the tarball; make-release.sh holds the two against each other). The next
 # update reads it to tell the files of the image from those of the user. Last, when nothing in $R changes any more.
 if [ -x $R/opt/mu300/bin/mu300-carry ]; then

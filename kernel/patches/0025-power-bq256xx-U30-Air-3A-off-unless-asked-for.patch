@@ -1,7 +1,7 @@
 From: kanoqwq <kanoqwq@qq.com>
 Subject: [PATCH] power: supply: bq256xx: the U30 Air at up to 3 A, off unless asked for
 
-Ported from kanoqwq/mu300-linux 627cacea (his upstream/patches/0024, docs/U30AIR-3A-20261022).
+Ported from kanoqwq/mu300-linux 627cacea (his kernel/patches/0024, docs/U30AIR-3A-20261022).
 
 With bq256xx_charger.u30air_3a=1, the isolated vendor battery path takes the
 fast-charge current from the battery node (3 A on the U30 Air), bounded by

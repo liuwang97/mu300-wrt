@@ -11,7 +11,7 @@
  *                                      mounted on (not entered)
  *   mu300-carry sum ROOT < PATHS       "HASH PATH" for each: sha256 of a file's content or a link's target, - for
  *                                      anything else, ! when it is not there
- *   mu300-carry manifest ROOT IMAGE TAG   the manifest of an image's files (tools/image-manifest.py has the format
+ *   mu300-carry manifest ROOT IMAGE TAG   the manifest of an image's files (openwrt/tools/image-manifest.py has the format
  *                                      and makes the same lines from a tarball), without etc/mu300/image-manifest.gz
  *   mu300-carry copy SRC DST [IDMAP] < PATHS   make DST/PATH what SRC/PATH is: content (holes stay holes), owner,
  *                                      mode, extended attributes (capabilities, ACLs), times to the nanosecond; names

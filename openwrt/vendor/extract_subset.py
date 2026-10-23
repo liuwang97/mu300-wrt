@@ -2,7 +2,7 @@
 """Pull the Android vendor runtime needed by modem_control from a rooted device (adb + su) and build the chroot
 subset used by the initramfs (/android) and the root filesystem (/opt/mu300/android).
 
-    python3 android-vendor/extract_subset.py [OUTDIR]
+    python3 openwrt/vendor/extract_subset.py [OUTDIR]
 
 These files are proprietary (ZTE/Unisoc/Google) and are NOT part of this repository. Same output as the older
 extract-subset.sh; written in Python so it also runs on Windows.
@@ -11,7 +11,7 @@ Windows cannot store every name the device sends: the Android property area is a
 u:object_r:<context>:s0, ':' may not appear in a file name there, and the extraction used to die on the first of
 them with "OSError: [Errno 22] Invalid argument". The archive from the device is therefore also kept as
 OUTDIR/windows-source.tar.gz, and while that file exists it is the copy the packing tools use
-(tools/vendor-overlay.py and boot/build-boot-image.py read it instead of the directory), so a Windows install
+(tools/vendor-overlay.py and kernel/initramfs/build-boot-image.py read it instead of the directory), so a Windows install
 gets exactly what a Linux host would have extracted - including the file modes, which the file system there
 cannot hold either (the chroot's modem_control has to stay executable).
 

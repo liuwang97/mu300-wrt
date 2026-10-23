@@ -7,7 +7,7 @@ memory stores, so the controller can fetch a descriptor the CPU has not yet made
 (readl/writel...) carry the barrier that orders them. The vendor special cases (MAX_CURRENT, BLOCK_COUNT, the
 interrupt mask, the reset bits) are kept as they are: only the final access changes.
 
-After kanoqwq's clean-tf-7.2 0438ab01 (his upstream/port/emmc.py; his measurement was on a different board, an
+After kanoqwq's clean-tf-7.2 0438ab01 (his kernel/port/emmc.py; his measurement was on a different board, an
 E5, see FINDINGS 93). Used by install.py; files directly in port/ are not copied into the kernel tree.
 """
 import re

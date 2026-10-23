@@ -1,5 +1,5 @@
 # 简体中文 - MU300 Linux installer. One line per message: English<TAB>translation; {1}.. are the arguments.
-# Check with: tools/check-i18n.py
+# Check with: openwrt/tools/check-i18n.py
 parallel download failed, retrying as a single stream	并行下载失败，改为单线程重试
 could not read {1} from the device	无法从设备读取 {1}
 Checking host tools and device	正在检查电脑上的工具和设备

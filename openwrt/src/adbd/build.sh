@@ -1,6 +1,6 @@
 #!/bin/sh
 # Build adbd for MU300 Linux: one static aarch64 binary (musl) for Ubuntu and OpenWrt alike.
-#   tools/adbd/build.sh OUT        (OUT: the binary to write; needs docker with arm64 support)
+#   openwrt/src/adbd/build.sh OUT        (OUT: the binary to write; needs docker with arm64 support)
 # The daemon of AOSP's adb, platform-tools 34.0.5, from the release tarball of github.com/nmeum/android-tools (the
 # AOSP sources with BoringSSL vendored; checked against its SHA-256), built with CMakeLists.txt here - adbd only,
 # the tarball's own build makes the host tools - and mu300-adbd.patch:
@@ -13,7 +13,7 @@
 # stubs.cpp leaves out JDWP, adb over Wi-Fi (pairing) and mDNS, and with them protobuf. Debian's and Ubuntu's adbd
 # package (26.04 only) is no option: it has no authorisation to turn on and listens on TCP 5555.
 set -eu
-OUT=${1:?usage: tools/adbd/build.sh OUT}
+OUT=${1:?usage: openwrt/src/adbd/build.sh OUT}
 HERE=$(cd "$(dirname "$0")" && pwd)
 VER=34.0.5
 URL=https://github.com/nmeum/android-tools/releases/download/$VER/android-tools-$VER.tar.xz

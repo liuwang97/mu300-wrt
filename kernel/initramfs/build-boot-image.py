@@ -12,8 +12,8 @@ Example:
   build-boot-image.py \
     --stock-boot dumps/boot_a.img --misc-head dumps/misc-head.bin \
     --kernel out/Image --modules out/modules --busybox busybox-static-arm64 \
-    --logdw tools/logdw/logdw --android-subset android-subset \
-    --ueventd-perms android-vendor/ueventd-perms.sh --out boot-linux-slotb.img
+    --logdw openwrt/src/logdw/logdw --android-subset android-subset \
+    --ueventd-perms kernel/initramfs/ueventd-perms.sh --out boot-linux-slotb.img
 """
 import argparse
 import re
@@ -34,7 +34,7 @@ BOOT_CMDLINE = b'loglevel=5'
 MISC_BC_OFFSET = 0x800
 # persistent init log lives at 48 MiB inside boot_b (8 MiB); the image must end before it
 PERSIST_LOG_OFFSET = 48 << 20
-# written by android-vendor/extract_subset.py on a host whose file system cannot hold every name from the
+# written by openwrt/vendor/extract_subset.py on a host whose file system cannot hold every name from the
 # device (Windows: the property area's u:object_r:<context>:s0); while it exists it holds the whole subset
 WINDOWS_TAR = 'windows-source.tar.gz'
 
@@ -186,10 +186,10 @@ def main():
                                                 'that segment brings one)')
     ap.add_argument('--logdw', type=Path, help='tools/logdw build (static arm64; may be left out as --busybox)')
     ap.add_argument('--e2fsck', type=Path,
-                    help='tools/e2fsck/build.sh build (static arm64): /sbin/e2fsck, which init runs on a root '
+                    help='kernel/initramfs/e2fsck/build.sh build (static arm64): /sbin/e2fsck, which init runs on a root '
                          'filesystem whose superblock records an error; without it init boots such a one as it is')
     ap.add_argument('--ueventd-perms', required=True, type=Path)
-    ap.add_argument('--android-subset', type=Path, help='directory produced by android-vendor/extract-subset.sh')
+    ap.add_argument('--android-subset', type=Path, help='directory produced by openwrt/vendor/extract-subset.sh')
     ap.add_argument('--append-ramdisk', type=Path,
                     help='another LZ4 legacy ramdisk segment to put behind this one (the ramdisk-generic.lz4 of a '
                          'kernel bundle such as mu300-kernel-6.18.tar.gz: its init and modules replace these, which '

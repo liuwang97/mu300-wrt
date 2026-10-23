@@ -605,7 +605,7 @@ const ALARM = R + '/run/mu300/thermal-alarm';     // the alarm is on (it outlive
 
 let DEVICE = null, RELEASE = null;
 function thermal_init() {
-	// the label boot/init leaves when it says u30air, else mu300-device (its V50 rule is about the other labels)
+	// the label kernel/initramfs/init leaves when it says u30air, else mu300-device (its V50 rule is about the other labels)
 	DEVICE = rd(R + '/run/mu300/device');
 	if (DEVICE != 'u30air') {
 		let p = popen(shq(BIN + '/mu300-device') + ' 2>/dev/null', 'r');

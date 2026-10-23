@@ -1138,7 +1138,7 @@ m_usb_role() {
     ok
 }
 # The USB network to a computer (NCM, ECM or RNDIS) from the next boot on, for good or for one boot: mu300-usb net
-# (Ubuntu, OpenWrt), the control panel's Device page on openwrt-luci (its backend, which keeps it in UCI). boot/init
+# (Ubuntu, OpenWrt), the control panel's Device page on openwrt-luci (its backend, which keeps it in UCI). kernel/initramfs/init
 # reads the choice from the system it boots; without a request field this only reads it.
 USB_ADAPTER=$R/usr/libexec/unisoc-modem/device-usb
 usbnet_ok() { if is_luci; then [ -x "$USB_ADAPTER" ]; else [ -x "$BIN/mu300-usb" ]; fi; }

@@ -304,7 +304,7 @@ stress_cpu() {
     fi
 }
 
-# Mali GPU through Android's OpenCL driver in the vendor chroot (tools/gpu/cltest loop)
+# Mali GPU through Android's OpenCL driver in the vendor chroot (openwrt/src/gpu/cltest loop)
 stress_gpu() {
     /opt/mu300/bin/android-gpu-run /system/bin/cltest loop 0 > "$STRESS_DIR/gpu.log" 2>&1 & echo $! >> "$STRESS_DIR/pids"
 }
@@ -406,7 +406,7 @@ stress_run() {  # stress_run WHAT(cpu,gpu,net|all) SECONDS
     STRESS_WHAT=$1; [ "$STRESS_WHAT" = all ] && STRESS_WHAT=cpu,gpu,net
     STRESS_SECS=${2:-600}
     case ",$STRESS_WHAT," in *,gpu,*)
-        [ -x "$CLTEST" ] || { echo "GPU test needs $CLTEST (tools/gpu/cltest) and the Android GPU subset" >&2; return 1; } ;;
+        [ -x "$CLTEST" ] || { echo "GPU test needs $CLTEST (openwrt/src/gpu/cltest) and the Android GPU subset" >&2; return 1; } ;;
     esac
     NET_TOOL=
     case ",$STRESS_WHAT," in *,net,*)

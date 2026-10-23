@@ -3,7 +3,7 @@
 [ "$ACTION" = ifup ] && [ "$INTERFACE" = lan ] || exit 0
 
 # K9 (ported from the kanoqwq fork, cd4fb28 and 4e70d02): dnsmasq serves the LAN now, so the early server of
-# preinit (06_mu300_early_usb) goes. Then the address boot/init and preinit put on the gadget's netdev: netifd can leave it
+# preinit (06_mu300_early_usb) goes. Then the address kernel/initramfs/init and preinit put on the gadget's netdev: netifd can leave it
 # there after enslaving the netdev to br-lan, which makes two equal routes for the LAN subnet; replies then leave
 # through the wrong device and the host cannot even ping br-lan. It is taken off a bridge port only when it is the
 # bridge's own, after netifd has put that on br-lan. And rndis0: an installed system's bridge section may predate a

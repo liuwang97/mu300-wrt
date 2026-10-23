@@ -1,5 +1,5 @@
 # adbd for MU300 Linux, static (musl): the daemon of AOSP's adb (platform-tools 34.0.5), from the sources
-# github.com/nmeum/android-tools vendors (ANDROID_TOOLS: its vendor/ directory). tools/adbd/build.sh runs this.
+# github.com/nmeum/android-tools vendors (ANDROID_TOOLS: its vendor/ directory). openwrt/src/adbd/build.sh runs this.
 cmake_minimum_required(VERSION 3.12)
 project(mu300-adbd C CXX)
 set(CMAKE_C_STANDARD 11)

@@ -57,7 +57,7 @@ LEDS=$R/sys/class/leds
 STATE=$R/run/mu300/led
 # rd FILE: its first line into v (- when it cannot be read), by the shell itself
 rd() { v=-; { read -r v < "$1"; } 2>/dev/null; }
-# The device: boot/init's label, when it says u30air (mu300-device answers that label as it is: its V50 rule is about
+# The device: kernel/initramfs/init's label, when it says u30air (mu300-device answers that label as it is: its V50 rule is about
 # the f50 and v50 labels), else mu300-device - a script of its own, 2 ms, at every run of this one (mobile-data runs
 # it every 30 s)
 rd "$R/run/mu300/device"; DEVICE=$v

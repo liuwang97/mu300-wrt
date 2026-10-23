@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """The control panel's (openwrt/luci-app-mu300) translation catalogs, po/<lang>/mu300.po (tr and zh_Hans required).
 
-    python3 tools/luci-i18n.py check   [--root DIR]   list the problems; exit 1 if there is any
-    python3 tools/luci-i18n.py extract [--root DIR]   print every message once, in order of first use
-    python3 tools/luci-i18n.py update  [--root DIR]   add the missing msgids (empty msgstr) to every .po file,
+    python3 openwrt/tools/luci-i18n.py check   [--root DIR]   list the problems; exit 1 if there is any
+    python3 openwrt/tools/luci-i18n.py extract [--root DIR]   print every message once, in order of first use
+    python3 openwrt/tools/luci-i18n.py update  [--root DIR]   add the missing msgids (empty msgstr) to every .po file,
                                                        drop the stale ones, order the entries by first use
 
 --root DIR checks another copy of the app (the tests use it); the shared scripts are then not scanned for CJK.
@@ -26,7 +26,7 @@ Messages are English and come from:
       - a literal "error" or "message" key of an object, quoted or not: { ok: 0, error: 'Text' }; any other value
         is an error unless the line is right after '// i18n: Text' line(s);
       - a comment line '// i18n: Text'.
-  * N_() is an error: the app has no plural messages (tools/po2lmo.py refuses msgid_plural).
+  * N_() is an error: the app has no plural messages (openwrt/tools/po2lmo.py refuses msgid_plural).
 
 The problems `check` prints, one per line as RULE: PATH:LINE: WHAT (spec, Translations):
   cjk          a CJK character outside the catalogs (po/) and the installers' i18n data
@@ -38,7 +38,7 @@ The problems `check` prints, one per line as RULE: PATH:LINE: WHAT (spec, Transl
   dynamic      a _(), a reply helper or an "error"/"message" key with a non-literal message, not allowed above
   plural       an N_() call
   js           a JavaScript file the scanner cannot read (its messages are then not extracted)
-  po           a .po that LuCI's po2lmo (tools/po2lmo.py) would not compile
+  po           a .po that LuCI's po2lmo (openwrt/tools/po2lmo.py) would not compile
 """
 import argparse
 import json
@@ -84,7 +84,7 @@ BACKEND_DYNAMIC_OK = {('mu300dash', 'refuse', '"$2"'),   # reply_obj passing its
 # CJK: only these files may contain it (repository paths; with --root, only po/ of that copy)
 CJK = re.compile('[\u2e80-\u9fff\uf900-\ufaff\uff00-\uffef]')
 CJK_SCOPE = ['openwrt', 'rootfs/overlay', 'boot', 'tools', 'install.sh', 'uninstall.sh']
-CJK_ALLOWED = re.compile(r'^(tools/i18n\.sh|i18n/[^/]+\.tsv|openwrt/luci-app-mu300/po/.*|openwrt/luci-languages\.tsv|tests/fixtures/.*|rootfs/overlay/opt/mu300/lib/cpu-voltage-warning\.txt|rootfs/overlay/opt/mu300/lib/image-manifests/[^/]+\.gz)$')   # (compressed data: no text to look at)
+CJK_ALLOWED = re.compile(r'^(tools/i18n\.sh|i18n/[^/]+\.tsv|openwrt/luci-app-mu300/po/.*|openwrt/luci-languages\.tsv|tests/fixtures/.*|openwrt/opt/mu300/lib/cpu-voltage-warning\.txt|openwrt/opt/mu300/lib/image-manifests/[^/]+\.gz)$')   # (compressed data: no text to look at)
 
 PLACEHOLDER = re.compile(r'%(?:%|[-+#0]*\d*(?:\.\d+)?[a-zA-Z])')
 

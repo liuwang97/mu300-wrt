@@ -20,7 +20,7 @@
 # first boot on, before anybody types one in. uci keeps the mode of a file it rewrites. (No link is followed.)
 [ -f /etc/config/network ] && [ ! -L /etc/config/network ] && chmod 600 /etc/config/network 2>/dev/null
 lan_ip=$(/opt/mu300/bin/mu300-lan-ip)
-# The USB host's MAC (K25): boot/init leaves it in /run (the gadget's host_addr); else the gadget's own address
+# The USB host's MAC (K25): kernel/initramfs/init leaves it in /run (the gadget's host_addr); else the gadget's own address
 # tells it (init gives the host the next one: :01 -> :02 for usb0, :03 -> :04 for rndis0).
 usb_host_mac=$(cat /run/mu300-usb-host-mac 2>/dev/null)
 for nic in usb0:02 rndis0:04; do

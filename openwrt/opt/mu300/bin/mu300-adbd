@@ -7,7 +7,7 @@
 #                        mu300-usb adb off, or the service puts it back)
 #   mu300-adbd status    what is set up
 #   mu300-adbd auth      open or keys: who adbd lets in (below)
-# The gadget (boot/init) is made and bound before any system runs; adbd joins it later, so this rebinds it once, which
+# The gadget (kernel/initramfs/init) is made and bound before any system runs; adbd joins it later, so this rebinds it once, which
 # looks like a replug to the computer (the network and the console drop for a moment). FunctionFS wants its
 # descriptors before the bind: the function goes into the configuration once adbd has written them (ep1 exists).
 # FunctionFS also unbinds the whole gadget whenever adbd closes its control endpoint, and adbd does that at the end of
@@ -17,7 +17,7 @@
 # Interfaces: the network function, the console, then adb (ff/42/01, "ADB Interface"): adding adb changes no number.
 # bcdDevice 0x0303 (0x0304 with RNDIS) while adb is in the gadget: Windows caches the MS OS descriptors per
 # VID/PID/bcdDevice, and adbd's ask for WinUSB for its interface, as Android's do. The MS OS descriptors are on in the
-# NCM/ECM configuration too while adb is there (boot/init has them for RNDIS only).
+# NCM/ECM configuration too while adb is there (kernel/initramfs/init has them for RNDIS only).
 # Authentication (mu300-usb adb auth open|keys, /etc/mu300/adb_auth), handed to adbd as MU300_ADB_AUTH when it starts:
 #   open  the default (the owner's decision of 2026-10-13, FINDINGS 70): adbd accepts every computer, no key asked.
 #         Anyone who can plug a cable into the device gets a root shell without a password, whatever passwords are

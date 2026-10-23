@@ -1,4 +1,4 @@
-# The Mali userspace and its library closure, relative to /, as android-vendor/extract-gpu-subset.sh pulls it from
+# The Mali userspace and its library closure, relative to /, as openwrt/vendor/extract-gpu-subset.sh pulls it from
 # the F50 test board. The Magisk installer copies them from the device it runs on (tools/android-boot-image.sh), all
 # of them or none. File names only: the files themselves stay on the device.
 apex/com.android.vndk.v33/lib64/android.hardware.common-V2-ndk.so

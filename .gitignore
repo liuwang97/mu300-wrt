@@ -2,7 +2,7 @@
 dumps/
 firmware/
 # ...but not the kernel source directory of that name in the mainline port
-!upstream/port/drivers/firmware/
+!kernel/port/drivers/firmware/
 android-subset/
 out/
 *.img
@@ -12,19 +12,19 @@ out/
 *.bin
 *.ko
 busybox
-tools/logdw/logdw
+openwrt/src/logdw/logdw
 logs-*/
 rootfs/base.tar
 __pycache__/
 .DS_Store
-tools/bt-init/mu300-bt-init
-tools/carry/mu300-carry
-tools/gpu/cltest
+openwrt/src/bt-init/mu300-bt-init
+openwrt/src/carry/mu300-carry
+openwrt/src/gpu/cltest
 work/
 work-*/
 openwrt/*.tar.gz
-upstream/stub/*.elf
-upstream/stub/*.bin
+kernel/stub/*.elf
+kernel/stub/*.bin
 sing-box
 /xray
 /hev-socks5-tunnel
@@ -35,12 +35,12 @@ arch/*.tar.gz
 arch/ArchLinuxARM-*
 android/magisk/*.zip
 
-# built by tools/adbd/build.sh
-tools/adbd/adbd
+# built by openwrt/src/adbd/build.sh
+openwrt/src/adbd/adbd
 
 # written by the installer self-update in copies without git
 .mu300-source
-upstream/out-*/
+kernel/out-*/
 # the user's own list of files the self-update leaves alone (tools/self-update.sh, install.ps1)
 .mu300-keep
 # a test run with TMPDIR inside the tree

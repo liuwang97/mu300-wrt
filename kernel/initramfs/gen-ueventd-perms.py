@@ -2,8 +2,8 @@
 """Generate ueventd-perms.sh: apply Android device node ownership (ueventd.rc + init *.rc chown/chmod)
 on plain Linux, because modem_control and refnotify open /dev/modem etc. as Android's system user, not as root.
 usage: gen-ueventd-perms.py vendor/etc/ueventd.rc vendor-init/*.rc > ueventd-perms.sh
-(android-vendor/ueventd/ holds the lines of this device's files the generator reads:
- gen-ueventd-perms.py android-vendor/ueventd/ueventd.rc android-vendor/ueventd/init-perms.rc)
+(kernel/initramfs/ueventd/ holds the lines of this device's files the generator reads:
+ gen-ueventd-perms.py kernel/initramfs/ueventd/ueventd.rc kernel/initramfs/ueventd/init-perms.rc)
 
 Android's ids are not taken over as numbers. Android's system user is uid 1000, and on a distribution uid 1000 is
 the first human account (ubuntu; alarm on Arch): the modem's calibration partitions (nr_fixnv*), persist and the

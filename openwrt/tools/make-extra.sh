@@ -1,11 +1,11 @@
 #!/bin/sh
 # Build an extra: the optional parts that are not in the images and that mu300-extra installs on the device.
-#   tools/make-extra.sh NAME OUT.tar.gz [TAG]     (TAG: the release it belongs to, default dev)
+#   openwrt/tools/make-extra.sh NAME OUT.tar.gz [TAG]     (TAG: the release it belongs to, default dev)
 # Extras of this repository:
 #   lang  LuCI's catalogs in every language of the OpenWrt feed besides the images' own (tr, zh-cn): luci-base and each
 #         LuCI app of the images, from the luci-i18n-* packages (apk add in the OpenWrt base image that
 #         openwrt/build-rootfs.sh imports, so apk checks every package against the feed's signed index), plus the
-#         MU300 panel's catalogs (openwrt/luci-app-mu300/po, tools/po2lmo.py). Needs docker with arm64 support.
+#         MU300 panel's catalogs (openwrt/luci-app-mu300/po, openwrt/tools/po2lmo.py). Needs docker with arm64 support.
 #   panel  the web panel for Ubuntu (rootfs/panel): bin/mu300-panel and the MU300 page of Cockpit (cockpit/mu300, with
 #         po.<lang>.js from rootfs/panel/po, tools/cockpit-i18n.py). Cockpit itself comes from Ubuntu's archive when
 #         the extra is installed.
@@ -19,8 +19,8 @@
 # Layout (what mu300-update's extra_unpack checks): ./name ./release ./components ./manifest (sha256 of every file),
 # ./languages (uci key, tab, name) and ./i18n/<component>.<code>.lmo; owned by root.
 set -eu
-NAME=${1:?usage: tools/make-extra.sh NAME OUT.tar.gz [TAG]}
-OUT=${2:?usage: tools/make-extra.sh NAME OUT.tar.gz [TAG]}
+NAME=${1:?usage: openwrt/tools/make-extra.sh NAME OUT.tar.gz [TAG]}
+OUT=${2:?usage: openwrt/tools/make-extra.sh NAME OUT.tar.gz [TAG]}
 TAG=${3:-dev}
 TOP=$(cd "$(dirname "$0")/.." && pwd)
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/mu300-extra.XXXXXX"); trap 'rm -rf "$tmp"' EXIT
@@ -68,7 +68,7 @@ ours = []
 for d, (code, name) in sorted(table.items()):
     if d in ('tr', 'zh_Hans') or not os.path.isfile(os.path.join(top, 'openwrt/luci-app-mu300/po', d, 'mu300.po')):
         continue
-    subprocess.run([sys.executable, os.path.join(top, 'tools/po2lmo.py'),
+    subprocess.run([sys.executable, os.path.join(top, 'openwrt/tools/po2lmo.py'),
                     os.path.join(top, 'openwrt/luci-app-mu300/po', d, 'mu300.po'),
                     os.path.join(x, 'i18n', f'mu300.{code}.lmo')], check=True)
     ours.append(code)

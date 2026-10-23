@@ -1,5 +1,5 @@
 #!/bin/sh
-# Which device this is: f50, u30air or v50. boot/init writes it to /run/mu300/device; a boot image from before that
+# Which device this is: f50, u30air or v50. kernel/initramfs/init writes it to /run/mu300/device; a boot image from before that
 # (an older release's or a mainline kernel) does not, so then the device tree tells, the way init decides:
 # only the U30 Air's has the charger policy service. (MU300_SYSROOT is for tests/: a fake / to read from.)
 # The ZTE V50 (MU3351; experimental, docs/FINDINGS.md 95) is told by its device tree whatever the label says: its LED
@@ -13,7 +13,7 @@
 #                         "mu300" (the version of this format) changes when one is taken away or changes meaning.
 R=${MU300_SYSROOT:-}
 DT=$R/proc/device-tree
-# --- v50 begin (the same rule in boot/init; tests/test_device_scripts.py holds the two to it)
+# --- v50 begin (the same rule in kernel/initramfs/init; tests/test_device_scripts.py holds the two to it)
 v50_dt() {  # the V50's AW9523B node; its parent is soc:ap-ahb or ap-ahb, by kernel
     for _n in "$DT"/soc/*/i2c@2270000/aw9523b_led@5b; do [ -d "$_n" ] && return 0; done
     return 1

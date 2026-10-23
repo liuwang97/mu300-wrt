@@ -710,7 +710,7 @@ cpu_voltage_boot() {  # cpu_voltage_boot DIR: DIR is .mu300 on the mounted Linux
 # The root filesystem's own record of errors, read before it is mounted (FINDINGS 182; kanoqwq's desktop init did it
 # first): ext4 sets ERROR_FS (bit 1 of s_state, superblock byte 58) when it finds corruption, and nothing on the
 # device ever cleared it - every later boot mounted the damaged filesystem as it was. One byte is read on a clean
-# filesystem; only with the bit set does the ramdisk's static e2fsck (tools/e2fsck/build.sh) run, -fy, on the
+# filesystem; only with the bit set does the ramdisk's static e2fsck (kernel/initramfs/e2fsck/build.sh) run, -fy, on the
 # unmounted device - the loop over the region, the GPT partition, the card. Never a reason not to boot: whatever
 # e2fsck says, or when it takes longer than FSCK_TIMEOUT seconds (it is stopped then, TERM first: e2fsck cancels at a
 # safe point), the boot goes on with the filesystem as it is. Every outcome is a stage line; exit codes 4 and up
@@ -943,7 +943,7 @@ if [ "$root_mounted" = 1 ] && rootdir=$(pick_root) && [ -n "$rootdir" ]; then
     # procd's to the real kmodloader by its own name (modprobe, insmod, lsmod are links to it).
     if [ "$init" = /sbin/init ] && [ -x /newroot/sbin/kmodloader ] && [ -d /newroot/etc/modules-boot.d ]; then
         printf '%s\n' '#!/bin/sh' \
-            '# MU300 initramfs (boot/init): stands in for kmodloader until its first run, procd'"'"'s modules-boot.d' \
+            '# MU300 initramfs (kernel/initramfs/init): stands in for kmodloader until its first run, procd'"'"'s modules-boot.d' \
             'umount -l /sbin/kmodloader 2>/dev/null' \
             '[ "${0##*/} $1" = "kmodloader /etc/modules-boot.d/" ] && exit 0' \
             '[ -z "$MU300_KMOD_ONCE" ] || exit 1' \
