@@ -15,7 +15,9 @@ bundle: what it may assume about the kernel and the initramfs is in `docs/contra
 - `luci-app-mu300/` — the panel: views (`htdocs`), rpcd backends and the ucode plugin (`root`), `po/zh_Hans`.
 - `src/` — static C programs: `atd-io` (the AT channel bridge), `carry` (update carry-over), `keys` (key and uevent
   reader), `logdw`, `bt-init`.
-- `patches/` — fw4 (sipa offload), wifi-scripts (no DFS, WPA2 only).
+- `patches/` — fw4 (sipa offload), wifi-scripts (a DFS channel becomes 36).
+- `hostapd/` — the hotspot's WPA3-SAE: wpad-basic-mbedtls, hostapd-common and wifi-scripts rebuilt (docker) to
+  take the firmware's SAE PMK; `build-rootfs.sh` installs them instead of the feed's.
 - `vendor/` — the list and the tools that pull the Android subset (modem_control & co.) from a device; never committed.
 - `tools/` — `image-manifest.py`, `luci-i18n.py`, `po2lmo.py`.
 - `docs/` — modem, Wi-Fi, USB, power, update, LuCI, system.

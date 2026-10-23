@@ -343,7 +343,7 @@ m_hello() {
         "$([ -x "$BIN/wifi-client" ] && echo true || echo false)" \
         "$(if is_luci; then js pool; elif [ -x "$BIN/sms" ]; then js cli; else js ''; fi)" \
         "$(have_locks && echo true || echo false)" "$(have_forward && echo true || echo false)" "$_sim2"
-    printf '"battery":%s,"usb_role":%s,"usb_net":%s,"wpa3":false,"luci":%s},"job":%s}\n' \
+    printf '"battery":%s,"usb_role":%s,"usb_net":%s,"wpa3":true,"luci":%s},"job":%s}\n' \
         "$([ "$DEV" = u30air ] && echo true || echo false)" "$([ "$DEV" = u30air ] && echo true || echo false)" \
         "$(usbnet_ok && echo true || echo false)" "$(is_luci && echo true || echo false)" "$(job_brief)"
     exit 0
@@ -432,14 +432,15 @@ m_wifi_get() {
 ssid_ok() { text_ok "$1" 32 && [ -n "$1" ] && case $1 in ' '*|*' ') false ;; *) true ;; esac; }
 # psk_ok PASSWORD: WPA2's passphrase, 8-63 printable ASCII
 psk_ok() { is_ascii_line "$1" && [ "${#1}" -ge 8 ] && [ "$(bytes "$1")" -le 63 ]; }
-# hotspot_check: SSID PSK BAND CHAN HIDDEN from the request, checked (empty: unchanged)
+# hotspot_check: SSID PSK BAND CHAN HIDDEN SEC from the request, checked (empty: unchanged)
 hotspot_check() {
-    SSID= PSK= BAND= CHAN= HIDDEN=
+    SSID= PSK= BAND= CHAN= HIDDEN= SEC=
     fget ssid && { [ "$FT" = s ] && ssid_ok "$FV" || refuse bad-value ssid; SSID=$FV; }
     fget password && { [ "$FT" = s ] && psk_ok "$FV" || refuse bad-value password; PSK=$FV; }
     word band '2\.4|5' && BAND=$V
     word channel 'auto|[0-9]{1,3}' && CHAN=$V
     flag hidden && HIDDEN=$V
+    word security 'wpa2|wpa3|wpa2-wpa3' && SEC=$V
     _b=$BAND
     [ -n "$_b" ] || _b=$(m_band_now)
     if [ -n "$CHAN" ] && [ "$CHAN" != auto ]; then
@@ -448,7 +449,7 @@ hotspot_check() {
             *) wifi_ap5_allowed "$(wifi_country)" "$CHAN" || refuse bad-value channel ;;
         esac
     fi
-    [ -n "$SSID$PSK$BAND$CHAN$HIDDEN" ] || refuse missing ssid
+    [ -n "$SSID$PSK$BAND$CHAN$HIDDEN$SEC" ] || refuse missing ssid
 }
 m_band_now() { case $(uci_q get "$(wifi_radio).band") in 2g) echo 2.4 ;; *) echo 5 ;; esac; }
 # uci_channel RADIO: the uci batch lines for $CHAN on RADIO, and on 5 GHz the width the country allows there
@@ -460,29 +461,28 @@ uci_channel() {
             *) printf 'set %s.htmode=%s%s\n' "$1" "${_ht%%[0-9]*}" "$_w" ;; esac
     fi
 }
+# the hotspot's encryption for a security word: WPA2-PSK, WPA3-SAE (the firmware's SAE, see hostapd-unisoc), or both
+enc_of() { case $1 in wpa3) echo sae ;; wpa2-wpa3) echo sae-mixed ;; *) echo psk2+ccmp ;; esac; }
 m_wifi_set() {
-    only ssid password band channel hidden
+    only ssid password band channel hidden security
     hotspot_check
     checked
     _rd=$(wifi_radio); _if=$(wifi_iface)
     _enc=$(uci_q get "$_if.encryption")
-    # WPA3/SAE is disabled on this Wi-Fi chip (the U30 Air's SAE offload does not work; the wifi-scripts refuse
-    # it): a hotspot still set to it becomes WPA2-PSK (CCMP) here, with its password or the one given
-    _sae=
-    case ${_enc%%+*} in sae|sae-mixed|sae-compat|psk3|psk3-mixed) _sae=1 ;; esac
-    [ -z "$_sae" ] || [ -n "$PSK" ] || psk_ok "$(uci_q get "$_if.key")" || refuse missing password
+    # WPA2 and WPA3 alike need a password: the one given, or the one there is
+    [ -z "$SEC" ] || [ -n "$PSK" ] || psk_ok "$(uci_q get "$_if.key")" || refuse missing password
     {
         [ -z "$SSID" ] || printf 'set %s.ssid=%s\n' "$_if" "$(uq "$SSID")"
         if [ -n "$PSK" ]; then
             printf 'set %s.key=%s\n' "$_if" "$(uq "$PSK")"
-            # an open hotspot gets WPA2 with its first password; WPA3 is never switched on here
-            case $_enc in none|'') printf 'set %s.encryption=psk2\n' "$_if" ;; esac
+            # an open hotspot gets WPA2 with its first password, unless a security is asked for
+            [ -n "$SEC" ] || case $_enc in none|'') printf 'set %s.encryption=psk2\n' "$_if" ;; esac
         fi
-        if [ -n "$_sae" ]; then
-            printf 'set %s.encryption=psk2+ccmp\n' "$_if"
+        if [ -n "$SEC" ]; then
+            printf 'set %s.encryption=%s\n' "$_if" "$(enc_of "$SEC")"
+            # PMF follows the mode (the wifi-scripts: required for WPA3, optional for mixed, off for WPA2); a value
+            # left from another mode would hold WPA2 clients out or WPA3 ones back
             for _o in ieee80211w sae_pwe; do [ -z "$(uci_q get "$_if.$_o")" ] || printf 'delete %s.%s\n' "$_if" "$_o"; done
-            uci_q get "$_if.hostapd_bss_options" | grep -q 'u30_sae_offload=1' &&
-                printf 'del_list %s.hostapd_bss_options=u30_sae_offload=1\n' "$_if"
         fi
         [ -z "$HIDDEN" ] || printf 'set %s.hidden=%s\n' "$_if" "$HIDDEN"
         [ -z "$CHAN" ] || [ -n "$BAND" ] || uci_channel "$_rd"
@@ -497,8 +497,8 @@ m_wifi_set() {
             later wifi reload
         fi
     else
-        # out of SAE: a full restart (the access point the wifi-scripts refused is not there to reload)
-        if [ -n "$_sae" ]; then later sh -c 'wifi down; sleep 1; wifi up'; else later wifi reload; fi
+        # hostapd restarts an SAE access point whose settings changed (START_AP gives the firmware the password)
+        later wifi reload
     fi
     ok '"restart":true'
 }

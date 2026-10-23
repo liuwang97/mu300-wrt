@@ -50,11 +50,18 @@ Applies to: Linux 7.2.11, OpenWrt 25.12.5 (F50, U30 Air). Checked against the co
 **Next**: iperf3 both ways at full rate for minutes, idle and loaded ping, hotspot restart under traffic; then make it the default.
 **Workaround**: None needed.
 
-## The hotspot has no WPA3-SAE and no 5 GHz mid channels
-**Symptom**: The access point is WPA2-PSK only and starts on 36-48 or 149-165: `openwrt/patches/wifi-scripts-wpa2-only.patch` refuses an SAE AP, and `openwrt/opt/mu300/lib/wifi-channels.sh` replaces 52-64 and 100-144.
-**Impact**: No WPA3, and the mid channels stay unused; `docs/decisions/0008-hotspot-sae-and-mid-channels.md` asks for both.
-**Known**: The firmware returns the SAE PMK as vendor element `40:45:da:04` inside the client's own element list, so a client could append one.
-**Next**: Frame the SAE record in the driver, then drop the two patches and the channel replacement; test on both boards.
+## The firmware SAE PMK record is not proven to come from the firmware
+**Symptom**: hostapd takes a WPA3 station's PMK from the vendor element `40:45:da:04` at the end of `EVT_NEW_STATION`'s element list, the same list as the client's own association-request elements.
+**Impact**: If the firmware admits a station that names the SAE AKM without completing SAE (most plausibly in WPA2/WPA3 mixed mode), that station can bring its own record and join without the password. A duplicate record is refused, so a client cannot override a real one.
+**Known**: Upstream (`clean-tf-7.2`) ships the same bridge; T551M stations used `auth_alg=sae` with PMF. Never tested with a crafted client.
+**Next**: Associate a modified wpa_supplicant (open authentication, SAE AKM, forged record) to an F50 and a U30 Air in both SAE modes; if admitted, refuse the record unless the firmware marks the station as SAE-authenticated.
+**Workaround**: WPA2-PSK (`psk2`).
+
+## The hotspot has no 5 GHz mid channels
+**Symptom**: An AP set to a DFS channel (52-64, 100-144) starts on 36 with its width unchanged.
+**Impact**: The mid channels of decision 0008 stay unused.
+**Known**: The driver has no `start_radar_detection` and the firmware's ACS list is 36-48 and 149-165; the firmware has `CMD_RADAR_DETECT` and `EVT_RADAR_DETECTED`.
+**Next**: Wire those to cfg80211's radar interface and check that the firmware starts an AP on a DFS channel.
 **Workaround**: None.
 
 ## U30 Air USB 3 link follows the plug orientation

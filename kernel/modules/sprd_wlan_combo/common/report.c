@@ -67,34 +67,6 @@ void sprd_report_sched_scan_done(struct sprd_vif *vif, bool abort)
 }
 EXPORT_SYMBOL(sprd_report_sched_scan_done);
 
-/* MU300: the SC2355 firmware's soft-AP SAE offload (U30 Air) is switched off.
- * Its PMK record, vendor element dd 34 40:45:da:04 <PMK 32><PMKID 16>, arrived in this element list behind the
- * station's own association-request elements, with nothing to tell the firmware's record from one a client sent
- * over the air: a hostapd that imported it could be handed a PMK by a client that never knew the passphrase. So no
- * such record reaches cfg80211, whoever wrote it: every vendor element with that prefix is dropped, and so is a
- * malformed tail (an element longer than what is left), which no element parser takes apart. The list is compacted
- * in place; returns its new length. */
-static u16 mu300_strip_sae_pmk_record(u8 *ies, u16 len)
-{
-	static const u8 prefix[4] = { 0x40, 0x45, 0xda, 0x04 };
-	unsigned int in = 0, out = 0;
-
-	while (in + 2 <= len) {
-		unsigned int elen = ies[in + 1];
-
-		if (in + 2 + elen > len)
-			break;
-		if (!(ies[in] == 221 && elen >= sizeof(prefix) &&
-		      !memcmp(ies + in + 2, prefix, sizeof(prefix)))) {
-			if (out != in)
-				memmove(ies + out, ies + in, 2 + elen);
-			out += 2 + elen;
-		}
-		in += 2 + elen;
-	}
-	return out;
-}
-
 void sprd_report_softap(struct sprd_vif *vif, u8 is_connect, u8 *addr,
 			u8 *req_ie, u16 req_ie_len)
 {
@@ -106,15 +78,6 @@ void sprd_report_softap(struct sprd_vif *vif, u8 is_connect, u8 *addr,
 
 	if (!addr || !vif->ndev)
 		return;
-
-	if (req_ie && req_ie_len > 0) {
-		u16 n = mu300_strip_sae_pmk_record(req_ie, req_ie_len);
-
-		if (n != req_ie_len)
-			pr_info_ratelimited("sprd_wlan: %pM: a firmware PMK record or a malformed tail dropped from the association elements (SAE offload is off)\n",
-					    addr);
-		req_ie_len = n;
-	}
 
 	if (req_ie_len > 0) {
 		sinfo.assoc_req_ies = req_ie;

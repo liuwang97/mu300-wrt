@@ -227,7 +227,7 @@ class Rules(unittest.TestCase):
         # the VPN module's mu300-vpn reads vmess links and raw Xray/sing-box configs with jq, so the image has it; the
         # CI runner needs jq for the same tests
         owrt = (TOP / 'openwrt/build-rootfs.sh').read_text()
-        first = re.search(r'\napk add (.*?)>/dev/null', owrt, re.S).group(1)
+        first = re.search(r'\napk add (?!--allow-untrusted)(.*?)>/dev/null', owrt, re.S).group(1)  # from the feed
         self.assertIn('jq', first.replace('\\\n', ' ').split())
         ci = (TOP / '.github/workflows/tests.yml').read_text()
         self.assertTrue(any('jq' in m.split() for m in re.findall(r'sudo apt-get install -y -qq ([^>]*)>', ci)))
@@ -445,7 +445,7 @@ class Rules(unittest.TestCase):
                 'openwrt/overlay/usr/share/ucode/mu300/cellparse.uc': 'x\n',
                 'openwrt/patches/fw4-sipa-offload.patch': 'x\n',
                 'openwrt/patches/wifi-scripts-no-dfs.patch': 'x\n',
-                'openwrt/patches/wifi-scripts-wpa2-only.patch': 'x\n'}
+                'openwrt/hostapd/build-hostapd.sh': 'x\n'}
         for missing in need:
             with self.subTest(missing=missing):
                 r = run({k: v for k, v in need.items() if k != missing})

@@ -1,12 +1,14 @@
 """The hotspot never goes onto a DFS channel (the SC2355 driver has no radar detection: hostapd's start_dfs_cac()
-fails and the AP stays down).
+fails and the AP stays down). A DFS channel becomes 36 with its width kept, or fails: never 149, never narrower.
 
 * `lib/wifi-channels.sh`: the country table, a DFS or disallowed channel replaced with one line why, "auto", widths;
 * `openwrt-wifi-config` and `mu300-wifi-band` on OpenWrt (a stub `uci`): the channel, htmode, the channel list for
   auto, and a DFS channel set in LuCI rewritten at boot;
-* `openwrt/patches/wifi-scripts-no-dfs.patch`: how the build applies it, and - with MU300_WRT_IMAGE naming an
-  OpenWrt 25.12 docker image (e.g. mu300-openwrt-base:25.12.5, as openwrt/build-rootfs.sh imports it) - the hostapd
-  configuration the patched wifi-scripts generate for a fake wiphy with and without radar detection.
+* `openwrt/patches/wifi-scripts-no-dfs.patch`: how the build applies it, that it applies with --fuzz=0 to both layouts
+  of hostapd.uc (the feed's and the SAE build's), and - with MU300_WRT_IMAGE naming an OpenWrt 25.12 docker image
+  (e.g. mu300-openwrt-base:25.12.5, as openwrt/build-rootfs.sh imports it) - the hostapd configuration the patched
+  wifi-scripts generate for a fake wiphy with and without radar detection; with MU300_WIFI_SAE_APKS (a directory
+  openwrt/hostapd/build-hostapd.sh wrote) also with the SAE build's wifi-scripts, which the image has.
 """
 import json
 import os
@@ -73,8 +75,12 @@ class Lib(ShellTest):
                 out, err = self.call(shell, f'wifi_ap5_resolve CN {ch}')
                 self.assertEqual(out, '36', ch)
                 self.assertIn('DFS', err)
-            self.assertEqual(self.call(shell, 'wifi_ap5_resolve BD 100'), ('149', 'hotspot: 5 GHz channel 100 is a '
-                             'DFS channel (radar detection), which this Wi-Fi driver cannot do: using channel 149'))
+            # 36 at 80 MHz or nothing: never 149
+            out, err = self.call(shell, 'wifi_ap5_resolve BD 100; echo rc=$?')
+            self.assertEqual((out, err), ('rc=1', 'hotspot: DFS channel 100: channel 36 / 80 MHz is not permitted in '
+                                                  'country BD; no narrower fallback'))
+            self.assertEqual(self.call(shell, 'wifi_ap5_channels() { echo "36 40 149 153"; }; '
+                                              'wifi_ap5_resolve XX 60; echo rc=$?')[0], 'rc=1')
             # allowed: kept, nothing said
             for cc, ch in (('CN', 36), ('CN', 48), ('CN', 149), ('CN', 165), ('TR', 44), ('BD', 161)):
                 self.assertEqual(self.call(shell, f'wifi_ap5_resolve {cc} {ch}'), (str(ch), ''), (cc, ch))
@@ -88,7 +94,10 @@ class Lib(ShellTest):
                                                 'country TR: using channel 36'))
             self.assertEqual(self.call(shell, 'wifi_ap5_resolve CN 6')[0], '36')
             # no 5 GHz channel at all: empty, and why
-            out, err = self.call(shell, 'wifi_ap5_resolve 00 60')
+            out, err = self.call(shell, 'wifi_ap5_resolve 00 60; echo rc=$?')
+            self.assertEqual(out, 'rc=1')
+            self.assertIn('channel 36 / 80 MHz is not permitted in country 00', err)
+            out, err = self.call(shell, 'wifi_ap5_resolve 00 149')
             self.assertEqual(out, '')
             self.assertIn('country 00 has no 5 GHz channel without DFS', err)
             self.assertEqual(self.call(shell, 'wifi_ap5_resolve 00 auto'), ('', ''))
@@ -179,18 +188,25 @@ class OpenWrt(ShellTest):
     def test_dfs_channel_from_luci_rewritten_at_boot(self):
         (self.root / 'etc' / 'mu300' / 'wifi-configured').write_text('')
         for shell in self.each_shell():
-            for ch, ht, want_ch, want_ht in (('60', 'VHT80', '36', 'VHT80'), ('100', 'HE160', '36', 'HE80'),
-                                             ('52', 'HT40', '36', 'HT40'), ('120', 'VHT80', '36', 'VHT80')):
+            for ch, ht, cc in (('60', 'VHT80', 'CN'), ('52', 'HT40', 'CN'), ('120', 'VHT80', 'CN'),
+                               ('100', 'HE80', 'TR'), ('64', 'NOHT', 'CN'), ('56', 'VHT20', 'CN')):
                 self.state(f'wireless.radio0.band=5g\nwireless.radio0.channel={ch}\nwireless.radio0.htmode={ht}\n'
-                           'wireless.radio0.country=CN\n')
+                           f'wireless.radio0.country={cc}\n')
                 r = self.script(shell, BIN / 'openwrt-wifi-config', MU300_SYSROOT=self.root)
                 self.assertEqual(r.returncode, 0, r.stderr)
                 b = self.batch()
-                self.assertIn(f"set wireless.radio0.channel='{want_ch}'\n", b, ch)
-                self.assertIn(f"set wireless.radio0.htmode='{want_ht}'\n", b, ch)
+                self.assertIn("set wireless.radio0.channel='36'\n", b, ch)
+                self.assertNotIn('htmode', b, ch)
                 self.assertIn("set wireless.radio0.acs_exclude_dfs='1'\n", b, ch)
                 self.assertIn('commit wireless', b)
-                self.assertIn(f'channel {ch} is a DFS channel', r.stderr)
+                self.assertEqual(r.stderr.strip(), f'hotspot: channel {ch} is a DFS channel: using channel 36, keeping {ht}')
+            # 36 cannot carry that width there (160 MHz never does without DFS; BD has no 36): nothing changes
+            for ch, ht, cc in (('100', 'HE160', 'CN'), ('60', 'VHT80', 'BD'), ('60', 'VHT80', '00')):
+                self.state(f'wireless.radio0.band=5g\nwireless.radio0.channel={ch}\nwireless.radio0.htmode={ht}\n'
+                           f'wireless.radio0.country={cc}\n')
+                r = self.script(shell, BIN / 'openwrt-wifi-config', MU300_SYSROOT=self.root)
+                self.assertEqual((r.returncode, self.batch()), (1, ''), (ch, ht, cc))
+                self.assertIn(f'DFS channel {ch}: channel 36 with {ht} is not permitted in country {cc}', r.stderr)
             # left alone: a non-DFS channel, auto, 2.4 GHz, no radio
             for st in ('wireless.radio0.band=5g\nwireless.radio0.channel=149\nwireless.radio0.country=CN\n',
                        'wireless.radio0.band=5g\nwireless.radio0.channel=auto\nwireless.radio0.country=CN\n',
@@ -225,6 +241,45 @@ class OpenWrt(ShellTest):
             self.assertEqual(self.batch(), '')
 
 
+# The two layouts of hostapd.uc the patch meets, cut to what its hunks touch: the SAE build's (OpenWrt v25.12.5, which
+# the image installs) and the feed's (one line more in device_capabilities()).
+HOSTAPD_UC = """'use strict';
+
+import {
+	append, append_raw, append_vars, dump_config, flush_config, set_default,
+	wiphy_info, wiphy_band
+} from 'wifi.common';
+import { validate } from 'wifi.validate';
+import * as netifd from 'wifi.netifd';
+
+function device_capabilities(config) {
+	let phy = config.phy;
+
+	phy = wiphy_info(phy);
+	let band = wiphy_band(phy, config.band);
+
+	phy_capabilities.ht_capa = band.ht_capa ?? 0;
+	phy_features.radar_background = device_extended_features(phy.extended_features, NL80211_EXT_FEATURE_RADAR_BACKGROUND);
+CIPHER}
+
+function generate(config) {
+	if (!config)
+		die(`${config.path} is an unknown phy`);
+
+	device_capabilities(config);
+
+	append('driver', 'nl80211');
+
+	set_device_defaults(config);
+
+	device_log_append(config);
+
+	device_country_code(config);
+}
+"""
+CIPHER = '\tphy_features.cipher_gcmp256 = WLAN_CIPHER_SUITE_GCMP_256 in (phy.cipher_suites ?? []);\n'
+
+
 class WifiScriptsPatch(unittest.TestCase):
     def test_build_applies_it(self):
         text = (TOP / 'openwrt' / 'build-rootfs.sh').read_text()
@@ -232,7 +287,9 @@ class WifiScriptsPatch(unittest.TestCase):
         apply = 'patch --batch --fuzz=0 -d $R -p1 -i /in/wifi-scripts-no-dfs.patch'
         self.assertIn(apply, text)
         self.assertIn('grep -q "device_no_dfs(config);" $R/usr/share/ucode/wifi/hostapd.uc || {', text)
-        # after the copy of the overlay into $R, before the panel's files and before the patch tool goes
+        # on the SAE build's wifi-scripts (installed first), after the copy of the overlay into $R, before the panel's
+        # files and before the patch tool goes
+        self.assertLess(text.index('apk add --allow-untrusted /in/wifi-sae/*.apk'), text.index(apply))
         self.assertLess(text.index('cp -a /in/overlay/. $R/'), text.index(apply))
         self.assertLess(text.index(apply), text.index('cp -a /in/luci-overlay/. $R/'))
         self.assertLess(text.index(apply), text.index('apk del patch'))
@@ -246,12 +303,60 @@ class WifiScriptsPatch(unittest.TestCase):
         self.assertIn('c.radar_detect_widths', added)
         self.assertIn('config.acs_exclude_dfs = true;', added)
         self.assertIn('device_no_dfs(config);', added)
+        # 36 and nothing else; the width is never touched
+        self.assertIn('config.channel = 36;', added)
+        self.assertNotRegex(added, r'config\.channel = (?!36;)')
+        self.assertNotRegex(added, r'config\.htmode\s*=(?!=)')
+
+    @unittest.skipUnless(shutil.which('patch'), 'no patch')
+    def test_applies_to_both_layouts_without_fuzz(self):
+        for cipher in ('', CIPHER):
+            with self.subTest(feed=bool(cipher)), tempfile.TemporaryDirectory() as d:
+                f = Path(d) / 'usr/share/ucode/wifi/hostapd.uc'
+                f.parent.mkdir(parents=True)
+                f.write_text(HOSTAPD_UC.replace('CIPHER', cipher))
+                r = subprocess.run(['patch', '--batch', '--fuzz=0', '-p1', '-d', d, '-i', str(PATCH)],
+                                   capture_output=True, text=True)
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                text = f.read_text()
+                self.assertEqual(text.count('function device_no_dfs(config)'), 1)
+                self.assertEqual(text.count('\tdevice_no_dfs(config);\n'), 1)
+                self.assertLess(text.index('\tset_device_defaults(config);'), text.index('\tdevice_no_dfs(config);'))
+                self.assertLess(text.index('\tdevice_no_dfs(config);'), text.index('\tdevice_log_append(config);'))
+                self.assertIn('wiphy_info, wiphy_band, log\n', text)
+
+
+# what the container runs: install, patch, a wifi.common whose wiphy_info() reads $FAKE_WIPHY, then run.uc per case
+GENERATE = r'''
+mkdir -p /var/lock /var/run /tmp /fake/wifi
+apk update >/dev/null && apk add $PKGS patch >/dev/null 2>&1 || exit 1
+patch --batch --fuzz=0 -p1 -d / -i /in/wifi-scripts-no-dfs.patch || exit 1
+grep -q "device_no_dfs(config);" /usr/share/ucode/wifi/hostapd.uc || exit 1
+sed -e "s/^export function wiphy_info(phy) {/function nl_wiphy_info(phy) {/" /usr/share/ucode/wifi/common.uc > /fake/wifi/common.uc
+grep -q "^function nl_wiphy_info" /fake/wifi/common.uc || exit 1
+echo "export function wiphy_info(phy) { return json(fs.readfile(getenv(\"FAKE_WIPHY\"))); };" >> /fake/wifi/common.uc
+if [ -n "$MODULE" ]; then
+    # the driver module of phy0, under /fake (the container has no wiphy in /sys)
+    sed -e "s|/sys/class/ieee80211/|/fake/sys/class/ieee80211/|" /usr/share/ucode/wifi/ap.uc > /fake/wifi/ap.uc
+    sed -e "s|/sys/module/sprd_wlan_combo|/fake/sys/module/sprd_wlan_combo|" /usr/share/ucode/wifi/unisoc-sae.uc > /fake/wifi/unisoc-sae.uc
+    grep -q /fake/sys/class /fake/wifi/ap.uc && grep -q /fake/sys/module /fake/wifi/unisoc-sae.uc || exit 1
+    mkdir -p /fake/sys/class/ieee80211/phy0/device/driver /fake/sys/module/$MODULE
+    ln -s /fake/sys/module/$MODULE /fake/sys/class/ieee80211/phy0/device/driver/module
+fi
+for f in /t/cases/*.data.json; do
+    n=$(basename "$f" .data.json)
+    rm -f /var/run/hostapd-phy0.conf
+    FAKE_DATA=$f FAKE_WIPHY=/t/cases/$n.wiphy.json FAKE_CC=CN \
+        ucode -L "/fake/*.uc" -L "/usr/share/ucode/*.uc" /fx/run.uc > /t/out/$n.conf 2>&1 || echo "rc=$?" >> /t/out/$n.conf
+done
+'''
 
 
 @unittest.skipUnless(os.environ.get('MU300_WRT_IMAGE') and shutil.which('docker'),
                      'MU300_WRT_IMAGE (an OpenWrt 25.12 arm64 docker image) not set')
 class WifiScriptsInOpenWrt(unittest.TestCase):
-    """The patched wifi-scripts of the OpenWrt feed, for a fake wiphy: the hostapd configuration they write."""
+    """The patched wifi-scripts, for a fake wiphy: the hostapd configuration they write (the feed's wifi-scripts, and
+    with MU300_WIFI_SAE_APKS the SAE build's)."""
 
     @staticmethod
     def wiphy(radar, flags):
@@ -276,84 +381,97 @@ class WifiScriptsInOpenWrt(unittest.TestCase):
                                                   'key': '12345678', 'ifname': 'wlan0', 'network': ['lan']},
                                        'bridge': 'br-lan', 'vlans': {}, 'stas': {}}}}
 
-    def test_hostapd_config(self):
+    @staticmethod
+    def generate(cases, sae_apks=None, module=''):
+        """{name: (wiphy, data)} -> {name: what run.uc printed}. sae_apks: a directory with the SAE build's APKs,
+        installed instead of the feed's wifi-scripts; module: the driver module the AP generator finds for phy0."""
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            (d / 'cases').mkdir()
+            (d / 'out').mkdir()
+            for n, (wiphy, data) in cases.items():
+                (d / 'cases' / f'{n}.wiphy.json').write_text(json.dumps(wiphy))
+                (d / 'cases' / f'{n}.data.json').write_text(json.dumps(data))
+            argv = ['docker', 'run', '--rm', '--platform', 'linux/arm64', '-v', f'{PATCH.parent}:/in:ro',
+                    '-v', f'{FIXTURES}:/fx:ro', '-v', f'{d}:/t', '-e', f'MODULE={module}']
+            if sae_apks:
+                argv += ['-v', f'{sae_apks}:/apks:ro', '-e', 'PKGS=--allow-untrusted /apks/*.apk']
+            else:
+                argv += ['-e', 'PKGS=wifi-scripts']
+            r = subprocess.run(argv + [os.environ['MU300_WRT_IMAGE'], '/bin/sh', '-c', GENERATE],
+                               capture_output=True, text=True, timeout=900)
+            if r.returncode:
+                raise AssertionError(r.stdout + r.stderr)
+            return {n: (d / 'out' / f'{n}.conf').read_text() for n in cases}
+
+    @staticmethod
+    def conf(text):
+        return dict(l.split('=', 1) for l in text.splitlines() if '=' in l and not l.startswith('#'))
+
+    def check_dfs(self, sae_apks):
         no36 = {c: {'disabled': True} for c in (36, 40, 44, 48)}
         cases = {
-            # name: (driver detects radar, channel flags, channel, htmode, extra) -> expected
+            # name: (driver detects radar, channel flags, channel, htmode, extra)
             'cn60': (False, {}, 60, 'VHT80', None),
             'cn60-radar': (True, {}, 60, 'VHT80', None),
             'cn36': (False, {}, 36, 'VHT80', None),
             'cn149': (False, {}, 149, 'VHT80', None),
             'cn52-he160': (False, {}, 52, 'HE160', None),
             'cn120-vht40': (False, {}, 120, 'VHT40', None),
+            'cn100-ht20': (False, {}, 100, 'HT20', None),
             'auto': (False, {}, 'auto', 'VHT80', None),
             'auto-radar': (True, {}, 'auto', 'VHT80', None),
             'auto-list': (False, {}, 'auto', 'VHT80', {'channels': '36 40 44 48 149 153 157 161 165'}),
             'no36-60': (False, no36, 60, 'VHT80', None),
-            'no5g-60': (False, {c: {'disabled': True} for c in FIVE if not 52 <= c <= 144}, 60, 'VHT80', None),
+            'no80-60': (False, {44: {'no_80mhz': True}}, 60, 'VHT80', None),
         }
-        with tempfile.TemporaryDirectory() as d:
-            d = Path(d)
-            (d / 'cases').mkdir()
-            (d / 'out').mkdir()
-            for n, (radar, flags, ch, ht, extra) in cases.items():
-                (d / 'cases' / f'{n}.wiphy.json').write_text(json.dumps(self.wiphy(radar, flags)))
-                (d / 'cases' / f'{n}.data.json').write_text(json.dumps(self.data(ch, ht, extra)))
-            script = r'''
-mkdir -p /var/lock /var/run /tmp /fake/wifi
-apk update >/dev/null && apk add wifi-scripts patch >/dev/null 2>&1 || exit 1
-patch --batch --fuzz=0 -p1 -d / -i /in/wifi-scripts-no-dfs.patch || exit 1
-grep -q "device_no_dfs(config);" /usr/share/ucode/wifi/hostapd.uc || exit 1
-sed -e "s/^export function wiphy_info(phy) {/function nl_wiphy_info(phy) {/" /usr/share/ucode/wifi/common.uc > /fake/wifi/common.uc
-grep -q "^function nl_wiphy_info" /fake/wifi/common.uc || exit 1
-echo "export function wiphy_info(phy) { return json(fs.readfile(getenv(\"FAKE_WIPHY\"))); };" >> /fake/wifi/common.uc
-for f in /t/cases/*.data.json; do
-    n=$(basename "$f" .data.json)
-    FAKE_DATA=$f FAKE_WIPHY=/t/cases/$n.wiphy.json FAKE_CC=CN \
-        ucode -L "/fake/*.uc" -L "/usr/share/ucode/*.uc" /fx/run.uc > /t/out/$n.conf 2>&1 || echo "rc=$?" >> /t/out/$n.conf
-done
-'''
-            r = subprocess.run(['docker', 'run', '--rm', '--platform', 'linux/arm64',
-                                '-v', f'{PATCH.parent}:/in:ro', '-v', f'{FIXTURES}:/fx:ro', '-v', f'{d}:/t',
-                                os.environ['MU300_WRT_IMAGE'], '/bin/sh', '-c', script],
-                               capture_output=True, text=True, timeout=900)
-            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        out = self.generate({n: (self.wiphy(radar, flags), self.data(ch, ht, extra))
+                             for n, (radar, flags, ch, ht, extra) in cases.items()}, sae_apks)
 
-            def conf(n):
-                text = (d / 'out' / f'{n}.conf').read_text()
-                self.assertNotIn('rc=', text, n)
-                return text, dict(l.split('=', 1) for l in text.splitlines() if '=' in l and not l.startswith('#'))
+        def conf(n):
+            self.assertNotIn('rc=', out[n], n + ': ' + out[n])
+            return out[n], self.conf(out[n])
 
-            text, c = conf('cn60')
-            self.assertIn('wifi-scripts: channel 60 is a DFS channel and this driver cannot detect radar', text)
-            self.assertEqual((c['channel'], c['vht_oper_chwidth'], c['vht_oper_centr_freq_seg0_idx']), ('36', '1', '42'))
-            # a driver that can detect radar keeps the channel (hostapd does the CAC)
-            text, c = conf('cn60-radar')
-            self.assertEqual((c['channel'], c['vht_oper_centr_freq_seg0_idx']), ('60', '58'))
+        text, c = conf('cn60')
+        self.assertIn('wifi-scripts: channel 60 is a DFS channel and this driver cannot detect radar: using channel 36, '
+                      'keeping VHT80', text)
+        self.assertEqual((c['channel'], c['vht_oper_chwidth'], c['vht_oper_centr_freq_seg0_idx']), ('36', '1', '42'))
+        # a driver that can detect radar keeps the channel (hostapd does the CAC)
+        text, c = conf('cn60-radar')
+        self.assertEqual((c['channel'], c['vht_oper_centr_freq_seg0_idx']), ('60', '58'))
+        self.assertNotIn('DFS channel', text)
+        for n, ch, seg0 in (('cn36', '36', '42'), ('cn149', '149', '155')):
+            text, c = conf(n)
+            self.assertEqual((c['channel'], c['vht_oper_centr_freq_seg0_idx']), (ch, seg0), n)
             self.assertNotIn('DFS channel', text)
-            for n, ch, seg0 in (('cn36', '36', '42'), ('cn149', '149', '155')):
-                text, c = conf(n)
-                self.assertEqual((c['channel'], c['vht_oper_centr_freq_seg0_idx']), (ch, seg0), n)
-                self.assertNotIn('DFS channel', text)
-            # 160 MHz cannot fit without DFS: 80
-            _, c = conf('cn52-he160')
-            self.assertEqual((c['channel'], c['he_oper_chwidth'], c['he_oper_centr_freq_seg0_idx']), ('36', '1', '42'))
-            _, c = conf('cn120-vht40')
-            self.assertEqual((c['channel'], c['vht_oper_chwidth'], c['ht_capab'][:7]), ('36', '0', '[HT40+]'))
-            # auto: ACS without the DFS channels (and the channel list as given)
-            _, c = conf('auto')
-            self.assertEqual((c['channel'], c['acs_exclude_dfs']), ('0', '1'))
-            _, c = conf('auto-radar')
-            self.assertEqual((c['channel'], c['acs_exclude_dfs']), ('0', '0'))
-            _, c = conf('auto-list')
-            self.assertEqual((c['acs_exclude_dfs'], c['chanlist']), ('1', '36 40 44 48 149 153 157 161 165'))
-            # 36-48 not allowed: 149
-            _, c = conf('no36-60')
-            self.assertEqual((c['channel'], c['vht_oper_centr_freq_seg0_idx']), ('149', '155'))
-            # nothing to go to: left as it was, and said
-            text, c = conf('no5g-60')
-            self.assertEqual(c['channel'], '60')
-            self.assertIn('no other 5 GHz channel is allowed', text)
+        # the width as configured
+        _, c = conf('cn120-vht40')
+        self.assertEqual((c['channel'], c['vht_oper_chwidth'], c['ht_capab'][:7]), ('36', '0', '[HT40+]'))
+        _, c = conf('cn100-ht20')
+        self.assertEqual(c['channel'], '36')
+        self.assertNotIn('[HT40', c.get('ht_capab', ''))
+        # auto: ACS without the DFS channels (and the channel list as given)
+        _, c = conf('auto')
+        self.assertEqual((c['channel'], c['acs_exclude_dfs']), ('0', '1'))
+        _, c = conf('auto-radar')
+        self.assertEqual((c['channel'], c['acs_exclude_dfs']), ('0', '0'))
+        _, c = conf('auto-list')
+        self.assertEqual((c['acs_exclude_dfs'], c['chanlist']), ('1', '36 40 44 48 149 153 157 161 165'))
+        # 36 cannot carry the width (160 MHz on 36 needs 52-64): the setup fails with why and writes no access point;
+        # never 149, never narrower
+        for n, why in (('cn52-he160', 'channel 36 with HE160 is not permitted'),
+                       ('no36-60', 'channel 36 with VHT80 is not permitted'),
+                       ('no80-60', 'channel 36 with VHT80 is not permitted')):
+            self.assertIn('rc=', out[n], n)
+            self.assertIn(why, out[n], n)
+            self.assertNotIn('interface=wlan0', out[n], n)
+
+    def test_feed_wifi_scripts(self):
+        self.check_dfs(None)
+
+    @unittest.skipUnless(os.environ.get('MU300_WIFI_SAE_APKS'), 'MU300_WIFI_SAE_APKS (openwrt/hostapd) not set')
+    def test_sae_wifi_scripts(self):
+        self.check_dfs(os.environ['MU300_WIFI_SAE_APKS'])
 
 
 if __name__ == '__main__':

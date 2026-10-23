@@ -155,8 +155,16 @@ il=$(list $I)
 for f in opt/mu300/bin/mu300-carry opt/mu300/bin/busybox opt/mu300/bin/mu300-update etc/mu300/image-manifest.gz \
          usr/share/ucode/mu300/cellparse.uc usr/share/luci/menu.d/luci-app-mu300.json \
          www/luci-static/resources/view/mu300/home.js usr/libexec/rpcd/mu300dash usr/lib/lua/luci/i18n/mu300.zh-cn.lmo \
-         www/luci-static/aurora/main.css etc/mu300/packages.txt; do
+         www/luci-static/aurora/main.css etc/mu300/packages.txt \
+         usr/share/ucode/wifi/hostapd.uc usr/share/ucode/wifi/unisoc-sae.uc lib/netifd/hostapd-unisoc.sh \
+         etc/mu300/wifi-sae.build-id etc/mu300/wifi-sae.source-info; do
     printf '%s\n' "$il" | grep -qx "$f" || { echo "$I lacks $f"; fail=1; }
+done
+# the hotspot's WPA3-SAE: the three packages rebuilt from the sources of this commit (openwrt/hostapd), not the feed's
+[ "$(tar -xzOf "$D/$I.tar.gz" ./etc/mu300/wifi-sae.build-id 2>/dev/null)" = "$(python3 "$TOP/openwrt/hostapd/wifi-sae-state.py" --build-id)" ] ||
+    { echo "$I: the SAE hostapd was not built from openwrt/hostapd of this commit"; fail=1; }
+for p in wpad-basic-mbedtls hostapd-common wifi-scripts; do
+    tar -xzOf "$D/$I.tar.gz" ./etc/mu300/packages.txt | grep -q "^$p-[^ ]*-r1001 " || { echo "$I: $p is not the SAE build"; fail=1; }
 done
 ! printf '%s\n' "$il" | grep -E '^usr/lib/lua/luci/i18n/[^/]+\.lmo$' | grep -vqE '\.(zh-cn)\.lmo$' ||
     { echo "$I carries catalogs of other languages than Chinese"; fail=1; }

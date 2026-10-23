@@ -35,10 +35,10 @@ case ${MU300_DOCKER:-0} in
     0|1) DOCKER=${MU300_DOCKER:-0} ;;
     *) echo "MU300_DOCKER is 0 or 1" >&2; exit 1 ;;
 esac
-# an access point is WPA2-PSK only: SAE (WPA3-Personal, its mixed and compatibility modes) is refused on the SC2355,
-# whose firmware SAE offload is disabled
-WPA2PATCH=$TOP/openwrt/patches/wifi-scripts-wpa2-only.patch
-[ -s "$WPA2PATCH" ] || { echo "missing $WPA2PATCH" >&2; exit 1; }
+# WPA3-SAE on the hotspot: wpad-basic-mbedtls, hostapd-common and wifi-scripts rebuilt for the SC2355 firmware's SAE
+# (openwrt/hostapd, built below), installed instead of the feed's
+HOSTAPD_BUILD=$TOP/openwrt/hostapd/build-hostapd.sh
+[ -s "$HOSTAPD_BUILD" ] || { echo "missing $HOSTAPD_BUILD" >&2; exit 1; }
 # Keep the upstream Aurora theme reproducible. Its APK is installed while assembling the rootfs, so the theme is
 # present on first boot without a network-dependent uci-defaults install step. Bootstrap remains available.
 THEME_APK=${MU300_LUCI_THEME_APK:-$TOP/work/luci-theme-aurora-1.4.0-r20260920.apk}
@@ -64,6 +64,9 @@ python3 "$TOP/openwrt/tools/po2lmo.py" "$TOP/openwrt/luci-app-mu300/po/zh_Hans/m
 [ -s "$CAT/mu300.zh-cn.lmo" ] || { echo "no Chinese catalog built from openwrt/luci-app-mu300/po/zh_Hans" >&2; exit 1; }
 TARBALL=openwrt-$VER-armsr-armv8-rootfs.tar.gz
 URL=$BASEURL/$VER/targets/armsr/armv8
+# the SAE hostapd APKs (a cache that matches the sources is reused)
+WIFI_APKS=$TOP/work/wifi-sae
+MU300_WRT_VER="$VER" sh "$HOSTAPD_BUILD" "$WIFI_APKS"
 
 cd "$TOP"
 if [ ! -f "openwrt/$TARBALL" ]; then
@@ -89,7 +92,7 @@ docker run --rm --platform linux/arm64 \
   -v "$TOP/openwrt/opt/mu300":/in/opt-mu300:ro -v "$TOP/openwrt/overlay":/in/overlay:ro \
   -v "$FW4PATCH":/in/fw4-sipa-offload.patch:ro \
   -v "$NODFSPATCH":/in/wifi-scripts-no-dfs.patch:ro \
-  -v "$WPA2PATCH":/in/wifi-scripts-wpa2-only.patch:ro \
+  -v "$WIFI_APKS":/in/wifi-sae:ro \
   -v "$THEME_APK:/in/luci-theme-aurora.apk:ro" -v "$TOP/openwrt/luci-app-mu300:/in/luci-plugin:ro" \
   -v "$TOP/openwrt/luci-overlay:/in/luci-overlay:ro" -v "$CAT:/in/catalogs:ro" \
   $(opt firmware firmware) $(opt android-subset android-subset) \
@@ -127,7 +130,12 @@ apk upgrade >/dev/null
 # jq: the VPN module reads vmess links and raw Xray/sing-box configs with it, and rewrites those configs at every start
 # curl: mu300-update fetches with it where it is (and tells "the mirror cannot be reached" from "the source
 # answered" by its exit codes, which the wget family does not distinguish)
-apk add wpad-basic-mbedtls wifi-scripts iwinfo wireless-regdb iw bash flock ip-full coreutils-stty openssl-util \
+# the SAE hostapd (unsigned, built locally: openwrt/hostapd), before anything that would pull those of the feed
+apk add --allow-untrusted /in/wifi-sae/*.apk >/dev/null
+for p in wpad-basic-mbedtls hostapd-common wifi-scripts; do
+    apk list --installed "$p" | grep -q -- "-r1001 " || { echo "$p is not the SAE build (r1001)" >&2; exit 1; }
+done
+apk add iwinfo wireless-regdb iw bash flock ip-full coreutils-stty openssl-util \
     i2c-tools gpiod-tools jq curl >/dev/null
 # the router protocols LuCI offers, with their tools: WireGuard, PPTP/L2TP (PPPoE is in the base), 6in4/6rd/DS-Lite,
 # GRE and VXLAN, ipset, and SQM (cake). Their kmod-* dependencies install the 6.12 modules of the feed, removed below like
@@ -200,7 +208,7 @@ apk add patch >/dev/null
 patch --batch --fuzz=0 -d $R -p1 -i /in/fw4-sipa-offload.patch
 grep -q sipa_eth0 $R/usr/share/ucode/fw4.uc || { echo "fw4 patch not applied" >&2; exit 1; }
 # wifi-scripts: a driver without radar detection (no radar_detect_widths, the SC2355) never gets an access point on a
-# DFS channel - hostapd fails start_dfs_cac and the hotspot stays down otherwise
+# DFS channel (hostapd fails start_dfs_cac and the hotspot stays down otherwise): such a channel becomes 36, htmode kept
 patch --batch --fuzz=0 -d $R -p1 -i /in/wifi-scripts-no-dfs.patch
 grep -q "device_no_dfs(config);" $R/usr/share/ucode/wifi/hostapd.uc || { echo "wifi-scripts DFS patch not applied" >&2; exit 1; }
 # Docker keeps its images and containers on the Linux partition beside the system (/mnt/mu300-disk/docker/openwrt-luci);
@@ -208,10 +216,9 @@ grep -q "device_no_dfs(config);" $R/usr/share/ucode/wifi/hostapd.uc || { echo "w
 grep -q "\"data-root\": \"/mnt/mu300-disk/docker/$MU300_SYSTEM\"," $R/etc/docker/daemon.json || { echo "Docker data-root not set" >&2; exit 1; }
 grep -q "^.option alt_config_file ./etc/docker/daemon.json.$" $R/etc/config/dockerd || { echo "dockerd does not read etc/docker/daemon.json" >&2; exit 1; }
 ! ls $R/etc/rc.d/*dockerd >/dev/null 2>&1 || { echo "dockerd starts at boot" >&2; exit 1; }
-# wifi-scripts: an access point that asks for SAE (sae, sae-mixed, sae-compat, psk3) is not started, with a line that
-# says WPA2-PSK only - the U30 Air firmware SAE offload is disabled, and plain SAE never works on the SC2355
-patch --batch --fuzz=0 -d $R -p1 -i /in/wifi-scripts-wpa2-only.patch
-grep -q "mu300_sae_refused(k, interface.config)" $R/usr/share/ucode/wifi/hostapd.uc || { echo "wifi-scripts WPA2-only patch not applied" >&2; exit 1; }
+# the SAE wifi-scripts: their AP generator passes unisoc_sae to hostapd for the SC2355
+[ -s $R/usr/share/ucode/wifi/unisoc-sae.uc ] && grep -q "unisoc_sae_config(config" $R/usr/share/ucode/wifi/ap.uc ||
+    { echo "wifi-scripts are not the SAE build" >&2; exit 1; }
 apk del patch >/dev/null   # out of packages.txt below, which lists what the image has
 cp -a /in/luci-overlay/. $R/
 cp -a /in/luci-plugin/root/. $R/
@@ -276,6 +283,9 @@ if [ -e /in/busybox ]; then
 fi
 mkdir -p $R/etc/mu300
 printf "%s\n" "${MU300_VERSION:-dev}" > $R/etc/mu300/image-version
+# which sources the SAE hostapd was built from (openwrt/hostapd/wifi-sae-state.py --build-id)
+cp /in/wifi-sae/build-id $R/etc/mu300/wifi-sae.build-id
+cp /in/wifi-sae/source-info $R/etc/mu300/wifi-sae.source-info
 # enable the services (rc.common "enable" needs ubus, which is not running in the build container)
 # accounts still those of the image until mu300-update puts the device ones in place
 : > $R/etc/.mu300-accounts-from-image

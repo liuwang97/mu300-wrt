@@ -99,16 +99,6 @@ return view.extend({
 		root.innerHTML = this.html();
 		this.wire(root);
 		var self = this;
-		/* WPA3 on the hotspot was switched off at boot (openwrt-wifi-wpa2-only: the SC2355 firmware's SAE does not
-		 * work): the notice of Status > Overview, from the same module (its own English and Chinese), above the cards
-		 * until dismissed */
-		if (typeof L.require === 'function')
-			Promise.resolve().then(function() { return L.require('view.status.include.05_mu300_wpa2'); }).then(function(m) {
-				return m && m.load().then(function(n) {
-					var box = m.render(n);
-					if (box) root.insertBefore(box, root.firstChild);
-				});
-			}).catch(function() {});
 		var intervalMs = DEFAULT_POLL_S * 1000;
 		var config = L.resolveDefault(uci.load('unisoc_modem')).then(function() {
 			intervalMs = pollSeconds(uci.get('unisoc_modem', 'main', 'home_refresh_interval')) * 1000;

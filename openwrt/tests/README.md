@@ -27,7 +27,7 @@ docs/contract.md. The `test_from_kernel_*` modules are the checks of this tree t
 | `test_cpu.py` | mu300-cpu: profiles, cores, the services' CPUs |
 | `test_zram.py` | mu300-zram: compressed swap in RAM and its settings |
 | `test_traffic.py` | mu300-traffic: the mobile data count, its cycle and its cap |
-| `test_wifi.py`, `test_wifi_channels.py`, `test_wifi_client.py`, `test_wpa2_only.py` | Wi-Fi: wifi-start, the hotspot never on a DFS channel, wifi-client, WPA2-PSK only |
+| `test_wifi.py`, `test_wifi_channels.py`, `test_wifi_client.py`, `test_wifi_sae.py` | Wi-Fi: wifi-start, a DFS channel becomes 36, wifi-client, the hotspot's WPA3-SAE (openwrt/hostapd) |
 | `test_modemd.py`, `test_atd_io.py`, `test_sim2.py`, `test_sim_hot.py`, `test_sim_selection.py`, `test_modem_coldboot.py`, `test_mu300cell.py`, `test_ttl.py`, `test_sms_pool.py`, `test_sms_forward.py`, `test_run_dir.py`, `test_panel_resilience.py` | the modem: the AT daemon and its bridge, the SIMs, the netifd protocol, SMS |
 | `test_update.py`, `test_update_page.py`, `test_carry.py`, `test_delta.py`, `test_user_packages.py`, `test_extra.py`, `test_releases.py`, `test_smoke.py` | updates, extras, releases and the release smoke test |
 | `test_api.py`, `test_backup.py`, `test_usb_management.py`, `test_early_dhcp.py`, `test_uhttpd_key.py` | mu300-api, mu300-backup, USB, the early DHCP lease, the uhttpd key |

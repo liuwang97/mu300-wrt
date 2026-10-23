@@ -746,6 +746,10 @@ int sc2355_send_cmd_recv_rsp(struct sprd_priv *priv, struct sprd_msg *msg, u8 *r
 
 	ret = cmdevt_recv_rsp_timeout(priv, timeout);
 	if (ret != -1) {
+		/* MU300: a refused SAE password fails START_AP, never an AP the firmware cannot authenticate for */
+		if (cmd_id == CMD_SET_SAE_PARAM &&
+		    (!cmd->data || ((struct sprd_cmd_hdr *)cmd->data)->status))
+			ret = -EIO;
 #ifndef DRV_RESET_SELF
 		if (rbuf && rlen && *rlen) {
 #else
@@ -1890,14 +1894,21 @@ int sc2355_set_sae_ie(struct sprd_priv *priv, struct sprd_vif *vif,
 	return cmdevt_set_ie(priv, vif, SPRD_IE_SAE, ie, len);
 }
 
+#include "sae.h"
+
 int sc2355_start_ap(struct sprd_priv *priv, struct sprd_vif *vif, u8 *beacon,
 		    u16 len, struct cfg80211_ap_settings *settings)
 {
+	int ret;
 	struct sprd_msg *msg;
 	struct cmd_start_ap *p;
 	u16 datalen = sizeof(*p) + len;
 	struct sprd_api_version_t *api = (&priv->sync_api)->api_array;
 	u8 fw_ver = 0;
+
+	ret = sc2355_prepare_sae(priv, vif, settings);
+	if (ret)
+		return ret;
 
 	fw_ver = (api + CMD_SCAN)->fw_version;
 	if (vif->priv->hif.hw_type == SPRD_HW_SC2355_PCIE) {

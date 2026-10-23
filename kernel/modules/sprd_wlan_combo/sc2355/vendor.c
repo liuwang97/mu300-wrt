@@ -3199,10 +3199,7 @@ static int vendor_set_sae_password(struct wiphy *wiphy,
 	char *para;
 	int para_len, ret;
 
-	/* MU300: the firmware's soft-AP SAE (the U30 Air's SAE offload) is switched off: the PMK it hands
-	 * back cannot be told from a record a client sends (common/report.c drops it), so the firmware is never given
-	 * an SAE password. The access point is WPA2-PSK only. */
-	pr_info_once("sprd_wlan: soft-AP SAE refused: the firmware SAE offload is disabled (WPA2-PSK only)\n");
+	/* MU300: a soft AP's SAE password reaches the firmware through START_AP (sae.h, nl80211's sae_pwd) only */
 	return -EOPNOTSUPP;
 
 	if (!(priv->extend_feature & SPRD_EXTEND_SOATAP_WPA3)) {

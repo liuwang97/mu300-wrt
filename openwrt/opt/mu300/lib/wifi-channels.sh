@@ -2,8 +2,9 @@
 # The SC2355 firmware runs a 5 GHz access point on 36-48 and 149-165 only (its ACS channel list), and the driver has no
 # radar detection (no start_radar_detection): hostapd cannot start an AP on a DFS channel (52-64, 100-144 and,
 # in a few countries, also 36-48 or 149-165) - start_dfs_cac() fails and the AP stays down. So the hotspot never goes
-# onto a DFS channel: what these functions offer is the firmware's channels a country allows without DFS and without
-# NO-IR, from wireless-regdb (db.txt of 2026; the countries whose list differs from the full one are named below).
+# onto a DFS channel (one asked for becomes 36): what these functions offer is the firmware's channels a country allows
+# without DFS and without NO-IR, from wireless-regdb (db.txt of 2026; the countries whose list differs from the full
+# one are named below).
 WIFI_AP5_ALL='36 40 44 48 149 153 157 161 165'
 
 # wifi_ap5_channels CC: the channels for country CC (empty: none, the hotspot has to use 2.4 GHz)
@@ -45,9 +46,10 @@ wifi_ap5_default() {
     echo ''
 }
 
-# wifi_ap5_resolve CC CH: the channel to use for CH ("auto", empty or a number). An explicit channel CC does not
-# allow (a DFS one, or one outside the firmware's list) is replaced by the default; the reason goes to stderr in one
-# line. Prints nothing when CC has no 5 GHz channel at all.
+# wifi_ap5_resolve CC CH: the channel to use for CH ("auto", empty or a number). A DFS channel becomes 36, which CC
+# must allow at 80 MHz (else nothing is printed and it returns 1: never 149, 2.4 GHz or a narrower width instead);
+# another channel CC does not allow is replaced by the default. The reason goes to stderr in one line. Prints nothing
+# when CC has no 5 GHz channel at all.
 wifi_ap5_resolve() {
     _d=$(wifi_ap5_default "$1")
     case ${2:-} in
@@ -55,6 +57,11 @@ wifi_ap5_resolve() {
     esac
     if wifi_ap5_allowed "$1" "$2"; then echo "$2"; return 0; fi
     if wifi_ap5_dfs "$2"; then
+        if ! wifi_ap5_allowed "$1" 36 || [ "$(wifi_ap5_width "$1" 36)" != 80 ]; then
+            echo "hotspot: DFS channel $2: channel 36 / 80 MHz is not permitted in country ${1:-?}; no narrower fallback" >&2
+            return 1
+        fi
+        _d=36
         _why="a DFS channel (radar detection), which this Wi-Fi driver cannot do"
     else
         _why="not available to the hotspot in country ${1:-?}"

@@ -418,6 +418,15 @@ void sc2355_setup_wiphy(struct wiphy *wiphy, struct sprd_priv *priv)
 	wiphy_ext_feature_set(wiphy,
 			      NL80211_EXT_FEATURE_SCHED_SCAN_RELATIVE_RSSI);
 	wiphy->features |= NL80211_FEATURE_SAE;
+	/* MU300: a soft AP's SAE runs in the firmware (sae.h), the 4-way handshake in hostapd */
+	if ((priv->extend_feature & SPRD_EXTEND_SOATAP_WPA3) &&
+	    (priv->fw_capa & SPRD_CAPA_AP_SME) &&
+	    (priv->fw_std & SPRD_STD_11W)) {
+		wiphy_ext_feature_set(wiphy, NL80211_EXT_FEATURE_SAE_OFFLOAD_AP);
+		/* mixed mode carries PSK, PSK-SHA256 and SAE; with the default of two hostapd leaves out the AKM
+		 * list altogether, SAE with it */
+		wiphy->max_num_akm_suites = 3;
+	}
 
 	if (priv->extend_feature & SPRD_EXTEND_FEATURE_OCE) {
                 pr_info("\tOCE supported\n");

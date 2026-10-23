@@ -1275,6 +1275,11 @@ void sprd_cfg80211_mgmt_frame_register(struct wiphy *wiphy,
 			reg = 1;
 
 		frame_type = i << 4;
+		/* MU300: with firmware SAE the firmware answers AUTH frames; hostapd registering them would take them away */
+		if (frame_type == IEEE80211_STYPE_AUTH &&
+		    (vif->mode == SPRD_MODE_AP || vif->mode == SPRD_MODE_P2P_GO) &&
+		    wiphy_ext_feature_isset(wiphy, NL80211_EXT_FEATURE_SAE_OFFLOAD_AP))
+			continue;
 		netdev_info(wdev->netdev, "frame_type %d, reg %d\n", frame_type, reg);
 		misc_work = sprd_alloc_work(sizeof(*reg_mgmt));
 		if (!misc_work) {

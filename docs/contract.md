@@ -67,6 +67,14 @@ The root filesystem image carries no kernel modules.
 - power_supply `sc27xx-fgu` and `bq256xx-charger` (U30 Air).
 - `/sys/module/sprd_cpufreq_v2_driver/parameters/{voltage_offset_uv,voltage_state}`.
 
+## Wi-Fi access point (`sprd_wlan_combo`)
+
+When the SC2355 firmware can run SAE for a soft AP, the wiphy advertises `NL80211_EXT_FEATURE_SAE_OFFLOAD_AP` and
+`max_num_akm_suites` 3. START_AP hands the firmware nl80211's SAE password (hunting-and-pecking only: H2E, FT-SAE, an
+empty or longer than 63-byte password fail START_AP); AUTH frames stay with the firmware. A new station's association
+elements reach cfg80211 with the firmware's PMK record appended (`dd 34 40:45:da:04 <PMK 32><PMKID 16>`); hostapd
+takes the PMK from it and runs the 4-way handshake.
+
 ## CPU voltage offset
 
 The initramfs is the only writer of `voltage_offset_uv`; the root filesystem's `mu300-cpu` only writes the request

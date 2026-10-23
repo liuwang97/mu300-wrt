@@ -9,28 +9,33 @@ R=${MU300_SYSROOT:-}
 WIFI_CHANNELS=${MU300_WIFI_CHANNELS:-/opt/mu300/lib/wifi-channels.sh}
 [ -r "$WIFI_CHANNELS" ] || WIFI_CHANNELS=$(dirname "$0")/../lib/wifi-channels.sh
 . "$WIFI_CHANNELS"
-# Configured before (at every boot from then on): a DFS channel set in LuCI or by hand becomes the country's default,
-# with a line that says so. (wifi-scripts would replace it at every start anyway, see openwrt/patches/
-# wifi-scripts-no-dfs.patch; this makes LuCI show the channel the hotspot really uses.)
+# Configured before (at every boot from then on): a DFS channel set in LuCI or by hand becomes 36 with htmode as it is,
+# with a line that says so; where the country does not allow 36 at that width nothing changes and it exits 1. (The
+# wifi-scripts do the same at every start, see openwrt/patches/wifi-scripts-no-dfs.patch; this makes LuCI show the
+# channel the hotspot really uses.)
 if [ -e "$R/etc/mu300/wifi-configured" ]; then
 	radio=$(uci -q show wireless | sed -n "s/^wireless\.\([^.=]*\)=wifi-device$/\1/p" | head -1)
 	[ -n "$radio" ] || exit 0
 	ch=$(uci -q get "wireless.$radio.channel")
 	[ "$(uci -q get "wireless.$radio.band")" = 5g ] && wifi_ap5_dfs "$ch" || exit 0
 	cc=$(uci -q get "wireless.$radio.country"); cc=${cc:-TR}
-	note=$(wifi_ap5_resolve "$cc" "$ch" 2>&1 >/dev/null)
-	echo "$note" >&2; logger -t mu300-wifi "$note" 2>/dev/null || true
-	ch=$(wifi_ap5_default "$cc")
-	[ -n "$ch" ] || exit 0
-	ht=$(uci -q get "wireless.$radio.htmode"); w=$(wifi_ap5_width "$cc" "$ch")
+	ht=$(uci -q get "wireless.$radio.htmode")
 	case $ht in
-		NOHT|'') ;;
-		HT*) [ "$w" = 80 ] && w=40; ht=HT$w ;;
-		*) ht=${ht%%[0-9]*}$w ;;
+		NOHT|''|HT20|VHT20|HE20|EHT20) want=20 ;;
+		HT40|VHT40|HE40|EHT40) want=40 ;;
+		VHT80|HE80|EHT80) want=80 ;;
+		*) want=0 ;;
 	esac
+	if ! wifi_ap5_allowed "$cc" 36 || [ "$want" = 0 ] || [ "$(wifi_ap5_width "$cc" 36)" -lt "$want" ]; then
+		note="hotspot: DFS channel $ch: channel 36 with ${ht:-NOHT} is not permitted in country $cc; bandwidth left unchanged"
+		echo "$note" >&2; logger -t mu300-wifi "$note" 2>/dev/null || true
+		exit 1
+	fi
+	note="hotspot: channel $ch is a DFS channel: using channel 36, keeping ${ht:-NOHT}"
+	echo "$note" >&2; logger -t mu300-wifi "$note" 2>/dev/null || true
+	ch=36
 	uci -q batch <<UCI
 set wireless.$radio.channel='$ch'
-set wireless.$radio.htmode='$ht'
 set wireless.$radio.channels='$(wifi_ap5_channels "$cc")'
 set wireless.$radio.acs_exclude_dfs='1'
 UCI

@@ -46,11 +46,11 @@ jobs:
           node-version: 22
       - name: shells and tools
         run: sudo apt-get install -y -qq busybox lz4 cpio jq >/dev/null
-      - name: the driver strips the firmware SAE PMK record, with UBSan
+      - name: hostapd's import of the firmware SAE PMK, with ASan and UBSan
         if: matrix.shard == 0
         env:
-          MU300_TEST_UBSAN: '1'
-        run: cd openwrt/tests && python3 -m unittest test_wpa2_only -v
+          MU300_TEST_SANITIZE: '1'
+        run: cd openwrt/tests && python3 -m unittest test_wifi_sae.FirmwarePmkImport -v
       - name: tests
         # OpenWrt runs every script under busybox ash
         env:
