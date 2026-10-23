@@ -1,6 +1,6 @@
 # 重构交接（完成后删除本文件）
 
-仓库：WSL `/root/mu300-wrt`（还没有 remote）。它是 dikeckaan/mu300-linux 的硬分叉，基线写在 `UPSTREAM` 里。
+仓库：WSL `/home/akira/mu300-wrt`（还没有 remote；`/root/mu300-wrt` 是指向它的符号链接）。它是 dikeckaan/mu300-linux 的硬分叉，基线写在 `UPSTREAM` 里。
 完整方案：`C:\Users\Akira\mu300-linux\U30Air-重构方案.md`。
 
 ## 用户已定的范围
@@ -27,8 +27,8 @@
 ## 剩余工作（按顺序）
 
 1. **跑通测试**。命令：`cd kernel/tests && python3 -m unittest`，`openwrt/tests` 同样。
-   - 用非 root 用户跑（例如 akira），设 `MU300_TEST_SHELLS='busybox sh'`。
-   - 旧仓库基线在 `/root/base`（75295203），结果在 `/root/tb/`。基线就有 5 个模块失败：
+   - 用 `/home/akira/bin/mu300-wrt-test.sh kernel|openwrt [模块...]`：以 akira 就地运行，设 `MU300_TEST_SHELLS='busybox sh'`，日志在 `~/mu300-test-results/`。
+   - 旧仓库基线在 `/home/akira/mu300-base`（75295203），结果在 `/home/akira/mu300-base-tests/`。基线就有 5 个模块失败：
      - test_usb_pd：0028 编号重复，展平目录后应该会好；
      - test_terminal：root 权限导致；
      - test_sms_pool、test_mu300cell：时序问题；
@@ -60,11 +60,11 @@
 5. **文档**：
    - 写 `docs/contract.md`，接口内容见方案 3.3。
    - 写根目录、`kernel/`、`openwrt/` 三份 CLAUDE.md。
-   - 从 `/root/base/docs/FINDINGS.md` 蒸馏出三类文档：事实、决策（`docs/decisions/`）、未决问题（`docs/open-issues.md`）。
+   - 从 `/home/akira/mu300-base/docs/FINDINGS.md` 蒸馏出三类文档：事实、决策（`docs/decisions/`）、未决问题（`docs/open-issues.md`）。
    - 把代码里的 `FINDINGS N` 引用改成一句 WHY，或者指向文档锚点。
    - 加 `tools/doc-lint`，进 CI。
 6. **构建并对比**：
-   - 内核在 WSL 原生编（参考 `/root/mu300-72-build.sh`，源码在 `/root/mu300src`）。
+   - 内核在 WSL 原生编（参考 `/root/mu300-72-build.sh`）。本仓库用 `MU300_SRC=/home/akira/mu300src`：那里是签名校验过、未打补丁的 linux-7.2.11 和下载包；`/src`、`/work`、`/root/mu300src` 是其它会话共用的，不要在上面构建。
    - 镜像用 docker 编。**前提**：Docker Desktop 打开 Debian 的 WSL integration，否则 WSL 里没有 `docker`。
    - 和旧仓库的产物对比文件清单（`openwrt/tools/image-manifest.py`）。
    - 刷设备之前先读设备锁 `C:\Users\Akira\mu300-linux\U30AIR-DEVICE-LOCK.txt`。
