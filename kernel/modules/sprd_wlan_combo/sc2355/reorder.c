@@ -77,8 +77,13 @@ reorder_set_skb_list(struct rx_ba_entry *ba_entry,
 static inline void reorder_mod_timer(struct rx_ba_node *ba_node)
 {
 	if (ba_node->rx_ba->buff_cnt) {
-		mod_timer(&ba_node->reorder_timer,
-			  jiffies + RX_BA_LOSS_RECOVERY_TIMEOUT);
+		/*
+		 * The deadline belongs to the oldest buffered frame: a stream of out-of-order frames must not keep moving
+		 * it forward and hold that frame for as long as the stream lasts (from kanoqwq's clean-tf-7.2).
+		 */
+		if (!timer_pending(&ba_node->reorder_timer))
+			mod_timer(&ba_node->reorder_timer,
+				  jiffies + RX_BA_LOSS_RECOVERY_TIMEOUT);
 	} else {
 		del_timer(&ba_node->reorder_timer);
 		ba_node->timeout_cnt = 0;

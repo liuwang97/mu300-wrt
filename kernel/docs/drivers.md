@@ -9,7 +9,7 @@ Applies to: Linux 7.2.11, OpenWrt 25.12.5 (F50, U30 Air). Checked against the co
 ## Build
 
 - `kernel/build.sh` applies a patch only if not applied yet and stops on anything else. Order matters:
-  0011 builds on 0010, 0012/0015/0016/0019 on 0009, 0018 on 0011. 0003, 0005 and 0019 apply to 7.2.11 with fuzz.
+  0011 builds on 0010, 0012/0015/0016/0019 on 0009, 0018 on 0011, 0029 on 0016, 0020 and 0023. 0003, 0005 and 0019 apply to 7.2.11 with fuzz.
 - The build stops when Kconfig drops a fragment option. `kernel/all-modules.py` turns every `tristate` that is off into
   `m`, except what `all-modules.exclude` lists: tests/debug, ASoC, display panels, SoC GPU drivers (panfrost waits for
   the GPU bring-up), VFIO, the dummy UDC (`mu300-usb` takes the first UDC), chip drivers of other boards.
@@ -85,8 +85,9 @@ is synced first and removed only by a clean shutdown, so a crash or power cut dr
 - U30 Air: `0004`-`0006` add UMP9620 to efuse, ADC and fuel gauge. The SGM41511 (bq25601, I2C bus 6, 0x6b) is driven by
   `bq256xx` (`0009`; no register cache, so Android's values and `mu300-usb`'s OTG bit survive). Input current is 500 mA
   until BC1.2 reports (status register 0x239c); `0012` takes the larger of BC1.2 and the Type-C source's Rp. `0015`/`0016`:
-  the SGM41513 at 0x1a, only where `/charger_policy_service` exists (an F50 has a chip there and reset in a loop when told to
-  charge). `0024`: CV from the battery node (4.272 V; a low CV ends a charge early), `EN_TIMER` cleared. `0025`: 3 A only
+  the SGM41513 at 0x1a, only on the board with a battery (an F50 has a chip there and reset in a loop when told to
+  charge). `0029`: one test of that board for the charger, the fuel gauge and the port controller,
+  `ump9620_has_battery_policy()` (`/charger_policy_service` present and enabled). `0024`: CV from the battery node (4.272 V; a low CV ends a charge early), `EN_TIMER` cleared. `0025`: 3 A only
   with `bq256xx_charger.u30air_3a=1` (kernel command line).
 - The fuel gauge keeps the last capacity in its user area in Android's format (bits 7:0 percent, 11:8 tenths), written with
   `regmap_update_bits()`; `0018` also at shutdown. The charger's Full counts as 100 % when |I| <=

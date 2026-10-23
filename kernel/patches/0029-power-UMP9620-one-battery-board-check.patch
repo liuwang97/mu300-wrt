@@ -1,0 +1,109 @@
+power: UMP9620 boards: one check for the board with a battery
+
+The F50 and the U30 Air share the UMP9620 device tree layout, charger, fuel gauge and USB-PD nodes included; only
+the U30 Air has a battery, and only its tree has the stock charger policy service. The bq256xx charger (0016),
+the fuel gauge's awake events (0023) and the port controller (0020) each looked the node up on their own and took
+its mere presence for the answer. One helper, ump9620_has_battery_policy() in <linux/power/ump9620-battery.h>,
+answers for all three, and asks for the node to be enabled as well. The idea is kanoqwq's (clean-tf-7.2,
+"battery board isolation").
+
+--- a/drivers/power/supply/bq256xx_charger.c
++++ b/drivers/power/supply/bq256xx_charger.c
+@@ -22,6 +22,7 @@
+ #include <linux/extcon.h>
+ #include <linux/mfd/sc27xx-pmic.h>
+ #include <linux/of.h>
++#include <linux/power/ump9620-battery.h>
+ #include <linux/spi/spi.h>
+ 
+ #define BQ256XX_MANUFACTURER "Texas Instruments"
+@@ -2286,7 +2287,6 @@
+ 	if (bq->bq2560x_chg) {
+ 		struct bq256xx_chip_info *info;
+ 		int part, err;
+-		struct device_node *np;
+ 		bool battery;
+ 
+ 		/* the bq25601 as it is, without a register cache and with its input detection */
+@@ -2311,9 +2311,7 @@
+ 		 * told to charge, the fuel gauge reported over-voltage and the PMIC reset the board, over and over
+ 		 * on a router's USB port (issue #225). There it stays unbound, as before v2026.10.25.
+ 		 */
+-		np = of_find_node_by_path("/charger_policy_service");
+-		battery = np;
+-		of_node_put(np);
++		battery = ump9620_has_battery_policy();
+ 		if (part < 0 && client->addr != SGM41513_I2C_ADDR && battery) {
+ 			err = part;
+ 			chip = devm_i2c_new_dummy_device(dev, client->adapter, SGM41513_I2C_ADDR);
+--- a/drivers/power/supply/sc27xx_fuel_gauge.c
++++ b/drivers/power/supply/sc27xx_fuel_gauge.c
+@@ -15,6 +15,7 @@
+ #include <linux/property.h>
+ #include <linux/regmap.h>
+ #include <linux/slab.h>
++#include <linux/power/ump9620-battery.h>
+ 
+ /* PMIC global control registers definition */
+ #define SC27XX_MODULE_EN0		0xc08
+@@ -1149,13 +1150,7 @@
+  */
+ static bool ump9620_fgu_awake_events(struct sc27xx_fgu_data *data)
+ {
+-	struct device_node *np;
+-
+-	if (data->var != &ump9620_info)
+-		return false;
+-	np = of_find_node_by_path("/charger_policy_service");
+-	of_node_put(np);
+-	return np;
++	return data->var == &ump9620_info && ump9620_has_battery_policy();
+ }
+ 
+ static int ump9620_fgu_enable_events(struct sc27xx_fgu_data *data)
+--- a/drivers/usb/typec/tcpm/ump9620-tcpc.c
++++ b/drivers/usb/typec/tcpm/ump9620-tcpc.c
+@@ -37,6 +37,7 @@
+ #include <linux/regulator/consumer.h>
+ #include <linux/slab.h>
+ #include <linux/usb/pd.h>
++#include <linux/power/ump9620-battery.h>
+ #include <linux/usb/role.h>
+ #include <linux/usb/tcpm.h>
+ #include <linux/workqueue.h>
+@@ -796,9 +797,7 @@
+ 		return -ENODEV;
+ 	}
+ 	/* only a board with a battery: the U30 Air's device tree has the charger policy service (as mu300-device) */
+-	np = of_find_node_by_path("/charger_policy_service");
+-	of_node_put(np);
+-	if (!np)
++	if (!ump9620_has_battery_policy())
+ 		return -ENODEV;
+ 	typec = of_get_compatible_child(dev->parent->of_node, "sprd,sc27xx-typec");
+ 	if (!typec || !of_property_read_bool(typec, "use_pdhub_c2c")) {
+--- a/include/linux/power/ump9620-battery.h
++++ b/include/linux/power/ump9620-battery.h
+@@ -0,0 +1,22 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++#ifndef _LINUX_POWER_UMP9620_BATTERY_H
++#define _LINUX_POWER_UMP9620_BATTERY_H
++
++#include <linux/of.h>
++
++/*
++ * The UMP9620 boards share one device tree layout: the F50 carries the charger, fuel gauge and USB-PD nodes too,
++ * without a battery. Only the board with a battery (the ZTE U30 Air) has the stock charger policy service, and it
++ * is enabled there. Ask this before any register access: a charger that answers at its address is no proof of a
++ * battery (the F50 has one at 0x1a, which, bound and told to charge, had the PMIC reset the board).
++ */
++static inline bool ump9620_has_battery_policy(void)
++{
++	struct device_node *policy = of_find_node_by_path("/charger_policy_service");
++	bool enabled = policy && of_device_is_available(policy);
++
++	of_node_put(policy);
++	return enabled;
++}
++
++#endif
