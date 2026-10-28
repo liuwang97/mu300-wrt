@@ -679,6 +679,24 @@ class ThermalGuardCases:
             self.round(shell, 60000)                     # at the ceiling now: no further rise
             self.assertEqual((p / 'scaling_max_freq').read_text().strip(), '1105000')
 
+    def test_a_round_without_a_reading_lifts_no_cap_and_keeps_the_alarm(self):
+        # every zone failing (no number this round) is not a cool SoC: no cap goes and the alarm stays on until a real
+        # reading is cool
+        freqs = [614400, 936000, 1105000, 2002000]
+        for shell in self.each_shell():
+            shutil.rmtree(self.root, ignore_errors=True)
+            self.device('u30air')
+            p = self.policy('policy0', freqs, 936000)
+            self.assertEqual(self.round(shell, 90000), ['mu300-led alarm on'])
+            capped = (p / 'scaling_max_freq').read_text().strip()
+            for bad in ('', 'error', '-'):
+                (self.tmp / 'log').unlink(missing_ok=True)
+                self.assertEqual(self.round(shell, bad), [], repr(bad))
+                self.assertEqual((p / 'scaling_max_freq').read_text().strip(), capped, repr(bad))
+                self.assertIn('no thermal zone gave a temperature', self.log())
+            self.assertEqual(self.round(shell, 60000), ['mu300-led alarm off'])
+            self.assertNotEqual((p / 'scaling_max_freq').read_text().strip(), capped)
+
     def test_cooldown_without_a_ceiling_rises_to_the_hardware_maximum(self):
         freqs = [614400, 936000, 1105000, 2002000]
         for shell in self.each_shell():

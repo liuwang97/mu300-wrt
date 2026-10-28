@@ -612,14 +612,19 @@ function thermal_init() {
 	RELEASE = rd(R + '/proc/sys/kernel/osrelease') ?? rd('/proc/sys/kernel/osrelease') ?? '';
 }
 
+// hottest ZONES: the hottest zone's reading (0 at the least), or null when no zone gave a number (every sensor
+// failing, or no zone yet). That is not a cool SoC: a round without a reading lifts no cap and turns no alarm off.
 function hottest(zones) {
-	let t = 0;
+	let t = 0, found = false;
 	for (let z in zones) {
 		let v = rd(TH + '/' + z + '/temp');
-		if (integer(v) && +v > t)
+		if (!integer(v))
+			continue;
+		found = true;
+		if (+v > t)
 			t = +v;
 	}
-	return t;
+	return found ? t : null;
 }
 // the battery's temperature in tenths of a degree (null without one); the U30 Air only. The F50 has no battery, but
 // under mainline the PMIC's fuel gauge probes on it too and reports one, at 75 C from an unconnected NTC input. The
@@ -792,11 +797,21 @@ function next_look(t, b, throttle) {
 	return (w > WAIT) ? w : WAIT;
 }
 
-let native_was = '', first = true, th_timer = null;
+let native_was = '', first = true, th_timer = null, blind = false;
 // one round: the reading, who throttles, what this guard does about it, the alarm; the seconds to the next round
 function thermal_round() {
 	let listing = names(TH, ''), zones = filter(listing, (z) => substr(z, 0, 12) == 'thermal_zone');
 	let t = hottest(zones), b = battery_temp(), throttle = false;
+	if (t == null) {
+		if (!blind)
+			log('mu300-thermal', 'no thermal zone gave a temperature: keeping caps and alarm as they are');
+		blind = true;
+		t = 0;
+	}
+	else if (blind) {
+		log('mu300-thermal', 'thermal zones read again (' + t + ' mC)');
+		blind = false;
+	}
 	let native = native_cpu_cooling(t, listing) ?? '';
 	if (native != '') {
 		if (native != native_was) {
@@ -825,7 +840,7 @@ function thermal_round() {
 		mark(CAPPED, '');
 		log('mu300-thermal', 'hot (' + t + ' mC): lowered cpufreq limits');
 	}
-	else if (t <= COOL && throttle)
+	else if (t <= COOL && throttle && !blind)
 		raise_caps();
 	else if (t >= BACKSTOP && !throttle) {
 		// the kernel throttles but does not hold the SoC: one step more per round on top of its cap, the A76 clusters
@@ -837,7 +852,7 @@ function thermal_round() {
 				step(p, -1);
 		mark(CAPPED, 'backstop\n');
 	}
-	else if (t <= HOT && !throttle && exists(CAPPED))
+	else if (t <= HOT && !throttle && exists(CAPPED) && !blind)
 		raise_caps();   // the backstop's caps, a step a round once the kernel holds the SoC at its trip again
 	let bs = (b == null || b == '') ? '-' : b;
 	if (!exists(ALARM) && (t >= HOT || (bn != null && bn >= BATT_HOT))) {
@@ -845,7 +860,7 @@ function thermal_round() {
 		log('mu300-thermal', 'too hot (SoC ' + t + ' mC, battery ' + bs + ' dC): LED alarm on');
 		chain([ LED, 'alarm', 'on' ]);
 	}
-	else if (exists(ALARM) && t <= COOL && bn != null && bn <= BATT_COOL) {
+	else if (exists(ALARM) && !blind && t <= COOL && bn != null && bn <= BATT_COOL) {
 		unlink(ALARM);
 		log('mu300-thermal', 'cooled down (SoC ' + t + ' mC, battery ' + bs + ' dC): LED alarm off');
 		chain([ LED, 'alarm', 'off' ]);

@@ -102,16 +102,34 @@ set_conf() {
 }
 
 # write_bc FILE: the 32-byte block into misc, read back; then, and only then, the default boot that goes with it
-# (PENDING_CONF, set by the command). A failed or unverified write leaves the file as it was.
+# (PENDING_CONF, set by the command). A failed or unverified write leaves the file as it was. When the file cannot be
+# written after misc was, misc gets its previous block back, so the two never disagree (misc armed for Linux with the
+# file still saying android, or the reverse).
 PENDING_CONF=
+misc_bc() { dd if="$MISC" bs=1 skip=2048 count=32 2>/dev/null | od -An -tx1 -v | tr -d ' \n'; }
+put_bc() {  # put_bc FILE: written and read back; false when either fails
+    dd if="$1" of="$MISC" bs=1 seek=2048 conv=notrunc 2>/dev/null || return 1
+    sync
+    [ "$(misc_bc)" = "$(hex_of "$1")" ]
+}
 write_bc() {
+    local prev tmp
     [ -s "$1" ] || { echo "no boot control block $1 (initramfs too old for this slot?)" >&2; exit 1; }
+    prev=$(misc_bc)
     dd if="$1" of="$MISC" bs=1 seek=2048 conv=notrunc 2>/dev/null || { echo "writing misc failed" >&2; exit 1; }
     sync
-    [ "$(dd if="$MISC" bs=1 skip=2048 count=32 2>/dev/null | od -An -tx1 -v | tr -d ' \n')" = "$(hex_of "$1")" ] \
-        || { echo "misc verify failed" >&2; exit 1; }
+    [ "$(misc_bc)" = "$(hex_of "$1")" ] || { echo "misc verify failed" >&2; exit 1; }
     if [ -n "$PENDING_CONF" ]; then
-        set_conf "$PENDING_CONF" || { echo "misc written, but $CONF could not be written" >&2; exit 1; }
+        if ! set_conf "$PENDING_CONF"; then
+            tmp=$(mktemp)
+            if [ "${#prev}" = 64 ] && bytes_of "$prev" > "$tmp" && put_bc "$tmp"; then
+                echo "$CONF could not be written: misc put back as it was, nothing changed" >&2
+            else
+                echo "misc written, but $CONF could not be written, and putting misc back failed too" >&2
+            fi
+            rm -f "$tmp"
+            exit 1
+        fi
         PENDING_CONF=
     fi
 }

@@ -2716,6 +2716,28 @@ class Led(ShellTest):
             self.led(shell, 'u30air', 'sleep', '--if-due')
             self.assertEqual(self.state()['sc27xx:green'], '0')
 
+    def test_sleep_darkens_lamps_it_has_no_state_for(self):
+        """A lamp lit without a state file here (the boot's hand-off, a late driver, a run cut short) goes dark at the
+        timeout too; the battery LED is written again, not taken as last written."""
+        for shell in self.each_shell():
+            self.reset()
+            self.sim(0)
+            self.uptime(100)
+            self.led(shell, 'u30air', 'power', 'on')
+            self.led(shell, 'u30air', 'data', 'on')
+            for n in ('zte-ldo1', 'zte-ldo2', 'net_blue'):    # lit behind this script's back
+                (self.root / 'sys/class/leds' / n / 'brightness').write_text('255\n')
+            self.uptime(161)
+            self.led(shell, 'u30air', 'sleep', '--if-due')
+            self.assertEqual({v for v in self.state().values()}, {'0'})
+            self.assertFalse((self.root / 'run/mu300/led/zte-ldo1').exists())   # no state made up for them
+            # dark already, and the battery channel lit again by something else: idle on puts it out too
+            (self.root / 'sys/class/leds/sc27xx:green/brightness').write_text('120\n')
+            (self.root / 'sys/class/leds/zte-ldo2/brightness').write_text('255\n')
+            self.led(shell, 'u30air', 'idle', 'on')
+            self.assertEqual({v for v in self.state().values()}, {'0'})
+            self.led(shell, 'u30air', 'idle', 'off')
+
     def test_idle_darkens_everything_but_a_key_still_shows_them(self):
         """Under the idle flag a key press must light something, or the device looks powered off for hours. A
         key's wake shows the LEDs for LED_TIMEOUT (a minute when it is 0) in idle too; then dark again."""
@@ -4046,6 +4068,29 @@ class NextBoot(ShellTest):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual((self.bc()[14], conf.read_text()), (0x6f, 'linux\n'))
         self.assertEqual([p.name for p in self.tmp.glob('.default-boot.*')], [])
+
+    def test_misc_put_back_when_the_default_boot_cannot_be_written(self):
+        # misc written and read back, then the file fails: misc gets its previous block back, so the file and misc
+        # never disagree (here: misc on Android's block with the file still saying linux)
+        android_a, _ = self.slot_b_blocks()
+        conf = self.tmp / 'default-boot'
+        self.assertEqual(self.nb('--rearm').returncode, 0)
+        before = self.misc.read_bytes()
+        self.assertNotEqual(self.bc(), android_a)
+        os.chmod(self.tmp, 0o555)                   # the file's directory cannot take the new file
+        try:
+            if os.access(self.tmp, os.W_OK):
+                self.skipTest('running as root: a read-only directory is still writable')
+            r = self.nb('android')
+        finally:
+            os.chmod(self.tmp, 0o755)
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertIn('misc put back as it was', r.stderr)
+        self.assertEqual(self.misc.read_bytes(), before)
+        self.assertEqual(conf.read_text(), 'linux\n')
+        r = self.nb('android')                       # and once it can be written, as usual
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual((self.bc(), conf.read_text()), (android_a, 'android\n'))
 
     def test_the_degraded_arm_still_records_linux(self):
         # a slot block that cannot be rebuilt here gets the initramfs' one-shot block - written and read

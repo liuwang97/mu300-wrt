@@ -160,6 +160,16 @@ show_all() {  # every LED as it should be (none while idle, unless a key woke th
         rd "$f"; write "${f##*/}" "$v"
     done
 }
+# dark_all: every LED dark as the lamps are, not only as this script last wrote them: a lamp can be lit without a state
+# file here (the boot's hand-off, a driver that came late, a run cut short), and the battery LED is written again
+# rather than taken to be what .battery-shown says. The states are kept.
+dark_all() {
+    for f in "$STATE"/*; do [ -f "$f" ] && write "${f##*/}" 0; done
+    for l in $DATA $DATA5G $NODATA $WIFI5 $WIFI24; do
+        [ -e "$STATE/$l" ] || ! has_led "$l" || write "$l" 0
+    done
+    rm -f "$STATE/.battery-shown"
+}
 siren_running() { rd "$SIREN_PID"; p=$v; [ "$p" != - ] && [ -n "$p" ] && kill -0 "$p" 2>/dev/null; }
 
 # --- the U30 Air's battery LED: ZTE's services.jar ZteBatteryService and its lights HAL
@@ -266,7 +276,7 @@ leds_sleep() {
         [ -e "$STATE/.awake-until" ] || [ "${1:-}" != --if-due ] || return 0   # dark already
     fi
     rm -f "$STATE/.awake-until"
-    for f in "$STATE"/*; do [ -f "$f" ] && write "${f##*/}" 0; done
+    dark_all
     battery_show
 }
 # tick_hint: what the next tick depends on, for mu300-sysd (see the top): "due UPTIME", then "FILE VALUE" lines
@@ -357,7 +367,7 @@ case "$1 ${2:-}" in
         mkdir -p "$STATE" 2>/dev/null
         : > "$STATE/.idle"
         rm -f "$STATE/.peek-until"
-        for f in "$STATE"/*; do [ -f "$f" ] && write "${f##*/}" 0; done
+        dark_all
         [ -z "$POWER" ] || write "$POWER" 0
         battery_show ;;
     "idle off")
