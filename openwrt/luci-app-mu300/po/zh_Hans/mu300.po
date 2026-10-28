@@ -3244,6 +3244,15 @@ msgstr "未知的锁定类型"
 msgid "Invalid value for this lock kind"
 msgstr "此锁定类型的值无效"
 
+msgid "None of these bands is supported by this modem"
+msgstr "此调制解调器不支持其中任何频段"
+
+msgid "Band, mode and cell locks are not supported for SIM2 yet"
+msgstr "SIM2 暂不支持频段、模式和小区锁定"
+
+msgid "Band, mode and cell locks are not supported while dual-SIM switching manages the radio"
+msgstr "双卡切换管理射频时，不支持频段、模式和小区锁定"
+
 msgid "Invalid page"
 msgstr "页码无效"
 
@@ -3752,6 +3761,9 @@ msgstr "未知的转发操作"
 msgid "Lock cache unavailable"
 msgstr "锁定缓存不可用"
 
+msgid "The modem refused a write"
+msgstr "模组拒绝了一次写入"
+
 msgid "The saved locks could not be cleared"
 msgstr "无法清除已保存的锁定"
 
@@ -3760,9 +3772,6 @@ msgstr "没有可锁定的服务小区"
 
 msgid "The modem did not answer the mode query; nothing was sent"
 msgstr "模组未回应模式查询；未发送任何设置"
-
-msgid "The modem refused a write"
-msgstr "模组拒绝了一次写入"
 
 msgid "The read-back does not match the automatic values"
 msgstr "回读结果与自动值不一致"

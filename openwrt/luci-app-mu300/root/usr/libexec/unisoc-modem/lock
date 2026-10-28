@@ -55,6 +55,8 @@ STATE_DIR=$(safe_state_dir "$(uci_get state_dir)" /etc/unisoc-modem/lock-state.d
 DATA_IFACE=$(safe_iface "$(uci_get data_interface)" wan)
 RUNDIR=${MU300_DASH_DIR:-$RUN_DIR}
 APPLY_DIR=${UNISOC_APPLY_DIR:-/run/unisoc-modem-lock-apply}
+# the SIM manager's runtime state (sim-slot, sim-managed); the tests point it elsewhere
+SIM_RUN=${MU300_SIM_RUN:-/run/mu300}
 REPLAY_MARKER=${UNISOC_REPLAY_MARKER:-/run/unisoc-modem-lock-replay-done}
 LOG=$RUNDIR/lock.log
 # The lock state only changes when somebody applies one - a real read costs seven
@@ -377,6 +379,33 @@ emit_state() {
     sed 's/^{//' "$LOCKCACHE"
 }
 
+# band_write CMD: one band mask write. An explicit ERROR answer is a refusal: logged with the answer, nothing saved,
+# no stack restart (#356: the answer used to be thrown away, and a refused write was saved and replayed as applied).
+# No answer at all is not taken as a refusal: some vendor setters apply the value and omit the final OK.
+band_write() {
+    local r
+    r=$(at "$1" 6)
+    case $r in
+        *ERROR*)
+            say "the modem refused $1: $(printf '%s\n' "$r" | sed -n '/ERROR/{p;q;}')"
+            printf '{"ok":0,"error":"The modem refused a write","detail":"%s"}\n' "$1"
+            exit 1 ;;
+    esac
+}
+
+# bands_kept KIND REQUESTED KEPT: a band lock whose bands the modem supports none of is refused (the filter left
+# nothing, which used to be written as "automatic": a lock on n999 cleared the NR lock and was reported done); bands
+# left out of a partly supported list are logged
+bands_kept() {
+    [ -n "$2" ] || return 0
+    if [ -z "$3" ]; then
+        say "apply $1 refused: the modem supports none of the bands $2"
+        printf '{"ok":0,"error":"None of these bands is supported by this modem","detail":"%s"}\n' "$2"
+        exit 1
+    fi
+    [ "$2" = "$3" ] || say "apply $1: bands the modem does not support left out of $2 (locking $3)"
+}
+
 do_apply() {  # do_apply KIND VALUE
     _t0=$(date +%s)
     valid_value "$1" "$2" || { echo "invalid lock setting" >&2; exit 2; }
@@ -388,11 +417,18 @@ do_apply() {  # do_apply KIND VALUE
         say "boot auto-apply -> $2"
         return 0
     fi
-    [ "${MU300_SIM_SLOT:-$(cat /run/mu300/sim-slot 2>/dev/null || echo 0)}" != 1 ] || {
+    # #356: these refusals ran detached and said nothing anywhere; the rpcd backend now refuses the same two cases
+    # before it starts us (the page shows why), and the log says it for every other caller
+    [ "${MU300_SIM_SLOT:-$(cat "$SIM_RUN/sim-slot" 2>/dev/null || echo 0)}" != 1 ] || {
+        say "apply $1 refused: SIM2 lock writes and live radio restart are not supported yet"
         echo "SIM2 lock writes and live radio restart are not supported yet" >&2
         return 1
     }
-    [ ! -e /run/mu300/sim-managed ] || { echo "Managed dual-SIM network lock restart is not supported" >&2; return 1; }
+    [ ! -e "$SIM_RUN/sim-managed" ] || {
+        say "apply $1 refused: the dual-SIM manager runs the radio (managed dual-SIM network lock restart is not supported)"
+        echo "Managed dual-SIM network lock restart is not supported" >&2
+        return 1
+    }
     apply_lock
     trap 'rm -rf "$APPLY_DIR" 2>/dev/null' EXIT INT TERM
     # a reset that committed and was interrupted before its saved settings were all gone: finish it first, or the
@@ -430,19 +466,21 @@ do_apply() {  # do_apply KIND VALUE
             ;;
         lte)
             val=$(filter_bands "$val" "$LTE_SUP")
+            bands_kept lte "$2" "$val"
             if [ -n "$val" ]; then
-                at "AT+SPLBAND=1,$(lte_masks "$val")" 6 >/dev/null
+                band_write "AT+SPLBAND=1,$(lte_masks "$val")"
             else
-                at 'AT+SPLBAND=1,0,0,0,0,0' 6 >/dev/null
+                band_write 'AT+SPLBAND=1,0,0,0,0,0'
             fi
             say "LTE bands -> ${val:-automatic}"
             ;;
         nr)
             val=$(filter_bands "$val" "$(nr_sup)")
+            bands_kept nr "$2" "$val"
             if [ -n "$val" ]; then
-                at "AT+SPLBAND=2,$(nr_masks "$val" | awk -F, '{print $1",0,"$2","$3}')" 6 >/dev/null
+                band_write "AT+SPLBAND=2,$(nr_masks "$val" | awk -F, '{print $1",0,"$2","$3}')"
             else
-                at 'AT+SPLBAND=2,0,0,0,0' 6 >/dev/null
+                band_write 'AT+SPLBAND=2,0,0,0,0'
             fi
             say "NR bands -> ${val:-automatic}"
             ;;
@@ -586,6 +624,15 @@ write_setting() {
 }
 # read_field CMD PREFIX: the +PREFIX: line's value, blanks removed
 read_field() { at "$1" 4 | sed -n "s/^+$2: *//p" | head -n1 | tr -d ' \t'; }
+# lte_full BANDS: BANDS holds every band of the LTE table. A cleared LTE mask reads back as the modem's own full
+# table, which is the table here on the F50 but more on the U30 Air's modem (1,2,3,4,5,7,8,12,17,20,28,34,38-43,66):
+# an exact match failed every reset and every boot replay of "automatic" there
+lte_full() {
+    local b
+    for b in $(printf '%s' "$LTE_SUP" | tr ',' ' '); do
+        case ",$1," in *",$b,"*) ;; *) return 1 ;; esac
+    done
+}
 # verify_automatic: every setting reads back as automatic; else status 1 with VERIFY_STEP naming the first that
 # does not (mode, gran, endc, lte, nr, cell-lte, cell-nr) and VERIFY_GOT its raw answer. A silent read fails too.
 # "Automatic" bands: an empty mask, or the full supported set the modem reads a cleared mask back as (the LTE
@@ -602,7 +649,7 @@ verify_automatic() {
     raw=$(read_field 'AT+SPLBAND=0' SPLBAND)
     printf '%s\n' "$raw" | grep -Eq '^[0-9]+(,[0-9]+){4}$' || { VERIFY_STEP=lte; VERIFY_GOT=$raw; return 1; }
     got=$(canonical_bands "$(lte_bands "$raw")")
-    [ -z "$got" ] || [ "$got" = "$(canonical_bands "$LTE_SUP")" ] || { VERIFY_STEP=lte; VERIFY_GOT=$raw; return 1; }
+    [ -z "$got" ] || lte_full "$got" || { VERIFY_STEP=lte; VERIFY_GOT=$raw; return 1; }
     raw=$(read_field 'AT+SPLBAND=3' SPLBAND)
     printf '%s\n' "$raw" | grep -Eq '^[0-9]+(,[0-9]+){2,3}$' || { VERIFY_STEP=nr; VERIFY_GOT=$raw; return 1; }
     nr3=$(printf '%s\n' "$raw" | awk -F, 'NF>=4 {print $1","$3","$4; exit} NF==3 {print $1","$3",0"; exit}')
@@ -710,7 +757,7 @@ verify_replay() {
         raw=$(at_boot 'AT+SPLBAND=0' | sed -n 's/^+SPLBAND: *//p' | head -n1)
         [ -n "$raw" ] || return 1
         got=$(canonical_bands "$(lte_bands "$raw")")
-        [ "$got" = "$want" ] || { [ -z "$want" ] && [ "$got" = "$(canonical_bands "$LTE_SUP")" ]; } || return 1
+        [ "$got" = "$want" ] || { [ -z "$want" ] && lte_full "$got"; } || return 1
     fi
     if [ -f "$d/nr" ]; then
         val=$(cat "$d/nr")
@@ -745,9 +792,9 @@ verify_replay() {
     return 0
 }
 do_replay() {
-    [ ! -e /run/mu300/sim-managed ] || return 0
+    [ ! -e "$SIM_RUN/sim-managed" ] || { say "replay skipped: the dual-SIM manager runs the radio"; return 0; }
     # SIM2 has a different cold-start sequence. Its band/cell replay and restart are not validated.
-    [ "${MU300_SIM_SLOT:-$(cat /run/mu300/sim-slot 2>/dev/null || echo 0)}" != 1 ] || return 0
+    [ "${MU300_SIM_SLOT:-$(cat "$SIM_RUN/sim-slot" 2>/dev/null || echo 0)}" != 1 ] || { say "replay skipped: SIM2 is in use"; return 0; }
     local phase=${1:-late} marker=$REPLAY_MARKER
     [ -e "$marker" ] && return 0
     if ! auto_apply_enabled; then

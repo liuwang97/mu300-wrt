@@ -491,6 +491,18 @@ lock_val_ok() {  # lock_val_ok KIND VALUE
     esac
 }
 
+# lock_bands_supported KIND LIST: at least one band of LIST is in the modem's capabilities of the last reading
+# (the helper's cache, read here: no AT, nothing started); no reading yet: not refused here (the helper checks again)
+lock_bands_supported() {
+    local caps b
+    caps=$(jsonfilter -e "@.caps.$1" 2>/dev/null < "$LOCKF")
+    case $caps in ''|*[!0-9,]*) return 0 ;; esac
+    for b in $(printf '%s' "$2" | tr ',' ' '); do
+        case ",$caps," in *",$b,"*) return 0 ;; esac
+    done
+    return 1
+}
+
 m_lock_set() {
     local kind val q=0
     inp '@.kind'; kind=$V
@@ -500,6 +512,19 @@ m_lock_set() {
         *) refuse 'Unknown lock kind'; return ;;
     esac
     lock_val_ok "$kind" "$val" || { refuse 'Invalid value for this lock kind'; return; }
+    # #356: the lock helper refuses these two cases before it writes anything, but it runs detached, so the page
+    # got ok and the read-back quietly put the old bands back. Say it here instead.
+    if [ "$kind" != auto_apply ] && [ "$kind" != reset ]; then
+        [ "$(cat "${MU300_SIM_RUN:-/run/mu300}/sim-slot" 2>/dev/null)" != 1 ] ||
+            { refuse 'Band, mode and cell locks are not supported for SIM2 yet'; return; }
+        [ ! -e "${MU300_SIM_RUN:-/run/mu300}/sim-managed" ] ||
+            { refuse 'Band, mode and cell locks are not supported while dual-SIM switching manages the radio'; return; }
+    fi
+    # a band list of which the modem supports nothing (n999) was written as "automatic" and reported done
+    case $kind in lte|nr)
+        [ -z "$val" ] || lock_bands_supported "$kind" "$val" ||
+            { refuse 'None of these bands is supported by this modem'; return; } ;;
+    esac
     # applying restarts the protocol stack (SFUN 5 -> 4): half a minute without
     # cellular - exactly the thing that must never run inside a request
     # queued=1 tells the page another apply is still running (SFUN restart);

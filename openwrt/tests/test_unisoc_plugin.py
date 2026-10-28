@@ -298,7 +298,8 @@ case "$cmd" in
   'AT+SP5GRAN?') if [ -f "$M/gran" ]; then printf '+SP5GRAN: 1\n'; else printf '+SP5GRAN: 0\n'; fi ;;
   'AT+SPENDC?') if [ -f "$M/endc" ]; then printf '+ENDC: 1\n'; else printf '+ENDC: 2\n'; fi ;;
   'AT+SPLBAND=0')
-      if [ -f "$M/lte" ] && ! { [ -f "$M/revert-after-sfun" ] && [ -f "$M/sfun" ]; }; then printf '+SPLBAND: 0,482,0,149,0\n'
+      if [ -f "$M/lte" ] && [ -f "$M/u30air" ]; then printf '+SPLBAND: 0,2018,2057,2271,2\n'
+      elif [ -f "$M/lte" ] && ! { [ -f "$M/revert-after-sfun" ] && [ -f "$M/sfun" ]; }; then printf '+SPLBAND: 0,482,0,149,0\n'
       else printf '+SPLBAND: 0,0,0,4,0\n'; fi ;;
   'AT+SPLBAND=3') if [ -f "$M/nr" ]; then printf '+SPLBAND: 553,0,272\n'; else printf '+SPLBAND: 0,0,256\n'; fi ;;
   'AT+SPFORCEFRQ=12,3') if [ -f "$M/cell12" ]; then printf '+SPFORCEFRQ: 12,3\n'; else printf '+SPFORCEFRQ: 12,3,1650,211\n'; fi ;;
@@ -344,7 +345,7 @@ printf 'OK\n'
         (run / 'lock.json').write_text('{"ts":1,"mode":{"label":"4g"},"cell":"lte:1650,211",'
                                        '"cells":["lte:1650,211"],"caps":{"nr":"1,5,6,8,28,41,78","lte":"1,3,5,8,34,38,39,40,41"}}\n')
         r = self.script(shell, lock, *(args or ('reset',)), MU300_AT=at, MU300_MOBILE_DATA=self.tmp / 'mobile-data',
-                        MU300_DASH_DIR=run, UNISOC_APPLY_DIR=self.tmp / 'apply')
+                        MU300_DASH_DIR=run, UNISOC_APPLY_DIR=self.tmp / 'apply', MU300_SIM_RUN=self.tmp / 'sim-run')
         return r, self.sent()
 
     def sent(self):
@@ -359,6 +360,76 @@ printf 'OK\n'
 
     def reset_result(self, run):
         return json.loads((run / 'lock-reset.json').read_text())
+
+    def test_a_refused_band_write_is_reported_not_saved(self):
+        """#356: the band write's answer was thrown away, so a modem's ERROR was saved, replayed and reported as
+        applied. Now: logged with the answer, an error on stdout, nothing saved, no stack restart."""
+        lock, state, run, at = self.reset_setup('printf "AT+SPLBAND=2," > "$STUBLOG/modem/refuse"')
+        for shell in self.each_shell():
+            r, sent = self.reset_run(shell, lock, state, run, at, 'apply', 'nr', '41')
+            self.assertEqual(r.returncode, 1, r.stderr)
+            self.assertEqual(json.loads(r.stdout), {'ok': 0, 'error': 'The modem refused a write',
+                                                    'detail': 'AT+SPLBAND=2,0,0,16,0'})
+            self.assertIn('AT+SPLBAND=2,0,0,16,0', sent)
+            self.assertEqual([c for c in sent if c.startswith('AT+SFUN')], [])
+            self.assertEqual((state / 'nr').read_text(), '78')
+            self.assertIn('the modem refused AT+SPLBAND=2,0,0,16,0: ERROR', (run / 'lock.log').read_text())
+
+    def test_bands_the_modem_does_not_support_are_refused_not_written_as_automatic(self):
+        """None of the bands supported: the filter left nothing, which was written as automatic (AT+SPLBAND=2,0,0,0,0)
+        and saved. Now refused with nothing sent; a partly supported list locks the supported ones and logs the rest."""
+        lock, state, run, at = self.reset_setup()
+        for shell in self.each_shell():
+            r, sent = self.reset_run(shell, lock, state, run, at, 'apply', 'nr', '999')
+            self.assertEqual(r.returncode, 1, r.stderr)
+            self.assertEqual(json.loads(r.stdout), {'ok': 0, 'error': 'None of these bands is supported by this modem',
+                                                    'detail': '999'})
+            self.assertEqual(self.writes(sent), [])
+            self.assertEqual([c for c in sent if c.startswith('AT+SFUN')], [])
+            self.assertEqual((state / 'nr').read_text(), '78')
+            self.assertIn('apply nr refused: the modem supports none of the bands 999', (run / 'lock.log').read_text())
+            r, sent = self.reset_run(shell, lock, state, run, at, 'apply', 'lte', '7')
+            self.assertEqual(r.returncode, 1, r.stderr)
+            self.assertEqual(self.writes(sent), [])
+            r, sent = self.reset_run(shell, lock, state, run, at, 'apply', 'nr', '41,999')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn('AT+SPLBAND=2,0,0,16,0', sent)
+            self.assertEqual((state / 'nr').read_text(), '41')
+            self.assertIn('left out of 41,999 (locking 41)', (run / 'lock.log').read_text())
+
+    def test_an_accepted_band_write_is_saved_and_restarts_the_stack(self):
+        lock, state, run, at = self.reset_setup()
+        for shell in self.each_shell():
+            r, sent = self.reset_run(shell, lock, state, run, at, 'apply', 'nr', '41')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn('AT+SPLBAND=2,0,0,16,0', sent)
+            self.assertEqual([c for c in sent if c.startswith('AT+SFUN')][:2], ['AT+SFUN=5', 'AT+SFUN=4'])
+            self.assertEqual((state / 'nr').read_text(), '41')
+
+    def test_sim2_and_the_dual_sim_manager_refuse_with_a_log_line(self):
+        """#356: these refusals were only on the stderr of a detached process; the log says them now, and the boot
+        replay says why it skipped."""
+        lock, state, run, at = self.reset_setup()
+        sim = self.tmp / 'sim-run'
+        for marker, line in (('sim-managed', 'apply nr refused: the dual-SIM manager runs the radio'),
+                             ('sim-slot', 'apply nr refused: SIM2 lock writes')):
+            shutil.rmtree(sim, ignore_errors=True)
+            sim.mkdir()
+            (sim / marker).write_text('1\n')
+            for shell in self.each_shell():
+                with self.subTest(marker=marker):
+                    r, sent = self.reset_run(shell, lock, state, run, at, 'apply', 'nr', '41')
+                    self.assertEqual(r.returncode, 1)
+                    self.assertEqual(sent, [])
+                    self.assertEqual((state / 'nr').read_text(), '78')
+                    self.assertIn(line, (run / 'lock.log').read_text())
+            marker_file = self.tmp / 'replayed'
+            marker_file.unlink(missing_ok=True)
+            for shell in self.each_shell():
+                r = self.script(shell, lock, 'replay', MU300_AT=at, MU300_DASH_DIR=run, MU300_SIM_RUN=sim,
+                                UNISOC_APPLY_DIR=self.tmp / 'apply', UNISOC_REPLAY_MARKER=marker_file)
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertIn('replay skipped', (run / 'lock.log').read_text())
 
     def test_reset_sends_the_automatic_values_with_one_restart_and_clears_the_saved_state(self):
         """#96: mode and band locks live in the modem's NV and stay in force in Android. reset puts every lock back
@@ -395,6 +466,17 @@ printf 'OK\n'
             self.assertEqual(json.loads(r.stdout)['state'], 'ok')
             got = self.script(shell, lock, 'get', 'cached', MU300_DASH_DIR=run)
             self.assertEqual(json.loads(got.stdout)['reset']['state'], 'ok')
+
+    def test_reset_on_the_u30_air_takes_its_modems_full_lte_table_as_automatic(self):
+        """The U30 Air's modem reads a cleared LTE mask back as its own table (0,2018,2057,2271,2: bands 1,2,3,4,5,
+        7,8,12,17,20,28,34,38-43,66), more than the F50's table here: an exact match failed every reset there
+        ("lte read back as '0,2018,2057,2271,2'", seen on the U30 Air on 6.18.58)."""
+        lock, state, run, at = self.reset_setup(': > "$STUBLOG/modem/u30air"')
+        for shell in self.each_shell():
+            r, sent = self.reset_run(shell, lock, state, run, at)
+            self.assertEqual(r.returncode, 0, r.stderr + r.stdout + (run / 'lock.log').read_text())
+            self.assertEqual(self.reset_result(run)['state'], 'ok')
+            self.assertEqual(sorted(p.name for p in state.iterdir()), ['auto_apply'])
 
     def test_a_refused_write_keeps_the_saved_locks_and_restarts_nothing(self):
         lock, state, run, at = self.reset_setup('printf "AT+SPLBAND=2," > "$STUBLOG/modem/refuse"')
