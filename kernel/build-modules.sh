@@ -18,9 +18,10 @@ mods=${*:-wcn_bsp sprd_wlan_combo sprdbt_tty sprd_modem sprd_pmic_wdt mu300_ther
 mkdir -p "$OUT/modules"
 # xt_HL.ko and xt_hl.ko (and three more pairs) must stay two files
 . "$W/case-sensitive.sh"
+. "$W/module-sources.sh"
 case_sensitive "$OUT/modules" || exit 1
 # a full build starts clean, so no module of another kernel release ends up next to the new ones
-[ $# -gt 0 ] || rm -f "$OUT"/modules/*.ko "$OUT"/modules/*.log
+[ $# -gt 0 ] || rm -f "$OUT"/modules/*.ko "$OUT"/modules/*.log "$OUT"/modules/*.sources
 # Module.symvers for the built-in exports (pcie-sprd etc.)
 make -C "$K" O="$O" -j"$(nproc)" modules > "$O/modules.log" 2>&1 || { tail -20 "$O/modules.log"; exit 1; }
 # the kernel's own modules, stripped, flat next to the vendor ones: OpenWrt's kmodloader loads them by name
@@ -47,6 +48,9 @@ find "$O/mod-install/lib/modules" -name '*.ko' -exec cp {} "$OUT/modules/" \;
 B=$SRC/mod-build
 extra=
 for m in $mods; do
+    # the sources as they are built: make-bundle.sh refuses the module once the tree's differ
+    rm -f "$OUT/modules/$m.sources"
+    module_sources "$W/modules/$m" > "$SRC/$m.sources"
     rm -rf "$B/$m" && mkdir -p "$B" && cp -r "$W/modules/$m" "$B/$m"
     # wlan and bt use wcn_bsp's exports and its headers (../wcn_bsp/kinclude); the PMIC watchdog talks to pm_sys over
     # SIPC, so it needs the modem stack's headers next to it
@@ -61,6 +65,7 @@ for m in $mods; do
         # (several MiB each) - --strip-debug keeps their .BTF
         $STRIP --strip-debug "$OUT/modules/${ko##*/}"
     done
+    mv "$SRC/$m.sources" "$OUT/modules/$m.sources"
 done
 cp "$O/modules.in-tree" "$OUT/modules.in-tree"
 ls -la "$OUT"/modules/*.ko | wc -l

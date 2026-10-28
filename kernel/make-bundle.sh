@@ -25,6 +25,7 @@ OUT=${1:?usage: kernel/make-bundle.sh OUT.tar.gz}
 # the build's module tree and the staging directory must keep xt_HL.ko and xt_hl.ko apart: a tree built on a file
 # system that ignores case has lost one of each pair already (audit-bundle.py also finds that)
 . "$K/case-sensitive.sh"
+. "$K/module-sources.sh"
 case_sensitive "$UO/modules" || exit 1
 
 python3 "$K/audit-bundle.py" "$UO" "$K/mu300-mainline.config"
@@ -38,6 +39,18 @@ for m in "$UO"/modules/*.ko; do
     v=$(strings "$m" | sed -n 's/^vermagic=\([^ ]*\) .*/\1/p' | head -1)
     [ "$v" = "$krel" ] || { echo "$m is built for '$v', the kernel is '$krel'" >&2; exit 1; }
 done
+# --- stale begin
+# ... and a vendor module built from older sources has the right vermagic and the old code (a Wi-Fi fix that was in
+# the tree and not in the bundle): its directory must hold what build-modules.sh built (module-sources.sh), else it
+# is refused until build-modules.sh has run again
+for d in "$K"/modules/*/; do
+    d=${d%/}; n=${d##*/}
+    [ -f "$UO/modules/$n.sources" ] ||
+        { echo "$n was not built for this kernel: no $UO/modules/$n.sources (build-modules.sh)" >&2; exit 1; }
+    f=$(module_sources "$d" | LC_ALL=C diff "$UO/modules/$n.sources" - | sed -n 's|^[<>] [0-9a-f]*  \./||p' | head -n 1)
+    [ -z "$f" ] || { echo "kernel/modules/$n/$f changed after $n was built for $krel: run build-modules.sh $n again" >&2; exit 1; }
+done
+# --- stale end
 for m in $(cat "$I/module-order.txt"); do
     [ -f "$UO/modules/$m" ] || { echo "module-order.txt names $m, which was not built" >&2; exit 1; }
 done
