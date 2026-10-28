@@ -570,6 +570,49 @@ process.stdout.write(JSON.stringify({ shown: row.style.display !== 'none', value
             self.assertEqual(t['value'], '--')
 
 
+
+@unittest.skipUnless(shutil.which('node'), 'Node.js is needed for the LuCI JS tests')
+class ImeiRows(unittest.TestCase):
+    """home.js's paintIdent: the module's two IMEIs (cell's imei1/imei2, over diag), the active card's tagged, and the
+    AT+CGSN IMEI standing in for the active card's where diag gave nothing (from dikeckaan/mu300-linux e3177c45c)."""
+
+    def paint(self, ident):
+        src = HOME.read_text(encoding='utf-8')
+        start = src.index('paintIdent: function(cell) {')
+        start = src.index('function', start)
+        end = src.index('\n\t},', start)
+        js = r'''
+const _ = (s) => s;
+const out = {}, el = {};
+const M = { set: (id, t) => { out[id] = t; },
+            v: (id) => { if (!/^imei[12]-[kr]$/.test(id)) return null; return el[id] = el[id] || { style: {} }; } };
+const self = { identShown: false, paintIdent: ''' + src[start:end] + '\n\t}' + r''' };
+self.paintIdent({ ident: ''' + json.dumps(ident) + r''' });
+process.stdout.write(JSON.stringify({ out, k1: el['imei1-k'].innerHTML, k2: el['imei2-k'].innerHTML,
+    r1: el['imei1-r'].style.display, r2: el['imei2-r'].style.display, full: self.imeiFull }));
+'''
+        r = subprocess.run(['node', '-'], input=js, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return json.loads(r.stdout)
+
+    def test_both_from_diag_the_active_one_tagged(self):
+        t = self.paint({'slot': 1, 'imei': '222222222222228', 'imei1': '111111111111116', 'imei2': '222222222222228'})
+        self.assertEqual((t['out']['imei1'], t['out']['imei2']), ('1111****116', '2222****228'))
+        self.assertNotIn('in use', t['k1'])
+        self.assertIn('in use', t['k2'])
+        self.assertEqual((t['r1'], t['r2']), ('', ''))
+        self.assertEqual(t['full'], ['111111111111116', '222222222222228'])
+
+    def test_without_diag_the_at_imei_is_the_active_cards(self):
+        """No diag answer (the F50): only AT+CGSN's IMEI; the other card's row is not shown."""
+        t = self.paint({'slot': 0, 'imei': '333333333333334', 'imei1': '', 'imei2': ''})
+        self.assertEqual(t['out']['imei1'], '3333****334')
+        self.assertIn('in use', t['k1'])
+        self.assertEqual((t['r1'], t['r2']), ('', 'none'))
+        t = self.paint({'imei': '333333333333334'})                    # an identity cached before the slot field
+        self.assertEqual(t['out']['imei1'], '3333****334')
+
+
 if __name__ == '__main__':
     unittest.main()
 

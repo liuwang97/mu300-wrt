@@ -267,6 +267,10 @@ html.mud-bootstrap-theme{--surface:var(--background-color-high);--surface-sunken
 .mud-lockbtn{padding:0 10px;border-radius:99px;border:1px solid var(--hairline,var(--border,#ccc));background:var(--surface,var(--background,#fff));color:var(--text,#222);font-size:.72rem;cursor:pointer;line-height:1.7}
 .mud-lockbtn.on,.mud-lockbtn:active{background:var(--brand,var(--primary,#2f7bf6));border-color:var(--brand,var(--primary,#2f7bf6));color:var(--on-brand,#fff)}
 .mud-lockbtn.locked{opacity:.45;pointer-events:none;background:var(--surface-sunken,rgba(127,127,127,.1));color:var(--text-muted,var(--text-light,#888));border-color:transparent}
+/* the IMEI rows: a click copies the value; the active card's tag */
+.mud-copy{cursor:pointer;border-bottom:1px dotted color-mix(in oklab,var(--hairline,var(--border,#ddd)) 90%,transparent)}
+.mud-copy:hover,.mud-copy.ok{color:var(--success,#1e7e34)}
+.mud-imei-active{display:inline-block;margin-left:6px;padding:0 6px;border-radius:9px;background:color-mix(in oklab,var(--success,#2FBF71) 15%,transparent);color:var(--success,#1e7e34);font-size:11px;line-height:18px;font-weight:600}
 .mud-hero-l{flex:1 1 260px;min-width:0;display:flex;flex-direction:column;gap:5px}
 .mud-hero-r{flex:0 0 auto;text-align:right;display:flex;flex-direction:column;gap:8px;align-items:flex-end}
 .mud-rat{font-size:1.7rem;font-weight:700;line-height:1.1;letter-spacing:.01em}

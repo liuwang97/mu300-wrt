@@ -294,7 +294,8 @@ return view.extend({
         <div class="mud-r"><span class="mud-k">${_('Modem')}</span><span class="mud-v" id="mud-modem">--</span></div>
         <div class="mud-r"><span class="mud-k">${_('Carrier')}</span><span class="mud-v" id="mud-carr">--</span></div>
         <div class="mud-r"><span class="mud-k">PLMN</span><span class="mud-v" id="mud-plmn">--</span></div>
-        <div class="mud-r"><span class="mud-k">IMEI</span><span class="mud-v" id="mud-imei">--</span></div>
+        <div class="mud-r" id="mud-imei1-r"><span class="mud-k" id="mud-imei1-k">IMEI1 (SIM1)</span><span class="mud-v mud-copy" id="mud-imei1">--</span></div>
+        <div class="mud-r" id="mud-imei2-r" style="display:none"><span class="mud-k" id="mud-imei2-k">IMEI2 (SIM2)</span><span class="mud-v mud-copy" id="mud-imei2">--</span></div>
         <div class="mud-r"><span class="mud-k">IMSI</span><span class="mud-v" id="mud-imsi">--</span></div>
         <div class="mud-r"><span class="mud-k">ICCID</span><span class="mud-v" id="mud-iccid">--</span></div>
         <div class="mud-r" id="mud-msisdn-r" style="display:none"><span class="mud-k">${_('Own number')}</span><span class="mud-v" id="mud-msisdn">--</span></div>
@@ -441,6 +442,29 @@ return view.extend({
 			M.v('reveal').textContent = self.identShown ? _('Hide SIM identifiers') : _('Show SIM identifiers');
 			self.paintIdent(self.lastCell);
 		};
+		/* a click on an IMEI copies the whole value; the panel is plain HTTP (no secure context), so execCommand is
+		 * the fallback of the clipboard API */
+		[ 0, 1 ].forEach(function(n) {
+			var el = q('imei' + (n + 1));
+			if (!el) return;
+			el.onclick = function() {
+				var v = self.imeiFull && self.imeiFull[n];
+				if (!v) return;
+				var copy = navigator.clipboard && window.isSecureContext ? navigator.clipboard.writeText(v)
+					: new Promise(function(res, rej) {
+						var ta = document.createElement('textarea');
+						ta.value = v; ta.setAttribute('readonly', ''); ta.style.position = 'fixed'; ta.style.top = '-1000px';
+						document.body.appendChild(ta); ta.select();
+						try { document.execCommand('copy') ? res() : rej(new Error('copy')); } catch (e) { rej(e); }
+						document.body.removeChild(ta);
+					});
+				copy.then(function() {
+					el.classList.add('ok');
+					setTimeout(function() { el.classList.remove('ok'); }, 900);
+					M.toast('IMEI' + (n + 1) + ' \u2713', { type: 'success' });
+				}, function() { M.toast('\u2717', { type: 'error' }); });
+			};
+		});
 
 		/* Lock from a neighbor row (event delegation) */
 		q('neigh').addEventListener('click', function(ev) {
@@ -541,7 +565,20 @@ return view.extend({
 			if (!s) return '--';
 			return this.identShown ? s : s.substring(0, 4) + '****' + s.substring(s.length - 3);
 		}.bind(this);
-		M.set('imei', mask(id && id.imei));
+		/* The module has two IMEIs, one per card (cell's imei1/imei2, read over diag). Both are shown, the active one
+		 * tagged, and a click copies the full value (the page may be masking it). Where diag gave nothing, the
+		 * AT+CGSN IMEI stands in for the active card's, and a row with no value at all is hidden. */
+		var slot = id && typeof id.slot === 'number' ? id.slot : 0;
+		var imei = [ id && id.imei1, id && id.imei2 ];
+		if (!imei[slot] && id && id.imei) imei[slot] = id.imei;
+		this.imeiFull = imei;
+		for (var n = 0; n < 2; n++) {
+			var k = M.v('imei' + (n + 1) + '-k'), r = M.v('imei' + (n + 1) + '-r');
+			if (k) k.innerHTML = 'IMEI' + (n + 1) + ' (SIM' + (n + 1) + ')' +
+				(slot === n && imei[n] ? ' <span class="mud-imei-active">\u2713 ' + _('in use') + '</span>' : '');
+			if (r) r.style.display = imei[n] || n === slot ? '' : 'none';
+			M.set('imei' + (n + 1), mask(imei[n]));
+		}
 		M.set('imsi', mask(id && id.imsi));
 		M.set('iccid', mask(id && id.iccid));
 		/* The SIM's own number (CNUM, else the IMS identity; full rounds only): a row only when there is one, masked
