@@ -98,8 +98,15 @@ static int ump9620_wdt_suspend_noirq(struct device *dev)
 {
 	struct ump9620_wdt *w = dev_get_drvdata(dev);
 	u32 ctrl = 0;
+	int ret;
 
-	regmap_read(w->map, w->base + WDT_CTRL, &ctrl);
+	/*
+	 * A failed read is not "not running": a running watchdog left on would reset the device in its sleep. The
+	 * suspend fails instead, and is tried again.
+	 */
+	ret = regmap_read(w->map, w->base + WDT_CTRL, &ctrl);
+	if (ret)
+		return ret;
 	w->suspended = ctrl & WDT_CNT_EN;
 	if (w->suspended)
 		ump9620_wdt_ctrl(w, false);

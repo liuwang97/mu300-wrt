@@ -108,6 +108,9 @@ typedef uint32_t u32; typedef uint16_t u16; typedef uint8_t u8;
 #define PD_CTRL_GOOD_CRC 1
 #define PD_DATA_SOURCE_CAP 1
 #define PD_REV30 2
+#define PDO_TYPE_FIXED 0
+#define pdo_type(p) (((p) >> 30) & 3)
+#define pdo_fixed_voltage(p) ((((p) >> 10) & 0x3ff) * 50)
 #define READ_ONCE(x) (x)
 #define WRITE_ONCE(x, v) ((x) = (v))
 #define dev_info(...) ((void)0)
@@ -139,7 +142,7 @@ struct fwnode_handle; struct tcpm_port { int x; }; struct usb_role_switch { int 
 struct regulator { int on; }; struct power_supply { int x; }; struct extcon_dev { int x; };
 
 static u32 regs[0x4000];		/* the PMIC: typec at 0x380, pd at 0xe00 */
-static u32 fifo[32]; static int fifo_n, fifo_at, reads_fail;
+static u32 fifo[32]; static int fifo_n, fifo_at, reads_fail, late, polls;
 static int strobes, receives, completes[3], hard_resets, held, role_sets, psy_type = -1, psy_iin = -1;
 static int reg_enables, reg_disables, enable_error;
 static enum usb_role dwc3 = USB_ROLE_DEVICE;
@@ -150,9 +153,23 @@ static int regmap_read(struct regmap *m, u32 r, u32 *v)
 {
 	(void)m;
 	if (r == 0xe00 + 0x04) { if (reads_fail) return -EIO; *v = fifo_at < fifo_n ? fifo[fifo_at++] : 0; return 0; }
-	if (r == 0xe00 + 0x20) { *v = fifo_n - fifo_at; return 0; }
+	/* PD_STS1: the words left, RX_EMPTY (bit 13) without any; "late" reads see it empty still */
+	if (r == 0xe00 + 0x20) {
+		if (late) { late--; *v = BIT(13); return 0; }
+		*v = fifo_n - fifo_at ? (u32)(fifo_n - fifo_at) : BIT(13); return 0;
+	}
 	*v = regs[r]; return 0;
 }
+/* iopoll's loop, without the sleeps: read until COND, at most TIMEOUT/SLEEP more times */
+#define regmap_read_poll_timeout(map, addr, val, cond, sleep_us, timeout_us) ({ \
+	int __r, __n = (timeout_us) / (sleep_us); \
+	for (;;) { \
+		__r = regmap_read(map, addr, &(val)); \
+		if (__r || (cond)) break; \
+		if (__n-- <= 0) { __r = -ETIMEDOUT; break; } \
+		polls++; \
+	} \
+	__r; })
 static int regmap_write(struct regmap *m, u32 r, u32 v) { (void)m; regs[r] = v; return 0; }
 static int regmap_update_bits(struct regmap *m, u32 r, u32 mask, u32 v) { (void)m; regs[r] = (regs[r] & ~mask) | (v & mask); return 0; }
 static int regmap_write_bits(struct regmap *m, u32 r, u32 mask, u32 v)
@@ -247,6 +264,16 @@ int main(void)
 	ump9620_pd_irq(0, &u);
 	assert(receives == 1 && (strobes & BIT(4)) && !held);
 	reads_fail = 0;
+	/* the interrupt before the frame: the FIFO is waited for (kanoqwq b4748534), a frame there already is not */
+	assert(polls == 0);
+	regs[0xe00 + 0x28] = BIT(4); late = 3; polls = 0;
+	fifo[0] = 0x1161; fifo[1] = 0x912c; fifo[2] = 0x0801; fifo_n = 3; fifo_at = 0;
+	ump9620_pd_irq(0, &u);
+	assert(receives == 2 && polls == 3 && got.payload[0] == 0x0801912c && !held);
+	/* and nothing comes: no made-up frame for TCPM, 2 ms of 50 us polls, the FIFO flushed */
+	regs[0xe00 + 0x28] = BIT(4); fifo_n = fifo_at = 0; polls = 0; strobes = 0;
+	ump9620_pd_irq(0, &u);
+	assert(receives == 2 && polls == 2000 / 50 && (strobes & BIT(4)) && !held);
 
 	/* a hard reset: FIFOs and both message IDs back to zero, the contract gone, TCPM told */
 	regs[0xe00 + 0x18] = 5; strobes = 0;

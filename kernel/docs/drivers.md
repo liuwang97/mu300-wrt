@@ -87,11 +87,13 @@ is synced first and removed only by a clean shutdown, so a crash or power cut dr
   until BC1.2 reports (status register 0x239c); `0012` takes the larger of BC1.2 and the Type-C source's Rp. `0015`/`0016`:
   the SGM41513 at 0x1a, only on the board with a battery (an F50 has a chip there and reset in a loop when told to
   charge). `0029`: one test of that board for the charger, the fuel gauge and the port controller,
-  `ump9620_has_battery_policy()` (`/charger_policy_service` present and enabled). `0024`: CV from the battery node (4.272 V; a low CV ends a charge early), `EN_TIMER` cleared. `0025`: 3 A only
-  with `bq256xx_charger.u30air_3a=1` (kernel command line).
+  `ump9620_has_battery_policy()` (`/charger_policy_service` present and enabled). `0024`: CV from the battery node in
+  ZTE's encoding (4.3 V is REG04 0x70, 4.304 V, as under Android; a low CV ends a charge early), `EN_TIMER` cleared.
+  `0025`: 3 A only with `bq256xx_charger.u30air_3a=1` (kernel command line).
 - The fuel gauge keeps the last capacity in its user area in Android's format (bits 7:0 percent, 11:8 tenths), written with
   `regmap_update_bits()`; `0018` also at shutdown. The charger's Full counts as 100 % when |I| <=
-  `fullbatt-current` (120 mA), with no voltage test (the gauge sees ~4.147 V when Full). `i2cdetect -y 6` wedges the bus. `0020` (`ump9620_tcpc`, `enable=1`) is experimental.
+  `fullbatt-current` (120 mA), with no voltage test (the gauge sees ~4.147 V when Full). `i2cdetect -y 6` wedges the bus. `0020` (`ump9620_tcpc`, `enable=1`) is experimental;
+  its receive path waits up to 2 ms for the RX FIFO, as the interrupt can come before the frame.
 
 ## LEDs, pinctrl, PCIe
 

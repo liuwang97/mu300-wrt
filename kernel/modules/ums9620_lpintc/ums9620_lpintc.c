@@ -157,8 +157,14 @@ static int __init lpintc_init(void)
 			continue;
 		}
 		intc[n] = ioremap(lpintc_base[n], 0x10);
-		if (intc[n])
-			used++;
+		if (!intc[n]) {
+			/* a block that is on but cannot be reached would be left out of sync while the load says it
+			 * worked: the load fails instead, and nothing is touched */
+			pr_err("ums9620_lpintc: INTC%d cannot be mapped\n", n);
+			lpintc_unmap();
+			return -ENOMEM;
+		}
+		used++;
 	}
 	if (!used) {
 		lpintc_unmap();

@@ -389,6 +389,31 @@ class Static(unittest.TestCase):
                     'CRYPTO_LZ4', 'CRYPTO_ZSTD'):
             self.assertIn(f'CONFIG_{opt}=y', cfg)
 
+    def test_driver_failures_are_not_taken_for_success(self):
+        mods = TOP / 'kernel' / 'modules'
+        # the PMIC watchdog: a failed read at suspend is not "stopped" (it would reset the device in its sleep)
+        wdt = (TOP / 'kernel/port/drivers/watchdog/ump9620-pmic-wdt.c').read_text()
+        sus = wdt[wdt.index('static int ump9620_wdt_suspend_noirq('):wdt.index('static int ump9620_wdt_resume_noirq(')]
+        self.assertIn('ret = regmap_read(w->map, w->base + WDT_CTRL, &ctrl);\n\tif (ret)\n\t\treturn ret;', sus)
+        # ums9620_lpintc: an enabled block that cannot be mapped fails the load, nothing touched
+        lp = (mods / 'ums9620_lpintc' / 'ums9620_lpintc.c').read_text()
+        self.assertRegex(lp, r'if \(!intc\[n\]\) \{\n(\t.*\n)*?\t\t\tlpintc_unmap\(\);\n\t\t\treturn -ENOMEM;')
+        # sipc: a failed driver registration leaves no panic notifier and no wakeup source behind
+        sipc = (mods / 'sprd_modem' / 'sipc' / 'sipc.c').read_text()
+        init = sipc[sipc.index('static int __init sprd_ipc_init('):]
+        self.assertRegex(init, r'ret = platform_driver_register\(&sprd_ipc_driver\);\n\tif \(ret\) \{\n'
+                               r'(.*\n)*?.*atomic_notifier_chain_unregister\(&panic_notifier_list, &senddie_panic_nb\);'
+                               r'\n(.*\n)*?\t\tsmsg_remove_wakeup\(\);')
+        # the Wi-Fi recovery watchdog: a new probe starts clean but keeps this boot's one WCN reset used, and a tick
+        # never queues another once the stop has begun
+        iface = (mods / 'sprd_wlan_combo' / 'common' / 'iface.c').read_text()
+        start = iface[iface.index('static void iface_wd_start('):iface.index('static void iface_wd_stop(')]
+        self.assertIn('memset(&iface_wd, 0, sizeof(iface_wd));\n\tiface_wd.reset_used = reset_used;', start)
+        stop = iface[iface.index('static void iface_wd_stop('):]
+        self.assertLess(stop.index('WRITE_ONCE(iface_wd.stopping, true);'), stop.index('cancel_delayed_work_sync'))
+        tick = iface[iface.index('static void iface_wd_tick('):iface.index('static void iface_wd_start(')]
+        self.assertIn('if (!READ_ONCE(iface_wd.stopping))\n\t\tqueue_delayed_work(system_wq, &iface_wd.tick', tick)
+
     def test_mainline_command_line_panics_on_an_oops_and_a_lockup(self):
         # an oops before init sets panic_on_oops hung the boot until LK fell back to Android: oops=panic reboots it
         # with the dump in pstore. hardlockup_panic= is no boot parameter; nmi_watchdog=panic is

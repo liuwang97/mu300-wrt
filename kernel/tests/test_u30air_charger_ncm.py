@@ -1,6 +1,10 @@
 """kanoqwq's charger and NCM kernel patches (kernel/patches/0024-0026): the U30 Air's battery
-CV and stock safety-timer policy on, its 3 A and the NCM busy-flush retry off unless asked for."""
+CV (in the stock driver's encoding) and stock safety-timer policy on, its 3 A and the NCM busy-flush retry off unless
+asked for."""
 import re
+import shutil
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -34,13 +38,18 @@ class ChargerCV(unittest.TestCase):
     def test_kano_is_the_author(self):
         self.assertTrue(self.text.startswith('From: kanoqwq <kanoqwq@qq.com>\n'))
         self.assertIn('c031a58a', self.text)
+        self.assertIn('b4748534', self.text)
 
     def test_the_battery_cv_bounded_by_the_chip_and_only_on_the_vendor_node(self):
         self.assertIn('BQ2560X_CHG_VBATREG_MAX_uV', removed(self.text))          # the 4.208 V snapshot cap goes
         plus = added(self.text)
         self.assertNotIn('4208000', plus)
-        self.assertIn('min_t(u32, bat_info->constant_charge_voltage_max_uv,\n'
-                      '\t\t\t      bq->chip_info->bq256xx_max_vbatreg)', plus)
+        # the battery's declared CV, only when the device tree gave one, in the stock encoding, bounded by the chip
+        self.assertIn('bq->init_data.vbatreg_max = !ret && bat_info->constant_charge_voltage_max_uv > 0 ?\n'
+                      '\t\t\tbq2560x_chg_stock_cv(bat_info->constant_charge_voltage_max_uv,\n'
+                      '\t\t\t\t\t     bq->chip_info->bq256xx_max_vbatreg) :', plus)
+        # code 0xf read back as the chip's special 4.352 V, on the vendor node only
+        self.assertIn('if (bq->bq2560x_chg && vbatreg_reg_code == BQ2560X_CHG_VBATREG_SPECIAL)', plus)
         self.assertIn('bq->chip_info->bq256xx_def_vbatreg;', plus)                 # no valid node: the chip default
         # what probe writes: the vendor node its bounded CV, every other board the chip default as before
         self.assertIn('bq->bq2560x_chg ? bq->init_data.vbatreg_max :\n\t\t\tbq->chip_info->bq256xx_def_vbatreg);',
@@ -54,6 +63,38 @@ class ChargerCV(unittest.TestCase):
 
     def test_the_current_budget_is_not_this_patch(self):
         self.assertNotIn('ICHG', added(self.text).replace('ICHG_MAX_uA', ''))
+
+
+    @unittest.skipUnless(shutil.which('cc'), 'needs a C compiler')
+    def test_the_stock_encoding(self):
+        # ZTE's sqc_mp_set_cv: floor((mV - 3856) / 32) + 1, at most the chip's maximum
+        plus = added(self.text)
+        m = re.search(r'\nstatic int bq2560x_chg_stock_cv\(.*?\n}\n', after(self.text), re.S)
+        self.assertTrue(m)
+        prog = (
+            '#include <stdio.h>\n#define min_t(t, a, b) ((t)(a) < (t)(b) ? (t)(a) : (t)(b))\n'
+            '#define BQ2560X_VBATREG_STEP_uV 32000\n#define BQ2560X_VBATREG_OFFSET_uV 3856000\n'
+            '#define BQ2560X_VBATREG_MIN_uV 3856000\n'
+            + '\n'.join(l for l in plus.splitlines() if l.startswith('#define BQ2560X_CHG_VBATREG_SPECIAL'))
+            + m.group(0) +
+            'int main(void) { int v[] = { 4300000, 4272000, 4304000, 4400000, 4624000, 5000000, 3000000 };'
+            ' for (unsigned i = 0; i < sizeof(v) / sizeof(v[0]); i++)'
+            ' printf("%d\\n", bq2560x_chg_stock_cv(v[i], 4624000)); return 0; }\n')
+        with tempfile.TemporaryDirectory() as d:
+            src = f'{d}/t.c'
+            with open(src, 'w') as f:
+                f.write(prog)
+            r = subprocess.run(['cc', '-o', f'{d}/t', src], capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            got = [int(x) for x in subprocess.run([f'{d}/t'], capture_output=True, text=True).stdout.split()]
+        # 4.3 V: code 14, REG04 0x70, 4.304 V (stock Android reads 0x70 on the same unit); not the round-down's 0x68
+        self.assertEqual(got[0], 4304000)
+        self.assertEqual((got[0] - 3856000) // 32000 << 3, 0x70)
+        self.assertEqual(got[1], 4304000)               # 4.272 V, on the grid: one step up all the same
+        self.assertEqual(got[2], 4352000)               # code 0xf: the chip's special 4.352 V, not 4.336 V
+        self.assertEqual(got[3], 4432000)
+        self.assertEqual(got[4:6], [4624000, 4624000])  # the chip's maximum bounds it
+        self.assertEqual(got[6], 3856000)
 
 
 class Charger3A(unittest.TestCase):

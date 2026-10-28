@@ -33,6 +33,9 @@ What changed from kano's version, and why:
 - The receive-error interrupt is not enabled (nothing is done with it; Unisoc has a storm guard for it).
 - Locking: every callback that touches the PD block holds the driver's lock; TCPM is called with it held only where
   TCPM merely queues (receive, transmit complete, hard reset).
+- A received frame waits until the RX FIFO holds data (50 us polls, 2 ms at most, as Unisoc's receive path): the
+  packet-received interrupt can come first, and the header read from the empty FIFO handed TCPM a made-up frame
+  (kanoqwq b4748534). A Source_Capabilities whose first PDO is not fixed 5 V is logged as a frame read wrong.
 - Source PDO 5 V 400 mA (ZTE's own, from the board's connector node), sink 5 V 2 A, Rp default as a source.
 
 Kept from kano's version: the Type-C block's own state machine for attach, detach and the CC pin (open is not
@@ -78,7 +81,7 @@ the FIFO behind the first (the RX FIFO level is logged at debug level).
  obj-$(CONFIG_TYPEC_MT6360)		+= tcpci_mt6360.o
 --- /dev/null
 +++ b/drivers/usb/typec/tcpm/ump9620-tcpc.c
-@@ -0,0 +1,952 @@
+@@ -0,0 +1,971 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * The USB-C port of the Unisoc UMP9620 PMIC (ZTE U30 Air) as a port controller for TCPM: Type-C attach and detach,
@@ -105,6 +108,7 @@ the FIFO behind the first (the RX FIFO level is logged at debug level).
 +#include <linux/delay.h>
 +#include <linux/extcon.h>
 +#include <linux/interrupt.h>
++#include <linux/iopoll.h>
 +#include <linux/mfd/syscon.h>
 +#include <linux/module.h>
 +#include <linux/mutex.h>
@@ -203,6 +207,9 @@ the FIFO behind the first (the RX FIFO level is logged at debug level).
 +#define PD_MESS_ID_TX			GENMASK(2, 0)
 +#define PD_STS1				0x20
 +#define PD_RX_DATA_NUM			GENMASK(8, 0)
++#define PD_RX_EMPTY			BIT(13)
++#define PD_RX_POLL_US			50		/* Unisoc's raw-status poll and its ready timeout */
++#define PD_RX_READY_US			2000
 +#define PD_INT_FLG			0x28
 +#define PD_INT_CLR			0x2c
 +#define PD_INT_EN			0x30
@@ -678,6 +685,10 @@ the FIFO behind the first (the RX FIFO level is logged at debug level).
 + * One frame from the RX FIFO: the header, two 16-bit words per data object. The controller leaves more words behind
 + * the frame (its CRC: kano saw them taken for the next header), so the FIFO is flushed after each frame, as Unisoc
 + * does in the normal case.
++ *
++ * The packet-received interrupt can come before the FIFO has anything to read: first wait until it holds data, as
++ * Unisoc's receive path does (50 us polls, 2 ms at most). Without the wait the header was read from an empty FIFO and
++ * TCPM handed a made-up frame (kanoqwq b4748534, on his U30 Air). A frame that is there already does not wait.
 + */
 +static int ump9620_receive(struct ump9620_tcpc *u)
 +{
@@ -685,6 +696,10 @@ the FIFO behind the first (the RX FIFO level is logged at debug level).
 +	u32 head, lo, hi, sts1 = 0;
 +	int ret, i, n;
 +
++	ret = regmap_read_poll_timeout(u->regmap, u->base + PD_STS1, sts1, sts1 & ~PD_RX_EMPTY,
++				       PD_RX_POLL_US, PD_RX_READY_US);
++	if (ret)
++		return ret;
 +	ret = regmap_read(u->regmap, u->base + PD_RX_BUF, &head);
 +	if (ret)
 +		return ret;
@@ -710,8 +725,15 @@ the FIFO behind the first (the RX FIFO level is logged at debug level).
 +		ump9620_tx_done(u, TCPC_TX_SUCCESS);
 +		return 0;
 +	}
-+	if (n && pd_header_type_le(msg.header) == PD_DATA_SOURCE_CAP && u->power_role == TYPEC_SINK)
-+		u->source_caps = true;
++	if (n && pd_header_type_le(msg.header) == PD_DATA_SOURCE_CAP) {
++		/* every source offers vSafe5V first, as a fixed PDO: anything else is a frame read wrong */
++		if (pdo_type(le32_to_cpu(msg.payload[0])) != PDO_TYPE_FIXED ||
++		    pdo_fixed_voltage(le32_to_cpu(msg.payload[0])) != 5000)
++			dev_warn_ratelimited(u->dev, "PD source capabilities without 5 V first: header %#06x, PDO %#010x\n",
++					     head & 0xffff, le32_to_cpu(msg.payload[0]));
++		if (u->power_role == TYPEC_SINK)
++			u->source_caps = true;
++	}
 +	tcpm_pd_receive(u->port, &msg, TCPC_TX_SOP);
 +	return 0;
 +}

@@ -217,6 +217,7 @@ static struct {
 	bool reset_used;	/* the one chip reset of this boot */
 	bool reset_this_time;	/* ... and it was for the current stuck spell */
 	bool gave_up;
+	bool stopping;		/* iface_wd_stop() has begun: no tick queues another */
 } iface_wd;
 
 static void iface_wd_reset(struct work_struct *work)
@@ -249,6 +250,8 @@ static void iface_wd_tick(struct work_struct *work)
 	const char *why = dump ? "WCN in card dump" : "firmware asserted, Wi-Fi not reopened";
 	unsigned long now = jiffies;
 
+	if (READ_ONCE(iface_wd.stopping))
+		return;
 	if (!dump && !asserted) {
 		if (iface_wd.stuck)
 			pr_err("MU300 recovery: Wi-Fi is back after %u s\n",
@@ -280,11 +283,21 @@ static void iface_wd_tick(struct work_struct *work)
 	if (time_after_eq(now, iface_wd.stuck_since + IFACE_WD_REBOOT_AFTER))
 		iface_wd_give_up(why);
 again:
-	queue_delayed_work(system_wq, &iface_wd.tick, IFACE_WD_PERIOD);
+	if (!READ_ONCE(iface_wd.stopping))
+		queue_delayed_work(system_wq, &iface_wd.tick, IFACE_WD_PERIOD);
 }
 
+/*
+ * A probe after a remove (the device unbound and bound again, the module still loaded) starts from a clean watchdog:
+ * the last one's stuck spell, give-up and stopping flag are gone. The one chip reset of this boot stays used: a reset
+ * that leads to a new probe must not buy another one, and a reboot after that.
+ */
 static void iface_wd_start(struct sprd_priv *priv)
 {
+	bool reset_used = iface_wd.reset_used;
+
+	memset(&iface_wd, 0, sizeof(iface_wd));
+	iface_wd.reset_used = reset_used;
 	iface_wd.hif = &priv->hif;
 	INIT_DELAYED_WORK(&iface_wd.tick, iface_wd_tick);
 	INIT_WORK(&iface_wd.reset, iface_wd_reset);
@@ -293,6 +306,7 @@ static void iface_wd_start(struct sprd_priv *priv)
 
 static void iface_wd_stop(void)
 {
+	WRITE_ONCE(iface_wd.stopping, true);
 	cancel_delayed_work_sync(&iface_wd.tick);
 	cancel_work_sync(&iface_wd.reset);
 }

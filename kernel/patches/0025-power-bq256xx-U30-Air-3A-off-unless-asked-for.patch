@@ -17,14 +17,16 @@ driver does what it did before this patch.
 
 --- a/drivers/power/supply/bq256xx_charger.c
 +++ b/drivers/power/supply/bq256xx_charger.c
-@@ -161,7 +161,19 @@
+@@ -161,11 +161,23 @@
  #define BQ256XX_IINDET_EN		BIT(7)	/* CHARGER_CONTROL_3: force input detection, clears when done */
  #define BQ256XX_VBUS_STAT_NONSTD	(BIT(7) | BIT(6))
  #define BQ2560X_CHG_ICHG_MAX_uA		1980000	/* what Android charges the U30 Air's 4050 mAh cell with */
 +#define BQ2560X_CHG_ICHG_3A_uA		3000000	/* u30air_3a: still bounded by the battery node and the chip */
  #define BQ2560X_CHG_EN_TIMER		BIT(3)	/* REG05: stock driver disables the hardware safety timer */
-+
-+/*
+ #define BQ2560X_CHG_VBATREG_SPECIAL	0xf	/* REG04 VREG code 01111: 4.352 V, not 3.856 V + 15 x 32 mV */
+ #define BQ2560X_CHG_VBATREG_SPECIAL_uV	4352000
+ 
+ /*
 + * The U30 Air at up to 3 A (kanoqwq's 627cacea): the fast-charge current from the battery node (its 3 A), not the
 + * 1.98 A of an Android register snapshot, and a Type-C source's 3 A Rp taken as 3 A of input, not 2 A. Off by
 + * default: his test read the registers back (ICHG 3 A) but did not measure 3 A into the battery or from a 3 A
@@ -34,10 +36,12 @@ driver does what it did before this patch.
 +static bool u30air_3a;
 +module_param(u30air_3a, bool, 0444);
 +MODULE_PARM_DESC(u30air_3a, "ZTE U30 Air: charge at up to the battery's 3 A and take a Type-C 3 A source at 3 A (default off)");
- 
- /*
++
++/*
   * The SGM41513 that ZTE's driver (sqc_bq2560x.c) looks for when nothing answers at the node's address: the same
-@@ -1784,7 +1796,8 @@
+  * registers at I2C 0x1a, with its own fast charge and termination current steps (sgm41513_*).
+  */
+@@ -1789,7 +1801,8 @@
   * Type-C block ("sprd,sc27xx-typec", typec@380 under the PMIC). It has no driver here, but its state machine runs by
   * itself: STATUS bits 4:0 are the state (2: attached as a sink), bits 7:6 the source's Rp (0 default, 1 1.5 A,
   * 2 3 A), as Unisoc's sc27xx_pd reads them. A hub or splitter with a charger behind it answers BC1.2 as an SDP
@@ -47,7 +51,7 @@ driver does what it did before this patch.
   * One register read through the PMIC's regmap, as sprd_pmic_detect_charger_type() does.
   */
  #define UMP9620_TYPEC_STATUS		0x1c
-@@ -1825,7 +1838,7 @@
+@@ -1830,7 +1843,7 @@
  	case 1:
  		return 1500000;
  	case 2:
@@ -56,7 +60,7 @@ driver does what it did before this patch.
  	default:
  		return 0;
  	}
-@@ -2036,7 +2049,15 @@
+@@ -2060,7 +2073,15 @@
  	}
  
  	if (bq->bq2560x_chg) {
@@ -71,9 +75,9 @@ driver does what it did before this patch.
 +		else
 +			bq->init_data.ichg_max = min_t(u32, bq->init_data.ichg_max, BQ2560X_CHG_ICHG_MAX_uA);
  		/* A boot-time register snapshot is not the stock charging policy.
- 		 * Use this battery's declared CV, bounded by the charger capability;
- 		 * fall back to the chip default only when no valid value was supplied.
-@@ -2064,6 +2085,7 @@
+ 		 * Use this battery's declared CV in the stock driver's encoding,
+ 		 * bounded by the charger capability; fall back to the chip default
+@@ -2089,6 +2110,7 @@
  		return ret;
  
  	ret = bq->chip_info->bq256xx_set_ichg(bq,
