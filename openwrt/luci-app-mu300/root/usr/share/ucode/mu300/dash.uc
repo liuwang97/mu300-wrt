@@ -497,6 +497,40 @@ function link_exists(name) {
 // ------------------------------------------------------------------- the snapshot
 // info(opts) -> the snapshot, or { error } when the SIM selector cannot say which card is in use (the shell version
 // printed nothing then, and the backend answered this error). opts.cache: keep the SIM selector's answer (the plugin).
+// The USB-C port's link speed as negotiated with whatever sits at the other end of the cable. Device mode: the
+// gadget's UDC reports it (high-speed, super-speed, super-speed-plus). Host mode (mu300-usb host) has no UDC, and
+// the attached device's own speed file is the answer. A USB 2.0 cable or host port caps a 10 Gbps port at 480 Mbps,
+// which is why the page shows this as a downgrade instead of hiding it.
+const USB_MBPS = { 'low-speed': 1, 'full-speed': 12, 'high-speed': 480, 'super-speed': 5000, 'super-speed-plus': 10000 };
+function usb_mbps(s) {
+	if (USB_MBPS[s] != null)
+		return USB_MBPS[s];
+	let n = num(s);
+	return (type(n) == 'int' && n > 0) ? n : null;
+}
+// {role:"device", speed, mbps, max, max_mbps}, {role:"host", ...} or null
+function usb_link() {
+	let udc = env('MU300_UDC_DIR', '/sys/class/udc');
+	for (let u in sort(lsdir(udc) ?? [])) {
+		let d = udc + '/' + u;
+		if (!readable(d + '/current_speed'))
+			continue;
+		let cur = rd(d + '/current_speed'), max = rd(d + '/maximum_speed');
+		return { role: 'device', speed: str(cur), mbps: usb_mbps(cur), max: str(max), max_mbps: usb_mbps(max) };
+	}
+	// host mode: the fastest attached device; a root hub (1d6b) reports the port's own speed, not a device's
+	let devs = env('MU300_USB_DEVICES_DIR', '/sys/bus/usb/devices');
+	let best = null, best_s = null;
+	for (let u in sort(lsdir(devs) ?? [])) {
+		let d = devs + '/' + u;
+		if (!readable(d + '/speed') || rd(d + '/idVendor') == '1d6b')
+			continue;
+		let sp = rd(d + '/speed'), m = usb_mbps(sp);
+		if (m != null && (best == null || m > best)) { best = m; best_s = sp; }
+	}
+	return (best == null) ? null : { role: 'host', speed: str(best_s), mbps: best, max: null, max_mbps: null };
+}
+
 function info(opts) {
 	opts ??= {};
 	// one uci cursor (it keeps what it parsed) for 10 s: a change made in the panel shows within that
@@ -792,6 +826,7 @@ function info(opts) {
 		power: power,
 		net: { mobile: net_obj(data_device), sipa_eth0: net_obj(data_device), brlan: net_obj(lan_device),
 			wlan0: net_obj(wifi_device), usb0: net_obj(usb_device) },
+		usblink: usb_link(),
 		data_device: str(data_device),
 		sim: sim_json,
 		traffic: traffic,

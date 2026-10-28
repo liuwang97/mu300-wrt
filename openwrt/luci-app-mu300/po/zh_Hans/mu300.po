@@ -3880,3 +3880,9 @@ msgstr "此文件比已安装的版本旧：需要确认"
 
 msgid "The release source was not changed"
 msgstr "发布源未更改"
+
+msgid "USB host mode, attached device %s"
+msgstr "USB 主机模式，所接设备 %s"
+
+msgid "USB %s now, port maximum %s"
+msgstr "USB 当前 %s，端口最高 %s"
