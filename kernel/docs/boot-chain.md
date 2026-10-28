@@ -1,6 +1,6 @@
 # Boot chain
 
-Applies to: Linux 7.2.11, OpenWrt 25.12.5 (F50, U30 Air). Checked against the code: 2026-10-23.
+Applies to: Linux 7.2.13, OpenWrt 25.12.5 (F50, U30 Air). Checked against the code: 2026-10-23.
 
 What LK, the boot image and `kernel/initramfs/init` do before OpenWrt runs; what init hands over is in
 [`docs/contract.md`](../../docs/contract.md).

@@ -1,6 +1,6 @@
 # Mainline port, patches and configuration
 
-Applies to: Linux 7.2.11, OpenWrt 25.12.5 (F50, U30 Air). Checked against the code: 2026-10-23.
+Applies to: Linux 7.2.13, OpenWrt 25.12.5 (F50, U30 Air). Checked against the code: 2026-10-23.
 
 `kernel/port/` (clocks, PCIe, PHY, regulator, cpufreq, thermal, LEDs) is installed into the tree by
 `kernel/port/install.py`, then `kernel/patches/` is applied and `kernel/mu300-mainline.config` merged. Vendor modules:
@@ -9,7 +9,7 @@ Applies to: Linux 7.2.11, OpenWrt 25.12.5 (F50, U30 Air). Checked against the co
 ## Build
 
 - `kernel/build.sh` applies a patch only if not applied yet and stops on anything else. Order matters:
-  0011 builds on 0010, 0012/0015/0016/0019 on 0009, 0018 on 0011, 0029 on 0016, 0020 and 0023. 0003, 0005 and 0019 apply to 7.2.11 with fuzz.
+  0011 builds on 0010, 0012/0015/0016/0019 on 0009, 0018 on 0011, 0029 on 0016, 0020 and 0023. 0003, 0005 and 0019 apply to 7.2.13 with fuzz.
 - The build stops when Kconfig drops a fragment option. `kernel/all-modules.py` turns every `tristate` that is off into
   `m`, except what `all-modules.exclude` lists: tests/debug, ASoC, display panels, SoC GPU drivers (panfrost waits for
   the GPU bring-up), VFIO, the dummy UDC (`mu300-usb` takes the first UDC), chip drivers of other boards.

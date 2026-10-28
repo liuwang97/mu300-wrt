@@ -1,6 +1,6 @@
 # Hardware
 
-Applies to: Linux 7.2.11, OpenWrt 25.12.5 (F50, U30 Air). Checked against the code: 2026-10-23.
+Applies to: Linux 7.2.13, OpenWrt 25.12.5 (F50, U30 Air). Checked against the code: 2026-10-23.
 
 The kernel-to-rootfs interface is in [`docs/contract.md`](../../docs/contract.md); this file describes the silicon and
 the eMMC the kernel tree has to live with.

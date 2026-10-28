@@ -1,6 +1,6 @@
 # Vendor modules
 
-Applies to: Linux 7.2.11, OpenWrt 25.12.5 (F50, U30 Air). Checked against the code: 2026-10-23.
+Applies to: Linux 7.2.13, OpenWrt 25.12.5 (F50, U30 Air). Checked against the code: 2026-10-23.
 
 Out-of-tree Unisoc/ZTE code in `kernel/modules/`: `sprd_modem` (SIPC, SIPA, mailbox, Trusty, modem loader), `wcn_bsp`,
 `sprd_wlan_combo`, `sprdbt_tty`, `sprd_pmic_wdt`, `mu300_thermal`, `ums9620_lpintc`. Load order: `kernel/initramfs/module-order.txt`. In-tree port and patches: `drivers.md`.
