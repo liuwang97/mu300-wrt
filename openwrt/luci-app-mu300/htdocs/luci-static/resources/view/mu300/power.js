@@ -153,6 +153,8 @@ return view.extend({
 				+ (num(chg.input_ma) && chg.online === 1 ? ', ' + chg.input_ma + ' mA' : '') ]));
 		if (st.charge_off === 'temp') card.appendChild(E('div', { 'class': 'mud-note' }, _('Charging paused: battery temperature')));
 		else if (st.charge_off === 'limit') card.appendChild(E('div', { 'class': 'mud-note' }, _('Charging paused: charge limit')));
+		else if (st.charge_off === 'manual') card.appendChild(E('div', { 'class': 'mud-note' }, _('Charging paused: by hand')));
+		if (bat && conf.FULL_ONCE === 1) card.appendChild(E('div', { 'class': 'mud-note' }, _('Charging to full once, then back to the limit')));
 		var sleep = E('button', { 'class': 'mud-btn', 'id': 'mud-power-sleep' }, _('Sleep now'));
 		sleep.addEventListener('click', function() { self.act(sleep, 'idle'); });
 		var wake = E('button', { 'class': 'mud-btn', 'id': 'mud-power-wake' }, _('Wake'));
@@ -183,6 +185,19 @@ return view.extend({
 			]));
 			prof.appendChild(E('div', { 'class': 'mud-note' }, _('0 % never charges the battery (the device runs on the charger), 100 % charges it full; in between, charging stops at that level and starts again 5 points lower. Under 5 % the battery always charges.')));
 			prof.appendChild(E('div', { 'class': 'mud-note' }, _('80 % keeps the battery healthier on a device that stays plugged in.')));
+			/* RESUME_AT 0-99 (0: the limit's own 5 points), and the pause / full charge by hand (kanoqwq's controls) */
+			prof.appendChild(E('div', { 'style': 'display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:10px 0' }, [
+				E('label', { 'for': 'mud-power-resume' }, _('Start charging again under')),
+				self.number('RESUME_AT', num(conf.RESUME_AT) ? conf.RESUME_AT : 0, 99, 'mud-power-resume'), '%'
+			]));
+			prof.appendChild(E('div', { 'class': 'mud-note' }, _('0 starts again 5 points under the stop level. A lower value starts charging again only under it; with 100 %, a full battery waits until it drops under it.')));
+			var paused = conf.CHARGE_PAUSE === 1, full = conf.FULL_ONCE === 1;
+			var pause = E('button', { 'class': 'mud-btn', 'id': 'mud-power-pause' }, paused ? _('Resume charging') : _('Pause charging'));
+			pause.addEventListener('click', function() { M.busy(pause, true); self.save('CHARGE_PAUSE', paused ? '0' : '1'); });
+			var once = E('button', { 'class': 'mud-btn', 'id': 'mud-power-fullonce' }, full ? _('Cancel the full charge') : _('Charge to full once'));
+			once.addEventListener('click', function() { M.busy(once, true); self.save('FULL_ONCE', full ? '0' : '1'); });
+			prof.appendChild(E('div', { 'style': 'display:flex;gap:8px;flex-wrap:wrap;margin:10px 0' }, [ pause, once ]));
+			prof.appendChild(E('div', { 'class': 'mud-note' }, _('Paused, the battery is not charged and the device runs on the charger; under 5 % it still charges, and the temperature guard always applies.')));
 			/* POWER_ON_CHARGER: a boot the charger started stays a charging boot (0) or is a normal boot (1) */
 			prof.appendChild(E('div', { 'style': 'display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:10px 0' }, [
 				E('label', { 'for': 'mud-power-poweron' }, _('When the charger switches the device on')),

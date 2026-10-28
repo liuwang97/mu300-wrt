@@ -1112,7 +1112,7 @@ class ModemTools(ApiCase):
 
     def test_power(self):
         status = ('state: active\nprofile: battery (automatic)\nsupply: battery\nbattery: 80 %\n'
-                  'SAVER_BELOW=20 CHARGE_TO=80\nPOWER_ON_CHARGER=1\nplugged: WIFI_IDLE=0 RADIO_IDLE=keep LEDS_IDLE=on CPU=full\n'
+                  'SAVER_BELOW=20 CHARGE_TO=80\nPOWER_ON_CHARGER=1\nRESUME_AT=60 CHARGE_PAUSE=1 FULL_ONCE=0\nplugged: WIFI_IDLE=0 RADIO_IDLE=keep LEDS_IDLE=on CPU=full\n'
                   'battery: WIFI_IDLE=10 RADIO_IDLE=lte LEDS_IDLE=off CPU=eco\nsaver: WIFI_IDLE=5 RADIO_IDLE=off LEDS_IDLE=off CPU=eco\n')
         (self.root / 'etc/mu300/power.conf').write_text('PROFILE=saver\n')
         for shell in self.each_shell():
@@ -1122,16 +1122,21 @@ class ModemTools(ApiCase):
             self.assertEqual(o['conf']['PROFILE'], 'saver')
             self.assertEqual((o['conf']['SAVER_BELOW'], o['conf']['CHARGE_TO']), (20, 80))
             self.assertEqual(o['conf']['POWER_ON_CHARGER'], 1)
+            self.assertEqual((o['conf']['RESUME_AT'], o['conf']['CHARGE_PAUSE'], o['conf']['FULL_ONCE']), (60, 1, 0))
             self.assertEqual(o['conf']['battery'], {'WIFI_IDLE': 10, 'RADIO_IDLE': 'lte', 'LEDS_IDLE': 'off', 'CPU': 'eco'})
             for req, argv in (({'key': 'PROFILE', 'value': 'auto'}, ['profile', 'auto']),
                               ({'key': 'CHARGE_TO', 'value': 80}, ['set', 'CHARGE_TO', '80']),
                               ({'key': 'POWER_ON_CHARGER', 'value': 0}, ['set', 'POWER_ON_CHARGER', '0']),
+                              ({'key': 'RESUME_AT', 'value': 60}, ['set', 'RESUME_AT', '60']),
+                              ({'key': 'CHARGE_PAUSE', 'value': 1}, ['set', 'CHARGE_PAUSE', '1']),
+                              ({'key': 'FULL_ONCE', 'value': 1}, ['set', 'FULL_ONCE', '1']),
                               ({'key': 'saver.RADIO_IDLE', 'value': 'off'}, ['set', 'saver.RADIO_IDLE', 'off']),
                               ({'key': 'battery.WIFI_IDLE', 'value': 15}, ['set', 'battery.WIFI_IDLE', '15'])):
                 self.ok(shell, 'power.set', req)
                 self.assertEqual(self.calls('mu300-power')[-1], ['mu300-power'] + argv)
             for req in ({'key': 'PROFILE', 'value': 'x'}, {'key': 'FOO', 'value': 1}, {'key': 'CHARGE_TO', 'value': 101},
-                        {'key': 'POWER_ON_CHARGER', 'value': 2},
+                        {'key': 'POWER_ON_CHARGER', 'value': 2}, {'key': 'RESUME_AT', 'value': 100},
+                        {'key': 'CHARGE_PAUSE', 'value': 2}, {'key': 'FULL_ONCE', 'value': -1},
                         {'key': 'battery.CPU', 'value': 'turbo'}):
                 self.assertEqual(self.call(shell, 'power.set', req)[1]['error'], 'bad-value', req)
 
