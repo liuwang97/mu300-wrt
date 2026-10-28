@@ -227,6 +227,33 @@ class Pool(ShellTest):
             for bad in ('', '-1', '1x', '../1'):
                 self.assertEqual(self.run_sms(shell, 'show', bad).returncode, 1, bad)
 
+    # ------------------------------------------------------------------ the SIM storage (kanoqwq's capacity line)
+    def test_a_sync_notes_the_sim_storage_and_the_page_reads_it_without_at(self):
+        note = self.run / 'mu300-sms-storage'
+        for shell in self.each_shell():
+            self.fresh()
+            note.unlink(missing_ok=True)
+            self.assertEqual(self.run_sms(shell, 'sync').returncode, 0)
+            self.assertEqual(note.read_text().split()[:3], ['SM', '2', '50'])   # the stub kept both on the SIM
+            # both moved off: what is left
+            self.fresh()
+            self.answer('CMGR3', f'+CMGR: 0,,40\n{PDU_GSM}\nOK\n')
+            self.answer('CMGR7', f'+CMGR: 1,,56\n{PDU_UCS2}\nOK\n')
+            r = self.run_sms(shell, 'sync')
+            self.assertIn('2 moved off the SIM', r.stdout)
+            used = note.read_text().split()
+            self.assertEqual(used[:3], ['SM', '0', '50'])
+            at_before = len(self.at_log())
+            cap = self.dash(shell, 'sms_list', {})['sim_storage']
+            self.assertEqual(cap, {'store': 'SM', 'used': 0, 'total': 50, 'at': int(used[3])})
+            self.assertEqual(len(self.at_log()), at_before)        # the page asks the modem nothing
+            # anything else in the note: no storage line
+            for junk in ('SM 01 50 1\n', 'XX 1 50 1\n', 'SM 1 0 1\n', 'SM 1 50 1 "x"\n', ''):
+                note.write_text(junk)
+                self.assertIsNone(self.dash(shell, 'sms_list', {})['sim_storage'], junk)
+            note.unlink()
+            self.assertIsNone(self.dash(shell, 'sms_list', {})['sim_storage'])
+
     # ------------------------------------------------------------------ sync
     def test_sync_pulls_the_sim_into_the_pool_in_pdu_mode(self):
         for shell in self.each_shell():
@@ -639,7 +666,8 @@ class Pool(ShellTest):
                 r = self.run_sms(shell, *args)
                 self.assertEqual(r.returncode, 0, (args, r.stderr))
             self.assertEqual(self.stat_tree(self.pool), before)
-            self.assertEqual(list(self.run.iterdir()), [])          # the lock is in RAM, and released
+            # the lock is in RAM, and released (the SIM storage note is the one file there: RAM, for the panel)
+            self.assertEqual([p.name for p in self.run.iterdir()], ['mu300-sms-storage'])
             # a tombstone that is no longer needed is the one change a sync of a changed SIM makes to the list
             self.answer('CMGL4', f'+CMGL: 3,0,,40\n{PDU_GSM}\nOK\n')
             self.run_sms(shell, 'sync')
@@ -715,8 +743,9 @@ class Pool(ShellTest):
             shutil.rmtree(self.pool, ignore_errors=True)
             self.put(1, 'read', 'mt', '+905551112233', '2026-10-01 09:00:00', 'first "quoted" \\ text')
             self.put(2, 'unread', 'mt', 'ADANA BLD', '2026-10-02 10:00:00', 'Kargonuz yolda ğüş\nline two')
+            (self.run / 'mu300-sms-storage').unlink(missing_ok=True)
             self.assertEqual(self.dash(shell, 'sms_list', {}), {
-                'total': 2, 'unread': 1, 'page': 1, 'pages': 1, 'msgs': [
+                'total': 2, 'unread': 1, 'page': 1, 'pages': 1, 'sim_storage': None, 'msgs': [
                     {'id': '000002', 'status': 'unread', 'dir': 'mt', 'peer': 'ADANA BLD',
                      'time': '2026-10-02 10:00:00', 'preview': 'Kargonuz yolda ğüş'},
                     {'id': '000001', 'status': 'read', 'dir': 'mt', 'peer': '+905551112233',

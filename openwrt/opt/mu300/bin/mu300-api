@@ -971,12 +971,15 @@ m_sms_forward() {
 }
 FWD_FLAGS='enabled webhook telegram email sms'
 FWD_TEXTS='template allow deny keywords clear webhook_url webhook_format webhook_headers webhook_body webhook_expect
-telegram_token telegram_chat email_host email_port email_tls email_user email_password email_from email_to sms_number'
+webhook_secret timeout telegram_token telegram_chat email_host email_port email_tls email_user email_password email_from
+email_to sms_number'
 m_sms_forward_set() {
-    only $FWD_FLAGS $FWD_TEXTS
+    only $FWD_FLAGS $FWD_TEXTS power
     need_forward
     _req='{'
     for _k in $FWD_FLAGS; do flag "$_k"; _req="$_req\"$_k\":\"${V:-0}\","; done
+    # the battery notices: left out, the saved setting stays (a page that does not know them)
+    if flag power; then _req="$_req\"power\":\"$V\","; fi
     for _k in $FWD_TEXTS; do
         fget "$_k" || continue
         case $FT in z) continue ;; s) ;; *) refuse bad-value "$_k" ;; esac

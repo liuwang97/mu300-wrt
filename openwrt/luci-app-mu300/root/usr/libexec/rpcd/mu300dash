@@ -576,9 +576,14 @@ m_sms_list() {
     allowed "$page" "$SMS_ID" || { refuse 'Invalid page'; return; }
     out=$("$SMS" list "$page" 2>/dev/null) || out=''
     [ -n "$out" ] || { printf '{"error":"mu300-sms is not available (the SMS service is not installed or not running)"}\n'; return; }
+    # the SIM storage as the last sync left it (mu300-sms storage_note, a line in RAM: no AT command here):
+    # "STORE USED TOTAL EPOCH", numbers and SM/ME only, else null
+    local cap
+    cap=$(sed -nE '1s/^(SM|ME) (0|[1-9][0-9]{0,5}) ([1-9][0-9]{0,5}) ([1-9][0-9]{0,11})$/{"store":"\1","used":\2,"total":\3,"at":\4}/p' \
+        "${MU300_SMS_RUN:-/run}/mu300-sms-storage" 2>/dev/null)
     # first line "pool: N message(s), U unread - page P/T (10 per page)",
     # then fixed-width rows (see mu300-sms cmd_list); parse by column position
-    printf '%s\n' "$out" | awk "$JSON_ESC"'
+    printf '%s\n' "$out" | awk -v cap="${cap:-null}" "$JSON_ESC"'
         NR == 1 {
             total = $0; sub(/^pool: /, "", total); sub(/ message.*/, "", total)
             unread = $0; sub(/^pool: [0-9]+ message\(s\), /, "", unread); sub(/ unread.*/, "", unread)
@@ -599,7 +604,7 @@ m_sms_list() {
                 printf "%s{\"id\":\"%s\",\"status\":\"%s\",\"dir\":\"%s\",\"peer\":\"%s\",\"time\":\"%s\",\"preview\":\"%s\"}",
                     (n++ ? "," : ""), id, jesc(st), jesc(dir), jesc(peer), jesc(tm), jesc(prev)
         }
-        END { if (NR) print "]}"; else print "{\"error\":\"No output\"}" }'
+        END { if (NR) print "],\"sim_storage\":" cap "}"; else print "{\"error\":\"No output\"}" }'
 }
 
 m_sms_show() {
@@ -1031,7 +1036,7 @@ do_list() {
 		"telegram_chat": "String", "email": "String", "email_host": "String", "email_port": "String",
 		"email_tls": "String", "email_user": "String", "email_password": "String", "email_from": "String",
 		"email_to": "String", "sms": "String", "sms_number": "String", "webhook_body": "String",
-		"webhook_expect": "String" },
+		"webhook_expect": "String", "webhook_secret": "String", "timeout": "String", "power": "String" },
 	"forward_test": { },
 	"forward_log_clear": { },
 	"cpu_get": { },

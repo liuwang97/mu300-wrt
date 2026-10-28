@@ -25,6 +25,7 @@ return view.extend({
 		root.innerHTML = `
 <div class="mud-sec" style="margin-top:0">
   <h3>${_('SMS')} <span id="mud-sms-stat" style="font-weight:400"></span></h3>
+  <div class="mud-note" id="mud-sms-capacity" style="display:none;margin-bottom:8px"></div>
   <input id="mud-sms-num" placeholder="${_('Recipient: number, e.g. 10086 or +86...')}" spellcheck="false"
     style="width:100%;margin-bottom:8px;padding:7px 11px;border:1px solid var(--hairline,var(--border,#ccc));border-radius:var(--radius-base,.5rem);background:var(--surface,var(--background,#fff));color:var(--text,#222)"/>
   <div class="mud-ctl" style="max-width:460px;margin-bottom:8px">
@@ -187,8 +188,21 @@ return view.extend({
 		return step();
 	},
 
+	/* the SIM storage as the last sync left it (sms_list's sim_storage: a note in RAM, never an AT command); red when
+	 * full (kanoqwq's capacity line) */
+	capacity: function(cap) {
+		var el = this.Q('sms-capacity');
+		if (!el) return;
+		if (!cap || !(cap.total > 0)) { el.style.display = 'none'; return; }
+		el.style.display = '';
+		el.textContent = _('SIM storage: %d of %d slots in use (at %s)').format(cap.used, cap.total,
+			new Date(cap.at * 1000).toLocaleTimeString());
+		el.style.color = cap.used >= cap.total ? 'var(--danger,#E25555)' : '';
+	},
+
 	build: function(all) {
 		var self = this;
+		this.capacity(this.stat && this.stat.sim_storage);
 		/* No flicker on the 5 s poll: while the data's signature is unchanged (no new message, no unread flag flipped)
 		 * nothing is redrawn -- rebuilding the whole innerHTML and refilling the full texts flickers visibly */
 		var sig = (this.stat && this.stat.total) + '|' + all.map(function(m) {

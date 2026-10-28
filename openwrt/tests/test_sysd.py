@@ -897,6 +897,38 @@ class Daemon(ShellTest):
         self.assertEqual(ticks(), 6)
         self.assertEqual(self.calls().count('mu300-led wake'), 1)
 
+    def test_battery_notices_go_to_the_forwarder_on_a_change(self):
+        """mu300-sms-forward power CAP PLUG once at the start and on a uevent that changed the capacity or the plug;
+        nothing on the F50"""
+        root = self.u30air()
+        ps = root / 'sys/class/power_supply'
+        self.stub('mu300-sms-forward', 'echo "mu300-sms-forward $*" >> "$STUBLOG/calls"')
+        env = dict(MU300_RUN=self.tmp / 'run', MU300_SYSROOT=root, MU300_BIN=BIN, MU300_SYSD_PARTS='forward')
+
+        def told():
+            return [l for l in self.calls() if l.startswith('mu300-sms-forward')]
+
+        self.start(**env)
+        self.assertTrue(wait_for(lambda: told() == ['mu300-sms-forward power 80 0']), self.calls())
+        self.send('uevent change power_supply sc27xx-fgu')         # nothing changed: nothing told
+        time.sleep(1.5)
+        self.assertEqual(len(told()), 1)
+        (ps / 'sc27xx-fgu/capacity').write_text('79\n')
+        self.send('uevent change power_supply sc27xx-fgu')
+        self.assertTrue(wait_for(lambda: told()[-1:] == ['mu300-sms-forward power 79 0']), self.calls())
+        (ps / 'bq256xx-charger/online').write_text('1\n')
+        self.send('uevent change extcon extcon0')
+        self.assertTrue(wait_for(lambda: told()[-1:] == ['mu300-sms-forward power 79 1']), self.calls())
+
+    def test_no_battery_notices_on_the_f50(self):
+        root = self.u30air()
+        (root / 'run/mu300/device').write_text('f50\n')
+        self.stub('mu300-sms-forward', 'echo "mu300-sms-forward $*" >> "$STUBLOG/calls"')
+        self.start(MU300_RUN=self.tmp / 'run', MU300_SYSROOT=root, MU300_BIN=BIN, MU300_SYSD_PARTS='forward')
+        self.send('uevent change power_supply sc27xx-fgu')
+        time.sleep(1.5)
+        self.assertEqual(self.calls(), [])
+
     def test_a_lost_uevent_is_caught_by_the_safety_look(self):
         root = self.u30air()
         self.stub('mu300-led', f'echo "mu300-led $*" >> "$STUBLOG/calls"; exec "{BIN}/mu300-led" "$@"')

@@ -7,10 +7,10 @@
 #                   refused when one was started under 5 s ago (mu300-sms-forward test-gate)
 #   forward logclear  the delivery log emptied
 #
-# The secrets (webhook URL and headers, Telegram token, mail password) never come back: get says whether each is set,
-# with a hint where one is harmless (the URL's host, the header names, the bot's number). In set, an empty secret keeps
-# the one saved; "clear" (space-separated names) removes them. The configuration file is root's only (0600), written
-# whole (aside, then renamed), in the line format mu300-sms-forward reads.
+# The secrets (webhook URL, headers and secret, Telegram token, mail password) never come back: get says whether
+# each is set, with a hint where one is harmless (the URL's host, the header names, the bot's number). In set, an
+# empty secret keeps the one saved; "clear" (space-separated names) removes them. The configuration file is root's
+# only (0600), written whole (aside, then renamed), in the line format mu300-sms-forward reads.
 #
 # The webhook's own body (webhook_body, 2000 bytes at most) is a template like the message template, not a secret: it
 # comes back so that it can be edited, an empty one means the standard body, and the page says to keep secrets in the
@@ -21,6 +21,12 @@
 # VALUE a whole number (16 digits at most) or 1 to 16 lowercase letters; empty: any 2xx counts. Not a secret either.
 # mu300-sms-forward compares it as text and checks its form again. The form is as narrow as a status needs, because
 # whoever may set the address and this rule learns from the log whether the answer has that value.
+#
+# webhook_secret is a token the custom body puts where {secret} is (PushPlus wants its token in the body): a secret
+# like the address. A new address without a new secret drops the saved one, so that it never follows the body to
+# an address that was not its own. timeout is the seconds an HTTP request may take (1-120; empty keeps the saved one,
+# 15 when there is none); power (0|1, empty keeps the saved one) turns the battery notices on (mu300-sms-forward
+# power; only a board with a battery sends them, and get says whether this one has one: power_available).
 set -u
 export PATH="$PATH:/opt/mu300/bin:/usr/sbin:/sbin"
 LIB=${0%/*}/../../share/unisoc-modem/lib.sh
@@ -89,13 +95,16 @@ do_get() {
     _body=$(saved webhook_body | unesc_tpl)
     _st=$("$FWD" status 2>/dev/null)
     _q=$(printf '%s\n' "$_st" | sed -n 's/^queued //p'); _r=$(printf '%s\n' "$_st" | sed -n 's/^running //p')
-    _m=$(printf '%s\n' "$_st" | sed -n 's/^email //p')
+    _m=$(printf '%s\n' "$_st" | sed -n 's/^email //p'); _bat=$(printf '%s\n' "$_st" | sed -n 's/^battery //p')
+    _tmo=$(saved timeout); case $_tmo in [1-9]|[1-9][0-9]|1[01][0-9]|120) ;; *) _tmo=15 ;; esac
     printf '{"ok":1,"enabled":%s,"template":%s,"allow":%s,"deny":%s,"keywords":%s,' \
         "$(b "$(saved enabled)")" "$(json_str "$_tpl")" "$(json_str "$_allow")" "$(json_str "$_deny")" "$(json_str "$_kw")"
     printf '"webhook":%s,"webhook_url_set":%s,"webhook_url_hint":%s,"webhook_format":%s,"webhook_headers_set":%s,"webhook_header_names":%s,' \
         "$(b "$(saved webhook)")" "$(set01 "$_url")" "$(json_str "$_h_url")" "$(json_str "$(saved webhook_format)")" \
         "$(set01 "$_names")" "$(json_str "$_names")"
     printf '"webhook_body":%s,"webhook_expect":%s,' "$(json_str "$_body")" "$(json_str "$(saved webhook_expect)")"
+    printf '"webhook_secret_set":%s,"timeout":%s,"power":%s,"power_available":%s,' \
+        "$(set01 "$(saved webhook_secret)")" "$_tmo" "$(b "$(saved power)")" "$(b "$_bat")"
     printf '"telegram":%s,"telegram_token_set":%s,"telegram_token_hint":%s,"telegram_chat":%s,' \
         "$(b "$(saved telegram)")" "$(set01 "$_tok")" "$(json_str "$_h_tok")" "$(json_str "$(saved telegram_chat)")"
     printf '"email_available":%s,"email":%s,"email_host":%s,"email_port":%s,"email_tls":%s,"email_user":%s,"email_password_set":%s,"email_from":%s,"email_to":%s,' \
@@ -160,6 +169,19 @@ do_set() {
     inp webhook_expect; exp=$V
     [ -z "$exp" ] || like "$exp" '[A-Za-z_][A-Za-z0-9_]{0,31}=(-?[0-9]{1,16}|[a-z]{1,16})' ||
         error 'The answer check must be key=value, like errcode=0 or ok=true (the value a whole number or lowercase letters, 16 at most)'
+    inp webhook_secret; sec=$V
+    if [ -n "$sec" ]; then
+        like "$sec" '[!-~]+' && [ "$(bytes "$sec")" -le 256 ] || error 'Invalid webhook secret (up to 256 printable characters, no space)'
+    else
+        # kept only for the address it was saved with
+        case $clear in *" webhook_secret "*) ;; *) [ "$url" = "$(saved webhook_url)" ] && sec=$(saved webhook_secret) ;; esac
+    fi
+    inp timeout; tmo=$V
+    if [ -n "$tmo" ]; then
+        like "$tmo" '[1-9]|[1-9][0-9]|1[01][0-9]|120' || error 'The timeout must be 1 to 120 seconds'
+    else
+        tmo=$(saved timeout); like "${tmo:-x}" '[1-9]|[1-9][0-9]|1[01][0-9]|120' || tmo=15
+    fi
     list webhook_headers 512 '[A-Za-z0-9-]{1,64}: ?[ -~]*' || error 'Invalid header (one "Name: value" per line; Host, Content-Type, Content-Length, Transfer-Encoding and Connection are set by the device)'
     hdrs=$V
     if [ -n "$hdrs" ]; then
@@ -201,6 +223,9 @@ do_set() {
     [ -z "$to" ] || like "$to" '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+' || error 'Invalid e-mail setting'
 
     flag sms || error 'Invalid forwarding setting'; sm=$V
+    inp power
+    if [ -z "$V" ]; then pw_n=$(saved power); [ "$pw_n" = 1 ] || pw_n=0
+    else flag power || error 'Invalid forwarding setting'; pw_n=$V; fi
     inp sms_number; num=$V
     [ -z "$num" ] || like "$num" '\+?[0-9]{3,20}' || error 'The number may only contain digits (and a leading +)'
 
@@ -229,6 +254,7 @@ do_set() {
             printf 'webhook_body=%s\n' "$(esc_tpl "$body")"
             printf 'webhook_expect=%s\n' "$exp"
             printf '%s' "$hdrs" | sed 's/^/webhook_header=/'
+            printf 'webhook_secret=%s\ntimeout=%s\npower=%s\n' "$sec" "$tmo" "$pw_n"
             printf 'telegram=%s\ntelegram_token=%s\ntelegram_chat=%s\n' "$tg" "$tok" "$chat"
             printf 'email=%s\nemail_host=%s\nemail_port=%s\nemail_tls=%s\nemail_user=%s\nemail_password=%s\n' \
                 "$em" "$host" "$port" "$etls" "$user" "$pw"

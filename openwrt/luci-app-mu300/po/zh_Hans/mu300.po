@@ -3908,6 +3908,33 @@ msgstr "Webhook 请求体过长或包含控制字符"
 msgid "The answer check must be key=value, like errcode=0 or ok=true (the value a whole number or lowercase letters, 16 at most)"
 msgstr "响应检查必须是 键=值 的形式，例如 errcode=0 或 ok=true（值为整数或小写字母，最多 16 个字符）"
 
+msgid "Also {sim} (SIM 1 or SIM 2) and {kind} (sms, test or power)."
+msgstr "另有 {sim}（SIM 1 或 SIM 2）和 {kind}（sms、test 或 power）。"
+
+msgid "Battery and charger notices"
+msgstr "电量与充电提醒"
+
+msgid "A message to every target when the battery passes 5, 20, 40, 60, 80 or 100 % and when the charger is plugged in or out."
+msgstr "电量经过 5、20、40、60、80 或 100 % 时，以及插上或拔下充电器时，向每个目标发送一条消息。"
+
+msgid "Secret for {secret} in the custom body"
+msgstr "自定义正文中 {secret} 的密钥"
+
+msgid "For a service that wants its token in the body (PushPlus). Saved for this address only: a new address needs it again."
+msgstr "用于要求在正文中携带令牌的服务（PushPlus）。只为当前地址保存：更换地址后需重新填写。"
+
+msgid "Request timeout (seconds, 1-120; webhook and Telegram)"
+msgstr "请求超时（秒，1-120；Webhook 和 Telegram）"
+
+msgid "SIM storage: %d of %d slots in use (at %s)"
+msgstr "SIM 存储：已用 %d / %d 条（%s）"
+
+msgid "Invalid webhook secret (up to 256 printable characters, no space)"
+msgstr "Webhook 密钥无效（最多 256 个可打印字符，不含空格）"
+
+msgid "The timeout must be 1 to 120 seconds"
+msgstr "超时须为 1 到 120 秒"
+
 msgid "Invalid header (one \"Name: value\" per line; Host, Content-Type, Content-Length, Transfer-Encoding and Connection are set by the device)"
 msgstr "无效的请求头（每行一个 \"Name: value\"；Host、Content-Type、Content-Length、Transfer-Encoding 和 Connection 由设备设置）"
 

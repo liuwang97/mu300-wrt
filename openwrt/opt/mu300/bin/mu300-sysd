@@ -17,6 +17,8 @@
 //             state changes come without a uevent here) in case none came. The battery's readings count
 //             by what mu300-led shows of them (colour, breathing, low, plugged): a 1 % step starts nothing. Every
 //             other file the hint names counts as it is.
+//   forward   the SMS forwarding's battery notices: mu300-sms-forward told the capacity and the plug when either
+//             changed, on the same uevents (U30 Air).
 //   thermal   rounds as timers, at an adaptive interval (below), with the thresholds, caps, alarm, power-off and log
 //             lines; the zones are read here, no process per round.
 // At rest that is a thermal round every 22-30 s and a look at the LED hint every SAFETY s, both in this process,
@@ -29,7 +31,8 @@
 // MU300_BUTTONS_DEADLINE, MU300_BUTTONS_PROBE_DEADLINE, MU300_THERMAL_*, MU300_BATTERY_HOT, MU300_BATTERY_COOL. Its
 // own: MU300_KEYS_BIN (mu300-keys), MU300_SYSD_SAFETY (90 s), MU300_SYSD_SAFETY_PLUGGED (30 s),
 // MU300_SYSD_LED_HINT_MAX (600 s: the hint's due time
-// at the latest, mu300-led's MU300_LED_TICK_HINT_MAX), and for the tests MU300_SYSD_PARTS ("keys led thermal"),
+// at the latest, mu300-led's MU300_LED_TICK_HINT_MAX), and for the tests MU300_SYSD_PARTS ("keys led thermal
+// forward"),
 // MU300_SYSD_ONCE (the helper's end ends the daemon once its presses and their work are done) and MU300_SYSD_LOG
 // (a file for the log lines instead of syslog).
 'use strict';
@@ -84,7 +87,7 @@ const KEYS = env('MU300_KEYS_BIN', 'mu300-keys');
 const MODE = ARGV[0] ?? '';
 const ONCE = env('MU300_SYSD_ONCE', '') == '1';
 let parts = {};
-for (let p in split(env('MU300_SYSD_PARTS', 'keys led thermal'), /[ ,]+/))
+for (let p in split(env('MU300_SYSD_PARTS', 'keys led thermal forward'), /[ ,]+/))
 	parts[p] = true;
 
 // the uptime in seconds (a fraction): the clock of the LED files and of the hotspot marker
@@ -490,6 +493,38 @@ function led_soon() {
 	});
 }
 
+// ------------------------------------------------------------------ the SMS forwarding's battery notices
+// `mu300-sms-forward power CAP PLUG` when the battery's capacity or the plug changed: looked at on a uevent of the
+// gauge or the plug, and once at the start (the forwarder takes the first reading of a boot as its base). The U30
+// Air only (the F50's gauge is no battery, as mu300-device and mu300-power see it); the forwarder sends only when the
+// panel turned the notices on.
+let fwd_last = null, fwd_timer = null, fwd_battery = null;
+function fwd_look() {
+	if (fwd_battery == null) {
+		let d = rd(R + '/run/mu300/device');
+		fwd_battery = (d == 'u30air') ? true : (d == 'f50') ? false : exists(R + '/proc/device-tree/charger_policy_service');
+	}
+	let st = fwd_battery ? battery_state(rd) : null;
+	if (st == null || !which('mu300-sms-forward'))
+		return;
+	let cap = null;
+	for (let d in [ PSY + 'sc27xx-fgu', PSY + 'battery' ])
+		if (digits(cap = rd(d + '/capacity')))
+			break;
+	let r = '' + min(+cap, 100) + ' ' + split(st, ' ')[3];
+	if (r == fwd_last)
+		return;
+	fwd_last = r;
+	spawn([ 'mu300-sms-forward', 'power', ...split(r, ' ') ], null, null, true);
+}
+function fwd_soon() {
+	fwd_timer ??= uloop.timer(500, () => {
+		fwd_timer = null;
+		try { fwd_look(); }
+		catch (e) { log('mu300-sysd', 'the battery notice failed: ' + e); }
+	});
+}
+
 // ------------------------------------------------------------------ the helper (mu300-keys -u power_supply)
 let helper = null, helper_sock = null, helper_h = null, helper_buf = '', helper_wait = 1, helper_since = 0;
 let helper_gone = false, helper_said = false;
@@ -498,6 +533,8 @@ function on_line(line) {
 	if (f[0] == 'uevent') {   // the charger or the fuel gauge; "uevent overflow": some were lost
 		if (parts.led)
 			led_soon();
+		if (parts.forward)
+			fwd_soon();
 	}
 	else if (f[1] == 'tick') {   // (from -t: a look)
 		if (parts.led)
@@ -909,8 +946,10 @@ if (MODE != '') {
 slack_wait();
 uloop.signal('SIGTERM', () => uloop.end());
 uloop.signal('SIGINT', () => uloop.end());
-if (parts.keys || parts.led)
+if (parts.keys || parts.led || parts.forward)
 	helper_start();
+if (parts.forward)
+	fwd_look();
 if (parts.led) {
 	hint_load();
 	// the first look a little after the start (the tests' runs end before it)

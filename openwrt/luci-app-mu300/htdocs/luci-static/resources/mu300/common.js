@@ -58,7 +58,8 @@ var callFwdGet = rpc.declare({ object: 'mu300dash', method: 'forward_get', expec
 var callFwdSet = rpc.declare({ object: 'mu300dash', method: 'forward_set', params: [ 'enabled', 'template', 'allow',
 	'deny', 'keywords', 'clear', 'webhook', 'webhook_url', 'webhook_format', 'webhook_headers', 'telegram',
 	'telegram_token', 'telegram_chat', 'email', 'email_host', 'email_port', 'email_tls', 'email_user', 'email_password',
-	'email_from', 'email_to', 'sms', 'sms_number', 'webhook_body', 'webhook_expect' ], expect: { '': {} }, nobatch: true });
+	'email_from', 'email_to', 'sms', 'sms_number', 'webhook_body', 'webhook_expect', 'webhook_secret', 'timeout',
+	'power' ], expect: { '': {} }, nobatch: true });
 var callFwdTest = rpc.declare({ object: 'mu300dash', method: 'forward_test', expect: { '': {} }, nobatch: true });
 var callFwdLogClear = rpc.declare({ object: 'mu300dash', method: 'forward_log_clear', expect: { '': {} }, nobatch: true });
 var callCpuGet = rpc.declare({ object: 'mu300dash', method: 'cpu_get', expect: { '': {} }, nobatch: true });

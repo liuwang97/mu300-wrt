@@ -12,7 +12,10 @@
  * The secrets (webhook address and headers, bot token, mail password) are never sent back: an empty field keeps the
  * saved one, "Remove the saved value" deletes it. The webhook's custom body is a template like the message template:
  * it is sent back to be edited, and an empty one means the standard body. So is the answer check (key=value the
- * service's answer must have): the device compares it, and the log gets its verdict, never the answer. */
+ * service's answer must have): the device compares it, and the log gets its verdict, never the answer.
+ * kanoqwq's extras: the Bark, PushPlus and ServerChan presets, the webhook secret ({secret} in the custom body, for
+ * PushPlus's token: a secret like the address), the request timeout, {sim} and {kind}, and the battery notices (only
+ * where the board has a battery). */
 
 var DEFAULT_TEMPLATE = '{text}\n-- {sender}, {time} ({device})';
 
@@ -100,8 +103,8 @@ return view.extend({
 			'style': 'display:block;margin-top:4px' }, [
 			E('option', { 'value': '' }, [ _('Presets') ]),
 			E('option', { 'value': 'errcode=0' }, [ 'DingTalk, WeCom: errcode=0' ]),
-			E('option', { 'value': 'code=0' }, [ 'Feishu, Lark: code=0' ]),
-			E('option', { 'value': 'code=200' }, [ 'Bark: code=200' ]),
+			E('option', { 'value': 'code=0' }, [ 'Feishu, Lark, ServerChan: code=0' ]),
+			E('option', { 'value': 'code=200' }, [ 'Bark, PushPlus: code=200' ]),
 			E('option', { 'value': 'ok=true' }, [ 'Slack API, Telegram API: ok=true' ])
 		]);
 		preset.addEventListener('change', function() {
@@ -119,37 +122,54 @@ return view.extend({
 			E('option', { 'value': 'text', 'selected': fmt === 'text' ? '' : null }, [ _('Plain text') ])
 		]);
 		var body = this.area('webhook_body', st.webhook_body, 4, '{"text":"{message}"}');
+		/* [ body, answer check, type, address ]: Bark and ServerChan take their key in the address (a secret, typed
+		 * over the YOUR_... part), PushPlus its token in the body ({secret}, the webhook secret below). The address
+		 * is filled in only when none is saved. Every one is an https:// endpoint. */
 		var BODIES = {
 			wecom: [ '{"msgtype":"text","text":{"content":"{message}"}}', 'errcode=0' ],
-			feishu: [ '{"msg_type":"text","content":{"text":"{message}"}}', 'code=0' ]
+			feishu: [ '{"msg_type":"text","content":{"text":"{message}"}}', 'code=0' ],
+			bark: [ '{"title":"{sender}","body":"{message}","group":"MU300"}', 'code=200', 'json', 'https://api.day.app/YOUR_KEY' ],
+			pushplus: [ '{"token":"{secret}","title":"{sender}","content":"{message}","template":"txt"}', 'code=200', 'json',
+				'https://www.pushplus.plus/send' ],
+			serverchan: [ 'title={sender}&desp={message}', 'code=0', 'form', 'https://sctapi.ftqq.com/YOUR_SENDKEY.send' ]
 		};
 		var bodyPreset = E('select', { 'class': 'cbi-input-select', 'id': 'mud-fwd-webhook_body_preset',
 			'style': 'display:block;margin-top:4px' }, [
 			E('option', { 'value': '' }, [ _('Presets') ]),
 			E('option', { 'value': 'wecom' }, [ 'WeCom, DingTalk' ]),
-			E('option', { 'value': 'feishu' }, [ 'Feishu, Lark' ])
+			E('option', { 'value': 'feishu' }, [ 'Feishu, Lark' ]),
+			E('option', { 'value': 'bark' }, [ 'Bark' ]),
+			E('option', { 'value': 'pushplus' }, [ 'PushPlus' ]),
+			E('option', { 'value': 'serverchan' }, [ 'ServerChan' ])
 		]);
 		bodyPreset.addEventListener('change', function() {
 			var b = Object.prototype.hasOwnProperty.call(BODIES, bodyPreset.value) ? BODIES[bodyPreset.value] : null;
 			if (b) {
 				body.value = b[0];
-				format.value = 'json';
+				format.value = b[2] || 'json';
 				if (!expect.value.trim()) expect.value = b[1];
+				var url = self.root.querySelector('#mud-fwd-webhook_url');
+				if (b[3] && url && !url.value.trim()) {
+					if (st.webhook_url_set) url.placeholder = b[3]; else url.value = b[3];
+				}
 			}
 			bodyPreset.value = '';
 		});
+		var also = _('Also {sim} (SIM 1 or SIM 2) and {kind} (sms, test or power).');
 
 		var general = E('section', { 'class': 'mud-card', 'id': 'mud-fwd-card-general' }, [
 			E('h3', {}, _('SMS forwarding')),
 			E('div', { 'class': 'mud-note' }, [ _('Received messages are sent on as they reach the SMS pool. A failed delivery is retried after 30 s, then after twice as long each time (an hour at most), ten times in all.') ]),
 			this.check('enabled', st.enabled, _('Forward received messages')),
 			this.field(_('Message template'), this.area('template', st.template || DEFAULT_TEMPLATE, 3),
-				_('Placeholders: {sender}, {time}, {text}, {device}')),
+				_('Placeholders: {sender}, {time}, {text}, {device}') + ' ' + also),
 			this.field(_('Only these senders'), this.area('allow', st.allow, 2),
 				_('One per line; empty: every sender. A * at the end matches the start of a sender.')),
 			this.field(_('Never these senders'), this.area('deny', st.deny, 2)),
 			this.field(_('Only messages containing one of these words'), this.area('keywords', st.keywords, 2),
-				_('One per line; empty: every message.'))
+				_('One per line; empty: every message.')),
+			st.power_available ? this.field(_('Battery'), this.check('power', st.power, _('Battery and charger notices')),
+				_('A message to every target when the battery passes 5, 20, 40, 60, 80 or 100 % and when the charger is plugged in or out.')) : ''
 		]);
 
 		var webhook = E('section', { 'class': 'mud-card', 'id': 'mud-fwd-card-webhook' }, [
@@ -160,11 +180,14 @@ return view.extend({
 			this.field(_('Body'), format, _('Fields: sender, time, text, device, message (the template filled in)')),
 			/* the device fills this in (mu300-sms-forward fill): a template, not a secret, so it comes back */
 			this.field(_('Custom body'), E('div', {}, [ body, bodyPreset ]),
-				_('Empty: the standard fields (plain text: the message). Placeholders: {sender}, {time}, {text}, {device}, {message}. Each value is escaped for the chosen type. This body is shown again here: keep secrets in the address or a header.')),
+				_('Empty: the standard fields (plain text: the message). Placeholders: {sender}, {time}, {text}, {device}, {message}. Each value is escaped for the chosen type. This body is shown again here: keep secrets in the address or a header.') + ' ' + also),
+			this.secret('webhook_secret', st.webhook_secret_set, '', _('Secret for {secret} in the custom body'), { password: true }),
+			E('div', { 'class': 'mud-note' }, [ _('For a service that wants its token in the body (PushPlus). Saved for this address only: a new address needs it again.') ]),
 			this.secret('webhook_headers', st.webhook_headers_set, st.webhook_header_names,
 				_('Extra headers (one "Name: value" per line)'), { area: true, placeholder: 'Authorization: Bearer ...' }),
 			this.field(_('The answer must contain'), E('div', {}, [ expect, preset ]),
-				_('Empty: every HTTP 2xx answer counts as delivered. With key=value (for example errcode=0), the answer must also be a JSON object that has this value under this key at its top level; otherwise the delivery fails. Only the result of the check is logged, never the answer.'))
+				_('Empty: every HTTP 2xx answer counts as delivered. With key=value (for example errcode=0), the answer must also be a JSON object that has this value under this key at its top level; otherwise the delivery fails. Only the result of the check is logged, never the answer.')),
+			this.field(_('Request timeout (seconds, 1-120; webhook and Telegram)'), this.text('timeout', st.timeout || 15))
 		]);
 
 		var telegram = E('section', { 'class': 'mud-card', 'id': 'mud-fwd-card-telegram' }, [
@@ -226,7 +249,7 @@ return view.extend({
 			var d = new Date((e.time || 0) * 1000);
 			return E('tr', {}, [
 				E('td', {}, [ d.toLocaleString() ]),
-				E('td', {}, [ e.id === 'test' ? _('Test') : '#' + e.id ]),
+				E('td', {}, [ e.id === 'test' ? _('Test') : e.id === 'power' ? _('Battery') : '#' + e.id ]),
 				E('td', {}, [ targets[e.target] || '-' ]),
 				E('td', {}, [ results[e.result] || e.result || '' ]),
 				E('td', { 'style': 'text-align:left;word-break:break-word' }, [ e.detail || '' ])
@@ -263,9 +286,11 @@ return view.extend({
 
 	save: function(btn) {
 		var self = this, clear = [];
-		[ 'webhook_url', 'webhook_headers', 'telegram_token', 'email_password' ].forEach(function(k) {
+		[ 'webhook_url', 'webhook_headers', 'webhook_secret', 'telegram_token', 'email_password' ].forEach(function(k) {
 			if (self.on(k + '-clear') === '1') clear.push(k);
 		});
+		/* no battery: the box is not there, and the saved setting stays */
+		var power = this.root.querySelector('#mud-fwd-power') ? this.on('power') : '';
 		M.busy(btn, true);
 		return M.callFwdSet(this.on('enabled'), this.val('template'), this.val('allow'), this.val('deny'),
 			this.val('keywords'), clear.join(' '), this.on('webhook'), this.val('webhook_url').trim(),
@@ -273,7 +298,8 @@ return view.extend({
 			this.val('telegram_chat').trim(), this.on('email'), this.val('email_host').trim(), this.val('email_port').trim(),
 			this.val('email_tls'), this.val('email_user').trim(), this.val('email_password'), this.val('email_from').trim(),
 			this.val('email_to').trim(), this.on('sms'), this.val('sms_number').trim(), this.val('webhook_body'),
-			this.val('webhook_expect').trim()).then(function(r) {
+			this.val('webhook_expect').trim(), this.val('webhook_secret').trim(), this.val('timeout').trim(),
+			power).then(function(r) {
 			M.busy(btn, false);
 			if (!r || r.ok !== 1) {
 				M.toast(_('Failed: %s').format(M.errText(r)), { type: 'error', timeout: 6000 });

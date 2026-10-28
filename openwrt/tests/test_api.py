@@ -907,7 +907,8 @@ class PanelAdapters(ApiCase):
         req = {'enabled': True, 'template': '{text}\n-- {sender}', 'allow': 'BANK*\n+90555', 'webhook': True,
                'webhook_url': 'https://hook.example.com/s3cret', 'webhook_headers': 'Authorization: Bearer hdrsecret',
                'webhook_format': 'json', 'webhook_expect': 'errcode=0', 'telegram': False, 'telegram_token': '123456:' + 'A' * 30,
-               'email': False, 'email_password': 'mailsecret', 'sms': False, 'clear': 'telegram_token'}
+               'email': False, 'email_password': 'mailsecret', 'sms': False, 'clear': 'telegram_token',
+               'webhook_secret': 'ppsecret', 'timeout': '30', 'power': True}
         for shell in self.each_shell():
             self.assertEqual(self.ok(shell, 'sms.forward')['data'], {'ok': 1})
             self.assertEqual(self.calls('forward')[-1], ['forward', 'get'])
@@ -915,12 +916,20 @@ class PanelAdapters(ApiCase):
             self.assertEqual(self.calls('forward')[-1], ['forward', 'set'])
             sent = json.loads((self.tmp / 'stdin.forward').read_text())
             self.assertEqual((sent['enabled'], sent['webhook'], sent['telegram'], sent['email'], sent['sms']), ('1', '1', '0', '0', '0'))
-            for k in ('template', 'allow', 'webhook_url', 'webhook_headers', 'telegram_token', 'email_password', 'clear'):
+            for k in ('template', 'allow', 'webhook_url', 'webhook_headers', 'telegram_token', 'email_password', 'clear',
+                      'webhook_secret', 'timeout'):
                 self.assertEqual(sent[k], req[k], k)
+            self.assertEqual(sent['power'], '1')
+            # a client that does not know the battery notices sends none: none goes on (the saved setting stays)
+            self.ok(shell, 'sms.forward_set', {'enabled': True})
+            self.assertNotIn('power', json.loads((self.tmp / 'stdin.forward').read_text()))
+            self.refused(shell, 'sms.forward_set', {'power': 'maybe'}, 'bad-value', 'power')
+            self.ok(shell, 'sms.forward_set', req)
             self.assertEqual((self.tmp / 'fwdcheck').read_text().strip(), '')
             # no secret in an argument list, and no request file left behind
             for c in self.calls():
-                self.assertFalse(any(x in '\x1f'.join(c) for x in ('s3cret', 'hdrsecret', 'mailsecret', 'AAAAAAAAAA')), c)
+                self.assertFalse(any(x in '\x1f'.join(c) for x in ('s3cret', 'hdrsecret', 'mailsecret', 'AAAAAAAAAA',
+                                                                   'ppsecret')), c)
             self.assertEqual([f.name for f in self.run_dir.iterdir() if f.name.startswith('fwd.')], [])
             # the adapter's refusal is the answer's detail
             (self.tmp / 'fwdout').write_text('{"ok":0,"error":"Invalid Telegram bot token"}\n')

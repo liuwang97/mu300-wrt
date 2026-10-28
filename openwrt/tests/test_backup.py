@@ -486,7 +486,8 @@ class Luci(BackupCase):
         self.fwdconf = self.root / 'etc/mu300/sms-forward.conf'
         self.fwdconf.write_text('enabled=1\ntemplate={text}\\n-- {sender}\nallow=BANK*\nwebhook=1\n'
                                 'webhook_url=https://hook.example.com/hooksecret\nwebhook_format=json\nwebhook_body=\n'
-                                'webhook_expect=\nwebhook_header=Authorization: Bearer hdrsecret\ntelegram=0\ntelegram_token=\n'
+                                'webhook_expect=\nwebhook_header=Authorization: Bearer hdrsecret\nwebhook_secret=ppsecret\ntimeout=30\n'
+                                'power=1\ntelegram=0\ntelegram_token=\n'
                                 'telegram_chat=\nemail=0\nemail_host=\nemail_port=587\nemail_tls=starttls\nemail_user=\n'
                                 'email_password=\nemail_from=\nemail_to=\nsms=0\nsms_number=\n')
         self.fwdconf.chmod(0o600)
@@ -518,6 +519,7 @@ class Luci(BackupCase):
             self.assertEqual(calls, [['lock', 'reset'], ['lock', 'apply', 'lte', '1,3'], ['lock', 'apply', 'cell', 'lte:100,69']])
             self.assertEqual(self.fwdconf.read_text(), saved)
             self.assertNotIn('hooksecret', self.argv_text() + r.stdout + r.stderr)
+            self.assertNotIn('ppsecret', self.argv_text() + r.stdout + r.stderr)
             # a lock value the API's rules refuse; one that would be an option of the lock tool
             for locks in ({'cell': 'lte:1;reboot'}, {'lte': '--help'}, {'mode': '-x'}):
                 f = self.write(self.doc({'locks': locks}, system='openwrt-luci'))

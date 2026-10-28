@@ -41,6 +41,7 @@ line = lines[0] if lines else 'status 200'
 if lines:
     open(a, 'w').write(''.join(l + '\n' for l in lines[1:]))
 ask = os.environ.get('MU300_FWD_ANSWER')
+open(os.path.join(log, 'timeout.env'), 'a').write(os.environ.get('MU300_FWD_TIMEOUT', '-') + '\n')
 open(a + '.env', 'a').write((ask or '-') + '\n')
 sys.stdout.buffer.write(line.encode() + b'\n')
 if ask and line.startswith('status 2'):
@@ -79,7 +80,7 @@ class Forwarder(ShellTest):
         for p in (self.state, self.run_dir):
             subprocess.run(['rm', '-rf', str(p)])
         for f in self.tmp.iterdir():
-            if f.name.startswith(('http.', 'argv.log', 'answers', 'sms-')):
+            if f.name.startswith(('http.', 'argv.log', 'answers', 'sms-', 'timeout.env')):
                 f.unlink()
 
     def write_conf(self, **kv):
@@ -226,7 +227,8 @@ class Forwarder(ShellTest):
 
     def deliver_one(self, shell, mid=8, **conf):
         self.fresh()
-        self.write_conf(enabled=1, webhook=1, webhook_url=HOOK_URL, template='{sender}: {text}', **conf)
+        conf.setdefault('template', '{sender}: {text}')
+        self.write_conf(enabled=1, webhook=1, webhook_url=HOOK_URL, **conf)
         self.fwd(shell, 'enqueue', str(mid))
         r = self.fwd(shell, 'run')
         self.assertEqual(r.returncode, 0, r.stderr)
@@ -269,27 +271,42 @@ class Forwarder(ShellTest):
         document of that service's shape, with the answer check that service needs (one of the check presets)."""
         import re
         view = (TOP / 'openwrt/luci-app-mu300/htdocs/luci-static/resources/view/mu300/forward.js').read_text()
-        bodies = dict(re.findall(r"(\w+): \[ '(\{[^']*\})', '[^']*' \]", view))
-        checks = dict(re.findall(r"(\w+): \[ '\{[^']*\}', '([^']*)' \]", view))
-        self.assertEqual(set(bodies), {'wecom', 'feishu'})
+        rows = re.findall(r"(\w+): \[ '([^']*)', '([^']*)'(?:, '(\w+)',\s*'(https://[^']*)')? \]", view)
+        bodies = {r[0]: r[1] for r in rows}
+        checks = {r[0]: r[2] for r in rows}
+        kinds = {r[0]: r[3] or 'json' for r in rows}
+        self.assertEqual(set(bodies), {'wecom', 'feishu', 'bark', 'pushplus', 'serverchan'})
         presets = re.findall(r"E\('option', \{ 'value': '([^']*=[^']*)' \}", view)
-        self.assertEqual(checks, {'wecom': 'errcode=0', 'feishu': 'code=0'})
+        self.assertEqual(checks, {'wecom': 'errcode=0', 'feishu': 'code=0', 'bark': 'code=200', 'pushplus': 'code=200',
+                                  'serverchan': 'code=0'})
         self.assertTrue(set(checks.values()) <= set(presets))
-        self.assertIn("E('option', { 'value': 'wecom' }, [ 'WeCom, DingTalk' ])", view)
-        self.assertIn("E('option', { 'value': 'feishu' }, [ 'Feishu, Lark' ])", view)
+        # every address a preset fills in is https (no key in it but a YOUR_... to type over)
+        self.assertEqual({r[0]: r[4] for r in rows if r[4]}, {'bark': 'https://api.day.app/YOUR_KEY',
+                         'pushplus': 'https://www.pushplus.plus/send', 'serverchan': 'https://sctapi.ftqq.com/YOUR_SENDKEY.send'})
+        for k in bodies:
+            self.assertIn(f"E('option', {{ 'value': '{k}' }}", view)
         self.assertNotIn('\'{"msg_type":"text","content":{"text":"{message}"}}\')', view)   # not the placeholder
-        self.assertIn("format.value = 'json';", view)
+        self.assertIn("format.value = b[2] || 'json';", view)
         self.assertIn('if (!expect.value.trim()) expect.value = b[1];', view)   # a check of the user's is kept
         pool_msg(self.pool, 8, self.HOSTILE_SENDER, self.HOSTILE_TEXT)
         message = f'{self.HOSTILE_SENDER}: {self.HOSTILE_TEXT}'
+        from urllib.parse import parse_qs
         want = {'wecom': {'msgtype': 'text', 'text': {'content': message}},
-                'feishu': {'msg_type': 'text', 'content': {'text': message}}}
+                'feishu': {'msg_type': 'text', 'content': {'text': message}},
+                'bark': {'title': self.HOSTILE_SENDER, 'body': message, 'group': 'MU300'},
+                'pushplus': {'token': 'ppTok', 'title': self.HOSTILE_SENDER, 'content': message, 'template': 'txt'},
+                'serverchan': {'title': self.HOSTILE_SENDER, 'desp': message}}
         for shell in self.each_shell():
             for name, body in bodies.items():
                 with self.subTest(preset=name):
-                    [(_url, headers, sent)] = self.deliver_one(shell, webhook_body=body, webhook_format='json')
-                    self.assertEqual(headers['Content-Type'], 'application/json; charset=utf-8')
-                    self.assertEqual(json.loads(sent), want[name])
+                    [(_url, headers, sent)] = self.deliver_one(shell, webhook_body=body, webhook_format=kinds[name],
+                                                               webhook_secret='ppTok')
+                    if kinds[name] == 'form':
+                        self.assertEqual(headers['Content-Type'], 'application/x-www-form-urlencoded')
+                        self.assertEqual({k: v[0] for k, v in parse_qs(sent, keep_blank_values=True).items()}, want[name])
+                    else:
+                        self.assertEqual(headers['Content-Type'], 'application/json; charset=utf-8')
+                        self.assertEqual(json.loads(sent), want[name])
 
     def test_custom_form_and_text_bodies(self):
         from urllib.parse import parse_qs
@@ -359,7 +376,7 @@ class Forwarder(ShellTest):
         # the template and the values reach awk in its environment, never as program text or -v
         start = fwd.index('\nfill() {')
         body = fwd[start:fwd.index('\n}\n', start)]
-        self.assertIn('T=$1 M=$2 F=$3 D=$4 X=$5 V=$6 G=${7:-} N=$# awk', body)
+        self.assertIn('T=$1 M=$2 F=$3 D=$4 X=$5 V=$6 S=$7 K=$8 G=${9:-} P=${10:-} N=$# awk', body)
         self.assertNotIn('awk -v', body)
         self.assertNotIn('"$1"', body)
 
@@ -921,6 +938,110 @@ class Forwarder(ShellTest):
         self.assertIn('ucode "$HTTP"', fwd)
         self.assertNotRegex(fwd, r'ucode[^\n]*\$c_')
 
+    # ------------------------------------------------------------------ kanoqwq's extras
+    def test_sim_and_kind_placeholders(self):
+        pool_msg(self.pool, 8, '+905551112233', 'kod 1234')
+        slot = self.tmp / 'sim-slot'
+        for shell in self.each_shell():
+            slot.write_text('1\n')
+            [(_, _, body)] = self.deliver_sim(shell, slot)
+            self.assertEqual(body, 'kod 1234 [SIM 2 sms]')
+            slot.unlink()
+            [(_, _, body)] = self.deliver_sim(shell, slot)
+            self.assertEqual(body, 'kod 1234 [SIM 1 sms]')
+            # a test says so
+            self.fresh()
+            self.write_conf(enabled=1, webhook=1, webhook_url=HOOK_URL, webhook_format='text', template='{kind}')
+            self.fwd(shell, 'test', MU300_FWD_SIM_SLOT=slot)
+            self.assertEqual(self.requests()[0][2], 'test')
+
+    def deliver_sim(self, shell, slot):
+        self.fresh()
+        self.write_conf(enabled=1, webhook=1, webhook_url=HOOK_URL, webhook_format='text', template='{text} [{sim} {kind}]')
+        self.fwd(shell, 'enqueue', '8', MU300_FWD_SIM_SLOT=slot)
+        self.fwd(shell, 'run', MU300_FWD_SIM_SLOT=slot)
+        return self.requests()
+
+    def test_the_secret_goes_into_the_custom_body_only(self):
+        """PushPlus takes its token in the body: {secret} in the custom body is the saved webhook_secret, escaped
+        like any value; the message template never fills it in, and it is in no log or command line."""
+        pool_msg(self.pool, 8, 'BANK', 'kod 1234')
+        sec = 'pp"Tok\\en_0123456789'
+        for shell in self.each_shell():
+            [(_, _, body)] = self.deliver_one(shell, webhook_secret=sec, template='{text} {secret}',
+                                              webhook_body='{"token":"{secret}","title":"{sender}","content":"{message}"}')
+            self.assertEqual(json.loads(body), {'token': sec, 'title': 'BANK', 'content': 'kod 1234 {secret}'})
+            for f in ('argv.log',):
+                self.assertNotIn('Tok', (self.tmp / f).read_text())
+            self.assertNotIn('Tok', (self.run_dir / 'log').read_text())
+            # form: percent-encoded
+            [(_, _, body)] = self.deliver_one(shell, webhook_secret='a&b=c', webhook_format='form',
+                                              webhook_body='title={sender}&key={secret}')
+            self.assertEqual(body, 'title=BANK&key=a%26b%3Dc')
+
+    def test_the_timeout_reaches_the_helper(self):
+        pool_msg(self.pool, 8, 'BANK', 'x')
+        for shell in self.each_shell():
+            for conf, want in (({}, '15'), ({'timeout': '60'}, '60'), ({'timeout': '121'}, '15'), ({'timeout': 'x'}, '15')):
+                self.deliver_one(shell, **conf)
+                self.assertEqual((self.tmp / 'timeout.env').read_text(), want + '\n', conf)
+
+    def test_the_http_helper_takes_the_timeout(self):
+        src = HTTP_UC.read_text()
+        self.assertIn("getenv('MU300_FWD_TIMEOUT')", src)
+        self.assertIn('(secs >= 1 && secs <= 120) ? int(secs) * 1000 : 15000', src)
+
+    def power(self, shell, cap, plug, **env):
+        r = self.fwd(shell, 'power', str(cap), str(plug), **env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return r
+
+    def test_battery_notices(self):
+        self.stub('mu300-device', 'echo u30air')
+        for shell in self.each_shell():
+            self.fresh()
+            self.write_conf(enabled=1, power=1, webhook=1, webhook_url=HOOK_URL, webhook_format='text',
+                            template='{kind}: {text}')
+            self.power(shell, 50, 0)                    # the first reading: a base
+            self.assertEqual(self.requests(), [])
+            self.power(shell, 41, 0)
+            self.assertEqual(self.requests(), [])
+            self.power(shell, 3, 0)                     # down past 40, 20 and 5: the lowest
+            self.power(shell, 3, 1)
+            self.power(shell, 85, 1)                    # up past 20 ... 80: the highest
+            self.power(shell, 100, 1)
+            self.power(shell, 100, 0)
+            self.assertEqual([b for _, _, b in self.requests()], [
+                'power: Battery at 3 % (on battery)', 'power: Charger plugged in, battery at 3 %',
+                'power: Battery at 85 % (charging)', 'power: Battery at 100 % (charging)',
+                'power: Charger unplugged, battery at 100 %'])
+            self.assertEqual({tuple(l[1:4]) for l in self.log()}, {('power', 'webhook', 'sent')})
+            self.assertNotIn('Battery', (self.run_dir / 'log').read_text())
+            # off by default, and off with forwarding off: the base still moves
+            for conf in (dict(enabled=1, webhook=1, webhook_url=HOOK_URL), dict(enabled=0, power=1, webhook=1, webhook_url=HOOK_URL)):
+                self.fresh()
+                self.write_conf(**conf)
+                self.power(shell, 50, 0)
+                self.power(shell, 50, 1)
+                self.power(shell, 3, 1)
+                self.assertEqual(self.requests(), [])
+                self.assertEqual((self.run_dir / 'power').read_text(), '3 1\n')
+            for bad in (('101', '0'), ('5', '2'), ('x', '0'), ('5', '')):
+                self.assertEqual(self.fwd(shell, 'power', *bad).returncode, 2, bad)
+
+    def test_status_says_whether_there_is_a_battery(self):
+        psy = self.tmp / 'psy'
+        (psy / 'bat').mkdir(parents=True)
+        (psy / 'bat/type').write_text('Battery\n')
+        (psy / 'bat/present').write_text('1\n')
+        for shell in self.each_shell():
+            for dev, want in (('u30air', '1'), ('f50', '0')):
+                self.stub('mu300-device', f'echo {dev}')
+                out = self.fwd(shell, 'status', MU300_FWD_PSY=psy).stdout
+                self.assertIn(f'battery {want}\n', out)
+            self.stub('mu300-device', 'echo u30air')
+            self.assertIn('battery 0\n', self.fwd(shell, 'status', MU300_FWD_PSY=self.tmp / 'none').stdout)
+
 
 class Adapter(ShellTest):
     """unisoc-modem/forward: get never returns a secret, set checks and writes a root-only file."""
@@ -933,7 +1054,7 @@ class Adapter(ShellTest):
         self.conf = self.tmp / 'etc' / 'sms-forward.conf'
         # the forwarder: its status, a log, and what it was asked
         self.stub('fwd', 'echo "$*" >> "$STUBLOG/fwd.log"; case $1 in '
-                         'status) printf "queued 2\\nrunning 1\\nemail ${FWD_EMAIL:-0}\\n" ;; '
+                         'status) printf "queued 2\\nrunning 1\\nemail ${FWD_EMAIL:-0}\\nbattery ${FWD_BATTERY:-0}\\n" ;; '
                          'log-clear) [ -z "${FWD_CLEAR_FAIL:-}" ] || exit 1 ;; '
                          'test-gate) [ -z "${FWD_GATE_SHUT:-}" ] || exit 1 ;; '
                          'log) printf "1791000000\\t12\\twebhook\\tsent\\tHTTP 200\\n1791000001\\ttest\\ttelegram\\tfailed\\tHTTP 4\\"01\\n" ;; '
@@ -1112,6 +1233,44 @@ class Adapter(ShellTest):
                 self.assertIn('webhook_expect=', self.conf.read_text().splitlines())
                 self.assertEqual(self.get(shell)[1]['webhook_expect'], '')
 
+    def test_the_webhook_secret_timeout_and_battery_notices(self):
+        sec = 'ppTOKEN0123456789abcdef'
+        for shell in self.each_shell():
+            self.conf.parent.mkdir(exist_ok=True)
+            self.conf.unlink(missing_ok=True)
+            # the defaults: no secret, 15 s, no notices
+            self.assertEqual(self.set(shell, **self.FULL), {'ok': 1})
+            raw, st = self.get(shell)
+            self.assertEqual((st['webhook_secret_set'], st['timeout'], st['power'], st['power_available']), (0, 15, 0, 0))
+            self.assertIn('timeout=15', self.conf.read_text().splitlines())
+            self.assertEqual(self.set(shell, **dict(self.FULL, webhook_secret=sec, timeout='60', power='1')), {'ok': 1})
+            lines = self.conf.read_text().splitlines()
+            for want in (f'webhook_secret={sec}', 'timeout=60', 'power=1'):
+                self.assertIn(want, lines)
+            raw, st = self.get(shell, FWD_BATTERY='1')
+            self.assertNotIn(sec, raw)
+            self.assertEqual((st['webhook_secret_set'], st['timeout'], st['power']), (1, 60, 1))
+            # empty (or a page that does not send them): kept
+            kept = dict(self.FULL, webhook_url='', webhook_headers='', telegram_token='', email_password='')
+            self.assertEqual(self.set(shell, **kept), {'ok': 1})
+            lines = self.conf.read_text().splitlines()
+            for want in (f'webhook_secret={sec}', 'timeout=60', 'power=1'):
+                self.assertIn(want, lines)
+            self.set(shell, **dict(kept, power='0'))
+            self.assertIn('power=0', self.conf.read_text().splitlines())
+            # a new address without a new secret: the secret goes; clear removes it too
+            self.set(shell, **dict(kept, webhook_secret=sec))
+            self.assertEqual(self.set(shell, **dict(kept, webhook_url='https://www.pushplus.plus/send')), {'ok': 1})
+            self.assertNotIn(sec, self.conf.read_text())
+            self.set(shell, **dict(kept, webhook_secret=sec))
+            self.set(shell, **dict(kept, clear='webhook_secret'))
+            self.assertNotIn(sec, self.conf.read_text())
+            # refused
+            for bad in (dict(timeout='0'), dict(timeout='121'), dict(timeout='1.5'), dict(webhook_secret='a b'),
+                        dict(webhook_secret='x' * 257), dict(webhook_secret='tok\n'), dict(power='2')):
+                r = self.set(shell, **dict(self.FULL, **bad))
+                self.assertEqual(r['ok'], 0, bad)
+
     def test_logclear(self):
         for shell in self.each_shell():
             (self.tmp / 'fwd.log').unlink(missing_ok=True)
@@ -1214,16 +1373,18 @@ class Wiring(unittest.TestCase):
         common = (app / 'htdocs/luci-static/resources/mu300/common.js').read_text()
         self.assertIn('callFwdGet: callFwdGet, callFwdSet: callFwdSet, callFwdTest: callFwdTest, '
                       'callFwdLogClear: callFwdLogClear', common)
-        # the custom body, then the answer check (issue #171): declared to rpcd, sent by the page as the last
-        # parameters in that order (an older cached page still lines up)
-        self.assertIn("'sms_number', 'webhook_body', 'webhook_expect' ]", common)
-        self.assertIn('"webhook_body": "String"', DASH.read_text())
-        self.assertIn('"webhook_expect": "String"', DASH.read_text())
+        # the custom body, then the answer check (issue #171), then the webhook secret, the timeout and the battery
+        # notices: declared to rpcd, sent by the page as the last parameters in that order (an older cached page
+        # still lines up, and what it does not send is kept)
+        self.assertIn("'sms_number', 'webhook_body', 'webhook_expect', 'webhook_secret', 'timeout',\n\t'power' ]", common)
+        for k in ('webhook_body', 'webhook_expect', 'webhook_secret', 'timeout', 'power'):
+            self.assertIn(f'"{k}": "String"', DASH.read_text())
         self.assertIn('"forward_log_clear": { }', DASH.read_text())
         view = (app / 'htdocs/luci-static/resources/view/mu300/forward.js').read_text()
         self.assertIn("this.area('webhook_body', st.webhook_body,", view)
         self.assertIn("this.val('sms_number').trim(), this.val('webhook_body'),\n"
-                      "\t\t\tthis.val('webhook_expect').trim())", view)
+                      "\t\t\tthis.val('webhook_expect').trim(), this.val('webhook_secret').trim(), this.val('timeout').trim(),\n"
+                      "\t\t\tpower)", view)
         self.assertIn("this.text('webhook_expect', st.webhook_expect,", view)
         # a preset fills the field in and is nothing else: every one is a rule the adapter takes
         import re
@@ -1239,7 +1400,7 @@ class Wiring(unittest.TestCase):
     def test_the_view_never_shows_a_saved_secret(self):
         view = (TOP / 'openwrt/luci-app-mu300/htdocs/luci-static/resources/view/mu300/forward.js').read_text()
         # the secret fields start empty; only their *_set flags and hints are read
-        for k in ('webhook_url', 'webhook_headers', 'telegram_token', 'email_password'):
+        for k in ('webhook_url', 'webhook_headers', 'webhook_secret', 'telegram_token', 'email_password'):
             self.assertNotIn(f'st.{k})', view)
             self.assertNotIn(f'st.{k},', view)
         self.assertIn("this.secret('telegram_token', st.telegram_token_set", view)

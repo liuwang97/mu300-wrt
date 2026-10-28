@@ -215,7 +215,8 @@ sec_sms_forward() {
         {enabled: on("enabled"), template: (one("template") | unesc), allow: many("allow"), deny: many("deny"),
          keywords: many("keyword"), webhook: on("webhook"), webhook_url: one("webhook_url"),
          webhook_format: one("webhook_format"), webhook_body: (one("webhook_body") | unesc),
-         webhook_expect: one("webhook_expect"), webhook_headers: many("webhook_header"), telegram: on("telegram"),
+         webhook_expect: one("webhook_expect"), webhook_headers: many("webhook_header"),
+         webhook_secret: one("webhook_secret"), timeout: one("timeout"), power: on("power"), telegram: on("telegram"),
          telegram_token: one("telegram_token"), telegram_chat: one("telegram_chat"), email: on("email"),
          email_host: one("email_host"), email_port: one("email_port"), email_tls: one("email_tls"),
          email_user: one("email_user"), email_password: one("email_password"), email_from: one("email_from"),
@@ -370,7 +371,8 @@ else
       sec("sms_forward"; keysin(["enabled", "template", "allow", "deny", "keywords", "webhook", "webhook_url",
           "webhook_format", "webhook_body", "webhook_expect", "webhook_headers", "telegram", "telegram_token",
           "telegram_chat", "email", "email_host", "email_port", "email_tls", "email_user", "email_password",
-          "email_from", "email_to", "sms", "sms_number"]) and all(.[]; (type == "boolean") or s(30000))),
+          "email_from", "email_to", "sms", "sms_number", "webhook_secret", "timeout", "power"])
+          and all(.[]; (type == "boolean") or s(30000))),
       sec("lan"; keysin(["ip"]) and (.ip | l(15))),
       sec("system"; keysin(["hostname", "timezone", "ssh"]) and (.hostname // "" | l(63)) and (.timezone // "" | l(64))
           and (.ssh // true | flags)),
@@ -443,7 +445,7 @@ def q: tostring | @json;
   ( if $B.sms_forward != null and want("sms_forward") and $B.sms_forward != $C.sms_forward then
       {sec: "sms_forward", do: "forward",
        # (the panel keeps a saved secret that comes empty: "clear" names those the file has none of)
-       data: ($B.sms_forward + {clear: ([ [ "webhook_url", "webhook_headers", "telegram_token", "email_password" ][]
+       data: ($B.sms_forward + {clear: ([ [ "webhook_url", "webhook_headers", "webhook_secret", "telegram_token", "email_password" ][]
                                         | select(($B.sms_forward[.] // "") == "")] | join(" "))}),
        say: "SMS forwarding: its settings change"} else empty end ),
   ( if $B.vpn != null and want("vpn") then

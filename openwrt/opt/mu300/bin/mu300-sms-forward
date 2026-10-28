@@ -8,9 +8,11 @@
 #   mu300-sms-forward test            one delivery of a test message to every target that is on (the panel's button)
 #   mu300-sms-forward test-gate       0 when the panel may start a test now, 1 when one was started under 5 s ago
 #   mu300-sms-forward clear           empty the queue (forwarding turned off)
-#   mu300-sms-forward status          "queued N", "running 0|1", "email 0|1" (msmtp there or not)
+#   mu300-sms-forward status          "queued N", "running 0|1", "email 0|1" (msmtp), "battery 0|1" (a battery)
 #   mu300-sms-forward log             the delivery log, oldest first: epoch, id, target, result, detail (tab-separated)
 #   mu300-sms-forward log-clear       empty the delivery log (the panel's button)
+#   mu300-sms-forward power CAP PLUG  the battery is at CAP % and the charger in (PLUG 1) or out (0): mu300-sysd
+#                                     says so on the gauge's or the plug's uevent when either changed (U30 Air)
 #
 # Driven by the pool, never by the modem: mu300-sms hands over each new message by its id, and nothing here polls
 # anything. The queue ("target <TAB> message file", at most MU300_FWD_QUEUE_MAX lines) is on flash, next to the
@@ -20,6 +22,10 @@
 # A failed delivery is tried again after 30 s, then 1, 2, 4... minutes (an hour at most), MU300_FWD_ATTEMPTS times in
 # all; a refusal that cannot change by waiting (HTTP 4xx but 408 and 429, a bad number) is not retried.
 #
+# Battery notices (power=1, off by default): one message to every target that is on when the battery
+# passes 5, 20, 40, 60, 80 or 100 % (the lowest one passed going down, the highest going up) and when the charger is
+# plugged in or out. The first reading of a boot is only a base. A notice is tried once, not queued: it is about now.
+#
 # The configuration, /etc/mu300/sms-forward.conf, is written by the panel (unisoc-modem/forward) and is root's only
 # (0600): it holds the Telegram token, the webhook URL and headers and the mail password. None of them is ever put in
 # a command line or the log: an HTTP request goes to the ucode helper (/opt/mu300/lib/sms-forward-http.uc) on stdin,
@@ -28,8 +34,10 @@
 # allow, deny, keyword (one entry per line, repeated), webhook, webhook_url, webhook_format (json|form|text),
 # webhook_body (the user's own request body, stored like the template; empty: the standard one), webhook_expect
 # (KEY=VALUE a top-level value of the service's JSON answer must be; empty: any 2xx is a delivery), webhook_header
-# ("Name: value", repeated), telegram, telegram_token, telegram_chat, email, email_host, email_port,
-# email_tls (starttls|tls|off), email_user, email_password, email_from, email_to, sms, sms_number.
+# ("Name: value", repeated), webhook_secret (a token the custom body puts where {secret} is: PushPlus wants it in
+# the body; a secret like the others), timeout (seconds an HTTP request may take, 1-120, 15 by default), telegram,
+# telegram_token, telegram_chat, email, email_host, email_port, email_tls (starttls|tls|off), email_user,
+# email_password, email_from, email_to, sms, sms_number, power (0|1).
 set -u
 export PATH="$PATH:/opt/mu300/bin:/opt/mu300/busybox-bin:/usr/sbin:/sbin"
 # bytes, not characters: the template, the text and the cut to one SMS work on UTF-8 bytes
@@ -59,6 +67,8 @@ TAB=$(printf '\t')
 NL='
 '
 DEFAULT_TEMPLATE='{text}\n-- {sender}, {time} ({device})'
+# the SIM this boot runs on (mu300-sim: one SIM stack per boot), for {sim}
+SIM_SLOT=${MU300_FWD_SIM_SLOT:-/run/mu300/sim-slot}
 
 say() { echo "mu300-sms-forward: $*" >&2; }
 
@@ -67,6 +77,7 @@ say() { echo "mu300-sms-forward: $*" >&2; }
 conf_load() {
     c_enabled=0 c_template=$DEFAULT_TEMPLATE c_allow= c_deny= c_keyword=
     c_webhook=0 c_webhook_url= c_webhook_format=json c_webhook_header= c_webhook_body= c_webhook_expect=
+    c_webhook_secret= c_timeout=15 c_power=0
     c_telegram=0 c_telegram_token= c_telegram_chat=
     c_email=0 c_email_host= c_email_port=587 c_email_tls=starttls c_email_user= c_email_password= c_email_from= c_email_to=
     c_sms=0 c_sms_number=
@@ -86,6 +97,9 @@ conf_load() {
             webhook_body) c_webhook_body=$_v ;;
             webhook_expect) c_webhook_expect=$_v ;;
             webhook_header) c_webhook_header=$c_webhook_header$_v$NL ;;
+            webhook_secret) c_webhook_secret=$_v ;;
+            timeout) case $_v in [1-9]|[1-9][0-9]|1[01][0-9]|120) c_timeout=$_v ;; esac ;;
+            power) c_power=$_v ;;
             telegram) c_telegram=$_v ;;
             telegram_token) c_telegram_token=$_v ;;
             telegram_chat) c_telegram_chat=$_v ;;
@@ -202,14 +216,15 @@ passes() {
     return 0
 }
 
-# fill TEMPLATE MODE SENDER TIME TEXT DEVICE [MESSAGE]: TEMPLATE (in the stored one-line form) with its placeholders
-# replaced: {sender} {time} {text} {device}, and {message} when MESSAGE is given. Anything else in braces stays as it
+# fill TEMPLATE MODE SENDER TIME TEXT DEVICE SIM KIND [MESSAGE [SECRET]]: TEMPLATE (in the stored one-line form) with
+# its placeholders replaced: {sender} {time} {text} {device} {sim} {kind}, {message} when MESSAGE is given and {secret}
+# when SECRET is (the webhook body only). Anything else in braces stays as it
 # is. MODE says how a value is written: raw as it is; json as the inside of a JSON string (quote, backslash and every
 # control character escaped - the quotes around it are the template's); url percent-encoded. One pass: a value put in
 # is never read again for placeholders. Neither the template nor a value passes through a shell, eval or awk -v (no
 # escapes are read in them): they reach awk in its environment and are only ever copied.
 fill() {
-    T=$1 M=$2 F=$3 D=$4 X=$5 V=$6 G=${7:-} N=$# awk '
+    T=$1 M=$2 F=$3 D=$4 X=$5 V=$6 S=$7 K=$8 G=${9:-} P=${10:-} N=$# awk '
     function enc(s,   i, c, o) {
         if (mode == "json") {
             o = ""
@@ -241,9 +256,10 @@ fill() {
             t = substr(t, i + 2)
         }
         t = u t; out = ""
-        n = split("sender time text device" (ENVIRON["N"] + 0 >= 7 ? " message" : ""), name, " ")
+        n = split("sender time text device sim kind" (ENVIRON["N"] + 0 >= 9 ? " message" : "") \
+            (ENVIRON["N"] + 0 >= 10 ? " secret" : ""), name, " ")
         val["sender"] = ENVIRON["F"]; val["time"] = ENVIRON["D"]; val["text"] = ENVIRON["X"]; val["device"] = ENVIRON["V"]
-        val["message"] = ENVIRON["G"]
+        val["sim"] = ENVIRON["S"]; val["kind"] = ENVIRON["K"]; val["message"] = ENVIRON["G"]; val["secret"] = ENVIRON["P"]
         while ((i = index(t, "{")) > 0) {
             out = out substr(t, 1, i - 1); t = substr(t, i); hit = 0
             for (k = 1; k <= n; k++) {
@@ -256,10 +272,15 @@ fill() {
     }'
 }
 
-# render SENDER TIME TEXT DEVICE: the message template filled in, as text
-render() { fill "$c_template" raw "$1" "$2" "$3" "$4"; }
+# render SENDER TIME TEXT DEVICE [SIM KIND]: the message template filled in, as text
+render() { fill "$c_template" raw "$1" "$2" "$3" "$4" "${5:-}" "${6:-}"; }
 
 device_name() { cat /proc/sys/kernel/hostname 2>/dev/null || uname -n; }
+# sim_name: "SIM 1" or "SIM 2", the slot this boot runs on (mu300-sim's note; no note: the first)
+sim_name() {
+    _s=$(cat "$SIM_SLOT" 2>/dev/null)
+    case $_s in 1) echo 'SIM 2' ;; *) echo 'SIM 1' ;; esac
+}
 
 # JSON string of $1 (quotes included); every control character escaped, text above 0x7f passed through
 json() {
@@ -435,13 +456,14 @@ http_post() {
     if command -v ucode >/dev/null 2>&1 && [ -f "$HTTP" ]; then set -- ucode "$HTTP" "$@"
     else d_detail='no HTTP client (ucode)'; return; fi
     _hc1=$1 _hc2=$2; shift 2
-    _to=; command -v timeout >/dev/null 2>&1 && _to='timeout 40'
+    # the request's own limit (timeout, the helper's), and a last one around the helper
+    _to=; command -v timeout >/dev/null 2>&1 && _to="timeout $((c_timeout + 25))"
     if [ -n "${5:-}" ]; then
-        _r=$(http_request "$@" | MU300_FWD_TMP=$RUN MU300_FWD_ANSWER=$ANSWER_MAX $_to "$_hc1" "$_hc2" 2>/dev/null |
+        _r=$(http_request "$@" | MU300_FWD_TMP=$RUN MU300_FWD_TIMEOUT=$c_timeout MU300_FWD_ANSWER=$ANSWER_MAX $_to "$_hc1" "$_hc2" 2>/dev/null |
             answer_verdict "${5%%=*}" "${5#*=}" 2>/dev/null)
         case $_r in *"$NL"*) d_answer=${_r#*"$NL"}; _r=${_r%%"$NL"*} ;; esac
     else
-        _r=$(http_request "$@" | MU300_FWD_TMP=$RUN $_to "$_hc1" "$_hc2" 2>/dev/null | head -n 1)
+        _r=$(http_request "$@" | MU300_FWD_TMP=$RUN MU300_FWD_TIMEOUT=$c_timeout $_to "$_hc1" "$_hc2" 2>/dev/null | head -n 1)
     fi
     case $_r in
         'status '[0-9]*) d_status=${_r#status }; d_detail="HTTP $d_status" ;;
@@ -484,17 +506,20 @@ answer_result() {
     esac
 }
 
-# deliver TARGET FILE: one attempt; 0 delivered, 1 worth another try, 2 not; why in d_detail. FILE "test": a sample.
+# deliver TARGET FILE: one attempt; 0 delivered, 1 worth another try, 2 not; why in d_detail. FILE "test": a sample;
+# "power": the battery notice in $power_text. {kind} is sms, test or power.
 deliver() {
     d_detail=
-    if [ "$2" = test ]; then
-        _from=MU300; _time=$(date '+%Y-%m-%d %H:%M:%S'); _text='Test message from the control panel'
-    else
-        [ -f "$2" ] || { d_detail='message no longer in the pool'; return 2; }
-        _from=$(hdr "$2" from); _time=$(hdr "$2" scts); _text=$(body_of "$2")
-    fi
-    _dev=$(device_name)
-    _msg=$(render "$_from" "$_time" "$_text" "$_dev")
+    case $2 in
+        test) _kind=test; _from=MU300; _time=$(date '+%Y-%m-%d %H:%M:%S'); _text='Test message from the control panel' ;;
+        power) _kind=power; _from=MU300; _time=$(date '+%Y-%m-%d %H:%M:%S'); _text=$power_text ;;
+        *)
+            _kind=sms
+            [ -f "$2" ] || { d_detail='message no longer in the pool'; return 2; }
+            _from=$(hdr "$2" from); _time=$(hdr "$2" scts); _text=$(body_of "$2") ;;
+    esac
+    _dev=$(device_name); _sim=$(sim_name)
+    _msg=$(render "$_from" "$_time" "$_text" "$_dev" "$_sim" "$_kind")
     case $1 in
     webhook)
         # the format is the content type, and how a value is written into a body of the user's own (webhook_body);
@@ -505,7 +530,8 @@ deliver() {
             *) _type='application/json; charset=utf-8'; _mode=json ;;
         esac
         if [ -n "$c_webhook_body" ]; then
-            _body=$(fill "$c_webhook_body" "$_mode" "$_from" "$_time" "$_text" "$_dev" "$_msg")
+            _body=$(fill "$c_webhook_body" "$_mode" "$_from" "$_time" "$_text" "$_dev" "$_sim" "$_kind" "$_msg" \
+                "$c_webhook_secret")
         else
             case $_mode in
                 url) _body="sender=$(urlencode "$_from")&time=$(urlencode "$_time")&text=$(urlencode "$_text")&device=$(urlencode "$_dev")&message=$(urlencode "$_msg")" ;;
@@ -755,7 +781,55 @@ cmd_status() {
     _q=0; [ -s "$QUEUE" ] && _q=$(wc -l < "$QUEUE" | tr -d ' ')
     _w=0; alive "$(cat "$RUN/worker.lock/pid" 2>/dev/null)" && _w=1
     _m=0; command -v msmtp >/dev/null 2>&1 && _m=1
-    printf 'queued %s\nrunning %s\nemail %s\n' "$_q" "$_w" "$_m"
+    printf 'queued %s\nrunning %s\nemail %s\nbattery %s\n' "$_q" "$_w" "$_m" "$(has_battery && echo 1 || echo 0)"
+}
+
+# has_battery: the board has one (as mu300-power's battery_dir sees it: the F50's gauge is no battery)
+has_battery() {
+    case $(mu300-device 2>/dev/null) in f50) return 1 ;; esac
+    for _d in "${MU300_FWD_PSY:-/sys/class/power_supply}"/*; do
+        [ "$(cat "$_d/type" 2>/dev/null)" = Battery ] || continue
+        [ ! -f "$_d/present" ] || [ "$(cat "$_d/present" 2>/dev/null)" = 1 ] && return 0
+    done
+    return 1
+}
+
+# cmd_power CAP PLUG: a battery notice when the charger came or went or a threshold was passed since the last call
+# (kept in RAM; the first call of a boot is the base). Sent to every target that is on, once, and logged as "power":
+# neither the message nor anything else of it goes to the log.
+cmd_power() {
+    case ${1:-}:${2:-} in *[!0-9:]*|:*|*:) say "power CAP PLUG"; return 2 ;; esac
+    { [ "$1" -le 100 ] && { [ "$2" = 0 ] || [ "$2" = 1 ]; }; } || { say "power CAP(0-100) PLUG(0|1)"; return 2; }
+    state_init
+    lock power 5 || return 0
+    _prev=$(cat "$RUN/power" 2>/dev/null)
+    echo "$1 $2" > "$RUN/power"
+    unlock power
+    _pc=${_prev% *} _pp=${_prev#* }
+    case $_pc:$_pp in *[!0-9:]*|:*|*:) return 0 ;; esac
+    power_text=
+    if [ "$_pp" != "$2" ]; then
+        if [ "$2" = 1 ]; then power_text="Charger plugged in, battery at $1 %"
+        else power_text="Charger unplugged, battery at $1 %"; fi
+    else
+        _pt=
+        for _t in 5 20 40 60 80 100; do
+            if [ "$1" -gt "$_pc" ] && [ "$_pc" -lt "$_t" ] && [ "$1" -ge "$_t" ]; then _pt=$_t
+            elif [ "$1" -lt "$_pc" ] && [ "$_pc" -gt "$_t" ] && [ "$1" -le "$_t" ] && [ -z "$_pt" ]; then _pt=$_t; fi
+        done
+        [ -n "$_pt" ] || return 0
+        power_text="Battery at $1 % ($( [ "$2" = 1 ] && echo charging || echo on battery))"
+    fi
+    conf_load
+    [ "$c_enabled" = 1 ] && [ "$c_power" = 1 ] || return 0
+    for _t in $(targets); do
+        deliver "$_t" power
+        case $? in
+            0) log power "$_t" sent "$d_detail" ;;
+            *) log power "$_t" failed "$d_detail" ;;
+        esac
+    done
+    return 0
 }
 
 case ${1:-} in
@@ -768,5 +842,6 @@ case ${1:-} in
     status)  cmd_status ;;
     log)     cat "$LOG" 2>/dev/null; true ;;
     log-clear) cmd_log_clear ;;
-    *) sed -n '5,13p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+    power)   shift; cmd_power "$@" ;;
+    *) sed -n '5,16p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

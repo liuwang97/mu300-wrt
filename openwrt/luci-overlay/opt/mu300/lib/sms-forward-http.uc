@@ -14,6 +14,8 @@
 // what the service answered (mu300-sms-forward answer_verdict reads them from this pipe and nowhere else). The rest
 // of the reply is read and dropped as before; nothing is kept of any other reply.
 //
+// MU300_FWD_TIMEOUT (the caller's too: 1-120 seconds, 15 when unset) bounds the request.
+//
 // HTTPS checks the server's certificate against the system's CA bundle. Redirects are not followed (a 3xx is the
 // status). uclient sends a POST body chunked (Transfer-Encoding: chunked), as HTTP/1.1 servers must accept.
 // connect() is checked before request(): a request on a client that never connected crashes this ucode.
@@ -22,7 +24,8 @@ import * as uloop from 'uloop';
 import { stdin } from 'fs';
 
 const CA = '/etc/ssl/certs/ca-certificates.crt';
-const TIMEOUT_MS = 15000;
+let secs = +(getenv('MU300_FWD_TIMEOUT') ?? 15);
+const TIMEOUT_MS = (secs >= 1 && secs <= 120) ? int(secs) * 1000 : 15000;
 
 let keep = +(getenv('MU300_FWD_ANSWER') ?? 0);
 keep = (keep > 0) ? min(keep, 65536) : 0;

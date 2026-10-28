@@ -287,9 +287,10 @@ msg_file() {
 # The modem keeps messages on the SIM (SM) or in its own memory (ME): the one that holds any, as `sms` picks it.
 # Some firmwares refuse the three-argument AT+CPMS; the one-argument form is tried after it.
 # _store_unsure is set when a store that was asked did not answer (a SIM still busy after a boot, say): the listing
-# then says nothing about that store, and sync keeps its tombstones.
+# then says nothing about that store, and sync keeps its tombstones. _cap_used and _cap_total: what that answer says
+# the store picked holds, and can hold (for the panel's SMS page, written after the sync: storage_note).
 pick_store() {
-    _store=; _store_unsure=
+    _store=; _store_unsure=; _cap_used=; _cap_total=
     for _s in SM ME; do
         _out=$(at "AT+CPMS=\"$_s\",\"$_s\",\"$_s\"" 10 2>/dev/null) || _out=
         case $_out in *ERROR*|"")
@@ -298,6 +299,8 @@ pick_store() {
         esac
         _store=$_s
         _used=$(printf '%s\n' "$_out" | sed -n 's/^+CPMS: *\([0-9]*\),.*/\1/p' | head -n 1)
+        _cap_used=$_used
+        _cap_total=$(printf '%s\n' "$_out" | sed -n 's/^+CPMS: *[0-9]*, *\([0-9]*\).*/\1/p' | head -n 1)
         [ "${_used:-0}" != 0 ] && return 0
     done
     [ -n "$_store" ]
@@ -391,6 +394,18 @@ sim_move() {
             _kept=$((_kept + 1))
         fi
     done
+}
+
+# storage_note: the SIM storage as this sync left it, for the panel's SMS page (kanoqwq's capacity line): the store,
+# the slots in use (what AT+CPMS said less what moved off the SIM), the slots it has and when, one line in RAM
+# ($RUNDIR/mu300-sms-storage). The page reads the file and asks the modem nothing.
+storage_note() {
+    case ${_cap_used:-x}${_cap_total:-x} in *[!0-9]*) return 0 ;; esac
+    [ "$_cap_total" -gt 0 ] || return 0
+    _cu=$((_cap_used - ${_moved:-0})); [ "$_cu" -ge 0 ] || _cu=0
+    printf '%s %s %s %s\n' "$_store" "$_cu" "$_cap_total" "$(date +%s)" > "$RUNDIR/mu300-sms-storage.part" 2>/dev/null &&
+        mv "$RUNDIR/mu300-sms-storage.part" "$RUNDIR/mu300-sms-storage" 2>/dev/null
+    return 0
 }
 
 # known_or_dead FP SLOTS: the pool already dealt with the message of fingerprint FP (it holds it, or deleted it and
@@ -600,6 +615,7 @@ absorb() {
         case $_p in p*) rm -f "$PARTS/$_p" ;; esac
     done
     rm -f "$_move" "$_move.sim" "$_tmp.raw"
+    [ "$1" = sim ] && storage_note
     _wait=; [ "$_waiting" -gt 0 ] && _wait=", $_waiting waiting for its other parts"
     if [ "$1" = parts ]; then
         echo "import: $_new new, $_inpool in the pool$_wait"
