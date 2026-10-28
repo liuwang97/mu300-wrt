@@ -12,6 +12,14 @@
 set -eu
 VER=${MU300_WRT_VER:-25.12.5}
 BASEURL=https://downloads.openwrt.org/releases
+# The base tarball's hash comes from the release's sha256sums, and that file counts only with a valid usign signature
+# by the release series' key, pinned in openwrt/keys/usign/ (OpenWrt's keyring, usign/<number>): 25.12 is signed by
+# b5043e70f9a75cde. Another series is signed by another key, which has to be pinned here first. Without the check,
+# whoever could change the download (a mirror, a proxy) could change sha256sums with it, and the tarball would match.
+case $VER in
+    25.12.*) USIGN_KEY=b5043e70f9a75cde ;;
+    *) echo "no pinned usign key for OpenWrt $VER (openwrt/keys/usign, openwrt/build-rootfs.sh)" >&2; exit 1 ;;
+esac
 SYSTEM=openwrt-luci
 OUT=${1:-mu300-$SYSTEM-$VER-rootfs.tar.gz}
 TOP=$(cd "$(dirname "$0")/.." && pwd)
@@ -39,6 +47,23 @@ esac
 # (openwrt/hostapd, built below), installed instead of the feed's
 HOSTAPD_BUILD=$TOP/openwrt/hostapd/build-hostapd.sh
 [ -s "$HOSTAPD_BUILD" ] || { echo "missing $HOSTAPD_BUILD" >&2; exit 1; }
+# The base: OpenWrt's armsr rootfs, checked before anything is built or imported (USIGN_KEY above)
+TARBALL=openwrt-$VER-armsr-armv8-rootfs.tar.gz
+URL=$BASEURL/$VER/targets/armsr/armv8
+if [ ! -f "$TOP/openwrt/$TARBALL" ]; then
+    curl -fL -o "$TOP/openwrt/$TARBALL" "$URL/$TARBALL"
+fi
+SUMS=$(mktemp -d)
+curl -fsL -o "$SUMS/sha256sums" "$URL/sha256sums" && curl -fsL -o "$SUMS/sha256sums.sig" "$URL/sha256sums.sig" ||
+    { echo "cannot download $URL/sha256sums and its signature" >&2; rm -rf "$SUMS"; exit 1; }
+python3 "$TOP/openwrt/tools/usign-verify.py" "$TOP/openwrt/keys/usign/$USIGN_KEY" "$SUMS/sha256sums.sig" \
+    "$SUMS/sha256sums" >/dev/null ||
+    { echo "$URL/sha256sums: no valid signature by OpenWrt's key $USIGN_KEY" >&2; rm -rf "$SUMS"; exit 1; }
+want=$(sed -n "s/^\([0-9a-f]\{64\}\) \*$TARBALL$/\1/p" "$SUMS/sha256sums")
+rm -rf "$SUMS"
+[ -n "$want" ] || { echo "$TARBALL is not in the signed sha256sums" >&2; exit 1; }
+have=$(shasum -a 256 "$TOP/openwrt/$TARBALL" 2>/dev/null || sha256sum "$TOP/openwrt/$TARBALL")
+[ "${have%% *}" = "$want" ] || { echo "checksum mismatch for $TARBALL" >&2; exit 1; }
 # Keep the upstream Aurora theme reproducible. Its APK is installed while assembling the rootfs, so the theme is
 # present on first boot without a network-dependent uci-defaults install step. Bootstrap remains available.
 THEME_APK=${MU300_LUCI_THEME_APK:-$TOP/work/luci-theme-aurora-1.4.0-r20260920.apk}
@@ -62,19 +87,11 @@ theme_hash=$(shasum -a 256 "$THEME_APK" 2>/dev/null || sha256sum "$THEME_APK")
 CAT=$(mktemp -d)
 python3 "$TOP/openwrt/tools/po2lmo.py" "$TOP/openwrt/luci-app-mu300/po/zh_Hans/mu300.po" "$CAT/mu300.zh-cn.lmo"
 [ -s "$CAT/mu300.zh-cn.lmo" ] || { echo "no Chinese catalog built from openwrt/luci-app-mu300/po/zh_Hans" >&2; exit 1; }
-TARBALL=openwrt-$VER-armsr-armv8-rootfs.tar.gz
-URL=$BASEURL/$VER/targets/armsr/armv8
 # the SAE hostapd APKs (a cache that matches the sources is reused)
 WIFI_APKS=$TOP/work/wifi-sae
 MU300_WRT_VER="$VER" sh "$HOSTAPD_BUILD" "$WIFI_APKS"
 
 cd "$TOP"
-if [ ! -f "openwrt/$TARBALL" ]; then
-    curl -fL -o "openwrt/$TARBALL" "$URL/$TARBALL"
-fi
-want=$(curl -fsL "$URL/sha256sums" | sed -n "s/^\([0-9a-f]*\) \*$TARBALL$/\1/p")
-have=$(shasum -a 256 "openwrt/$TARBALL" 2>/dev/null || sha256sum "openwrt/$TARBALL")
-[ "${have%% *}" = "$want" ] || { echo "checksum mismatch for $TARBALL" >&2; exit 1; }
 docker import --platform linux/arm64 "openwrt/$TARBALL" mu300-openwrt-base:$VER >/dev/null
 # OpenWrt ships an unsigned regulatory.db; this kernel requires the signed database (wens key), so take Debian/Ubuntu's
 REGDB=$(mktemp -d)

@@ -6,9 +6,9 @@ bundle: what it may assume about the kernel and the initramfs is in `docs/contra
 
 ## What is here
 
-- `build-rootfs.sh` — the image: OpenWrt's armsr rootfs, packages from the feed, the overlays, `opt/mu300`, the LuCI
-  app with its Chinese catalog, the Aurora theme (pinned by hash), the signed regulatory database. No kernel modules
-  (they come with the bundle). Needs docker with linux/arm64; inputs under `$MU300_INPUTS` (the static programs, a
+- `build-rootfs.sh` — the image: OpenWrt's armsr rootfs (its sha256sums signed by the key in `keys/usign`),
+  packages from the feed, the overlays, `opt/mu300`, the LuCI app with its Chinese catalog, the Aurora theme (pinned
+  by hash), the signed regulatory database. No kernel modules (they come with the bundle). Needs docker with linux/arm64; inputs under `$MU300_INPUTS` (the static programs, a
   static busybox; never firmware or Android files in a release).
 - `opt/mu300/` — the device scripts (`bin/`) and their data (`lib/`), installed at `/opt/mu300`.
 - `overlay/`, `luci-overlay/` — files copied over the image: init scripts, hotplug, preinit, netifd protocols, ucode.
@@ -19,7 +19,7 @@ bundle: what it may assume about the kernel and the initramfs is in `docs/contra
 - `hostapd/` — the hotspot's WPA3-SAE: wpad-basic-mbedtls, hostapd-common and wifi-scripts rebuilt (docker) to
   take the firmware's SAE PMK; `build-rootfs.sh` installs them instead of the feed's.
 - `vendor/` — the list and the tools that pull the Android subset (modem_control & co.) from a device; never committed.
-- `tools/` — `image-manifest.py`, `luci-i18n.py`, `po2lmo.py`.
+- `tools/` — `image-manifest.py`, `luci-i18n.py`, `po2lmo.py`, `usign-verify.py`.
 - `docs/` — modem, Wi-Fi, USB, power, update, LuCI, system.
 - `tests/` — `cd openwrt/tests && MU300_TEST_SHELLS='busybox sh' python3 -m unittest`.
 

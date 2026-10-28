@@ -31,5 +31,6 @@ Applies to: Linux 7.2.11, OpenWrt 25.12.5 (F50, U30 Air). Checked against the co
 - The image build removes `/etc/uhttpd.key`, so uhttpd makes its own at first start (else all devices share one key).
 
 ## Misc
+- `openwrt/build-rootfs.sh` takes the base tarball's hash only from a `sha256sums` whose usign signature verifies (`openwrt/tools/usign-verify.py`) against the series' key pinned in `openwrt/keys/usign` (25.12: `b5043e70f9a75cde`); a series without a pinned key stops the build.
 - `sysupgrade` allows configuration backups only (`openwrt/overlay/usr/libexec/mu300-sysupgrade`): a whole-disk image would overwrite the eMMC partition table.
 - NFC (U30 Air, `openwrt/opt/mu300/bin/mu300-nfc`): the tag is a Fudan FM11NT08 on I2C bus 2, address 0x57, answering only while GPIO 190 is low. The RF side is silent while bit 5 of byte 0x3bf is set; `on|off` flips that bit alone.
