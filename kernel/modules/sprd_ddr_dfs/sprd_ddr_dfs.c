@@ -75,7 +75,6 @@ static int ddr_dfs_xfer(struct ddr_dfs *d, unsigned int cmd, unsigned int value,
 	err = smsg_send(SIPC_ID_PM_SYS, &m, DDR_DFS_TIMEOUT);
 	if (err < 0)
 		return err;
-	/* smsg_recv returns the jiffies left (> 0) when a message came in time */
 	smsg_set(&m, SMSG_CH_PM_CTRL, 0, 0, 0);
 	err = smsg_recv(SIPC_ID_PM_SYS, &m, DDR_DFS_TIMEOUT);
 	if (err < 0)
