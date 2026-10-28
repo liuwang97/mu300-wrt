@@ -45,7 +45,7 @@ proto_set_available() { rec proto_set_available "$@"; }
 proto_setup_failed() { rec proto_setup_failed "$@"; }
 proto_add_dynamic_defaults() { rec proto_add_dynamic_defaults; }
 json_get_vars() { apn=$T_APN; pdptype=$T_PDPTYPE; peerdns=$T_PEERDNS; ipv6=$T_IPV6; apn_internal=${T_APN_INTERNAL:-}; pdptype_internal=${T_PDPTYPE_INTERNAL:-}
-    auth=${T_AUTH:-}; username=${T_USERNAME:-}; password=${T_PASSWORD:-}; }
+    auth=${T_AUTH:-}; username=${T_USERNAME:-}; password=${T_PASSWORD:-}; iccid=${T_ICCID:-}; }
 json_init() { rec json_init; }
 json_add_string() { rec json_add_string "$@"; }
 json_add_boolean() { rec json_add_boolean "$@"; }
@@ -94,6 +94,7 @@ exit 0''')
     def set_mobile(self, out, rc, err=''):
         self.mobile.write_text('#!/bin/sh\necho "mobile-data $* env:$MU300_PDP_TYPE:$MU300_IPV6" >> "$STUBLOG/calls"\n'
                                'echo "$1 $#:${MU300_APN_AUTH-unset}:${MU300_APN_USER-unset}:${MU300_APN_PASSWORD-unset}" >> "$STUBLOG/creds"\n'
+                               'echo "${MU300_APN_ICCID-unset}" >> "$STUBLOG/iccid"\n'
                                f'[ "$1" = up ] || exit 0\nprintf \'{out}\'\necho \'{err}\' >&2\nexit {rc}\n')
         self.mobile.chmod(0o755)
 
@@ -132,6 +133,11 @@ exit 0''')
             self.assertIn('mobile-data up cmnet env:IPV4V6:', calls)
             # the internal card dials its own APN: the external card's credentials are not offered to its carrier
             self.assertEqual((self.tmp / 'creds').read_text().splitlines()[0], 'up 2:::')
+            # nor is the external card's binding applied to the internal card's own APN
+            (self.tmp / 'iccid').unlink(missing_ok=True)
+            self.run_proto(shell, 'proto_mu300cell_setup', out=UP_V4.replace('sipa_eth0', 'sipa_eth8'),
+                           T_APN='ctnet', T_APN_INTERNAL='cmnet', T_ICCID='89900000000000000001')
+            self.assertEqual((self.tmp / 'iccid').read_text().splitlines()[0], '')
             self.assertIn('proto_init_update sipa_eth8 1 1', calls)
             self.assertIn('ip -4 route replace default dev sipa_eth8', calls)
             calls = self.run_proto(shell, 'proto_mu300cell_teardown')
@@ -157,8 +163,13 @@ exit 0''')
             (self.tmp / 'creds').unlink()
             self.run_proto(shell, 'proto_mu300cell_setup')
             self.assertEqual((self.tmp / 'creds').read_text().splitlines()[0], 'up 2:::')
+            # the card they are bound to, in the environment too; none set: empty
+            (self.tmp / 'iccid').unlink(missing_ok=True)
+            self.run_proto(shell, 'proto_mu300cell_setup', T_ICCID='89900000000000000001')
+            self.run_proto(shell, 'proto_mu300cell_setup')
+            self.assertEqual((self.tmp / 'iccid').read_text().splitlines(), ['89900000000000000001', ''])
             calls = self.run_proto(shell, 'proto_mu300cell_init_config')
-            for name in ('auth', 'username', 'password'):
+            for name in ('auth', 'username', 'password', 'iccid'):
                 self.assertIn(f'proto_config_add_string {name}', calls)
 
     def test_setup_installs_v4_address_and_route_itself(self):
@@ -994,6 +1005,7 @@ if [ "$cmd" = - ]; then IFS= read -r cmd; printf 'stdin: %s\n' "$cmd" >> "$STUBL
 case $cmd in
     AT+CGPCO=0,\"\",\"\",*) cat "$STUBLOG/cgpco-clear" 2>/dev/null || echo OK ;;
     AT+CGPCO*) cat "$STUBLOG/cgpco" 2>/dev/null || echo OK ;;
+    AT+CCID) cat "$STUBLOG/ccid" 2>/dev/null || printf '+CCID: 89900000000000000001\nOK\n' ;;
     *) echo OK ;;
 esac
 """
@@ -1016,7 +1028,7 @@ esac
         """define_context APN with the settings in the environment (DROP: names left out of it altogether).
         -> (CompletedProcess, the stub's log lines)."""
         (self.tmp / 'at.log').unlink(missing_ok=True)
-        e = dict(MU300_APN_USER='', MU300_APN_PASSWORD='', MU300_APN_AUTH='', MU300_PDP_TYPE='',
+        e = dict(MU300_APN_USER='', MU300_APN_PASSWORD='', MU300_APN_AUTH='', MU300_APN_ICCID='', MU300_PDP_TYPE='',
                  MU300_APN_AUTH_MARK=self.mark.with_suffix(''), MU300_NETWORK_CONF=self.netconf, APN=apn)
         e.update(env)
         full = self.env(**e)
@@ -1100,6 +1112,42 @@ esac
         self.assertEqual(self.sent(log)[1], ('stdin', 'AT+CGPCO=0,"u","",1,3'))
         r, log = self.define('a', MU300_APN_PASSWORD=self.SECRET)
         self.assertEqual(self.sent(log)[1], ('stdin', f'AT+CGPCO=0,"","{self.SECRET}",1,3'))
+
+    def test_settings_bound_to_a_card_are_that_cards_alone(self):
+        """The APN, its PDP type and its credentials go to the card of MU300_APN_ICCID only; another card dials with
+        its own context, and gets back nothing given to the modem earlier; a card that does not say its ICCID gets no
+        dial."""
+        creds = dict(MU300_APN_USER='u', MU300_APN_PASSWORD=self.SECRET)
+        # the card of the settings (the stub's card), its ICCID in either case: as without a binding
+        for iccid in ('89900000000000000001', '89900000000000000001'.lower()):
+            r, log = self.define('private.apn', MU300_APN_ICCID=iccid, **creds)
+            self.assertEqual(r.stdout.strip(), 'rc=0', r.stderr)
+            self.assertEqual(self.sent(log), [('argv', 'AT+CCID'), ('argv', 'AT+CGDCONT=1,"IP","private.apn"'),
+                                              ('stdin', f'AT+CGPCO=0,"u","{self.SECRET}",1,3')])
+        # another card (quoted, as some firmware answers): no APN, no credentials; those of the last dial taken back
+        (self.tmp / 'ccid').write_text('+CCID: "8990000000000000009F"\nOK\n')
+        r, log = self.define('private.apn', MU300_APN_ICCID='89900000000000000001', **creds)
+        self.assertEqual(r.stdout.strip(), 'rc=0', r.stderr)
+        self.assertEqual(self.sent(log), [('argv', 'AT+CCID'), ('argv', 'AT+CGPCO=0,"","",1,0')])
+        self.assertFalse(self.mark.exists())
+        r, log = self.define('private.apn', MU300_APN_ICCID='89900000000000000001', **creds)
+        self.assertEqual(self.sent(log), [('argv', 'AT+CCID')])
+        # an ICCID with letters in it is matched as it is
+        r, log = self.define('private.apn', MU300_APN_ICCID='8990000000000000009f')
+        self.assertEqual(self.sent(log), [('argv', 'AT+CCID'), ('argv', 'AT+CGDCONT=1,"IP","private.apn"')])
+        # no ICCID from the card, or a setting that is no ICCID: no dial, and no ICCID in what is said
+        for answer in ('ERROR\n', '', 'OK\n'):
+            (self.tmp / 'ccid').write_text(answer)
+            r, log = self.define('private.apn', MU300_APN_ICCID='89900000000000000001', **creds)
+            self.assertEqual((r.stdout.strip(), self.sent(log)), ('rc=1', [('argv', 'AT+CCID')]), answer)
+            self.assertIn('did not say its ICCID', r.stderr)
+            self.assertNotIn('8990', r.stderr)
+        for bad in ('8990', '89900000000000000001;AT', '8990000000000000000"1', 'x' * 23):
+            r, log = self.define('private.apn', MU300_APN_ICCID=bad)
+            self.assertEqual((r.stdout.strip(), log), ('rc=1', []), bad)
+        # unset: the card is not even asked
+        r, log = self.define('private.apn')
+        self.assertEqual(self.sent(log), [('argv', 'AT+CGDCONT=1,"IP","private.apn"')])
 
     def test_a_trace_does_not_hold_the_password(self):
         # bash -x mobile-data, as somebody looking for a fault would run it
@@ -1215,7 +1263,7 @@ esac
 
     def test_the_interface_page_offers_them(self):
         js = (TOP / 'openwrt/overlay/www/luci-static/resources/protocol/mu300cell.js').read_text()
-        for kind, name in (('Value', 'username'), ('Value', 'password'), ('ListValue', 'auth')):
+        for kind, name in (('Value', 'username'), ('Value', 'password'), ('ListValue', 'auth'), ('Value', 'iccid')):
             self.assertIn(f"form.{kind}, '{name}'", js)
         self.assertIn('o.password = true', js)
         for v in ("o.value('pap'", "o.value('chap'", "o.value('both'", "o.value('none'"):

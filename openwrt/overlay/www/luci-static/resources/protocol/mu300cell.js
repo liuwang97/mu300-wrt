@@ -148,6 +148,18 @@ return network.registerProtocol('mu300cell', {
 		o.depends('sim_slot', '0');
 		o.retain = true;
 
+		/* these settings for one card only (mobile-data's apn_card): another card dials with its own context and is
+		 * never offered the APN or its password */
+		o = s.taboption('general', form.Value, 'iccid', _('Only for the SIM card'),
+			_('The ICCID of the card the APN, PDP type and credentials above are for. Another card in the device then dials with its own settings and is never offered these. Empty: any card.'));
+		o.placeholder = _('any card');
+		o.depends('sim_slot', '0');
+		o.retain = true;
+		o.validate = function(section_id, value) {
+			return (value === '' || /^[0-9A-Za-z]{18,22}$/.test(value)) ? true :
+				_('An ICCID is 18 to 22 letters and digits.');
+		};
+
 		o = s.taboption('general', form.Flag, 'peerdns', _('Use DNS servers advertised by peer'));
 		o.default = o.enabled;
 
