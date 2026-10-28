@@ -4,6 +4,8 @@
 #   mu300-dash-lock get cached          the last reading only, no AT (the panel's request path)
 #   mu300-dash-lock refresh             a fresh reading into the cache, one at a time (started detached)
 #   mu300-dash-lock apply KIND VALUE    write one setting, then restart the protocol stack
+#   mu300-dash-lock start KIND VALUE    the same as a job of its own, detached: prints {"ok":1,"id":...} at once
+#   mu300-dash-lock status ID           that job: queued, running, done or error (with why); no AT
 #   mu300-dash-lock replay [early]      boot hook: re-apply every enabled saved setting
 #   mu300-dash-lock reset               everything back to automatic, verified: every write's answer checked, the
 #                                       settings read back before and after the one stack restart, and only then
@@ -395,10 +397,11 @@ emit_state() {
     sed 's/^{//' "$LOCKCACHE"
 }
 
-# band_write CMD: one band mask write. An explicit ERROR answer is a refusal: logged with the answer, nothing saved,
-# no stack restart (#356: the answer used to be thrown away, and a refused write was saved and replayed as applied).
-# No answer at all is not taken as a refusal: some vendor setters apply the value and omit the final OK.
-band_write() {
+# apply_write CMD: one write of an apply (mode, EN-DC, band mask, cell). An explicit ERROR answer is a refusal: logged
+# with the answer, nothing saved, no stack restart, and the job's result says what the modem said; a refused write is
+# never saved and replayed as applied. No answer at all is not taken as a refusal: some vendor setters apply the value
+# and omit the final OK.
+apply_write() {
     local r
     r=$(at "$1" 6)
     case $r in
@@ -462,13 +465,13 @@ do_apply() {  # do_apply KIND VALUE
             tm=$(at 'AT+SPTESTMODE?' | sed -n 's/^+SPTESTMODE: *//p' | head -n1)
             m1=$(echo "$tm" | cut -d, -f2); prim=$(echo "$tm" | cut -d, -f3)
             [ -n "$m1" ] || m1=134; [ -n "$prim" ] || prim=0
-            [ -n "$gran" ] && at "AT+SP5GRAN=$gran" 6 >/dev/null
-            at "AT+SPTESTMODE=$m0,$m1,$prim" 6 >/dev/null
+            [ -z "$gran" ] || apply_write "AT+SP5GRAN=$gran"
+            apply_write "AT+SPTESTMODE=$m0,$m1,$prim"
             say "network mode -> $val (SPTESTMODE $m0, SP5GRAN ${gran:-kept})"
             ;;
         endc)
             case $val in on) v=1 ;; off) v=2 ;; esac   # OFF is 2 here, not 0 (measured)
-            at "AT+SPENDC=$v" 6 >/dev/null
+            apply_write "AT+SPENDC=$v"
             say "EN-DC -> $val (SPENDC=$v, no stack restart needed)"
             save_state "$kind" "$val"
             # Reflect the new state in the cache at once: the page re-reads it
@@ -484,9 +487,9 @@ do_apply() {  # do_apply KIND VALUE
             val=$(filter_bands "$val" "$LTE_SUP")
             bands_kept lte "$2" "$val"
             if [ -n "$val" ]; then
-                band_write "AT+SPLBAND=1,$(lte_masks "$val")"
+                apply_write "AT+SPLBAND=1,$(lte_masks "$val")"
             else
-                band_write 'AT+SPLBAND=1,0,0,0,0,0'
+                apply_write 'AT+SPLBAND=1,0,0,0,0,0'
             fi
             say "LTE bands -> ${val:-automatic}"
             ;;
@@ -494,9 +497,9 @@ do_apply() {  # do_apply KIND VALUE
             val=$(filter_bands "$val" "$(nr_sup)")
             bands_kept nr "$2" "$val"
             if [ -n "$val" ]; then
-                band_write "AT+SPLBAND=2,$(nr_masks "$val" | awk -F, '{print $1",0,"$2","$3}')"
+                apply_write "AT+SPLBAND=2,$(nr_masks "$val" | awk -F, '{print $1",0,"$2","$3}')"
             else
-                band_write 'AT+SPLBAND=2,0,0,0,0'
+                apply_write 'AT+SPLBAND=2,0,0,0,0'
             fi
             say "NR bands -> ${val:-automatic}"
             ;;
@@ -504,18 +507,18 @@ do_apply() {  # do_apply KIND VALUE
             state_saved=1
             case $val in
                 off)
-                    at 'AT+SPFORCEFRQ=12,4' 6 >/dev/null
-                    at 'AT+SPFORCEFRQ=16,4' 6 >/dev/null
+                    apply_write 'AT+SPFORCEFRQ=12,4'
+                    apply_write 'AT+SPFORCEFRQ=16,4'
                     say "cell lock removed"
                     cell_state_remove
                     ;;
                 off-nr)
-                    at 'AT+SPFORCEFRQ=16,4' 6 >/dev/null
+                    apply_write 'AT+SPFORCEFRQ=16,4'
                     say "NR cell lock removed"
                     cell_state_remove nr
                     ;;
                 off-lte)
-                    at 'AT+SPFORCEFRQ=12,4' 6 >/dev/null
+                    apply_write 'AT+SPFORCEFRQ=12,4'
                     say "LTE cell lock removed"
                     cell_state_remove lte
                     ;;
@@ -544,14 +547,14 @@ do_apply() {  # do_apply KIND VALUE
                     }
                     rat=${val%%:*}; pair=${val#*:}; fr=${pair%,*}; pc=${pair#*,}
                     case $rat in nr) p=16 ;; *) p=12 ;; esac
-                    at "AT+SPFORCEFRQ=$p,6,$fr,$pc" 6 >/dev/null
+                    apply_write "AT+SPFORCEFRQ=$p,6,$fr,$pc"
                     say "cell lock -> $val (SPFORCEFRQ=$p,6,$fr,$pc)"
                     cell_state_add "$val"
                     ;;
                 *:*)
                     rat=${val%%:*}; pair=${val#*:}; fr=${pair%,*}; pc=${pair#*,}
                     case $rat in nr) p=16 ;; *) p=12 ;; esac
-                    at "AT+SPFORCEFRQ=$p,6,$fr,$pc" 6 >/dev/null
+                    apply_write "AT+SPFORCEFRQ=$p,6,$fr,$pc"
                     say "cell lock -> $val"
                     cell_state_add "$val"
                     ;;
@@ -897,6 +900,103 @@ do_apply_quiet() {
     esac
 }
 
+# ------------------------------------------------------------------ jobs
+# An apply as a job of its own (kanoqwq's lock job queue), so the page learns how it ended. "apply" runs detached from
+# the rpcd call (half a minute of SFUN, more while another apply or the dial holds the radio); the read-back alone
+# cannot tell a refused write from a lock that did not take. "start" checks the value, makes $JOBS/<id> (ten random
+# characters, mode 700 under the private runtime directory), starts "job ID KIND VALUE" detached and answers at once;
+# "status ID" reads its result, without AT. The worker runs "apply" and keeps its exit status and its reason. Results live in RAM: a reboot forgets them.
+# Bounded: four jobs not yet ended and 64 in all; one that ended ten minutes ago is removed by the next start. A job
+# that has not ended after JOB_TIMEOUT, or whose worker is gone, is reported as such, never as running for ever.
+JOBS=$RUNDIR/lock-jobs
+JOB_TIMEOUT=${MU300_JOB_TIMEOUT:-420}   # apply_lock's 180 s wait + the radio lock's 120 s + the restart and its check
+job_now() { local n rest; read -r n rest < /proc/uptime; printf '%s\n' "${n%%.*}"; }
+job_dir() {  # job_dir ID: JOB set to that job's directory; 1 when ID is no job's
+    case $1 in ''|*[!A-Za-z0-9]*) return 1 ;; esac
+    [ ${#1} = 10 ] || return 1
+    JOB=$JOBS/$1
+    [ -d "$JOB" ] && [ ! -L "$JOB" ]
+}
+job_ended() { grep -q '"state":"\(done\|error\)"' "$1/result" 2>/dev/null; }
+# job_write STATE OK [ERROR]: ERROR is one of this script's fixed messages, the ones named here and at the callers
+job_write() {
+    # i18n: The modem refused a write
+    # i18n: None of these bands is supported by this modem
+    # i18n: No serving cell to lock to
+    # i18n: The saved locks could not be cleared
+    # i18n: Lock change failed
+    printf '{"id":%s,"state":%s,"ok":%d,"kind":%s,"error":%s}\n' "$(json_str "${JOB##*/}")" "$(json_str "$1")" "$2" \
+        "$(json_str "$(cat "$JOB/kind" 2>/dev/null)")" "$(json_str_or_null "${3:-}")" > "$JOB/result.part" &&
+        mv "$JOB/result.part" "$JOB/result"
+}
+job_status() {
+    local age pid
+    # i18n: The result of this lock change is no longer known
+    job_dir "${1:-}" || { printf '{"ok":0,"state":"error","error":"The result of this lock change is no longer known"}\n'; return 1; }
+    if ! job_ended "$JOB"; then
+        age=$(( $(job_now) - $(cat "$JOB/started" 2>/dev/null || echo 0) ))
+        pid=$(cat "$JOB/pid" 2>/dev/null)
+        if [ "$age" -gt "$JOB_TIMEOUT" ]; then
+            # i18n: The lock change took too long; select “Refresh lock status”
+            job_write error 0 'The lock change took too long; select “Refresh lock status”'
+        elif [ "$age" -gt 2 ] && { [ -z "$pid" ] || ! { tr '\0' ' ' < "/proc/$pid/cmdline"; } 2>/dev/null | grep -q '/unisoc-modem/lock'; }; then
+            # i18n: The lock change was interrupted; select “Refresh lock status”
+            job_write error 0 'The lock change was interrupted; select “Refresh lock status”'
+        fi
+    fi
+    cat "$JOB/result"
+}
+job_start() {
+    local d n=0 open=0 id
+    valid_value "$1" "$2" || { printf '{"ok":0,"error":"Invalid value for this lock kind"}\n'; return 2; }
+    ( umask 077; mkdir -p "$JOBS" ) && [ ! -L "$JOBS" ] || { printf '{"ok":0,"error":"Lock change failed"}\n'; return 1; }
+    # one start at a time: the count below and the new directory are one step
+    # i18n: Another lock change is being started; try again in a moment
+    mkdir "$JOBS/.start" 2>/dev/null ||
+        { printf '{"ok":0,"busy":1,"error":"Another lock change is being started; try again in a moment"}\n'; return 1; }
+    trap 'rmdir "$JOBS/.start" 2>/dev/null' EXIT INT TERM
+    for d in "$JOBS"/??????????; do
+        [ -d "$d" ] || continue
+        job_status "${d##*/}" >/dev/null
+        if job_ended "$d"; then
+            if [ $(( $(job_now) - $(cat "$d/started" 2>/dev/null || echo 0) )) -gt 600 ]; then
+                rm -f "$d/result" "$d/started" "$d/pid" "$d/kind" "$d/out" "$d/err"
+                rmdir "$d" 2>/dev/null && continue
+            fi
+        else
+            open=$((open + 1))
+        fi
+        n=$((n + 1))
+    done
+    # i18n: Too many lock changes are waiting; try again when they have ended
+    [ "$open" -lt 4 ] && [ "$n" -lt 64 ] ||
+        { printf '{"ok":0,"busy":1,"error":"Too many lock changes are waiting; try again when they have ended"}\n'; return 1; }
+    JOB=$(mktemp -d "$JOBS/XXXXXXXXXX") || { printf '{"ok":0,"error":"Lock change failed"}\n'; return 1; }
+    id=${JOB##*/}
+    job_now > "$JOB/started"
+    printf '%s\n' "$1" > "$JOB/kind"
+    job_write queued 0 || return 1
+    setsid "$0" job "$id" "$1" "$2" </dev/null >/dev/null 2>&1 &
+    printf '{"ok":1,"started":1,"id":%s,"kind":%s}\n' "$(json_str "$id")" "$(json_str "$1")"
+}
+# job_worker ID KIND VALUE: "apply" and how it ended. Its reason: the error of the JSON line it printed (a fixed
+# message of this script, which the page translates); a refusal on stderr only (a value, SIM2: the rpcd backend
+# refuses those before it starts a job) is the general one, and the log has the line
+job_worker() {
+    local rc=0 why
+    job_dir "$1" || return 1
+    echo $$ > "$JOB/pid"
+    job_write running 0 || return 1
+    "$0" apply "$2" "$3" > "$JOB/out" 2> "$JOB/err" || rc=$?
+    if [ "$rc" = 0 ]; then
+        job_write done 1
+        return 0
+    fi
+    why=$(jfilter -i "$JOB/out" -e '@.error' 2>/dev/null | head -n 1)
+    # i18n: Lock change failed
+    job_write error 0 "${why:-Lock change failed}"
+}
+
 # refresh: "get fresh" for the background, one at a time. The panel never reads the locks inside a request any more
 # (eight AT round trips, and on a busy or silent channel each waited out its whole budget, far past rpcd's 30 s); it
 # starts this and serves the cache. A second refresh while one runs has nothing to add, so it leaves at once.
@@ -933,9 +1033,13 @@ case "${1:-}" in
         emit_state
         ;;
     apply)  do_apply "${2:-}" "${3:-}" ;;
+    start)  job_start "${2:-}" "${3:-}" ;;
+    status) job_status "${2:-}" ;;
+    # run by job_start, detached
+    job)    job_worker "${2:-}" "${3:-}" "${4:-}" ;;
     reset)  do_reset; rc=$?; reset_status; exit "$rc" ;;
     replay) do_replay "${2:-late}" ;;
     # run by sfun_restart_locked, under the radio lock
     sfun-restart) sfun_restart "${2:-late}" ;;
-    *)      echo "usage: $0 get [fresh|cached] | refresh | apply KIND VALUE | reset | replay [early]" >&2; exit 2 ;;
+    *)      echo "usage: $0 get [fresh|cached] | refresh | apply KIND VALUE | start KIND VALUE | status ID | reset | replay [early]" >&2; exit 2 ;;
 esac

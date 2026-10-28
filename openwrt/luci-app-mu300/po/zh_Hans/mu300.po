@@ -1527,11 +1527,11 @@ msgstr "暂无驻网数据"
 msgid "NR serving cell"
 msgstr "NR 服务小区"
 
-msgid "Status confirmed"
-msgstr "状态已回读"
-
 msgid "Readback timed out; select “Refresh lock status”"
 msgstr "回读超时，请点「刷新锁定状态」"
+
+msgid "Status confirmed"
+msgstr "状态已回读"
 
 msgid "Reset verified: network mode automatic, EN-DC on, all bands, no cell lock; the saved lock settings are cleared"
 msgstr "重置已核对：网络模式自动、EN-DC 开启、全部频段、无小区锁定；已保存的锁定设置已清除"
@@ -3253,6 +3253,12 @@ msgstr "SIM2 暂不支持频段、模式和小区锁定"
 msgid "Band, mode and cell locks are not supported while dual-SIM switching manages the radio"
 msgstr "双卡切换管理射频时，不支持频段、模式和小区锁定"
 
+msgid "Lock change failed"
+msgstr "锁定更改失败"
+
+msgid "Invalid job id"
+msgstr "无效的任务 ID"
+
 msgid "Invalid page"
 msgstr "页码无效"
 
@@ -3781,6 +3787,21 @@ msgstr "协议栈重启后的回读结果与自动值不一致"
 
 msgid "The reset was interrupted"
 msgstr "重置被中断"
+
+msgid "The result of this lock change is no longer known"
+msgstr "此锁定更改的结果已不可知"
+
+msgid "The lock change took too long; select “Refresh lock status”"
+msgstr "锁定更改耗时过长，请点「刷新锁定状态」"
+
+msgid "The lock change was interrupted; select “Refresh lock status”"
+msgstr "锁定更改被中断，请点「刷新锁定状态」"
+
+msgid "Another lock change is being started; try again in a moment"
+msgstr "另一项锁定更改正在启动，请稍后重试"
+
+msgid "Too many lock changes are waiting; try again when they have ended"
+msgstr "等待中的锁定更改过多，请在它们结束后重试"
 
 msgid "Reinstalling packages is not available on this system"
 msgstr "此系统不支持重新安装软件包"

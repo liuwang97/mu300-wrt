@@ -246,7 +246,7 @@ class Mu300Dash(ShellTest):
 
 
 class Inventory(Mu300Dash):
-    METHODS = {'sysinfo', 'status', 'signal', 'act', 'at', 'at_job', 'at_history', 'ops_log', 'lock_get', 'lock_set', 'sms_list',
+    METHODS = {'sysinfo', 'status', 'signal', 'act', 'at', 'at_job', 'at_history', 'ops_log', 'lock_get', 'lock_set', 'lock_job', 'sms_list',
                'sms_show', 'sms_send', 'sms_job', 'sms_delete', 'sms_sync', 'usb_get', 'usb_set', 'usb_net_list', 'usb_net_add',
                'power_get', 'power_set',
                'ttl_get', 'ttl_set', 'cpu_get', 'cpu_set', 'cpu_tune', 'cpu_voltage_get', 'cpu_voltage_set', 'forward_get',
@@ -328,6 +328,7 @@ class Refusals(Mu300Dash):
         ('lock_set', {'kind': 'cell', 'val': 'off-lte'}, 'val', 'off-lte'),
         ('lock_set', {'kind': 'reset', 'val': 'auto'}, 'kind', 'reset'),
         ('lock_set', {'kind': 'reset', 'val': 'auto'}, 'val', 'auto'),
+        ('lock_job', {'id': 'AbCdE12345'}, 'id', 'AbCdE12345'),
         ('sms_list', {}, 'page', '2'),
         ('sms_show', {}, 'id', '12'),
         ('sms_send', {'num': '+905551112233', 'text': 'hi'}, 'num', '+905551112233'),
@@ -594,19 +595,36 @@ class LockSetSim(Mu300Dash):
                     self.assertEqual(self.reply(r).get('ok'), 1)
                     self.assertEqual(calls, [want])
 
+    JOB = '{"ok":1,"started":1,"id":"AbCdE12345","kind":"nr"}\n'
+
     def test_sim1_on_the_u30_air_starts_the_apply(self):
+        self.output('lock', self.JOB)
         sim = self.tmp / 'sim-run'
         sim.mkdir()
         (sim / 'sim-slot').write_text('0\n')
         for shell in self.each_shell():
             r, calls, _ = self.call(shell, 'lock_set', {'kind': 'nr', 'val': '41'})
             self.assertEqual(self.reply(r).get('ok'), 1)
-            self.assertEqual(calls, [['setsid', 'lock', 'apply', 'nr', '41']])
+            self.assertEqual(calls, [['lock', 'start', 'nr', '41']])
+            self.assertEqual(self.reply(r).get('job'), 'AbCdE12345')
+
+    def test_a_helper_that_refuses_the_job_is_heard(self):
+        """lock start's own refusal (busy, too many waiting) reaches the page as it said it; an answer without a job
+        id is a failure, never a started change."""
+        for shell in self.each_shell():
+            self.output('lock', '{"ok":0,"busy":1,"error":"Another lock change is being started; try again in a moment"}\n')
+            obj = self.reply(self.call(shell, 'lock_set', {'kind': 'nr', 'val': '41'})[0])
+            self.assertEqual((obj.get('ok'), obj.get('busy')), (0, 1))
+            self.assertEqual(obj.get('error'), 'Another lock change is being started; try again in a moment')
+            self.output('lock', '{"ok":1}\n')
+            obj = self.reply(self.call(shell, 'lock_set', {'kind': 'nr', 'val': '41'})[0])
+            self.assertEqual((obj.get('ok'), obj.get('error')), (0, 'Lock change failed'))
 
     def test_bands_the_modem_does_not_support(self):
         """A band list the modem supports none of was written as "automatic" (a lock on n999 cleared the NR lock and
         the page said done): refused in the request when the last reading has the modem's bands."""
         self.output('lock.json', '{"ts":1,"caps":{"nr":"1,28,41,78","lte":"1,3,5,8,34,38,39,40,41"}}\n')
+        self.output('lock', self.JOB)
         for shell in self.each_shell():
             for kind, val in (('nr', '999'), ('nr', '79,257'), ('lte', '7')):
                 with self.subTest(kind=kind, val=val, shell=shell):
@@ -619,7 +637,7 @@ class LockSetSim(Mu300Dash):
             for kind, val in (('nr', '41,999'), ('nr', ''), ('lte', '3')):
                 r, calls, _ = self.call(shell, 'lock_set', {'kind': kind, 'val': val})
                 self.assertEqual(self.reply(r).get('ok'), 1)
-                self.assertEqual(calls, [['setsid', 'lock', 'apply', kind, val]])
+                self.assertEqual(calls, [['lock', 'start', kind, val]])
         # no reading yet: not refused here
         (self.out / 'lock.json').unlink()
         for shell in self.each_shell():
@@ -644,12 +662,13 @@ class Passthrough(Mu300Dash):
         # no cache yet: a reading in the background, then the cache (never the modem inside the request)
         ('lock_get', {}, [['setsid', 'lock', 'refresh'], ['lock', 'get', 'cached']]),
         ('lock_get', {'fresh': '1'}, [['setsid', 'lock', 'refresh'], ['lock', 'get', 'cached']]),
-        ('lock_set', {'kind': 'lte', 'val': '1,3,41'}, [['setsid', 'lock', 'apply', 'lte', '1,3,41']]),
-        ('lock_set', {'kind': 'nr', 'val': ''}, [['setsid', 'lock', 'apply', 'nr', '']]),
-        ('lock_set', {'kind': 'cell', 'val': 'lte:1650,211'}, [['setsid', 'lock', 'apply', 'cell', 'lte:1650,211']]),
-        ('lock_set', {'kind': 'cell', 'val': 'auto'}, [['setsid', 'lock', 'apply', 'cell', 'auto']]),
-        ('lock_set', {'kind': 'mode', 'val': '4g'}, [['setsid', 'lock', 'apply', 'mode', '4g']]),
+        ('lock_set', {'kind': 'lte', 'val': '1,3,41'}, [['lock', 'start', 'lte', '1,3,41']]),
+        ('lock_set', {'kind': 'nr', 'val': ''}, [['lock', 'start', 'nr', '']]),
+        ('lock_set', {'kind': 'cell', 'val': 'lte:1650,211'}, [['lock', 'start', 'cell', 'lte:1650,211']]),
+        ('lock_set', {'kind': 'cell', 'val': 'auto'}, [['lock', 'start', 'cell', 'auto']]),
+        ('lock_set', {'kind': 'mode', 'val': '4g'}, [['lock', 'start', 'mode', '4g']]),
         ('lock_set', {'kind': 'reset', 'val': 'auto'}, [['setsid', 'lock', 'reset']]),
+        ('lock_job', {'id': 'AbCdE12345'}, [['lock', 'status', 'AbCdE12345']]),
         ('sms_list', {'page': 2}, [['sms', 'list', '2']]),
         ('sms_list', {}, [['sms', 'list', '1']]),
         ('sms_show', {'id': '12'}, [['sms', 'show', '12']]),
@@ -1109,7 +1128,7 @@ class Backup(Mu300Dash):
 
 class Acl(unittest.TestCase):
     # SMS bodies (one-time codes) and the AT history (AT+CPIN PINs) are not for read-only users
-    READ = {'sysinfo', 'status', 'signal', 'lock_get', 'usb_get', 'usb_net_list', 'power_get', 'ttl_get',
+    READ = {'sysinfo', 'status', 'signal', 'lock_get', 'lock_job', 'usb_get', 'usb_net_list', 'power_get', 'ttl_get',
             'cpu_get', 'cpu_voltage_get', 'traffic_get', 'ops_log', 'packages_get', 'sim_get', 'simcard_get', 'update_get', 'update_job'}
     WRITE = {'act', 'at', 'at_job', 'at_history', 'lock_set', 'sms_list', 'sms_show', 'sms_send', 'sms_job', 'sms_delete', 'sms_sync',
              'usb_set', 'usb_net_add', 'power_set', 'ttl_set', 'cpu_set', 'cpu_tune', 'cpu_voltage_set', 'forward_get',

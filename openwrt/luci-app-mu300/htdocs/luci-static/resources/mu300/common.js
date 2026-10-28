@@ -31,6 +31,7 @@ var callAtHist = rpc.declare({ object: 'mu300dash', method: 'at_history', expect
 var callLockGet = rpc.declare({ object: 'mu300dash', method: 'lock_get', expect: { '': {} }, nobatch: true });
 var callLockFresh = rpc.declare({ object: 'mu300dash', method: 'lock_get', params: [ 'fresh' ], expect: { '': {} }, nobatch: true });
 var callLockSet = rpc.declare({ object: 'mu300dash', method: 'lock_set', params: [ 'kind', 'val' ], expect: { '': {} }, nobatch: true });
+var callLockJob = rpc.declare({ object: 'mu300dash', method: 'lock_job', params: [ 'id' ], expect: { '': {} }, nobatch: true });
 var callSmsList = rpc.declare({ object: 'mu300dash', method: 'sms_list', params: [ 'page' ], expect: { '': {} }, nobatch: true });
 var callSmsShow = rpc.declare({ object: 'mu300dash', method: 'sms_show', params: [ 'id' ], expect: { '': {} }, nobatch: true });
 var callSmsSend = rpc.declare({ object: 'mu300dash', method: 'sms_send', params: [ 'num', 'text' ], expect: { '': {} }, nobatch: true });
@@ -748,7 +749,7 @@ function choiceBox(title, message, choices, opts) {
 return baseclass.extend({
 	callStatus: callStatus, callSignal: callSignal, callSysinfo: callSysinfo, callAct: callAct, callAt: callAt, callAtHist: callAtHist,
 	callAtJob: callAtJob, callOpsLog: callOpsLog, backoff: backoff, ageText: ageText,
-	callLockGet: callLockGet, callLockFresh: callLockFresh, callLockSet: callLockSet,
+	callLockGet: callLockGet, callLockFresh: callLockFresh, callLockSet: callLockSet, callLockJob: callLockJob,
 	callSmsList: callSmsList, callSmsShow: callSmsShow, callSmsSend: callSmsSend, callSmsJob: callSmsJob,
 	callSmsDel: callSmsDel, callSmsSync: callSmsSync,
 	callUsbGet: callUsbGet, callUsbSet: callUsbSet,

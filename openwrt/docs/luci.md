@@ -10,6 +10,7 @@ The image ships English (the source ids in the JavaScript) and Chinese (`po/zh_H
 - rpcd ends a call at 30 s (`rpcd -t 30`) and the browser at 20 s (LuCI's `rpctimeout`), but rpcd never kills the call's children. So no request reads the modem inline: `lock_get` serves a cache in `/run` and refreshes it in the background, one reader at a time. Collector rounds have deadlines (14 s live, 12 s and 25 s in the background; at most three collectors).
 - With the AT daemons stopped for 150 s: `sysinfo` and `status` answered in 0.5 s, the AT terminal said "busy" after 3 s, `lock_get fresh` served the cache after 12 s, `signal` gave up at 14 s (unverified on 7.2).
 - LuCI batches a page's calls into one HTTP request that uhttpd answers one after another, so one slow call blanks the page. Every panel call is `nobatch` (`common.js`) and polls back off after failures.
+- A lock change (`lock_set`, except `reset` and `auto_apply`) is a job: `lock start KIND VALUE` answers at once with an id, `lock_job` reads how it ended (no AT), and the page waits for `done` before its read-back, so a write the modem refused is said as such. At most 4 open jobs and 64 in all; one past 420 s or with its worker gone ends in error.
 - The panel logs its calls (method, time, outcome, never a value) in RAM, copied to `/etc/unisoc-modem/panel-ops.log` every five minutes at most and at shutdown.
 - Channel Analysis scans only on a click while the driver has an access point: a scan takes the AP off its channel.
 

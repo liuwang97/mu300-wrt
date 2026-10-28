@@ -504,7 +504,7 @@ lock_bands_supported() {
 }
 
 m_lock_set() {
-    local kind val q=0
+    local kind val q=0 out id
     inp '@.kind'; kind=$V
     inp '@.val'; val=$V
     case "$kind" in
@@ -530,12 +530,34 @@ m_lock_set() {
     # queued=1 tells the page another apply is still running (SFUN restart);
     # the new one waits for the modem and the page can say so
     { [ -d /run/unisoc-modem-lock-apply ] || [ -e /run/mu300/sim-switching ] || [ -e /run/mu300/sim-active-unknown ]; } && q=1
-    if [ "$kind" = reset ]; then
-        setsid "$DASH/lock" reset >/dev/null 2>&1 &
-    else
-        setsid "$DASH/lock" apply "$kind" "$val" >/dev/null 2>&1 &
-    fi
+    case $kind in
+        reset)      setsid "$DASH/lock" reset >/dev/null 2>&1 & ;;
+        auto_apply) setsid "$DASH/lock" apply "$kind" "$val" >/dev/null 2>&1 & ;;
+        *)
+            # a job of its own (kanoqwq's lock job queue): the helper answers at once with its id, and lock_job
+            # tells the page how the apply ended - a refused write is an error there, not a read-back that "did
+            # not take"
+            out=$("$DASH/lock" start "$kind" "$val" 2>/dev/null)
+            id=$(printf '%s' "$out" | jsonfilter -e '@.id' 2>/dev/null)
+            if ! allowed "$id" '[A-Za-z0-9]{10}'; then
+                # the helper's own refusal (busy, too many waiting) as it said it; anything else is a failure
+                if [ "$(printf '%s' "$out" | jsonfilter -e '@.ok' 2>/dev/null)" = 0 ]; then reply_obj "$out" 'Lock change failed'
+                else refuse 'Lock change failed'; fi
+                return
+            fi
+            printf '{"ok":1,"started":1,"queued":%d,"op":%s,"job":%s}\n' "$q" "$(json_str "lock $kind=$val")" "$(json_str "$id")"
+            return ;;
+    esac
     printf '{"ok":1,"started":1,"queued":%d,"op":%s}\n' "$q" "$(json_str "lock $kind=$val")"
+}
+
+# lock_job {id}: how the lock change with that id (lock_set's "job") has gone: queued, running, done or error, with
+# the reason; read from the helper's runtime directory, no AT
+m_lock_job() {
+    local id
+    inp '@.id'; id=$V
+    allowed "$id" '[A-Za-z0-9]{10}' || { refuse 'Invalid job id'; return; }
+    reply_obj "$("$DASH/lock" status "$id" 2>/dev/null)" 'Lock change failed'
 }
 
 # --------------------------------------------------------------------- SMS
@@ -957,6 +979,7 @@ do_list() {
 	"ops_log": { },
 	"lock_get": { "fresh": "String" },
 	"lock_set": { "kind": "String", "val": "String" },
+	"lock_job": { "id": "String" },
 	"sms_list": { "page": "String" },
 	"sms_show": { "id": "String" },
 	"sms_send": { "num": "String", "text": "String" },
@@ -1207,7 +1230,7 @@ run_m() {  # run_m LABEL FUNCTION: the method's reply, logged
     case $1 in
         # (the send's job logs its own result once it is in; the polls that ask after it are not worth a line each)
         ops_log|sms_job|update_job|backup_job) return ;;
-        sysinfo|status|signal|at_job|at_history|sms_list|sms_show|*_get|usb_net_list)
+        sysinfo|status|signal|at_job|lock_job|at_history|sms_list|sms_show|*_get|usb_net_list)
             [ "$how" != ok ] || [ "$dt" -ge 200 ] || [ -n "$detail" ] || return ;;
     esac
     ops_add "$(printf '%s %d.%02ds %s' "$stamp" $((dt / 100)) $((dt % 100)) "$how")"
@@ -1240,6 +1263,7 @@ call)
         ops_log)      run_m ops_log      m_ops_log ;;
         lock_get)     run_m lock_get     m_lock_get ;;
         lock_set)     run_m lock_set     m_lock_set ;;
+        lock_job)     run_m lock_job     m_lock_job ;;
         sms_list)     run_m sms_list     m_sms_list ;;
         sms_show)     run_m sms_show     m_sms_show ;;
         sms_send)     run_m sms_send     m_sms_send ;;

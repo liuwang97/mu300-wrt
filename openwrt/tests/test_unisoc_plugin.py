@@ -9,6 +9,7 @@ import json
 import shutil
 import subprocess
 import threading
+from pathlib import Path
 
 from helpers import ShellTest, TOP, ucode, ucode_paths
 
@@ -412,6 +413,92 @@ printf 'OK\n'
             self.assertIn('AT+SPLBAND=2,0,0,16,0', sent)
             self.assertEqual([c for c in sent if c.startswith('AT+SFUN')][:2], ['AT+SFUN=5', 'AT+SFUN=4'])
             self.assertEqual((state / 'nr').read_text(), '41')
+
+    def test_a_refused_mode_or_cell_write_ends_the_apply(self):
+        """The mode, EN-DC and cell writes are checked like the band ones (kanoqwq's lock-apply write_setting): an
+        explicit ERROR ends the apply with nothing saved and no stack restart, so a lock job can say so."""
+        lock, state, run, at = self.reset_setup('cp "$STUBLOG/want-refuse" "$STUBLOG/modem/refuse" 2>/dev/null')
+        for refuse, args, key, old in (('AT+SPTESTMODE=', ('mode', 'sa'), 'mode', '4g'),
+                                       ('AT+SPFORCEFRQ=16,6', ('cell', 'nr:627264,393'), 'cell', 'lte:1650,211\n')):
+            (self.tmp / 'want-refuse').write_text(refuse)
+            for shell in self.each_shell():
+                with self.subTest(kind=key):
+                    r, sent = self.reset_run(shell, lock, state, run, at, 'apply', *args)
+                    self.assertEqual(r.returncode, 1, r.stderr)
+                    self.assertEqual(json.loads(r.stdout)['error'], 'The modem refused a write')
+                    self.assertEqual([c for c in sent if c.startswith('AT+SFUN')], [])
+                    self.assertEqual((state / key).read_text(), old)
+
+    def job_env(self, run):
+        return dict(MU300_AT=self.tmp / 'at', MU300_MOBILE_DATA=self.tmp / 'mobile-data', MU300_DASH_DIR=run,
+                    UNISOC_APPLY_DIR=self.tmp / 'apply', MU300_SIM_RUN=self.tmp / 'sim-run')
+
+    def test_a_lock_job_says_how_its_apply_ended(self):
+        """kanoqwq's job queue: start answers at once with an id (the worker is detached: setsid is a stub here, the
+        test runs the worker itself), status reads the result without AT."""
+        lock, state, run, at = self.reset_setup('[ -f "$STUBLOG/refuse-nr" ] && printf "AT+SPLBAND=2," > "$STUBLOG/modem/refuse"')
+        for shell in self.each_shell():
+            for refused in (True, False):
+                with self.subTest(refused=refused):
+                    marker = self.tmp / 'refuse-nr'
+                    if refused:
+                        marker.write_text('')
+                    else:
+                        marker.unlink(missing_ok=True)
+                    r, _ = self.reset_run(shell, lock, state, run, at, 'start', 'nr', '41')
+                    self.assertEqual(r.returncode, 0, r.stderr)
+                    started = json.loads(r.stdout)
+                    self.assertEqual((started['ok'], started['kind']), (1, 'nr'))
+                    jid = started['id']
+                    self.assertRegex(jid, r'^[A-Za-z0-9]{10}$')
+                    st = json.loads(self.script(shell, lock, 'status', jid, **self.job_env(run)).stdout)
+                    self.assertEqual((st['state'], st['ok']), ('queued', 0))
+                    (self.tmp / 'at.commands').unlink(missing_ok=True)
+                    w = self.script(shell, lock, 'job', jid, 'nr', '41', **self.job_env(run))
+                    self.assertEqual(w.returncode, 0, w.stderr)
+                    st = json.loads(self.script(shell, lock, 'status', jid, **self.job_env(run)).stdout)
+                    sfun = [c for c in self.sent() if c.startswith('AT+SFUN')]
+                    if refused:
+                        self.assertEqual((st['state'], st['ok'], st['error']), ('error', 0, 'The modem refused a write'))
+                        self.assertEqual(sfun, [])
+                        self.assertEqual((state / 'nr').read_text(), '78')
+                    else:
+                        self.assertEqual((st['state'], st['ok'], st['error']), ('done', 1, None))
+                        self.assertEqual(sfun[:2], ['AT+SFUN=5', 'AT+SFUN=4'])
+                        self.assertEqual((state / 'nr').read_text(), '41')
+            # what the page may ask that is no job: refused without a look at the file system beyond the name
+            for bad in ('nosuchjob1', '../../etc', 'short', ''):
+                st = json.loads(self.script(shell, lock, 'status', bad, **self.job_env(run)).stdout)
+                self.assertEqual((st['state'], st['error']), ('error', 'The result of this lock change is no longer known'))
+            r = self.script(shell, lock, 'start', 'nr', '4x1', **self.job_env(run))
+            self.assertEqual(json.loads(r.stdout), {'ok': 0, 'error': 'Invalid value for this lock kind'})
+
+    def test_a_lock_job_whose_worker_is_gone_is_interrupted_and_the_queue_is_bounded(self):
+        lock, state, run, at = self.reset_setup()
+        for shell in self.each_shell():
+            r, _ = self.reset_run(shell, lock, state, run, at, 'start', 'mode', 'sa')
+            jid = json.loads(r.stdout)['id']
+            job = run / 'lock-jobs' / jid
+            # started a minute ago, its worker gone (a pid that is not the lock tool's)
+            up = int(float(Path('/proc/uptime').read_text().split()[0]))
+            (job / 'started').write_text(f'{max(up - 60, 0)}\n')
+            (job / 'pid').write_text('1\n')
+            st = json.loads(self.script(shell, lock, 'status', jid, **self.job_env(run)).stdout)
+            self.assertEqual(st['state'], 'error')
+            self.assertIn('interrupted', st['error'])
+            # an old one past the limit: timed out, whatever its worker does
+            (job / 'result').write_text('{"state":"running"}\n')
+            (job / 'started').write_text('0\n')
+            st = json.loads(self.script(shell, lock, 'status', jid, MU300_JOB_TIMEOUT='5', **self.job_env(run)).stdout)
+            self.assertIn('took too long', st['error'])
+            # four that have not ended: the fifth is refused, nothing started
+            for _ in range(4):
+                self.assertEqual(json.loads(self.script(shell, lock, 'start', 'endc', 'on', **self.job_env(run)).stdout)['ok'], 1)
+            r = self.script(shell, lock, 'start', 'endc', 'on', **self.job_env(run))
+            self.assertEqual(json.loads(r.stdout)['busy'], 1)
+            # (the timed-out one ended more than ten minutes after its start: a start removes it)
+            self.assertEqual(len(list((run / 'lock-jobs').glob('??????????'))), 4)
+            self.assertFalse(job.exists())
 
     def test_sim2_and_the_dual_sim_manager_refuse_with_a_log_line(self):
         """#356: these refusals were only on the stderr of a detached process; the log says them now, and the boot

@@ -433,7 +433,9 @@ class OpsLog(sec.Mu300Dash):
             self.go(shell, 'at', {'cmd': 'ATD+905551234567', 'confirm': '1'})
             self.go(shell, 'at', {'cmd': 'AT+CFUN=0'})                       # not confirmed
             self.go(shell, 'act', {'op': 'radio', 'arg': 'off'})
+            self.output('lock', '{"ok":1,"started":1,"id":"AbCdE12345","kind":"lte"}')   # lock start's answer
             self.go(shell, 'lock_set', {'kind': 'lte', 'val': '1,3'})
+            (self.out / 'lock').unlink()
             self.go(shell, 'status', {})                                     # a quick, good read: no line
             (self.adapters / 'cell').write_text('#!/bin/sh\nprintf \'{"ts":5,"error":"x"}\' > "$MU300_DASH_DIR/sig.json"\n')
             self.go(shell, 'signal', {})                                     # the modem did not answer: a line

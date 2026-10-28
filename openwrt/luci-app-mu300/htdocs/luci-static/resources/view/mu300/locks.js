@@ -154,6 +154,7 @@ return view.extend({
 					return self.readbackReset(prevEnd, btn);
 				}
 				self.note(_('Started in background: %s (SFUN restart, about 30 seconds); reading the status back…').format(r.op || kind), 'busy');
+				if (r.job) return self.followJob(r.job, Date.now(), btn);
 				self.readback(Date.now(), btn);
 			}, function() { M.busy(btn, false); self.note(_('Request failed'), 'error'); });
 		};
@@ -273,7 +274,7 @@ return view.extend({
 				M.busy(btn, false);
 				if (!r.ok) { self.note(_('Unlock failed: %s').format(M.errText(r)), 'error'); return; }
 					self.note(_('Unlock started in background (SFUN restart, about 30 seconds); reading the status back…'), 'busy');
-					self.readback(Date.now());
+					if (r.job) self.followJob(r.job, Date.now()); else self.readback(Date.now());
 				});
 			});
 		});
@@ -291,7 +292,7 @@ return view.extend({
 				M.busy(btn, false);
 				if (!r.ok) { self.note(_('Lock failed: %s').format(M.errText(r)), 'error'); return; }
 					self.note(_('Locked %s in the background (SFUN restart, about 30 seconds); reading the status back…').format(key), 'busy');
-					self.readback(Date.now());
+					if (r.job) self.followJob(r.job, Date.now()); else self.readback(Date.now());
 				});
 			});
 		};
@@ -383,6 +384,27 @@ return view.extend({
 		if (nb) nb.innerHTML = M.neighborRows(c, (this.lastLock || {}).cells || []);
 	},
 
+	/* A lock change with a job id (backend: unisoc-modem/lock start, kanoqwq's job queue): first how the apply itself
+	 * ended - a write the modem refused, or a change that was interrupted, says so and stops here, with the
+	 * highlights put back from a fresh reading - and only a finished one goes on to the read-back of the new state.
+	 * Up to about seven minutes, the backend's own limit (another change or the dial may hold the radio first). */
+	followJob: function(id, t0ms, btn) {
+		var self = this, tries = 0;
+		var step = function() {
+			L.resolveDefault(M.callLockJob(id)).then(function(j) {
+				j = j || {};
+				if (j.state === 'done') return self.readback(t0ms, btn);
+				if (j.state === 'error' || ++tries > 170) {
+					M.busy(btn, false);
+					self.note(j.state === 'error' ? _('Failed: %s').format(M.errText(j))
+						: _('Readback timed out; select “Refresh lock status”'), 'error');
+					return self.refresh();
+				}
+				setTimeout(step, 2500);
+			});
+		};
+		setTimeout(step, 1500);
+	},
 	/* Readback after applying: poll the lock_get cache until its ts is after the click on Apply (SFUN restart + a fresh
 	 * read take up to a minute or two; meanwhile the backend never overwrites the cache with an empty reading), and
 	 * redraw the highlights only from the new state */
