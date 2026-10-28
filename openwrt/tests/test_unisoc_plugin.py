@@ -340,8 +340,9 @@ printf 'OK\n'
         self.stub('setsid', 'exit 0')
         return lock, state, self.tmp / 'run', at
 
-    def reset_run(self, shell, lock, state, run, at, *args):
-        """One `lock reset` (or ARGS) from the saved-and-set starting point: (result, [AT commands sent])."""
+    def reset_run(self, shell, lock, state, run, at, *args, cache=None):
+        """One `lock reset` (or ARGS) from the saved-and-set starting point: (result, [AT commands sent]). CACHE is the
+        lock cache to start from (a short one by default)."""
         shutil.rmtree(state, ignore_errors=True)
         state.mkdir(parents=True)
         for k, v in self.SAVED:
@@ -350,7 +351,7 @@ printf 'OK\n'
         (self.tmp / 'at.commands').unlink(missing_ok=True)
         shutil.rmtree(run, ignore_errors=True)
         run.mkdir(mode=0o700)
-        (run / 'lock.json').write_text('{"ts":1,"mode":{"label":"4g"},"cell":"lte:1650,211",'
+        (run / 'lock.json').write_text(cache or '{"ts":1,"mode":{"label":"4g"},"cell":"lte:1650,211",'
                                        '"cells":["lte:1650,211"],"caps":{"nr":"1,5,6,8,28,41,78","lte":"1,3,5,8,34,38,39,40,41"}}\n')
         r = self.script(shell, lock, *(args or ('reset',)), MU300_AT=at, MU300_MOBILE_DATA=self.tmp / 'mobile-data',
                         MU300_DASH_DIR=run, UNISOC_APPLY_DIR=self.tmp / 'apply', MU300_SIM_RUN=self.tmp / 'sim-run')
@@ -560,6 +561,31 @@ printf 'OK\n'
             self.assertEqual(json.loads(r.stdout)['state'], 'ok')
             got = self.script(shell, lock, 'get', 'cached', MU300_DASH_DIR=run)
             self.assertEqual(json.loads(got.stdout)['reset']['state'], 'ok')
+
+    def test_reset_rewrites_the_cached_locks_to_automatic_before_it_says_ok(self):
+        """The page paints the cache the moment the reset's result is new; the background re-read comes later (and is
+        stubbed off here). So the reset rewrites the cache's lock fields to the automatic state its read-back
+        verified, with a new ts, before the result says ok: the pre-reset reading would show "1 locked: B3"."""
+        lock, state, run, at = self.reset_setup()
+        before = ('{"ts":1,"mode":{"label":"4g","work":"3","gran":"0","m1":"134","prim":"0"},"endc":"2",'
+                  '"lte":{"locked":"3","raw":"0,0,0,4,0"},"nr":{"locked":"78","raw":"0,0,256"},'
+                  '"cell":"lte:1650,211","cells":["lte:1650,211","nr:627264,393"],'
+                  '"caps":{"nr":"1,5,6,8,28,41,78","lte":"1,3,5,8,34,38,39,40,41"}}\n')
+        for shell in self.each_shell():
+            r, _ = self.reset_run(shell, lock, state, run, at, cache=before)
+            self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+            res = self.reset_result(run)
+            self.assertEqual(res['state'], 'ok')
+            got = json.loads(self.script(shell, lock, 'get', 'cached', MU300_DASH_DIR=run).stdout)
+            self.assertEqual(got['mode'], {'label': 'auto', 'work': '134', 'gran': '1', 'm1': '134', 'prim': '0'})
+            self.assertEqual(got['endc'], '1')
+            self.assertEqual(got['lte'], {'locked': '', 'raw': '0,482,0,149,0'})
+            self.assertEqual(got['nr'], {'locked': '', 'raw': '553,0,272'})
+            self.assertEqual((got['cell'], got['cells']), ('', []))
+            self.assertEqual(got['caps'], {'nr': '1,5,6,8,28,41,78', 'lte': '1,3,5,8,34,38,39,40,41'})
+            # a reading from after the reset started: the page waits for one before it paints an ok reset
+            self.assertGreaterEqual(got['ts'], res['ts'])
+            self.assertEqual(got['reset']['state'], 'ok')
 
     def test_reset_on_the_u30_air_takes_its_modems_full_lte_table_as_automatic(self):
         """The U30 Air's modem reads a cleared LTE mask back as its own table (0,2018,2057,2271,2: bands 1,2,3,4,5,

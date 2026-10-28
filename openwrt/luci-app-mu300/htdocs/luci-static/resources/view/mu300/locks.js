@@ -436,6 +436,13 @@ return view.extend({
 				l = l || {};
 				var res = l.reset || {};
 				var done = res.state && res.state !== 'running' && (res.end || 0) > prevEnd;
+				/* an ok reset paints only a reading taken since it started (res.ts): the backend rewrites the cache
+				 * to the verified automatic state before it says ok; a cache from before the reset would show the
+				 * old locks until a reload */
+				if (done && res.state === 'ok' && !((l.ts || 0) >= (res.ts || 0)) && tries < 60) {
+					++tries;
+					return setTimeout(step, 2500);
+				}
 				if (done || ++tries > 60) {
 					M.busy(btn, false);
 					self.lastLock = l; self.paint(); self.paintServing(self.lastCell);

@@ -657,7 +657,7 @@ lte_full() {
 # table, or the NR bands SP5GCMDS lists that the SPLBAND codec can carry: n6 is supported and not encodable).
 verify_automatic() {
     local raw got nr3 want
-    VERIFY_STEP=; VERIFY_GOT=
+    VERIFY_STEP=; VERIFY_GOT=; VERIFY_LTE_RAW=; VERIFY_NR_RAW=
     raw=$(read_field 'AT+SPTESTMODE?' SPTESTMODE)
     [ "${raw%%,*}" = 134 ] || { VERIFY_STEP=mode; VERIFY_GOT=$raw; return 1; }
     raw=$(read_field 'AT+SP5GRAN?' SP5GRAN)
@@ -666,10 +666,12 @@ verify_automatic() {
     [ "$raw" = 1 ] || { VERIFY_STEP=endc; VERIFY_GOT=$raw; return 1; }
     raw=$(read_field 'AT+SPLBAND=0' SPLBAND)
     printf '%s\n' "$raw" | grep -Eq '^[0-9]+(,[0-9]+){4}$' || { VERIFY_STEP=lte; VERIFY_GOT=$raw; return 1; }
+    VERIFY_LTE_RAW=$raw
     got=$(canonical_bands "$(lte_bands "$raw")")
     [ -z "$got" ] || lte_full "$got" || { VERIFY_STEP=lte; VERIFY_GOT=$raw; return 1; }
     raw=$(read_field 'AT+SPLBAND=3' SPLBAND)
     printf '%s\n' "$raw" | grep -Eq '^[0-9]+(,[0-9]+){2,3}$' || { VERIFY_STEP=nr; VERIFY_GOT=$raw; return 1; }
+    VERIFY_NR_RAW=$raw
     nr3=$(printf '%s\n' "$raw" | awk -F, 'NF>=4 {print $1","$3","$4; exit} NF==3 {print $1","$3",0"; exit}')
     got=$(canonical_bands "$(nr_bands "$nr3")")
     want=$(canonical_bands "$(nr_bands "$(nr_masks "$(nr_sup)")")")
@@ -708,6 +710,22 @@ reset_fail() {
     refresh_cache_soon
     return 1
 }
+# reset_cache_automatic M1 PRIM: the cache rewritten to the automatic state the read-back after the restart has just
+# verified, before the result says ok: the page paints the cache the moment it sees the new result, and the
+# background re-read (refresh_cache_soon) comes later, so the pre-reset reading would show the old locks until a
+# reload. Mode auto (134, NR mode 1, the slot1/primary fields the reset kept), EN-DC on, no band
+# locked (the raw masks the read-back got), no cell lock - and no cell file means "seed from the cache" at the next
+# cell lock, so the cache must not offer the cells just removed. ts is now: the modem was read a moment ago.
+reset_cache_automatic() {
+    [ -s "$LOCKCACHE" ] || return 0
+    sed -e "s/\"ts\":[0-9]*/\"ts\":$(date +%s)/" \
+        -e "s/\"mode\":{[^}]*}/\"mode\":{\"label\":\"auto\",\"work\":\"134\",\"gran\":\"1\",\"m1\":\"$1\",\"prim\":\"$2\"}/" \
+        -e 's/"endc":"[^"]*"/"endc":"1"/' \
+        -e "s/\"lte\":{\"locked\":\"[^\"]*\",\"raw\":\"[^\"]*\"/\"lte\":{\"locked\":\"\",\"raw\":\"$VERIFY_LTE_RAW\"/" \
+        -e "s/\"nr\":{\"locked\":\"[^\"]*\",\"raw\":\"[^\"]*\"/\"nr\":{\"locked\":\"\",\"raw\":\"$VERIFY_NR_RAW\"/" \
+        -e 's/"cell":"[^"]*"/"cell":""/; s/"cells":\[[^]]*\]/"cells":[]/' \
+        "$LOCKCACHE" > "$LOCKCACHE.part" 2>/dev/null && mv "$LOCKCACHE.part" "$LOCKCACHE"
+}
 do_reset() {
     local tm m1 prim cmd
     _t0=$(date +%s)
@@ -736,11 +754,7 @@ do_reset() {
     # two is finished by the next apply or replay
     save_state reset_pending 1
     finish_reset_state commit || { reset_fail 'The saved locks could not be cleared'; return 1; }
-    # no cell file means "seed from the cache" at the next cell lock: the cache
-    # must not offer the cells just removed (the fresh read below rewrites it all)
-    [ -s "$LOCKCACHE" ] &&
-        sed 's/"cell":"[^"]*"/"cell":""/; s/"cells":\[[^]]*\]/"cells":[]/' "$LOCKCACHE" > "$LOCKCACHE.part" 2>/dev/null &&
-        mv "$LOCKCACHE.part" "$LOCKCACHE"
+    reset_cache_automatic "$m1" "$prim"
     reset_result ok
     say "reset verified ($(( $(date +%s) - _t0 ))s); saved settings cleared"
     refresh_cache_soon
