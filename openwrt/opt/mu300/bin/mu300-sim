@@ -43,6 +43,9 @@ ensure_slot_supported() {
     [ "$1" != 1 ] || ensure_f50
 }
 valid() { case "$1" in 0|1) return 0 ;; *) echo 'SIM slot must be 0 (external) or 1 (internal)' >&2; return 1 ;; esac; }
+# `default` takes the card numbers the panel shows (1 external, 2 internal), not `select`'s slot numbers: its refusal
+# names its own numbering
+valid_default() { case "$1" in 1|2) return 0 ;; *) echo 'SIM card must be 1 (external) or 2 (internal)' >&2; return 1 ;; esac; }
 configured() { sim_cfg_default; }
 
 active() {
@@ -95,7 +98,7 @@ case ${1:-status} in
     select|default)
         # "|| exit 2": under set -e a failing "valid" would end the script with its own status 1
         if [ "$1" = default ]; then
-            case ${2:-} in 1) next=0 ;; 2) next=1 ;; *) valid invalid || exit 2 ;; esac
+            case ${2:-} in 1) next=0 ;; 2) next=1 ;; *) valid_default invalid || exit 2 ;; esac
         else
             case ${2:-} in external|0) next=0 ;; internal|1) next=1 ;; *) valid invalid || exit 2 ;; esac
         fi
@@ -122,5 +125,5 @@ case ${1:-status} in
         echo 'mu300-sim: live SIM switching is not supported on F50; select a slot and reboot' >&2
         exit 1
         ;;
-    *) echo 'usage: mu300-sim status [--json]|active|configured|select external|internal|default 1|2 (U30 Air also: hot 0|1, switch 1|2)' >&2; exit 2 ;;
+    *) echo 'usage: mu300-sim status [--json]|active|configured|select external|internal|0|1, default 1|2 (default: 1 external, 2 internal; U30 Air also: hot 0|1, switch 1|2)' >&2; exit 2 ;;
 esac

@@ -74,6 +74,24 @@ esac
             self.assertFalse((self.tmp / 'run/mu300-radio-freeze').exists())
             self.assertFalse((self.tmp / 'run/mu300/sim-switch.log').exists())
 
+    def test_default_uses_card_numbers_and_says_so(self):
+        """`default 1|2` takes the card numbers (1 external, 2 internal), `select` the slots 0/1: each refusal names
+        its own numbering, and both valid values save the slot."""
+        for shell in self.each_shell():
+            result = self.sim(shell, 'default', '0')
+            self.assertEqual(result.returncode, 2)
+            self.assertIn('SIM card must be 1 (external) or 2 (internal)', result.stderr)
+            self.assertNotIn('SIM slot must be 0 (external) or 1 (internal)', result.stderr)
+            result = self.sim(shell, 'select', '2')
+            self.assertEqual(result.returncode, 2)
+            self.assertIn('SIM slot must be 0 (external) or 1 (internal)', result.stderr)
+            result = self.sim(shell, 'default', '1')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(self.choice.read_text(), '0\n')
+            result = self.sim(shell, 'default', '2')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(self.choice.read_text(), '1\n')
+
     def test_u30_migration_copies_legacy_preference_and_profile_once(self):
         self.native()
         self.choice.unlink()
