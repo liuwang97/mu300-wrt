@@ -13,9 +13,9 @@ the eMMC the kernel tree has to live with.
   MUSB (`musb-hdrc.1.auto`), Type-C on the PMIC.
 - The bootloader is Unisoc LK ("sprdlk") with Trusty TEE and A/B slots. `boot` and `vendor_boot` are Android header
   v4, page size 4096, with LZ4 legacy ramdisks.
-- The F50 has no battery: its fuel gauge reports made-up values. The device tree's charger entry (bq2560x) is not F50
-  hardware, nothing answers at I2C 0x6b there. Patch 0016 binds the charger at 0x1a only where `/charger_policy_service`
-  exists, so nothing binds on the F50.
+- The F50 has no battery: its fuel gauge reports made-up values when bound. The device tree's charger entry (bq2560x)
+  is not F50 hardware, nothing answers at I2C 0x6b there. Patch 0029 binds the UMP9620 fuel gauge and the charger only
+  where `/charger_policy_service` is, so the F50 lists no power supply.
 - The U30 Air has the F50's SoC, 64 GB eMMC and partition layout (partitions end at sector 54218752, so the Linux
   region has the same offset). It differs by ZTE's "SQC" charger stack (`sqc_charger`, `sqc_bq2560x`,
   `charger_policy_service`, `zte_power_supply`), `SC27XX_PD`, GPIO/LDO LEDs, a SAR sensor and an NFC tag. Firmware

@@ -165,6 +165,21 @@ class Static(unittest.TestCase):
         for s in ('of_find_node_by_path("/charger_policy_service")', 'of_node_put(np);',
                   '+\t\tif (part < 0 && client->addr != SGM41513_I2C_ADDR && battery) {'):
             self.assertIn(s, p16)
+        # 0029: one test of that board (the policy service present and enabled), and both ZTE's charger node and the
+        # UMP9620's fuel gauge end their probe with it, before any register access: the F50's gauge listed a battery
+        # with made-up readings
+        p29 = (TOP / 'kernel' / 'patches' / '0029-power-UMP9620-one-battery-board-check.patch').read_text()
+        self.assertIn('+\tbool enabled = policy && of_device_is_available(policy);', p29)
+        bq = p29[p29.index('+++ b/drivers/power/supply/bq256xx_charger.c'):p29.index('--- a/drivers/power/supply/sc27xx')]
+        self.assertLess(bq.index('+\t\tif (!ump9620_has_battery_policy())\n+\t\t\treturn -ENODEV;'),
+                        bq.index('part = i2c_smbus_read_byte_data(client, BQ256XX_PART_INFORMATION);'))
+        self.assertIn('+\t\tif (part < 0 && client->addr != SGM41513_I2C_ADDR) {', bq)
+        fgu = p29[p29.index('+++ b/drivers/power/supply/sc27xx_fuel_gauge.c'):p29.index('--- a/drivers/usb/typec')]
+        self.assertLess(fgu.index('+\tif (of_device_is_compatible(dev->of_node, "sprd,ump9620-fgu") && '
+                                  '!ump9620_has_battery_policy())\n+\t\treturn -ENODEV;'),
+                        fgu.index(' \tdata = devm_kzalloc(dev, sizeof(*data), GFP_KERNEL);'))
+        # the helper's lookup is the only one left
+        self.assertEqual(sum('of_find_node_by_path' in l for l in p29.splitlines() if l.startswith('+')), 1)
         # the PMIC's charger detection reads the UMP9620's own register (0x239c), not the SC2730's (0x1b9c)
         self.assertIn(r"#define SPRD_UMP9620_CHG_DET\t\t0x239c", port)
         self.assertIn("'.charger_det = SPRD_UMP9620_CHG_DET,'", port)

@@ -87,7 +87,8 @@ is synced first and removed only by a clean shutdown, so a crash or power cut dr
   until BC1.2 reports (status register 0x239c); `0012` takes the larger of BC1.2 and the Type-C source's Rp. `0015`/`0016`:
   the SGM41513 at 0x1a, only on the board with a battery (an F50 has a chip there and reset in a loop when told to
   charge). `0029`: one test of that board for the charger, the fuel gauge and the port controller,
-  `ump9620_has_battery_policy()` (`/charger_policy_service` present and enabled). `0024`: CV from the battery node in
+  `ump9620_has_battery_policy()` (`/charger_policy_service` present and enabled), asked before any register access:
+  elsewhere the charger node and the UMP9620 gauge end their probe with -ENODEV. `0024`: CV from the battery node in
   ZTE's encoding (4.3 V is REG04 0x70, 4.304 V, as under Android; a low CV ends a charge early), `EN_TIMER` cleared.
   `0025`: 3 A only with `bq256xx_charger.u30air_3a=1` (kernel command line).
 - The fuel gauge keeps the last capacity in its user area in Android's format (bits 7:0 percent, 11:8 tenths), written with

@@ -1,11 +1,16 @@
-power: UMP9620 boards: one check for the board with a battery
+power: UMP9620 boards: one check for the board with a battery, before any register access
 
 The F50 and the U30 Air share the UMP9620 device tree layout, charger, fuel gauge and USB-PD nodes included; only
-the U30 Air has a battery, and only its tree has the stock charger policy service. The bq256xx charger (0016),
-the fuel gauge's awake events (0023) and the port controller (0020) each looked the node up on their own and took
-its mere presence for the answer. One helper, ump9620_has_battery_policy() in <linux/power/ump9620-battery.h>,
-answers for all three, and asks for the node to be enabled as well. The idea is kanoqwq's (clean-tf-7.2,
-"battery board isolation").
+the U30 Air has a battery, and only its tree has the stock charger policy service. One helper,
+ump9620_has_battery_policy() in <linux/power/ump9620-battery.h>, answers for the bq256xx charger (0016), the fuel
+gauge (0023) and the port controller (0020), and asks for the node to be enabled as well. The idea is kanoqwq's
+(clean-tf-7.2, "battery board isolation"; mu300-linux f59a2968).
+
+ZTE's charger node ("ti,bq2560x_chg") and the UMP9620's fuel gauge ("sprd,ump9620-fgu") end their probe with
+-ENODEV on a board without it, before any register access. Under mainline the F50's gauge bound and listed a
+"Battery" (sc27xx-fgu) with made-up readings: status Full, health "Over voltage", a temperature from an
+unconnected NTC input, which every reader had to be told by the board to ignore; the charger read its node's
+address before it gave up. Other SC27xx and BQ256xx boards keep their behaviour; the U30 Air is unchanged.
 
 --- a/drivers/power/supply/bq256xx_charger.c
 +++ b/drivers/power/supply/bq256xx_charger.c
@@ -17,25 +22,50 @@ answers for all three, and asks for the node to be enabled as well. The idea is 
  #include <linux/spi/spi.h>
  
  #define BQ256XX_MANUFACTURER "Texas Instruments"
-@@ -2286,7 +2287,6 @@
+@@ -2311,8 +2312,17 @@
  	if (bq->bq2560x_chg) {
  		struct bq256xx_chip_info *info;
  		int part, err;
 -		struct device_node *np;
- 		bool battery;
+-		bool battery;
++
++		/*
++		 * ZTE's charger node is on every UMP9620 board, but there is a battery to charge only on the U30 Air,
++		 * whose device tree has the charger policy service (as mu300-device tells the boards apart). The F50
++		 * has no battery, and a charger at 0x1a all the same, with its registers set (0e 1e b4 f7 c0 8f 64 40
++		 * 34 00 80 00 measured): bound and told to charge, the fuel gauge reported over-voltage and the PMIC
++		 * reset the board, over and over on a router's USB port (issue #225). There no register of either
++		 * address is touched.
++		 */
++		if (!ump9620_has_battery_policy())
++			return -ENODEV;
  
  		/* the bq25601 as it is, without a register cache and with its input detection */
-@@ -2311,9 +2311,7 @@
- 		 * told to charge, the fuel gauge reported over-voltage and the PMIC reset the board, over and over
- 		 * on a router's USB port (issue #225). There it stays unbound, as before v2026.10.25.
+ 		info = devm_kmemdup(dev, bq->chip_info, sizeof(*info), GFP_KERNEL);
+@@ -2325,21 +2335,10 @@
+ 		/*
+ 		 * Nothing at the node's address: ZTE's driver then goes on at 0x1a, where an SGM41513 is, and keeps
+ 		 * the client it has (so the device is "6-006b" under Android whichever chip it is). Here the second
+-		 * address is a client of its own, which also keeps i2c-dev off it. A board that has the node and
+-		 * neither chip (the F50) probes no further than these two reads.
++		 * address is a client of its own, which also keeps i2c-dev off it.
  		 */
+ 		part = i2c_smbus_read_byte_data(client, BQ256XX_PART_INFORMATION);
+-		/*
+-		 * Only on a board with a battery to charge: the U30 Air, whose device tree has the charger policy
+-		 * service (as mu300-device tells the boards apart). The F50 has no battery, and a charger at 0x1a
+-		 * all the same, with its registers set (0e 1e b4 f7 c0 8f 64 40 34 00 80 00 measured): bound and
+-		 * told to charge, the fuel gauge reported over-voltage and the PMIC reset the board, over and over
+-		 * on a router's USB port (issue #225). There it stays unbound, as before v2026.10.25.
+-		 */
 -		np = of_find_node_by_path("/charger_policy_service");
 -		battery = np;
 -		of_node_put(np);
-+		battery = ump9620_has_battery_policy();
- 		if (part < 0 && client->addr != SGM41513_I2C_ADDR && battery) {
+-		if (part < 0 && client->addr != SGM41513_I2C_ADDR && battery) {
++		if (part < 0 && client->addr != SGM41513_I2C_ADDR) {
  			err = part;
  			chip = devm_i2c_new_dummy_device(dev, client->adapter, SGM41513_I2C_ADDR);
+ 			if (IS_ERR(chip))
 --- a/drivers/power/supply/sc27xx_fuel_gauge.c
 +++ b/drivers/power/supply/sc27xx_fuel_gauge.c
 @@ -15,6 +15,7 @@
@@ -46,7 +76,17 @@ answers for all three, and asks for the node to be enabled as well. The idea is 
  
  /* PMIC global control registers definition */
  #define SC27XX_MODULE_EN0		0xc08
-@@ -1149,13 +1150,7 @@
+@@ -1142,20 +1143,13 @@
+ /*
+  * MU300 (from kanoqwq/mu300-linux 99e1316a): the UMP9620's low-voltage and 1 % coulomb-counter interrupts only while
+  * awake too. Mainline arms them in suspend alone, and these boards do not suspend: the low-voltage calibration of
+- * the capacity never ran and no capacity change reached userspace. hw_init has set the delta to 1 % already. Only
+- * the U30 Air, the board with a battery (its device tree has the charger policy service, as patch 0016 tells it);
+- * the F50 has this fuel gauge with made-up readings and keep the mainline mask. A removed battery disarms
+- * them, an inserted one arms them again.
++ * the capacity never ran and no capacity change reached userspace. hw_init has set the delta to 1 % already. The
++ * UMP9620's gauge is bound only on the board with a battery, the U30 Air (sc27xx_fgu_probe); the other PMICs keep
++ * the mainline mask. A removed battery disarms them, an inserted one arms them again.
   */
  static bool ump9620_fgu_awake_events(struct sc27xx_fgu_data *data)
  {
@@ -57,13 +97,28 @@ answers for all three, and asks for the node to be enabled as well. The idea is 
 -	np = of_find_node_by_path("/charger_policy_service");
 -	of_node_put(np);
 -	return np;
-+	return data->var == &ump9620_info && ump9620_has_battery_policy();
++	return data->var == &ump9620_info;
  }
  
  static int ump9620_fgu_enable_events(struct sc27xx_fgu_data *data)
+@@ -1405,6 +1399,14 @@
+ 	struct sc27xx_fgu_data *data;
+ 	int ret, irq;
+ 
++	/*
++	 * MU300: the F50 has the UMP9620's fuel gauge but no battery; bound, it reported one with made-up readings
++	 * (status Full, "Over voltage", a temperature from an unconnected NTC) that every reader had to be told to
++	 * ignore. Only the U30 Air has a battery: nothing of the gauge is touched elsewhere.
++	 */
++	if (of_device_is_compatible(dev->of_node, "sprd,ump9620-fgu") && !ump9620_has_battery_policy())
++		return -ENODEV;
++
+ 	data = devm_kzalloc(dev, sizeof(*data), GFP_KERNEL);
+ 	if (!data)
+ 		return -ENOMEM;
 --- a/drivers/usb/typec/tcpm/ump9620-tcpc.c
 +++ b/drivers/usb/typec/tcpm/ump9620-tcpc.c
-@@ -37,6 +37,7 @@
+@@ -38,6 +38,7 @@
  #include <linux/regulator/consumer.h>
  #include <linux/slab.h>
  #include <linux/usb/pd.h>
@@ -71,7 +126,7 @@ answers for all three, and asks for the node to be enabled as well. The idea is 
  #include <linux/usb/role.h>
  #include <linux/usb/tcpm.h>
  #include <linux/workqueue.h>
-@@ -796,9 +797,7 @@
+@@ -815,9 +816,7 @@
  		return -ENODEV;
  	}
  	/* only a board with a battery: the U30 Air's device tree has the charger policy service (as mu300-device) */
@@ -82,7 +137,7 @@ answers for all three, and asks for the node to be enabled as well. The idea is 
  		return -ENODEV;
  	typec = of_get_compatible_child(dev->parent->of_node, "sprd,sc27xx-typec");
  	if (!typec || !of_property_read_bool(typec, "use_pdhub_c2c")) {
---- a/include/linux/power/ump9620-battery.h
+--- /dev/null
 +++ b/include/linux/power/ump9620-battery.h
 @@ -0,0 +1,22 @@
 +/* SPDX-License-Identifier: GPL-2.0 */
