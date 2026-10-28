@@ -3812,18 +3812,25 @@ class VpnUplink(ShellTest):
 
     def test_a_vpn_started_before_the_bearer_is_restarted(self):
         import time
-        now = int(time.time())
+        # the seconds in the message are counted from the script's own clock reading (state/uplink-up), which can be a
+        # second or more after the test's: the expected text is taken from it, not from the test's clock
+        def up():
+            return int((self.tmp / 'state' / 'uplink-up').read_text())
         for shell in self.each_shell():
-            r, calls = self.run_uplink(shell, now - 2)
+            since = int(time.time()) - 2
+            r, calls = self.run_uplink(shell, since)
             self.assertIn('vpn restart', calls, (shell, r.stderr))
-            self.assertIn('the VPN started before sipa_eth0 was up (2 s): restarting it', calls)
+            self.assertGreaterEqual(up() - since, 2)
+            self.assertIn(f'the VPN started before sipa_eth0 was up ({up() - since} s): restarting it', calls)
             # the same second counts as before
             r, calls = self.run_uplink(shell, int(time.time()))
             self.assertIn('vpn restart', calls, (shell, r.stderr))
             # a run that began before the bearer (its engine file) and reached its engine after it: restarted too
-            r, calls = self.run_uplink(shell, int(time.time()) + 20, began=int(time.time()) - 3)
+            began = int(time.time()) - 3
+            r, calls = self.run_uplink(shell, began + 23, began=began)
             self.assertIn('vpn restart', calls, (shell, r.stderr))
-            self.assertIn('(3 s)', calls)
+            self.assertGreaterEqual(up() - began, 3)
+            self.assertIn(f'({up() - began} s)', calls)
             self.assertTrue((self.tmp / 'state' / 'uplink-up').exists())
             self.assertFalse((self.tmp / 'state' / 'vpn-uplink.lock').exists())
 
