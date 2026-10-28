@@ -41,3 +41,4 @@ Applies to: Linux 7.2.11, OpenWrt 25.12.5 (F50, U30 Air). Checked against the co
 
 ## Event-driven daemon
 `openwrt/opt/mu300/bin/mu300-sysd` (ucode + uloop, always on) does the keys, the LED tick and the thermal guard in one process, from kernel uevents (`mu300-keys -u power_supply,extcon`) and timers; no loop runs while nothing happens. The U30 Air's charger sends no uevent and the gauge counts 1 % steps only, so the LED tick also looks every 30 s (charger) or 90 s (battery).
+- The Wi-Fi key held 3 s wakes and toggles the hotspot in one press, asleep too, and writes `wireless.@wifi-device[0].disabled` as the panel's Wi-Fi switch does (so either undoes the other); in the charging boot it only wakes. A short press on a sleeping device only wakes.

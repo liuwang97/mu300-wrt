@@ -7,7 +7,8 @@
 //   keys      power, short: wake the LEDs; held 3 s: shut down (in the charging boot: start the device). Wi-Fi key
 //             (U30 Air), short: hotspot 2.4 <-> 5 GHz; held 3 s: hotspot off / on. Every press lights the LEDs first
 //             (mu300-led wake), then wakes mu300-power with the key's name in the background (idle wakes on any key, a
-//             charging boot only on the Wi-Fi key); the toggles act on an awake device, under a deadline. A held
+//             charging boot only on the Wi-Fi key). The band toggle acts on an awake device; a Wi-Fi hold wakes and
+//             toggles the hotspot in one go (in the charging boot it only wakes); both under a deadline. A held
 //             power key leaves $PST/shutdown, a hotspot toggled off $PST/hotspot-off. A press is the only thing that
 //             starts them.
 //   LED tick  `mu300-led tick` only when it has something to do, by its hint (.tick-hint): looked at on a uevent of
@@ -259,15 +260,20 @@ function probe(argv, cb) {
 function hotspot_is_up(cb) {
 	probe([ 'ubus', '-t', '5', 'call', 'hostapd.wlan0', 'get_status' ], cb);
 }
-function hotspot_set(dir) {   // the toggle itself, a shell command
-	return (dir == 'off') ? 'wifi down; mu300-led wifi off' : 'wifi up; mu300-led wifi sync 120';
+// hotspot_set DIR: the toggle itself, a shell command; it writes the radio's flag the panel's Wi-Fi switch writes, so
+// a hotspot switched off on the page comes back with the key, and the key's off lasts as the page's does
+function hotspot_set(dir) {
+	let d = (dir == 'off') ? '1' : '0';
+	return 'uci -q set wireless.@wifi-device[0].disabled=' + d + '; uci -q commit wireless; ' +
+		((dir == 'off') ? 'wifi down; mu300-led wifi off' : 'wifi up; mu300-led wifi sync 120');
 }
 
 let led_arm;   // set below (the LED tick)
 let presses = [], pressing = false;
 let press_next;   // set below
 // press_act: what the press does once the LEDs are lit and, for a Wi-Fi hold, its direction is decided (see the top:
-// idle wakes on any key, a charging boot only on the Wi-Fi key; the toggles act on an awake device)
+// idle wakes on any key, a charging boot only on the Wi-Fi key; the band toggle acts on an awake device, a Wi-Fi hold
+// with its direction decided toggles the hotspot)
 function press_act(code, kind, s, was_idle, dir) {
 	let key = (code == KEY_WIFI) ? 'wifi' : 'power';
 	// a held power key in the charging boot starts the device (the stock charger mode: hold power to switch it on):
@@ -293,15 +299,16 @@ function press_act(code, kind, s, was_idle, dir) {
 }
 function press_rest(code, kind) {
 	let s = rd(PST + '/state') ?? '';
-	// dark on purpose (idle, or someone's mu300-led idle on): this press only wakes
+	// dark on purpose (idle, or someone's mu300-led idle on): a short press only wakes
 	let was_idle = (s != '' && s != 'active') || exists(LEDIDLE);
-	if (code != KEY_WIFI || kind != 'long' || was_idle) {
+	// the charging boot has no services to toggle: a hold there only wakes (and that wake ends the charging boot)
+	if (code != KEY_WIFI || kind != 'long' || s == 'charging-boot') {
 		press_act(code, kind, s, was_idle, null);
 		press_next();
 		return;
 	}
-	// a Wi-Fi hold on an awake device: which way, and the user's marker (with the uptime of the hold), before the
-	// wake can look
+	// a Wi-Fi hold, on a sleeping device too (one hold wakes and toggles): which way, and the user's marker (with the
+	// uptime of the hold), before the wake can look, so the wake of the same press cannot undo them
 	mkdir_p(PST);
 	hotspot_is_up((up) => {
 		try {

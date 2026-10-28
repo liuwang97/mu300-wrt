@@ -104,7 +104,7 @@ class ButtonsCases:
     """the keys, as mu300-sysd handles them (run by ButtonsUnderSysd)"""
     def test_actions(self):
         self.stub('mu300-keys', 'cat "$STUBLOG/keys.in"')
-        for name in ('mu300-led', 'mu300-wifi-band', 'ubus', 'wifi', 'logger', 'poweroff', 'mu300-power'):
+        for name in ('mu300-led', 'mu300-wifi-band', 'ubus', 'wifi', 'logger', 'poweroff', 'mu300-power', 'uci'):
             self.stub(name, f'echo "{name} $*" >> "$STUBLOG/calls"; [ "{name} $*" != "ubus -t 5 call hostapd.wlan0 get_status" ]')
         # Every press lights the LEDs first (a key always shows life, whatever the state), then wakes mu300-power with
         # the key's name in the background (only wifi ends a charging boot; other keys count as power), which the
@@ -112,7 +112,9 @@ class ButtonsCases:
         WP, WW = 'mu300-power wake power', 'mu300-power wake wifi'
         cases = [('116 short', [WP]),
                  ('138 short', [WW, 'mu300-wifi-band toggle']),
-                 ('138 long', [WW, 'ubus -t 5 call hostapd.wlan0 get_status', 'wifi up', 'mu300-led wifi sync 120']),
+                 # the hold writes the radio's flag the panel's Wi-Fi switch writes: the page's off can be undone
+                 ('138 long', [WW, 'ubus -t 5 call hostapd.wlan0 get_status', 'uci -q set wireless.@wifi-device[0].disabled=0',
+                               'uci -q commit wireless', 'wifi up', 'mu300-led wifi sync 120']),
                  ('0 tick', None),   # a tick is no press: it must not wake, only let the LEDs time out (and the battery LED follow)
                  # held power: no mu300-power wake (the radios would come back on the way down); the shutdown marker
                  ('116 long', ['poweroff']),
@@ -332,22 +334,26 @@ class ButtonsCases:
             self.script(shell, KEYS_RUN, MU300_RUN=self.tmp / 'run')
             self.assertFalse(marker.exists())
 
-    def test_first_wifi_press_while_asleep_only_wakes(self):
+    def test_wifi_hold_while_asleep_wakes_and_toggles(self):
+        # asleep (state idle): a short press only wakes, a hold wakes and toggles the hotspot too; the charging boot
+        # has no services to toggle, so both only wake (mu300-power wake wifi); awake, both act
         self.stub('mu300-keys', 'cat "$STUBLOG/keys.in"')
-        for name in ('mu300-led', 'mu300-wifi-band', 'ubus', 'wifi', 'logger', 'mu300-power'):
+        for name in ('mu300-led', 'mu300-wifi-band', 'ubus', 'wifi', 'logger', 'mu300-power', 'uci'):
             self.stub(name, f'echo "{name} $*" >> "$STUBLOG/calls"')
         (self.tmp / 'run/mu300/power').mkdir(parents=True)
-        for state, acts in (('idle', False), ('charging-boot', False), ('active', True)):
+        for state, short_acts, long_acts in (('idle', False, True), ('charging-boot', False, False),
+                                             ('active', True, True)):
             (self.tmp / 'run/mu300/power/state').write_text(state + '\n')
             for shell in self.each_shell():
-                for event in ('138 short', '138 long'):
+                for event, acts in (('138 short', short_acts), ('138 long', long_acts)):
                     (self.tmp / 'keys.in').write_text(event + '\n')
                     (self.tmp / 'calls').unlink(missing_ok=True)
                     r = self.script(shell, KEYS_RUN, MU300_RUN=self.tmp / 'run')
                     self.assertEqual(r.returncode, 0, r.stderr)
                     calls = (self.tmp / 'calls').read_text()
-                    self.assertIn('mu300-power wake', calls, (state, event))
-                    self.assertEqual(acts, ('mu300-wifi-band toggle' in calls or 'wifi up' in calls or 'get_status' in calls), (state, event))
+                    self.assertIn('mu300-power wake wifi', calls, (state, event))
+                    self.assertEqual(acts, ('mu300-wifi-band toggle' in calls or 'wifi up' in calls or 'wifi down' in calls
+                                            or 'get_status' in calls), (state, event))
 
 
 
