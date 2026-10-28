@@ -177,5 +177,46 @@ class Plant(unittest.TestCase):
             self.assertLess(avg, 90, seed)
 
 
+class Governor(unittest.TestCase):
+    """soc-thmzone runs power_allocator: built in, selected by mu300_thermal for its zone alone (patch 0030 exports
+    the call), over cpufreq cooling devices that are power actors because the cpufreq driver registers an energy
+    model from its final OPP table."""
+    CONFIG = (TOP / 'kernel/mu300-mainline.config').read_text()
+    DRIVER = (TOP / 'kernel/modules/mu300_thermal/mu300_thermal.c').read_text()
+    CPUFREQ = (TOP / 'kernel/port/drivers/cpufreq/sprd-cpufreq-v2-driver.c').read_text()
+
+    def test_power_allocator_is_built_and_step_wise_stays_the_default(self):
+        for opt in ('THERMAL_GOV_POWER_ALLOCATOR', 'THERMAL_GOV_STEP_WISE', 'THERMAL_DEFAULT_GOV_STEP_WISE',
+                    'ENERGY_MODEL', 'CPU_THERMAL', 'THERMAL_OF'):
+            self.assertIn(f'\nCONFIG_{opt}=y\n', self.CONFIG)
+        self.assertNotIn('CONFIG_THERMAL_DEFAULT_GOV_POWER_ALLOCATOR=y', self.CONFIG)
+
+    def test_the_module_selects_power_allocator_for_its_zone(self):
+        self.assertIn('#define MU300_GOVERNOR\t\t"power_allocator"', self.DRIVER)
+        self.assertIn('char governor[] = MU300_GOVERNOR;', self.DRIVER)       # set_policy trims it in place
+        probe = self.DRIVER[self.DRIVER.index('devm_thermal_of_zone_register('):]
+        self.assertIn('thermal_zone_device_set_policy(tz, governor)', probe)
+        self.assertIn('.get_trend = mu300_virtual_get_trend', self.DRIVER)    # step_wise's, when it is refused
+
+    def test_patch_0030_exports_the_call(self):
+        patch = next((TOP / 'kernel/patches').glob('0030-*.patch')).read_text()
+        self.assertIn('+EXPORT_SYMBOL_GPL(thermal_zone_device_set_policy);', patch)
+        self.assertIn('+int thermal_zone_device_set_policy(struct thermal_zone_device *tz, char *policy);', patch)
+
+    def test_the_energy_model_comes_from_the_final_opp_table(self):
+        # the cooling devices are power actors only with an energy model of as many states as cooling levels;
+        # DVFS_INIT (which sets the voltages, offset included) runs before the driver registers, so the OPPs the
+        # model is built from at registration are final, and nothing replaces them afterwards
+        self.assertIn('.register_em = cpufreq_register_em_with_opp', self.CPUFREQ)
+        self.assertIn('CPUFREQ_IS_COOLING_DEV', self.CPUFREQ)
+        start = self.CPUFREQ[self.CPUFREQ.index('static int sprd_dvfs_start('):]
+        self.assertLess(start.index('pclusters->dvfs_init(flag)'), start.index('cpufreq_register_driver('))
+        # the vendor's temperature tables (sprd_cpufreq_update_opp_v2 re-adds OPPs) have no caller
+        self.assertEqual(self.CPUFREQ.count('sprd_cpufreq_update_opp_v2('), 1)   # its definition
+        for tree in ('modules', 'port'):
+            for src in (TOP / 'kernel' / tree).rglob('*.c'):
+                self.assertNotIn('->update_opp(', src.read_text(errors='replace'), src)
+
+
 if __name__ == '__main__':
     unittest.main()

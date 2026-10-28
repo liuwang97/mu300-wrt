@@ -23,10 +23,10 @@ Applies to: Linux 7.2.11, OpenWrt 25.12.5 (F50, U30 Air). Checked against the co
 **Workaround**: None needed; the fallback boots.
 
 ## Thermal under full load on 7.2 and on the U30 Air
-**Symptom**: Full-load behaviour of `kernel/modules/mu300_thermal` with the trend fix is measured only on 6.18.56 (mean 87.6 C, peak 92.6 C with the backstop); the U30 Air is not measured.
-**Impact**: Unknown whether trips and handoff match on the U30 Air, whose tree may name other `thmzone-cells`; hot shutdowns have been followed by boots without eMMC (see above).
-**Known**: Mainline has no energy-model governor or cluster hotplug for this SoC; the vendor kernel held the same load at 80-91 C with both.
-**Next**: Load runs on 7.2 and on the U30 Air; decide whether an energy-model governor is needed.
+**Symptom**: Full-load behaviour is measured only with `step_wise` and the module's trend on 6.18.56 (mean 87.6 C, peak 92.6 C with the backstop); `soc-thmzone` runs `power_allocator` (decision 0007), not yet measured under load on either board.
+**Impact**: Unknown whether the stock 3000 mW budget holds 85 C without the backstop, and whether trips and handoff match on the U30 Air; hot shutdowns have been followed by boots without eMMC (see above).
+**Known**: The energy model (EAS on, U30 Air) makes the three cpufreq cooling devices power actors; the vendor kernel held the same load at 80-91 C with an energy-model governor plus cluster hotplug and a leakage model, which mainline lacks.
+**Next**: Load runs on 7.2 on both boards (the zone's `temp`, the `cpufreq-cpu*` cooling states, `scaling_cur_freq`); tune the zone's `sustainable_power` if it settles far under 85 C or passes 90 C.
 **Workaround**: the thermal guard in `openwrt/opt/mu300/bin/mu300-sysd` caps from userspace; keep stress runs capped.
 
 ## SD card slot: hot insert and spontaneous removal (F50)

@@ -11,12 +11,15 @@
  * throttled: userspace (thermal-guard) capped cpufreq itself.
  *
  * This driver binds to that node and reports the hottest of the referenced zones. The thermal core then registers
- * soc-thmzone from the device tree with its trips and polling delays, binds the cpufreq cooling devices through the
- * cooling maps (the maps to the vendor cooling nodes are ignored, nothing registers them), and the step_wise
- * governor throttles the clusters at 85 C; the critical trip powers the device off at 110 C through the thermal
- * core. thermal-guard notices the bound zone and hands frequency control over. The trend
- * step_wise steps by is this driver's (get_trend, mu300_trend.h): with the core's own, reading against reading, the
- * sensors' noise kept the cooling at a step or two and the SoC passed 98 C under a full CPU load.
+ * soc-thmzone from the device tree with its trips, polling delays and sustainable power (3000 mW), binds the cpufreq
+ * cooling devices through the cooling maps (the maps to the vendor cooling nodes are ignored, nothing registers them;
+ * the contributions are the instances' weights), and the driver hands the zone to power_allocator: from the 70 C trip
+ * it splits a power budget between the three clusters by the energy model of the cpufreq driver, its PID controller
+ * holding the zone at the 85 C trip. The critical trip powers the device off at 110 C through the thermal core.
+ * thermal-guard notices the bound zone and hands frequency control over. The default governor, step_wise, keeps the
+ * zone when power_allocator refuses it (a bound cooling device that is no power actor); the trend step_wise steps by
+ * is then this driver's (get_trend, mu300_trend.h): with the core's own, reading against reading, the sensors' noise
+ * kept the cooling at a step or two and the SoC passed 98 C under a full CPU load. power_allocator reads no trend.
  *
  * After kanoqwq's mu300_thermal (github.com/kanoqwq/mu300-linux, branch clean-tf-7.2, commit 5c8c2f9), GPL-2.0.
  *
@@ -40,6 +43,7 @@
 #define MU300_WINDOW		HZ		/* the slope is taken over about this long */
 #define MU300_SPAN		(HZ / 2)	/* the readings of this long are averaged at either end of the window */
 #define MU300_DROP_EVERY	HZ		/* in the throttling band, one step back at most this often */
+#define MU300_GOVERNOR		"power_allocator"	/* soc-thmzone's governor (kernel patch 0030 exports the call) */
 
 struct mu300_virtual {
 	struct mu300_history hist;	/* written by get_temp, read by get_trend: both under the zone's lock */
@@ -105,9 +109,10 @@ static const struct thermal_zone_device_ops mu300_virtual_ops = {
 static int mu300_virtual_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
+	char governor[] = MU300_GOVERNOR;	/* thermal_zone_device_set_policy() trims it in place */
 	struct thermal_zone_device *tz;
 	struct mu300_virtual *v;
-	int count, i;
+	int count, i, ret;
 
 	if (!of_machine_is_compatible("sprd,ums9620"))
 		return -ENODEV;
@@ -138,7 +143,16 @@ static int mu300_virtual_probe(struct platform_device *pdev)
 	tz = devm_thermal_of_zone_register(dev, 0, v, &mu300_virtual_ops);
 	if (IS_ERR(tz))
 		return dev_err_probe(dev, PTR_ERR(tz), "no thermal zone for this sensor in the device tree\n");
-	dev_info(dev, "%s: the hottest of %d zones\n", thermal_zone_device_type(tz), count);
+	/*
+	 * thermal_of gives the zone the default governor; power_allocator binds when every cooling device bound to the
+	 * 85 C trip so far is a power actor, and counts later ones only if they are. Refused, the zone keeps step_wise.
+	 */
+	ret = thermal_zone_device_set_policy(tz, governor);
+	if (ret)
+		dev_warn(dev, "%s: %s refused (%d), step_wise with this driver's trend\n", thermal_zone_device_type(tz),
+			 MU300_GOVERNOR, ret);
+	dev_info(dev, "%s: the hottest of %d zones, %s\n", thermal_zone_device_type(tz), count,
+		 ret ? "step_wise" : MU300_GOVERNOR);
 	return 0;
 }
 

@@ -1,0 +1,41 @@
+thermal: core: export thermal_zone_device_set_policy() to modules
+
+A zone registered from the device tree takes the default governor: thermal_of builds the zone's parameters
+itself, so a sensor driver cannot name a governor for the one zone it serves. On the UMS9620 boards the stock
+zone soc-thmzone (sensor: the out-of-tree mu300_thermal) is the one zone with passive trips, a sustainable
+power and weighted cpufreq cooling maps, which is what power_allocator is made for; the nineteen physical zones
+have no trips and no cooling devices, and power_allocator as the default would only log "sustainable_power will
+be estimated" for each of them. Exported, the sensor driver picks the governor of its own zone right after
+registering it, the same call a write to the zone's sysfs "policy" makes; a governor that refuses to bind leaves
+the zone with its previous one.
+
+--- a/drivers/thermal/thermal_core.c
++++ b/drivers/thermal/thermal_core.c
+@@ -153,6 +153,7 @@
+
+ 	return ret;
+ }
++EXPORT_SYMBOL_GPL(thermal_zone_device_set_policy);
+
+ int thermal_build_list_of_policies(char *buf)
+ {
+--- a/include/linux/thermal.h
++++ b/include/linux/thermal.h
+@@ -313,6 +313,7 @@
+ int thermal_zone_device_enable(struct thermal_zone_device *tz);
+ int thermal_zone_device_disable(struct thermal_zone_device *tz);
+ void thermal_zone_device_critical(struct thermal_zone_device *tz);
++int thermal_zone_device_set_policy(struct thermal_zone_device *tz, char *policy);
+
+ void thermal_pm_prepare(void);
+ void thermal_pm_complete(void);
+@@ -387,6 +388,9 @@
+ static inline int thermal_zone_device_disable(struct thermal_zone_device *tz)
+ { return -ENODEV; }
+
++static inline int thermal_zone_device_set_policy(struct thermal_zone_device *tz, char *policy)
++{ return -ENODEV; }
++
+ static inline void thermal_pm_prepare(void) {}
+ static inline void thermal_pm_complete(void) {}
+ #endif /* CONFIG_THERMAL */
