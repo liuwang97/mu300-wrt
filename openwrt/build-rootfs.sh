@@ -10,7 +10,7 @@
 #   openwrt/src/atd-io/mu300-atd-io (static: holds the modem's AT channels for mu300-modemd)
 # MU300_LUCI_THEME_APK: a local copy of the pinned Aurora .apk (offline builds; else downloaded)
 set -eu
-VER=${MU300_WRT_VER:-25.12.5}
+VER=${MU300_WRT_VER:-25.12.6}
 BASEURL=https://downloads.openwrt.org/releases
 # The base tarball's hash comes from the release's sha256sums, and that file counts only with a valid usign signature
 # by the release series' key, pinned in openwrt/keys/usign/ (OpenWrt's keyring, usign/<number>): 25.12 is signed by

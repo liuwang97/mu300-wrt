@@ -214,6 +214,9 @@ class UcodePolicy(unittest.TestCase):
         uc = (H / 'hostapd-unisoc.uc').read_text()
         self.assertIn("if (module != '/sys/module/sprd_wlan_combo')", uc)
         self.assertIn("config.sae_pwe ??= 0;", uc)
+        # the firmware's group and no beacon protection, before the generator's defaults
+        self.assertIn("config.sae_groups = '19';", uc)
+        self.assertIn("config.beacon_prot ??= 0;", uc)
 
 
 # stand-ins of the files patch-hostapd-sae.py edits: the anchor it looks for, once each
@@ -230,7 +233,7 @@ WIFI = {
                                    '\t[ -n "$spp_amsdu" ] && append bss_conf "spp_amsdu=$spp_amsdu" "$N"\n}\n',
     'files-ucode/usr/share/ucode/wifi/ap.uc': "import * as fs from 'fs';\nimport * as iface from 'wifi.iface';\n\n"
                                               "export function generate(interface, data, config) {\n"
-                                              "\tconfig.wmm_enabled = 1;\n\tiface_auth_type(config);\n}\n",
+                                              "\tconfig.wmm_enabled = 1;\n\tiface_auth_type(config, data.config.band);\n}\n",
 }
 RELOAD = {'hostapd.uc': 'function bss_reload() {\n\tif (is_equal(old_config.bss, config.bss))\n\t\treturn true;\n}\n'}
 
@@ -286,7 +289,7 @@ class PatchScript(unittest.TestCase):
             self.assertIn('\n\tunisoc_sae_bss_options\n', sh)
             ap = (d / 'files-ucode/usr/share/ucode/wifi/ap.uc').read_text()
             self.assertIn("import { configure as unisoc_sae_config } from 'wifi.unisoc-sae';", ap)
-            self.assertLess(ap.index('unisoc_sae_config(config, fs.realpath('), ap.index('\tiface_auth_type(config);'))
+            self.assertLess(ap.index('unisoc_sae_config(config, fs.realpath('), ap.index('\tiface_auth_type(config, data.config.band);'))
             # SAE only: U-APSD and WMM as OpenWrt has them
             self.assertIn('\tset_default uapsd 1\n', sh)
             self.assertNotIn('uapsd', ap)
@@ -453,7 +456,7 @@ class SaeWifiScriptsInOpenWrt(unittest.TestCase):
             self.assertEqual((c['unisoc_sae'], c['ieee80211w'], c['sae_pwe']), ('1', pmf, '0'), n)
             self.assertEqual(set(c['wpa_key_mgmt'].split()), akm, n)
             self.assertNotIn('rsn_override_key_mgmt', c, n)
-            self.assertNotIn('sae_groups', c, n)
+            self.assertEqual((c.get('sae_groups'), c.get('beacon_prot', '0')), ('19', '0'), n)
             # another driver: OpenWrt's own SAE
             c = conf(other, n)
             self.assertNotIn('unisoc_sae', c, n)

@@ -13,7 +13,7 @@ channels (52-64, 100-144); until the driver detects radar, a DFS channel becomes
 ## Consequences
 - WPA3 relies on the record being the firmware's: open issue "The firmware SAE PMK record is not proven to come from
   the firmware". The mid channels are the open issue "The hotspot has no 5 GHz mid channels".
-- hostapd, hostapd-common and wifi-scripts are rebuilt from OpenWrt 25.12.5 with the bridge (`openwrt/hostapd/`).
+- hostapd, hostapd-common and wifi-scripts are rebuilt from OpenWrt 25.12.6 with the bridge (`openwrt/hostapd/`).
 
 ## Revisit when
 A crafted client joins without the password, or the driver detects radar.

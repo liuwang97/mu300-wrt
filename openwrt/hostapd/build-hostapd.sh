@@ -1,5 +1,5 @@
 #!/bin/sh
-# The hotspot's WPA3-SAE: wpad-basic-mbedtls, hostapd-common and wifi-scripts of OpenWrt 25.12.5, rebuilt with
+# The hotspot's WPA3-SAE: wpad-basic-mbedtls, hostapd-common and wifi-scripts of OpenWrt 25.12.6, rebuilt with
 # patch-hostapd-sae.py (the SC2355 firmware does SAE; hostapd takes the PMK it hands back and runs the four-way
 # handshake). The three APKs go together (release r1001): the image installs them instead of the feed's.
 #   openwrt/hostapd/build-hostapd.sh [OUT]     OUT: default work/wifi-sae in the checkout
@@ -10,9 +10,9 @@
 set -eu
 TOP=$(cd "$(dirname "$0")/../.." && pwd)
 H=$TOP/openwrt/hostapd
-VER=${MU300_WRT_VER:-25.12.5}
-[ "$VER" = 25.12.5 ] || {
-    echo "SAE hostapd: the source and build checks are for OpenWrt 25.12.5, not $VER" >&2
+VER=${MU300_WRT_VER:-25.12.6}
+[ "$VER" = 25.12.6 ] || {
+    echo "SAE hostapd: the source and build checks are for OpenWrt 25.12.6, not $VER" >&2
     exit 1
 }
 OUT=${1:-$TOP/work/wifi-sae}

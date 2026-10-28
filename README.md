@@ -9,7 +9,7 @@ narrowed to one kernel, one system and two boards:
 | | here | not here (any more) |
 |---|---|---|
 | kernel | mainline Linux 7.2 | vendor 5.4, 6.18, 7.3 |
-| system | OpenWrt 25.12.5 + LuCI panel (`openwrt-luci`) | Ubuntu, Arch, ImmortalWrt, plain OpenWrt |
+| system | OpenWrt 25.12.6 + LuCI panel (`openwrt-luci`) | Ubuntu, Arch, ImmortalWrt, plain OpenWrt |
 | boards | F50, U30 Air | V50 |
 | installing | `mu300-update` on a device that runs Linux | install.sh/ps1/cmd, GUI, web installer, Magisk zips |
 | LuCI languages | English, Chinese (zh_Hans) | the other 29 |

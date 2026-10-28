@@ -1,6 +1,6 @@
 # Kernel ↔ OpenWrt contract
 
-Contract version: **1** (the bundle's `contract` file). Applies to Linux 7.2.11 and OpenWrt 25.12.5.
+Contract version: **1** (the bundle's `contract` file). Applies to Linux 7.2.11 and OpenWrt 25.12.6.
 
 This is the only document that both trees depend on. `kernel/` never reads a file under `openwrt/`, and `openwrt/`
 never reads a file under `kernel/`: it uses the bundle the kernel tree builds (a local file, or a release asset

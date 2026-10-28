@@ -1,6 +1,6 @@
 # openwrt/
 
-The root filesystem: OpenWrt 25.12.5 with the MU300 control panel (system name `openwrt-luci`), for the ZTE F50 and
+The root filesystem: OpenWrt 25.12.6 with the MU300 control panel (system name `openwrt-luci`), for the ZTE F50 and
 the ZTE U30 Air. Read the root `CLAUDE.md` first. This tree never reads a file outside itself except the kernel
 bundle: what it may assume about the kernel and the initramfs is in `docs/contract.md`, and nowhere else.
 

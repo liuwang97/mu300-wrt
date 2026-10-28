@@ -6,7 +6,7 @@ fails and the AP stays down). A DFS channel becomes 36 with its width kept, or f
   auto, and a DFS channel set in LuCI rewritten at boot;
 * `openwrt/patches/wifi-scripts-no-dfs.patch`: how the build applies it, that it applies with --fuzz=0 to both layouts
   of hostapd.uc (the feed's and the SAE build's), and - with MU300_WRT_IMAGE naming an OpenWrt 25.12 docker image
-  (e.g. mu300-openwrt-base:25.12.5, as openwrt/build-rootfs.sh imports it) - the hostapd configuration the patched
+  (e.g. mu300-openwrt-base:25.12.6, as openwrt/build-rootfs.sh imports it) - the hostapd configuration the patched
   wifi-scripts generate for a fake wiphy with and without radar detection; with MU300_WIFI_SAE_APKS (a directory
   openwrt/hostapd/build-hostapd.sh wrote) also with the SAE build's wifi-scripts, which the image has.
 """
@@ -241,8 +241,8 @@ class OpenWrt(ShellTest):
             self.assertEqual(self.batch(), '')
 
 
-# The two layouts of hostapd.uc the patch meets, cut to what its hunks touch: the SAE build's (OpenWrt v25.12.5, which
-# the image installs) and the feed's (one line more in device_capabilities()).
+# The two layouts of hostapd.uc the patch meets, cut to what its hunks touch: OpenWrt v25.12.5's and the one with one
+# line more in device_capabilities() (v25.12.6, whose SAE build the image installs, and the feed's).
 HOSTAPD_UC = """'use strict';
 
 import {
