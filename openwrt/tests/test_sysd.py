@@ -720,6 +720,14 @@ class ButtonsUnderSysd(ButtonsCases, ShellTest):
     def setUp(self):
         super().setUp()
         self.shells = [sysd_shell(self.tmp)]
+        # the hotspot toggle's library (opt/mu300/lib/hotspot-ap.sh, tested in test_hotspot_ap): a stand-in that
+        # runs the stubbed wifi command the cases record
+        self.hotspot_lib = self.tmp / 'hotspot-ap.sh'
+        self.hotspot_lib.write_text('hotspot_ap_set() { case $1 in on) wifi up ;; off) wifi down ;; esac; echo pending; }\n')
+
+    def env(self, **extra):
+        extra.setdefault('MU300_HOTSPOT_AP_LIB', self.hotspot_lib)
+        return super().env(**extra)
 
 
 @unittest.skipUnless(OK, NEEDS)

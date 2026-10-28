@@ -21,6 +21,7 @@ USB_BUS=${MU300_USB_BUS:-/sys/bus/usb/devices}
 RESCAN_MARKER=${MU300_USB_RESCAN_MARKER:-/run/unisoc-usb-host-rescan-done}
 NETWORK_SERVICE=${MU300_USB_NETWORK_SERVICE:-/etc/init.d/network}
 IP=${MU300_USB_IP_BIN:-ip}
+GADGET_DIR=${MU300_USB_GADGET_DIR:-/sys/kernel/config/usb_gadget}
 get() { uci -q get "$CFG.$1" 2>/dev/null || true; }
 put() { uci -q set "$CFG.$1=$2"; }
 error() { printf '{"ok":0,"error":%s}\n' "$(json_str "$1")"; exit 1; }
@@ -60,6 +61,21 @@ sync_boot_file() {
     chmod 600 "$tmp"
     mv "$tmp" "$BOOT_FILE" || error 'Cannot save USB boot settings'
 }
+# bound_function: the network function the USB gadget has bound right now (configfs, kanoqwq's db4e5d2): ncm, ecm,
+# rndis, mixed (more than one kind), or none (no gadget bound to a controller, or none of these functions)
+bound_function() {
+    found=
+    for gadget in "$GADGET_DIR"/*; do
+        [ -n "$(cat "$gadget/UDC" 2>/dev/null)" ] || continue
+        for link in "$gadget"/configs/*/*; do
+            [ -L "$link" ] || continue
+            f=$(readlink "$link"); f=${f##*/}
+            case $f in ncm.*) f=ncm ;; ecm.*) f=ecm ;; rndis.*) f=rndis ;; *) continue ;; esac
+            if [ -z "$found" ]; then found=$f; elif [ "$found" != "$f" ]; then found=mixed; fi
+        done
+    done
+    echo "${found:-none}"
+}
 usb_net() {
     name=$1
     # an interface name (IFNAMSIZ: 15 characters) that is never an option, "."
@@ -67,6 +83,10 @@ usb_net() {
     case $name in ''|[!a-zA-Z0-9]*|*[!a-zA-Z0-9_.:-]*) return 1 ;; esac
     [ ${#name} -le 15 ] || return 1
     [ -d "$NET_CLASS/$name" ] || return 1
+    # Ethernet only (ARPHRD_ETHER): a USB Wi-Fi stick is an Ethernet-type device too, so wireless ones are refused by
+    # their own markers (kanoqwq's db4e5d2)
+    [ "$(cat "$NET_CLASS/$name/type" 2>/dev/null)" = 1 ] || return 1
+    [ ! -e "$NET_CLASS/$name/wireless" ] && [ ! -e "$NET_CLASS/$name/phy80211" ] || return 1
     sub=$(readlink -f "$NET_CLASS/$name/device/subsystem" 2>/dev/null)
     # Configfs gadget interfaces (usb0/rndis0) are not host-side USB NICs.
     # Their parent belongs to the gadget bus, even if their names contain usb.
@@ -86,6 +106,30 @@ bridge_has() {
     ports=$(uci -q get "$section.ports" 2>/dev/null)
     case " $ports " in *" $name "*) return 0 ;; esac
     return 1
+}
+# owner NAME [LAN_SECTION]: who else has this interface, or nothing (kanoqwq's db4e5d2): a bridge other than the LAN
+# one it is a port of now, a network section whose device, ifname or ports name it (or a VLAN of it: NAME.10) - other
+# than the LAN bridge's own ports - or an interface netifd runs on it (network.interface dump). Status 1 when netifd
+# cannot be asked: then nobody can say it is free.
+owner() {
+    o_name=$1; o_lan=${2:-}
+    lan=$(safe_iface "$(uci_get lan_device)" br-lan)
+    master=
+    [ ! -L "$NET_CLASS/$o_name/master" ] || master=$(readlink -f "$NET_CLASS/$o_name/master" 2>/dev/null)
+    master=${master##*/}
+    if [ -n "$master" ] && [ "$master" != "$lan" ]; then echo "$master"; return 0; fi
+    o=$(uci -q show network | awk -v nic="$o_name" -v lan="$o_lan" '
+        /^network\.[^.=]+\.(device|ifname|ports)=/ {
+            key = $0; sub(/=.*/, "", key); sec = key; sub(/\.[^.]+$/, "", sec)
+            if (key == lan ".ports") next
+            v = $0; sub(/^[^=]*=/, "", v); gsub(/\047/, "", v)
+            n = split(v, f, /[ \t]+/)
+            for (i = 1; i <= n; i++) if (f[i] == nic || index(f[i], nic ".") == 1) { sub(/^network\./, "", sec); print sec; exit }
+        }')
+    [ -z "$o" ] || { safe_iface "$o" network; return 0; }
+    dump=$(ubus -t 2 call network.interface dump 2>/dev/null) && [ -n "$dump" ] || return 1
+    printf '%s' "$dump" | jsonfilter -e '@.interface[*].device' -e '@.interface[*].l3_device' 2>/dev/null |
+        awk -v nic="$o_name" '$0 == nic || index($0, nic ".") == 1 { print "netifd"; exit }'
 }
 sync_host_nic() {
     name=$1
@@ -122,8 +166,11 @@ case ${1:-} in
         if [ "$role" = host ] || [ "$role_auto" = 1 ]; then available=0; fi
         host_supported=1
         [ -e "$ROLE_FILE" ] || host_supported=0
-        printf '{"ok":1,"role":%s,"role_auto":%s,"host_supported":%s,"net_mode":"%s","net_scope":"%s","net_auto":%s,"net_available":%s}\n' \
-            "$(json_str "$role")" "$role_auto" "$host_supported" "$mode" "$scope" "$net_auto" "$available"
+        # what the gadget runs now, beside what is saved for the next boot (none in host role: no gadget)
+        current=none
+        [ "$role" = host ] || current=$(bound_function)
+        printf '{"ok":1,"role":%s,"role_auto":%s,"host_supported":%s,"net_mode":"%s","net_scope":"%s","net_auto":%s,"net_available":%s,"net_current":"%s"}\n' \
+            "$(json_str "$role")" "$role_auto" "$host_supported" "$mode" "$scope" "$net_auto" "$available" "$current"
         ;;
     set-role)
         role=${2:-}; auto=${3:-}
@@ -234,7 +281,6 @@ case ${1:-} in
             [ -d "$dir" ] || continue
             name=${dir##*/}
             usb_net "$name" || continue
-            "$IP" link set dev "$name" up >/dev/null 2>&1 || true
             [ "$first" = 1 ] || printf ','
             first=0
             joined=0
@@ -242,8 +288,16 @@ case ${1:-} in
                 joined=1
                 sync_host_nic "$name" || true
             fi
+            # an adapter another network has is listed, but not brought up or offered (unknown: netifd did not answer)
+            eligible=1
+            if [ "$joined" = 0 ]; then
+                if by=$(owner "$name" "$section"); then [ -z "$by" ] || eligible=0
+                else by=unknown; eligible=0; fi
+            else by=; fi
+            [ "$eligible" = 0 ] || "$IP" link set dev "$name" up >/dev/null 2>&1 || true
             carrier=$(cat "$dir/carrier" 2>/dev/null); case $carrier in 1) ;; *) carrier=0 ;; esac
-            printf '{"name":%s,"carrier":%s,"in_lan":%s}' "$(json_str "$name")" "$carrier" "$joined"
+            printf '{"name":%s,"carrier":%s,"in_lan":%s,"eligible":%s,"owner":%s}' "$(json_str "$name")" "$carrier" \
+                "$joined" "$eligible" "$(json_str "$by")"
         done
         printf ']}\n'
         ;;
@@ -253,6 +307,12 @@ case ${1:-} in
         usb_net "$name" || error 'Not a USB network interface'
         section=$(bridge_section)
         [ -n "$section" ] || error 'LAN bridge device section was not found'
+        if ! bridge_has "$section" "$name"; then
+            by=$(owner "$name" "$section") || error 'Could not determine adapter ownership; try again later'
+            [ -z "$by" ] || error 'Adapter belongs to another network and cannot join LAN'
+            # uncommitted network changes (uci's own) would be committed with this port
+            [ -z "$(uci -q changes network)" ] || error 'The network settings have unsaved changes: save or revert them first'
+        fi
         "$IP" link set dev "$name" up || error 'Cannot bring USB network interface up'
         if ! bridge_has "$section" "$name"; then
             uci -q add_list "$section.ports=$name" || error 'Cannot add interface to LAN bridge'

@@ -5,6 +5,7 @@ import time
 import unittest
 
 from helpers import ShellTest, TOP
+from test_mu300dash_security import JSONFILTER
 
 APP = TOP / 'openwrt/luci-app-mu300/root'
 USB = APP / 'usr/libexec/unisoc-modem/device-usb'
@@ -34,7 +35,8 @@ case "$cmd" in
     esac ;;
   set)
     key=${1%%=*}; val=${1#*=}; printf '%s' "$val" > "$STUBLOG/uci.${key##*.}" ;;
-  show) [ "$1" = network ] && echo "network.@device[0].name='br-lan'" ;;
+  show) [ "$1" = network ] && { echo "network.@device[0].name='br-lan'"; cat "$STUBLOG/network.uci" 2>/dev/null; } ;;
+  changes) [ "$1" = network ] && cat "$STUBLOG/network.changes" 2>/dev/null ;;
   add_list) printf '%s' "${1##*=}" > "$STUBLOG/ports" ;;
   commit) echo "$1" >> "$STUBLOG/commits" ;;
 esac
@@ -49,6 +51,11 @@ esac
         reload_script.chmod(0o755)
         self.reload_script = reload_script
         self.stub('ip', 'printf "%s\\n" "$*" >> "$STUBLOG/ip-calls"')
+        # netifd's interfaces (network.interface dump): $STUBLOG/dump, or none; ubus.fail: netifd does not answer
+        (self.stubs / 'jsonfilter.py').write_text(JSONFILTER)
+        self.stub('jsonfilter', f'exec python3 "{self.stubs}/jsonfilter.py" "$@"')
+        self.stub('ubus', '[ ! -e "$STUBLOG/ubus.fail" ] || exit 4; '
+                          'if [ -f "$STUBLOG/dump" ]; then cat "$STUBLOG/dump"; else echo \'{"interface":[]}\'; fi')
 
     def call_usb(self, shell, *args, **env):
         base = dict(MU300_USB_ROLE_FILE=self.role,
@@ -198,9 +205,11 @@ esac
         nic.mkdir()
         (nic / 'device').symlink_to(usbdev, target_is_directory=True)
         (nic / 'carrier').write_text('1\n')
+        (nic / 'type').write_text('1\n')
         other = self.net_class / 'sipa_eth0'
         other.mkdir()
         (other / 'carrier').write_text('1\n')
+        (other / 'type').write_text('1\n')
         gadget = self.net_class / 'rndis0'
         gadget.mkdir()
         gadget_parent = self.tmp / 'gadget.0'
@@ -236,6 +245,7 @@ esac
         nic = self.net_class / 'eth0'
         nic.mkdir()
         (nic / 'device').symlink_to(usbdev, target_is_directory=True)
+        (nic / 'type').write_text('1\n')
         (self.tmp / 'ports').write_text('usb0 eth0')
         for shell in self.each_shell():
             (self.tmp / 'ip-calls').unlink(missing_ok=True)
@@ -246,6 +256,107 @@ esac
             self.assertIn('link set dev eth0 up', calls)
             self.assertIn('link set dev eth0 master br-lan', calls)
             self.assertFalse((self.tmp / 'reloads').exists())
+
+    # --- kanoqwq's db4e5d2: the function bound now, and only free Ethernet adapters join the LAN
+
+    def nic(self, name, kind='1', wireless=False):
+        usbdev = self.tmp / 'usb1' / f'1-{name}'
+        usbdev.mkdir(parents=True, exist_ok=True)
+        d = self.net_class / name
+        d.mkdir()
+        (d / 'device').symlink_to(usbdev, target_is_directory=True)
+        (d / 'carrier').write_text('0\n')
+        (d / 'type').write_text(kind + '\n')
+        if wireless:
+            (d / 'wireless').mkdir()
+        return d
+
+    def test_get_reports_the_function_bound_now(self):
+        gadgets = self.tmp / 'usb_gadget'
+        funcs = gadgets / 'g1' / 'functions'
+        conf = gadgets / 'g1' / 'configs' / 'b.1'
+        for f in ('ncm.usb0', 'rndis.usb0', 'acm.gs0'):
+            (funcs / f).mkdir(parents=True)
+        conf.mkdir(parents=True)
+        (conf / 'f1').symlink_to(funcs / 'acm.gs0', target_is_directory=True)
+        (conf / 'f2').symlink_to(funcs / 'ncm.usb0', target_is_directory=True)
+        udc = gadgets / 'g1' / 'UDC'
+        for shell in self.each_shell():
+            self.reset()
+            udc.write_text('25100000.dwc3\n')
+            get = lambda: self.reply(self.call_usb(shell, 'get', MU300_USB_GADGET_DIR=gadgets))
+            self.assertEqual(get()['net_current'], 'ncm')
+            # the saved mode is the next boot's; what runs now is the gadget's own
+            self.call_usb(shell, 'set-net', 'rndis', 'permanent', '1')
+            r = get()
+            self.assertEqual((r['net_mode'], r['net_current']), ('rndis', 'ncm'))
+            (conf / 'f3').symlink_to(funcs / 'rndis.usb0', target_is_directory=True)
+            self.assertEqual(get()['net_current'], 'mixed')
+            (conf / 'f3').unlink()
+            udc.write_text('\n')   # not bound to the controller
+            self.assertEqual(get()['net_current'], 'none')
+            udc.write_text('25100000.dwc3\n')
+            self.role.write_text('host\n')
+            self.assertEqual(get()['net_current'], 'none')
+
+    def test_only_ethernet_adapters_are_usb_nics(self):
+        self.nic('eth0')
+        self.nic('wlan1', wireless=True)
+        self.nic('wwan0', kind='65534')
+        self.role.write_text('host\n')
+        for shell in self.each_shell():
+            listed = self.reply(self.call_usb(shell, 'net-list'))
+            self.assertEqual([d['name'] for d in listed['devices']], ['eth0'])
+            for name in ('wlan1', 'wwan0'):
+                r = json.loads(self.call_usb(shell, 'net-add', name).stdout)
+                self.assertEqual(r, {'ok': 0, 'error': 'Not a USB network interface'}, name)
+            self.assertFalse((self.tmp / 'ports').exists())
+
+    def test_an_adapter_another_network_has_is_not_offered(self):
+        self.nic('eth1')
+        self.role.write_text('host\n')
+        for shell in self.each_shell():
+            for setup, owner in (
+                    (lambda: (self.tmp / "network.uci").write_text("network.wan2.device='eth1'\n"), 'wan2'),
+                    (lambda: (self.tmp / "network.uci").write_text("network.vlan10.ifname='eth1.10'\n"), 'vlan10'),
+                    (lambda: (self.tmp / 'dump').write_text(
+                        '{"interface":[{"interface":"x","device":"eth1","l3_device":"eth1"}]}'), 'netifd')):
+                for f in ("network.uci", "dump", "ports", "reloads", "ip-calls"):
+                    (self.tmp / f).unlink(missing_ok=True)
+                setup()
+                listed = self.reply(self.call_usb(shell, 'net-list'))
+                d = listed['devices'][0]
+                self.assertEqual((d['name'], d['eligible'], d['owner'], d['in_lan']), ('eth1', 0, owner, 0), owner)
+                ipc = (self.tmp / 'ip-calls').read_text() if (self.tmp / 'ip-calls').exists() else ''
+                self.assertNotIn('eth1 up', ipc)   # a scan does not take it
+                r = json.loads(self.call_usb(shell, 'net-add', 'eth1').stdout)
+                self.assertEqual(r, {'ok': 0, 'error': 'Adapter belongs to another network and cannot join LAN'})
+                self.assertFalse((self.tmp / 'ports').exists())
+                self.assertFalse((self.tmp / 'reloads').exists())
+            # netifd does not answer: nobody can say it is free
+            for f in ("network.uci", "dump"):
+                (self.tmp / f).unlink(missing_ok=True)
+            (self.tmp / 'ubus.fail').write_text('')
+            r = json.loads(self.call_usb(shell, 'net-add', 'eth1').stdout)
+            self.assertEqual(r, {'ok': 0, 'error': 'Could not determine adapter ownership; try again later'})
+            self.assertEqual(self.reply(self.call_usb(shell, 'net-list'))['devices'][0]['eligible'], 0)
+            (self.tmp / 'ubus.fail').unlink()
+            # unsaved network changes would be committed with the port
+            (self.tmp / 'network.changes').write_text("network.lan.ipaddr='10.0.0.1'\n")
+            r = json.loads(self.call_usb(shell, 'net-add', 'eth1').stdout)
+            self.assertEqual(r['ok'], 0)
+            self.assertFalse((self.tmp / 'ports').exists())
+            (self.tmp / 'network.changes').unlink()
+            # free: it joins
+            r = json.loads(self.call_usb(shell, 'net-add', 'eth1').stdout)
+            self.assertEqual(r, {'ok': 1})
+            self.assertEqual((self.tmp / 'ports').read_text(), 'eth1')
+
+    def test_role_command_keeps_safe_program(self):
+        # kanoqwq's version read usb.role_command straight from uci; ours only runs a program of the platform directory
+        src = USB.read_text()
+        self.assertIn('safe_program "$(get role_command)"', src)
+        self.assertNotIn('cmd=$(get role_command)', src)
 
     def test_missing_host_nic_triggers_one_hub_rescan(self):
         hub = self.usb_bus / '1-1'

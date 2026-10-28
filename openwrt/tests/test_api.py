@@ -1007,7 +1007,7 @@ class ModemTools(ApiCase):
 
     def setUp(self):
         super().setUp()
-        for name in ('mu300-ttl', 'mu300-power', 'mu300-cpu', 'mu300-zram', 'mu300-led', 'mu300-ussd', 'mu300-user-packages'):
+        for name in ('mu300-ttl', 'mu300-tcp', 'mu300-power', 'mu300-cpu', 'mu300-zram', 'mu300-led', 'mu300-ussd', 'mu300-user-packages'):
             self.tool(name)
         (self.stubs / 'docker').write_text(RECORD)
         (self.stubs / 'docker').chmod(0o755)
@@ -1055,6 +1055,22 @@ class ModemTools(ApiCase):
             self.assertEqual(self.calls('mu300-ttl')[-1], ['mu300-ttl', 'off'])
             for bad in ('0', '256', '064', '-1', 'on'):
                 self.refused(shell, 'ttl.set', {'value': bad}, 'bad-value', 'value')
+
+    def test_tcp(self):
+        # mu300-tcp (kanoqwq's b9f71e72): what the kernel offers of cubic and bbr, nothing else; the value checked
+        for shell in self.each_shell():
+            self.out('mu300-tcp', 'SAVED=bbr\nCURRENT=bbr\nQDISC=fq\nOFFERED=cubic bbr\nSUPPORTED=1\nDEFAULT=cubic\n')
+            self.assertEqual(self.ok(shell, 'tcp.get'), {'ok': 1, 'supported': True, 'saved': 'bbr', 'current': 'bbr',
+                                                         'qdisc': 'fq', 'default': 'cubic', 'offered': ['cubic', 'bbr']})
+            # a kernel without BBR: none offered; odd words are not passed on
+            self.out('mu300-tcp', 'SAVED=reno\nCURRENT=cu"bic\nQDISC=pfifo_fast\nOFFERED=cubic reno\nSUPPORTED=1\nDEFAULT=\n')
+            self.assertEqual(self.ok(shell, 'tcp.get'), {'ok': 1, 'supported': True, 'saved': 'default', 'current': '',
+                                                         'qdisc': 'pfifo_fast', 'default': '', 'offered': ['cubic']})
+            for v in ('bbr', 'cubic', 'default'):
+                self.ok(shell, 'tcp.set', {'value': v})
+                self.assertEqual(self.calls('mu300-tcp')[-1], ['mu300-tcp', 'set', v])
+            for bad in ('reno', 'BBR', '-x', 'bbr;reboot', ''):
+                self.refused(shell, 'tcp.set', {'value': bad}, 'bad-value', 'value')
 
     def test_traffic(self):
         for shell in self.each_shell():

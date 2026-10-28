@@ -28,6 +28,9 @@
 #                     the one before: no values, no replies (see run_m).
 #   power_get, power_set  the power profiles (unisoc-modem/power, mu300-power)
 #   ttl_get, ttl_set value  the TTL of mobile data (unisoc-modem/ttl, mu300-ttl); value off or 1-255
+#   tcp_get, tcp_set value  the TCP congestion control of the device's own connections (unisoc-modem/tcp, mu300-tcp);
+#                     value default|cubic|bbr
+#   boot_get          the dual boot's state, read only (unisoc-modem/boot, mu300-next-boot status)
 #   traffic_get, traffic_set op value  the mobile data count, its billing cycle and cap (unisoc-modem/traffic,
 #                     mu300-traffic)
 #   forward_get, forward_set ..., forward_test, forward_log_clear  SMS forwarding (unisoc-modem/forward,
@@ -827,6 +830,20 @@ m_ttl_set() {
     reply_obj "$("$TTLA" set "$value" 2>/dev/null)" 'The TTL adapter gave no valid reply'
 }
 
+# ------------------------------------------------------------ TCP, boot
+# The Device page's TCP congestion control card: mu300-tcp through the adapter, which checks the value again
+TCPA=${MU300_TCP_ADAPTER:-$DASH/tcp}
+m_tcp_get() { reply_obj "$("$TCPA" get 2>/dev/null)" 'The TCP adapter gave no valid reply'; }
+m_tcp_set() {
+    local value
+    inp '@.value'; value=$V
+    allowed "$value" '(default|cubic|bbr)' || { refuse 'Invalid congestion control'; return; }
+    reply_obj "$("$TCPA" set "$value" 2>/dev/null)" 'The TCP adapter gave no valid reply'
+}
+# The dashboard's boot card: mu300-next-boot status, read only (the changes are act os ...)
+BOOTA=${MU300_BOOT_ADAPTER:-$DASH/boot}
+m_boot_get() { reply_obj "$("$BOOTA" get 2>/dev/null)" 'The boot adapter gave no valid reply'; }
+
 # --------------------------------------------------------------- data usage
 # The Data usage page: mu300-traffic through the adapter, which checks every value again. Sizes are whole bytes.
 TRAFA=${MU300_TRAFFIC_ADAPTER:-$DASH/traffic}
@@ -998,6 +1015,9 @@ do_list() {
 	"simcard_set": { "kind": "String", "slot": "String", "state": "String" },
 	"ttl_get": { },
 	"ttl_set": { "value": "String" },
+	"tcp_get": { },
+	"tcp_set": { "value": "String" },
+	"boot_get": { },
 	"traffic_get": { },
 	"traffic_set": { "op": "String", "value": "String" },
 	"forward_get": { },
@@ -1282,6 +1302,9 @@ call)
         simcard_set)  run_m simcard_set  m_simcard_set ;;
         ttl_get)      run_m ttl_get      m_ttl_get ;;
         ttl_set)      run_m ttl_set      m_ttl_set ;;
+        tcp_get)      run_m tcp_get      m_tcp_get ;;
+        tcp_set)      run_m tcp_set      m_tcp_set ;;
+        boot_get)     run_m boot_get     m_boot_get ;;
         traffic_get)  run_m traffic_get  m_traffic_get ;;
         traffic_set)  run_m traffic_set  m_traffic_set ;;
         forward_get)  run_m forward_get  m_forward_get ;;

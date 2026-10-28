@@ -1,0 +1,49 @@
+#!/bin/sh
+# TCP adapter: mu300-tcp for the Device page's congestion control card (mu300dash tcp_get, tcp_set). One JSON object.
+#   tcp get            {"ok":1,"supported":0|1,"saved":"default"|"cubic"|"bbr","current":S,"qdisc":S,"default":S|null,
+#                       "offered":[...]}: what the kernel offers of cubic and bbr
+#   tcp set ALGO       default, cubic or bbr, checked here again: {"ok":1} or {"ok":0,"error":...,"detail":...}
+set -u
+export PATH="$PATH:/opt/mu300/bin:/usr/sbin:/sbin"
+LIB=${0%/*}/../../share/unisoc-modem/lib.sh
+[ -f "$LIB" ] || LIB=/usr/share/unisoc-modem/lib.sh
+. "$LIB"
+
+TCP_CMD=${MU300_TCP_CMD:-/opt/mu300/bin/mu300-tcp}
+
+error() { printf '{"ok":0,"error":%s}\n' "$(json_str "$1")"; exit 0; }
+# word VALUE: a congestion control or queue name as the kernel spells them, else nothing
+word() { case $1 in [a-z]*) case $1 in *[!a-z0-9_]*) ;; *) [ "${#1}" -gt 32 ] || printf '%s' "$1" ;; esac ;; esac; }
+val() { printf '%s\n' "$st" | sed -n "s/^$1=//p" | head -n1; }
+
+do_get() {
+    [ -x "$TCP_CMD" ] || error 'TCP congestion control is not provided by this platform'
+    st=$("$TCP_CMD" state 2>/dev/null) || error 'The TCP settings could not be read'
+    saved=$(val SAVED); case $saved in cubic|bbr) ;; *) saved=default ;; esac
+    sup=$(val SUPPORTED); case $sup in 1) ;; *) sup=0 ;; esac
+    list= sep=
+    for a in $(val OFFERED); do
+        case $a in cubic|bbr) list="$list$sep\"$a\""; sep=, ;; esac
+    done
+    def=$(word "$(val DEFAULT)")
+    printf '{"ok":1,"supported":%s,"saved":"%s","current":%s,"qdisc":%s,"default":%s,"offered":[%s]}\n' "$sup" "$saved" \
+        "$(json_str "$(word "$(val CURRENT)")")" "$(json_str "$(word "$(val QDISC)")")" \
+        "$( [ -n "$def" ] && json_str "$def" || echo null)" "$list"
+}
+
+do_set() {
+    case ${1:-} in default|cubic|bbr) ;; *) error 'Invalid congestion control' ;; esac
+    [ -x "$TCP_CMD" ] || error 'TCP congestion control is not provided by this platform'
+    if out=$("$TCP_CMD" set "$1" 2>&1 >/dev/null); then
+        echo '{"ok":1}'
+    else
+        printf '{"ok":0,"error":"The kernel did not accept the network settings","detail":%s}\n' \
+            "$(json_str "$(printf '%s\n' "$out" | tail -n1)")"
+    fi
+}
+
+case ${1:-} in
+    get) do_get ;;
+    set) do_set "${2:-}" ;;
+    *) error 'Unknown op' ;;
+esac

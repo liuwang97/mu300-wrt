@@ -4216,6 +4216,21 @@ class NextBoot(ShellTest):
         self.assertEqual(self.nb('android').returncode, 0)
         self.assertEqual(self.bc(), android_b)
 
+    def test_status_says_whether_boot_control_can_be_written(self):
+        """The panel's boot card (unisoc-modem/boot, kanoqwq's f6b0668d) reads this line."""
+        android_a, linux_b, android_b, linux_a = self.blocks
+        line = lambda: [l for l in self.nb('status').stdout.splitlines() if l.startswith('boot control:')]
+        (self.run_dir / 'linux-slot').write_text('b\n')
+        self.assertEqual(line(), ['boot control: not writable'])            # no blocks published
+        (self.run_dir / 'misc-bc-android.bin').write_bytes(android_a)
+        (self.run_dir / 'misc-bc-linux-trial.bin').write_bytes(linux_b)
+        self.assertEqual(line(), ['boot control: writable'])
+        (self.run_dir / 'misc-bc-linux-trial.bin').write_bytes(linux_a)       # the pair of another slot
+        self.assertEqual(line(), ['boot control: not writable'])
+        (self.run_dir / 'misc-bc-linux-trial.bin').write_bytes(linux_b)
+        (self.run_dir / 'misc-dev').write_text(str(self.tmp / 'no-misc'))
+        self.assertEqual(line(), ['boot control: not writable'])
+
 
 class EarlyRecorder(ShellTest):
     """early-recorder's choice of boot partition: the Linux slot's, never Android's."""

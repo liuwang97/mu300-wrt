@@ -167,6 +167,12 @@ arm_linux() {  # arm_linux [trial]: locked when that is wanted, unless this is t
     fi
 }
 
+# bc_writable: this slot's pair of boot control blocks is there and matches it, and misc can be written - what every
+# command but status needs (the panel's boot card shows it)
+bc_writable() {
+    [ -s "$BC_A" ] && [ -s "$BC_B" ] && pair_ok && [ -n "$MISC" ] && [ -e "$MISC" ] && [ -w "$MISC" ]
+}
+
 slot_state() {
     b=$(dd if="$MISC" bs=1 skip=2048 count=32 2>/dev/null | od -An -tx1 -v | tr -d ' \n')
     echo "misc bootloader_control: $b"
@@ -222,6 +228,7 @@ case "${1:-status}" in
              if lock_wanted; then echo "failed boots in a row before Android: $(attempts) (only while a new boot image is on trial)"
              else echo "failed boots in a row before Android: $(attempts)"; fi
              d=$(disk_dir) && [ -f "$d/boot-tries" ] && echo "boots since the last good one: $(cat "$d/boot-tries")"
+             if bc_writable; then echo "boot control: writable"; else echo "boot control: not writable"; fi
              slot_state ;;
     *) echo "usage: $0 linux|android|lock|unlock|attempts [N]|status" >&2; exit 2 ;;
 esac

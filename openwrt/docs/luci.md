@@ -26,4 +26,6 @@ A shell backend cost 70.7 % of one core with the home page open and 9.5-11 % idl
 
 ## Actions and VPN page
 - The restart button asks Cancel / Power off / Restart; both go through `root/usr/libexec/unisoc-modem/action`: `reboot` or `poweroff` after a 3 s grace for the reply, orderly via procd, never forced.
+- The Wi-Fi button and the Wi-Fi key held both go through `openwrt/opt/mu300/lib/hotspot-ap.sh`: the access point's own `wifi-iface` `disabled` flag (kept), the radio turned on with it only when nothing else would come up on it; refused while uci or a LuCI session has unsaved wireless changes or `wifi-client` has the radio; netifd applies it later (`pending`).
+- The Device page's TCP card is `mu300-tcp` (`/etc/mu300/tcp.conf`, replayed by `mu300-toolkit apply`): only `net.ipv4.tcp_congestion_control` and `net.core.default_qdisc` (BBR with `fq`), the kernel's own pair kept per boot for "default". The home page's boot rows read `mu300-next-boot status`.
 - `mu300vpn`'s `cli_message` takes the line before the CLI's closing line (`profile ID does not check: ...`) as the message, never a `note:` line, so a refusal shows its reason.

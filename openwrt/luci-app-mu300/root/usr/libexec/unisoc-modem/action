@@ -3,7 +3,7 @@
 #   mu300-dash-act radio on|off     the radio of the SIM in use, kept across reboots (mu300-sim-radio set)
 #   mu300-dash-act data up|down     netifd wan interface up/down (no AT in-band)
 #   mu300-dash-act roaming on|off   data roaming of the SIM in use (mobile-data roaming; no AT)
-#   mu300-dash-act wifi on|off      uci wireless disabled flag + wifi up/down
+#   mu300-dash-act wifi on|off      the hotspot's access point on or off, kept (/opt/mu300/lib/hotspot-ap.sh)
 #   mu300-dash-act modem-reset      the SFUN 5/3/2/4 sequence mobile-data uses for sim-reset
 # modem-reset: under mobile-data's radio lock, or "busy" (lib.sh radio_locked); radio: mu300-sim-radio, which takes
 # the lock itself (mobile-data rf-apply)
@@ -26,6 +26,7 @@ LIB=${0%/*}/../../share/unisoc-modem/lib.sh
 . "$LIB"
 
 AT=${MU300_AT:-/usr/libexec/unisoc-modem/at}
+HOTSPOT_AP_LIB=${MU300_HOTSPOT_AP_LIB:-/opt/mu300/lib/hotspot-ap.sh}
 # the SIM slot this boot uses (0 without the selector)
 sim_in_use() { if [ -x /opt/mu300/bin/mu300-sim ]; then /opt/mu300/bin/mu300-sim active 2>/dev/null || echo 0; else echo 0; fi; }
 DATA_IFACE=$(safe_iface "$(uci_get data_interface)" wan)
@@ -92,13 +93,25 @@ case "${1:-}:${2:-}" in
         fi
         ;;
     wifi:on|wifi:off)
-        # persistent through reboots: the uci flag, not just a runtime wifi down
-        case $2 in on) d=0 ;; off) d=1 ;; esac
-        [ -n "${d:-}" ] || { fail "wifi $2" "Expected on or off"; exit 1; }
-        uci -q set wireless.@wifi-device[0].disabled=$d
-        uci -q commit wireless
-        case $2 in on) wifi up ;; off) wifi down ;; esac >/dev/null 2>&1
-        ok "wifi $2"
+        # the access point's own wifi-iface, kept across reboots, through the one path the Wi-Fi key takes too
+        # (/opt/mu300/lib/hotspot-ap.sh: the AP section, not the radio; nothing unsaved in LuCI committed with it).
+        # netifd applies it asynchronously: "pending", and the page reads the state again.
+        if [ -r "$HOTSPOT_AP_LIB" ] && . "$HOTSPOT_AP_LIB"; then
+            r=$(hotspot_ap_set "$2")
+            case $r in
+                pending)   printf '{"ok":1,"op":"wifi %s","pending":1}\n' "$2" ;;
+                unchanged) printf '{"ok":1,"op":"wifi %s","unchanged":1}\n' "$2" ;;
+                saved)     fail "wifi $2" "The hotspot setting is saved, but the wireless reload failed" ;;
+                staged)    fail "wifi $2" "The wireless settings have unsaved changes: save or revert them first" ;;
+                busy)      fail "wifi $2" "The hotspot is being switched already; try again shortly" ;;
+                noap)      fail "wifi $2" "No hotspot (access point) is configured" ;;
+                conflict)  fail "wifi $2" "Turning this radio on would affect another interface; use the Wireless page" ;;
+                client)    fail "wifi $2" "The radio is in use by the Wi-Fi client" ;;
+                *)         fail "wifi $2" "The hotspot setting could not be written" ;;
+            esac
+        else
+            fail "wifi $2" "Hotspot control is not provided by this platform"
+        fi
         ;;
     modem-reset:)
         if [ -x "$MOBILE_DATA" ]; then

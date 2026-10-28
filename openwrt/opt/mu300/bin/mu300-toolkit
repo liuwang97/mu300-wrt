@@ -5,7 +5,7 @@
 #   mu300-toolkit info         one-shot summary
 #   mu300-toolkit profile [eco|balanced|performance]
 #   mu300-toolkit stress [cpu,net|all] [MINUTES]   stress test with live monitor and a summary (0 = until q)
-#   mu300-toolkit apply        apply the saved settings: performance profile, TTL (boot service)
+#   mu300-toolkit apply        apply the saved settings: performance profile, TTL, TCP congestion control (boot service)
 export PATH="$PATH:/opt/mu300/bin:/opt/mu300/busybox-bin:/usr/sbin:/sbin"
 CONF=/etc/mu300/toolkit.conf
 VPN_CONF=/etc/mu300/vpn.conf
@@ -928,6 +928,7 @@ case ${1:-menu} in
     apply)
         p=$(conf_get CPU_PROFILE)
         [ -n "$p" ] && profile_apply "$p" && echo "applied profile $p"
+        /opt/mu300/bin/mu300-tcp apply
         /opt/mu300/bin/mu300-ttl apply ;;
     -h|--help|help) sed -n '2,8s/^# \{0,1\}//p' "$0" ;;
     *) echo "usage: mu300-toolkit [menu|top [seconds]|info|profile [eco|balanced|performance]|stress [cpu,net|all] [minutes]|apply]" >&2; exit 2 ;;

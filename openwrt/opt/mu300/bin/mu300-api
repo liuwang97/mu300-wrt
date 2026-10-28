@@ -62,7 +62,7 @@ lan.get lan.set usb.role usb.net
 system.get system.hostname system.timezone system.password system.ssh system.reboot system.boot system.bootos
 update.check update.apply extra.list extra.install extra.remove logs
 backup.export backup.import
-at.send at.history ussd.send ussd.cancel modem.restart ttl.get ttl.set traffic.get traffic.set
+at.send at.history ussd.send ussd.cancel modem.restart ttl.get ttl.set tcp.get tcp.set traffic.get traffic.set
 power.get power.set led.get led.set zram.get zram.set cpu.get cpu.profile cpu.core cpu.lowlatency cpu.voltage
 update.status update.source packages.get packages.act docker.status
 job.status job.cancel job.clear'
@@ -1268,6 +1268,30 @@ m_ttl_set() {
         refuse failed "$ERR"
     ok
 }
+# tcp.get: the TCP congestion control of the device's own connections (mu300-tcp): saved (default|cubic|bbr), what is in
+# force, the kernel's own default and what it offers of cubic and bbr
+m_tcp_get() {
+    only
+    [ -x "$BIN/mu300-tcp" ] || refuse unsupported mu300-tcp
+    tool 20 "$BIN/mu300-tcp" state </dev/null || refuse failed "$ERR"
+    _tv() { printf '%s\n' "$OUT" | sed -n "s/^$1=//p" | head -n 1; }
+    _s=$(_tv SAVED); case $_s in cubic|bbr) ;; *) _s=default ;; esac
+    _c=$(_tv CURRENT); allowed "$_c" '[a-z][a-z0-9_]{0,31}' || _c=
+    _q=$(_tv QDISC); allowed "$_q" '[a-z][a-z0-9_]{0,31}' || _q=
+    _d=$(_tv DEFAULT); allowed "$_d" '[a-z][a-z0-9_]{0,31}' || _d=
+    _o=
+    for _a in $(_tv OFFERED); do case $_a in cubic|bbr) _o="$_o $_a" ;; esac; done
+    ok "\"supported\":$(jb "$(_tv SUPPORTED)"),\"saved\":\"$_s\",\"current\":$(js "$_c"),\"qdisc\":$(js "$_q"),\"default\":$(js "$_d"),\"offered\":$(jlist $_o)"
+}
+# tcp.set {value}: default, cubic or bbr (bbr also makes fq the default queue); what the kernel lacks is refused
+m_tcp_set() {
+    only value
+    word value 'default|cubic|bbr'; need value
+    [ -x "$BIN/mu300-tcp" ] || refuse unsupported mu300-tcp
+    checked
+    tool 30 "$BIN/mu300-tcp" set "$V" </dev/null || refuse failed "$ERR"
+    ok
+}
 m_traffic_get() {
     only
     [ -x "$BIN/mu300-traffic" ] || refuse unsupported mu300-traffic
@@ -1758,6 +1782,8 @@ case $METHOD in
     modem.restart) m_modem_restart ;;
     ttl.get) m_ttl_get ;;
     ttl.set) m_ttl_set ;;
+    tcp.get) m_tcp_get ;;
+    tcp.set) m_tcp_set ;;
     traffic.get) m_traffic_get ;;
     traffic.set) m_traffic_set ;;
     power.get) m_power_get ;;

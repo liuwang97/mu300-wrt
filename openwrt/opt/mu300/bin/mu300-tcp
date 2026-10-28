@@ -1,0 +1,125 @@
+#!/bin/sh
+# mu300-tcp: the TCP congestion control of the device's own connections.
+#   mu300-tcp                 show the setting, what is in force and what the kernel offers
+#   mu300-tcp set bbr|cubic   new TCP connections use it, kept across reboots and updates; bbr also makes fq the
+#                             default queue of interfaces created from then on (BBR wants pacing)
+#   mu300-tcp set default     back to what the kernel had at boot (the default: nothing saved, nothing touched)
+#   mu300-tcp apply           apply the saved setting (at boot, from mu300-toolkit apply)
+#   mu300-tcp state           key=value lines for the panels
+#
+# Only the device's own TCP changes (net.ipv4.tcp_congestion_control, net.core.default_qdisc): what hotspot and USB
+# clients forward keeps the client's own congestion control, and no firewall rule, interface or existing connection
+# is touched. Only what the kernel lists in tcp_available_congestion_control is offered (the bundle's kernel has BBR
+# built in and fq as a module).
+# "default" is the kernel's own pair, read once per boot before anything here writes (BOOT, the boot_id, says which
+# boot it belongs to), so it comes back exactly. A write the kernel refuses puts the old pair back.
+export PATH="$PATH:/opt/mu300/bin:/usr/sbin:/sbin"
+CONF=${MU300_TCP_CONF:-/etc/mu300/tcp.conf}       # (the variables are for tests/)
+SYS=${MU300_TCP_SYS:-/proc/sys}
+BASE=${MU300_TCP_BASE:-/run/mu300/tcp-default}
+CC=net/ipv4/tcp_congestion_control
+QD=net/core/default_qdisc
+CHOICES="cubic bbr"
+
+rd() { head -n1 "$SYS/$1" 2>/dev/null | tr -d ' \t'; }
+token() { case $1 in [a-z]*) case $1 in *[!a-z0-9_]*) return 1 ;; esac; [ "${#1}" -le 32 ] ;; *) return 1 ;; esac; }
+saved() { a=$(sed -n 's/^ALGO=//p' "$CONF" 2>/dev/null | tail -n1); case " $CHOICES " in *" $a "*) echo "$a" ;; esac; }
+available() { tr ' \t' '\n\n' < "$SYS/net/ipv4/tcp_available_congestion_control" 2>/dev/null | grep -v '^$'; }
+offered() { for c in $CHOICES; do available | grep -qx "$c" && echo "$c"; done; }
+supported() { token "$(rd $CC)" && token "$(rd $QD)"; }
+boot_id() { head -n1 "$SYS/kernel/random/boot_id" 2>/dev/null; }
+
+# base: the kernel's own pair of this boot (ALGO= and QDISC=), read now when this boot has none yet
+base() {
+    b=$(boot_id)
+    if [ -n "$b" ] && [ "$(sed -n 's/^BOOT=//p' "$BASE" 2>/dev/null)" = "$b" ]; then
+        BA=$(sed -n 's/^ALGO=//p' "$BASE"); BQ=$(sed -n 's/^QDISC=//p' "$BASE")
+        token "$BA" && token "$BQ" && return 0
+    fi
+    BA=$(rd $CC); BQ=$(rd $QD)
+    token "$BA" && token "$BQ" || { echo "the kernel's TCP settings could not be read" >&2; return 1; }
+    [ -n "$b" ] || return 0
+    mkdir -p "${BASE%/*}" && printf 'BOOT=%s\nALGO=%s\nQDISC=%s\n' "$b" "$BA" "$BQ" > "$BASE.new" && mv -f "$BASE.new" "$BASE"
+}
+
+# put KEY VALUE: written only when it differs, and read back
+put() {
+    [ "$(rd "$1")" = "$2" ] && return 0
+    printf '%s\n' "$2" 2>/dev/null > "$SYS/$1" || return 1
+    [ "$(rd "$1")" = "$2" ]
+}
+
+# use ALGO (cubic, bbr or default): the pair it means, written; on a refusal the old pair goes back
+use() {
+    base || return 1
+    case $1 in
+        default) a=$BA q=$BQ ;;
+        bbr) a=bbr q=fq ;;
+        *) a=$1 q=$BQ ;;
+    esac
+    available | grep -qx "$a" || { echo "this kernel has no $a congestion control" >&2; return 1; }
+    oa=$(rd $CC) oq=$(rd $QD)
+    # (fq is a module on mainline: the kernel loads it itself on the write, but not every modprobe it calls can)
+    [ "$q" != fq ] || modprobe sch_fq >/dev/null 2>&1 || :
+    if put $QD "$q" && put $CC "$a"; then return 0; fi
+    echo "the kernel did not take $a with the $q queue" >&2
+    put $QD "$oq" && put $CC "$oa" || echo "the previous settings ($oa, $oq) could not be put back" >&2
+    return 1
+}
+
+apply() {
+    a=$(saved)
+    if [ -z "$a" ]; then
+        # nothing saved: nothing is touched; still read the kernel's own pair for a later "set default"
+        base >/dev/null 2>&1
+        return 0
+    fi
+    use "$a"
+}
+
+state() {
+    printf 'SAVED=%s\nCURRENT=%s\nQDISC=%s\nOFFERED=%s\nSUPPORTED=%s\n' "$(saved)" "$(rd $CC)" "$(rd $QD)" \
+        "$(offered | tr '\n' ' ' | sed 's/ $//')" "$(supported && echo 1 || echo 0)"
+    b=$(boot_id)
+    if [ -n "$b" ] && [ "$(sed -n 's/^BOOT=//p' "$BASE" 2>/dev/null)" = "$b" ]; then
+        printf 'DEFAULT=%s\n' "$(sed -n 's/^ALGO=//p' "$BASE")"
+    elif [ -z "$(saved)" ]; then
+        printf 'DEFAULT=%s\n' "$(rd $CC)"
+    else
+        echo DEFAULT=
+    fi
+}
+
+status() {
+    a=$(saved)
+    if [ -n "$a" ]; then echo "TCP congestion control: $a (saved)"
+    else echo "TCP congestion control: the kernel's default (nothing saved)"; fi
+    echo "in force: $(rd $CC), default queue $(rd $QD)"
+    o=$(offered | tr '\n' ' '); echo "offered: ${o:-none}"
+}
+
+root() { [ "$(id -u)" = 0 ] || { echo "run as root" >&2; exit 1; }; }
+
+case ${1:-status} in
+    status) status ;;
+    state) state ;;
+    set)
+        root
+        case ${2:-} in
+            default)
+                use default || exit 1
+                rm -f "$CONF" ;;
+            cubic|bbr)
+                offered | grep -qx "$2" || { echo "this kernel has no $2 congestion control" >&2; exit 1; }
+                prev=$(saved)
+                use "$2" || exit 1
+                mkdir -p "${CONF%/*}" && echo "ALGO=$2" > "$CONF.new" && mv -f "$CONF.new" "$CONF" || {
+                    echo "the setting could not be saved; the previous one is back" >&2
+                    rm -f "$CONF.new"; use "${prev:-default}"; exit 1; } ;;
+            *) echo "usage: mu300-tcp set bbr|cubic|default" >&2; exit 2 ;;
+        esac
+        status ;;
+    apply) root; apply ;;
+    -h|--help|help) sed -n '2,7s/^# \{0,1\}//p' "$0" ;;
+    *) echo "usage: mu300-tcp [status|set bbr|cubic|default|apply|state]" >&2; exit 2 ;;
+esac

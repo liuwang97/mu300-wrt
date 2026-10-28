@@ -40,6 +40,7 @@ return view.extend({
  </section>
  <section class="mud-card" id="mud-usb-net-card">
   <h3>${_('USB network mode')}</h3>
+  <div class="mud-r"><span class="mud-k">${_('Current sharing protocol')}</span><span class="mud-v" id="mud-usb-net-current">--</span></div>
   <div class="mud-device-field"><label for="mud-usb-net-mode">${_('Network protocol')}</label>
    <select id="mud-usb-net-mode"><option value="ncm">NCM</option><option value="ecm">ECM</option><option value="rndis">RNDIS</option></select></div>
   <div class="mud-device-field"><label for="mud-usb-net-scope">${_('Apply duration')}</label>
@@ -54,6 +55,17 @@ return view.extend({
  <div class="mud-note">${_('Available only in host mode. Refresh brings discovered USB adapters up; adding to LAN saves the bridge and reloads networking.')}</div>
  <div class="mud-device-list" id="mud-usb-adapters"></div>
 </section>
+<section class="mud-card" style="margin-top:14px" id="mud-usb-tcp-card">
+ <div class="mud-device-head"><h3>${_('Network performance')}</h3><button class="mud-btn" id="mud-usb-tcp-refresh">${_('Refresh')}</button></div>
+ <div class="mud-r"><span class="mud-k">${_('Active congestion control')}</span><span class="mud-v" id="mud-usb-tcp-current">--</span></div>
+ <div class="mud-r"><span class="mud-k">${_('Default queue')}</span><span class="mud-v" id="mud-usb-tcp-qdisc">--</span></div>
+ <div class="mud-device-field"><label for="mud-usb-tcp-algo">${_('TCP congestion control')}</label>
+  <select id="mud-usb-tcp-algo" disabled></select></div>
+ <div class="mud-device-actions"><button class="mud-btn" id="mud-usb-tcp-apply" disabled>${_('Apply')}</button></div>
+ <div class="mud-note">${_('Mainly affects new TCP connections made by this device. Forwarded hotspot and USB client connections do not automatically use BBR.')}</div>
+ <div class="mud-note">${_('BBR selects FQ as the default queue for newly created interfaces. Existing connections, interfaces and QoS are retained. Settings persist across reboots.')}</div>
+ <div class="mud-note" id="mud-usb-tcp-note" role="status" aria-live="polite"></div>
+</section>
 <section class="mud-card" style="margin-top:14px">
  <div class="mud-device-head"><h3>${_('Recent modem operations')}</h3><button class="mud-btn" id="mud-usb-ops-show">${_('Show')}</button></div>
  <div class="mud-note">${_('The control panel\'s recent calls, of this boot and the one before: when, which page call or AT command, how long it took and how it ended (ok, error, busy, killed). No values, replies or messages are kept. Useful when the panel was stuck.')}</div>
@@ -63,6 +75,7 @@ return view.extend({
 		this.state = state || {};
 		this.wire();
 		this.paint();
+		this.loadTcp();
 		return root;
 	},
 	q: function(id) { return this.root.querySelector('#mud-usb-' + id); },
@@ -75,6 +88,9 @@ return view.extend({
 		this.q('net-mode').value = s.net_mode || 'ncm';
 		this.q('net-scope').value = s.net_scope || 'permanent';
 		this.q('net-auto').checked = !!s.net_auto;
+		/* what the gadget has bound now (configfs), beside the mode saved for the next boot (kanoqwq's db4e5d2) */
+		var cur = { ncm: 'NCM', ecm: 'ECM', rndis: 'RNDIS', mixed: _('Mixed'), none: _('None') }[s.net_current];
+		this.q('net-current').textContent = cur || '--';
 		this.updateDisabled();
 		this.refreshAdapters();
 	},
@@ -137,6 +153,45 @@ return view.extend({
 		});
 		this.q('refresh').addEventListener('click', function() { self.refreshAdapters(0); });
 		this.q('ops-show').addEventListener('click', function() { self.showOps(); });
+		this.q('tcp-refresh').addEventListener('click', function() { self.loadTcp(); });
+		this.q('tcp-apply').addEventListener('click', function() { self.applyTcp(); });
+	},
+	/* TCP congestion control (mu300-tcp, kanoqwq's b9f71e72): only what the kernel offers */
+	loadTcp: function() {
+		var self = this, note = this.q('tcp-note'), btn = this.q('tcp-refresh');
+		M.busy(btn, true);
+		note.textContent = _('Loading…');
+		return L.resolveDefault(M.callTcpGet(), {}).then(function(s) {
+			M.busy(btn, false);
+			if (!s || s.ok !== 1) {
+				self.tcp = null; self.paintTcp();
+				note.textContent = s && s.ok === 0 ? M.errText(s) : _('Unable to read network performance settings; refresh to retry');
+				return;
+			}
+			self.tcp = s; self.paintTcp();
+			note.textContent = s.supported ? '' : _('This kernel does not provide this setting');
+		});
+	},
+	paintTcp: function() {
+		var s = this.tcp, sel = this.q('tcp-algo');
+		this.q('tcp-current').textContent = s && s.current ? String(s.current).toUpperCase() : '--';
+		this.q('tcp-qdisc').textContent = s && s.qdisc ? s.qdisc : '--';
+		sel.replaceChildren();
+		var opt = function(v, text) { var o = document.createElement('option'); o.value = v; o.textContent = text; sel.appendChild(o); };
+		opt('default', _('System default') + (s && s.default ? ' (' + String(s.default).toUpperCase() + ')' : ''));
+		((s && s.offered) || []).forEach(function(v) { if (v === 'cubic' || v === 'bbr') opt(v, v.toUpperCase()); });
+		sel.value = s && [].some.call(sel.options, function(o) { return o.value === s.saved; }) ? s.saved : 'default';
+		sel.disabled = this.q('tcp-apply').disabled = !(s && s.supported);
+	},
+	applyTcp: function() {
+		var self = this, btn = this.q('tcp-apply'), value = this.q('tcp-algo').value;
+		M.busy(btn, true);
+		L.resolveDefault(M.callTcpSet(value), {}).then(function(r) {
+			M.busy(btn, false);
+			M.toast(r && r.ok === 1 ? _('Applied and saved for future boots.') : (r && r.ok === 0 ? M.errText(r) : _('The kernel did not accept the network settings')),
+				{ type: r && r.ok === 1 ? 'success' : 'error' });
+			self.loadTcp();
+		});
 	},
 	/* "Recent modem operations": the backend's log of its calls (ops_log), newest first, this boot and the one before */
 	showOps: function() {
@@ -205,9 +260,15 @@ return view.extend({
 				var dot = document.createElement('i'); dot.className = 'mud-device-dot' + (d.carrier ? ' up' : ''); main.appendChild(dot);
 				var info = document.createElement('div');
 				var name = document.createElement('div'); name.className = 'mud-device-item-name'; name.textContent = d.name;
-				var sub = document.createElement('div'); sub.className = 'mud-device-item-sub'; sub.textContent = d.carrier ? _('Link connected') : _('No link; enable attempted');
+				/* an adapter another network has (another bridge, a network section, an interface netifd runs on it) is
+				 * listed but not offered (kanoqwq's db4e5d2) */
+				var taken = d.eligible === 0;
+				var sub = document.createElement('div'); sub.className = 'mud-device-item-sub';
+				sub.textContent = taken ? _('In use by another network') + (d.owner && d.owner !== 'unknown' ? ' (' + d.owner + ')' : '')
+					: d.carrier ? _('Link connected') : _('No link; enable attempted');
 				info.appendChild(name); info.appendChild(sub); main.appendChild(info); row.appendChild(main);
-				var btn = document.createElement('button'); btn.className = 'mud-btn'; btn.textContent = d.in_lan ? _('Added to LAN') : _('Add to LAN'); btn.disabled = !!d.in_lan;
+				var btn = document.createElement('button'); btn.className = 'mud-btn';
+				btn.textContent = d.in_lan ? _('Added to LAN') : taken ? _('Cannot add') : _('Add to LAN'); btn.disabled = !!d.in_lan || taken;
 				btn.addEventListener('click', function() {
 					M.confirmBox(_('Add USB adapter to LAN?'), _('This saves the bridge configuration and reloads networking; existing connections may briefly drop.'), { okText: _('Add') }).then(function(yes) {
 						if (!yes) return;

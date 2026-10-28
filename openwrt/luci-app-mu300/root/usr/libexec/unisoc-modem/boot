@@ -1,0 +1,29 @@
+#!/bin/sh
+# Boot adapter: the dual boot's state for the dashboard's boot card (mu300dash boot_get), read only, from
+# mu300-next-boot status (the tool that writes it). One JSON line:
+#   {"ok":1,"available":1,"default":"linux"|"android"|"unknown","temporary":true|false|null,"locked":0|1,
+#    "attempts":N|null,"writable":0|1}
+# temporary: this Linux boot is a one-time boot - the default boot is Android, the next restart goes there.
+# writable: the boot control blocks for this slot are there and match it, and misc can be written: the os actions
+# (Switch to Android, Lock Linux) can work.
+set -u
+export PATH="$PATH:/opt/mu300/bin:/opt/mu300/busybox-bin:/usr/sbin:/sbin"
+LIB=${0%/*}/../../share/unisoc-modem/lib.sh
+[ -f "$LIB" ] || LIB=/usr/share/unisoc-modem/lib.sh
+. "$LIB"
+
+NB=${MU300_NEXT_BOOT:-/opt/mu300/bin/mu300-next-boot}
+
+case ${1:-} in
+    get) ;;
+    *) printf '{"ok":0,"error":"Unknown op"}\n'; exit 0 ;;
+esac
+[ -x "$NB" ] || { printf '{"ok":1,"available":0}\n'; exit 0; }
+st=$("$NB" status 2>/dev/null) || :
+d=$(printf '%s\n' "$st" | sed -n 's/^default boot: //p' | head -n1)
+case $d in linux) tmp=false ;; android) tmp=true ;; *) d=unknown tmp=null ;; esac
+lk=0; case $(printf '%s\n' "$st" | sed -n 's/^locked: //p' | head -n1) in yes|'yes '*) lk=1 ;; esac
+n=$(printf '%s\n' "$st" | sed -n 's/^failed boots in a row before Android: \([1-6]\).*/\1/p' | head -n1)
+w=0; [ "$(printf '%s\n' "$st" | sed -n 's/^boot control: //p' | head -n1)" != writable ] || w=1
+printf '{"ok":1,"available":1,"default":"%s","temporary":%s,"locked":%s,"attempts":%s,"writable":%s}\n' \
+    "$d" "$tmp" "$lk" "${n:-null}" "$w"

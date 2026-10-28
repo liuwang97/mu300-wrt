@@ -319,6 +319,34 @@ class Rules(unittest.TestCase):
         view = (app / 'htdocs/luci-static/resources/view/mu300/ttl.js').read_text()
         self.assertRegex(view, r"if \(st\.backend === 'nft'\)\s*card\.appendChild\([^;]*firewall fast-path is off")
 
+    def test_tcp_and_boot_cards_are_wired(self):
+        # kanoqwq's b9f71e72 (the TCP card on the Device page) and f6b0668d (the boot state on the dashboard): rpc
+        # declarations, tcp_get/boot_get readable, tcp_set only with write access, the adapters executable; the boot
+        # card only reads (its changes stay the act os buttons)
+        import json
+        app = TOP / 'openwrt' / 'luci-app-mu300'
+        common = (app / 'htdocs/luci-static/resources/mu300/common.js').read_text()
+        self.assertIn("method: 'tcp_get'", common)
+        self.assertIn("method: 'tcp_set', params: [ 'value' ]", common)
+        self.assertIn("method: 'boot_get', expect", common)
+        self.assertIn('callTcpGet: callTcpGet, callTcpSet: callTcpSet, callBootGet: callBootGet', common)
+        acl = json.loads((app / 'root/usr/share/rpcd/acl.d/luci-app-mu300.json').read_text())['luci-app-mu300']
+        self.assertIn('tcp_get', acl['read']['ubus']['mu300dash'])
+        self.assertIn('boot_get', acl['read']['ubus']['mu300dash'])
+        self.assertNotIn('tcp_set', acl['read']['ubus']['mu300dash'])
+        self.assertIn('tcp_set', acl['write']['ubus']['mu300dash'])
+        self.assertNotIn('boot_set', json.dumps(acl))
+        for name in ('tcp', 'boot'):
+            self.assertTrue((app / 'root/usr/libexec/unisoc-modem' / name).stat().st_mode & 0o111, name)
+        self.assertTrue((TOP / 'openwrt/opt/mu300/bin/mu300-tcp').stat().st_mode & 0o111)
+        device = (app / 'htdocs/luci-static/resources/view/mu300/device.js').read_text()
+        self.assertIn('M.callTcpGet()', device)
+        self.assertIn('M.callTcpSet(value)', device)
+        self.assertIn('s.net_current', device)
+        self.assertIn('d.eligible === 0', device)
+        home = (app / 'htdocs/luci-static/resources/view/mu300/home.js').read_text()
+        self.assertIn('M.callBootGet()', home)
+
     def test_release_can_be_a_prerelease(self):
         # a release is published as a prerelease first and promoted to "latest" only after a board ran it: the
         # option reaches `gh release create`, and an unknown option stops the script instead of being ignored

@@ -624,6 +624,9 @@ msgstr "主机模式会断开本端口的 USB 网络与串口。F50 没有电池
 msgid "USB network mode"
 msgstr "USB 网络模式"
 
+msgid "Current sharing protocol"
+msgstr "当前共享协议"
+
 msgid "Network protocol"
 msgstr "网络协议"
 
@@ -654,6 +657,27 @@ msgstr "刷新"
 msgid "Available only in host mode. Refresh brings discovered USB adapters up; adding to LAN saves the bridge and reloads networking."
 msgstr "仅主机模式可用。刷新时会尝试启用发现的 USB 网卡；添加到 LAN 后将保存到网桥并重新加载网络。"
 
+msgid "Network performance"
+msgstr "网络性能"
+
+msgid "Active congestion control"
+msgstr "当前拥塞控制"
+
+msgid "Default queue"
+msgstr "默认队列"
+
+msgid "TCP congestion control"
+msgstr "TCP 拥塞控制"
+
+msgid "Apply"
+msgstr "应用"
+
+msgid "Mainly affects new TCP connections made by this device. Forwarded hotspot and USB client connections do not automatically use BBR."
+msgstr "主要影响设备自身新建的 TCP 连接；不会将热点或 USB 转发的客户端连接统一改为 BBR。"
+
+msgid "BBR selects FQ as the default queue for newly created interfaces. Existing connections, interfaces and QoS are retained. Settings persist across reboots."
+msgstr "BBR 配套使用 FQ 作为新建接口的默认队列；现有连接、接口和 QoS 不重置。设置重启后保留。"
+
 msgid "Recent modem operations"
 msgstr "最近的调制解调器操作"
 
@@ -666,6 +690,12 @@ msgstr "控制面板在本次及上一次启动中的最近调用：时间、哪
 msgid "Unavailable"
 msgstr "不可用"
 
+msgid "Mixed"
+msgstr "混合"
+
+msgid "None"
+msgstr "无"
+
 msgid "USB network mode is unavailable in host mode; host auto-start also disables USB network auto-start."
 msgstr "主机模式下不可选择 USB 网络模式；主机开机自启会自动关闭 USB 网络开机自启。"
 
@@ -677,9 +707,6 @@ msgstr "切回设备模式后 USB 网络和串口会重新枚举。"
 
 msgid "Switch USB role?"
 msgstr "确认切换 USB 角色？"
-
-msgid "Apply"
-msgstr "应用"
 
 msgid "Switching USB role…"
 msgstr "正在切换 USB 角色…"
@@ -717,6 +744,21 @@ msgstr "设置已保存"
 msgid "Save failed: %s"
 msgstr "保存失败：%s"
 
+msgid "Unable to read network performance settings; refresh to retry"
+msgstr "无法读取网络性能设置，请刷新重试"
+
+msgid "This kernel does not provide this setting"
+msgstr "当前内核不提供此设置"
+
+msgid "System default"
+msgstr "系统默认"
+
+msgid "Applied and saved for future boots."
+msgstr "已应用并保存，开机后继续生效。"
+
+msgid "The kernel did not accept the network settings"
+msgstr "内核未接受网络性能设置"
+
 msgid "This boot"
 msgstr "本次启动"
 
@@ -735,6 +777,9 @@ msgstr "正在扫描 USB 网卡…"
 msgid "No USB adapters found."
 msgstr "没有发现 USB 网卡。"
 
+msgid "In use by another network"
+msgstr "已被其他网络占用"
+
 msgid "Link connected"
 msgstr "链路已连接"
 
@@ -743,6 +788,9 @@ msgstr "链路未连接，已尝试启用"
 
 msgid "Added to LAN"
 msgstr "已添加到 LAN"
+
+msgid "Cannot add"
+msgstr "不可添加"
 
 msgid "Add to LAN"
 msgstr "添加到 LAN"
@@ -858,9 +906,6 @@ msgstr "端口"
 msgid "Security"
 msgstr "安全"
 
-msgid "None"
-msgstr "无"
-
 msgid "User name"
 msgstr "用户名"
 
@@ -968,6 +1013,21 @@ msgstr "MCS 下/上"
 
 msgid "BLER DL/UL"
 msgstr "BLER 下/上"
+
+msgid "Linux locked"
+msgstr "Linux 已锁定"
+
+msgid "Yes: the next restart starts Android"
+msgstr "是：下次重启将进入 Android"
+
+msgid "No"
+msgstr "否"
+
+msgid "Writable"
+msgstr "可写入"
+
+msgid "This boot image cannot change the boot"
+msgstr "当前启动镜像不支持更改启动设置"
 
 msgid "%s of %s"
 msgstr "%s / %s"
@@ -1110,6 +1170,15 @@ msgstr "切换到 Android"
 msgid "Lock Linux"
 msgstr "锁定 Linux"
 
+msgid "Default boot"
+msgstr "默认启动"
+
+msgid "One-time boot"
+msgstr "临时启动"
+
+msgid "Boot control"
+msgstr "启动控制"
+
 msgid "Neighbor cells"
 msgstr "邻区"
 
@@ -1121,6 +1190,9 @@ msgstr "频点"
 
 msgid "Running %s…"
 msgstr "正在执行 %s …"
+
+msgid "Hotspot settings saved; applying changes"
+msgstr "热点配置已保存，正在应用"
 
 msgid "Started in background: %s"
 msgstr "已后台执行：%s"
@@ -1242,6 +1314,15 @@ msgstr "已选择内置 SIM：重启后生效"
 msgid "Internal SIM selected, but not supported on this device: the external SIM is in use"
 msgstr "已选择内置 SIM，但此设备不支持：正在使用外置 SIM"
 
+msgid "in use"
+msgstr "使用中"
+
+msgid "USB host mode, attached device %s"
+msgstr "USB 主机模式，所接设备 %s"
+
+msgid "USB %s now, port maximum %s"
+msgstr "USB 当前 %s，端口最高 %s"
+
 msgid "Uptime %s"
 msgstr "已运行 %s"
 
@@ -1308,9 +1389,6 @@ msgstr "LTE 链路"
 msgid "Hidden"
 msgstr "已隐藏"
 
-msgid "No"
-msgstr "否"
-
 msgid "Running"
 msgstr "运行中"
 
@@ -1370,9 +1448,6 @@ msgstr "在线"
 
 msgid "AT adapter unavailable"
 msgstr "AT 适配器不可用"
-
-msgid "Linux locked"
-msgstr "Linux 已锁定"
 
 msgid "Automatic"
 msgstr "自动"
@@ -1957,9 +2032,6 @@ msgstr "模组默认"
 msgid "SIM%d"
 msgstr "SIM%d"
 
-msgid "in use"
-msgstr "使用中"
-
 msgid "Turn off the radio of SIM%d"
 msgstr "关闭 SIM%d 射频"
 
@@ -2361,9 +2433,6 @@ msgstr "启动镜像"
 
 msgid "not written by an update yet"
 msgstr "尚未由更新写入"
-
-msgid "Default boot"
-msgstr "默认启动"
 
 msgid "Free space"
 msgstr "可用空间"
@@ -3247,14 +3316,14 @@ msgstr "未知的锁定类型"
 msgid "Invalid value for this lock kind"
 msgstr "此锁定类型的值无效"
 
-msgid "None of these bands is supported by this modem"
-msgstr "此调制解调器不支持其中任何频段"
-
 msgid "Band, mode and cell locks are not supported for SIM2 yet"
 msgstr "SIM2 暂不支持频段、模式和小区锁定"
 
 msgid "Band, mode and cell locks are not supported while dual-SIM switching manages the radio"
 msgstr "双卡切换管理射频时，不支持频段、模式和小区锁定"
+
+msgid "None of these bands is supported by this modem"
+msgstr "此调制解调器不支持其中任何频段"
 
 msgid "Lock change failed"
 msgstr "锁定更改失败"
@@ -3336,6 +3405,15 @@ msgstr "TTL 适配器未返回有效回复"
 
 msgid "Invalid TTL"
 msgstr "无效的 TTL"
+
+msgid "The TCP adapter gave no valid reply"
+msgstr "TCP 适配器未返回有效响应"
+
+msgid "Invalid congestion control"
+msgstr "拥塞控制算法无效"
+
+msgid "The boot adapter gave no valid reply"
+msgstr "启动适配器未返回有效响应"
 
 msgid "The data usage adapter gave no valid reply"
 msgstr "流量统计适配器没有返回有效的回复"
@@ -3593,8 +3671,29 @@ msgstr "射频未按设置生效"
 msgid "The data roaming setting could not be saved"
 msgstr "无法保存数据漫游设置"
 
-msgid "Expected on or off"
-msgstr "应为 on 或 off"
+msgid "The hotspot setting is saved, but the wireless reload failed"
+msgstr "热点配置已保存，但应用失败，请重试"
+
+msgid "The wireless settings have unsaved changes: save or revert them first"
+msgstr "无线配置有未应用更改，请先保存或撤销"
+
+msgid "The hotspot is being switched already; try again shortly"
+msgstr "热点正在应用配置，请稍后重试"
+
+msgid "No hotspot (access point) is configured"
+msgstr "没有配置热点"
+
+msgid "Turning this radio on would affect another interface; use the Wireless page"
+msgstr "启用此无线电会影响其他接口，请在无线页面处理"
+
+msgid "The radio is in use by the Wi-Fi client"
+msgstr "无线电正被 Wi-Fi 客户端占用"
+
+msgid "The hotspot setting could not be written"
+msgstr "热点配置写入失败"
+
+msgid "Hotspot control is not provided by this platform"
+msgstr "此平台未提供热点控制"
 
 msgid "VPN integration is not provided by this platform"
 msgstr "此平台不提供 VPN 集成"
@@ -3694,6 +3793,15 @@ msgstr "不是 USB 网络接口"
 
 msgid "LAN bridge device section was not found"
 msgstr "未找到 LAN 网桥设备配置节"
+
+msgid "Could not determine adapter ownership; try again later"
+msgstr "无法确认网卡归属，请稍后重试"
+
+msgid "Adapter belongs to another network and cannot join LAN"
+msgstr "网卡已被其他网络占用，不可加入 LAN"
+
+msgid "The network settings have unsaved changes: save or revert them first"
+msgstr "配置有未保存更改，请先处理后重试"
 
 msgid "Cannot bring USB network interface up"
 msgstr "无法启用 USB 网络接口"
@@ -3824,6 +3932,12 @@ msgstr "未知的软件包操作"
 msgid "usage: power get|set KEY VALUE|wake|idle"
 msgstr "usage: power get|set KEY VALUE|wake|idle"
 
+msgid "TCP congestion control is not provided by this platform"
+msgstr "此平台未提供 TCP 拥塞控制"
+
+msgid "The TCP settings could not be read"
+msgstr "无法读取 TCP 设置"
+
 msgid "Data usage is not available on this system"
 msgstr "此系统不支持流量统计"
 
@@ -3880,9 +3994,3 @@ msgstr "此文件比已安装的版本旧：需要确认"
 
 msgid "The release source was not changed"
 msgstr "发布源未更改"
-
-msgid "USB host mode, attached device %s"
-msgstr "USB 主机模式，所接设备 %s"
-
-msgid "USB %s now, port maximum %s"
-msgstr "USB 当前 %s，端口最高 %s"

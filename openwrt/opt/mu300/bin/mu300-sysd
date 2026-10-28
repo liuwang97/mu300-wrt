@@ -243,7 +243,7 @@ const KEY_WIFI = 138;   // "Wifi Switch Key" in the U30 Air's device tree (KEY_H
 const PST = RUN + '/mu300/power';
 const LEDDIR = R + '/run/mu300/led';
 const LEDIDLE = LEDDIR + '/.idle';   // mu300-led idle on (mu300-led keeps its state there)
-const DEADLINE = num('MU300_BUTTONS_DEADLINE', 150);   // a toggle in the background (the LED sync after wifi up: 120 s)
+const DEADLINE = num('MU300_BUTTONS_DEADLINE', 150);   // a toggle in the background (its LED sync: 120 s)
 const PROBE_DEADLINE = num('MU300_BUTTONS_PROBE_DEADLINE', 5);
 
 // probe ARGV CB: ARGV within PROBE_DEADLINE, CB(true) when it said yes (the direction of a hold is decided before the
@@ -260,12 +260,14 @@ function probe(argv, cb) {
 function hotspot_is_up(cb) {
 	probe([ 'ubus', '-t', '5', 'call', 'hostapd.wlan0', 'get_status' ], cb);
 }
-// hotspot_set DIR: the toggle itself, a shell command; it writes the radio's flag the panel's Wi-Fi switch writes, so
-// a hotspot switched off on the page comes back with the key, and the key's off lasts as the page's does
+// hotspot_set DIR: the toggle itself, a shell command. The panel's own path (/opt/mu300/lib/hotspot-ap.sh: the access
+// point's wifi-iface, kept; the radio only when it was off; nothing unsaved in LuCI committed with it), so that the key
+// and the page always undo each other. The LEDs follow only what it did.
+const HOTSPOT_AP_LIB = env('MU300_HOTSPOT_AP_LIB', '/opt/mu300/lib/hotspot-ap.sh');
 function hotspot_set(dir) {
-	let d = (dir == 'off') ? '1' : '0';
-	return 'uci -q set wireless.@wifi-device[0].disabled=' + d + '; uci -q commit wireless; ' +
-		((dir == 'off') ? 'wifi down; mu300-led wifi off' : 'wifi up; mu300-led wifi sync 120');
+	let led = (dir == 'off') ? 'mu300-led wifi off' : 'mu300-led wifi sync 120';
+	return sprintf('r=$(. %s && hotspot_ap_set %s); logger -t mu300-sysd "hotspot %s: ${r:-failed}"; ' +
+		'case $r in pending|unchanged|saved) %s ;; esac', shq(HOTSPOT_AP_LIB), dir, dir, led);
 }
 
 let led_arm;   // set below (the LED tick)

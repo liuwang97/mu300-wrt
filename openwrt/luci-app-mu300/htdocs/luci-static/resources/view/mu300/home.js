@@ -107,6 +107,7 @@ return view.extend({
 		var first = L.resolveDefault(M.callStatus()).then(function(st) {
 			self.update(st || {});
 		});
+		this.loadBoot();
 		/* LuCI poll.add() truncates intervals to whole seconds. Use a one-shot
 		 * timer so 1.5 s remains 1.5 s and slow requests never overlap; after a
 		 * failed snapshot the next one waits longer (M.backoff), up to 18 s. */
@@ -146,6 +147,24 @@ return view.extend({
 	unload: function() {
 		clearTimeout(this._refreshTimer);
 		clearTimeout(this._rateTimer);
+	},
+
+	/* The dual boot's state under the boot buttons (mu300-next-boot status, read only; kanoqwq's f6b0668d): the default
+	 * boot, whether this boot is a one-time one (the default is Android: the next restart goes there), and whether the
+	 * boot control blocks can be written, which the buttons need. Read once, and again after a boot button. */
+	loadBoot: function() {
+		var root = this._root;
+		return L.resolveDefault(M.callBootGet(), {}).then(function(b) {
+			var box = root.querySelector('#mud-boot');
+			if (!box) return;
+			if (!b || b.ok !== 1 || !b.available) { box.style.display = 'none'; return; }
+			box.style.display = '';
+			var set = function(id, text) { root.querySelector('#mud-boot-' + id).textContent = text; };
+			set('default', b.default === 'linux' ? 'Linux' + (b.locked ? ' (' + _('Linux locked') + ')' : '')
+				: b.default === 'android' ? 'Android' : _('Unknown'));
+			set('temp', b.temporary === true ? _('Yes: the next restart starts Android') : b.temporary === false ? _('No') : _('Unknown'));
+			set('ctl', b.writable ? _('Writable') : _('This boot image cannot change the boot'));
+		});
 	},
 
 	/* One reading of the fast lane: rates over the time since the last one (a counter that went down - the interface
@@ -321,6 +340,11 @@ return view.extend({
     <button class="mud-btn warn" id="mud-btn-android">${_('Switch to Android')}</button>
     <button class="mud-btn" id="mud-btn-bootlock">${_('Lock Linux')}</button>
   </div>
+  <div class="mud-rows" id="mud-boot" style="display:none;margin-top:10px">
+    <div class="mud-r"><span class="mud-k">${_('Default boot')}</span><span class="mud-v" id="mud-boot-default">--</span></div>
+    <div class="mud-r"><span class="mud-k">${_('One-time boot')}</span><span class="mud-v" id="mud-boot-temp">--</span></div>
+    <div class="mud-r"><span class="mud-k">${_('Boot control')}</span><span class="mud-v" id="mud-boot-ctl">--</span></div>
+  </div>
 </div>
 <div class="mud-sec">
   <h3>${_('Neighbor cells')}</h3>
@@ -350,7 +374,9 @@ return view.extend({
 			return L.resolveDefault(M.callAct(op, arg)).then(function(r) {
 				r = r || {};
 				M.busy(btn, false);
-				M.toast(r.ok ? (r.started ? _('Started in background: %s') : _('Done: %s')).format(r.op || op)
+				/* (the hotspot: written and committed, netifd applies it asynchronously - kanoqwq's db4e5d2) */
+				M.toast(r.ok && r.pending && op === 'wifi' ? _('Hotspot settings saved; applying changes')
+					: r.ok ? (r.started ? _('Started in background: %s') : _('Done: %s')).format(r.op || op)
 					: _('Failed: %s').format(M.errText(r)),
 					{ type: r.ok ? 'success' : 'error' });
 			}, function() { M.busy(btn, false); M.toast(_('Request failed'), { type: 'error' }); });
@@ -435,7 +461,7 @@ return view.extend({
 					  _('A new kernel from an update still gets its first boots on trial, and locks again once one of them succeeds.'),
 					  _('If the system itself no longer starts, the device waits on USB (telnet) instead of going to Android.') ].join('\n'),
 					{ danger: true, okText: _('Lock') })
-			).then(function(go) { if (go) act('os', locked ? 'unlock' : 'lock', null, btn); });
+			).then(function(go) { if (go) act('os', locked ? 'unlock' : 'lock', null, btn).then(function() { self.loadBoot(); }); });
 		};
 		q('reveal').onclick = function() {
 			self.identShown = !self.identShown;

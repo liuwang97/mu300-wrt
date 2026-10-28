@@ -928,9 +928,9 @@ rpcReply = { ok: 0, error: 'The TTL could not be set', detail: 'tc and nftables'
 await V.set(null, 64); await flush();
 return [ notes().pop() ];""", [('Failed: %s', 'The TTL could not be set', 'tc and nftables')]),
         ('home', """V.render(); await flush(); toasts.length = 0;
-rpcReply = { ok: 0, op: 'wifi on', error: 'Expected on or off' };
+rpcReply = { ok: 0, op: 'wifi on', error: 'No hotspot (access point) is configured' };
 get('mud-btn-wifi').onclick.call(get('mud-btn-wifi')); await flush();
-return [ notes().pop() ];""", [('Failed: %s', 'Expected on or off', None)]),
+return [ notes().pop() ];""", [('Failed: %s', 'No hotspot (access point) is configured', None)]),
         ('locks', """V.render(); await flush();
 V.lastLock = { error: 'Lock cache unavailable' }; V.paint();
 V.paintServing({ error: 'The modem is restarting (network locks or a SIM switch): no live signal right now' });

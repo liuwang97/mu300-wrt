@@ -1,8 +1,11 @@
 #!/bin/sh /etc/rc.common
-# apply the performance profile and the TTL setting saved by mu300-toolkit (/etc/mu300/toolkit.conf, ttl.conf)
+# apply the performance profile, the TTL setting and the TCP congestion control saved by mu300-toolkit, mu300-ttl and
+# mu300-tcp (/etc/mu300/toolkit.conf, ttl.conf, tcp.conf). After the network: a congestion control set here holds for
+# the connections opened from then on, and BBR's fq queue for the interfaces that come up later (BBR paces by itself
+# without it); nothing already running is reset.
 START=96
 
 start() {
-	[ -r /etc/mu300/toolkit.conf ] || [ -r /etc/mu300/ttl.conf ] || return 0
+	[ -r /etc/mu300/toolkit.conf ] || [ -r /etc/mu300/ttl.conf ] || [ -r /etc/mu300/tcp.conf ] || return 0
 	/opt/mu300/bin/mu300-toolkit apply
 }

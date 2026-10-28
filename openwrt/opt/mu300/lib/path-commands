@@ -9,6 +9,7 @@ mu300-ussd
 sms
 wifi-client
 mu300-ttl
+mu300-tcp
 mu300-wifi-band
 mu300-led
 mu300-usb
