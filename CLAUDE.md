@@ -44,7 +44,7 @@ sh kernel/make-bundle.sh mu300-kernel-7.2.tar.gz
 sh tools/make-release.sh TAG                      # the bundle and the openwrt-luci image, audited (docker)
 ```
 
-`MU300_SRC` holds the verified kernel source (`linux-7.2.11`, objects in `out-7.2.11`); never build in a source tree
+`MU300_SRC` holds the verified kernel source (`linux-7.2.13`, objects in `out-7.2.13`); never build in a source tree
 another session uses.
 
 ## Documentation

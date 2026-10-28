@@ -46,7 +46,7 @@ An update can also come from files: `mu300-update apply --from DIR` with `mu300-
 Two trees, each with its own build and tests; they meet only in the kernel bundle (`docs/contract.md`).
 
 ```sh
-# kernel/: Linux 7.2.11 + port + patches + out-of-tree modules (cross-compiles off arm64)
+# kernel/: Linux 7.2.13 + port + patches + out-of-tree modules (cross-compiles off arm64)
 MU300_SRC=$HOME/mu300src bash kernel/build.sh
 MU300_SRC=$HOME/mu300src bash kernel/build-modules.sh
 sh kernel/make-bundle.sh mu300-kernel-7.2.tar.gz          # needs docker with linux/arm64 (e2fsck)
