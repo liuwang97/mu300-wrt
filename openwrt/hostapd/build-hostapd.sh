@@ -6,7 +6,9 @@
 # OUT gets the APKs, SHA256SUMS, source-info and build-id (the sha256 of the sources here, written last); an OUT whose
 # build-id and checksums match is kept as it is. Runs on the host; needs docker (the build container runs on the
 # host's architecture and cross-compiles for armsr/armv8). The OpenWrt tree and its toolchain stay in a docker volume
-# ($MU300_HOSTAPD_CACHE, default mu300-openwrt-src) between builds; MU300_JOBS: make -j (default 4).
+# between builds, one per OpenWrt release ($MU300_HOSTAPD_CACHE, default mu300-openwrt-src-VER): the inner build
+# refuses a tree of another release, and one release's toolchain is not reused for the next. MU300_JOBS: make -j
+# (default 4).
 set -eu
 TOP=$(cd "$(dirname "$0")/../.." && pwd)
 H=$TOP/openwrt/hostapd
@@ -30,7 +32,7 @@ case "$(uname -m)" in
 esac
 docker build --platform "$PLAT" -t mu300-hostapd-build -f "$H/hostapd.Dockerfile" "$H"
 docker run --rm --platform "$PLAT" \
-    -v "${MU300_HOSTAPD_CACHE:-mu300-openwrt-src}:/build" \
+    -v "${MU300_HOSTAPD_CACHE:-mu300-openwrt-src-$VER}:/build" \
     -v "$H:/src:ro" -v "$OUT:/out" \
     -e "VER=$VER" -e "BUILD_ID=$stamp" -e "JOBS=${MU300_JOBS:-4}" \
     mu300-hostapd-build sh /src/build-hostapd-inner.sh

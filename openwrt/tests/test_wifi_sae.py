@@ -369,7 +369,7 @@ class Wiring(unittest.TestCase):
             self.assertEqual(r.returncode, 0, f + r.stderr)
         b = (H / 'build-hostapd.sh').read_text()
         self.assertIn('stamp=$(python3 "$H/wifi-sae-state.py" --build-id)', b)
-        self.assertIn('${MU300_HOSTAPD_CACHE:-mu300-openwrt-src}:/build', b)
+        self.assertIn('${MU300_HOSTAPD_CACHE:-mu300-openwrt-src-$VER}:/build', b)
         inner = (H / 'build-hostapd-inner.sh').read_text()
         self.assertIn("sed -i 's/^PKG_RELEASE:=.*/PKG_RELEASE:=1001/'", inner)
         self.assertIn("'CONFIG_PACKAGE_wpad-basic-mbedtls=m' 'CONFIG_PACKAGE_hostapd-common=m'", inner)
