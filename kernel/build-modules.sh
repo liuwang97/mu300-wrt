@@ -12,9 +12,9 @@ OUT=${MU300_OUT:-$W/out}
 export ARCH=arm64
 [ "$(uname -m)" = aarch64 ] || export CROSS_COMPILE=${CROSS_COMPILE:-aarch64-linux-gnu-}
 STRIP=${CROSS_COMPILE:-}strip
-# Every out-of-tree module, in dependency order: wlan and bt use wcn_bsp, the PMIC watchdog the modem's headers;
-# mu300_thermal and ums9620_lpintc need only the kernel.
-mods=${*:-wcn_bsp sprd_wlan_combo sprdbt_tty sprd_modem sprd_pmic_wdt mu300_thermal ums9620_lpintc}
+# Every out-of-tree module, in dependency order: wlan and bt use wcn_bsp, the PMIC watchdog and the DDR DFS driver the
+# modem's headers; mu300_thermal and ums9620_lpintc need only the kernel.
+mods=${*:-wcn_bsp sprd_wlan_combo sprdbt_tty sprd_modem sprd_pmic_wdt sprd_ddr_dfs mu300_thermal ums9620_lpintc}
 mkdir -p "$OUT/modules"
 # xt_HL.ko and xt_hl.ko (and three more pairs) must stay two files
 . "$W/case-sensitive.sh"
@@ -48,8 +48,8 @@ B=$SRC/mod-build
 extra=
 for m in $mods; do
     rm -rf "$B/$m" && mkdir -p "$B" && cp -r "$W/modules/$m" "$B/$m"
-    # wlan and bt use wcn_bsp's exports and its headers (../wcn_bsp/kinclude); the PMIC watchdog talks to pm_sys over
-    # SIPC, so it needs the modem stack's headers next to it
+    # wlan and bt use wcn_bsp's exports and its headers (../wcn_bsp/kinclude); the PMIC watchdog and the DDR DFS
+    # driver talk to pm_sys over SIPC, so they need the modem stack's headers next to them
     [ -d "$B/wcn_bsp" ] || cp -r "$W/modules/wcn_bsp" "$B/wcn_bsp"
     [ -d "$B/sprd_modem" ] || cp -r "$W/modules/sprd_modem" "$B/sprd_modem"
     make -C "$O" M="$B/$m" KBUILD_EXTRA_SYMBOLS="$extra" -j"$(nproc)" modules 2>&1 | tee "$OUT/modules/$m.log"
