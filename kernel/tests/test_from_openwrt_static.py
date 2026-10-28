@@ -389,6 +389,17 @@ class Static(unittest.TestCase):
                     'CRYPTO_LZ4', 'CRYPTO_ZSTD'):
             self.assertIn(f'CONFIG_{opt}=y', cfg)
 
+    def test_mainline_command_line_panics_on_an_oops_and_a_lockup(self):
+        # an oops before init sets panic_on_oops hung the boot until LK fell back to Android: oops=panic reboots it
+        # with the dump in pstore. hardlockup_panic= is no boot parameter; nmi_watchdog=panic is
+        cfg = (TOP / 'kernel/mu300-mainline.config').read_text()
+        cmdline = re.search(r'(?m)^CONFIG_CMDLINE="(.*)"$', cfg).group(1).split()
+        for arg in ('oops=panic', 'nmi_watchdog=panic', 'softlockup_panic=1', 'panic=5'):
+            self.assertIn(arg, cmdline)
+        self.assertFalse([a for a in cmdline if a.startswith('hardlockup_panic')])
+        for k in ('CONFIG_SOFTLOCKUP_DETECTOR', 'CONFIG_HARDLOCKUP_DETECTOR'):
+            self.assertRegex(cfg, rf'(?m)^{k}=y$')
+
 
 if __name__ == '__main__':
     unittest.main()
