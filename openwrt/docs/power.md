@@ -1,5 +1,5 @@
 # Power, charging, LEDs and CPU
-Applies to: Linux 7.2.11, OpenWrt 25.12.5 (F50, U30 Air). Checked against the code: 2026-10-23.
+Applies to: Linux 7.2.11, OpenWrt 25.12.5 (F50, U30 Air). Checked against the code: 2026-10-25.
 
 "(unverified on 7.2)": measured on 6.18/5.4 or only offline. The F50 has no battery.
 
@@ -14,8 +14,8 @@ Applies to: Linux 7.2.11, OpenWrt 25.12.5 (F50, U30 Air). Checked against the co
 - The loop runs every 10 s only when something is close (idle, charging boot, battery <= 20 % off the charger, retry, wake), else every 30 s on the charger and 60 s on battery.
 
 ## Charging boot
-- Init writes `/run/mu300/boot-mode` and, for a charger boot, `/run/mu300/charging-boot` (`docs/contract.md`). The daemon enters the charging boot only on its first start of a boot and leaves it only by the Wi-Fi key (`mu300-power wake wifi`), not USB or the power key.
-- It powers off cleanly when unplugged by every account (no charger online, no extcon `USB=1`, battery not `Charging`) for two loops 10 s apart; the power key held 3 s starts the device.
+- Init writes `/run/mu300/boot-mode` and, for a charger boot, `/run/mu300/charging-boot` (`docs/contract.md`). The daemon enters the charging boot only on its first start of a boot and leaves it only by the Wi-Fi key (`mu300-power wake wifi`), not USB or the power key, with a reboot (shutdown marker first): a warm reboot on the charger is a normal boot, and only a normal boot has the modem.
+- It powers off cleanly when unplugged by every account (no charger online, no extcon `USB=1`, battery not `Charging`) for two loops 10 s apart; the power key held 3 s starts the device (the same reboot).
 - `POWER_ON_CHARGER=1` in `/etc/mu300/power.conf` (default 0) makes a charger boot a normal one (no marker, starts `active`).
 - In a U30 Air charger boot LK loads no CP and sets `modem=shutdown`; the stock `modem_control` then loads nothing, `/dev/stty_nr*` answer ENODEV and the modem is absent until a normal reboot (unverified on 7.2).
 - `openwrt/opt/mu300/bin/mu300-modem-coldboot` (opt-in: `touch /etc/mu300/modem-coldboot`) runs a RAM copy of `modem_control` with `0xcf0c mov w19,w0 -> mov w19,wzr` and `0xcf50 mov w0,#63 -> mov w0,#34` (load the CP and CH images, not the running PM's). Stock sha256 `43a3bc8c...819a3`, copy `9e3490f2...37c2ae`; it runs only for a `u30air` with `modem=shutdown`, no `/dev/stty_nr1` and the stock hash, else the stock program. The copy keeps the name `modem_control` because `sprd_modem_loader` checks the task's comm.

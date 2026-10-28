@@ -80,10 +80,10 @@ Applies to: Linux 7.2.11, OpenWrt 25.12.5 (F50, U30 Air). Checked against the co
 
 ## U30 Air has no modem after LK's charger boot
 **Symptom**: When LK boots for a charger it runs the PM co-processor but loads no CP and sets `modem=shutdown`; the stock `modem_control` loads nothing, `/dev/stty_nr*` answer ENODEV (unverified on 7.2).
-**Impact**: No mobile data until a normal reboot.
+**Impact**: No mobile data until a normal reboot; leaving the charging boot reboots, so only `POWER_ON_CHARGER=1` keeps a boot without a CP.
 **Known**: `openwrt/opt/mu300/bin/mu300-modem-coldboot` (opt-in: `touch /etc/mu300/modem-coldboot`) patches a RAM copy of `modem_control` to load the CP images; only on a U30 Air with the stock hash. Checked offline only.
 **Next**: On a flat or switched-off U30 Air on a charger: `/run/mu300/boot-mode`, `/dev/stty_nr1`, `mu300-at ATI`, the Wi-Fi key, a dial; then drop the opt-in.
-**Workaround**: Reboot once the charger boot is up.
+**Workaround**: With `POWER_ON_CHARGER=1`, reboot once the charger boot is up.
 
 ## System suspend and CPU cluster wake sources
 **Symptom**: A sleep with the radio on ends after 10-20 s: the modem's mailbox irq is `IRQF_NO_SUSPEND`, and its unsolicited `+CSQ`/`+CESQ` reports and `mobile-data`'s 2 s registration poll wake it (with `AT+CFUN=4` it runs to the alarm). `mu300-power` does not use suspend.

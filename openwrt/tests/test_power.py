@@ -16,7 +16,7 @@ class PowerTest(ShellTest):
         self.run_dir = self.tmp / 'run'
         (self.run_dir / 'mu300').mkdir(parents=True)
         self.conf = self.tmp / 'power.conf'
-        for name in ('iw', 'wifi', 'mobile-data', 'mu300-led', 'logger', 'poweroff'):
+        for name in ('iw', 'wifi', 'mobile-data', 'mu300-led', 'logger', 'poweroff', 'reboot'):
             self.stub(name, 'echo "$(basename "$0") $*" >> "$STUBLOG/calls"')
         self.stub('iw', 'echo "iw $*" >> "$STUBLOG/calls"; cat "$STUBLOG/stations" 2>/dev/null')
         self.stub('mu300-device', 'echo u30air')
@@ -55,6 +55,9 @@ class PowerTest(ShellTest):
     def calls(self):
         p = self.tmp / 'calls'
         return p.read_text() if p.exists() else ''
+
+    def reboots(self):
+        return [l for l in self.calls().splitlines() if l.split(' ', 1)[0] == 'reboot']
 
     def power(self, shell, args, **env):
         return self.sh(shell, f'"{POWER}" {args}', MU300_SYSROOT=self.root, MU300_RUN=self.run_dir,
@@ -661,11 +664,13 @@ class Guards(DaemonTest):
             self.battery(capacity=50); self.loops(shell); self.loops(shell); self.loops(shell)
             self.assertEqual(self.state(), 'charging-boot')      # on the charger: nothing happens
             self.assertNotIn('poweroff', self.calls())
-            self.power(shell, 'wake'); self.loops(shell)
-            self.assertEqual(self.state(), 'active')
-            self.assertIn('mu300-led charge off', self.calls())
-            self.assertIn('mobile-data resume', self.calls())
-            self.assertFalse((self.run_dir / 'mu300/charging-boot').exists())
+            self.assertEqual(self.reboots(), [])
+            r = self.power(shell, 'wake')
+            self.assertIn('woken (mu300-power wake): rebooting into a normal boot', r.stderr)
+            self.assertEqual(len(self.reboots()), 1)
+            self.assertTrue((self.run_dir / 'mu300/power/shutdown').exists())
+            # the radios stay down on the way out: no resume, no hotspot
+            self.assertNotIn('mobile-data resume', self.calls()); self.assertNotIn('wifi up', self.calls())
 
     def test_the_power_key_does_not_end_a_charging_boot(self):
         for shell in self.each_shell():
@@ -674,18 +679,22 @@ class Guards(DaemonTest):
             self.power(shell, 'wake power'); self.loops(shell)
             self.assertEqual(self.state(), 'charging-boot')
             self.assertFalse((self.run_dir / 'mu300/power/wake').exists())
+            self.assertEqual(self.reboots(), [])
             self.power(shell, 'wake wifi'); self.loops(shell)
-            self.assertEqual(self.state(), 'active')
+            self.assertEqual(len(self.reboots()), 1)
             self.assertEqual(self.power(shell, 'wake volume').returncode, 2)
 
-    def test_a_restart_after_the_key_stays_active(self):
+    def test_the_daemon_reboots_on_a_wake_flag_once(self):
+        # the wake flag seen by the daemon loop (a wake that could not take the lock) reboots too, and only once
         for shell in self.each_shell():
             self.setUp()
             self.charging_boot(shell)
+            (self.run_dir / 'mu300/power/wake').write_text('wifi\n')
+            r = self.loops(shell)
+            self.assertIn('woken by the Wi-Fi key: rebooting into a normal boot', r.stderr)
             self.power(shell, 'wake'); self.loops(shell)
-            self.assertEqual(self.state(), 'active')
-            self.power(shell, 'daemon', MU300_POWER_LOOPS=1, MU300_POWER_FRESH=1)   # boot-mode still says charger
-            self.assertEqual(self.state(), 'active')
+            self.assertEqual(len(self.reboots()), 1)
+            self.assertFalse((self.run_dir / 'mu300/power/wake').exists())
 
     def test_a_restart_inside_the_charging_boot_stays_in_it(self):
         for shell in self.each_shell():
@@ -1103,9 +1112,10 @@ class Guards(DaemonTest):
             self.setUp()
             self.charging_boot(shell)
             self.power(shell, 'idle'); self.loops(shell)
+            self.assertFalse((self.run_dir / 'mu300/power/idle-now').exists())
+            self.assertEqual(self.state(), 'charging-boot')
             self.power(shell, 'wake'); self.loops(shell)
-            self.loops(shell)
-            self.assertEqual(self.state(), 'active')
+            self.assertEqual(len(self.reboots()), 1)
 
     def test_log_validates_seconds(self):
         for shell in self.each_shell():

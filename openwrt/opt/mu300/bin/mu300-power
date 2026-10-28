@@ -9,8 +9,8 @@
 #                                       again under N-5, 0 never charges (the device runs on the charger); whatever
 #                                       the limit, the battery charges while under 5 % (U30 Air; the F50 has none)
 #   mu300-power wake [wifi|power]       bring back whatever is down, by looking (the keys call it with their name);
-#                                       restarts the idle timer; a charging boot ends on any wake but "power" (the
-#                                       held power key ends it with a wake without a name)
+#                                       restarts the idle timer; any wake but "power" ends a charging boot with a
+#                                       reboot (the held power key ends it with a wake without a name)
 #   mu300-power idle                    enter idle now
 #   mu300-power log [SECONDS] [FILE]    append epoch,mV,mA,mW,capacity,temp,state,profile every SECONDS (5) to
 #                                       FILE (/var/log/mu300-power.csv)
@@ -634,10 +634,15 @@ enter_charging_boot() {
     bounded "$LEDDL" mu300-led charge on </dev/null >/dev/null 2>&1 || true
     set_state charging-boot "charging boot (LK boot mode charger)"
 }
+# The charging boot ends in a reboot: LK loads the CP only in a normal boot, so a charging boot left in place has no
+# modem until the next reboot (and the services that wait for it skipped this boot). A warm reboot on the charger is
+# a normal boot.
 leave_charging_boot() {  # leave_charging_boot REASON
-    bounded "$LEDDL" mu300-led charge off </dev/null >/dev/null 2>&1 || true
-    rm -f "$RUN/charging-boot" "$ST/low-loops" "$ST/unplugged-loops"
-    leave_idle "$1"
+    rm -f "$ST/wake"
+    shutting_down && return 0   # the daemon and a wake may both get here; one reboot
+    say "$1: rebooting into a normal boot"
+    : > "$ST/shutdown"   # the TERM trap must not wake the radios on the way down
+    reboot
 }
 # A boot the charger started is a normal one with POWER_ON_CHARGER=1 (U30 Air; kanoqwq's power-on-on-charge option):
 # the initramfs makes no charging-boot marker then, and one found anyway is removed.
@@ -979,7 +984,8 @@ cmd_log() {  # cmd_log [SECONDS] [FILE]
         sleep "$_lge"
     done
 }
-# shutting_down: mu300-sysd (the held power key) and low_battery_check leave $ST/shutdown before poweroff
+# shutting_down: mu300-sysd (the held power key) and low_battery_check leave $ST/shutdown before poweroff, and the
+# end of a charging boot before its reboot
 shutting_down() { [ -e "$ST/shutdown" ]; }
 cmd_wake() {  # cmd_wake [wifi|power]: the flag holds the key's name ("any" without one) for the daemon, and the restore
     case ${1:-} in ''|wifi|power) ;; *) echo "usage: mu300-power wake [wifi|power]" >&2; return 2 ;; esac   # runs now
