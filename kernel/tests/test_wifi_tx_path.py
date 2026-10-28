@@ -71,6 +71,32 @@ class WifiTxPath(unittest.TestCase):
         self.assertIn('atomic_set(&tx_mgmt->pcie_tx_waiting, 0);', body(tx, 'int sc2355_tx_init('))
         self.assertIn('\tatomic_t pcie_tx_waiting;\n', (WLAN / 'tx.h').read_text())
 
+    def test_backpressure_is_not_logged_as_an_error(self):
+        # the pair "edma_pending_q_buffer(10) full" / "push link fail: -11" was a third of the kernel log
+        src = (WCN / 'pcie' / 'edma_engine.c').read_text()
+        edma = body(src, 'static int edma_pending_q_buffer(')
+        self.assertNotIn('pr_warn_ratelimited(', edma)
+        self.assertIn('static DEFINE_RATELIMIT_STATE(full_rs, 60 * HZ, 1);', edma)
+        self.assertLess(edma.index('if (__ratelimit(&full_rs))'), edma.index('return -EAGAIN;'))
+        self.assertIn('#include <linux/ratelimit.h>', src)
+        link = body((WLAN / 'pcie.c').read_text(), 'int sc2355_pcie_push_link(')
+        self.assertIn('if (ret && ret != -EAGAIN) {', link)
+        self.assertIn('pr_err_ratelimited("%s: push link fail: %d, chn: %d!\\n"', link)
+
+    def test_a_failed_direct_push_does_not_leave_the_channel_refusing(self):
+        # status is set before the direct push and only a completion's flush clears it; a push that went nowhere
+        # brings no completion, so with an empty ring status is cleared at once. Nothing queued is popped here: a
+        # queued submission's caller was told OK, and dropping one whose push fails would leak it.
+        src = (WCN / 'pcie' / 'edma_engine.c').read_text()
+        a = body(src, 'int edma_push_link_async(')
+        self.assertLess(a.index('pending_q.status = 1;'), a.index('ret = edma_push_link(chn, head, tail, num);\n\t/*'))
+        self.assertIn('\tif (ret) {\n\t\tspin_lock_irqsave(q->lock.irq_spinlock_p, q->lock.flag);\n'
+                      '\t\tif (edma_pending_q_num(chn) <= 0)\n\t\t\tq->status = 0;\n'
+                      '\t\tspin_unlock_irqrestore(q->lock.irq_spinlock_p, q->lock.flag);\n\t}', a)
+        self.assertNotIn('edma_pending_q_flush(', a)
+        self.assertNotIn('while (', a)
+        self.assertLess(src.index('static int edma_pending_q_num(int chn);'), src.index('int edma_push_link_async('))
+
 
 class WifiCommandNotSent(unittest.TestCase):
     """After kanoqwq's clean-tf-7.2 0e19fe32: a command the driver does not send is an error, with nothing in the
