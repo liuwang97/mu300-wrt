@@ -8,7 +8,7 @@
 # host's architecture and cross-compiles for armsr/armv8). The OpenWrt tree and its toolchain stay in a docker volume
 # between builds, one per OpenWrt release ($MU300_HOSTAPD_CACHE, default mu300-openwrt-src-VER): the inner build
 # refuses a tree of another release, and one release's toolchain is not reused for the next. MU300_JOBS: make -j
-# (default 4).
+# (default: every CPU the host has).
 set -eu
 TOP=$(cd "$(dirname "$0")/../.." && pwd)
 H=$TOP/openwrt/hostapd
@@ -34,6 +34,6 @@ docker build --platform "$PLAT" -t mu300-hostapd-build -f "$H/hostapd.Dockerfile
 docker run --rm --platform "$PLAT" \
     -v "${MU300_HOSTAPD_CACHE:-mu300-openwrt-src-$VER}:/build" \
     -v "$H:/src:ro" -v "$OUT:/out" \
-    -e "VER=$VER" -e "BUILD_ID=$stamp" -e "JOBS=${MU300_JOBS:-4}" \
+    -e "VER=$VER" -e "BUILD_ID=$stamp" -e "JOBS=${MU300_JOBS:-$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)}" \
     mu300-hostapd-build sh /src/build-hostapd-inner.sh
 python3 "$H/wifi-sae-state.py" "$OUT" >/dev/null
