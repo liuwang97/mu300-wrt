@@ -129,6 +129,7 @@ if (IDENT_DIR == '')
 	IDENT_DIR = '/etc/unisoc-modem';
 let IDENT = IDENT_DIR + '/sim.json';
 const AT_ADAPTER = env('MU300_AT', '/usr/libexec/unisoc-modem/at');
+const IMEI_DIAG = env('MU300_IMEI_DIAG', '/usr/libexec/unisoc-modem/imei-diag');
 const IDENT_MAXAGE = 21600;   // seconds; a SIM change goes through a reboot, 6 h is plenty
 const IDENT_RETRY = 60;       // seconds a partial identity (modem or SIM not ready) is shown before it is asked again
 
@@ -311,9 +312,24 @@ function at(cmd, timeout) {
 // grep -v '^AT' | grep -- '-' | head -n1: an engineering answer line (never the echo)
 
 // iccid_value ICCID: upper case; the F that pads a 19-digit ICCID to 20 nibbles is dropped
+// ident_complete FILE: the identity cache holds IMEI, IMSI and ICCID. Fifteen zeros (a modem that answers AT+CGSN
+// with nothing) is no IMEI: keeping it in the 6 h cache would hide the diag read below for hours. A real IMEI may
+// start with 0 (reporting bodies 00-01).
 function ident_complete(path) {
 	let s = readfile(path) ?? '';
-	return match(s, /"imei":"[0-9]/) && match(s, /"imsi":"[0-9]/) && match(s, /"iccid":"[0-9A-F]/);
+	return match(s, /"imei":"[0-9]/) && !match(s, /"imei":"000000000000000"/) && match(s, /"imsi":"[0-9]/) &&
+		match(s, /"iccid":"[0-9A-F]/);
+}
+// imei_diag SLOT: the slot's IMEI from the modem's NV over the diag port (imei-diag), '' when it gives none
+function imei_diag(slot) {
+	if (!executable(IMEI_DIAG))
+		return '';
+	let p = popen(shq(IMEI_DIAG) + ' ' + slot + ' 2>/dev/null', 'r');
+	let out = p ? p.read('all') : null;
+	if (p)
+		p.close();
+	out = replace(out ?? '', /\n+$/, '');
+	return match(out, /^[0-9]{15}$/) ? out : '';
 }
 function file_age(path) { let s = stat(path); return now() - (s ? s.mtime : 0); }
 
@@ -516,13 +532,22 @@ if (MODE == 'full') {
 		let i_model = first_ok(at('AT+CGMM', 2));
 		let i_fw = first_ok(at('AT+CGMR', 2));
 		let i_imei = substr(ident_token(at('AT+CGSN', 2), /^[0-9]{15,17}$/), 0, 15);
+		// Some U30 Air firmware answers AT+CGSN with fifteen zeros -- on both SIM slots, and through the vendor's own
+		// miscserver path -- while the NV holds both IMEIs and the diag port reads them. The panel shows the module's
+		// two IMEIs, so both are read; the active slot's one has AT+CGSN's as the fallback, and fifteen zeros are none.
+		let i_imei1 = imei_diag(0), i_imei2 = imei_diag(1);
+		if (i_imei == '000000000000000')
+			i_imei = '';
+		if (i_imei == '')
+			i_imei = (SIM_SLOT == '1') ? i_imei2 : i_imei1;
 		let i_imsi = ident_token(at('AT+CIMI', 2), /^[0-9]{6,15}$/);
 		let i_iccid = iccid_value(ident_token(at('AT+CCID', 2), /^[0-9A-Fa-f]{18,22}$/));
 		let q = (s) => (s == '') ? null : s;
-		IDENT_JSON = { ts: now(), mfg: q(i_mfg), model: q(i_model), fw: q(i_fw), imei: q(i_imei), imsi: q(i_imsi),
-			iccid: q(i_iccid) };
-		let text = sprintf('{"ts":%d,"mfg":%J,"model":%J,"fw":%J,"imei":%J,"imsi":%J,"iccid":%J}', IDENT_JSON.ts,
-			IDENT_JSON.mfg, IDENT_JSON.model, IDENT_JSON.fw, IDENT_JSON.imei, IDENT_JSON.imsi, IDENT_JSON.iccid);
+		IDENT_JSON = { ts: now(), slot: (SIM_SLOT == '1') ? 1 : 0, mfg: q(i_mfg), model: q(i_model), fw: q(i_fw),
+			imei: q(i_imei), imei1: q(i_imei1), imei2: q(i_imei2), imsi: q(i_imsi), iccid: q(i_iccid) };
+		let text = sprintf('{"ts":%d,"slot":%d,"mfg":%J,"model":%J,"fw":%J,"imei":%J,"imei1":%J,"imei2":%J,"imsi":%J,' +
+			'"iccid":%J}', IDENT_JSON.ts, IDENT_JSON.slot, IDENT_JSON.mfg, IDENT_JSON.model, IDENT_JSON.fw,
+			IDENT_JSON.imei, IDENT_JSON.imei1, IDENT_JSON.imei2, IDENT_JSON.imsi, IDENT_JSON.iccid);
 		if (i_imei != '' && i_imsi != '' && i_iccid != '') {
 			publish(IDENT, text + '\n');
 			unlink(IDENT_PART);

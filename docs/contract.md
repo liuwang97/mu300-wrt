@@ -61,7 +61,7 @@ The root filesystem image carries no kernel modules.
 
 ## Device nodes and sysfs the system uses
 
-- `/dev/{modem,pmsys,sctl_pm,trusty-ipc-dev0,stty_nr*,spipe*}`, `/proc/mdbg`.
+- `/dev/{modem,pmsys,sctl_pm,trusty-ipc-dev0,stty_nr*,spipe*,sdiag_nr}`, `/proc/mdbg`.
 - `/sys/class/udc/25100000.dwc3`, the Type-C port, `ump9620_tcpc` parameter `enable=1` (U30 Air).
 - LEDs `sc27xx:*` and `zte-ldo0` … `zte-ldo2`.
 - power_supply `sc27xx-fgu` and `bq256xx-charger` (U30 Air).
