@@ -134,11 +134,20 @@ class ShellTest(unittest.TestCase):
                               text=True, env=self.env(**env), timeout=60)
 
     def each_shell(self):
-        for s in self.shells:
-            with self.subTest(shell=' '.join(s)):
-                try:
-                    yield s
-                except GeneratorExit:
-                    # the loop's body left by an exception (a skipTest() where there is no ucode, a failure): that
-                    # exception is the test's outcome, not a second error in this subtest
-                    return
+        """The shells, one by one; an assertion that fails meanwhile names the shell it failed under.
+
+        Not a subTest around the yield: the loop body's exception never passes through this generator, so a subTest
+        records nothing for it, and when the generator is closed later (the failure's traceback keeps it alive past
+        the end of the test) the subTest's exit reads the finished test's outcome ("'NoneType' object has no
+        attribute 'success'"): a spurious error on every failure."""
+        try:
+            for s in self.shells:
+                self.shell_now = ' '.join(s)
+                yield s
+        finally:
+            self.shell_now = None
+
+    def _formatMessage(self, msg, standardMsg):
+        text = super()._formatMessage(msg, standardMsg)
+        shell = getattr(self, 'shell_now', None)
+        return f'{text} [shell={shell}]' if shell else text
