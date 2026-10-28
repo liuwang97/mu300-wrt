@@ -11,7 +11,7 @@ Read the root `CLAUDE.md` first. This tree never reads a file under `openwrt/`: 
   `mu300-mainline.config` + `all-modules.py`: every tristate the boards can use becomes a module) and builds `Image`
   into `$MU300_OUT` (default `kernel/out`). Cross-compiles with `aarch64-linux-gnu-` off arm64.
 - `build-modules.sh` — the kernel's own modules and the out-of-tree ones in `modules/` (wcn_bsp, sprd_wlan_combo,
-  sprdbt_tty, sprd_modem, sprd_pmic_wdt, mu300_thermal, ums9620_lpintc), flat in `$MU300_OUT/modules`;
+  sprdbt_tty, sprd_modem, sprd_pmic_wdt, sprd_ddr_dfs, mu300_thermal, ums9620_lpintc), flat in `$MU300_OUT/modules`;
   `check-dt-modules.py` fails the build when a module would bind to the stock device tree by itself.
 - `make-bundle.sh OUT.tar.gz` — the bundle of `docs/contract.md`: Image (`wrap-image.py`), the generic ramdisk segment
   (`initramfs/build-boot-image.py`), every module, `autoload-blocked`, `contract`. It audits the build first

@@ -260,7 +260,7 @@ class ModuleOrder(unittest.TestCase):
         self.assertEqual(len(order), len(set(order)), 'a module is listed twice')
         # dependencies first: the modem stack's transport before its users, the PMIC watchdog last
         for a, b in (('sipc-core.ko', 'spipe.ko'), ('sprd_modem_loader.ko', 'sipa-core.ko'),
-                     ('sipa-core.ko', 'sipa_eth.ko')):
+                     ('sipa-core.ko', 'sipa_eth.ko'), ('sipc-core.ko', 'sprd_ddr_dfs.ko')):
             self.assertLess(order.index(a), order.index(b), f'{a} must load before {b}')
         self.assertEqual(order[-1], 'sprd_pmic_wdt.ko')
 
