@@ -854,9 +854,13 @@ m_traffic_set() {
     inp '@.value'; value=$V
     case $op in
         reset_day) allowed "$value" '([1-9]|[12][0-9]|3[01])' ;;
-        cap|used)  allowed "$value" '(0|[1-9][0-9]{0,15})' ;;
+        cap|used|daily) allowed "$value" '(0|[1-9][0-9]{0,15})' ;;
         warn)      allowed "$value" '([1-9]|[1-9][0-9]|100)' ;;
-        cut)       allowed "$value" '(on|off)' ;;
+        cut|daily_cut) allowed "$value" '(on|off)' ;;
+        count)     allowed "$value" '(total|rx|tx)' ;;
+        # the plan's name: one line of text (UTF-8 allowed), no control character, at most 96 bytes; empty: none
+        plan)      [ "$(printf '%s' "$value" | LC_ALL=C tr -d '\040-\176\200-\377'; echo x)" = x ] &&
+                       [ "$(printf '%s' "$value" | wc -c)" -le 96 ] ;;
         clear)     allowed "$value" 'yes' ;;
         *)         refuse 'Unknown data usage setting'; return ;;
     esac || { refuse 'Invalid value for this setting'; return; }

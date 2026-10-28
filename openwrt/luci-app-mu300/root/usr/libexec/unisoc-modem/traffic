@@ -3,6 +3,8 @@
 # is one JSON object. The count itself (per day, per billing cycle, the cap) is mu300-traffic's, shared with its CLI.
 #   traffic get               mu300-traffic json, as it is
 #   traffic set OP VALUE      reset_day 1-31 | cap BYTES (0: none) | warn 1-100 | cut on|off | used BYTES | clear yes
+#                             | daily BYTES (0: none) | daily_cut on|off | count total|rx|tx | plan NAME (one line,
+#                             at most 96 bytes, UTF-8, no control character; empty: none)
 #                             -> {"ok":1}, or {"ok":0,"error":...}; checked here again
 set -u
 export PATH="$PATH:/opt/mu300/bin:/usr/sbin:/sbin"
@@ -15,6 +17,10 @@ TRAFFIC_CMD=${MU300_TRAFFIC_CMD:-/opt/mu300/bin/mu300-traffic}
 error() { printf '{"ok":0,"error":%s}\n' "$(json_str "$1")"; exit 0; }
 # ok VALUE ERE: VALUE is one line matching ^ERE$
 ok() { printf '%s\n' "$1" | grep -Eqx -- "$2" && [ "$(printf '%s' "$1" | wc -l)" -eq 0 ]; }
+# text_ok VALUE: one line of text (UTF-8 allowed), no control character, at most 96 bytes
+text_ok() {
+    [ "$(printf '%s' "$1" | LC_ALL=C tr -d '\040-\176\200-\377'; echo x)" = x ] && [ "$(printf '%s' "$1" | wc -c)" -le 96 ]
+}
 
 [ -x "$TRAFFIC_CMD" ] || error 'Data usage is not available on this system'
 
@@ -26,6 +32,11 @@ do_set() {
                    [ "$v" != 0 ] || v=off; set -- set cap "$v" ;;
         warn)      ok "$v" '[1-9]|[1-9][0-9]|100' || error 'Invalid value for this setting'; set -- set warn "$v" ;;
         cut)       ok "$v" 'on|off' || error 'Invalid value for this setting'; set -- set cut "$v" ;;
+        daily)     ok "$v" '0|[1-9][0-9]{0,15}' || error 'Invalid value for this setting'
+                   [ "$v" != 0 ] || v=off; set -- set daily "$v" ;;
+        daily_cut) ok "$v" 'on|off' || error 'Invalid value for this setting'; set -- set daily-cut "$v" ;;
+        count)     ok "$v" 'total|rx|tx' || error 'Invalid value for this setting'; set -- set count "$v" ;;
+        plan)      text_ok "$v" || error 'Invalid value for this setting'; set -- set plan "$v" ;;
         used)      ok "$v" '0|[1-9][0-9]{0,15}' || error 'Invalid value for this setting'; set -- used "$v" ;;
         clear)     ok "$v" 'yes' || error 'Invalid value for this setting'; set -- clear --yes ;;
         *)         error 'Unknown data usage setting' ;;

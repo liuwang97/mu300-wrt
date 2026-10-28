@@ -151,6 +151,13 @@ word() {
     [ "$FT" = s ] && allowed "$FV" "$2" || refuse bad-value "$1"
     V=$FV
 }
+# wnum KEY ERE: as word, and a JSON number too (traffic.set's daily 1073741824, not only "1073741824")
+wnum() {
+    fget "$1" || { V=; return 1; }
+    [ "$FT" != z ] || { V=; return 1; }
+    { [ "$FT" = s ] || [ "$FT" = n ]; } && allowed "$FV" "$2" || refuse bad-value "$1"
+    V=$FV
+}
 # int KEY MIN MAX: a whole number (a JSON number, or a string of digits)
 int() {
     fget "$1" || { V=; return 1; }
@@ -438,7 +445,7 @@ hotspot_check() {
     fget ssid && { [ "$FT" = s ] && ssid_ok "$FV" || refuse bad-value ssid; SSID=$FV; }
     fget password && { [ "$FT" = s ] && psk_ok "$FV" || refuse bad-value password; PSK=$FV; }
     word band '2\.4|5' && BAND=$V
-    word channel 'auto|[0-9]{1,3}' && CHAN=$V
+    wnum channel 'auto|[0-9]{1,3}' && CHAN=$V
     flag hidden && HIDDEN=$V
     word security 'wpa2|wpa3|wpa2-wpa3' && SEC=$V
     _b=$BAND
@@ -1260,7 +1267,7 @@ m_ttl_get() {
 }
 m_ttl_set() {
     only value
-    word value 'off|[1-9][0-9]{0,2}'; need value
+    wnum value 'off|[1-9][0-9]{0,2}'; need value
     [ "$V" = off ] || [ "$V" -le 255 ] || refuse bad-value value
     [ -x "$BIN/mu300-ttl" ] || refuse unsupported mu300-ttl
     checked
@@ -1299,24 +1306,29 @@ m_traffic_get() {
     _j=$(jcheck "$OUT") || refuse failed "mu300-traffic gave no JSON"
     ok "\"traffic\":$_j"
 }
-# traffic.set {key, value}: reset_day 1-31, cap bytes (0: none), warn 1-100, cut on|off, used bytes, clear "yes"
+# traffic.set {key, value}: reset_day 1-31, cap bytes (0: none; the byte counts a number or a string of digits),
+# warn 1-100, cut on|off, used bytes, clear "yes", daily bytes (0: none), daily_cut on|off, count total|rx|tx,
+# plan text (at most 96 bytes; "" for none)
 m_traffic_set() {
     only key value
-    word key 'reset_day|cap|warn|cut|used|clear'; need key; _k=$V
+    word key 'reset_day|cap|warn|cut|used|clear|daily|daily_cut|count|plan'; need key; _k=$V
     case $_k in
         reset_day) int value 1 31 ;;
         warn) int value 1 100 ;;
-        cut) word value 'on|off' ;;
+        cut|daily_cut) word value 'on|off' ;;
         clear) word value 'yes' ;;
-        cap|used) word value '0|[1-9][0-9]{0,15}' ;;
+        count) word value 'total|rx|tx' ;;
+        cap|used|daily) wnum value '0|[1-9][0-9]{0,15}' ;;
+        plan) fget value || refuse missing value; text value 96 ;;
     esac
-    need value
+    [ "$_k" = plan ] || need value
     [ -x "$BIN/mu300-traffic" ] || refuse unsupported mu300-traffic
     checked
     case $_k in
         reset_day) set -- set reset-day "$V" ;;
-        cap) if [ "$V" = 0 ]; then set -- set cap off; else set -- set cap "$V"; fi ;;
-        warn|cut) set -- set "$_k" "$V" ;;
+        cap|daily) if [ "$V" = 0 ]; then set -- set "$_k" off; else set -- set "$_k" "$V"; fi ;;
+        warn|cut|count|plan) set -- set "$_k" "$V" ;;
+        daily_cut) set -- set daily-cut "$V" ;;
         used) set -- used "$V" ;;
         clear) set -- clear --yes ;;
     esac

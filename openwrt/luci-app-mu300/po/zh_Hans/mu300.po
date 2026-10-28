@@ -2275,6 +2275,51 @@ msgstr "每月上限（GB，0 表示无）"
 msgid "Warning at this percentage of the cap"
 msgstr "达到上限的此百分比时提醒"
 
+msgid "Daily quota"
+msgstr "每日额度"
+
+msgid "The daily quota is reached: mobile data was turned off. It comes back on at midnight."
+msgstr "已达每日额度：移动数据已关闭，午夜后自动恢复。"
+
+msgid "The daily quota is reached"
+msgstr "已达每日额度"
+
+msgid "%d%% of the daily quota is used"
+msgstr "已用每日额度的 %d%%"
+
+msgid "The cap and the daily quota count downloads only."
+msgstr "上限和每日额度仅统计下行。"
+
+msgid "The cap and the daily quota count uploads only."
+msgstr "上限和每日额度仅统计上行。"
+
+msgid "Counted"
+msgstr "计量"
+
+msgid "Turn mobile data off at the daily quota"
+msgstr "达到每日额度时关闭移动数据"
+
+msgid "When today reaches the daily quota, mobile data is turned off until midnight, the quota is raised or this is turned off again. Turning mobile data back on by hand keeps it on until the next reboot."
+msgstr "当天用量达到每日额度时，移动数据会关闭，直到午夜、额度调高或再次关闭此项。手动重新打开移动数据后，它会保持开启直到下次重启。"
+
+msgid "Both ways"
+msgstr "上下行合计"
+
+msgid "Downloads only"
+msgstr "仅下行"
+
+msgid "Uploads only"
+msgstr "仅上行"
+
+msgid "Daily quota (GB, 0: none)"
+msgstr "每日额度（GB，0 表示无）"
+
+msgid "The cap and the daily quota count"
+msgstr "套餐计量方式"
+
+msgid "Plan name"
+msgstr "套餐名称"
+
 msgid "Used so far in this cycle (GB)"
 msgstr "本周期已用（GB）"
 

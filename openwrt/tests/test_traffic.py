@@ -335,7 +335,7 @@ class Cycle(TrafficBase):
             self.assertEqual((v['reset_day'], v['cap']['bytes'], v['cap']['warn']), (1, 0, 90))
 
 
-class Cap(TrafficBase):
+class CapBase(TrafficBase):
     def setUp(self):
         super().setUp()
         (self.root / 'etc').mkdir()
@@ -354,6 +354,8 @@ class Cap(TrafficBase):
         self.counters(rx, 0, up, **kw)
         return self.run_tool(shell, 'save', now=now or self.now + up)
 
+
+class Cap(CapBase):
     def test_warning_and_cut_once(self):
         for shell in self.each_shell():
             self.fresh()
@@ -442,6 +444,114 @@ class Cap(TrafficBase):
             self.assertIn('today         2026-10-10  down 3.0 GB, up 0 B', out)
             self.assertIn('this cycle    2026-10-01 - 2026-10-31  3.0 GB used of 50.0 GB (6%), 22 days left', out)
             self.assertIn('2026-10-10  down    3.0 GB', self.run_tool(shell, 'days', now=self.now + 160).stdout)
+
+
+class Plan(CapBase):
+    """the daily quota (its own warning and cut, until midnight), the count mode and the plan's name"""
+
+    def test_defaults_are_unchanged(self):
+        for shell in self.each_shell():
+            self.fresh()
+            self.sample(shell, 0, 0, 100, self.now)
+            self.sample(shell, 900, 100, 160, self.now + 60)
+            v = self.view(shell, self.now + 60)
+            self.assertEqual((v['plan'], v['count'], v['cycle']['used']), ('', 'total', 1000))
+            self.assertEqual(v['daily'], {'bytes': 0, 'used': 1000, 'cut': 0, 'level': 'none', 'cut_active': 0})
+            self.assertNotIn('dalert', self.ledger())
+            out = self.run_tool(shell, now=self.now + 60).stdout
+            self.assertNotIn('daily quota', out)
+            self.assertNotIn('plan ', out)
+
+    def test_daily_quota_warns_cuts_and_comes_back_at_midnight(self):
+        for shell in self.each_shell():
+            self.fresh()
+            (self.root / 'run/mu300-mobile-data-down').unlink(missing_ok=True)
+            self.set(shell, 'daily', '1000')
+            self.set(shell, 'warn', '80')
+            self.round(shell, 0, 100)
+            self.round(shell, 850, 160)
+            self.assertIn('80% of the daily quota is used', self.log())
+            self.round(shell, 1200, 220)
+            v = self.view(shell, self.now + 220)
+            self.assertEqual((v['daily']['level'], v['daily']['cut_active'], v['cap']['level']), ('over', 0, 'none'))
+            self.assertEqual(self.calls(), [])            # daily-cut is off by default: a warning only
+            self.assertIn('the daily quota is reached', self.log())
+            self.fresh()
+            (self.root / 'run/mu300-mobile-data-down').unlink(missing_ok=True)
+            self.set(shell, 'daily', '1000')
+            self.set(shell, 'daily-cut', 'on')
+            self.round(shell, 0, 100)
+            self.round(shell, 1200, 160)
+            self.assertEqual(self.view(shell, self.now + 160)['daily']['cut_active'], 1)
+            self.assertEqual(self.calls(), ['ifdown wan'])
+            self.assertIn('daily quota until midnight', self.log())
+            (self.root / 'run/mu300-mobile-data-down').write_text('')
+            self.round(shell, 1300, 220)
+            self.assertEqual(self.calls(), ['ifdown wan'])
+            # the next day: back on
+            self.round(shell, 1300, 280, now=at(2026, 10, 11, 0, 5))
+            self.assertEqual(self.calls(), ['ifdown wan', 'ifup wan'])
+
+    def test_back_on_only_when_neither_limit_holds_it(self):
+        for shell in self.each_shell():
+            self.fresh()
+            (self.root / 'run/mu300-mobile-data-down').unlink(missing_ok=True)
+            self.set(shell, 'daily', '1000')
+            self.set(shell, 'daily-cut', 'on')
+            self.set(shell, 'cap', '1500')
+            self.set(shell, 'cut', 'on')
+            self.round(shell, 0, 100)
+            self.round(shell, 2000, 160)              # both reached: one ifdown
+            self.assertEqual(self.calls(), ['ifdown wan'])
+            (self.root / 'run/mu300-mobile-data-down').write_text('')
+            self.round(shell, 2000, 220, now=at(2026, 10, 11, 0, 5))    # the day is over, the cycle is not
+            self.assertEqual(self.calls(), ['ifdown wan'])
+            self.set(shell, 'cut', 'off')
+            self.round(shell, 2000, 280, now=at(2026, 10, 11, 0, 6))
+            self.assertEqual(self.calls(), ['ifdown wan', 'ifup wan'])
+
+    def test_count_mode(self):
+        for shell in self.each_shell():
+            self.fresh()
+            self.set(shell, 'cap', '1000')
+            self.round(shell, 0, 100)
+            self.round(shell, 700, 160)
+            self.counters(700, 600, 220)
+            self.run_tool(shell, 'save', now=self.now + 220)
+            self.assertEqual(self.view(shell, self.now + 220)['cap']['level'], 'over')
+            self.set(shell, 'count', 'rx')
+            v = self.view(shell, self.now + 220)
+            self.assertEqual((v['count'], v['cycle']['used'], v['cap']['level'], v['cycle']['rx'], v['cycle']['tx']),
+                             ('rx', 700, 'ok', 700, 600))
+            self.assertEqual(v['cycles'][0]['used'], 700)
+            self.set(shell, 'count', 'tx')
+            self.assertEqual(self.view(shell, self.now + 220)['daily']['used'], 600)
+            # a correction belongs to its mode
+            self.run_tool(shell, 'used', '5000', now=self.now + 220)
+            self.assertEqual(self.view(shell, self.now + 220)['cycle']['used'], 5000)
+            self.assertIn('adj 2026-10-01 4400 tx', self.ledger())
+            self.assertIn('counted       uploads only', self.run_tool(shell, now=self.now + 220).stdout)
+            self.set(shell, 'count', 'total')
+            self.assertEqual(self.view(shell, self.now + 220)['cycle']['used'], 1300)
+            self.assertNotEqual(self.run_tool(shell, 'set', 'count', 'both', ok=False).returncode, 0)
+
+    def test_plan_name(self):
+        for shell in self.each_shell():
+            self.fresh()
+            self.counters(0, 0, 100)
+            name = 'Turkcell 50GB "gece" \\ \u6708\u5957\u9910'
+            self.set(shell, 'plan', name)
+            self.assertEqual(self.view(shell)['plan'], name)
+            self.assertIn('plan          ' + name, self.run_tool(shell).stdout)
+            for bad in ('a\nb', 'x' * 97, 'tab\there'):
+                self.assertNotEqual(self.run_tool(shell, 'set', 'plan', bad, ok=False).returncode, 0, bad)
+            self.assertEqual(self.view(shell)['plan'], name)
+            self.set(shell, 'plan', '')
+            self.assertEqual(self.view(shell)['plan'], '')
+            # a file edited by hand: a control character is refused, the name is none
+            conf = (self.store / 'conf').read_text().replace('PLAN=\n', 'PLAN=x\x1b[2Jy\n')
+            (self.store / 'conf').write_text(conf)
+            self.assertEqual(self.view(shell)['plan'], '')
 
 
 class Service(TrafficBase):

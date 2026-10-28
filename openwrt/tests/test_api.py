@@ -402,6 +402,8 @@ class Hotspot(ApiCase):
             self.assertEqual(self.calls('mu300-wifi-band'), [['mu300-wifi-band', '2.4']])
             self.assertEqual(self.ucidb()['wireless']['radio0']['channel'], '11')
             self.assertEqual(self.calls('later')[-1][-2:], ['wifi', 'reload'])
+            self.ok(shell, 'wifi.set', {'channel': 6})                  # a JSON number as well
+            self.assertEqual(self.ucidb()['wireless']['radio0']['channel'], '6')
 
     def test_security_wpa2_wpa3_and_mixed(self):
         """security: WPA2-PSK (CCMP), WPA3-SAE or both, with the password given or the one there is; PMF and sae_pwe
@@ -1051,9 +1053,11 @@ class ModemTools(ApiCase):
             self.assertEqual(self.ok(shell, 'ttl.get'), {'ok': 1, 'enabled': False, 'value': None, 'backend': 'none'})
             self.ok(shell, 'ttl.set', {'value': '65'})
             self.assertEqual(self.calls('mu300-ttl')[-1], ['mu300-ttl', 'set', '65'])
+            self.ok(shell, 'ttl.set', {'value': 65})                  # a JSON number as well
+            self.assertEqual(self.calls('mu300-ttl')[-1], ['mu300-ttl', 'set', '65'])
             self.ok(shell, 'ttl.set', {'value': 'off'})
             self.assertEqual(self.calls('mu300-ttl')[-1], ['mu300-ttl', 'off'])
-            for bad in ('0', '256', '064', '-1', 'on'):
+            for bad in ('0', '256', '064', '-1', 'on', 256, 0, 64.5, True):
                 self.refused(shell, 'ttl.set', {'value': bad}, 'bad-value', 'value')
 
     def test_tcp(self):
@@ -1082,11 +1086,26 @@ class ModemTools(ApiCase):
                               ({'key': 'warn', 'value': 90}, ['set', 'warn', '90']),
                               ({'key': 'cut', 'value': 'on'}, ['set', 'cut', 'on']),
                               ({'key': 'used', 'value': '1000'}, ['used', '1000']),
-                              ({'key': 'clear', 'value': 'yes'}, ['clear', '--yes'])):
+                              ({'key': 'clear', 'value': 'yes'}, ['clear', '--yes']),
+                              ({'key': 'daily', 'value': '0'}, ['set', 'daily', 'off']),
+                              ({'key': 'daily', 'value': '2147483648'}, ['set', 'daily', '2147483648']),
+                              # the byte counts as JSON numbers too (the F50's page sent daily as one: bad-value)
+                              ({'key': 'daily', 'value': 1073741824}, ['set', 'daily', '1073741824']),
+                              ({'key': 'daily', 'value': 0}, ['set', 'daily', 'off']),
+                              ({'key': 'cap', 'value': 53687091200}, ['set', 'cap', '53687091200']),
+                              ({'key': 'used', 'value': 1000}, ['used', '1000']),
+                              ({'key': 'daily_cut', 'value': 'on'}, ['set', 'daily-cut', 'on']),
+                              ({'key': 'count', 'value': 'rx'}, ['set', 'count', 'rx']),
+                              ({'key': 'plan', 'value': 'Gece "50" \u6708'}, ['set', 'plan', 'Gece "50" \u6708']),
+                              ({'key': 'plan', 'value': ''}, ['set', 'plan', ''])):
                 self.ok(shell, 'traffic.set', req)
                 self.assertEqual(self.calls('mu300-traffic')[-1], ['mu300-traffic'] + argv, req)
             for req in ({'key': 'reset_day', 'value': 32}, {'key': 'cap', 'value': '-1'}, {'key': 'cut', 'value': 'x'},
-                        {'key': 'clear', 'value': 'no'}, {'key': 'device', 'value': 'eth0'}):
+                        {'key': 'clear', 'value': 'no'}, {'key': 'device', 'value': 'eth0'},
+                        {'key': 'daily', 'value': '1.5'}, {'key': 'daily', 'value': 1.5}, {'key': 'daily', 'value': -1},
+                        {'key': 'daily', 'value': 1e9}, {'key': 'cap', 'value': True}, {'key': 'count', 'value': 'both'},
+                        {'key': 'daily_cut', 'value': 'yes'}, {'key': 'plan', 'value': 'a\nb'},
+                        {'key': 'plan', 'value': 'x' * 97}, {'key': 'plan', 'value': 'a\tb'}):
                 self.assertEqual(self.call(shell, 'traffic.set', req)[1]['error'], 'bad-value', req)
             self.out('mu300-traffic', 'nope\n')
             self.refused(shell, 'traffic.get', {}, 'failed')

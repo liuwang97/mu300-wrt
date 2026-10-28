@@ -7,7 +7,8 @@
  * strings as text. */
 /* Cellular > Data usage: mobile data per day and per billing cycle, the cap and its warning, from mu300dash
  * traffic_get/traffic_set (unisoc-modem/traffic, mu300-traffic: the same count as the mu300-traffic command, shared
- * by every system on the Linux disk). Sizes are binary (1 GB = 1024 MB), as everywhere on the panel. */
+ * by every system on the Linux disk). Sizes are binary (1 GB = 1024 MB), as everywhere on the panel. The daily quota,
+ * the count mode (both ways, downloads or uploads only) and the plan's name are kanoqwq's traffic plans. */
 
 var GB = 1073741824;
 var DAYS = 31;
@@ -84,7 +85,7 @@ return view.extend({
 	},
 
 	summary: function(st) {
-		var c = st.cycle, cap = st.cap || {}, today = st.today || {}, pend = st.pending || {};
+		var c = st.cycle, cap = st.cap || {}, today = st.today || {}, pend = st.pending || {}, daily = st.daily || {};
 		var capB = cap.bytes > 0 ? cap.bytes : 0, pct = capB ? Math.min(100, Math.round(c.used * 100 / capB)) : 0;
 		var col = cap.level === 'over' ? 'var(--danger,#E25555)' : cap.level === 'warn' ? 'var(--warning,#f59e0b)' :
 			'var(--brand,var(--primary,#3b82f6))';
@@ -104,6 +105,8 @@ return view.extend({
 		];
 		if (c.adj) rows.push(this.row(_('Corrected by'), (c.adj < 0 ? '−' : '+') + M.fmtBytes(Math.abs(c.adj))));
 		rows.push(this.row(_('Monthly cap'), capB ? _('%s, warning at %d%%').format(M.fmtBytes(capB), cap.warn) : _('None'), 'mud-traffic-cap'));
+		if (daily.bytes > 0)
+			rows.push(this.row(_('Daily quota'), _('%s of %s').format(M.fmtBytes(daily.used), M.fmtBytes(daily.bytes)), 'mud-traffic-daily'));
 		var notes = [];
 		if (cap.level === 'over')
 			notes.push(E('div', { 'class': 'mud-note', 'id': 'mud-traffic-alert', 'style': 'color:' + col }, [
@@ -112,6 +115,17 @@ return view.extend({
 		else if (cap.level === 'warn')
 			notes.push(E('div', { 'class': 'mud-note', 'id': 'mud-traffic-alert', 'style': 'color:' + col }, [
 				_('%d%% of the monthly cap is used').format(pct) ]));
+		var dcol = daily.level === 'over' ? 'var(--danger,#E25555)' : 'var(--warning,#f59e0b)';
+		if (daily.level === 'over')
+			notes.push(E('div', { 'class': 'mud-note', 'id': 'mud-traffic-dalert', 'style': 'color:' + dcol }, [
+				daily.cut_active ? _('The daily quota is reached: mobile data was turned off. It comes back on at midnight.')
+					: _('The daily quota is reached') ]));
+		else if (daily.level === 'warn')
+			notes.push(E('div', { 'class': 'mud-note', 'id': 'mud-traffic-dalert', 'style': 'color:' + dcol }, [
+				_('%d%% of the daily quota is used').format(Math.min(100, Math.round(daily.used * 100 / daily.bytes))) ]));
+		if (st.count === 'rx' || st.count === 'tx')
+			notes.push(E('div', { 'class': 'mud-note', 'id': 'mud-traffic-count' }, [ st.count === 'rx' ?
+				_('The cap and the daily quota count downloads only.') : _('The cap and the daily quota count uploads only.') ]));
 		if (pend.rx + pend.tx > 0)
 			notes.push(E('div', { 'class': 'mud-note', 'id': 'mud-traffic-pending' }, [
 				_('%s waits for the clock: it has not been set over the network yet. It already counts towards this cycle and goes to its day once the clock is set.').format(M.fmtBytes(pend.rx + pend.tx)) ]));
@@ -121,7 +135,8 @@ return view.extend({
 			_('Counted on %s, both ways, as the operator counts it (a VPN\'s overhead included).').format(st.device) + ' ' +
 			_('The count is kept in memory and written to the disk every 30 minutes and at shutdown: a power cut loses at most the last half hour.') +
 			(st.since ? ' ' + _('Counting since %s.').format(new Date(st.since * 1000).toISOString().substring(0, 10)) : '') ]));
-		return E('section', { 'class': 'mud-card', 'id': 'mud-traffic' }, [ E('h3', {}, _('Data usage')), kpis ].concat(rows, notes));
+		return E('section', { 'class': 'mud-card', 'id': 'mud-traffic' }, [
+			E('h3', {}, [ _('Data usage') + (st.plan ? ' · ' + st.plan : '') ]), kpis ].concat(rows, notes));
 	},
 
 	/* the last DAYS days to today (none before counting started), a day without traffic as zero, each with a bar of
@@ -154,19 +169,22 @@ return view.extend({
 	},
 
 	cycles: function(st) {
+		/* the last column: what the cap counts (both ways, or one way with count rx/tx), the correction included */
 		var body = (st.cycles || []).map(function(c) {
+			var u = c.used != null ? c.used : c.rx + c.tx + (c.adj || 0);
 			return E('tr', {}, [ E('td', {}, [ c.start + ' – ' + c.last ]), E('td', {}, [ M.fmtBytes(c.rx) ]),
-				E('td', {}, [ M.fmtBytes(c.tx) ]), E('td', {}, [ M.fmtBytes(Math.max(0, c.rx + c.tx + (c.adj || 0))) ]) ]);
+				E('td', {}, [ M.fmtBytes(c.tx) ]), E('td', {}, [ M.fmtBytes(Math.max(0, u)) ]) ]);
 		});
+		var oneWay = st.count === 'rx' || st.count === 'tx';
 		return E('section', { 'class': 'mud-card', 'style': 'margin-top:10px' }, [ E('h3', {}, _('Per billing cycle')),
 			E('table', { 'class': 'mud-table', 'id': 'mud-traffic-cycles', 'style': 'white-space:nowrap' }, [
 				E('thead', {}, [ E('tr', {}, [ E('th', {}, _('Billing cycle')), E('th', {}, _('Received')),
-					E('th', {}, _('Sent')), E('th', {}, _('Total')) ]) ]),
+					E('th', {}, _('Sent')), E('th', {}, oneWay ? _('Counted') : _('Total')) ]) ]),
 				E('tbody', {}, body) ]) ]);
 	},
 
 	settings: function(st) {
-		var self = this, cap = st.cap || {};
+		var self = this, cap = st.cap || {}, daily = st.daily || {};
 		var field = function(label, input, btn, note) {
 			return E('div', { 'style': 'margin:8px 0' }, [
 				E('div', { 'style': 'display:flex;gap:8px;flex-wrap:wrap;align-items:center' },
@@ -209,6 +227,35 @@ return view.extend({
 				{ danger: true, okText: _('On') }).then(function(go) { if (go) self.set(cutBtn, 'cut', 'on'); });
 		});
 
+		var dailyIn = input('mud-traffic-dailyin', daily.bytes > 0 ? String(+(daily.bytes / GB).toFixed(2)) : '0');
+		var dailyBtn = E('button', { 'class': 'mud-btn' }, _('Save'));
+		dailyBtn.addEventListener('click', function() {
+			var b = gbBytes(dailyIn.value);
+			if (b == null) { M.toast(_('Enter a size in GB, for example 50 or 2.5'), { type: 'error' }); return; }
+			self.set(dailyBtn, 'daily', b);
+		});
+
+		var dcutBtn = E('button', { 'class': 'mud-btn' + (daily.cut ? ' on' : ''), 'id': 'mud-traffic-dcut' },
+			daily.cut ? _('On') : _('Off'));
+		dcutBtn.addEventListener('click', function() {
+			if (daily.cut) { self.set(dcutBtn, 'daily_cut', 'off'); return; }
+			M.confirmBox(_('Turn mobile data off at the daily quota'),
+				_('When today reaches the daily quota, mobile data is turned off until midnight, the quota is raised or this is turned off again. Turning mobile data back on by hand keeps it on until the next reboot.'),
+				{ danger: true, okText: _('On') }).then(function(go) { if (go) self.set(dcutBtn, 'daily_cut', 'on'); });
+		});
+
+		var count = E('select', { 'class': 'cbi-input-select', 'id': 'mud-traffic-count' });
+		[ [ 'total', _('Both ways') ], [ 'rx', _('Downloads only') ], [ 'tx', _('Uploads only') ] ].forEach(function(o) {
+			count.appendChild(E('option', { 'value': o[0], 'selected': (st.count || 'total') === o[0] ? '' : null }, [ o[1] ]));
+		});
+		var countBtn = E('button', { 'class': 'mud-btn' }, _('Save'));
+		countBtn.addEventListener('click', function() { self.set(countBtn, 'count', count.value); });
+
+		var planIn = E('input', { 'type': 'text', 'class': 'cbi-input-text', 'id': 'mud-traffic-plan', 'maxlength': '32',
+			'style': 'width:14em', 'value': st.plan || '' });
+		var planBtn = E('button', { 'class': 'mud-btn' }, _('Save'));
+		planBtn.addEventListener('click', function() { self.set(planBtn, 'plan', String(planIn.value).trim()); });
+
 		var usedIn = input('mud-traffic-usedin', '');
 		var usedBtn = E('button', { 'class': 'mud-btn' }, _('Set'));
 		usedBtn.addEventListener('click', function() {
@@ -229,6 +276,10 @@ return view.extend({
 			field(_('Monthly cap (GB, 0: none)'), capIn, capBtn),
 			field(_('Warning at this percentage of the cap'), warnIn, warnBtn),
 			field(_('Turn mobile data off at the cap'), cutBtn, ''),
+			field(_('Daily quota (GB, 0: none)'), dailyIn, dailyBtn),
+			field(_('Turn mobile data off at the daily quota'), dcutBtn, ''),
+			field(_('The cap and the daily quota count'), count, countBtn),
+			field(_('Plan name'), planIn, planBtn),
 			field(_('Used so far in this cycle (GB)'), usedIn, usedBtn,
 				_('What the operator shows for this cycle (for example when counting started in the middle of it); the count is corrected to it.')),
 			field(_('Clear the count'), clearBtn, '')
