@@ -1152,15 +1152,34 @@ class ModemTools(ApiCase):
     def test_leds_and_zram(self):
         for shell in self.each_shell():
             (self.root / 'etc/mu300/led.conf').unlink(missing_ok=True)
-            self.assertEqual(self.ok(shell, 'led.get'), {'ok': 1, 'timeout': None, 'device': 'f50'})
+            self.out('mu300-led', '')
+            self.assertEqual(self.ok(shell, 'led.get'), {'ok': 1, 'timeout': None, 'device': 'f50', 'settings': None})
             self.ok(shell, 'led.set', {'timeout': 120})
             self.assertEqual((self.root / 'etc/mu300/led.conf').read_text(), 'LED_TIMEOUT=120\n')
             self.assertEqual(self.ok(shell, 'led.get')['timeout'], 120)
+            # mu300-led's settings as they are (the lamps, switches, brightness, boot indicator, heat alarm)
+            self.out('mu300-led', '{"device":"f50","lamps":["network","wifi"],"dimmable":["network","wifi"],'
+                                  '"network":false,"network_brightness":40,"boot":true,"thermal":"blink"}\n')
+            o = self.ok(shell, 'led.get')['settings']
+            self.assertEqual((o['lamps'], o['network'], o['network_brightness'], o['boot'], o['thermal']),
+                             (['network', 'wifi'], False, 40, True, 'blink'))
+            self.clear_calls()
+            self.ok(shell, 'led.set', {'network': False, 'wifi_brightness': 30, 'boot': True, 'thermal': 'off'})
+            self.assertEqual((self.root / 'etc/mu300/led.conf').read_text(),
+                             'LED_TIMEOUT=120\nLED_NETWORK=0\nLED_BOOT=1\nLED_WIFI_BRIGHTNESS=30\nLED_THERMAL=off\n')
+            self.assertEqual(self.calls('later')[-1][-1], 'refresh')
+            self.ok(shell, 'led.set', {'timeout_default': True})
+            self.assertNotIn('LED_TIMEOUT', (self.root / 'etc/mu300/led.conf').read_text())
             self.clear_calls()
             self.ok(shell, 'led.set', {'test': True})
             self.assertEqual(self.calls('later')[-1][-1], 'test')
             self.refused(shell, 'led.set', {}, 'missing', 'timeout')
             self.refused(shell, 'led.set', {'timeout': -1}, 'bad-value', 'timeout')
+            for req, field in (({'network': 'off'}, 'network'), ({'battery_brightness': 0}, 'battery_brightness'),
+                               ({'wifi_brightness': 101}, 'wifi_brightness'), ({'thermal': 'loud'}, 'thermal'),
+                               ({'timeout': 5, 'timeout_default': True}, 'timeout_default'), ({'colour': 'red'}, 'colour')):
+                self.refused(shell, 'led.set', req, 'unknown-field' if field == 'colour' else 'bad-value', field)
+            (self.root / 'etc/mu300/led.conf').unlink()
             self.out('mu300-zram', 'zram swap: on, 700 MiB, lz4, priority 100\n  empty\n')
             o = self.ok(shell, 'zram.get')
             self.assertEqual((o['active'], o['enabled']), (True, True))

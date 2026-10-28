@@ -444,7 +444,7 @@ if (selected !== true) throw Error('the Bootstrap token bridge must survive the 
 
 VIEWS = APP / 'htdocs/luci-static/resources/view/mu300'
 VIEW_NAMES = ('home', 'locks', 'sms', 'at', 'settings', 'device', 'ttl', 'traffic', 'packages', 'terminal',
-              'update')
+              'leds', 'update')
 CJK_RE = re.compile('[\u2e80-\u9fff\uf900-\ufaff\uff00-\uffef]')
 
 
@@ -816,6 +816,29 @@ V.paint({ ok: 0, error: 'Data usage is not available on this system' });
 rpcReply = { ok: 0, error: 'Invalid value for this setting' }; await V.set(null, 'warn', '0'); await flush();
 rpcReply = { ok: 1 }; await V.set(null, 'warn', '80'); await flush();
 return notes();'''
+
+    # System > LEDs: a U30 Air (a lamp that dims, two that only switch), an F50, no answer, and the replies of led_set
+    LEDS = '''
+const st = { ok: 1, device: 'u30air', lamps: [ 'network', 'wifi', 'battery' ], dimmable: [ 'battery' ], timeout: 60,
+             timeout_default: true, default_timeout: 60, network: true, network_brightness: 100, wifi: false,
+             wifi_brightness: 100, battery: true, battery_brightness: 40, boot: false, thermal: 'siren' };
+V.render(st);
+V.paint(Object.assign({}, st, { device: 'f50', lamps: [ 'network', 'wifi' ], dimmable: [ 'network', 'wifi' ],
+                                timeout: 0, timeout_default: false, default_timeout: 0, boot: true, thermal: 'blink' }));
+V.paint({ ok: 0, error: 'The LED adapter gave no valid reply' });
+rpcReply = { ok: 0, error: 'Unknown LED setting' }; await V.save('colour', '1'); await flush();
+rpcReply = { ok: 1 }; await V.save('boot', '1'); await flush();
+return notes();'''
+
+    def test_leds_page_messages(self):
+        for lang, want in ((None, ['Failed: Unknown LED setting', 'Saved']),
+                           ('zh_Hans', ['失败：未知的状态灯设置', '已保存'])):
+            with self.subTest(lang=lang):
+                out = self.run_view('leds', lang, self.LEDS)
+                self.assertEqual(out['result'], want)
+                for m in ('LEDs', 'Network lamp', 'Wi-Fi lamp', 'Battery lamp', 'Brightness (%)', 'LED timeout (seconds)',
+                          'Device default', 'Boot indicator', 'Heat alarm', 'Siren', 'Red blink'):
+                    self.assertIn(m, out['used'])
 
     # System > Terminal: a token framed over HTTP, a tab of its own over HTTPS, and each refusal code
     TERMINAL = '''

@@ -31,6 +31,8 @@
 #   tcp_get, tcp_set value  the TCP congestion control of the device's own connections (unisoc-modem/tcp, mu300-tcp);
 #                     value default|cubic|bbr
 #   boot_get          the dual boot's state, read only (unisoc-modem/boot, mu300-next-boot status)
+#   led_get, led_set key value  the LED settings (unisoc-modem/led, mu300-led): the lamps' switches and brightness,
+#                     the timeout, the boot indicator, the heat alarm's light
 #   traffic_get, traffic_set op value  the mobile data count, its billing cycle and cap (unisoc-modem/traffic,
 #                     mu300-traffic)
 #   forward_get, forward_set ..., forward_test, forward_log_clear  SMS forwarding (unisoc-modem/forward,
@@ -848,6 +850,23 @@ m_tcp_set() {
 # The dashboard's boot card: mu300-next-boot status, read only (the changes are act os ...)
 BOOTA=${MU300_BOOT_ADAPTER:-$DASH/boot}
 m_boot_get() { reply_obj "$("$BOOTA" get 2>/dev/null)" 'The boot adapter gave no valid reply'; }
+# --------------------------------------------------------------------- LEDs
+# The LED page: mu300-led through the adapter, which checks the key and the value again (and mu300-led after it)
+LEDA=${MU300_LED_ADAPTER:-$DASH/led}
+m_led_get() { reply_obj "$("$LEDA" get 2>/dev/null)" 'The LED adapter gave no valid reply'; }
+m_led_set() {
+    local key value
+    inp '@.key'; key=$V
+    inp '@.value'; value=$V
+    case $key in
+        timeout) allowed "$value" '(default|0|[1-9][0-9]{0,4})' && { [ "$value" = default ] || [ "$value" -le 86400 ]; } ;;
+        network|wifi|battery|boot) allowed "$value" '[01]' ;;
+        network_brightness|wifi_brightness|battery_brightness) allowed "$value" '([1-9][0-9]?|100)' ;;
+        thermal) allowed "$value" '(siren|blink|off)' ;;
+        *) refuse 'Unknown LED setting'; return ;;
+    esac || { refuse 'Invalid value for this setting'; return; }
+    reply_obj "$("$LEDA" set "$key" "$value" 2>/dev/null)" 'The LED adapter gave no valid reply'
+}
 
 # --------------------------------------------------------------- data usage
 # The Data usage page: mu300-traffic through the adapter, which checks every value again. Sizes are whole bytes.
@@ -1027,6 +1046,8 @@ do_list() {
 	"tcp_get": { },
 	"tcp_set": { "value": "String" },
 	"boot_get": { },
+	"led_get": { },
+	"led_set": { "key": "String", "value": "String" },
 	"traffic_get": { },
 	"traffic_set": { "op": "String", "value": "String" },
 	"forward_get": { },
@@ -1177,6 +1198,7 @@ ops_detail() {
         update_act) inp '@.op'; allowed "$V" '[a-z_]{1,16}' && printf '%s\n' "$V" ;;
         cpu_voltage_set) inp '@.op'; allowed "$V" '[a-z]{1,8}' && printf '%s\n' "$V" ;;
         cpu_tune) inp '@.op'; allowed "$V" '[a-z]{1,10}' && printf '%s\n' "$V" ;;
+        led_set) inp '@.key'; allowed "$V" '[a-z_]{1,20}' && printf '%s\n' "$V" ;;
     esac
 }
 
@@ -1314,6 +1336,8 @@ call)
         tcp_get)      run_m tcp_get      m_tcp_get ;;
         tcp_set)      run_m tcp_set      m_tcp_set ;;
         boot_get)     run_m boot_get     m_boot_get ;;
+        led_get)      run_m led_get      m_led_get ;;
+        led_set)      run_m led_set      m_led_set ;;
         traffic_get)  run_m traffic_get  m_traffic_get ;;
         traffic_set)  run_m traffic_set  m_traffic_set ;;
         forward_get)  run_m forward_get  m_forward_get ;;

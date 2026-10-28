@@ -1,0 +1,43 @@
+#!/bin/sh
+# LED adapter: mu300-led for the panel's LED page (mu300dash led_get, led_set). Every reply is one JSON object.
+#   led get              {"ok":1, ...mu300-led settings: the lamps this device has, which dim, and each setting}
+#   led set KEY VALUE    {"ok":1}, or {"ok":0,"error":...}; KEY and VALUE checked here again, and by mu300-led
+set -u
+export PATH="$PATH:/opt/mu300/bin:/usr/sbin:/sbin"
+LIB=${0%/*}/../../share/unisoc-modem/lib.sh
+[ -f "$LIB" ] || LIB=/usr/share/unisoc-modem/lib.sh
+. "$LIB"
+
+LED_CMD=${MU300_LED_CMD:-/opt/mu300/bin/mu300-led}
+
+error() { printf '{"ok":0,"error":%s}\n' "$(json_str "$1")"; exit 0; }
+
+do_get() {
+    st=$("$LED_CMD" settings 2>/dev/null) || error 'The LED settings could not be read'
+    case $st in '{'*'}') ;; *) error 'The LED settings could not be read' ;; esac
+    printf '{"ok":1,%s\n' "${st#\{}"
+}
+
+do_set() {
+    case ${1:-} in
+        timeout) case ${2:-} in default|0|[1-9]|[1-9][0-9]|[1-9][0-9][0-9]|[1-9][0-9][0-9][0-9]|[1-9][0-9][0-9][0-9][0-9]) ;;
+                 *) error 'Invalid value for this setting' ;; esac
+                 [ "$2" = default ] || [ "$2" -le 86400 ] || error 'Invalid value for this setting' ;;
+        network|wifi|battery|boot) case ${2:-} in 0|1) ;; *) error 'Invalid value for this setting' ;; esac ;;
+        network_brightness|wifi_brightness|battery_brightness)
+                 case ${2:-} in [1-9]|[1-9][0-9]|100) ;; *) error 'Invalid value for this setting' ;; esac ;;
+        thermal) case ${2:-} in siren|blink|off) ;; *) error 'Invalid value for this setting' ;; esac ;;
+        *) error 'Unknown LED setting' ;;
+    esac
+    if out=$("$LED_CMD" set "$1" "$2" 2>&1 >/dev/null); then
+        echo '{"ok":1}'
+    else
+        printf '{"ok":0,"error":"The LED setting could not be saved","detail":%s}\n' "$(json_str "$(printf '%s\n' "$out" | tail -n1)")"
+    fi
+}
+
+case ${1:-} in
+    get) do_get ;;
+    set) do_set "${2:-}" "${3:-}" ;;
+    *) error 'Unknown LED setting' ;;
+esac

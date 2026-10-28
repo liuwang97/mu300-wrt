@@ -1405,23 +1405,44 @@ m_power_set() {
     ok
 }
 LEDCONF=$R/etc/mu300/led.conf
+# led.get: timeout (null: the device's own), device, and settings: mu300-led's (the lamps this device has, which of
+# them dim, each switch and brightness, the boot indicator, the heat alarm's light), null without it
 m_led_get() {
     only
     _t=$(sed -n 's/^LED_TIMEOUT=\([0-9][0-9]*\)$/\1/p' "$LEDCONF" 2>/dev/null | tail -n 1)
-    ok "\"timeout\":$(jn "$_t"),\"device\":$(js "$DEV")"
+    _s=null
+    if [ -x "$BIN/mu300-led" ] && tool 10 "$BIN/mu300-led" settings </dev/null; then _s=$(jcheck "$OUT") || _s=null; fi
+    ok "\"timeout\":$(jn "$_t"),\"device\":$(js "$DEV"),\"settings\":$_s"
 }
-# led.set {timeout}: seconds the LEDs stay on after a key or a change (0: always on); led.set {test:true}: each LED in
-# turn, 2 s each (to tell which one is where)
+# led.set {timeout}: seconds the LEDs stay on after a key or a change (0: always on; timeout_default: true, the device's
+# own); led.set {test:true}: each LED in turn, 2 s each (to tell which one is where). The other settings, as mu300-led
+# has them (kanoqwq's): network, wifi, battery (true: the lamp as it should be, false: dark), network_brightness,
+# wifi_brightness, battery_brightness (1-100 % of its usual level), boot (the boot indicator), thermal (siren, blink
+# or off: how the heat alarm shows)
 m_led_set() {
-    only timeout test
+    only timeout timeout_default test network wifi battery network_brightness wifi_brightness battery_brightness boot thermal
+    _kv=
     int timeout 0 86400; _t=$V
+    flag timeout_default; [ "${V:-0}" = 0 ] || { [ -z "$_t" ] || refuse bad-value timeout_default; _t=default; }
     flag test; _test=${V:-0}
-    [ -n "$_t" ] || [ "$_test" = 1 ] || refuse missing timeout
+    for _k in network wifi battery boot; do
+        flag "$_k"; [ -z "$V" ] || _kv="$_kv LED_$(echo "$_k" | tr a-z A-Z)=$V"
+    done
+    for _k in network_brightness wifi_brightness battery_brightness; do
+        int "$_k" 1 100; [ -z "$V" ] || _kv="$_kv LED_$(echo "$_k" | tr a-z A-Z)=$V"
+    done
+    word thermal 'siren|blink|off'; [ -z "$V" ] || _kv="$_kv LED_THERMAL=$V"
+    [ -n "$_t$_kv" ] || [ "$_test" = 1 ] || refuse missing timeout
     [ -x "$BIN/mu300-led" ] || refuse unsupported mu300-led
     checked
     if [ -n "$_t" ]; then
+        [ "$_t" != default ] || _t=
         conf_put "$LEDCONF" 644 "LED_TIMEOUT=$_t" || refuse failed "could not write led.conf"
         later "$BIN/mu300-led" wake
+    fi
+    if [ -n "$_kv" ]; then
+        conf_put "$LEDCONF" 644 $_kv || refuse failed "could not write led.conf"   # (fixed keys, checked values: split)
+        later "$BIN/mu300-led" refresh
     fi
     [ "$_test" = 0 ] || later "$BIN/mu300-led" test
     ok

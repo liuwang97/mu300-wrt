@@ -54,6 +54,9 @@ var callTtlSet = rpc.declare({ object: 'mu300dash', method: 'ttl_set', params: [
 var callTcpGet = rpc.declare({ object: 'mu300dash', method: 'tcp_get', expect: { '': {} }, nobatch: true });
 var callTcpSet = rpc.declare({ object: 'mu300dash', method: 'tcp_set', params: [ 'value' ], expect: { '': {} }, nobatch: true });
 var callBootGet = rpc.declare({ object: 'mu300dash', method: 'boot_get', expect: { '': {} }, nobatch: true });
+/* System > LEDs: mu300-led's settings (key: timeout, network, wifi, battery, *_brightness, boot, thermal) */
+var callLedGet = rpc.declare({ object: 'mu300dash', method: 'led_get', expect: { '': {} }, nobatch: true });
+var callLedSet = rpc.declare({ object: 'mu300dash', method: 'led_set', params: [ 'key', 'value' ], expect: { '': {} }, nobatch: true });
 var callFwdGet = rpc.declare({ object: 'mu300dash', method: 'forward_get', expect: { '': {} }, nobatch: true });
 var callFwdSet = rpc.declare({ object: 'mu300dash', method: 'forward_set', params: [ 'enabled', 'template', 'allow',
 	'deny', 'keywords', 'clear', 'webhook', 'webhook_url', 'webhook_format', 'webhook_headers', 'telegram',
@@ -775,6 +778,7 @@ return baseclass.extend({
 	callSimGet: callSimGet, callSimSet: callSimSet, callSimcardGet: callSimcardGet, callSimcardSet: callSimcardSet,
 	callTtlGet: callTtlGet, callTtlSet: callTtlSet,
 	callTcpGet: callTcpGet, callTcpSet: callTcpSet, callBootGet: callBootGet,
+	callLedGet: callLedGet, callLedSet: callLedSet,
 	callFwdGet: callFwdGet, callFwdSet: callFwdSet, callFwdTest: callFwdTest, callFwdLogClear: callFwdLogClear,
 	callCpuGet: callCpuGet, callCpuSet: callCpuSet, callCpuTune: callCpuTune, callCpuVoltageGet: callCpuVoltageGet, callCpuVoltageSet: callCpuVoltageSet,
 	callPackagesGet: callPackagesGet, callPackagesAct: callPackagesAct,

@@ -6,6 +6,8 @@ USE_PROCD=1
 export PATH="$PATH:/opt/mu300/busybox-bin"
 
 start_service() {
+	# the boot is done: the boot indicator (04_mu300_early_leds, LED_BOOT=1) ends and the LEDs show the states
+	/opt/mu300/bin/mu300-led boot off </dev/null >/dev/null 2>&1
 	# the commands on the PATH (/usr/bin): new ones an update brought, and the extras'
 	/opt/mu300/bin/mu300-extra link >/dev/null 2>&1
 

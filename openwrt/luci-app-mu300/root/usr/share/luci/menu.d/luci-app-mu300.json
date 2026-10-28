@@ -126,6 +126,12 @@
 		"action": { "type": "view", "path": "mu300/power" },
 		"depends": { "acl": [ "luci-app-mu300" ] }
 	},
+	"admin/system/mu300-leds": {
+		"title": "LEDs",
+		"order": 16,
+		"action": { "type": "view", "path": "mu300/leds" },
+		"depends": { "acl": [ "luci-app-mu300" ] }
+	},
 	"admin/system/cpu": {
 		"title": "CPU",
 		"order": 17,

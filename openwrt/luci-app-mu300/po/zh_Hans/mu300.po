@@ -48,6 +48,60 @@ msgstr "设置备份"
 msgid "Power"
 msgstr "电源"
 
+msgid "LEDs"
+msgstr "状态灯"
+
+msgid "Network lamp"
+msgstr "信号灯"
+
+msgid "Wi-Fi lamp"
+msgstr "Wi-Fi 热点灯"
+
+msgid "Battery lamp"
+msgstr "电池灯"
+
+msgid "Brightness (%)"
+msgstr "亮度（%）"
+
+msgid "A lamp switched off stays dark; the heat alarm still shows on its LED."
+msgstr "关闭的灯保持熄灭；温度告警仍会在其指示灯上显示。"
+
+msgid "Device default"
+msgstr "设备默认值"
+
+msgid "LED timeout (seconds)"
+msgstr "状态灯自动熄灭（秒）"
+
+msgid "How long the LEDs stay lit after a key press or a change; 0 keeps them on. On a charger they stay lit."
+msgstr "按键或状态变化后指示灯保持点亮的时间；0 表示常亮。连接充电器时保持点亮。"
+
+msgid "Boot indicator"
+msgstr "开机指示"
+
+msgid "The LED shows its colours in turn while the system starts"
+msgstr "系统启动期间指示灯依次显示各颜色"
+
+msgid "Heat alarm"
+msgstr "温度告警"
+
+msgid "Siren"
+msgstr "警灯轮闪"
+
+msgid "Red blink"
+msgstr "红色闪烁"
+
+msgid "The LED adapter gave no valid reply"
+msgstr "LED 适配器未返回有效回复"
+
+msgid "Unknown LED setting"
+msgstr "未知的状态灯设置"
+
+msgid "The LED settings could not be read"
+msgstr "无法读取状态灯设置"
+
+msgid "The LED setting could not be saved"
+msgstr "无法保存状态灯设置"
+
 msgid "CPU"
 msgstr "CPU"
 

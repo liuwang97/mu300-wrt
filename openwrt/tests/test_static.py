@@ -76,6 +76,26 @@ class Rules(unittest.TestCase):
         self.assertIn('power_get', acl['luci-app-mu300']['read']['ubus']['mu300dash'])
         self.assertIn('power_set', acl['luci-app-mu300']['write']['ubus']['mu300dash'])
 
+    def test_led_page_is_wired(self):
+        # System > LEDs (kanoqwq's LED settings, as a page of this app over mu300-led, not LuCI's own LED page): the menu
+        # entry, its view, the rpc declarations, led_get readable and led_set only with write access, the adapter
+        app = TOP / 'openwrt' / 'luci-app-mu300'
+        menu = json.loads((app / 'root/usr/share/luci/menu.d/luci-app-mu300.json').read_text())
+        self.assertEqual(menu['admin/system/mu300-leds']['action'], {'type': 'view', 'path': 'mu300/leds'})
+        self.assertNotIn('admin/system/leds', menu)
+        self.assertFalse((TOP / 'openwrt/overlay/www/luci-static/resources/view/system/leds.js').exists())
+        common = (app / 'htdocs/luci-static/resources/mu300/common.js').read_text()
+        self.assertIn("method: 'led_get'", common)
+        self.assertIn("method: 'led_set', params: [ 'key', 'value' ]", common)
+        view = (app / 'htdocs/luci-static/resources/view/mu300/leds.js').read_text()
+        for s in ('callLedGet', 'callLedSet', "'timeout'", "'boot'", "'thermal'", "_brightness'"):
+            self.assertIn(s, view)
+        acl = json.loads((app / 'root/usr/share/rpcd/acl.d/luci-app-mu300.json').read_text())['luci-app-mu300']
+        self.assertIn('led_get', acl['read']['ubus']['mu300dash'])
+        self.assertNotIn('led_set', acl['read']['ubus']['mu300dash'])
+        self.assertIn('led_set', acl['write']['ubus']['mu300dash'])
+        self.assertTrue((app / 'root/usr/libexec/unisoc-modem/led').stat().st_mode & 0o111)
+
     def test_power_profiles_are_wired_in(self):
         # the daemon runs at boot, the keys wake it (mu300-sysd), the command is on PATH, OpenWrt's own power-key
         # handler (a tap = poweroff) is neutralised, and power.conf is kept

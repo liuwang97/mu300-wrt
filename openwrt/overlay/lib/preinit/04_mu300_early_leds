@@ -1,0 +1,10 @@
+# MU300: the boot indicator, when it is on (LED_BOOT=1 in /etc/mu300/led.conf; off by default): the siren's LED
+# takes its colours in turn from here, before the recorder and USB and on a start from the battery too, until
+# mu300-post says the boot is done (mu300-led boot off). mu300-led runs it in the background.
+mu300_early_leds() {
+	grep -qx 'LED_BOOT=1' /etc/mu300/led.conf 2>/dev/null || return 0
+	[ -x /opt/mu300/bin/mu300-led ] || return 0
+	PATH="$PATH:/opt/mu300/busybox-bin" /opt/mu300/bin/mu300-led boot on </dev/null >/dev/null 2>&1
+}
+
+boot_hook_add preinit_essential mu300_early_leds

@@ -34,6 +34,7 @@ Applies to: Linux 7.2.11, OpenWrt 25.12.5 (F50, U30 Air). Checked against the co
 - Wi-Fi LED: white (`zte-ldo1`) 5 GHz, blue (`zte-ldo2`) 2.4 GHz, steady; dark with the hotspot off.
 - U30 Air network LED shows the SIM in use: white (`zte-ldo0`) slot 0 (nano-SIM), blue (`net_blue`) slot 1 (eSIM), red alone for no service, dark for data off; the slot is `/run/mu300/sim-slot` (missing or not `1` is slot 0).
 - 4G vs 5G (`led_up` in `mobile-data`): the AcT of `AT+CEREG?`; a 5G SA registration is NR-only (CEREG: not registered), so `AT+C5GREG?` decides.
+- Settings (`mu300-led set`, System > LEDs): `LED_NETWORK|WIFI|BATTERY=0` darkens a lamp (the heat alarm still shows); `LED_*_BRIGHTNESS` 1-100 % dims only the PMIC RGB channels (0-255) and the F50's keypad sink (0-127): the U30 Air's network and Wi-Fi lamps are LDOs and a GPIO (`max_brightness` 1) and only switch. A breathing channel's peak is the level written to `hw_pattern`, so ZTE's levels scale and the curve stays. `LED_BOOT=1` cycles the RGB LED from preinit to `mu300-post` (3 min at most); `LED_THERMAL=siren|blink|off` is how the alarm `mu300-sysd` raises shows.
 
 ## CPU (`openwrt/opt/mu300/bin/mu300-cpu`)
 - `mu300-cpu core N on|off` takes CPU N offline or back and saves it (`CORES_OFF` in `/etc/mu300/cpu.conf`); `apply` (boot service) re-applies. CPU0 is refused: kernel timekeeping and the vendor drivers' interrupts start there. `mu300-power`'s idle takes CPU7 offline and leaves a core kept offline alone.
