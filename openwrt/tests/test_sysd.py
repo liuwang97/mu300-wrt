@@ -112,9 +112,8 @@ class ButtonsCases:
         WP, WW = 'mu300-power wake power', 'mu300-power wake wifi'
         cases = [('116 short', [WP]),
                  ('138 short', [WW, 'mu300-wifi-band toggle']),
-                 # the hold writes the radio's flag the panel's Wi-Fi switch writes: the page's off can be undone
-                 ('138 long', [WW, 'ubus -t 5 call hostapd.wlan0 get_status', 'uci -q set wireless.@wifi-device[0].disabled=0',
-                               'uci -q commit wireless', 'wifi up', 'mu300-led wifi sync 120']),
+                 # the hold goes through the panel's own toggle (hotspot-ap.sh): the page's off can be undone
+                 ('138 long', [WW, 'ubus -t 5 call hostapd.wlan0 get_status', 'wifi up', 'mu300-led wifi sync 120']),
                  ('0 tick', None),   # a tick is no press: it must not wake, only let the LEDs time out (and the battery LED follow)
                  # held power: no mu300-power wake (the radios would come back on the way down); the shutdown marker
                  ('116 long', ['poweroff']),
@@ -980,7 +979,9 @@ class Daemon(ShellTest):
         self.assertEqual(self.calls().count('mu300-led tick'), 1)
         self.send('uevent change extcon extcon0')
         self.assertTrue(wait_for(lambda: self.calls().count('mu300-led tick') == 2, 3))
-        self.assertEqual((root / 'run/mu300/led/.plugged').read_text().strip(), '1')
+        # the stub logs the tick before mu300-led runs: its .plugged comes a moment later
+        plugged = root / 'run/mu300/led/.plugged'
+        self.assertTrue(wait_for(lambda: plugged.exists() and plugged.read_text().strip() == '1', 3))
 
     def test_the_helper_is_asked_for_power_supply_uevents_and_started_again(self):
         self.stub('mu300-keys', 'echo "mu300-keys $*" >> "$STUBLOG/helper"')   # ends at once

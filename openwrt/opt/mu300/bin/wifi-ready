@@ -10,8 +10,6 @@
 //   exit 1  not there (yet), no radio configured, or ubus not answering.
 // With SECONDS it waits that long at most for 0 or 2, looking again at each ubus event and never on a clock: ubusd
 // announces every object it adds and removes, and hostapd.IFNAME appears when hostapd has set the access point up.
-import { cursor } from 'uci';
-import * as ubusmod from 'ubus';
 import * as uloop from 'uloop';
 
 let secs = ARGV[0] ?? '0';
@@ -22,10 +20,11 @@ if (!match(secs, /^[0-9]+$/)) {
 secs = +secs;
 
 uloop.init();
-let bus = ubusmod.connect(null, 2);
+// require, not import: loaded at run time like mu300-modemd's and cell's (the tests stand in for both)
+let ubusmod = require('ubus'), bus = ubusmod.connect(null, 2);
 if (!bus)
 	exit(1);
-let uci = cursor();
+let uci = require('uci').cursor();
 
 function look() {
 	let runtime = bus.call('network.wireless', 'status', {});

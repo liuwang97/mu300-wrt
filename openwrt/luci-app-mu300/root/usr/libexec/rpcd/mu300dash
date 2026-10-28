@@ -850,6 +850,7 @@ m_tcp_set() {
 # The dashboard's boot card: mu300-next-boot status, read only (the changes are act os ...)
 BOOTA=${MU300_BOOT_ADAPTER:-$DASH/boot}
 m_boot_get() { reply_obj "$("$BOOTA" get 2>/dev/null)" 'The boot adapter gave no valid reply'; }
+
 # --------------------------------------------------------------------- LEDs
 # The LED page: mu300-led through the adapter, which checks the key and the value again (and mu300-led after it)
 LEDA=${MU300_LED_ADAPTER:-$DASH/led}

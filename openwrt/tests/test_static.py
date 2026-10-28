@@ -484,7 +484,12 @@ class Rules(unittest.TestCase):
                 for rel, body in files.items():
                     (top / rel).parent.mkdir(parents=True, exist_ok=True)
                     (top / rel).write_text(body)
-                env = dict(os.environ, MU300_INPUTS=d, PATH='/usr/bin:/bin', MU300_LUCI_THEME_APK=str(top / 'no-theme.apk'))
+                # no network: a curl that fails (the base download comes right after these checks)
+                (top / 'bin').mkdir()
+                (top / 'bin' / 'curl').write_text('#!/bin/sh\necho "curl: offline" >&2\nexit 22\n')
+                (top / 'bin' / 'curl').chmod(0o755)
+                env = dict(os.environ, MU300_INPUTS=d, PATH=f'{top}/bin:/usr/bin:/bin',
+                           MU300_LUCI_THEME_APK=str(top / 'no-theme.apk'))
                 env.update(extra_env or {})
                 return subprocess.run(['sh', str(top / 'openwrt' / 'build-rootfs.sh'), 'x.tar.gz'], env=env,
                                       capture_output=True, text=True, timeout=30)
@@ -499,10 +504,10 @@ class Rules(unittest.TestCase):
                 r = run({k: v for k, v in need.items() if k != missing})
                 self.assertEqual(r.returncode, 1, r.stderr)
                 self.assertIn(missing.rsplit('/', 1)[1], r.stderr)
-        # with every file present no check stops the build (it stops later, at the theme this tree lacks)
+        # with every file present no check stops the build (it stops later, at the base download curl refuses)
         r = run(need)
         self.assertNotEqual(r.returncode, 0, r.stderr)
-        self.assertIn('theme package missing', r.stderr)
+        self.assertIn('curl: offline', r.stderr)
         self.assertNotIn('required file missing', r.stderr)
 
     def test_panel_mounts_survive_spaces_in_paths(self):

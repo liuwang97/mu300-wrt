@@ -1115,27 +1115,11 @@ class TcpAdapter(ShellTest):
 
     def run_ad(self, shell, *args):
         r = self.script(shell, ADAPTERS / 'tcp', *args, MU300_TCP_CMD=self.stubs / 'mu300-tcp')
-class LedAdapter(ShellTest):
-    """unisoc-modem/led: mu300-led's settings as JSON for the LED page, and one setting at a time, checked again"""
-
-    def setUp(self):
-        super().setUp()
-        self.settings = self.tmp / 'settings'
-        self.settings.write_text('{"device":"u30air","lamps":["network","wifi","battery"],"dimmable":["battery"],'
-                                 '"timeout":60,"network":true,"battery_brightness":100,"thermal":"siren"}\n')
-        self.stub('mu300-led', 'echo "$*" >> "$STUBLOG/led.log"\n'
-                               'case $1 in settings) cat "$STUBLOG/settings" ;;\n'
-                               '  *) [ -e "$STUBLOG/fail" ] && { cat "$STUBLOG/fail" >&2; exit 2; } ;; esac\n'
-                               'exit 0')
-
-    def run_ad(self, shell, *args):
-        r = self.script(shell, ADAPTERS / 'led', *args, MU300_LED_CMD=self.stubs / 'mu300-led')
         self.assertEqual(r.returncode, 0, r.stderr)
         return json.loads(r.stdout)
 
     def log(self):
         p = self.tmp / 'tcp.log'
-        p = self.tmp / 'led.log'
         t = p.read_text() if p.exists() else ''
         p.unlink(missing_ok=True)
         return t
@@ -1198,6 +1182,33 @@ class BootAdapter(ShellTest):
             self.assertEqual(json.loads(r.stdout), {'ok': 1, 'available': 0})
             r = self.script(shell, ADAPTERS / 'boot', 'set', MU300_NEXT_BOOT=self.tmp / 'none')
             self.assertEqual(json.loads(r.stdout)['ok'], 0)
+
+
+class LedAdapter(ShellTest):
+    """unisoc-modem/led: mu300-led's settings as JSON for the LED page, and one setting at a time, checked again"""
+
+    def setUp(self):
+        super().setUp()
+        self.settings = self.tmp / 'settings'
+        self.settings.write_text('{"device":"u30air","lamps":["network","wifi","battery"],"dimmable":["battery"],'
+                                 '"timeout":60,"network":true,"battery_brightness":100,"thermal":"siren"}\n')
+        self.stub('mu300-led', 'echo "$*" >> "$STUBLOG/led.log"\n'
+                               'case $1 in settings) cat "$STUBLOG/settings" ;;\n'
+                               '  *) [ -e "$STUBLOG/fail" ] && { cat "$STUBLOG/fail" >&2; exit 2; } ;; esac\n'
+                               'exit 0')
+
+    def run_ad(self, shell, *args):
+        r = self.script(shell, ADAPTERS / 'led', *args, MU300_LED_CMD=self.stubs / 'mu300-led')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return json.loads(r.stdout)
+
+    def log(self):
+        p = self.tmp / 'led.log'
+        t = p.read_text() if p.exists() else ''
+        p.unlink(missing_ok=True)
+        return t
+
+    def test_get(self):
         good = self.settings.read_text()
         for shell in self.each_shell():
             self.settings.write_text(good)
