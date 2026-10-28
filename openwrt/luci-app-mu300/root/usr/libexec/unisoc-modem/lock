@@ -70,9 +70,22 @@ mkdir -p "$STATE_DIR" 2>/dev/null
 at() { "$AT" -t "${2:-6}" "$1" 2>/dev/null | tr -d '\r'; }
 # Never WRITE bands the module does not support - the n79 lock (from the old
 # wrong capability decode) left the CP searching until it wedged. Supported
-# sets: NR from the cached SP5GCMDS caps (refreshed by every get), LTE fixed.
+# sets: NR from the cached SP5GCMDS caps (refreshed by every get), LTE per board.
 NR_SUP_FALLBACK=1,5,6,8,28,41,78
-LTE_SUP=1,3,5,8,34,38,39,40,41
+# LTE has no capability query: a cleared mask (AT+SPLBAND=1,0,0,0,0,0) reads back as the modem's own full table,
+# measured once per board and fixed here. F50: 0,482,0,149,0. U30 Air (W25.30.2): 0,2018,2057,2271,2. Fixed per
+# board and not learned from a read-back: a read-back taken while a lock is in the modem's NV (one left by Android,
+# by the stock UI, or by a wiped state directory) would become "the table" and that lock "automatic", and a learned
+# file on the SD card would follow the card to the other board. Nothing is written.
+LTE_TABLE_F50=1,3,5,8,34,38,39,40,41
+LTE_TABLE_U30AIR=1,2,3,4,5,7,8,12,17,20,28,34,38,39,40,41,42,43,66
+lte_table() {
+    case $(mu300-device 2>/dev/null) in
+        u30air) printf '%s' "$LTE_TABLE_U30AIR" ;;
+        *) printf '%s' "$LTE_TABLE_F50" ;;
+    esac
+}
+LTE_SUP=$(lte_table)
 filter_bands() {  # filter_bands "1,5,79" "1,5,6,..." -> "1,5"
     local b out=
     for b in $(printf '%s' "$1" | tr ',' ' '); do
@@ -229,6 +242,9 @@ do_get() {
     # super-table slot and decoded as nonsense bands like n82.
     nr3=$(echo "$nrm" | awk -F',' 'NF>=4 {print $1","$3","$4; exit} NF==3 {print $1","$3",0"; exit} {print "0,0,0"}')
     lte_b=$(lte_bands "$ltem")
+    # the read-back as it is: a lock the panel did not save shows as that lock. Only a read-back holding every band
+    # of the table is automatic (it is what a cleared mask reads back as), and it is reported as nothing locked
+    [ -n "$lte_b" ] && lte_full "$lte_b" && lte_b=
     nr_b=$(nr_bands "$nr3")
 
     # cell locks: "12,3" alone = none; (freq,pci) pairs follow - and there can
@@ -253,12 +269,12 @@ do_get() {
 
     # "auto" for bands = nothing locked (empty masks or the full supported set)
     # caps = what the module can do: NR = the SP5GCMDS list (sorted), LTE = the
-    # fixed table (there is no LTE capability command; ufi_tools uses the same
-    # fixed list). Both with a measured fallback for a silent firmware.
+    # board's table (there is no LTE capability command; see lte_table). NR with
+    # a measured fallback for a silent firmware.
     nrcap=$(printf '%s' "$nrcapm" | tr ',' '\n' | tr -d ' \t"' | grep -xE '[0-9]+' |
         sort -n | awk 'NR>1{printf ","}{printf "%s", $1}')
     [ -n "$nrcap" ] || nrcap=1,5,6,8,28,41,78
-    ltecap=1,3,5,8,34,38,39,40,41
+    ltecap=$LTE_SUP
     # every modem-derived value goes through json_str; cells is built above
     # from digits matched by a regex only
     printf '{"ts":%d,"mode":{"label":%s,"work":%s,"gran":%s,"m1":%s,"prim":%s},"endc":%s,"lte":{"locked":%s,"raw":%s},"nr":{"locked":%s,"raw":%s},"cell":%s,"cells":%s,"caps":{"nr":%s,"lte":%s}}\n' \
@@ -624,9 +640,8 @@ write_setting() {
 }
 # read_field CMD PREFIX: the +PREFIX: line's value, blanks removed
 read_field() { at "$1" 4 | sed -n "s/^+$2: *//p" | head -n1 | tr -d ' \t'; }
-# lte_full BANDS: BANDS holds every band of the LTE table. A cleared LTE mask reads back as the modem's own full
-# table, which is the table here on the F50 but more on the U30 Air's modem (1,2,3,4,5,7,8,12,17,20,28,34,38-43,66):
-# an exact match failed every reset and every boot replay of "automatic" there
+# lte_full BANDS: BANDS holds every band of the board's LTE table (lte_table): what a cleared LTE mask reads back as.
+# A superset, not an exact match: a firmware whose table is larger than the one here is still automatic.
 lte_full() {
     local b
     for b in $(printf '%s' "$LTE_SUP" | tr ',' ' '); do

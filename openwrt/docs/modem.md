@@ -44,6 +44,7 @@ Applies to: Linux 7.2.11, OpenWrt 25.12.5 (F50, U30 Air). Checked against the co
 
 ## Cell locks and panel data
 - `lock reset` (`openwrt/luci-app-mu300/root/usr/libexec/unisoc-modem/lock`) is verified: it writes seven fixed values, stops on an explicit ERROR (silence is not failure), reads back, restarts the stack once and reads again, and deletes the saved locks only then. A failed reset keeps them. Mode `auto152` (`SPTESTMODE=152`, no 2G) is not run on a device.
+- LTE has no capability query; a cleared mask reads back as the modem's own table, fixed per board in `lock` (F50 `0,482,0,149,0` = B1/3/5/8/34/38-41; U30 Air W25.30.2 `0,2018,2057,2271,2` = B1-5/7/8/12/17/20/28/34/38-43/66). It is the panel's candidates and the apply filter, and a read-back holding all of it is automatic. Learning it from a read-back would take a lock left in NV for the table.
 - The own number is `AT+CNUM`, else the IMS identity from `AT+SPPAURI?`; it is asked on full rounds only because IMS registers after the SIM is read, and is never written to flash.
 - Bearer QoS maps `sipa_eth0-7` to CID 1-8 of slot 0 and `sipa_eth8-15` to slot 1 (`data_cid` in `openwrt/luci-app-mu300/root/usr/share/unisoc-modem/lib.sh`), so a stale or other-bearer answer is never shown.
 - With `option ipv6 'relay'` the carrier's /64 comes by RA and `+CGCONTRDP` gives only the interface identifier; `mu300cell-v6.sh` follows `+CGEV` on the channels of the card in use.
