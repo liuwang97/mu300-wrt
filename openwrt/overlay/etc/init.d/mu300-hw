@@ -20,6 +20,8 @@ hw_bringup() {
 	# as the phy is there) already runs under them. The Wi-Fi then comes before the vendor extras and zram, which held
 	# it back ~2 s at every boot (modprobes of modules this kernel does not have).
 	/opt/mu300/bin/regdb-load >/tmp/mu300-wifi-start.log 2>&1
+	# a broken /etc/board.json made again before the wifi-scripts read it (the bring-up goes on either way)
+	/opt/mu300/bin/openwrt-board-check >>/tmp/mu300-wifi-start.log 2>&1
 	country=$(uci -q get wireless.radio0.country)
 	[ -n "$country" ] && iw reg set "$country"
 	/opt/mu300/bin/wifi-start >>/tmp/mu300-wifi-start.log 2>&1
@@ -35,30 +37,17 @@ hw_bringup() {
 		iw reg set "$country"
 		for n in $(seq 1 10); do iw reg get | grep -q "country $country:" && break; sleep 1; done
 	fi
-	# Unchanged settings and an access point that netifd's own start brought up: nothing to redo. The down/up below
-	# took a hotspot that was up (and the chip under it: a power cycle and a firmware load) down again for ~4 s at
-	# every boot.
-	if [ "$(md5sum /etc/config/wireless 2>/dev/null)" = "$cfg" ] && ap_enabled_soon; then
-		echo "access point up under the configured rules, no restart" >>/tmp/mu300-wifi-start.log
+	# Unchanged settings and the Wi-Fi up as configured from netifd's own start (wifi-ready, waiting 20 s at most on
+	# ubus events; a hotspot switched off counts as up): nothing to redo. The down/up below takes a hotspot that is up
+	# (and the chip under it: a power cycle and a firmware load) down again for ~4 s.
+	if [ "$(md5sum /etc/config/wireless 2>/dev/null)" = "$cfg" ] && /opt/mu300/bin/wifi-ready 20; then
+		echo "Wi-Fi up as configured under the configured rules, no restart" >>/tmp/mu300-wifi-start.log
 		return 0
 	fi
 	# a reload does not restart a hostapd interface that went AP-DISABLED while the world regulatory domain
 	# was still active; one down/up right after the country is live does
 	wifi down >>/tmp/mu300-wifi-start.log 2>&1
 	wifi up >>/tmp/mu300-wifi-start.log 2>&1
-}
-
-# ap_enabled_soon: true once hostapd reports wlan0 ENABLED (20 s at most); false when it gives up (DISABLED) or never
-# gets there
-ap_enabled_soon() {
-	for n in $(seq 1 100); do
-		case $(ubus -S call hostapd.wlan0 get_status 2>/dev/null | jsonfilter -e '@.status' 2>/dev/null) in
-			ENABLED) return 0 ;;
-			DISABLED) return 1 ;;
-		esac
-		/opt/mu300/bin/busybox sleep 0.2 2>/dev/null || sleep 1
-	done
-	return 1
 }
 
 start() {

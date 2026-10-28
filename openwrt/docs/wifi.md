@@ -32,6 +32,7 @@ The chip is the SC2355 on PCIe, driven by the kernel bundle's out-of-tree `sprd_
 - With Wi-Fi connected the default route has metric 50 and mobile data has 100 (`openwrt/opt/mu300/bin/wifi-client`), so Wi-Fi wins.
 
 ## Startup order
-- After power-on netifd starts the radio once before `mu300-hw` does; it ends `AP-DISABLED` under the world domain (15-23 s). `mu300-hw`'s `wifi down; wifi up` at about 37 s brings the hotspot up (`AP-ENABLED` at 39.9-43.4 s on the U30 Air).
+- After power-on netifd starts the radio once before `mu300-hw` does; it ends `AP-DISABLED` under the world domain (15-23 s). `mu300-hw`'s `wifi down; wifi up` at about 37 s brings the hotspot up (`AP-ENABLED` at 39.9-43.4 s on the U30 Air). It is skipped when the settings are unchanged and `openwrt/opt/mu300/bin/wifi-ready` finds the Wi-Fi up as configured within 20 s, waiting on ubus events (a hotspot switched off counts as up).
+- A broken `/etc/board.json` makes the wifi-scripts' `find_phy_by_path()` fail (radio `retry_setup_failed`, no AP); `mu300-hw` runs `openwrt-board-check`, which has `board_detect` make it again and keeps the broken one as `board.json.corrupt.PID`.
 - A `wifi reload` that adds a second BSS can take the whole radio down; use `wifi down; wifi up` and keep another way into the device.
 - The logd ring is 128 KiB (about 1300 lines) and one Wi-Fi restart writes hundreds, so a boot-time line can be gone within about 135 s; important reasons are also written to a file.

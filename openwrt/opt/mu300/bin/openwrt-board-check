@@ -1,0 +1,36 @@
+#!/bin/sh
+# openwrt-board-check: /etc/board.json is JSON, or made again before the wifi-scripts read it. A broken board.json
+# (seen after a restore) makes the wifi-scripts' find_phy_by_path() fail: netifd marks the radio retry_setup_failed
+# and no access point comes up, with the Wi-Fi switched on.
+# board_detect writes it from the device tree and board.d (when it is missing: the first boot, the first after an
+# update); the wireless settings live in /etc/config/wireless and are not touched. A valid file is left as it is,
+# whatever it holds. A broken one is kept next to it as board.json.corrupt.PID, and the new one moved into place only
+# once it is valid itself.
+# Exit 0: valid (already, or made again); 1: still not (the reason on stderr).
+set -eu
+R=${MU300_SYSROOT:-}
+parser=${MU300_BOARD_UCODE:-ucode}
+detector=${MU300_BOARD_DETECTOR:-/bin/board_detect}
+config=$R/etc/board.json
+valid() {   # valid FILE: a JSON object of at most 1 MiB
+    "$parser" -e 'import {readfile,stat} from "fs"; try { let s=stat(ARGV[0]); if(!s || s.size>1048576) exit(1); let x=json(readfile(ARGV[0])); exit(type(x)=="object"?0:1); } catch(e) { exit(1); }' "$1" >/dev/null 2>&1
+}
+valid "$config" && exit 0
+[ ! -L "$config" ] || { echo 'board.json is a symlink: not replacing it' >&2; exit 1; }
+[ -x "$detector" ] || { echo 'board.json is not valid and there is no board_detect to make it again' >&2; exit 1; }
+temp=$config.rebuild.$$
+[ ! -e "$temp" ] || exit 1
+trap 'rm -f "$temp"' EXIT
+"$detector" "$temp" >/dev/null
+valid "$temp" || { echo 'board_detect gave no valid JSON: board.json left as it was' >&2; exit 1; }
+if [ -f "$config" ]; then
+    # the broken one kept as evidence, never over an earlier one
+    backup=$config.corrupt.$$
+    [ ! -e "$backup" ] || exit 1
+    cp -p "$config" "$backup"
+fi
+chmod 0644 "$temp"
+mv "$temp" "$config"
+trap - EXIT
+sync
+echo 'board.json was not valid: made again by board_detect (wireless settings kept)'

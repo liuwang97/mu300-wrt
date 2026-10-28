@@ -1,9 +1,11 @@
 """wifi-start loads the WCN modules without modules.dep (the bundle ships none); mu300-hw restarts the AP once the
-country is live."""
+country is live unless wifi-ready finds the Wi-Fi up as configured, and makes a broken /etc/board.json again before
+the wifi-scripts read it."""
 import subprocess
+import sys
 import unittest
 
-from helpers import BIN, TOP, ShellTest
+from helpers import BIN, TOP, ShellTest, ucode_argv
 
 HW = TOP / 'openwrt' / 'overlay' / 'etc' / 'init.d' / 'mu300-hw'
 
@@ -59,6 +61,125 @@ class HwBringup(unittest.TestCase):
         self.assertEqual(s.count('wifi down'), 1)
         self.assertEqual(s.count('wifi up'), 1)
         self.assertLess(up, s.index('\nstart()'))
+
+    def test_board_json_checked_and_readiness_from_wifi_ready(self):
+        s = HW.read_text()
+        self.assertLess(s.index('openwrt-board-check'), s.index('/opt/mu300/bin/wifi-start'))
+        self.assertLess(s.index('/opt/mu300/bin/wifi-ready 20'), s.index('wifi down'))
+        self.assertNotIn('hostapd.wlan0', s)       # a hotspot switched off has none: 20 s and a restart for nothing
+        self.assertNotIn('sleep 0.2', s)
+
+
+class BoardCheck(ShellTest):
+    """openwrt-board-check, with ucode's JSON check played by Python."""
+
+    def setUp(self):
+        super().setUp()
+        self.root = self.tmp / 'root'
+        (self.root / 'etc').mkdir(parents=True)
+        self.board = self.root / 'etc' / 'board.json'
+        parser = self.stubs / 'ucode'
+        parser.write_text('#!%s\nimport json, sys\ntry:\n    sys.exit(0 if isinstance(json.load(open(sys.argv[-1])), '
+                          'dict) else 1)\nexcept Exception:\n    sys.exit(1)\n' % sys.executable)
+        parser.chmod(0o755)
+        self.stub('board_detect', 'printf \'{"model":{"id":"zte,u30air"}}\' > "$1"')
+        self.stub('bad_detect', 'printf \'{"model":\' > "$1"')
+        self.stub('sync', ':')
+
+    def check(self, shell, detector='board_detect'):
+        return self.script(shell, BIN / 'openwrt-board-check', MU300_SYSROOT=self.root,
+                           MU300_BOARD_DETECTOR=self.stubs / detector)
+
+    def leftovers(self):
+        return sorted(p.name for p in self.board.parent.iterdir() if p.name != 'board.json')
+
+    def test_valid_is_kept_whatever_it_holds(self):
+        for shell in self.each_shell():
+            self.board.write_text('{"custom": 1}')
+            r = self.check(shell)
+            self.assertEqual((r.returncode, r.stdout), (0, ''), r.stderr)
+            self.assertEqual(self.board.read_text(), '{"custom": 1}')
+
+    def test_broken_is_made_again_and_kept_beside_it(self):
+        for shell in self.each_shell():
+            for old in ('{"model":{', '', '[1]'):
+                for p in self.board.parent.iterdir():
+                    p.unlink()
+                self.board.write_text(old)
+                r = self.check(shell)
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertEqual(self.board.read_text(), '{"model":{"id":"zte,u30air"}}')
+                kept = self.leftovers()
+                self.assertEqual(len(kept), 1)
+                self.assertTrue(kept[0].startswith('board.json.corrupt.'))
+                self.assertEqual((self.board.parent / kept[0]).read_text(), old)
+
+    def test_missing_is_made(self):
+        for shell in self.each_shell():
+            self.board.unlink(missing_ok=True)
+            self.assertEqual(self.check(shell).returncode, 0)
+            self.assertEqual(self.board.read_text(), '{"model":{"id":"zte,u30air"}}')
+            self.assertEqual(self.leftovers(), [])
+            self.board.unlink()
+
+    def test_a_bad_rebuild_leaves_the_file_as_it_was(self):
+        for shell in self.each_shell():
+            self.board.write_text('[1]')
+            r = self.check(shell, 'bad_detect')
+            self.assertEqual(r.returncode, 1)
+            self.assertIn('no valid JSON', r.stderr)
+            self.assertEqual(self.board.read_text(), '[1]')
+            self.assertEqual(self.leftovers(), [])
+            r = self.check(shell, 'no_such_detector')
+            self.assertEqual(r.returncode, 1)
+            self.assertEqual(self.board.read_text(), '[1]')
+
+    def test_a_symlink_is_not_replaced(self):
+        for shell in self.each_shell():
+            real = self.root / 'etc' / 'real'
+            real.write_text('x')
+            self.board.unlink(missing_ok=True)
+            self.board.symlink_to('real')
+            self.assertEqual(self.check(shell).returncode, 1)
+            self.assertEqual(real.read_text(), 'x')
+            self.board.unlink()
+            real.unlink()
+
+
+class WifiReady(ShellTest):
+    """wifi-ready's one look (no SECONDS), against stubbed `uci -q show wireless` and `ubus call` (tests/ucode-stubs)."""
+
+    UCI = ("wireless.radio0=wifi-device\n"
+           "wireless.ap0=wifi-iface\nwireless.ap0.device='radio0'\nwireless.ap0.mode='ap'\n"
+           "wireless.ap0.ifname='wlan0'\n")
+
+    def ready(self, uci, radio, hostapd=None):
+        argv = ucode_argv(BIN / 'wifi-ready')
+        if not argv:
+            self.skipTest('no ucode')
+        (self.tmp / 'uci.out').write_text(uci)
+        (self.tmp / 'status.json').write_text('{"radio0": %s}' % radio)
+        (self.tmp / 'hostapd.json').write_text('{"status": "%s"}' % hostapd if hostapd else '')
+        self.stub('uci', '[ "$*" = "-q show wireless" ] && cat "$STUBLOG/uci.out"')
+        self.stub('ubus', 'case "$2 $3" in\n'
+                          '  "network.wireless status") cat "$STUBLOG/status.json" ;;\n'
+                          '  "hostapd.wlan0 get_status") [ -s "$STUBLOG/hostapd.json" ] && cat "$STUBLOG/hostapd.json" ;;\n'
+                          '  *) exit 4 ;;\nesac')
+        return subprocess.run(argv, capture_output=True, text=True, env=self.env()).returncode
+
+    def test_access_point(self):
+        up = '{"up": true, "pending": false, "interfaces": [{"section": "ap0", "ifname": "wlan0"}]}'
+        self.assertEqual(self.ready(self.UCI, up, 'ENABLED'), 0)
+        self.assertEqual(self.ready(self.UCI, up, 'DISABLED'), 2)
+        self.assertEqual(self.ready(self.UCI, up, 'COUNTRY_UPDATE'), 1)
+        self.assertEqual(self.ready(self.UCI, '{"up": false, "pending": true}'), 1)     # not there yet
+        self.assertEqual(self.ready(self.UCI, '{"up": false, "retry_setup_failed": true}'), 2)
+
+    def test_a_hotspot_switched_off_is_ready(self):
+        off = self.UCI + "wireless.ap0.disabled='1'\n"
+        self.assertEqual(self.ready(off, '{"up": false, "pending": false}'), 0)
+        self.assertEqual(self.ready(self.UCI + "wireless.radio0.disabled='1'\n", '{"up": false}'), 0)
+        self.assertEqual(self.ready('', '{}'), 1)                                        # no radio configured
 
 
 if __name__ == '__main__':

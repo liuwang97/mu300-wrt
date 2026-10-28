@@ -1,0 +1,81 @@
+#!/usr/bin/ucode
+// wifi-ready [SECONDS]: is the Wi-Fi up as /etc/config/wireless has it? A read-only look at netifd's and hostapd's
+// state over ubus; it never enables a radio or an interface.
+//   exit 0  every access point of an enabled interface on an enabled radio ENABLED in hostapd, every other enabled
+//           interface up in netifd. A radio or an interface switched off counts as ready: there is nothing to wait
+//           for (a hotspot switched off, or disabled by wifi-client's station mode, never has a hostapd object).
+//   exit 2  it will not come by waiting: netifd gave a radio up (retry_setup_failed), or hostapd reports an access
+//           point DISABLED (one started under the world regulatory domain ends there; only a Wi-Fi restart brings it
+//           back).
+//   exit 1  not there (yet), no radio configured, or ubus not answering.
+// With SECONDS it waits that long at most for 0 or 2, looking again at each ubus event and never on a clock: ubusd
+// announces every object it adds and removes, and hostapd.IFNAME appears when hostapd has set the access point up.
+import { cursor } from 'uci';
+import * as ubusmod from 'ubus';
+import * as uloop from 'uloop';
+
+let secs = ARGV[0] ?? '0';
+if (!match(secs, /^[0-9]+$/)) {
+	warn('usage: wifi-ready [SECONDS]\n');
+	exit(1);
+}
+secs = +secs;
+
+uloop.init();
+let bus = ubusmod.connect(null, 2);
+if (!bus)
+	exit(1);
+let uci = cursor();
+
+function look() {
+	let runtime = bus.call('network.wireless', 'status', {});
+	if (runtime == null)
+		return 1;
+	let configured = 0, waiting = false, failed = false;
+	uci.foreach('wireless', 'wifi-device', (radio) => {
+		configured++;
+		if (radio.disabled == '1')
+			return;
+		let r = runtime[radio['.name']];
+		if (r?.retry_setup_failed || r?.failed) {
+			failed = true;
+			return;
+		}
+		uci.foreach('wireless', 'wifi-iface', (iface) => {
+			if (iface.device != radio['.name'] || iface.disabled == '1')
+				return;
+			let actual = null;
+			for (let i in r?.interfaces ?? [])
+				if (i.section == iface['.name'])
+					actual = i;
+			// an access point is up when hostapd says so, whatever netifd still has pending; it is found under the
+			// name netifd gave it, else the one the settings give it
+			if (iface.mode == 'ap') {
+				let ifname = actual?.ifname ?? iface.ifname;
+				let st = ifname ? bus.call('hostapd.' + ifname, 'get_status', {})?.status : null;
+				if (st == 'DISABLED')
+					failed = true;
+				else if (st != 'ENABLED')
+					waiting = true;
+			}
+			else if (!r?.up || r.pending || !actual?.ifname)
+				waiting = true;
+		});
+	});
+	return failed ? 2 : (waiting || !configured) ? 1 : 0;
+}
+
+let rc = look();
+if (rc == 1 && secs > 0) {
+	bus.listener('*', () => {
+		rc = look();
+		if (rc != 1)
+			uloop.end();
+	});
+	rc = look();   // what came between the first look and the listener
+	if (rc == 1) {
+		uloop.timer(secs * 1000, () => uloop.end());
+		uloop.run();
+	}
+}
+exit(rc);
