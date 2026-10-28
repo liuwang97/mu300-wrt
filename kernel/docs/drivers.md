@@ -59,12 +59,23 @@ is synced first and removed only by a clean shutdown, so a crash or power cut dr
 `-3125,0,0`, `-3125,-3125,-3125`, `-6250,-6250,0` lowered exactly those domains' OPP tables and passed
 `mu300-cpu voltage stress`; nothing beyond -6250 uV has been tried. DVFS starts 3.3-4.6 s later.
 
+Energy model and EAS: `DVFS_INIT` runs before `cpufreq_register_driver()`, so `register_em` (`dynamic-power-coefficient`
+x V^2 x f) reads the final OPP voltages, offset included, and no later code replaces an OPP. U30 Air, 7.2.11: perf
+domains 0-3 / 4-6 / 7 (10/10/11 states, top 215/1497/1407 mW per CPU), capacities 363/1024/985, one PKG domain with
+`SD_ASYM_CPUCAPACITY_FULL`, EAS started, `schedutil` on all policies.
+
 ## Thermal
 
-`step_wise` follows the noise of the "hottest of eleven" sensor: under 8 loops the SoC went 38 -> 98.5 C in
-185 s (6.18.56, unmeasured on 7.2). `kernel/modules/mu300_thermal` supplies `get_trend` (slope between 0.5 s means a second apart, dead band
-1 C/s): from trip+3 C raising, trip-5..trip stable, below dropping (`soc-thmzone` trip 85 C); 10 min full load: mean
-82.3 C, peak 91.2 C. The root filesystem's thermal guard adds a backstop from 92 C (A55 from 95 C) and powers off at 105 C.
+`soc-thmzone` (70/85 C passive, 110 C critical, sustainable power 3000 mW, cooling maps from the 85 C trip with
+weights A55 1024, CPUs 4-6 410, CPU 7 410) runs `power_allocator`: `kernel/modules/mu300_thermal` registers the zone and
+selects it (patch `0030` exports the call); every other zone keeps the default `step_wise` and has no trips. The
+three `cpufreq-cpu*` cooling devices are power actors through the energy model. From 70 C the budget is 3000 mW
++ 400 mW per C under 85 C (200 mW per C over it, plus the integral): at full load all clusters run free up to about
+76 C; 80 C caps CPUs 4-6 at 1755 and CPU 7 at 1872 MHz; 85 C grants about 1846/1326/936 MHz. A zone left on
+`step_wise` (power_allocator refuses a bound cooling device that is no power actor) uses the module's `get_trend`
+(slope between 0.5 s means a second apart, dead band 1 C/s): with the core's own, 8 loops reached 98.5 C in 185 s
+(6.18.56); with this one a 10 min full load held mean 82.3 C, peak 91.2 C. The root filesystem's thermal guard adds a backstop from 92 C (A55 from
+95 C) and powers off at 105 C.
 
 ## eMMC and SD host
 
@@ -100,3 +111,18 @@ is synced first and removed only by a clean shutdown, so a crash or power cut dr
 
 `leds-zte-ldo` exposes the U30 Air's LDO-switched lights as `zte-ldo0..2` and starts them dark (else the bootloader's "on"
 stays); `leds-sc27xx-kpled` drives the keypad sink used as a red LED.  `0013` ports `pinctrl-sprd-qogirn6pro` (511 pins). `0028` lets `pcie-sprd` skip the 0.9 s link wait: `wcn_bsp` powers the Marlin3 later.
+
+## Unused power domains
+
+- The bootloader leaves two top domains on that nothing uses: MM (camera; PMU APB `0x508[28:24]`, its ISP/DCAM/VDSP
+  sub-domains off) and DPU_VSP (`0x510[28:24]`, VPU enc0/enc1/dec off), with their bus enables (`mm-eb`,
+  `dpu-vsp-eb`) and the pixel PLL running. GPU, AI and DP are off; IPA and PCIe are on and in use. State 0 is on, 7 off.
+- `port/drivers/pmdomain/sprd/ums9620-unused-pd.c` (built in) binds to `mm_domain` and the top `sprd,vpu-pd` and
+  runs the vendor sequence: bus enable off (AON APB), auto shutdown off, force shutdown on, state 7 within 15 ms, then
+  the pixel PLL off. It acts only on a domain that is on with every sub-domain off, switches a domain that does not
+  reach 7 back on, writes the set/clear registers (+0x1000/+0x2000) and takes regmaps of the PMU and AON APB only.
+  It registers no genpd provider, so no driver of a device in these domains can probe.
+- A read of a block without power can hang the bus, so nothing may map one: `ums9620-clk` registers no MM
+  (`0x30000000`, `0x30010000`) or DPU/VSP (`0x30100000`, `0x30110000`) controller, and no syscon of those blocks is
+  ever looked up (no `/sys/kernel/debug/regmap` entry, nothing in `clk_summary`). `0x318xxxxx` (`dispc1` glb,
+  USB31/DP PHY, `dptx`) belongs to the IPA domain and stays.

@@ -3,7 +3,7 @@
 Applies to: Linux 7.2.13, OpenWrt 25.12.5 (F50, U30 Air). Checked against the code: 2026-10-23.
 
 Out-of-tree Unisoc/ZTE code in `kernel/modules/`: `sprd_modem` (SIPC, SIPA, mailbox, Trusty, modem loader), `wcn_bsp`,
-`sprd_wlan_combo`, `sprdbt_tty`, `sprd_pmic_wdt`, `mu300_thermal`, `ums9620_lpintc`. Load order: `kernel/initramfs/module-order.txt`. In-tree port and patches: `drivers.md`.
+`sprd_wlan_combo`, `sprdbt_tty`, `sprd_pmic_wdt`, `sprd_ddr_dfs`, `mu300_thermal`, `ums9620_lpintc`. Load order: `kernel/initramfs/module-order.txt`. In-tree port and patches: `drivers.md`.
 
 ## Modem stack (SIPC, SIPA)
 
@@ -69,6 +69,24 @@ Out-of-tree Unisoc/ZTE code in `kernel/modules/`: `sprd_modem` (SIPC, SIPA, mail
   firmware pull WAKE# and end `mem`: the log is off by default (`/sys/devices/virtual/misc/wcn/devices/armlog_status`).
 - `iw dev wlan0 set type __ap` on a down interface fails once with `EINVAL`; a retry succeeds. A good `CMD_START_AP` leaves no
   kernel log line, and `/sys/class/firmware` does not exist (no sysfs fallback).
+
+## DDR frequency scaling: `sprd_ddr_dfs`
+
+- The PM_SYS firmware scales the DDR; the AP only asks, over SIPC channel 22 (`SMSG_CH_PM_CTRL`, dst 6). Protocol and
+  measured behaviour: `modules/sprd_ddr_dfs/ddr_dfs.h`. Without the driver the firmware keeps 1866 MHz (DFS and auto DFS
+  off). Table (U30 Air): 384 533 768 1066 1244 1536 1866 MHz; the stock tree's `freq-num` is 8, entry 7 reads 0.
+- Binds to `/scene-frequency` (`sprd,ddr-dvfs`, no modalias), loaded from `module-order.txt`; a thread opens the
+  channel and waits for pm_sys, turns DFS on and registers `/sys/class/devfreq/scene-frequency`. Governor
+  `sprd_ddr_auto` (default): auto DFS on, `min_freq` is the AP's vote (a floor), `max_freq` does nothing. performance,
+  powersave and userspace pin a frequency (`SET_DDR_FREQ`, auto DFS off). `cur_freq` asks the firmware; `target_freq`
+  and `trans_stat` show the vote. `rmmod` puts back the found DFS, auto, frequency and vote.
+- The firmware answers the OPEN handshake once per boot and ignores CLOSE: the channel is never closed; a reload
+  finds it open in sipc. `smsg_ch_open()` with a finite timeout fails a good handshake (`smsg_recv()` returns the
+  jiffies left) and leaves the firmware's side open for good: only `-1` works.
+- U30 Air, 7.2.11, auto DFS, no floor: idle 533/1536 MHz (never 384), one core of `membw` lifts it to 1866 within a
+  second and it drops to 1536 a second after: read 6.2 GB/s, copy 10.6 GB/s, latency 159-172 ns (pinned 1866: 6.0,
+  10.5, 150 ns; pinned 384: 1.9-2.5, 1.5-1.9 GB/s, 290-310 ns). Wi-Fi AP, USB and ping unaffected. Power not measured
+  (battery full on USB).
 
 ## Bluetooth and the GPU
 
