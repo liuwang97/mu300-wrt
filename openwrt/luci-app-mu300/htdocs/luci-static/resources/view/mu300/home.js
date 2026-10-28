@@ -570,7 +570,7 @@ return view.extend({
 		var c = st.cell || null;
 		var s = st.sig || null;
 		if (s && !s.error && (!c || !c.ts || (s.ts || 0) >= c.ts)) {
-			if (c && s.partial) {
+			if (c && !c.error && s.partial) {
 				/* The first core reply updates the registration, but a transient empty CESQ does not wipe the last engineering signal. */
 				c = Object.assign({}, c, {
 					ts: s.ts, cfun: s.cfun, reg: s.reg, reg5g: s.reg5g
@@ -578,7 +578,10 @@ return view.extend({
 			} else c = c ? Object.assign({}, c, {
 				ts: s.ts, cfun: s.cfun, reg: s.reg, reg5g: s.reg5g,
 				sig_src: s.sig_src, sig: s.sig, lte: s.lte, nr: s.nr
-			}) : s;
+			}) : Object.assign({}, s);
+			/* A newer successful read supersedes the slow tier's older failure: the card stops saying "No response"
+			 * once the modem answers again, not only at the slow tier's next full refresh. */
+			delete c.error;
 		}
 		this.lastCell = c;
 		/* Slow-tier data (neighbors/carrier/identity) is redrawn only when the whole cache's timestamp changes */
