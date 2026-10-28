@@ -19,7 +19,7 @@ bundle: what it may assume about the kernel and the initramfs is in `docs/contra
 - `hostapd/` — the hotspot's WPA3-SAE: wpad-basic-mbedtls, hostapd-common and wifi-scripts rebuilt (docker) to
   take the firmware's SAE PMK; `build-rootfs.sh` installs them instead of the feed's.
 - `vendor/` — the list and the tools that pull the Android subset (modem_control & co.) from a device; never committed.
-- `tools/` — `image-manifest.py`, `luci-i18n.py`, `po2lmo.py`, `usign-verify.py`.
+- `tools/` — `image-manifest.py`, `image-diff.py` (release diffs), `luci-i18n.py`, `po2lmo.py`, `usign-verify.py`.
 - `docs/` — modem, Wi-Fi, USB, power, update, LuCI, system.
 - `tests/` — `cd openwrt/tests && MU300_TEST_SHELLS='busybox sh' python3 -m unittest`.
 

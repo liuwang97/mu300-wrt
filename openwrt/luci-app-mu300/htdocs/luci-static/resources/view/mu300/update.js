@@ -294,7 +294,8 @@ return view.extend({
 			var box = E('div', { 'id': pre ? 'mud-upd-beta' : 'mud-upd-latest', 'style': 'margin:10px 0' }, [
 				row(pre ? _('Pre-release') : _('Newest release'), [ rel.tag + (rel.published ? ' · ' + rel.published : '') + ' ',
 					E('a', { 'href': rel.url, 'target': '_blank', 'rel': 'noopener noreferrer' }, _('Release notes')) ]),
-				row(_('Download'), M.fmtBytes(rel.download)),
+				/* a diff: only what changed since the installed release, checked by mu300-update against the signed release */
+				row(_('Download'), M.fmtBytes(rel.download) + (rel.diffs > 0 ? ' · ' + _('only what changed since the installed release') : '')),
 				row(_('Free space needed'), kb(rel.need_kb) + (disk.free_kb != null && rel.need_kb > disk.free_kb ? ' · ' + _('not enough: remove the previous version first') : ''))
 			]);
 			if (pre) box.appendChild(E('div', { 'class': 'mud-note' }, _('A pre-release is a release still being tried: it can have faults a release does not. The previous version is kept all the same.')));

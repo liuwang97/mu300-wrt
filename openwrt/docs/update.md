@@ -5,6 +5,7 @@ Applies to: Linux 7.2.11, OpenWrt 25.12.5 (F50, U30 Air). Checked against the co
 
 ## Download and checks
 - Everything is downloaded first and checked against the release's `SHA256SUMS`; only then anything changes. Stalled transfers stop and partial files resume, so a dead downlink is an error, not a hang. The data watchdog is stopped during the install so no redial interrupts the boot write.
+- Diffs: a release carries `mu300-openwrt-luci-rootfs.diff-<tag>.tar.gz` from each of the five releases before it (`tools/make-diffs.sh`, `openwrt/tools/image-diff.py`; only from bases whose `SHA256SUMS` is signed, listed in this release's signed `SHA256SUMS`). A device running `<tag>` downloads the diff and the image manifest instead of the image; after every download `diffs_unpack` fills the left-out files from the installed system where it has them byte for byte and keeps the result only when `mu300-carry manifest` of it equals the signed manifest, else it downloads the whole image. `MU300_DIFF=0` always takes the whole image.
 - `apply` execs the release's own updater in the same process (`MU300_SELF_UPDATED`); the keep-alive runs with `9>&-` so it cannot hold the lock, and a continued run waits up to 10 s for its own lock.
 
 ## Signatures

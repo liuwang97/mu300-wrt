@@ -2422,6 +2422,9 @@ msgstr "发布说明"
 msgid "Download"
 msgstr "下载"
 
+msgid "only what changed since the installed release"
+msgstr "仅下载自已安装版本以来的变更"
+
 msgid "Free space needed"
 msgstr "所需可用空间"
 

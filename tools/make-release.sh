@@ -12,10 +12,10 @@
 # The kernel must be built first (kernel/build.sh and kernel/build-modules.sh into $MU300_KERNEL_OUT, default
 # kernel/out). Needs docker with linux/arm64 (the image, e2fsck) and an aarch64 C compiler for the static
 # programs (aarch64-linux-gnu-gcc, or gcc on an arm64 host; CC overrides it).
-# Assets: mu300-kernel-7.2.tar.gz, mu300-openwrt-luci-rootfs.tar.gz and its .manifest.gz, mu300-update,
-# mu300-release, SHA256SUMS (and SHA256SUMS.sig with the release key). They must never contain proprietary files or
-# anything from a particular device: the audit below fails the build if firmware, Android userspace, host keys or
-# local settings end up in an asset.
+# Assets: mu300-kernel-7.2.tar.gz, mu300-openwrt-luci-rootfs.tar.gz, its .manifest.gz and its diffs from the releases
+# before (tools/make-diffs.sh), mu300-update, mu300-release, SHA256SUMS (and SHA256SUMS.sig with the release key).
+# They must never contain proprietary files or anything from a particular device: the audit below fails the build if
+# firmware, Android userspace, host keys or local settings end up in an asset.
 set -eu
 USAGE='usage: tools/make-release.sh TAG [--publish [--prerelease]] [--any-date] | --next-tag | --check-tag TAG [--any-date]'
 TOP=$(cd "$(dirname "$0")/.." && pwd)
@@ -183,6 +183,8 @@ if [ -n "${MU300_PREV_RELEASE:-}" ] && [ -f "$MU300_PREV_RELEASE/$I.tar.gz" ]; t
 fi
 [ $fail = 0 ] || { echo "audit failed, nothing published" >&2; exit 1; }
 rm -rf "$IN"
+# the diffs from the releases before this one (tools/make-diffs.sh): listed in SHA256SUMS below, so signed with the rest
+sh "$TOP/tools/make-diffs.sh" "$D" "$TAG"
 # the updater itself: an older mu300-update fetches this one and continues with it
 cp "$TOP/openwrt/opt/mu300/bin/mu300-update" "$D/mu300-update"
 # mu300-release: the tag, as a file, so that SHA256SUMS - and with it the signature - says which release these
@@ -221,6 +223,7 @@ Linux $KV and OpenWrt with the MU300 control panel for the ZTE F50 (MU300) and t
 | mu300-kernel-7.2.tar.gz | Linux $KV: \`Image\`, every module (the kernel's own and the out-of-tree Wi-Fi, Bluetooth, modem, thermal and wake-source drivers), the generic boot ramdisk segment; the bundle of \`docs/contract.md\` |
 | mu300-openwrt-luci-rootfs.tar.gz | OpenWrt with the MU300 control panel (luci-app-mu300 by kanoqwq, Aurora theme by eamonxg); English and Chinese |
 | mu300-openwrt-luci-rootfs.manifest.gz | the list of the image's files (type, mode, owner, size, sha256): an update reads it to tell the image's files from yours, and carries yours over |
+| mu300-openwrt-luci-rootfs.diff-<tag>.tar.gz | the image without the files the image of release <tag> (one of the five before this one) had as they are: \`mu300-update apply\` on a device that runs <tag> downloads it instead of the whole image, takes the rest from the installed system, and installs it only when the result is, file for file, the image this release's signed manifest describes (else it downloads the whole image) |
 | mu300-update | the on-device updater of this release (\`mu300-update apply\` switches to it before it changes anything) |
 
 The assets contain **no proprietary files**: the Wi-Fi/Bluetooth firmware and the Android modem userspace stay on the

@@ -1702,10 +1702,10 @@ asset_kb() {
 # (UNPACKING, set by apply_one: the new system and the work directory)
 UNPACKING=
 unpack_abort() {
-    for _ua in $UNPACKING; do
+    for _ua in $UNPACKING $DIFF_NEW; do
         case $_ua in "$DISK"/*.new|"$DISK"/.mu300-delta-*) rm -rf "$_ua" ;; esac
     done
-    UNPACKING=
+    UNPACKING= DIFF_NEW=
     boot_abort
 }
 # delta_unpack TARBALL OLD NEW WORK: the image into NEW (made here), the files WORK/link names as second names of
@@ -1725,6 +1725,118 @@ delta_unpack() {
     "$4/carry" tarlink "$2" "$3" < "$4/log" > "$4/linked" || return 1
 }
 # --- delta end
+
+# --- diff begin
+# A release also carries, for its image, the diff from each of the five releases before it (tools/make-diffs.sh,
+# openwrt/tools/image-diff.py): the new image without the files the older image had as they are, outside the places
+# a device changes. Its checksum is in the release's SHA256SUMS with every other file's, so it is downloaded and
+# checked - the signature of SHA256SUMS too - as the whole image is (fetch_verified), and nothing of it is used before
+# that. A device whose installed image is the diff's base downloads it instead of the image; once every download is
+# done, diff_unpack makes the new system from it (the delta block's unpack), takes the files it left out from the
+# installed system where that has them byte for byte, and keeps the result only when it is, entry for entry, what the
+# release's signed manifest of the image says (mu300-carry manifest). Otherwise it is removed, and the whole image
+# downloaded and unpacked. What follows the unpack is the same for both: the user's files, the accounts, the vendor
+# files, the extras, the VPN and its kill switch (never part of an image or a diff), the previous system kept for a
+# rollback. MU300_DIFF=0: always the whole image.
+# image_kind ASSET: the image a release file of a root filesystem is (its manifest's third word)
+image_kind() {
+    case $1 in mu300-openwrt-luci-rootfs.*) echo openwrt-luci ;; *) return 1 ;; esac
+}
+# diff_asset OS: the release file that is the diff from the image installed in OS (its own manifest says which) to
+# this release's image of OS; status 1 when there is none to ask for (no manifest, another image)
+diff_asset() {
+    _dh=$(gzip -dc < "$DISK/$1/etc/mu300/image-manifest.gz" 2>/dev/null | head -n 1)
+    _da=$(rootfs_asset "$1")
+    # shellcheck disable=SC2086
+    set -- $_dh
+    [ "$#" = 4 ] && [ "$1 $2" = "mu300-image-manifest 1" ] && [ "$3" = "$(image_kind "$_da")" ] && tag_ok "$4" || return 1
+    echo "${_da%.tar.gz}.diff-$4.tar.gz"
+}
+# diff_fetch TAG OS: the diff for OS and the image's manifest in $STAGE, both checked against the release's
+# SHA256SUMS; status 1 when the whole image is to be downloaded (no such diff, MU300_DIFF=0, a failed download - a
+# file that does not match its checksum is never kept)
+diff_fetch() {
+    [ "${MU300_DIFF:-1}" != 0 ] && _fd=$(diff_asset "$2") || return 1
+    _fm=$(rootfs_asset "$2"); _fm=${_fm%.tar.gz}.manifest.gz
+    fetch_verified "$1" "$_fd" 2>/dev/null; _fr=$?
+    [ "$_fr" = 0 ] || {
+        rm -f "$STAGE/$_fd"
+        [ "$_fr" = 2 ] || echo "$2: the diff $_fd could not be had: the whole image is downloaded"
+        return 1
+    }
+    fetch_verified "$1" "$_fm" || { rm -f "$STAGE/$_fd"; return 1; }
+    _fb=${_fd##*.diff-}
+    echo "$2: only what changed since ${_fb%.tar.gz}: $(( $(fsize "$STAGE/$_fd") / 1048576 + 1 )) MB"
+}
+# diff_unpack OS TAG: DISK/OS.new made from the staged diff and the installed system, and checked against the
+# release's signed manifest of the image. Status 1, with DIFF_WHY, when it is not that image: nothing is left of it
+DIFF_WHY= DIFF_NEW=
+diff_unpack() {
+    _uo=$1 _ut=$2
+    _uf=$STAGE/$(diff_asset "$_uo") || { DIFF_WHY="the installed image does not say which it is"; return 1; }
+    _um=$(rootfs_asset "$_uo"); _um=$STAGE/${_um%.tar.gz}.manifest.gz
+    _old=$DISK/$_uo _new=$DISK/$_uo.new _w=$DISK/.mu300-delta-$_uo
+    rm -rf "$_new" "$_w"
+    DIFF_NEW="$DIFF_NEW $_new $_w"
+    # the new image's own parts, from the diff (they are never left out); its manifest is the release's
+    delta_tools "$_uf" "$_w" && delta_ready "$_w" "$_uo" || { DIFF_WHY="it does not bring the parts an update runs"; return 1; }
+    cmp -s "$_w/root/etc/mu300/image-manifest.gz" "$_um" || { DIFF_WHY="its manifest is not the release's"; return 1; }
+    # the room, as for the image (apply_one)
+    if [ "${MU300_DELTA:-1}" != 0 ]; then _dp=$(delta_plan "$_old" "$_w/lines" "$_w" "$_w/carry") || { DIFF_WHY="the installed system could not be compared with it"; return 1; }
+    else : > "$_w/link"; _dp=$(delta_kb "$_w/link" "$_w/lines"); fi
+    _dneed=$(( $(delta_margin "${_dp% *}") + $(carry_need "$_uo") ))
+    _dfree=$(df -Pk "$DISK" | awk 'NR == 2 { print $4 }')
+    [ "${_dfree:-0}" -ge "$_dneed" ] ||
+        die "$_uo: not enough free space on the Linux partition: $((_dneed / 1024)) MB needed, $((${_dfree:-0} / 1024)) MB free. Nothing was changed. mu300-update clean deletes the kept previous versions; mu300-update apply --no-rollback keeps none, and needs no room for your files"
+    delta_unpack "$_uf" "$_old" "$_new" "$_w" || { DIFF_WHY="unpacking it failed"; return 1; }
+    # what it is, and the files it left out
+    [ -f "$_new/.mu300-diff" ] && [ ! -L "$_new/.mu300-diff" ] && mv "$_new/.mu300-diff" "$_w/head" ||
+        { DIFF_WHY="it does not say what it is"; return 1; }
+    _dh=$(gzip -dc < "$_old/etc/mu300/image-manifest.gz" 2>/dev/null | head -n 1)
+    # shellcheck disable=SC2086
+    set -- $_dh
+    [ "$#" = 4 ] && [ "$(head -n 1 "$_w/head")" = "mu300-diff 1 $3 $4 $_ut" ] ||
+        { DIFF_WHY="it is not the diff from the installed image"; return 1; }
+    sed 1d "$_w/head" > "$_w/left"
+    # from the installed system: binaries of the program trees as second names of its files (the delta block's
+    # rule), the rest copied. A file it does not have as the image had it - changed on the device, or gone - and the
+    # diff is no use here
+    "$_w/carry" same "$_old" < "$_w/left" > "$_w/same.left" || { DIFF_WHY="the installed system could not be compared with it"; return 1; }
+    _dn=$(( $(wc -l < "$_w/left") - $(wc -l < "$_w/same.left") ))
+    [ "$_dn" = 0 ] || { DIFF_WHY="$_dn of the files it takes from the installed system are not as $4 had them"; return 1; }
+    awk -v L="$_w/fill.link" -v C="$_w/fill.copy" 'FILENAME == ARGV[1] { l[$0] = 1; next }
+        { p = substr($0, 3); print p > ((p in l) ? L : C) }' "$_w/link" "$_w/same.left" &&
+        touch "$_w/fill.link" "$_w/fill.copy" &&
+        "$_w/carry" link "$_old" "$_new" < "$_w/fill.link" > /dev/null &&
+        "$_w/carry" copy "$_old" "$_new" < "$_w/fill.copy" > /dev/null || { DIFF_WHY="taking the files from the installed system failed"; return 1; }
+    # the new system is the release's image, entry for entry: type, mode, owner, size and content of every one
+    gzip -dc < "$_um" > "$_w/want" && "$_w/carry" manifest "$_new" "$3" "$_ut" > "$_w/got" && cmp -s "$_w/want" "$_w/got" &&
+        cmp -s "$_new/etc/mu300/image-manifest.gz" "$_um" || { DIFF_WHY="the result is not the release's image"; return 1; }
+    echo "$_dp" > "$STAGE/.diff-$_uo.kb"
+    rm -rf "$_w" "$_uf"
+}
+# diffs_unpack TAG OS...: the systems that come as a diff made now, after the downloads and before anything is
+# changed: one that does not give the release's image is replaced by the whole image, downloaded here (DIFF_READY: the
+# systems whose new system is ready)
+DIFF_READY=
+diffs_unpack() {
+    _st=$1; shift
+    for _so in "$@"; do
+        _sa=$(rootfs_asset "$_so"); _sd=$(diff_asset "$_so") || continue
+        [ ! -s "$STAGE/$_sa" ] && [ -s "$STAGE/$_sd" ] || continue
+        say "$_so: unpacking the diff"
+        if diff_unpack "$_so" "$_st"; then
+            DIFF_READY="$DIFF_READY $_so"
+            echo "$_so: the diff gives the release's image"
+            continue
+        fi
+        rm -rf "$DISK/$_so.new" "$DISK/.mu300-delta-$_so" "${STAGE:?}/$_sd"
+        echo "$_so: the diff is not used ($DIFF_WHY): the whole image is downloaded"
+        fetch_verified "$_st" "$_sa" || fetch_stop $?
+        payload_is "$_st" "$_so" || die "nothing was changed"
+    done
+}
+# --- diff end
 
 # The update that keeps keep_list's places and nothing else of the user's: for a new image that does not bring the
 # carry block's parts (one built by hand without mu300-carry), and for MU300_UPDATE_KEEP=list, which asks for it.
@@ -1778,19 +1890,25 @@ apply_one() {  # apply_one OS TAG
     [ -d "$old" ] || die "$os is not installed"
     tarball=$(rootfs_asset "$os")
     tmp=$STAGE
+    # made from the diff already (diffs_unpack), and checked against the release's manifest of the image
+    ready=; case " $DIFF_READY " in *" $os "*) [ -d "$new" ] && ready=1 ;; esac
     # downloaded and checked in apply() already, together with everything else this update needs
-    [ -s "$tmp/$tarball" ] || die "$tarball was not downloaded"
+    [ -n "$ready" ] || [ -s "$tmp/$tarball" ] || die "$tarball was not downloaded"
 
     say "$os: unpacking"
     # (what is being made goes when the run ends before the switch, however it ends: unpack_abort, the EXIT trap)
     work=$DISK/.mu300-delta-$os
     UNPACKING="$new $work"
-    rm -rf "$new" "$work"
+    [ -n "$ready" ] || rm -rf "$new" "$work"
     # Only what changed is written (the delta block): the files of the new image that this system has byte for byte
     # become second names of its own. The room it takes is known before anything is written, and checked again here
     # with the new image's own helper (apply counted with this system's before the download).
     delta=
-    if [ "${MU300_DELTA:-1}" != 0 ] && delta_tools "$tmp/$tarball" "$work" && delta_ready "$work" "$os"; then
+    if [ -n "$ready" ]; then
+        _dp=$(cat "$STAGE/.diff-$os.kb" 2>/dev/null) || _dp='0 0'
+        _dl=${_dp#* }; [ "$_dl" -gt 0 ] 2>/dev/null && delta=1
+        echo "$os: made from the diff; $((_dl / 1024)) MB of it are files of this system that did not change"
+    elif [ "${MU300_DELTA:-1}" != 0 ] && delta_tools "$tmp/$tarball" "$work" && delta_ready "$work" "$os"; then
         _dp=$(delta_plan "$old" "$work/lines" "$work" "$work/carry") || { rm -rf "$work"; die "$os: could not compare the new image with the installed system, nothing was changed"; }
         _dk=${_dp% *}; _dl=${_dp#* }
         _dneed=$(( $(delta_margin "$_dk") + $(carry_need "$os") ))
@@ -1807,7 +1925,7 @@ apply_one() {  # apply_one OS TAG
         untar -xzpf "$tmp/$tarball" -C "$new" || { rm -rf "$new" "$tmp/$tarball"; die "unpacking failed, nothing was changed"; }
     fi
     rm -rf "$work"
-    rm -f "$tmp/$tarball"
+    rm -f "$tmp/$tarball" "$STAGE/.diff-$os.kb"
     [ -x "$new/sbin/init" ] || [ -L "$new/sbin/init" ] || [ -x "$new/bin/busybox" ] || { rm -rf "$new"; die "the unpacked system looks wrong, nothing was changed"; }
 
     # Everything of the user's goes into the new system (the carry block, run from the new image), with the accounts
@@ -3372,8 +3490,9 @@ apply() {
         need=$(space_needed "$(echo $todo | wc -w)" "$(carry_need $todo)")
         [ "$free" -gt "$need" ] || die "not enough free space on the Linux partition: $((need / 1024)) MB needed, $((free / 1024)) MB free (about 1 GB, plus 1 GB for every system to update, plus a copy of what you added to it for the previous version kept for a rollback). mu300-update clean deletes the kept previous versions; mu300-update apply --no-rollback keeps none, and needs no room for your files"
     fi
+    # (where the release has the diff from the installed image, only that: the diff block)
     for os in $todo; do
-        fetch_verified "$tag" "$(rootfs_asset "$os")" || fetch_stop $?
+        diff_fetch "$tag" "$os" || fetch_verified "$tag" "$(rootfs_asset "$os")" || fetch_stop $?
     done
     # (the release that was judged - signature, downgrade - is the one these files are: see payload_is)
     payload_is "$tag" $todo || die "nothing was changed"
@@ -3404,6 +3523,8 @@ apply() {
         die "$(root_not_found_msg). Nothing was changed"
     fi
     rm -f "$STAGE/kernel.list"
+    # the diffs become the new systems now, while one that does not can still be replaced by the whole image
+    diffs_unpack "$tag" $todo
     echo "all files are here and verified; from now on the network is not needed"
 
     EXTRA_CHANGED=
@@ -3748,7 +3869,10 @@ downgrade_ok() {
 payload_is() {
     _pt=$1; shift
     for _po in "$@"; do
-        _pv=$(untar -xzOf "$STAGE/$(rootfs_asset "$_po")" ./etc/mu300/image-version 2>/dev/null | head -n1)
+        # (or the diff that stands in for it: its etc/mu300/image-version, which a diff always carries)
+        _pf=$STAGE/$(rootfs_asset "$_po")
+        [ -s "$_pf" ] || { _pd=$(diff_asset "$_po") && [ -s "$STAGE/$_pd" ] && _pf=$STAGE/$_pd; }
+        _pv=$(untar -xzOf "$_pf" ./etc/mu300/image-version 2>/dev/null | head -n1)
         [ "$_pv" = "$_pt" ] && continue
         echo "$(rootfs_asset "$_po") says it is ${_pv:-no release at all}, not $_pt: not installed" >&2
         return 1
@@ -4056,16 +4180,22 @@ status_json() {
 release_json() {
     _rl=$(printf '%s\n' "$RELEASES" | awk -v t="$1" '$1 == "R" && $2 == t { print; exit }')
     _want="$(kernel_asset) mu300-update"
-    _ns=0 _nl=
+    _ns=0 _nl= _nd=0
     for _os in $(installed_systems); do
         [ "$(cat "$DISK/$_os$VERSION_FILE" 2>/dev/null)" = "$1" ] && continue
-        _want="$_want $(rootfs_asset "$_os")"; _ns=$((_ns + 1)); _nl="$_nl $_os"
+        # (the diff from the installed image where the release has one: what apply downloads, the diff block)
+        _ra=$(rootfs_asset "$_os")
+        if [ "${MU300_DIFF:-1}" != 0 ] && _rd=$(diff_asset "$_os") &&
+            printf '%s\n' "$RELEASES" | awk -v t="$1" -v f="$_rd" '$1 == "A" && $2 == t && $4 == f { x = 1 } END { exit !x }'; then
+            _ra=$_rd _nd=$((_nd + 1))
+        fi
+        _want="$_want $_ra"; _ns=$((_ns + 1)); _nl="$_nl $_os"
     done
     for _x in $(extras_to_fetch "$1"); do _want="$_want $(extra_asset "$_x")"; done
-    printf '{"tag":"%s","title":%s,"published":%s,"url":"https://github.com/%s/releases/tag/%s","signed":%d,"systems":%d,"need_kb":%s,"files":[' \
+    printf '{"tag":"%s","title":%s,"published":%s,"url":"https://github.com/%s/releases/tag/%s","signed":%d,"systems":%d,"diffs":%d,"need_kb":%s,"files":[' \
         "$1" "$(jstr "$(printf '%s\n' "$_rl" | cut -d' ' -f6-)")" "$(jstr "$(printf '%s\n' "$_rl" | awk '{print $5}' | cut -c1-10)")" \
         "$(jv "$REPO")" "$1" "$(printf '%s\n' "$RELEASES" | awk -v t="$1" '$1 == "A" && $2 == t && $4 == "SHA256SUMS.sig" { f = 1 } END { print f + 0 }')" \
-        "$_ns" "$(space_needed "$_ns" "$(carry_need $_nl)")"
+        "$_ns" "$_nd" "$(space_needed "$_ns" "$(carry_need $_nl)")"
     _sep= _tot=0
     for _f in $_want; do
         _sz=$(printf '%s\n' "$RELEASES" | awk -v t="$1" -v f="$_f" '$1 == "A" && $2 == t && $4 == f { print $3; exit }')
